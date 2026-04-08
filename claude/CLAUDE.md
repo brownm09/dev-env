@@ -1,3 +1,7 @@
+<!-- SOURCE OF TRUTH: C:/Users/brown/Git/dev-env/claude/CLAUDE.md -->
+<!-- ~/.claude/CLAUDE.md is a symlink to this file. Edit here, not at ~/.claude/. -->
+<!-- To commit: cd C:/Users/brown/Git/dev-env && git add claude/CLAUDE.md && git commit -->
+
 # Claude Code — Global Configuration
 
 This file is loaded automatically in every session, across all projects.
