@@ -22,4 +22,15 @@ rm -f "$HOME/.claude/CLAUDE.md"
 cmd.exe /c "mklink \"$WIN_LINK\" \"$WIN_TARGET\""
 echo "  Linked claude/CLAUDE.md -> ~/.claude/CLAUDE.md"
 
+# Claude Code scripts — symlink the whole directory
+WIN_SCRIPTS_TARGET="$(cygpath -w "$REPO_DIR/claude/scripts")"
+WIN_SCRIPTS_LINK="$(cygpath -w "$HOME/.claude/scripts")"
+
+# Remove existing directory or symlink before creating new one
+if [ -L "$HOME/.claude/scripts" ] || [ -d "$HOME/.claude/scripts" ]; then
+  cmd.exe /c "rmdir \"$WIN_SCRIPTS_LINK\"" 2>/dev/null || rm -rf "$HOME/.claude/scripts"
+fi
+cmd.exe /c "mklink /D \"$WIN_SCRIPTS_LINK\" \"$WIN_SCRIPTS_TARGET\""
+echo "  Linked claude/scripts/ -> ~/.claude/scripts/"
+
 echo "Done."
