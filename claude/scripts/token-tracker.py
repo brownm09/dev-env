@@ -196,19 +196,39 @@ def main() -> None:
 
     SCRATCH_DIR.mkdir(exist_ok=True)
 
-    # Skip if already recorded (e.g. backfill ran after hook, or hook fired twice)
+    # If a prior record exists for this session_id, update it only if this firing has
+    # a later last_turn_ts (session was paused and resumed) or more subagents.
+    # This handles claude-desktop's pause/resume behavior where the same session_id
+    # can accumulate more Agent calls after the first Stop event fires.
+    existing_line_idx: int | None = None
+    existing_last_turn: str = ""
     if TOKEN_LOG.exists():
-        with open(TOKEN_LOG, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    if json.loads(line).get("session_id") == session_id:
-                        print(f"[token-tracker] {session_id[:8]}… already in log — skipping write")
-                        return
-                except json.JSONDecodeError:
-                    continue
+        lines = TOKEN_LOG.read_text(encoding="utf-8").splitlines(keepends=True)
+        for i, line in enumerate(lines):
+            try:
+                rec = json.loads(line)
+                if rec.get("session_id") == session_id:
+                    existing_line_idx = i
+                    existing_last_turn = rec.get("last_turn_ts") or ""
+                    break
+            except json.JSONDecodeError:
+                continue
+    else:
+        lines = []
 
-    with open(TOKEN_LOG, "a", encoding="utf-8") as f:
-        f.write(json.dumps(summary) + "\n")
+    new_last_turn = summary.get("last_turn_ts") or ""
+    if existing_line_idx is not None:
+        if new_last_turn <= existing_last_turn:
+            print(f"[token-tracker] {session_id[:8]}… already in log (no new turns) — skipping write")
+            return
+        # Update in-place: replace the existing line, rewrite the file
+        lines[existing_line_idx] = json.dumps(summary) + "\n"
+        TOKEN_LOG.write_text("".join(lines), encoding="utf-8")
+        action = "updated"
+    else:
+        with open(TOKEN_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(summary) + "\n")
+        action = "recorded"
 
     with open(LATEST_SESSION, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
@@ -220,7 +240,7 @@ def main() -> None:
         else ""
     )
     print(
-        f"[token-tracker] {session_id[:8]}… | {data['turn_count']} turns{sa_note} | "
+        f"[token-tracker] {session_id[:8]}… {action} | {data['turn_count']} turns{sa_note} | "
         f"in={t['input_tokens']:,} out={t['output_tokens']:,} "
         f"cache_r={t['cache_read_input_tokens']:,} cache_w={t['cache_creation_input_tokens']:,} "
         f"| est. ${estimated_cost:.4f}"
