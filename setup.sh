@@ -33,4 +33,14 @@ fi
 cmd.exe /c "mklink /D \"$WIN_SCRIPTS_LINK\" \"$WIN_SCRIPTS_TARGET\""
 echo "  Linked claude/scripts/ -> ~/.claude/scripts/"
 
+# Claude Code skills — symlink the whole directory
+WIN_SKILLS_TARGET="$(cygpath -w "$REPO_DIR/claude/skills")"
+WIN_SKILLS_LINK="$(cygpath -w "$HOME/.claude/skills")"
+
+if [ -L "$HOME/.claude/skills" ] || [ -d "$HOME/.claude/skills" ]; then
+  cmd.exe /c "rmdir \"$WIN_SKILLS_LINK\"" 2>/dev/null || rm -rf "$HOME/.claude/skills"
+fi
+cmd.exe /c "mklink /D \"$WIN_SKILLS_LINK\" \"$WIN_SKILLS_TARGET\""
+echo "  Linked claude/skills/ -> ~/.claude/skills/"
+
 echo "Done."
