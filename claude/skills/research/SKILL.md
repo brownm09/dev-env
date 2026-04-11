@@ -1,7 +1,7 @@
 ---
 name: research
-description: Find 1–3 primary sources for a decision or topic. Greps the shared source library first (zero cost), spawns a subagent only on a cache miss. Emits footnote-ready markdown. Invoke as /research [tag:] <decision description>.
-argument-hint: "[<tag>:] <decision description>"
+description: Find 1–3 primary sources for a decision or topic. Greps the shared source library first (zero cost), spawns a subagent only on a cache miss. Emits footnote-ready markdown. Invoke as /research [tag:] <decision> [--compare <alternative>].
+argument-hint: "[<tag>:] <decision> [--compare <alternative>]"
 allowed-tools: Grep Read Agent Write Edit
 ---
 
@@ -10,22 +10,31 @@ Produce footnote-ready markdown that can be pasted directly into any document.
 
 ## Step 1 — Parse $ARGUMENTS
 
-`$ARGUMENTS` may take one of two forms:
+`$ARGUMENTS` may take one of these forms:
 
-- **With tag prefix:** `architecture: chose hexagonal over layered for service boundary`
-- **Without tag prefix:** `chose hexagonal over layered for service boundary`
+- **Basic:** `chose hexagonal over layered for service boundary`
+- **With tag:** `architecture: chose hexagonal over layered for service boundary`
+- **With compare:** `chose hexagonal over layered --compare layered monolith`
+- **With tag and compare:** `architecture: chose hexagonal over layered --compare layered monolith`
 
-Parse rule: if `$ARGUMENTS` matches the pattern `<word>: <rest>` where the prefix is a
-single word or hyphenated word, treat the prefix as a **topic tag** and the rest as the
-**decision description**. Otherwise treat the entire string as the decision description.
+Parse rules:
+1. If `$ARGUMENTS` matches `<word>: <rest>` where the prefix is a single word or
+   hyphenated word, treat the prefix as **TAG** and the rest as the remaining string.
+   Otherwise TAG is empty.
+2. If the remaining string contains ` --compare `, split on the first occurrence:
+   everything before is **DECISION**, everything after is **ALTERNATIVE**.
+   Otherwise DECISION is the full remaining string and ALTERNATIVE is empty.
 
 Extract:
-- `TAG` — the topic prefix if present, otherwise empty
-- `DECISION` — the decision description
+- `TAG` — topic prefix if present, otherwise empty
+- `DECISION` — the chosen approach being researched
+- `ALTERNATIVE` — the rejected alternative (only if `--compare` was given)
 
-Tell the user: "Researching: `<DECISION>`" (include tag if present: "Topic: `<TAG>`").
+Tell the user:
+- "Researching: `<DECISION>`" (include tag if present: "Topic: `<TAG>`")
+- If ALTERNATIVE is set: "Comparing against: `<ALTERNATIVE>`"
 
-## Step 2 — Pass 1: Grep the source library
+## Step 2 — Pass 1: Grep the source library (DECISION)
 
 The shared source library is at `~/.claude/skills/sources.md`.
 
@@ -41,15 +50,15 @@ grep -i "<keyword>" ~/.claude/skills/sources.md -A 2
 ```
 
 After grepping, read the matched entries in full. Do not cite a source just because the
-keyword matched — read the one-sentence relevance note and confirm it fits the decision.
+keyword matched — read the one-sentence relevance note and confirm it fits DECISION.
 
-**Candidate selection:** Select up to 3 sources from the library that most directly
-explain the reasoning behind DECISION. If 1 or more strong matches exist, skip Pass 2.
-If fewer than 1 strong match exists, proceed to Pass 2.
+**Candidate selection:** Select up to 3 sources that most directly explain the reasoning
+behind DECISION. If 1 or more strong matches exist, skip Pass 2 for DECISION.
 
-## Step 3 — Pass 2: Research subagent (cache miss only)
+## Step 3 — Pass 2: Research subagent for DECISION (cache miss only)
 
-Spawn a general-purpose subagent (via the Agent tool) with the following task:
+If fewer than 1 strong match was found in Step 2, spawn a general-purpose subagent
+(via the Agent tool) with the following task:
 
 > Find 1–2 primary sources (no summaries, no blog posts without a named author) that a
 > senior engineer at a company like Stripe, Netflix, Google, or Uber would cite when
@@ -59,8 +68,6 @@ Spawn a general-purpose subagent (via the Agent tool) with the following task:
 > Return for each source: title, author or org, URL, and one sentence on why it is
 > relevant to the specific decision.
 > Do not fabricate URLs — only return sources you can verify exist.
-
-The subagent runs in isolation; its output does not expand this conversation's context.
 
 **Library feedback loop:** If the subagent returns a high-quality source not already in
 `~/.claude/skills/sources.md`, append it under the appropriate `##` section. If no
@@ -73,12 +80,40 @@ section fits, add a new one. Format:
 
 Tell the user: "Added `<Title>` to source library under `<Section>`."
 
-## Step 4 — Emit footnote-ready output
+## Step 4 — Pass 1 for ALTERNATIVE (only if --compare was given)
 
-Combine sources from Pass 1 and Pass 2 (up to 3 total). Assign sequential footnote
-numbers starting at `[^1]`.
+Skip this step if ALTERNATIVE is empty.
 
-Output format:
+Repeat the same Pass 1 grep logic from Step 2, but using ALTERNATIVE as the query
+subject. Extract 2–4 keywords from ALTERNATIVE and grep the source library. Select up
+to 3 sources that most directly explain the reasoning for choosing the alternative.
+
+If 1 or more strong matches exist, skip Pass 2 for ALTERNATIVE.
+
+## Step 5 — Pass 2 for ALTERNATIVE (cache miss only, only if --compare was given)
+
+Skip this step if ALTERNATIVE is empty, or if Step 4 found sufficient sources.
+
+Spawn a second general-purpose subagent with the following task (runs independently,
+does not expand conversation context):
+
+> Find 1–2 primary sources (no summaries, no blog posts without a named author) that a
+> senior engineer would cite when arguing for this approach: "<ALTERNATIVE>".
+> This is the rejected alternative to: "<DECISION>".
+> Prefer: named-practitioner engineering blog posts, peer-reviewed papers, official
+> specifications, or free book chapters.
+> Return for each source: title, author or org, URL, and one sentence on why it is
+> relevant to this specific alternative.
+> Do not fabricate URLs — only return sources you can verify exist.
+
+Apply the same library feedback loop as Step 3 for any new high-quality sources found.
+
+## Step 6 — Emit footnote-ready output
+
+### Single-decision output (no --compare)
+
+Combine sources from Steps 2–3 (up to 3 total). Assign sequential footnote numbers
+starting at `[^1]`.
 
 ```
 **Decision:** <DECISION>
@@ -89,15 +124,33 @@ Output format:
 [^2]: ...
 ```
 
-If only one source was found, emit one footnote. If no sources were found after both
-passes, say so explicitly and suggest rephrasing the decision description or broadening
-the topic tag.
+### Dual-decision output (with --compare)
+
+Assign sequential footnote numbers across both groups (chosen starts at `[^1]`,
+rejected continues from where chosen left off). Each group gets a label comment.
+
+```
+**Decision:** <DECISION>
+**Alternative considered:** <ALTERNATIVE>
+
+<!-- paste [^N] markers inline wherever these citations support claims in your document -->
+
+<!-- chosen: <DECISION> -->
+[^1]: [<Title>](<URL>) — <Author/Org>, <year if known>. <One sentence relevance.>
+[^2]: ...
+
+<!-- rejected: <ALTERNATIVE> -->
+[^3]: [<Title>](<URL>) — <Author/Org>, <year if known>. <One sentence relevance.>
+[^4]: ...
+```
+
+If only one source was found for a side, emit one footnote for that side. If no sources
+were found for a side after both passes, say so explicitly under that side's label.
 
 ## Notes
 
 - Inline placement of `[^N]` markers is the caller's responsibility — this skill emits
   the footnote definitions and a reminder to place the markers.
 - GitHub has rendered `[^N]` footnotes in Markdown files since September 2022.
-- For ADR alternatives coverage, invoke the skill once per decision branch (chosen
-  approach + each rejected alternative). A `--compare` flag for single-invocation
-  ADR coverage is tracked in brownm09/dev-env#2.
+- For ADR alternatives coverage, `--compare <alternative>` covers both sides in a single
+  invocation — closes brownm09/dev-env#2.
