@@ -42,6 +42,29 @@ Before writing a `gh` or other CLI automation script:
 
 ---
 
+## Git Workflow
+
+- **Never commit directly to `main`.** All changes go through a branch and PR, regardless of repo.
+- **Branch naming:** `feat/`, `fix/`, `config/`, `chore/`, `draft/` prefixes — match the convention already in use in the repo.
+- **PR first, then merge.** Open the PR immediately after pushing the branch; do not prompt the user to run `gh pr create` themselves.
+- **Exception:** Local-only repos with no remote may commit to main directly.
+
+---
+
+## Model Selection
+
+Route tasks to the least powerful model that can handle them reliably:
+
+| Task type | Model |
+|-----------|-------|
+| Mechanical: search, format, summarize, diff, rename | Haiku |
+| Standard dev: code review, feature implementation, debugging | Sonnet |
+| Complex: architectural decisions, novel problems, multi-file reasoning | Opus |
+
+Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handles correctly on the first try.
+
+---
+
 ## Documentation and Citations
 
 When writing or updating any architectural documentation (ADRs, design docs, READMEs):
