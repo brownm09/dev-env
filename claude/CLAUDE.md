@@ -42,6 +42,15 @@ Before writing a `gh` or other CLI automation script:
 
 ---
 
+## Git Workflow
+
+- **Never commit directly to `main`.** All changes go through a branch and PR, regardless of repo.
+- **Branch naming:** `feat/`, `fix/`, `config/`, `chore/`, `draft/` prefixes — match the convention already in use in the repo.
+- **PR first, then merge.** Open the PR immediately after pushing the branch; do not prompt the user to run `gh pr create` themselves.
+- **Exception:** Local-only repos with no remote may commit to main directly.
+
+---
+
 ## Model Selection
 
 Route tasks to the least powerful model that can handle them reliably:
