@@ -51,6 +51,29 @@ Before writing a `gh` or other CLI automation script:
 
 ---
 
+## Dev-Env
+
+`~/.claude/` is split between two categories. Treat them differently.
+
+**Owned by `brownm09/dev-env` — symlinked, version-controlled:**
+
+| Path | dev-env source |
+|---|---|
+| `~/.claude/CLAUDE.md` | `claude/CLAUDE.md` |
+| `~/.claude/scripts/` | `claude/scripts/` (directory junction) |
+| `~/.claude/skills/` | `claude/skills/` (directory junction) |
+| `~/.claude/settings.json` | `claude/settings.json` |
+
+**Machine-local only — never commit:**
+
+`scratch/`, `projects/`, `sessions/`, `backups/`, `ide/`, `plans/`, `shell-snapshots/`
+
+**Rule:** Any addition or modification to a dev-env-owned artifact — new hook script, new skill, settings change, CLAUDE.md edit — must be committed to `brownm09/dev-env` via branch and PR before the session ends. Do not leave global tooling as untracked files.
+
+**Repo path:** `C:/Users/brown/Git/dev-env`
+
+---
+
 ## Model Selection
 
 Route tasks to the least powerful model that can handle them reliably:
@@ -185,5 +208,7 @@ Opening brief: ...
 - When the journal structure itself changes — record the new section, placement, and rationale
 - When a new canonical reference repo or external resource is identified — record the resource
   and its role
+- When a `brownm09/dev-env` PR is merged — record what changed (script, skill, settings, or
+  CLAUDE.md), why it was introduced, and which project or session prompted it
 
 **Full journal conventions:** See [`brownm09/engineering-journal`](https://github.com/brownm09/engineering-journal) → `sessions/meta/2026-04-05-workflow-and-journal-setup.md`
