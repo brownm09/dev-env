@@ -11,12 +11,12 @@ Stdout is injected as context Claude sees before processing the user's message.
 """
 
 import glob
-import json
 import os
 import sys
 from datetime import date
+from pathlib import Path
 
-JOURNAL_REPO = "C:/Users/brown/Git/engineering-journal"
+JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 TODAY = date.today().strftime("%Y-%m-%d")
 
 
@@ -27,7 +27,7 @@ def main() -> None:
     except Exception:
         pass
 
-    pattern = os.path.join(JOURNAL_REPO, "sessions", "**", "*_draft.md")
+    pattern = str(JOURNAL_REPO / "sessions" / "**" / "*_draft.md")
     drafts = glob.glob(pattern, recursive=True)
     stale = [
         f for f in drafts
@@ -39,7 +39,7 @@ def main() -> None:
 
     # Most recent stale draft first (basename sort is date-based).
     stale.sort(key=lambda f: os.path.basename(f), reverse=True)
-    draft_path = stale[0].replace("\\", "/")
+    draft_path = Path(stale[0]).as_posix()
     draft_date = os.path.basename(stale[0]).replace("_draft.md", "")
 
     print(
