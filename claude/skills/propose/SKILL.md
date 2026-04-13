@@ -2,7 +2,6 @@
 name: propose
 description: One-sentence idea → PRD in docs/proposals/ → linked GitHub issue → ROADMAP.md update. Run from the lifting-logbook repo root on a clean working tree.
 argument-hint: "<one-line idea>"
-disable-model-invocation: true
 allowed-tools: Read Edit Write Bash Glob Grep
 ---
 
