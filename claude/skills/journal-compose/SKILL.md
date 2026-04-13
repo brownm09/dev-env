@@ -486,7 +486,10 @@ git -C C:/Users/brown/Git/engineering-journal push
 
 ## Step 11 — Open PR
 
-Open the PR immediately using `gh`:
+Open the PR immediately using `gh`.
+
+Before composing the PR body, read `~/.claude/templates/pr-body.md` and use it as the
+structural guide. This is a journal PR — use the "Journal PR" pattern from that file.
 
 ```bash
 gh pr create \
