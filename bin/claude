@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Wrapper for Claude Code desktop app CLI.
+# Resolves the current version directory dynamically so this script
+# does not need to be updated after app upgrades.
+CLAUDE_BASE="$LOCALAPPDATA/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code"
+CLAUDE_BIN=$(ls -d "$CLAUDE_BASE"/*/claude.exe 2>/dev/null | sort -V | tail -1)
+if [[ -z "$CLAUDE_BIN" ]]; then
+  echo "claude: could not find Claude Code binary under $CLAUDE_BASE" >&2
+  exit 1
+fi
+exec "$CLAUDE_BIN" "$@"

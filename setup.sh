@@ -51,4 +51,14 @@ rm -f "$HOME/.claude/settings.json"
 cmd.exe /c "mklink \"$WIN_SETTINGS_LINK\" \"$WIN_SETTINGS_TARGET\""
 echo "  Linked claude/settings.json -> ~/.claude/settings.json"
 
+# ~/bin — personal CLI wrappers (junction to dev-env/bin/)
+WIN_BIN_TARGET="$(cygpath -w "$REPO_DIR/bin")"
+WIN_BIN_LINK="$(cygpath -w "$HOME/bin")"
+
+if [ -L "$HOME/bin" ] || [ -d "$HOME/bin" ]; then
+  cmd.exe /c "rmdir \"$WIN_BIN_LINK\"" 2>/dev/null || rm -rf "$HOME/bin"
+fi
+cmd.exe /c "mklink /J \"$WIN_BIN_LINK\" \"$WIN_BIN_TARGET\""
+echo "  Linked bin/ -> ~/bin/"
+
 echo "Done."
