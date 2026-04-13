@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 C:/Users/brown/.claude/scripts/token-tracker.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 C:/Users/brown/.claude/scripts/pr-merge-reminder.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 C:/Users/brown/.claude/scripts/post-tool-use.py"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -43,4 +43,12 @@ fi
 cmd.exe /c "mklink /D \"$WIN_SKILLS_LINK\" \"$WIN_SKILLS_TARGET\""
 echo "  Linked claude/skills/ -> ~/.claude/skills/"
 
+# Claude Code global settings
+WIN_SETTINGS_TARGET="$(cygpath -w "$REPO_DIR/claude/settings.json")"
+WIN_SETTINGS_LINK="$(cygpath -w "$HOME/.claude/settings.json")"
+
+rm -f "$HOME/.claude/settings.json"
+cmd.exe /c "mklink \"$WIN_SETTINGS_LINK\" \"$WIN_SETTINGS_TARGET\""
+echo "  Linked claude/settings.json -> ~/.claude/settings.json"
+
 echo "Done."
