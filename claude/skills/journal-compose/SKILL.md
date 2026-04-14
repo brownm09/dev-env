@@ -2,7 +2,6 @@
 name: journal-compose
 description: Compose the end-of-day engineering journal from today's draft file. Produces the canonical 11-section document, updates READMEs, commits, and prompts for a PR. Invoke as /journal-compose [draft-file-path].
 argument-hint: "[sessions/<project>/YYYY-MM-DD_draft.md]"
-disable-model-invocation: true
 allowed-tools: Read Edit Write Bash Glob Grep Agent
 ---
 
