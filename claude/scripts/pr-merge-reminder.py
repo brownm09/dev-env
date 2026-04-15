@@ -2,6 +2,9 @@
 """Claude Code PostToolUse hook — detects 'gh pr merge' in Bash commands and
 emits a journal-update reminder via stderr (exit code 2) so Claude sees it.
 
+Matches only actual CLI invocations of `gh pr merge`, not the string appearing
+inside commit messages, heredocs, or other quoted arguments.
+
 Stdin JSON shape (PostToolUse):
   {
     "hook_event_name": "PostToolUse",
@@ -16,7 +19,19 @@ Exit 0  — not a gh pr merge; no action
 Exit 2  — gh pr merge detected; reminder emitted via stderr
 """
 import json
+import re
 import sys
+
+# Matches `gh pr merge` at the start of a sub-command (after shell operators
+# or at the very beginning of the command string). This avoids false positives
+# from commit messages or heredoc content that happen to contain the phrase.
+_GH_PR_MERGE_RE = re.compile(
+    r"(?:^|&&|\|\||;|\n)\s*(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b"
+)
+
+
+def is_pr_merge_command(command: str) -> bool:
+    return bool(_GH_PR_MERGE_RE.search(command))
 
 
 def main() -> None:
@@ -33,7 +48,7 @@ def main() -> None:
         sys.exit(0)
 
     command = data.get("tool_input", {}).get("command", "")
-    if "gh pr merge" not in command:
+    if not is_pr_merge_command(command):
         sys.exit(0)
 
     cwd = data.get("cwd", "<unknown>")
