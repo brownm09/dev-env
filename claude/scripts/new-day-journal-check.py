@@ -45,20 +45,23 @@ def unmerged_draft_branches() -> list[str]:
         )
         branches = [b.strip() for b in result.stdout.splitlines() if b.strip()]
 
-        # Find which are not merged into origin/main
+        # Find which are not merged into origin/main.
+        # Use git log --grep instead of --merged because journals are squash-merged:
+        # the original branch commits are not ancestors of main's tip, so --merged
+        # always reports them as unmerged even after the squash PR lands.
         unmerged = []
         for branch in branches:
             date_part = branch.replace("origin/draft/", "")
             if date_part == TODAY:
                 continue  # current day is always open
-            merged_result = subprocess.run(
-                ["git", "branch", "-r", "--merged", "origin/main", "--list", branch],
+            log_result = subprocess.run(
+                ["git", "log", "origin/main", "--oneline", f"--grep={date_part}", "-1"],
                 cwd=JOURNAL_REPO,
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
-            if branch not in merged_result.stdout:
+            if not log_result.stdout.strip():
                 unmerged.append(date_part)
 
         unmerged.sort(reverse=True)
