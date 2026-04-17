@@ -1,13 +1,24 @@
 ---
 name: fit-screen
-description: Run fit screening on a job description for Mike Brown's job search. Uses a Haiku subagent to check auto-skip triggers, soft flags, and compensation floor. Returns PROCEED, FLAG, or SKIP. Invoke as /fit-screen [JD text or file path].
-argument-hint: "[JD text or path to JD file]"
-allowed-tools: Read Bash Agent
+description: Run fit screening on a job description for Mike Brown's job search. Uses a Haiku subagent to check auto-skip triggers, soft flags, and compensation floor. Returns PROCEED, FLAG, or SKIP. Invoke as /fit-screen [JD text, file path, PDF path, or URL].
+argument-hint: "[JD text, file path, PDF path, or URL to job posting]"
+allowed-tools: Read Bash Agent WebFetch
 ---
 
 You are running a fit screen for Mike Brown's job search.
 
-The job description is provided in `$ARGUMENTS`. If it is a file path, read it. If it is inline text, use it directly. If neither is provided, ask the user for the JD before proceeding.
+## Step 0 — Load the job description
+
+The job description is provided in `$ARGUMENTS`. Determine input type and load accordingly:
+
+- **No argument / pasted text:** If `$ARGUMENTS` is empty or looks like inline prose (not a path or URL), use it directly as the JD text. If empty, ask the user to paste the JD.
+- **File path (`.md`, `.txt`, `.docx`):** Read the file.
+- **PDF path (`.pdf`):** Read the file using the Read tool — it handles PDF extraction.
+- **URL:** Fetch the page using WebFetch. Extract the job description text from the page body; discard navigation, footers, and cookie banners.
+
+Store the extracted JD text. If the JD text is under 50 words after extraction, tell the user the source may not have loaded correctly and ask them to paste the JD directly.
+
+## Step 1 — Spawn fit screening subagent
 
 Spawn a single **Haiku** subagent with this task:
 
@@ -35,12 +46,20 @@ Spawn a single **Haiku** subagent with this task:
 > Job description:
 > <JD text>
 
-After the subagent returns, present its report directly to the user without summarizing or editorializing. Then state the recommendation prominently:
+## Step 2 — Present results
+
+Present the subagent's full report directly to the user without summarizing or editorializing. Then state the recommendation prominently:
 
 ```
 Recommendation: [PROCEED / FLAG / SKIP]
 ```
 
-If FLAG, add: "Run /cover-letter once you've reviewed the flags and decided to proceed."
-If PROCEED, add: "Run /cover-letter to draft the letter."
-If SKIP, add: "Role logged as skipped? If you want to override, re-run /cover-letter manually."
+## Step 3 — Follow-up action
+
+**If PROCEED:** Tell the user "Run /cover-letter to draft the letter." Do not log anything.
+
+**If FLAG:** Tell the user "Review the flags above, then run /cover-letter if you decide to proceed." Do not log anything.
+
+**If SKIP:** Ask the user: "Log this role as skipped in `company_log.md`? (yes/no)"
+- If yes: Read `C:/Users/brown/Git/job-search/context/company_log.md`, add a row to the "Roles Skipped" table with company name, role title, date, and the skip reason (from the triggered auto-skip rule), then write the updated file and confirm.
+- If no: Do nothing.

@@ -1,37 +1,50 @@
 ---
 name: cover-letter
-description: Draft a cover letter for a job application following the full 10-step job-search workflow. Invokes Haiku subagents for fit screening and style self-check. Invoke as /cover-letter [job-description-text or file path].
-argument-hint: "[JD text or path to JD file]"
-allowed-tools: Read Edit Write Bash Glob Grep Agent
+description: Draft a cover letter for a job application following the full cover letter workflow. Invokes Haiku subagents for fit screening and style self-check. Invoke as /cover-letter [JD text, file path, PDF path, or URL].
+argument-hint: "[JD text, file path, PDF path, or URL to job posting]"
+allowed-tools: Read Edit Write Bash Glob Grep Agent WebFetch
 ---
 
 You are drafting a cover letter for Mike Brown's job search, following the canonical workflow defined in `CLAUDE.md`.
 
 Follow every step in order. Do not skip steps.
 
-The job description is provided in `$ARGUMENTS`. If it is a file path, read it. If it is inline text, use it directly. If neither is provided, ask the user for the JD before proceeding.
+## Step 0 — Load the job description
 
-## Step 1 — Fit Screening (Haiku subagent)
+The job description is provided in `$ARGUMENTS`. Determine input type and load accordingly:
+
+- **No argument / pasted text:** If `$ARGUMENTS` is empty or looks like inline prose (not a path or URL), use it directly as the JD text. If empty, ask the user to paste the JD.
+- **File path (`.md`, `.txt`, `.docx`):** Read the file.
+- **PDF path (`.pdf`):** Read the file using the Read tool — it handles PDF extraction.
+- **URL:** Fetch the page using WebFetch. Extract the job description text from the page body; discard navigation, footers, and cookie banners.
+
+Store the extracted JD text. If the JD text is under 50 words after extraction, tell the user the source may not have loaded correctly and ask them to paste the JD directly.
+
+## Step 1 — Company log check
+
+Read `C:/Users/brown/Git/job-search/context/company_log.md`.
+Check the "Roles Completed" and "Roles Skipped" tables for this company and role.
+If already present, stop and tell the user: "This role is already logged as [completed/skipped]."
+
+## Step 2 — Fit Screening (Haiku subagent)
 
 Spawn a **Haiku** subagent with this task:
 
-> You are performing a fit screen for a job application. Read `C:/Users/brown/Git/job-search/context/session_instructions.md` — specifically the "Fit Screening Protocol", "Technical Stack Reference", and "Notable Gaps" sections. Then evaluate this job description against those rules and report:
-> 1. Any auto-skip triggers (list the rule and the JD text that triggered it)
-> 2. Any soft flags (compensation, seniority, stack mismatches)
+> You are performing a fit screen for a job application for Mike Brown, targeting Director and Senior Manager of Engineering roles.
+>
+> Read `C:/Users/brown/Git/job-search/context/session_instructions.md` — specifically the sections: "Fit Screening Protocol", "Technical Stack Reference", "Notable Gaps", "Compensation Floor", and "Auto-Skip Triggers".
+>
+> Evaluate the following job description against those rules and report:
+> 1. Any auto-skip triggers (list the rule and the JD text that triggered it). If none, write "None."
+> 2. Any soft flags (compensation uncertainty, seniority mismatch, stack gaps, industry fit). For each, quote the relevant JD text.
 > 3. Overall recommendation: PROCEED, FLAG, or SKIP
 >
 > Job description:
-> <paste JD here>
+> <JD text>
 
 If the subagent returns SKIP, stop and report the result to the user. Do not proceed.
 If the subagent returns FLAG, surface the flags and ask the user whether to proceed.
 If PROCEED, continue.
-
-## Step 2 — Company log check
-
-Read `C:/Users/brown/Git/job-search/context/company_log.md`.
-Check the "Roles Completed" and "Roles Skipped" tables for the company and role.
-If already present, stop and tell the user: "This role is already logged as [completed/skipped]."
 
 ## Step 3 — Read style rules
 
@@ -77,11 +90,17 @@ Apply every violation the self-check subagent flagged. Re-read each fixed passag
 
 ## Step 9 — Word count
 
-Run:
+Write the letter body to a temp file and count words:
 ```bash
-echo "<letter body>" | wc -w
+TMPFILE="C:/Users/brown/.claude/scratch/wc_$$.txt"
+cat > "$TMPFILE" << 'LETTER'
+<letter body here>
+LETTER
+wc -w < "$TMPFILE"
+rm -f "$TMPFILE"
 ```
-Or count manually. The body must be under 470 words (subtract approximately 30–35 words for header, salutation, and sign-off). If over, trim.
+
+The body must be under 470 words (subtract approximately 30–35 words for header, salutation, and sign-off from the total). If over, trim.
 
 Report the final word count to the user.
 
