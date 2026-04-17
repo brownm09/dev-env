@@ -68,7 +68,7 @@ Draft the cover letter body in Markdown. Apply all style rules from Step 3 while
 - No em-dashes (anywhere, no exceptions)
 - No banned constructions ("The outcomes were concrete" and all variants)
 - Do not claim Mike "led a platform directorate" — use "led platform teams responsible for..." or "led programs within the platform organization"
-- Body word ceiling: 470 words
+- Body word ceiling: 400 words (body paragraphs only)
 - Output is Markdown only
 
 Use the model letter from Step 4 as a structural reference. Adapt tone and emphasis to the specific JD. Do not copy model letter text verbatim.
@@ -100,7 +100,7 @@ wc -w < "$TMPFILE"
 rm -f "$TMPFILE"
 ```
 
-The body must be under 470 words (subtract approximately 30–35 words for header, salutation, and sign-off from the total). If over, trim.
+The body must be under 400 words (count body paragraphs only — exclude header block, salutation, and sign-off). If over, trim.
 
 Report the final word count to the user.
 
