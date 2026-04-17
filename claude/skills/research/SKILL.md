@@ -2,7 +2,7 @@
 name: research
 description: Find 1–3 primary sources for a decision or topic. Greps the shared source library first (zero cost), spawns a subagent only on a cache miss. Emits footnote-ready markdown. Invoke as /research [tag:] <decision> [--compare <alternative>].
 argument-hint: "[<tag>:] <decision> [--compare <alternative>]"
-allowed-tools: Grep Read Agent Write Edit
+allowed-tools: Grep Read Agent Write Edit AskUserQuestion
 ---
 
 You are finding primary sources for an engineering decision or topic.
@@ -53,13 +53,46 @@ After grepping, read the matched entries in full. Do not cite a source just beca
 keyword matched — read the one-sentence relevance note and confirm it fits DECISION.
 
 **Candidate selection:** Select up to 3 sources that most directly explain the reasoning
-behind DECISION. If 1 or more strong matches exist, skip Pass 2 for DECISION.
+behind DECISION. If 1 or more strong matches exist, skip Steps 3a–3b for DECISION.
 
-## Step 3 — Pass 2: Research subagent for DECISION (cache miss only)
+## Step 3a — Haiku quick scan for DECISION (cache miss only)
 
-If fewer than 1 strong match was found in Step 2, spawn a general-purpose subagent
-(via the Agent tool) with the following task:
+If fewer than 1 strong match was found in Step 2, spawn a **Haiku** subagent
+(`model: "haiku"`) with the following task:
 
+> First, call ToolSearch with query "select:WebSearch,WebFetch" to load web tools.
+>
+> Then find 1–2 primary sources (no summaries, no blog posts without a named author)
+> that a senior engineer at a company like Stripe, Netflix, Google, or Uber would cite
+> when making this decision: "<DECISION>".
+> Prefer: named-practitioner engineering blog posts, peer-reviewed papers, official
+> specifications, or free book chapters (SRE book, SE@Google, etc.).
+> Return for each source: title, author or org, URL, and one sentence on why it is
+> relevant to the specific decision.
+> Do not fabricate URLs — only return sources you can confirm exist via web search.
+> If you cannot find verifiable sources, say so explicitly and explain what you searched.
+
+Report the Haiku subagent's findings to the user in a brief summary.
+
+If the Haiku subagent returned 1+ sources with confirmed URLs, skip Step 3b and proceed
+to Step 4.
+
+## Step 3b — Approval gate for deep DECISION search
+
+If the Haiku quick scan found no confirmed sources, ask the user for approval before
+spending more tokens on a deeper Sonnet search:
+
+Use AskUserQuestion with:
+- Question: "The quick scan found no verified sources. Run a deeper Sonnet search? (This uses roughly 10× more tokens.)"
+- Header: "Deep search"
+- Options:
+  - "Yes, continue" — spawn a Sonnet subagent for a thorough search
+  - "No, skip" — report no sources found and move on
+
+If the user approves, spawn a **general-purpose** subagent with the following task:
+
+> First, call ToolSearch with query "select:WebSearch,WebFetch" to load web tools.
+>
 > Find 1–2 primary sources (no summaries, no blog posts without a named author) that a
 > senior engineer at a company like Stripe, Netflix, Google, or Uber would cite when
 > making this decision: "<DECISION>".
@@ -67,11 +100,11 @@ If fewer than 1 strong match was found in Step 2, spawn a general-purpose subage
 > specifications, or free book chapters (SRE book, SE@Google, etc.).
 > Return for each source: title, author or org, URL, and one sentence on why it is
 > relevant to the specific decision.
-> Do not fabricate URLs — only return sources you can verify exist.
+> Do not fabricate URLs — only return sources you can confirm exist via web search.
 
-**Library feedback loop:** If the subagent returns a high-quality source not already in
-`~/.claude/skills/sources.md`, append it under the appropriate `##` section. If no
-section fits, add a new one. Format:
+**Library feedback loop (Steps 3a and 3b):** If either subagent returns a high-quality
+source not already in `~/.claude/skills/sources.md`, append it under the appropriate
+`##` section. If no section fits, add a new one. Format:
 
 ```
 - **<Title>** | <Author/Org> | <URL> |
@@ -88,15 +121,17 @@ Repeat the same Pass 1 grep logic from Step 2, but using ALTERNATIVE as the quer
 subject. Extract 2–4 keywords from ALTERNATIVE and grep the source library. Select up
 to 3 sources that most directly explain the reasoning for choosing the alternative.
 
-If 1 or more strong matches exist, skip Pass 2 for ALTERNATIVE.
+If 1 or more strong matches exist, skip Steps 5a–5b for ALTERNATIVE.
 
-## Step 5 — Pass 2 for ALTERNATIVE (cache miss only, only if --compare was given)
+## Step 5a — Haiku quick scan for ALTERNATIVE (cache miss only)
 
 Skip this step if ALTERNATIVE is empty, or if Step 4 found sufficient sources.
 
-Spawn a second general-purpose subagent with the following task (runs independently,
-does not expand conversation context):
+Spawn a **Haiku** subagent (`model: "haiku"`) with the following task (runs
+independently, does not expand conversation context):
 
+> First, call ToolSearch with query "select:WebSearch,WebFetch" to load web tools.
+>
 > Find 1–2 primary sources (no summaries, no blog posts without a named author) that a
 > senior engineer would cite when arguing for this approach: "<ALTERNATIVE>".
 > This is the rejected alternative to: "<DECISION>".
@@ -104,15 +139,45 @@ does not expand conversation context):
 > specifications, or free book chapters.
 > Return for each source: title, author or org, URL, and one sentence on why it is
 > relevant to this specific alternative.
-> Do not fabricate URLs — only return sources you can verify exist.
+> Do not fabricate URLs — only return sources you can confirm exist via web search.
+> If you cannot find verifiable sources, say so explicitly and explain what you searched.
 
-Apply the same library feedback loop as Step 3 for any new high-quality sources found.
+Report the Haiku subagent's findings to the user.
+
+If the Haiku subagent returned 1+ sources with confirmed URLs, skip Step 5b and proceed
+to Step 6.
+
+## Step 5b — Approval gate for deep ALTERNATIVE search
+
+Skip this step if ALTERNATIVE is empty, or if Step 5a found confirmed sources.
+
+Use AskUserQuestion with:
+- Question: "The quick scan found no verified sources for the alternative. Run a deeper Sonnet search? (This uses roughly 10× more tokens.)"
+- Header: "Deep search"
+- Options:
+  - "Yes, continue" — spawn a Sonnet subagent for a thorough search
+  - "No, skip" — report no sources found for this side
+
+If approved, spawn a **general-purpose** subagent with the following task:
+
+> First, call ToolSearch with query "select:WebSearch,WebFetch" to load web tools.
+>
+> Find 1–2 primary sources (no summaries, no blog posts without a named author) that a
+> senior engineer would cite when arguing for this approach: "<ALTERNATIVE>".
+> This is the rejected alternative to: "<DECISION>".
+> Prefer: named-practitioner engineering blog posts, peer-reviewed papers, official
+> specifications, or free book chapters.
+> Return for each source: title, author or org, URL, and one sentence on why it is
+> relevant to this specific alternative.
+> Do not fabricate URLs — only return sources you can confirm exist via web search.
+
+Apply the same library feedback loop as Steps 3a–3b for any new high-quality sources found.
 
 ## Step 6 — Emit footnote-ready output
 
 ### Single-decision output (no --compare)
 
-Combine sources from Steps 2–3 (up to 3 total). Assign sequential footnote numbers
+Combine sources from Steps 2–3b (up to 3 total). Assign sequential footnote numbers
 starting at `[^1]`.
 
 ```
