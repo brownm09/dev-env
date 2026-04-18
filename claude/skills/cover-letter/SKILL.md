@@ -123,8 +123,20 @@ Write the updated file.
 
 ## Step 12 — Report to user
 
+Before reporting the file path, compute a path relative to the current working directory so the link resolves correctly in the UI (this matters when the session runs in a git worktree).
+
+Replace `<abs>` with the absolute path written in Step 10, then run:
+
+```bash
+ABS="<abs>"
+PYBIN=$(command -v python3 || command -v python)
+"$PYBIN" -c "import os; print(os.path.relpath('$ABS', os.getcwd()).replace('\\', '/'))"
+```
+
+Use the printed path as the markdown link href — e.g., `[filename](relative/path/filename.md)`.
+
 Tell the user:
-- Where the letter was saved
+- Where the letter was saved (as a clickable markdown link using the relative path computed above)
 - Final word count
 - Any flags raised during fit screening that are still relevant
 - Any open items (e.g., missing salary range, unclear hiring manager name)
