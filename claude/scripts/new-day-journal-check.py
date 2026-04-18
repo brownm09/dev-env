@@ -33,9 +33,16 @@ def stale_draft_files() -> list[str]:
 
 
 def unmerged_draft_branches() -> list[str]:
-    """Return remote draft/* branch names not yet merged into origin/main."""
+    """Return remote draft/* branch names not yet merged into origin/main.
+
+    Fast path: check local remote-tracking refs (zero network cost).
+    Verification pass: for any branch that appears unmerged locally, confirm it
+    still exists on the remote via ls-remote. This prunes false positives caused
+    by stale tracking refs left behind after squash-merge + branch deletion,
+    while avoiding a network call when there is nothing to verify.
+    """
     try:
-        # List remote draft branches
+        # Fast path — local tracking refs, no network
         result = subprocess.run(
             ["git", "branch", "-r", "--list", "origin/draft/*"],
             cwd=JOURNAL_REPO,
@@ -43,27 +50,40 @@ def unmerged_draft_branches() -> list[str]:
             text=True,
             timeout=10,
         )
-        branches = [b.strip() for b in result.stdout.splitlines() if b.strip()]
+        candidates = []
+        for b in result.stdout.splitlines():
+            b = b.strip()
+            date_part = b.replace("origin/draft/", "")
+            if date_part and date_part != TODAY:
+                merged = subprocess.run(
+                    ["git", "branch", "-r", "--merged", "origin/main", "--list", b],
+                    cwd=JOURNAL_REPO,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if b not in merged.stdout:
+                    candidates.append(date_part)
 
-        # Find which are not merged into origin/main.
-        # Use git log --grep instead of --merged because journals are squash-merged:
-        # the original branch commits are not ancestors of main's tip, so --merged
-        # always reports them as unmerged even after the squash PR lands.
-        unmerged = []
-        for branch in branches:
-            date_part = branch.replace("origin/draft/", "")
-            if date_part == TODAY:
-                continue  # current day is always open
-            log_result = subprocess.run(
-                ["git", "log", "origin/main", "--oneline", f"--grep={date_part}", "-1"],
-                cwd=JOURNAL_REPO,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if not log_result.stdout.strip():
-                unmerged.append(date_part)
+        if not candidates:
+            return []
 
+        # Verification pass — one ls-remote call only when candidates exist.
+        # Squash-merge + delete means "branch still on remote = not yet merged".
+        ls = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", "refs/heads/draft/*"],
+            cwd=JOURNAL_REPO,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        remote_dates = set()
+        for line in ls.stdout.splitlines():
+            if "\t" in line:
+                ref = line.split("\t", 1)[1].strip()
+                remote_dates.add(ref.replace("refs/heads/draft/", ""))
+
+        unmerged = [d for d in candidates if d in remote_dates]
         unmerged.sort(reverse=True)
         return unmerged
     except Exception:
