@@ -47,6 +47,7 @@ Before writing a `gh` or other CLI automation script:
 - **Never commit directly to `main`.** All changes go through a branch and PR, regardless of repo.
 - **Branch naming:** `feat/`, `fix/`, `config/`, `chore/`, `draft/` prefixes — match the convention already in use in the repo.
 - **PR first, then merge.** Open the PR immediately after pushing the branch; do not prompt the user to run `gh pr create` themselves.
+- **Auto-review on PR creation.** After opening any PR, immediately run `/review <PR-URL>` before reporting the task as complete. Do not skip this step.
 - **Exception:** Local-only repos with no remote may commit to main directly.
 
 ---
