@@ -45,6 +45,50 @@ From the draft file, extract:
   - Next-session-context paragraph
 - **Last next-session-context** — the final one in the file (used in Section 9)
 
+## Step 2b — Check for meta-relevant content (project drafts only)
+
+Skip this step if the draft path is `sessions/meta/`.
+
+Using the session blocks already extracted in Step 2, scan each block's body text for
+content matching the meta journal trigger criteria from `~/.claude/CLAUDE.md`:
+
+| Trigger | What to look for |
+|---|---|
+| `CLAUDE.md` modified | References to "CLAUDE.md" alongside a change, addition, or update |
+| New platform constraint | Platform-specific discovery (Windows, Git Bash, nvm, PATH, temp file paths) paired with a fix or workaround |
+| Workflow failure remediated | A hook, script, or process that failed, was diagnosed, and fixed |
+| Cross-project convention established | Language like "all repos", "global", "convention", "from now on" |
+| `dev-env` PR merged | Any `brownm09/dev-env#N` PR reference |
+| Journal structure changed | Changes to journal sections, skill logic, draft format, or token tracking |
+| New canonical reference identified | A new external resource, repo, or tool added as a persistent reference |
+
+For each session block, note which triggers (if any) apply and why.
+
+If **no triggers match**, continue to Step 3.
+
+If **one or more triggers match**, present the findings to the user before continuing:
+
+```
+The following session blocks contain content that may belong in sessions/meta/:
+
+- Session N (`<slug>`): <trigger type> — <one-line reason>
+
+Should I open a meta draft block for sessions/meta/YYYY-MM-DD_draft.md now?
+Enter: y (append meta block and continue), n (skip meta, continue composing), or describe what to do.
+```
+
+If the user confirms (`y` or equivalent):
+1. Check whether `sessions/meta/YYYY-MM-DD_draft.md` exists on the current branch.
+   - If not: create it with `<!-- draft: YYYY-MM-DD -->\nOpening brief: Meta entries from project session — see source journal.\n`
+2. Append one `<!-- session: <meta-slug> -->` block per matched trigger, summarizing the
+   meta-relevant content. Use a slug like `platform-constraint-<topic>` or `dev-env-pr-N`.
+3. Add `<!-- tokens: input=0 output=0 cost≈$0.00 -->` and a `<!-- next-session-context -->`
+   paragraph at the end of each block.
+4. `git add`, `git commit -m "draft: YYYY-MM-DD meta — <topic>"`, `git push`.
+5. Resume at Step 3.
+
+If the user declines (`n` or equivalent), continue to Step 3 without creating a meta entry.
+
 ## Step 3 — Determine the slug
 
 The slug for the final filename comes from the overall day's theme.
