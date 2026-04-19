@@ -10,6 +10,23 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "Setting up dev-env from $REPO_DIR"
 
+# Claude Code hook commands use "bash -c '...'" so that python3 (a Windows App
+# Execution Alias symlink) resolves correctly regardless of which process spawns
+# the hook. Verify that bash.exe is on the Windows PATH so non-interactive
+# processes (like the Claude Code Desktop hook runner) can find it.
+BASH_PATH="$(cmd.exe /c "where bash 2>NUL" 2>/dev/null | tr -d '\r' | head -1)"
+if [ -z "$BASH_PATH" ]; then
+  echo ""
+  echo "WARNING: bash.exe is not on the Windows PATH."
+  echo "  Claude Code hooks use 'bash -c ...' to invoke Python scripts."
+  echo "  Add Git Bash to your Windows PATH, e.g.:"
+  echo "    C:\\Program Files\\Git\\usr\\bin"
+  echo "  Then re-run this script."
+  echo ""
+else
+  echo "  bash found at: $BASH_PATH"
+fi
+
 # Claude Code global config
 mkdir -p "$HOME/.claude"
 
