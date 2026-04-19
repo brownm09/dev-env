@@ -22,4 +22,10 @@ while read local_ref local_sha remote_ref remote_sha; do
   fi
 done
 
+# Chain to per-repo hook if one exists (preserves Husky, git-secrets, corporate hooks, etc.)
+REPO_HOOK="$(git rev-parse --git-dir)/hooks/pre-push"
+if [ -x "$REPO_HOOK" ]; then
+  "$REPO_HOOK" "$@"
+fi
+
 exit 0
