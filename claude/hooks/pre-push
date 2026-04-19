@@ -1,0 +1,31 @@
+#!/bin/bash
+# pre-push hook: warn when branch merge base diverges from origin/main
+#
+# Catches the squash-merge divergence case: if this repo uses squash merges,
+# a branch cut from a pre-squash ancestor will have a merge base that doesn't
+# match origin/main's tip. The PR will target the wrong base and rebase will fail.
+#
+# This hook WARNS only (exit 0) — it does not block the push.
+# Install globally: git config --global core.hooksPath ~/.claude/hooks
+
+while read local_ref local_sha remote_ref remote_sha; do
+  # skip deletes
+  [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+
+  merge_base=$(git merge-base "$local_sha" origin/main 2>/dev/null)
+  main_tip=$(git rev-parse origin/main 2>/dev/null)
+
+  if [ -n "$merge_base" ] && [ "$merge_base" != "$main_tip" ]; then
+    echo "WARNING: Branch merge base (${merge_base:0:8}) != origin/main tip (${main_tip:0:8})." >&2
+    echo "If this repo uses squash merges, the PR may target the wrong base." >&2
+    echo "Consider cherry-picking onto a fresh branch from origin/main." >&2
+  fi
+done
+
+# Chain to per-repo hook if one exists (preserves Husky, git-secrets, corporate hooks, etc.)
+REPO_HOOK="$(git rev-parse --git-dir)/hooks/pre-push"
+if [ -x "$REPO_HOOK" ]; then
+  "$REPO_HOOK" "$@"
+fi
+
+exit 0

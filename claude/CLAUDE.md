@@ -49,6 +49,8 @@ Before writing a `gh` or other CLI automation script:
 - **PR first, then merge.** Open the PR immediately after pushing the branch; do not prompt the user to run `gh pr create` themselves.
 - **Auto-review on PR creation.** After opening any PR, immediately run `/review <PR-URL>` before reporting the task as complete. Do not skip this step.
 - **Exception:** Local-only repos with no remote may commit to main directly.
+- **Branch creation in squash-merge repos:** Use `new-branch <name>` (source `~/.claude/scripts/new-branch.sh` in `.bashrc`) or `git checkout -b <name> origin/main` explicitly. Never cut from a branch that has been squash-merged — its commits no longer exist on main and a rebase will fail. Verify with `git merge-base HEAD origin/main` — output should equal `git rev-parse origin/main`.
+- **Pre-push hook wiring (one-time setup):** Before setting, check for an existing value: `git config --system core.hooksPath` and `git config --global core.hooksPath`. If a system-level path exists (enterprise-managed hooks), migrate its hooks into `~/.claude/hooks/` rather than overriding. If another tool (Husky, Lefthook) owns the global value, coordinate rather than overwrite — two tools cannot share `core.hooksPath`. Once clear: `git config --global core.hooksPath ~/.claude/hooks`. The hook chains to any per-repo `.git/hooks/pre-push` so existing repo-level hooks are preserved.
 
 ---
 
@@ -63,6 +65,7 @@ Before writing a `gh` or other CLI automation script:
 | `~/.claude/CLAUDE.md` | `claude/CLAUDE.md` |
 | `~/.claude/scripts/` | `claude/scripts/` (directory junction) |
 | `~/.claude/skills/` | `claude/skills/` (directory junction) |
+| `~/.claude/hooks/` | `claude/hooks/` (directory junction) |
 | `~/.claude/settings.json` | `claude/settings.json` |
 
 **Machine-local only — never commit:**
