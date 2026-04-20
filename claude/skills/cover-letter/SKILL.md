@@ -62,6 +62,22 @@ Tell the user which model you selected and why.
 Read `C:/Users/brown/Git/job-search/context/accomplishments.md`.
 Note which accomplishments are relevant to this JD. Only claim what is listed there.
 
+## Step 5b — Voice calibration
+
+Read `C:/Users/brown/Git/job-search/models/voice/INDEX.md`.
+Then read all five voice reference files:
+- `C:/Users/brown/Git/job-search/models/voice/MikeBrown_Progyny_Voice_Reference.md`
+- `C:/Users/brown/Git/job-search/models/voice/Vaughn_WhatWritersCanLearnFromFanfiction.md`
+- `C:/Users/brown/Git/job-search/models/voice/Vaughn_MakeItPersonal.md`
+- `C:/Users/brown/Git/job-search/models/voice/Vaughn_BlankPageWritersFirstHurdle.md`
+- `C:/Users/brown/Git/job-search/models/voice/Vaughn_RehashEvergreenTopics.md`
+
+All five files are Mike's own writing (the essays published under a pen name). Together they establish:
+- **Professional register (Progyny):** credential inventory in sentence one, semicolon-linked clauses, enumerated evidence using (1)/(a) structure, direct close
+- **Essay register (Vaughn):** tangential analogy chains, confident declarative claims, direct first-person, comfortable with parentheticals and lists as compression
+
+Do not import prohibited constructions from these files (em-dashes appear in the Progyny letter; they are still banned). Voice calibration informs opening sentence rhythm and paragraph structure only — the style rules from Step 3 govern everything else.
+
 ## Step 6 — Draft the letter (Sonnet — this session)
 
 Draft the cover letter body in Markdown. Apply all style rules from Step 3 while drafting:
@@ -107,7 +123,7 @@ Report the final word count to the user.
 ## Step 10 — Save the letter
 
 Determine the output path:
-- If this letter is intended as a new canonical model (a new role type not yet in `models/`), save to `C:/Users/brown/Git/job-search/models/` and update `models/INDEX.md`
+- If this letter is intended as a new canonical model (a new role type not yet in `models/letters/`), save to `C:/Users/brown/Git/job-search/models/letters/` and update `models/INDEX.md`
 - Otherwise, save to `C:/Users/brown/Git/job-search/applications/cover_letters/`
 
 File name format: `MikeBrown_YYYYMMDD__Company__Role__Cover_Letter.md`
