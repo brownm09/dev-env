@@ -168,6 +168,18 @@ posts on company engineering blogs, and books with canonical URLs.
 
 ---
 
+## Git & Platform Tooling
+
+**tags: git, hooks, core.hooksPath, windows, bash, path, junction, symlink**
+
+- **git-config man page — core.hooksPath** | Git project (Junio C Hamano, maintainer) | https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath |
+  Canonical specification for `core.hooksPath` (introduced Git 2.9); defines that the configured path *fully replaces* the default `.git/hooks/` lookup — which is precisely why any global hook must explicitly chain to `$(git rev-parse --git-dir)/hooks/<hook-name>` to preserve per-repo hooks.
+
+- **Environment variables in Windows** | Microsoft | https://learn.microsoft.com/en-us/windows/win32/procthread/environment-variables |
+  Documents that child processes inherit the environment of their parent at spawn time, not the interactive user session's environment; this is the underlying mechanism that causes Windows App Execution Alias stubs (python3, node via Store) to be invisible to non-interactive hook runners — cite when any hook command relies on the Git Bash PATH.
+
+---
+
 ## Claude Code & AI-Assisted Development
 
 **tags: claude-code, llm, ai-dev, token, hooks, skills, mcp**
