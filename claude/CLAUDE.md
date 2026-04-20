@@ -137,7 +137,7 @@ where `HHMMSS` is the UTC start time of the session (`date -u +%H%M%S`).
 1. `git -C C:/Users/brown/Git/engineering-journal pull origin draft/YYYY-MM-DD`
 2. Find the most recent stub and read only its `<!-- next-session-context -->` paragraph:
    ```bash
-   ls -t C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_*.stub.md | head -1
+   ls C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_*.stub.md | sort | tail -1
    ```
 3. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` with the current session block
 4. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
@@ -157,7 +157,8 @@ Each stub file contains exactly one session block:
 <!-- stub: YYYY-MM-DD HHMMSS -->
 
 <!-- opening-brief (first stub of the day only) -->
-Opening brief: <Next Session Context from the previous day, or "First session — no prior context.">
+Opening brief: <paste the Next Session Context from the previous day's published journal verbatim;
+               use "First session — no prior context." only if this is the project's very first entry>
 
 <!-- session: <slug> -->
 ## <Topic>

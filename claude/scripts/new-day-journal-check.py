@@ -28,7 +28,8 @@ def stale_draft_artifacts() -> list[str]:
     artifacts = []
     for pattern in (
         str(JOURNAL_REPO / "sessions" / "**" / "*_draft.md"),
-        str(JOURNAL_REPO / "sessions" / "**" / "*.stub.md"),
+        # Match only convention-named stubs: YYYY-MM-DD_HHMMSS.stub.md
+        str(JOURNAL_REPO / "sessions" / "**" / "????-??-??_*.stub.md"),
     ):
         artifacts.extend(glob.glob(pattern, recursive=True))
     stale = [f for f in artifacts if not os.path.basename(f).startswith(TODAY)]

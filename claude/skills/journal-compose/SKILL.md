@@ -70,6 +70,10 @@ echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > \
 
 Tell the user: "Composing journal from N stub(s): `<stub1>`, `<stub2>`, ..."
 
+**Note for retries after a crash:** If compose was interrupted and you are re-running it, first
+delete the lock file manually (`rm sessions/<project>/.draft-compose.lock`) and verify that no
+partial output file (e.g., `YYYY-MM-DD-<slug>.md`) was written before restarting from Step 1.
+
 ## Step 2 — Read all stubs
 
 Read each stub file in ascending filename order (which equals chronological session order).
@@ -564,7 +568,12 @@ For legacy single-file compose, delete the draft file instead:
 rm C:/Users/brown/Git/engineering-journal/<draft-file-path>
 ```
 
-Tell the user: "Stub files deleted."
+Tell the user: "Draft artifacts deleted."
+
+**Lock file hygiene:** `.draft-compose.lock` is ephemeral and must never be committed. If it
+appears in `git status` as an untracked file during compose, that is expected — `git add -u`
+(Step 10) will not stage it because it has never been committed. Do not run `git add .` or
+`git add sessions/<project>/` (without `-u`) — that would stage the lock file.
 
 ## Step 10 — Commit
 
