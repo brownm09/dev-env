@@ -117,59 +117,58 @@ Use that path wherever `sessions/<project>/` appears below.
 
 ---
 
-### Draft file workflow
+### Stub file workflow
 
-One draft file per calendar day, living on a dedicated branch in the engineering-journal repo.
-Slug is determined at day end when the overall theme is clear.
+Each session writes an isolated stub file — no shared mutable draft. This eliminates write
+contention when multiple sessions run in parallel. Slug is determined at day end.
 
 **Branch:** `draft/YYYY-MM-DD` — created at the first session of the day, merged to main at day end.
+
+**Stub filename:** `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md`
+where `HHMMSS` is the UTC start time of the session (`date -u +%H%M%S`).
 
 **First session of the day:**
 1. `git -C C:/Users/brown/Git/engineering-journal checkout main && git pull`
 2. `git -C C:/Users/brown/Git/engineering-journal checkout -b draft/YYYY-MM-DD`
-3. Create `sessions/<project>/YYYY-MM-DD_draft.md` with the opening brief and first
-   `<!-- session: <slug> -->` block
+3. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see stub structure below)
 4. `git add`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
 
 **Subsequent sessions:**
 1. `git -C C:/Users/brown/Git/engineering-journal pull origin draft/YYYY-MM-DD`
-2. Get the file's line count (`wc -l`), then `Read` with offset to retrieve only the last
-   `<!-- next-session-context -->` block — do not read the full draft
-3. Append the new `<!-- session: <slug> -->` block and `<!-- next-session-context -->` paragraph
-   using `Edit`
-4. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block,
-   drawn from the Claude Code CLI session summary
+2. Find the most recent stub and read only its `<!-- next-session-context -->` paragraph:
+   ```bash
+   ls -t C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_*.stub.md | head -1
+   ```
+3. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` with the current session block
+4. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
 5. `git add`, `git commit -m "draft: YYYY-MM-DD session N"`, `git push`
 
 **End of day (last session):**
-1. Read the full draft once to compose the final 11-section document
-2. Write as `sessions/<project>/YYYY-MM-DD-<slug>.md`
-3. Delete the draft file
-4. `git add`, `git commit -m "[docs] Add YYYY-MM-DD journal: <slug>"`
-5. Open a PR from `draft/YYYY-MM-DD` into `main`, squash merge, delete branch
+1. Run `/journal-compose` — it discovers all stubs, sorts them, merges them, and produces
+   the canonical 11-section document; it also deletes stubs and opens the PR
 
 ---
 
-### Draft structure during the day
+### Stub structure
+
+Each stub file contains exactly one session block:
 
 ```
-<!-- draft: YYYY-MM-DD -->
-Opening brief: ...
+<!-- stub: YYYY-MM-DD HHMMSS -->
 
-<!-- session: <first-slug> -->
+<!-- opening-brief (first stub of the day only) -->
+Opening brief: <Next Session Context from the previous day, or "First session — no prior context.">
+
+<!-- session: <slug> -->
 ## <Topic>
 ...
 <!-- tokens: input=12,450 output=3,200 cost≈$0.08 -->
 <!-- next-session-context -->
-<one paragraph — copy to open next session>
-
-<!-- session: <second-slug> -->
-## <Topic>
-...
-<!-- tokens: input=18,900 output=4,100 cost≈$0.12 -->
-<!-- next-session-context -->
-<one paragraph — copy to open next session>
+<one paragraph — for the next session to read and open with>
 ```
+
+The `<!-- opening-brief -->` block appears **only in the first stub of the day**.
+Subsequent stubs begin directly at `<!-- session: <slug> -->`.
 
 ---
 
@@ -188,7 +187,7 @@ Opening brief: ...
 8. Token Optimization Suggestions (2–4 per-session observations grouped under a `### Session N`
    heading; close with a `### Cross-Session Patterns` subsection for generalizable findings
    that apply across multiple sessions)
-9. Next Session Context (the final `<!-- next-session-context -->` block from the draft)
+9. Next Session Context (the final `<!-- next-session-context -->` block from the stubs)
 10. Reflection (gaps, risks, strategic questions — written last)
 11. Further Reading (1–3 primary sources per session that explain the reasoning behind key
     decisions; intended for deliberate study between sessions — link + one sentence on why
@@ -199,7 +198,7 @@ Opening brief: ...
 ### Update triggers
 
 **Project journal** (`sessions/<project>/`):
-- Append to draft when a PR is merged or a strategic decision is made
+- Add to the current session's stub when a PR is merged or a strategic decision is made
 - Compose and publish the daily document at end of last session of the day
 
 **Meta journal** (`sessions/meta/`):

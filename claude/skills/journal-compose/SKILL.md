@@ -1,7 +1,7 @@
 ---
 name: journal-compose
-description: Compose the end-of-day engineering journal from today's draft file. Produces the canonical 11-section document, updates READMEs, commits, and prompts for a PR. Invoke as /journal-compose [draft-file-path].
-argument-hint: "[sessions/<project>/YYYY-MM-DD_draft.md]"
+description: Compose the end-of-day engineering journal from today's stub files. Discovers all YYYY-MM-DD_*.stub.md files, sorts and merges them, produces the canonical 11-section document, updates READMEs, commits, and opens the PR. Invoke as /journal-compose [YYYY-MM-DD].
+argument-hint: "[YYYY-MM-DD]"
 allowed-tools: Read Edit Write Bash Glob Grep Agent
 ---
 
@@ -12,38 +12,81 @@ Supporting files:
 - `~/.claude/skills/sources.md` — shared primary source library, organized by topic tag;
   use Grep on this file before spawning any research subagent (see Section 11)
 
-## Step 1 — Locate the draft file
+## Step 1 — Locate stubs and acquire compose lock
 
-If `$ARGUMENTS` is provided, use it as the draft file path (relative to the repo root
-`C:/Users/brown/Git/engineering-journal`).
+**Determine the date:**
 
-If no argument is given, detect from the current branch:
+If `$ARGUMENTS` is provided and matches `YYYY-MM-DD`, use it as the date. Otherwise, detect
+from the current branch:
 ```bash
 git -C C:/Users/brown/Git/engineering-journal branch --show-current
 ```
-The branch name is `draft/YYYY-MM-DD`. List draft files on that branch:
+The branch name is `draft/YYYY-MM-DD`. Extract `YYYY-MM-DD` from it.
+
+**Find stub files:**
+
 ```bash
-find C:/Users/brown/Git/engineering-journal/sessions -name "*_draft.md"
+ls C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD_*.stub.md 2>/dev/null | sort
 ```
-If multiple draft files exist (multiple projects active today), ask the user which one to
-compose. If exactly one draft file is found, proceed with it.
 
-Confirm the path and tell the user: "Composing journal from: `<path>`"
+If no stubs are found, fall back to a legacy draft:
+```bash
+find C:/Users/brown/Git/engineering-journal/sessions -name "YYYY-MM-DD_draft.md"
+```
+If a legacy draft is found, use it as a monolithic draft (skip the lock step below and proceed
+as in the old single-file workflow — read it once in Step 2).
 
-## Step 2 — Read the draft file once
+If stubs span multiple project directories (e.g., both `sessions/lifting-logbook/` and
+`sessions/meta/`), ask the user which project to compose (or compose both sequentially).
 
-Read the entire draft file in a single `Read` call. Do not read it again during composition.
-Capture all content in memory for use in all subsequent steps.
+**Acquire the compose lock:**
 
-From the draft file, extract:
-- **Date** — from the `<!-- draft: YYYY-MM-DD -->` comment
-- **Project path** — the `sessions/<project>/` directory component of the draft file path
-- **Opening brief** — the text after `Opening brief:` at the top, before the first `<!-- session: ... -->`
-- **Session blocks** — each `<!-- session: <slug> -->` … `<!-- tokens: ... -->` … `<!-- next-session-context -->` unit
+Check for a lock at `sessions/<project>/.draft-compose.lock`:
+```bash
+LOCK="C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock"
+if [ -f "$LOCK" ]; then
+  LOCK_TIME=$(cat "$LOCK")
+  LOCK_EPOCH=$(date -d "$LOCK_TIME" +%s 2>/dev/null || echo 0)
+  NOW_EPOCH=$(date +%s)
+  AGE=$(( NOW_EPOCH - LOCK_EPOCH ))
+  if [ "$AGE" -lt 600 ]; then
+    echo "LOCK_ACTIVE=true AGE=$AGE"
+  else
+    echo "LOCK_STALE=true AGE=$AGE"
+  fi
+fi
+```
+
+- **`LOCK_ACTIVE`:** Abort. Tell the user: "Compose is already running (lock age: ${AGE}s). If
+  this is stale, delete `sessions/<project>/.draft-compose.lock` and retry."
+- **`LOCK_STALE`:** Warn the user ("Stale compose lock (${AGE}s old) — overriding."), then continue.
+- **No lock:** Continue.
+
+Create the lock:
+```bash
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > \
+  "C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock"
+```
+
+Tell the user: "Composing journal from N stub(s): `<stub1>`, `<stub2>`, ..."
+
+## Step 2 — Read all stubs
+
+Read each stub file in ascending filename order (which equals chronological session order).
+Do not re-read stubs after this step.
+
+From the stubs, extract:
+- **Date** — the `YYYY-MM-DD` prefix from any stub filename
+- **Project path** — the `sessions/<project>/` directory component of the stub paths
+- **Opening brief** — from the `<!-- opening-brief -->` block in the **first** stub only.
+  If absent, use `"First session for this project — no prior Next Session Context."`
+- **Session blocks** — from each stub, in filename order:
+  `<!-- session: <slug> -->` … `<!-- tokens: ... -->` … `<!-- next-session-context -->` unit
   - Session slug, H2 heading, body content
   - Token comment (may be absent — note if missing)
   - Next-session-context paragraph
-- **Last next-session-context** — the final one in the file (used in Section 9)
+- **Last next-session-context** — the final `<!-- next-session-context -->` paragraph across
+  all stubs (used in Section 9)
 
 ## Step 2b — Check for meta-relevant content (project drafts only)
 
@@ -508,14 +551,20 @@ Top-level entry format (description + link only, no table):
 If the project does not yet appear in the README, add a new `### <Project>` section
 under `## Projects` using this format.
 
-## Step 9 — Delete the draft file
+## Step 9 — Delete stub files and release lock
 
-Delete the draft file:
+Delete all stubs for the date and release the compose lock:
+```bash
+rm C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_*.stub.md
+rm -f C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock
+```
+
+For legacy single-file compose, delete the draft file instead:
 ```bash
 rm C:/Users/brown/Git/engineering-journal/<draft-file-path>
 ```
 
-Tell the user: "Draft file deleted."
+Tell the user: "Stub files deleted."
 
 ## Step 10 — Commit
 
@@ -523,6 +572,8 @@ Tell the user: "Draft file deleted."
 git -C C:/Users/brown/Git/engineering-journal add sessions/<project>/YYYY-MM-DD-<slug>.md
 git -C C:/Users/brown/Git/engineering-journal add sessions/<project>/README.md
 git -C C:/Users/brown/Git/engineering-journal add README.md
+# Stage deleted stubs (and any other modifications/deletions in sessions/<project>/)
+git -C C:/Users/brown/Git/engineering-journal add -u sessions/<project>/
 git -C C:/Users/brown/Git/engineering-journal commit -m "[docs] Add YYYY-MM-DD journal: <slug>"
 git -C C:/Users/brown/Git/engineering-journal push
 ```

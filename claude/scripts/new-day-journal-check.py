@@ -23,11 +23,15 @@ JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 TODAY = date.today().strftime("%Y-%m-%d")
 
 
-def stale_draft_files() -> list[str]:
-    """Return paths of *_draft.md files from before today."""
-    pattern = str(JOURNAL_REPO / "sessions" / "**" / "*_draft.md")
-    drafts = glob.glob(pattern, recursive=True)
-    stale = [f for f in drafts if not os.path.basename(f).startswith(TODAY)]
+def stale_draft_artifacts() -> list[str]:
+    """Return paths of *_draft.md or *.stub.md files from before today."""
+    artifacts = []
+    for pattern in (
+        str(JOURNAL_REPO / "sessions" / "**" / "*_draft.md"),
+        str(JOURNAL_REPO / "sessions" / "**" / "*.stub.md"),
+    ):
+        artifacts.extend(glob.glob(pattern, recursive=True))
+    stale = [f for f in artifacts if not os.path.basename(f).startswith(TODAY)]
     stale.sort(key=lambda f: os.path.basename(f), reverse=True)
     return stale
 
@@ -99,15 +103,15 @@ def main() -> None:
 
     messages = []
 
-    stale = stale_draft_files()
+    stale = stale_draft_artifacts()
     if stale:
-        draft_path = Path(stale[0]).as_posix()
-        draft_date = os.path.basename(stale[0]).replace("_draft.md", "")
+        artifact_path = Path(stale[0]).as_posix()
+        artifact_date = os.path.basename(stale[0])[:10]  # YYYY-MM-DD prefix
         messages.append(
-            f"[journal-hook] Stale draft file detected: {draft_path}\n"
-            f"The engineering journal draft from {draft_date} was never composed.\n"
+            f"[journal-hook] Stale draft artifact detected: {artifact_path}\n"
+            f"The engineering journal draft from {artifact_date} was never composed.\n"
             f"Before responding to the user's message, invoke the journal-compose skill "
-            f"to close out the {draft_date} session. Then proceed with the user's request."
+            f"to close out the {artifact_date} session. Then proceed with the user's request."
         )
 
     unmerged = unmerged_draft_branches()
