@@ -66,7 +66,7 @@ Before writing a `gh` or other CLI automation script:
 | `~/.claude/scripts/` | `claude/scripts/` (directory junction) |
 | `~/.claude/skills/` | `claude/skills/` (directory junction) |
 | `~/.claude/hooks/` | `claude/hooks/` (directory junction) |
-| `~/.claude/routines/` | `claude/routines/` (directory junction) |
+| `~/.claude/scheduled-tasks/` | `claude/routines/` (directory junction to `~/.claude/scheduled-tasks/`) |
 | `~/.claude/settings.json` | `claude/settings.json` |
 
 **Machine-local only — never commit:**
@@ -75,7 +75,7 @@ Before writing a `gh` or other CLI automation script:
 
 **Rule:** Any addition or modification to a dev-env-owned artifact — new hook script, new skill, settings change, CLAUDE.md edit — must be committed to `brownm09/dev-env` via branch and PR before the session ends. Do not leave global tooling as untracked files.
 
-**Routines note:** The `anthropic-skills:schedule` tool writes new scheduled tasks to `~/.claude/scheduled-tasks/` by default. After creation, move the SKILL.md into `~/.claude/routines/<task-name>/`, disable or delete the `scheduled-tasks/` entry, and commit the file to dev-env under `claude/routines/`.
+**Routines note:** `claude/routines/` is a junction to `~/.claude/scheduled-tasks/`, so the scheduler tool writes directly to the version-controlled directory. After creating a new routine, commit it to dev-env under `claude/routines/`.
 
 **Repo path:** `C:/Users/brown/Git/dev-env`
 
