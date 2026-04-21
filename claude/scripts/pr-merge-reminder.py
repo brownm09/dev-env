@@ -22,16 +22,64 @@ import json
 import re
 import sys
 
-# Matches `gh pr merge` at the start of a sub-command (after shell operators
-# or at the very beginning of the command string). This avoids false positives
-# from commit messages or heredoc content that happen to contain the phrase.
-_GH_PR_MERGE_RE = re.compile(
-    r"(?:^|&&|\|\||;|\n)\s*(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b"
-)
+# Matches the start of a statement token (after leading whitespace and an
+# optional `cd dir &&` prefix) against `gh pr merge`.
+_STMT_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
+
+
+def _check_stmt(token: str) -> bool:
+    return bool(_STMT_RE.match(token.lstrip()))
 
 
 def is_pr_merge_command(command: str) -> bool:
-    return bool(_GH_PR_MERGE_RE.search(command))
+    """Return True only when *command* contains a top-level `gh pr merge`
+    invocation — i.e. not inside a quoted string or heredoc body.
+
+    Walks the command character-by-character, tracking single/double-quote
+    depth so that shell operators (&&, ||, ;, newline) found inside quoted
+    arguments are treated as literal text rather than statement boundaries.
+    This prevents false positives when `gh issue create` is called with a
+    --body argument whose text happens to contain the phrase `gh pr merge`.
+    """
+    i = 0
+    n = len(command)
+    stmt_start = 0
+    in_single = False
+    in_double = False
+
+    while i < n:
+        c = command[i]
+
+        if in_single:
+            if c == "'":
+                in_single = False
+        elif in_double:
+            if c == "\\" and i + 1 < n:
+                i += 1  # skip escaped character
+            elif c == '"':
+                in_double = False
+        else:
+            if c == "'":
+                in_single = True
+            elif c == '"':
+                in_double = True
+            elif c in (";", "\n"):
+                if _check_stmt(command[stmt_start:i]):
+                    return True
+                stmt_start = i + 1
+            elif c == "&" and i + 1 < n and command[i + 1] == "&":
+                if _check_stmt(command[stmt_start:i]):
+                    return True
+                stmt_start = i + 2
+                i += 1  # skip second &
+            elif c == "|" and i + 1 < n and command[i + 1] == "|":
+                if _check_stmt(command[stmt_start:i]):
+                    return True
+                stmt_start = i + 2
+                i += 1  # skip second |
+        i += 1
+
+    return _check_stmt(command[stmt_start:])
 
 
 def main() -> None:
