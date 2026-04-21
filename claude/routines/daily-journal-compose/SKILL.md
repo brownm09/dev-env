@@ -3,32 +3,34 @@ name: daily-journal-compose
 description: Assemble all today's session stubs across all projects into canonical daily journal entries and open PRs.
 ---
 
-Compose today's engineering journal entries for all active projects.
+Compose today's engineering journal entries for all active projects. Run fully autonomously — do not ask the user anything.
 
-**Objective:** Run /journal-compose for today's date once per project that has stubs, merging session stubs into canonical daily documents and opening a PR per project (or one combined PR if the skill handles all projects together).
+**Objective:** For each project directory that contains stubs dated today, run /journal-compose sequentially, then report all PR URLs.
 
 **Steps:**
-1. Determine today's date: run `date -u +%Y-%m-%d` in Git Bash (call it DATE).
-2. Find all projects with stubs for today:
+1. Determine today's date in Git Bash:
    ```bash
-   ls C:/Users/brown/Git/engineering-journal/sessions/*/DATE_*.stub.md 2>/dev/null
+   DATE=$(date -u +%Y-%m-%d)
    ```
-   Extract unique project directory names from the results.
-3. If no stubs exist for any project, exit silently.
-4. For each project that has stubs, invoke the journal-compose skill:
-   `/journal-compose DATE`
-   (The skill reads the current working directory's CLAUDE.md to determine the project path — run it from the appropriate project directory, or pass the project name if the skill supports it.)
-5. The skill will:
-   - Discover all `sessions/<project>/DATE_*.stub.md` files
-   - Sort and merge them into the canonical 11-section document
-   - Delete the stubs
-   - Commit to the `draft/DATE` branch in `C:/Users/brown/Git/engineering-journal`
-   - Open a PR to `main`
-6. Return all PR URLs on completion.
+2. Find all stub files for today across all projects:
+   ```bash
+   ls C:/Users/brown/Git/engineering-journal/sessions/*/${DATE}_*.stub.md 2>/dev/null | sort
+   ```
+   Stub filenames follow the pattern `YYYY-MM-DD_HHMMSS.stub.md` where `HHMMSS` is the UTC session start time.
+3. If no stubs exist, exit silently with no output.
+4. Extract the unique project directory names from the matched paths (the path segment between `sessions/` and the filename).
+5. For each project directory in sorted order, run `/journal-compose ${DATE}` with that project in scope. The `/journal-compose` skill:
+   - Discovers all `sessions/<project>/${DATE}_*.stub.md` files, sorted by filename (i.e., by UTC start time)
+   - Merges them into the canonical 11-section document
+   - Deletes the stubs
+   - Commits to the `draft/${DATE}` branch in `C:/Users/brown/Git/engineering-journal`
+   - Opens a PR to `main`
+   If a canonical document for that project already exists for today (i.e., stubs were already composed), skip that project.
+6. Collect and return all PR URLs produced.
 
 **Constraints:**
 - Engineering journal repo: `C:/Users/brown/Git/engineering-journal`
 - Sessions root: `sessions/` — subdirectories are project names (e.g., `job-search`, `lifting-logbook`, `meta`)
 - Never commit directly to `main`
 - Use Git Bash syntax. Temp files go to `C:/Users/brown/.claude/scratch/`
-- If a project's stubs were already composed today (canonical file already exists), skip that project
+- Never prompt the user. If stubs span multiple projects, compose each one sequentially without asking.
