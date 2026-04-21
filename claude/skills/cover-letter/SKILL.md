@@ -22,19 +22,27 @@ Store the extracted JD text. If the JD text is under 50 words after extraction, 
 
 ## Step 1 — Company log check
 
-Read `C:/Users/brown/Git/job-search/context/company_log.md`.
+Read `C:/Users/brown/Git/job-search/context/company_log.md`. Keep this content in context — Step 11 will reuse it without re-reading the file.
 Check the "Roles Completed" and "Roles Skipped" tables for this company and role.
 If already present, stop and tell the user: "This role is already logged as [completed/skipped]."
 
 ## Step 2 — Fit Screening (Haiku subagent)
 
-Spawn a **Haiku** subagent with this task:
+Read `C:/Users/brown/Git/job-search/context/session_instructions.md`. Extract these three sections verbatim: "Fit Screening Protocol", "Technical Stack Reference" (including all sub-bullets and notes), and the compensation floor from "Job Search Preferences" ($180,000).
+
+Spawn a **Haiku** subagent. Pass the extracted sections inline — do not instruct the subagent to read any files:
 
 > You are performing a fit screen for a job application for Mike Brown, targeting Director and Senior Manager of Engineering roles.
 >
-> Read `C:/Users/brown/Git/job-search/context/session_instructions.md` — specifically the sections: "Fit Screening Protocol", "Technical Stack Reference", "Notable Gaps", "Compensation Floor", and "Auto-Skip Triggers".
+> **Fit Screening Protocol:**
+> <paste extracted "Fit Screening Protocol" section verbatim>
 >
-> Evaluate the following job description against those rules and report:
+> **Technical Stack Reference:**
+> <paste extracted "Technical Stack Reference" section verbatim>
+>
+> **Compensation floor:** $180,000 — flag any role where the range ceiling is below this.
+>
+> Evaluate the following job description and report:
 > 1. Any auto-skip triggers (list the rule and the JD text that triggered it). If none, write "None."
 > 2. Any soft flags (compensation uncertainty, seniority mismatch, stack gaps, industry fit). For each, quote the relevant JD text.
 > 3. Overall recommendation: PROCEED, FLAG, or SKIP
@@ -64,19 +72,11 @@ Note which accomplishments are relevant to this JD. Only claim what is listed th
 
 ## Step 5b — Voice calibration
 
-Read `C:/Users/brown/Git/job-search/models/voice/INDEX.md`.
-Then read all five voice reference files:
-- `C:/Users/brown/Git/job-search/models/voice/MikeBrown_Progyny_Voice_Reference.md`
-- `C:/Users/brown/Git/job-search/models/voice/Vaughn_WhatWritersCanLearnFromFanfiction.md`
-- `C:/Users/brown/Git/job-search/models/voice/Vaughn_MakeItPersonal.md`
-- `C:/Users/brown/Git/job-search/models/voice/Vaughn_BlankPageWritersFirstHurdle.md`
-- `C:/Users/brown/Git/job-search/models/voice/Vaughn_RehashEvergreenTopics.md`
+Read `C:/Users/brown/Git/job-search/models/voice/VOICE_SYNOPSIS.md`.
 
-All five files are Mike's own writing (the essays published under a pen name). Together they establish:
-- **Professional register (Progyny):** credential inventory in sentence one, semicolon-linked clauses, enumerated evidence using (1)/(a) structure, direct close
-- **Essay register (Vaughn):** tangential analogy chains, confident declarative claims, direct first-person, comfortable with parentheticals and lists as compression
+Apply the patterns in the synopsis to calibrate opening sentence rhythm, paragraph structure, and declarative confidence. Style rules from Step 3 govern all constraints; voice calibration informs structure and rhythm only.
 
-Do not import prohibited constructions from these files (em-dashes appear in the Progyny letter; they are still banned). Voice calibration informs opening sentence rhythm and paragraph structure only — the style rules from Step 3 govern everything else.
+(The full voice reference files are at `models/voice/` and can be consulted if a specific passage is needed, but the synopsis is sufficient for drafting.)
 
 ## Step 6 — Draft the letter (Sonnet — this session)
 
@@ -91,11 +91,16 @@ Use the model letter from Step 4 as a structural reference. Adapt tone and empha
 
 ## Step 7 — Style self-check (Haiku subagent)
 
+The `style_rules.md` file is already in context from Step 3. Extract the "Self-Check Before Presenting" section verbatim and pass it inline in the subagent prompt — do not instruct the subagent to read any files.
+
 Spawn a **Haiku** subagent with this task:
 
-> You are performing a style self-check on a cover letter draft. Read `C:/Users/brown/Git/job-search/context/style_rules.md` — the "Self-Check Before Presenting" section only. Then check the following letter body for every violation listed in that section. Report each violation with the offending text quoted and the rule it breaks. If no violations, report "PASS".
+> You are performing a style self-check on a cover letter draft. Check the letter body below against every item in the Self-Check list. Report each violation with the offending text quoted and the rule it breaks. If no violations, report "PASS".
 >
-> Letter body:
+> **Self-Check Before Presenting:**
+> <paste the "Self-Check Before Presenting" section from style_rules.md verbatim>
+>
+> **Letter body:**
 > <paste full draft here>
 
 Report the subagent's findings to the user.
@@ -133,7 +138,7 @@ Write the file.
 
 ## Step 11 — Log the application
 
-Read `C:/Users/brown/Git/job-search/context/company_log.md`.
+The `context/company_log.md` content is already in context from Step 1 — do not re-read the file.
 Add a row to the "Roles Completed" table with: company name, role title, date, and the file path of the saved letter.
 Write the updated file.
 
