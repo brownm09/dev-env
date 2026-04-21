@@ -1,6 +1,7 @@
 ---
 name: daily-journal-compose
 description: Assemble all today's session stubs across all projects into canonical daily journal entries and open PRs.
+schedule: "0 0 * * *"
 ---
 
 Compose today's engineering journal entries for all active projects. Run fully autonomously — do not ask the user anything.
