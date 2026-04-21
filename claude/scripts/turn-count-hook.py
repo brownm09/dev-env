@@ -16,12 +16,14 @@ Stdout is injected as context Claude sees before processing the user's message.
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 SCRATCH = Path.home() / ".claude" / "scratch"
 DEFAULT_THRESHOLD = 50
 REPEAT_INTERVAL = 25
 CONFIG_FILE = ".claude/hook-config.json"
+COUNTER_MAX_AGE_DAYS = 30
 
 
 def load_threshold(cwd: str) -> int:
@@ -35,7 +37,20 @@ def load_threshold(cwd: str) -> int:
         return DEFAULT_THRESHOLD
 
 
+def cleanup_stale_counters() -> None:
+    """Delete counter files older than COUNTER_MAX_AGE_DAYS."""
+    cutoff = time.time() - COUNTER_MAX_AGE_DAYS * 86400
+    try:
+        for f in SCRATCH.glob("turn-count-*.txt"):
+            if f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+    except Exception:
+        pass  # degrade silently — cleanup is best-effort
+
+
 def main() -> None:
+    cleanup_stale_counters()
+
     raw = sys.stdin.read().strip()
     data: dict = {}
     if raw:

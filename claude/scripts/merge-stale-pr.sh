@@ -15,6 +15,7 @@
 # or set JOURNAL_REPO env var.
 
 set -euo pipefail
+shopt -s globstar
 
 PR_NUMBER="${1:-}"
 if [[ -z "$PR_NUMBER" ]]; then
@@ -86,8 +87,10 @@ if ! git rebase origin/main; then
 
   ALL_RESOLVABLE=true
   while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
     if [[ "$f" == *README* ]]; then
-      echo "    Resolving $f — keeping branch (ours) version..."
+      # During rebase, --theirs = commits being replayed from our branch (--ours = upstream).
+      echo "    Resolving $f — keeping our branch's version..."
       git checkout --theirs "$f"
       git add "$f"
     else
@@ -102,7 +105,8 @@ if ! git rebase origin/main; then
     exit 1
   fi
 
-  git rebase --continue --no-edit
+  # GIT_EDITOR=true skips the commit-message editor; --no-edit is invalid for rebase --continue.
+  GIT_EDITOR=true git rebase --continue
 fi
 
 echo "==> Pushing rebased branch..."
