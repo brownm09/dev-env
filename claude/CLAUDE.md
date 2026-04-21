@@ -66,6 +66,7 @@ Before writing a `gh` or other CLI automation script:
 | `~/.claude/scripts/` | `claude/scripts/` (directory junction) |
 | `~/.claude/skills/` | `claude/skills/` (directory junction) |
 | `~/.claude/hooks/` | `claude/hooks/` (directory junction) |
+| `~/.claude/scheduled-tasks/` | `claude/routines/` (directory junction to `~/.claude/scheduled-tasks/`) |
 | `~/.claude/settings.json` | `claude/settings.json` |
 
 **Machine-local only — never commit:**
@@ -73,6 +74,8 @@ Before writing a `gh` or other CLI automation script:
 `scratch/`, `projects/`, `sessions/`, `backups/`, `ide/`, `plans/`, `shell-snapshots/`
 
 **Rule:** Any addition or modification to a dev-env-owned artifact — new hook script, new skill, settings change, CLAUDE.md edit — must be committed to `brownm09/dev-env` via branch and PR before the session ends. Do not leave global tooling as untracked files.
+
+**Routines note:** `dev-env/claude/routines/` is a directory junction pointing at `~/.claude/scheduled-tasks/`, so the scheduler tool writes directly to the version-controlled path. After creating a new routine, commit it to dev-env under `claude/routines/`.
 
 **Repo path:** `C:/Users/brown/Git/dev-env`
 
