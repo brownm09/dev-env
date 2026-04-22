@@ -21,6 +21,7 @@ Exit 2  — gh pr merge detected; reminder emitted via stderr
 import json
 import re
 import sys
+from typing import Optional
 
 # Matches the start of a statement token (after leading whitespace and an
 # optional `cd dir &&` prefix) against `gh pr merge`.
@@ -29,6 +30,22 @@ _STMT_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
 
 def _check_stmt(token: str) -> bool:
     return bool(_STMT_RE.match(token.lstrip()))
+
+
+def _extract_backtick(cmd: str, start: int) -> tuple:
+    """start = index of opening backtick.
+    Returns (content, index_of_closing_backtick). If unclosed, returns
+    (rest_of_string, len(cmd))."""
+    n = len(cmd)
+    j = start + 1
+    while j < n:
+        if cmd[j] == "\\" and j + 1 < n:
+            j += 2  # skip escaped char
+        elif cmd[j] == "`":
+            return cmd[start + 1 : j], j
+        else:
+            j += 1
+    return cmd[start + 1 :], n
 
 
 def _find_heredoc_end(cmd: str, start: int) -> int:
@@ -43,7 +60,7 @@ def _find_heredoc_end(cmd: str, start: int) -> int:
         strip_tabs = True
         i += 1
     # Read delimiter — may be wrapped in ' or "
-    quote: str | None = None
+    quote: Optional[str] = None
     if i < n and cmd[i] in ("'", '"'):
         quote = cmd[i]
         i += 1
@@ -84,10 +101,14 @@ def is_pr_merge_command(command: str) -> bool:
     Uses a stack-based parser with four states ('top', 'single', 'double',
     'subshell') so that shell operators buried inside quoted arguments, command
     substitutions, or heredoc content are never mistaken for top-level statement
-    separators.  Specifically handles:
+    separators.  Backtick subshells are handled by recursing into their content
+    (since backticks execute their content just like top-level statements).
+    Specifically handles:
     - Single/double quotes
     - $() subshells (including $() inside "…")
+    - Backtick subshells (`…`) — recursively checked
     - <<DELIM / <<'DELIM' heredoc bodies
+    - <<< herestrings (skipped without entering heredoc scanning)
     """
     n = len(command)
     i = 0
@@ -108,6 +129,12 @@ def is_pr_merge_command(command: str) -> bool:
                 i += 1  # skip escaped char
             elif c == '"':
                 stack.pop()
+            elif c == "`":
+                # Backtick inside "…" still executes — recurse into its content
+                content, j = _extract_backtick(command, i)
+                if is_pr_merge_command(content):
+                    return True
+                i = j  # point at closing `; i += 1 below moves past it
             elif c == "$" and i + 1 < n and command[i + 1] == "(":
                 # $() inside "…" — track subshell so its content is opaque
                 stack.append("subshell")
@@ -120,26 +147,48 @@ def is_pr_merge_command(command: str) -> bool:
                 stack.append("single")
             elif c == '"':
                 stack.append("double")
+            elif c == "`":
+                # Inside $() the backtick is a nested subshell — treat as opaque
+                # (we don't recurse here to avoid unbounded depth on exotic nesting)
+                stack.append("backtick_opaque")
             elif c == "$" and i + 1 < n and command[i + 1] == "(":
                 stack.append("subshell")
                 i += 1
             elif c == "(":
                 stack.append("subshell")
             elif c == "<" and i + 1 < n and command[i + 1] == "<":
-                # heredoc inside subshell — skip body entirely
-                i = _find_heredoc_end(command, i)
+                if i + 2 < n and command[i + 2] == "<":
+                    i += 2  # <<< herestring — skip the marker, treat word as text
+                else:
+                    i = _find_heredoc_end(command, i)
                 continue
+
+        elif state == "backtick_opaque":
+            # Opaque backtick inside $() — just find the closing backtick
+            if c == "\\" and i + 1 < n:
+                i += 1
+            elif c == "`":
+                stack.pop()
 
         else:  # state == 'top'
             if c == "'":
                 stack.append("single")
             elif c == '"':
                 stack.append("double")
+            elif c == "`":
+                # Backtick at top level executes its content — recurse into it
+                content, j = _extract_backtick(command, i)
+                if is_pr_merge_command(content):
+                    return True
+                i = j  # point at closing `; i += 1 below moves past it
             elif c == "$" and i + 1 < n and command[i + 1] == "(":
                 stack.append("subshell")
                 i += 1
             elif c == "<" and i + 1 < n and command[i + 1] == "<":
-                i = _find_heredoc_end(command, i)
+                if i + 2 < n and command[i + 2] == "<":
+                    i += 2  # <<< herestring — skip the marker, treat word as text
+                else:
+                    i = _find_heredoc_end(command, i)
                 continue
             elif c in (";", "\n"):
                 if _check_stmt(command[stmt_start:i]):
