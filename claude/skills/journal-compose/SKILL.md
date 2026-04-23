@@ -51,7 +51,8 @@ If a legacy draft is found, use it as a monolithic draft (skip the lock step bel
 as in the old single-file workflow — read it once in Step 2).
 
 If stubs span multiple project directories (e.g., both `sessions/lifting-logbook/` and
-`sessions/meta/`), ask the user which project to compose (or compose both sequentially).
+`sessions/meta/`), use **Multi-project mode** (see section below) — do NOT compose projects
+sequentially in this session. Proceed directly to that section instead of Step 2.
 
 **Acquire the compose lock:**
 
@@ -87,6 +88,99 @@ Tell the user: "Composing journal from N stub(s): `<stub1>`, `<stub2>`, ..."
 **Note for retries after a crash:** If compose was interrupted and you are re-running it, first
 delete the lock file manually (`rm sessions/<project>/.draft-compose.lock`) and verify that no
 partial output file (e.g., `YYYY-MM-DD-<slug>.md`) was written before restarting from Step 1.
+
+## Multi-project mode
+
+Use this when Step 1 finds stubs in more than one project directory.
+
+Running projects sequentially inflates context with each pass — by project 3 you are paying
+for projects 1 and 2 sitting idle in the window. Instead, spawn one isolated Haiku subagent
+per project in parallel (Steps 2–6), then run the shared git work once in this session (Steps 7–11).
+
+### Phase 1 — Parallel compose (one Haiku subagent per project)
+
+For each project directory, spawn an Agent with `model: "haiku"`. Send all spawns in a
+single message so they run concurrently. Use this prompt template per subagent (substitute
+the bracketed values):
+
+---
+
+```
+You are composing the engineering journal for one project. Follow these steps exactly.
+
+**Date:** YYYY-MM-DD
+**Project path:** sessions/<project>/
+**Stub files (in order):** <stub1>, <stub2>, ...
+
+Step 1 — Acquire compose lock for this project only, exactly as described in
+  ~/.claude/skills/journal-compose/SKILL.md Step 1 ("Acquire the compose lock" subsection).
+
+Step 2 — Read stubs. Read ~/.claude/skills/journal-compose/SKILL.md Steps 2 and 2b
+  for the extraction format. In Step 2b, do NOT prompt the user — instead record any
+  meta trigger findings in your final report (see below).
+
+Step 3 — Determine the slug. If unclear, synthesize from the session H2 headings; do not
+  ask the user. Report your chosen slug.
+
+Step 4 — Fetch real token data. Run:
+  python3 ~/.claude/scripts/token-report.py --date YYYY-MM-DD --format json > \
+    "C:/Users/brown/.claude/scratch/tmp_tokens_<project>_$$.json"
+  then parse as shown in SKILL.md Step 4.
+
+Step 5 — Compose the 11-section document. Follow SKILL.md Step 5 exactly.
+
+Step 6 — Write the output file to:
+  C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD-<slug>.md
+
+Do NOT do Steps 7–11 (no README edits, no git add/commit/push, no PR).
+
+When done, report exactly this structure:
+  OUTPUT_FILE=<absolute path>
+  SLUG=<slug>
+  META_TRIGGERS=<none | comma-separated list of trigger types found>
+  STATUS=done
+```
+
+---
+
+### Phase 2 — Serial coordinator (this session)
+
+After all subagents complete, collect `OUTPUT_FILE`, `SLUG`, and `META_TRIGGERS` from each.
+
+If any subagent reported `META_TRIGGERS` (non-none), present them to the user now:
+```
+Meta triggers found in <project> session(s): <list>
+Should I open a meta draft block? (y/n)
+```
+Handle the response as described in Step 2b before continuing.
+
+Then for each project in sequence:
+- **Step 7** — Update `sessions/<project>/README.md`
+- **Step 8** — Update the top-level `README.md` (one pass covering all projects)
+- **Step 9** — Delete stubs and release lock for this project
+
+Finally, do one combined commit and PR (**Steps 10–11**) that stages all projects' files:
+```bash
+# Stage all composed files and README updates
+git -C C:/Users/brown/Git/engineering-journal add \
+  sessions/project-a/YYYY-MM-DD-<slug-a>.md \
+  sessions/project-b/YYYY-MM-DD-<slug-b>.md \
+  ... \
+  sessions/project-a/README.md \
+  sessions/project-b/README.md \
+  README.md
+# Stage deleted stubs across all projects
+git -C C:/Users/brown/Git/engineering-journal add -u sessions/
+git -C C:/Users/brown/Git/engineering-journal commit -m \
+  "[docs] Add YYYY-MM-DD journals: <slug-a>, <slug-b>, ..."
+git -C C:/Users/brown/Git/engineering-journal push
+```
+
+Open one PR covering all projects (Step 11). List each composed journal in the PR body.
+
+After completing Phase 2, skip to the end — do not re-run Steps 2–9 individually.
+
+---
 
 ## Step 2 — Read all stubs
 
