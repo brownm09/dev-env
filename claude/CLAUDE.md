@@ -130,6 +130,21 @@ Use that path wherever `sessions/<project>/` appears below.
 
 ---
 
+### Composition rules
+
+- **`/journal-compose` is a dedicated-session operation.** Never run it alongside other tasks.
+  If composition is requested in a session that has already processed other work, respond:
+  > "Journal composition must run in its own session. Open a new Claude Code session and invoke `/journal-compose` there."
+  Then stop — do not compose.
+
+- **Never compose proactively.** If an incomplete journal draft branch (`draft/YYYY-MM-DD`) is
+  detected at session start, emit a single line:
+  > "Incomplete journal detected — run `/journal-compose` in a dedicated session."
+  Then proceed with the user's actual request. Do not read stubs, do not compose, do not ask
+  whether to compose.
+
+---
+
 ### Stub file workflow
 
 Each session writes an isolated stub file — no shared mutable draft. This eliminates write

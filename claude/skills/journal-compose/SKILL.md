@@ -12,6 +12,18 @@ Supporting files:
 - `~/.claude/skills/sources.md` — shared primary source library, organized by topic tag;
   use Grep on this file before spawning any research subagent (see Section 11)
 
+## Step 0 — Session isolation check
+
+Before doing anything else, verify this session has not processed prior task work.
+
+If any tool calls or user turns exist in this session *before* the `/journal-compose`
+invocation (i.e., other tasks were handled first), stop immediately and respond:
+
+> "Journal composition must run in a dedicated session with no prior task work.
+> Open a fresh Claude Code session and invoke `/journal-compose` there."
+
+Do not proceed to Step 1.
+
 ## Step 1 — Locate stubs and acquire compose lock
 
 **Determine the date:**
