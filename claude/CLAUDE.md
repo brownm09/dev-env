@@ -137,11 +137,12 @@ Use that path wherever `sessions/<project>/` appears below.
   > "Journal composition must run in its own session. Open a new Claude Code session and invoke `/journal-compose` there."
   Then stop — do not compose.
 
-- **Never compose proactively.** If an incomplete journal draft branch (`draft/YYYY-MM-DD`) is
-  detected at session start, emit a single line:
+- **Never compose proactively.** If a `draft/YYYY-MM-DD` branch is encountered during any
+  work (e.g., while running `git branch`, checking git status, or reading branch output),
+  emit a single line at the next natural pause:
   > "Incomplete journal detected — run `/journal-compose` in a dedicated session."
-  Then proceed with the user's actual request. Do not read stubs, do not compose, do not ask
-  whether to compose.
+  Then continue with the user's actual request. Do not read stubs, do not compose, do not
+  ask whether to compose.
 
 ---
 
