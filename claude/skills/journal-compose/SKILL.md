@@ -14,12 +14,12 @@ Supporting files:
 
 ## Step 0 — Session isolation check
 
-Before doing anything else, verify this session has not processed prior task work.
-If the conversation contains any prior assistant response other than this skill's invocation,
-treat that as evidence of prior task work.
+Before doing anything else, check the conversation history *prior to the message that
+triggered this skill invocation*. Tool calls made during this skill's own execution do not
+count. Only pre-invocation user turns and assistant responses are evidence of prior task work.
 
-If any tool calls or user turns exist in this session *before* the `/journal-compose`
-invocation (i.e., other tasks were handled first), stop immediately and respond:
+If any user turns or assistant responses exist in the conversation before the
+`/journal-compose` invocation (i.e., other tasks were handled first), stop immediately and respond:
 
 > "Journal composition must run in a dedicated session with no prior task work.
 > Open a fresh Claude Code session and invoke `/journal-compose` there."
@@ -112,19 +112,23 @@ You are composing the engineering journal for one project. Follow these steps ex
 **Project path:** sessions/<project>/
 **Stub files (in order):** <stub1>, <stub2>, ...
 
-Step 1 — Acquire compose lock for this project only, exactly as described in
-  ~/.claude/skills/journal-compose/SKILL.md Step 1 ("Acquire the compose lock" subsection).
+Step 1 — Acquire compose lock for this project using this project-scoped path:
+  C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock
+  Follow the lock check/create procedure in SKILL.md Step 1 ("Acquire the compose lock").
 
-Step 2 — Read stubs. Read ~/.claude/skills/journal-compose/SKILL.md Steps 2 and 2b
-  for the extraction format. In Step 2b, do NOT prompt the user — instead record any
-  meta trigger findings in your final report (see below).
+Step 2 — Read stubs following SKILL.md Step 2 extraction format.
+
+Step 2b — Meta trigger check. Do NOT prompt the user, ask questions, or create any meta
+  draft files. Instead, scan each session block against the trigger table in SKILL.md Step 2b
+  and record any matches for the final report. Proceed immediately to Step 3.
 
 Step 3 — Determine the slug. If unclear, synthesize from the session H2 headings; do not
   ask the user. Report your chosen slug.
 
-Step 4 — Fetch real token data. Run:
+Step 4 — Fetch real token data. Sanitize the project name first (slashes → underscores):
+  PROJECT_SAFE=$(echo "<project>" | tr '/' '_')
   python3 ~/.claude/scripts/token-report.py --date YYYY-MM-DD --format json > \
-    "C:/Users/brown/.claude/scratch/tmp_tokens_<project>_$$.json"
+    "C:/Users/brown/.claude/scratch/tmp_tokens_${PROJECT_SAFE}_$$.json"
   then parse as shown in SKILL.md Step 4.
 
 Step 5 — Compose the 11-section document. Follow SKILL.md Step 5 exactly.
@@ -147,6 +151,11 @@ When done, report exactly this structure:
 
 After all subagents complete, collect `OUTPUT_FILE`, `SLUG`, and `META_TRIGGERS` from each.
 
+**Error check first:** If any subagent did not return `STATUS=done`, stop immediately and
+report which project(s) failed before touching any README or running git commands. Do not
+proceed with a partial set — a missing output file will cause the commit to fail silently.
+
+If all subagents returned `STATUS=done`, check meta triggers.
 If any subagent reported `META_TRIGGERS` (non-none), present them to the user now:
 ```
 Meta triggers found in <project> session(s): <list>
