@@ -15,6 +15,8 @@ Supporting files:
 ## Step 0 — Session isolation check
 
 Before doing anything else, verify this session has not processed prior task work.
+If the conversation contains any prior assistant response other than this skill's invocation,
+treat that as evidence of prior task work.
 
 If any tool calls or user turns exist in this session *before* the `/journal-compose`
 invocation (i.e., other tasks were handled first), stop immediately and respond:
