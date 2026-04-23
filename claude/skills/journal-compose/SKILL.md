@@ -118,10 +118,9 @@ Step 1 — Acquire compose lock for this project using this project-scoped path:
 
 Step 2 — Read stubs following SKILL.md Step 2 extraction format.
 
-Step 2b — Meta trigger check. Scan each session block against the trigger table in
-  SKILL.md Step 2b. If triggers match, record them for the final report.
-  Do NOT present options, ask questions, or create any meta draft files — the Phase 2
-  coordinator handles user interaction. Proceed immediately to Step 3.
+Step 2b — Meta trigger check. Do NOT prompt the user, ask questions, or create any meta
+  draft files. Instead, scan each session block against the trigger table in SKILL.md Step 2b
+  and record any matches for the final report. Proceed immediately to Step 3.
 
 Step 3 — Determine the slug. If unclear, synthesize from the session H2 headings; do not
   ask the user. Report your chosen slug.
