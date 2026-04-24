@@ -1,154 +1,178 @@
 #!/usr/bin/env bash
-# dev-env setup — run once on each new machine after cloning this repo.
-# Creates symlinks from well-known config locations into this repo.
+# dev-env setup — run once per machine after cloning this repo.
 #
-# Requirements (Windows):
-#   - Git for Windows (Git Bash)
-#   - Developer Mode enabled in Windows Settings → System → For Developers
-#     (allows mklink without elevation; alternative: run as Administrator)
+# Usage (Windows, Git Bash):  bash setup.sh
+# Usage (Linux/macOS):        bash setup.sh
+#
+# Windows: self-elevates via UAC if neither Administrator nor Developer Mode
+# is detected. No manual elevation step required.
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "Setting up dev-env from $REPO_DIR"
-echo ""
-
 # ---------------------------------------------------------------------------
-# Prerequisite: bash.exe on Windows PATH
-# Claude Code hook commands use "bash -c '...'" so that python3 (a Windows App
-# Execution Alias symlink) resolves correctly regardless of which process spawns
-# the hook. Verify that bash.exe is on the Windows PATH so non-interactive
-# processes (like the Claude Code Desktop hook runner) can find it.
+# Windows setup
 # ---------------------------------------------------------------------------
-BASH_PATH="$(cmd.exe /c "where bash 2>NUL" 2>/dev/null | tr -d '\r' | head -1)"
-if [ -z "$BASH_PATH" ]; then
-  echo "WARNING: bash.exe is not on the Windows PATH."
-  echo "  Claude Code hooks use 'bash -c ...' to invoke Python scripts."
-  echo "  Add Git Bash to your Windows PATH, e.g.:"
-  echo "    C:\\Program Files\\Git\\usr\\bin"
-  echo "  Then re-run this script."
+setup_windows() {
+  echo "dev-env setup (Windows) from $REPO_DIR"
   echo ""
-else
-  echo "  bash found at: $BASH_PATH"
-fi
 
-# ---------------------------------------------------------------------------
-# Prerequisite: python3
-# Required by every hook script in claude/scripts/.
-# ---------------------------------------------------------------------------
-if ! python3 --version &>/dev/null; then
-  echo ""
-  echo "WARNING: python3 not found."
-  echo "  Install Python 3 from https://python.org/downloads/ and ensure it is"
-  echo "  on your PATH. Then re-run this script."
-  echo ""
-else
-  echo "  python3 found: $(python3 --version 2>&1)"
-fi
+  # -- Elevation / Developer Mode check ------------------------------------
+  # mklink (file symlink) and mklink /D (dir symlink) require either
+  # Administrator or Developer Mode. mklink /J (junction) works without both.
+  # Self-elevate via UAC so the user never has to think about it.
 
-# ---------------------------------------------------------------------------
-# Prerequisite: Developer Mode or Administrator
-# mklink without /J requires Developer Mode or elevation.
-# ---------------------------------------------------------------------------
-DEV_MODE_KEY="HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"
-DEV_MODE_VAL="$(reg.exe query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock" /v AllowDevelopmentWithoutDevLicense 2>/dev/null | grep -oP '0x\w+' || true)"
-if [ "$DEV_MODE_VAL" != "0x1" ]; then
-  IS_ADMIN="$(net.exe session 2>/dev/null && echo yes || echo no)"
-  if [ "$IS_ADMIN" != "yes" ]; then
-    echo ""
-    echo "WARNING: Developer Mode is not enabled and this session is not elevated."
-    echo "  Symlinks (mklink) require one of:"
-    echo "    - Windows Settings → System → For Developers → Developer Mode ON"
-    echo "    - Running Git Bash as Administrator"
-    echo "  Directory junctions (mklink /J, /D) are not affected."
-    echo "  CLAUDE.md and settings.json links may fail. Enable Developer Mode and re-run."
+  is_admin()    { net.exe session &>/dev/null 2>&1; }
+  has_dev_mode() {
+    local val
+    val="$(reg.exe query \
+      "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock" \
+      /v AllowDevelopmentWithoutDevLicense 2>/dev/null \
+      | tr -d '\r' | grep -oP '0x\w+' || echo "0x0")"
+    [[ "$val" == "0x1" ]]
+  }
+
+  if ! is_admin && ! has_dev_mode; then
+    SCRIPT_WIN="$(cygpath -w "${BASH_SOURCE[0]}")"
+    echo "Requires elevation (Administrator or Developer Mode)."
+    echo "Triggering UAC prompt — setup will complete in a new window..."
+    # -Wait keeps this process alive until the elevated one finishes.
+    powershell.exe -NoProfile -Command \
+      "Start-Process 'bash' -ArgumentList '\"$SCRIPT_WIN\"' -Verb RunAs -Wait"
+    exit 0
+  fi
+
+  # -- Soft prerequisites --------------------------------------------------
+  # These don't block setup but will cause hooks to fail at runtime.
+
+  if ! cmd.exe /c "where bash >NUL 2>&1"; then
+    echo "WARNING: bash.exe not on Windows PATH."
+    echo "  Add Git Bash: C:\\Program Files\\Git\\usr\\bin"
+    echo "  Claude Code hooks use 'bash -c ...' and won't fire until this is fixed."
     echo ""
   fi
-fi
 
-echo ""
-echo "Creating ~/.claude layout..."
+  if ! python3 --version &>/dev/null; then
+    echo "WARNING: python3 not found."
+    echo "  Install from https://python.org/downloads/ (tick 'Add python.exe to PATH')."
+    echo "  Hook scripts in claude/scripts/ won't run until this is fixed."
+    echo ""
+  fi
 
-# Claude Code global config dir
-mkdir -p "$HOME/.claude"
+  # -- ~/.claude layout ----------------------------------------------------
+  mkdir -p "$HOME/.claude"
+  echo "Creating ~/.claude layout..."
 
-# ---------------------------------------------------------------------------
-# CLAUDE.md (file symlink)
-# ---------------------------------------------------------------------------
-WIN_TARGET="$(cygpath -w "$REPO_DIR/claude/CLAUDE.md")"
-WIN_LINK="$(cygpath -w "$HOME/.claude/CLAUDE.md")"
+  win_link "$REPO_DIR/claude/CLAUDE.md"    "$HOME/.claude/CLAUDE.md"    file
+  echo "  Linked CLAUDE.md"
 
-rm -f "$HOME/.claude/CLAUDE.md"
-cmd.exe /c "mklink \"$WIN_LINK\" \"$WIN_TARGET\""
-echo "  Linked claude/CLAUDE.md -> ~/.claude/CLAUDE.md"
+  win_link "$REPO_DIR/claude/settings.json" "$HOME/.claude/settings.json" file
+  echo "  Linked settings.json"
 
-# ---------------------------------------------------------------------------
-# settings.json (file symlink)
-# ---------------------------------------------------------------------------
-WIN_SETTINGS_TARGET="$(cygpath -w "$REPO_DIR/claude/settings.json")"
-WIN_SETTINGS_LINK="$(cygpath -w "$HOME/.claude/settings.json")"
+  for subdir in scripts skills hooks; do
+    win_link "$REPO_DIR/claude/$subdir" "$HOME/.claude/$subdir" dir
+    echo "  Linked $subdir/"
+  done
 
-rm -f "$HOME/.claude/settings.json"
-cmd.exe /c "mklink \"$WIN_SETTINGS_LINK\" \"$WIN_SETTINGS_TARGET\""
-echo "  Linked claude/settings.json -> ~/.claude/settings.json"
+  mkdir -p "$HOME/.claude/scratch"
+  echo "  Created scratch/"
 
-# ---------------------------------------------------------------------------
-# scripts/ (directory junction)
-# ---------------------------------------------------------------------------
-WIN_SCRIPTS_TARGET="$(cygpath -w "$REPO_DIR/claude/scripts")"
-WIN_SCRIPTS_LINK="$(cygpath -w "$HOME/.claude/scripts")"
+  win_link "$REPO_DIR/bin" "$HOME/bin" junction
+  echo "  Linked ~/bin/"
 
-if [ -L "$HOME/.claude/scripts" ] || [ -d "$HOME/.claude/scripts" ]; then
-  cmd.exe /c "rmdir \"$WIN_SCRIPTS_LINK\"" 2>/dev/null || rm -rf "$HOME/.claude/scripts"
-fi
-cmd.exe /c "mklink /D \"$WIN_SCRIPTS_LINK\" \"$WIN_SCRIPTS_TARGET\""
-echo "  Linked claude/scripts/ -> ~/.claude/scripts/"
+  set_hooks_path
 
-# ---------------------------------------------------------------------------
-# skills/ (directory junction)
-# ---------------------------------------------------------------------------
-WIN_SKILLS_TARGET="$(cygpath -w "$REPO_DIR/claude/skills")"
-WIN_SKILLS_LINK="$(cygpath -w "$HOME/.claude/skills")"
+  echo ""
+  echo "Done. Open a new Git Bash window so ~/bin is on PATH."
+}
 
-if [ -L "$HOME/.claude/skills" ] || [ -d "$HOME/.claude/skills" ]; then
-  cmd.exe /c "rmdir \"$WIN_SKILLS_LINK\"" 2>/dev/null || rm -rf "$HOME/.claude/skills"
-fi
-cmd.exe /c "mklink /D \"$WIN_SKILLS_LINK\" \"$WIN_SKILLS_TARGET\""
-echo "  Linked claude/skills/ -> ~/.claude/skills/"
+# win_link <target> <link> <type: file|dir|junction>
+win_link() {
+  local src="$1" dst="$2" type="$3"
+  local src_win dst_win flag
 
-# ---------------------------------------------------------------------------
-# hooks/ (directory junction)
-# ---------------------------------------------------------------------------
-WIN_HOOKS_TARGET="$(cygpath -w "$REPO_DIR/claude/hooks")"
-WIN_HOOKS_LINK="$(cygpath -w "$HOME/.claude/hooks")"
+  src_win="$(cygpath -w "$src")"
+  dst_win="$(cygpath -w "$dst")"
 
-if [ -L "$HOME/.claude/hooks" ] || [ -d "$HOME/.claude/hooks" ]; then
-  cmd.exe /c "rmdir \"$WIN_HOOKS_LINK\"" 2>/dev/null || rm -rf "$HOME/.claude/hooks"
-fi
-cmd.exe /c "mklink /D \"$WIN_HOOKS_LINK\" \"$WIN_HOOKS_TARGET\""
-echo "  Linked claude/hooks/ -> ~/.claude/hooks/"
+  case "$type" in
+    file)     flag="" ;;
+    dir)      flag="/D" ;;
+    junction) flag="/J" ;;
+  esac
+
+  rm -f "$dst" 2>/dev/null || true
+  if [ -d "$dst" ]; then
+    cmd.exe /c "rmdir \"$dst_win\"" 2>/dev/null || rm -rf "$dst"
+  fi
+
+  cmd.exe /c "mklink $flag \"$dst_win\" \"$src_win\""
+}
 
 # ---------------------------------------------------------------------------
-# scratch/ (machine-local temp dir; not version-controlled)
+# Linux / macOS setup
 # ---------------------------------------------------------------------------
-mkdir -p "$HOME/.claude/scratch"
-echo "  Created ~/.claude/scratch/"
+setup_unix() {
+  echo "dev-env setup ($(uname -s)) from $REPO_DIR"
+  echo ""
+
+  # settings.json contains Windows-specific absolute paths in hook commands.
+  echo "NOTE: claude/settings.json has Windows paths in hook commands."
+  echo "  Hooks will not fire correctly until those paths are updated for this OS."
+  echo ""
+
+  mkdir -p "$HOME/.claude"
+  echo "Creating ~/.claude layout..."
+
+  for item in CLAUDE.md settings.json; do
+    ln -sf "$REPO_DIR/claude/$item" "$HOME/.claude/$item"
+    echo "  Linked $item"
+  done
+
+  for subdir in scripts skills hooks; do
+    ln -sf "$REPO_DIR/claude/$subdir" "$HOME/.claude/$subdir"
+    echo "  Linked $subdir/"
+  done
+
+  mkdir -p "$HOME/.claude/scratch"
+  echo "  Created scratch/"
+
+  ln -sf "$REPO_DIR/bin" "$HOME/bin"
+  echo "  Linked ~/bin/"
+
+  set_hooks_path
+
+  echo ""
+  echo "Done. Reload your shell so ~/bin is on PATH (or open a new terminal)."
+}
 
 # ---------------------------------------------------------------------------
-# ~/bin (directory junction to dev-env/bin/)
+# Shared: configure global git hooks path
 # ---------------------------------------------------------------------------
-WIN_BIN_TARGET="$(cygpath -w "$REPO_DIR/bin")"
-WIN_BIN_LINK="$(cygpath -w "$HOME/bin")"
+set_hooks_path() {
+  local system_hooks
+  system_hooks="$(git config --system core.hooksPath 2>/dev/null || true)"
 
-if [ -L "$HOME/bin" ] || [ -d "$HOME/bin" ]; then
-  cmd.exe /c "rmdir \"$WIN_BIN_LINK\"" 2>/dev/null || rm -rf "$HOME/bin"
-fi
-cmd.exe /c "mklink /J \"$WIN_BIN_LINK\" \"$WIN_BIN_TARGET\""
-echo "  Linked bin/ -> ~/bin/"
+  if [ -n "$system_hooks" ] && [ "$system_hooks" != "$HOME/.claude/hooks" ]; then
+    echo ""
+    echo "WARNING: system-level core.hooksPath already set to: $system_hooks"
+    echo "  This may be enterprise-managed — skipping global hooks config."
+    echo "  Set manually if safe: git config --global core.hooksPath ~/.claude/hooks"
+    return
+  fi
 
-echo ""
-echo "Done. Next steps if not already complete:"
-echo "  1. Set global git hooks path:"
-echo "       git config --global core.hooksPath ~/.claude/hooks"
-echo "  2. Reload your shell (or open a new Git Bash window) so ~/bin is on PATH."
+  git config --global core.hooksPath "$HOME/.claude/hooks"
+  echo "  Set core.hooksPath -> ~/.claude/hooks"
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+OS="$(uname -s)"
+case "$OS" in
+  MINGW*|CYGWIN*|MSYS*) setup_windows ;;
+  Linux|Darwin)          setup_unix ;;
+  *)
+    echo "Unsupported OS: $OS" >&2
+    exit 1 ;;
+esac
