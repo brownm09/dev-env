@@ -150,6 +150,12 @@ Use that path wherever `sessions/<project>/` appears below.
   Then continue with the user's actual request. Do not read stubs, do not compose, do not
   ask whether to compose.
 
+- **PR grouping heuristic.** When two or more stubs share a PR number (one stub has it in
+  `prs_opened`, another in `prs_closed`), compose them under a single H2 dialogue section
+  rather than producing a separate H2 per stub. Annotate with "→ merged in session N" at the
+  end of the section. This prevents the composed journal from fragmenting short create-then-review
+  session pairs into unrelated-looking sections.
+
 ---
 
 ### Stub file workflow
@@ -165,34 +171,53 @@ where `HHMMSS` is the UTC start time of the session (`date -u +%H%M%S`).
 **First session of the day:**
 1. `git -C C:/Users/brown/Git/engineering-journal checkout main && git pull`
 2. `git -C C:/Users/brown/Git/engineering-journal checkout -b draft/YYYY-MM-DD`
-3. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see stub structure below)
-4. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
-5. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
-6. `git add`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
+3. Read `sessions/<project>/open-prs.jsonl` if it exists — include its PR list as session context before starting work.
+4. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see stub structure below)
+5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
+6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
+7. `git add`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
 
 **Subsequent sessions:**
 1. `git -C C:/Users/brown/Git/engineering-journal pull origin draft/YYYY-MM-DD`
-2. Find the most recent stub and read only its `<!-- next-session-context -->` paragraph:
+2. Read `sessions/<project>/open-prs.jsonl` if it exists — include its PR list as session context before starting work.
+3. Find the most recent stub and read only its `<!-- next-session-context -->` paragraph:
    ```bash
    ls C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_*.stub.md | sort | tail -1
    ```
-3. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` with the current session block
-4. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
-5. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
-6. `git add`, `git commit -m "draft: YYYY-MM-DD session N"`, `git push`
+4. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` with the current session block
+5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
+6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
+7. `git add`, `git commit -m "draft: YYYY-MM-DD session N"`, `git push`
 
 **Manifest format (`YYYY-MM-DD.manifest.jsonl`):**
 
 One JSON line per session, appended after the token comment is known (end of session):
 ```bash
-echo '{"stub":"YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"input":N,"output":N,"cost":N}}' \
+echo '{"stub":"YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"input":N,"output":N,"cost":N},"prs_opened":[],"prs_closed":[]}' \
   >> "C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl"
 ```
 
-The manifest lets `/journal-compose` see the session count, topics, and token data without
-reading individual stubs. It is advisory: if the manifest is missing or has fewer entries
+- `prs_opened`: PR numbers opened during this session (e.g., `[54]`). Empty array if none.
+- `prs_closed`: PR numbers reviewed/merged during this session (e.g., `[54]`). Empty array if none.
+
+The manifest lets `/journal-compose` see the session count, topics, token data, and PR lifecycle
+without reading individual stubs. It is advisory: if the manifest is missing or has fewer entries
 than the stub glob, stubs are authoritative. Never commit the manifest separately from its stubs
 (include it in the same `git add` / commit step).
+
+**Open-PR tracking file (`sessions/<project>/open-prs.jsonl`):**
+
+Tracks PRs whose full lifecycle (open → review → merge) spans multiple sessions. Lives in the
+engineering-journal repo; carried forward from day to day via the draft branch merge to main.
+
+Schema — one JSON line per open PR:
+```json
+{"pr":54,"url":"https://github.com/brownm09/dev-env/pull/54","topic":"<H2 heading from stub>","stub":"YYYY-MM-DD_HHMMSS.stub.md","opened":"YYYY-MM-DD"}
+```
+
+- **When a session opens a PR:** append a line and commit it alongside the stub.
+- **When a session merges/closes a PR:** remove the matching line and commit the updated file alongside the stub.
+- `/journal-compose` preserves this file unchanged in the merge-to-main commit so it carries forward to the next day.
 
 **End of day (last session):**
 1. Run `/journal-compose` — it discovers all stubs via manifest (or glob fallback), merges them,
