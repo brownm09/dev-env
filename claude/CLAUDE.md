@@ -166,8 +166,9 @@ where `HHMMSS` is the UTC start time of the session (`date -u +%H%M%S`).
 1. `git -C C:/Users/brown/Git/engineering-journal checkout main && git pull`
 2. `git -C C:/Users/brown/Git/engineering-journal checkout -b draft/YYYY-MM-DD`
 3. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see stub structure below)
-4. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
-5. `git add`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
+4. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
+5. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
+6. `git add`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
 
 **Subsequent sessions:**
 1. `git -C C:/Users/brown/Git/engineering-journal pull origin draft/YYYY-MM-DD`

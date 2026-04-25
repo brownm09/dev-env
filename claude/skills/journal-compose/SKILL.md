@@ -129,6 +129,9 @@ Step 1 — Acquire compose lock for this project using this project-scoped path:
   C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock
   Follow the lock check/create procedure in SKILL.md Step 1 ("Acquire the compose lock").
 
+Step 1b — If a manifest exists at `sessions/<project>/YYYY-MM-DD.manifest.jsonl`, read it
+  for a session overview (topics, token data) before reading individual stubs.
+
 Step 2 — Read stubs following SKILL.md Step 2 extraction format.
 
 Step 2b — Meta trigger check. Do NOT prompt the user, ask questions, or create any meta
@@ -691,6 +694,7 @@ under `## Projects` using this format.
 Delete all stubs for the date and release the compose lock:
 ```bash
 rm C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_*.stub.md
+rm -f C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl
 rm -f C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock
 ```
 
@@ -744,7 +748,8 @@ EOF
 gh pr merge <PR-URL> \
   --repo brownm09/engineering-journal \
   --squash \
-  --delete-branch
+  --delete-branch \
+  --yes
 ```
 
 This squash-merges the draft branch and deletes the remote branch in one step, preventing
