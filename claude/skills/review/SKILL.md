@@ -220,3 +220,8 @@ the cap, state the count here.>
   handles those; your job is everything automation misses.
 - The cap (5–7 blocking, 5 non-blocking) is a signal discipline, not a quality compromise.
   A review with 20 findings gets ignored. A review with 5 targeted findings gets acted on.
+- **Follow-up / merge-readiness checks:** When verifying whether findings have been addressed on
+  an existing PR, always fetch the remote branch first — never read files from the local working
+  tree or current worktree. Protocol: `git fetch origin <headRefName>`, then read via
+  `git show origin/<headRefName>:<path>`. The local tree may be stale or on a different branch,
+  producing false "still outstanding" results.
