@@ -37,6 +37,19 @@ git -C C:/Users/brown/Git/engineering-journal branch --show-current
 ```
 The branch name is `draft/YYYY-MM-DD`. Extract `YYYY-MM-DD` from it.
 
+**Check for a manifest (fast path):**
+
+```bash
+ls C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD.manifest.jsonl 2>/dev/null
+```
+
+If one or more manifests exist, read them to get a session overview before touching stubs:
+- Number of sessions per project (manifest line count)
+- Topics (for slug synthesis and day structure)
+- Token data per session (supplemental for Step 4 — JSONL log is still authoritative)
+
+If the manifest count differs from the stub glob count below, treat stubs as authoritative.
+
 **Find stub files:**
 
 ```bash
@@ -115,6 +128,9 @@ You are composing the engineering journal for one project. Follow these steps ex
 Step 1 — Acquire compose lock for this project using this project-scoped path:
   C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock
   Follow the lock check/create procedure in SKILL.md Step 1 ("Acquire the compose lock").
+
+Step 1b — If a manifest exists at `sessions/<project>/YYYY-MM-DD.manifest.jsonl`, read it
+  for a session overview (topics, token data) before reading individual stubs.
 
 Step 2 — Read stubs following SKILL.md Step 2 extraction format.
 
@@ -678,6 +694,7 @@ under `## Projects` using this format.
 Delete all stubs for the date and release the compose lock:
 ```bash
 rm C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_*.stub.md
+rm -f C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl
 rm -f C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock
 ```
 
@@ -725,16 +742,22 @@ EOF
 )"
 ```
 
-Return the PR URL to the user.
-
-**After the PR is squash-merged**, delete the remote branch to prevent the stale-branch
-hook from false-positive firing (squash merges don't appear in `git branch --merged`):
+**Auto-merge the PR immediately after creation:**
 
 ```bash
-# substitute the actual date, e.g. draft/2026-04-24
-git -C C:/Users/brown/Git/engineering-journal push origin --delete draft/YYYY-MM-DD
+gh pr merge <PR-URL> \
+  --repo brownm09/engineering-journal \
+  --squash \
+  --delete-branch \
+  --yes
+```
+
+This squash-merges the draft branch and deletes the remote branch in one step, preventing
+the stale-branch hook from false-positive firing. Wait for the merge to complete, then
+delete the local draft branch:
+
+```bash
 git -C C:/Users/brown/Git/engineering-journal branch -d draft/YYYY-MM-DD 2>/dev/null || true
 ```
 
-If the user asks you to merge or confirms the PR is merged, run these commands immediately.
-If you are not present at merge time, include the commands as a reminder in your final message.
+Tell the user: "Merged: <PR-URL>. Journal published."

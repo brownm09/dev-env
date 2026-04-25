@@ -166,7 +166,9 @@ where `HHMMSS` is the UTC start time of the session (`date -u +%H%M%S`).
 1. `git -C C:/Users/brown/Git/engineering-journal checkout main && git pull`
 2. `git -C C:/Users/brown/Git/engineering-journal checkout -b draft/YYYY-MM-DD`
 3. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see stub structure below)
-4. `git add`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
+4. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
+5. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
+6. `git add`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
 
 **Subsequent sessions:**
 1. `git -C C:/Users/brown/Git/engineering-journal pull origin draft/YYYY-MM-DD`
@@ -176,11 +178,25 @@ where `HHMMSS` is the UTC start time of the session (`date -u +%H%M%S`).
    ```
 3. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` with the current session block
 4. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
-5. `git add`, `git commit -m "draft: YYYY-MM-DD session N"`, `git push`
+5. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
+6. `git add`, `git commit -m "draft: YYYY-MM-DD session N"`, `git push`
+
+**Manifest format (`YYYY-MM-DD.manifest.jsonl`):**
+
+One JSON line per session, appended after the token comment is known (end of session):
+```bash
+echo '{"stub":"YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"input":N,"output":N,"cost":N}}' \
+  >> "C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl"
+```
+
+The manifest lets `/journal-compose` see the session count, topics, and token data without
+reading individual stubs. It is advisory: if the manifest is missing or has fewer entries
+than the stub glob, stubs are authoritative. Never commit the manifest separately from its stubs
+(include it in the same `git add` / commit step).
 
 **End of day (last session):**
-1. Run `/journal-compose` — it discovers all stubs, sorts them, merges them, and produces
-   the canonical 11-section document; it also deletes stubs and opens the PR
+1. Run `/journal-compose` — it discovers all stubs via manifest (or glob fallback), merges them,
+   produces the canonical 11-section document, and auto-merges the PR
 
 ---
 
