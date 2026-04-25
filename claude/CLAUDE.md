@@ -301,6 +301,7 @@ Subsequent stubs begin directly at `<!-- session: <slug> -->`.
   - PR opened — follow the Stub file workflow immediately, then stop (see Git Workflow → Stop after PR creation)
   - PR merged (including auto-merge) — follow the Stub file workflow immediately, then stop (see Git Workflow → Stop after PR merge)
   - PR closed without merging — follow the Stub file workflow; stopping is optional (see Git Workflow → PR closed without merging)
+- Review-only sessions (`/review --post-comment`) do **not** auto-create a stub — review is not a session boundary
 - Add to the current session's stub when a strategic decision is made mid-session
 - Compose and publish the daily document at end of last session of the day
 
