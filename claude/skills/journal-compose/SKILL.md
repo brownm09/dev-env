@@ -731,6 +731,7 @@ Return the PR URL to the user.
 hook from false-positive firing (squash merges don't appear in `git branch --merged`):
 
 ```bash
+# substitute the actual date, e.g. draft/2026-04-24
 git -C C:/Users/brown/Git/engineering-journal push origin --delete draft/YYYY-MM-DD
 git -C C:/Users/brown/Git/engineering-journal branch -d draft/YYYY-MM-DD 2>/dev/null || true
 ```

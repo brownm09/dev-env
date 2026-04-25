@@ -44,6 +44,10 @@ def composed_dates_on_main() -> set[str]:
     This is the squash-merge signal: squash merges don't leave branch commits in
     main's ancestry, so git branch --merged is unreliable. Checking for the
     composed file on main is the authoritative indicator.
+
+    Note: reads the local remote-tracking ref (origin/main) without fetching —
+    results reflect the last fetch. A stale ref could produce a false positive
+    (flagging a merged date as unmerged), but the next fetch will self-correct.
     """
     try:
         result = subprocess.run(
@@ -91,6 +95,9 @@ def unmerged_draft_branches() -> list[str]:
             return []
 
         merged = composed_dates_on_main()
+        # TODAY is always excluded from automatic detection — today's active
+        # branch is never stale. Use /journal-compose YYYY-MM-DD explicitly
+        # to compose and merge the current day's journal.
         unmerged = sorted(
             [d for d in remote_dates if d != TODAY and d not in merged],
             reverse=True,
