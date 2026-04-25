@@ -50,6 +50,19 @@ If one or more manifests exist, read them to get a session overview before touch
 
 If the manifest count differs from the stub glob count below, treat stubs as authoritative.
 
+**Check for open-PR context:**
+
+```bash
+ls C:/Users/brown/Git/engineering-journal/sessions/*/open-prs.jsonl 2>/dev/null
+```
+
+If found, read each file and record the open-PR list as `OPEN_PRS`. This is used in Step 5
+to group sessions that span multiple days under the same PR. For each entry:
+- If the PR's `prs_closed` appears in today's manifest, the PR was opened in a previous session
+  (possibly a previous day). The `stub` field identifies the opening session for cross-referencing.
+- If the PR has no `prs_closed` in today's manifest, it is still open — do not group anything
+  for it; the file carries forward unchanged to the next day.
+
 **Find stub files:**
 
 ```bash
@@ -410,6 +423,21 @@ Link to issues/PRs where referenced in the draft.
 ---
 
 ### Section 5 — Dialogue sections
+
+**PR grouping (before writing any H2s):** Scan the manifest(s) for `prs_opened` and
+`prs_closed` fields, and check `OPEN_PRS` (from Step 1). For any PR number that either:
+- appears in both `prs_opened` and `prs_closed` in today's manifests (same-day lifecycle), or
+- appears in `OPEN_PRS` and also in `prs_closed` in today's manifests (cross-day lifecycle),
+
+group all related session blocks under one `## Session N — <PR topic>` H2 instead of
+producing a separate H2 per stub. Order: opening session content first, any iteration sessions
+next, closing session content last. Annotate the end of the section with "→ merged in session N"
+where N is the 1-based ordinal of the closing stub for the day. For cross-day PRs, the opening
+stub is identified by the `stub` field in `OPEN_PRS` — note the original session date inline:
+"(opened YYYY-MM-DD — see [stub-filename])".
+
+Any stub that has neither `prs_opened` nor `prs_closed` set for a grouped PR but was written
+on a day when that PR was open in `OPEN_PRS` should also be merged into that H2.
 
 One `## Session N — <Title>` per session block, drawn from the draft's H2s.
 Use H3s for sub-topics within a session.
