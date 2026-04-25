@@ -103,6 +103,14 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 
 **Mechanical operations:** If a task is fully scriptable with known inputs, write the script rather than running an interactive session. Candidate operations: stale PR remediation, branch cleanup, rebase-and-merge sequences. Use `~/.claude/scripts/merge-stale-pr.sh` for engineering-journal stale draft PRs.
 
+**Plan-then-optimize before acting:** For any non-trivial task, state a numbered plan first, then do one explicit token-efficiency revision pass before taking any action. The revision pass must check:
+- Sequential tool calls that can be parallelized
+- `Agent` spawns: all independent subagents must go in a single message with `run_in_background: true` — no synchronous preflight agent that a parallel sibling will redo (root cause of dev-env#51)
+- File reads that can be skipped by reading an index or manifest instead of globbing
+- Data a downstream step will recompute anyway
+
+State the revised plan, then act.
+
 ---
 
 ## Documentation and Citations
