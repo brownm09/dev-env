@@ -1,7 +1,7 @@
 ---
 name: review
-description: Review a PR or diff for correctness, security, reliability, and maintainability. Produces a structured report with blocking findings, non-blocking findings, questions for the author, and optional style notes. Invoke as /review <PR-URL> [--no-style] [--author junior|mid|senior] [--focus security|correctness|perf].
-argument-hint: "<PR-URL | --diff> [--no-style] [--author <level>] [--focus <area>]"
+description: Review a PR or diff for correctness, security, reliability, and maintainability. Produces a structured report with blocking findings, non-blocking findings, questions for the author, and optional style notes. Invoke as /review <PR-URL> [--no-style] [--author junior|mid|senior] [--focus security|correctness|perf] [--post-comment].
+argument-hint: "<PR-URL | --diff> [--no-style] [--author <level>] [--focus <area>] [--post-comment]"
 allowed-tools: Bash Read Grep Agent
 ---
 
@@ -26,10 +26,11 @@ Parse rules:
    - `--no-style` → **STYLE=false** (default: true)
    - `--author <level>` → **AUTHOR_LEVEL** = junior | mid | senior (default: mid)
    - `--focus <area>` → **FOCUS** = security | correctness | perf (default: all)
+   - `--post-comment` → **POST_COMMENT=true** (default: false) — post the review as a PR comment after emitting it
 
 Tell the user what you parsed:
 - "Reviewing: `<PR_URL>`" (or "Diff mode — paste your diff")
-- Flags in effect (omit defaults): e.g., "--no-style, author=junior, focus=security"
+- Flags in effect (omit defaults): e.g., "--no-style, author=junior, focus=security, --post-comment"
 
 ---
 
@@ -206,6 +207,31 @@ the cap, state the count here.>
 <Grouped, not itemized. One short paragraph per concern.>
 <Omit section if STYLE=false or no style findings.>
 ```
+
+---
+
+## Step 9 — Post comment (if --post-comment)
+
+Step 8 always emits the review to the terminal. If **POST_COMMENT=true** and **PR_URL** is set,
+also post it as a PR comment and apply the `reviewed-by-claude` label so both are always present.
+
+Write the review output to a temp file to avoid shell-quoting issues with backticks and
+special characters, then post it:
+
+```bash
+TMPFILE="C:/Users/brown/.claude/scratch/review_comment_$$.md"
+# write the full review output from Step 8 to $TMPFILE
+gh pr comment "<PR_URL>" --body-file "$TMPFILE"
+gh pr edit "<PR_URL>" --add-label "reviewed-by-claude"
+rm -f "$TMPFILE"
+```
+
+If either `gh` command fails, report the error to the user and note that the review was
+still emitted to the terminal.
+
+Report: "Review posted as comment: <PR_URL>"
+
+If POST_COMMENT is false, or DIFF_MODE is true, skip this step.
 
 ---
 
