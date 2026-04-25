@@ -304,6 +304,7 @@ Subsequent stubs begin directly at `<!-- session: <slug> -->`.
 - The following do **not** auto-create a stub — they are not session boundaries:
   - Review-only sessions (`/review --post-comment`)
   - Pushing commits to an existing PR (e.g., addressing review findings) — if the session continues to a merge, the merge creates the stub
+
 - Add to the current session's stub when a strategic decision is made mid-session
 - Compose and publish the daily document at end of last session of the day
 
