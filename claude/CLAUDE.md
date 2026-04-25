@@ -296,7 +296,9 @@ Subsequent stubs begin directly at `<!-- session: <slug> -->`.
 ### Update triggers
 
 **Project journal** (`sessions/<project>/`):
-- Add to the current session's stub when a PR is merged or a strategic decision is made
+- **Auto-create stub without user prompt on these session-end events:** PR opened, PR merged — follow the Stub file workflow immediately, then stop
+- Review-only sessions (`/review --post-comment`) do **not** auto-create a stub — review is not a session boundary
+- Add to the current session's stub when a strategic decision is made mid-session
 - Compose and publish the daily document at end of last session of the day
 
 **Meta journal** (`sessions/meta/`):
