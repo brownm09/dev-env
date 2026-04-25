@@ -37,45 +37,44 @@ def stale_draft_artifacts() -> list[str]:
     return stale
 
 
-def unmerged_draft_branches() -> list[str]:
-    """Return remote draft/* branch names not yet merged into origin/main.
+def composed_dates_on_main() -> set[str]:
+    """Return YYYY-MM-DD dates that have a composed journal file on origin/main.
 
-    Fast path: check local remote-tracking refs (zero network cost).
-    Verification pass: for any branch that appears unmerged locally, confirm it
-    still exists on the remote via ls-remote. This prunes false positives caused
-    by stale tracking refs left behind after squash-merge + branch deletion,
-    while avoiding a network call when there is nothing to verify.
+    A composed file is any sessions/**/*.md that is NOT a stub (*.stub.md).
+    This is the squash-merge signal: squash merges don't leave branch commits in
+    main's ancestry, so git branch --merged is unreliable. Checking for the
+    composed file on main is the authoritative indicator.
     """
     try:
-        # Fast path — local tracking refs, no network
         result = subprocess.run(
-            ["git", "branch", "-r", "--list", "origin/draft/*"],
+            ["git", "ls-tree", "-r", "--name-only", "origin/main", "sessions/"],
             cwd=JOURNAL_REPO,
             capture_output=True,
             text=True,
             timeout=10,
         )
-        candidates = []
-        for b in result.stdout.splitlines():
-            b = b.strip()
-            date_part = b.replace("origin/draft/", "")
-            if date_part and date_part != TODAY:
-                merged = subprocess.run(
-                    ["git", "branch", "-r", "--merged", "origin/main", "--list", b],
-                    cwd=JOURNAL_REPO,
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                if b not in merged.stdout:
-                    candidates.append(date_part)
+        dates = set()
+        for line in result.stdout.splitlines():
+            fname = line.split("/")[-1]
+            if fname.endswith(".stub.md") or not fname.endswith(".md"):
+                continue
+            # Composed files are named YYYY-MM-DD-<slug>.md
+            if len(fname) >= 10 and fname[4] == "-" and fname[7] == "-":
+                dates.add(fname[:10])
+        return dates
+    except Exception:
+        return set()
 
-        if not candidates:
-            return []
 
-        # Verification pass — one ls-remote call only when candidates exist.
-        # Squash-merge + delete means "branch still on remote = not yet merged".
-        ls = subprocess.run(
+def unmerged_draft_branches() -> list[str]:
+    """Return remote draft/* branch names not yet merged into origin/main.
+
+    Uses composed_dates_on_main() as the merge signal — squash merges don't
+    leave branch commits in main's ancestry, making git branch --merged
+    unreliable. A composed journal file on main is the authoritative indicator.
+    """
+    try:
+        result = subprocess.run(
             ["git", "ls-remote", "--heads", "origin", "refs/heads/draft/*"],
             cwd=JOURNAL_REPO,
             capture_output=True,
@@ -83,13 +82,19 @@ def unmerged_draft_branches() -> list[str]:
             timeout=15,
         )
         remote_dates = set()
-        for line in ls.stdout.splitlines():
+        for line in result.stdout.splitlines():
             if "\t" in line:
                 ref = line.split("\t", 1)[1].strip()
                 remote_dates.add(ref.replace("refs/heads/draft/", ""))
 
-        unmerged = [d for d in candidates if d in remote_dates]
-        unmerged.sort(reverse=True)
+        if not remote_dates:
+            return []
+
+        merged = composed_dates_on_main()
+        unmerged = sorted(
+            [d for d in remote_dates if d != TODAY and d not in merged],
+            reverse=True,
+        )
         return unmerged
     except Exception:
         return []

@@ -725,5 +725,15 @@ EOF
 )"
 ```
 
-Return the PR URL to the user. After the PR is merged (squash merge), delete the
-`draft/YYYY-MM-DD` branch.
+Return the PR URL to the user.
+
+**After the PR is squash-merged**, delete the remote branch to prevent the stale-branch
+hook from false-positive firing (squash merges don't appear in `git branch --merged`):
+
+```bash
+git -C C:/Users/brown/Git/engineering-journal push origin --delete draft/YYYY-MM-DD
+git -C C:/Users/brown/Git/engineering-journal branch -d draft/YYYY-MM-DD 2>/dev/null || true
+```
+
+If the user asks you to merge or confirms the PR is merged, run these commands immediately.
+If you are not present at merge time, include the commands as a reminder in your final message.
