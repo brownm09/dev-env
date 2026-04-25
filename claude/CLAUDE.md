@@ -48,7 +48,8 @@ Before writing a `gh` or other CLI automation script:
 - **Branch naming:** `feat/`, `fix/`, `config/`, `chore/`, `draft/` prefixes — match the convention already in use in the repo.
 - **PR first, then merge.** Open the PR immediately after pushing the branch; do not prompt the user to run `gh pr create` themselves.
 - **Stop after PR creation.** After opening any PR, report the PR URL, create the journal stub for this session (no user prompt — see Engineering Journal > Stub file workflow), then **stop — the session is complete.** Do not run `/review`, do not summarize next steps, do not continue with any further work. Instruct the user to run `/review <PR-URL> --post-comment` in a new session. Rationale: the review skill reads the PR directly from GitHub and needs no implementation context; running it in the same session adds 30–80k unnecessary input tokens. The review skill applies the `reviewed-by-claude` label; a PR without that label has not been reviewed.
-- **Stop after PR merge.** After merging a PR (via `gh pr merge` or equivalent), create the journal stub for this session without prompting, then **stop — the session is complete.** Do not continue with any further work. A merge is a session boundary.
+- **Stop after PR merge.** After merging a PR (via `gh pr merge`, auto-merge, or equivalent), create the journal stub for this session without prompting, then **stop — the session is complete.** Do not continue with any further work. A merge is a session boundary.
+- **PR closed without merging.** If a PR is closed without merging, create the journal stub for this session without prompting. Stopping is optional — the session may continue if follow-up work remains.
 - **Exception:** Local-only repos with no remote may commit to main directly.
 - **Branch creation in squash-merge repos:** Use `new-branch <name>` (source `~/.claude/scripts/new-branch.sh` in `.bashrc`) or `git checkout -b <name> origin/main` explicitly. Never cut from a branch that has been squash-merged — its commits no longer exist on main and a rebase will fail. Verify with `git merge-base HEAD origin/main` — output should equal `git rev-parse origin/main`.
 - **Pre-push hook wiring (one-time setup):** Before setting, check for an existing value: `git config --system core.hooksPath` and `git config --global core.hooksPath`. If a system-level path exists (enterprise-managed hooks), migrate its hooks into `~/.claude/hooks/` rather than overriding. If another tool (Husky, Lefthook) owns the global value, coordinate rather than overwrite — two tools cannot share `core.hooksPath`. Once clear: `git config --global core.hooksPath ~/.claude/hooks`. The hook chains to any per-repo `.git/hooks/pre-push` so existing repo-level hooks are preserved.
@@ -296,7 +297,10 @@ Subsequent stubs begin directly at `<!-- session: <slug> -->`.
 ### Update triggers
 
 **Project journal** (`sessions/<project>/`):
-- **Auto-create stub without user prompt on these session-end events:** PR opened, PR merged — follow the Stub file workflow immediately, then stop
+- **Auto-create stub without user prompt on these session-end events:**
+  - PR opened — follow the Stub file workflow immediately, then stop (see Git Workflow → Stop after PR creation)
+  - PR merged (including auto-merge) — follow the Stub file workflow immediately, then stop (see Git Workflow → Stop after PR merge)
+  - PR closed without merging — follow the Stub file workflow; stopping is optional (see Git Workflow → PR closed without merging)
 - Add to the current session's stub when a strategic decision is made mid-session
 - Compose and publish the daily document at end of last session of the day
 
