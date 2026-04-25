@@ -152,9 +152,12 @@ Use that path wherever `sessions/<project>/` appears below.
 
 - **PR grouping heuristic.** When two or more stubs share a PR number (one stub has it in
   `prs_opened`, another in `prs_closed`), compose them under a single H2 dialogue section
-  rather than producing a separate H2 per stub. Annotate with "→ merged in session N" at the
-  end of the section. This prevents the composed journal from fragmenting short create-then-review
-  session pairs into unrelated-looking sections.
+  rather than producing a separate H2 per stub. Annotate with "→ merged in session N" (where
+  N is the 1-based ordinal of the closing stub for that day) at the end of the section. Any
+  stub written on a day where `open-prs.jsonl` shows the same PR as open should also be grouped
+  under that H2, even if neither `prs_opened` nor `prs_closed` is set for that PR in its
+  manifest entry — this covers PRs that span more than two sessions. This prevents the composed
+  journal from fragmenting create-iterate-review sequences into unrelated-looking sections.
 
 ---
 
@@ -175,7 +178,8 @@ where `HHMMSS` is the UTC start time of the session (`date -u +%H%M%S`).
 4. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see stub structure below)
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
 6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
-7. `git add`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
+7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD.manifest.jsonl sessions/<project>/open-prs.jsonl`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
+   *(omit `open-prs.jsonl` from the add command if it was not modified this session)*
 
 **Subsequent sessions:**
 1. `git -C C:/Users/brown/Git/engineering-journal pull origin draft/YYYY-MM-DD`
@@ -187,7 +191,8 @@ where `HHMMSS` is the UTC start time of the session (`date -u +%H%M%S`).
 4. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` with the current session block
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
 6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
-7. `git add`, `git commit -m "draft: YYYY-MM-DD session N"`, `git push`
+7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD.manifest.jsonl sessions/<project>/open-prs.jsonl`, `git commit -m "draft: YYYY-MM-DD session N"`, `git push`
+   *(omit `open-prs.jsonl` from the add command if it was not modified this session)*
 
 **Manifest format (`YYYY-MM-DD.manifest.jsonl`):**
 
@@ -215,8 +220,22 @@ Schema — one JSON line per open PR:
 {"pr":54,"url":"https://github.com/brownm09/dev-env/pull/54","topic":"<H2 heading from stub>","stub":"YYYY-MM-DD_HHMMSS.stub.md","opened":"YYYY-MM-DD"}
 ```
 
-- **When a session opens a PR:** append a line and commit it alongside the stub.
-- **When a session merges/closes a PR:** remove the matching line and commit the updated file alongside the stub.
+- `stub`: the stub filename that opened this PR — used by `/journal-compose` to cross-reference the opening session when a PR spans multiple days.
+
+- **When a session opens a PR:** append a line and commit it alongside the stub (see step 7 above).
+- **When a session merges/closes a PR:** remove the matching line using `node -e`, then commit:
+  ```bash
+  node -e "
+    const fs = require('fs');
+    const path = 'C:/Users/brown/Git/engineering-journal/sessions/<project>/open-prs.jsonl';
+    if (!fs.existsSync(path)) process.exit(0);
+    const kept = fs.readFileSync(path,'utf8').trim().split('\n')
+      .filter(l => l && JSON.parse(l).pr !== <PR_NUMBER>);
+    if (kept.length) fs.writeFileSync(path, kept.join('\n') + '\n');
+    else fs.unlinkSync(path);
+  "
+  ```
+  If the last line is removed, the script deletes the file rather than leaving it empty.
 - `/journal-compose` preserves this file unchanged in the merge-to-main commit so it carries forward to the next day.
 
 **End of day (last session):**
