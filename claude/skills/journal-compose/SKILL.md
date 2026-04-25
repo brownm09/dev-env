@@ -748,8 +748,7 @@ EOF
 gh pr merge <PR-URL> \
   --repo brownm09/engineering-journal \
   --squash \
-  --delete-branch \
-  --yes
+  --delete-branch
 ```
 
 This squash-merges the draft branch and deletes the remote branch in one step, preventing
