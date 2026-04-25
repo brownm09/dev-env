@@ -212,11 +212,22 @@ the cap, state the count here.>
 
 ## Step 9 — Post comment (if --post-comment)
 
-If **POST_COMMENT=true** and **PR_URL** is set:
+Step 8 always emits the review to the terminal. If **POST_COMMENT=true** and **PR_URL** is set,
+also post it as a PR comment and apply the `reviewed-by-claude` label so both are always present.
+
+Write the review output to a temp file to avoid shell-quoting issues with backticks and
+special characters, then post it:
 
 ```bash
-gh pr comment "<PR_URL>" --body "<full review output from Step 8>"
+TMPFILE="C:/Users/brown/.claude/scratch/review_comment_$$.md"
+# write the full review output from Step 8 to $TMPFILE
+gh pr comment "<PR_URL>" --body-file "$TMPFILE"
+gh pr edit "<PR_URL>" --add-label "reviewed-by-claude"
+rm -f "$TMPFILE"
 ```
+
+If either `gh` command fails, report the error to the user and note that the review was
+still emitted to the terminal.
 
 Report: "Review posted as comment: <PR_URL>"
 
