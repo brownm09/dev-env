@@ -17,6 +17,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash -c 'python3 C:/Users/brown/.claude/scripts/dev-env-sync.py'"
+          },
+          {
+            "type": "command",
             "command": "bash -c 'python3 C:/Users/brown/.claude/scripts/new-day-journal-check.py'"
           },
           {
