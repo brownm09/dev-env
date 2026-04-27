@@ -7,11 +7,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'python3 C:/Users/brown/.claude/scripts/pre-commit-branch-check.py'"
+            "command": "python3 C:/Users/brown/.claude/scripts/pre-commit-branch-check.py"
           },
           {
             "type": "command",
-            "command": "bash -c 'python3 C:/Users/brown/.claude/scripts/pre-pr-create-check.py'"
+            "command": "python3 C:/Users/brown/.claude/scripts/pre-pr-create-check.py"
           }
         ]
       }
@@ -21,15 +21,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'python3 C:/Users/brown/.claude/scripts/dev-env-sync.py'"
+            "command": "python3 C:/Users/brown/.claude/scripts/dev-env-sync.py"
           },
           {
             "type": "command",
-            "command": "bash -c 'python3 C:/Users/brown/.claude/scripts/new-day-journal-check.py'"
+            "command": "python3 C:/Users/brown/.claude/scripts/new-day-journal-check.py"
           },
           {
             "type": "command",
-            "command": "bash -c 'python3 C:/Users/brown/.claude/scripts/turn-count-hook.py'"
+            "command": "python3 C:/Users/brown/.claude/scripts/turn-count-hook.py"
           }
         ]
       }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'python3 C:/Users/brown/.claude/scripts/token-tracker.py'"
+            "command": "python3 C:/Users/brown/.claude/scripts/token-tracker.py"
           }
         ]
       }
@@ -50,15 +50,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'python3 C:/Users/brown/.claude/scripts/pr-merge-reminder.py'"
+            "command": "python3 C:/Users/brown/.claude/scripts/pr-merge-reminder.py"
           },
           {
             "type": "command",
-            "command": "bash -c 'python3 C:/Users/brown/.claude/scripts/post-tool-use.py'"
+            "command": "python3 C:/Users/brown/.claude/scripts/post-tool-use.py"
           },
           {
             "type": "command",
-            "command": "bash -c 'python3 C:/Users/brown/.claude/scripts/post-pr-merge-pull.py'"
+            "command": "python3 C:/Users/brown/.claude/scripts/post-pr-merge-pull.py"
           }
         ]
       }
