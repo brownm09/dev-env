@@ -800,7 +800,7 @@ the stale-branch hook from false-positive firing. Wait for the merge to complete
 delete the local draft branch:
 
 ```bash
-git -C C:/Users/brown/Git/engineering-journal branch -d draft/YYYY-MM-DD 2>/dev/null || true
+git -C C:/Users/brown/Git/engineering-journal branch -D draft/YYYY-MM-DD 2>/dev/null || true
 ```
 
 Tell the user: "Merged: <PR-URL>. Journal published."

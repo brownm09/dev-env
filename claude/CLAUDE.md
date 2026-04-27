@@ -148,7 +148,13 @@ Use that path wherever `sessions/<project>/` appears below.
 
 - **Never compose proactively.** If a `draft/YYYY-MM-DD` branch is encountered during any
   work (e.g., while running `git branch`, checking git status, or reading branch output),
-  emit a single line at the next natural pause:
+  first check whether it exists on the remote before warning:
+  ```bash
+  git -C C:/Users/brown/Git/engineering-journal ls-remote --heads origin draft/YYYY-MM-DD
+  ```
+  A local-only draft branch means the PR was already squash-merged and the local ref was not
+  cleaned up — ignore it silently. Only if the remote branch exists, emit a single line at
+  the next natural pause:
   > "Incomplete journal detected — run `/journal-compose` in a dedicated session."
   Then continue with the user's actual request. Do not read stubs, do not compose, do not
   ask whether to compose.
