@@ -19,6 +19,8 @@ Exit 0 always — never block the user's prompt.
 Stdout is injected as context Claude sees before processing the user's message.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
@@ -40,6 +42,7 @@ COUNTER_MAX_AGE_DAYS = 30
 
 
 def load_prompt_threshold(cwd: str) -> int:
+    """Return turn threshold from project hook-config.json, or the default."""
     path = os.path.join(cwd, CONFIG_FILE)
     try:
         with open(path, encoding="utf-8") as f:
@@ -50,6 +53,7 @@ def load_prompt_threshold(cwd: str) -> int:
 
 
 def cleanup_stale_counters() -> None:
+    """Delete counter and ctx-warn files older than COUNTER_MAX_AGE_DAYS."""
     cutoff = time.time() - COUNTER_MAX_AGE_DAYS * 86400
     try:
         for f in SCRATCH.glob("turn-count-*.txt"):
@@ -67,6 +71,9 @@ def get_current_context_tokens(transcript_path_str: str) -> int | None:
     Parse the transcript JSONL and return total context tokens from the last
     assistant turn: input_tokens + cache_read_input_tokens + cache_creation_input_tokens.
     Returns None if the transcript cannot be read or has no assistant turns yet.
+
+    transcript_path_str comes from the documented `transcript_path` field in the
+    UserPromptSubmit hook payload (see code.claude.com/docs/en/hooks.md).
     """
     if not transcript_path_str:
         return None
@@ -124,14 +131,22 @@ def check_context_tokens(transcript_path_str: str, session_id: str) -> str | Non
     if tokens < next_threshold:
         return None
 
+    # Advance through all crossed thresholds so a single heavy prompt doesn't
+    # produce consecutive same-token warnings on back-to-back turns.
+    initial_threshold = next_threshold
+    while tokens >= next_threshold + CONTEXT_REPEAT_TOKENS:
+        next_threshold += CONTEXT_REPEAT_TOKENS
+    caught_up = next_threshold > initial_threshold
+
     try:
         warn_file.write_text(str(next_threshold))
     except Exception:
         pass
 
+    clause = " (catching up — context crossed prior boundaries)" if caught_up else ""
     return (
         f"[session-size] Context is at {tokens:,} tokens "
-        f"(threshold: {next_threshold:,}). "
+        f"(threshold: {next_threshold:,}{clause}). "
         f"Consider running /compact or /clear if the task scope has shifted — "
         f"accumulated context increases cost on every subsequent turn."
     )
