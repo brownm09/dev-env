@@ -26,6 +26,15 @@ If any user turns or assistant responses exist in the conversation before the
 
 Do not proceed to Step 1.
 
+## Step 0.5 — Plan-then-optimize (required)
+
+Before reading any file or spawning any agent, write out:
+1. The steps you are about to execute (numbered)
+2. Which file reads can be skipped entirely (e.g., if manifest data is sufficient, skip the stub read)
+3. Which agent spawns will be batched in a single message with `run_in_background: true`
+
+Do not proceed to Step 1 until this plan is written. No tool calls before the revision pass completes.
+
 ## Step 1 — Locate stubs and acquire compose lock
 
 **Determine the date:**
@@ -137,6 +146,13 @@ You are composing the engineering journal for one project. Follow these steps ex
 **Date:** YYYY-MM-DD
 **Project path:** sessions/<project>/
 **Stub files (in order):** <stub1>, <stub2>, ...
+
+<!-- mirrors Step 0.5 in main flow — keep in sync; intentional differences: item 2 scoped to skip/read (not grep), item 3 broader (all parallel tool calls, not only agent spawns) -->
+Step 0.5 — Plan-then-optimize (required). Before any tool call, write out:
+  1. The steps you will execute (numbered)
+  2. Which reads can be skipped entirely (e.g., if manifest data is sufficient, skip the stub read)
+  3. Confirm no sequential tool calls exist that could run in parallel
+  Do not proceed until this plan is written.
 
 Step 1 — Acquire compose lock for this project using this project-scoped path:
   C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock
