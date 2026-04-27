@@ -42,8 +42,28 @@ Before writing a `gh` or other CLI automation script:
 
 ---
 
+## Per-Project CLAUDE.md Requirements
+
+Every project CLAUDE.md **must** include a `## Testing` section specifying the command(s) used to verify a solution before opening a PR. Examples:
+
+```markdown
+## Testing
+Run `npm test` to execute the full test suite.
+Run `npm run build` first if touching compiled output.
+```
+
+```markdown
+## Testing
+Run `pytest` from the repo root. Integration tests require `DATABASE_URL` set.
+```
+
+If the project has no automated tests, the section must say so explicitly and describe the manual verification steps instead. The `## Testing` section is used by the global "Test before PR" rule — without it, Claude cannot comply with that rule and will fall back to an undocumented manual check.
+
+---
+
 ## Git Workflow
 
+- **Test before PR.** Before running `gh pr create`, execute the project's test command defined in `## Testing` in the project CLAUDE.md. Tests must pass (or the failure must be explained and documented). Include what was tested and the outcome in the PR body. If no project test command is defined, state that explicitly and describe any manual verification performed instead.
 - **Never commit directly to `main`.** All changes go through a branch and PR, regardless of repo.
 - **Branch naming:** `feat/`, `fix/`, `config/`, `chore/`, `draft/` prefixes — match the convention already in use in the repo.
 - **PR first, then merge.** Open the PR immediately after pushing the branch; do not prompt the user to run `gh pr create` themselves.
