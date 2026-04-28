@@ -1,7 +1,7 @@
 ---
 name: review
-description: Review a PR or diff for correctness, security, reliability, and maintainability. Produces a structured report with blocking findings, non-blocking findings, questions for the author, and optional style notes. Invoke as /review <PR-URL> [--no-style] [--author junior|mid|senior] [--focus security|correctness|perf] [--post-comment].
-argument-hint: "<PR-URL | --diff> [--no-style] [--author <level>] [--focus <area>] [--post-comment]"
+description: Review a PR or diff for correctness, security, reliability, and maintainability. Produces a structured report with blocking findings, non-blocking findings, questions for the author, and optional style notes. Invoke as /review <PR-URL> [--no-style] [--author junior|mid|senior] [--focus security|correctness|perf] [--no-comment].
+argument-hint: "<PR-URL | --diff> [--no-style] [--author <level>] [--focus <area>] [--no-comment]"
 allowed-tools: Bash Read Grep Agent
 ---
 
@@ -26,11 +26,11 @@ Parse rules:
    - `--no-style` → **STYLE=false** (default: true)
    - `--author <level>` → **AUTHOR_LEVEL** = junior | mid | senior (default: mid)
    - `--focus <area>` → **FOCUS** = security | correctness | perf (default: all)
-   - `--post-comment` → **POST_COMMENT=true** (default: false) — post the review as a PR comment after emitting it
+   - `--no-comment` → **POST_COMMENT=false** (default: true) — skip posting the review as a PR comment
 
 Tell the user what you parsed:
 - "Reviewing: `<PR_URL>`" (or "Diff mode — paste your diff")
-- Flags in effect (omit defaults): e.g., "--no-style, author=junior, focus=security, --post-comment"
+- Flags in effect (omit defaults): e.g., "--no-style, author=junior, focus=security, --no-comment"
 
 ---
 
@@ -39,8 +39,17 @@ Tell the user what you parsed:
 **If PR_URL is set:**
 
 ```bash
-gh pr view "<PR_URL>" --json title,body,additions,deletions,changedFiles,baseRefName,headRefName
+gh pr view "<PR_URL>" --json title,body,additions,deletions,changedFiles,baseRefName,headRefName,labels
 ```
+
+Store **PR_TITLE**, **PR_BODY**, **ADDITIONS**, **DELETIONS**, **CHANGED_FILES**, and **LABELS**.
+
+**Duplicate-review guard:** If `reviewed-by-claude` appears in LABELS, tell the user:
+
+> "⚠️ This PR already has the `reviewed-by-claude` label — it appears to have been reviewed.
+> Re-review anyway? (y/n)"
+
+If the user answers `n`, stop. If `y`, continue.
 
 Then fetch the diff:
 
@@ -49,7 +58,6 @@ gh pr diff "<PR_URL>"
 ```
 
 Store:
-- **PR_TITLE**, **PR_BODY**, **ADDITIONS**, **DELETIONS**, **CHANGED_FILES**
 - **DIFF** — the full diff text
 - **DIFF_SIZE** = ADDITIONS + DELETIONS
 
@@ -206,11 +214,15 @@ the cap, state the count here.>
 ### Style Notes
 <Grouped, not itemized. One short paragraph per concern.>
 <Omit section if STYLE=false or no style findings.>
+
+---
+
+*Reviewed by `<your model ID>` via Claude Code*
 ```
 
 ---
 
-## Step 9 — Post comment (if --post-comment)
+## Step 9 — Post comment (skipped only if --no-comment)
 
 Step 8 always emits the review to the terminal. If **POST_COMMENT=true** and **PR_URL** is set,
 also post it as a PR comment and apply the `reviewed-by-claude` label so both are always present.
@@ -231,7 +243,7 @@ still emitted to the terminal.
 
 Report: "Review posted as comment: <PR_URL>"
 
-If POST_COMMENT is false, or DIFF_MODE is true, skip this step.
+If POST_COMMENT is false (i.e., `--no-comment` was passed), or DIFF_MODE is true, skip this step.
 
 ---
 
