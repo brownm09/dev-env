@@ -63,6 +63,7 @@ If the project has no automated tests, the section must say so explicitly and de
 
 ## Git Workflow
 
+- **Create an issue before changing files.** When a user's question or request will result in file changes, create a GitHub issue first with `gh issue create` — describe the problem or goal, not the implementation. Do this before writing any code or editing any files. For a single-line change, ask the user whether an issue is warranted before creating one; anything longer than one line warrants an issue without prompting. Exception: engineering-journal draft branches (`draft/YYYY-MM-DD`) may omit an issue. Every PR must then reference the issue via a `Closes #N` line in the PR body.
 - **Test before PR.** Before running `gh pr create`, execute the project's test command defined in `## Testing` in the project CLAUDE.md. Tests must pass (or the failure must be explained and documented). Include what was tested and the outcome in the PR body. **If no `## Testing` section exists in the project CLAUDE.md, stop and ask the user to add one — do not open the PR until it is present.**
 - **Never commit directly to `main`.** All changes go through a branch and PR, regardless of repo.
 - **Branch naming:** `feat/`, `fix/`, `config/`, `chore/`, `draft/` prefixes — match the convention already in use in the repo.
