@@ -2,9 +2,12 @@
 """Claude Code PreToolUse hook — detects 'gh pr create' in Bash commands and
 emits a systemMessage checklist requiring test verification before the PR lands.
 
-Does NOT block the PR creation (exit 0). The checklist appears in the Claude
-Code UI as a hard reminder; the CLAUDE.md testing mandate is the enforcement
-mechanism.
+Enforcement model (layered):
+  - This hook is advisory only (always exits 0). It fires a systemMessage
+    reminder visible in the Claude Code UI.
+  - Hard enforcement is handled by CLAUDE.md instruction: Claude must not
+    run `gh pr create` until the project's ## Testing section is satisfied.
+    The hook is a secondary reminder, not the gate.
 
 Stdin JSON shape (PreToolUse):
   {
@@ -22,7 +25,7 @@ import re
 import sys
 
 _GH_PR_CREATE_RE = re.compile(
-    r"(?:^|&&|\|\||;|\n)\s*gh\s+pr\s+create\b"
+    r"(?:^|&&|\|+|;|\n)\s*gh\s+pr\s+create\b"
 )
 
 
