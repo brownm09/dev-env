@@ -30,6 +30,10 @@
           {
             "type": "command",
             "command": "python3 C:/Users/brown/.claude/scripts/turn-count-hook.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 C:/Users/brown/.claude/scripts/multi-worktree-alert.py"
           }
         ]
       }
