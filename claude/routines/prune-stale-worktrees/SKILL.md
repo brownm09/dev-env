@@ -14,7 +14,7 @@ Prune stale Claude session worktrees in the dev-env repo. Run fully autonomously
    python C:/Users/brown/Git/dev-env/claude/scripts/prune-merged-worktrees.py
    ```
 2. Report the output: how many worktrees were pruned, how many skipped, and the reason for each skip.
-3. If `git worktree list` in dev-env shows any `claude/*` branches that the script skipped due to "not merged" status, list them for manual review.
+3. If `git worktree list` in dev-env shows any `claude/*` branches that the script skipped due to "not merged" status, list them and send a push notification summarizing the count and branch names so the user can investigate.
 
 **Constraints:**
 - Dev-env repo: `C:/Users/brown/Git/dev-env`

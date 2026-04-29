@@ -7,12 +7,13 @@ Uses git branch -d (not -D) and git worktree remove (no --force).
 Usage:
   python claude/scripts/prune-merged-worktrees.py [--dry-run]
 """
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 
-REPO = "C:/Users/brown/Git/dev-env"
+REPO = str(Path(__file__).resolve().parents[2])
 BRANCH_PREFIX = "claude/"
 
 
@@ -52,13 +53,14 @@ def is_merged(branch: str) -> bool:
 
 
 def is_dirty(path: str) -> bool:
+    if not Path(path).exists():
+        return True
     r = run(["git", "status", "--porcelain"], cwd=path)
     return bool(r.stdout.strip())
 
 
 def current_worktree_path() -> str:
-    r = run(["git", "rev-parse", "--show-toplevel"])
-    return str(Path(r.stdout.strip()).resolve())
+    return str(Path(os.getcwd()).resolve())
 
 
 def main() -> None:
