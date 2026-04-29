@@ -30,18 +30,18 @@ def parse_worktree_list(output: str) -> list[dict]:
       branch (str) — short branch name, or '<detached>' for detached-HEAD worktrees
     """
     worktrees: list[dict] = []
-    current: dict = {}
+    current: dict | None = None
     for line in output.splitlines():
         if line.startswith("worktree "):
-            if current:
+            if current is not None:
                 worktrees.append(current)
             current = {"path": line[len("worktree "):].strip(), "branch": ""}
-        elif line.startswith("branch "):
+        elif line.startswith("branch ") and current is not None:
             ref = line[len("branch "):].strip()
             current["branch"] = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
-        elif line == "detached":
+        elif line == "detached" and current is not None:
             current["branch"] = "<detached>"
-    if current:
+    if current is not None:
         worktrees.append(current)
     return worktrees
 
@@ -99,7 +99,8 @@ def main() -> None:
         name = wt["branch"] or "<unknown>"
         labeled.append(f"*{name}*" if wt is current else name)
 
-    msg = f"[worktree-alert] {len(worktrees)} active worktrees: {', '.join(labeled)}"
+    location = "current unknown" if current is None else f"on *{current['branch'] or '<unknown>'}*"
+    msg = f"[worktree-alert] {len(worktrees)} active worktrees ({location}): {', '.join(labeled)}"
     print(json.dumps({"systemMessage": msg}))
     sys.exit(0)
 
