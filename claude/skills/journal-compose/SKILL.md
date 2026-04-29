@@ -40,6 +40,8 @@ Do not proceed to Step 1 until this plan is written. No tool calls before the re
 Before reading any stubs or manifests, run the JSONL validator:
 
 ```bash
+[ -f "C:/Users/brown/Git/engineering-journal/scripts/validate-jsonl.js" ] || \
+  { echo "validate-jsonl.js not found — merge the companion engineering-journal PR first"; exit 1; }
 node "C:/Users/brown/Git/engineering-journal/scripts/validate-jsonl.js"
 ```
 
