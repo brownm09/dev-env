@@ -127,11 +127,19 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 
 **Mechanical operations:** If a task is fully scriptable with known inputs, write the script rather than running an interactive session. Candidate operations: stale PR remediation, branch cleanup, rebase-and-merge sequences. Use `~/.claude/scripts/merge-stale-pr.sh` for engineering-journal stale draft PRs.
 
-**Plan-then-optimize before acting:** Any task involving an Agent spawn, a skill invocation, or reads across more than one file requires this protocol. State a numbered plan first, then do one explicit token-efficiency revision pass before taking any action. The revision pass must check:
+**Plan-then-optimize before acting:** Any task involving an Agent spawn, a skill invocation, or reads across more than one file requires this protocol. State a numbered plan first, then apply two explicit revision passes before taking any action.
+
+**Pass 1 — Token efficiency:** check:
 - Sequential tool calls that can be parallelized
 - `Agent` spawns: all independent subagents must go in a single message with `run_in_background: true` — no synchronous preflight agent that a parallel sibling will redo (root cause of dev-env#51)
 - File reads that can be skipped by reading an index or manifest instead of globbing
 - Data a downstream step will recompute anyway
+
+**Pass 2 — Outcome correctness:** after the efficiency revision, verify the optimized plan still produces the intended result:
+- No implicit ordering dependency was broken by parallelizing two steps
+- No read was dropped that a later step actually depends on for its inputs
+- No Agent scope was narrowed so far that it misses required context
+- The final outputs (files written, PRs opened, commits made) match what the original plan intended
 
 ---
 
