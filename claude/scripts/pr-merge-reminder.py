@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Claude Code PostToolUse hook — detects 'gh pr merge' in Bash commands and
-emits a journal-update reminder via stderr (exit code 2) so Claude sees it.
+"""Claude Code PostToolUse hook — detects 'gh pr create' or 'gh pr merge' in
+Bash commands and emits journal-update reminders via stderr (exit code 2) so
+Claude sees them.
 
-Matches only actual CLI invocations of `gh pr merge`, not the string appearing
-inside commit messages, heredocs, or other quoted arguments.
+Matches only actual CLI invocations, not the string appearing inside commit
+messages, heredocs, or other quoted arguments.
 
 Stdin JSON shape (PostToolUse):
   {
@@ -15,20 +16,24 @@ Stdin JSON shape (PostToolUse):
     "cwd": "..."
   }
 
-Exit 0  — not a gh pr merge; no action
-Exit 2  — gh pr merge detected; reminder emitted via stderr
+Exit 0  — neither gh pr create nor gh pr merge; no action
+Exit 2  — gh pr create and/or gh pr merge detected; reminder(s) emitted via stderr
 """
 import json
 import re
 import sys
 
-# Matches the start of a statement token (after leading whitespace and an
-# optional `cd dir &&` prefix) against `gh pr merge`.
-_STMT_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
+# Matches the start of a statement token against `gh pr merge` or `gh pr create`.
+_MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
+_CREATE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+create\b")
 
 
-def _check_stmt(token: str) -> bool:
-    return bool(_STMT_RE.match(token.lstrip()))
+def _check_merge_stmt(token: str) -> bool:
+    return bool(_MERGE_RE.match(token.lstrip()))
+
+
+def _check_create_stmt(token: str) -> bool:
+    return bool(_CREATE_RE.match(token.lstrip()))
 
 
 def _find_heredoc_end(cmd: str, start: int) -> int:
@@ -77,9 +82,9 @@ def _find_heredoc_end(cmd: str, start: int) -> int:
     return i
 
 
-def is_pr_merge_command(command: str) -> bool:
-    """Return True only when *command* contains a top-level `gh pr merge`
-    invocation — i.e. not inside a quoted string, $() subshell, or heredoc body.
+def _scan_top_level(command: str, check_fn) -> bool:
+    """Return True when *command* contains a top-level statement matched by
+    *check_fn* — i.e. not inside a quoted string, $() subshell, or heredoc body.
 
     Uses a stack-based parser with four states ('top', 'single', 'double',
     'subshell') so that shell operators buried inside quoted arguments, command
@@ -142,16 +147,16 @@ def is_pr_merge_command(command: str) -> bool:
                 i = _find_heredoc_end(command, i)
                 continue
             elif c in (";", "\n"):
-                if _check_stmt(command[stmt_start:i]):
+                if check_fn(command[stmt_start:i]):
                     return True
                 stmt_start = i + 1
             elif c == "&" and i + 1 < n and command[i + 1] == "&":
-                if _check_stmt(command[stmt_start:i]):
+                if check_fn(command[stmt_start:i]):
                     return True
                 stmt_start = i + 2
                 i += 1
             elif c == "|" and i + 1 < n and command[i + 1] == "|":
-                if _check_stmt(command[stmt_start:i]):
+                if check_fn(command[stmt_start:i]):
                     return True
                 stmt_start = i + 2
                 i += 1
@@ -159,8 +164,18 @@ def is_pr_merge_command(command: str) -> bool:
         i += 1
 
     if stack == ["top"]:
-        return _check_stmt(command[stmt_start:])
+        return check_fn(command[stmt_start:])
     return False
+
+
+def is_pr_merge_command(command: str) -> bool:
+    """Return True only when *command* contains a top-level `gh pr merge`."""
+    return _scan_top_level(command, _check_merge_stmt)
+
+
+def is_pr_create_command(command: str) -> bool:
+    """Return True only when *command* contains a top-level `gh pr create`."""
+    return _scan_top_level(command, _check_create_stmt)
 
 
 def main() -> None:
@@ -177,20 +192,41 @@ def main() -> None:
         sys.exit(0)
 
     command = data.get("tool_input", {}).get("command", "")
-    if not is_pr_merge_command(command):
+    cwd = data.get("cwd", "<unknown>")
+
+    is_create = is_pr_create_command(command)
+    is_merge = is_pr_merge_command(command)
+
+    if not (is_create or is_merge):
         sys.exit(0)
 
-    cwd = data.get("cwd", "<unknown>")
-    print(
-        "[journal-reminder] gh pr merge detected — update the engineering journal now:\n"
-        f"  cwd: {cwd}\n"
-        "  1. Identify the project journal path from cwd.\n"
-        "  2. Check out or create the draft branch in engineering-journal.\n"
-        "  3. Append a <!-- session: <slug> --> block documenting this PR merge.\n"
-        "  4. Add token comment and <!-- next-session-context --> paragraph.\n"
-        '  5. git commit -m "draft: YYYY-MM-DD session N" && git push',
-        file=sys.stderr,
-    )
+    messages = []
+
+    if is_create:
+        messages.append(
+            "[journal-reminder] gh pr create detected — write the journal stub NOW:\n"
+            f"  cwd: {cwd}\n"
+            "  Rationale: the stub captures session context while it's intact;\n"
+            "  compaction or session corruption after this point loses it permanently.\n"
+            "  1. Identify the project journal path from cwd.\n"
+            "  2. Check out or create the draft branch in engineering-journal.\n"
+            "  3. Write a <!-- session: <slug> --> block for this session.\n"
+            "  4. Add token comment and <!-- next-session-context --> paragraph.\n"
+            '  5. git commit -m "draft: YYYY-MM-DD session N" && git push'
+        )
+
+    if is_merge:
+        messages.append(
+            "[journal-reminder] gh pr merge detected — update the engineering journal now:\n"
+            f"  cwd: {cwd}\n"
+            "  1. Identify the project journal path from cwd.\n"
+            "  2. Check out or create the draft branch in engineering-journal.\n"
+            "  3. Append a <!-- session: <slug> --> block documenting this PR merge.\n"
+            "  4. Add token comment and <!-- next-session-context --> paragraph.\n"
+            '  5. git commit -m "draft: YYYY-MM-DD session N" && git push'
+        )
+
+    print("\n\n".join(messages), file=sys.stderr)
     sys.exit(2)
 
 
