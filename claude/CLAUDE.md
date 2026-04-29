@@ -71,7 +71,12 @@ If the project has no automated tests, the section must say so explicitly and de
 - **Branch naming:** `feat/`, `fix/`, `config/`, `chore/`, `draft/` prefixes — match the convention already in use in the repo.
 - **PR first, then merge.** Open the PR immediately after pushing the branch; do not prompt the user to run `gh pr create` themselves.
 - **Write the journal stub immediately after `gh pr create`.** Do not defer until merge — if `/compact` fails or the session is corrupted, all context is permanently lost. Write the stub, then report the PR URL and prompt the user to run `/compact`. Once compaction is complete, immediately run `/review <PR-URL> --post-comment`. Address any blocking findings and merge in the same session. Rationale: `/compact` reduces implementation context to a small summary before review fires, preserving most token savings without a session break. The review skill applies the `reviewed-by-claude` label; a PR without that label has not been reviewed.
-- **Stop after PR merge.** The stub was already written when the PR was opened — do not write a second stub. Just **stop — the session is complete.** A merge is a session boundary.
+- **Write a stub on PR merge.** A merge is a session boundary that requires stub coverage.
+  - **Same session as PR open:** the existing stub covers the full lifecycle. Append a second manifest line for the merge event with `prs_closed: [N]` and remove the PR from `open-prs.jsonl`. Then stop.
+  - **New session (merge happens later):** choose the cheaper option:
+    - **Update the opening stub in place** if the merge session adds only minor content (e.g., the merge itself with no follow-up work) — avoids the token cost `/journal-compose` pays to read and merge two stubs.
+    - **Write a new stub** if the merge session involves substantial new content (review responses, follow-up fixes, etc.) — the PR grouping heuristic will combine them under one H2.
+  - Either way: set `prs_closed: [N]` in the relevant manifest entry, remove the PR from `open-prs.jsonl`, and stop.
 - **PR closed without merging.** If a PR is closed without merging, the stub was already written at PR creation. Stopping is optional — the session may continue if follow-up work remains.
 - **Exception:** Local-only repos with no remote may commit to main directly.
 - **Branch creation in squash-merge repos:** Use `new-branch <name>` (source `~/.claude/scripts/new-branch.sh` in `.bashrc`) or `git checkout -b <name> origin/main` explicitly. Never cut from a branch that has been squash-merged — its commits no longer exist on main and a rebase will fail. Verify with `git merge-base HEAD origin/main` — output should equal `git rev-parse origin/main`.
@@ -378,7 +383,7 @@ Subsequent stubs begin directly at `<!-- session: <slug> -->`.
 **Project journal** (`sessions/<project>/`):
 - **Auto-create stub without user prompt on these events:**
   - PR opened — follow the Stub file workflow immediately after `gh pr create`. If no further work is planned (e.g., waiting on CI or human review), stop after writing the stub.
-  - PR merged (including auto-merge) — stub was already written at PR creation; just stop (see Git Workflow → Stop after PR merge)
+  - PR merged (including auto-merge) — write or update a stub for the merge session (see Git Workflow → Write a stub on PR merge), then stop.
   - PR closed without merging — stub was already written at PR creation; stopping is optional (see Git Workflow → PR closed without merging)
 - The following do **not** auto-create a stub — they are not session boundaries:
   - Review-only sessions (`/review <PR-URL>`)
