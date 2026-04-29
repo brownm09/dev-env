@@ -1,7 +1,8 @@
 # ADR 007 — Hook Command Invocation: Direct `python3` vs `bash -c` Wrapper
 
 **Date:** 2026-04-27  
-**Status:** Accepted
+**Status:** Accepted  
+**Formerly:** ADR 001 (renumbered 2026-04-29 to maintain chronological order)
 
 ---
 

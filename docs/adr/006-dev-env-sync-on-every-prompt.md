@@ -26,7 +26,7 @@ In practice, dev-env changes happen frequently — especially during active work
 - Commits to `dev-env` take effect in the current session on the next prompt — no session restart required.
 - Every prompt incurs a small network round-trip (a `git pull`). On a fast connection this is imperceptible; on a slow connection it adds latency.
 - The hook must not be removed to "improve performance" without understanding this tradeoff — stale config is a silent failure mode, not a visible one.
-- If dev-env has local uncommitted changes when the hook runs, the pull may produce a conflict. `dev-env-sync.py` should stash, pull, pop to handle this gracefully.
+- The script only runs when `main` is checked out and only attempts a `--ff-only` pull. Because CLAUDE.md prohibits direct commits to `main`, local uncommitted changes on `main` are not an expected state; the pull failing due to a dirty tree would be caught by the existing "fast-forward pull failed" warning path.
 
 ---
 
