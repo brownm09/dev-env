@@ -70,9 +70,9 @@ If the project has no automated tests, the section must say so explicitly and de
 - **Never commit directly to `main`.** All changes go through a branch and PR, regardless of repo.
 - **Branch naming:** `feat/`, `fix/`, `config/`, `chore/`, `draft/` prefixes — match the convention already in use in the repo.
 - **PR first, then merge.** Open the PR immediately after pushing the branch; do not prompt the user to run `gh pr create` themselves.
-- **Review in the same session after /compact.** After opening a PR, report the PR URL, then prompt the user to run `/compact`. Once compaction is complete, immediately run `/review <PR-URL> --post-comment`. Address any blocking findings and merge in the same session. Do not write the journal stub until merge. Rationale: `/compact` reduces implementation context to a small summary before review fires, preserving most token savings without a session break. The review skill applies the `reviewed-by-claude` label; a PR without that label has not been reviewed.
-- **Stop after PR merge.** After merging a PR (via `gh pr merge`, auto-merge, or equivalent), create the journal stub for this session without prompting, then **stop — the session is complete.** Do not continue with any further work. A merge is a session boundary.
-- **PR closed without merging.** If a PR is closed without merging, create the journal stub for this session without prompting. Stopping is optional — the session may continue if follow-up work remains.
+- **Write the journal stub immediately after `gh pr create`.** Do not defer until merge — if `/compact` fails or the session is corrupted, all context is permanently lost. Write the stub, then report the PR URL and prompt the user to run `/compact`. Once compaction is complete, immediately run `/review <PR-URL> --post-comment`. Address any blocking findings and merge in the same session. Rationale: `/compact` reduces implementation context to a small summary before review fires, preserving most token savings without a session break. The review skill applies the `reviewed-by-claude` label; a PR without that label has not been reviewed.
+- **Stop after PR merge.** The stub was already written when the PR was opened — do not write a second stub. Just **stop — the session is complete.** A merge is a session boundary.
+- **PR closed without merging.** If a PR is closed without merging, the stub was already written at PR creation. Stopping is optional — the session may continue if follow-up work remains.
 - **Exception:** Local-only repos with no remote may commit to main directly.
 - **Branch creation in squash-merge repos:** Use `new-branch <name>` (source `~/.claude/scripts/new-branch.sh` in `.bashrc`) or `git checkout -b <name> origin/main` explicitly. Never cut from a branch that has been squash-merged — its commits no longer exist on main and a rebase will fail. Verify with `git merge-base HEAD origin/main` — output should equal `git rev-parse origin/main`.
 - **Verify branch before making changes and before every commit.** Run `git branch --show-current` (1) before making any edits in a session and (2) immediately before each `git commit`. Do not assume the branch is correct because it was correct earlier — worktrees, `git checkout`, and multi-repo work can silently shift context. A `UserPromptSubmit` hook already emits the active worktree list on every prompt when multiple worktrees are open. If the branch is wrong: if no edits are on disk yet, switch branches immediately; if edits are already on disk but not committed, run `git stash`, switch to the correct branch, then `git stash pop` before proceeding.
@@ -376,13 +376,13 @@ Subsequent stubs begin directly at `<!-- session: <slug> -->`.
 ### Update triggers
 
 **Project journal** (`sessions/<project>/`):
-- **Auto-create stub without user prompt on these session-end events:**
-  - PR opened without same-session merge (e.g., waiting on CI, human review required) — follow the Stub file workflow and stop; this captures work done so far
-  - PR merged (including auto-merge) — follow the Stub file workflow immediately, then stop (see Git Workflow → Stop after PR merge)
-  - PR closed without merging — follow the Stub file workflow; stopping is optional (see Git Workflow → PR closed without merging)
+- **Auto-create stub without user prompt on these events:**
+  - PR opened — follow the Stub file workflow immediately after `gh pr create`. If no further work is planned (e.g., waiting on CI or human review), stop after writing the stub.
+  - PR merged (including auto-merge) — stub was already written at PR creation; just stop (see Git Workflow → Stop after PR merge)
+  - PR closed without merging — stub was already written at PR creation; stopping is optional (see Git Workflow → PR closed without merging)
 - The following do **not** auto-create a stub — they are not session boundaries:
   - Review-only sessions (`/review <PR-URL>`)
-  - Pushing commits to an existing PR (e.g., addressing review findings) — if the session continues to a merge, the merge creates the stub
+  - Pushing commits to an existing PR (e.g., addressing review findings) — stub was written when the PR was first opened
 
 - Add to the current session's stub when a strategic decision is made mid-session
 - Compose and publish the daily document at end of last session of the day
