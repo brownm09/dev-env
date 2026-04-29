@@ -108,6 +108,12 @@ If the project has no automated tests, the section must say so explicitly and de
 
 ---
 
+## Testing
+
+Run `python3 -m py_compile claude/scripts/*.py` from the repo root to verify all hook scripts are free of syntax errors.
+
+---
+
 ## Hook Safety
 
 PreToolUse hooks that exit non-zero **block the matched tool call silently** — the user sees the
