@@ -68,7 +68,7 @@ If the project has no automated tests, the section must say so explicitly and de
 - **Never commit directly to `main`.** All changes go through a branch and PR, regardless of repo.
 - **Branch naming:** `feat/`, `fix/`, `config/`, `chore/`, `draft/` prefixes — match the convention already in use in the repo.
 - **PR first, then merge.** Open the PR immediately after pushing the branch; do not prompt the user to run `gh pr create` themselves.
-- **Stop after PR creation.** After opening any PR, report the PR URL, create the journal stub for this session (no user prompt — see Engineering Journal > Stub file workflow), then **stop — the session is complete.** Do not run `/review`, do not summarize next steps, do not continue with any further work. Instruct the user to run `/review <PR-URL> --post-comment` in a new session. Rationale: the review skill reads the PR directly from GitHub and needs no implementation context; running it in the same session adds 30–80k unnecessary input tokens. The review skill applies the `reviewed-by-claude` label; a PR without that label has not been reviewed.
+- **Stop after PR creation.** After opening any PR, report the PR URL, create the journal stub for this session (no user prompt — see Engineering Journal > Stub file workflow), then **stop — the session is complete.** Do not run `/review`, do not summarize next steps, do not continue with any further work. Instruct the user to run `/review <PR-URL>` in a new session. Rationale: the review skill reads the PR directly from GitHub and needs no implementation context; running it in the same session adds 30–80k unnecessary input tokens. The review skill applies the `reviewed-by-claude` label; a PR without that label has not been reviewed.
 - **Stop after PR merge.** After merging a PR (via `gh pr merge`, auto-merge, or equivalent), create the journal stub for this session without prompting, then **stop — the session is complete.** Do not continue with any further work. A merge is a session boundary.
 - **PR closed without merging.** If a PR is closed without merging, create the journal stub for this session without prompting. Stopping is optional — the session may continue if follow-up work remains.
 - **Exception:** Local-only repos with no remote may commit to main directly.
@@ -337,7 +337,7 @@ Subsequent stubs begin directly at `<!-- session: <slug> -->`.
   - PR merged (including auto-merge) — follow the Stub file workflow immediately, then stop (see Git Workflow → Stop after PR merge)
   - PR closed without merging — follow the Stub file workflow; stopping is optional (see Git Workflow → PR closed without merging)
 - The following do **not** auto-create a stub — they are not session boundaries:
-  - Review-only sessions (`/review --post-comment`)
+  - Review-only sessions (`/review <PR-URL>`)
   - Pushing commits to an existing PR (e.g., addressing review findings) — if the session continues to a merge, the merge creates the stub
 
 - Add to the current session's stub when a strategic decision is made mid-session
