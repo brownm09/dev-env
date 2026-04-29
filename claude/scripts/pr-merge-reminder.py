@@ -22,6 +22,7 @@ Exit 2  — gh pr create and/or gh pr merge detected; reminder(s) emitted via st
 import json
 import re
 import sys
+from collections.abc import Callable
 
 # Matches the start of a statement token against `gh pr merge` or `gh pr create`.
 _MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
@@ -82,7 +83,7 @@ def _find_heredoc_end(cmd: str, start: int) -> int:
     return i
 
 
-def _scan_top_level(command: str, check_fn) -> bool:
+def _scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
     """Return True when *command* contains a top-level statement matched by
     *check_fn* — i.e. not inside a quoted string, $() subshell, or heredoc body.
 
@@ -189,6 +190,10 @@ def main() -> None:
         sys.exit(0)
 
     if data.get("tool_name") != "Bash":
+        sys.exit(0)
+
+    exit_code = data.get("tool_response", {}).get("exitCode", 0)
+    if exit_code != 0:
         sys.exit(0)
 
     command = data.get("tool_input", {}).get("command", "")
