@@ -35,6 +35,21 @@ Before reading any file or spawning any agent, write out:
 
 Do not proceed to Step 1 until this plan is written. No tool calls before the revision pass completes.
 
+## Step 0.8 — Validate JSONL files
+
+Before reading any stubs or manifests, run the JSONL validator:
+
+```bash
+[ -f "C:/Users/brown/Git/engineering-journal/scripts/validate-jsonl.js" ] || \
+  { echo "validate-jsonl.js not found — merge the companion engineering-journal PR first"; exit 1; }
+node "C:/Users/brown/Git/engineering-journal/scripts/validate-jsonl.js"
+```
+
+- **Exit 0:** All `.jsonl` files under `sessions/` are valid — proceed to Step 1.
+- **Exit non-zero:** Stop immediately. Report the offending file(s) and line(s) printed by the validator. Do not proceed with composition until the errors are resolved — a malformed manifest line can cause sessions to be silently misread or omitted from the composed journal.
+
+---
+
 ## Step 1 — Locate stubs and acquire compose lock
 
 **Determine the date:**
