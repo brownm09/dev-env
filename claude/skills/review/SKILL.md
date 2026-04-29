@@ -47,9 +47,9 @@ Store **PR_TITLE**, **PR_BODY**, **ADDITIONS**, **DELETIONS**, **CHANGED_FILES**
 **Duplicate-review guard:** If `reviewed-by-claude` appears in LABELS, tell the user:
 
 > "⚠️ This PR already has the `reviewed-by-claude` label — it appears to have been reviewed.
-> Re-review anyway? (y/n)"
+> Re-review anyway? (y/n) [default: n]"
 
-If the user answers `n`, stop. If `y`, continue.
+If the user answers `y`, continue. Otherwise (answer is `n`, no response, or non-interactive context), stop.
 
 Then fetch the diff:
 
