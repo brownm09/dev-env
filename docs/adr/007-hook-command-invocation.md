@@ -1,7 +1,8 @@
-# ADR 001 — Hook Command Invocation: Direct `python3` vs `bash -c` Wrapper
+# ADR 007 — Hook Command Invocation: Direct `python3` vs `bash -c` Wrapper
 
-**Date:** 2026-04-29  
-**Status:** Accepted
+**Date:** 2026-04-27  
+**Status:** Accepted  
+**Formerly:** ADR 001 (renumbered 2026-04-29 to maintain chronological order)
 
 ---
 
@@ -9,7 +10,7 @@
 
 Claude Code hook commands in `settings.json` are spawned by the Claude Code Desktop process, which runs in a non-interactive Windows context (not a Git Bash shell). This creates a PATH ambiguity for `python3`:
 
-- **Git Bash PATH** — resolves `python3` to the real Python binary managed by the user's shell profile.  
+- **Git Bash PATH** — resolves `python3` to the real Python binary managed by the user's shell profile.
 - **Windows system PATH** — resolves `python3` to the Windows App Execution Alias stub (`C:\Users\<user>\AppData\Local\Microsoft\WindowsApps\python3.exe`), which redirects to the Microsoft Store and cannot run scripts.
 
 Separately, `bash.exe` (Git Bash) is on the *Git Bash PATH* but **not** on the *Windows system PATH*.
@@ -50,6 +51,6 @@ If `python3` resolves to the Windows App Execution Alias stub in a future Claude
 
 ## References
 
-- Engineering journal: `sessions/dev-env/2026-04-27-workflow-discipline-sprint.md` (root cause diagnosis)  
-- Engineering journal: `sessions/dev-env/2026-04-28-hook-fix-and-workflow-rules.md` (PR #81 review and merge)  
+- Engineering journal: `sessions/dev-env/2026-04-27-workflow-discipline-sprint.md` (root cause diagnosis)
+- Engineering journal: `sessions/dev-env/2026-04-28-hook-fix-and-workflow-rules.md` (PR #81 review and merge)
 - PR #81: `fix: remove bash -c wrapper from hook commands`

@@ -7,6 +7,8 @@
 This file is loaded automatically in every session, across all projects.
 Project-specific CLAUDE.md files extend these conventions — they do not repeat them.
 
+> **ADRs:** The design decisions behind the rules in this file are recorded in [`docs/adr/`](../docs/adr/INDEX.md) in the dev-env repo. Consult the relevant ADR before overriding any rule, hook, skill, or config.
+
 ---
 
 ## Platform & Environment
