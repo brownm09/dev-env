@@ -113,6 +113,83 @@ If the project has no automated tests, the section must say so explicitly and de
 
 ---
 
+## GitHub Project
+
+All new dev-env issues must be added to the **Dev Env** project and given an Impact rating and Why description before work begins.
+
+**Project IDs:**
+- Project number: `3`, owner: `brownm09`
+- Project node ID: `PVT_kwHOAjEKvM4BWKFe`
+
+**Field IDs:**
+
+| Field | ID | Options |
+|---|---|---|
+| Status | `PVTSSF_lAHOAjEKvM4BWKFezhRgkMY` | Todo=`f75ad846`, In Progress=`47fc9ee4`, Done=`98236657` |
+| Impact | `PVTSSF_lAHOAjEKvM4BWKFezhRgkNc` | High=`08de2558`, Medium=`6320e8a6`, Low=`d8a85c2f` |
+| Why | `PVTF_lAHOAjEKvM4BWKFezhRgkN0` | (text) |
+
+**Impact guidelines:**
+
+| Level | Meaning |
+|---|---|
+| High | Causes manual recovery work or token waste on every occurrence |
+| Medium | Recurs periodically or silently degrades correctness over time |
+| Low | Nice-to-have; low frequency or easily worked around |
+
+**Workflow — run after `gh issue create`:**
+
+```bash
+# Requires project scope — add once if needed: gh auth refresh -s project
+
+# 1. Add issue to project, capture item ID
+TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
+gh project item-add 3 --owner brownm09 --url <issue-url> --format json > "$TMPFILE"
+ITEM_ID=$(node -e "const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8')); console.log(d.id);")
+rm -f "$TMPFILE"
+
+# 2. Set Impact
+gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
+  --field-id PVTSSF_lAHOAjEKvM4BWKFezhRgkNc \
+  --single-select-option-id <option-id>   # 08de2558=High  6320e8a6=Medium  d8a85c2f=Low
+
+# 3. Set Why (one sentence — the cost of not fixing it)
+gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
+  --field-id PVTF_lAHOAjEKvM4BWKFezhRgkN0 \
+  --text "<why this matters>"
+```
+
+**Move to In Progress when work begins:**
+
+```bash
+gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
+  --field-id PVTSSF_lAHOAjEKvM4BWKFezhRgkMY \
+  --single-select-option-id 47fc9ee4
+```
+
+**Move to Done after PR merges:**
+
+```bash
+gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
+  --field-id PVTSSF_lAHOAjEKvM4BWKFezhRgkMY \
+  --single-select-option-id 98236657
+```
+
+To look up an item ID mid-session (e.g., when moving to Done after a merge):
+
+```bash
+TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
+gh project item-list 3 --owner brownm09 --format json > "$TMPFILE"
+ITEM_ID=$(node -e "
+  const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8'));
+  const item=d.items.find(i=>i.content&&i.content.number===<N>);
+  console.log(item.id);
+")
+rm -f "$TMPFILE"
+```
+
+---
+
 ## Testing
 
 Run `python3 -m py_compile claude/scripts/*.py` from the repo root to verify all hook scripts are free of syntax errors.
