@@ -1,0 +1,14 @@
+{
+  "proposals_dir": "docs/proposals",
+  "roadmap_file": "ROADMAP.md",
+  "prd_file": "docs/PRD.md",
+  "github_repo": "OWNER/REPO",
+  "milestones": [],
+  "epics": [],
+  "github_project": {
+    "number": 0,
+    "owner": "OWNER",
+    "node_id": "",
+    "epic_field_id": ""
+  }
+}
