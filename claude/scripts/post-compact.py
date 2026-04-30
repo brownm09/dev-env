@@ -2,17 +2,36 @@
 """PostCompact hook — emit a status line and, for manual compactions with open PRs,
 inject a systemMessage so Claude auto-invokes /review without user input."""
 import json
+import subprocess
 import sys
 from pathlib import Path
 
-OPEN_PRS_PATH = Path("C:/Users/brown/Git/engineering-journal/sessions/dev-env/open-prs.jsonl")
+JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+
+
+def get_journal_project() -> str | None:
+    """Infer journal project name from the current git repo (worktree-safe)."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return Path(result.stdout.strip()).resolve().parent.name
+    except Exception:
+        pass
+    return None
 
 
 def load_open_prs() -> list[dict]:
-    if not OPEN_PRS_PATH.exists():
+    project = get_journal_project()
+    if not project:
+        return []
+    path = JOURNAL_REPO / "sessions" / project / "open-prs.jsonl"
+    if not path.exists():
         return []
     entries = []
-    for line in OPEN_PRS_PATH.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line:
             try:
