@@ -219,12 +219,17 @@ gh issue create \
 gh issue edit <N> --milestone "<milestone-title>" -R <config.github_repo>
 ```
 
-**Only if** `config.github_project` is non-null:
+**Only if** `config.github_project` is non-null **and** `config.github_project.node_id` is non-empty:
 
 Run the project/epic assignment workflow from the project CLAUDE.md (it contains the exact
 field IDs and option IDs for this repo's project):
 1. Add issue to project and capture item ID
 2. Set the Epic field using the option ID for the chosen epic
+
+If `config.github_project` is non-null but `node_id` or `epic_field_id` is empty, skip
+project assignment and tell the user: "GitHub Project field IDs are not yet configured in
+`.claude/propose.json` — fill in `node_id` and `epic_field_id`, then assign the project
+manually."
 
 After the issue is created, update the `**Issue:**` line in the proposal file with the issue
 number and URL.
@@ -235,8 +240,11 @@ number and URL.
 
 **Skip this step entirely if** `config.roadmap_file` is null.
 
-Read `<config.roadmap_file>`. Find the section for the milestone chosen in Step 4 (or the
-first proposals table if no milestones are configured).
+Read `<config.roadmap_file>`.
+
+- If a milestone was chosen in Step 4, find that milestone's section and insert there.
+- If `config.milestones` is empty, find the first existing proposals table in the file and
+  insert there. If no proposals table exists anywhere in the file, append one at the end.
 
 Add a new row:
 
