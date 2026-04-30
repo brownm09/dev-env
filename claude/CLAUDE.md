@@ -194,6 +194,8 @@ gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
 
 Run `python3 -m py_compile claude/scripts/*.py` from the repo root to verify all hook scripts are free of syntax errors.
 
+For docs-only changes to `claude/CLAUDE.md`: run `grep -n 'date -u' claude/CLAUDE.md` and confirm every match is in an internal operational artifact context (lock files, log timestamps) — not in stub filename or branch name descriptions.
+
 ---
 
 ## Hook Safety
@@ -333,7 +335,10 @@ contention when multiple sessions run in parallel. Slug is determined at day end
 **Branch:** `draft/YYYY-MM-DD` — created at the first session of the day, merged to main at day end.
 
 **Stub filename:** `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md`
-where `HHMMSS` is the UTC start time of the session (`date -u +%H%M%S`).
+where `YYYY-MM-DD` is the **local calendar date** and `HHMMSS` is the **local start time**
+of the session (`date +%Y-%m-%d` / `date +%H%M%S`). Local time is used so stub filenames
+and branch names always share the same calendar day. UTC is reserved for internal
+operational artifacts (compose lock files, log file timestamps).
 
 **First session of the day:**
 1. `git -C C:/Users/brown/Git/engineering-journal checkout main && git pull`
@@ -365,6 +370,7 @@ One JSON line per session, appended after the token comment is known (end of ses
 echo '{"stub":"YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"input":N,"output":N,"cost":N},"prs_opened":[],"prs_closed":[]}' \
   >> "C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl"
 ```
+(`YYYY-MM-DD` and `HHMMSS` are local time — same as the stub filename spec above.)
 
 - `prs_opened`: PR numbers opened during this session (e.g., `[54]`). Empty array if none.
 - `prs_closed`: PR numbers reviewed/merged during this session (e.g., `[54]`). Empty array if none.
