@@ -13,14 +13,19 @@ def main():
     summary = data.get("summary", "")
     tokens = data.get("context_tokens", None)
 
-    label = "[compact]" if trigger == "manual" else "[auto-compact]"
+    if trigger == "manual":
+        label = "[compact]"
+    elif trigger == "auto":
+        label = "[auto-compact]"
+    else:
+        label = f"[compact/{trigger}]"
     if tokens is not None:
         print(f"{label} done -- context now {tokens:,} tokens", file=sys.stderr)
     else:
         print(f"{label} done", file=sys.stderr)
 
     if summary:
-        first_line = summary.splitlines()[0][:120]
+        first_line = summary.splitlines()[0].strip()[:120]
         print(f"  summary: {first_line}", file=sys.stderr)
 
 
