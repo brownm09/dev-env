@@ -52,6 +52,16 @@
         ]
       }
     ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 C:/Users/brown/.claude/scripts/post-compact.py"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Bash",
@@ -67,6 +77,10 @@
           {
             "type": "command",
             "command": "python3 C:/Users/brown/.claude/scripts/post-pr-merge-pull.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 C:/Users/brown/.claude/scripts/stub-push-archive-reminder.py"
           }
         ]
       }
