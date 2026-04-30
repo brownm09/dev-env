@@ -44,6 +44,10 @@
           {
             "type": "command",
             "command": "python3 C:/Users/brown/.claude/scripts/token-tracker.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 C:/Users/brown/.claude/scripts/journal-stop-check.py"
           }
         ]
       }
