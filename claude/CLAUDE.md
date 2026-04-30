@@ -159,6 +159,19 @@ gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
   --text "<why this matters>"
 ```
 
+To look up an item ID (e.g., when moving to In Progress or Done in a new session):
+
+```bash
+TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
+gh project item-list 3 --owner brownm09 --format json > "$TMPFILE"
+ITEM_ID=$(node -e "
+  const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8'));
+  const item=d.items.find(i=>i.content&&i.content.number===<N>);
+  console.log(item.id);
+")
+rm -f "$TMPFILE"
+```
+
 **Move to In Progress when work begins:**
 
 ```bash
@@ -173,19 +186,6 @@ gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
 gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
   --field-id PVTSSF_lAHOAjEKvM4BWKFezhRgkMY \
   --single-select-option-id 98236657
-```
-
-To look up an item ID mid-session (e.g., when moving to Done after a merge):
-
-```bash
-TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
-gh project item-list 3 --owner brownm09 --format json > "$TMPFILE"
-ITEM_ID=$(node -e "
-  const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8'));
-  const item=d.items.find(i=>i.content&&i.content.number===<N>);
-  console.log(item.id);
-")
-rm -f "$TMPFILE"
 ```
 
 ---
