@@ -2,7 +2,7 @@
 name: cover-letter
 description: Draft a cover letter for a job application following the full cover letter workflow. Invokes Haiku subagents for fit screening and style self-check. Invoke as /cover-letter [JD text, file path, PDF path, or URL].
 argument-hint: "[JD text, file path, PDF path, or URL to job posting]"
-allowed-tools: Read Edit Write Bash Glob Grep Agent WebFetch
+allowed-tools: Read Edit Write Bash Glob Grep Agent WebFetch AskUserQuestion
 ---
 
 You are drafting a cover letter for Mike Brown's job search, following the canonical workflow defined in `CLAUDE.md`.

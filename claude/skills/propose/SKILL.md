@@ -163,7 +163,7 @@ the subagent to read any files:
 - Chosen milestone and epic (from Step 4, if applicable)
 - Today's date
 
-Subagent task:
+Subagent task (substitute `<proposals_dir>` with `config.proposals_dir` before passing):
 
 > Using the template and context provided, produce a complete proposal. Return:
 > 1. A **slug**: lowercase, hyphens, 3–5 words (e.g., `bodyweight-exercise-tracking`)
