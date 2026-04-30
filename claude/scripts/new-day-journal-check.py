@@ -13,14 +13,28 @@ Stdout is injected as context Claude sees before processing the user's message.
 """
 
 import glob
+import json
 import os
 import subprocess
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+SCRATCH = Path.home() / ".claude" / "scratch"
 TODAY = date.today().strftime("%Y-%m-%d")
+FLAG_MAX_AGE_HOURS = 24
+
+
+def cleanup_stale_flags() -> None:
+    cutoff = time.time() - FLAG_MAX_AGE_HOURS * 3600
+    try:
+        for f in SCRATCH.glob("journal_hook_*.flag"):
+            if f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def stale_draft_artifacts() -> list[str]:
@@ -108,11 +122,20 @@ def unmerged_draft_branches() -> list[str]:
 
 
 def main() -> None:
-    # Consume stdin (UserPromptSubmit sends JSON; we don't need the contents).
+    raw = ""
     try:
-        sys.stdin.read()
+        raw = sys.stdin.read().strip()
     except Exception:
         pass
+    hook_data = json.loads(raw) if raw else {}
+    session_id = hook_data.get("session_id", "")
+
+    cleanup_stale_flags()
+
+    if session_id:
+        flag_path = SCRATCH / f"journal_hook_{session_id}.flag"
+        if flag_path.exists():
+            sys.exit(0)
 
     messages = []
 
@@ -138,6 +161,11 @@ def main() -> None:
 
     if messages:
         print("\n".join(messages))
+        if session_id:
+            try:
+                (SCRATCH / f"journal_hook_{session_id}.flag").touch()
+            except Exception:
+                pass
 
     sys.exit(0)
 
