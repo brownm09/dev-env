@@ -72,6 +72,7 @@ If the project has no automated tests, the section must say so explicitly and de
 - **PR first, then merge.** Open the PR immediately after pushing the branch; do not prompt the user to run `gh pr create` themselves.
 - **Write the journal stub immediately after `gh pr create`.** Do not defer until merge — if `/compact` fails or the session is corrupted, all context is permanently lost. Write the stub, then report the PR URL and prompt the user to run `/compact`. Once compaction is complete, immediately run `/review <PR-URL> --post-comment`. Address any blocking findings and merge in the same session. Rationale: `/compact` reduces implementation context to a small summary before review fires, preserving most token savings without a session break. The review skill applies the `reviewed-by-claude` label; a PR without that label has not been reviewed.
 - **Write a stub on PR merge.** A merge is a session boundary that requires stub coverage.
+  - **Multiple merges in one session:** if the plan includes more than one PR merge, defer all stub work until after the last merge completes. Write one stub that records every `prs_closed` entry and `open-prs.jsonl` removal together. Do not write an intermediate stub or stop between merges.
   - **Same session as PR open:** the existing stub covers the full lifecycle. Append a second manifest line for the merge event with `prs_closed: [N]` and remove the PR from `open-prs.jsonl`. Then stop.
   - **New session (merge happens later):** choose the cheaper option:
     - **Update the opening stub in place** if the merge session adds only minor content (e.g., the merge itself with no follow-up work) — avoids the token cost `/journal-compose` pays to read and merge two stubs.
@@ -268,6 +269,7 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 - No read was dropped that a later step actually depends on for its inputs
 - No Agent scope was narrowed so far that it misses required context
 - The final outputs (files written, PRs opened, commits made) match what the original plan intended
+- If the plan includes multiple PR merges, the stub-writing step appears once, after the last merge — not once per merge
 
 ---
 
