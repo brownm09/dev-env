@@ -2,12 +2,23 @@
 name: cover-letter
 description: Draft a cover letter for a job application following the full cover letter workflow. Invokes Haiku subagents for fit screening and style self-check. Invoke as /cover-letter [JD text, file path, PDF path, or URL].
 argument-hint: "[JD text, file path, PDF path, or URL to job posting]"
-allowed-tools: Read Edit Write Bash Glob Grep Agent WebFetch
+allowed-tools: Read Edit Write Bash Glob Grep Agent WebFetch AskUserQuestion
 ---
 
 You are drafting a cover letter for Mike Brown's job search, following the canonical workflow defined in `CLAUDE.md`.
 
 Follow every step in order. Do not skip steps.
+
+## Step -1 — Model selection
+
+Use AskUserQuestion with:
+- Question: "Which model should draft this cover letter?"
+- Header: "Draft model"
+- Options:
+  - "Opus (Recommended)" — better prose quality, higher cost (~5–10× Sonnet)
+  - "Sonnet" — faster and cheaper, sufficient for routine applications
+
+Store the answer as DRAFT_MODEL: `"opus"` if Opus was selected, `"sonnet"` if Sonnet.
 
 ## Step 0 — Load the job description
 
@@ -78,16 +89,32 @@ Apply the patterns in the synopsis to calibrate opening sentence rhythm, paragra
 
 (The full voice reference files are at `models/voice/` and can be consulted if a specific passage is needed, but the synopsis is sufficient for drafting.)
 
-## Step 6 — Draft the letter (Sonnet — this session)
+## Step 6 — Draft the letter (subagent)
 
-Draft the cover letter body in Markdown. Apply all style rules from Step 3 while drafting:
-- No em-dashes (anywhere, no exceptions)
-- No banned constructions ("The outcomes were concrete" and all variants)
-- Do not claim Mike "led a platform directorate" — use "led platform teams responsible for..." or "led programs within the platform organization"
-- Body word ceiling: 400 words (body paragraphs only)
-- Output is Markdown only
+Spawn an Agent with `model: "<DRAFT_MODEL>"`. Pass all of the following inline — do not
+instruct the subagent to read any files:
 
-Use the model letter from Step 4 as a structural reference. Adapt tone and emphasis to the specific JD. Do not copy model letter text verbatim.
+- All style rules (from Step 3, verbatim)
+- The model letter (from Step 4, verbatim)
+- The accomplishments list (from Step 5, verbatim)
+- The voice synopsis (from Step 5b, verbatim)
+- The full JD text (from Step 0)
+
+Subagent task:
+
+> Draft the cover letter body in Markdown. Apply all style rules provided:
+> - No em-dashes (anywhere, no exceptions)
+> - No banned constructions ("The outcomes were concrete" and all variants)
+> - Do not claim Mike "led a platform directorate" — use "led platform teams responsible for..." or "led programs within the platform organization"
+> - Body word ceiling: 400 words (body paragraphs only)
+> - Output is Markdown only
+>
+> Use the model letter as a structural reference. Adapt tone and emphasis to the specific JD.
+> Do not copy model letter text verbatim.
+>
+> Return only the letter body — no preamble, no commentary.
+
+Collect the subagent's output as DRAFT.
 
 ## Step 7 — Style self-check (Haiku subagent)
 

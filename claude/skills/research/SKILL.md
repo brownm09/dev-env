@@ -80,16 +80,16 @@ to Step 4.
 ## Step 3b — Approval gate for deep DECISION search
 
 If the Haiku quick scan found no confirmed sources, ask the user for approval before
-spending more tokens on a deeper Sonnet search:
+spending more tokens on a deeper Opus search:
 
 Use AskUserQuestion with:
-- Question: "The quick scan found no verified sources. Run a deeper Sonnet search? (This uses roughly 10× more tokens.)"
+- Question: "The quick scan found no verified sources. Run a deeper Opus search? (Higher quality, ~15× more tokens than the quick scan.)"
 - Header: "Deep search"
 - Options:
-  - "Yes, continue" — spawn a Sonnet subagent for a thorough search
+  - "Yes, continue" — spawn an Opus subagent for a thorough search
   - "No, skip" — report no sources found and move on
 
-If the user approves, spawn a **general-purpose** subagent with the following task:
+If the user approves, spawn a **general-purpose** subagent (`model: "opus"`) with the following task:
 
 > First, call ToolSearch with query "select:WebSearch,WebFetch" to load web tools.
 >
@@ -152,13 +152,13 @@ to Step 6.
 Skip this step if ALTERNATIVE is empty, or if Step 5a found confirmed sources.
 
 Use AskUserQuestion with:
-- Question: "The quick scan found no verified sources for the alternative. Run a deeper Sonnet search? (This uses roughly 10× more tokens.)"
+- Question: "The quick scan found no verified sources for the alternative. Run a deeper Opus search? (Higher quality, ~15× more tokens than the quick scan.)"
 - Header: "Deep search"
 - Options:
-  - "Yes, continue" — spawn a Sonnet subagent for a thorough search
+  - "Yes, continue" — spawn an Opus subagent for a thorough search
   - "No, skip" — report no sources found for this side
 
-If approved, spawn a **general-purpose** subagent with the following task:
+If approved, spawn a **general-purpose** subagent (`model: "opus"`) with the following task:
 
 > First, call ToolSearch with query "select:WebSearch,WebFetch" to load web tools.
 >

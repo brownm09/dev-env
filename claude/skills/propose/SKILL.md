@@ -2,7 +2,7 @@
 name: propose
 description: One-sentence idea → PRD → linked GitHub issue → ROADMAP entry. Reads per-project config from .claude/propose.json; scaffolds config interactively for unconfigured repos.
 argument-hint: "<one-line idea>"
-allowed-tools: Read Edit Write Bash Glob Grep
+allowed-tools: Read Edit Write Bash Glob Grep Agent
 ---
 
 You are implementing the `/propose` workflow: expand a one-line idea into a proposal document,
@@ -151,16 +151,28 @@ If both lists are empty (minimal config), skip this step entirely.
 
 ---
 
-## Step 5 — Draft the proposal
+## Step 5 — Draft the proposal (Opus subagent)
 
-Using the template from Step 3 and the answers from Steps 1–4, compose the full proposal.
+Spawn an Agent with `model: "opus"`. Pass all of the following inline — do not instruct
+the subagent to read any files:
 
-Produce:
-- A **slug**: lowercase, hyphens, 3–5 words (e.g., `bodyweight-exercise-tracking`)
-- A **filename**: `<config.proposals_dir>/YYYY-MM-DD-<slug>.md` (use today's date)
-- The **full proposal document**, filled in from the template
+- The proposal template (from Step 3, verbatim)
+- The project PRD (from Step 3, if loaded — otherwise omit)
+- The idea (from Step 1)
+- Answers to clarifying questions (from Step 2)
+- Chosen milestone and epic (from Step 4, if applicable)
+- Today's date
 
-Show the draft to the user. Ask: "Does this look right? Any edits before I write the file?"
+Subagent task (substitute `<proposals_dir>` with `config.proposals_dir` before passing):
+
+> Using the template and context provided, produce a complete proposal. Return:
+> 1. A **slug**: lowercase, hyphens, 3–5 words (e.g., `bodyweight-exercise-tracking`)
+> 2. A **filename**: `<proposals_dir>/YYYY-MM-DD-<slug>.md` (use today's date)
+> 3. The **full proposal document**, filled in from the template
+>
+> Return only the slug, filename, and proposal document — no preamble or commentary.
+
+Collect the subagent's output. Show the draft to the user. Ask: "Does this look right? Any edits before I write the file?"
 
 Wait for confirmation. Apply any requested edits, then confirm once more before proceeding.
 
