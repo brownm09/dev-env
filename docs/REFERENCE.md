@@ -115,7 +115,7 @@ Runs fit screening only — a lighter-weight version of the first step of `/cove
 All hooks are **advisory** — they emit `systemMessage` reminders via exit 2 but do not block tool execution. No hook exits with a non-zero code that prevents the matched tool from running.
 
 Configuration is in `claude/settings.json` (symlinked to `~/.claude/settings.json`).
-See [ADR-007](adr/007-hook-invocation-direct-python3.md) for why hooks call `python3` directly rather than via a `bash -c` wrapper.
+See [ADR-007](adr/007-hook-command-invocation.md) for why hooks call `python3` directly rather than via a `bash -c` wrapper.
 
 ---
 
@@ -125,7 +125,7 @@ Fires on every user prompt, before Claude processes it.
 
 | Script | What it does |
 |--------|-------------|
-| `dev-env-sync.py` | Fast-forward pulls the dev-env repo to `origin/main` so symlinked tooling stays current. Skips if a feature branch is active in the main worktree. [ADR-006] |
+| `dev-env-sync.py` | Fast-forward pulls the dev-env repo to `origin/main` so symlinked tooling stays current. Skips if a feature branch is active in the main worktree. [ADR-006](adr/006-dev-env-sync-on-every-prompt.md) |
 | `new-day-journal-check.py` | Checks for stale `draft/*` branches on `origin/engineering-journal`. Emits a one-line warning if any are found; continues silently otherwise. |
 | `turn-count-hook.py` | Warns when session context accumulates past a threshold. Primary signal: token count; secondary: turn count. Configurable via `"turn_threshold"` in `.claude/hook-config.json` (default: 50). |
 | `multi-worktree-alert.py` | When ≥2 git worktrees are active, emits a list in `repo:branch` format, starring the current one. Fires on every prompt. |
