@@ -27,41 +27,53 @@ Any edits made through those symlinks update the repo file directly.
 
 ## Skills
 
-Custom skills extend Claude Code with project-aware slash commands. Invoke with `/skill-name`.
+Custom slash commands loaded from `claude/skills/`. Invoke with `/skill-name [args]`.
 
-| Skill | Command | Description |
+| Command | Purpose |
+|---|---|
+| [`/propose <idea>`](claude/skills/propose/SKILL.md) | One-line idea → proposal doc → GitHub issue → ROADMAP entry. Per-project config via `.claude/propose.json`. |
+| [`/journal-compose [YYYY-MM-DD]`](claude/skills/journal-compose/SKILL.md) | Composes the end-of-day engineering journal from stub files. Dedicated-session only. |
+| [`/research [tag:] <decision> [--compare <alt>]`](claude/skills/research/SKILL.md) | Finds 1–3 primary sources. Greps shared source library first; spawns a subagent only on cache miss. |
+| [`/review <PR-URL> [flags]`](claude/skills/review/SKILL.md) | Reviews a PR for correctness, security, reliability, and maintainability. Posts report as PR comment by default. |
+| [`/cover-letter [JD]`](claude/skills/cover-letter/SKILL.md) | Drafts a cover letter for a job application. Runs fit screening and style check as Haiku subagents. |
+| [`/fit-screen [JD]`](claude/skills/fit-screen/SKILL.md) | Fit-screens a job description. Returns PROCEED / FLAG / SKIP. |
+
+## Hooks
+
+Hook scripts run automatically via Claude Code's `hooks` configuration in `claude/settings.json`.
+All hooks are advisory — none block tool execution.
+
+| Event | Script | Purpose |
 |---|---|---|
-| [`propose`](claude/skills/propose/SKILL.md) | `/propose <idea>` | Expands a one-line idea into a proposal doc, creates a GitHub issue, and updates ROADMAP.md. Targets `lifting-logbook`. |
-| [`journal-compose`](claude/skills/journal-compose/SKILL.md) | `/journal-compose [draft-path]` | Composes the end-of-day engineering journal from the day's draft file. Produces the canonical 11-section document, updates READMEs, commits, and opens a PR. |
-| [`research`](claude/skills/research/SKILL.md) | `/research [tag:] <decision> [--compare <alt>]` | Finds 1–3 primary sources for an engineering decision. Greps the shared source library first; spawns a subagent only on a cache miss. |
+| UserPromptSubmit | `dev-env-sync.py` | Fast-forward pulls dev-env to `origin/main` at session start |
+| UserPromptSubmit | `new-day-journal-check.py` | Warns if stale `draft/*` journal branches exist on origin |
+| UserPromptSubmit | `turn-count-hook.py` | Warns when session context token count exceeds threshold |
+| UserPromptSubmit | `multi-worktree-alert.py` | Lists active worktrees in `repo:branch` format when ≥2 are open |
+| PreToolUse (Bash) | `pre-commit-branch-check.py` | Emits current branch as a checkpoint before `git commit` |
+| PreToolUse (Bash) | `pre-pr-create-check.py` | Emits test-verification checklist before `gh pr create` |
+| PostToolUse (Bash) | `pr-merge-reminder.py` | Reminds to write a journal stub after `gh pr create` or `gh pr merge` |
+| PostToolUse (Bash) | `post-tool-use.py` | Auto-adds issues/PRs to configured GitHub Project |
+| PostToolUse (Bash) | `post-pr-merge-pull.py` | Fast-forwards local `main` after `gh pr merge` |
+| PostToolUse (Bash) | `stub-push-archive-reminder.py` | Prompts to archive session after a stub is pushed to engineering-journal |
+| Stop | `token-tracker.py` | Aggregates session token usage to `scratch/token-sessions.jsonl` |
+| Stop | `journal-stop-check.py` | Checks for stale open journal stubs at session end |
+| PostCompact | `post-compact.py` | Emits compaction status line (trigger type + remaining tokens) |
+| Git pre-push | `hooks/pre-push` | Warns when branch merge base diverges from `origin/main` in squash-merge repos |
 
-The source library for `/research` and `/journal-compose` lives at [`claude/skills/sources.md`](claude/skills/sources.md).
+## Routines
 
-## Scripts
+Autonomous scheduled agents in `claude/routines/`. No user interaction.
 
-Hook scripts run automatically via Claude Code's `hooks` configuration in `settings.json`.
-
-| Script | Trigger | Purpose |
+| Schedule | Routine | Purpose |
 |---|---|---|
-| `post-tool-use.py` | After every tool call | Tracks token usage to the session JSONL log |
-| `token-tracker.py` | Session start/stop | Writes and closes session records |
-| `token-report.py` | On demand | Generates markdown and JSON token usage reports by date |
-| `backfill-tokens.py` | On demand | Backfills token data for sessions predating the tracker |
-| `pr-merge-reminder.py` | After tool calls | Reminds to open a PR when changes are pushed without one |
-
-## Templates
-
-Document templates consumed by skills at runtime.
-
-| Template | Used by | Purpose |
-|---|---|---|
-| [`proposal.md`](claude/templates/proposal.md) | `/propose` | PRD template for feature proposals |
-| [`pr-body.md`](claude/templates/pr-body.md) | `/propose`, `/journal-compose` | PR body structure guide |
-| [`contributing.md`](claude/templates/contributing.md) | Manual / `/propose` | CONTRIBUTING.md template for project repos |
+| Daily midnight UTC | `daily-journal-compose` | Assembles stub files into canonical journal entries and opens PRs |
+| Sunday midnight UTC | `prune-stale-worktrees` | Removes merged `claude/*` worktrees |
 
 ## Adding new configs
 
 1. Add the file under a descriptive directory (e.g., `claude/scripts/`, `claude/skills/`)
 2. Add a `ln -sf` or `mklink` line for it in `setup.sh` (if it needs symlinking)
-3. Add a row to the relevant table above
+3. Update the relevant table above **and** the corresponding section in [`docs/REFERENCE.md`](docs/REFERENCE.md)
 4. Update `claude/CLAUDE.md` if the artifact changes session behavior
+
+→ Full reference: **[docs/REFERENCE.md](docs/REFERENCE.md)**

@@ -112,6 +112,8 @@ If the project has no automated tests, the section must say so explicitly and de
 
 **Routines note:** `dev-env/claude/routines/` is a directory junction pointing at `~/.claude/scheduled-tasks/`, so the scheduler tool writes directly to the version-controlled path. After creating a new routine, commit it to dev-env under `claude/routines/`.
 
+**Reference doc maintenance.** When a change adds, removes, or renames a hook script, skill, routine, or utility script, check whether the project README and any reference documentation need updating in the same PR. This includes command renames, new options, and behavior changes. Each project's CLAUDE.md specifies which reference files apply.
+
 **Repo path:** `C:/Users/brown/Git/dev-env`
 
 ---
