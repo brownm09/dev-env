@@ -333,7 +333,10 @@ contention when multiple sessions run in parallel. Slug is determined at day end
 **Branch:** `draft/YYYY-MM-DD` — created at the first session of the day, merged to main at day end.
 
 **Stub filename:** `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md`
-where `HHMMSS` is the UTC start time of the session (`date -u +%H%M%S`).
+where `YYYY-MM-DD` is the **local calendar date** and `HHMMSS` is the **local start time**
+of the session (`date +%Y-%m-%d` / `date +%H%M%S`). Local time is used so stub filenames
+and branch names always share the same calendar day. UTC is reserved for internal
+operational artifacts (compose lock files, log file timestamps).
 
 **First session of the day:**
 1. `git -C C:/Users/brown/Git/engineering-journal checkout main && git pull`
