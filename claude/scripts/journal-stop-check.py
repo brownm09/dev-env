@@ -116,7 +116,6 @@ def main() -> None:
     except Exception:
         raw = ""
     # session_id / transcript_path available if needed in future
-    json.loads(raw) if raw else {}
 
     messages = []
 
