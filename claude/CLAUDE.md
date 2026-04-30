@@ -194,6 +194,8 @@ gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
 
 Run `python3 -m py_compile claude/scripts/*.py` from the repo root to verify all hook scripts are free of syntax errors.
 
+For docs-only changes to `claude/CLAUDE.md`: run `grep -n 'date -u' claude/CLAUDE.md` and confirm every match is in an internal operational artifact context (lock files, log timestamps) — not in stub filename or branch name descriptions.
+
 ---
 
 ## Hook Safety
@@ -368,6 +370,7 @@ One JSON line per session, appended after the token comment is known (end of ses
 echo '{"stub":"YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"input":N,"output":N,"cost":N},"prs_opened":[],"prs_closed":[]}' \
   >> "C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl"
 ```
+(`YYYY-MM-DD` and `HHMMSS` are local time — same as the stub filename spec above.)
 
 - `prs_opened`: PR numbers opened during this session (e.g., `[54]`). Empty array if none.
 - `prs_closed`: PR numbers reviewed/merged during this session (e.g., `[54]`). Empty array if none.
