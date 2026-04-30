@@ -22,6 +22,19 @@ import sys
 from pathlib import Path
 
 
+def repo_name_from_path(path: str) -> str:
+    """Extract the repository directory name from a worktree path.
+
+    Linked worktrees live under <repo>/.claude/worktrees/<name> — walk up past
+    those three components.  Main worktrees ARE the repo root.
+    """
+    parts = Path(path).parts
+    for i, part in enumerate(parts):
+        if part == "worktrees" and i >= 2 and parts[i - 1] == ".claude":
+            return parts[i - 2]
+    return Path(path).name
+
+
 def parse_worktree_list(output: str) -> list[dict]:
     """Parse `git worktree list --porcelain` output into a list of dicts.
 
@@ -96,10 +109,15 @@ def main() -> None:
 
     labeled = []
     for wt in worktrees:
-        name = wt["branch"] or "<unknown>"
+        repo = repo_name_from_path(wt["path"])
+        name = f"{repo}:{wt['branch'] or '<unknown>'}"
         labeled.append(f"*{name}*" if wt is current else name)
 
-    location = "current unknown" if current is None else f"on *{current['branch'] or '<unknown>'}*"
+    if current is None:
+        location = "current unknown"
+    else:
+        repo = repo_name_from_path(current["path"])
+        location = f"on *{repo}:{current['branch'] or '<unknown>'}*"
     msg = f"[worktree-alert] {len(worktrees)} active worktrees ({location}): {', '.join(labeled)}"
     print(json.dumps({"systemMessage": msg}))
     sys.exit(0)
