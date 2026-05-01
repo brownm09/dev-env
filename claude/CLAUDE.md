@@ -216,8 +216,8 @@ Route tasks to the least powerful model that can handle them reliably:
 | Task type | Model |
 |-----------|-------|
 | Mechanical: search, format, summarize, diff, rename | Haiku |
-| Standard dev: code review, feature implementation, debugging | Sonnet |
-| Complex: architectural decisions, novel problems, multi-file reasoning, writing test code | Opus |
+| Standard dev: feature implementation, debugging | Sonnet |
+| Complex: architectural decisions, novel problems, multi-file reasoning, writing test code, `/review` skill | Opus |
 
 Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handles correctly on the first try.
 
