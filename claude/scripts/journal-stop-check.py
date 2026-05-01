@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """
-Stop hook: remind user of stale journal work at session end.
+Stop hook: remind Claude to archive after a stub push, and remind the user
+of stale journal work at session end.
 
-Two checks (same logic as new-day-journal-check.py):
+Check 1 — stub-push sentinel:
+  If stub-push-archive-reminder.py wrote a sentinel flag (meaning a stub was
+  pushed to engineering-journal this session), consume the flag and emit a
+  closing message reminding the user to call ccd_session_mgmt__archive_session.
+
+Checks 2–3:
 1. Stale *_draft.md / *.stub.md files from before today
 2. Unmerged remote draft/* branches
 
 Also cleans up orphaned draft files: physical files left on disk as untracked
 after git rm. This prevents new-day-journal-check.py false positives on the
 next session (see dev-env#31).
-
-Exit 0 always — never block session close.
-Stdout is shown to user as a closing message.
 """
 
 import glob
@@ -23,7 +26,28 @@ from datetime import date
 from pathlib import Path
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+SENTINEL = Path.home() / ".claude" / "scratch" / "stub-pushed.flag"
 TODAY = date.today().strftime("%Y-%m-%d")
+
+
+def consume_stub_pushed_sentinel() -> str | None:
+    """Return a reminder message if the stub-push sentinel exists, else None.
+
+    Deletes the sentinel before returning so the reminder fires only once.
+    Any I/O failure is swallowed — the sentinel check is best-effort.
+    """
+    try:
+        if SENTINEL.exists():
+            SENTINEL.unlink()
+            return (
+                "Stub committed and pushed to engineering-journal. "
+                "Archive this session now: call ccd_session_mgmt__archive_session "
+                "(use list_sessions to look up the current session_id if needed). "
+                "Then stop."
+            )
+    except Exception:
+        pass
+    return None
 
 
 def composed_project_dates_on_main() -> set[tuple[str, str]]:
@@ -93,28 +117,6 @@ def stale_draft_artifacts() -> list[str]:
     return stale
 
 
-def composed_dates_on_main() -> set[str]:
-    """Return YYYY-MM-DD dates that have a composed journal file on origin/main."""
-    try:
-        result = subprocess.run(
-            ["git", "ls-tree", "-r", "--name-only", "origin/main", "sessions/"],
-            cwd=JOURNAL_REPO,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        dates = set()
-        for line in result.stdout.splitlines():
-            fname = line.split("/")[-1]
-            if fname.endswith(".stub.md") or not fname.endswith(".md"):
-                continue
-            if len(fname) >= 10 and fname[4] == "-" and fname[7] == "-":
-                dates.add(fname[:10])
-        return dates
-    except Exception:
-        return set()
-
-
 def unmerged_draft_branches() -> list[str]:
     """Return remote draft/* branch names not yet merged into origin/main."""
     try:
@@ -134,7 +136,8 @@ def unmerged_draft_branches() -> list[str]:
         if not remote_dates:
             return []
 
-        merged = composed_dates_on_main()
+        merged_pairs = composed_project_dates_on_main()
+        merged = {d for _, d in merged_pairs}
         unmerged = sorted(
             [d for d in remote_dates if d != TODAY and d not in merged],
             reverse=True,
@@ -171,7 +174,12 @@ def main() -> None:
         raw = ""
     # session_id / transcript_path available if needed in future
 
+    # Sentinel check: stub was pushed this session — remind user to archive.
+    reminder = consume_stub_pushed_sentinel()
+
     messages = []
+    if reminder:
+        messages.append(f"[journal-stop-hook] {reminder}")
 
     stale = stale_draft_artifacts()
 
