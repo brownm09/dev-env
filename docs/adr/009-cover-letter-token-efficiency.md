@@ -54,6 +54,8 @@ Projected token savings:
 
 The Sonnet inline-drafting path eliminates the draft subagent spawn and the Haiku self-check subagent — approximately 2,520 tokens per letter. Batch savings for letters 2–5 add ~1,170 tokens each (stable context reads eliminated). The Opus path savings are smaller: filtered accomplishments (~200–350 tokens per letter) plus session reuse on letters 2–5.
 
+A follow-on fix (same PR) closed a pre-existing gap: the self-check previously targeted only the `## Cover-Letter-Specific Self-Check` section from `style_rules.md`, which explicitly does not duplicate the Universal Self-Check items from `prose_style.md`. `prose_style.md` was never read by the skill, so the 23-item Universal Self-Check (em-dash ban, filler phrases, AI-tell patterns, rhythm checks) was applied at drafting time but not verified at self-check time. The fix adds a session-cached `prose_style.md` read as Step 3b and updates both self-check paths to run the Universal check first, then the cover-letter-specific extensions. Token cost of the fix: ~500 tokens to main agent context (first letter per session; cached after that) and ~150 tokens to the Haiku subagent (Opus path only, Universal Self-Check section passed inline). The savings figures above remain accurate within rounding.
+
 Prose quality for Sonnet letters is expected to be comparable to the previous Opus output for routine applications, because the main agent has full context and applies the same style rules. Opus remains available for high-stakes applications where the user explicitly needs it.
 
 The word-count ceiling correction has no impact on letters that were already staying under 400 words; letters where the draft was being trimmed unnecessarily will now have 75 words of additional room.
@@ -62,7 +64,8 @@ The word-count ceiling correction has no impact on letters that were already sta
 
 ## References
 
-- `claude/skills/cover-letter/SKILL.md` — implementation of all four changes
-- `job-search/CLAUDE.md` — Model Routing table updated (Opus → Sonnet for cover letter draft)
+- `claude/skills/cover-letter/SKILL.md` — implementation of all changes
+- `claude/skills/cover-letter/WORKFLOW.md` — visual flow diagram of the skill execution path
+- `job-search/CLAUDE.md` (brownm09/career-playbook) — Model Routing table updated (Opus → Sonnet for cover letter draft)
 - Engineering journal: `sessions/job-search/` — session covering this analysis and implementation
 - dev-env issue #147 — token-efficiency analysis and proposed fixes

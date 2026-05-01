@@ -71,6 +71,14 @@ If PROCEED, continue.
 
 Otherwise: Read `C:/Users/brown/Git/job-search/context/style_rules.md` in full. Internalize all rules before drafting. Do not proceed until read.
 
+## Step 3b — Read universal style rules
+
+**Session cache:** If `prose_style.md` is already in context from a previous letter this session, skip this file read and re-use the content already loaded.
+
+Otherwise: Read `C:/Users/brown/Git/job-search/context/prose_style.md` in full.
+
+The `## Universal Self-Check` section from this file will be used in Step 6 (Sonnet inline check) or Step 7 (Haiku subagent) to verify the draft against universal prose rules that are not duplicated in the cover-letter-specific check.
+
 ## Step 4 — Select model letter
 
 Read `C:/Users/brown/Git/job-search/models/INDEX.md`.
@@ -119,7 +127,12 @@ Constraints:
 - Body word ceiling: 475 words (body paragraphs only)
 - Output is Markdown only
 
-After drafting, run a self-check inline — do not spawn a separate subagent. Using the "Cover-Letter-Specific Self-Check" section from `style_rules.md` (already in context from Step 3), check the draft for every violation. Fix any violations before continuing. Report "PASS" or list each fix made.
+After drafting, run a self-check inline — do not spawn a separate subagent. Run both checks in sequence:
+
+1. **Universal Self-Check** — from `prose_style.md` `## Universal Self-Check` (already in context from Step 3b). Applies to all external-facing content: em-dashes, filler phrases, AI-tell patterns, rhythm, passive voice, etc.
+2. **Cover-Letter-Specific Self-Check** — from `style_rules.md` `## Cover-Letter-Specific Self-Check` (already in context from Step 3). Cover-letter extensions only: word count, HQ address, markdown format, closing construction, leadership philosophy presence, etc.
+
+Fix any violations before continuing. Report "PASS" or list each fix made with the offending text.
 
 Collect the final draft as DRAFT. Skip Step 7 and proceed to Step 8.
 
@@ -154,14 +167,17 @@ Collect the subagent's output as DRAFT.
 
 **Skip this step if DRAFT_MODEL is `"sonnet"` (self-check was run inline in Step 6).**
 
-The `style_rules.md` file is already in context from Step 3. Extract the "Cover-Letter-Specific Self-Check" section verbatim and pass it inline in the subagent prompt — do not instruct the subagent to read any files.
+Both style files are already in context. Extract verbatim: (a) the `## Universal Self-Check` section from `prose_style.md` and (b) the `## Cover-Letter-Specific Self-Check` section from `style_rules.md`. Pass both inline — do not instruct the subagent to read any files.
 
 Spawn a **Haiku** subagent with this task:
 
-> You are performing a style self-check on a cover letter draft. Check the letter body below against every item in the Self-Check list. Report each violation with the offending text quoted and the rule it breaks. If no violations, report "PASS".
+> You are performing a style self-check on a cover letter draft. Run both checks in sequence. Report each violation with the offending text quoted and the rule it breaks. If no violations in either check, report "PASS".
 >
-> **Cover-Letter-Specific Self-Check:**
-> <paste the "Cover-Letter-Specific Self-Check" section from style_rules.md verbatim>
+> **Check 1 — Universal Self-Check (prose_style.md):**
+> <paste the "## Universal Self-Check" section from prose_style.md verbatim>
+>
+> **Check 2 — Cover-Letter-Specific Self-Check (style_rules.md):**
+> <paste the "## Cover-Letter-Specific Self-Check" section from style_rules.md verbatim>
 >
 > **Letter body:**
 > <paste full draft here>
