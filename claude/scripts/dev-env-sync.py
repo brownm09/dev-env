@@ -77,7 +77,8 @@ def main() -> None:
         print(
             "[dev-env-sync] WARNING: local dev-env repo has diverged from origin/main.\n"
             "CLAUDE.md and symlinked tooling may be stale. Run `git -C ~/Git/dev-env "
-            "status` to investigate before proceeding."
+            "status` to investigate before proceeding.",
+            file=sys.stderr,
         )
         sys.exit(0)
 
@@ -99,7 +100,8 @@ def main() -> None:
     else:
         print(
             "[dev-env-sync] WARNING: fast-forward pull failed.\n"
-            + pull.stderr.strip()
+            + pull.stderr.strip(),
+            file=sys.stderr,
         )
 
     sys.exit(0)
