@@ -1,6 +1,6 @@
 ---
 name: cover-letter
-description: Draft a cover letter for a job application following the full cover letter workflow. Invokes Haiku subagents for fit screening and style self-check. Invoke as /cover-letter [JD text, file path, PDF path, or URL].
+description: Draft a cover letter for a job application following the full cover letter workflow. Invokes Haiku subagents for fit screening and (on the Opus path) style self-check. Invoke as /cover-letter [JD text, file path, PDF path, or URL].
 argument-hint: "[JD text, file path, PDF path, or URL to job posting]"
 allowed-tools: Read Edit Write Bash Glob Grep Agent WebFetch AskUserQuestion
 ---
@@ -15,10 +15,10 @@ Use AskUserQuestion with:
 - Question: "Which model should draft this cover letter?"
 - Header: "Draft model"
 - Options:
-  - "Opus (Recommended)" — better prose quality, higher cost (~5–10× Sonnet)
-  - "Sonnet" — faster and cheaper, sufficient for routine applications
+  - "Sonnet (Recommended)" — faster and cheaper; sufficient for most applications; drafts inline (no subagent spawn)
+  - "Opus" — better prose quality; higher cost (~5–10× Sonnet); use for high-stakes applications
 
-Store the answer as DRAFT_MODEL: `"opus"` if Opus was selected, `"sonnet"` if Sonnet.
+Store the answer as DRAFT_MODEL: `"sonnet"` if Sonnet was selected, `"opus"` if Opus.
 
 ## Step 0 — Load the job description
 
@@ -67,7 +67,17 @@ If PROCEED, continue.
 
 ## Step 3 — Read style rules
 
-Read `C:/Users/brown/Git/job-search/context/style_rules.md` in full. Internalize all rules before drafting. Do not proceed until read.
+**Session cache:** If `style_rules.md` is already in context from a previous letter this session, skip this file read and re-use the content already loaded.
+
+Otherwise: Read `C:/Users/brown/Git/job-search/context/style_rules.md` in full. Internalize all rules before drafting. Do not proceed until read.
+
+## Step 3b — Read universal style rules
+
+**Session cache:** If `prose_style.md` is already in context from a previous letter this session, skip this file read and re-use the content already loaded.
+
+Otherwise: Read `C:/Users/brown/Git/job-search/context/prose_style.md` in full.
+
+The `## Universal Self-Check` section from this file will be used in Step 6 (Sonnet inline check) or Step 7 (Haiku subagent) to verify the draft against universal prose rules that are not duplicated in the cover-letter-specific check.
 
 ## Step 4 — Select model letter
 
@@ -78,25 +88,62 @@ Tell the user which model you selected and why.
 
 ## Step 5 — Check accomplishments
 
-Read `C:/Users/brown/Git/job-search/context/accomplishments.md`.
+**Session cache:** If `accomplishments.md` is already in context from a previous letter this session, skip this file read and re-use the content already loaded.
+
+Otherwise: Read `C:/Users/brown/Git/job-search/context/accomplishments.md`.
+
 Note which accomplishments are relevant to this JD. Only claim what is listed there.
 
 ## Step 5b — Voice calibration
 
-Read `C:/Users/brown/Git/job-search/models/voice/VOICE_SYNOPSIS.md`.
+**Session cache:** If `VOICE_SYNOPSIS.md` is already in context from a previous letter this session, skip this file read and re-use the content already loaded.
+
+Otherwise: Read `C:/Users/brown/Git/job-search/models/voice/VOICE_SYNOPSIS.md`.
 
 Apply the patterns in the synopsis to calibrate opening sentence rhythm, paragraph structure, and declarative confidence. Style rules from Step 3 govern all constraints; voice calibration informs structure and rhythm only.
 
 (The full voice reference files are at `models/voice/` and can be consulted if a specific passage is needed, but the synopsis is sufficient for drafting.)
 
-## Step 6 — Draft the letter (subagent)
+## Step 5c — Filter accomplishments (Opus path only)
 
-Spawn an Agent with `model: "<DRAFT_MODEL>"`. Pass all of the following inline — do not
+**Skip this step if DRAFT_MODEL is `"sonnet"`.**
+
+From the full accomplishments list in context, identify the 4–8 rows most directly relevant to this JD. Criteria: direct match to the JD's stated technical requirements, team size expectations, industry context, or compliance posture. Exclude rows with no plausible relevance to this specific role.
+
+Store the filtered set as RELEVANT_ACCOMPLISHMENTS.
+
+## Step 6 — Draft the letter
+
+### Sonnet path (DRAFT_MODEL = "sonnet")
+
+Draft the letter body directly — do not spawn a subagent. All context (style rules, model letter, accomplishments, voice synopsis) is already in context from Steps 3–5b.
+
+Apply all style rules from Step 3. Use the model letter from Step 4 as a structural reference. Adapt tone and emphasis to the specific JD. Draw only from accomplishments in Step 5. Calibrate rhythm using the voice synopsis from Step 5b.
+
+Constraints:
+- No em-dashes (anywhere, no exceptions)
+- No banned constructions ("The outcomes were concrete" and all variants)
+- Do not claim Mike "led a platform directorate" — use "led platform teams responsible for..." or "led programs within the platform organization"
+- Body word ceiling: 475 words (body paragraphs only)
+- Output is Markdown only
+
+After drafting, run a self-check inline — do not spawn a separate subagent. Run both checks in sequence:
+
+1. **Universal Self-Check** — from `prose_style.md` `## Universal Self-Check` (already in context from Step 3b). Applies to all external-facing content: em-dashes, filler phrases, AI-tell patterns, rhythm, passive voice, etc.
+2. **Cover-Letter-Specific Self-Check** — from `style_rules.md` `## Cover-Letter-Specific Self-Check` (already in context from Step 3). Cover-letter extensions only: word count, HQ address, markdown format, closing construction, leadership philosophy presence, etc.
+
+Fix any violations before continuing. Report "PASS" or list each fix made with the offending text.
+
+Collect the final draft as DRAFT. Skip Step 7 and proceed to Step 8.
+
+### Opus path (DRAFT_MODEL = "opus")
+
+Spawn an Agent with `model: "opus"`. Pass all of the following inline — do not
 instruct the subagent to read any files:
 
 - All style rules (from Step 3, verbatim)
 - The model letter (from Step 4, verbatim)
-- The accomplishments list (from Step 5, verbatim)
+- RELEVANT_ACCOMPLISHMENTS (from Step 5c — filtered rows only, not the full list)
 - The voice synopsis (from Step 5b, verbatim)
 - The full JD text (from Step 0)
 
@@ -106,7 +153,7 @@ Subagent task:
 > - No em-dashes (anywhere, no exceptions)
 > - No banned constructions ("The outcomes were concrete" and all variants)
 > - Do not claim Mike "led a platform directorate" — use "led platform teams responsible for..." or "led programs within the platform organization"
-> - Body word ceiling: 400 words (body paragraphs only)
+> - Body word ceiling: 475 words (body paragraphs only)
 > - Output is Markdown only
 >
 > Use the model letter as a structural reference. Adapt tone and emphasis to the specific JD.
@@ -116,16 +163,21 @@ Subagent task:
 
 Collect the subagent's output as DRAFT.
 
-## Step 7 — Style self-check (Haiku subagent)
+## Step 7 — Style self-check (Haiku subagent — Opus path only)
 
-The `style_rules.md` file is already in context from Step 3. Extract the "Self-Check Before Presenting" section verbatim and pass it inline in the subagent prompt — do not instruct the subagent to read any files.
+**Skip this step if DRAFT_MODEL is `"sonnet"` (self-check was run inline in Step 6).**
+
+Both style files are already in context. Extract verbatim: (a) the `## Universal Self-Check` section from `prose_style.md` and (b) the `## Cover-Letter-Specific Self-Check` section from `style_rules.md`. Pass both inline — do not instruct the subagent to read any files.
 
 Spawn a **Haiku** subagent with this task:
 
-> You are performing a style self-check on a cover letter draft. Check the letter body below against every item in the Self-Check list. Report each violation with the offending text quoted and the rule it breaks. If no violations, report "PASS".
+> You are performing a style self-check on a cover letter draft. Run both checks in sequence. Report each violation with the offending text quoted and the rule it breaks. If no violations in either check, report "PASS".
 >
-> **Self-Check Before Presenting:**
-> <paste the "Self-Check Before Presenting" section from style_rules.md verbatim>
+> **Check 1 — Universal Self-Check (prose_style.md):**
+> <paste the "## Universal Self-Check" section from prose_style.md verbatim>
+>
+> **Check 2 — Cover-Letter-Specific Self-Check (style_rules.md):**
+> <paste the "## Cover-Letter-Specific Self-Check" section from style_rules.md verbatim>
 >
 > **Letter body:**
 > <paste full draft here>
@@ -134,7 +186,7 @@ Report the subagent's findings to the user.
 
 ## Step 8 — Fix violations
 
-Apply every violation the self-check subagent flagged. Re-read each fixed passage to confirm it is clean.
+Apply every violation flagged in Step 6 (Sonnet) or Step 7 (Opus). Re-read each fixed passage to confirm it is clean.
 
 ## Step 9 — Word count
 
@@ -148,7 +200,7 @@ wc -w < "$TMPFILE"
 rm -f "$TMPFILE"
 ```
 
-The body must be under 400 words (count body paragraphs only — exclude header block, salutation, and sign-off). If over, trim.
+The body must be under 475 words (count body paragraphs only — exclude header block, salutation, and sign-off). If over, trim.
 
 Report the final word count to the user.
 
@@ -186,5 +238,6 @@ Use the printed path as the markdown link href — e.g., `[filename](relative/pa
 Tell the user:
 - Where the letter was saved (as a clickable markdown link using the relative path computed above)
 - Final word count
+- Draft model used (Sonnet or Opus)
 - Any flags raised during fit screening that are still relevant
 - Any open items (e.g., missing salary range, unclear hiring manager name)

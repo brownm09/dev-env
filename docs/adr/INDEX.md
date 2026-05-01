@@ -13,3 +13,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [006](006-dev-env-sync-on-every-prompt.md) | UserPromptSubmit Dev-Env Sync on Every Prompt | 2026-04-19 | Accepted |
 | [007](007-hook-command-invocation.md) | Hook Command Invocation: Direct `python3` vs `bash -c` Wrapper | 2026-04-27 | Accepted |
 | [008](008-plan-then-optimize-forcing-function.md) | Plan-Then-Optimize as an Embedded Skill Step | 2026-04-27 | Accepted |
+| [009](009-cover-letter-token-efficiency.md) | Cover Letter Token Efficiency: Inline Drafting and Session Reuse | 2026-05-01 | Accepted |
