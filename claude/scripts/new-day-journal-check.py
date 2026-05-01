@@ -37,8 +37,49 @@ def cleanup_stale_flags() -> None:
         pass
 
 
+def composed_project_dates_on_main() -> set[tuple[str, str]]:
+    """Return (project, YYYY-MM-DD) pairs that have a composed file on origin/main.
+
+    Finer-grained than composed_dates_on_main(): used to suppress false positives
+    when stubs from a composed date are still present on disk because a new-day
+    branch was cut from the previous day's draft branch instead of from main.
+
+    Note: reads the local remote-tracking ref (origin/main) without fetching —
+    results reflect the last fetch. A stale ref could miss composed dates, causing
+    branch-lineage artifacts to appear stale. The next fetch will self-correct.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", "origin/main", "sessions/"],
+            cwd=JOURNAL_REPO,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        pairs: set[tuple[str, str]] = set()
+        for line in result.stdout.splitlines():
+            parts = line.split("/")
+            if len(parts) < 3:
+                continue
+            project = parts[1]
+            fname = parts[-1]
+            if fname.endswith(".stub.md") or not fname.endswith(".md"):
+                continue
+            if len(fname) >= 10 and fname[4] == "-" and fname[7] == "-":
+                pairs.add((project, fname[:10]))
+        return pairs
+    except Exception:
+        return set()
+
+
 def stale_draft_artifacts() -> list[str]:
-    """Return paths of *_draft.md or *.stub.md files from before today."""
+    """Return stub/draft paths whose (project, date) lacks a composed file on main.
+
+    Stubs whose project+date already have a composed file on main are branch-lineage
+    artifacts (carried forward because the new-day branch was cut from the previous
+    day's draft instead of from main) — not genuine unComposed drafts.
+    """
+    composed = composed_project_dates_on_main()
     artifacts = []
     for pattern in (
         str(JOURNAL_REPO / "sessions" / "**" / "*_draft.md"),
@@ -46,7 +87,20 @@ def stale_draft_artifacts() -> list[str]:
         str(JOURNAL_REPO / "sessions" / "**" / "????-??-??_*.stub.md"),
     ):
         artifacts.extend(glob.glob(pattern, recursive=True))
-    stale = [f for f in artifacts if not os.path.basename(f).startswith(TODAY)]
+    stale = []
+    for f in artifacts:
+        if os.path.basename(f).startswith(TODAY):
+            continue
+        date_prefix = os.path.basename(f)[:10]
+        try:
+            parts = Path(f).parts
+            sessions_idx = next(i for i, p in enumerate(parts) if p == "sessions")
+            project = parts[sessions_idx + 1]
+        except (StopIteration, IndexError):
+            project = None
+        if project and (project, date_prefix) in composed:
+            continue  # Already composed on main — branch-lineage artifact, not stale
+        stale.append(f)
     stale.sort(key=lambda f: os.path.basename(f), reverse=True)
     return stale
 

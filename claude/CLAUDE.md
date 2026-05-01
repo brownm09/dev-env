@@ -320,6 +320,14 @@ operational artifacts (compose lock files, log file timestamps).
 **First session of the day:**
 1. `git -C C:/Users/brown/Git/engineering-journal checkout main && git pull`
 2. `git -C C:/Users/brown/Git/engineering-journal checkout -b draft/YYYY-MM-DD`
+   **Branch validation (required):** Confirm the new branch was cut from `main`, not a previous
+   draft branch. Both commands below must print the same SHA — if they differ, delete the local
+   branch (`git -C C:/Users/brown/Git/engineering-journal branch -D draft/YYYY-MM-DD`) and
+   re-run steps 1–2:
+   ```bash
+   git -C C:/Users/brown/Git/engineering-journal merge-base HEAD origin/main
+   git -C C:/Users/brown/Git/engineering-journal rev-parse origin/main
+   ```
 3. Read `sessions/<project>/open-prs.jsonl` if it exists — include its PR list as session context before starting work.
 4. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see stub structure below)
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
