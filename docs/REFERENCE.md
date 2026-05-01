@@ -11,6 +11,7 @@ For a compact overview see the [README](../README.md).
 - [Hooks](#hooks)
 - [Routines](#routines)
 - [Utility Scripts](#utilities)
+- [Model Selection](#model-selection)
 
 ---
 
@@ -196,6 +197,30 @@ A global git pre-push hook installed via `core.hooksPath` (see [ADR-005](adr/005
 
 ---
 
+### Authoring rules
+
+PreToolUse hooks that exit non-zero **block the matched tool call silently** — the user sees the tool refused with no error pointing to the hook. Three invariants prevent recurrence:
+
+1. **Atomic commits.** A `settings.json` hook entry and its script file must land in the **same commit**. Never push a `settings.json` change that references a script not yet in `claude/scripts/` on main. Verify by running the script **from the dev-env repo root** (not via `~/.claude/scripts/` — that junction resolves against the main worktree checkout, not the branch being tested):
+   ```bash
+   python3 claude/scripts/<new-hook>.py < /dev/null; echo "exit: $?"
+   # Must print "exit: 0"
+   ```
+
+2. **Safe-exit guard.** Advisory hooks (hooks that emit a `systemMessage` reminder but do not intend to block) must exit 0 on **every** code path — happy path, empty stdin, malformed JSON, and unhandled exception. Use a top-level exception handler so no code path escapes:
+   ```python
+   if __name__ == "__main__":
+       try:
+           main()
+       except Exception:
+           sys.exit(0)
+   ```
+   Never add `sys.exit(N)` where N > 0 to an advisory hook.
+
+3. **No `bash -c` wrappers.** Hook commands call the interpreter directly: `python3 C:/Users/brown/.claude/scripts/foo.py` — never `bash -c 'python3 ...'`. The wrapper adds an exit-code-propagation layer and can fail independently on Windows (quoting issues, PATH differences). Root cause of [dev-env#81](https://github.com/brownm09/dev-env/issues/81).
+
+---
+
 ## Routines
 
 Autonomous scheduled agents in `claude/routines/`. They run on a cron schedule with no user interaction. Managed via the `scheduled-tasks` MCP tool; stored in `claude/routines/` (directory junction to `~/.claude/scheduled-tasks/`).
@@ -231,3 +256,17 @@ On-demand scripts — not wired to any event. Run manually or from other scripts
 | `prune-merged-worktrees.py` | `python3 prune-merged-worktrees.py` | Manual equivalent of the `prune-stale-worktrees` routine. |
 | `new-branch.sh` | `new-branch <name>` (shell function; source `~/.claude/scripts/new-branch.sh` in `.bashrc`) | Creates a branch always rooted at `origin/main`. Warns when HEAD has diverged from the merge base. |
 | `merge-stale-pr.sh` | `bash merge-stale-pr.sh <PR-URL>` | Remediates stale `engineering-journal` draft PRs: checks out the branch, warns on missing journal file, deletes orphaned drafts, rebases, and squash-merges with auto-conflict resolution. |
+
+---
+
+## Model Selection
+
+Route tasks to the least powerful model that can handle them reliably:
+
+| Task type | Model |
+|-----------|-------|
+| Mechanical: search, format, summarize, diff, rename | Haiku |
+| Standard dev: code review, feature implementation, debugging | Sonnet |
+| Complex: architectural decisions, novel problems, multi-file reasoning, writing test code | Opus |
+
+Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handles correctly on the first try.
