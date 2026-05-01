@@ -96,7 +96,7 @@ Proceed to Step 6.
 
 ## Step 5 — Parallel subagent analysis (large diffs only)
 
-Spawn two subagents in parallel using the Agent tool. Pass each the full DIFF and PR context.
+Spawn two subagents in parallel using the Agent tool with `model: "opus"`. Pass each the full DIFF and PR context.
 
 **Subagent A — Correctness & Security:**
 
