@@ -43,6 +43,10 @@ def composed_project_dates_on_main() -> set[tuple[str, str]]:
     Finer-grained than composed_dates_on_main(): used to suppress false positives
     when stubs from a composed date are still present on disk because a new-day
     branch was cut from the previous day's draft branch instead of from main.
+
+    Note: reads the local remote-tracking ref (origin/main) without fetching —
+    results reflect the last fetch. A stale ref could miss composed dates, causing
+    branch-lineage artifacts to appear stale. The next fetch will self-correct.
     """
     try:
         result = subprocess.run(
