@@ -54,9 +54,9 @@ All hooks are advisory — none block tool execution.
 | PostToolUse (Bash) | `pr-merge-reminder.py` | Reminds to write a journal stub after `gh pr create` or `gh pr merge` |
 | PostToolUse (Bash) | `post-tool-use.py` | Auto-adds issues/PRs to configured GitHub Project |
 | PostToolUse (Bash) | `post-pr-merge-pull.py` | Fast-forwards local `main` after `gh pr merge` |
-| PostToolUse (Bash) | `stub-push-archive-reminder.py` | Prompts to archive session after a stub is pushed to engineering-journal |
+| PostToolUse (Bash) | `stub-push-archive-reminder.py` | Writes a sentinel flag after a stub is pushed to engineering-journal; Stop hook consumes it to remind Claude to archive |
 | Stop | `token-tracker.py` | Aggregates session token usage to `scratch/token-sessions.jsonl` |
-| Stop | `journal-stop-check.py` | Checks for stale open journal stubs at session end |
+| Stop | `journal-stop-check.py` | Checks sentinel flag and stale open journal stubs at session end; emits closing reminder if stub was pushed this session |
 | PostCompact | `post-compact.py` | Emits compaction status line (trigger type + remaining tokens) |
 | Git pre-push | `hooks/pre-push` | Warns when branch merge base diverges from `origin/main` in squash-merge repos |
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""PostToolUse/Bash hook — remind Claude to archive the session after a stub
-is pushed to engineering-journal.
+"""PostToolUse/Bash hook — set a sentinel flag after a stub is pushed to
+engineering-journal so the Stop hook can remind Claude to archive the session.
 
 Fires on every Bash tool call. Most calls are skipped quickly:
   1. Command must contain "git push"
@@ -8,10 +8,12 @@ Fires on every Bash tool call. Most calls are skipped quickly:
   3. Push must have succeeded (no error output)
   4. Most-recent commit in engineering-journal must touch a .stub.md file
 
-When all four conditions are met, exits 2 with a systemMessage prompting
-Claude to call ccd_session_mgmt__archive_session before stopping.
+When all four conditions are met, writes a sentinel file to the scratch
+directory. The Stop hook (journal-stop-check.py) reads and clears the
+sentinel and issues a closing reminder via stdout — the correct output
+channel for Stop hook messages.
 
-Exit 0 on every non-trigger path and on any exception — never blocks.
+Exit 0 on every code path — never blocks.
 
 Stdin JSON shape (PostToolUse):
   {
@@ -27,6 +29,7 @@ import sys
 from pathlib import Path
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+SENTINEL = Path.home() / ".claude" / "scratch" / "stub-pushed.flag"
 
 
 def most_recent_commit_has_stub(repo: Path) -> bool:
@@ -76,14 +79,14 @@ def main() -> None:
     if not most_recent_commit_has_stub(JOURNAL_REPO):
         sys.exit(0)
 
-    msg = (
-        "Stub committed and pushed to engineering-journal. "
-        "Archive this session now: call ccd_session_mgmt__archive_session "
-        "(use list_sessions to look up the current session_id if needed). "
-        "Then stop."
-    )
-    print(json.dumps({"systemMessage": msg}))
-    sys.exit(2)
+    # Write sentinel — the Stop hook will consume it and issue the reminder
+    try:
+        SENTINEL.parent.mkdir(parents=True, exist_ok=True)
+        SENTINEL.write_text("1")
+    except Exception:
+        pass
+
+    sys.exit(0)
 
 
 if __name__ == "__main__":
