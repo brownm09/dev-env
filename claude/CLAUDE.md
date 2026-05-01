@@ -205,36 +205,7 @@ For docs-only changes to `claude/CLAUDE.md`: run `grep -n 'date -u' claude/CLAUD
 
 ## Hook Safety
 
-PreToolUse hooks that exit non-zero **block the matched tool call silently** — the user sees the
-tool refused with no error pointing to the hook. This has caused complete Bash outages more than
-once. Three invariants prevent recurrence:
-
-1. **Atomic commits.** A `settings.json` hook entry and its script file must land in the **same
-   commit**. Never push a settings.json change that references a script not yet in
-   `claude/scripts/` on main. Verify by running the script **from the dev-env repo root**
-   (not via `~/.claude/scripts/` — that junction resolves against the main worktree checkout,
-   not the branch being tested):
-   ```bash
-   python3 claude/scripts/<new-hook>.py < /dev/null; echo "exit: $?"
-   # Must print "exit: 0"
-   ```
-
-2. **Safe-exit guard.** Advisory hooks (hooks that emit a systemMessage reminder but do not
-   intend to block) must exit 0 on **every** code path — happy path, empty stdin, malformed
-   JSON, and unhandled exception. Use a top-level exception handler so no code path escapes:
-   ```python
-   if __name__ == "__main__":
-       try:
-           main()
-       except Exception:
-           sys.exit(0)
-   ```
-   Never add `sys.exit(N)` where N > 0 to an advisory hook.
-
-3. **No `bash -c` wrappers.** Hook commands call the interpreter directly:
-   `python3 C:/Users/brown/.claude/scripts/foo.py` — never `bash -c 'python3 ...'`. The
-   wrapper adds an exit-code-propagation layer and can fail independently on Windows (quoting
-   issues, PATH differences). This was the root cause of dev-env#81.
+See [docs/REFERENCE.md — Hooks → Authoring rules](../docs/REFERENCE.md#authoring-rules) for the three hook invariants (atomic commits, safe-exit guard, no `bash -c` wrappers).
 
 ---
 
@@ -246,7 +217,7 @@ Route tasks to the least powerful model that can handle them reliably:
 |-----------|-------|
 | Mechanical: search, format, summarize, diff, rename | Haiku |
 | Standard dev: code review, feature implementation, debugging | Sonnet |
-| Complex: architectural decisions, novel problems, multi-file reasoning | Opus |
+| Complex: architectural decisions, novel problems, multi-file reasoning, writing test code | Opus |
 
 Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handles correctly on the first try.
 
