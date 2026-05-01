@@ -205,7 +205,7 @@ For docs-only changes to `claude/CLAUDE.md`: run `grep -n 'date -u' claude/CLAUD
 
 ## Hook Safety
 
-See [docs/REFERENCE.md — Hooks → Authoring rules](docs/REFERENCE.md) for the three hook invariants (atomic commits, safe-exit guard, no `bash -c` wrappers).
+See [docs/REFERENCE.md — Hooks → Authoring rules](../docs/REFERENCE.md#authoring-rules) for the three hook invariants (atomic commits, safe-exit guard, no `bash -c` wrappers).
 
 ---
 
