@@ -228,14 +228,21 @@ Step 8 always emits the review to the terminal. If **POST_COMMENT=true** and **P
 also post it as a PR comment and apply the `reviewed-by-claude` label so both are always present.
 
 Write the review output to a temp file to avoid shell-quoting issues with backticks and
-special characters, then post it:
+special characters, then post it.
+
+**Use the Write tool** (not a Bash heredoc) to write the review content — `Write(C:/Users/brown/.claude/scratch/**)` is already in `permissions.allow`, so using Bash to write the file would trigger a permission prompt:
+
+```
+TMPFILE = "C:/Users/brown/.claude/scratch/review_comment_<PID>.md"
+[Write tool] → write full Step 8 review output to TMPFILE
+```
+
+Then post with Bash (covered by `Bash(gh pr comment *)`):
 
 ```bash
-TMPFILE="C:/Users/brown/.claude/scratch/review_comment_$$.md"
-# write the full review output from Step 8 to $TMPFILE
-gh pr comment "<PR_URL>" --body-file "$TMPFILE"
+gh pr comment "<PR_URL>" --body-file "C:/Users/brown/.claude/scratch/review_comment_<PID>.md"
 gh pr edit "<PR_URL>" --add-label "reviewed-by-claude"
-rm -f "$TMPFILE"
+rm -f "C:/Users/brown/.claude/scratch/review_comment_<PID>.md"
 ```
 
 If either `gh` command fails, report the error to the user and note that the review was
