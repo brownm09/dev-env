@@ -14,3 +14,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [007](007-hook-command-invocation.md) | Hook Command Invocation: Direct `python3` vs `bash -c` Wrapper | 2026-04-27 | Accepted |
 | [008](008-plan-then-optimize-forcing-function.md) | Plan-Then-Optimize as an Embedded Skill Step | 2026-04-27 | Accepted |
 | [009](009-cover-letter-token-efficiency.md) | Cover Letter Token Efficiency: Inline Drafting and Session Reuse | 2026-05-01 | Accepted |
+| [010](010-skill-tmpfile-allow-rule.md) | Skill Temp File Writes: `Bash(TMPFILE=*)` Allow Rule | 2026-05-02 | Accepted |

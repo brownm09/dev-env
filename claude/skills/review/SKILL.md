@@ -232,7 +232,9 @@ special characters, then post it:
 
 ```bash
 TMPFILE="C:/Users/brown/.claude/scratch/review_comment_$$.md"
-# write the full review output from Step 8 to $TMPFILE
+cat > "$TMPFILE" << 'REVIEW_EOF'
+<full Step 8 review output>
+REVIEW_EOF
 gh pr comment "<PR_URL>" --body-file "$TMPFILE"
 gh pr edit "<PR_URL>" --add-label "reviewed-by-claude"
 rm -f "$TMPFILE"
