@@ -1,5 +1,11 @@
 {
   "model": "claude-sonnet-4-6",
+  "permissions": {
+    "allow": [
+      "Write(C:/Users/brown/.claude/scratch/**)",
+      "Edit(C:/Users/brown/.claude/scratch/**)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
