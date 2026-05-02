@@ -3,7 +3,8 @@
   "permissions": {
     "allow": [
       "Write(C:/Users/brown/.claude/scratch/**)",
-      "Edit(C:/Users/brown/.claude/scratch/**)"
+      "Edit(C:/Users/brown/.claude/scratch/**)",
+      "Bash(gh pr comment *)"
     ]
   },
   "hooks": {
