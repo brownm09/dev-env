@@ -1,24 +1,13 @@
 ---
 name: cover-letter
-description: Draft a cover letter for a job application following the full cover letter workflow. Invokes Haiku subagents for fit screening and (on the Opus path) style self-check. Invoke as /cover-letter [JD text, file path, PDF path, or URL].
+description: Draft a cover letter for a job application following the full cover letter workflow. Two-pass workflow: Opus completeness draft, then Sonnet density revision. Invokes Haiku subagents for fit screening and style self-check. Invoke as /cover-letter [JD text, file path, PDF path, or URL].
 argument-hint: "[JD text, file path, PDF path, or URL to job posting]"
 allowed-tools: Read Edit Write Bash Glob Grep Agent WebFetch AskUserQuestion
 ---
 
-You are drafting a cover letter for Mike Brown's job search, following the canonical workflow defined in `CLAUDE.md`.
+You are drafting a cover letter for Mike Brown's job search, following the canonical workflow defined in `CLAUDE.md` (job-search project).
 
-Follow every step in order. Do not skip steps.
-
-## Step -1 — Model selection
-
-Use AskUserQuestion with:
-- Question: "Which model should draft this cover letter?"
-- Header: "Draft model"
-- Options:
-  - "Sonnet (Recommended)" — faster and cheaper; sufficient for most applications; drafts inline (no subagent spawn)
-  - "Opus" — better prose quality; higher cost (~5–10× Sonnet); use for high-stakes applications
-
-Store the answer as DRAFT_MODEL: `"sonnet"` if Sonnet was selected, `"opus"` if Opus.
+Follow every step in order. Do not skip steps. The workflow is two-pass: an Opus completeness draft is followed by a Sonnet density revision; both files are committed in the application PR so the cut is reviewable, and the draft is deleted before the PR is merged.
 
 ## Step 0 — Load the job description
 
@@ -31,11 +20,35 @@ The job description is provided in `$ARGUMENTS`. Determine input type and load a
 
 Store the extracted JD text. If the JD text is under 50 words after extraction, tell the user the source may not have loaded correctly and ask them to paste the JD directly.
 
+Also collect the JD source string (the URL, file path, or `pasted text` literal) and today's date in `YYYYMMDD` format. These are used in Step 0b.
+
+## Step 0b — Save the JD to disk
+
+Confirm the company name and role title with the user if not clearly recoverable from the JD. Slugify both for the filename: keep alphanumerics, replace spaces with single underscores, no other punctuation. Use the same `Company` and `Role` slugs in every artifact for this application.
+
+Construct the JD path:
+
+```
+C:/Users/brown/Git/job-search/applications/cover_letters/MikeBrown_YYYYMMDD__Company__Role__JD.md
+```
+
+Use today's local calendar date for `YYYYMMDD`.
+
+If a file at that path already exists, skip silently — the JD is already preserved. Otherwise, write the file with this structure:
+
+```
+<!-- source: <URL or file path or "pasted text">; fetched: YYYY-MM-DD -->
+
+<JD text verbatim>
+```
+
+The save happens before fit screening so the JD artifact is preserved even if Step 2 returns SKIP.
+
 ## Step 1 — Company log check
 
 Read `C:/Users/brown/Git/job-search/context/company_log.md`. Keep this content in context — Step 11 will reuse it without re-reading the file.
 Check the "Roles Completed" and "Roles Skipped" tables for this company and role.
-If already present, stop and tell the user: "This role is already logged as [completed/skipped]."
+If already present, stop and tell the user: "This role is already logged as [completed/skipped]." (The JD has already been saved by Step 0b; that's acceptable — the JD artifact has standalone reference value.)
 
 ## Step 2 — Fit Screening (Haiku subagent)
 
@@ -77,7 +90,7 @@ Otherwise: Read `C:/Users/brown/Git/job-search/context/style_rules.md` in full. 
 
 Otherwise: Read `C:/Users/brown/Git/job-search/context/prose_style.md` in full.
 
-The `## Universal Self-Check` section from this file will be used in Step 6 (Sonnet inline check) or Step 7 (Haiku subagent) to verify the draft against universal prose rules that are not duplicated in the cover-letter-specific check.
+The `## Universal Self-Check` section from this file will be used in Step 8 (Haiku subagent) to verify the final letter against universal prose rules that are not duplicated in the cover-letter-specific check.
 
 ## Step 4 — Select model letter
 
@@ -104,44 +117,18 @@ Apply the patterns in the synopsis to calibrate opening sentence rhythm, paragra
 
 (The full voice reference files are at `models/voice/` and can be consulted if a specific passage is needed, but the synopsis is sufficient for drafting.)
 
-## Step 5c — Filter accomplishments (Opus path only)
-
-**Skip this step if DRAFT_MODEL is `"sonnet"`.**
+## Step 5c — Filter accomplishments
 
 From the full accomplishments list in context, identify the 4–8 rows most directly relevant to this JD. Criteria: direct match to the JD's stated technical requirements, team size expectations, industry context, or compliance posture. Exclude rows with no plausible relevance to this specific role.
 
 Store the filtered set as RELEVANT_ACCOMPLISHMENTS.
 
-## Step 6 — Draft the letter
+## Step 6 — Completeness draft (Opus subagent)
 
-### Sonnet path (DRAFT_MODEL = "sonnet")
-
-Draft the letter body directly — do not spawn a subagent. All context (style rules, model letter, accomplishments, voice synopsis) is already in context from Steps 3–5b.
-
-Apply all style rules from Step 3. Use the model letter from Step 4 as a structural reference. Adapt tone and emphasis to the specific JD. Draw only from accomplishments in Step 5. Calibrate rhythm using the voice synopsis from Step 5b.
-
-Constraints:
-- No em-dashes (anywhere, no exceptions)
-- No banned constructions ("The outcomes were concrete" and all variants)
-- Do not claim Mike "led a platform directorate" — use "led platform teams responsible for..." or "led programs within the platform organization"
-- Body word ceiling: 475 words (body paragraphs only)
-- Output is Markdown only
-
-After drafting, run a self-check inline — do not spawn a separate subagent. Run both checks in sequence:
-
-1. **Universal Self-Check** — from `prose_style.md` `## Universal Self-Check` (already in context from Step 3b). Applies to all external-facing content: em-dashes, filler phrases, AI-tell patterns, rhythm, passive voice, etc.
-2. **Cover-Letter-Specific Self-Check** — from `style_rules.md` `## Cover-Letter-Specific Self-Check` (already in context from Step 3). Cover-letter extensions only: word count, HQ address, markdown format, closing construction, leadership philosophy presence, etc.
-
-Fix any violations before continuing. Report "PASS" or list each fix made with the offending text.
-
-Collect the final draft as DRAFT. Skip Step 7 and proceed to Step 8.
-
-### Opus path (DRAFT_MODEL = "opus")
-
-Spawn an Agent with `model: "opus"`. Pass all of the following inline — do not
-instruct the subagent to read any files:
+Spawn an Agent with `model: "opus"`. Pass all of the following inline — do not instruct the subagent to read any files:
 
 - All style rules (from Step 3, verbatim)
+- The universal self-check (from `prose_style.md` `## Universal Self-Check`, already in context from Step 3b)
 - The model letter (from Step 4, verbatim)
 - RELEVANT_ACCOMPLISHMENTS (from Step 5c — filtered rows only, not the full list)
 - The voice synopsis (from Step 5b, verbatim)
@@ -149,29 +136,49 @@ instruct the subagent to read any files:
 
 Subagent task:
 
-> Draft the cover letter body in Markdown. Apply all style rules provided:
+> Draft the cover letter body in Markdown. This is the **completeness draft**: prioritize narrative arc, leadership philosophy, signal calibration, and accomplishment density over compactness. No upper word cap; aim for whatever length the argument actually needs. If the draft exceeds roughly 700 words, return early with a flag — over-700 typically signals two role mandates or three threads where there should be two, and the letter plan needs revision before drafting continues.
+>
+> Apply all style rules provided:
 > - No em-dashes (anywhere, no exceptions)
 > - No banned constructions ("The outcomes were concrete" and all variants)
 > - Do not claim Mike "led a platform directorate" — use "led platform teams responsible for..." or "led programs within the platform organization"
-> - Body word ceiling: 475 words (body paragraphs only)
 > - Output is Markdown only
 >
-> Use the model letter as a structural reference. Adapt tone and emphasis to the specific JD.
-> Do not copy model letter text verbatim.
+> Use the model letter as a structural reference; do not copy text verbatim. Adapt tone and emphasis to the specific JD.
 >
 > Return only the letter body — no preamble, no commentary.
 
 Collect the subagent's output as DRAFT.
 
-## Step 7 — Style self-check (Haiku subagent — Opus path only)
+If the subagent flagged over-700, surface to the user and ask whether to proceed (revise the letter plan and re-run) or override and continue with the long draft.
 
-**Skip this step if DRAFT_MODEL is `"sonnet"` (self-check was run inline in Step 6).**
+Save DRAFT to:
+
+```
+C:/Users/brown/Git/job-search/applications/cover_letters/MikeBrown_YYYYMMDD__Company__Role__Cover_Letter_Draft.md
+```
+
+Same `YYYYMMDD`, `Company`, and `Role` slugs as the JD file from Step 0b.
+
+## Step 7 — Density revision (Sonnet, inline)
+
+Apply the precision-then-compactness pass from `prose_style.md` (`## Precision in Word Choice` and `## Compactness Techniques`) aggressively to DRAFT. Target 400 words; 450 is the hard ceiling. The revision should sharpen verbs, remove hedges, collapse redundant clauses, and tighten transitions while preserving the narrative arc, philosophy paragraph, and signal calibration of the completeness draft.
+
+Save the revised letter to:
+
+```
+C:/Users/brown/Git/job-search/applications/cover_letters/MikeBrown_YYYYMMDD__Company__Role__Cover_Letter.md
+```
+
+If this letter is intended as a new canonical model (a new role type not yet in `models/letters/`), also copy the revised version to `C:/Users/brown/Git/job-search/models/letters/` and update `models/INDEX.md`.
+
+## Step 8 — Style self-check (Haiku subagent)
 
 Both style files are already in context. Extract verbatim: (a) the `## Universal Self-Check` section from `prose_style.md` and (b) the `## Cover-Letter-Specific Self-Check` section from `style_rules.md`. Pass both inline — do not instruct the subagent to read any files.
 
 Spawn a **Haiku** subagent with this task:
 
-> You are performing a style self-check on a cover letter draft. Run both checks in sequence. Report each violation with the offending text quoted and the rule it breaks. If no violations in either check, report "PASS".
+> You are performing a style self-check on a cover letter. Run both checks in sequence. Report each violation with the offending text quoted and the rule it breaks. If no violations in either check, report "PASS".
 >
 > **Check 1 — Universal Self-Check (prose_style.md):**
 > <paste the "## Universal Self-Check" section from prose_style.md verbatim>
@@ -180,17 +187,15 @@ Spawn a **Haiku** subagent with this task:
 > <paste the "## Cover-Letter-Specific Self-Check" section from style_rules.md verbatim>
 >
 > **Letter body:**
-> <paste full draft here>
+> <paste the Step 7 density-revised letter here>
 
 Report the subagent's findings to the user.
 
-## Step 8 — Fix violations
+## Step 9 — Fix violations and verify word count
 
-Apply every violation flagged in Step 6 (Sonnet) or Step 7 (Opus). Re-read each fixed passage to confirm it is clean.
+Apply every violation flagged in Step 8 to the `__Cover_Letter.md` file. Re-read each fixed passage to confirm it is clean.
 
-## Step 9 — Word count
-
-Write the letter body to a temp file and count words:
+Write the final letter body to a temp file and count words:
 ```bash
 TMPFILE="C:/Users/brown/.claude/scratch/wc_$$.txt"
 cat > "$TMPFILE" << 'LETTER'
@@ -200,32 +205,19 @@ wc -w < "$TMPFILE"
 rm -f "$TMPFILE"
 ```
 
-The body must be under 475 words (count body paragraphs only — exclude header block, salutation, and sign-off). If over, trim.
+The body must be at most 450 words with a 400-word target (count body paragraphs only — exclude header block, salutation, and sign-off). If over 450, trim further. Report the final word count to the user.
 
-Report the final word count to the user.
-
-## Step 10 — Save the letter
-
-Determine the output path:
-- If this letter is intended as a new canonical model (a new role type not yet in `models/letters/`), save to `C:/Users/brown/Git/job-search/models/letters/` and update `models/INDEX.md`
-- Otherwise, save to `C:/Users/brown/Git/job-search/applications/cover_letters/`
-
-File name format: `MikeBrown_YYYYMMDD__Company__Role__Cover_Letter.md`
-Use today's date. Confirm company name and role title with the user if not clear from the JD.
-
-Write the file.
-
-## Step 11 — Log the application
+## Step 10 — Log the application
 
 The `context/company_log.md` content is already in context from Step 1 — do not re-read the file.
-Add a row to the "Roles Completed" table with: company name, role title, date, and the file path of the saved letter.
+Add a row to the "Roles Completed" table with: company name, role title, date, and the file path of the saved `__Cover_Letter.md` file.
 Write the updated file.
 
-## Step 12 — Report to user
+## Step 11 — Report to user
 
-Before reporting the file path, compute a path relative to the current working directory so the link resolves correctly in the UI (this matters when the session runs in a git worktree).
+Before reporting file paths, compute paths relative to the current working directory so links resolve correctly in the UI (this matters when the session runs in a git worktree).
 
-Replace `<abs>` with the absolute path written in Step 10, then run:
+For each of the three artifacts (`__JD.md`, `__Cover_Letter_Draft.md`, `__Cover_Letter.md`), replace `<abs>` with the absolute path written and run:
 
 ```bash
 ABS="<abs>"
@@ -233,11 +225,14 @@ PYBIN=$(command -v python3 || command -v python)
 "$PYBIN" -c "import os; print(os.path.relpath('$ABS', os.getcwd()).replace('\\', '/'))"
 ```
 
-Use the printed path as the markdown link href — e.g., `[filename](relative/path/filename.md)`.
+Use the printed paths as the markdown link hrefs — e.g., `[filename](relative/path/filename.md)`.
 
 Tell the user:
-- Where the letter was saved (as a clickable markdown link using the relative path computed above)
-- Final word count
-- Draft model used (Sonnet or Opus)
+- Where each of the three artifacts was saved (clickable markdown links using the relative paths computed above)
+- Final word count of `__Cover_Letter.md`
 - Any flags raised during fit screening that are still relevant
 - Any open items (e.g., missing salary range, unclear hiring manager name)
+
+## Step 12 — Pre-merge cleanup note
+
+Remind the user that before the application PR is merged, the `__Cover_Letter_Draft.md` artifact must be deleted from the branch — only `__JD.md` and `__Cover_Letter.md` should land on `main`. The density revision is the canonical artifact; the draft was a process aid that exists in the PR for reviewable contrast only. The skill itself does not delete the draft (the PR has not yet been opened at this point in the workflow); the cleanup is the responsibility of the author or the merge-time session, per `CLAUDE.md` "How to Draft" Step 13.
