@@ -20,35 +20,14 @@ The job description is provided in `$ARGUMENTS`. Determine input type and load a
 
 Store the extracted JD text. If the JD text is under 50 words after extraction, tell the user the source may not have loaded correctly and ask them to paste the JD directly.
 
-Also collect the JD source string (the URL, file path, or `pasted text` literal) and today's date in `YYYYMMDD` format. These are used in Step 0b.
-
-## Step 0b — Save the JD to disk
-
-Confirm the company name and role title with the user if not clearly recoverable from the JD. Slugify both for the filename: keep alphanumerics, replace spaces with single underscores, no other punctuation. Use the same `Company` and `Role` slugs in every artifact for this application.
-
-Construct the JD path:
-
-```
-C:/Users/brown/Git/job-search/applications/cover_letters/MikeBrown_YYYYMMDD__Company__Role__JD.md
-```
-
-Use today's local calendar date for `YYYYMMDD`.
-
-If a file at that path already exists, skip silently — the JD is already preserved. Otherwise, write the file with this structure:
-
-```
-<!-- source: <URL or file path or "pasted text">; fetched: YYYY-MM-DD -->
-
-<JD text verbatim>
-```
-
-The save happens before fit screening so the JD artifact is preserved even if Step 2 returns SKIP.
+Also collect the JD source string (the URL, file path, or `pasted text` literal) and today's date in `YYYYMMDD` format. These are used in Step 0b after fit screening passes.
 
 ## Step 1 — Company log check
 
-Read `C:/Users/brown/Git/job-search/context/company_log.md`. Keep this content in context — Step 11 will reuse it without re-reading the file.
+Read `C:/Users/brown/Git/job-search/context/company_log.md`. Keep this content in context — Step 10 will reuse it without re-reading the file.
+Identify the company and role from the JD text (no filename slugification needed yet — that happens in Step 0b after fit screening).
 Check the "Roles Completed" and "Roles Skipped" tables for this company and role.
-If already present, stop and tell the user: "This role is already logged as [completed/skipped]." (The JD has already been saved by Step 0b; that's acceptable — the JD artifact has standalone reference value.)
+If already present, stop and tell the user: "This role is already logged as [completed/skipped]."
 
 ## Step 2 — Fit Screening (Haiku subagent)
 
@@ -77,6 +56,28 @@ Spawn a **Haiku** subagent. Pass the extracted sections inline — do not instru
 If the subagent returns SKIP, stop and report the result to the user. Do not proceed.
 If the subagent returns FLAG, surface the flags and ask the user whether to proceed.
 If PROCEED, continue.
+
+## Step 0b — Save the JD to disk
+
+Run this step only after Step 2 returns PROCEED (or FLAG with user override). Auto-skipped JDs are not saved — the skip itself is logged in `Roles Skipped` and the JD source string remains in `$ARGUMENTS` history if needed.
+
+Confirm the company name and role title with the user if not clearly recoverable from the JD. Slugify both for the filename: keep alphanumerics, replace spaces with single underscores, no other punctuation. Use the same `Company` and `Role` slugs in every artifact for this application.
+
+Construct the JD path:
+
+```
+C:/Users/brown/Git/job-search/applications/cover_letters/MikeBrown_YYYYMMDD__Company__Role__JD.md
+```
+
+Use today's local calendar date for `YYYYMMDD`.
+
+If a file at that path already exists, compare its `<!-- source: -->` comment to the current source string (URL or file path). If they match, skip silently — the JD is already preserved. If they differ, surface a one-line note to the user ("existing JD at <path> has source <X>; this run's source is <Y> — keeping existing file") and continue without overwriting. Otherwise, write the file with this structure:
+
+```
+<!-- source: <URL or file path or "pasted text">; fetched: YYYY-MM-DD -->
+
+<JD text verbatim>
+```
 
 ## Step 3 — Read style rules
 

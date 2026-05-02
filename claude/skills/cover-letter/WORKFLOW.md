@@ -5,8 +5,7 @@ Visual reference for the `/cover-letter` skill execution path. The workflow is t
 ```mermaid
 flowchart TD
     S0["Step 0 — Load JD\nfile / PDF / URL / pasted text"]
-    S0 --> S0B["Step 0b — Save JD to disk\n__JD.md"]
-    S0B --> S1["Step 1 — Company log check"]
+    S0 --> S1["Step 1 — Company log check"]
     S1 -->|"Already logged"| STOP(["Stop"])
     S1 --> S2
 
@@ -14,8 +13,10 @@ flowchart TD
     S2 -->|"SKIP"| STOP
     S2 -->|"FLAG"| FLAG{"Proceed?"}
     FLAG -->|"No"| STOP
-    FLAG -->|"Yes"| CTX_START
-    S2 -->|"PROCEED"| CTX_START
+    FLAG -->|"Yes"| S0B
+    S2 -->|"PROCEED"| S0B
+    S0B["Step 0b — Save JD to disk\n__JD.md\n(only after fit screen passes)"]
+    S0B --> CTX_START
 
     subgraph CTX ["Context loading — session-cached where noted"]
         CTX_START["Step 3 — style_rules.md ♻"]
@@ -48,7 +49,7 @@ flowchart TD
 | Fit screening | Haiku subagent | 650 |
 | Context reads (Steps 3–5b) | Main agent | 1,735 |
 | Completeness draft | Opus subagent | 1,620 |
-| Density revision | Main agent (Sonnet) | inline |
+| Density revision | Main agent (Sonnet) | ~1,400 (no spawn; cost ≈ draft length) |
 | Style self-check | Haiku subagent | 700 |
 
 **Batch savings (letters 2-N, session-cached reads):** ~1,170 tokens eliminated per letter (Steps 3, 3b, 5, 5b skip re-reads).
