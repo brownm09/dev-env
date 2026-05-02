@@ -118,6 +118,10 @@ All hooks are **advisory** — they emit `systemMessage` reminders via exit 2 bu
 Configuration is in `claude/settings.json` (symlinked to `~/.claude/settings.json`).
 See [ADR-007](adr/007-hook-command-invocation.md) for why hooks call `python3` directly rather than via a `bash -c` wrapper.
 
+#### Machine-local permissions
+
+The `permissions.allow` block in `claude/settings.json` contains paths with a hardcoded Windows username (`C:/Users/brown/...`). These rules are functionally correct on this machine but must be updated manually when bootstrapping dev-env on a new machine or account. If scratch-dir writes or edits start prompting for permission after a re-bootstrap, update the username in every `allow` entry.
+
 ---
 
 ### UserPromptSubmit
