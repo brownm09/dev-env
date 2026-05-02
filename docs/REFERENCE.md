@@ -93,9 +93,11 @@ Reviews a PR or pasted diff for correctness, security, reliability, and maintain
 
 Drafts a cover letter for Mike Brown's job search. Accepts the job description as inline text, a file path (`.md`, `.txt`, `.docx`, `.pdf`), or a URL.
 
-**Workflow:** loads JD → checks company log for duplicates → runs fit screening (Haiku subagent) → drafts letter → runs style self-check (Haiku subagent) → logs result to `job-search/context/company_log.md`.
+**Workflow (two-pass):** loads JD → checks company log for duplicates → runs fit screening (Haiku subagent) → saves JD to disk (`__JD.md`, only on PROCEED/FLAG-override) → completeness draft via Opus subagent (`__Cover_Letter_Draft.md`) → density revision inline on Sonnet (`__Cover_Letter.md`) → runs style self-check on the final (Haiku subagent) → logs result to `job-search/context/company_log.md`.
 
-**Returns:** PROCEED / FLAG / SKIP from fit screen, then the drafted letter if proceeding.
+**Three artifacts share the stem `MikeBrown_YYYYMMDD__Company__Role__`** under `job-search/applications/cover_letters/`: `__JD.md` (kept), `__Cover_Letter_Draft.md` (deleted before PR merge), `__Cover_Letter.md` (canonical, kept).
+
+**Returns:** PROCEED / FLAG / SKIP from fit screen, then all three artifacts (JD, completeness draft, density revision) and a pre-merge cleanup reminder if proceeding.
 
 ---
 
