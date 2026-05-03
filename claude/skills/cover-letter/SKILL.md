@@ -79,25 +79,16 @@ If a file at that path already exists, compare its `<!-- source: -->` comment to
 <JD text verbatim>
 ```
 
-## Step 3 — Read style rules
+## Step 3 — Read letter writer briefing
 
-**Session cache:** If `style_rules.md` is already in context from a previous letter this session, skip this file read and re-use the content already loaded.
+**Session cache:** If `letter_writer_briefing.md` is already in context from a previous letter this session, skip this file read and re-use the content already loaded.
 
-Otherwise: Read `C:/Users/brown/Git/job-search/context/style_rules.md` in full. Internalize all rules before drafting. Do not proceed until read.
-
-## Step 3b — Read universal style rules
-
-**Session cache:** If `prose_style.md` is already in context from a previous letter this session, skip this file read and re-use the content already loaded.
-
-Otherwise: Read `C:/Users/brown/Git/job-search/context/prose_style.md` in full.
-
-The `## Universal Self-Check` section from this file will be used in Step 8 (Haiku subagent) to verify the final letter against universal prose rules that are not duplicated in the cover-letter-specific check.
+Otherwise: Read `C:/Users/brown/Git/job-search/context/letter_writer_briefing.md` in full. This file contains: universal prose rules, cover-letter-specific style rules, voice patterns, leadership positioning reference, and model letter index. Internalize all rules before drafting. Do not proceed until read.
 
 ## Step 4 — Select model letter
 
-Read `C:/Users/brown/Git/job-search/models/INDEX.md`.
-Identify the closest matching model letter for this role type.
-Read that model letter file.
+The `## Model Letter Index` table is in the briefing already in context. Identify the closest matching model letter for this role type from that table.
+Read that model letter file (always re-read — application-specific).
 Tell the user which model you selected and why.
 
 ## Step 5 — Check accomplishments
@@ -108,17 +99,7 @@ Otherwise: Read `C:/Users/brown/Git/job-search/context/accomplishments.md`.
 
 Note which accomplishments are relevant to this JD. Only claim what is listed there.
 
-## Step 5b — Voice calibration
-
-**Session cache:** If `VOICE_SYNOPSIS.md` is already in context from a previous letter this session, skip this file read and re-use the content already loaded.
-
-Otherwise: Read `C:/Users/brown/Git/job-search/models/voice/VOICE_SYNOPSIS.md`.
-
-Apply the patterns in the synopsis to calibrate opening sentence rhythm, paragraph structure, and declarative confidence. Style rules from Step 3 govern all constraints; voice calibration informs structure and rhythm only.
-
-(The full voice reference files are at `models/voice/` and can be consulted if a specific passage is needed, but the synopsis is sufficient for drafting.)
-
-## Step 5c — Filter accomplishments
+## Step 5b — Filter accomplishments
 
 From the full accomplishments list in context, identify the 4–8 rows most directly relevant to this JD. Criteria: direct match to the JD's stated technical requirements, team size expectations, industry context, or compliance posture. Exclude rows with no plausible relevance to this specific role.
 
@@ -128,16 +109,20 @@ Store the filtered set as RELEVANT_ACCOMPLISHMENTS.
 
 Spawn an Agent with `model: "opus"`. Pass all of the following inline — do not instruct the subagent to read any files:
 
-- All style rules (from Step 3, verbatim)
-- The universal self-check (from `prose_style.md` `## Universal Self-Check`, already in context from Step 3b)
+- The full briefing content (from Step 3, verbatim — includes style rules, both self-checks, voice patterns, and leadership positioning reference)
 - The model letter (from Step 4, verbatim)
-- RELEVANT_ACCOMPLISHMENTS (from Step 5c — filtered rows only, not the full list)
-- The voice synopsis (from Step 5b, verbatim)
+- RELEVANT_ACCOMPLISHMENTS (from Step 5b — filtered rows only, not the full list)
 - The full JD text (from Step 0)
 
 Subagent task:
 
 > Draft the cover letter body in Markdown. This is the **completeness draft**: prioritize narrative arc, leadership philosophy, signal calibration, and accomplishment density over compactness. No upper word cap; aim for whatever length the argument actually needs. If the draft exceeds roughly 700 words, return early with a flag — over-700 typically signals two role mandates or three threads where there should be two, and the letter plan needs revision before drafting continues.
+>
+> **Thread selection:** Before drafting, read the `## Leadership Positioning Reference` section of the briefing. Identify the 2–3 differentiating characteristics from `## Differentiating Characteristics` that most directly answer this role's mandate. Use the `## Positioning Threads by Role Context` table to confirm the right thread for the role type (Platform/DevEx, fintech, gov/civic, healthcare, startup, etc.).
+>
+> **Philosophy placement:** At least one paragraph must surface how Mike thinks about managing engineers — drawn from `## Core Philosophy` in the briefing — not just what he built. If the letter could describe a strong IC who never managed anyone, the philosophy is absent.
+>
+> **Narrative arc:** The career-arc paragraph must use the trajectory framing from `## Narrative Arc` in the briefing (scope growth + platform deepening + mission-driven moves), not parallel credential-listing ("At X I..., at Y I...").
 >
 > Apply all style rules provided:
 > - No em-dashes (anywhere, no exceptions)
@@ -175,17 +160,17 @@ If this letter is intended as a new canonical model (a new role type not yet in 
 
 ## Step 8 — Style self-check (Haiku subagent)
 
-Both style files are already in context. Extract verbatim: (a) the `## Universal Self-Check` section from `prose_style.md` and (b) the `## Cover-Letter-Specific Self-Check` section from `style_rules.md`. Pass both inline — do not instruct the subagent to read any files.
+The briefing is already in context from Step 3. Extract verbatim: (a) the `## Universal Self-Check` section from the briefing's `## Universal Prose Rules` and (b) the `## Cover-Letter-Specific Self-Check` section from the briefing's `## Cover Letter Rules`. Pass both inline — do not instruct the subagent to read any files.
 
 Spawn a **Haiku** subagent with this task:
 
 > You are performing a style self-check on a cover letter. Run both checks in sequence. Report each violation with the offending text quoted and the rule it breaks. If no violations in either check, report "PASS".
 >
-> **Check 1 — Universal Self-Check (prose_style.md):**
-> <paste the "## Universal Self-Check" section from prose_style.md verbatim>
+> **Check 1 — Universal Self-Check:**
+> <paste the "## Universal Self-Check" section from the briefing verbatim>
 >
-> **Check 2 — Cover-Letter-Specific Self-Check (style_rules.md):**
-> <paste the "## Cover-Letter-Specific Self-Check" section from style_rules.md verbatim>
+> **Check 2 — Cover-Letter-Specific Self-Check:**
+> <paste the "## Cover-Letter-Specific Self-Check" section from the briefing verbatim>
 >
 > **Letter body:**
 > <paste the Step 7 density-revised letter here>
