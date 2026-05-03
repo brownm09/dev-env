@@ -118,6 +118,10 @@ Subagent task:
 
 > Draft the cover letter body in Markdown. This is the **completeness draft**: prioritize narrative arc, leadership philosophy, signal calibration, and accomplishment density over compactness. No upper word cap; aim for whatever length the argument actually needs. If the draft exceeds roughly 700 words, return early with a flag — over-700 typically signals two role mandates or three threads where there should be two, and the letter plan needs revision before drafting continues.
 >
+> **Voice calibration first — read before applying any rules.** The model letter provided is a voice reference, not just a structural template. Before drafting, read it for positive moves: em-dash parentheticals carrying scale/pressure context within a sentence, semicolons joining claim and evidence, working aphorisms with bite, concrete-item inventories after a colon, people as grammatical subjects. Study what Mike does, then write in that mode. Style rules are second-pass correction for Claude tics — not first-pass prescription. When a rule and a move that appears in the model letter conflict, hold the move.
+>
+> **Reader-trust principle:** Write as if every sentence builds on established context. Qualifiers appear only when they introduce new information. Contextual redundancy — phrases restating frame the surrounding sentences already provide — accounts for roughly 40% of cover letter bloat.
+>
 > **Thread selection:** Before drafting, read the `## Leadership Positioning Reference` section of the briefing. Identify the 2–3 differentiating characteristics from `## Differentiating Characteristics` that most directly answer this role's mandate. Use the `## Positioning Threads by Role Context` table to confirm the right thread for the role type (Platform/DevEx, fintech, gov/civic, healthcare, startup, etc.).
 >
 > **Philosophy placement:** At least one paragraph must surface how Mike thinks about managing engineers — drawn from `## Core Philosophy` in the briefing — not just what he built. If the letter could describe a strong IC who never managed anyone, the philosophy is absent.
@@ -125,12 +129,18 @@ Subagent task:
 > **Narrative arc:** The career-arc paragraph must use the trajectory framing from `## Narrative Arc` in the briefing (scope growth + platform deepening + mission-driven moves), not parallel credential-listing ("At X I..., at Y I...").
 >
 > Apply all style rules provided:
-> - No em-dashes (anywhere, no exceptions)
+> - Em-dashes: two permitted uses (parenthetical within a sentence carrying qualifying context — not count-limited; inline credential qualification — one per artifact); two banned uses (single trailing em-dash as connector; pair where a comma or period carries the same load). Never use a single em-dash.
+> - **Aphorism placement.** Working aphorisms (Move 5 in the briefing's Positive Moves) work in three positions: the letter opener (frame before evidence), paragraph closes (earned distillation), and the letter close (portable principle). They fail at evidence paragraph openers — they perform conviction before earning it. Topic sentences opening evidence paragraphs should be formal-analytical: noun-phrase subject, precise transitive verb, measured claim.
+> - **Aphorism honesty test.** Identity-claim aphorisms that flatten distinct things into "X is Y" — where X and Y are not literally the same — are a Claude tic. *Fail:* "compliance discipline is reliability discipline." *Pass:* "compliance and reliability often require the same type of discipline." Real aphorisms compress an earned observation; identity-flatteners perform insight without substance.
+> - **Demonstrative sentence opener.** Never open a sentence with "That" as a subject. When a demonstrative pronoun is required as a sentence opener, default to "This" rather than "That" — "this" claims proximity to and ownership of the referent; "that" creates distance.
+> - **Lexicon register floor.** Substitute precise alternatives for casual verbs: `bet` → `hypothesis`; `cut` (quantity) → `reduced`; `cut` (elimination) → `eliminate` or `remove`; `axed`/`killed` → `deprecated` or `retired`; `hit` → `achieved` or `delivered`. Mike's register runs more formal-precise than Claude's defaults.
 > - No banned constructions ("The outcomes were concrete" and all variants)
-> - Do not claim Mike "led a platform directorate" — use "led platform teams responsible for..." or "led programs within the platform organization"
+> - **No wind-up constructions** — meta-framing that announces what is coming rather than landing the substance directly. Categories: action ("The work I am most proud of is X" → "X"); insight ("X has shaped how I think about Y" / "X taught me that Y" → "Y," anchor source in the next sentence if needed); credential ("X gave me the discipline this work requires" → demonstrate through the work); value/opinion ("What matters most to me is X" → "X matters" or skip the assertion).
+> - **Closing CTAs — banned and endorsed forms.** Closes invite engagement (conversation/question/understanding/thread); they do not deposit Mike's record or claim the destination. **Banned:** hedge-asks ("I would like to discuss," "I'd love to discuss," "I'd welcome the chance to discuss," "Looking forward to," "Eager/Excited to discuss"); deposit-want ("I want to bring [X] to [Y]," "I want to apply [X] to [Y]"); claim-of-fit ("[Y] is where [X] should land next"). **Endorsed (pick by letter's strongest move):** bridge ("How [my X] benefits [JD Y] is the conversation I want to have with your team"); open-question ("How [research] reshapes [JD priority] is the conversation worth having" / "What does [X] look like across [Y]? It is the question I want to take into the team"); specific-thread invitation ("[Thread] is the thread I want to take deeper with your team"); operating claim ("The first thing I want to understand in [role/team] is [topic]"); two-level close (research signal + bridge + question); mandate-reframe (no ask). Required: name something specific (never "the work"); engagement framing not transfer/claim; 1–2 sentences.
+> - **Directorate rule.** Do not claim Mike "led a platform directorate" — use "led platform teams responsible for..." or "led programs within the platform organization." The prohibition is on the *claim*, not the *word*: `directorate` is permitted as a generic structural noun in abstract claims (e.g., "The construction of a directorate informs..."), never as possessive ("my directorate") or with a verb implying Mike's leadership of one.
 > - Output is Markdown only
 >
-> Use the model letter as a structural reference; do not copy text verbatim. Adapt tone and emphasis to the specific JD.
+> Use the model letter as a structural and voice reference; do not copy text verbatim. Adapt tone and emphasis to the specific JD.
 >
 > Return only the letter body — no preamble, no commentary.
 
@@ -149,6 +159,10 @@ Same `YYYYMMDD`, `Company`, and `Role` slugs as the JD file from Step 0b.
 ## Step 7 — Density revision (Sonnet, inline)
 
 Apply the precision-then-compactness pass from `prose_style.md` (`## Precision in Word Choice` and `## Compactness Techniques`) aggressively to DRAFT. Target 400 words; 450 is the hard ceiling. The revision should sharpen verbs, remove hedges, collapse redundant clauses, and tighten transitions while preserving the narrative arc, philosophy paragraph, and signal calibration of the completeness draft.
+
+Apply the sentence-level compaction checklist from `prose_style.md` → `## Compactness Techniques` in order: (1) copular verbs doing connective work → transitive verbs; (2) "the" before generic nouns → drop; (3) "where" in formal relative clauses → "in which" or participial; (4) phrases restating frame from prior sentence → cut; (5) consecutive claim-only + evidence-only sentences → semicolon; (6) em-dash parenthetical opportunity expressed as a separate sentence → consolidate; (7) adjective where a number exists → replace; (8) parallel ownership/role claims after a main action expressed as semicolon-coordinate → participial with "respectively" (e.g., "sequenced the cross-functional path; team A owned X, team B owned Y" → "sequenced the cross-functional path spanning X and Y, respectively owned by team A and team B"). Cuts compound — run in sequence.
+
+Then apply the **mandate-reservation pass**: identify the climactic word the closing sentence lands on (typically the final or near-final noun). Audit the rest of the letter for earlier incidental uses of that word. Replace earlier uses with same-register substitutes from the Voice Lexicon so the closing word lands fresh on first reading.
 
 Save the revised letter to:
 
@@ -193,6 +207,18 @@ rm -f "$TMPFILE"
 
 The body must be at most 450 words with a 400-word target (count body paragraphs only — exclude header block, salutation, and sign-off). If over 450, trim further. Report the final word count to the user.
 
+## Step 9b — Save signal calibration card
+
+Write the completed 17-dimension signal calibration card (produced at the letter-plan step, updated if Step 8/9 changed any signals) as a standalone sidecar file:
+
+```
+C:/Users/brown/Git/job-search/applications/cover_letters/MikeBrown_YYYYMMDD__Company__Role__Signal_Card.md
+```
+
+Same `YYYYMMDD`, `Company`, and `Role` slugs as the other artifacts. This file persists permanently alongside `__JD.md`, `__Research.md`, and `__Cover_Letter.md`; it is never deleted. Do not embed the card in `__Cover_Letter.md` as an HTML comment.
+
+**Before saving:** reconcile the card against the post-self-check letter body. If Steps 8/9 changed signals (a Heavy dimension was cut, a key passage revised), update the card to match the final letter before writing.
+
 ## Step 10 — Log the application
 
 The `context/company_log.md` content is already in context from Step 1 — do not re-read the file.
@@ -221,4 +247,4 @@ Tell the user:
 
 ## Step 12 — Pre-merge cleanup note
 
-Remind the user that before the application PR is merged, the `__Cover_Letter_Draft.md` artifact must be deleted from the branch — only `__JD.md` and `__Cover_Letter.md` should land on `main`. The density revision is the canonical artifact; the draft was a process aid that exists in the PR for reviewable contrast only. The skill itself does not delete the draft (the PR has not yet been opened at this point in the workflow); the cleanup is the responsibility of the author or the merge-time session, per `CLAUDE.md` "How to Draft" Step 13.
+Remind the user that `__Cover_Letter_Draft.md` must be deleted **after the PR is reviewed and approved, before merging** — not before. The draft exists in the PR so the cut from completeness to density revision is reviewable. The following artifacts persist permanently on `main`: `__JD.md`, `__Research.md`, `__Signal_Card.md`, and `__Cover_Letter.md`. The density revision is the canonical letter artifact; the draft is a process aid only.
