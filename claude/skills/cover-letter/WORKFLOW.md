@@ -19,15 +19,13 @@ flowchart TD
     S0B --> CTX_START
 
     subgraph CTX ["Context loading — session-cached where noted"]
-        CTX_START["Step 3 — style_rules.md ♻"]
-        CTX_START --> CTX_3B["Step 3b — prose_style.md ♻"]
-        CTX_3B --> CTX_4["Step 4 — Model letter\nalways re-read"]
+        CTX_START["Step 3 — letter_writer_briefing.md ♻\nStyle rules · voice · positioning · model index"]
+        CTX_START --> CTX_4["Step 4 — Model letter\nalways re-read"]
         CTX_4 --> CTX_5["Step 5 — accomplishments.md ♻"]
-        CTX_5 --> CTX_5B["Step 5b — VOICE_SYNOPSIS.md ♻"]
-        CTX_5B --> S5C["Step 5c — Filter accomplishments\n4–8 relevant rows → RELEVANT_ACCOMPLISHMENTS"]
+        CTX_5 --> S5B["Step 5b — Filter accomplishments\n4–8 relevant rows → RELEVANT_ACCOMPLISHMENTS"]
     end
 
-    S5C --> S6["Step 6 — Completeness draft (Opus subagent)\nNarrative arc, philosophy, signal calibration\nNo word cap; 700-word soft warning\n→ __Cover_Letter_Draft.md"]
+    S5B --> S6["Step 6 — Completeness draft (Opus subagent)\nNarrative arc, philosophy, thread selection, signal calibration\nNo word cap; 700-word soft warning\n→ __Cover_Letter_Draft.md"]
     S6 --> S7["Step 7 — Density revision (Sonnet, inline)\nPrecision-then-compactness pass\nTarget 400 / ceiling 450\n→ __Cover_Letter.md"]
 
     S7 --> S8["Step 8 — Haiku self-check against final\n① Universal Self-Check\n② Cover-Letter-Specific Self-Check"]
@@ -47,12 +45,13 @@ flowchart TD
 | Phase | Agent | ~Tokens |
 |---|---|---|
 | Fit screening | Haiku subagent | 650 |
-| Context reads (Steps 3–5b) | Main agent | 1,735 |
-| Completeness draft | Opus subagent | 1,620 |
+| Context read (Step 3 — briefing) | Main agent | ~565 |
+| Context reads (Steps 4–5) | Main agent | ~1,170 |
+| Completeness draft | Opus subagent | ~1,620 |
 | Density revision | Main agent (Sonnet) | ~1,400 (no spawn; cost ≈ draft length) |
 | Style self-check | Haiku subagent | 700 |
 
-**Batch savings (letters 2-N, session-cached reads):** ~1,170 tokens eliminated per letter (Steps 3, 3b, 5, 5b skip re-reads).
+**Batch savings (letters 2-N, session-cached reads):** ~1,170 tokens eliminated per letter (Steps 3 and 5 skip re-reads).
 
 **Lifecycle of the three artifacts:**
 
