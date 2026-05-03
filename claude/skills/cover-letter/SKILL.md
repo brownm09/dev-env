@@ -130,8 +130,12 @@ Subagent task:
 >
 > Apply all style rules provided:
 > - Em-dashes: two permitted uses (parenthetical within a sentence carrying qualifying context — not count-limited; inline credential qualification — one per artifact); two banned uses (single trailing em-dash as connector; pair where a comma or period carries the same load). Never use a single em-dash.
+> - **Aphorism placement.** Working aphorisms (Move 5 in the briefing's Positive Moves) work in three positions: the letter opener (frame before evidence), paragraph closes (earned distillation), and the letter close (portable principle). They fail at evidence paragraph openers — they perform conviction before earning it. Topic sentences opening evidence paragraphs should be formal-analytical: noun-phrase subject, precise transitive verb, measured claim.
+> - **Aphorism honesty test.** Identity-claim aphorisms that flatten distinct things into "X is Y" — where X and Y are not literally the same — are a Claude tic. *Fail:* "compliance discipline is reliability discipline." *Pass:* "compliance and reliability often require the same type of discipline." Real aphorisms compress an earned observation; identity-flatteners perform insight without substance.
+> - **Demonstrative sentence opener.** Never open a sentence with "That" as a subject. When a demonstrative pronoun is required as a sentence opener, default to "This" rather than "That" — "this" claims proximity to and ownership of the referent; "that" creates distance.
+> - **Lexicon register floor.** Substitute precise alternatives for casual verbs: `bet` → `hypothesis`; `cut` (quantity) → `reduced`; `cut` (elimination) → `eliminate` or `remove`; `axed`/`killed` → `deprecated` or `retired`; `hit` → `achieved` or `delivered`. Mike's register runs more formal-precise than Claude's defaults.
 > - No banned constructions ("The outcomes were concrete" and all variants)
-> - Do not claim Mike "led a platform directorate" — use "led platform teams responsible for..." or "led programs within the platform organization"
+> - **Directorate rule.** Do not claim Mike "led a platform directorate" — use "led platform teams responsible for..." or "led programs within the platform organization." The prohibition is on the *claim*, not the *word*: `directorate` is permitted as a generic structural noun in abstract claims (e.g., "The construction of a directorate informs..."), never as possessive ("my directorate") or with a verb implying Mike's leadership of one.
 > - Output is Markdown only
 >
 > Use the model letter as a structural and voice reference; do not copy text verbatim. Adapt tone and emphasis to the specific JD.
@@ -154,7 +158,9 @@ Same `YYYYMMDD`, `Company`, and `Role` slugs as the JD file from Step 0b.
 
 Apply the precision-then-compactness pass from `prose_style.md` (`## Precision in Word Choice` and `## Compactness Techniques`) aggressively to DRAFT. Target 400 words; 450 is the hard ceiling. The revision should sharpen verbs, remove hedges, collapse redundant clauses, and tighten transitions while preserving the narrative arc, philosophy paragraph, and signal calibration of the completeness draft.
 
-Apply the sentence-level compaction checklist from `prose_style.md` → `## Compactness Techniques` in order: (1) copular verbs doing connective work → transitive verbs; (2) "the" before generic nouns → drop; (3) "where" in formal relative clauses → "in which" or participial; (4) phrases restating frame from prior sentence → cut; (5) consecutive claim-only + evidence-only sentences → semicolon; (6) em-dash parenthetical opportunity expressed as a separate sentence → consolidate; (7) adjective where a number exists → replace. Cuts compound — run in sequence.
+Apply the sentence-level compaction checklist from `prose_style.md` → `## Compactness Techniques` in order: (1) copular verbs doing connective work → transitive verbs; (2) "the" before generic nouns → drop; (3) "where" in formal relative clauses → "in which" or participial; (4) phrases restating frame from prior sentence → cut; (5) consecutive claim-only + evidence-only sentences → semicolon; (6) em-dash parenthetical opportunity expressed as a separate sentence → consolidate; (7) adjective where a number exists → replace; (8) parallel ownership/role claims after a main action expressed as semicolon-coordinate → participial with "respectively" (e.g., "sequenced the cross-functional path; team A owned X, team B owned Y" → "sequenced the cross-functional path spanning X and Y, respectively owned by team A and team B"). Cuts compound — run in sequence.
+
+Then apply the **mandate-reservation pass**: identify the climactic word the closing sentence lands on (typically the final or near-final noun). Audit the rest of the letter for earlier incidental uses of that word. Replace earlier uses with same-register substitutes from the Voice Lexicon so the closing word lands fresh on first reading.
 
 Save the revised letter to:
 
