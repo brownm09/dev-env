@@ -68,6 +68,7 @@ Autonomous scheduled agents in `claude/routines/`. No user interaction.
 |---|---|---|
 | Daily midnight UTC | `daily-journal-compose` | Assembles stub files into canonical journal entries and opens PRs |
 | Sunday midnight UTC | `prune-stale-worktrees` | Removes merged `claude/*` worktrees |
+| Nightly 3:00 AM local | `nightly-research` | Researches pending topics from the queue and writes structured markdown notes to `research-notes/` |
 
 ## Adding new configs
 
