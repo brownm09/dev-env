@@ -251,6 +251,24 @@ Removes `claude/*` worktrees whose branches are fully merged into `origin/main`.
 
 ---
 
+### nightly-research
+
+**Schedule:** `0 8 * * *` UTC (3:00 AM CDT; update to `0 9 * * *` for CST in winter)
+
+Reads `C:/Users/brown/Git/research-notes/research-queue.md`, processes pending topics top-to-bottom using `WebSearch` and `WebFetch`, writes one structured markdown note per topic to `C:/Users/brown/Git/research-notes/notes/YYYY-MM-DD/`, updates the queue (completed items move to Done; topics with no confirmed sources are annotated but kept in Pending for manual review), and commits to the local research-notes repo.
+
+**Model:** Sonnet. Research and synthesis run directly in the main agent — no subagent spawns, no approval gate.
+
+**Time budget:** 5 hours wall clock. Topics that cannot start with < 10 minutes remaining are deferred to the next run.
+
+**Failure handling:** a topic with zero confirmed primary sources is kept in Pending with an `<!-- attempted YYYY-MM-DD, no sources found -->` annotation so the user can review, rephrase, or remove it manually.
+
+**Output path:** `C:/Users/brown/Git/research-notes/notes/YYYY-MM-DD/<slug>.md`
+
+**Queue path:** `C:/Users/brown/Git/research-notes/research-queue.md`
+
+---
+
 ## Utilities
 
 On-demand scripts — not wired to any event. Run manually or from other scripts.
