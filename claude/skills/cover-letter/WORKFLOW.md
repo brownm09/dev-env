@@ -51,7 +51,7 @@ flowchart TD
 | Density revision | Main agent (Sonnet) | ~1,400 (no spawn; cost ≈ draft length) |
 | Style self-check | Haiku subagent | 700 |
 
-**Batch savings (letters 2-N, session-cached reads):** ~1,735 tokens eliminated per letter (Steps 3 and 5 skip re-reads).
+**Batch savings (letters 2-N, session-cached reads):** ~1,170 tokens eliminated per letter (Steps 3 and 5 skip re-reads).
 
 **Lifecycle of the three artifacts:**
 
