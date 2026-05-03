@@ -2,6 +2,8 @@
 name: nightly-research
 description: Research pending topics from the queue overnight, write structured markdown notes, and update the queue with completion status.
 schedule: "0 8 * * *"
+# CDT (Apr–Nov): 0 8 * * *   → 3:00 AM local
+# CST (Nov–Mar): 0 9 * * *   → 3:00 AM local
 ---
 
 Research pending topics from the queue file. Run fully autonomously — never call AskUserQuestion.
@@ -145,7 +147,7 @@ Generate the slug from the title:
 
 Example: `"B-Tree vs LSM-Tree Storage Engines"` → `b-tree-vs-lsm-tree-storage-engines`
 
-Write the note to `${NOTES_DIR}/<slug>.md`. If a file at that path already exists (same topic run twice on the same day), append `-2` to the slug.
+Write the note to `${NOTES_DIR}/<slug>.md`. If a file at that path already exists, increment a counter suffix until a free name is found: `<slug>-2.md`, `<slug>-3.md`, etc.
 
 ---
 
@@ -202,15 +204,27 @@ node "$UPDATE_SCRIPT" && rm -f "$UPDATE_SCRIPT"
 
 ## Step 4 — Commit
 
+Before committing, check whether any note files were actually written. If `notes/${RUN_DATE}/` is empty (all topics failed), skip the `git add notes/` step — git does not track empty directories and the commit would fail with "nothing to commit."
+
 ```bash
 cd C:/Users/brown/Git/research-notes
-git add notes/${RUN_DATE}/ research-queue.md
+
+# Stage notes only if any were written
+if [ -n "$(ls -A "notes/${RUN_DATE}" 2>/dev/null)" ]; then
+  git add "notes/${RUN_DATE}/"
+fi
+
+# Always stage the queue file (may have failure annotations even if no notes were written)
+git add research-queue.md
+
 git commit -m "research: ${RUN_DATE} — <N> topic(s): <comma-separated titles>"
 ```
 
 The commit message includes the count and titles so the git log is scannable without opening files.
 
-If the commit fails: send a push notification — "nightly-research: git commit failed — notes written to ${NOTES_DIR} but not committed" — and exit with a non-zero status.
+If the commit fails with "nothing to commit" (queue was empty or unchanged): this is not an error — exit cleanly.
+
+If the commit fails for any other reason: send a push notification — "nightly-research: git commit failed — notes at ${NOTES_DIR}" — and exit with a non-zero status.
 
 **Do NOT push to a remote.** This is a local-only repo during the testing phase.
 
@@ -229,10 +243,10 @@ nightly-research complete — <N> researched, <M> failed, <K> remain (<RUN_DATE>
 
 If zero topics were completed: "nightly-research: 0 topics completed on <RUN_DATE> — check scratch logs for errors."
 
-Clean up scratch files created during this run:
+Clean up any residual scratch files from this run (the update script is already deleted inline in Step 3, but this catches anything left by an interrupted run):
 
 ```bash
-rm -f "${SCRATCH}/nightly-research-"*"-$$."*
+rm -f "${SCRATCH}/nightly-research-update-"*.js
 ```
 
 ---
