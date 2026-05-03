@@ -30,9 +30,10 @@ flowchart TD
 
     S7 --> S8["Step 8 — Haiku self-check against final\n① Universal Self-Check\n② Cover-Letter-Specific Self-Check"]
     S8 --> S9["Step 9 — Fix violations + word count ≤ 450"]
-    S9 --> S10["Step 10 — Log application\n(company_log.md already in context)"]
-    S10 --> S11["Step 11 — Report\nthree artifact links · word count · flags"]
-    S11 --> S12["Step 12 — Pre-merge cleanup note\n__Cover_Letter_Draft.md must be deleted before PR merge"]
+    S9 --> S9B["Step 9b — Save signal calibration card\n→ __Signal_Card.md\n(reconcile against final letter before saving)"]
+    S9B --> S10["Step 10 — Log application\n(company_log.md already in context)"]
+    S10 --> S11["Step 11 — Report\nfour artifact links · word count · flags"]
+    S11 --> S12["Step 12 — Pre-merge cleanup note\n__Cover_Letter_Draft.md deleted AFTER PR reviewed and approved\n__JD.md · __Research.md · __Signal_Card.md · __Cover_Letter.md kept"]
 ```
 
 **Legend:**
@@ -53,12 +54,14 @@ flowchart TD
 
 **Batch savings (letters 2-N, session-cached reads):** ~1,170 tokens eliminated per letter (Steps 3 and 5 skip re-reads).
 
-**Lifecycle of the three artifacts:**
+**Lifecycle of artifacts:**
 
 | Artifact | Step | In PR? | After merge? |
 |---|---|---|---|
 | `__JD.md` | 0b | yes | kept |
-| `__Cover_Letter_Draft.md` | 6 | yes (cut to final is reviewable) | **deleted** |
+| `__Research.md` | 2b | yes | kept |
+| `__Cover_Letter_Draft.md` | 6 | yes (cut to final is reviewable) | **deleted after review/approval** |
 | `__Cover_Letter.md` | 7, post-revision | yes | kept (canonical) |
+| `__Signal_Card.md` | 9b | yes | kept |
 
 See [ADR 009](../../docs/adr/009-cover-letter-token-efficiency.md) for the original token-efficiency analysis (predates the two-pass workflow; numbers above reflect current flow).

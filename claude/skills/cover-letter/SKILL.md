@@ -118,6 +118,10 @@ Subagent task:
 
 > Draft the cover letter body in Markdown. This is the **completeness draft**: prioritize narrative arc, leadership philosophy, signal calibration, and accomplishment density over compactness. No upper word cap; aim for whatever length the argument actually needs. If the draft exceeds roughly 700 words, return early with a flag — over-700 typically signals two role mandates or three threads where there should be two, and the letter plan needs revision before drafting continues.
 >
+> **Voice calibration first — read before applying any rules.** The model letter provided is a voice reference, not just a structural template. Before drafting, read it for positive moves: em-dash parentheticals carrying scale/pressure context within a sentence, semicolons joining claim and evidence, working aphorisms with bite, concrete-item inventories after a colon, people as grammatical subjects. Study what Mike does, then write in that mode. Style rules are second-pass correction for Claude tics — not first-pass prescription. When a rule and a move that appears in the model letter conflict, hold the move.
+>
+> **Reader-trust principle:** Write as if every sentence builds on established context. Qualifiers appear only when they introduce new information. Contextual redundancy — phrases restating frame the surrounding sentences already provide — accounts for roughly 40% of cover letter bloat.
+>
 > **Thread selection:** Before drafting, read the `## Leadership Positioning Reference` section of the briefing. Identify the 2–3 differentiating characteristics from `## Differentiating Characteristics` that most directly answer this role's mandate. Use the `## Positioning Threads by Role Context` table to confirm the right thread for the role type (Platform/DevEx, fintech, gov/civic, healthcare, startup, etc.).
 >
 > **Philosophy placement:** At least one paragraph must surface how Mike thinks about managing engineers — drawn from `## Core Philosophy` in the briefing — not just what he built. If the letter could describe a strong IC who never managed anyone, the philosophy is absent.
@@ -125,12 +129,12 @@ Subagent task:
 > **Narrative arc:** The career-arc paragraph must use the trajectory framing from `## Narrative Arc` in the briefing (scope growth + platform deepening + mission-driven moves), not parallel credential-listing ("At X I..., at Y I...").
 >
 > Apply all style rules provided:
-> - No em-dashes (anywhere, no exceptions)
+> - Em-dashes: two permitted uses (parenthetical within a sentence carrying qualifying context — not count-limited; inline credential qualification — one per artifact); two banned uses (single trailing em-dash as connector; pair where a comma or period carries the same load). Never use a single em-dash.
 > - No banned constructions ("The outcomes were concrete" and all variants)
 > - Do not claim Mike "led a platform directorate" — use "led platform teams responsible for..." or "led programs within the platform organization"
 > - Output is Markdown only
 >
-> Use the model letter as a structural reference; do not copy text verbatim. Adapt tone and emphasis to the specific JD.
+> Use the model letter as a structural and voice reference; do not copy text verbatim. Adapt tone and emphasis to the specific JD.
 >
 > Return only the letter body — no preamble, no commentary.
 
@@ -149,6 +153,8 @@ Same `YYYYMMDD`, `Company`, and `Role` slugs as the JD file from Step 0b.
 ## Step 7 — Density revision (Sonnet, inline)
 
 Apply the precision-then-compactness pass from `prose_style.md` (`## Precision in Word Choice` and `## Compactness Techniques`) aggressively to DRAFT. Target 400 words; 450 is the hard ceiling. The revision should sharpen verbs, remove hedges, collapse redundant clauses, and tighten transitions while preserving the narrative arc, philosophy paragraph, and signal calibration of the completeness draft.
+
+Apply the sentence-level compaction checklist from `prose_style.md` → `## Compactness Techniques` in order: (1) copular verbs doing connective work → transitive verbs; (2) "the" before generic nouns → drop; (3) "where" in formal relative clauses → "in which" or participial; (4) phrases restating frame from prior sentence → cut; (5) consecutive claim-only + evidence-only sentences → semicolon; (6) em-dash parenthetical opportunity expressed as a separate sentence → consolidate; (7) adjective where a number exists → replace. Cuts compound — run in sequence.
 
 Save the revised letter to:
 
@@ -193,6 +199,18 @@ rm -f "$TMPFILE"
 
 The body must be at most 450 words with a 400-word target (count body paragraphs only — exclude header block, salutation, and sign-off). If over 450, trim further. Report the final word count to the user.
 
+## Step 9b — Save signal calibration card
+
+Write the completed 17-dimension signal calibration card (produced at the letter-plan step, updated if Step 8/9 changed any signals) as a standalone sidecar file:
+
+```
+C:/Users/brown/Git/job-search/applications/cover_letters/MikeBrown_YYYYMMDD__Company__Role__Signal_Card.md
+```
+
+Same `YYYYMMDD`, `Company`, and `Role` slugs as the other artifacts. This file persists permanently alongside `__JD.md`, `__Research.md`, and `__Cover_Letter.md`; it is never deleted. Do not embed the card in `__Cover_Letter.md` as an HTML comment.
+
+**Before saving:** reconcile the card against the post-self-check letter body. If Steps 8/9 changed signals (a Heavy dimension was cut, a key passage revised), update the card to match the final letter before writing.
+
 ## Step 10 — Log the application
 
 The `context/company_log.md` content is already in context from Step 1 — do not re-read the file.
@@ -221,4 +239,4 @@ Tell the user:
 
 ## Step 12 — Pre-merge cleanup note
 
-Remind the user that before the application PR is merged, the `__Cover_Letter_Draft.md` artifact must be deleted from the branch — only `__JD.md` and `__Cover_Letter.md` should land on `main`. The density revision is the canonical artifact; the draft was a process aid that exists in the PR for reviewable contrast only. The skill itself does not delete the draft (the PR has not yet been opened at this point in the workflow); the cleanup is the responsibility of the author or the merge-time session, per `CLAUDE.md` "How to Draft" Step 13.
+Remind the user that `__Cover_Letter_Draft.md` must be deleted **after the PR is reviewed and approved, before merging** — not before. The draft exists in the PR so the cut from completeness to density revision is reviewable. The following artifacts persist permanently on `main`: `__JD.md`, `__Research.md`, `__Signal_Card.md`, and `__Cover_Letter.md`. The density revision is the canonical letter artifact; the draft is a process aid only.
