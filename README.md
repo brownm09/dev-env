@@ -37,6 +37,7 @@ Custom slash commands loaded from `claude/skills/`. Invoke with `/skill-name [ar
 | [`/review <PR-URL> [flags]`](claude/skills/review/SKILL.md) | Reviews a PR for correctness, security, reliability, and maintainability. Posts report as PR comment by default. |
 | [`/cover-letter [JD]`](claude/skills/cover-letter/SKILL.md) | Drafts a cover letter for a job application. Runs fit screening and style check as Haiku subagents. |
 | [`/fit-screen [JD]`](claude/skills/fit-screen/SKILL.md) | Fit-screens a job description. Returns PROCEED / FLAG / SKIP. |
+| [`/journal-onboard [slug]`](claude/skills/journal-onboard/SKILL.md) | Scaffolds `sessions/<project>/` in engineering-journal and optionally creates `.claude/CLAUDE.md` in the project repo. |
 
 ## Hooks
 
@@ -47,6 +48,7 @@ All hooks are advisory — none block tool execution.
 |---|---|---|
 | UserPromptSubmit | `dev-env-sync.py` | Fast-forward pulls dev-env to `origin/main` at session start |
 | UserPromptSubmit | `new-day-journal-check.py` | Warns if stale `draft/*` journal branches exist on origin |
+| UserPromptSubmit | `journal-onboard-check.py` | Warns when the active project has no journal home in engineering-journal |
 | UserPromptSubmit | `turn-count-hook.py` | Warns when session context token count exceeds threshold |
 | UserPromptSubmit | `multi-worktree-alert.py` | Lists active worktrees in `repo:branch` format when ≥2 are open |
 | PreToolUse (Bash) | `pre-commit-branch-check.py` | Emits current branch as a checkpoint before `git commit` |
