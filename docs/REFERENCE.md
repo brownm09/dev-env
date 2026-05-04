@@ -85,34 +85,6 @@ Reviews a PR or pasted diff for correctness, security, reliability, and maintain
 
 ---
 
-### /cover-letter
-
-```
-/cover-letter [JD text | file path | PDF path | URL]
-```
-
-Drafts a cover letter for Mike Brown's job search. Accepts the job description as inline text, a file path (`.md`, `.txt`, `.docx`, `.pdf`), or a URL.
-
-**Workflow (two-pass):** loads JD → checks company log for duplicates → runs fit screening (Haiku subagent) → saves JD to disk (`__JD.md`, only on PROCEED/FLAG-override) → completeness draft via Opus subagent (`__Cover_Letter_Draft.md`) → density revision inline on Sonnet (`__Cover_Letter.md`) → runs style self-check on the final (Haiku subagent) → logs result to `job-search/context/company_log.md`.
-
-**Three artifacts share the stem `MikeBrown_YYYYMMDD__Company__Role__`** under `job-search/applications/cover_letters/`: `__JD.md` (kept), `__Cover_Letter_Draft.md` (deleted before PR merge), `__Cover_Letter.md` (canonical, kept).
-
-**Returns:** PROCEED / FLAG / SKIP from fit screen, then all three artifacts (JD, completeness draft, density revision) and a pre-merge cleanup reminder if proceeding.
-
----
-
-### /fit-screen
-
-```
-/fit-screen [JD text | file path | PDF path | URL]
-```
-
-Runs fit screening only — a lighter-weight version of the first step of `/cover-letter`. Useful for quickly evaluating a role before drafting.
-
-**Returns:** `PROCEED`, `FLAG`, or `SKIP` with structured sections covering auto-skip triggers, soft flags, fit summary, and recommendation.
-
----
-
 ### /journal-onboard
 
 ```
@@ -130,6 +102,7 @@ Scaffolds a new project's journal home (`sessions/<slug>/`) in engineering-journ
 **Detection:** the `journal-onboard-check.py` hook emits an advisory on the first prompt of any session in a repo that lacks a journal home.
 
 ---
+
 
 ## Hooks
 
