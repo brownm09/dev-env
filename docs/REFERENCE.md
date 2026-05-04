@@ -113,6 +113,24 @@ Runs fit screening only — a lighter-weight version of the first step of `/cove
 
 ---
 
+### /journal-onboard
+
+```
+/journal-onboard [project-slug]
+```
+
+Scaffolds a new project's journal home (`sessions/<slug>/`) in engineering-journal and optionally creates `.claude/CLAUDE.md` in the project repo.
+
+**Slug inference:** defaults to the active git repo's name. Pass an explicit slug to override (useful when the repo name and journal slug differ).
+
+**Produces:** `sessions/<slug>/README.md` in engineering-journal (committed and pushed directly to `main`), and optionally `.claude/CLAUDE.md` in the current project repo.
+
+**Template:** reads `~/.claude/templates/project-claude.md` when scaffolding a new CLAUDE.md, substituting `<REPO_NAME>` and `<PROJECT_SLUG>`.
+
+**Detection:** the `journal-onboard-check.py` hook emits an advisory on the first prompt of any session in a repo that lacks a journal home.
+
+---
+
 ## Hooks
 
 All hooks are **advisory** — they emit `systemMessage` reminders via exit 2 but do not block tool execution. No hook exits with a non-zero code that prevents the matched tool from running.
@@ -134,6 +152,7 @@ Fires on every user prompt, before Claude processes it.
 |--------|-------------|
 | `dev-env-sync.py` | Fast-forward pulls the dev-env repo to `origin/main` so symlinked tooling stays current. Skips if a feature branch is active in the main worktree. [ADR-006](adr/006-dev-env-sync-on-every-prompt.md) |
 | `new-day-journal-check.py` | Checks for stale `draft/*` branches on `origin/engineering-journal`. Emits a one-line warning if any are found; continues silently otherwise. |
+| `journal-onboard-check.py` | Checks whether the active git repo has a `sessions/<repo-name>/` directory in engineering-journal. Emits a one-line advisory and `/journal-onboard` hint if not. Fires once per session. |
 | `turn-count-hook.py` | Warns when session context accumulates past a threshold. Primary signal: token count; secondary: turn count. Configurable via `"turn_threshold"` in `.claude/hook-config.json` (default: 50). |
 | `multi-worktree-alert.py` | When ≥2 git worktrees are active, emits a list in `repo:branch` format, starring the current one. Fires on every prompt. |
 
