@@ -2,7 +2,7 @@
 name: journal-onboard
 description: Scaffold a new project's journal home (sessions/<project>/) in engineering-journal and optionally create a .claude/CLAUDE.md in the project repo.
 argument-hint: "[project-slug]"
-allowed-tools: Read Write Bash Glob
+allowed-tools: Read Write Edit Bash Glob
 ---
 
 You are implementing the `/journal-onboard` workflow: create a journal home for a new project in the engineering-journal repo and optionally scaffold `.claude/CLAUDE.md` in the project repo.
@@ -102,7 +102,7 @@ If no: note that the journal path convention requires `.claude/CLAUDE.md` to con
 Ask the user:
 > "`.claude/CLAUDE.md` exists but has no journal path. Append the `## Journal` section? (yes/no)"
 
-If yes: append to the file:
+If yes: use the Edit tool to append to the file. Add the following block at the end:
 ```markdown
 
 ## Journal

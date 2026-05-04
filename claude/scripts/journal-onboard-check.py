@@ -56,6 +56,7 @@ def main() -> None:
         if flag_path.exists():
             sys.exit(0)
         try:
+            SCRATCH.mkdir(parents=True, exist_ok=True)
             flag_path.touch()
         except Exception:
             pass
