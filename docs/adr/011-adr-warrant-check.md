@@ -25,7 +25,7 @@ Add an explicit "ADR-warrant check" rule to global `claude/CLAUDE.md` `## Git Wo
 
 The criteria for "warrants an ADR" are written to be auditable, not exhaustive:
 
-- Changes a non-negotiable rule, hook, skill, or settings value documented in `claude/`.
+- Changes a rule, hook, skill, or settings value documented in `claude/`.
 - Introduces or restructures a directory under `claude/`.
 - Establishes or changes a workflow rule that other CLAUDE.md files reference.
 - Rationale would be hard to recover from `git log` alone six months later.
@@ -49,7 +49,7 @@ The rule is enforcement-style ("never merge a qualifying change without an ADR r
 
 - Risk of ADR bloat if criteria 4 ("hard to recover from `git log`") is interpreted loosely. Mitigation: the other three criteria are concrete; criterion 4 is a backstop, not the primary trigger.
 - Three checkpoints means three opportunities to remember — but also three opportunities to forget. Mitigation: the checkpoint rule is colocated with `gh pr create` and `gh pr merge` rules in `## Git Workflow`, so it's read alongside the operations that trigger it.
-- Adds friction to small structural changes that don't actually need an ADR. Mitigation: criterion 1 ("non-negotiable rule") and criterion 2 ("directory restructure") rule out routine bug fixes and feature additions inside an existing structure; the rule should not fire on most PRs.
+- Adds friction to small structural changes that don't actually need an ADR. Mitigation: criterion 1 ("any rule/hook/skill/settings change") combined with criterion 2 ("directory restructure") rule out routine bug fixes and feature additions inside an existing structure; the rule should not fire on most PRs.
 
 ---
 
