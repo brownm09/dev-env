@@ -16,3 +16,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [009](009-cover-letter-token-efficiency.md) | Cover Letter Token Efficiency: Inline Drafting and Session Reuse | 2026-05-01 | Accepted |
 | [010](010-skill-tmpfile-allow-rule.md) | Skill Temp File Writes: `Bash(TMPFILE=*)` Allow Rule | 2026-05-02 | Accepted |
 | [011](011-adr-warrant-check.md) | ADR-Warrant Check at Plan, PR-Open, and PR-Merge Checkpoints | 2026-05-03 | Accepted |
+| [012](012-two-pass-voice-analysis-workflow.md) | Two-Pass Voice Analysis Workflow | 2026-05-03 | Accepted |
