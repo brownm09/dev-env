@@ -1,7 +1,7 @@
 # ADR 009 — Cover Letter Token Efficiency: Inline Drafting and Session Reuse
 
 **Date:** 2026-05-01  
-**Status:** Accepted
+**Status:** Moved — the `/cover-letter` skill was removed from dev-env in [PR #172](https://github.com/brownm09/dev-env/pull/172) (2026-05-03) and is now maintained in `brownm09/career-playbook/.claude/skills/cover-letter/`. This ADR records decisions made while the skill lived in dev-env.
 
 ---
 
