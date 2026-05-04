@@ -1,9 +1,9 @@
 ---
 name: nightly-cover-letters
-description: Nightly batch cover-letter processing — runs /batch-cover-letters on the career-playbook repo at 11 PM local. Produces a PR with completed artifacts and flags items needing Mike's review in _review_queue.md.
-schedule: "0 4 * * *"
-# CDT (Apr–Nov): 0 4 * * *  → 11:00 PM CDT (UTC−5)
-# CST (Nov–Mar): 0 5 * * *  → 11:00 PM CST (UTC−6)
+description: Nightly batch cover-letter processing — runs /batch-cover-letters on the career-playbook repo at 2 AM local. Produces a PR with completed artifacts and flags items needing Mike's review in _review_queue.md.
+schedule: "0 7 * * *"
+# CDT (Apr–Nov): 0 7 * * *  → 2:00 AM CDT (UTC−5) — update to "0 8 * * *" at Nov DST-end; revert Mar DST-start
+# CST (Nov–Mar): 0 8 * * *  → 2:00 AM CST (UTC−6)
 ---
 
 Run the batch cover-letter pipeline on the career-playbook repo.
@@ -16,10 +16,28 @@ Never call AskUserQuestion. Run fully autonomously.
 REPO="C:/Users/brown/Git/career-playbook"
 ```
 
-Verify the repo exists and the `main` branch is up to date:
+Verify the repo directory exists:
+
+```bash
+if [ ! -d "$REPO" ]; then
+  # send push notification and exit
+fi
+```
+
+If the directory does not exist: send a push notification —
+"nightly-cover-letters: repo not found at ${REPO} — skipping batch run" — and exit.
+
+Check out `main` and ensure it is up to date:
 
 ```bash
 git -C "$REPO" checkout main
+```
+
+If checkout fails (e.g., `main` is checked out in a worktree): send a push notification —
+"nightly-cover-letters: git checkout main failed — is main in a worktree? Check ${REPO}" —
+and exit.
+
+```bash
 git -C "$REPO" pull origin main
 ```
 
