@@ -5,7 +5,17 @@
       "Write(C:/Users/brown/.claude/scratch/**)",
       "Edit(C:/Users/brown/.claude/scratch/**)",
       "Bash(gh pr comment *)",
-      "Bash(TMPFILE=*)"
+      "Bash(TMPFILE=*)",
+      "Bash(git -C * fetch *)",
+      "Bash(git -C * show *)",
+      "Bash(git -C * ls-remote *)",
+      "Bash(git -C * log *)",
+      "Bash(git -C * status *)",
+      "Bash(git -C * merge-base *)",
+      "Bash(git -C * diff *)",
+      "Bash(git -C * remote *)",
+      "Bash(git -C * branch --show-current)",
+      "Bash(python3 -m py_compile *)"
     ]
   },
   "hooks": {
