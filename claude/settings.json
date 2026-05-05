@@ -7,6 +7,7 @@
       "Edit(C:/Users/brown/Git/**)",
       "Bash(gh pr comment *)",
       "Bash(gh project item-list *)",
+      "Bash(node -e *)",
       "Bash(rm -f C:/Users/brown/.claude/scratch/*)",
       "Bash(TMPFILE=*)",
       "Bash(git -C * fetch *)",
