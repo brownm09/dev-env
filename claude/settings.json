@@ -4,6 +4,7 @@
     "allow": [
       "Write(C:/Users/brown/.claude/scratch/**)",
       "Edit(C:/Users/brown/.claude/scratch/**)",
+      "Edit(C:/Users/brown/Git/**)",
       "Bash(gh pr comment *)",
       "Bash(TMPFILE=*)",
       "Bash(git -C * fetch *)",
