@@ -42,6 +42,7 @@ The rule is enforcement-style ("never merge a qualifying change without an ADR r
 
 - Decisions get recorded at the cheapest possible moment — when the rationale is still in context. The 10–20 minutes spent writing an ADR at plan-approval time is recovered the first time a future change is paused to read it.
 - Three checkpoints span the change lifecycle, so a decision that crystallizes mid-implementation isn't lost.
+- Lookup cost is reduced by scanning `docs/adr/INDEX.md` tags first — individual ADR files are opened only on a tag match, reducing the common "not warranted" case to a single index read.
 - The criteria are concrete enough to evaluate against (4 clauses), avoiding the "what counts as architectural" debate.
 - Project-level ADRs (per the precedent set in career-playbook#89) keep project-specific decisions out of dev-env's catalog while still benefiting from the same checkpoint discipline.
 
