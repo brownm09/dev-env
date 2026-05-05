@@ -171,7 +171,7 @@ To look up an item ID (e.g., when moving to In Progress or Done in a new session
 
 ```bash
 TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
-gh project item-list 3 --owner brownm09 --format json > "$TMPFILE"
+gh project item-list 3 --owner brownm09 --format json --limit 1000 > "$TMPFILE"
 ITEM_ID=$(node -e "
   const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8'));
   const item=d.items.find(i=>i.content&&i.content.number===<N>);
