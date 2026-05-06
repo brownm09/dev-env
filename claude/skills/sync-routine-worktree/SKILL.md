@@ -21,46 +21,52 @@ If `VERIFY_FILE` is omitted, skip the post-sync existence check.
 
 ---
 
+## Push notifications
+
+Every abort path below sends a push notification using the `PushNotification` tool: `title` = `${PREFIX}`, `body` = the message string shown in the step. The notification is the user's only signal that an autonomous run aborted, so it must fire on every ABORT path before the skill returns.
+
+---
+
 ## Behavior
 
-1. **Verify `$REPO` exists as a directory.** If not, push-notify `${PREFIX}: repo not found at ${REPO} — skipping run` and return **ABORT**.
+1. **Verify `${REPO}` exists as a directory.** If not, push-notify `${PREFIX}: repo not found at ${REPO} — skipping run` and return **ABORT**.
 
 2. **Fetch `origin/main`:**
    ```bash
-   git -C "$REPO" fetch origin main
+   git -C "${REPO}" fetch origin main
    ```
    On failure (network error, auth issue), push-notify `${PREFIX}: git fetch failed — check ${REPO}` and return **ABORT**.
 
 3. **Determine the current branch:**
    ```bash
-   BRANCH=$(git -C "$REPO" branch --show-current)
+   BRANCH=$(git -C "${REPO}" branch --show-current)
    ```
 
 4. **Choose a sync strategy based on `BRANCH`:**
 
    - **Claude-managed worktree branch (`claude/*`):** these branches exist only to host an autonomous run; `--hard` reset is authorized.
      ```bash
-     git -C "$REPO" reset --hard origin/main
+     git -C "${REPO}" reset --hard origin/main
      ```
 
-   - **`main`:** fast-forward only, never merge.
+   - **`main`:** fast-forward only, never merge. Step 2 already fetched, so merge directly against the fetched ref rather than re-fetching via `pull`.
      ```bash
-     git -C "$REPO" pull --ff-only origin main
+     git -C "${REPO}" merge --ff-only origin/main
      ```
 
-   - **Anything else** (a feature branch, a draft branch, etc.): rebase onto `origin/main`. If conflicts arise, abort the rebase and exit cleanly.
+   - **Anything else** (a feature branch, a draft branch, etc.): rebase onto `origin/main`. If the rebase fails for any reason — merge conflict, dirty working tree, or anything else — abort cleanly and exit.
      ```bash
-     git -C "$REPO" rebase origin/main
+     git -C "${REPO}" rebase origin/main
      ```
      If `git rebase` exits non-zero:
      ```bash
-     git -C "$REPO" rebase --abort
+     git -C "${REPO}" rebase --abort
      ```
-     Then push-notify `${PREFIX}: sync conflict on ${BRANCH} — manual intervention required` and return **ABORT**.
+     Then push-notify `${PREFIX}: rebase failed on ${BRANCH} — manual intervention required` and return **ABORT**. The message is intentionally broad: rebase can fail for conflicts, uncommitted changes, or other reasons; the user investigates from the worktree state.
 
 5. **Verify the file the routine plans to read** (only if `VERIFY_FILE` is set):
    ```bash
-   if [ ! -f "$REPO/$VERIFY_FILE" ]; then
+   if [ ! -f "${REPO}/${VERIFY_FILE}" ]; then
      # push-notify and abort
    fi
    ```

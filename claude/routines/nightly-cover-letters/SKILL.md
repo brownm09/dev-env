@@ -12,10 +12,11 @@ Never call AskUserQuestion. Run fully autonomously.
 
 ## Step 0 — Sync the working tree
 
-Invoke the `sync-routine-worktree` skill to bring the career-playbook working tree current
-with `origin/main` and verify the batch skill file is present. The sync skill handles repo
-existence, fetch failure, branch-class-aware sync (Claude-managed worktree branch / `main` /
-other), and abort-on-conflict with push notification.
+Read `~/.claude/skills/sync-routine-worktree/SKILL.md` and execute its **Behavior** section
+end-to-end with the parameters below. The skill brings the career-playbook working tree current
+with `origin/main` and verifies the batch skill file is present. It handles repo existence,
+fetch failure, branch-class-aware sync (Claude-managed worktree branch / `main` / other), and
+abort-on-rebase-failure with push notification.
 
 Parameters:
 - `REPO` = `C:/Users/brown/Git/career-playbook`

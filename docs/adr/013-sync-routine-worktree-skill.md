@@ -10,7 +10,7 @@
 
 Scheduled-task routines (`claude/routines/`) are launched by the Claude Code scheduler into a Claude-managed worktree under `.claude/worktrees/<name>/`. The worktree's branch is cut from whatever `main` was at the moment the worktree was created — which may predate skill changes, context file edits, or queue updates that have since merged to `main`.
 
-This bit on 2026-05-06: the scheduled `batch-cover-letter-test` task (an out-of-tree test routine) fired into a worktree whose branch did not yet contain the `batch-cover-letters` skill in career-playbook (still on a feature branch when the worktree was created). The routine had to abort with a "skill not found" report instead of running the pipeline against the seven-JD inbox. The skill and its filename-handling fix had already merged to career-playbook `main` (career-playbook#102, career-playbook#109) — the routine simply could not see them from inside the stale worktree. Issue: dev-env#188.
+This bit us on 2026-05-06: the scheduled `batch-cover-letter-test` task (an out-of-tree test routine) fired into a worktree whose branch did not yet contain the `batch-cover-letters` skill in career-playbook (still on a feature branch when the worktree was created). The routine had to abort with a "skill not found" report instead of running the pipeline against the seven-JD inbox. The skill and its filename-handling fix had already merged to career-playbook `main` (career-playbook#102, career-playbook#109) — the routine simply could not see them from inside the stale worktree. Issue: dev-env#188.
 
 A survey of existing tracked routines confirmed the pattern is general:
 
