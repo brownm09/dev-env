@@ -9,6 +9,14 @@ Compose today's engineering journal entries for all active projects. Run fully a
 **Objective:** For each project directory that contains stubs dated today, run /journal-compose sequentially, then report all PR URLs.
 
 **Steps:**
+0. **Sync the engineering-journal repo to `origin/main`** before reading any stubs. Read `~/.claude/skills/sync-routine-worktree/SKILL.md` and execute its Behavior section with these parameters:
+   - `REPO` = `C:/Users/brown/Git/engineering-journal`
+   - `PREFIX` = `daily-journal-compose`
+   - `VERIFY_FILE` = (omit — no single file is required; the stub glob in Step 2 handles the empty-directory case)
+
+   On **SUCCESS**, continue to Step 1.
+   On **ABORT**, exit cleanly — do not proceed, do not commit, do not open PRs.
+
 1. Determine today's date in Git Bash:
    ```bash
    DATE=$(date -u +%Y-%m-%d)
