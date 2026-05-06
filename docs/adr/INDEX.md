@@ -17,3 +17,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [010](010-skill-tmpfile-allow-rule.md) | Skill Temp File Writes: `Bash(TMPFILE=*)` Allow Rule | 2026-05-02 | Accepted | skills, permissions, tmpfile, bash, settings |
 | [011](011-adr-warrant-check.md) | ADR-Warrant Check at Plan, PR-Open, and PR-Merge Checkpoints | 2026-05-03 | Accepted | adr, workflow, git, checkpoints, documentation |
 | [012](012-post-merge-checklist-board-done-roadmap-update.md) | Post-Merge Checklist: Board Done + Roadmap Update Rules | 2026-05-06 | Accepted | git, workflow, project-board, roadmap, post-merge |
+| [013](013-sync-routine-worktree-skill.md) | Sync-to-Main as a Reusable Routine Skill | 2026-05-06 | Accepted | routines, skills, git, worktree, scheduled-tasks, sync |
