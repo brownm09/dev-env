@@ -10,40 +10,21 @@ Run the batch cover-letter pipeline on the career-playbook repo.
 
 Never call AskUserQuestion. Run fully autonomously.
 
-## Step 0 — Verify repo
+## Step 0 — Sync the working tree
 
-```bash
-REPO="C:/Users/brown/Git/career-playbook"
-```
+Read `~/.claude/skills/sync-routine-worktree/SKILL.md` and execute its **Behavior** section
+end-to-end with the parameters below. The skill brings the career-playbook working tree current
+with `origin/main` and verifies the batch skill file is present. It handles repo existence,
+fetch failure, branch-class-aware sync (Claude-managed worktree branch / `main` / other), and
+abort-on-rebase-failure with push notification.
 
-Verify the repo directory exists:
+Parameters:
+- `REPO` = `C:/Users/brown/Git/career-playbook`
+- `VERIFY_FILE` = `.claude/skills/batch-cover-letters/SKILL.md`
+- `PREFIX` = `nightly-cover-letters`
 
-```bash
-if [ ! -d "$REPO" ]; then
-  # send push notification and exit
-fi
-```
-
-If the directory does not exist: send a push notification —
-"nightly-cover-letters: repo not found at ${REPO} — skipping batch run" — and exit.
-
-Check out `main` and ensure it is up to date:
-
-```bash
-git -C "$REPO" checkout main
-```
-
-If checkout fails (e.g., `main` is checked out in a worktree): send a push notification —
-"nightly-cover-letters: git checkout main failed — is main in a worktree? Check ${REPO}" —
-and exit.
-
-```bash
-git -C "$REPO" pull origin main
-```
-
-If the pull fails (network error, merge conflict): send a push notification —
-"nightly-cover-letters: git pull failed — skipping batch run. Check repo state at ${REPO}" —
-and exit.
+If the sync skill returns **ABORT**, exit immediately. The notification has already been sent;
+do not re-notify or fall back to running against stale state.
 
 ## Step 1 — Run the batch skill
 
@@ -52,7 +33,7 @@ skill with cwd set to `${REPO}`.
 
 The batch skill handles all JD processing, artifact writing, `_review_queue.md` updates,
 branch creation, committing, PR creation, and push notification. This routine's job is only
-to ensure the repo is on a clean `main` before the skill runs.
+to ensure the working tree is current with `origin/main` before the skill runs.
 
 ## Constraints
 
