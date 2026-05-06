@@ -781,9 +781,90 @@ git -C C:/Users/brown/Git/engineering-journal commit -m "[docs] Add YYYY-MM-DD j
 git -C C:/Users/brown/Git/engineering-journal push
 ```
 
+**Before proceeding to Step 11**, run Step 10.5 to check whether the draft branch can be
+cleanly merged into main. Do not skip this check — a conflicting draft branch requires a
+different PR head.
+
+## Step 10.5 — Detect merge conflict; switch to compose branch if needed
+
+After pushing the draft branch, check whether it can be cleanly merged into `origin/main`.
+A draft branch that accumulated many commits (e.g., 50+ commits from iterative sessions)
+may have diverged from main via squash-merges, making it unmergeable.
+
+```bash
+git -C C:/Users/brown/Git/engineering-journal fetch origin main
+MERGE_BASE=$(git -C C:/Users/brown/Git/engineering-journal merge-base HEAD origin/main)
+if [ -z "$MERGE_BASE" ]; then
+  echo "ERROR: could not compute merge base — inspect manually before opening PR"
+  exit 1
+fi
+CONFLICT_LINES=$(git -C C:/Users/brown/Git/engineering-journal \
+  merge-tree "$MERGE_BASE" HEAD origin/main | grep -c "^<<<<<<<" || true)
+echo "CONFLICT_LINES=$CONFLICT_LINES"
+```
+
+**If `CONFLICT_LINES` is 0** — no conflicts detected; proceed to Step 11 using the
+draft branch as the PR head. Set `PR_HEAD=draft/YYYY-MM-DD`.
+
+**If `CONFLICT_LINES` > 0** — conflicts detected. Recover via a clean compose branch:
+
+```bash
+# 1. Create a clean branch from origin/main
+git -C C:/Users/brown/Git/engineering-journal checkout -b compose/YYYY-MM-DD origin/main
+
+# 2. Cherry-pick only the composed output files from the draft branch.
+#    Include open-prs.jsonl if it exists — today's sessions may have updated it.
+git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \
+  sessions/<project>/YYYY-MM-DD-<slug>.md \
+  sessions/<project>/README.md \
+  README.md
+[ -f "C:/Users/brown/Git/engineering-journal/sessions/<project>/open-prs.jsonl" ] && \
+  git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \
+    sessions/<project>/open-prs.jsonl
+
+# 3. Commit and push
+git -C C:/Users/brown/Git/engineering-journal commit -m \
+  "[docs] Add YYYY-MM-DD journal: <slug> (compose branch — draft had conflicts)"
+git -C C:/Users/brown/Git/engineering-journal push -u origin compose/YYYY-MM-DD
+
+# 4. Delete the remote draft branch so the stale-branch hook does not fire on it
+git -C C:/Users/brown/Git/engineering-journal push origin --delete draft/YYYY-MM-DD || true
+```
+
+Set `PR_HEAD=compose/YYYY-MM-DD`.
+
+Tell the user: "Draft branch had merge conflicts with main — composed journal pushed to
+`compose/YYYY-MM-DD` instead. Remote draft branch deleted. Opening PR from clean branch."
+
+**Multi-project mode:** apply this check once (after the combined `git push` at the end
+of Phase 2). If conflicts are detected, run the recovery for all projects' composed files
+together on a single `compose/YYYY-MM-DD` branch before opening the combined PR. Example
+for two projects `meta` and `lifting-logbook`:
+
+```bash
+git -C C:/Users/brown/Git/engineering-journal checkout -b compose/YYYY-MM-DD origin/main
+git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \
+  sessions/meta/YYYY-MM-DD-<slug-a>.md \
+  sessions/meta/README.md \
+  sessions/lifting-logbook/YYYY-MM-DD-<slug-b>.md \
+  sessions/lifting-logbook/README.md \
+  README.md
+# open-prs.jsonl per project (conditional)
+for proj in meta lifting-logbook; do
+  [ -f "C:/Users/brown/Git/engineering-journal/sessions/$proj/open-prs.jsonl" ] && \
+    git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \
+      "sessions/$proj/open-prs.jsonl"
+done
+git -C C:/Users/brown/Git/engineering-journal commit -m \
+  "[docs] Add YYYY-MM-DD journals: <slug-a>, <slug-b> (compose branch — draft had conflicts)"
+git -C C:/Users/brown/Git/engineering-journal push -u origin compose/YYYY-MM-DD
+git -C C:/Users/brown/Git/engineering-journal push origin --delete draft/YYYY-MM-DD || true
+```
+
 ## Step 11 — Open PR
 
-Open the PR immediately using `gh`.
+Open the PR immediately using `gh`, using `PR_HEAD` determined in Step 10.5
+(`draft/YYYY-MM-DD` if clean, `compose/YYYY-MM-DD` if conflicts were detected).
 
 Before composing the PR body, read `~/.claude/templates/pr-body.md` and use it as the
 structural guide. This is a journal PR — use the "Journal PR" pattern from that file.
@@ -792,6 +873,7 @@ structural guide. This is a journal PR — use the "Journal PR" pattern from tha
 gh pr create \
   --repo brownm09/engineering-journal \
   --base main \
+  --head <PR_HEAD> \
   --title "YYYY-MM-DD: <slug>" \
   --body "$(cat <<'EOF'
 End-of-day journal: <one-line topic summary>.
@@ -810,11 +892,14 @@ gh pr merge <PR-URL> \
   --delete-branch
 ```
 
-This squash-merges the draft branch and deletes the remote branch in one step, preventing
+This squash-merges the branch and deletes the remote branch in one step, preventing
 the stale-branch hook from false-positive firing. Wait for the merge to complete, then
-delete the local draft branch:
+clean up local branches:
 
 ```bash
+# Delete whichever branch was used as PR head
+git -C C:/Users/brown/Git/engineering-journal branch -D <PR_HEAD> 2>/dev/null || true
+# If a compose branch was used, also clean up the draft branch locally
 git -C C:/Users/brown/Git/engineering-journal branch -D draft/YYYY-MM-DD 2>/dev/null || true
 ```
 
