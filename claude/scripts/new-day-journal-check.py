@@ -184,6 +184,14 @@ def main() -> None:
     hook_data = json.loads(raw) if raw else {}
     session_id = hook_data.get("session_id", "")
 
+    # Suppress in Claude-managed worktree sessions — journal warnings are only
+    # actionable in main-checkout sessions of dev-env or engineering-journal.
+    cwd = hook_data.get("cwd", "")
+    if cwd:
+        _parts = Path(cwd).parts
+        if ".claude" in _parts and "worktrees" in _parts:
+            sys.exit(0)
+
     cleanup_stale_flags()
 
     if session_id:

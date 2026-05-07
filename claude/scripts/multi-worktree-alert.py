@@ -87,6 +87,11 @@ def main() -> None:
     if not cwd:
         sys.exit(0)
 
+    # Suppress in Claude-managed worktree sessions — the system prompt already
+    # identifies the current worktree; the sibling list adds noise without value.
+    if ".claude" in Path(cwd).parts and "worktrees" in Path(cwd).parts:
+        sys.exit(0)
+
     try:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
