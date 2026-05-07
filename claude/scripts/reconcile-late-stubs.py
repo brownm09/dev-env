@@ -18,6 +18,7 @@ import subprocess
 import sys
 from datetime import date, datetime
 from pathlib import Path
+from typing import Optional
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SCRATCH = Path.home() / ".claude" / "scratch"
@@ -33,7 +34,7 @@ def run(cmd, cwd=None, check=True, capture=True):
     return result
 
 
-def get_merged_pr_info(branch: str) -> dict | None:
+def get_merged_pr_info(branch: str) -> Optional[dict]:
     result = subprocess.run(
         ["gh", "pr", "list", "--repo", "brownm09/engineering-journal",
          "--state", "merged", "--head", branch,
@@ -67,9 +68,9 @@ def get_stub_files_in_commits(commits: list[str]) -> list[str]:
             status, path = parts
             if status.startswith("D"):
                 continue
+            # open-prs.jsonl is excluded — the target branch's copy is authoritative
             if (path.endswith(".stub.md")
-                    or path.endswith(".manifest.jsonl")
-                    or path.endswith("open-prs.jsonl")):
+                    or path.endswith(".manifest.jsonl")):
                 if path not in seen:
                     files.append(path)
                     seen.add(path)
@@ -98,6 +99,8 @@ def find_target_branch(source_date: str) -> str:
         if date_str not in composed:
             return f"draft/{date_str}"
 
+    # Fallback: today's branch. There should essentially always be an active
+    # day branch, and ensure_remote_branch_exists will create it if absent.
     return f"draft/{TODAY}"
 
 

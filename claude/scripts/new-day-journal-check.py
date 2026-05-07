@@ -138,13 +138,8 @@ def composed_dates_on_main() -> set[str]:
         return set()
 
 
-def unmerged_draft_branches() -> list[str]:
-    """Return remote draft/* branch names not yet merged into origin/main.
-
-    Uses composed_dates_on_main() as the merge signal — squash merges don't
-    leave branch commits in main's ancestry, making git branch --merged
-    unreliable. A composed journal file on main is the authoritative indicator.
-    """
+def remote_draft_dates() -> set[str]:
+    """Return YYYY-MM-DD date strings for all remote draft/* branches."""
     try:
         result = subprocess.run(
             ["git", "ls-remote", "--heads", "origin", "refs/heads/draft/*"],
@@ -153,26 +148,34 @@ def unmerged_draft_branches() -> list[str]:
             text=True,
             timeout=15,
         )
-        remote_dates = set()
+        dates: set[str] = set()
         for line in result.stdout.splitlines():
             if "\t" in line:
                 ref = line.split("\t", 1)[1].strip()
-                remote_dates.add(ref.replace("refs/heads/draft/", ""))
-
-        if not remote_dates:
-            return []
-
-        merged = composed_dates_on_main()
-        # TODAY is always excluded from automatic detection — today's active
-        # branch is never stale. Use /journal-compose YYYY-MM-DD explicitly
-        # to compose and merge the current day's journal.
-        unmerged = sorted(
-            [d for d in remote_dates if d != TODAY and d not in merged],
-            reverse=True,
-        )
-        return unmerged
+                dates.add(ref.replace("refs/heads/draft/", ""))
+        return dates
     except Exception:
+        return set()
+
+
+def unmerged_draft_branches() -> list[str]:
+    """Return remote draft/* branch names not yet merged into origin/main.
+
+    Uses composed_dates_on_main() as the merge signal — squash merges don't
+    leave branch commits in main's ancestry, making git branch --merged
+    unreliable. A composed journal file on main is the authoritative indicator.
+    """
+    remote_dates = remote_draft_dates()
+    if not remote_dates:
         return []
+    merged = composed_dates_on_main()
+    # TODAY is always excluded from automatic detection — today's active
+    # branch is never stale. Use /journal-compose YYYY-MM-DD explicitly
+    # to compose and merge the current day's journal.
+    return sorted(
+        [d for d in remote_dates if d != TODAY and d not in merged],
+        reverse=True,
+    )
 
 
 def resurrected_draft_branches() -> list[str]:
@@ -186,31 +189,14 @@ def resurrected_draft_branches() -> list[str]:
     recent git fetch. A stale cache may produce false negatives (silent), which
     is preferable to false-positive noise.
     """
-    try:
-        result = subprocess.run(
-            ["git", "ls-remote", "--heads", "origin", "refs/heads/draft/*"],
-            cwd=JOURNAL_REPO,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        remote_dates = set()
-        for line in result.stdout.splitlines():
-            if "\t" in line:
-                ref = line.split("\t", 1)[1].strip()
-                remote_dates.add(ref.replace("refs/heads/draft/", ""))
-
-        if not remote_dates:
-            return []
-
-        merged = composed_dates_on_main()
-        resurrected = sorted(
-            [d for d in remote_dates if d != TODAY and d in merged],
-            reverse=True,
-        )
-        return resurrected
-    except Exception:
+    remote_dates = remote_draft_dates()
+    if not remote_dates:
         return []
+    merged = composed_dates_on_main()
+    return sorted(
+        [d for d in remote_dates if d != TODAY and d in merged],
+        reverse=True,
+    )
 
 
 def main() -> None:

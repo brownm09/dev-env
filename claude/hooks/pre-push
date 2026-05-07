@@ -37,7 +37,7 @@ while read local_ref local_sha remote_ref remote_sha; do
           echo "Check your current branch — did you mean a different draft branch?" >&2
           echo "To reconcile orphaned commits after an accidental push:" >&2
           echo "  python3 ~/.claude/scripts/reconcile-late-stubs.py $remote_branch" >&2
-          exit 1
+          exit 1  # intentionally skips per-repo hook chain — push is fully blocked
         fi
       fi
     fi
