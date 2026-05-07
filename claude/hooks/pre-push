@@ -20,6 +20,28 @@ while read local_ref local_sha remote_ref remote_sha; do
     echo "If this repo uses squash merges, the PR may target the wrong base." >&2
     echo "Consider cherry-picking onto a fresh branch from origin/main." >&2
   fi
+
+  # Block pushes to already-merged draft/YYYY-MM-DD branches in engineering-journal.
+  # Pushing to a merged branch resurrects it, causing the stale-branch hook to fire
+  # on every subsequent prompt until orphaned commits are reconciled.
+  remote_branch="${remote_ref#refs/heads/}"
+  if echo "$remote_branch" | grep -qE '^draft/[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+    remote_url=$(git remote get-url origin 2>/dev/null || echo "")
+    if echo "$remote_url" | grep -q "engineering-journal"; then
+      if command -v gh >/dev/null 2>&1; then
+        merged=$(gh pr list --repo brownm09/engineering-journal \
+          --state merged --head "$remote_branch" --json number 2>/dev/null || echo "[]")
+        if [ "$merged" != "[]" ] && [ -n "$merged" ]; then
+          echo "ERROR: $remote_branch already has a merged PR." >&2
+          echo "Pushing to this branch would resurrect it and cause stale-branch hook noise." >&2
+          echo "Check your current branch — did you mean a different draft branch?" >&2
+          echo "To reconcile orphaned commits after an accidental push:" >&2
+          echo "  python3 ~/.claude/scripts/reconcile-late-stubs.py $remote_branch" >&2
+          exit 1  # intentionally skips per-repo hook chain — push is fully blocked
+        fi
+      fi
+    fi
+  fi
 done
 
 # Chain to per-repo hook if one exists (preserves Husky, git-secrets, corporate hooks, etc.)
