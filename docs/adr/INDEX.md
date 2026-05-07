@@ -18,3 +18,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [011](011-adr-warrant-check.md) | ADR-Warrant Check at Plan, PR-Open, and PR-Merge Checkpoints | 2026-05-03 | Accepted | adr, workflow, git, checkpoints, documentation |
 | [012](012-post-merge-checklist-board-done-roadmap-update.md) | Post-Merge Checklist: Board Done + Roadmap Update Rules | 2026-05-06 | Accepted | git, workflow, project-board, roadmap, post-merge |
 | [013](013-sync-routine-worktree-skill.md) | Sync-to-Main as a Reusable Routine Skill | 2026-05-06 | Accepted | routines, skills, git, worktree, scheduled-tasks, sync |
+| [014](014-auto-move-project-item-done-on-merge.md) | Auto-Move GitHub Project Item to Done on PR Merge | 2026-05-07 | Accepted | hooks, github-project, post-tool-use, hook-config, automation |
