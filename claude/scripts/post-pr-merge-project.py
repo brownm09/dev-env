@@ -37,6 +37,7 @@ import sys
 
 CONFIG_FILE = ".claude/hook-config.json"
 
+# _scan_top_level and helpers below are duplicated from pr-merge-reminder.py.
 _MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
 _CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
 _PR_URL_RE = re.compile(r"https://github\.com/\S+/pull/(\d+)")
@@ -316,4 +317,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        sys.exit(0)

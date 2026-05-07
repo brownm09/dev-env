@@ -1,4 +1,4 @@
-# ADR-012: Auto-Move GitHub Project Item to Done on PR Merge
+# ADR-014: Auto-Move GitHub Project Item to Done on PR Merge
 
 **Date:** 2026-05-07  
 **Status:** Accepted  
