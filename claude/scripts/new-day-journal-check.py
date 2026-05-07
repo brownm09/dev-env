@@ -175,6 +175,44 @@ def unmerged_draft_branches() -> list[str]:
         return []
 
 
+def resurrected_draft_branches() -> list[str]:
+    """Return remote draft/* branch names that were already merged but still exist.
+
+    A branch is resurrected when its date has a composed journal file on
+    origin/main (merged PR) but the remote branch was recreated by a later push.
+    These need reconciliation via reconcile-late-stubs.py, not recomposition.
+
+    Note: uses the local origin/main cache — results are only accurate after a
+    recent git fetch. A stale cache may produce false negatives (silent), which
+    is preferable to false-positive noise.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", "refs/heads/draft/*"],
+            cwd=JOURNAL_REPO,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        remote_dates = set()
+        for line in result.stdout.splitlines():
+            if "\t" in line:
+                ref = line.split("\t", 1)[1].strip()
+                remote_dates.add(ref.replace("refs/heads/draft/", ""))
+
+        if not remote_dates:
+            return []
+
+        merged = composed_dates_on_main()
+        resurrected = sorted(
+            [d for d in remote_dates if d != TODAY and d in merged],
+            reverse=True,
+        )
+        return resurrected
+    except Exception:
+        return []
+
+
 def main() -> None:
     raw = ""
     try:
@@ -211,6 +249,15 @@ def main() -> None:
             f"[journal-hook] Unmerged draft branch(es) detected: {dates_str}\n"
             f"These branches have composed journal files but no PR was opened or merged into main.\n"
             f"Remind the user that draft/{unmerged[0]} (and any others listed) still need a PR to main."
+        )
+
+    resurrected = resurrected_draft_branches()
+    if resurrected:
+        dates_str = ", ".join(resurrected)
+        messages.append(
+            f"[journal-hook] Resurrected draft branch(es) detected: {dates_str}\n"
+            f"draft/{resurrected[0]} was already merged but new commits were pushed to it after the merge.\n"
+            f"Run: python3 ~/.claude/scripts/reconcile-late-stubs.py draft/{resurrected[0]}"
         )
 
     if messages:
