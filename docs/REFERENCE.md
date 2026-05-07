@@ -157,6 +157,7 @@ Fires after each Bash tool call completes. Matched with `"matcher": "Bash"`.
 | `pr-merge-reminder.py` | Command contains `gh pr create` or `gh pr merge` | Exits 2 with a `systemMessage` reminding Claude to write a journal stub. |
 | `post-tool-use.py` | Command contains `gh issue create` or `gh pr create` | Auto-adds the created item to the configured GitHub Project. Opt-in via `"github_project_id"` in `.claude/hook-config.json`. |
 | `post-pr-merge-pull.py` | Command contains `gh pr merge` | Fast-forwards the local `main` branch via `git fetch origin main:main` so the local clone stays current after a merge. |
+| `post-pr-merge-project.py` | Command contains `gh pr merge` | Auto-moves the linked issue (`Closes/Fixes/Resolves #N` in PR body) to Done on the configured GitHub Project. Opt-in via `status_field_id` and `done_option_id` in `hook-config.json`. [ADR-012](adr/012-auto-move-project-item-done-on-merge.md) |
 | `stub-push-archive-reminder.py` | `git push` to `engineering-journal` with a stub commit | Writes a sentinel file (`~/.claude/scratch/stub-pushed.flag`) and exits 0. Verifies the most-recent commit in the journal repo touches a `.stub.md` file before writing the flag. The Stop hook (`journal-stop-check.py`) consumes the sentinel and issues the archive reminder via exit 2. |
 
 ---
@@ -198,6 +199,8 @@ A global git pre-push hook installed via `core.hooksPath` (see [ADR-005](adr/005
 |-------|------|---------|---------|
 | `github_project_id` | string | — | `post-tool-use.py` — opt-in; item is added to this project when an issue or PR is created |
 | `turn_threshold` | integer | `50` | `turn-count-hook.py` — warn after N turns; warns again every 25 turns thereafter |
+| `status_field_id` | string | — | `post-pr-merge-project.py` — GitHub Project Status field ID; required to auto-move item to Done on merge |
+| `done_option_id` | string | — | `post-pr-merge-project.py` — single-select option ID for "Done" status; required to auto-move item to Done on merge |
 
 ---
 
