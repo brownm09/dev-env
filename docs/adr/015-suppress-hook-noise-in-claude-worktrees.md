@@ -21,7 +21,7 @@ in feature-work worktree sessions they are noise that inflates token cost on eve
 ## Decision
 
 Add a guard to both hooks: if the session's `cwd` contains `.claude` and `worktrees` as
-consecutive path components, exit silently (`sys.exit(0)`).
+path components, exit silently (`sys.exit(0)`).
 
 Claude-managed worktrees are always created at `<repo>/.claude/worktrees/<name>`, making
 `.claude/worktrees/` a reliable, stable identifier. This path structure is established by
