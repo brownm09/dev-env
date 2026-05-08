@@ -146,7 +146,17 @@ All new dev-env issues must be added to the **Dev Env** project and given an Imp
 | Impact | `PVTSSF_lAHOAjEKvM4BWKFezhRgkNc` | High=`08de2558`, Medium=`6320e8a6`, Low=`d8a85c2f` |
 | Why | `PVTF_lAHOAjEKvM4BWKFezhRgkN0` | (text) |
 
-> **Single-select option mutation hazard (applies to every project, not just dev-env).** Running `updateProjectV2Field` with `singleSelectOptions` is a full replacement — passing the existing options unchanged still produces new option IDs and drops every item's prior assignment for that field. Before adding, removing, or renaming any single-select option on any project, snapshot the current per-item assignments to a git-tracked file under the project repo's `.claude/backups/`, commit it, run the mutation, then restore by re-issuing `gh project item-edit` for each item using the new option IDs. Update the project's CLAUDE.md option-ID table in the same PR. If a mutation runs without a prior snapshot commit, stop and recover from the latest snapshot before any other work. Validated against lifting-logbook on 2026-05-08 — assignments were lost despite passing the full option list.
+> **Single-select option mutation hazard (applies to every project, not just dev-env).** Running `updateProjectV2Field` with `singleSelectOptions` is a full replacement — passing the existing options unchanged still produces new option IDs and drops every item's prior assignment for that field. Validated against lifting-logbook on 2026-05-08: an Observability epic addition wiped assignments on all 89 project items despite passing the full option list. Recovery precedent: [lifting-logbook#203](https://github.com/brownm09/lifting-logbook/issues/203).
+>
+> **Procedure (mandatory before adding/removing/renaming any single-select option on any project):**
+>
+> 1. Snapshot current per-item assignments to a git-tracked file under the project repo's `.claude/backups/`.
+> 2. Commit the snapshot.
+> 3. Run the mutation with the full desired option list.
+> 4. Update the project's CLAUDE.md option-ID table with the regenerated IDs in the same PR.
+> 5. Restore assignments by re-issuing `gh project item-edit` for each item, mapping snapshot option name → new option ID.
+>
+> If a mutation runs without a prior snapshot commit, stop and recover from the latest snapshot before any other work.
 
 **Impact guidelines:**
 
