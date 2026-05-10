@@ -66,6 +66,10 @@
           {
             "type": "command",
             "command": "python3 C:/Users/brown/.claude/scripts/worktree-npm-install.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 C:/Users/brown/.claude/scripts/reconcile-open-prs.py"
           }
         ]
       }

@@ -22,3 +22,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [015](015-suppress-hook-noise-in-claude-worktrees.md) | Suppress Hook Noise in Claude-Managed Worktree Sessions | 2026-05-07 | Accepted | hooks, worktree, UserPromptSubmit, token-efficiency, context-pollution |
 | [016](016-worktree-npm-auto-install.md) | Auto-Install npm Packages in Claude-Managed Worktrees | 2026-05-09 | Accepted | hooks, worktree, UserPromptSubmit, npm, node_modules, automation |
 | [017](017-journal-compose-today-guard.md) | Journal-Compose Today-Date Guard (Branch-Detection Path Only) | 2026-05-10 | Accepted | journal, composition, skill, today-guard, branch-detection |
+| [018](018-reconcile-open-prs-hook.md) | Auto-Reconcile open-prs.jsonl Against GitHub State | 2026-05-10 | Accepted | hooks, open-prs, UserPromptSubmit, github, token-efficiency |
