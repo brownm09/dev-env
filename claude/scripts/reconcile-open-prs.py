@@ -120,7 +120,7 @@ def reconcile_file(path: Path) -> tuple[list[dict], list[tuple[dict, str]]]:
         repo = repo_from_url(url)
 
         if not repo or not pr_number:
-            surviving.append(entry)
+            removed.append((entry, "malformed"))
             continue
 
         state = check_pr_state(pr_number, repo)
@@ -147,7 +147,7 @@ def main() -> None:
         except json.JSONDecodeError:
             pass
 
-    session_id = data.get("session_id", "unknown")
+    session_id = data.get("session_id") or f"unknown-{int(time.time())}"
 
     if already_ran(session_id):
         return
@@ -166,7 +166,10 @@ def main() -> None:
         for entry in surviving:
             all_surviving.append(f"{project}#{entry.get('pr')} ({entry.get('url', '')})")
         for entry, state in removed:
-            all_removed.append(f"{project}#{entry.get('pr')} — {state.lower()}")
+            if state == "malformed":
+                all_removed.append(f"{project}: malformed entry (missing pr/url)")
+            else:
+                all_removed.append(f"{project}#{entry.get('pr')} — {state.lower()}")
 
     mark_done(session_id)
 
@@ -180,7 +183,7 @@ def main() -> None:
     if all_surviving:
         parts.append("Open PRs: " + ", ".join(all_surviving))
     elif not all_removed:
-        # nothing to report — no files exist
+        # nothing to report — no files found or all are empty
         return
 
     msg = " ".join(parts) if parts else ""
