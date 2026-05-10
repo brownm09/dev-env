@@ -126,6 +126,10 @@ If the project has no automated tests, the section must say so explicitly and de
 
 **Reference doc maintenance.** When a change adds, removes, or renames a hook script, skill, routine, or utility script, check whether the project README and any reference documentation need updating in the same PR. This includes command renames, new options, and behavior changes. Each project's CLAUDE.md specifies which reference files apply.
 
+**Downstream artifacts that name specific dev-env skills/hooks/routines** (update in the same PR as a rename or retirement):
+
+- `tech-leadership-reference/ai-adoption/ai-adoption-readiness-framework.md` — Appendix C names `/propose`, `/review`, `/journal-compose`, `/research`, and the `prune-stale-worktrees` and nightly journal compose routines as live-state evidence.
+
 **Repo path:** `C:/Users/brown/Git/dev-env`
 
 ---
