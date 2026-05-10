@@ -422,8 +422,10 @@ Schema — one JSON line per open PR:
 - `/journal-compose` preserves this file unchanged in the merge-to-main commit so it carries forward to the next day.
 
 **End of day (last session):**
-1. Run `/journal-compose` — it discovers all stubs via manifest (or glob fallback), merges them,
-   produces the canonical 11-section document, and auto-merges the PR
+1. Run `/journal-compose --force` — it discovers all stubs via manifest (or glob fallback), merges
+   them, produces the canonical 11-section document, and auto-merges the PR. `--force` is required
+   when composing today's branch; past-date composition (`/journal-compose YYYY-MM-DD` for a prior
+   day) does not need the flag
 
 ---
 
