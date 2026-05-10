@@ -61,6 +61,26 @@ git -C C:/Users/brown/Git/engineering-journal branch --show-current
 ```
 The branch name is `draft/YYYY-MM-DD`. Extract `YYYY-MM-DD` from it.
 
+**Guard — refuse to compose today's branch:**
+
+After resolving the date (whether from `$ARGUMENTS` or from the branch name), compare it to
+today's date:
+
+```bash
+TODAY=$(date +%Y-%m-%d)
+```
+
+If the resolved date equals `$TODAY`, stop immediately and respond:
+
+> "`/journal-compose` targets completed days only. `draft/YYYY-MM-DD` is **today's** branch —
+> stubs may still be written during later sessions today.  
+> Run `/journal-compose` at end of day, or pass an explicit past date:
+> `/journal-compose YYYY-MM-DD`."
+
+Do **not** proceed to stub discovery, manifest reading, lock acquisition, or any further step.
+This guard applies whether the date came from `$ARGUMENTS` or branch detection — today's branch
+is never safe to merge mid-day.
+
 **Check for a manifest (fast path):**
 
 ```bash
