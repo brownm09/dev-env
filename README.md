@@ -49,6 +49,7 @@ All hooks are advisory — none block tool execution.
 | UserPromptSubmit | `journal-onboard-check.py` | Warns when the active project has no journal home in engineering-journal |
 | UserPromptSubmit | `turn-count-hook.py` | Warns when session context token count exceeds threshold |
 | UserPromptSubmit | `multi-worktree-alert.py` | Lists active worktrees in `repo:branch` format when ≥2 are open |
+| UserPromptSubmit | `reconcile-open-prs.py` | Removes stale entries from `open-prs.jsonl` whose PRs are now merged/closed; emits surviving open PRs as session context |
 | PreToolUse (Bash) | `pre-commit-branch-check.py` | Emits current branch as a checkpoint before `git commit` |
 | PreToolUse (Bash) | `pre-pr-create-check.py` | Emits test-verification checklist before `gh pr create` |
 | PostToolUse (Bash) | `pr-merge-reminder.py` | Reminds to write a journal stub after `gh pr create` or `gh pr merge` |
