@@ -24,10 +24,15 @@ while read local_ref local_sha remote_ref remote_sha; do
   # Block pushes to already-merged draft/YYYY-MM-DD branches in engineering-journal.
   # Pushing to a merged branch resurrects it, causing the stale-branch hook to fire
   # on every subsequent prompt until orphaned commits are reconciled.
+  # Exception: same-day branches are allowed — recovery pushes after an accidental
+  # mid-day compose are legitimate. Prior-day branches are still blocked (stale-branch noise).
+  # Both the exception and the block are scoped to engineering-journal only.
   remote_branch="${remote_ref#refs/heads/}"
   if echo "$remote_branch" | grep -qE '^draft/[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
     remote_url=$(git remote get-url origin 2>/dev/null || echo "")
     if echo "$remote_url" | grep -q "engineering-journal"; then
+      branch_date="${remote_branch#draft/}"
+      [ "$branch_date" = "$(date +%Y-%m-%d)" ] && continue
       if command -v gh >/dev/null 2>&1; then
         merged=$(gh pr list --repo brownm09/engineering-journal \
           --state merged --head "$remote_branch" --json number 2>/dev/null || echo "[]")
