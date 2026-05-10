@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """PostCompact hook — emit a status line and, for manual compactions with open PRs,
-inject a systemMessage so Claude auto-invokes /review without user input."""
+inject a systemMessage so Claude invokes /review on the next user reply."""
 import json
 import subprocess
 import sys
@@ -75,6 +75,7 @@ def main():
                     f"PostCompact complete. Open PR: {pr_ref}\n"
                     f"Per CLAUDE.md workflow: invoke /review {pr.get('url', '')} --post-comment now."
                 )
+                print(f"  open PR #{pr['pr']} — reply to this message to trigger /review", file=sys.stderr)
             else:
                 pr_list = ", ".join(
                     f"#{p['pr']} {p.get('url', '')}" for p in prs
@@ -83,6 +84,7 @@ def main():
                     f"PostCompact complete. Open PRs: {pr_list}\n"
                     "Per CLAUDE.md workflow: invoke /review on the relevant PR --post-comment now."
                 )
+                print(f"  {len(prs)} open PRs — reply to this message to trigger /review", file=sys.stderr)
             print(json.dumps({"systemMessage": msg}))
 
 
