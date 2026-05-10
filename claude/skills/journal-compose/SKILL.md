@@ -1,6 +1,6 @@
 ---
 name: journal-compose
-description: Compose the end-of-day engineering journal from today's stub files. Discovers all YYYY-MM-DD_*.stub.md files, sorts and merges them, produces the canonical 11-section document, updates READMEs, commits, and opens the PR. Invoke as /journal-compose [YYYY-MM-DD].
+description: Compose the end-of-day engineering journal from today's stub files. Discovers all YYYY-MM-DD_*.stub.md files, sorts and merges them, produces the canonical 11-section document, updates READMEs, commits, and opens the PR. Invoke as /journal-compose [YYYY-MM-DD] [--force].
 argument-hint: "[YYYY-MM-DD] [--force]"
 allowed-tools: Read Edit Write Bash Glob Grep Agent
 ---
