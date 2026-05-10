@@ -20,10 +20,10 @@ Two design options were considered for the guard scope:
 1. **Block both paths** — refuse today's date whether from `$ARGUMENTS` or branch detection.
 2. **Block branch-detection path only** — allow an explicit argument to override the guard.
 
-Option 1 was implemented first, then revised after review. Blocking an explicit argument is
-incorrect: a user who passes `/journal-compose 2026-05-10` is making a deliberate choice
-(e.g., they have written all stubs for the day and want to compose now). The guard should
-protect against the *accidental* case (branch auto-detection), not the *intentional* case.
+Option 1 was considered and rejected because blocking an explicit argument is incorrect: a
+user who passes `/journal-compose 2026-05-10` is making a deliberate choice (e.g., they have
+written all stubs for the day and want to compose now). The guard should protect against the
+*accidental* case (branch auto-detection), not the *intentional* case.
 
 ---
 
@@ -58,6 +58,6 @@ before stub discovery, manifest reading, or lock acquisition, and responds:
 
 - [dev-env#204](https://github.com/brownm09/dev-env/issues/204) — issue tracking this bug
 - [dev-env#205](https://github.com/brownm09/dev-env/pull/205) — PR implementing the guard
-- `claude/skills/journal-compose/SKILL.md` — Step 1, "Guard" block
-- ADR 002 — Journal-Compose Session Isolation (related: the other hard stop in Step 0)
-- `claude/hooks/pre-push` — the hook that blocks pushes to merged draft branches
+- [SKILL.md](../../claude/skills/journal-compose/SKILL.md) — Step 1, "Guard" block
+- [ADR 002](002-journal-compose-session-isolation.md) — Journal-Compose Session Isolation (related: the other hard stop in Step 0)
+- [pre-push](../../claude/hooks/pre-push) — the hook that blocks pushes to merged draft branches
