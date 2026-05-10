@@ -421,9 +421,48 @@ Schema — one JSON line per open PR:
   If the last line is removed, the script deletes the file rather than leaving it empty.
 - `/journal-compose` preserves this file unchanged in the merge-to-main commit so it carries forward to the next day.
 
+**Draft branch recovery:**
+
+If `draft/YYYY-MM-DD` was merged or deleted before end of day (e.g., by an accidental mid-day `/journal-compose` run):
+
+1. Create a fresh recovery branch from `origin/main`:
+   ```bash
+   git -C C:/Users/brown/Git/engineering-journal fetch origin
+   git -C C:/Users/brown/Git/engineering-journal checkout -b draft/YYYY-MM-DD-recovery origin/main
+   ```
+2. Copy all session files from the stale local branch onto the recovery branch:
+   ```bash
+   git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- sessions/
+   git -C C:/Users/brown/Git/engineering-journal commit -m "draft: recover YYYY-MM-DD stubs (post-kerfuffle)"
+   git -C C:/Users/brown/Git/engineering-journal push -u origin draft/YYYY-MM-DD-recovery
+   ```
+   This also removes from `main` any stubs that were accidentally merged (they will be deleted from the branch
+   and composed into a journal when `/journal-compose` runs).
+3. If any stub content was committed directly to `main` (e.g., via ad-hoc chore/* PR), revert each accidental commit
+   via a PR to `main` and then re-add the observation to the recovery branch.
+4. Write the stub for the current session normally — commit to `draft/YYYY-MM-DD-recovery` instead of `draft/YYYY-MM-DD`.
+5. When running `/journal-compose`, ensure the engineering-journal working tree is on `draft/YYYY-MM-DD-recovery`.
+
+**Why `draft/YYYY-MM-DD-recovery` instead of `draft/YYYY-MM-DD`:** The pre-push hook blocks pushing to a branch that already has a merged PR (to prevent stale-branch noise). The `-recovery` suffix bypasses the check while keeping the date visible.
+
+If orphaned `chore/*` or `late-stub/*` stub PRs are open (sessions that fell back to ad-hoc branches when the draft was missing):
+```bash
+# Close the ad-hoc PR — its content was already included via the sessions/ checkout above
+gh -R brownm09/engineering-journal pr close <N> \
+  --comment "Content recovered onto draft/YYYY-MM-DD-recovery — closing without merge."
+```
+
+If the engineering-journal working tree is simply on the wrong branch (not the draft branch), no recovery needed:
+```bash
+git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD
+git -C C:/Users/brown/Git/engineering-journal pull
+```
+
 **End of day (last session):**
-1. Run `/journal-compose` — it discovers all stubs via manifest (or glob fallback), merges them,
-   produces the canonical 11-section document, and auto-merges the PR
+1. Run `/journal-compose --force` — it discovers all stubs via manifest (or glob fallback), merges
+   them, produces the canonical 11-section document, and auto-merges the PR. `--force` is required
+   when composing today's branch; past-date composition (`/journal-compose YYYY-MM-DD` for a prior
+   day) does not need the flag
 
 ---
 

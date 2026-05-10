@@ -1,7 +1,7 @@
 ---
 name: journal-compose
-description: Compose the end-of-day engineering journal from today's stub files. Discovers all YYYY-MM-DD_*.stub.md files, sorts and merges them, produces the canonical 11-section document, updates READMEs, commits, and opens the PR. Invoke as /journal-compose [YYYY-MM-DD].
-argument-hint: "[YYYY-MM-DD]"
+description: Compose the end-of-day engineering journal from today's stub files. Discovers all YYYY-MM-DD_*.stub.md files, sorts and merges them, produces the canonical 11-section document, updates READMEs, commits, and opens the PR. Invoke as /journal-compose [YYYY-MM-DD] [--force].
+argument-hint: "[YYYY-MM-DD] [--force]"
 allowed-tools: Read Edit Write Bash Glob Grep Agent
 ---
 
@@ -52,35 +52,37 @@ node "C:/Users/brown/Git/engineering-journal/scripts/validate-jsonl.js"
 
 ## Step 1 — Locate stubs and acquire compose lock
 
-**Determine the date:**
+**Parse `$ARGUMENTS`:**
 
-If `$ARGUMENTS` is provided and matches `YYYY-MM-DD`, use it as the date. Otherwise, detect
-from the current branch:
-```bash
-git -C C:/Users/brown/Git/engineering-journal branch --show-current
-```
-The branch name is `draft/YYYY-MM-DD`. Extract `YYYY-MM-DD` from it.
+- If `$ARGUMENTS` contains `--force`, set `FORCE=true` and strip it before further parsing.
+  Otherwise set `FORCE=false`.
+- If the remaining `$ARGUMENTS` matches `YYYY-MM-DD`, use it as the date.
+- Otherwise, detect the date from the current branch:
+  ```bash
+  git -C C:/Users/brown/Git/engineering-journal branch --show-current
+  ```
+  The branch name is `draft/YYYY-MM-DD`. Extract `YYYY-MM-DD` from it.
 
-**Guard — refuse to compose today's branch (branch-detection path only):**
+**Guard — refuse to compose today's branch:**
 
-If the date was **auto-detected from the branch name** (i.e., `$ARGUMENTS` was not provided),
-compare it to today's date:
+Compare the resolved date to today's date:
 
 ```bash
 TODAY=$(date +%Y-%m-%d)
 ```
 
-If the detected date equals `$TODAY`, stop immediately and respond:
+If the date equals `$TODAY` **and** `FORCE` is false, stop immediately and respond:
 
 > "`/journal-compose` targets completed days only. `draft/YYYY-MM-DD` is **today's** branch —
 > stubs may still be written during later sessions today.  
-> Run `/journal-compose` at end of day, or pass an explicit past date:
-> `/journal-compose YYYY-MM-DD`."
+> To compose today's journal intentionally (all stubs written, end of day):
+> `/journal-compose --force`"
 
 Do **not** proceed to stub discovery, manifest reading, lock acquisition, or any further step.
 
-If the date came from `$ARGUMENTS`, skip this guard — an explicit date is a deliberate choice
-(e.g., composing after the final stub of the day has been written).
+If the date equals `$TODAY` and `FORCE` is true, proceed — intentional same-day compose.
+
+If the date is not today, proceed normally (regardless of `FORCE`).
 
 **Check for a manifest (fast path):**
 
