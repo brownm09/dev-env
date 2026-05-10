@@ -68,6 +68,33 @@ Accept the pasted content as **DIFF**. Set PR_TITLE="(pasted diff)", PR_BODY="",
 
 ---
 
+## Step 2b — Documentation Reconciliation Check
+
+Applies to PR_URL mode only. Skip if DIFF_MODE is true.
+
+Using the changed file list from Step 2, check whether the repo has a Documentation Maintenance
+table: look for the phrase `Documentation Maintenance` in the project's `CLAUDE.md`
+(`.claude/CLAUDE.md` or the repo root). If not found, skip this step and note
+"No doc-reconciliation rules defined for this repo."
+
+If the table exists (dev-env and any repo that adopts the pattern):
+
+1. Check whether any changed path matches `claude/skills/**`, `claude/hooks/**`,
+   `claude/scripts/**`, or `claude/routines/**`.
+2. If yes, check whether `README.md` or `docs/REFERENCE.md` also appears in the changed files.
+3. If neither README.md nor docs/REFERENCE.md appears, record a **Documentation** blocking
+   finding to include in the Step 6 output:
+
+   > **[documentation]** Missing reference doc update
+   > Paths under `claude/skills/`, `claude/hooks/`, `claude/scripts/`, or `claude/routines/`
+   > were changed, but neither `README.md` nor `docs/REFERENCE.md` appears in the diff.
+   > **Fix:** Per the Documentation Maintenance table in `CLAUDE.md`, update the relevant
+   > section(s) of `README.md` and/or `docs/REFERENCE.md` in this PR.
+
+Proceed to Step 3.
+
+---
+
 ## Step 3 — Decide analysis path
 
 **DIFF_SIZE ≤ 400 lines or FOCUS is set:** Proceed to Step 4 (single-pass analysis).
@@ -84,7 +111,7 @@ to do?) before looking for problems.
 For every substantive finding, answer all four questions:
 1. **What** — a factual description of what the code does
 2. **Why it matters here** — the consequence in this specific codebase/context, not in the abstract
-3. **Category** — one of: correctness | security | reliability | performance | maintainability | style
+3. **Category** — one of: correctness | security | reliability | documentation | performance | maintainability | style
 4. **What to do** — a concrete action the author can take
 
 Apply the cap: collect all findings, then keep the 5–7 highest-severity blocking findings and
@@ -137,11 +164,12 @@ Proceed to Step 6.
 
 Assign each finding to one of four buckets:
 
-**Blocking** (correctness | security | reliability):
+**Blocking** (correctness | security | reliability | documentation):
 - Incorrect behavior, crashes, data loss, race conditions
 - Security vulnerabilities (injection, auth bypass, secrets in code, unsafe deserialization)
 - Reliability failures (unhandled errors in critical paths, missing retries where required)
 - Missing test coverage for a behavior change in a tested codebase
+- Documentation gaps from Step 2b (skill/hook/script/routine changed without updating README.md or docs/REFERENCE.md)
 
 **Non-Blocking** (performance | maintainability):
 - Performance concerns that do not affect correctness

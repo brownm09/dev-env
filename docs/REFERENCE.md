@@ -73,7 +73,7 @@ Finds 1–3 primary sources for an engineering decision or topic. Emits footnote
 /review <PR-URL | --diff> [--no-style] [--author junior|mid|senior] [--focus security|correctness|perf] [--no-comment]
 ```
 
-Reviews a PR or pasted diff for correctness, security, reliability, and maintainability. Produces a structured report with blocking findings, non-blocking findings, questions for the author, and optional style notes.
+Reviews a PR or pasted diff for correctness, security, reliability, and maintainability. Also runs a documentation reconciliation check (Step 2b) — flags as a blocking finding if `claude/skills/**`, `claude/hooks/**`, `claude/scripts/**`, or `claude/routines/**` were changed without updating `README.md` or `docs/REFERENCE.md`. Produces a structured report with blocking findings, non-blocking findings, questions for the author, and optional style notes.
 
 **Flags:**
 - `--no-style` — omit style/nit findings
@@ -145,7 +145,7 @@ Fires before each Bash tool call. Matched with `"matcher": "Bash"`.
 | Script | Trigger condition | What it does |
 |--------|------------------|-------------|
 | `pre-commit-branch-check.py` | Command contains `git commit` | Emits the current branch name as a confirmation checkpoint before the commit runs. |
-| `pre-pr-create-check.py` | Command contains `gh pr create` | Emits a test-verification checklist. Enforces the "test before PR" rule from CLAUDE.md. |
+| `pre-pr-create-check.py` | Command contains `gh pr create` | Emits a test-verification checklist and a documentation-gap warning (if `claude/skills/`, `claude/hooks/`, `claude/scripts/`, or `claude/routines/` were changed without updating `README.md` or `docs/REFERENCE.md`). Enforces the "test before PR" and doc-reconciliation rules from CLAUDE.md. |
 
 ---
 
