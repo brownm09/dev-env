@@ -73,8 +73,15 @@ Accept the pasted content as **DIFF**. Set PR_TITLE="(pasted diff)", PR_BODY="",
 Applies to PR_URL mode only. Skip if DIFF_MODE is true.
 
 Using the changed file list from Step 2, check whether the repo has a Documentation Maintenance
-table: look for the phrase `Documentation Maintenance` in the project's `CLAUDE.md`
-(`.claude/CLAUDE.md` or the repo root). If not found, skip this step and note
+table. Fetch the project's `CLAUDE.md` from the remote PR branch (per ADR-004, always read
+from the remote, not the local worktree):
+
+```bash
+git show origin/<headRefName>:.claude/CLAUDE.md 2>/dev/null \
+  || git show origin/<headRefName>:CLAUDE.md 2>/dev/null
+```
+
+Search the output for the phrase `Documentation Maintenance`. If not found, skip this step and note
 "No doc-reconciliation rules defined for this repo."
 
 If the table exists (dev-env and any repo that adopts the pattern):
