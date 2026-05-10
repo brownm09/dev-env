@@ -34,7 +34,7 @@ Custom slash commands loaded from `claude/skills/`. Invoke with `/skill-name [ar
 | [`/propose <idea>`](claude/skills/propose/SKILL.md) | One-line idea → proposal doc → GitHub issue → ROADMAP entry. Per-project config via `.claude/propose.json`. |
 | [`/journal-compose [YYYY-MM-DD]`](claude/skills/journal-compose/SKILL.md) | Composes the end-of-day engineering journal from stub files. Dedicated-session only. |
 | [`/research [tag:] <decision> [--compare <alt>]`](claude/skills/research/SKILL.md) | Finds 1–3 primary sources. Greps shared source library first; spawns a subagent only on cache miss. |
-| [`/review <PR-URL> [flags]`](claude/skills/review/SKILL.md) | Reviews a PR for correctness, security, reliability, and maintainability. Posts report as PR comment by default. |
+| [`/review <PR-URL> [flags]`](claude/skills/review/SKILL.md) | Reviews a PR for correctness, security, reliability, maintainability, and documentation reconciliation. Posts report as PR comment by default. |
 | [`/journal-onboard [slug]`](claude/skills/journal-onboard/SKILL.md) | Scaffolds `sessions/<project>/` in engineering-journal and optionally creates `.claude/CLAUDE.md` in the project repo. |
 
 ## Hooks
@@ -51,7 +51,7 @@ All hooks are advisory — none block tool execution.
 | UserPromptSubmit | `multi-worktree-alert.py` | Lists active worktrees in `repo:branch` format when ≥2 are open |
 | UserPromptSubmit | `reconcile-open-prs.py` | Removes stale entries from `open-prs.jsonl` whose PRs are now merged/closed; emits surviving open PRs as session context |
 | PreToolUse (Bash) | `pre-commit-branch-check.py` | Emits current branch as a checkpoint before `git commit` |
-| PreToolUse (Bash) | `pre-pr-create-check.py` | Emits test-verification checklist before `gh pr create` |
+| PreToolUse (Bash) | `pre-pr-create-check.py` | Emits test-verification checklist and documentation-gap warning before `gh pr create` |
 | PostToolUse (Bash) | `pr-merge-reminder.py` | Reminds to write a journal stub after `gh pr create` or `gh pr merge` |
 | PostToolUse (Bash) | `post-tool-use.py` | Auto-adds issues/PRs to configured GitHub Project |
 | PostToolUse (Bash) | `post-pr-merge-pull.py` | Fast-forwards local `main` after `gh pr merge` |
