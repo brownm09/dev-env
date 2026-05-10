@@ -441,7 +441,7 @@ If `draft/YYYY-MM-DD` was merged or deleted before end of day (e.g., by an accid
 3. If any stub content was committed directly to `main` (e.g., via ad-hoc chore/* PR), revert each accidental commit
    via a PR to `main` and then re-add the observation to the recovery branch.
 4. Write the stub for the current session normally — commit to `draft/YYYY-MM-DD-recovery` instead of `draft/YYYY-MM-DD`.
-5. When running `/journal-compose`, ensure the engineering-journal working tree is on `draft/YYYY-MM-DD-recovery`.
+5. Run `/journal-compose --force` with the engineering-journal working tree on `draft/YYYY-MM-DD-recovery`. (`--force` is required because the target date is still today.)
 
 **Why `draft/YYYY-MM-DD-recovery` instead of `draft/YYYY-MM-DD`:** The pre-push hook blocks pushing to a branch that already has a merged PR (to prevent stale-branch noise). The `-recovery` suffix bypasses the check while keeping the date visible.
 
