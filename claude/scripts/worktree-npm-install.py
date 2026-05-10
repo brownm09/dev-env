@@ -15,7 +15,6 @@ Fires on every user prompt; exits silently when not applicable.
 Stdin JSON shape (UserPromptSubmit):
   {
     "hook_event_name": "UserPromptSubmit",
-    "session_id": "...",
     "cwd": "..."
   }
 
@@ -43,10 +42,7 @@ def main() -> None:
     parts = cwd_path.parts
 
     # Only run in Claude-managed worktrees (.claude/worktrees/<name> path structure).
-    if ".claude" not in parts or "worktrees" not in parts:
-        sys.exit(0)
-
-    # Verify .claude and worktrees appear as consecutive components.
+    # Require .claude and worktrees as consecutive path components.
     try:
         claude_idx = parts.index(".claude")
         if claude_idx + 1 >= len(parts) or parts[claude_idx + 1] != "worktrees":
@@ -64,7 +60,17 @@ def main() -> None:
 
     # Choose npm ci (reproducible) when a lockfile exists, otherwise npm install.
     has_lockfile = (cwd_path / "package-lock.json").exists()
-    cmd = ["npm", "ci"] if has_lockfile else ["npm", "install"]
+    cmd = "npm ci" if has_lockfile else "npm install"
+
+    # Emit a progress message before starting — install can take 30–120 s on large
+    # monorepos and the first prompt would otherwise appear to hang without feedback.
+    print(json.dumps({
+        "systemMessage": (
+            f"[worktree-npm-install] node_modules absent — running `{cmd}`. "
+            "This may take up to a few minutes on a large repo…"
+        )
+    }))
+    sys.stdout.flush()
 
     try:
         result = subprocess.run(
@@ -73,15 +79,15 @@ def main() -> None:
             capture_output=True,
             text=True,
             timeout=300,
+            shell=True,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError):
         sys.exit(0)
 
     if result.returncode == 0:
-        cmd_str = " ".join(cmd)
         print(json.dumps({
             "systemMessage": (
-                f"[worktree-npm-install] Ran `{cmd_str}` — "
+                f"[worktree-npm-install] `{cmd}` succeeded — "
                 "packages installed. node_modules is ready."
             )
         }))
@@ -89,7 +95,7 @@ def main() -> None:
         stderr_excerpt = result.stderr.strip()[:300] if result.stderr else "(no stderr)"
         print(json.dumps({
             "systemMessage": (
-                f"[worktree-npm-install] `{' '.join(cmd)}` failed "
+                f"[worktree-npm-install] `{cmd}` failed "
                 f"(exit {result.returncode}). "
                 f"Run it manually before testing.\n{stderr_excerpt}"
             )
