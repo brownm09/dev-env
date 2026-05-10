@@ -62,6 +62,10 @@
           {
             "type": "command",
             "command": "python3 C:/Users/brown/.claude/scripts/multi-worktree-alert.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 C:/Users/brown/.claude/scripts/worktree-npm-install.py"
           }
         ]
       }
