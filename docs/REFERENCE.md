@@ -73,7 +73,12 @@ Finds 1–3 primary sources for an engineering decision or topic. Emits footnote
 /review <PR-URL | --diff> [--no-style] [--author junior|mid|senior] [--focus security|correctness|perf] [--no-comment]
 ```
 
-Reviews a PR or pasted diff for correctness, security, reliability, and maintainability. Also runs a documentation reconciliation check (Step 2b) — flags as a blocking finding if `claude/skills/**`, `claude/hooks/**`, `claude/scripts/**`, or `claude/routines/**` were changed without updating `README.md` or `docs/REFERENCE.md`. Produces a structured report with blocking findings, non-blocking findings, questions for the author, and optional style notes.
+Reviews a PR or pasted diff for correctness, security, reliability, and maintainability. Runs two documentation checks before the main analysis:
+
+- **Step 2b — Documentation Reconciliation:** flags as a blocking finding if `claude/skills/**`, `claude/hooks/**`, `claude/scripts/**`, or `claude/routines/**` were changed without updating `README.md` or `docs/REFERENCE.md` (applies to repos with a `Documentation Maintenance` table in their `CLAUDE.md`).
+- **Step 2c — Documentation Coverage:** for every file added, deleted, renamed, or significantly rewritten, walks up ancestor directories and uses LLM judgment to determine whether a README at any of those levels should have been updated. Flags as a blocking finding when an existing README was not touched; suggests creation as a non-blocking finding when a directory would benefit from an index it lacks.
+
+Produces a structured report with blocking findings, non-blocking findings, questions for the author, and optional style notes.
 
 **Flags:**
 - `--no-style` — omit style/nit findings
