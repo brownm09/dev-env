@@ -98,6 +98,57 @@ If the table exists (dev-env and any repo that adopts the pattern):
    > **Fix:** Per the Documentation Maintenance table in `CLAUDE.md`, update the relevant
    > section(s) of `README.md` and/or `docs/REFERENCE.md` in this PR.
 
+Proceed to Step 2c.
+
+---
+
+## Step 2c — Documentation Coverage Check
+
+Applies to both PR_URL mode and DIFF_MODE.
+
+For every file that was **added, deleted, or renamed** in the diff (structural changes),
+and for every file that was **significantly rewritten** (purpose or functionality changed,
+not a minor fix or content update), apply the following check:
+
+1. Identify the file's directory and all ancestor directories up to depth 3 from the
+   changed file (stop at repo root).
+2. For each ancestor level, check whether a `README.md` exists at that level.
+   - In PR_URL mode: `git show origin/<headRefName>:<dir>/README.md 2>/dev/null`
+   - In DIFF_MODE: infer from the diff whether a README is present at that level.
+3. Use judgment to determine whether this specific change warrants a documentation update
+   at any of those levels. Consider:
+   - **New file in a directory that has a README index** → the index likely needs a new entry.
+   - **Deleted or renamed file in a directory with a README** → the index reference may need removal or updating.
+   - **File rewritten to serve a different purpose** → the README description may be stale.
+   - **Minor bug fix, typo correction, or content-only update to an existing file** → no README change needed.
+   - **Cross-tree impact**: a skill, hook, or workflow change referenced in a parent README or
+     in a related doc outside the immediate directory tree → flag the relevant parent or sibling
+     doc even if it is not in the same directory as the changed file.
+4. For each directory level where a README **exists** and the change **warrants** an update
+   and the README **does not appear in the diff**: record a **blocking Documentation finding**.
+5. For each directory level where no README exists but one **would add navigational value**
+   (e.g., a directory now has several files with no index): record a **non-blocking
+   Documentation finding** suggesting creation.
+
+If no ancestor directories have READMEs and no cross-tree impact is identified, note
+"No README coverage gaps found." and proceed to Step 3.
+
+**Example findings:**
+
+> **[documentation]** `context/sentence_density.md` added without README update
+> `context/README.md` is an index of all files in this directory. Adding a new file here
+> without adding an entry leaves sessions that orient from `context/README.md` unaware of
+> the new file — the career-playbook#168 incident that prompted issue #219.
+> **Fix:** Add a `### \`sentence_density.md\`` entry to `context/README.md` describing
+> its purpose and when to load it.
+
+> **[documentation]** `claude/skills/new-skill/` added; top-level README not updated
+> `README.md` contains a Skills table that lists all available skills. Adding a skill
+> without updating the table leaves the skill undiscoverable to sessions that orient from
+> `README.md`.
+> **Fix:** Add a row for `new-skill` to the Skills table in `README.md` and the Skills
+> section of `docs/REFERENCE.md`.
+
 Proceed to Step 3.
 
 ---
@@ -177,10 +228,12 @@ Assign each finding to one of four buckets:
 - Reliability failures (unhandled errors in critical paths, missing retries where required)
 - Missing test coverage for a behavior change in a tested codebase
 - Documentation gaps from Step 2b (skill/hook/script/routine changed without updating README.md or docs/REFERENCE.md)
+- Documentation gaps from Step 2c (README exists at a relevant directory level and warrants an update, but was not changed in this PR)
 
-**Non-Blocking** (performance | maintainability):
+**Non-Blocking** (performance | maintainability | documentation):
 - Performance concerns that do not affect correctness
 - Code that works but will be hard to extend, test, or debug
+- Step 2c suggestion to create a README where none exists (not required, but advisable)
 
 **Questions for Author:**
 - Ambiguities where intent is genuinely unclear — frame as a question, not a criticism
