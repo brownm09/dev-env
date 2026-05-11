@@ -37,8 +37,12 @@ Extend the `/review` skill with **Step 2c — Documentation Coverage Check**, a 
 LLM-judged step that runs after Step 2b and before the main correctness/security/reliability
 analysis. Step 2c:
 
-1. Identifies files in the diff that were added, deleted, renamed, or significantly rewritten.
-2. Walks ancestor directories up to depth 3 from each changed file.
+1. Identifies files in the diff that were added, deleted, or renamed, plus files whose
+   change reflects any of the 4 Ds (decision made, discovery surfaced, dependency
+   introduced/removed, deviation from documented process — the same criteria the
+   stub-update rules in `claude/CLAUDE.md` use to define a substantive session event).
+2. Walks ancestor directories up to depth 3 from each changed file, deduplicating shared
+   ancestors so each unique directory is queried once.
 3. For each ancestor level that has a `README.md`, uses LLM judgment to decide whether the
    change warrants a README update.
 4. Records a **blocking documentation finding** when a relevant README exists but is not
@@ -95,9 +99,13 @@ maintainer may have a reason not to add one. The two cases warrant different sev
   output; no new section or flag is needed.
 - Repos that previously had silent documentation drift (career-playbook `context/`,
   potentially others) will see findings on the next PR that exercises the pattern.
-- The check uses LLM tokens proportional to the changed-file count. For PRs touching only
-  one or two files, the cost is negligible (≤200 tokens of reasoning). For larger PRs the
-  check is bounded by the changed-file count, not the diff size.
+- The check uses LLM tokens proportional to the unique-ancestor count, not the changed-file
+  count. For PRs touching only one or two files, the cost is negligible (≤200 tokens of
+  reasoning). For larger PRs the check is bounded by the number of distinct ancestor
+  directories, not the diff size.
+- DIFF_MODE (pasted diff) cannot reveal unchanged READMEs, so the blocking-finding branch
+  is skipped in that mode; only README-creation suggestions (non-blocking) apply. For full
+  coverage, run `/review` against a PR URL.
 - Future repos do not need to opt in or add configuration. The check applies uniformly.
 - The career-playbook-specific validator originally proposed in issue #219 is **not built**;
   this ADR documents the decision to solve the problem at a more general layer.

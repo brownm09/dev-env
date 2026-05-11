@@ -107,26 +107,33 @@ Proceed to Step 2c.
 Applies to both PR_URL mode and DIFF_MODE.
 
 For every file that was **added, deleted, or renamed** in the diff (structural changes),
-and for every file that was **significantly rewritten** (purpose or functionality changed,
-not a minor fix or content update), apply the following check:
+and for every file whose change reflects any of the **4 Ds** — a **decision made**, a
+**discovery surfaced**, a **dependency introduced** (or removed), or a **deviation from
+documented process** — apply the following check. (The 4 Ds match the dev-env stub-update
+criteria in `claude/CLAUDE.md`; minor bug fixes, typo corrections, and content-only updates
+to an existing file do not qualify.)
 
 1. Identify the file's directory and all ancestor directories up to depth 3 from the
-   changed file (stop at repo root).
-2. For each ancestor level, check whether a `README.md` exists at that level.
+   changed file (stop at repo root). When multiple files share an ancestor, deduplicate
+   the ancestor set before issuing `git show` calls — query each unique ancestor once.
+2. For each unique ancestor directory, check whether a `README.md` exists there.
    - In PR_URL mode: `git show origin/<headRefName>:<dir>/README.md 2>/dev/null`
-   - In DIFF_MODE: infer from the diff whether a README is present at that level.
+   - In DIFF_MODE: a pasted diff cannot reveal unchanged READMEs. Skip the blocking
+     branch entirely (step 4 below) — only the non-blocking suggestion branch (step 5)
+     applies. Note in the review output: "DIFF_MODE — README-staleness check skipped;
+     paste the relevant README contents or use PR_URL mode for full coverage."
 3. Use judgment to determine whether this specific change warrants a documentation update
    at any of those levels. Consider:
    - **New file in a directory that has a README index** → the index likely needs a new entry.
    - **Deleted or renamed file in a directory with a README** → the index reference may need removal or updating.
    - **File rewritten to serve a different purpose** → the README description may be stale.
-   - **Minor bug fix, typo correction, or content-only update to an existing file** → no README change needed.
    - **Cross-tree impact**: a skill, hook, or workflow change referenced in a parent README or
      in a related doc outside the immediate directory tree → flag the relevant parent or sibling
      doc even if it is not in the same directory as the changed file.
-4. For each directory level where a README **exists** and the change **warrants** an update
-   and the README **does not appear in the diff**: record a **blocking Documentation finding**.
-5. For each directory level where no README exists but one **would add navigational value**
+4. (PR_URL mode only.) For each ancestor where a README **exists** and the change
+   **warrants** an update and the README **does not appear in the diff**: record a
+   **blocking Documentation finding**.
+5. For each ancestor where no README exists but one **would add navigational value**
    (e.g., a directory now has several files with no index): record a **non-blocking
    Documentation finding** suggesting creation.
 
@@ -137,8 +144,8 @@ If no ancestor directories have READMEs and no cross-tree impact is identified, 
 
 > **[documentation]** `context/sentence_density.md` added without README update
 > `context/README.md` is an index of all files in this directory. Adding a new file here
-> without adding an entry leaves sessions that orient from `context/README.md` unaware of
-> the new file — the career-playbook#168 incident that prompted issue #219.
+> without an entry leaves sessions that orient from `context/README.md` unaware of the
+> new file.
 > **Fix:** Add a `### \`sentence_density.md\`` entry to `context/README.md` describing
 > its purpose and when to load it.
 
