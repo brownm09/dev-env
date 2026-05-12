@@ -9,6 +9,9 @@ Prune stale Claude session worktrees in the dev-env repo. Run fully autonomously
 **Objective:** Remove all `claude/*` worktrees whose branches are fully merged into `origin/main` and have no uncommitted changes. Report the pruned/skipped summary.
 
 **Steps:**
+0. Sync the dev-env working tree to `origin/main`:
+   - Invoke `sync-routine-worktree` with `REPO=C:/Users/brown/Git/dev-env`, `VERIFY_FILE=claude/scripts/prune-merged-worktrees.py`, `PREFIX=prune-stale-worktrees`.
+   - If it returns **ABORT**, stop — the push notification has already been sent.
 1. Run the prune script from the dev-env repo root:
    ```bash
    python C:/Users/brown/Git/dev-env/claude/scripts/prune-merged-worktrees.py
