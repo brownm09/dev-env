@@ -254,7 +254,15 @@ Assembles all `YYYY-MM-DD_*.stub.md` files across all configured projects into t
 
 **Schedule:** `0 0 * * 0` (midnight UTC, every Sunday)
 
-Removes `claude/*` worktrees whose branches are fully merged into `origin/main`. Uses `git branch -d` and `git worktree remove` (no `--force`). Skips the current worktree, dirty worktrees, and any worktree not named `claude/*`. Sends a push notification listing any unmerged branches that were skipped.
+Targets the **dev-env** repo. Removes `claude/*` worktrees whose branches are fully merged into `origin/main`, and removes any non-primary worktree accidentally checked out on `main` (e.g., after a session runs `git checkout main` as part of post-merge cleanup). Uses `git branch -d` and `git worktree remove` (no `--force`). Skips the current worktree, dirty worktrees, and any worktree not named `claude/*` (except `main`). Sends a push notification listing any unmerged branches that were skipped.
+
+---
+
+### prune-stale-worktrees-ll
+
+**Schedule:** `0 1 * * 0` (1 AM local, every Sunday)
+
+Same behavior as `prune-stale-worktrees` but targets the **lifting-logbook** repo at `C:/Users/brown/Git/lifting-logbook`. Runs the shared `prune-merged-worktrees.py` script with `--repo-path C:/Users/brown/Git/lifting-logbook`; the script auto-detects the GitHub repo slug from the lifting-logbook remote URL.
 
 ---
 
@@ -284,7 +292,7 @@ On-demand scripts — not wired to any event. Run manually or from other scripts
 |--------|-----------|-------------|
 | `token-report.py` | `python3 token-report.py [--date YYYY-MM-DD] [--days N] [--project name] [--latest] [--show-subagents]` | Generates markdown and JSON token usage reports from `~/.claude/scratch/token-sessions.jsonl`. |
 | `backfill-tokens.py` | `python3 backfill-tokens.py` | Backfills token data for sessions predating the token-tracker hook. Idempotent — deduplicates on `session_id`. |
-| `prune-merged-worktrees.py` | `python3 prune-merged-worktrees.py` | Manual equivalent of the `prune-stale-worktrees` routine. |
+| `prune-merged-worktrees.py` | `python3 prune-merged-worktrees.py [--dry-run] [--repo-path /path/to/repo]` | Manual equivalent of the prune routines. Auto-detects the GitHub repo slug from the origin remote URL. `--repo-path` targets a different repo's worktrees; defaults to dev-env. Removes merged `claude/*` worktrees and stale `main` checkouts. |
 | `new-branch.sh` | `new-branch <name>` (shell function; source `~/.claude/scripts/new-branch.sh` in `.bashrc`) | Creates a branch always rooted at `origin/main`. Warns when HEAD has diverged from the merge base. |
 | `merge-stale-pr.sh` | `bash merge-stale-pr.sh <PR-URL>` | Remediates stale `engineering-journal` draft PRs: checks out the branch, warns on missing journal file, deletes orphaned drafts, rebases, and squash-merges with auto-conflict resolution. |
 | `get-project-item.sh` | `ITEM_ID=$(bash get-project-item.sh <issue-number> [project-number] [owner])` | Resolves a GitHub Project item node ID from an issue/PR number. Defaults to project 3, owner `brownm09`. Overridable via args or `PROJECT_NUMBER`/`PROJECT_OWNER` env vars. Requires `project` scope: `gh auth refresh -s project`. |

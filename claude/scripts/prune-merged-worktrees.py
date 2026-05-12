@@ -33,8 +33,10 @@ BRANCH_PREFIX = "claude/"
 
 def _repo_from_args() -> str:
     for i, arg in enumerate(sys.argv[1:], 1):
-        if arg == "--repo-path" and i < len(sys.argv):
-            return str(Path(sys.argv[i + 1]).resolve())
+        if arg == "--repo-path":
+            if i + 1 < len(sys.argv):
+                return str(Path(sys.argv[i + 1]).resolve())
+            sys.exit("--repo-path requires an argument")
     return _DEFAULT_REPO
 
 
@@ -149,10 +151,6 @@ def main() -> None:
 
         if not branch.startswith(BRANCH_PREFIX):
             skipped.append((path, f"branch '{branch}' not in {BRANCH_PREFIX}* prefix"))
-            continue
-
-        if path == cwd:
-            skipped.append((path, "current worktree"))
             continue
 
         if not is_merged(branch, gh_repo):

@@ -9,6 +9,9 @@ Prune stale Claude session worktrees in the lifting-logbook repo. Run fully auto
 **Objective:** Remove all `claude/*` worktrees in lifting-logbook whose branches are fully merged into `origin/main` and have no uncommitted changes. Also remove any non-primary worktrees accidentally checked out on `main`. Report the pruned/skipped summary.
 
 **Steps:**
+0. Sync the dev-env working tree to `origin/main`:
+   - Invoke `sync-routine-worktree` with `REPO=C:/Users/brown/Git/dev-env`, `VERIFY_FILE=claude/scripts/prune-merged-worktrees.py`, `PREFIX=prune-stale-worktrees-ll`.
+   - If it returns **ABORT**, stop — the push notification has already been sent.
 1. Run the prune script targeting lifting-logbook:
    ```bash
    python C:/Users/brown/Git/dev-env/claude/scripts/prune-merged-worktrees.py \
