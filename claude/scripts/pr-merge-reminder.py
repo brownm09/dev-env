@@ -202,6 +202,10 @@ def _open_pr_for_cwd(cwd: str) -> dict | None:
     Returns a dict with keys ``number``, ``url``, and ``title``.
     Returns None when *cwd* is the engineering-journal repo (handled by
     stub-push-archive-reminder.py) or when no open PR exists.
+
+    Note: uses ``git branch --show-current`` (the checked-out branch), not the
+    push refspec.  Correct for the common case of ``git push`` with no explicit
+    refspec; may miss or mismatch on ``git push origin other:target`` patterns.
     """
     if _EJ_REPO_FRAGMENT in cwd.replace("\\", "/"):
         return None
@@ -218,6 +222,8 @@ def _open_pr_for_cwd(cwd: str) -> dict | None:
              "--json", "number,url,title", "--state", "open", "--limit", "1"],
             capture_output=True, text=True, timeout=10, cwd=cwd,
         )
+        if pr_result.returncode != 0:
+            return None
         prs = json.loads(pr_result.stdout or "[]")
         return prs[0] if prs else None
     except Exception:

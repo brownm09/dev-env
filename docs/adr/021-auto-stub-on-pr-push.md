@@ -61,6 +61,14 @@ existing PR") is removed.
   add latency to pushes on branches without an open PR. The `except Exception: return None`
   guard ensures the hook fails silently if either call errors (no valid cwd, auth issue, etc.).
 - Branches with no open PR produce no reminder and no latency beyond the two subprocess calls.
+- `_PUSH_RE` matches `git push --delete origin <branch>` (remote branch deletion). If the
+  currently checked-out branch has an open PR, this would emit a spurious reminder. In
+  practice Claude uses `gh pr merge --delete-branch` rather than `git push --delete`, so
+  this case does not arise in the normal workflow. Accepted as a known edge case.
+- `_open_pr_for_cwd` uses `git branch --show-current` (the checked-out branch), not the
+  push refspec. Pushes with an explicit `other:target` refspec would look up the wrong
+  branch. The normal workflow always pushes the currently checked-out branch, so this is
+  not a practical concern.
 
 ---
 
