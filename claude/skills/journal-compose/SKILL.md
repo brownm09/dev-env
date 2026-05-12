@@ -771,7 +771,7 @@ Top-level entry format (labeled bullets, no prose block):
 **Status:** Archived / Superseded / Complete   ← only for finished projects; omit for active ones
 **Recent:** [#N](url) — description, [#M](url) — description   ← omit if no work in last 1–2 sessions
 **Open:** [#N](url) — topic; [#M](url) — topic   ← use `None` if explicitly closed out; omit if not applicable
-**Next:** One concrete sentence.   ← omit if no clear next step
+**Next:** One concrete sentence.   ← omit if no clear next step; no dates
 **Repo:** [owner/repo](https://github.com/owner/repo)   ← always include
 **Journal:** [sessions/<project>/](sessions/<project>/README.md)   ← always include
 ```
