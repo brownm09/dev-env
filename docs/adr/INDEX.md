@@ -25,3 +25,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [018](018-reconcile-open-prs-hook.md) | Auto-Reconcile open-prs.jsonl Against GitHub State | 2026-05-10 | Accepted | hooks, open-prs, UserPromptSubmit, github, token-efficiency |
 | [019](019-doc-reconciliation-enforcement.md) | Documentation Reconciliation Enforcement | 2026-05-10 | Accepted | documentation, skills, hooks, workflow, review, checkpoints |
 | [020](020-doc-coverage-in-review.md) | Documentation Coverage Check as LLM-Judged Step in /review | 2026-05-11 | Accepted | documentation, review, skill, semantic, readme, llm-judgment |
+| [021](021-auto-stub-on-pr-push.md) | Auto-Write Journal Stub on git push to Open PR Branch | 2026-05-11 | Accepted | journal, stubs, hooks, post-tool-use, git-push, automation |
