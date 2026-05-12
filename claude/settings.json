@@ -1,5 +1,4 @@
 {
-  "model": "claude-sonnet-4-6",
   "permissions": {
     "allow": [
       "Write(C:/Users/brown/.claude/scratch/**)",
@@ -24,6 +23,7 @@
       "Bash(gh issue view *)"
     ]
   },
+  "model": "claude-sonnet-4-6",
   "hooks": {
     "PreToolUse": [
       {
@@ -125,5 +125,6 @@
         ]
       }
     ]
-  }
+  },
+  "effortLevel": "medium"
 }
