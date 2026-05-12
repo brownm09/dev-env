@@ -288,16 +288,18 @@ def main() -> None:
         if pr:
             messages.append(
                 f"[journal-reminder] git push detected for PR #{pr['number']} — "
-                f"write a journal stub NOW:\n"
+                f"update the engineering journal NOW:\n"
                 f"  PR: {pr['url']} — {pr['title']}\n"
                 f"  cwd: {cwd}\n"
-                "  Write a NEW stub for this push session (the original PR-creation stub\n"
-                "  remains unchanged). Document what changed and why.\n"
+                "  Check whether a stub already exists for this session:\n"
+                "  - If YES: update it in place (append new content to the session block).\n"
+                "  - If NO: create a new stub for this push session.\n"
+                "  Document what changed and why (review findings addressed,\n"
+                "  approach decisions, what was pushed).\n"
                 "  1. Identify the project journal path from cwd.\n"
                 "  2. Check out the draft branch in engineering-journal.\n"
-                "  3. Write a <!-- session: <slug> --> block (review findings addressed,\n"
-                "     approach decisions, what was pushed).\n"
-                "  4. Add token comment and <!-- next-session-context --> paragraph.\n"
+                "  3. Find today's stub for this session, or create one if absent.\n"
+                "  4. Add/update token comment and <!-- next-session-context --> paragraph.\n"
                 '  5. git commit -m "draft: YYYY-MM-DD session N" && git push'
             )
 

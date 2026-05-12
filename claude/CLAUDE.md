@@ -520,7 +520,7 @@ Subsequent stubs begin directly at `<!-- session: <slug> -->`.
   - PR opened — follow the Stub file workflow immediately after `gh pr create`. If no further work is planned (e.g., waiting on CI or human review), stop after writing the stub.
   - PR merged (including auto-merge) — write or update a stub for the merge session (see Git Workflow → Write a stub on PR merge), then stop.
   - PR closed without merging — stub was already written at PR creation; stopping is optional (see Git Workflow → PR closed without merging)
-  - PR updated (push to a branch with an open PR) — when the hook reminder fires after `git push`, write a **new** stub for this push session immediately. The original PR-creation stub remains unchanged; the push stub documents what changed in this session (review findings addressed, approach decisions, what was pushed).
+  - PR updated (push to a branch with an open PR) — when the hook reminder fires after `git push`, update the engineering journal immediately: if a stub already exists for the current session, update it in place; otherwise create a new stub. Document what changed in this session (review findings addressed, approach decisions, what was pushed).
 - The following do **not** auto-create a stub — they are not session boundaries:
   - Review-only sessions (`/review <PR-URL>`)
 
