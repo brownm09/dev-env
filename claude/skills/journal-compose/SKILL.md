@@ -749,23 +749,31 @@ today's journal.
 Read `C:/Users/brown/Git/engineering-journal/README.md`.
 
 The top-level README uses a hub-and-spoke layout: **no inline entry tables**. Each project
-section has a 2–3 sentence description, current state, and a link to its folder README.
-Entry tables live only in the folder READMEs (already updated in Step 7).
+section uses a labeled-bullet structure (defined in `engineering-journal/CLAUDE.md` →
+`## Top-level README Format`). Entry tables live only in the folder READMEs (already updated
+in Step 7).
 
 For the project you just composed:
 - Find its `### <Project Name>` section in the top-level README
-- Update the description to reflect the current milestone, next step, and any open blockers
-  that changed today (draw from the journal's Open Items and Next Session Context sections)
+- Update the bullets to reflect any changes from today's journal (Open Items, Next Session
+  Context, PRs opened/merged)
+- **Hyperlink every PR and issue reference** — `[#N](https://github.com/owner/repo/pull/N)`
+  for PRs, `[#N](https://github.com/owner/repo/issues/N)` for issues
+- Omit any bullet whose value is empty — never write placeholder dashes
 - Do not add entry rows — the folder README owns the table
 
-Top-level entry format (description + link only, no table):
+Top-level entry format (labeled bullets, no prose block):
 ```markdown
 ### <Project Name>
 
-<2–3 sentences: what the project is, current milestone, next step, open blockers if any.>
+<One-line lead sentence — what the project is; no dates or status.>
 
-**Repository:** [brownm09/<repo>](https://github.com/brownm09/<repo>)
-**Journal:** [sessions/<project>/](sessions/<project>/README.md)
+**Status:** Archived / Superseded / Complete   ← only for finished projects; omit for active ones
+**Recent:** [#N](url) — description, [#M](url) — description   ← omit if no work in last 1–2 sessions
+**Open:** [#N](url) — topic; [#M](url) — topic   ← use `None` if explicitly closed out; omit if not applicable
+**Next:** One concrete sentence.   ← omit if no clear next step; no dates
+**Repo:** [owner/repo](https://github.com/owner/repo)   ← always include
+**Journal:** [sessions/<project>/](sessions/<project>/README.md)   ← always include
 ```
 
 If the project does not yet appear in the README, add a new `### <Project>` section
