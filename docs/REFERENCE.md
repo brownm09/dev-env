@@ -160,7 +160,7 @@ Fires after each Bash tool call completes. Matched with `"matcher": "Bash"`.
 
 | Script | Trigger condition | What it does |
 |--------|------------------|-------------|
-| `pr-merge-reminder.py` | Command contains `gh pr create` or `gh pr merge` | Exits 2 with a `systemMessage` reminding Claude to write a journal stub. |
+| `pr-merge-reminder.py` | Command contains `gh pr create`, `gh pr merge`, or `git push` (when the pushed branch has an open PR) | Exits 2 with a `systemMessage` reminding Claude to write a journal stub. For `git push`, runs `git branch --show-current` and `gh pr list --head <branch>` as subprocesses to confirm an open PR exists before emitting the reminder. Skips `engineering-journal` pushes (handled by `stub-push-archive-reminder.py`). |
 | `post-tool-use.py` | Command contains `gh issue create` or `gh pr create` | Auto-adds the created item to the configured GitHub Project. Opt-in via `"github_project_id"` in `.claude/hook-config.json`. |
 | `post-pr-merge-pull.py` | Command contains `gh pr merge` | Fast-forwards the local `main` branch via `git fetch origin main:main` so the local clone stays current after a merge. |
 | `post-pr-merge-project.py` | Command contains `gh pr merge` | Auto-moves the linked issue (`Closes/Fixes/Resolves #N` in PR body) to Done on the configured GitHub Project. Opt-in via `status_field_id` and `done_option_id` in `hook-config.json`. [ADR-014](adr/014-auto-move-project-item-done-on-merge.md) |

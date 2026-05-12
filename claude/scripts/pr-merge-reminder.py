@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Claude Code PostToolUse hook — detects 'gh pr create' or 'gh pr merge' in
-Bash commands and emits journal-update reminders via stderr (exit code 2) so
-Claude sees them.
+"""Claude Code PostToolUse hook — detects 'gh pr create', 'gh pr merge', or
+'git push' (when the pushed branch has an open PR) in Bash commands and emits
+journal-update reminders via stderr (exit code 2) so Claude sees them.
 
 Matches only actual CLI invocations, not the string appearing inside commit
 messages, heredocs, or other quoted arguments.
@@ -16,17 +16,25 @@ Stdin JSON shape (PostToolUse):
     "cwd": "..."
   }
 
-Exit 0  — neither gh pr create nor gh pr merge; no action
-Exit 2  — gh pr create and/or gh pr merge detected; reminder(s) emitted via stderr
+Exit 0  — no relevant command detected; no action
+Exit 2  — gh pr create, gh pr merge, or git push (open PR) detected;
+          reminder(s) emitted via stderr
 """
 import json
 import re
+import subprocess
 import sys
 from collections.abc import Callable
 
-# Matches the start of a statement token against `gh pr merge` or `gh pr create`.
+# Matches the start of a statement token against `gh pr merge`, `gh pr create`,
+# or `git push`.
 _MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
 _CREATE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+create\b")
+_PUSH_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?git\s+push\b")
+
+# Path fragment that identifies the engineering-journal repo — push events
+# there are handled by stub-push-archive-reminder.py, not this script.
+_EJ_REPO_FRAGMENT = "engineering-journal"
 
 
 def _check_merge_stmt(token: str) -> bool:
@@ -35,6 +43,10 @@ def _check_merge_stmt(token: str) -> bool:
 
 def _check_create_stmt(token: str) -> bool:
     return bool(_CREATE_RE.match(token.lstrip()))
+
+
+def _check_push_stmt(token: str) -> bool:
+    return bool(_PUSH_RE.match(token.lstrip()))
 
 
 def _find_heredoc_end(cmd: str, start: int) -> int:
@@ -179,6 +191,45 @@ def is_pr_create_command(command: str) -> bool:
     return _scan_top_level(command, _check_create_stmt)
 
 
+def is_git_push_command(command: str) -> bool:
+    """Return True only when *command* contains a top-level `git push`."""
+    return _scan_top_level(command, _check_push_stmt)
+
+
+def _open_pr_for_cwd(cwd: str) -> dict | None:
+    """Return the first open PR for the current branch in *cwd*, or None.
+
+    Returns a dict with keys ``number``, ``url``, and ``title``.
+    Returns None when *cwd* is the engineering-journal repo (handled by
+    stub-push-archive-reminder.py) or when no open PR exists.
+
+    Note: uses ``git branch --show-current`` (the checked-out branch), not the
+    push refspec.  Correct for the common case of ``git push`` with no explicit
+    refspec; may miss or mismatch on ``git push origin other:target`` patterns.
+    """
+    if _EJ_REPO_FRAGMENT in cwd.replace("\\", "/"):
+        return None
+    try:
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True, text=True, timeout=5, cwd=cwd,
+        )
+        branch = branch_result.stdout.strip()
+        if not branch:
+            return None
+        pr_result = subprocess.run(
+            ["gh", "pr", "list", "--head", branch,
+             "--json", "number,url,title", "--state", "open", "--limit", "1"],
+            capture_output=True, text=True, timeout=10, cwd=cwd,
+        )
+        if pr_result.returncode != 0:
+            return None
+        prs = json.loads(pr_result.stdout or "[]")
+        return prs[0] if prs else None
+    except Exception:
+        return None
+
+
 def main() -> None:
     raw = sys.stdin.read().strip()
     if not raw:
@@ -201,8 +252,9 @@ def main() -> None:
 
     is_create = is_pr_create_command(command)
     is_merge = is_pr_merge_command(command)
+    is_push = is_git_push_command(command)
 
-    if not (is_create or is_merge):
+    if not (is_create or is_merge or is_push):
         sys.exit(0)
 
     messages = []
@@ -230,6 +282,29 @@ def main() -> None:
             "  4. Add token comment and <!-- next-session-context --> paragraph.\n"
             '  5. git commit -m "draft: YYYY-MM-DD session N" && git push'
         )
+
+    if is_push and not (is_create or is_merge):
+        pr = _open_pr_for_cwd(cwd)
+        if pr:
+            messages.append(
+                f"[journal-reminder] git push detected for PR #{pr['number']} — "
+                f"update the engineering journal NOW:\n"
+                f"  PR: {pr['url']} — {pr['title']}\n"
+                f"  cwd: {cwd}\n"
+                "  Check whether a stub already exists for this session:\n"
+                "  - If YES: update it in place (append new content to the session block).\n"
+                "  - If NO: create a new stub for this push session.\n"
+                "  Document what changed and why (review findings addressed,\n"
+                "  approach decisions, what was pushed).\n"
+                "  1. Identify the project journal path from cwd.\n"
+                "  2. Check out the draft branch in engineering-journal.\n"
+                "  3. Find today's stub for this session, or create one if absent.\n"
+                "  4. Add/update token comment and <!-- next-session-context --> paragraph.\n"
+                '  5. git commit -m "draft: YYYY-MM-DD session N" && git push'
+            )
+
+    if not messages:
+        sys.exit(0)
 
     print("\n\n".join(messages), file=sys.stderr)
     sys.exit(2)
