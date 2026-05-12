@@ -38,11 +38,12 @@ has an open PR, emit a journal-update reminder with the PR number, URL, and titl
    - Runs `gh pr list --head <branch> --json number,url,title --state open --limit 1`.
    - Returns the first result, or `None` if no open PR exists.
 3. If a PR is found, the hook emits a reminder (exit 2) with step-by-step stub instructions,
-   instructing Claude to write a **new** stub for the push session.
+   instructing Claude to check whether a stub already exists for the current session —
+   update it in place if yes, create a new stub if no.
 
 **CLAUDE.md update:** "PR updated (push to a branch with an open PR)" is added to the
-auto-create-stub trigger list, and the former exclusion bullet ("Pushing commits to an
-existing PR") is removed.
+Update triggers section with check-first-update-or-create semantics. The former exclusion
+bullet ("Pushing commits to an existing PR") is removed.
 
 ---
 
