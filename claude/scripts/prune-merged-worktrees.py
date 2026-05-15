@@ -15,9 +15,13 @@ correctly in any repo — not just brownm09/dev-env.
 
 Usage:
   python claude/scripts/prune-merged-worktrees.py [--dry-run] [--repo-path /path/to/repo]
+  python claude/scripts/prune-merged-worktrees.py [--dry-run] --scan-dir /path/to/dir
 
-  --repo-path  Target a different repo's worktrees (defaults to the dev-env repo).
+  --repo-path  Target a specific repo's worktrees (defaults to the dev-env repo).
                Example: --repo-path C:/Users/brown/Git/lifting-logbook
+  --scan-dir   Discover and prune all git repos directly under the given directory.
+               Skips repos with no GitHub remote or no claude/* worktrees.
+               Example: --scan-dir C:/Users/brown/Git
 """
 import os
 import re
@@ -40,16 +44,40 @@ def _repo_from_args() -> str:
     return _DEFAULT_REPO
 
 
-REPO = _repo_from_args()
+def _scan_dir_from_args() -> str | None:
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg == "--scan-dir":
+            if i + 1 < len(sys.argv):
+                return str(Path(sys.argv[i + 1]).resolve())
+            sys.exit("--scan-dir requires an argument")
+    return None
 
 
-def run(args: list[str], cwd: str = REPO, check: bool = False) -> subprocess.CompletedProcess:
+def run(args: list[str], cwd: str, check: bool = False) -> subprocess.CompletedProcess:
     return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=30, check=check)
 
 
-def detect_gh_repo() -> str:
-    """Return 'owner/repo' derived from the origin remote URL of REPO."""
-    r = run(["git", "remote", "get-url", "origin"])
+def find_git_repos(scan_dir: str) -> list[str]:
+    """Return paths of primary git repos (with a .git directory) directly under scan_dir."""
+    repos = []
+    try:
+        entries = sorted(os.scandir(scan_dir), key=lambda e: e.name.lower())
+    except PermissionError as exc:
+        print(f"WARNING: cannot scan {scan_dir}: {exc}", file=sys.stderr)
+        return repos
+    for entry in entries:
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        git_path = Path(entry.path) / ".git"
+        # .git is a directory for primary repos; a file for git worktrees — skip worktrees
+        if git_path.is_dir():
+            repos.append(entry.path)
+    return repos
+
+
+def detect_gh_repo(repo: str) -> str:
+    """Return 'owner/repo' derived from the origin remote URL of repo."""
+    r = run(["git", "remote", "get-url", "origin"], cwd=repo)
     url = r.stdout.strip()
     # Matches both https://github.com/owner/repo(.git) and git@github.com:owner/repo(.git)
     m = re.search(r"github\.com[:/](.+?)(?:\.git)?$", url)
@@ -76,20 +104,20 @@ def parse_worktrees(output: str) -> list[dict]:
     return worktrees
 
 
-def is_merged(branch: str, gh_repo: str) -> bool:
+def is_merged(branch: str, gh_repo: str, repo: str) -> bool:
     # Regular merge: commit is an ancestor of origin/main
-    r = run(["git", "merge-base", "--is-ancestor", branch, "origin/main"])
+    r = run(["git", "merge-base", "--is-ancestor", branch, "origin/main"], cwd=repo)
     if r.returncode == 0:
         return True
     # Squash merge: commit SHA diverges from main — ask GitHub instead
     r = run(["gh", "pr", "list", "--repo", gh_repo,
-             "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"])
+             "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"], cwd=repo)
     if r.returncode == 0 and r.stdout.strip() not in ("", "[]"):
         return True
     return False
 
 
-def is_dirty(path: str) -> bool:
+def is_dirty(path: str, repo: str) -> bool:
     if not Path(path).exists():
         return True
     r = run(["git", "status", "--porcelain"], cwd=path)
@@ -98,25 +126,28 @@ def is_dirty(path: str) -> bool:
 
 def primary_worktree_path(worktrees: list[dict]) -> str:
     """The primary worktree is always the first entry from 'git worktree list'."""
-    return str(Path(worktrees[0]["path"]).resolve()) if worktrees else REPO
+    return str(Path(worktrees[0]["path"]).resolve()) if worktrees else ""
 
 
-def main() -> None:
-    dry_run = "--dry-run" in sys.argv
-    if dry_run:
-        print("[dry-run] no changes will be made")
+def prune_one(repo: str, dry_run: bool) -> tuple[int, int]:
+    """Prune merged claude/* worktrees in a single repo. Returns (pruned, skipped) counts."""
+    try:
+        gh_repo = detect_gh_repo(repo)
+    except RuntimeError as exc:
+        print(f"  SKIP {repo}: {exc}")
+        return 0, 0
 
-    gh_repo = detect_gh_repo()
-    print(f"Repo: {gh_repo}")
+    print(f"\nRepo: {gh_repo} ({repo})")
 
     # Fetch origin/main so merge checks are accurate
-    print("Fetching origin/main…")
-    run(["git", "fetch", "origin", "main"], check=True)
+    r = run(["git", "fetch", "origin", "main"], cwd=repo)
+    if r.returncode != 0:
+        print(f"  WARNING: fetch failed: {r.stderr.strip()}")
 
-    result = run(["git", "worktree", "list", "--porcelain"])
+    result = run(["git", "worktree", "list", "--porcelain"], cwd=repo)
     if result.returncode != 0:
-        print("ERROR: git worktree list failed:", result.stderr, file=sys.stderr)
-        sys.exit(1)
+        print(f"  ERROR: git worktree list failed: {result.stderr}", file=sys.stderr)
+        return 0, 0
 
     worktrees = parse_worktrees(result.stdout)
     primary = primary_worktree_path(worktrees)
@@ -141,7 +172,7 @@ def main() -> None:
                 pruned.append(path)
                 print(f"  [dry-run] would remove stale main checkout: {path}")
                 continue
-            r = run(["git", "worktree", "remove", path])
+            r = run(["git", "worktree", "remove", path], cwd=repo)
             if r.returncode != 0:
                 skipped.append((path, f"worktree remove failed: {r.stderr.strip()}"))
                 continue
@@ -153,11 +184,11 @@ def main() -> None:
             skipped.append((path, f"branch '{branch}' not in {BRANCH_PREFIX}* prefix"))
             continue
 
-        if not is_merged(branch, gh_repo):
+        if not is_merged(branch, gh_repo, repo):
             skipped.append((path, "not merged into origin/main"))
             continue
 
-        if is_dirty(path):
+        if is_dirty(path, repo):
             skipped.append((path, "has uncommitted changes"))
             continue
 
@@ -166,12 +197,12 @@ def main() -> None:
             print(f"  [dry-run] would remove: {path} ({branch})")
             continue
 
-        r = run(["git", "worktree", "remove", path])
+        r = run(["git", "worktree", "remove", path], cwd=repo)
         if r.returncode != 0:
             skipped.append((path, f"worktree remove failed: {r.stderr.strip()}"))
             continue
 
-        r = run(["git", "branch", "-d", branch])
+        r = run(["git", "branch", "-d", branch], cwd=repo)
         if r.returncode != 0:
             # Worktree already gone; branch delete failure is non-fatal
             print(f"  WARNING: branch delete failed for {branch}: {r.stderr.strip()}")
@@ -179,11 +210,36 @@ def main() -> None:
         pruned.append(path)
         print(f"  pruned: {path} ({branch})")
 
-    print(f"\nDone — pruned {len(pruned)}, skipped {len(skipped)}")
+    print(f"  Done — pruned {len(pruned)}, skipped {len(skipped)}")
     if skipped:
-        print("Skipped:")
         for path, reason in skipped:
-            print(f"  {path}: {reason}")
+            print(f"    skipped {path}: {reason}")
+
+    return len(pruned), len(skipped)
+
+
+def main() -> None:
+    dry_run = "--dry-run" in sys.argv
+    scan_dir = _scan_dir_from_args()
+
+    if dry_run:
+        print("[dry-run] no changes will be made")
+
+    if scan_dir:
+        repos = find_git_repos(scan_dir)
+        if not repos:
+            print(f"No git repos found under {scan_dir}")
+            sys.exit(0)
+        print(f"Found {len(repos)} repos under {scan_dir}")
+        total_pruned = total_skipped = 0
+        for repo in repos:
+            p, s = prune_one(repo, dry_run)
+            total_pruned += p
+            total_skipped += s
+        print(f"\nTotal — pruned {total_pruned}, skipped {total_skipped}")
+    else:
+        repo = _repo_from_args()
+        prune_one(repo, dry_run)
 
 
 if __name__ == "__main__":
