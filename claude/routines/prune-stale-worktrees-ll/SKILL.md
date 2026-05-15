@@ -1,7 +1,7 @@
 ---
 name: prune-stale-worktrees-ll
 description: Remove Claude session worktrees in lifting-logbook whose branches have been merged into main.
-schedule: "0 1 * * 0"
+schedule: "0 8 * * *"
 ---
 
 Prune stale Claude session worktrees in the lifting-logbook repo. Run fully autonomously — do not ask the user anything.

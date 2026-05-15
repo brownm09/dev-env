@@ -1,7 +1,7 @@
 ---
 name: prune-stale-worktrees
 description: Remove Claude session worktrees whose branches have been merged into main.
-schedule: "0 0 * * 0"
+schedule: "0 8 * * *"
 ---
 
 Prune stale Claude session worktrees in the dev-env repo. Run fully autonomously — do not ask the user anything.
