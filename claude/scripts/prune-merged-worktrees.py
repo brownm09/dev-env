@@ -117,7 +117,7 @@ def is_merged(branch: str, gh_repo: str, repo: str) -> bool:
     return False
 
 
-def is_dirty(path: str, repo: str) -> bool:
+def is_dirty(path: str) -> bool:
     if not Path(path).exists():
         return True
     r = run(["git", "status", "--porcelain"], cwd=path)
@@ -129,25 +129,27 @@ def primary_worktree_path(worktrees: list[dict]) -> str:
     return str(Path(worktrees[0]["path"]).resolve()) if worktrees else ""
 
 
-def prune_one(repo: str, dry_run: bool) -> tuple[int, int]:
-    """Prune merged claude/* worktrees in a single repo. Returns (pruned, skipped) counts."""
+def prune_one(repo: str, dry_run: bool) -> tuple[int, int, bool]:
+    """Prune merged claude/* worktrees in a single repo. Returns (pruned, skipped, fetch_failed)."""
     try:
         gh_repo = detect_gh_repo(repo)
     except RuntimeError as exc:
         print(f"  SKIP {repo}: {exc}")
-        return 0, 0
+        return 0, 0, False
 
     print(f"\nRepo: {gh_repo} ({repo})")
 
     # Fetch origin/main so merge checks are accurate
+    fetch_failed = False
     r = run(["git", "fetch", "origin", "main"], cwd=repo)
     if r.returncode != 0:
-        print(f"  WARNING: fetch failed: {r.stderr.strip()}")
+        fetch_failed = True
+        print(f"  WARNING: fetch failed — merge checks may use stale origin/main: {r.stderr.strip()}")
 
     result = run(["git", "worktree", "list", "--porcelain"], cwd=repo)
     if result.returncode != 0:
         print(f"  ERROR: git worktree list failed: {result.stderr}", file=sys.stderr)
-        return 0, 0
+        return 0, 0, fetch_failed
 
     worktrees = parse_worktrees(result.stdout)
     primary = primary_worktree_path(worktrees)
@@ -188,7 +190,7 @@ def prune_one(repo: str, dry_run: bool) -> tuple[int, int]:
             skipped.append((path, "not merged into origin/main"))
             continue
 
-        if is_dirty(path, repo):
+        if is_dirty(path):
             skipped.append((path, "has uncommitted changes"))
             continue
 
@@ -210,12 +212,13 @@ def prune_one(repo: str, dry_run: bool) -> tuple[int, int]:
         pruned.append(path)
         print(f"  pruned: {path} ({branch})")
 
-    print(f"  Done — pruned {len(pruned)}, skipped {len(skipped)}")
+    suffix = " [fetch failed — results may use stale origin/main]" if fetch_failed else ""
+    print(f"  Done — pruned {len(pruned)}, skipped {len(skipped)}{suffix}")
     if skipped:
         for path, reason in skipped:
             print(f"    skipped {path}: {reason}")
 
-    return len(pruned), len(skipped)
+    return len(pruned), len(skipped), fetch_failed
 
 
 def main() -> None:
@@ -232,11 +235,17 @@ def main() -> None:
             sys.exit(0)
         print(f"Found {len(repos)} repos under {scan_dir}")
         total_pruned = total_skipped = 0
+        fetch_failed_repos: list[str] = []
         for repo in repos:
-            p, s = prune_one(repo, dry_run)
+            p, s, ff = prune_one(repo, dry_run)
             total_pruned += p
             total_skipped += s
-        print(f"\nTotal — pruned {total_pruned}, skipped {total_skipped}")
+            if ff:
+                fetch_failed_repos.append(repo)
+        summary = f"\nTotal — pruned {total_pruned}, skipped {total_skipped}"
+        if fetch_failed_repos:
+            summary += f", fetch failed in {len(fetch_failed_repos)} repo(s): {', '.join(fetch_failed_repos)}"
+        print(summary)
     else:
         repo = _repo_from_args()
         prune_one(repo, dry_run)
