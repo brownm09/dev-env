@@ -73,10 +73,11 @@ Finds 1–3 primary sources for an engineering decision or topic. Emits footnote
 /review <PR-URL | --diff> [--no-style] [--author junior|mid|senior] [--focus security|correctness|perf] [--no-comment]
 ```
 
-Reviews a PR or pasted diff for correctness, security, reliability, and maintainability. Runs two documentation checks before the main analysis:
+Reviews a PR or pasted diff for correctness, security, reliability, and maintainability. Runs three pre-checks before the main analysis:
 
 - **Step 2b — Documentation Reconciliation:** flags as a blocking finding if `claude/skills/**`, `claude/hooks/**`, `claude/scripts/**`, or `claude/routines/**` were changed without updating `README.md` or `docs/REFERENCE.md` (applies to repos with a `Documentation Maintenance` table in their `CLAUDE.md`).
 - **Step 2c — Documentation Coverage:** for every file added, deleted, renamed, or significantly rewritten, walks up ancestor directories and uses LLM judgment to determine whether a README at any of those levels should have been updated. Flags as a blocking finding when an existing README was not touched; suggests creation as a non-blocking finding when a directory would benefit from an index it lacks.
+- **Step 2d — Test Coverage Gate:** enforces the global "Test before PR" rule (see [ADR-022](adr/022-test-coverage-gate-before-pr.md)). Inspects the diff for new testable behavior (new endpoints, pages, exported functions, CLI commands, bug fixes) and flags as a blocking finding when new behavior is present but no test files appear in the diff and no deferral rationale is documented in the PR body.
 
 Produces a structured report with blocking findings, non-blocking findings, questions for the author, and optional style notes.
 

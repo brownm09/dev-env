@@ -30,7 +30,7 @@ The deferred-with-rationale escape hatch is intentional — it allows shipping i
 - Claude and human contributors must answer the coverage question before every `gh pr create`.
 - PRs without tests for new behavior must document the deferral in the PR body — making the gap visible in the review record.
 - Per-project coverage tables (like the one added to lifting-logbook CLAUDE.md in the same session) give the coverage gate concrete criteria to apply rather than relying on judgment alone.
-- No automation is added — this is a behavioral rule enforced by the author and by `/review`.
+- The `/review` skill gains an explicit Step 2d that inspects the diff for new testable behavior and flags as a blocking finding when neither tests nor a deferral rationale appear. This is LLM-judgment-based, not a deterministic check — it cannot replace author discipline, but it surfaces the gap in the review record.
 
 ## References
 

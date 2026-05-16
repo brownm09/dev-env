@@ -156,6 +156,55 @@ If no ancestor directories have READMEs and no cross-tree impact is identified, 
 > **Fix:** Add a row for `new-skill` to the Skills table in `README.md` and the Skills
 > section of `docs/REFERENCE.md`.
 
+Proceed to Step 2d.
+
+---
+
+## Step 2d — Test Coverage Gate Check
+
+Applies to both PR_URL mode and DIFF_MODE.
+
+Per the global "Test before PR" rule in `claude/CLAUDE.md` (see ADR-022), every PR that
+introduces new testable behavior must either include tests for it or document the deferral
+in the PR body.
+
+Inspect the DIFF and PR_BODY:
+
+1. Determine whether the diff introduces **new testable behavior**. Examples that qualify:
+   - A new API endpoint, route handler, controller method, or RPC procedure.
+   - A new frontend page, interactive component, or user-facing feature.
+   - A new exported function or class in a library/package.
+   - A new CLI command, flag, or subcommand.
+   - A bug fix (any change under `fix/` or that the PR_BODY frames as a bug fix).
+
+   Changes that do **not** qualify: pure refactors with no behavior change, documentation,
+   comments, formatting, dependency bumps, config-only tweaks, generated files.
+
+2. If new behavior is present, check whether the diff also includes corresponding test
+   files (test directories, `*.spec.*`, `*.test.*`, `e2e/**`, `tests/**`, fixtures, etc.).
+
+3. If new behavior is present and no tests appear in the diff, scan PR_BODY for a written
+   deferral rationale. A valid deferral explicitly names the deferred coverage and the
+   reason (e.g., "Playwright tests deferred until #259 lands" or "Manual test plan below;
+   automation tracked in #N"). A checkbox marked "no new testable behavior" on a PR that
+   clearly does introduce new behavior is **not** a valid deferral — flag it.
+
+4. Record findings:
+   - **Blocking [correctness] — Missing test coverage** when new behavior is present, no
+     tests appear, and no deferral rationale is in PR_BODY.
+     **Fix:** Add tests for the new behavior, or document in the PR body the specific tests
+     deferred, what tracks them, and why deferral is acceptable for this PR.
+   - **Blocking [correctness] — Coverage checkbox mismatch** when the PR body marks
+     "no new testable behavior" but the diff clearly adds new behavior.
+     **Fix:** Correct the checkbox and either add tests or document the deferral rationale.
+   - **Non-blocking [maintainability] — Coverage rationale is vague** when a deferral
+     rationale exists but does not name what is deferred or how it will be tracked.
+     **Suggestion:** Reference a tracking issue and state which test tier (unit, integration,
+     E2E) is deferred.
+
+If the diff is docs-only, refactor-only, or otherwise introduces no new testable behavior,
+note "No new testable behavior — coverage gate not applicable." and proceed.
+
 Proceed to Step 3.
 
 ---

@@ -34,7 +34,7 @@ Custom slash commands loaded from `claude/skills/`. Invoke with `/skill-name [ar
 | [`/propose <idea>`](claude/skills/propose/SKILL.md) | One-line idea → proposal doc → GitHub issue → ROADMAP entry. Per-project config via `.claude/propose.json`. |
 | [`/journal-compose [YYYY-MM-DD]`](claude/skills/journal-compose/SKILL.md) | Composes the end-of-day engineering journal from stub files. Dedicated-session only. |
 | [`/research [tag:] <decision> [--compare <alt>]`](claude/skills/research/SKILL.md) | Finds 1–3 primary sources. Greps shared source library first; spawns a subagent only on cache miss. |
-| [`/review <PR-URL> [flags]`](claude/skills/review/SKILL.md) | Reviews a PR for correctness, security, reliability, maintainability, and documentation reconciliation. Posts report as PR comment by default. |
+| [`/review <PR-URL> [flags]`](claude/skills/review/SKILL.md) | Reviews a PR for correctness, security, reliability, maintainability, documentation reconciliation, and test coverage (per ADR-022). Posts report as PR comment by default. |
 | [`/journal-onboard [slug]`](claude/skills/journal-onboard/SKILL.md) | Scaffolds `sessions/<project>/` in engineering-journal and optionally creates `.claude/CLAUDE.md` in the project repo. |
 
 ## Hooks
