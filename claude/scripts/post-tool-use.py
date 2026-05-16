@@ -129,10 +129,11 @@ def format_reminder(item_type: str, url: str, item_id: str, config: dict) -> str
         lines.append("")
         lines.append(f"  Set {name}{hint_str}:")
 
+        project_node_id = config.get("project_node_id", "<project-node-id>")
         if ftype == "single_select":
             lines += [
                 f"    gh project item-edit \\",
-                f"      --project-id {config['project_node_id']} \\",
+                f"      --project-id {project_node_id} \\",
                 f"      --id {item_id} \\",
                 f"      --field-id {field_id} \\",
                 f"      --single-select-option-id <option-id>",
@@ -145,7 +146,7 @@ def format_reminder(item_type: str, url: str, item_id: str, config: dict) -> str
         elif ftype == "text":
             lines += [
                 f"    gh project item-edit \\",
-                f"      --project-id {config['project_node_id']} \\",
+                f"      --project-id {project_node_id} \\",
                 f"      --id {item_id} \\",
                 f"      --field-id {field_id} \\",
                 f"      --text \"<{name.lower()}>\"",

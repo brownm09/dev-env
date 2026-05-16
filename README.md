@@ -53,7 +53,7 @@ All hooks are advisory — none block tool execution.
 | PreToolUse (Bash) | `pre-commit-branch-check.py` | Emits current branch as a checkpoint before `git commit` |
 | PreToolUse (Bash) | `pre-pr-create-check.py` | Emits test-verification checklist and documentation-gap warning before `gh pr create` |
 | PostToolUse (Bash) | `pr-merge-reminder.py` | Reminds to write a journal stub after `gh pr create`, `gh pr merge`, or `git push` (when the pushed branch has an open PR) |
-| PostToolUse (Bash) | `post-tool-use.py` | Auto-adds issues/PRs to configured GitHub Project |
+| PostToolUse (Bash) | `post-tool-use.py` | Auto-adds issues/PRs to configured GitHub Project; exits 2 with `required_fields` reminders |
 | PostToolUse (Bash) | `post-pr-merge-pull.py` | Fast-forwards local `main` after `gh pr merge` |
 | PostToolUse (Bash) | `post-pr-merge-project.py` | Auto-moves linked issue to Done on configured GitHub Project after `gh pr merge` |
 | PostToolUse (Bash) | `stub-push-archive-reminder.py` | Writes a sentinel flag after a stub is pushed to engineering-journal; Stop hook consumes it to remind Claude to archive |
