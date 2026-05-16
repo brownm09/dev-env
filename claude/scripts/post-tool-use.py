@@ -94,30 +94,71 @@ def add_to_project(url: str, config: dict) -> str | None:
 
 
 def format_reminder(item_type: str, url: str, item_id: str, config: dict) -> str:
-    epic_options = config.get("epic_options", {})
-    epic_list = "\n".join(
-        f"      {name}: {opt_id}"
-        for name, opt_id in epic_options.items()
-    )
-    milestones = config.get("milestones", [])
-    milestone_list = ", ".join(f'"{m}"' for m in milestones) if milestones else "<milestone>"
+    lines = [
+        f"[project-hook] {item_type} added to project.",
+        f"  URL:     {url}",
+        f"  Item ID: {item_id}",
+    ]
 
-    return (
-        f"[project-hook] {item_type} added to project.\n"
-        f"  URL:     {url}\n"
-        f"  Item ID: {item_id}\n"
-        f"\n"
-        f"  Set Epic field:\n"
-        f"    gh project item-edit \\\n"
-        f"      --project-id {config['project_node_id']} \\\n"
-        f"      --id {item_id} \\\n"
-        f"      --field-id {config['epic_field_id']} \\\n"
-        f"      --single-select-option-id <option-id>\n"
-        + (f"\n  Epic options:\n{epic_list}\n" if epic_list else "")
-        + f"\n"
-        f"  Set milestone (issues only):\n"
-        f"    gh issue edit <N> --milestone {milestone_list}"
-    )
+    required_fields = list(config.get("required_fields", []))
+
+    # Backward compat: convert old epic_field_id / milestones shape
+    if not required_fields:
+        if config.get("epic_field_id"):
+            opts = config.get("epic_options", {})
+            required_fields.append({
+                "name": "Epic",
+                "field_id": config["epic_field_id"],
+                "type": "single_select",
+                "options": opts,
+            })
+        if config.get("milestones"):
+            required_fields.append({
+                "name": "Milestone",
+                "type": "milestone",
+                "options_list": config["milestones"],
+            })
+
+    for field in required_fields:
+        name = field.get("name", "Field")
+        field_id = field.get("field_id", "")
+        ftype = field.get("type", "text")
+        hint = field.get("hint", "")
+        hint_str = f" ({hint})" if hint else ""
+
+        lines.append("")
+        lines.append(f"  Set {name}{hint_str}:")
+
+        project_node_id = config.get("project_node_id", "<project-node-id>")
+        if ftype == "single_select":
+            lines += [
+                f"    gh project item-edit \\",
+                f"      --project-id {project_node_id} \\",
+                f"      --id {item_id} \\",
+                f"      --field-id {field_id} \\",
+                f"      --single-select-option-id <option-id>",
+            ]
+            opts = field.get("options", {})
+            if opts:
+                lines.append(f"  {name} options:")
+                for opt_name, opt_id in opts.items():
+                    lines.append(f"      {opt_name}: {opt_id}")
+        elif ftype == "text":
+            lines += [
+                f"    gh project item-edit \\",
+                f"      --project-id {project_node_id} \\",
+                f"      --id {item_id} \\",
+                f"      --field-id {field_id} \\",
+                f"      --text \"<{name.lower()}>\"",
+            ]
+        elif ftype == "milestone":
+            opts_list = field.get("options_list", [])
+            opts_str = (
+                ", ".join(f'"{m}"' for m in opts_list) if opts_list else "<milestone>"
+            )
+            lines.append(f"    gh issue edit <N> --milestone {opts_str}")
+
+    return "\n".join(lines)
 
 
 def main() -> None:
@@ -189,4 +230,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        sys.exit(0)
