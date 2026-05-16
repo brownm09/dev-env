@@ -162,7 +162,7 @@ Fires after each Bash tool call completes. Matched with `"matcher": "Bash"`.
 | Script | Trigger condition | What it does |
 |--------|------------------|-------------|
 | `pr-merge-reminder.py` | Command contains `gh pr create`, `gh pr merge`, or `git push` (when the pushed branch has an open PR) | Exits 2 with a `systemMessage` reminding Claude to write a journal stub. For `git push`, runs `git branch --show-current` and `gh pr list --head <branch>` as subprocesses to confirm an open PR exists before emitting the reminder. Skips `engineering-journal` pushes (handled by `stub-push-archive-reminder.py`). |
-| `post-tool-use.py` | Command contains `gh issue create` or `gh pr create` | Auto-adds the created item to the configured GitHub Project. Opt-in via `"github_project_id"` in `.claude/hook-config.json`. |
+| `post-tool-use.py` | Command contains `gh issue create` or `gh pr create` | Auto-adds the created item to the configured GitHub Project, then exits 2 with a `systemMessage` listing the exact `gh project item-edit` commands to set any `required_fields` defined in `hook-config.json`. Opt-in via `project_number` + `project_owner` in `.claude/hook-config.json`. [ADR-023](adr/023-generic-required-fields-issue-hook.md) |
 | `post-pr-merge-pull.py` | Command contains `gh pr merge` | Fast-forwards the local `main` branch via `git fetch origin main:main` so the local clone stays current after a merge. |
 | `post-pr-merge-project.py` | Command contains `gh pr merge` | Auto-moves the linked issue (`Closes/Fixes/Resolves #N` in PR body) to Done on the configured GitHub Project. Opt-in via `status_field_id` and `done_option_id` in `hook-config.json`. [ADR-014](adr/014-auto-move-project-item-done-on-merge.md) |
 | `stub-push-archive-reminder.py` | `git push` to `engineering-journal` with a stub commit | Writes a sentinel file (`~/.claude/scratch/stub-pushed.flag`) and exits 0. Verifies the most-recent commit in the journal repo touches a `.stub.md` file before writing the flag. The Stop hook (`journal-stop-check.py`) consumes the sentinel and issues the archive reminder via exit 2. |
@@ -204,7 +204,13 @@ A global git pre-push hook installed via `core.hooksPath` (see [ADR-005](adr/005
 
 | Field | Type | Default | Used by |
 |-------|------|---------|---------|
-| `github_project_id` | string | — | `post-tool-use.py` — opt-in; item is added to this project when an issue or PR is created |
+| `repo` | string | — | `post-tool-use.py` / `post-pr-merge-project.py` — `"owner/repo"` filter; only acts when the created item URL contains this repo path |
+| `project_number` | string | — | `post-tool-use.py` — GitHub Project number; required for auto-add on issue/PR create |
+| `project_owner` | string | — | `post-tool-use.py` — GitHub user/org that owns the project |
+| `project_node_id` | string | — | `post-tool-use.py` — GraphQL node ID of the project; used in `gh project item-edit` commands shown in the reminder |
+| `required_fields` | array | `[]` | `post-tool-use.py` — list of project fields to prompt for after issue/PR creation. Each entry: `{"name": string, "field_id": string, "type": "single_select"\|"text"\|"milestone", "options": {name: id}, "hint": string}`. The hook prints ready-to-run `gh project item-edit` commands for each field. |
+| `epic_field_id` | string | — | `post-tool-use.py` — **deprecated fallback**; use `required_fields` instead. Treated as a single `single_select` field named "Epic" when `required_fields` is absent. |
+| `milestones` | array | — | `post-tool-use.py` — **deprecated fallback**; use `required_fields` with `"type": "milestone"` instead. |
 | `turn_threshold` | integer | `50` | `turn-count-hook.py` — warn after N turns; warns again every 25 turns thereafter |
 | `status_field_id` | string | — | `post-pr-merge-project.py` — GitHub Project Status field ID; required to auto-move item to Done on merge |
 | `done_option_id` | string | — | `post-pr-merge-project.py` — single-select option ID for "Done" status; required to auto-move item to Done on merge |

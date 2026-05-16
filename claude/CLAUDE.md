@@ -171,7 +171,16 @@ All new dev-env issues must be added to the **Dev Env** project and given an Imp
 | Medium | Recurs periodically or silently degrades correctness over time |
 | Low | Nice-to-have; low frequency or easily worked around |
 
-**Workflow — run after `gh issue create`:**
+**Workflow — automated via PostToolUse hook:**
+
+After `gh issue create` succeeds, the `post-tool-use.py` hook fires automatically and:
+
+1. Adds the issue to project #3 (`gh project item-add`).
+2. Exits with code 2, printing the exact `gh project item-edit` commands to set Impact and Why.
+
+**Run those commands immediately — before any file edits.** Do not proceed to implementation until both Impact and Why are set. This is the same forcing function as the test-before-PR rule: the hook output is visible in the session and must be acted on.
+
+**Fallback (if the hook did not fire or the item-add failed):** run the three steps manually:
 
 ```bash
 # Requires project scope — add once if needed: gh auth refresh -s project
