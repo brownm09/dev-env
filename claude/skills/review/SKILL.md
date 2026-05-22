@@ -251,7 +251,7 @@ Spawn two subagents in parallel using the Agent tool with `model: "opus"`. Pass 
 >
 > For each finding, answer: (1) what the code does, (2) why it matters in this context,
 > (3) whether it is correctness or security, (4) what the author should do.
-> Report every substantive finding that meets the four-question gate. Do not cap. Do not comment on style, performance, or maintainability.
+> Report every substantive finding that meets the four-question gate (category is pre-restricted to {correctness, security} for this pass — discard any finding outside those two categories; the other subagent will surface them). Do not cap. Do not comment on style, performance, or maintainability.
 > Format each finding as:
 > **[correctness|security]** <file>:<line> — <what> / <why here> / <what to do>
 
@@ -265,7 +265,7 @@ Spawn two subagents in parallel using the Agent tool with `model: "opus"`. Pass 
 >
 > For each finding, answer: (1) what the code does, (2) why it matters in this context,
 > (3) whether it is reliability, performance, or maintainability, (4) what the author should do.
-> Report every substantive finding that meets the four-question gate. Do not cap. Do not comment on correctness, security, or style.
+> Report every substantive finding that meets the four-question gate (category is pre-restricted to {reliability, performance, maintainability} for this pass — discard any finding outside those three categories; the other subagent will surface them). Do not cap. Do not comment on correctness, security, or style.
 > Format each finding as:
 > **[reliability|performance|maintainability]** <file>:<line> — <what> / <why here> / <what to do>
 
@@ -363,11 +363,15 @@ is appropriately scoped or should be split.>
 ---
 
 ### Questions for Author
-<For each question — omit section header if no questions>
+<For each question — omit section header if no questions. Separate adjacent questions with a `---` rule so the three labeled lines per question stay visually distinct.>
 
 **Question:** <The question itself.>
 **Context:** <What in the diff or surrounding code made the intent unclear. Cite file:line.>
 **Tradeoffs:** <The realistic alternatives and what each implies for this codebase. One sentence per alternative; two or three alternatives is typical.>
+
+---
+
+<!-- Next question, if any, follows the rule above. -->
 
 ---
 
