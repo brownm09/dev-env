@@ -228,8 +228,10 @@ For every substantive finding, answer all four questions:
 3. **Category** — one of: correctness | security | reliability | documentation | performance | maintainability | style
 4. **What to do** — a concrete action the author can take
 
-Apply the cap: collect all findings, then keep the 5–7 highest-severity blocking findings and
-the 5 most impactful non-blocking findings. If you found more, note the count in the Summary.
+Report every substantive finding — do not cap. Quality discipline comes from the four-question
+gate above (what / why here / category / what to do), not from a count limit. A finding that
+cannot meet all four questions should be dropped or downgraded; one that can meet them belongs
+in the report regardless of how many others are already listed.
 
 Proceed to Step 6.
 
@@ -249,7 +251,7 @@ Spawn two subagents in parallel using the Agent tool with `model: "opus"`. Pass 
 >
 > For each finding, answer: (1) what the code does, (2) why it matters in this context,
 > (3) whether it is correctness or security, (4) what the author should do.
-> Limit: 5 blocking findings max. Do not comment on style, performance, or maintainability.
+> Report every substantive finding that meets the four-question gate (category is pre-restricted to {correctness, security} for this pass — discard any finding outside those two categories; the other subagent will surface them). Do not cap. Do not comment on style, performance, or maintainability.
 > Format each finding as:
 > **[correctness|security]** <file>:<line> — <what> / <why here> / <what to do>
 
@@ -263,7 +265,7 @@ Spawn two subagents in parallel using the Agent tool with `model: "opus"`. Pass 
 >
 > For each finding, answer: (1) what the code does, (2) why it matters in this context,
 > (3) whether it is reliability, performance, or maintainability, (4) what the author should do.
-> Limit: 5 findings max. Do not comment on correctness, security, or style.
+> Report every substantive finding that meets the four-question gate (category is pre-restricted to {reliability, performance, maintainability} for this pass — discard any finding outside those three categories; the other subagent will surface them). Do not cap. Do not comment on correctness, security, or style.
 > Format each finding as:
 > **[reliability|performance|maintainability]** <file>:<line> — <what> / <why here> / <what to do>
 
@@ -292,8 +294,20 @@ Assign each finding to one of four buckets:
 - Step 2c suggestion to create a README where none exists (not required, but advisable)
 
 **Questions for Author:**
-- Ambiguities where intent is genuinely unclear — frame as a question, not a criticism
-- Example: "Is the `None` return here intentional, or should this raise?" not "This should raise."
+- Only for ambiguities where intent is genuinely unclear — frame as a question, not a criticism.
+- Every question must include three parts:
+  1. **Question** — the question itself, phrased so the author can answer yes/no or pick an option.
+  2. **Context** — what you saw in the diff or surrounding code that made the intent unclear (file, line, the specific shape of the ambiguity). Without this the author cannot tell whether you misread the change or spotted a real gap.
+  3. **Tradeoffs** — the realistic alternatives you considered and what each implies for this codebase (behavior, callers, future maintenance, performance, etc.). Two or three alternatives is typical.
+- Depth of Context and Tradeoffs follows AUTHOR_LEVEL, mirroring Step 7:
+  - **junior:** Spell out *why* each alternative matters (callers affected, type-system impact, future-maintenance cost) in 2–3 sentences per alternative. Context should explicitly name the class of concern (e.g., "this is a null-safety question — the caller pattern determines whether `None` is a safe return").
+  - **mid (default):** One sentence per alternative covering the primary implication. Context cites file:line and the specific shape of the ambiguity.
+  - **senior:** Condense to a single comparative clause where possible ("raise vs. sentinel — raise integrates with the existing middleware; sentinel is a new pattern"). Context is one sentence. Drop background; assume the author can derive implications from the alternative itself.
+- A question that cannot supply Context and Tradeoffs is not yet a review question — either resolve it by reading more of the code, or convert it to a non-blocking finding with a concrete suggestion.
+- Example shape:
+  > **Question:** Is the `None` return in `parse_user(payload)` intentional, or should it raise?
+  > **Context:** `parse_user` in [`api/users.py:42`](api/users.py:42) returns `None` when `payload["id"]` is missing, but every existing caller in `api/handlers/` immediately dereferences `.id` on the result, which will `AttributeError` instead of producing a 400.
+  > **Tradeoffs:** (a) Raise `ValidationError` — callers get a typed exception they already handle in the request middleware, but any non-HTTP caller (e.g., the batch importer) has to add a try/except. (b) Keep returning `None` and fix each caller to check — preserves the current type signature but spreads the null check across ~8 sites. (c) Return a sentinel `INVALID_USER` — avoids both, but is a new pattern in this codebase.
 
 **Style** (only if STYLE=true):
 - Naming, formatting, comment quality
@@ -324,8 +338,7 @@ directly into a query string..."). Suggest a concrete fix, not just a direction.
 ### Summary
 <1 paragraph: overall readiness — merge / merge with minor changes / needs revision.
 Name the single highest-severity finding. If DIFF_SIZE > 400, note whether the PR
-is appropriately scoped or should be split. If additional findings were omitted beyond
-the cap, state the count here.>
+is appropriately scoped or should be split.>
 
 ---
 
@@ -350,8 +363,15 @@ the cap, state the count here.>
 ---
 
 ### Questions for Author
-<Bullet list of genuine ambiguities. Each is a question, not a criticism.>
-<Omit section if no questions.>
+<For each question — omit section header if no questions. Separate adjacent questions with a `---` rule so the three labeled lines per question stay visually distinct.>
+
+**Question:** <The question itself.>
+**Context:** <What in the diff or surrounding code made the intent unclear. Cite file:line.>
+**Tradeoffs:** <The realistic alternatives and what each implies for this codebase. One sentence per alternative; two or three alternatives is typical.>
+
+---
+
+<!-- Next question, if any, follows the rule above. -->
 
 ---
 
@@ -402,8 +422,10 @@ If POST_COMMENT is false (i.e., `--no-comment` was passed), or DIFF_MODE is true
   to describe the intent — a missing description is itself a review finding.
 - Do not comment on lines that a linter or formatter would catch if STYLE=false. Automation
   handles those; your job is everything automation misses.
-- The cap (5–7 blocking, 5 non-blocking) is a signal discipline, not a quality compromise.
-  A review with 20 findings gets ignored. A review with 5 targeted findings gets acted on.
+- Signal discipline comes from the four-question gate (what / why here / category / what to do)
+  and the "genuine ambiguity" gate on author questions — not from a finding count cap. A finding
+  that meets the gate belongs in the report; one that does not should be dropped, not held back
+  to stay under a number.
 - **Follow-up / merge-readiness checks:** When verifying whether findings have been addressed on
   an existing PR, always fetch the remote branch first — never read files from the local working
   tree or current worktree. Protocol: `git fetch origin <headRefName>`, then read via
