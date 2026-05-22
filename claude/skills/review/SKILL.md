@@ -298,7 +298,11 @@ Assign each finding to one of four buckets:
 - Every question must include three parts:
   1. **Question** — the question itself, phrased so the author can answer yes/no or pick an option.
   2. **Context** — what you saw in the diff or surrounding code that made the intent unclear (file, line, the specific shape of the ambiguity). Without this the author cannot tell whether you misread the change or spotted a real gap.
-  3. **Tradeoffs** — the realistic alternatives you considered and what each implies for this codebase (behavior, callers, future maintenance, performance, etc.). One sentence per alternative is enough; two or three alternatives is typical.
+  3. **Tradeoffs** — the realistic alternatives you considered and what each implies for this codebase (behavior, callers, future maintenance, performance, etc.). Two or three alternatives is typical.
+- Depth of Context and Tradeoffs follows AUTHOR_LEVEL, mirroring Step 7:
+  - **junior:** Spell out *why* each alternative matters (callers affected, type-system impact, future-maintenance cost) in 2–3 sentences per alternative. Context should explicitly name the class of concern (e.g., "this is a null-safety question — the caller pattern determines whether `None` is a safe return").
+  - **mid (default):** One sentence per alternative covering the primary implication. Context cites file:line and the specific shape of the ambiguity.
+  - **senior:** Condense to a single comparative clause where possible ("raise vs. sentinel — raise integrates with the existing middleware; sentinel is a new pattern"). Context is one sentence. Drop background; assume the author can derive implications from the alternative itself.
 - A question that cannot supply Context and Tradeoffs is not yet a review question — either resolve it by reading more of the code, or convert it to a non-blocking finding with a concrete suggestion.
 - Example shape:
   > **Question:** Is the `None` return in `parse_user(payload)` intentional, or should it raise?
