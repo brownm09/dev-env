@@ -24,7 +24,7 @@
     ],
     "defaultMode": "plan"
   },
-  "model": "opusplan",
+  "model": "claude-sonnet-4-6",
   "hooks": {
     "PreToolUse": [
       {
