@@ -59,6 +59,7 @@ On Windows, `os.path.relpath` raises `ValueError` when source and target are on 
 - **Write/Edit/NotebookEdit calls with wrong absolute paths now fail immediately** with a clear message instead of silently landing on the main working tree.
 - **No-op outside worktrees** — the hook exits 0 instantly when `cwd` does not match the worktree pattern.
 - **Coverage gap remains for Bash** — commands like `cp`, `tee`, or here-doc redirects that write to the canonical root are not intercepted. This is acceptable for now given the complexity; extend if recurrence is observed.
+- **Bypass for intentional canonical edits from a worktree:** The hook blocks `Write`, `Edit`, and `NotebookEdit` — not `Bash`. When a worktree session legitimately needs to modify a canonical repo file (e.g., editing `settings.json` on a config branch checked out in the main working tree), use `Bash` with `node -e` or a targeted `sed`/`python3` invocation. This is the correct pattern — the hook is designed to surface accidental path mistakes, not to prevent deliberate file operations through a different tool surface.
 - **ADR warranted** because the hook is a new file under `claude/scripts/`, is wired in `claude/settings.json`, and establishes a harness-level safety invariant applicable to all repos using Claude-managed worktrees.
 
 ---

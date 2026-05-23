@@ -21,9 +21,10 @@
       "Bash(git -C * branch --show-current)",
       "Bash(python3 -m py_compile *)",
       "Bash(gh issue view *)"
-    ]
+    ],
+    "defaultMode": "plan"
   },
-  "model": "claude-sonnet-4-6",
+  "model": "opusplan",
   "hooks": {
     "PreToolUse": [
       {

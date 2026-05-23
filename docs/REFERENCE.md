@@ -159,7 +159,7 @@ Fires before matched tool calls. Matcher values are set per entry in `settings.j
 
 | Script | Trigger condition | What it does |
 |--------|------------------|-------------|
-| `pre-tool-use-worktree-path-check.py` | Session `cwd` is inside a Claude-managed worktree and `file_path` (or `notebook_path`) is absolute and starts with the canonical repo root | **Blocks** the tool call (exit 2) with a message naming the attempted path, the active worktree root, and the corrected path. No-op when the session is not in a worktree or when the path already targets the worktree root. [ADR-024](adr/024-worktree-path-guard-hook.md) |
+| `pre-tool-use-worktree-path-check.py` | Session `cwd` is inside a Claude-managed worktree and `file_path` (or `notebook_path`) is absolute and starts with the canonical repo root | **Blocks** the tool call (exit 2) with a message naming the attempted path, the active worktree root, and the corrected path. No-op when the session is not in a worktree or when the path already targets the worktree root. **Bypass for intentional canonical edits:** use `Bash` with `node -e`, `sed`, or `python3` — the hook only covers the three file tools, not `Bash`. [ADR-024](adr/024-worktree-path-guard-hook.md) |
 
 ---
 
@@ -317,3 +317,14 @@ Route tasks to the least powerful model that can handle them reliably:
 | Complex: architectural decisions, novel problems, multi-file reasoning, writing test code, `/review` skill | Opus |
 
 Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handles correctly on the first try.
+
+
+### Configured defaults
+
+The active defaults in `claude/settings.json`:
+
+| Key | Value | Effect |
+|-----|-------|--------|
+| `model` | `opusplan` | Uses Opus during plan mode; Sonnet for execution. Introduced in Claude Code v1.0.75. See [ADR-025](adr/025-default-plan-mode-and-opusplan-model.md). |
+| `permissions.defaultMode` | `plan` | Every session starts in plan mode — no edits until the user approves a plan. Override per-session with Shift+Tab. See [ADR-025](adr/025-default-plan-mode-and-opusplan-model.md). |
+| `effortLevel` | `medium` | Applies to all model tiers. Increase to `high` or `xhigh` for intelligence-sensitive sessions (e.g., full cover letter workflow). |
