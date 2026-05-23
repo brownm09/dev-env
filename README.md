@@ -57,6 +57,7 @@ Most hooks are advisory — they emit reminders but do not block tool execution.
 | PostToolUse (Bash) | `post-tool-use.py` | Auto-adds issues/PRs to configured GitHub Project; exits 2 with `required_fields` reminders |
 | PostToolUse (Bash) | `post-pr-merge-pull.py` | Fast-forwards local `main` after `gh pr merge` |
 | PostToolUse (Bash) | `post-pr-merge-project.py` | Auto-moves linked issue to Done on configured GitHub Project after `gh pr merge` |
+| PostToolUse (Bash) | `usage-snapshot.py` | Emits weekly/5-hour utilisation vs. daily soft targets and top-5 session exchanges after `gh pr merge` |
 | PostToolUse (Bash) | `stub-push-archive-reminder.py` | Writes a sentinel flag after a stub is pushed to engineering-journal; Stop hook consumes it to remind Claude to archive |
 | Stop | `token-tracker.py` | Aggregates session token usage to `scratch/token-sessions.jsonl` |
 | Stop | `journal-stop-check.py` | Checks sentinel flag and stale open journal stubs at session end; emits closing reminder if stub was pushed this session |
