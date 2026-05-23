@@ -317,3 +317,14 @@ Route tasks to the least powerful model that can handle them reliably:
 | Complex: architectural decisions, novel problems, multi-file reasoning, writing test code, `/review` skill | Opus |
 
 Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handles correctly on the first try.
+
+
+### Configured defaults
+
+The active defaults in `claude/settings.json`:
+
+| Key | Value | Effect |
+|-----|-------|--------|
+| `model` | `opusplan` | Uses Opus during plan mode; Sonnet for execution. Introduced in Claude Code v1.0.75. See [ADR-023](adr/025-default-plan-mode-and-opusplan-model.md). |
+| `permissions.defaultMode` | `plan` | Every session starts in plan mode — no edits until the user approves a plan. Override per-session with Shift+Tab. See [ADR-023](adr/025-default-plan-mode-and-opusplan-model.md). |
+| `effortLevel` | `medium` | Applies to all model tiers. Increase to `high` or `xhigh` for intelligence-sensitive sessions (e.g., full cover letter workflow). |
