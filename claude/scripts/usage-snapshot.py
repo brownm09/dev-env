@@ -20,11 +20,10 @@ Stdin JSON shape (PostToolUse):
     "cwd": "..."
   }
 
-Exit 0  — not a merge command, token expired, or API error; silent
-Exit 2  — snapshot emitted via stderr
+Exit 0  — not a merge command, token missing/unparseable, or API error; silent
+Exit 2  — snapshot emitted via stderr, OR token expires within 1 hour (advisory warning)
 """
 import json
-import os
 import re
 import sys
 import time
@@ -182,9 +181,9 @@ def fetch_usage(token: str) -> dict | None:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
+    except (urllib.error.URLError, json.JSONDecodeError):
         return None
 
 
@@ -204,7 +203,7 @@ def compute_cumulative_target(resets_at_str: str, config: dict) -> tuple[int, in
     day_number: 1-based day index in the window (1 = first day).
     """
     try:
-        resets_at = datetime.fromisoformat(resets_at_str)
+        resets_at = datetime.fromisoformat(resets_at_str.replace("Z", "+00:00"))
         window_start = resets_at - timedelta(days=7)
         now = datetime.now(timezone.utc)
         days_elapsed = max(0, (now - window_start).days)  # 0 = first day
@@ -253,15 +252,7 @@ def find_session_jsonl(cwd: str, session_id: str) -> Path | None:
         if not project_dir.exists():
             return None
         candidate = project_dir / f"{session_id}.jsonl"
-        if candidate.exists():
-            return candidate
-        # fall back to most-recently modified JSONL in that dir
-        jsonl_files = sorted(
-            project_dir.glob("*.jsonl"),
-            key=lambda f: f.stat().st_mtime,
-            reverse=True,
-        )
-        return jsonl_files[0] if jsonl_files else None
+        return candidate if candidate.exists() else None
 
     # 1. Try direct encoded path
     encoded = encode_cwd(cwd)
@@ -381,7 +372,7 @@ def format_snapshot(util_data: dict, config: dict, exchanges: list[dict]) -> str
     resets_display = ""
     if resets_at_str:
         try:
-            resets_dt = datetime.fromisoformat(resets_at_str)
+            resets_dt = datetime.fromisoformat(resets_at_str.replace("Z", "+00:00"))
             resets_display = resets_dt.strftime("%Y-%m-%d %H:%M UTC")
         except Exception:
             resets_display = resets_at_str
@@ -450,8 +441,11 @@ def main() -> None:
     if not token:
         sys.exit(0)
 
-    # Warn and exit if token expires within 1 hour
-    if expires_at_ms and (expires_at_ms - time.time() * 1000) < 3_600_000:
+    # Skip silently if token is already expired; warn if it expires within 1 hour
+    now_ms = time.time() * 1000
+    if expires_at_ms and expires_at_ms <= now_ms:
+        sys.exit(0)
+    if expires_at_ms and (expires_at_ms - now_ms) < 3_600_000:
         print(
             "[usage-snapshot] OAuth token expires within 1 hour — open Claude Code "
             "interactively to refresh before the next check.",
