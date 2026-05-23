@@ -144,14 +144,22 @@ Fires on every user prompt, before Claude processes it.
 
 ---
 
-### PreToolUse (Bash only)
+### PreToolUse
 
-Fires before each Bash tool call. Matched with `"matcher": "Bash"`.
+Fires before matched tool calls. Matcher values are set per entry in `settings.json`.
+
+#### Bash hooks
 
 | Script | Trigger condition | What it does |
 |--------|------------------|-------------|
 | `pre-commit-branch-check.py` | Command contains `git commit` | Emits the current branch name as a confirmation checkpoint before the commit runs. |
 | `pre-pr-create-check.py` | Command contains `gh pr create` | Emits a test-verification checklist and a documentation-gap warning (if `claude/skills/`, `claude/hooks/`, `claude/scripts/`, or `claude/routines/` were changed without updating `README.md` or `docs/REFERENCE.md`). Enforces the "test before PR" and doc-reconciliation rules from CLAUDE.md. |
+
+#### Write / Edit / NotebookEdit hooks
+
+| Script | Trigger condition | What it does |
+|--------|------------------|-------------|
+| `pre-tool-use-worktree-path-check.py` | Session `cwd` is inside a Claude-managed worktree and `file_path` (or `notebook_path`) is absolute and starts with the canonical repo root | **Blocks** the tool call (exit 2) with a message naming the attempted path, the active worktree root, and the corrected path. No-op when the session is not in a worktree or when the path already targets the worktree root. [ADR-024](adr/024-worktree-path-guard-hook.md) |
 
 ---
 
