@@ -38,6 +38,33 @@
             "command": "python3 C:/Users/brown/.claude/scripts/pre-pr-create-check.py"
           }
         ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py"
+          }
+        ]
+      },
+      {
+        "matcher": "NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

@@ -40,7 +40,7 @@ Custom slash commands loaded from `claude/skills/`. Invoke with `/skill-name [ar
 ## Hooks
 
 Hook scripts run automatically via Claude Code's `hooks` configuration in `claude/settings.json`.
-All hooks are advisory — none block tool execution.
+Most hooks are advisory — they emit reminders but do not block tool execution. The exception is `pre-tool-use-worktree-path-check.py`, which blocks `Write`, `Edit`, and `NotebookEdit` calls that target the canonical repo root instead of the active worktree.
 
 | Event | Script | Purpose |
 |---|---|---|
@@ -52,6 +52,7 @@ All hooks are advisory — none block tool execution.
 | UserPromptSubmit | `reconcile-open-prs.py` | Removes stale entries from `open-prs.jsonl` whose PRs are now merged/closed; emits surviving open PRs as session context |
 | PreToolUse (Bash) | `pre-commit-branch-check.py` | Emits current branch as a checkpoint before `git commit` |
 | PreToolUse (Bash) | `pre-pr-create-check.py` | Emits test-verification checklist and documentation-gap warning before `gh pr create` |
+| PreToolUse (Write/Edit/NotebookEdit) | `pre-tool-use-worktree-path-check.py` | Blocks file writes whose absolute path targets the canonical repo root instead of the active worktree |
 | PostToolUse (Bash) | `pr-merge-reminder.py` | Reminds to write a journal stub after `gh pr create`, `gh pr merge`, or `git push` (when the pushed branch has an open PR) |
 | PostToolUse (Bash) | `post-tool-use.py` | Auto-adds issues/PRs to configured GitHub Project; exits 2 with `required_fields` reminders |
 | PostToolUse (Bash) | `post-pr-merge-pull.py` | Fast-forwards local `main` after `gh pr merge` |
