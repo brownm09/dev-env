@@ -112,7 +112,7 @@ Scaffolds a new project's journal home (`sessions/<slug>/`) in engineering-journ
 
 ## Hooks
 
-All hooks are **advisory** — they emit `systemMessage` reminders via exit 2 but do not block tool execution. No hook exits with a non-zero code that prevents the matched tool from running.
+Most hooks are **advisory** — they emit `systemMessage` reminders but do not block tool execution. The exception is `pre-tool-use-worktree-path-check.py` (a `PreToolUse` hook), which exits 2 with a `{"reason": "..."}` payload to block `Write`, `Edit`, and `NotebookEdit` calls that target the canonical repo root instead of the active worktree.
 
 Configuration is in `claude/settings.json` (symlinked to `~/.claude/settings.json`).
 See [ADR-007](adr/007-hook-command-invocation.md) for why hooks call `python3` directly rather than via a `bash -c` wrapper.

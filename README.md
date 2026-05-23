@@ -40,7 +40,7 @@ Custom slash commands loaded from `claude/skills/`. Invoke with `/skill-name [ar
 ## Hooks
 
 Hook scripts run automatically via Claude Code's `hooks` configuration in `claude/settings.json`.
-All hooks are advisory — none block tool execution.
+Most hooks are advisory — they emit reminders but do not block tool execution. The exception is `pre-tool-use-worktree-path-check.py`, which blocks `Write`, `Edit`, and `NotebookEdit` calls that target the canonical repo root instead of the active worktree.
 
 | Event | Script | Purpose |
 |---|---|---|
