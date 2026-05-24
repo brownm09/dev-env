@@ -30,3 +30,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [023](023-generic-required-fields-issue-hook.md) | Generic `required_fields` Config for Issue/PR Project-Board Hook | 2026-05-16 | Accepted | hooks, github-project, post-tool-use, hook-config, automation, workflow |
 | [024](024-worktree-path-guard-hook.md) | PreToolUse Hook to Block Canonical-Root Writes from Worktrees | 2026-05-23 | Accepted | hooks, worktrees, pre-tool-use, file-safety, write, edit |
 | [025](025-default-plan-mode.md) | Default Plan Mode | 2026-05-23 | Accepted | config, settings, plan-mode, workflow, defaults |
+| [026](026-suppression-policy.md) | Suppression Policy: No Silent Workarounds for Type and Lint Errors | 2026-05-24 | Accepted | code-quality, typescript, eslint, workflow, suppression, pre-pr |

@@ -68,6 +68,7 @@ If the project has no automated tests, the section must say so explicitly and de
 - **Create an issue before changing files.** When a user's question or request will result in file changes, create a GitHub issue first with `gh issue create` — describe the problem or goal, not the implementation. Do this before writing any code or editing any files. For a single-line change, ask the user whether an issue is warranted before creating one; anything longer than one line warrants an issue without prompting. Exception: engineering-journal draft branches (`draft/YYYY-MM-DD`) may omit an issue. Every PR must then reference the issue via a `Closes #N` line in the PR body.
 - **Test before PR.** Before running `gh pr create`, execute the project's test command defined in `## Testing` in the project CLAUDE.md. Tests must pass (or the failure must be explained and documented). Include what was tested and the outcome in the PR body. **If no `## Testing` section exists in the project CLAUDE.md, stop and ask the user to add one — do not open the PR until it is present.**
   - **Coverage gate.** Also ask whether the change introduces testable behavior not covered by existing tests. If yes, add tests before creating the PR, or explicitly document in the PR body why they are deferred (which tests, what tracks them, why deferral is acceptable). Enforced behaviorally by the author and by `/review` Step 2d (see [ADR-022](../docs/adr/022-test-coverage-gate-before-pr.md)).
+  - **Suppression check.** Also run the pre-PR suppression grep from `## Code Quality` — any new suppression without a PR-body justification blocks the PR.
 - **ADR-warrant check.** Evaluate whether the change warrants an architectural decision record at three explicit checkpoints: (1) immediately after a plan is approved (post-`ExitPlanMode`), or at the start of the first file edit for sessions without an explicit planning phase; (2) immediately after `gh pr create` returns; and (3) immediately before `gh pr merge`. A change warrants an ADR when any of the following hold: it changes a rule, hook, skill, or settings value documented in `claude/`; it introduces or restructures a directory under `claude/` (skills, hooks, scripts, routines); it establishes or changes a workflow rule that other CLAUDE.md files reference; or its rationale would be hard to recover from `git log` alone six months later. ADRs for global rules go in dev-env [`docs/adr/`](../docs/adr/INDEX.md); ADRs for project-specific decisions go in that project's `docs/adr/`. **If warranted and not yet written, write the ADR and update `INDEX.md` before merging — never merge a qualifying change without an ADR record.**
   - **Warrant check lookup:** Scan `docs/adr/INDEX.md` tags first — the Tags column covers every ADR's domain keywords. If no tag matches the change type, the warrant check requires no additional file reads. Only open individual ADR files when a tag match suggests a possible overlap or conflict.
   - **Proactive template (opt-in):** When checkpoint 1 fires and the change is clearly ADR-worthy, create the ADR template file on the branch immediately using the next available ADR number and the `NNN-kebab-case-title.md` naming convention, rather than waiting until checkpoint 3. Fill in context and the decision rationale as work proceeds; the ADR is 80% complete by the time `gh pr create` runs, with no extra end-of-session step. This approach is preferable for complex multi-file changes where the full rationale is known upfront. For exploratory work where the decision may not crystallize until checkpoint 2 or 3, write the ADR at whichever checkpoint it becomes clear.
@@ -239,6 +240,37 @@ gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
 Run `python3 -m py_compile claude/scripts/*.py` from the repo root to verify all hook scripts are free of syntax errors.
 
 For docs-only changes to `claude/CLAUDE.md`: run `grep -n 'date -u' claude/CLAUDE.md` and confirm every match is in an internal operational artifact context (lock files, log timestamps) — not in stub filename or branch name descriptions.
+
+---
+
+## Code Quality
+
+### Suppression policy
+
+A *suppression* is any of the following: `!` (non-null assertion), `?? null` to coerce away `undefined`, `// @ts-ignore`, `// @ts-expect-error`, `eslint-disable` (line or block), or an explicit type cast used to silence an error rather than for a legitimate narrowing.
+
+**Rule 1 — No suppression without justification.**
+Every suppression that lands in a PR must be accompanied by a PR-body note explaining why a proper fix was not appropriate. The note must name the specific lines and state the invariant the suppression relies on.
+
+**Rule 2 — Pre-existing errors must be filed, not silenced.**
+Before adding a suppression, determine whether the error predates the current branch:
+```bash
+git stash && npm test 2>&1 | grep -i error; git stash pop
+```
+If the error exists on the base branch, do **not** suppress it. File a GitHub issue (or batch it into an existing one) and leave the error unmodified. Only suppressions for errors introduced by the current branch are ever permissible — and only with Rule 1 justification.
+
+**Rule 3 — Pre-PR suppression check (required before `gh pr create`).**
+Run this from the repo root and review every match before opening a PR:
+```bash
+git diff origin/main -- . | grep -E '(ts-ignore|ts-expect-error|eslint-disable|!\s*[;,)]|\?\? null)'
+```
+If the output is non-empty:
+- Each line must map to a Rule 1 justification note in the PR body, **or**
+- The suppression must be removed and replaced with a proper fix.
+
+A PR that adds suppressions with no PR-body justification is not mergeable.
+
+See [ADR-026](../docs/adr/026-suppression-policy.md) for rationale.
 
 ---
 
