@@ -33,6 +33,10 @@ def main():
         if age < COOLDOWN_SECS:
             sys.exit(0)
 
+    # Routines run in Claude-managed worktrees — no human to confirm the mode
+    if ".claude/worktrees/" in os.getcwd().replace("\\", "/"):
+        sys.exit(0)
+
     # Only fire on the first prompt of the session (no prior assistant turns)
     messages = data.get("messages", [])
     if any(m.get("role") == "assistant" for m in messages):
