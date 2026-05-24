@@ -24,7 +24,7 @@ Add a `## Code Quality` section to `claude/CLAUDE.md` with three binding rules:
 
 3. **Pre-PR suppression grep (required before `gh pr create`).** Run:
    ```bash
-   git diff origin/main -- . | grep -E '(ts-ignore|ts-expect-error|eslint-disable|!\s*[;,)]|\?\? null)'
+   git diff origin/main -- . | grep -E '(ts-ignore|ts-expect-error|eslint-disable|![.[]|!\s*[;,)]|\?\? null)'
    ```
    Any match must map to a Rule 1 justification note in the PR body, or the suppression must be replaced with a proper fix. A PR that adds suppressions with no PR-body justification is not mergeable.
 
@@ -40,6 +40,7 @@ A *suppression* is defined as: `!` (non-null assertion), `?? null` to coerce awa
 - Suppressions become visible artifacts that require acknowledgment before merge.
 - Pre-existing errors can no longer accumulate silently across PRs — they must be tracked in issues.
 - The grep check takes under 5 seconds and runs at the same point as the existing test command.
+- The grep pattern covers end-of-expression assertions (`!;`, `!,`, `!)`) and chained access (`!.`, `![`). It does not catch every possible `!` form; a manual scan of added `!` occurrences in the diff is still required to confirm completeness.
 
 **Negative:**
 - Every suppression, even clearly safe ones (e.g., a non-null assertion on a loop-bounded index), requires a PR-body note. This is a deliberate friction cost.

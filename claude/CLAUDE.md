@@ -262,8 +262,10 @@ If the error exists on the base branch, do **not** suppress it. File a GitHub is
 **Rule 3 — Pre-PR suppression check (required before `gh pr create`).**
 Run this from the repo root and review every match before opening a PR:
 ```bash
-git diff origin/main -- . | grep -E '(ts-ignore|ts-expect-error|eslint-disable|!\s*[;,)]|\?\? null)'
+git diff origin/main -- . | grep -E '(ts-ignore|ts-expect-error|eslint-disable|![.[]|!\s*[;,)]|\?\? null)'
 ```
+The pattern covers end-of-expression assertions (`!;`, `!,`, `!)`) and chained access (`!.`, `![`). It does not catch every `!` — also scan added lines in the diff manually for any remaining `!` that could be a suppression.
+
 If the output is non-empty:
 - Each line must map to a Rule 1 justification note in the PR body, **or**
 - The suppression must be removed and replaced with a proper fix.
