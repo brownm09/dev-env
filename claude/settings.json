@@ -73,6 +73,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "python3 C:/Users/brown/.claude/scripts/session-mode-prompt.py"
+          },
+          {
+            "type": "command",
             "command": "python3 C:/Users/brown/.claude/scripts/dev-env-sync.py"
           },
           {
