@@ -49,8 +49,8 @@ def main():
     except Exception as e:
         sys.stderr.write(f"session-mode-prompt: could not write marker: {e}\n")
 
-    print("─────────────────────────────────────────────────")
-    print("New session — confirm your permission mode:")
+    print("-------------------------------------------------")
+    print("New session -- confirm your permission mode:")
     print("")
     print("  plan       Claude asks before making any edits  (settings default)")
     print("  bypass     Claude acts immediately without asking")
@@ -58,7 +58,7 @@ def main():
     print("")
     print("Press Shift+Tab to cycle modes if needed,")
     print("then re-submit your prompt to continue.")
-    print("─────────────────────────────────────────────────")
+    print("-------------------------------------------------")
     sys.exit(2)
 
 
