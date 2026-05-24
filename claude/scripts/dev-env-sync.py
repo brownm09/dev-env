@@ -6,9 +6,9 @@ Runs a fast-forward pull at session start so that CLAUDE.md and other
 symlinked tooling always reflect the latest merged changes. Silent on
 success; emits a warning if the repo has diverged and needs manual attention.
 
-Only acts when the repo has `main` checked out — exits silently when a
-feature branch is active so dev-env PR sessions are not spammed with
-false-positive divergence warnings.
+Warns on every prompt when the canonical worktree is on a feature branch,
+since `~/.claude/` symlinks will serve that branch's stale files. Skips
+the fast-forward pull in that case — only syncs when `main` is checked out.
 
 Exit 0 always — never block the user's prompt.
 """
