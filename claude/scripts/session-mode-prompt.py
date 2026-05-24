@@ -46,8 +46,8 @@ def main():
     try:
         with open(MARKER, "w") as f:
             f.write(str(now))
-    except Exception:
-        pass
+    except Exception as e:
+        sys.stderr.write(f"session-mode-prompt: could not write marker: {e}\n")
 
     print("─────────────────────────────────────────────────")
     print("New session — confirm your permission mode:")
