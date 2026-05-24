@@ -41,9 +41,22 @@ def main() -> None:
     if not DEV_ENV_REPO.is_dir():
         sys.exit(0)
 
-    # Only act when main is checked out — feature branches are intentional.
+    # Only sync when main is checked out — feature branches are intentional.
+    # But warn: the canonical worktree being on a branch means ~/.claude/ symlinks
+    # point at that branch's files, not origin/main — newly merged hooks/scripts
+    # won't be visible until the worktree returns to main.
     branch = run(["git", "symbolic-ref", "--short", "HEAD"])
-    if branch.returncode != 0 or branch.stdout.strip() != "main":
+    if branch.returncode != 0:
+        sys.exit(0)
+    current_branch = branch.stdout.strip()
+    if current_branch != "main":
+        print(
+            f"[dev-env-sync] ⚠️  Canonical worktree is on '{current_branch}' — "
+            "~/.claude/ symlinks may serve stale hooks/scripts.\n"
+            "Switch the canonical worktree back to main, or keep dev-env changes\n"
+            "in a separate worktree so the canonical copy stays on main.",
+            file=sys.stderr,
+        )
         sys.exit(0)
 
     # Fetch quietly so the local remote-tracking ref is current.
