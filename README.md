@@ -44,6 +44,7 @@ Most hooks are advisory — they emit reminders but do not block tool execution.
 
 | Event | Script | Purpose |
 |---|---|---|
+| UserPromptSubmit | `session-mode-prompt.py` | Blocks on the first prompt of each new session to let the user confirm the permission mode |
 | UserPromptSubmit | `dev-env-sync.py` | Fast-forward pulls dev-env to `origin/main` at session start |
 | UserPromptSubmit | `new-day-journal-check.py` | Warns if stale `draft/*` journal branches exist on origin |
 | UserPromptSubmit | `journal-onboard-check.py` | Warns when the active project has no journal home in engineering-journal |
