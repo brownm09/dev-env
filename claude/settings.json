@@ -162,5 +162,6 @@
       }
     ]
   },
-  "effortLevel": "medium"
+  "effortLevel": "medium",
+  "agentPushNotifEnabled": true
 }
