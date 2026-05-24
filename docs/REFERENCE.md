@@ -330,3 +330,4 @@ The active defaults in `claude/settings.json`:
 | `model` | `claude-sonnet-4-6` | Default model for all session phases. See [ADR-025](adr/025-default-plan-mode.md). |
 | `permissions.defaultMode` | `plan` | Every session starts in plan mode — no edits until the user approves a plan. Override per-session with Shift+Tab. See [ADR-025](adr/025-default-plan-mode.md). |
 | `effortLevel` | `medium` | Applies to all model tiers. Increase to `high` or `xhigh` for intelligence-sensitive sessions (e.g., full cover letter workflow). |
+| `agentPushNotifEnabled` | `true` | Fires a push notification when an agent session completes. |
