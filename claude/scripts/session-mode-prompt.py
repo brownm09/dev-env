@@ -23,7 +23,8 @@ import time
 MARKER = "C:/Users/brown/.claude/scratch/session_mode_ack.txt"
 COOLDOWN_SECS = 120  # covers the re-submit window after user sees the prompt
 
-# Automated triggers use XML-tagged prompts; human prompts never start with <tag>
+# Automated triggers use XML-tagged prompts; human prompts never start with <tag>.
+# Matches lowercase-initial tags only — all current triggers use lowercase; update if that changes.
 _AUTOMATED_PREFIX = re.compile(r"^\s*<[a-z]")
 
 
