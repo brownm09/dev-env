@@ -240,7 +240,15 @@ gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
 
 ## Testing
 
-Run `py -3 -m py_compile claude/scripts/*.py` from the repo root to verify all hook scripts are free of syntax errors. On Windows, `python3` resolves to the Microsoft Store stub — use `py -3` (the Windows Python Launcher). See [ADR-007](../docs/adr/007-hook-command-invocation.md).
+Run the following from the repo root to verify all hook scripts are free of syntax errors:
+
+```bash
+py -3 -c "import ast,sys; [ast.parse(open(f,encoding='utf-8').read(),f) for f in sys.argv[1:]]" claude/scripts/*.py
+```
+
+`ast.parse` is used instead of `py_compile` because the latter writes `.pyc` files into `claude/scripts/__pycache__/` as a side effect (see [dev-env#276](https://github.com/brownm09/dev-env/issues/276)). Neither `-B` nor `PYTHONDONTWRITEBYTECODE=1` suppresses that — they only affect implicit caching on import, not explicit compilation.
+
+On Windows, `python3` resolves to the Microsoft Store stub — use `py -3` (the Windows Python Launcher). See [ADR-007](../docs/adr/007-hook-command-invocation.md).
 
 For docs-only changes to `claude/CLAUDE.md`: run `grep -n 'date -u' claude/CLAUDE.md` and confirm every match is in an internal operational artifact context (lock files, log timestamps) — not in stub filename or branch name descriptions.
 
