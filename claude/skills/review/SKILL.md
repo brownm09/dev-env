@@ -233,15 +233,17 @@ A file qualifies as "test-relevant" if it is a test file (path matches `*test*`,
 `tests/`, `spec/`, `e2e/`) or it is a non-test source file in one of the listed languages
 that the JS-only patterns cannot inspect. Pure documentation files that *describe* these
 idioms (e.g., a README mentioning `pytest.skip`) do not count — limit detection to source
-extensions, not Markdown.
+extensions, not Markdown. Build-infrastructure scripts (e.g., `setup.py`, `wsgi.py`) that
+appear in the diff but contain no test patterns can be dismissed quickly by filename.
 
 If any non-JS test-relevant file appears:
 
 - Record a **Non-blocking [maintainability] — Language-scope coverage gap** finding:
   > Diff contains \<list of detected languages\> files but Step 2e's automated scanners
-  > target JS/TS test frameworks (Jest, Vitest, Mocha). The JS patterns produced zero
-  > matches; this is not evidence the integrity policy was satisfied for the non-JS code.
-  > **Fix:** Manually verify the diff did not introduce any of: `@pytest.mark.skip`,
+  > target JS/TS test frameworks (Jest, Vitest, Mocha). The automated JS/TS patterns
+  > cannot inspect these non-JS files; a clean result from those scanners is not evidence
+  > the integrity policy was satisfied for the non-JS code.
+  > **Suggestion:** Manually verify the diff did not introduce any of: `@pytest.mark.skip`,
   > `pytest.skip(`, `t.Skip(`, `#[ignore]`, RSpec `skip(`, or equivalent without a
   > PR-body justification. If a violation exists, surface it as a blocking finding;
   > otherwise note in the PR body that the integrity check was extended manually.
