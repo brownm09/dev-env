@@ -25,7 +25,8 @@ import sys
 import time
 import traceback
 
-MARKER = "C:/Users/brown/.claude/scratch/session_mode_ack.txt"
+MARKER_DIR = "C:/Users/brown/.claude/scratch"
+MARKER_PREFIX = "session_mode_ack_"
 LOG_PATH = "C:/Users/brown/.claude/scratch/session-mode-prompt.log"
 COOLDOWN_SECS = 120  # covers the re-submit window after user sees the prompt
 
@@ -65,16 +66,21 @@ def main():
         sys.exit(0)
 
     now = time.time()
-    event["session_id"] = data.get("session_id", "")
+    session_id = data.get("session_id", "unknown")
+    event["session_id"] = session_id
     prompt = data.get("prompt", "")
     event["prompt_prefix"] = prompt[:80]
     event["permission_mode"] = data.get("permission_mode", "")
 
-    marker_exists = os.path.exists(MARKER)
+    # Per-session marker: each session gets its own cooldown file so sessions
+    # opening within COOLDOWN_SECS of each other don't suppress each other's banners.
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id)
+    marker = os.path.join(MARKER_DIR, f"{MARKER_PREFIX}{safe_id}.txt")
+    marker_exists = os.path.exists(marker)
     event["marker_exists"] = marker_exists
     if marker_exists:
         try:
-            age = now - os.path.getmtime(MARKER)
+            age = now - os.path.getmtime(marker)
             event["marker_age_sec"] = round(age, 2)
             if age < COOLDOWN_SECS:
                 event["stage"] = "cooldown_passthrough"
@@ -84,6 +90,19 @@ def main():
         except Exception as e:
             event["marker_stat_error"] = repr(e)
 
+    # Prune stale per-session markers (older than COOLDOWN_SECS) to keep scratch/ clean.
+    try:
+        for fname in os.listdir(MARKER_DIR):
+            if fname.startswith(MARKER_PREFIX) and fname.endswith(".txt"):
+                fpath = os.path.join(MARKER_DIR, fname)
+                try:
+                    if now - os.path.getmtime(fpath) >= COOLDOWN_SECS:
+                        os.remove(fpath)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     if _AUTOMATED_PREFIX.match(prompt):
         event["stage"] = "automated_suppressed"
         event["exit"] = 0
@@ -91,7 +110,7 @@ def main():
         sys.exit(0)
 
     try:
-        with open(MARKER, "w") as f:
+        with open(marker, "w") as f:
             f.write(str(now))
         event["marker_written"] = True
     except Exception as e:
