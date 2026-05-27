@@ -231,10 +231,10 @@ def main() -> None:
         artifact_path = Path(stale[0]).as_posix()
         artifact_date = os.path.basename(stale[0])[:10]  # YYYY-MM-DD prefix
         messages.append(
-            f"[journal-hook] Stale draft artifact detected: {artifact_path}\n"
-            f"The engineering journal draft from {artifact_date} was never composed.\n"
-            f"Before responding to the user's message, invoke the journal-compose skill "
-            f"to close out the {artifact_date} session. Then proceed with the user's request."
+            f"[journal-hook] Stale draft artifact detected ({artifact_date}): {artifact_path} — "
+            f"the engineering journal draft from {artifact_date} was never composed. "
+            f"Mention this to the user at a natural pause and suggest running /journal-compose "
+            f"in a dedicated session. Do not defer or interrupt the user's current request."
         )
 
     unmerged = unmerged_draft_branches()
@@ -256,7 +256,7 @@ def main() -> None:
         )
 
     if messages:
-        print("\n".join(messages))
+        print(json.dumps({"systemMessage": " ".join(messages)}))
         if session_id:
             try:
                 (SCRATCH / f"journal_hook_{session_id}.flag").touch()
