@@ -66,9 +66,10 @@ If the project has no automated tests, the section must say so explicitly and de
 ## Git Workflow
 
 - **Create an issue before changing files.** When a user's question or request will result in file changes, create a GitHub issue first with `gh issue create` — describe the problem or goal, not the implementation. Do this before writing any code or editing any files. For a single-line change, ask the user whether an issue is warranted before creating one; anything longer than one line warrants an issue without prompting. Exception: engineering-journal draft branches (`draft/YYYY-MM-DD`) may omit an issue. Every PR must then reference the issue via a `Closes #N` line in the PR body.
-- **Test before PR.** Before running `gh pr create`, execute the project's test command defined in `## Testing` in the project CLAUDE.md. Tests must pass (or the failure must be explained and documented). Include what was tested and the outcome in the PR body. **If no `## Testing` section exists in the project CLAUDE.md, stop and ask the user to add one — do not open the PR until it is present.**
+- **Test before PR.** Before running `gh pr create`, execute the project's test command defined in `## Testing` in the project CLAUDE.md. Tests must pass (or the failure must be explained and documented). Include what was tested, the `Tests: N passed, N skipped, N failed (duration)` summary line, and the outcome in the PR body. **If no `## Testing` section exists in the project CLAUDE.md, stop and ask the user to add one — do not open the PR until it is present.**
   - **Coverage gate.** Also ask whether the change introduces testable behavior not covered by existing tests. If yes, add tests before creating the PR, or explicitly document in the PR body why they are deferred (which tests, what tracks them, why deferral is acceptable). Enforced behaviorally by the author and by `/review` Step 2d (see [ADR-022](../docs/adr/022-test-coverage-gate-before-pr.md)).
   - **Suppression check.** Also run the pre-PR suppression grep from `## Code Quality` — any new suppression without a PR-body justification blocks the PR.
+  - **Test integrity check.** Also run the pre-PR test-integrity grep from `## Code Quality` — any new skip marker, deleted test, lowered coverage threshold, or bypass flag without a PR-body justification blocks the PR. The `Tests: N passed, N skipped, N failed (duration)` summary line is required in the PR body; a non-zero skipped count requires a per-skip justification (see [ADR-029](../docs/adr/029-test-integrity-policy.md)).
 - **ADR-warrant check.** Evaluate whether the change warrants an architectural decision record at three explicit checkpoints: (1) immediately after a plan is approved (post-`ExitPlanMode`), or at the start of the first file edit for sessions without an explicit planning phase; (2) immediately after `gh pr create` returns; and (3) immediately before `gh pr merge`. A change warrants an ADR when any of the following hold: it changes a rule, hook, skill, or settings value documented in `claude/`; it introduces or restructures a directory under `claude/` (skills, hooks, scripts, routines); it establishes or changes a workflow rule that other CLAUDE.md files reference; or its rationale would be hard to recover from `git log` alone six months later. ADRs for global rules go in dev-env [`docs/adr/`](../docs/adr/INDEX.md); ADRs for project-specific decisions go in that project's `docs/adr/`. **If warranted and not yet written, write the ADR and update `INDEX.md` before merging — never merge a qualifying change without an ADR record.**
   - **Warrant check lookup:** Scan `docs/adr/INDEX.md` tags first — the Tags column covers every ADR's domain keywords. If no tag matches the change type, the warrant check requires no additional file reads. Only open individual ADR files when a tag match suggests a possible overlap or conflict.
   - **Proactive template (opt-in):** When checkpoint 1 fires and the change is clearly ADR-worthy, create the ADR template file on the branch immediately using the next available ADR number and the `NNN-kebab-case-title.md` naming convention, rather than waiting until checkpoint 3. Fill in context and the decision rationale as work proceeds; the ADR is 80% complete by the time `gh pr create` runs, with no extra end-of-session step. This approach is preferable for complex multi-file changes where the full rationale is known upfront. For exploratory work where the decision may not crystallize until checkpoint 2 or 3, write the ADR at whichever checkpoint it becomes clear.
@@ -275,6 +276,37 @@ If the output is non-empty:
 A PR that adds suppressions with no PR-body justification is not mergeable.
 
 See [ADR-026](../docs/adr/026-suppression-policy.md) for rationale.
+
+### Test integrity policy
+
+A *test integrity violation* is any of the following: adding a skip marker (`it.skip`, `xit`, `xdescribe`, `test.skip`, `describe.skip`, `.todo`, `pending`), deleting a test file or `describe`/`it` block, lowering a coverage threshold in `jest.config.*` / `.nycrc` / `vitest.config.*` / equivalent, adding `--passWithNoTests` / `--bail` / `--testPathIgnorePatterns` to a test invocation or CI command, or hardcoding implementation values to satisfy a specific test input rather than a general contract.
+
+The Test Coverage Gate (ADR-022) guards against *missing* tests on new behavior. This policy guards against *degrading* existing tests to manufacture a green run.
+
+**Rule 1 — No integrity violation without justification.**
+Every violation that lands in a PR must be accompanied by a PR-body note naming the specific tests/thresholds and stating why removal or degradation is appropriate (e.g., "deleted tests for the removed `/legacy-export` endpoint").
+
+**Rule 2 — Skipped counts must be visible.**
+The test-before-PR run must emit a summary of the form `Tests: N passed, N skipped, N failed (duration)`. Include this line verbatim in the PR body under the Testing section. A non-zero skipped count requires a PR-body note explaining why each skip is acceptable. When the project has no automated tests, state that explicitly in place of the summary line.
+
+**Rule 3 — Pre-PR test-integrity check (required before `gh pr create`).**
+Run this alongside the suppression grep:
+```bash
+git diff origin/main -- . | grep -E '(it\.skip|xit\(|xdescribe|test\.skip|describe\.skip|\.todo\(|pending\(|passWithNoTests|--bail|testPathIgnorePatterns)'
+```
+Also check for deleted test files and lowered coverage thresholds:
+```bash
+git diff --diff-filter=D --name-only origin/main -- '*.test.*' '*.spec.*' 'tests/**' 'e2e/**'
+git diff origin/main -- jest.config.* .nycrc vitest.config.* | grep -E 'threshold|coverage'
+```
+
+If any pattern matches:
+- Each line must map to a Rule 1 justification note in the PR body, **or**
+- The violation must be reverted.
+
+A PR that adds integrity violations with no PR-body justification is not mergeable.
+
+See [ADR-029](../docs/adr/029-test-integrity-policy.md) for rationale.
 
 ---
 

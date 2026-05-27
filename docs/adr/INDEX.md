@@ -33,3 +33,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [026](026-suppression-policy.md) | Suppression Policy: No Silent Workarounds for Type and Lint Errors | 2026-05-24 | Accepted | code-quality, typescript, eslint, workflow, suppression, pre-pr |
 | [027](027-userpromptsubmit-blocking-hook-conventions.md) | UserPromptSubmit Hook Output: stderr for Blocking, Per-Session Marker Files | 2026-05-27 | Accepted | hooks, UserPromptSubmit, stderr, per-session-state, claude-code-contract |
 | [028](028-all-findings-merge-gate.md) | All-Findings Merge Gate: Address Blocking and Non-Blocking Before Merge | 2026-05-27 | Accepted | review, workflow, git, pr, blocking-rule, non-blocking |
+| [029](029-test-integrity-policy.md) | Test Integrity Policy: No Silent Degradation of Existing Tests | 2026-05-27 | Accepted | testing, quality, review, suppression-parallel, workflow, pre-pr |
