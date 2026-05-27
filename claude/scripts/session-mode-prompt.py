@@ -2,25 +2,28 @@
 """
 session-mode-prompt.py
 
-On the first user prompt of a new session, block and ask the user to confirm
-their permission mode. Addresses sessions spawned from an active bypass-permissions
-session that may have inherited the wrong defaultMode from settings.json.
+On the first user prompt of a new session, inject a one-time mode-confirmation
+reminder into Claude's context so Claude surfaces the active permission mode
+(plan / bypass / auto) in its first response. Addresses sessions spawned from
+an active bypass-permissions session that may have inherited the wrong
+defaultMode from settings.json.
+
+Output contract: stdout JSON `{"hookSpecificOutput": {"hookEventName":
+"UserPromptSubmit", "additionalContext": "..."}}` + exit 0. The reminder
+becomes added context for Claude alongside the user's prompt; the prompt is
+NOT erased and the user does not need to re-submit. See ADR-027 amendment
+2026-05-27 (issue #268) for why this hook is exit-0/additionalContext rather
+than exit-2/stderr — its goal is a one-time advisory, not a true block.
 
 Per-session marker file at scratch/session_mode_ack_<session_id>.txt records
-that the banner has been shown for this session; any subsequent prompt in the
-same session passes through silently. Markers from other sessions are not
-read, so a banner in session A does not suppress the banner in session B.
+that the reminder has been injected for this session; any subsequent prompt
+in the same session passes through silently. Markers from other sessions are
+not read, so a reminder in session A does not suppress one in session B.
 Old markers from closed sessions are orphaned but harmless (~18 bytes each).
 
 Suppressed for automated sessions whose prompt begins with an XML tag (e.g.
 <scheduled-task>, <ci-monitor-event>). These are machine-generated triggers
-where no human is present to answer a blocking prompt.
-
-Output: the banner is written to **stderr**, not stdout. Per Claude Code's
-UserPromptSubmit hook contract, exit-2 blocks the prompt and stderr is what
-gets surfaced to the user; stdout is silently fed back to the model as added
-context. The original stdout-based version was invisible to humans.
-See dev-env#264.
+where no human is present to need the reminder.
 
 Debug logging: every invocation appends one JSON line to
 C:/Users/brown/.claude/scratch/session-mode-prompt.log so silent failures can
@@ -43,6 +46,13 @@ _AUTOMATED_PREFIX = re.compile(r"^\s*<[a-z]")
 
 # session_id is a UUID from Claude Code; sanitize defensively in case the contract changes.
 _SAFE_SESSION_ID = re.compile(r"[^A-Za-z0-9_-]")
+
+_REMINDER_TEXT = (
+    "Session-mode reminder (shown once per session): the user just started a "
+    "new Claude Code session. In your first response, briefly confirm which "
+    "permission mode is active (plan / bypass / auto) and remind them they "
+    "can press Shift+Tab to cycle modes. Plan mode is the settings default."
+)
 
 
 def _marker_path(session_id, event=None):
@@ -102,21 +112,21 @@ def main():
     marker_exists = os.path.exists(marker_path)
     event["marker_exists"] = marker_exists
 
-    # If the banner was already shown for THIS session, pass through silently.
+    # If the reminder was already injected for THIS session, pass through silently.
     if marker_exists:
         event["stage"] = "session_acked_passthrough"
         event["exit"] = 0
         _log(event)
         sys.exit(0)
 
-    # Automated sessions (scheduled tasks, CI monitors, etc.) — no human present to answer.
+    # Automated sessions (scheduled tasks, CI monitors, etc.) — no human to remind.
     if _AUTOMATED_PREFIX.match(prompt):
         event["stage"] = "automated_suppressed"
         event["exit"] = 0
         _log(event)
         sys.exit(0)
 
-    # Write marker BEFORE blocking so the user's re-submit passes through.
+    # Write marker BEFORE emitting so any retry on the same session passes through.
     try:
         with open(marker_path, "w") as f:
             f.write(str(now))
@@ -125,35 +135,28 @@ def main():
         event["marker_write_error"] = repr(e)
         sys.stderr.write(f"session-mode-prompt: could not write marker: {e}\n")
 
-    banner = (
-        "-------------------------------------------------\n"
-        "New session -- confirm your permission mode:\n"
-        "\n"
-        "  plan       Claude asks before making any edits  (settings default)\n"
-        "  bypass     Claude acts immediately without asking\n"
-        "  auto       Claude decides based on task risk\n"
-        "\n"
-        "Press Shift+Tab to cycle modes if needed,\n"
-        "then re-submit your prompt to continue.\n"
-        "-------------------------------------------------\n"
-    )
+    payload = {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": _REMINDER_TEXT,
+        }
+    }
 
-    # Write to stderr — Claude Code surfaces stderr (not stdout) to the user on exit 2.
     try:
-        sys.stderr.write(banner)
-        sys.stderr.flush()
-        event["stage"] = "banner_printed"
-        event["exit"] = 2
+        sys.stdout.write(json.dumps(payload))
+        sys.stdout.flush()
+        event["stage"] = "additional_context_emitted"
+        event["exit"] = 0
         _log(event)
     except Exception as e:
-        event["stage"] = "banner_print_failed"
+        event["stage"] = "additional_context_emit_failed"
         event["error"] = repr(e)
         event["traceback"] = traceback.format_exc()
-        event["exit"] = 2
+        event["exit"] = 0
         _log(event)
-        sys.stderr.write(f"session-mode-prompt: banner print failed: {e}\n")
+        sys.stderr.write(f"session-mode-prompt: emit failed: {e}\n")
 
-    sys.exit(2)
+    sys.exit(0)
 
 
 main()

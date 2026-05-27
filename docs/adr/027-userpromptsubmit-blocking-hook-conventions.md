@@ -89,6 +89,53 @@ The original 120-second cooldown was a workaround for the global-marker bug — 
 
 ## References
 
-- [Anthropic — Claude Code Hooks documentation](https://code.claude.com/docs/en/hooks) — defines the exit-2 contract (stdout ignored, stderr forwarded to Claude as the blocking error message; `UserPromptSubmit` exit 2 erases the prompt).
+- [Anthropic — Claude Code Hooks documentation](https://code.claude.com/docs/en/hooks) — defines the exit-2 contract (stdout ignored, stderr forwarded to Claude as the blocking error message; `UserPromptSubmit` exit 2 erases the prompt) and the exit-0 `hookSpecificOutput.additionalContext` JSON for injecting context alongside the prompt.
 - [ADR-007](007-hook-command-invocation.md) — the related amendment chain that restored hook execution and made these defects observable.
 - [dev-env #264](https://github.com/brownm09/dev-env/issues/264) — the defect report with the timeline that produced this ADR.
+- [dev-env #268](https://github.com/brownm09/dev-env/issues/268) — the follow-up defect that produced the 2026-05-27 amendment below.
+
+---
+
+## Amendment 2026-05-27 (issue #268) — choose hook contract by intent
+
+After #266 shipped (per-session marker + banner to stderr), two fresh sessions verified the hook:
+the banner was still invisible to the user, and the user's prompt vanished. Re-reading the Claude
+Code hook docs surfaced the real design error: `session-mode-prompt.py` was never a *block* — its
+goal is a one-time advisory reminder. Forcing that goal through the exit-2 contract was wrong
+regardless of which stream the banner was written to. Exit 2 on `UserPromptSubmit` deletes the
+prompt and forwards stderr to *Claude* as an error message, which Claude cannot meaningfully act on
+when the prompt itself has been erased. The user sees nothing useful; the session stalls.
+
+### Rule: choose the hook contract by intent
+
+For `UserPromptSubmit` hooks:
+
+- **Block the prompt** (refuse it with a reason — e.g., the prompt contains a secret, the prompt
+  violates a policy): write the reason to **stderr** and **exit 2**. The prompt is erased, the
+  reason is forwarded to Claude as a blocking error, Claude surfaces it to the user.
+- **Inject context alongside the prompt** (advisory, reminder, link, pre-fetched data — anything
+  that should travel *with* the prompt rather than replace it): write a JSON object to **stdout**
+  and **exit 0**:
+  ```python
+  json.dumps({
+      "hookSpecificOutput": {
+          "hookEventName": "UserPromptSubmit",
+          "additionalContext": "<reminder text>",
+      }
+  })
+  ```
+  The prompt is preserved, the `additionalContext` is delivered to Claude alongside it, Claude
+  weaves the advisory into its response naturally. See the [Claude Code Hooks documentation](https://code.claude.com/docs/en/hooks)
+  for the full input/output schema.
+
+Per-session markers, XML-tag automated-session suppression, and the diagnostic log remain
+unchanged — they are orthogonal to which output contract is used.
+
+### Consequences (amendment)
+
+- `claude/scripts/session-mode-prompt.py` rewritten again: stdout JSON + exit 0 (no longer a
+  blocking hook). Docstring updated. Log stage renamed `banner_printed` → `additional_context_emitted`.
+- The stderr-on-exit-2 rule from the original 2026-05-27 decision **still stands** for hooks that
+  genuinely intend to block a prompt. The amendment adds the second rule (exit-0 + additionalContext
+  for advisory output), not a replacement.
+- `docs/REFERENCE.md` and `README.md` updated to describe the corrected behavior.
