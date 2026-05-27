@@ -23,6 +23,7 @@ Stdin JSON shape (PreToolUse):
 Exit 0 — always; hook is advisory only.
 """
 import json
+import os
 import re
 import subprocess
 import sys
@@ -33,6 +34,8 @@ _GH_PR_CREATE_RE = re.compile(
 
 _DOC_PATHS = ("claude/skills/", "claude/hooks/", "claude/scripts/", "claude/routines/")
 _REF_DOCS = {"README.md", "docs/REFERENCE.md"}
+
+_SCRATCH_DIR = "C:/Users/brown/.claude/scratch"
 
 
 def _doc_reconciliation_warning(cwd):
@@ -67,6 +70,60 @@ def _doc_reconciliation_warning(cwd):
     )
 
 
+def _baseline_advisory(cwd):
+    """Return an advisory line about the pre-existing test failure baseline (ADR-030).
+
+    Three cases:
+      - Opt-in flag absent → empty string (feature dormant for this repo).
+      - Flag on, baseline file present → 'run baseline-tests diff' reminder.
+      - Flag on, baseline file missing → 'no baseline captured' reminder.
+    """
+    if not cwd:
+        return ""
+    cfg_path = os.path.join(cwd, ".claude", "hook-config.json")
+    if not os.path.exists(cfg_path):
+        return ""
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return ""
+    if cfg.get("baseline_test_failure_tracking") is not True:
+        return ""
+
+    try:
+        repo = os.path.basename(
+            subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, cwd=cwd, timeout=5
+            ).stdout.strip()
+        )
+        branch_raw = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, cwd=cwd, timeout=5
+        ).stdout.strip()
+    except Exception:
+        return ""
+    if not repo or not branch_raw:
+        return ""
+    branch = branch_raw.replace("/", "-")
+    baseline_path = os.path.join(_SCRATCH_DIR, f"baseline_{repo}_{branch}.json")
+
+    if os.path.exists(baseline_path):
+        return (
+            "  4. Run `baseline-tests diff` and address per the fix-on-touch rule "
+            "(ADR-030) — new failures block; preexisting-touched failures must be "
+            "fixed inline or filed and listed in the PR body."
+        )
+    return (
+        "  4. ⚠ BASELINE: `baseline_test_failure_tracking` is enabled but no "
+        f"baseline file exists at {baseline_path}. Pre-existing failures cannot be "
+        "distinguished from new ones. Run `baseline-tests snapshot` from "
+        "`origin/main` and re-cut this branch with `new-branch`, or accept the loss "
+        "of fix-on-touch coverage for this PR."
+    )
+
+
 def main() -> None:
     raw = sys.stdin.read().strip()
     if not raw:
@@ -86,6 +143,7 @@ def main() -> None:
 
     cwd = data.get("cwd", "")
     doc_warning = _doc_reconciliation_warning(cwd)
+    baseline_line = _baseline_advisory(cwd)
 
     checklist = (
         "[pre-pr-check] Before this PR is created, confirm:\n"
@@ -93,6 +151,8 @@ def main() -> None:
         "  2. Tests passed (or documented why they are not applicable)\n"
         "  3. PR body includes what was tested and the outcome"
     )
+    if baseline_line:
+        checklist += "\n" + baseline_line
     if doc_warning:
         checklist += "\n" + doc_warning
 
