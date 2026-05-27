@@ -218,6 +218,36 @@ silently degrade existing tests to manufacture a green run. While Step 2d guards
 *absent* tests on new behavior, Step 2e guards against *degraded* tests on existing
 behavior.
 
+**Language scope preamble.** The patterns in steps (1)–(3) below target JavaScript/TypeScript
+test frameworks (Jest, Vitest, Mocha) — the same scope as the pre-PR grep in
+`claude/CLAUDE.md` Code Quality → Test integrity policy → Rule 3. Before running them, scan
+the changed file list (from `gh pr view --json changedFiles` or the diff's `+++ b/` headers)
+for source files in other languages:
+
+- `*.py` → pytest idioms (`@pytest.mark.skip`, `@pytest.mark.skipif`, `pytest.skip(`, `pytest.xfail(`, `unittest.skip`)
+- `*.go` → Go testing idioms (`t.Skip(`, `t.SkipNow(`, `testing.Short()` gates)
+- `*.rs` → Rust idioms (`#[ignore]`, `#[cfg(not(test))]` on test fns)
+- `*.rb` → RSpec/Minitest idioms (`skip(`, `xit(`, `xdescribe(`, `pending(`)
+
+A file qualifies as "test-relevant" if it is a test file (path matches `*test*`, `*spec*`,
+`tests/`, `spec/`, `e2e/`) or it is a non-test source file in one of the listed languages
+that the JS-only patterns cannot inspect. Pure documentation files that *describe* these
+idioms (e.g., a README mentioning `pytest.skip`) do not count — limit detection to source
+extensions, not Markdown.
+
+If any non-JS test-relevant file appears:
+
+- Record a **Non-blocking [maintainability] — Language-scope coverage gap** finding:
+  > Diff contains \<list of detected languages\> files but Step 2e's automated scanners
+  > target JS/TS test frameworks (Jest, Vitest, Mocha). The JS patterns produced zero
+  > matches; this is not evidence the integrity policy was satisfied for the non-JS code.
+  > **Fix:** Manually verify the diff did not introduce any of: `@pytest.mark.skip`,
+  > `pytest.skip(`, `t.Skip(`, `#[ignore]`, RSpec `skip(`, or equivalent without a
+  > PR-body justification. If a violation exists, surface it as a blocking finding;
+  > otherwise note in the PR body that the integrity check was extended manually.
+
+Continue with steps (1)–(5) below — they still catch JS/TS violations when the diff is mixed-language.
+
 Inspect the DIFF, PR_BODY, and any test config files in the diff:
 
 1. **Skip markers in added lines.** Scan the diff for any of: `it.skip`, `xit(`,
