@@ -45,9 +45,18 @@ _AUTOMATED_PREFIX = re.compile(r"^\s*<[a-z]")
 _SAFE_SESSION_ID = re.compile(r"[^A-Za-z0-9_-]")
 
 
-def _marker_path(session_id):
-    """Return the per-session marker path. Falls back to 'unknown' when session_id is missing."""
-    safe = _SAFE_SESSION_ID.sub("", session_id or "") or "unknown"
+def _marker_path(session_id, event=None):
+    """Return the per-session marker path. Falls back to 'unknown' when session_id is missing.
+
+    When the fallback fires, set event["fallback_marker"]=True so a future Claude Code
+    contract change that drops session_id is visible in scratch/session-mode-prompt.log
+    rather than silently re-introducing cross-session contamination via session_mode_ack_unknown.txt.
+    """
+    safe = _SAFE_SESSION_ID.sub("", session_id or "")
+    if not safe:
+        safe = "unknown"
+        if event is not None:
+            event["fallback_marker"] = True
     return f"{MARKER_DIR}/session_mode_ack_{safe}.txt"
 
 
@@ -88,7 +97,7 @@ def main():
     event["prompt_prefix"] = prompt[:80]
     event["permission_mode"] = data.get("permission_mode", "")
 
-    marker_path = _marker_path(session_id)
+    marker_path = _marker_path(session_id, event)
     event["marker_path"] = marker_path
     marker_exists = os.path.exists(marker_path)
     event["marker_exists"] = marker_exists
