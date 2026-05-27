@@ -70,6 +70,7 @@ If the project has no automated tests, the section must say so explicitly and de
   - **Coverage gate.** Also ask whether the change introduces testable behavior not covered by existing tests. If yes, add tests before creating the PR, or explicitly document in the PR body why they are deferred (which tests, what tracks them, why deferral is acceptable). Enforced behaviorally by the author and by `/review` Step 2d (see [ADR-022](../docs/adr/022-test-coverage-gate-before-pr.md)).
   - **Suppression check.** Also run the pre-PR suppression grep from `## Code Quality` — any new suppression without a PR-body justification blocks the PR.
   - **Test integrity check.** Also run the pre-PR test-integrity grep from `## Code Quality` — any new skip marker, deleted test, lowered coverage threshold, or bypass flag without a PR-body justification blocks the PR. The `Tests: N passed, N skipped, N failed (duration)` summary line is required in the PR body; a non-zero skipped count requires a per-skip justification (see [ADR-029](../docs/adr/029-test-integrity-policy.md)).
+  - **Pre-existing failure check.** If the project enables `baseline_test_failure_tracking` in `.claude/hook-config.json`, also run `baseline-tests diff`. New failures block the PR; pre-existing failures in files this branch modifies must be fixed inline (≤ ~20 LOC / ~15 min) or filed and referenced in the PR body (see [ADR-030](../docs/adr/030-baseline-test-failure-policy.md)).
 - **ADR-warrant check.** Evaluate whether the change warrants an architectural decision record at three explicit checkpoints: (1) immediately after a plan is approved (post-`ExitPlanMode`), or at the start of the first file edit for sessions without an explicit planning phase; (2) immediately after `gh pr create` returns; and (3) immediately before `gh pr merge`. A change warrants an ADR when any of the following hold: it changes a rule, hook, skill, or settings value documented in `claude/`; it introduces or restructures a directory under `claude/` (skills, hooks, scripts, routines); it establishes or changes a workflow rule that other CLAUDE.md files reference; or its rationale would be hard to recover from `git log` alone six months later. ADRs for global rules go in dev-env [`docs/adr/`](../docs/adr/INDEX.md); ADRs for project-specific decisions go in that project's `docs/adr/`. **If warranted and not yet written, write the ADR and update `INDEX.md` before merging — never merge a qualifying change without an ADR record.**
   - **Warrant check lookup:** Scan `docs/adr/INDEX.md` tags first — the Tags column covers every ADR's domain keywords. If no tag matches the change type, the warrant check requires no additional file reads. Only open individual ADR files when a tag match suggests a possible overlap or conflict.
   - **Proactive template (opt-in):** When checkpoint 1 fires and the change is clearly ADR-worthy, create the ADR template file on the branch immediately using the next available ADR number and the `NNN-kebab-case-title.md` naming convention, rather than waiting until checkpoint 3. Fill in context and the decision rationale as work proceeds; the ADR is 80% complete by the time `gh pr create` runs, with no extra end-of-session step. This approach is preferable for complex multi-file changes where the full rationale is known upfront. For exploratory work where the decision may not crystallize until checkpoint 2 or 3, write the ADR at whichever checkpoint it becomes clear.
@@ -321,6 +322,40 @@ If any pattern matches:
 A PR that adds integrity violations with no PR-body justification is not mergeable.
 
 See [ADR-029](../docs/adr/029-test-integrity-policy.md) for rationale.
+
+### Pre-existing test failure policy
+
+The Suppression Policy and Test Integrity Policy guard against *new* and *degraded* tests, respectively. This policy guards against *inherited red state* — tests that were already failing when the branch was cut and that drift forever across branches because each session correctly declines to fix unrelated breakage. See [ADR-030](../docs/adr/030-baseline-test-failure-policy.md) for rationale and rejected alternatives.
+
+A *pre-existing failure* is a failing test whose fingerprint (`sha1(file + "::" + test_name + "::" + first_line_of_error)`) was already present in the branch-start baseline snapshot. A *new failure* is one that does not appear in the baseline.
+
+**Rule 1 — Baseline at branch creation.**
+Per-project opt-in via `"baseline_test_failure_tracking": true` in `.claude/hook-config.json`. When enabled, `new-branch <name>` (see the Git Workflow → Branch creation in squash-merge repos bullet above) automatically runs `baseline-tests snapshot` immediately after `git checkout -b`. The snapshot is written to `C:/Users/brown/.claude/scratch/baseline_<repo>_<branch>.json`. Branches cut via raw `git checkout -b` skip the snapshot; the pre-PR hook will surface the missing baseline as an advisory.
+
+The hook-config also reads an optional `"test_command"` field (default `npx jest --json --silent`) — the command must emit Jest `--json` output on stdout. Projects whose `npm test` script wraps Jest through turbo/lerna will need to override this to call Jest directly.
+
+**Rule 2 — Fix-on-touch threshold.**
+When `baseline-tests diff` classifies a pre-existing failure as `preexisting-touched` (failure file is in the branch's modified set):
+
+- **Fix inline** if the fix is **≤ ~20 LOC or ≤ ~15 minutes** by Claude's judgment.
+- **Otherwise** file a GitHub issue (or append to a rolling "Pre-existing test failures" tracking issue) and reference it in the PR body. The failure stays in the baseline for future branches.
+
+The ~20 LOC / ~15 min figure is a judgment-based proxy, not a hard contract — the goal is to prevent both yak-shaving and silent inheritance. Pre-existing failures classified as `preexisting-untouched` are noted in the PR body but are not blocking.
+
+**Rule 3 — Pre-PR baseline diff (required before `gh pr create`).**
+Run `baseline-tests diff` from the repo root. The script classifies failures into three groups and prints them:
+
+```
+=== NEW failures (block PR — must fix) ===
+=== PRE-EXISTING failures in touched files (fix-on-touch or file an issue) ===
+=== PRE-EXISTING failures in untouched files (note in PR body) ===
+```
+
+If any `new` failures appear, do **not** open the PR — fix them first. The script exits 1 in this case. Any `preexisting-touched` entries must be either fixed inline (Rule 2) or filed; the PR body must list outstanding entries with a link to the tracking issue.
+
+A PR that adds new failures or lists no PR-body justification for outstanding `preexisting-touched` entries is not mergeable.
+
+**Scope note.** The first implementation supports Jest only. Pytest, Go `testing`, and Rust have different JSON output formats and each needs its own parser — a clean run in a non-Jest repo is not evidence the policy applies. The opt-in flag should stay off in repos whose test runners are not yet supported.
 
 ---
 

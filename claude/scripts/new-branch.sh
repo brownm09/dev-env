@@ -29,4 +29,32 @@ new-branch() {
   fi
 
   git checkout -b "$branch_name" origin/main
+
+  # Optional: snapshot pre-existing test failures so the fix-on-touch policy
+  # (ADR-030) can distinguish "introduced on this branch" from "inherited".
+  # Opt-in per repo via `.claude/hook-config.json` field
+  # `"baseline_test_failure_tracking": true`. Bypass for one invocation by
+  # setting BASELINE_TESTS_SKIP=1 (e.g., when the test suite is too slow today).
+  if [ "${BASELINE_TESTS_SKIP:-0}" = "1" ]; then
+    echo "BASELINE_TESTS_SKIP=1 — skipping baseline snapshot." >&2
+  elif [ -f .claude/hook-config.json ]; then
+    local enabled
+    enabled=$(node -e '
+      try {
+        const d = JSON.parse(require("fs").readFileSync(".claude/hook-config.json", "utf8"));
+        process.stdout.write(d.baseline_test_failure_tracking === true ? "1" : "0");
+      } catch (e) { process.stdout.write("0"); }
+    ' 2>/dev/null)
+    if [ "$enabled" = "1" ]; then
+      if command -v baseline-tests >/dev/null 2>&1; then
+        echo "Capturing pre-existing test failure baseline (ADR-030)..." >&2
+        baseline-tests snapshot || echo "WARNING: baseline snapshot failed; fix-on-touch diff will be unavailable." >&2
+      elif [ -x ~/.claude/scripts/baseline-tests.sh ]; then
+        echo "Capturing pre-existing test failure baseline (ADR-030)..." >&2
+        bash ~/.claude/scripts/baseline-tests.sh snapshot || echo "WARNING: baseline snapshot failed." >&2
+      else
+        echo "WARNING: baseline_test_failure_tracking is enabled but baseline-tests is not on PATH." >&2
+      fi
+    fi
+  fi
 }
