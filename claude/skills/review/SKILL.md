@@ -229,7 +229,9 @@ Inspect the DIFF, PR_BODY, and any test config files in the diff:
 3. **Bypass flags and lowered thresholds.** In test config (`jest.config.*`, `.nycrc`,
    `vitest.config.*`, `package.json` test scripts) and CI YAML, look for new occurrences
    of `--passWithNoTests`, `--bail`, `--testPathIgnorePatterns`, or numeric coverage
-   thresholds that decreased.
+   thresholds that decreased. Only decreases are violations — a hunk like
+   `-  "branches": 80,` / `+  "branches": 60,` is a violation; the same hunk reversed
+   (`60` → `80`) is an improvement and not flagged.
 
 4. **Skew toward specific test inputs.** Scan implementation diffs for branches
    conditional on values that look like test inputs (e.g.,

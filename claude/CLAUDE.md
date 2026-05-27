@@ -292,13 +292,19 @@ The test-before-PR run must emit a summary of the form `Tests: N passed, N skipp
 **Rule 3 — Pre-PR test-integrity check (required before `gh pr create`).**
 Run this alongside the suppression grep:
 ```bash
-git diff origin/main -- . | grep -E '(it\.skip|xit\(|xdescribe|test\.skip|describe\.skip|\.todo\(|pending\(|passWithNoTests|--bail|testPathIgnorePatterns)'
+git diff origin/main -- . | grep -E '(it\.skip|xit\(|xdescribe\(|test\.skip|describe\.skip|\.todo\(|pending\(|passWithNoTests|--bail|testPathIgnorePatterns)'
 ```
 Also check for deleted test files and lowered coverage thresholds:
 ```bash
 git diff --diff-filter=D --name-only origin/main -- '*.test.*' '*.spec.*' 'tests/**' 'e2e/**'
 git diff origin/main -- jest.config.* .nycrc vitest.config.* | grep -E 'threshold|coverage'
 ```
+
+**Scope note.** The grep patterns above target JavaScript/TypeScript test frameworks (Jest, Vitest, Mocha). For pytest, Go `testing`, or Rust projects, extend the patterns to cover the language's idioms (`@pytest.mark.skip`, `pytest.skip(`, `t.Skip(`, `#[ignore]`, etc.) before running. A clean grep against JS-only patterns in a non-JS repo is not evidence the policy was satisfied.
+
+**Known false-positive classes.** Two patterns over-match by design — review matches manually:
+- `--bail` matches any CLI bail flag, including non-test-runner contexts.
+- The threshold/coverage grep flags **any** change to those fields, including threshold *increases* (which are improvements, not violations). Only decreased thresholds are violations.
 
 If any pattern matches:
 - Each line must map to a Rule 1 justification note in the PR body, **or**

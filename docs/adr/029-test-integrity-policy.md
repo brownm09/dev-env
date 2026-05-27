@@ -34,7 +34,7 @@ Add a `### Test integrity policy` subsection to the `## Code Quality` section of
 
 3. **Pre-PR test-integrity grep (required before `gh pr create`).** Run alongside the suppression grep:
    ```bash
-   git diff origin/main -- . | grep -E '(it\.skip|xit\(|xdescribe|test\.skip|describe\.skip|\.todo\(|pending\(|passWithNoTests|--bail|testPathIgnorePatterns)'
+   git diff origin/main -- . | grep -E '(it\.skip|xit\(|xdescribe\(|test\.skip|describe\.skip|\.todo\(|pending\(|passWithNoTests|--bail|testPathIgnorePatterns)'
    git diff --diff-filter=D --name-only origin/main -- '*.test.*' '*.spec.*' 'tests/**' 'e2e/**'
    git diff origin/main -- jest.config.* .nycrc vitest.config.* | grep -E 'threshold|coverage'
    ```
@@ -61,7 +61,8 @@ A *test integrity violation* is defined as: adding a skip marker, deleting a tes
 - Every legitimate test removal (e.g., deleting tests for a removed feature) requires a PR-body note. This is a deliberate friction cost — the alternative is silent removal.
 - The skew-detection step (Step 2e #4) relies on LLM judgment about whether a hardcoded constant looks like a test input. False positives will occur; the non-blocking finding category absorbs them.
 - The required summary line (`Tests: N passed, N skipped, N failed`) adds a small line of PR-body content even for trivial PRs. Acceptable since the line doubles as evidence the test command was actually run.
-- The grep patterns target common JavaScript/TypeScript test frameworks (Jest, Vitest, Mocha); pytest / Go / Rust equivalents are not currently covered and would need separate patterns when those languages are in scope.
+- The grep patterns target common JavaScript/TypeScript test frameworks (Jest, Vitest, Mocha); pytest / Go / Rust equivalents are not currently covered and would need separate patterns when those languages are in scope. A scope note in `claude/CLAUDE.md` Rule 3 surfaces this at the decision point.
+- Two grep patterns over-match by design and require manual review of matches: `--bail` matches any CLI bail flag (not just test-runner contexts), and the threshold/coverage grep flags any change to those fields including improvements (threshold *increases*). Narrowing either pattern would require parsing numeric diffs or context, which is more brittle than letting the author classify a small number of matches. The over-match is documented in CLAUDE.md Rule 3 as "Known false-positive classes."
 
 ---
 
