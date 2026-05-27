@@ -33,7 +33,7 @@ bash "$HOME/Git/dev-env/setup.sh"
 
 `setup.sh` will:
 - Self-elevate via UAC if Administrator privileges are needed
-- Warn about any missing soft prerequisites (python3, bash on PATH)
+- Warn about any missing soft prerequisites (`py -3` launcher, bash on PATH)
 - Create all `~/.claude/` symlinks and junctions
 - Set `core.hooksPath` globally
 - Create `~/.claude/scratch/`

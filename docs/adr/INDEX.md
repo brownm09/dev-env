@@ -11,7 +11,7 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [004](004-pr-review-reads-from-remote.md) | PR Review Reads from Remote, Not Local Worktree | 2026-04-17 | Accepted | git, pr-review, worktree, remote, correctness |
 | [005](005-global-core-hooks-path.md) | Global `core.hooksPath` for Cross-Repo Invariants | 2026-04-19 | Accepted | git, hooks, core.hooksPath, cross-repo |
 | [006](006-dev-env-sync-on-every-prompt.md) | UserPromptSubmit Dev-Env Sync on Every Prompt | 2026-04-19 | Accepted | hooks, dev-env-sync, UserPromptSubmit, prompts |
-| [007](007-hook-command-invocation.md) | Hook Command Invocation: Direct `python3` vs `bash -c` Wrapper | 2026-04-27 | Accepted | hooks, python, bash, invocation, scripts |
+| [007](007-hook-command-invocation.md) | Hook Command Invocation: `py -3` Launcher on Windows | 2026-04-27 (amended 2026-05-26) | Accepted | hooks, python, bash, invocation, scripts |
 | [008](008-plan-then-optimize-forcing-function.md) | Plan-Then-Optimize as an Embedded Skill Step | 2026-04-27 | Accepted | planning, token-efficiency, skills, workflow |
 | [009](009-cover-letter-token-efficiency.md) | Cover Letter Token Efficiency: Inline Drafting and Session Reuse | 2026-05-01 | Accepted | cover-letter, token-efficiency, skills, drafting |
 | [010](010-skill-tmpfile-allow-rule.md) | Skill Temp File Writes: `Bash(TMPFILE=*)` Allow Rule | 2026-05-02 | Accepted | skills, permissions, tmpfile, bash, settings |

@@ -239,7 +239,7 @@ gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
 
 ## Testing
 
-Run `python3 -m py_compile claude/scripts/*.py` from the repo root to verify all hook scripts are free of syntax errors.
+Run `py -3 -m py_compile claude/scripts/*.py` from the repo root to verify all hook scripts are free of syntax errors. On Windows, `python3` resolves to the Microsoft Store stub — use `py -3` (the Windows Python Launcher). See [ADR-007](../docs/adr/007-hook-command-invocation.md).
 
 For docs-only changes to `claude/CLAUDE.md`: run `grep -n 'date -u' claude/CLAUDE.md` and confirm every match is in an internal operational artifact context (lock files, log timestamps) — not in stub filename or branch name descriptions.
 

@@ -113,5 +113,5 @@ enough complexity to warrant a new script.
 2. Attempt `gh pr create` — confirm hook emits the documentation warning.
 3. Run `/review` on that PR — confirm a blocking "Documentation" finding appears.
 4. Add the README.md change, re-run `/review` — confirm finding is absent.
-5. Run `python3 -m py_compile claude/scripts/pre-pr-create-check.py` — no syntax errors.
+5. Run `py -3 -m py_compile claude/scripts/pre-pr-create-check.py` — no syntax errors.
 6. Tracked in [dev-env#217](https://github.com/brownm09/dev-env/issues/217).
