@@ -53,10 +53,11 @@ setup_windows() {
     echo ""
   fi
 
-  if ! python3 --version &>/dev/null; then
-    echo "WARNING: python3 not found."
-    echo "  Install from https://python.org/downloads/ (tick 'Add python.exe to PATH')."
+  if ! py -3 --version &>/dev/null; then
+    echo "WARNING: 'py -3' not found (Windows Python Launcher)."
+    echo "  Install from https://python.org/downloads/ (tick 'Install launcher for all users')."
     echo "  Hook scripts in claude/scripts/ won't run until this is fixed."
+    echo "  Note: 'python3' on Windows usually resolves to the Microsoft Store stub — use 'py -3'."
     echo ""
   fi
 

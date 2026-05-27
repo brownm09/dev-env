@@ -19,7 +19,8 @@
       "Bash(git -C * remote -v)",
       "Bash(git -C * remote get-url *)",
       "Bash(git -C * branch --show-current)",
-      "Bash(python3 -m py_compile *)",
+      "Bash(py -3 -m py_compile *)",
+      "Bash(py -3 *)",
       "Bash(gh issue view *)"
     ],
     "defaultMode": "plan"
@@ -32,11 +33,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/pre-commit-branch-check.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/pre-commit-branch-check.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/pre-pr-create-check.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/pre-pr-create-check.py"
           }
         ]
       },
@@ -45,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py"
           }
         ]
       },
@@ -54,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py"
           }
         ]
       },
@@ -63,7 +64,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py"
           }
         ]
       }
@@ -73,35 +74,35 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/session-mode-prompt.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/session-mode-prompt.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/dev-env-sync.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/dev-env-sync.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/new-day-journal-check.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/new-day-journal-check.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/journal-onboard-check.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/journal-onboard-check.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/turn-count-hook.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/turn-count-hook.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/multi-worktree-alert.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/multi-worktree-alert.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/worktree-npm-install.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/worktree-npm-install.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/reconcile-open-prs.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/reconcile-open-prs.py"
           }
         ]
       }
@@ -111,11 +112,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/token-tracker.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/token-tracker.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/journal-stop-check.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/journal-stop-check.py"
           }
         ]
       }
@@ -125,7 +126,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/post-compact.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/post-compact.py"
           }
         ]
       }
@@ -136,27 +137,27 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/pr-merge-reminder.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/pr-merge-reminder.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/post-tool-use.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/post-tool-use.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/post-pr-merge-pull.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/post-pr-merge-pull.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/stub-push-archive-reminder.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/stub-push-archive-reminder.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/post-pr-merge-project.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/post-pr-merge-project.py"
           },
           {
             "type": "command",
-            "command": "python3 C:/Users/brown/.claude/scripts/usage-snapshot.py"
+            "command": "py -3 C:/Users/brown/.claude/scripts/usage-snapshot.py"
           }
         ]
       }

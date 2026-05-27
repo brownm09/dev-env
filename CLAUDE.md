@@ -17,8 +17,10 @@ guidelines, and journal conventions are defined there and apply to every project
 Run from the repo root to verify all hook scripts are syntax-clean:
 
 ```bash
-python3 -m py_compile claude/scripts/*.py
+py -3 -m py_compile claude/scripts/*.py
 ```
+
+(On Windows, `python3` resolves to the Microsoft Store stub; use `py -3` — see [ADR-007](docs/adr/007-hook-command-invocation.md).)
 
 For docs-only changes to `claude/CLAUDE.md`: run `grep -n 'date -u' claude/CLAUDE.md` and
 confirm every match is in an internal operational artifact context (lock files, log timestamps)

@@ -252,7 +252,7 @@ def main() -> None:
         messages.append(
             f"[journal-hook] Resurrected draft branch(es) detected: {dates_str}\n"
             f"draft/{resurrected[0]} was already merged but new commits were pushed to it after the merge.\n"
-            f"Run: python3 ~/.claude/scripts/reconcile-late-stubs.py draft/{resurrected[0]}"
+            f"Run: py -3 ~/.claude/scripts/reconcile-late-stubs.py draft/{resurrected[0]}"
         )
 
     if messages:

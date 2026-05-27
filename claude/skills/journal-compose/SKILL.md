@@ -211,7 +211,7 @@ Step 3 — Determine the slug. If unclear, synthesize from the session H2 headin
 
 Step 4 — Fetch real token data. Sanitize the project name first (slashes → underscores):
   PROJECT_SAFE=$(echo "<project>" | tr '/' '_')
-  python3 ~/.claude/scripts/token-report.py --date YYYY-MM-DD --format json > \
+  py -3 ~/.claude/scripts/token-report.py --date YYYY-MM-DD --format json > \
     "C:/Users/brown/.claude/scratch/tmp_tokens_${PROJECT_SAFE}_$$.json"
   then parse as shown in SKILL.md Step 4.
 
@@ -359,7 +359,7 @@ Token data comes from two sources. Collect both; the JSONL log is authoritative.
 
 ```bash
 TMPFILE="C:/Users/brown/.claude/scratch/tmp_tokens_$$.json"
-python3 ~/.claude/scripts/token-report.py --date YYYY-MM-DD --format json > "$TMPFILE"
+py -3 ~/.claude/scripts/token-report.py --date YYYY-MM-DD --format json > "$TMPFILE"
 node -e "
   const d = JSON.parse(require('fs').readFileSync('$TMPFILE','utf8'));
   console.log('SESSION_COUNT=' + d.length);
@@ -381,7 +381,7 @@ rm -f "$TMPFILE"
 
 Also run the markdown report for use in the Token Usage section:
 ```bash
-python3 ~/.claude/scripts/token-report.py --date YYYY-MM-DD
+py -3 ~/.claude/scripts/token-report.py --date YYYY-MM-DD
 ```
 
 Note the session count from the JSONL log. **Important:** the current journal-compose
@@ -556,7 +556,7 @@ hasn't fired yet), add a placeholder:
 ### Session N — journal-compose (current session, pending)
 
 *Token data not yet available — Stop hook fires after this conversation ends.*
-*Run `python3 ~/.claude/scripts/token-report.py --date YYYY-MM-DD` after session close*
+*Run `py -3 ~/.claude/scripts/token-report.py --date YYYY-MM-DD` after session close*
 *to get the actual figures and update this section if needed.*
 ```
 

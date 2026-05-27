@@ -6,7 +6,7 @@ Run once after deploying the token-tracker Stop hook to seed historical data.
 Safe to re-run — deduplicates on session_id.
 
 Usage:
-    python3 backfill-tokens.py [--dry-run]
+    py -3 backfill-tokens.py [--dry-run]
 """
 import argparse
 import json

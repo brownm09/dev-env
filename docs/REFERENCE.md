@@ -115,7 +115,7 @@ Scaffolds a new project's journal home (`sessions/<slug>/`) in engineering-journ
 Most hooks are **advisory** — they emit `systemMessage` reminders but do not block tool execution. The exception is `pre-tool-use-worktree-path-check.py` (a `PreToolUse` hook), which exits 2 with a `{"reason": "..."}` payload to block `Write`, `Edit`, and `NotebookEdit` calls that target the canonical repo root instead of the active worktree.
 
 Configuration is in `claude/settings.json` (symlinked to `~/.claude/settings.json`).
-See [ADR-007](adr/007-hook-command-invocation.md) for why hooks call `python3` directly rather than via a `bash -c` wrapper.
+See [ADR-007](adr/007-hook-command-invocation.md) for why hooks invoke scripts via `py -3` (the Windows Python Launcher) rather than `python3` directly or wrapped in `bash -c`.
 
 #### Machine-local permissions
 
@@ -233,7 +233,7 @@ PreToolUse hooks that exit non-zero **block the matched tool call silently** —
 
 1. **Atomic commits.** A `settings.json` hook entry and its script file must land in the **same commit**. Never push a `settings.json` change that references a script not yet in `claude/scripts/` on main. Verify by running the script **from the dev-env repo root** (not via `~/.claude/scripts/` — that junction resolves against the main worktree checkout, not the branch being tested):
    ```bash
-   python3 claude/scripts/<new-hook>.py < /dev/null; echo "exit: $?"
+   py -3 claude/scripts/<new-hook>.py < /dev/null; echo "exit: $?"
    # Must print "exit: 0"
    ```
 
@@ -247,7 +247,7 @@ PreToolUse hooks that exit non-zero **block the matched tool call silently** —
    ```
    Never add `sys.exit(N)` where N > 0 to an advisory hook.
 
-3. **No `bash -c` wrappers.** Hook commands call the interpreter directly: `python3 C:/Users/brown/.claude/scripts/foo.py` — never `bash -c 'python3 ...'`. The wrapper adds an exit-code-propagation layer and can fail independently on Windows (quoting issues, PATH differences). Root cause of [dev-env#81](https://github.com/brownm09/dev-env/issues/81).
+3. **Invoke via `py -3`, never bare `python3`, never `bash -c`.** Hook commands call the interpreter directly: `py -3 C:/Users/brown/.claude/scripts/foo.py`. `python3` resolves to the Microsoft Store App Execution Alias stub on Windows and exits 49 silently; the `bash -c` wrapper fails because `bash.exe` is not on the Windows system PATH. Root causes of [dev-env#81](https://github.com/brownm09/dev-env/issues/81) and [dev-env#261](https://github.com/brownm09/dev-env/issues/261). See [ADR-007](adr/007-hook-command-invocation.md).
 
 ---
 
@@ -299,9 +299,9 @@ On-demand scripts — not wired to any event. Run manually or from other scripts
 
 | Script | Invocation | What it does |
 |--------|-----------|-------------|
-| `token-report.py` | `python3 token-report.py [--date YYYY-MM-DD] [--days N] [--project name] [--latest] [--show-subagents]` | Generates markdown and JSON token usage reports from `~/.claude/scratch/token-sessions.jsonl`. |
-| `backfill-tokens.py` | `python3 backfill-tokens.py` | Backfills token data for sessions predating the token-tracker hook. Idempotent — deduplicates on `session_id`. |
-| `prune-merged-worktrees.py` | `python3 prune-merged-worktrees.py [--dry-run] [--repo-path /path/to/repo\|--scan-dir /path/to/dir]` | Manual equivalent of the prune routines. Auto-detects the GitHub repo slug from the origin remote URL. `--repo-path` targets a specific repo's worktrees (defaults to dev-env); `--scan-dir` discovers and prunes all git repos directly under the given directory. Removes merged `claude/*` worktrees and stale `main` checkouts. |
+| `token-report.py` | `py -3 token-report.py [--date YYYY-MM-DD] [--days N] [--project name] [--latest] [--show-subagents]` | Generates markdown and JSON token usage reports from `~/.claude/scratch/token-sessions.jsonl`. |
+| `backfill-tokens.py` | `py -3 backfill-tokens.py` | Backfills token data for sessions predating the token-tracker hook. Idempotent — deduplicates on `session_id`. |
+| `prune-merged-worktrees.py` | `py -3 prune-merged-worktrees.py [--dry-run] [--repo-path /path/to/repo\|--scan-dir /path/to/dir]` | Manual equivalent of the prune routines. Auto-detects the GitHub repo slug from the origin remote URL. `--repo-path` targets a specific repo's worktrees (defaults to dev-env); `--scan-dir` discovers and prunes all git repos directly under the given directory. Removes merged `claude/*` worktrees and stale `main` checkouts. |
 | `new-branch.sh` | `new-branch <name>` (shell function; source `~/.claude/scripts/new-branch.sh` in `.bashrc`) | Creates a branch always rooted at `origin/main`. Warns when HEAD has diverged from the merge base. |
 | `merge-stale-pr.sh` | `bash merge-stale-pr.sh <PR-URL>` | Remediates stale `engineering-journal` draft PRs: checks out the branch, warns on missing journal file, deletes orphaned drafts, rebases, and squash-merges with auto-conflict resolution. |
 | `get-project-item.sh` | `ITEM_ID=$(bash get-project-item.sh <issue-number> [project-number] [owner])` | Resolves a GitHub Project item node ID from an issue/PR number. Defaults to project 3, owner `brownm09`. Overridable via args or `PROJECT_NUMBER`/`PROJECT_OWNER` env vars. Requires `project` scope: `gh auth refresh -s project`. |
