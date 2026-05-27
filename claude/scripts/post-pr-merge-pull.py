@@ -105,13 +105,22 @@ def main() -> None:
 
     command = data.get("tool_input", {}).get("command", "")
     exit_code = data.get("tool_response", {}).get("exitCode", -1)
+    output = data.get("tool_response", {}).get("output", "")
     cwd = data.get("cwd", "")
 
     if "gh pr merge" not in command:
         sys.exit(0)
 
-    # Only pull when the merge actually succeeded
-    if exit_code != 0:
+    # `gh pr merge` from a worktree exits non-zero because local cleanup
+    # (`git checkout main`, branch delete) fails — even though the remote
+    # merge succeeded. Trust the stdout success marker too. (issue #275)
+    merge_succeeded = (
+        exit_code == 0
+        or "Merged pull request" in output
+        or "Squashed and merged" in output
+        or "Rebased and merged" in output
+    )
+    if not merge_succeeded:
         sys.exit(0)
 
     repo = extract_repo(command, cwd)
