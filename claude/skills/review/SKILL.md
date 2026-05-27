@@ -291,7 +291,7 @@ Assign each finding to one of four buckets:
 **Non-Blocking** (performance | maintainability | documentation):
 - Performance concerns that do not affect correctness
 - Code that works but will be hard to extend, test, or debug
-- Step 2c suggestion to create a README where none exists (not required, but advisable)
+- Step 2c suggestion to create a README where none exists
 
 **Questions for Author:**
 - Only for ambiguities where intent is genuinely unclear — frame as a question, not a criticism.
