@@ -205,6 +205,77 @@ Inspect the DIFF and PR_BODY:
 If the diff is docs-only, refactor-only, or otherwise introduces no new testable behavior,
 note "No new testable behavior — coverage gate not applicable." and proceed.
 
+Proceed to Step 2e.
+
+---
+
+## Step 2e — Test Integrity Gate Check
+
+Applies to both PR_URL mode and DIFF_MODE.
+
+Per the global Test Integrity policy in `claude/CLAUDE.md` (see ADR-029), PRs must not
+silently degrade existing tests to manufacture a green run. While Step 2d guards against
+*absent* tests on new behavior, Step 2e guards against *degraded* tests on existing
+behavior.
+
+Inspect the DIFF, PR_BODY, and any test config files in the diff:
+
+1. **Skip markers in added lines.** Scan the diff for any of: `it.skip`, `xit(`,
+   `xdescribe`, `test.skip`, `describe.skip`, `.todo(`, `pending(`.
+
+2. **Deleted tests.** Identify deleted `*.test.*` / `*.spec.*` files, or whole
+   `describe` / `it` / `test` blocks removed from existing test files.
+
+3. **Bypass flags and lowered thresholds.** In test config (`jest.config.*`, `.nycrc`,
+   `vitest.config.*`, `package.json` test scripts) and CI YAML, look for new occurrences
+   of `--passWithNoTests`, `--bail`, `--testPathIgnorePatterns`, or numeric coverage
+   thresholds that decreased. Only decreases are violations — a hunk like
+   `-  "branches": 80,` / `+  "branches": 60,` is a violation; the same hunk reversed
+   (`60` → `80`) is an improvement and not flagged.
+
+4. **Skew toward specific test inputs.** Scan implementation diffs for branches
+   conditional on values that look like test inputs (e.g.,
+   `if (input === 'test-value') return expected`, `if (id === 1) return mock`). Treat
+   as suspect when the value also appears in a corresponding test file in the diff or
+   nearby in the repo.
+
+5. **Missing test-run summary.** Scan PR_BODY for a line of the form
+   `Tests: N passed, N skipped, N failed` (with optional duration). Acceptable
+   alternative: an explicit statement that the project has no automated tests.
+
+6. For each pattern in (1)–(4), check PR_BODY for a justification that names the
+   specific tests/thresholds and explains why removal or degradation is appropriate.
+
+Record findings:
+
+- **Blocking [correctness] — Test integrity violation** when a skip marker, deletion,
+  lowered threshold, or bypass flag is present without a PR-body justification.
+  **Fix:** Restore the test or document in the PR body which tests/thresholds were
+  degraded and why.
+
+- **Blocking [correctness] — Implementation skew toward test input** when an
+  implementation branch appears designed to satisfy a specific test input rather than
+  a general contract, and the value appears in a test file. Raise as a question to the
+  author if confident but the contract is ambiguous.
+  **Fix:** Generalize the implementation, or explain in the PR body why this hardcoded
+  path is the correct contract.
+
+- **Non-blocking [correctness] — Possible implementation skew** for the same pattern
+  when not confident (e.g., the value could be a legitimate domain constant). Raise as
+  a question rather than a blocker.
+
+- **Blocking [correctness] — Missing test-run summary** when the PR body has no
+  `Tests: N passed, N skipped, N failed` line and no explicit statement that the
+  project has no automated tests.
+  **Fix:** Re-run the test command and paste the summary line into the PR body Testing
+  section.
+
+- **Non-blocking [maintainability] — Unexplained skipped tests** when the summary line
+  shows a non-zero skipped count but the PR body does not justify each skip.
+
+If the diff touches no test files, no implementation code, and no test configuration,
+note "No test-affecting changes — integrity gate not applicable." and proceed.
+
 Proceed to Step 3.
 
 ---
