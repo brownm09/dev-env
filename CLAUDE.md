@@ -17,7 +17,7 @@ guidelines, and journal conventions are defined there and apply to every project
 Run from the repo root to verify all hook scripts are syntax-clean:
 
 ```bash
-py -3 -m py_compile claude/scripts/*.py
+py -3 -c "import ast,sys; [ast.parse(open(f,encoding='utf-8').read(),f) for f in sys.argv[1:]]" claude/scripts/*.py
 ```
 
 (On Windows, `python3` resolves to the Microsoft Store stub; use `py -3` — see [ADR-007](docs/adr/007-hook-command-invocation.md).)
