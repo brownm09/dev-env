@@ -7,8 +7,8 @@ unmerged draft branch (or today's branch if none exists), then deletes the
 stale source branch.
 
 Usage:
-  python3 reconcile-late-stubs.py draft/2026-05-06
-  python3 reconcile-late-stubs.py 2026-05-06   # draft/ prefix optional
+  py -3 reconcile-late-stubs.py draft/2026-05-06
+  py -3 reconcile-late-stubs.py 2026-05-06   # draft/ prefix optional
 """
 
 import json

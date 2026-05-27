@@ -19,7 +19,6 @@
       "Bash(git -C * remote -v)",
       "Bash(git -C * remote get-url *)",
       "Bash(git -C * branch --show-current)",
-      "Bash(python3 -m py_compile *)",
       "Bash(py -3 -m py_compile *)",
       "Bash(py -3 *)",
       "Bash(gh issue view *)"

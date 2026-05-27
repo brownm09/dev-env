@@ -2,13 +2,13 @@
 """Read ~/.claude/scratch/token-sessions.jsonl and produce a formatted token-usage report.
 
 Usage:
-    python3 token-report.py                  # all sessions
-    python3 token-report.py --date 2026-04-08  # sessions for one calendar date (UTC)
-    python3 token-report.py --days 7         # last N days
-    python3 token-report.py --project engineering-journal  # filter by cwd substring
-    python3 token-report.py --format json    # raw JSON instead of markdown
-    python3 token-report.py --latest         # single latest session only
-    python3 token-report.py --show-subagents # break out per-subagent token contributions
+    py -3 token-report.py                  # all sessions
+    py -3 token-report.py --date 2026-04-08  # sessions for one calendar date (UTC)
+    py -3 token-report.py --days 7         # last N days
+    py -3 token-report.py --project engineering-journal  # filter by cwd substring
+    py -3 token-report.py --format json    # raw JSON instead of markdown
+    py -3 token-report.py --latest         # single latest session only
+    py -3 token-report.py --show-subagents # break out per-subagent token contributions
 """
 import argparse
 import json
