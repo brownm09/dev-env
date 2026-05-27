@@ -48,10 +48,12 @@ _AUTOMATED_PREFIX = re.compile(r"^\s*<[a-z]")
 _SAFE_SESSION_ID = re.compile(r"[^A-Za-z0-9_-]")
 
 _REMINDER_TEXT = (
-    "Session-mode reminder (shown once per session): the user just started a "
-    "new Claude Code session. In your first response, briefly confirm which "
-    "permission mode is active (plan / bypass / auto) and remind them they "
-    "can press Shift+Tab to cycle modes. Plan mode is the settings default."
+    "Session-mode reminder (first prompt of a new session): the active "
+    "permission mode is plan / bypass / auto (Shift+Tab cycles modes; plan "
+    "is the settings default). Only surface this in your response if the "
+    "user is starting a substantive task where the mode affects what you "
+    "will do — skip the preamble for trivial prompts (greetings, /clear, "
+    "single-word inputs, prompts where the mode is obviously irrelevant)."
 )
 
 
@@ -132,8 +134,9 @@ def main():
             f.write(str(now))
         event["marker_written"] = True
     except Exception as e:
+        # Route to log only; stderr on exit-0 UserPromptSubmit is surfaced to the user UI,
+        # which would expose a hook-internal disk error in the chat. The log captures it.
         event["marker_write_error"] = repr(e)
-        sys.stderr.write(f"session-mode-prompt: could not write marker: {e}\n")
 
     payload = {
         "hookSpecificOutput": {
@@ -142,6 +145,11 @@ def main():
         }
     }
 
+    # Marker is written BEFORE this emit (above) so a transient retry on the same
+    # session_id passes through silently rather than double-emitting. The tradeoff:
+    # if the emit below raises (e.g., broken pipe), the reminder is silently lost for
+    # this session — observable via the log, but the user gets no preamble. Accepted:
+    # double-emission would be worse than a missed one-time advisory.
     try:
         sys.stdout.write(json.dumps(payload))
         sys.stdout.flush()
@@ -149,12 +157,12 @@ def main():
         event["exit"] = 0
         _log(event)
     except Exception as e:
+        # Same rationale as marker_write_error: log-only, no user-facing stderr.
         event["stage"] = "additional_context_emit_failed"
         event["error"] = repr(e)
         event["traceback"] = traceback.format_exc()
         event["exit"] = 0
         _log(event)
-        sys.stderr.write(f"session-mode-prompt: emit failed: {e}\n")
 
     sys.exit(0)
 
