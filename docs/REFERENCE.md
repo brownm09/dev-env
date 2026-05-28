@@ -41,7 +41,7 @@ Expands a one-line idea into a full proposal document, creates a linked GitHub i
 /journal-compose [YYYY-MM-DD]
 ```
 
-Composes the end-of-day engineering journal from the day's stub files. Discovers all `YYYY-MM-DD_*.stub.md` files, sorts and merges them, produces the canonical 11-section document, commits to the `draft/YYYY-MM-DD` branch, and opens a PR.
+Composes the end-of-day engineering journal from the day's stub files. Discovers all `YYYY-MM-DD_*.stub.md` files, sorts and merges them, produces the canonical 11-section document, commits to the `draft/YYYY-MM-DD` branch, and opens a PR. Also refreshes the marker-delimited `## Start here` block at the top of `engineering-journal/README.md` (freshness stamp + top 3–5 cross-project priorities aggregated from manifest `priorities` arrays and `open-prs.jsonl` — see [ADR-032](adr/032-journal-start-here-dashboard.md)).
 
 **Constraint:** must run in a dedicated session with no prior task work. If other tasks were handled before invocation, the skill refuses with an error message.
 

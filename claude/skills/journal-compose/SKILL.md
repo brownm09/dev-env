@@ -793,8 +793,18 @@ node -e "
   const date = 'YYYY-MM-DD';   // <-- substitute the compose date
   const items = [];
   const seen = new Set();
+  // Normalize refs to a single canonical form so manifest-style 'repo#N' and
+  // open-prs-derived 'owner/repo#N' dedup against each other. Convention:
+  // strip the owner prefix — manifests are owner-less by convention.
+  const normRef = (r) => {
+    const s = (r || '').trim();
+    if (!s) return '';
+    const m = s.match(/^[^\/]+\/([^#]+#\d+)$/);
+    return m ? m[1] : s;
+  };
   const push = (it) => {
-    const key = (it.ref || '').trim() || ('__no_ref_' + items.length);
+    const norm = normRef(it.ref);
+    const key = norm || ('__no_ref_' + items.length);
     if (seen.has(key)) return;
     seen.add(key);
     items.push(it);
@@ -838,6 +848,9 @@ node -e "
 
 **Render the block:**
 
+Read `$TMPFILE` (an array of `{source, project, label, ref, why, url?}` objects, max 5).
+For each entry, render one numbered bullet per the rules below the template.
+
 ```
 <!-- start-here:begin -->
 **Last composed:** YYYY-MM-DD
@@ -855,9 +868,9 @@ Top priorities across all projects (max 5):
 If `PRIORITY_COUNT=0`, render the body as `*No flagged priorities and no open PRs.*` (omit the numbered list).
 
 For each item:
-- If `ref` matches `owner/repo#N`, render as `[#N](https://github.com/owner/repo/<pull|issues>/N)`. Default to `/pull/` unless the manifest entry specifies `/issues/`.
-- If `ref` is absent and the source is `open-prs`, use `url` directly.
-- If neither is available, render the label without a link.
+- If the source is `open-prs`, use `url` directly as the link target.
+- Else if `ref` (post-normalization) matches `repo#N` or `owner/repo#N`, render the link as `https://github.com/<owner>/<repo>/pull/N`. Use `brownm09` as the owner when the manifest ref omits it. A GitHub `/pull/N` URL 302s to `/issues/N` when N is an issue, so always emitting `/pull/` is safe.
+- If neither a `url` nor a parseable `ref` is available, render the label without a link.
 - Always italicize the project name in parentheses after the label.
 - Append `— <why>` only if `why` is non-empty.
 
@@ -867,6 +880,7 @@ For each item:
 2. If `<!-- start-here:begin -->` and `<!-- start-here:end -->` both exist, replace everything between (and including) the markers with the new block.
 3. Otherwise, insert the new block immediately above the first `## Projects` heading, with one blank line before `## Projects`.
 4. Use the Edit tool with `replace_all: false` — there is only ever one such block in the file.
+5. **Anchor-missing abort:** if neither the marker pair nor a `## Projects` heading is present, do not silently skip. Report `START_HERE_INSERT_FAILED: anchor not found` to the user and continue the compose (Step 9 onward) — the rest of the journal still ships, but the dashboard refresh is flagged so the README structural drift gets diagnosed.
 
 The block lives above any `## Projects` H2 and below the file's top-level `# Engineering Journal` title.
 
