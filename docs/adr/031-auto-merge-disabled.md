@@ -1,0 +1,84 @@
+# ADR-031 — Auto-Merge Disabled Across All Repos
+
+**Date:** 2026-05-28
+**Status:** Accepted
+**Closes:** [dev-env#284](https://github.com/brownm09/dev-env/issues/284)
+**Tags:** git, pr, merge, workflow, hooks, post-merge
+**Related:** [ADR-011](011-adr-warrant-check.md), [ADR-012](012-post-merge-checklist-board-done-roadmap-update.md), [ADR-019](019-doc-reconciliation-enforcement.md), [ADR-028](028-all-findings-merge-gate.md)
+
+---
+
+## Context
+
+GitHub's [auto-merge feature](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request) lands a PR server-side as soon as branch protection requirements (CI, approvals) are satisfied. The merge happens asynchronously, often after the Claude session that opened the PR has ended.
+
+The documented workflow across `brownm09/*` repos has accumulated six rules that fire at the merge moment, all anchored to the in-session `gh pr merge` Bash invocation:
+
+1. **PostToolUse `usage-snapshot.py` hook** — queries the Anthropic usage API and parses the session JSONL after `gh pr merge` returns. Emits a `### Usage Snapshot (post-merge)` block that the post-merge stub includes verbatim. The hook is bound to the Bash tool call; a server-side merge bypasses it entirely, and the cost data for that PR is permanently lost from the journal.
+2. **Post-merge journal stub** (global `claude/CLAUDE.md` → "Write a stub on PR merge") — a merge is a session boundary requiring stub coverage. Async merges produce no session boundary to attach a stub to.
+3. **ADR-warrant checkpoint 3** ([ADR-011](011-adr-warrant-check.md)) — "immediately before `gh pr merge`." Server-side merges run no Claude code at all at that moment.
+4. **Doc-reconciliation checkpoint 3** ([ADR-019](019-doc-reconciliation-enforcement.md)) — same anchor as ADR-011's checkpoint 3.
+5. **`/review` all-findings merge gate** ([ADR-028](028-all-findings-merge-gate.md)) — sequence: `gh pr create` → stub → `/compact` → `/review --post-comment` → address findings → merge. Auto-merge lands the PR as soon as CI is green, often before `/review` even runs.
+6. **Project board → Done transition + roadmap shipped-row move** ([ADR-012](012-post-merge-checklist-board-done-roadmap-update.md), automated by the post-tool-use hook from [ADR-014](014-auto-move-project-item-done-on-merge.md)) — the automation is triggered by the local `gh pr merge` tool call, not by GitHub webhooks.
+
+Pre-PR gates ([ADR-026](026-suppression-policy.md) suppression check, [ADR-029](029-test-integrity-policy.md) test-integrity check, [ADR-030](030-baseline-test-failure-policy.md) baseline-tests diff, test-before-PR) all run before `gh pr create` and are unaffected by auto-merge.
+
+The question is whether to enable auto-merge as a convenience (no in-session wait for CI) at the cost of these six rules, refactor the rules to run pre-merge, or keep auto-merge off and accept the in-session wait.
+
+---
+
+## Decision
+
+**Repo-wide auto-merge stays disabled across all `brownm09/*` repos.** Every PR is merged in-session via `gh pr merge --squash --delete-branch` after `/review`, ADR-warrant checkpoint 3, doc-reconciliation checkpoint 3, project board transition, and roadmap update have completed.
+
+**Per-PR escape hatch:** `gh pr merge --auto --squash` is permitted on a per-PR basis *only after* all in-session gates above have already passed in the same session. The auto-merge flag in that case waits for green CI but no longer guards any rule — the gates already ran. This is the only sanctioned use of GitHub's auto-merge feature. It accepts the loss of the post-merge `usage-snapshot.py` hook for that specific PR (the merge completes async, after the session has moved on).
+
+Auto-merge must never be enabled at the repo level (no default branch protection rule that auto-merges on green CI).
+
+---
+
+## Rationale
+
+**Why not refactor the rules to fire pre-merge?** Considered and rejected:
+
+- The merge moment is load-bearing as the *last reversible point* before code lands on `main`. Running ADR-warrant and doc-reconciliation checks pre-merge weakens the forcing function: the checks already exist at PR-create time (checkpoints 1 and 2); checkpoint 3 is the final catch for things that surfaced during review.
+- The `usage-snapshot.py` hook fundamentally cannot run pre-merge — its purpose is to capture the *complete* session cost up to and including the merge. Moving it earlier loses the data it exists to collect.
+- The post-merge journal stub is a session boundary marker. Pre-merge would not be a session boundary; the session continues until the merge completes.
+
+**Why not per-PR auto-merge without the in-session gates?** Rejected: that's just repo-wide auto-merge with extra steps. The whole point of the gates is that they're sequenced after `gh pr create` and before the merge lands. Skipping them on a per-PR basis is no different from skipping them on every PR.
+
+**Why accept the in-session wait?** In practice CI on these repos runs in 2–10 minutes. The session is already paid-for context; sleeping through CI is not a significant cost compared to losing six workflow guarantees on every PR.
+
+---
+
+## Consequences
+
+**Forced:** every merge is in-session. One `### Usage Snapshot (post-merge)` block per merged PR. ADR-warrant and doc-reconciliation get a real third checkpoint. `/review` always runs before merge. Project board and roadmap stay in sync via the existing automation.
+
+**Cost:** cannot walk away after `gh pr create` and let CI auto-land the change. For PRs where in-session waiting for CI is wasteful, the per-PR `--auto` escape hatch is available after the gates have completed — at the price of one missing usage-snapshot block.
+
+**Detection:** if a project later enables auto-merge as a default branch protection rule, the symptoms will be (a) journals missing post-merge usage-snapshot blocks, (b) merged PRs with no review comment from `/review`, (c) project board items stuck in "In Progress" after merge. Any of these on a recent merge is a signal that this ADR has been silently violated.
+
+---
+
+## Alternatives considered
+
+**A — Enable repo-wide auto-merge.** Rejected: breaks all six workflow rules above with no compensating benefit beyond convenience.
+
+**B — Per-PR `--auto` without gates.** Rejected: equivalent to A in practice; bypasses [ADR-028](028-all-findings-merge-gate.md).
+
+**C — Refactor all merge-time rules to pre-merge.** Rejected: see Rationale. The merge moment is the correct anchor for the rules that fire there.
+
+**D (chosen) — Disable repo-wide auto-merge; allow per-PR `--auto` only after in-session gates pass.** Preserves all six rules. Provides a narrow escape hatch for cases where the in-session CI wait is genuinely wasteful.
+
+---
+
+## References
+
+- [ADR-011 — ADR-Warrant Check at Plan, PR-Open, and PR-Merge Checkpoints](011-adr-warrant-check.md)
+- [ADR-012 — Post-Merge Checklist: Board Done + Roadmap Update Rules](012-post-merge-checklist-board-done-roadmap-update.md)
+- [ADR-014 — Auto-Move GitHub Project Item to Done on PR Merge](014-auto-move-project-item-done-on-merge.md)
+- [ADR-019 — Doc-Reconciliation Enforcement](019-doc-reconciliation-enforcement.md)
+- [ADR-028 — All-Findings Merge Gate](028-all-findings-merge-gate.md)
+- GitHub Docs — [Automatically merging a pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request)
+- GitHub Docs — [Managing auto-merge for pull requests in your repository](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-auto-merge-for-pull-requests-in-your-repository)
