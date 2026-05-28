@@ -36,3 +36,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [029](029-test-integrity-policy.md) | Test Integrity Policy: No Silent Degradation of Existing Tests | 2026-05-27 | Accepted | testing, quality, review, suppression-parallel, workflow, pre-pr |
 | [030](030-baseline-test-failure-policy.md) | Pre-existing Test Failure Policy: Baseline + Fix-on-Touch | 2026-05-27 | Accepted | testing, quality, pre-pr, baseline, fix-on-touch, workflow |
 | [031](031-auto-merge-disabled.md) | Auto-Merge Disabled Across All Repos | 2026-05-28 | Accepted | git, pr, merge, workflow, hooks, post-merge |
+| [032](032-journal-start-here-dashboard.md) | Top-of-README "Start here" Dashboard in journal-compose | 2026-05-28 | Accepted | journal, composition, skill, readme, manifest, dashboard |
