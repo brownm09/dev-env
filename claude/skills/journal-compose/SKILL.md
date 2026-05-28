@@ -779,6 +779,118 @@ Top-level entry format (labeled bullets, no prose block):
 If the project does not yet appear in the README, add a new `### <Project>` section
 under `## Projects` using this format.
 
+## Step 8a — Update top-level "Start here" dashboard block
+
+After Step 8, refresh the marker-delimited block at the top of `engineering-journal/README.md`. This block surfaces a freshness stamp and the top 3–5 cross-project priorities. It is rewritten on every compose; it is not hand-edited between composes. See [ADR-032](https://github.com/brownm09/dev-env/blob/main/docs/adr/032-journal-start-here-dashboard.md) for rationale.
+
+**Aggregate the priority list (max 5 entries, deduped by `ref`):**
+
+```bash
+TMPFILE="C:/Users/brown/.claude/scratch/tmp_start_here_$$.json"
+node -e "
+  const fs = require('fs'); const path = require('path');
+  const root = 'C:/Users/brown/Git/engineering-journal';
+  const date = 'YYYY-MM-DD';   // <-- substitute the compose date
+  const items = [];
+  const seen = new Set();
+  // Normalize refs to a single canonical form so manifest-style 'repo#N' and
+  // open-prs-derived 'owner/repo#N' dedup against each other. Convention:
+  // strip the owner prefix — manifests are owner-less by convention.
+  const normRef = (r) => {
+    const s = (r || '').trim();
+    if (!s) return '';
+    const m = s.match(/^[^\/]+\/([^#]+#\d+)$/);
+    return m ? m[1] : s;
+  };
+  const push = (it) => {
+    const norm = normRef(it.ref);
+    const key = norm || ('__no_ref_' + items.length);
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push(it);
+  };
+  const sessionsDir = path.join(root, 'sessions');
+  const projects = fs.readdirSync(sessionsDir).filter(d =>
+    fs.statSync(path.join(sessionsDir, d)).isDirectory());
+  // Source 1: today's manifests
+  for (const proj of projects) {
+    const f = path.join(sessionsDir, proj, date + '.manifest.jsonl');
+    if (!fs.existsSync(f)) continue;
+    for (const line of fs.readFileSync(f,'utf8').split('\n').filter(Boolean)) {
+      try {
+        const m = JSON.parse(line);
+        for (const p of (m.priorities || [])) {
+          push({ source:'manifest', project:proj, label:p.label, ref:p.ref||'', why:p.why||'' });
+        }
+      } catch (e) {}
+    }
+  }
+  // Source 2: open-prs.jsonl across projects (fills to 5)
+  if (items.length < 5) {
+    for (const proj of projects) {
+      if (items.length >= 5) break;
+      const f = path.join(sessionsDir, proj, 'open-prs.jsonl');
+      if (!fs.existsSync(f)) continue;
+      for (const line of fs.readFileSync(f,'utf8').split('\n').filter(Boolean)) {
+        if (items.length >= 5) break;
+        try {
+          const o = JSON.parse(line);
+          const ref = (o.url||'').replace(/^https:\/\/github.com\//,'').replace(/\/pull\//,'#');
+          push({ source:'open-prs', project:proj, label:o.topic||('PR #'+o.pr), ref, why:'open since '+o.opened, url:o.url });
+        } catch (e) {}
+      }
+    }
+  }
+  fs.writeFileSync('$TMPFILE', JSON.stringify(items.slice(0,5), null, 2));
+  console.log('PRIORITY_COUNT=' + Math.min(items.length, 5));
+"
+```
+
+**Render the block:**
+
+Read `$TMPFILE` (an array of `{source, project, label, ref, why, url?}` objects, max 5).
+For each entry, render one numbered bullet per the rules below the template.
+
+```
+<!-- start-here:begin -->
+**Last composed:** YYYY-MM-DD
+
+## Start here
+
+Top priorities across all projects (max 5):
+
+1. **[<ref-or-label>](<url>) — <label>** *(<project>)* — <why>
+2. ...
+
+<!-- start-here:end -->
+```
+
+If `PRIORITY_COUNT=0`, render the body as `*No flagged priorities and no open PRs.*` (omit the numbered list).
+
+For each item:
+- If the source is `open-prs`, use `url` directly as the link target.
+- Else if `ref` (post-normalization) matches `repo#N` or `owner/repo#N`, render the link as `https://github.com/<owner>/<repo>/pull/N`. Use `brownm09` as the owner when the manifest ref omits it. A GitHub `/pull/N` URL 302s to `/issues/N` when N is an issue, so always emitting `/pull/` is safe.
+- If neither a `url` nor a parseable `ref` is available, render the label without a link.
+- Always italicize the project name in parentheses after the label.
+- Append `— <why>` only if `why` is non-empty.
+
+**Insert or replace in `engineering-journal/README.md`:**
+
+1. Read the current README.
+2. If `<!-- start-here:begin -->` and `<!-- start-here:end -->` both exist, replace everything between (and including) the markers with the new block.
+3. Otherwise, insert the new block immediately above the first `## Projects` heading, with one blank line before `## Projects`.
+4. Use the Edit tool with `replace_all: false` — there is only ever one such block in the file.
+5. **Anchor-missing abort:** if neither the marker pair nor a `## Projects` heading is present, do not silently skip. Report `START_HERE_INSERT_FAILED: anchor not found` to the user and continue the compose (Step 9 onward) — the rest of the journal still ships, but the dashboard refresh is flagged so the README structural drift gets diagnosed.
+
+The block lives above any `## Projects` H2 and below the file's top-level `# Engineering Journal` title.
+
+Tell the user: "Start here block refreshed with N item(s)."
+
+Clean up:
+```bash
+rm -f "$TMPFILE"
+```
+
 ## Step 9 — Delete stub files and release lock
 
 Delete all stubs for the date and release the compose lock:

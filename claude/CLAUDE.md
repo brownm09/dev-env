@@ -516,6 +516,12 @@ echo '{"stub":"YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"inpu
 
 - `prs_opened`: PR numbers opened during this session (e.g., `[54]`). Empty array if none.
 - `prs_closed`: PR numbers reviewed/merged during this session (e.g., `[54]`). Empty array if none.
+- `priorities` (optional): array of items to surface on the top-level README "Start here" dashboard.
+  Each entry: `label` (required string, short title); `ref` (optional string, `owner/repo#N` or
+  freeform key used for dedupe); `why` (optional string, one-sentence rationale). Example:
+  `"priorities":[{"label":"Staging gate fix","ref":"lifting-logbook#346","why":"blocks next deploy"}]`.
+  `/journal-compose` aggregates these across all projects (deduped by `ref`, capped at 5) — see
+  [ADR-032](https://github.com/brownm09/dev-env/blob/main/docs/adr/032-journal-start-here-dashboard.md).
 
 The manifest lets `/journal-compose` see the session count, topics, token data, and PR lifecycle
 without reading individual stubs. It is advisory: if the manifest is missing or has fewer entries
