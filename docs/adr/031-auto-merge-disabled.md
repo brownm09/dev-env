@@ -31,7 +31,7 @@ The question is whether to enable auto-merge as a convenience (no in-session wai
 
 **Repo-wide auto-merge stays disabled across all `brownm09/*` repos.** Every PR is merged in-session via `gh pr merge --squash --delete-branch` after `/review`, ADR-warrant checkpoint 3, doc-reconciliation checkpoint 3, project board transition, and roadmap update have completed.
 
-**Per-PR escape hatch:** `gh pr merge --auto --squash` is permitted on a per-PR basis *only after* all in-session gates above have already passed in the same session. The auto-merge flag in that case waits for green CI but no longer guards any rule — the gates already ran. This is the only sanctioned use of GitHub's auto-merge feature. It accepts the loss of the post-merge `usage-snapshot.py` hook for that specific PR (the merge completes async, after the session has moved on).
+**Per-PR escape hatch:** `gh pr merge --auto --squash` is permitted on a per-PR basis *only after* all in-session gates above have already passed in the same session. The auto-merge flag in that case waits for green CI but no longer guards any rule — the gates already ran. This is the only sanctioned use of GitHub's auto-merge feature. Escape-hatch use accepts two unavoidable losses for that specific PR, both flowing from the same root cause (the actual merge completes async, after the session has moved on): (1) the post-merge `usage-snapshot.py` hook does not fire — the `gh pr merge --auto` Bash call returns immediately rather than at merge time; (2) no post-merge journal stub is written — there is no in-session merge moment to attach one to. Escape-hatch PRs should be noted in the opening stub (written at `gh pr create` time) with a `merge: auto` annotation so the gap is visible without having to infer it from a missing snapshot.
 
 Auto-merge must never be enabled at the repo level (no default branch protection rule that auto-merges on green CI).
 
@@ -57,7 +57,7 @@ Auto-merge must never be enabled at the repo level (no default branch protection
 
 **Cost:** cannot walk away after `gh pr create` and let CI auto-land the change. For PRs where in-session waiting for CI is wasteful, the per-PR `--auto` escape hatch is available after the gates have completed — at the price of one missing usage-snapshot block.
 
-**Detection:** if a project later enables auto-merge as a default branch protection rule, the symptoms will be (a) journals missing post-merge usage-snapshot blocks, (b) merged PRs with no review comment from `/review`, (c) project board items stuck in "In Progress" after merge. Any of these on a recent merge is a signal that this ADR has been silently violated.
+**Detection:** if a project later enables auto-merge as a default branch protection rule, the symptoms will be (a) journals missing post-merge usage-snapshot blocks, (b) merged PRs with no review comment from `/review`, (c) project board items stuck in "In Progress" after merge. (a) alone is expected on escape-hatch PRs (see Decision) and is not diagnostic on its own; (b) or (c) on a recent merge — or all three co-occurring — is a signal this ADR has been silently violated.
 
 ---
 
