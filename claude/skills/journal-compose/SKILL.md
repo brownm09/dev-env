@@ -796,7 +796,7 @@ under `## Projects` using this format.
 
 ## Step 8a — Update top-level "Start here" dashboard block
 
-After Step 8, refresh the marker-delimited block at the top of `engineering-journal/README.md`. This block surfaces a freshness stamp and the top 3–5 cross-project priorities. It is rewritten on every compose; it is not hand-edited between composes. See [ADR-032](https://github.com/brownm09/dev-env/blob/main/docs/adr/032-journal-start-here-dashboard.md) for rationale.
+After Step 8, refresh the marker-delimited block at the top of `engineering-journal/README.md`. This block surfaces a freshness stamp and the top 3–5 cross-project priorities, drawn from (a) priorities flagged in today's manifests, (b) PRs currently open across projects, and (c) open issues labeled `start-here` across project repos — top 5 across all sources, deduped by ref. It is rewritten on every compose; it is not hand-edited between composes. See [ADR-032](https://github.com/brownm09/dev-env/blob/main/docs/adr/032-journal-start-here-dashboard.md) for rationale.
 
 **Aggregate the priority list (max 5 entries, deduped by `ref`):**
 
@@ -856,6 +856,32 @@ node -e "
       }
     }
   }
+  // Source 3: open issues labeled 'start-here' across project repos (fills to 5).
+  // Project -> repo slug is read from each sessions/<proj>/README.md 'Repo:' line;
+  // projects without a parseable Repo: line are skipped.
+  if (items.length < 5) {
+    const { execSync } = require('child_process');
+    for (const proj of projects) {
+      if (items.length >= 5) break;
+      const readme = path.join(sessionsDir, proj, 'README.md');
+      if (!fs.existsSync(readme)) continue;
+      const txt = fs.readFileSync(readme, 'utf8');
+      const m = txt.match(/Repo:\s*\[([^\]]+)\]\(https:\/\/github\.com\/([^\/]+\/[^\/\)]+)\)/);
+      if (!m) continue;
+      const slug = m[2].replace(/\.git$/,'');
+      let out = '';
+      try {
+        out = execSync('gh issue list --repo ' + slug + ' --label start-here --state open --json number,title,url --limit 5', { encoding: 'utf8' });
+      } catch (e) { continue; }
+      let issues = [];
+      try { issues = JSON.parse(out); } catch (e) { continue; }
+      for (const iss of issues) {
+        if (items.length >= 5) break;
+        const ref = slug + '#' + iss.number;
+        push({ source:'issue', project:proj, label:iss.title, ref, why:'open issue', url:iss.url });
+      }
+    }
+  }
   fs.writeFileSync('$TMPFILE', JSON.stringify(items.slice(0,5), null, 2));
   console.log('PRIORITY_COUNT=' + Math.min(items.length, 5));
 "
@@ -883,7 +909,7 @@ Top priorities across all projects (max 5):
 If `PRIORITY_COUNT=0`, render the body as `*No flagged priorities and no open PRs.*` (omit the numbered list).
 
 For each item:
-- If the source is `open-prs`, use `url` directly as the link target.
+- If the source is `open-prs` or `issue`, use `url` directly as the link target.
 - Else if `ref` (post-normalization) matches `repo#N` or `owner/repo#N`, render the link as `https://github.com/<owner>/<repo>/pull/N`. Use `brownm09` as the owner when the manifest ref omits it. A GitHub `/pull/N` URL 302s to `/issues/N` when N is an issue, so always emitting `/pull/` is safe.
 - If neither a `url` nor a parseable `ref` is available, render the label without a link.
 - Always italicize the project name in parentheses after the label.
@@ -905,6 +931,14 @@ Clean up:
 ```bash
 rm -f "$TMPFILE"
 ```
+
+**Promoting an issue to the dashboard:**
+
+To promote an open issue to the top-level dashboard, apply the `start-here` label in its repo:
+```bash
+gh issue edit <N> --repo <owner/repo> --add-label start-here
+```
+The label is auto-created on first use. Remove it when the issue is no longer top-priority.
 
 ## Step 9 — Delete stub files and release lock
 
