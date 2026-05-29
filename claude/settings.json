@@ -103,6 +103,10 @@
           {
             "type": "command",
             "command": "py -3 C:/Users/brown/.claude/scripts/reconcile-open-prs.py"
+          },
+          {
+            "type": "command",
+            "command": "py -3 C:/Users/brown/.claude/scripts/awake-blocker.py"
           }
         ]
       }
@@ -117,6 +121,20 @@
           {
             "type": "command",
             "command": "py -3 C:/Users/brown/.claude/scripts/journal-stop-check.py"
+          },
+          {
+            "type": "command",
+            "command": "py -3 C:/Users/brown/.claude/scripts/awake-blocker.py"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "py -3 C:/Users/brown/.claude/scripts/awake-blocker.py"
           }
         ]
       }
