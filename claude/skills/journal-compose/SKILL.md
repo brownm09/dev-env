@@ -216,9 +216,13 @@ Step 4 — Fetch real token data. Sanitize the project name first (slashes → u
   then parse as shown in SKILL.md Step 4.
 
 Step 5 — Compose the 11-section document. Follow SKILL.md Step 5 exactly.
+  **Fidelity floor.** Your composed dialogue sections must preserve the technical detail in the source stubs. As a rough heuristic, your composed document's line count should be ≥ 80% of the combined stub line count. A journal that compresses to < 50% of source-stub length is a quality failure — re-read the stubs and expand before writing. Reproduce code blocks, file paths, exact PR/issue numbers, and decision rationale verbatim where the stub provides them. Synthesis is allowed only when stubs duplicate each other; raw compression of unique content is not.
 
 Step 6 — Write the output file to:
   C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD-<slug>.md
+  **Canonical path check.** Your output path must begin with `C:/Users/brown/Git/engineering-journal/sessions/<project>/`. If your current working directory is a worktree (path contains `.claude/worktrees/`), DO NOT use the worktree-relative path — use the absolute canonical path. Writing to a worktree path requires a post-hoc file move and breaks the commit flow.
+
+Step 6.5 — Self-check before claiming done. After writing the file, run `wc -l` on it and compare to the combined source stub line count. If the journal is < 50% of source length, the compose is incomplete — expand it before proceeding. Report the ratio in your final status as `LINE_COUNT=<n> SOURCE_LINES=<m> FIDELITY=<n/m>`.
 
 Do NOT do Steps 7–11 (no README edits, no git add/commit/push, no PR).
 
@@ -226,6 +230,9 @@ When done, report exactly this structure:
   OUTPUT_FILE=<absolute path>
   SLUG=<slug>
   META_TRIGGERS=<none | comma-separated list of trigger types found>
+  LINE_COUNT=<n>
+  SOURCE_LINES=<m>
+  FIDELITY=<n/m>
   STATUS=done
 ```
 
@@ -500,6 +507,8 @@ Reformat for readability (code fences, bullets) but preserve meaning.
 
 Label sessions: `## Session 1 — <slug title>`, `## Session 2 — <slug title>`, etc.
 
+**Fidelity floor.** The composed dialogue sections must preserve the technical detail in the source stubs. As a rough heuristic, the composed document's line count should be ≥ 80% of the combined stub line count. A journal that compresses to < 50% of source-stub length is a quality failure — re-read the stubs and expand before writing. Reproduce code blocks, file paths, exact PR/issue numbers, and decision rationale verbatim where the stub provides them. Synthesis is allowed only when stubs duplicate each other; raw compression of unique content is not.
+
 ---
 
 ### Section 6 — Open Items / Next Steps
@@ -713,6 +722,12 @@ Write the composed document to:
 ```
 C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD-<slug>.md
 ```
+
+- **Canonical path check.** The output path must begin with `C:/Users/brown/Git/engineering-journal/sessions/<project>/`. If the current working directory is a worktree (path contains `.claude/worktrees/`), DO NOT use the worktree-relative path — use the absolute canonical path. Writing to a worktree path requires a post-hoc file move and breaks the commit flow.
+
+## Step 6.5 — Self-check before claiming done
+
+After writing the file, run `wc -l` on it and compare to the combined source stub line count. If the journal is < 50% of source length, the compose is incomplete — expand it before proceeding. Report the ratio in your final status: `LINE_COUNT=<n> SOURCE_LINES=<m> FIDELITY=<n/m>`.
 
 ## Step 7 — Update the folder README
 
