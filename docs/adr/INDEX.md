@@ -38,3 +38,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [031](031-auto-merge-disabled.md) | Auto-Merge Disabled Across All Repos | 2026-05-28 | Accepted | git, pr, merge, workflow, hooks, post-merge |
 | [032](032-journal-start-here-dashboard.md) | Top-of-README "Start here" Dashboard in journal-compose | 2026-05-28 | Accepted | journal, composition, skill, readme, manifest, dashboard |
 | [033](033-prevent-system-sleep-while-processing.md) | Prevent System Sleep While Claude Is Processing | 2026-05-29 | Accepted | hooks, windows, sleep, UserPromptSubmit, Stop, Notification, background-process |
+| [034](034-error-message-diligence.md) | Error Message Diligence | 2026-06-01 | Accepted | workflow, diagnosis, ci, error-handling, claude-behavior, global-rule |

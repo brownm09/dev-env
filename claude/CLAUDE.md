@@ -405,6 +405,26 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 
 ---
 
+## Error Message Diligence
+
+Error messages emitted by CI workflow guards, hooks, bots, and library exceptions are written by the *author of the guard* — they describe what the author thinks went wrong, not what actually went wrong. When a single check stands in for multiple upstream states (a job skipped because its `needs:` failed, a downstream output that defaults to empty when an earlier step never ran, a generic catch-block re-raise), the message can be confidently misleading. Restating that message as a diagnosis to the user, to a bot thread, or in a PR comment propagates the wrong root cause and produces follow-up corrections that cost more than the original verification would have.
+
+Before acting on any automation- or library-emitted error message in a non-trivial situation, complete three diligence steps:
+
+1. **Locate the emitting line.** Find the file and line that printed the message. Read the conditional or `raise` site directly — do not infer it from the message text.
+2. **Read the condition the code actually evaluates.** The literal expression (`if X != 'true'`, `if not config.get('key')`) is the ground truth. The message is a human-readable label for that expression and may have drifted.
+3. **Distinguish the upstream signal from the message's narrative.** If the evaluated condition can be false for multiple reasons — secret missing, upstream job skipped, network 5xx during a fetch, schema mismatch — trace one level up before accepting the message's framing. For CI: check the parent job's status and `needs:` chain. For hooks/scripts: check the input that produced the falsy value, not just the falsy value itself.
+
+When uncertain after the three steps, surface the uncertainty explicitly: "the guard printed X; I have not yet confirmed the underlying condition" rather than restating X as fact. This applies equally to user-facing messages, PR comments, and bot replies.
+
+**Anti-pattern:** quoting an emitted error message back to the user as the diagnosis without having read the emitting line. The message is evidence of *what was reported*, not evidence of *what is true*.
+
+**Exemption:** local errors where the message is reliable by construction — syntax errors, file-not-found at a path you just wrote, type errors with a specific symbol named — do not require the three-step trace. The rule targets guard messages that summarize composite upstream state.
+
+**Rationale incident.** lifting-logbook [PR #395](https://github.com/brownm09/lifting-logbook/pull/395) (2026-06-01). The `staging.yml` deploy-prereq guard printed a "Staging Clerk secret key is not configured" error and pointed to `docs/deploy.md` Step 4. The actual upstream chain was a transient 504 from Artifact Registry in `build-images` → `deploy-api` skipped because of `needs: build-images` → empty `clerk_configured` output → integration-tests' `!= 'true'` check fired the misconfig message. The secret was already correctly set. Both the github-actions bot and I reported the wrong root cause until the user pushed back. Full trace: [PR #395 comment](https://github.com/brownm09/lifting-logbook/pull/395#issuecomment-4594434736). See [ADR-034](../docs/adr/034-error-message-diligence.md).
+
+---
+
 ## Documentation and Citations
 
 When writing or updating any architectural documentation (ADRs, design docs, READMEs):
