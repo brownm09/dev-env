@@ -45,24 +45,37 @@ The failure mode this ADR predicted occurred. On this machine, `python3` resolve
 - Absolute path (`C:/.../Python312/python.exe`) is deterministic but breaks on every Python upgrade.
 - `py -3` defers version selection to the Python Launcher, which discovers all installed Pythons and picks the latest Python 3.
 
+### 2026-06-01 — Switched hook commands `py -3` → `pyw -3` ([dev-env#294](https://github.com/brownm09/dev-env/issues/294))
+
+`py.exe` invokes `python.exe`, which is built against the Windows console subsystem. Each hook spawn briefly allocates and tears down a console window — visible as a flash on every prompt and tool call. With ~25 hooks across PreToolUse, UserPromptSubmit, Stop, PostToolUse, etc., the flashes are frequent enough to be a persistent cosmetic annoyance.
+
+**Fix:** Swap `py -3` → `pyw -3` in `settings.json` hook commands only. `pyw.exe` is the Python Launcher's windowless variant — it invokes `pythonw.exe` (Windows subsystem), so no console allocation. Stdin/stdout/stderr still work normally over the pipes Claude Code wires to the subprocess.
+
+**Scope:** Hook command entries only. Left unchanged:
+- `Bash(py -3 *)` permission entries — these govern Claude running `py` via the Bash tool, which executes inside the existing Git Bash shell and does not pop a window.
+- The `## Testing` command and skill/script `py -3` examples — these run from a shell.
+- The `pre-push` hook — runs from a shell (`git push` context).
+
 ---
 
 ## Decision
 
-Invoke hook scripts as **`py -3 C:/path/to/script.py`** — no `bash -c` wrapper, no bare `python3`.
+Invoke hook scripts as **`pyw -3 C:/path/to/script.py`** in `settings.json` hook command entries — no `bash -c` wrapper, no bare `python3`, no `py -3` (which flashes a console window per spawn).
 
-`py.exe` (the Windows Python Launcher) must be installed and on the Windows system PATH. It ships with python.org installers by default.
+Outside of `settings.json` hook commands, continue to use `py -3` (shell-invoked contexts do not flash).
 
-If a future Claude Code version invokes hooks through a different shell context (e.g., a hook runner that pre-resolves to Git Bash where `python3` is the user-shell alias), this decision may revisit. Until then, `py -3` is the only invocation that works reliably from Claude Code's non-interactive hook context on Windows.
+`py.exe` and `pyw.exe` both ship with the python.org installer's Python Launcher for Windows.
+
+If a future Claude Code version invokes hooks through a different shell context (e.g., a hook runner that pre-resolves to Git Bash where `python3` is the user-shell alias), this decision may revisit. Until then, `pyw -3` is the invocation that works reliably from Claude Code's non-interactive hook context on Windows without flashing a console.
 
 ---
 
 ## Consequences
 
-- All hook entries in `settings.json` use `py -3 C:/...` syntax.
-- The `## Testing` test commands in this repo and downstream projects also use `py -3` — running `python3 -m py_compile ...` would silently no-op on this machine.
-- Any new hook added to this repo must follow the same pattern.
-- If `py.exe` is missing on a future machine, install the python.org distribution which bundles the launcher.
+- All hook command entries in `settings.json` use `pyw -3 C:/...` syntax.
+- Shell-invoked Python (the `## Testing` command, skill docs, the `pre-push` hook) continues to use `py -3`.
+- Any new hook added to this repo must follow the `pyw -3` pattern for its `settings.json` entry.
+- If `py.exe` or `pyw.exe` is missing on a future machine, install the python.org distribution which bundles the launcher.
 
 ---
 
