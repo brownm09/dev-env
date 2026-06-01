@@ -13,6 +13,7 @@ the fast-forward pull in that case — only syncs when `main` is checked out.
 Exit 0 always — never block the user's prompt.
 """
 
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import subprocess
 import sys
 from pathlib import Path

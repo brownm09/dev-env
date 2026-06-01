@@ -29,6 +29,7 @@ Stdin JSON shape (PostToolUse):
 Exit 0  — gh pr merge not detected, no config, or no Closes ref; silent
 Exit 2  — item moved to Done (success) or move failed (fallback command shown)
 """
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import os
 import re

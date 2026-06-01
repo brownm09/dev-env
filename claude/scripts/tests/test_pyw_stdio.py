@@ -41,6 +41,7 @@ subprocess invocations under test are `pyw -3`. Exit 0 = all pass.
 
 import ast
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -214,11 +215,107 @@ def test_all_settings_hooks_use_pyw_and_resolve_to_repo() -> str:
     return f"{total} hook commands all use `pyw -3` and resolve to syntactically valid scripts in {HOOKS_DIR.name}/"
 
 
+def test_winsubp_patches_subprocess_under_pyw() -> str:
+    """`import _winsubp` under pyw -3 must install the Popen patch and let subprocess still work."""
+    _require_pyw()
+    scripts_dir = (REPO_ROOT / "claude" / "scripts").as_posix()
+    program = (
+        f"import sys; sys.path.insert(0, {scripts_dir!r})\n"
+        "import _winsubp  # noqa: F401\n"
+        "import subprocess, json\n"
+        "patched = getattr(subprocess, '_winsubp_patched', False)\n"
+        "proc = subprocess.run(['cmd','/c','echo','probe'], capture_output=True, text=True)\n"
+        "sys.stdout.write(json.dumps({'patched': patched, 'echo_rc': proc.returncode, 'echo_out': proc.stdout.strip()}))\n"
+    )
+    proc = subprocess.run(
+        ["pyw", "-3", "-c", program],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(f"pyw child exited {proc.returncode}; stderr={proc.stderr!r}")
+    result = json.loads(proc.stdout)
+    if not result["patched"]:
+        raise AssertionError("_winsubp did not set subprocess._winsubp_patched=True under pyw")
+    if result["echo_rc"] != 0 or result["echo_out"] != "probe":
+        raise AssertionError(
+            f"patched subprocess.run broke the echo round-trip: rc={result['echo_rc']}, "
+            f"out={result['echo_out']!r}"
+        )
+    return "subprocess patched (CREATE_NO_WINDOW applied) and subprocess.run still functions"
+
+
+# Regexes used by the static-scan guard below. Defined at module scope so
+# the negative-control assertion at the bottom of this test exercises the
+# exact same patterns the real scan uses.
+#
+# `_WINSUBP_IMPORT_RE` matches a real top-level import of the helper —
+# either `import _winsubp` (optionally with `as alias` or `# comment`) or
+# `from _winsubp import X`. Multiline + leading-whitespace tolerant so an
+# indented re-import inside a function still counts; comments and
+# docstring mentions of the bare string `_winsubp` do not.
+_WINSUBP_IMPORT_RE = re.compile(
+    r"^\s*(?:import\s+_winsubp\b|from\s+_winsubp\b)",
+    re.MULTILINE,
+)
+# `_SUBPROCESS_USE_RE` matches an actual subprocess use-site. Covers both
+# `subprocess.run(...)` / `subprocess.Popen(...)` etc. AND
+# `from subprocess import run, Popen` (or any subset) so that a hook
+# using the `from subprocess import` idiom is not silently skipped.
+_SUBPROCESS_USE_RE = re.compile(
+    r"\bsubprocess\.(?:run|Popen|check_output|check_call|call)\b"
+    r"|^\s*from\s+subprocess\s+import\b",
+    re.MULTILINE,
+)
+
+
+def test_every_subprocess_using_hook_imports_winsubp() -> str:
+    """Every hook script in claude/scripts/ that uses subprocess must import _winsubp.
+
+    The check uses real regexes (not substring matches) so neither a
+    comment/docstring mention of `_winsubp` nor a `from subprocess import …`
+    idiom can bypass the guard.
+    """
+    hooks_dir = REPO_ROOT / "claude" / "scripts"
+    missing: list[str] = []
+    checked = 0
+    for path in sorted(hooks_dir.glob("*.py")):
+        # Skip the helper itself and any underscore-prefixed support modules.
+        if path.name.startswith("_"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        if not _SUBPROCESS_USE_RE.search(text):
+            continue
+        checked += 1
+        if not _WINSUBP_IMPORT_RE.search(text):
+            missing.append(path.name)
+    if missing:
+        raise AssertionError(
+            f"{len(missing)} hook(s) use subprocess but do not import _winsubp: "
+            + ", ".join(missing)
+        )
+
+    # Negative controls — make sure the regexes don't false-positive on
+    # comments/docstrings or false-negative on the `from subprocess import`
+    # idiom. If these fail, the guard above is no longer load-bearing.
+    if _WINSUBP_IMPORT_RE.search("# _winsubp is great\n"):
+        raise AssertionError("import regex false-positive on a comment mentioning _winsubp")
+    if _WINSUBP_IMPORT_RE.search('"""mentions _winsubp in a docstring"""\n'):
+        raise AssertionError("import regex false-positive on a docstring mentioning _winsubp")
+    if not _SUBPROCESS_USE_RE.search("from subprocess import run\nrun(['x'])\n"):
+        raise AssertionError("subprocess-use regex missed the `from subprocess import` idiom")
+
+    return f"all {checked} subprocess-using hook scripts import _winsubp"
+
+
 def main() -> int:
     tests = [
         ("pyw -3 stdio wired when parent supplies pipes", test_pyw_stdio_wired_when_parent_supplies_pipes),
         ("pyw -3 runs Claude-Code-shaped hook end-to-end", test_pyw_runs_claude_code_shaped_hook_end_to_end),
         ("all settings.json hooks use pyw -3 and resolve", test_all_settings_hooks_use_pyw_and_resolve_to_repo),
+        ("_winsubp patches subprocess under pyw -3", test_winsubp_patches_subprocess_under_pyw),
+        ("every subprocess-using hook imports _winsubp", test_every_subprocess_using_hook_imports_winsubp),
     ]
     failed = 0
     passed_names: list[str] = []

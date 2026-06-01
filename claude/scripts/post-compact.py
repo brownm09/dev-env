@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """PostCompact hook — emit a status line and, for manual compactions with open PRs,
 inject a systemMessage so Claude auto-invokes /review without user input."""
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import subprocess
 import sys

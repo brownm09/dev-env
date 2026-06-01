@@ -23,6 +23,7 @@ Stdin JSON shape (PostToolUse):
     "tool_response": {"output": "...", ...}
   }
 """
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import subprocess
 import sys

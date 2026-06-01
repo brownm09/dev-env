@@ -56,6 +56,20 @@ The failure mode this ADR predicted occurred. On this machine, `python3` resolve
 - The `## Testing` command and skill/script `py -3` examples — these run from a shell.
 - The `pre-push` hook — runs from a shell (`git push` context).
 
+### 2026-06-01 (follow-up) — Suppress console flashes from hook *subprocesses* via `_winsubp` ([dev-env#297](https://github.com/brownm09/dev-env/issues/297))
+
+The launcher swap above removed the flash from the Python launcher itself, but a residual flash remained. Hook scripts spawn `git`, `gh`, `bash`, and (in `awake-blocker.py`) `py` via `subprocess.run` / `subprocess.Popen`. Under `pythonw.exe` (no console), Windows allocates a fresh console window for any child console application unless the parent passes `CREATE_NO_WINDOW` (0x08000000) in `creationflags`. Source: [Microsoft — Process Creation Flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags) and [Python — `subprocess.CREATE_NO_WINDOW`](https://docs.python.org/3/library/subprocess.html#subprocess.CREATE_NO_WINDOW).
+
+**Fix:** Add `claude/scripts/_winsubp.py` — on import, monkey-patches `subprocess.Popen.__init__` to OR `CREATE_NO_WINDOW` into `creationflags`. The patch is idempotent (sentinel `subprocess._winsubp_patched`), no-op on non-Windows, and wrapped in `try/except` so a future Python signature change cannot break a hook. Every hook script in `claude/scripts/` that spawns a subprocess adds one line near its imports:
+
+```python
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
+```
+
+**Why monkey-patch rather than rewrite every call site:** the patch touches one well-defined seam (`Popen.__init__`) and every existing call uses `subprocess.run`/`Popen` with no `creationflags` set, so OR-merging the flag is invariant-preserving. The alternative — replacing 30+ call sites with a `helper.run(...)` wrapper — adds equal surface area in the hooks themselves while leaving any newly-added call vulnerable to the same regression.
+
+**Verification:** `claude/scripts/tests/test_pyw_stdio.py` gained two checks: (4) under `pyw -3`, importing `_winsubp` sets the sentinel and leaves `subprocess.run` functional; (5) every subprocess-using hook script imports `_winsubp` (static scan — prevents new hooks from silently re-introducing the flash).
+
 ---
 
 ## Decision
@@ -75,6 +89,7 @@ If a future Claude Code version invokes hooks through a different shell context 
 - All hook command entries in `settings.json` use `pyw -3 C:/...` syntax.
 - Shell-invoked Python (the `## Testing` command, skill docs, the `pre-push` hook) continues to use `py -3`. Note that `python3` still resolves to the Microsoft Store App Execution Alias on this machine — shell commands must use `py -3`, not `python3`, or they will silently no-op (e.g., `python3 -m py_compile ...` produces no error and no compiled output).
 - Any new hook added to this repo must follow the `pyw -3` pattern for its `settings.json` entry.
+- Any new hook that imports `subprocess` (directly or indirectly) **must** add `import _winsubp` near the top of its imports. The static test in `test_pyw_stdio.py` fails the build if a subprocess-using hook ships without it.
 - If `py.exe` or `pyw.exe` is missing on a future machine, install the python.org distribution which bundles the launcher.
 
 ---

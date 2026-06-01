@@ -22,6 +22,7 @@ Stdin JSON shape (PreToolUse):
 
 Exit 0 — always; hook is advisory only.
 """
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import os
 import re

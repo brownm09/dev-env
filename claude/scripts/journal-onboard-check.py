@@ -8,6 +8,7 @@ directory in engineering-journal, emits a one-line advisory pointing to /journal
 Exit 0 always — never blocks the user's prompt.
 """
 
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import subprocess
 import sys

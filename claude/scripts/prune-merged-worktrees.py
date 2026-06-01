@@ -23,6 +23,7 @@ Usage:
                Skips repos with no GitHub remote or no claude/* worktrees.
                Example: --scan-dir C:/Users/brown/Git
 """
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import os
 import re
 import subprocess

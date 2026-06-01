@@ -20,6 +20,7 @@ Exit 0  — no relevant command detected; no action
 Exit 2  — gh pr create, gh pr merge, or git push (open PR) detected;
           reminder(s) emitted via stderr
 """
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import re
 import subprocess

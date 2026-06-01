@@ -15,6 +15,7 @@ removals), so Claude has correct context from turn 1 without reading the file.
 """
 from __future__ import annotations
 
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import os
 import subprocess

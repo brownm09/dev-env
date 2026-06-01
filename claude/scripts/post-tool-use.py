@@ -31,6 +31,7 @@ Stdin JSON shape (PostToolUse):
 Exit 0  — not a relevant command, no config, or gh command itself failed; silent
 Exit 2  — item added (or failed to add); structured reminder emitted via stderr
 """
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import os
 import re

@@ -42,6 +42,8 @@ Custom slash commands loaded from `claude/skills/`. Invoke with `/skill-name [ar
 Hook scripts run automatically via Claude Code's `hooks` configuration in `claude/settings.json`.
 Most hooks are advisory — they emit reminders but do not block tool execution. The exception is `pre-tool-use-worktree-path-check.py`, which blocks `Write`, `Edit`, and `NotebookEdit` calls that target the canonical repo root instead of the active worktree.
 
+Hooks that spawn subprocesses (`git`, `gh`, `bash`, …) must `import _winsubp` — a helper module at `claude/scripts/_winsubp.py` that patches `subprocess.Popen.__init__` to set `CREATE_NO_WINDOW` so children don't flash a console window under `pythonw.exe`. See [ADR-007](docs/adr/007-hook-command-invocation.md).
+
 | Event | Script | Purpose |
 |---|---|---|
 | UserPromptSubmit | `session-mode-prompt.py` | Injects a one-time mode-confirmation reminder into Claude's context on the first prompt of each new session |
