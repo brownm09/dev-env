@@ -17,6 +17,7 @@ after git rm. This prevents new-day-journal-check.py false positives on the
 next session (see dev-env#31).
 """
 
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import glob
 import json
 import os

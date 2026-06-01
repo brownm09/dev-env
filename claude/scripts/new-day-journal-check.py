@@ -12,6 +12,7 @@ Exit 0 always — never block the user's prompt.
 Stdout is injected as context Claude sees before processing the user's message.
 """
 
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import glob
 import json
 import os

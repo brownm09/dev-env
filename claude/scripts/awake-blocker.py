@@ -17,6 +17,7 @@ Safe-exit guard: any exception in hook mode exits 0 so a bug never blocks a prom
 
 from __future__ import annotations
 
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import os
 import subprocess

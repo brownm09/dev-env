@@ -214,11 +214,78 @@ def test_all_settings_hooks_use_pyw_and_resolve_to_repo() -> str:
     return f"{total} hook commands all use `pyw -3` and resolve to syntactically valid scripts in {HOOKS_DIR.name}/"
 
 
+def test_winsubp_patches_subprocess_under_pyw() -> str:
+    """`import _winsubp` under pyw -3 must install the Popen patch and let subprocess still work."""
+    _require_pyw()
+    scripts_dir = (REPO_ROOT / "claude" / "scripts").as_posix()
+    program = (
+        f"import sys; sys.path.insert(0, {scripts_dir!r})\n"
+        "import _winsubp  # noqa: F401\n"
+        "import subprocess, json\n"
+        "patched = getattr(subprocess, '_winsubp_patched', False)\n"
+        "proc = subprocess.run(['cmd','/c','echo','probe'], capture_output=True, text=True)\n"
+        "sys.stdout.write(json.dumps({'patched': patched, 'echo_rc': proc.returncode, 'echo_out': proc.stdout.strip()}))\n"
+    )
+    proc = subprocess.run(
+        ["pyw", "-3", "-c", program],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(f"pyw child exited {proc.returncode}; stderr={proc.stderr!r}")
+    result = json.loads(proc.stdout)
+    if not result["patched"]:
+        raise AssertionError("_winsubp did not set subprocess._winsubp_patched=True under pyw")
+    if result["echo_rc"] != 0 or result["echo_out"] != "probe":
+        raise AssertionError(
+            f"patched subprocess.run broke the echo round-trip: rc={result['echo_rc']}, "
+            f"out={result['echo_out']!r}"
+        )
+    return "subprocess patched (CREATE_NO_WINDOW applied) and subprocess.run still functions"
+
+
+def test_every_subprocess_using_hook_imports_winsubp() -> str:
+    """Every hook script in claude/scripts/ that uses subprocess must import _winsubp."""
+    hooks_dir = REPO_ROOT / "claude" / "scripts"
+    missing: list[str] = []
+    checked = 0
+    for path in sorted(hooks_dir.glob("*.py")):
+        # Skip the helper itself and any underscore-prefixed support modules.
+        if path.name.startswith("_"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "subprocess" not in text:
+            continue
+        # The grep used to build the patch list looked for subprocess.{run,Popen,...}
+        # — anything matching that pattern must also import _winsubp.
+        uses_subprocess = any(
+            kw in text
+            for kw in (
+                "subprocess.run", "subprocess.Popen", "subprocess.check_output",
+                "subprocess.check_call", "subprocess.call",
+            )
+        )
+        if not uses_subprocess:
+            continue
+        checked += 1
+        if "_winsubp" not in text:
+            missing.append(path.name)
+    if missing:
+        raise AssertionError(
+            f"{len(missing)} hook(s) use subprocess but do not import _winsubp: "
+            + ", ".join(missing)
+        )
+    return f"all {checked} subprocess-using hook scripts import _winsubp"
+
+
 def main() -> int:
     tests = [
         ("pyw -3 stdio wired when parent supplies pipes", test_pyw_stdio_wired_when_parent_supplies_pipes),
         ("pyw -3 runs Claude-Code-shaped hook end-to-end", test_pyw_runs_claude_code_shaped_hook_end_to_end),
         ("all settings.json hooks use pyw -3 and resolve", test_all_settings_hooks_use_pyw_and_resolve_to_repo),
+        ("_winsubp patches subprocess under pyw -3", test_winsubp_patches_subprocess_under_pyw),
+        ("every subprocess-using hook imports _winsubp", test_every_subprocess_using_hook_imports_winsubp),
     ]
     failed = 0
     passed_names: list[str] = []

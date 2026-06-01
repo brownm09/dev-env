@@ -11,6 +11,7 @@ Usage:
   py -3 reconcile-late-stubs.py 2026-05-06   # draft/ prefix optional
 """
 
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import re
 import shutil

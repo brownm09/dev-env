@@ -17,6 +17,7 @@ Stdin JSON shape (PostToolUse):
 
 Exit 0 always — informational output only; never blocks Claude.
 """
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import os
 import re

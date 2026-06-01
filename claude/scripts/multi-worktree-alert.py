@@ -16,6 +16,7 @@ Stdin JSON shape (UserPromptSubmit):
 
 Exit 0 always — advisory only, never blocks.
 """
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import subprocess
 import sys
