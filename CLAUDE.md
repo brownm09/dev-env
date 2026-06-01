@@ -20,6 +20,12 @@ Run from the repo root to verify all hook scripts are syntax-clean:
 py -3 -c "import ast,sys; [ast.parse(open(f,encoding='utf-8').read(),f) for f in sys.argv[1:]]" claude/scripts/*.py
 ```
 
+Additionally, run the `pyw -3` stdio verification (Windows-only — confirms `pythonw.exe` honors parent-supplied pipes, the invariant ADR-007's 2026-06-01 decision relies on):
+
+```bash
+py -3 claude/scripts/tests/test_pyw_stdio.py
+```
+
 (On Windows, `python3` resolves to the Microsoft Store stub; use `py -3` — see [ADR-007](docs/adr/007-hook-command-invocation.md).)
 
 For docs-only changes to `claude/CLAUDE.md`: run `grep -n 'date -u' claude/CLAUDE.md` and
