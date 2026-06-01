@@ -20,12 +20,26 @@ Properties:
   - Idempotent — guarded by `subprocess._winsubp_patched`. Importing twice
     is harmless.
   - No-op on non-Windows (`os.name != 'nt'`).
-  - Safe-fallback — any unexpected failure during patch installation is
-    swallowed so a hook never crashes because of this module.
+  - Safe-fallback — any unexpected failure during patch installation OR at
+    Popen call time is swallowed so a hook never crashes because of this
+    module. If the patch fails for any reason, the worst outcome is the
+    original cosmetic flash returns.
   - Caller-respecting — if the caller already passed `creationflags`, the
     flag is OR-merged, not overwritten. Callers that explicitly want a
     console (none currently exist among hooks) can still set
     `CREATE_NEW_CONSOLE` and both flags coexist.
+
+Assumptions:
+  - Callers pass `creationflags` as a keyword argument, never positionally.
+    `subprocess.Popen.__init__` accepts `creationflags` as its 13th positional
+    parameter; a caller that passes 13+ positional args would collide with
+    `kwargs["creationflags"]` and raise TypeError. Every hook in this repo
+    uses kwargs, so the simple kwargs-only path is correct in practice; the
+    runtime `try/except` below covers the hypothetical regression.
+  - The generic `(self, *args, **kwargs)` signature on the patched init
+    intentionally shadows `Popen.__init__`'s detailed signature — IDE and
+    type-checker parameter help should be consulted on `subprocess.Popen`
+    directly.
 
 Usage:
     import _winsubp  # noqa: F401  -- suppress console windows on Windows
@@ -53,8 +67,16 @@ try:
         _orig_popen_init = subprocess.Popen.__init__
 
         def _patched_popen_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-            existing = kwargs.get("creationflags", 0) or 0
-            kwargs["creationflags"] = existing | _CREATE_NO_WINDOW
+            try:
+                existing = kwargs.get("creationflags", 0) or 0
+                kwargs["creationflags"] = existing | _CREATE_NO_WINDOW
+            except Exception:
+                # Defensive — if anything goes wrong merging the flag (e.g.,
+                # a future caller passes creationflags positionally and the
+                # kwargs injection would collide), fall through to the
+                # original init unchanged. Cosmetic flash returns; hook
+                # never crashes.
+                pass
             _orig_popen_init(self, *args, **kwargs)
 
         subprocess.Popen.__init__ = _patched_popen_init  # type: ignore[method-assign]
