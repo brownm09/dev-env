@@ -73,7 +73,7 @@ If a future Claude Code version invokes hooks through a different shell context 
 ## Consequences
 
 - All hook command entries in `settings.json` use `pyw -3 C:/...` syntax.
-- Shell-invoked Python (the `## Testing` command, skill docs, the `pre-push` hook) continues to use `py -3`.
+- Shell-invoked Python (the `## Testing` command, skill docs, the `pre-push` hook) continues to use `py -3`. Note that `python3` still resolves to the Microsoft Store App Execution Alias on this machine — shell commands must use `py -3`, not `python3`, or they will silently no-op (e.g., `python3 -m py_compile ...` produces no error and no compiled output).
 - Any new hook added to this repo must follow the `pyw -3` pattern for its `settings.json` entry.
 - If `py.exe` or `pyw.exe` is missing on a future machine, install the python.org distribution which bundles the launcher.
 
