@@ -309,6 +309,92 @@ def test_every_subprocess_using_hook_imports_winsubp() -> str:
     return f"all {checked} subprocess-using hook scripts import _winsubp"
 
 
+def test_no_hook_spawns_python_via_py_launcher() -> str:
+    """No hook in claude/scripts/ may spawn Python via the `py` / `py.exe` launcher.
+
+    Naming `py` as the first element of a `subprocess.Popen` / `subprocess.run`
+    argv re-introduces the launcher-chain console flash that ADR-007 follow-up 2
+    fixed (dev-env#300): `py.exe` is a console-subsystem program that spawns
+    `python.exe` without propagating `CREATE_NO_WINDOW`, so Windows allocates a
+    fresh console for the grandchild. `_winsubp` only suppresses the immediate
+    child's console, not the grandchild's. Hooks that spawn Python must use
+    `sys.executable` (or another already-windowless launcher).
+
+    This check is AST-based: it walks every `subprocess.Popen(...)` /
+    `subprocess.run(...)` / `subprocess.check_*(...)` / `subprocess.call(...)`
+    call in `claude/scripts/*.py` and fails if any of them passes a list/tuple
+    literal whose first element is the bare string `"py"` or `"py.exe"`.
+    String-command spawns (e.g., `shell=True` invocations of `"py -3 ..."`)
+    are out of scope — those flash for other reasons and would be caught by
+    review separately.
+    """
+    hooks_dir = REPO_ROOT / "claude" / "scripts"
+    SPAWN_FUNCS = {"run", "Popen", "check_output", "check_call", "call"}
+    FORBIDDEN = {"py", "py.exe"}
+    offenders: list[str] = []
+    scanned = 0
+    for path in sorted(hooks_dir.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(text, filename=str(path))
+        except SyntaxError:
+            continue
+        scanned += 1
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            # Match `subprocess.<fn>(...)`.
+            if not (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "subprocess"
+                and func.attr in SPAWN_FUNCS
+            ):
+                continue
+            if not node.args:
+                continue
+            first = node.args[0]
+            if not isinstance(first, (ast.List, ast.Tuple)) or not first.elts:
+                continue
+            head = first.elts[0]
+            if isinstance(head, ast.Constant) and isinstance(head.value, str):
+                if head.value.lower() in FORBIDDEN:
+                    offenders.append(
+                        f"{path.name}:{node.lineno} — argv[0]={head.value!r}"
+                    )
+    if offenders:
+        raise AssertionError(
+            "Hook(s) spawn Python via the `py` launcher (re-introduces "
+            "launcher-chain console flash; see ADR-007 follow-up 2):\n  "
+            + "\n  ".join(offenders)
+        )
+
+    # Negative control — a synthetic offending snippet must trip the AST walk.
+    # If this stops detecting, the guard above is no longer load-bearing.
+    bad = "import subprocess\nsubprocess.Popen(['py', '-3', 'x.py'])\n"
+    bad_tree = ast.parse(bad)
+    detected = False
+    for node in ast.walk(bad_tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "subprocess"
+            and node.func.attr in SPAWN_FUNCS
+            and node.args
+            and isinstance(node.args[0], (ast.List, ast.Tuple))
+            and node.args[0].elts
+            and isinstance(node.args[0].elts[0], ast.Constant)
+            and node.args[0].elts[0].value in FORBIDDEN
+        ):
+            detected = True
+    if not detected:
+        raise AssertionError("AST walker failed to detect a synthetic `py` offender")
+
+    return f"scanned {scanned} hook script(s); none spawn Python via the `py` launcher"
+
+
 def main() -> int:
     tests = [
         ("pyw -3 stdio wired when parent supplies pipes", test_pyw_stdio_wired_when_parent_supplies_pipes),
@@ -316,6 +402,7 @@ def main() -> int:
         ("all settings.json hooks use pyw -3 and resolve", test_all_settings_hooks_use_pyw_and_resolve_to_repo),
         ("_winsubp patches subprocess under pyw -3", test_winsubp_patches_subprocess_under_pyw),
         ("every subprocess-using hook imports _winsubp", test_every_subprocess_using_hook_imports_winsubp),
+        ("no hook spawns Python via the `py` launcher", test_no_hook_spawns_python_via_py_launcher),
     ]
     failed = 0
     passed_names: list[str] = []

@@ -40,8 +40,15 @@ EXEC_STATE_REFRESH = 30.0     # seconds between SetThreadExecutionState calls
 # Log rotation: when LOG_FILE exceeds this many bytes, rotate to LOG_FILE_ROTATED.
 LOG_MAX_BYTES = 256 * 1024  # 256 KiB
 
-# Watcher process image name — used together with PID to defeat PID-reuse false positives.
-WATCHER_IMAGE = "py.exe"
+# Watcher executable + image name — single source of truth so the spawn argv (start())
+# and the `tasklist` PID-reuse defense (_pid_is_watcher) cannot drift. Derived from
+# `sys.executable` so it tracks whatever interpreter actually spawned the watcher
+# (`pythonw.exe` under the `pyw -3` hook invocation; `python.exe` if a developer
+# runs the hook manually via `py -3` for debugging). Falls back to `pythonw.exe`
+# in the (extremely rare on Windows) case where `sys.executable` is empty — both
+# the spawn and the image-match check then resolve consistently against PATH.
+_WATCHER_EXEC = sys.executable or "pythonw.exe"
+WATCHER_IMAGE = Path(_WATCHER_EXEC).name
 
 # SetThreadExecutionState flags
 ES_CONTINUOUS = 0x80000000
@@ -137,12 +144,23 @@ def start() -> None:
 
     # Spawn detached watcher. DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP keeps it
     # alive past the hook's exit and disconnects it from the parent's console.
+    #
+    # Use sys.executable rather than the `py -3` launcher: the hook runs under
+    # `pyw -3` (per settings.json; ADR-007), so sys.executable resolves to
+    # `pythonw.exe` — the Windows-subsystem interpreter that allocates no console.
+    # Spawning via `py -3` instead would chain through `py.exe` (console
+    # subsystem), which then spawns `python.exe` without propagating
+    # CREATE_NO_WINDOW — Windows allocates a fresh console for the grandchild,
+    # producing the residual flash that #297 thought it had eliminated.
+    # _winsubp still OR's CREATE_NO_WINDOW into creationflags below (no-op in
+    # this windowless chain, but defense-in-depth for any future caller path).
+    # See dev-env#300.
     DETACHED_PROCESS = 0x00000008
     CREATE_NEW_PROCESS_GROUP = 0x00000200
     creationflags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
 
     proc = subprocess.Popen(
-        ["py", "-3", str(Path(__file__).resolve()), "--watcher"],
+        [_WATCHER_EXEC, str(Path(__file__).resolve()), "--watcher"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
