@@ -40,12 +40,15 @@ EXEC_STATE_REFRESH = 30.0     # seconds between SetThreadExecutionState calls
 # Log rotation: when LOG_FILE exceeds this many bytes, rotate to LOG_FILE_ROTATED.
 LOG_MAX_BYTES = 256 * 1024  # 256 KiB
 
-# Watcher process image name — used together with PID to defeat PID-reuse false positives.
-# Derived from `sys.executable` so it tracks whatever interpreter actually spawned the
-# watcher (`pythonw.exe` under the `pyw -3` hook invocation; `python.exe` if a developer
-# runs the hook manually via `py -3` for debugging). This must stay in sync with the
-# executable used to spawn the watcher in start() below.
-WATCHER_IMAGE = Path(sys.executable).name if sys.executable else "pythonw.exe"
+# Watcher executable + image name — single source of truth so the spawn argv (start())
+# and the `tasklist` PID-reuse defense (_pid_is_watcher) cannot drift. Derived from
+# `sys.executable` so it tracks whatever interpreter actually spawned the watcher
+# (`pythonw.exe` under the `pyw -3` hook invocation; `python.exe` if a developer
+# runs the hook manually via `py -3` for debugging). Falls back to `pythonw.exe`
+# in the (extremely rare on Windows) case where `sys.executable` is empty — both
+# the spawn and the image-match check then resolve consistently against PATH.
+_WATCHER_EXEC = sys.executable or "pythonw.exe"
+WATCHER_IMAGE = Path(_WATCHER_EXEC).name
 
 # SetThreadExecutionState flags
 ES_CONTINUOUS = 0x80000000
@@ -157,7 +160,7 @@ def start() -> None:
     creationflags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
 
     proc = subprocess.Popen(
-        [sys.executable, str(Path(__file__).resolve()), "--watcher"],
+        [_WATCHER_EXEC, str(Path(__file__).resolve()), "--watcher"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

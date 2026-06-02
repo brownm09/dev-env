@@ -100,6 +100,7 @@ If a future Claude Code version invokes hooks through a different shell context 
 - Shell-invoked Python (the `## Testing` command, skill docs, the `pre-push` hook) continues to use `py -3`. Note that `python3` still resolves to the Microsoft Store App Execution Alias on this machine — shell commands must use `py -3`, not `python3`, or they will silently no-op (e.g., `python3 -m py_compile ...` produces no error and no compiled output).
 - Any new hook added to this repo must follow the `pyw -3` pattern for its `settings.json` entry.
 - Any new hook that imports `subprocess` (directly or indirectly) **must** add `import _winsubp` near the top of its imports. The static test in `test_pyw_stdio.py` fails the build if a subprocess-using hook ships without it.
+- Any hook in `claude/scripts/` that spawns Python as a subprocess **must** use `sys.executable` (or `pyw -3` if the command must be a literal string), never `py` or `py -3`. Naming `py` chains through the `py.exe` console-subsystem launcher, which spawns `python.exe` without propagating `CREATE_NO_WINDOW` — Windows then allocates a fresh console for the grandchild, re-introducing the flash that `_winsubp` thought it had eliminated. Enforced by `test_pyw_stdio.py` test 6 (AST-based scan).
 - If `py.exe` or `pyw.exe` is missing on a future machine, install the python.org distribution which bundles the launcher.
 
 ---
