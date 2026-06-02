@@ -70,6 +70,16 @@ import _winsubp  # noqa: F401  -- suppress console windows on Windows
 
 **Verification:** `claude/scripts/tests/test_pyw_stdio.py` gained two checks: (4) under `pyw -3`, importing `_winsubp` sets the sentinel and leaves `subprocess.run` functional; (5) every subprocess-using hook script imports `_winsubp` (static scan — prevents new hooks from silently re-introducing the flash).
 
+### 2026-06-01 (follow-up 2) — `awake-blocker` watcher: spawn via `sys.executable`, not `py -3` ([dev-env#300](https://github.com/brownm09/dev-env/issues/300))
+
+After the `_winsubp` follow-up above, a residual `py.exe` flash persisted on every prompt. Diagnosis: `awake-blocker.py` spawned its detached watcher via `["py", "-3", str(__file__), "--watcher"]`. `_winsubp` correctly OR'd `CREATE_NO_WINDOW` into `creationflags`, so the `py.exe` launcher process itself had no console. But `py.exe` is a console-subsystem program: it then calls `CreateProcess` on `python.exe` *without* passing `CREATE_NO_WINDOW` through, and because `py.exe`'s own process had no console (thanks to our flag), Windows allocated a fresh console for the grandchild `python.exe`. Visible flash.
+
+**Fix:** Spawn the watcher via `sys.executable` rather than the `py -3` launcher. The hook itself runs under `pyw -3` (settings.json), so `sys.executable` is `pythonw.exe` — the Windows-subsystem interpreter that allocates no console at any level. No launcher chain, no grandchild console, no flash. Also derive `WATCHER_IMAGE` (used by the `tasklist`-based PID-reuse defense in `_pid_is_watcher`) from `Path(sys.executable).name` so it tracks whatever interpreter actually spawned the watcher.
+
+**Why not just keep `_winsubp` and trust it:** the flag only affects the immediate child Popen spawns. It does not propagate through a console-launcher intermediary. Hooks that spawn Python should prefer `sys.executable` (or `pyw -3` if the command must be a string); naming `py` re-introduces the same chain-of-console-allocation bug.
+
+**Verification:** Test suite still passes (5/5). Cosmetic flash absence is verified manually after Claude Code reloads the patched script — there is no programmatic way to detect "no console window was allocated."
+
 ---
 
 ## Decision
