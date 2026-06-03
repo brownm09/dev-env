@@ -12,6 +12,7 @@ For a compact overview see the [README](../README.md).
 - [Routines](#routines)
 - [Utility Scripts](#utilities)
 - [Model Selection](#model-selection)
+- [Platform Constraints](#platform-constraints)
 
 ---
 
@@ -341,3 +342,50 @@ The active defaults in `claude/settings.json`:
 | `permissions.defaultMode` | `plan` | Every session starts in plan mode — no edits until the user approves a plan. Override per-session with Shift+Tab. See [ADR-025](adr/025-default-plan-mode.md). |
 | `effortLevel` | `medium` | Applies to all model tiers. Increase to `high` or `xhigh` for intelligence-sensitive sessions (e.g., full cover letter workflow). |
 | `agentPushNotifEnabled` | `true` | Fires a push notification when an agent session completes. |
+
+---
+
+## Platform Constraints
+
+Environment-specific limitations and the workarounds the workflow rules in `claude/CLAUDE.md`
+depend on.
+
+### `git push --delete` fails in Claude Code web sessions
+
+**Symptom.** In Claude Code **web/cloud sessions**, `git push origin --delete <branch>` (any
+delete-only ref update) aborts mid-stream:
+
+```
+error: RPC failed; ... sideband ...
+fatal: the remote end hung up unexpectedly
+fatal: failed to push some refs to '<remote>'
+```
+
+The same command succeeds in local sessions.
+
+**Root cause.** Web sessions run in a network-isolated sandbox: git traffic is relayed through an
+**HTTP git proxy** and repos are **cloned shallow** (`--depth 1`). The proxy is built for the
+*fetch* path (clone/pull). A ref deletion exercises the *send-pack* (push) path, which sets the
+new OID to the zero OID and POSTs an effectively empty packfile to `git-receive-pack`; the
+server's `unpack ok` / per-ref status comes back over the **sideband-64k** channel. The proxy
+closes the receive-pack POST connection before relaying that sideband status, so git reports a
+**sideband disconnect**. The shallow clone compounds it — the delete-only send-pack sideband
+stream is a path the proxy was never validated against. The ref deletion never reaches GitHub.
+
+**Workaround (use everywhere — safe in local *and* web sessions).** Delete the remote ref through
+the GitHub REST API via `gh`, which goes over authenticated HTTPS and bypasses send-pack:
+
+```bash
+gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"
+```
+
+For the merge case, prefer `gh pr merge --squash --delete-branch` — its branch delete already uses
+the API path and is unaffected. Alternatively, defer deletion to GitHub's "automatically delete
+head branches" repo setting or the weekly `prune-stale-worktrees` routine.
+
+**Upstream fix (Claude Code sandbox).** Proxy the send-pack sideband for delete-only ref updates
+from shallow clones (relay the full receive-pack response before closing the POST), or fall back
+to a full clone when a push is detected.
+
+Tracked in [dev-env#303](https://github.com/brownm09/dev-env/issues/303). See
+[ADR-035](adr/035-git-push-delete-web-session-constraint.md).
