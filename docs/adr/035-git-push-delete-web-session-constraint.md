@@ -25,9 +25,14 @@ proxy does not handle:
    back to the client. Git surfaces this as a **sideband disconnect** —
    `the remote end hung up unexpectedly` — and the ref deletion never reaches GitHub.
 
-The shallow clone compounds the problem: the delete-only send-pack sideband stream is a code path
-the proxy was never exercised against. The symptom is reproducible for `git push origin --delete
-<branch>` in web sessions and absent in local sessions, where git talks to the remote directly.
+Clone depth is *not* a contributing factor: a delete-only push transfers no objects, so a shallow
+versus full clone makes no difference to this path — the failure is entirely in the proxy's
+handling of the receive-pack sideband response. (Web sessions happen to clone shallow, but that is
+a co-occurring environment property, not a cause.) The symptom is reproducible for `git push
+origin --delete <branch>` in web sessions and absent in local sessions, where git talks to the
+remote directly. The mechanism above is reconstructed from the observed
+`the remote end hung up unexpectedly` symptom; the sandbox proxy is not directly inspectable from
+this repo.
 
 This matters operationally because the dev-env workflow deletes remote branches as part of routine
 cleanup, and a session that reaches for `git push --delete` in the cloud fails opaquely and burns
@@ -61,9 +66,10 @@ deletion idiom that is correct regardless of environment.
 - `gh pr merge --squash --delete-branch` remains the primary path for the merge case and needs no
   change — it already uses the API.
 - The workaround does not fix the underlying proxy bug. The proper upstream fix lives in the
-  Claude Code sandbox: proxy the send-pack sideband for delete-only ref updates from shallow
-  clones (relay the full receive-pack response before closing the POST), or fall back to a full
-  clone when a push is detected. Until then, the documented workaround stands.
+  Claude Code sandbox: proxy the send-pack sideband for delete-only ref updates — relay the full
+  receive-pack response before closing the POST. (A full-clone fallback would help only
+  object-carrying pushes, not delete-only updates, which send no objects.) Until then, the
+  documented workaround stands.
 
 ---
 
@@ -73,5 +79,7 @@ deletion idiom that is correct regardless of environment.
   `prune-stale-worktrees` routine.** Valid as a deferral, but it leaves a window where stale
   remote branches accumulate and does not cover ad-hoc deletions. Kept as a secondary option, not
   the primary rule.
-- **Force a full (non-shallow) clone in web sessions.** Not controllable from the repo side — the
-  sandbox owns clone depth — so this is an upstream fix, not a workflow rule.
+- **Force a full (non-shallow) clone in web sessions.** Rejected on two counts: it is not
+  controllable from the repo side (the sandbox owns clone depth), and — more fundamentally — it
+  would not fix the symptom, since a delete-only push transfers no objects and the failure is in
+  the proxy's sideband handling, not in clone depth.

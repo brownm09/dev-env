@@ -364,13 +364,16 @@ fatal: failed to push some refs to '<remote>'
 The same command succeeds in local sessions.
 
 **Root cause.** Web sessions run in a network-isolated sandbox: git traffic is relayed through an
-**HTTP git proxy** and repos are **cloned shallow** (`--depth 1`). The proxy is built for the
+**HTTP git proxy** (and repos are cloned shallow, `--depth 1`). The proxy is built for the
 *fetch* path (clone/pull). A ref deletion exercises the *send-pack* (push) path, which sets the
 new OID to the zero OID and POSTs an effectively empty packfile to `git-receive-pack`; the
 server's `unpack ok` / per-ref status comes back over the **sideband-64k** channel. The proxy
 closes the receive-pack POST connection before relaying that sideband status, so git reports a
-**sideband disconnect**. The shallow clone compounds it — the delete-only send-pack sideband
-stream is a path the proxy was never validated against. The ref deletion never reaches GitHub.
+**sideband disconnect** and the ref deletion never reaches GitHub. Clone depth is *not* a factor:
+a delete-only push transfers no objects, so shallow vs. full clone is irrelevant — the failure is
+purely in the proxy's handling of the receive-pack sideband response. (This mechanism is
+reconstructed from the observed `the remote end hung up unexpectedly` symptom; the sandbox proxy
+is not directly inspectable from this repo.)
 
 **Workaround (use everywhere — safe in local *and* web sessions).** Delete the remote ref through
 the GitHub REST API via `gh`, which goes over authenticated HTTPS and bypasses send-pack:
@@ -384,8 +387,8 @@ the API path and is unaffected. Alternatively, defer deletion to GitHub's "autom
 head branches" repo setting or the weekly `prune-stale-worktrees` routine.
 
 **Upstream fix (Claude Code sandbox).** Proxy the send-pack sideband for delete-only ref updates
-from shallow clones (relay the full receive-pack response before closing the POST), or fall back
-to a full clone when a push is detected.
+— relay the full `git-receive-pack` response before closing the POST. (A full-clone fallback would
+help only object-carrying pushes; it does not address delete-only updates, which send no objects.)
 
 Tracked in [dev-env#303](https://github.com/brownm09/dev-env/issues/303). See
 [ADR-035](adr/035-git-push-delete-web-session-constraint.md).
