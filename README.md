@@ -57,6 +57,7 @@ Hooks that spawn subprocesses (`git`, `gh`, `bash`, …) must `import _winsubp` 
 | UserPromptSubmit / Stop / Notification | `awake-blocker.py` | Spawns a detached watcher that holds a Windows system-sleep lock while Claude is processing; releases on Stop or Notification |
 | PreToolUse (Bash) | `pre-commit-branch-check.py` | Emits current branch as a checkpoint before `git commit` |
 | PreToolUse (Bash) | `pre-pr-create-check.py` | Emits test-verification checklist, documentation-gap warning, and pre-existing-failure baseline advisory before `gh pr create` |
+| PreToolUse (Bash) | `pre-merge-findings-gate.py` | Blocks `gh pr merge` when a `/review` comment reports open findings and the PR body records no disposition — mechanical enforcement of the all-findings merge gate (see [ADR-039](docs/adr/039-merge-gate-findings-enforcement.md)) |
 | PreToolUse (Write/Edit/NotebookEdit) | `pre-tool-use-worktree-path-check.py` | Blocks file writes whose absolute path targets the canonical repo root instead of the active worktree |
 | PostToolUse (Bash) | `pr-merge-reminder.py` | Reminds to write a journal stub after `gh pr create`, `gh pr merge`, or `git push` (when the pushed branch has an open PR) |
 | PostToolUse (Bash) | `post-tool-use.py` | Auto-adds issues/PRs to configured GitHub Project; exits 2 with `required_fields` reminders |

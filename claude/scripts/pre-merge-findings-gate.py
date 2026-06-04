@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""Claude Code PreToolUse hook — All-Findings Merge Gate enforcement (ADR-028/ADR-039).
+
+Detects `gh pr merge` in a Bash command and blocks the merge when the PR has a
+`/review` comment reporting unresolved findings and the PR body does not record
+their disposition. This converts ADR-028 ("all findings — blocking and
+non-blocking — must be addressed before merge") from a prose rule into a
+mechanical gate, so a session cannot silently merge while leaving findings
+"as-is".
+
+How it decides (mechanical, not a content judgment):
+  1. Find the merge target PR (positional ref / --repo, else current branch).
+  2. `gh pr view --json comments,body`.
+  3. Among comments, take the LAST one carrying the machine marker the /review
+     skill emits:  <!-- review-findings: blocking=N non_blocking=M -->
+  4. If no such marker → exit 0 (PR not reviewed by /review; out of scope here).
+     If N+M == 0 → exit 0 (clean review).
+     If N+M > 0 and the PR body records a disposition (a "Review findings
+     disposition" section, or a <!-- findings-disposed --> sentinel) → exit 0.
+     Otherwise → exit 2 (BLOCK) with the counts and the fix-or-file instruction.
+
+Design limitation (documented in ADR-039): the gate verifies that a conscious
+disposition step happened, not that each individual finding was genuinely fixed
+or filed. It removes the silent-merge autopilot; it is not a proof of closure.
+
+Fails OPEN: any error resolving or fetching the PR exits 0 with an advisory
+systemMessage, so a transient `gh`/network problem never wedges a legitimate
+merge. The gate is one layer; CLAUDE.md and the reviewer remain responsible.
+
+Stdin JSON shape (PreToolUse): {"tool_name":"Bash","tool_input":{"command":...},"cwd":...}
+
+Exit 2 — block the merge (stderr shown to Claude).
+Exit 0 — allow (clean review, no review marker, disposition present, or hook error).
+"""
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
+import json
+import os
+import re
+import subprocess
+import sys
+
+_GH_PR_MERGE_RE = re.compile(r"(?:^|&&|\|+|;|\n)\s*gh\s+pr\s+merge\b")
+_MARKER_RE = re.compile(
+    r"<!--\s*review-findings:\s*blocking\s*=\s*(\d+)\s+non_blocking\s*=\s*(\d+)\s*-->"
+)
+# A recorded disposition in the PR body: the sentinel comment, or a heading/line
+# mentioning "findings disposition" / "findings-disposed" (case-insensitive).
+_DISPOSED_RE = re.compile(r"findings[\s\-]dispos", re.IGNORECASE)
+
+# Flags to `gh pr merge` that consume the following token as their value.
+_VALUE_FLAGS = {"--repo", "-R", "-b", "--body", "-t", "--subject", "--match-head-commit",
+                "--author-email"}
+
+
+def _parse_merge_target(command):
+    """Return (ref, repo) parsed from the `gh pr merge ...` invocation.
+
+    ref is the positional PR number/URL/branch, or None (→ current branch).
+    repo is the --repo/-R value, or None.
+    """
+    m = re.search(r"gh\s+pr\s+merge\b(.*)", command, re.DOTALL)
+    if not m:
+        return None, None
+    tail = m.group(1)
+    # Stop at a shell separator so we don't swallow a chained command.
+    tail = re.split(r"&&|\|\||;|\n", tail)[0]
+    tokens = tail.split()
+    ref, repo = None, None
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in ("--repo", "-R") and i + 1 < len(tokens):
+            repo = tokens[i + 1]
+            i += 2
+            continue
+        if tok in _VALUE_FLAGS and i + 1 < len(tokens):
+            i += 2
+            continue
+        if tok.startswith("-"):
+            i += 1
+            continue
+        if ref is None:
+            ref = tok
+        i += 1
+    return ref, repo
+
+
+def _advisory(msg):
+    print(json.dumps({"systemMessage": msg}))
+    sys.exit(0)
+
+
+def _fetch_pr_json(view_cmd, cwd):
+    """Return the PR's JSON dict, or None on any failure (→ fail open).
+
+    Test seam: when MERGE_GATE_TEST_JSON is set it bypasses `gh` entirely —
+    the value "FAIL" simulates a gh error; any other value is read as a path to
+    a JSON file. Never set in production; lets the behavioral self-test exercise
+    every decision path without a cross-platform `gh` stub.
+    """
+    seam = os.environ.get("MERGE_GATE_TEST_JSON")
+    if seam is not None:
+        if seam == "FAIL":
+            return None
+        try:
+            with open(seam, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+    try:
+        result = subprocess.run(
+            view_cmd, capture_output=True, text=True, cwd=cwd, timeout=20
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def main() -> None:
+    raw = sys.stdin.read().strip()
+    if not raw:
+        sys.exit(0)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        sys.exit(0)
+    if data.get("tool_name") != "Bash":
+        sys.exit(0)
+    command = data.get("tool_input", {}).get("command", "")
+    if not _GH_PR_MERGE_RE.search(command):
+        sys.exit(0)
+
+    cwd = data.get("cwd", "") or None
+    ref, repo = _parse_merge_target(command)
+
+    view_cmd = ["gh", "pr", "view"]
+    if ref:
+        view_cmd.append(ref)
+    if repo:
+        view_cmd += ["--repo", repo]
+    view_cmd += ["--json", "comments,body,number"]
+
+    pr = _fetch_pr_json(view_cmd, cwd)
+    if pr is None:
+        _advisory("[merge-gate] Could not verify review findings (gh/network error "
+                  "or unparseable output). Merge allowed — manually confirm all "
+                  "/review findings are fixed-or-filed per ADR-028.")
+
+    comments = pr.get("comments", []) or []
+    body = pr.get("body", "") or ""
+
+    # Last comment carrying the /review machine marker wins (handles re-reviews).
+    blocking = non_blocking = None
+    for c in comments:
+        mk = _MARKER_RE.search(c.get("body", "") or "")
+        if mk:
+            blocking, non_blocking = int(mk.group(1)), int(mk.group(2))
+    if blocking is None:
+        sys.exit(0)  # no /review marker — not in scope for this gate
+    total = blocking + non_blocking
+    if total == 0:
+        sys.exit(0)  # clean review
+
+    if _DISPOSED_RE.search(body):
+        sys.exit(0)  # author recorded a disposition section
+
+    num = pr.get("number", ref or "current branch")
+    sys.stderr.write(
+        f"[merge-gate] BLOCKED: PR #{num} has an open /review with "
+        f"{blocking} blocking + {non_blocking} non-blocking finding(s), and the PR "
+        f"body records no disposition.\n\n"
+        f"Per ADR-028, every finding must be either FIXED in this PR or FILED as a "
+        f"tracked issue and linked — none may be left \"as-is\".\n\n"
+        f"To proceed:\n"
+        f"  1. For each finding in the review comment, fix it (commit) or file a "
+        f"follow-up issue.\n"
+        f"  2. Add a \"Review findings disposition\" section to the PR body listing "
+        f"each finding's disposition (fixed in <sha> | filed #N), or add the "
+        f"sentinel <!-- findings-disposed --> once all are genuinely closed.\n"
+        f"  3. Re-run `gh pr merge`.\n"
+    )
+    sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
