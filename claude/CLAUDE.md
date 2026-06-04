@@ -253,6 +253,12 @@ py -3 -c "import ast,sys; [ast.parse(open(f,encoding='utf-8').read(),f) for f in
 
 On Windows, `python3` resolves to the Microsoft Store stub — use `py -3` (the Windows Python Launcher). See [ADR-007](../docs/adr/007-hook-command-invocation.md).
 
+When changing `claude/hooks/pre-push`, also run its behavioral self-test, which drives the real hook against throwaway fixture repos with a stubbed `npm` and asserts the lockfile-drift guard's BLOCK / PASS / SKIP paths, working-tree restoration, and repo-hook chaining (see [ADR-036](../docs/adr/036-lockfile-drift-prevention.md)):
+
+```bash
+bash claude/hooks/tests/test-pre-push-lockfile.sh
+```
+
 For docs-only changes to `claude/CLAUDE.md`: run `grep -n 'date -u' claude/CLAUDE.md` and confirm every match is in an internal operational artifact context (lock files, log timestamps) — not in stub filename or branch name descriptions.
 
 ---
