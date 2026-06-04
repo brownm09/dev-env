@@ -11,6 +11,18 @@ Project-specific CLAUDE.md files extend these conventions — they do not repeat
 
 ---
 
+## Durable Preferences & Memory
+
+Agent memory (`~/.claude/projects/.../memory/`) is a private cache, not the source of truth. It is invisible to the user and to everyone else who works in these repos and processes, and it is not reliably consulted at the moments it matters.
+
+- **Any durable user preference or workflow rule committed to memory must also be documented in the version-controlled repo** — in the appropriate `CLAUDE.md` (global or project) or project docs — **or, at minimum, captured in a GitHub issue.** Never let a standing instruction live *exclusively* in memory.
+- Do this **in the same session** the preference is stated. When you write the memory entry, link it back to where it is recorded in the repo so the two stay connected.
+- Memory may still hold session-local or fast-changing context; this rule governs durable, cross-session preferences and rules — the things a human collaborator would need to know to work the way the user expects.
+
+See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md).
+
+---
+
 ## Platform & Environment
 
 - **OS:** Windows 11, Git Bash terminal
@@ -264,6 +276,16 @@ For docs-only changes to `claude/CLAUDE.md`: run `grep -n 'date -u' claude/CLAUD
 ---
 
 ## Code Quality
+
+### Fix errors on encounter
+
+Fix any error you encounter in any project, including issues unrelated to the task at hand — do not step around a broken thing and leave it broken.
+
+- **Truly unrelated errors go in a separate PR** (still follow the issue-before-changes and test-before-PR rules — the fix is normal work, not an exception to process).
+- **Scope guard:** before taking on an unrelated fix, estimate whether it would increase the scope of the current work by more than ~75%. If it would, stop and discuss with the user before proceeding rather than absorbing it silently.
+- This comes up most often in lifting-logbook.
+
+See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md).
 
 ### Suppression policy
 
