@@ -67,7 +67,7 @@ Hooks that spawn subprocesses (`git`, `gh`, `bash`, …) must `import _winsubp` 
 | Stop | `token-tracker.py` | Aggregates session token usage to `scratch/token-sessions.jsonl` |
 | Stop | `journal-stop-check.py` | Checks sentinel flag and stale open journal stubs at session end; emits closing reminder if stub was pushed this session |
 | PostCompact | `post-compact.py` | Emits compaction status line (trigger type + remaining tokens) |
-| Git pre-push | `hooks/pre-push` | Warns when branch merge base diverges from `origin/main` in squash-merge repos |
+| Git pre-push | `hooks/pre-push` | Warns when branch merge base diverges from `origin/main` in squash-merge repos; blocks engineering-journal pushes to already-merged draft branches; blocks pushes that drift `package-lock.json` from `package.json` (see [ADR-036](docs/adr/036-lockfile-drift-prevention.md)) |
 
 ## Routines
 

@@ -47,7 +47,53 @@ while read local_ref local_sha remote_ref remote_sha; do
       fi
     fi
   fi
+
+  # Detect whether the push range touches any package.json (root or workspace).
+  # Consumed by the lockfile-drift guard after the loop (Layer 3 of the lockfile
+  # defense — see dev-env ADR-036 and lifting-logbook#435).
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+    base=$(git rev-parse origin/main 2>/dev/null)
+    [ -n "$base" ] && pkg_range="$base..$local_sha" || pkg_range=""
+  else
+    pkg_range="$remote_sha..$local_sha"
+  fi
+  if [ -n "$pkg_range" ] && \
+     git diff --name-only "$pkg_range" 2>/dev/null | grep -qE '(^|/)package\.json$'; then
+    PKG_TOUCHED=1
+  fi
 done
+
+# Lockfile-drift guard: when a pushed package.json changed, verify package-lock.json
+# is in sync with it, and block the push on drift so CI never hits the cryptic
+# `npm ci` EUSAGE error. Skips cleanly when npm is absent or the repo has no root
+# lockfile. The check is non-destructive — the working-tree lockfile is restored on
+# every exit path (including SIGINT/SIGTERM) by a trap, and the backup is held
+# outside the repo (mktemp) so an interrupted run never leaves a stray file behind.
+# Note: the check evaluates the current working tree, not the exact pushed tree; for
+# the common clean-tree push of HEAD these coincide, and CI is authoritative on the
+# committed state regardless.
+if [ "$PKG_TOUCHED" = "1" ] && command -v npm >/dev/null 2>&1; then
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null)
+  if [ -n "$repo_root" ] && [ -f "$repo_root/package.json" ] && [ -f "$repo_root/package-lock.json" ]; then
+    lock="$repo_root/package-lock.json"
+    backup=$(mktemp 2>/dev/null) || backup="${lock}.prepush.bak"
+    cp "$lock" "$backup"
+    restore_lock() { [ -n "$backup" ] && cp "$backup" "$lock" 2>/dev/null; rm -f "$backup" 2>/dev/null; }
+    trap 'restore_lock' EXIT
+    trap 'restore_lock; exit 1' INT TERM
+    ( cd "$repo_root" && npm install --package-lock-only --ignore-scripts >/dev/null 2>&1 )
+    npm_rc=$?
+    if [ "$npm_rc" -ne 0 ]; then
+      echo "WARNING: pre-push lockfile-drift check skipped (npm exited $npm_rc; offline?)." >&2
+    elif ! diff -q "$lock" "$backup" >/dev/null 2>&1; then
+      echo "ERROR: package-lock.json is out of sync with package.json in $repo_root." >&2
+      echo "A dependency was changed without regenerating the lockfile; CI 'npm ci' will fail." >&2
+      echo "Fix: run 'npm install' in that repo and commit the updated package-lock.json, then re-push." >&2
+      exit 1  # trap restores the working-tree lockfile; push is fully blocked
+    fi
+    # Success or skip: the EXIT trap restores the lockfile and removes the backup.
+  fi
+fi
 
 # Chain to per-repo hook if one exists (preserves Husky, git-secrets, corporate hooks, etc.)
 REPO_HOOK="$(git rev-parse --git-dir)/hooks/pre-push"

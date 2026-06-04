@@ -1,4 +1,4 @@
-# ADR-036: Automated Disk Reclamation for Idle Worktree node_modules
+# ADR-037: Automated Disk Reclamation for Idle Worktree node_modules
 
 **Date:** 2026-06-03
 **Status:** Accepted
