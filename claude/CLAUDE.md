@@ -359,6 +359,22 @@ A PR that adds new failures or lists no PR-body justification for outstanding `p
 
 **Scope note.** The first implementation supports Jest only. Pytest, Go `testing`, and Rust have different JSON output formats and each needs its own parser — a clean run in a non-Jest repo is not evidence the policy applies. The opt-in flag should stay off in repos whose test runners are not yet supported.
 
+### Dependency and lockfile policy
+
+In any npm repo, `package-lock.json` must stay in sync with the dependency ranges declared in `package.json`. When they drift, `npm ci` refuses to install (it requires an in-sync lockfile) and CI fails at the install step with a cryptic `EUSAGE` error — and `main` can go red. The motivating incident is lifting-logbook #432/#433, where clerk-backend, clerk-shared, and react drift reddened `main` and required reactive recovery PRs. See [ADR-036](../docs/adr/036-lockfile-drift-prevention.md) for the full defense-in-depth rationale.
+
+**Rule 1 — Edit a dependency, regenerate the lockfile, commit both together.**
+Any change that adds, removes, or changes the version range of a dependency in a `package.json` (root or workspace) **must** run `npm install` and commit the regenerated `package-lock.json` in the **same** change. Never commit a `package.json` dependency edit without its lockfile update.
+
+**Rule 2 — Pre-PR lockfile-sync check (required before `gh pr create` when any `package.json` changed).**
+Run this from the repo root and confirm it exits clean before opening the PR:
+```bash
+npm install --package-lock-only --ignore-scripts && git diff --exit-code package-lock.json
+```
+A non-empty diff means the lockfile is out of sync — run `npm install`, commit the result, and re-run the check. The same check runs automatically in the global `pre-push` hook (it blocks the push on drift) and should run in each repo's CI as an early step; the pre-PR run catches it before either fires.
+
+**Scope note.** Applies to npm/`package-lock.json` repos. Yarn (`yarn.lock`) and pnpm (`pnpm-lock.yaml`) have equivalent drift failure modes but different regeneration commands (`yarn install`, `pnpm install --lockfile-only`) — extend the check per repo before relying on it there.
+
 ---
 
 ## Hook Safety
