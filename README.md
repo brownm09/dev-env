@@ -53,6 +53,7 @@ Hooks that spawn subprocesses (`git`, `gh`, `bash`, …) must `import _winsubp` 
 | UserPromptSubmit | `turn-count-hook.py` | Warns when session context token count exceeds threshold |
 | UserPromptSubmit | `multi-worktree-alert.py` | Lists active worktrees in `repo:branch` format when ≥2 are open |
 | UserPromptSubmit | `reconcile-open-prs.py` | Removes stale entries from `open-prs.jsonl` whose PRs are now merged/closed; emits surviving open PRs as session context |
+| UserPromptSubmit | `disk-space-check.py` | Watches free space on `C:`; warns once per session below 20 GB and spawns detached `node_modules`/`.turbo` reclamation below 10 GB |
 | UserPromptSubmit / Stop / Notification | `awake-blocker.py` | Spawns a detached watcher that holds a Windows system-sleep lock while Claude is processing; releases on Stop or Notification |
 | PreToolUse (Bash) | `pre-commit-branch-check.py` | Emits current branch as a checkpoint before `git commit` |
 | PreToolUse (Bash) | `pre-pr-create-check.py` | Emits test-verification checklist, documentation-gap warning, and pre-existing-failure baseline advisory before `gh pr create` |
@@ -76,6 +77,7 @@ Autonomous scheduled agents in `claude/routines/`. No user interaction.
 |---|---|---|
 | Daily midnight UTC | `daily-journal-compose` | Assembles stub files into canonical journal entries and opens PRs |
 | Daily 8am local | `prune-stale-worktrees` | Removes merged `claude/*` worktrees and stale `main` checkouts across all repos under `C:/Users/brown/Git` |
+| Every 6 hours | `reclaim-worktree-disk` | Strips regenerable `node_modules`/`.turbo` from idle Claude worktrees under `.claude/worktrees/`, reclaiming disk between weekly prune runs |
 | Nightly 8:00 UTC (3 AM CDT) | `nightly-research` | Researches pending topics from the queue and writes structured markdown notes to `research-notes/` |
 
 ## Adding new configs

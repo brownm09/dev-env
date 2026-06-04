@@ -41,3 +41,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [034](034-error-message-diligence.md) | Error Message Diligence | 2026-06-01 | Accepted | workflow, diagnosis, ci, error-handling, claude-behavior, global-rule |
 | [035](035-git-push-delete-web-session-constraint.md) | `git push --delete` Fails in Claude Code Web Sessions | 2026-06-03 | Accepted | git, web-session, sandbox, proxy, shallow-clone, branch-deletion, workflow, global-rule |
 | [036](036-lockfile-drift-prevention.md) | Lockfile-Drift Prevention: Global Pre-Push Hook + Dependency-Edit Rule | 2026-06-03 | Accepted | hooks, pre-push, npm, lockfile, package-lock, ci, global-rule, code-quality |
+| [037](037-worktree-disk-reclamation.md) | Automated Disk Reclamation for Idle Worktree node_modules | 2026-06-03 | Accepted | disk, worktrees, node_modules, hooks, routines, UserPromptSubmit, saturation, automation |
