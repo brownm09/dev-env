@@ -54,11 +54,13 @@ layers, which apply to every npm repo without per-repo wiring.
    (`npm install --package-lock-only --ignore-scripts`) and compares it to the working-tree
    lockfile. On any difference, prints an actionable message and **blocks the push** (`exit 1`).
 
-The check is **non-destructive**: the working-tree lockfile is backed up before regeneration and
-restored on every code path (drift, no-drift, and npm failure), so the hook never leaves the tree
-modified. If `npm` exits non-zero (e.g. offline), the check is **skipped with a warning, not
-blocked** — a tooling failure must not wedge an unrelated push. The block path `exit 1`s before the
-per-repo hook chain, consistent with the hook's existing fully-blocking journal case.
+The check is **non-destructive**: the working-tree lockfile is backed up (to a `mktemp` file
+outside the repo) before regeneration and restored on every exit path by a `trap` — drift,
+no-drift, npm failure, and SIGINT/SIGTERM — so neither an interrupted run nor a normal one ever
+leaves the tree modified or a stray backup in the repo. If `npm` exits non-zero (e.g. offline),
+the check is **skipped with a warning, not blocked** — a tooling failure must not wedge an
+unrelated push. The block path `exit 1`s before the per-repo hook chain, consistent with the
+hook's existing fully-blocking journal case.
 
 It extends the *existing* `pre-push` file rather than adding a second hook because `core.hooksPath`
 resolves a single `pre-push` per repo; a second file would silently never run.

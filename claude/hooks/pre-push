@@ -66,28 +66,32 @@ done
 # Lockfile-drift guard: when a pushed package.json changed, verify package-lock.json
 # is in sync with it, and block the push on drift so CI never hits the cryptic
 # `npm ci` EUSAGE error. Skips cleanly when npm is absent or the repo has no root
-# lockfile. The check is non-destructive — the working-tree lockfile is always
-# restored, whatever the outcome.
+# lockfile. The check is non-destructive — the working-tree lockfile is restored on
+# every exit path (including SIGINT/SIGTERM) by a trap, and the backup is held
+# outside the repo (mktemp) so an interrupted run never leaves a stray file behind.
+# Note: the check evaluates the current working tree, not the exact pushed tree; for
+# the common clean-tree push of HEAD these coincide, and CI is authoritative on the
+# committed state regardless.
 if [ "$PKG_TOUCHED" = "1" ] && command -v npm >/dev/null 2>&1; then
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null)
   if [ -n "$repo_root" ] && [ -f "$repo_root/package.json" ] && [ -f "$repo_root/package-lock.json" ]; then
     lock="$repo_root/package-lock.json"
-    backup="${lock}.prepush.bak"
+    backup=$(mktemp 2>/dev/null) || backup="${lock}.prepush.bak"
     cp "$lock" "$backup"
+    restore_lock() { [ -n "$backup" ] && cp "$backup" "$lock" 2>/dev/null; rm -f "$backup" 2>/dev/null; }
+    trap 'restore_lock' EXIT
+    trap 'restore_lock; exit 1' INT TERM
     ( cd "$repo_root" && npm install --package-lock-only --ignore-scripts >/dev/null 2>&1 )
     npm_rc=$?
     if [ "$npm_rc" -ne 0 ]; then
-      cp "$backup" "$lock"; rm -f "$backup"
       echo "WARNING: pre-push lockfile-drift check skipped (npm exited $npm_rc; offline?)." >&2
     elif ! diff -q "$lock" "$backup" >/dev/null 2>&1; then
-      cp "$backup" "$lock"; rm -f "$backup"
       echo "ERROR: package-lock.json is out of sync with package.json in $repo_root." >&2
       echo "A dependency was changed without regenerating the lockfile; CI 'npm ci' will fail." >&2
       echo "Fix: run 'npm install' in that repo and commit the updated package-lock.json, then re-push." >&2
-      exit 1  # block push; intentionally skips per-repo hook chain — push is fully blocked
-    else
-      cp "$backup" "$lock"; rm -f "$backup"
+      exit 1  # trap restores the working-tree lockfile; push is fully blocked
     fi
+    # Success or skip: the EXIT trap restores the lockfile and removes the backup.
   fi
 fi
 
