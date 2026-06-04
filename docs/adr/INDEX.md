@@ -42,3 +42,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [035](035-git-push-delete-web-session-constraint.md) | `git push --delete` Fails in Claude Code Web Sessions | 2026-06-03 | Accepted | git, web-session, sandbox, proxy, shallow-clone, branch-deletion, workflow, global-rule |
 | [036](036-lockfile-drift-prevention.md) | Lockfile-Drift Prevention: Global Pre-Push Hook + Dependency-Edit Rule | 2026-06-03 | Accepted | hooks, pre-push, npm, lockfile, package-lock, ci, global-rule, code-quality |
 | [037](037-worktree-disk-reclamation.md) | Automated Disk Reclamation for Idle Worktree node_modules | 2026-06-03 | Accepted | disk, worktrees, node_modules, hooks, routines, UserPromptSubmit, saturation, automation |
+| [038](038-durable-preferences-documented-in-repo.md) | Durable Preferences Must Be Documented in the Repo, Not Only in Memory | 2026-06-04 | Accepted | workflow, memory, claude-behavior, documentation, global-rule, code-quality |
