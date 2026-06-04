@@ -210,7 +210,13 @@ Fires after `/compact` or auto-compact completes.
 
 A global git pre-push hook installed via `core.hooksPath` (see [ADR-005](adr/005-global-core-hooks-path.md)).
 
-**What it does:** before every `git push`, checks whether the branch's merge base diverges from `origin/main` in squash-merge repos. Warns when it detects a branch that was cut from a squash-merged ancestor (which would cause a rebase to fail). Chains to any existing per-repo `.git/hooks/pre-push` so repo-level hooks are preserved.
+**What it does:** before every `git push` it (1) checks whether the branch's merge base diverges from `origin/main` in squash-merge repos and warns when it detects a branch cut from a squash-merged ancestor (which would cause a rebase to fail); (2) blocks engineering-journal pushes to already-merged `draft/` branches; and (3) when the push range touches a `package.json`, runs a non-destructive **lockfile-drift guard** that regenerates lockfile metadata and blocks the push if `package-lock.json` is out of sync (see [ADR-036](adr/036-lockfile-drift-prevention.md)). It chains to any existing per-repo `.git/hooks/pre-push` so repo-level hooks are preserved.
+
+**Testing:** the lockfile-drift guard has a behavioral self-test that drives the real hook against fixture repos with a stubbed `npm`, asserting its BLOCK / PASS / SKIP paths, working-tree restoration, and repo-hook chaining. Run it after any change to the hook:
+
+```bash
+bash claude/hooks/tests/test-pre-push-lockfile.sh
+```
 
 ---
 
