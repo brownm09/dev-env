@@ -69,6 +69,10 @@ def _parse_merge_target(command):
     i = 0
     while i < len(tokens):
         tok = tokens[i]
+        if tok.startswith("--repo=") or tok.startswith("-R="):
+            repo = tok.split("=", 1)[1]
+            i += 1
+            continue
         if tok in ("--repo", "-R") and i + 1 < len(tokens):
             repo = tokens[i + 1]
             i += 2

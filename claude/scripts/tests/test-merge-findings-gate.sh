@@ -76,6 +76,21 @@ RC=$(run_gate "$MERGE_CMD" "FAIL"); [ "$RC" = "0" ] && ok "exit 0" || bad "expec
 echo "[6] non-merge command -> allow"
 RC=$(run_gate 'gh pr view 999 --repo o/r' "UNSET"); [ "$RC" = "0" ] && ok "exit 0" || bad "expected 0, got $RC"
 
+echo "[7] --repo and --repo= forms parse to the right repo"
+OUT=$($PY - "$HOOK" <<'PYEOF'
+import importlib.util, os, sys
+p = sys.argv[1]
+sys.path.insert(0, os.path.dirname(p))
+spec = importlib.util.spec_from_file_location("mg", p)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print(m._parse_merge_target("gh pr merge 5 --repo o/r --squash"))
+print(m._parse_merge_target("gh pr merge 7 --repo=a/b --admin"))
+PYEOF
+)
+echo "$OUT" | grep -q "('5', 'o/r')" && ok "space form --repo parsed" || bad "space form: $OUT"
+echo "$OUT" | grep -q "('7', 'a/b')" && ok "equals form --repo= parsed" || bad "equals form: $OUT"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
