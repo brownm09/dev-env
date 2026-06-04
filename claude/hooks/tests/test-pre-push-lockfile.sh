@@ -20,7 +20,6 @@ ZERO="0000000000000000000000000000000000000000"
 
 PASS=0
 FAIL=0
-note() { echo "  NOTE: $*"; }
 ok()   { echo "  ok: $*"; PASS=$((PASS + 1)); }
 bad()  { echo "  FAIL: $*"; FAIL=$((FAIL + 1)); }
 
@@ -117,16 +116,33 @@ rm -rf "$REPO" "$(dirname "$BIN")"
 # --- Scenario 4: npm absent -> SKIP (exit 0) ---
 echo "[4] npm absent -> SKIP"
 read -r REPO C1 C2 <<<"$(make_fixture)"
-NPM_DIR=$(dirname "$(command -v npm 2>/dev/null || echo /nonexistent/npm)")
-MINPATH=$(printf '%s\n' $(echo "$PATH" | tr ':' '\n') | grep -v -F -x "$NPM_DIR" | paste -sd: -)
-if PATH="$MINPATH" command -v npm >/dev/null 2>&1; then
-  note "could not isolate npm from PATH on this host; skipping absent-npm assertion"
+NPM_PATH=$(command -v npm 2>/dev/null || true)
+SHIM=""
+if [ -z "$NPM_PATH" ]; then
+  FINALPATH="$PATH"   # npm already absent on this host
 else
-  RC=$(run_hook "$REPO" "$C1" "$C2" "$MINPATH" pass)
-  [ "$RC" = "0" ] && ok "exit 0 (guard skipped cleanly)" || bad "expected exit 0, got $RC"
+  NPM_DIR=$(dirname "$NPM_PATH")
+  FINALPATH=$(printf '%s\n' $(echo "$PATH" | tr ':' '\n') | grep -v -F -x "$NPM_DIR" | paste -sd: -)
+  # If dropping npm's dir also dropped a tool the hook needs, shim that tool back in
+  # (handles the pathological case where npm shares a directory with coreutils/git).
+  SHIM=$(mktemp -d)
+  for t in git grep cp rm diff mktemp date bash sed; do
+    if ! PATH="$FINALPATH" command -v "$t" >/dev/null 2>&1; then
+      src=$(command -v "$t" 2>/dev/null) && [ -n "$src" ] && ln -s "$src" "$SHIM/$t" 2>/dev/null
+    fi
+  done
+  FINALPATH="$SHIM:$FINALPATH"
+fi
+# Coverage is only meaningful if npm is genuinely gone AND the hook's tools resolve.
+# A construction failure is a loud FAIL, never a silent skip (dev-env#313).
+if PATH="$FINALPATH" command -v npm >/dev/null 2>&1 || ! PATH="$FINALPATH" command -v git >/dev/null 2>&1; then
+  bad "could not construct an npm-absent environment (npm still on PATH or git missing)"
+else
+  RC=$(run_hook "$REPO" "$C1" "$C2" "$FINALPATH" pass)
+  [ "$RC" = "0" ] && ok "exit 0 (guard skipped cleanly, npm absent)" || bad "expected exit 0, got $RC"
   tree_clean "$REPO" && ok "working tree clean" || bad "working tree dirty"
 fi
-rm -rf "$REPO"
+rm -rf "$REPO" "${SHIM:-/nonexistent}"
 
 # --- Scenario 5: repo-level pre-push chaining fires on pass ---
 echo "[5] chaining to repo-level .git/hooks/pre-push"
