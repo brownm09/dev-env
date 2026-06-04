@@ -3,6 +3,7 @@
 **Date:** 2026-05-27
 **Status:** Accepted
 **Tags:** review, workflow, git, pr, blocking-rule, non-blocking
+**Enforced by:** [ADR-039](039-merge-gate-findings-enforcement.md) — the `pre-merge-findings-gate` hook makes this policy a mechanical merge-time gate after it was violated by prose-only enforcement (PR #310).
 
 ---
 

@@ -456,7 +456,11 @@ is appropriately scoped or should be split.>
 ---
 
 ### Non-Blocking Findings
-<For each finding — omit section header if no non-blocking findings>
+<For each finding — omit section header if no non-blocking findings. Non-blocking
+does NOT mean optional: per ADR-028 every finding here must be fixed-in-PR or
+filed-and-linked before merge (see Findings Disposition below). Do not soften a
+finding with "not worth it" / "leave as-is" — if it does not meet the fix-or-file
+bar, drop it instead of recording it.>
 
 **[category]** `<file>:<line>`
 <What the code does.>
@@ -484,8 +488,26 @@ is appropriately scoped or should be split.>
 
 ---
 
+### Findings Disposition
+<Include whenever there is at least one Blocking or Non-Blocking finding. Per
+ADR-028, each must be fixed in this PR or filed as a tracked issue and linked
+before merge — none may be left "as-is". Before `gh pr merge` the author records
+each finding's disposition (fixed in <sha> | filed #N) in a "Review findings
+disposition" section of the PR body; the `pre-merge-findings-gate` hook blocks the
+merge until that disposition exists (ADR-039).>
+
+---
+
 *Reviewed by `<your model ID>` via Claude Code*
+
+<!-- review-findings: blocking=<B> non_blocking=<NB> -->
 ```
+
+**Always emit the trailing `<!-- review-findings: blocking=<B> non_blocking=<NB> -->`
+marker** as the last line of the review, substituting the actual counts (e.g.
+`blocking=0 non_blocking=2`; use `0 0` for a clean review). The merge-gate hook
+parses this marker to decide whether a disposition is required, so it must be
+present and accurate in every posted review.
 
 ---
 

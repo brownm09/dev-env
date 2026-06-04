@@ -161,6 +161,7 @@ Fires before matched tool calls. Matcher values are set per entry in `settings.j
 |--------|------------------|-------------|
 | `pre-commit-branch-check.py` | Command contains `git commit` | Emits the current branch name as a confirmation checkpoint before the commit runs. |
 | `pre-pr-create-check.py` | Command contains `gh pr create` | Emits a test-verification checklist, a documentation-gap warning (if `claude/skills/`, `claude/hooks/`, `claude/scripts/`, or `claude/routines/` were changed without updating `README.md` or `docs/REFERENCE.md`), and — when `baseline_test_failure_tracking` is enabled — a baseline-diff advisory pointing at `baseline-tests diff` (ADR-030). Enforces the "test before PR", doc-reconciliation, and pre-existing-failure rules from CLAUDE.md. |
+| `pre-merge-findings-gate.py` | Command contains `gh pr merge` | Reads the target PR's last `/review` comment marker (`<!-- review-findings: blocking=N non_blocking=M -->`); if `N+M > 0` and the PR body records no "Review findings disposition" section (or `<!-- findings-disposed -->` sentinel), **blocks the merge (exit 2)** with a fix-or-file instruction. Mechanical enforcement of the all-findings merge gate (ADR-028/ADR-039). Fails open on any `gh`/parse error. Has a behavioral self-test: `bash claude/scripts/tests/test-merge-findings-gate.sh`. |
 
 #### Write / Edit / NotebookEdit hooks
 
