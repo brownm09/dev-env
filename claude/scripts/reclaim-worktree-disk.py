@@ -247,7 +247,13 @@ def find_reclaim_dirs(worktree: str) -> list[Path]:
 
 
 def reclaim_worktree(worktree: str, dry_run: bool) -> int:
-    """Delete reclaim dirs in a worktree. Returns bytes reclaimed (or that would be)."""
+    """Delete reclaim dirs in a worktree. Returns bytes reclaimed (or that would be).
+
+    Totals are best-effort under concurrent runs: the 6-hourly routine and the
+    <10 GB threshold hook can both target the same worktree. Size is tallied
+    before rmtree, so two overlapping runs may each count the same bytes; the
+    loser's rmtree raises OSError (already-deleted) and is logged, never fatal.
+    """
     reclaimed = 0
     for d in find_reclaim_dirs(worktree):
         size = dir_size_bytes(d)
@@ -309,9 +315,19 @@ def reclaim_one(repo: str, dry_run: bool, protect_cwd: str) -> int:
         if is_dirty(path):
             skipped.append((path, "has uncommitted changes"))
             continue
+        if not branch or branch == "<detached>":
+            # No resolvable branch ref: ahead/merged checks would evaluate the
+            # range against the primary repo's HEAD (run cwd=repo), silently
+            # misclassifying. Conservative — never strip when the branch is unknown.
+            skipped.append((path, "no resolvable branch (detached or unnamed)"))
+            continue
 
-        merged = is_merged(branch, gh_repo, repo)
+        # Compute the cheap local ahead-count first and short-circuit: an idle
+        # worktree (zero commits ahead of origin/main) is eligible without the
+        # network `gh pr list` fallback that is_merged() may trigger. is_merged()
+        # is only needed to catch squash-merged branches that still show as ahead.
         ahead = commits_ahead(branch, repo)
+        merged = ahead != 0 and is_merged(branch, gh_repo, repo)
         if not is_idle_eligible(merged, ahead):
             skipped.append((path, f"{ahead if ahead is not None else '?'} commit(s) ahead, not merged"))
             continue
