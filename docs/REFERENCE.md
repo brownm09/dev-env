@@ -13,6 +13,7 @@ For a compact overview see the [README](../README.md).
 - [Utility Scripts](#utilities)
 - [Model Selection](#model-selection)
 - [Platform Constraints](#platform-constraints)
+- [Git Workflow Runbooks](#git-workflow-runbooks)
 - [Engineering Journal Internals](#engineering-journal-internals)
 
 ---
@@ -410,6 +411,59 @@ help only object-carrying pushes; it does not address delete-only updates, which
 
 Tracked in [dev-env#303](https://github.com/brownm09/dev-env/issues/303). See
 [ADR-035](adr/035-git-push-delete-web-session-constraint.md).
+
+---
+
+## Git Workflow Runbooks
+
+Operational runbooks pointed to from [`claude/CLAUDE.md`](../claude/CLAUDE.md) → Git Workflow. The
+behavioral *rules* stay in CLAUDE.md; these are the step-by-step details.
+
+### Merging a PR developed in a worktree
+
+Run `gh pr merge --squash --delete-branch` directly from the worktree. Do **not** call `ExitWorktree`
+first — it is session-bound and becomes a no-op after `/compact` (the common case). `gh` will fail to
+check out main locally and fail to delete the local branch (the worktree holds it checked out), but
+the remote merge and remote branch delete complete successfully — those errors are benign. The local
+worktree directory and branch are cleaned up by the weekly `prune-merged-worktrees.py` run.
+
+### Separate clones for fully independent parallel work
+
+Worktrees share the `.git` ref database (branches, stash, FETCH_HEAD, packed-refs). When two sessions
+share no branches or PRs and you want full `.git/` isolation, use a local clone instead:
+
+```bash
+git clone --local C:/Users/brown/Git/<repo> C:/Users/brown/Git/<repo>-2
+```
+
+`--local` hardlinks the object store, so the clone is near-instant with no extra disk cost for existing
+objects. Use worktrees (default) when sessions share context; a separate clone only when the two
+workstreams are completely independent.
+
+### Deleting a remote branch in Claude Code web sessions
+
+Never use `git push origin --delete <branch>` in a web/cloud session — the sandbox HTTP git proxy does
+not relay the `git-receive-pack` sideband status for a delete-only send-pack, so the push aborts with
+a sideband disconnect (`the remote end hung up unexpectedly`). (Clone depth is not a factor — a delete
+transfers no objects.) Delete the ref through the GitHub REST API instead, which travels over
+authenticated HTTPS and bypasses send-pack — the same path `gh pr merge --squash --delete-branch`
+already uses, so it is unaffected:
+
+```bash
+gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"
+```
+
+Root cause and upstream fix: [ADR-035](adr/035-git-push-delete-web-session-constraint.md) /
+[Platform Constraints](#platform-constraints).
+
+### Pre-push hook wiring (one-time setup)
+
+Before setting, check for an existing value: `git config --system core.hooksPath` and
+`git config --global core.hooksPath`. If a system-level path exists (enterprise-managed hooks),
+migrate its hooks into `~/.claude/hooks/` rather than overriding. If another tool (Husky, Lefthook)
+owns the global value, coordinate rather than overwrite — two tools cannot share `core.hooksPath`.
+Once clear: `git config --global core.hooksPath ~/.claude/hooks`. The hook chains to any per-repo
+`.git/hooks/pre-push`, so existing repo-level hooks are preserved.
 
 ---
 

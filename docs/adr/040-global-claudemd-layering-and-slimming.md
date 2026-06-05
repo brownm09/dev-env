@@ -10,8 +10,11 @@
 session in every project. Its own preamble states the layering rule: *"Project-specific CLAUDE.md
 files extend these conventions — they do not repeat them."*
 
-Over time the global file grew to 744 lines / 8.7k words / ~61.5 KB — roughly 50% over a reasonable
-size budget for a file that is prepended to every session's context. A correctness audit found that
+Over time the global file grew to **61,523 characters** (744 lines / 8.7k words) — roughly 50% over a
+reasonable size budget for a file prepended to every session's context. **Characters, not lines, are
+the right metric** here: the file's line lengths vary by an order of magnitude (dense prose bullets vs.
+short table rows), so line count badly tracks the actual context/token cost. Measured in characters,
+the implied 50%-over budget is ≈ 61,523 / 1.5 ≈ 41,000 chars. A correctness audit found that
 a meaningful fraction of the bloat was **dev-env-project-specific content living in the global
 file**, which produced two concrete defects beyond the token cost:
 
@@ -51,8 +54,15 @@ do not need to be in the always-loaded global file.
    global file keeps every *behavioral* rule: composition guardrails, the per-session stub workflow
    steps, and the auto-stub update triggers, each pointing to REFERENCE for the formats.
 
-Net: the global file drops from 744 to ~474 lines (−36%), landing below the size budget, with no
-enforceable rule or command deleted — content was relocated, not removed.
+4. **The verbose Git Workflow bullets are compressed and their runbooks relocated.** The section was
+   the single heaviest by characters (~14.5k chars, ~330 chars/line of duplicated ADR prose, incident
+   anecdotes, and one-time-setup runbooks). Every behavioral *rule* stays as a tight imperative with an
+   ADR pointer; the four operational runbooks (worktree merge, separate clones, web-session branch
+   delete, `core.hooksPath` setup) move to `docs/REFERENCE.md` → Git Workflow Runbooks.
+
+Net: the global file drops from **61,523 to 38,997 characters (−36.6%)** — below the ≈ 41,000-char
+budget — and from 744 to 455 lines, with no enforceable rule or command deleted. Content was
+relocated, not removed.
 
 ## Consequences
 
@@ -71,7 +81,11 @@ enforceable rule or command deleted — content was relocated, not removed.
 
 - **Leave it and only trim prose.** Rejected: it would not fix the wrong-test-command defect or the
   Testing drift, which are correctness problems, not just size.
-- **Aggressively compress the Code Quality grep policies too.** Rejected for this change: those
-  sections are load-bearing (the grep patterns are executed verbatim before every PR), and the
-  layering move plus journal relocation already met the size goal. Compressing them carried
-  disproportionate risk for marginal additional savings.
+- **Measure the overage in lines.** Rejected: line count under-measures a file with order-of-magnitude
+  variance in line length and does not track context/token cost. An initial line-based pass looked like
+  a −36% cut while characters had only dropped ~24% — still over budget. The character metric is what
+  drove the Git Workflow compression that actually landed the file under budget.
+- **Aggressively compress the Code Quality grep policies too.** Rejected: those sections are
+  load-bearing (the grep patterns are executed verbatim before every PR), and the layering move,
+  journal relocation, and Git Workflow compression already brought the file under the character budget.
+  Compressing them carried disproportionate risk for marginal additional savings.
