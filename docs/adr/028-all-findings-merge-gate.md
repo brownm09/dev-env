@@ -77,3 +77,37 @@ finding, merging without acting on it defeats the purpose of having the step.
   unrelated code), the correct action is to open a follow-up issue, address the finding by
   linking to that issue in the PR body, and then merge. The finding is "addressed" once it has
   a tracked home — it does not have to be fixed in the same PR.
+
+---
+
+## Addendum (2026-06-05) — "Fix everything, always" behavioral default
+
+ADR-028 establishes *what* must happen (every finding closed before merge) and the two valid
+dispositions (fixed-in-PR or filed-and-linked). It did not specify the *default behavior* an
+agent should take when it reaches the findings list. In lifting-logbook PR #452 the agent
+emitted a correct review (0 blocking, 2 non-blocking, 1 design question), then paused to ask the
+user *which* findings to fix and offered a fix-vs-defer menu. The user's response — **"Fix
+everything, always"** — establishes the missing default:
+
+1. **Do not ask which findings to fix.** Resolve all of them as part of the same work. A
+   choose-which-to-fix menu or a "should I proceed?" prompt is the wrong default — it adds a
+   round-trip and risks findings being silently dropped.
+2. **Prefer fixing in-PR over filing.** Filing-and-linking remains valid (see Consequences
+   above) but only for findings genuinely out of scope for the current PR. The default is the
+   in-PR fix.
+3. **Prefer the root-cause fix over the band-aid**, even when the band-aid is smaller. In #452
+   the symptom was a duplicate `environment: production` declaration; the root cause was a
+   separate `approve-production` job built on the false premise that two jobs sharing one
+   environment prompt only once (GitHub prompts per-job). The chosen fix deleted the job and
+   consolidated the gate onto the deploy job, which simultaneously closed both non-blocking
+   findings and the design question — a band-aid (patch the stale doc, accept the misattributed
+   deployment record) would have left the underlying defect in place.
+
+**Escalation exceptions** (the only cases where asking the user is correct): a fix requires a
+product/design decision the code cannot settle, or it would breach the scope guard in
+`claude/CLAUDE.md` → *Code Quality → Fix errors on encounter* (>~75% scope increase).
+
+This addendum is recorded in `claude/CLAUDE.md` as a Git Workflow bullet and tracked in
+[dev-env#319](https://github.com/brownm09/dev-env/issues/319). It complies with the Durable
+Preferences rule ([ADR-038](038-durable-preferences-documented-in-repo.md)): the preference is
+now documented in version control, not only in agent memory.
