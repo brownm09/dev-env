@@ -101,7 +101,7 @@ If the project has no automated tests, the section must say so explicitly and de
     - **Write a new stub** if the merge session involves substantial new content (review responses, follow-up fixes, etc.) — the PR grouping heuristic will combine them under one H2.
   - Either way: set `prs_closed: [N]` in the relevant manifest entry, remove the PR from `open-prs.jsonl`, and stop.
 - **PR closed without merging.** If a PR is closed without merging, the stub was already written at PR creation. Stopping is optional — the session may continue if follow-up work remains.
-- **After merging a PR:** move the linked project board item to Done. The exact command (project ID, field ID, option ID) is project-specific — each project's CLAUDE.md provides it. For dev-env, see the GitHub Project section below.
+- **After merging a PR:** move the linked project board item to Done. The exact command (project ID, field ID, option ID) is project-specific — each project's CLAUDE.md provides it. For dev-env, see the GitHub Project section in the dev-env project `CLAUDE.md`.
 - **When a work stream completes** (a milestone, closed issue group, or multi-session feature sequence): update the project's active roadmap or work-tracking document — move the completed item out of Active Work and into a Shipped section (or equivalent). Do not leave roadmaps in a state that contradicts the actual shipping history.
 - **Exception:** Local-only repos with no remote may commit to main directly.
 - **Branch creation in squash-merge repos:** Use `new-branch <name>` (source `~/.claude/scripts/new-branch.sh` in `.bashrc`) or `git checkout -b <name> origin/main` explicitly. Never cut from a branch that has been squash-merged — its commits no longer exist on main and a rebase will fail. Verify with `git merge-base HEAD origin/main` — output should equal `git rev-parse origin/main`.
@@ -119,160 +119,21 @@ If the project has no automated tests, the section must say so explicitly and de
 
 ---
 
-## Dev-Env
+## Dev-Env & Project Boards
 
-`~/.claude/` is split between two categories. Treat them differently.
+Dev-env's own architecture (the `~/.claude/` symlink/junction map, the worktree-on-`main` rule, routine authoring) and its GitHub Project IDs, field IDs, and board procedures live in the **dev-env project `CLAUDE.md`** (repo root) — they are project-specific and must not load into every project. Each project's `CLAUDE.md` owns its own `## Testing` commands and board configuration; the global "Test before PR" rule defers to that section.
 
-**Owned by `brownm09/dev-env` — symlinked, version-controlled:**
+**GitHub Projects — single-select option mutation hazard (applies to every project).** Running `updateProjectV2Field` with `singleSelectOptions` is a full replacement — passing the existing options unchanged still produces new option IDs and drops every item's prior assignment for that field. Validated against lifting-logbook on 2026-05-08: an Observability epic addition wiped assignments on all 89 project items despite passing the full option list. Recovery precedent: [lifting-logbook#203](https://github.com/brownm09/lifting-logbook/issues/203).
 
-| Path | dev-env source |
-|---|---|
-| `~/.claude/CLAUDE.md` | `claude/CLAUDE.md` |
-| `~/.claude/scripts/` | `claude/scripts/` (directory junction) |
-| `~/.claude/skills/` | `claude/skills/` (directory junction) |
-| `~/.claude/hooks/` | `claude/hooks/` (directory junction) |
-| `~/.claude/scheduled-tasks/` | `claude/routines/` (directory junction to `~/.claude/scheduled-tasks/`) |
-| `~/.claude/settings.json` | `claude/settings.json` |
+Procedure (mandatory before adding/removing/renaming any single-select option on any project):
 
-**Machine-local only — never commit:**
+1. Snapshot current per-item assignments to a git-tracked file under the project repo's `.claude/backups/`.
+2. Commit the snapshot.
+3. Run the mutation with the full desired option list.
+4. Update the project's CLAUDE.md option-ID table with the regenerated IDs in the same PR.
+5. Restore assignments by re-issuing `gh project item-edit` for each item, mapping snapshot option name → new option ID.
 
-`scratch/`, `projects/`, `sessions/`, `backups/`, `ide/`, `plans/`, `shell-snapshots/`
-
-**Rule:** Any addition or modification to a dev-env-owned artifact — new hook script, new skill, settings change, CLAUDE.md edit — must be committed to `brownm09/dev-env` via branch and PR before the session ends. Do not leave global tooling as untracked files.
-
-**Rule:** The canonical dev-env worktree (`~/Git/dev-env`) must stay on `main` at all times. All dev-env changes go through a separate worktree (use `EnterWorktree` or `git worktree add`). Reason: `~/.claude/settings.json` and `~/.claude/scripts/` are symlinked/junctioned to the canonical worktree's working tree — checking out a feature branch there makes newly merged hooks and scripts invisible until the worktree returns to main. `dev-env-sync` will warn on every prompt when this rule is violated.
-
-**Routines note:** `dev-env/claude/routines/` is a directory junction pointing at `~/.claude/scheduled-tasks/`, so the scheduler tool writes directly to the version-controlled path. After creating a new routine, commit it to dev-env under `claude/routines/`.
-
-**Routine authoring — sync-to-main preamble.** Any routine that reads repo-resident files (a skill, a context file, a queue file) at run time must invoke the `sync-routine-worktree` skill as Step 0, before reading any of those files. Scheduled tasks fire into Claude-managed worktrees whose branches were cut from whatever `main` was at worktree creation; without an explicit sync the routine reads stale files or aborts because a recently-merged file is missing on the worktree branch. The sync skill handles fetch, branch-class-aware sync (Claude-managed worktree / `main` / other), file existence verification, and abort-with-push-notification on conflict — routines pass `REPO`, `VERIFY_FILE`, and `PREFIX` and treat the return as a guard. See `claude/skills/sync-routine-worktree/SKILL.md` and `claude/routines/nightly-cover-letters/SKILL.md` for the canonical pattern. Rationale: `docs/adr/013-sync-routine-worktree-skill.md`.
-
-**Doc-reconciliation checkpoint** (three moments, same as ADR-warrant): (1) immediately after a plan is approved; (2) immediately after `gh pr create` returns; (3) immediately before `gh pr merge`. At each checkpoint, ask: does this change add, remove, rename, or modify the behavior of a skill, hook, script, or routine? If yes, verify that `README.md` and any project-specific reference docs listed in the project's Documentation Maintenance table are updated in this PR. For dev-env, the table is in `dev-env/CLAUDE.md`. **If warranted updates are missing, add them before merging.** Rationale: `docs/adr/019-doc-reconciliation-enforcement.md`.
-
-**Downstream artifacts that name specific dev-env skills/hooks/routines** (update in the same PR as a rename or retirement):
-
-- `tech-leadership-reference/ai-adoption/ai-adoption-readiness-framework.md` — Appendix C names `/propose`, `/review`, `/journal-compose`, `/research`, and the `prune-stale-worktrees` and nightly journal compose routines as live-state evidence.
-
-**Repo path:** `C:/Users/brown/Git/dev-env`
-
----
-
-## GitHub Project
-
-All new dev-env issues must be added to the **Dev Env** project and given an Impact rating and Why description before work begins.
-
-**Project IDs:**
-- Project number: `3`, owner: `brownm09`
-- Project node ID: `PVT_kwHOAjEKvM4BWKFe`
-
-**Field IDs:**
-
-| Field | ID | Options |
-|---|---|---|
-| Status | `PVTSSF_lAHOAjEKvM4BWKFezhRgkMY` | Todo=`f75ad846`, In Progress=`47fc9ee4`, Done=`98236657` |
-| Impact | `PVTSSF_lAHOAjEKvM4BWKFezhRgkNc` | High=`08de2558`, Medium=`6320e8a6`, Low=`d8a85c2f` |
-| Why | `PVTF_lAHOAjEKvM4BWKFezhRgkN0` | (text) |
-
-> **Single-select option mutation hazard (applies to every project, not just dev-env).** Running `updateProjectV2Field` with `singleSelectOptions` is a full replacement — passing the existing options unchanged still produces new option IDs and drops every item's prior assignment for that field. Validated against lifting-logbook on 2026-05-08: an Observability epic addition wiped assignments on all 89 project items despite passing the full option list. Recovery precedent: [lifting-logbook#203](https://github.com/brownm09/lifting-logbook/issues/203).
->
-> **Procedure (mandatory before adding/removing/renaming any single-select option on any project):**
->
-> 1. Snapshot current per-item assignments to a git-tracked file under the project repo's `.claude/backups/`.
-> 2. Commit the snapshot.
-> 3. Run the mutation with the full desired option list.
-> 4. Update the project's CLAUDE.md option-ID table with the regenerated IDs in the same PR.
-> 5. Restore assignments by re-issuing `gh project item-edit` for each item, mapping snapshot option name → new option ID.
->
-> If a mutation runs without a prior snapshot commit, stop and recover from the latest snapshot before any other work.
-
-**Impact guidelines:**
-
-| Level | Meaning |
-|---|---|
-| High | Causes manual recovery work or token waste on every occurrence |
-| Medium | Recurs periodically or silently degrades correctness over time |
-| Low | Nice-to-have; low frequency or easily worked around |
-
-**Workflow — automated via PostToolUse hook:**
-
-After `gh issue create` succeeds, the `post-tool-use.py` hook fires automatically and:
-
-1. Adds the issue to project #3 (`gh project item-add`).
-2. Exits with code 2, printing the exact `gh project item-edit` commands to set Impact and Why.
-
-**Run those commands immediately — before any file edits.** Do not proceed to implementation until both Impact and Why are set. This is the same forcing function as the test-before-PR rule: the hook output is visible in the session and must be acted on.
-
-**Fallback (if the hook did not fire or the item-add failed):** run the three steps manually:
-
-```bash
-# Requires project scope — add once if needed: gh auth refresh -s project
-
-# 1. Add issue to project, capture item ID
-TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
-gh project item-add 3 --owner brownm09 --url <issue-url> --format json > "$TMPFILE"
-ITEM_ID=$(node -e "const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8')); console.log(d.id);")
-rm -f "$TMPFILE"
-
-# 2. Set Impact
-gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
-  --field-id PVTSSF_lAHOAjEKvM4BWKFezhRgkNc \
-  --single-select-option-id <option-id>   # 08de2558=High  6320e8a6=Medium  d8a85c2f=Low
-
-# 3. Set Why (one sentence — the cost of not fixing it)
-gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
-  --field-id PVTF_lAHOAjEKvM4BWKFezhRgkN0 \
-  --text "<why this matters>"
-```
-
-To look up an item ID (e.g., when moving to In Progress or Done in a new session):
-
-```bash
-TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
-gh project item-list 3 --owner brownm09 --format json --limit 1000 > "$TMPFILE"
-ITEM_ID=$(node -e "
-  const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8'));
-  const item=d.items.find(i=>i.content&&i.content.number===<N>);
-  console.log(item.id);
-")
-rm -f "$TMPFILE"
-```
-
-**Move to In Progress when work begins:**
-
-```bash
-gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
-  --field-id PVTSSF_lAHOAjEKvM4BWKFezhRgkMY \
-  --single-select-option-id 47fc9ee4
-```
-
-**Move to Done after PR merges:**
-
-```bash
-gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
-  --field-id PVTSSF_lAHOAjEKvM4BWKFezhRgkMY \
-  --single-select-option-id 98236657
-```
-
----
-
-## Testing
-
-Run the following from the repo root to verify all hook scripts are free of syntax errors:
-
-```bash
-py -3 -c "import ast,sys; [ast.parse(open(f,encoding='utf-8').read(),f) for f in sys.argv[1:]]" claude/scripts/*.py
-```
-
-`ast.parse` is used instead of `py_compile` because the latter writes `.pyc` files into `claude/scripts/__pycache__/` as a side effect (see [dev-env#276](https://github.com/brownm09/dev-env/issues/276)). Neither `-B` nor `PYTHONDONTWRITEBYTECODE=1` suppresses that — they only affect implicit caching on import, not explicit compilation.
-
-On Windows, `python3` resolves to the Microsoft Store stub — use `py -3` (the Windows Python Launcher). See [ADR-007](../docs/adr/007-hook-command-invocation.md).
-
-When changing `claude/hooks/pre-push`, also run its behavioral self-test, which drives the real hook against throwaway fixture repos with a stubbed `npm` and asserts the lockfile-drift guard's BLOCK / PASS / SKIP paths, working-tree restoration, and repo-hook chaining (see [ADR-036](../docs/adr/036-lockfile-drift-prevention.md)):
-
-```bash
-bash claude/hooks/tests/test-pre-push-lockfile.sh
-```
-
-For docs-only changes to `claude/CLAUDE.md`: run `grep -n 'date -u' claude/CLAUDE.md` and confirm every match is in an internal operational artifact context (lock files, log timestamps) — not in stub filename or branch name descriptions.
+If a mutation runs without a prior snapshot commit, stop and recover from the latest snapshot before any other work.
 
 ---
 
@@ -552,9 +413,9 @@ operational artifacts (compose lock files, log file timestamps).
    git -C C:/Users/brown/Git/engineering-journal rev-parse origin/main
    ```
 3. Read `sessions/<project>/open-prs.jsonl` if it exists — include its PR list as session context before starting work.
-4. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see stub structure below)
+4. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
-6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
+6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD.manifest.jsonl sessions/<project>/open-prs.jsonl`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
    *(omit `open-prs.jsonl` from the add command if it was not modified this session)*
 
@@ -567,150 +428,19 @@ operational artifacts (compose lock files, log file timestamps).
    ```
 4. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` with the current session block
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
-6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
+6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD.manifest.jsonl sessions/<project>/open-prs.jsonl`, `git commit -m "draft: YYYY-MM-DD session N"`, `git push`
    *(omit `open-prs.jsonl` from the add command if it was not modified this session)*
 
-**Manifest format (`YYYY-MM-DD.manifest.jsonl`):**
+**File formats, stub template, and recovery:** the `.manifest.jsonl` and `open-prs.jsonl` schemas
+(referenced in the workflow steps above), the stub-file template, the canonical 11-section compose
+structure, and the draft-branch recovery procedure are documented in
+[`docs/REFERENCE.md` → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals).
 
-One JSON line per session, appended after the token comment is known (end of session):
-```bash
-echo '{"stub":"YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"input":N,"output":N,"cost":N},"prs_opened":[],"prs_closed":[]}' \
-  >> "C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl"
-```
-(`YYYY-MM-DD` and `HHMMSS` are local time — same as the stub filename spec above.)
-
-- `prs_opened`: PR numbers opened during this session (e.g., `[54]`). Empty array if none.
-- `prs_closed`: PR numbers reviewed/merged during this session (e.g., `[54]`). Empty array if none.
-- `priorities` (optional): array of items to surface on the top-level README "Start here" dashboard.
-  Each entry: `label` (required string, short title); `ref` (optional string, `owner/repo#N` or
-  freeform key used for dedupe); `why` (optional string, one-sentence rationale). Example:
-  `"priorities":[{"label":"Staging gate fix","ref":"lifting-logbook#346","why":"blocks next deploy"}]`.
-  `/journal-compose` aggregates these across all projects (deduped by `ref`, capped at 5) — see
-  [ADR-032](https://github.com/brownm09/dev-env/blob/main/docs/adr/032-journal-start-here-dashboard.md).
-
-The manifest lets `/journal-compose` see the session count, topics, token data, and PR lifecycle
-without reading individual stubs. It is advisory: if the manifest is missing or has fewer entries
-than the stub glob, stubs are authoritative. Never commit the manifest separately from its stubs
-(include it in the same `git add` / commit step).
-
-**Open-PR tracking file (`sessions/<project>/open-prs.jsonl`):**
-
-Tracks PRs whose full lifecycle (open → review → merge) spans multiple sessions. Lives in the
-engineering-journal repo; carried forward from day to day via the draft branch merge to main.
-
-Schema — one JSON line per open PR:
-```json
-{"pr":54,"url":"https://github.com/brownm09/dev-env/pull/54","topic":"<H2 heading from stub>","stub":"YYYY-MM-DD_HHMMSS.stub.md","opened":"YYYY-MM-DD"}
-```
-
-- `stub`: the stub filename that opened this PR — used by `/journal-compose` to cross-reference the opening session when a PR spans multiple days.
-
-- **When a session opens a PR:** append a line and commit it alongside the stub (see step 7 above).
-- **When a session merges/closes a PR:** remove the matching line using `node -e`, then commit:
-  ```bash
-  node -e "
-    const fs = require('fs');
-    const path = 'C:/Users/brown/Git/engineering-journal/sessions/<project>/open-prs.jsonl';
-    if (!fs.existsSync(path)) process.exit(0);
-    const kept = fs.readFileSync(path,'utf8').trim().split('\n')
-      .filter(l => l && JSON.parse(l).pr !== <PR_NUMBER>);
-    if (kept.length) fs.writeFileSync(path, kept.join('\n') + '\n');
-    else fs.unlinkSync(path);
-  "
-  ```
-  If the last line is removed, the script deletes the file rather than leaving it empty.
-- `/journal-compose` preserves this file unchanged in the merge-to-main commit so it carries forward to the next day.
-
-**Draft branch recovery:**
-
-If `draft/YYYY-MM-DD` was merged or deleted before end of day (e.g., by an accidental mid-day `/journal-compose` run):
-
-1. Create a fresh recovery branch from `origin/main`:
-   ```bash
-   git -C C:/Users/brown/Git/engineering-journal fetch origin
-   git -C C:/Users/brown/Git/engineering-journal checkout -b draft/YYYY-MM-DD-recovery origin/main
-   ```
-2. Copy all session files from the stale local branch onto the recovery branch:
-   ```bash
-   git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- sessions/
-   git -C C:/Users/brown/Git/engineering-journal commit -m "draft: recover YYYY-MM-DD stubs (post-kerfuffle)"
-   git -C C:/Users/brown/Git/engineering-journal push -u origin draft/YYYY-MM-DD-recovery
-   ```
-   This also removes from `main` any stubs that were accidentally merged (they will be deleted from the branch
-   and composed into a journal when `/journal-compose` runs).
-3. If any stub content was committed directly to `main` (e.g., via ad-hoc chore/* PR), revert each accidental commit
-   via a PR to `main` and then re-add the observation to the recovery branch.
-4. Write the stub for the current session normally — commit to `draft/YYYY-MM-DD-recovery` instead of `draft/YYYY-MM-DD`.
-5. When running `/journal-compose`, ensure the engineering-journal working tree is on `draft/YYYY-MM-DD-recovery`.
-
-**Why `draft/YYYY-MM-DD-recovery` instead of `draft/YYYY-MM-DD`:** The pre-push hook blocks pushing to a branch that already has a merged PR (to prevent stale-branch noise). The `-recovery` suffix bypasses the check while keeping the date visible.
-
-If orphaned `chore/*` or `late-stub/*` stub PRs are open (sessions that fell back to ad-hoc branches when the draft was missing):
-```bash
-# Close the ad-hoc PR — its content was already included via the sessions/ checkout above
-gh -R brownm09/engineering-journal pr close <N> \
-  --comment "Content recovered onto draft/YYYY-MM-DD-recovery — closing without merge."
-```
-
-If the engineering-journal working tree is simply on the wrong branch (not the draft branch), no recovery needed:
-```bash
-git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD
-git -C C:/Users/brown/Git/engineering-journal pull
-```
-
-**End of day (last session):**
-1. Run `/journal-compose --force` — it discovers all stubs via manifest (or glob fallback), merges
-   them, produces the canonical 11-section document, and auto-merges the PR. `--force` is required
-   when composing today's branch; past-date composition (`/journal-compose YYYY-MM-DD` for a prior
-   day) does not need the flag
-
----
-
-### Stub structure
-
-Each stub file contains exactly one session block:
-
-```
-<!-- stub: YYYY-MM-DD HHMMSS -->
-
-<!-- opening-brief (first stub of the day only) -->
-Opening brief: <paste the Next Session Context from the previous day's published journal verbatim;
-               use "First session — no prior context." only if this is the project's very first entry>
-
-<!-- session: <slug> -->
-## <Topic>
-...
-<!-- tokens: input=12,450 output=3,200 cost≈$0.08 -->
-<!-- next-session-context -->
-<one paragraph — for the next session to read and open with>
-```
-
-The `<!-- opening-brief -->` block appears **only in the first stub of the day**.
-Subsequent stubs begin directly at `<!-- session: <slug> -->`.
-
----
-
-### Canonical 11-section structure (composed once at day end)
-
-1. Header block (Topic, Repo/Branch, Issues closed, PRs merged)
-2. Table of Contents
-3. Opening Brief (paste the Next Session Context from the previous day verbatim)
-4. Key Decisions (bullet list with links to sections, issues, PRs, ADRs)
-5. Dialogue sections (one H2 per task or topic, drawn from draft)
-6. Open Items / Next Steps (checkbox list)
-7. Token Usage (per-session breakdown tables: model, est. input tokens, est. output tokens,
-   est. cost — drawn from `<!-- tokens: ... -->` comments in the draft; when comments are
-   absent use retroactive estimates based on session scope, labeled as "retroactive estimate";
-   close with a Combined totals table)
-8. Token Optimization Suggestions (2–4 per-session observations grouped under a `### Session N`
-   heading; close with a `### Cross-Session Patterns` subsection for generalizable findings
-   that apply across multiple sessions)
-9. Next Session Context (the final `<!-- next-session-context -->` block from the stubs)
-10. Reflection (gaps, risks, strategic questions — written last)
-11. Further Reading (1–3 primary sources per session that explain the reasoning behind key
-    decisions; intended for deliberate study between sessions — link + one sentence on why
-    it matters)
+**End of day (last session):** Run `/journal-compose --force` — it discovers all stubs via manifest
+(or glob fallback), merges them, produces the canonical 11-section document, and auto-merges the PR.
+`--force` is required when composing today's branch; past-date composition
+(`/journal-compose YYYY-MM-DD` for a prior day) does not need the flag.
 
 ---
 

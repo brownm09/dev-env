@@ -13,6 +13,7 @@ For a compact overview see the [README](../README.md).
 - [Utility Scripts](#utilities)
 - [Model Selection](#model-selection)
 - [Platform Constraints](#platform-constraints)
+- [Engineering Journal Internals](#engineering-journal-internals)
 
 ---
 
@@ -409,3 +410,133 @@ help only object-carrying pushes; it does not address delete-only updates, which
 
 Tracked in [dev-env#303](https://github.com/brownm09/dev-env/issues/303). See
 [ADR-035](adr/035-git-push-delete-web-session-constraint.md).
+
+---
+
+## Engineering Journal Internals
+
+Mechanical reference for the engineering-journal stub/compose workflow. The **behavioral rules**
+(when to auto-create a stub, composition guardrails, the per-session workflow steps) live in
+[`claude/CLAUDE.md`](../claude/CLAUDE.md) → Engineering Journal. This section holds the file formats
+and recovery procedures that section points to.
+
+### Manifest format (`YYYY-MM-DD.manifest.jsonl`)
+
+One JSON line per session, appended after the token comment is known (end of session). The manifest
+lets `/journal-compose` see the session count, topics, token data, and PR lifecycle without reading
+individual stubs. It is advisory: if missing or shorter than the stub glob, stubs are authoritative.
+Never commit the manifest separately from its stubs.
+
+```bash
+echo '{"stub":"YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"input":N,"output":N,"cost":N},"prs_opened":[],"prs_closed":[]}' \
+  >> "C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl"
+```
+
+- `prs_opened` / `prs_closed`: PR numbers opened / reviewed-or-merged this session (e.g., `[54]`); empty array if none.
+- `priorities` (optional): array surfaced on the top-level README "Start here" dashboard. Each entry:
+  `label` (required, short title); `ref` (optional, `owner/repo#N` or freeform key used for dedupe);
+  `why` (optional, one-sentence rationale). Example:
+  `"priorities":[{"label":"Staging gate fix","ref":"lifting-logbook#346","why":"blocks next deploy"}]`.
+  `/journal-compose` aggregates these across projects (deduped by `ref`, capped at 5) — see
+  [ADR-032](adr/032-journal-start-here-dashboard.md).
+
+### Open-PR tracking file (`sessions/<project>/open-prs.jsonl`)
+
+Tracks PRs whose full lifecycle (open → review → merge) spans multiple sessions. Carried forward
+day to day via the draft branch merge to main. `/journal-compose` preserves it unchanged in the
+merge-to-main commit. Schema — one JSON line per open PR:
+
+```json
+{"pr":54,"url":"https://github.com/brownm09/dev-env/pull/54","topic":"<H2 heading from stub>","stub":"YYYY-MM-DD_HHMMSS.stub.md","opened":"YYYY-MM-DD"}
+```
+
+`stub` is the filename that opened the PR — used to cross-reference the opening session when a PR
+spans multiple days. **When a session opens a PR:** append a line, commit alongside the stub.
+**When a session merges/closes a PR:** remove the matching line, then commit:
+
+```bash
+node -e "
+  const fs = require('fs');
+  const path = 'C:/Users/brown/Git/engineering-journal/sessions/<project>/open-prs.jsonl';
+  if (!fs.existsSync(path)) process.exit(0);
+  const kept = fs.readFileSync(path,'utf8').trim().split('\n')
+    .filter(l => l && JSON.parse(l).pr !== <PR_NUMBER>);
+  if (kept.length) fs.writeFileSync(path, kept.join('\n') + '\n');
+  else fs.unlinkSync(path);
+"
+```
+
+If the last line is removed, the script deletes the file rather than leaving it empty.
+
+### Stub structure
+
+Each stub file contains exactly one session block. The `<!-- opening-brief -->` block appears
+**only in the first stub of the day**; subsequent stubs begin directly at `<!-- session: <slug> -->`.
+
+```
+<!-- stub: YYYY-MM-DD HHMMSS -->
+
+<!-- opening-brief (first stub of the day only) -->
+Opening brief: <paste the Next Session Context from the previous day's published journal verbatim;
+               use "First session — no prior context." only if this is the project's very first entry>
+
+<!-- session: <slug> -->
+## <Topic>
+...
+<!-- tokens: input=12,450 output=3,200 cost≈$0.08 -->
+<!-- next-session-context -->
+<one paragraph — for the next session to read and open with>
+```
+
+### Canonical 11-section structure (composed once at day end)
+
+1. Header block (Topic, Repo/Branch, Issues closed, PRs merged)
+2. Table of Contents
+3. Opening Brief (paste the Next Session Context from the previous day verbatim)
+4. Key Decisions (bullet list with links to sections, issues, PRs, ADRs)
+5. Dialogue sections (one H2 per task or topic, drawn from draft)
+6. Open Items / Next Steps (checkbox list)
+7. Token Usage (per-session breakdown tables: model, est. input tokens, est. output tokens, est. cost
+   — drawn from `<!-- tokens: ... -->` comments; when absent use retroactive estimates labeled as such;
+   close with a Combined totals table)
+8. Token Optimization Suggestions (2–4 per-session observations under a `### Session N` heading; close
+   with a `### Cross-Session Patterns` subsection for generalizable findings)
+9. Next Session Context (the final `<!-- next-session-context -->` block from the stubs)
+10. Reflection (gaps, risks, strategic questions — written last)
+11. Further Reading (1–3 primary sources per session; link + one sentence on why it matters)
+
+### Draft branch recovery
+
+If `draft/YYYY-MM-DD` was merged or deleted before end of day (e.g., an accidental mid-day
+`/journal-compose` run):
+
+1. Create a fresh recovery branch from `origin/main`:
+   ```bash
+   git -C C:/Users/brown/Git/engineering-journal fetch origin
+   git -C C:/Users/brown/Git/engineering-journal checkout -b draft/YYYY-MM-DD-recovery origin/main
+   ```
+2. Copy all session files from the stale local branch onto the recovery branch (this also removes
+   from `main` any stubs that were accidentally merged):
+   ```bash
+   git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- sessions/
+   git -C C:/Users/brown/Git/engineering-journal commit -m "draft: recover YYYY-MM-DD stubs (post-kerfuffle)"
+   git -C C:/Users/brown/Git/engineering-journal push -u origin draft/YYYY-MM-DD-recovery
+   ```
+3. If any stub content was committed directly to `main` (e.g., via ad-hoc chore/* PR), revert each
+   accidental commit via a PR to `main`, then re-add the observation to the recovery branch.
+4. Write the current session's stub normally — commit to `draft/YYYY-MM-DD-recovery`.
+5. When running `/journal-compose`, ensure the working tree is on `draft/YYYY-MM-DD-recovery`.
+
+**Why the `-recovery` suffix:** the pre-push hook blocks pushing to a branch that already has a
+merged PR (to prevent stale-branch noise); the suffix bypasses the check while keeping the date visible.
+
+Orphaned `chore/*` or `late-stub/*` stub PRs (sessions that fell back to ad-hoc branches when the
+draft was missing) can be closed — their content was already included via the `sessions/` checkout:
+
+```bash
+gh -R brownm09/engineering-journal pr close <N> \
+  --comment "Content recovered onto draft/YYYY-MM-DD-recovery — closing without merge."
+```
+
+If the working tree is simply on the wrong branch (not the draft branch), no recovery is needed —
+just `git checkout draft/YYYY-MM-DD && git pull`.
