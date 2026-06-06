@@ -1,4 +1,4 @@
-# ADR-041 — Plan Risk-Dimension Audit Checklist + Per-Project Observability Section
+# ADR-042 — Plan Risk-Dimension Audit Checklist + Per-Project Observability Section
 
 **Date:** 2026-06-06
 **Status:** Accepted
