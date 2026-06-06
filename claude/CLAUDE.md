@@ -77,202 +77,44 @@ If the project has no automated tests, the section must say so explicitly and de
 
 ## Git Workflow
 
-- **Create an issue before changing files.** When a user's question or request will result in file changes, create a GitHub issue first with `gh issue create` — describe the problem or goal, not the implementation. Do this before writing any code or editing any files. For a single-line change, ask the user whether an issue is warranted before creating one; anything longer than one line warrants an issue without prompting. Exception: engineering-journal draft branches (`draft/YYYY-MM-DD`) may omit an issue. Every PR must then reference the issue via a `Closes #N` line in the PR body.
-- **Test before PR.** Before running `gh pr create`, execute the project's test command defined in `## Testing` in the project CLAUDE.md. Tests must pass (or the failure must be explained and documented). Include what was tested, the `Tests: N passed, N skipped, N failed (duration)` summary line, and the outcome in the PR body. **If no `## Testing` section exists in the project CLAUDE.md, stop and ask the user to add one — do not open the PR until it is present.**
-  - **Coverage gate.** Also ask whether the change introduces testable behavior not covered by existing tests. If yes, add tests before creating the PR, or explicitly document in the PR body why they are deferred (which tests, what tracks them, why deferral is acceptable). Enforced behaviorally by the author and by `/review` Step 2d (see [ADR-022](../docs/adr/022-test-coverage-gate-before-pr.md)).
-  - **Suppression check.** Also run the pre-PR suppression grep from `## Code Quality` — any new suppression without a PR-body justification blocks the PR.
-  - **Test integrity check.** Also run the pre-PR test-integrity grep from `## Code Quality` — any new skip marker, deleted test, lowered coverage threshold, or bypass flag without a PR-body justification blocks the PR. The `Tests: N passed, N skipped, N failed (duration)` summary line is required in the PR body; a non-zero skipped count requires a per-skip justification (see [ADR-029](../docs/adr/029-test-integrity-policy.md)).
-  - **Pre-existing failure check.** If the project enables `baseline_test_failure_tracking` in `.claude/hook-config.json`, also run `baseline-tests diff`. New failures block the PR; pre-existing failures in files this branch modifies must be fixed inline (≤ ~20 LOC / ~15 min) or filed and referenced in the PR body (see [ADR-030](../docs/adr/030-baseline-test-failure-policy.md)).
-- **ADR-warrant check.** Evaluate whether the change warrants an architectural decision record at three explicit checkpoints: (1) immediately after a plan is approved (post-`ExitPlanMode`), or at the start of the first file edit for sessions without an explicit planning phase; (2) immediately after `gh pr create` returns; and (3) immediately before `gh pr merge`. A change warrants an ADR when any of the following hold: it changes a rule, hook, skill, or settings value documented in `claude/`; it introduces or restructures a directory under `claude/` (skills, hooks, scripts, routines); it establishes or changes a workflow rule that other CLAUDE.md files reference; or its rationale would be hard to recover from `git log` alone six months later. ADRs for global rules go in dev-env [`docs/adr/`](../docs/adr/INDEX.md); ADRs for project-specific decisions go in that project's `docs/adr/`. **If warranted and not yet written, write the ADR and update `INDEX.md` before merging — never merge a qualifying change without an ADR record.**
-  - **Warrant check lookup:** Scan `docs/adr/INDEX.md` tags first — the Tags column covers every ADR's domain keywords. If no tag matches the change type, the warrant check requires no additional file reads. Only open individual ADR files when a tag match suggests a possible overlap or conflict.
-  - **Proactive template (opt-in):** When checkpoint 1 fires and the change is clearly ADR-worthy, create the ADR template file on the branch immediately using the next available ADR number and the `NNN-kebab-case-title.md` naming convention, rather than waiting until checkpoint 3. Fill in context and the decision rationale as work proceeds; the ADR is 80% complete by the time `gh pr create` runs, with no extra end-of-session step. This approach is preferable for complex multi-file changes where the full rationale is known upfront. For exploratory work where the decision may not crystallize until checkpoint 2 or 3, write the ADR at whichever checkpoint it becomes clear.
-- **Never commit directly to `main`.** All changes go through a branch and PR, regardless of repo.
-- **Branch naming:** `feat/`, `fix/`, `config/`, `chore/`, `draft/` prefixes — match the convention already in use in the repo.
-- **PR first, then merge.** Open the PR immediately after pushing the branch; do not prompt the user to run `gh pr create` themselves.
-- **Write the journal stub immediately after `gh pr create`.** Do not defer until merge — if `/compact` fails or the session is corrupted, all context is permanently lost. Write the stub, then report the PR URL and prompt the user to run `/compact`. Once compaction is complete, immediately run `/review <PR-URL> --post-comment`. Address all findings (blocking and non-blocking) and merge in the same session (see [ADR-028](../docs/adr/028-all-findings-merge-gate.md)). Rationale: `/compact` reduces implementation context to a small summary before review fires, preserving most token savings without a session break. The review skill applies the `reviewed-by-claude` label; a PR without that label has not been reviewed. **"Addressed" means fixed-in-PR or filed-and-linked — never "left as-is".** Each finding's disposition (fixed in `<sha>` | filed `#N`) must be recorded in a "Review findings disposition" section of the PR body before `gh pr merge`; the `pre-merge-findings-gate` hook blocks the merge until it is (see [ADR-039](../docs/adr/039-merge-gate-findings-enforcement.md)).
-  - **Multiple PRs in one session:** if the plan opens more than one PR, defer stub writing until after the last `gh pr create` completes. Produce one stub covering all `prs_opened` entries and `open-prs.jsonl` additions together. Do not write an intermediate stub between PR opens.
-- **Fix everything, always — do not ask which findings to address.** When a `/review` or `/code-review` produces findings, resolve **all** of them as part of the same work — never present a choose-which-to-fix menu or ask whether to proceed. Default to fixing in-PR; file-and-link (per [ADR-028](../docs/adr/028-all-findings-merge-gate.md)) only when a finding is genuinely out of scope for the current PR. Prefer the root-cause fix over a band-aid even when the band-aid is smaller — fix the upstream assumption, not just the symptom it produced. Escalate to the user only when a fix requires a product or design decision the code cannot settle, or when it would breach the scope guard in *Code Quality → Fix errors on encounter*. Stated by the user 2026-06-04 (lifting-logbook PR #452); see [ADR-028 → Addendum](../docs/adr/028-all-findings-merge-gate.md).
-- **Write a stub on PR merge.** A merge is a session boundary that requires stub coverage.
-  - **Usage snapshot (post-merge):** After `gh pr merge` completes, the `PostToolUse` hook runs `usage-snapshot.py`, which queries `https://api.anthropic.com/api/oauth/usage` and parses the session JSONL for the top-5 costliest exchanges. The hook emits a `### Usage Snapshot (post-merge)` markdown block to the session. Include this block verbatim in the stub body. `/journal-compose` will preserve it in Section 7 (Token Usage).
-  - **Multiple merges in one session:** if the plan includes more than one PR merge, defer all stub work until after the last merge completes. Produce one consolidated stub covering every `prs_closed` entry and `open-prs.jsonl` removal together. Do not write an intermediate stub or stop between merges.
-  - **Same session as PR open:** the existing stub covers the full lifecycle. Before the final commit below, update the stub's session block with any of the following that arose after the PR was opened: decisions made, discoveries surfaced, dependencies introduced, or deviations from documented process encountered. Then append a second manifest line with `prs_closed: [N]`, remove the PR from `open-prs.jsonl`, commit, and stop.
-  - **New session (merge happens later):** choose the cheaper option:
-    - **Update the opening stub in place** if the merge session adds only minor content (e.g., the merge itself with no follow-up work) — avoids the token cost `/journal-compose` pays to read and merge two stubs.
-    - **Write a new stub** if the merge session involves substantial new content (review responses, follow-up fixes, etc.) — the PR grouping heuristic will combine them under one H2.
-  - Either way: set `prs_closed: [N]` in the relevant manifest entry, remove the PR from `open-prs.jsonl`, and stop.
-- **PR closed without merging.** If a PR is closed without merging, the stub was already written at PR creation. Stopping is optional — the session may continue if follow-up work remains.
-- **After merging a PR:** move the linked project board item to Done. The exact command (project ID, field ID, option ID) is project-specific — each project's CLAUDE.md provides it. For dev-env, see the GitHub Project section below.
-- **When a work stream completes** (a milestone, closed issue group, or multi-session feature sequence): update the project's active roadmap or work-tracking document — move the completed item out of Active Work and into a Shipped section (or equivalent). Do not leave roadmaps in a state that contradicts the actual shipping history.
-- **Exception:** Local-only repos with no remote may commit to main directly.
-- **Branch creation in squash-merge repos:** Use `new-branch <name>` (source `~/.claude/scripts/new-branch.sh` in `.bashrc`) or `git checkout -b <name> origin/main` explicitly. Never cut from a branch that has been squash-merged — its commits no longer exist on main and a rebase will fail. Verify with `git merge-base HEAD origin/main` — output should equal `git rev-parse origin/main`.
-- **Separate clones for fully independent parallel work.** Worktrees share the `.git` ref database (branches, stash, FETCH_HEAD, packed-refs). When two sessions share no branches or PRs and you want full `.git/` isolation, use a local clone instead of a worktree:
-  ```bash
-  git clone --local C:/Users/brown/Git/<repo> C:/Users/brown/Git/<repo>-2
-  ```
-  `--local` hardlinks the object store so the clone is nearly instant with no extra disk cost for existing objects. Use worktrees (default) when sessions share common context; use a separate clone only when the two workstreams are completely independent.
-- **Merging a PR developed in a worktree:** Run `gh pr merge --squash --delete-branch` directly from the worktree. Do not call `ExitWorktree` first — it is session-bound and becomes a no-op after `/compact`, which is the common case. `gh` will fail to check out main locally and will fail to delete the local branch (the worktree holds the branch checked out), but the remote merge and remote branch delete complete successfully — those errors are benign. The local worktree directory and branch are cleaned up by the weekly `prune-merged-worktrees.py` run.
-- **Deleting a remote branch in Claude Code web sessions:** Never use `git push origin --delete <branch>` in a web/cloud session — the sandbox HTTP git proxy does not relay the `git-receive-pack` sideband status for a delete-only send-pack, so the push aborts with a sideband disconnect (`the remote end hung up unexpectedly`). (Clone depth is not a factor — a delete transfers no objects.) Delete the ref through the GitHub REST API instead, which travels over authenticated HTTPS and bypasses send-pack entirely — the same path `gh pr merge --squash --delete-branch` already uses, so it is unaffected: `gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"`. Root cause and upstream fix: [ADR-035](../docs/adr/035-git-push-delete-web-session-constraint.md) / [REFERENCE.md → Platform Constraints](../docs/REFERENCE.md#platform-constraints).
-- **Verify branch before making changes and before every commit.** Run `git branch --show-current` (1) before making any edits in a session and (2) immediately before each `git commit`. Do not assume the branch is correct because it was correct earlier — worktrees, `git checkout`, and multi-repo work can silently shift context. A `UserPromptSubmit` hook already emits the active worktree list on every prompt when multiple worktrees are open. If the branch is wrong: if no edits are on disk yet, switch branches immediately; if edits are already on disk but not committed, run `git stash`, switch to the correct branch, then `git stash pop` before proceeding.
-- **Auto-merge is off by design.** Every merge happens in-session via `gh pr merge --squash --delete-branch` after the post-PR-create checklist completes (`/review`, ADR-warrant check, doc-reconciliation check, project board transition, roadmap shipped-row move). Per-PR `gh pr merge --auto --squash` is permitted only after that checklist passes in-session — never as fire-and-forget after `gh pr create`. Rationale: [ADR-031](../docs/adr/031-auto-merge-disabled.md).
-- **Pre-push hook wiring (one-time setup):** Before setting, check for an existing value: `git config --system core.hooksPath` and `git config --global core.hooksPath`. If a system-level path exists (enterprise-managed hooks), migrate its hooks into `~/.claude/hooks/` rather than overriding. If another tool (Husky, Lefthook) owns the global value, coordinate rather than overwrite — two tools cannot share `core.hooksPath`. Once clear: `git config --global core.hooksPath ~/.claude/hooks`. The hook chains to any per-repo `.git/hooks/pre-push` so existing repo-level hooks are preserved.
-- **PR branch state must come from the remote, not the local worktree.** Whenever checking whether a PR has addressed review findings or is ready to merge: (1) run `git fetch origin <headRefName>` first, (2) read files via `git show origin/<headRefName>:<path>`, never from the local working tree. The local worktree may be behind or on a different branch entirely — reading it produces false "still outstanding" results. (Incident: lifting-logbook#86 commit `50f7ac6` fixed all blockers but a follow-up check read the wrong branch and reported three still open.)
+- **Create an issue before changing files.** `gh issue create` describing the problem/goal, not the implementation, before any edit. Single-line change: ask first; anything longer warrants an issue without prompting. Exception: engineering-journal `draft/YYYY-MM-DD` branches. Every PR references the issue via `Closes #N`.
+- **Test before PR.** Before `gh pr create`, run the project's `## Testing` command; tests must pass (or the failure be explained). Put what was tested + the `Tests: N passed, N skipped, N failed (duration)` line + outcome in the PR body. **No `## Testing` section → stop and ask the user to add one before opening the PR.** Also run, before `gh pr create`:
+  - **Coverage gate** — add tests for new testable behavior, or document the deferral in the PR body ([ADR-022](../docs/adr/022-test-coverage-gate-before-pr.md)).
+  - **Suppression + test-integrity greps** from `## Code Quality` — any new suppression, skip marker, deleted test, lowered threshold, or bypass flag needs a PR-body justification or it blocks the PR; a non-zero skipped count needs a per-skip justification ([ADR-026](../docs/adr/026-suppression-policy.md), [ADR-029](../docs/adr/029-test-integrity-policy.md)).
+  - **Pre-existing failure check** — if `baseline_test_failure_tracking` is on, run `baseline-tests diff`: new failures block; pre-existing failures in touched files are fixed inline (≤ ~20 LOC / ~15 min) or filed ([ADR-030](../docs/adr/030-baseline-test-failure-policy.md)).
+- **ADR-warrant check** at three checkpoints — (1) after a plan is approved / first edit, (2) after `gh pr create`, (3) before `gh pr merge`. Warranted when the change touches a rule/hook/skill/settings documented in `claude/`, restructures a `claude/` directory, sets a workflow rule other CLAUDE.md files reference, or has rationale `git log` won't recover. Scan `docs/adr/INDEX.md` tags first; open ADR files only on a tag match. Global rules → dev-env [`docs/adr/`](../docs/adr/INDEX.md); project decisions → that project's `docs/adr/`. **Write the ADR + update `INDEX.md` before merging a qualifying change.** For clearly ADR-worthy multi-file work, create the template at checkpoint 1 ([ADR-011](../docs/adr/011-adr-warrant-check.md)).
+- **Never commit directly to `main`.** Branch + PR always. Exception: local-only repos with no remote.
+- **Branch naming:** `feat/`, `fix/`, `config/`, `chore/`, `draft/` — match the repo's convention.
+- **Branch creation in squash-merge repos:** use `new-branch <name>` (sources `~/.claude/scripts/new-branch.sh`) or `git checkout -b <name> origin/main`. Never cut from a squash-merged branch (its commits are gone from main; rebase fails). Verify `git merge-base HEAD origin/main` equals `git rev-parse origin/main`.
+- **Verify branch before editing and before every commit** with `git branch --show-current` — worktrees and `git checkout` shift context silently. If wrong: switch if no edits are on disk; else `git stash`, switch, `git stash pop`.
+- **PR first, then merge.** Open the PR immediately after pushing; don't prompt the user to run `gh pr create`.
+- **Write the journal stub immediately after `gh pr create`** — defer and a corrupted session loses all context. Then report the PR URL, prompt `/compact`, and after compaction run `/review <PR-URL> --post-comment`. **Address all findings — fixed-in-PR or filed-and-linked, never "left as-is"** — and merge in the same session. Each finding's disposition (fixed in `<sha>` | filed `#N`) goes in a "Review findings disposition" PR-body section; the `pre-merge-findings-gate` hook blocks merge until it's present, and `/review` applies the `reviewed-by-claude` label ([ADR-028](../docs/adr/028-all-findings-merge-gate.md), [ADR-039](../docs/adr/039-merge-gate-findings-enforcement.md)).
+- **Fix everything, always — never ask which findings to address.** Resolve all `/review` / `/code-review` findings as part of the same work; default to fixing in-PR, file-and-link only when genuinely out of scope. Prefer the root-cause fix over the smaller band-aid. Escalate only for a product/design decision the code can't settle or a breach of the *Code Quality → Fix errors on encounter* scope guard ([ADR-028 → Addendum](../docs/adr/028-all-findings-merge-gate.md)).
+- **Write a stub on PR merge** — a merge is a session boundary. After `gh pr merge`, the `PostToolUse` hook emits a `### Usage Snapshot (post-merge)` block; include it verbatim in the stub (preserved in journal Section 7). Same session as the PR open: update the existing stub, append a `prs_closed:[N]` manifest line, remove the PR from `open-prs.jsonl`. New session: update the opening stub in place for minor merges, or write a new stub for substantial follow-up. Either way set `prs_closed:[N]` and remove from `open-prs.jsonl`.
+- **Multiple PRs/merges in one session:** defer stub writing until after the last `gh pr create` / `gh pr merge`; produce one consolidated stub. Never write an intermediate stub between PR opens or merges.
+- **PR closed without merging:** the stub was already written at creation; stopping is optional.
+- **After merging:** move the linked project board item to Done (command is project-specific — see the project's CLAUDE.md; for dev-env, its GitHub Project section). When a work stream completes (milestone, issue group, feature sequence), move the item from Active Work to Shipped in the project roadmap — don't leave roadmaps contradicting shipping history.
+- **Auto-merge is off by design.** Every merge is in-session via `gh pr merge --squash --delete-branch` after the post-PR checklist (`/review`, ADR-warrant, doc-reconciliation, board transition, roadmap move). `--auto` is allowed only after that checklist passes in-session, never fire-and-forget ([ADR-031](../docs/adr/031-auto-merge-disabled.md)).
+- **PR branch state comes from the remote, not the local worktree.** Before judging whether a PR addressed findings or is mergeable: `git fetch origin <headRefName>`, then read via `git show origin/<headRefName>:<path>` — never the local tree, which may be stale or on another branch ([ADR-004](../docs/adr/004-pr-review-reads-from-remote.md)).
+- **Runbooks** for merging a PR from a worktree, separate clones for independent parallel work, deleting a remote branch in web sessions ([ADR-035](../docs/adr/035-git-push-delete-web-session-constraint.md)), and one-time `core.hooksPath` setup are in [`docs/REFERENCE.md` → Git Workflow Runbooks](../docs/REFERENCE.md#git-workflow-runbooks).
 
 ---
 
-## Dev-Env
+## Dev-Env & Project Boards
 
-`~/.claude/` is split between two categories. Treat them differently.
+Dev-env's own architecture (the `~/.claude/` symlink/junction map, the worktree-on-`main` rule, routine authoring) and its GitHub Project IDs, field IDs, and board procedures live in the **dev-env project `CLAUDE.md`** (repo root) — they are project-specific and must not load into every project. Each project's `CLAUDE.md` owns its own `## Testing` commands and board configuration; the global "Test before PR" rule defers to that section.
 
-**Owned by `brownm09/dev-env` — symlinked, version-controlled:**
+**GitHub Projects — single-select option mutation hazard (applies to every project).** Running `updateProjectV2Field` with `singleSelectOptions` is a full replacement — passing the existing options unchanged still produces new option IDs and drops every item's prior assignment for that field. Validated against lifting-logbook on 2026-05-08: an Observability epic addition wiped assignments on all 89 project items despite passing the full option list. Recovery precedent: [lifting-logbook#203](https://github.com/brownm09/lifting-logbook/issues/203).
 
-| Path | dev-env source |
-|---|---|
-| `~/.claude/CLAUDE.md` | `claude/CLAUDE.md` |
-| `~/.claude/scripts/` | `claude/scripts/` (directory junction) |
-| `~/.claude/skills/` | `claude/skills/` (directory junction) |
-| `~/.claude/hooks/` | `claude/hooks/` (directory junction) |
-| `~/.claude/scheduled-tasks/` | `claude/routines/` (directory junction to `~/.claude/scheduled-tasks/`) |
-| `~/.claude/settings.json` | `claude/settings.json` |
+Procedure (mandatory before adding/removing/renaming any single-select option on any project):
 
-**Machine-local only — never commit:**
+1. Snapshot current per-item assignments to a git-tracked file under the project repo's `.claude/backups/`.
+2. Commit the snapshot.
+3. Run the mutation with the full desired option list.
+4. Update the project's CLAUDE.md option-ID table with the regenerated IDs in the same PR.
+5. Restore assignments by re-issuing `gh project item-edit` for each item, mapping snapshot option name → new option ID.
 
-`scratch/`, `projects/`, `sessions/`, `backups/`, `ide/`, `plans/`, `shell-snapshots/`
-
-**Rule:** Any addition or modification to a dev-env-owned artifact — new hook script, new skill, settings change, CLAUDE.md edit — must be committed to `brownm09/dev-env` via branch and PR before the session ends. Do not leave global tooling as untracked files.
-
-**Rule:** The canonical dev-env worktree (`~/Git/dev-env`) must stay on `main` at all times. All dev-env changes go through a separate worktree (use `EnterWorktree` or `git worktree add`). Reason: `~/.claude/settings.json` and `~/.claude/scripts/` are symlinked/junctioned to the canonical worktree's working tree — checking out a feature branch there makes newly merged hooks and scripts invisible until the worktree returns to main. `dev-env-sync` will warn on every prompt when this rule is violated.
-
-**Routines note:** `dev-env/claude/routines/` is a directory junction pointing at `~/.claude/scheduled-tasks/`, so the scheduler tool writes directly to the version-controlled path. After creating a new routine, commit it to dev-env under `claude/routines/`.
-
-**Routine authoring — sync-to-main preamble.** Any routine that reads repo-resident files (a skill, a context file, a queue file) at run time must invoke the `sync-routine-worktree` skill as Step 0, before reading any of those files. Scheduled tasks fire into Claude-managed worktrees whose branches were cut from whatever `main` was at worktree creation; without an explicit sync the routine reads stale files or aborts because a recently-merged file is missing on the worktree branch. The sync skill handles fetch, branch-class-aware sync (Claude-managed worktree / `main` / other), file existence verification, and abort-with-push-notification on conflict — routines pass `REPO`, `VERIFY_FILE`, and `PREFIX` and treat the return as a guard. See `claude/skills/sync-routine-worktree/SKILL.md` and `claude/routines/nightly-cover-letters/SKILL.md` for the canonical pattern. Rationale: `docs/adr/013-sync-routine-worktree-skill.md`.
-
-**Doc-reconciliation checkpoint** (three moments, same as ADR-warrant): (1) immediately after a plan is approved; (2) immediately after `gh pr create` returns; (3) immediately before `gh pr merge`. At each checkpoint, ask: does this change add, remove, rename, or modify the behavior of a skill, hook, script, or routine? If yes, verify that `README.md` and any project-specific reference docs listed in the project's Documentation Maintenance table are updated in this PR. For dev-env, the table is in `dev-env/CLAUDE.md`. **If warranted updates are missing, add them before merging.** Rationale: `docs/adr/019-doc-reconciliation-enforcement.md`.
-
-**Downstream artifacts that name specific dev-env skills/hooks/routines** (update in the same PR as a rename or retirement):
-
-- `tech-leadership-reference/ai-adoption/ai-adoption-readiness-framework.md` — Appendix C names `/propose`, `/review`, `/journal-compose`, `/research`, and the `prune-stale-worktrees` and nightly journal compose routines as live-state evidence.
-
-**Repo path:** `C:/Users/brown/Git/dev-env`
-
----
-
-## GitHub Project
-
-All new dev-env issues must be added to the **Dev Env** project and given an Impact rating and Why description before work begins.
-
-**Project IDs:**
-- Project number: `3`, owner: `brownm09`
-- Project node ID: `PVT_kwHOAjEKvM4BWKFe`
-
-**Field IDs:**
-
-| Field | ID | Options |
-|---|---|---|
-| Status | `PVTSSF_lAHOAjEKvM4BWKFezhRgkMY` | Todo=`f75ad846`, In Progress=`47fc9ee4`, Done=`98236657` |
-| Impact | `PVTSSF_lAHOAjEKvM4BWKFezhRgkNc` | High=`08de2558`, Medium=`6320e8a6`, Low=`d8a85c2f` |
-| Why | `PVTF_lAHOAjEKvM4BWKFezhRgkN0` | (text) |
-
-> **Single-select option mutation hazard (applies to every project, not just dev-env).** Running `updateProjectV2Field` with `singleSelectOptions` is a full replacement — passing the existing options unchanged still produces new option IDs and drops every item's prior assignment for that field. Validated against lifting-logbook on 2026-05-08: an Observability epic addition wiped assignments on all 89 project items despite passing the full option list. Recovery precedent: [lifting-logbook#203](https://github.com/brownm09/lifting-logbook/issues/203).
->
-> **Procedure (mandatory before adding/removing/renaming any single-select option on any project):**
->
-> 1. Snapshot current per-item assignments to a git-tracked file under the project repo's `.claude/backups/`.
-> 2. Commit the snapshot.
-> 3. Run the mutation with the full desired option list.
-> 4. Update the project's CLAUDE.md option-ID table with the regenerated IDs in the same PR.
-> 5. Restore assignments by re-issuing `gh project item-edit` for each item, mapping snapshot option name → new option ID.
->
-> If a mutation runs without a prior snapshot commit, stop and recover from the latest snapshot before any other work.
-
-**Impact guidelines:**
-
-| Level | Meaning |
-|---|---|
-| High | Causes manual recovery work or token waste on every occurrence |
-| Medium | Recurs periodically or silently degrades correctness over time |
-| Low | Nice-to-have; low frequency or easily worked around |
-
-**Workflow — automated via PostToolUse hook:**
-
-After `gh issue create` succeeds, the `post-tool-use.py` hook fires automatically and:
-
-1. Adds the issue to project #3 (`gh project item-add`).
-2. Exits with code 2, printing the exact `gh project item-edit` commands to set Impact and Why.
-
-**Run those commands immediately — before any file edits.** Do not proceed to implementation until both Impact and Why are set. This is the same forcing function as the test-before-PR rule: the hook output is visible in the session and must be acted on.
-
-**Fallback (if the hook did not fire or the item-add failed):** run the three steps manually:
-
-```bash
-# Requires project scope — add once if needed: gh auth refresh -s project
-
-# 1. Add issue to project, capture item ID
-TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
-gh project item-add 3 --owner brownm09 --url <issue-url> --format json > "$TMPFILE"
-ITEM_ID=$(node -e "const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8')); console.log(d.id);")
-rm -f "$TMPFILE"
-
-# 2. Set Impact
-gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
-  --field-id PVTSSF_lAHOAjEKvM4BWKFezhRgkNc \
-  --single-select-option-id <option-id>   # 08de2558=High  6320e8a6=Medium  d8a85c2f=Low
-
-# 3. Set Why (one sentence — the cost of not fixing it)
-gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
-  --field-id PVTF_lAHOAjEKvM4BWKFezhRgkN0 \
-  --text "<why this matters>"
-```
-
-To look up an item ID (e.g., when moving to In Progress or Done in a new session):
-
-```bash
-TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
-gh project item-list 3 --owner brownm09 --format json --limit 1000 > "$TMPFILE"
-ITEM_ID=$(node -e "
-  const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8'));
-  const item=d.items.find(i=>i.content&&i.content.number===<N>);
-  console.log(item.id);
-")
-rm -f "$TMPFILE"
-```
-
-**Move to In Progress when work begins:**
-
-```bash
-gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
-  --field-id PVTSSF_lAHOAjEKvM4BWKFezhRgkMY \
-  --single-select-option-id 47fc9ee4
-```
-
-**Move to Done after PR merges:**
-
-```bash
-gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
-  --field-id PVTSSF_lAHOAjEKvM4BWKFezhRgkMY \
-  --single-select-option-id 98236657
-```
-
----
-
-## Testing
-
-Run the following from the repo root to verify all hook scripts are free of syntax errors:
-
-```bash
-py -3 -c "import ast,sys; [ast.parse(open(f,encoding='utf-8').read(),f) for f in sys.argv[1:]]" claude/scripts/*.py
-```
-
-`ast.parse` is used instead of `py_compile` because the latter writes `.pyc` files into `claude/scripts/__pycache__/` as a side effect (see [dev-env#276](https://github.com/brownm09/dev-env/issues/276)). Neither `-B` nor `PYTHONDONTWRITEBYTECODE=1` suppresses that — they only affect implicit caching on import, not explicit compilation.
-
-On Windows, `python3` resolves to the Microsoft Store stub — use `py -3` (the Windows Python Launcher). See [ADR-007](../docs/adr/007-hook-command-invocation.md).
-
-When changing `claude/hooks/pre-push`, also run its behavioral self-test, which drives the real hook against throwaway fixture repos with a stubbed `npm` and asserts the lockfile-drift guard's BLOCK / PASS / SKIP paths, working-tree restoration, and repo-hook chaining (see [ADR-036](../docs/adr/036-lockfile-drift-prevention.md)):
-
-```bash
-bash claude/hooks/tests/test-pre-push-lockfile.sh
-```
-
-For docs-only changes to `claude/CLAUDE.md`: run `grep -n 'date -u' claude/CLAUDE.md` and confirm every match is in an internal operational artifact context (lock files, log timestamps) — not in stub filename or branch name descriptions.
+If a mutation runs without a prior snapshot commit, stop and recover from the latest snapshot before any other work.
 
 ---
 
@@ -552,9 +394,9 @@ operational artifacts (compose lock files, log file timestamps).
    git -C C:/Users/brown/Git/engineering-journal rev-parse origin/main
    ```
 3. Read `sessions/<project>/open-prs.jsonl` if it exists — include its PR list as session context before starting work.
-4. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see stub structure below)
+4. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
-6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
+6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD.manifest.jsonl sessions/<project>/open-prs.jsonl`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
    *(omit `open-prs.jsonl` from the add command if it was not modified this session)*
 
@@ -567,150 +409,19 @@ operational artifacts (compose lock files, log file timestamps).
    ```
 4. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` with the current session block
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
-6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see Manifest format below)
+6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD.manifest.jsonl sessions/<project>/open-prs.jsonl`, `git commit -m "draft: YYYY-MM-DD session N"`, `git push`
    *(omit `open-prs.jsonl` from the add command if it was not modified this session)*
 
-**Manifest format (`YYYY-MM-DD.manifest.jsonl`):**
+**File formats, stub template, and recovery:** the `.manifest.jsonl` and `open-prs.jsonl` schemas
+(referenced in the workflow steps above), the stub-file template, the canonical 11-section compose
+structure, and the draft-branch recovery procedure are documented in
+[`docs/REFERENCE.md` → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals).
 
-One JSON line per session, appended after the token comment is known (end of session):
-```bash
-echo '{"stub":"YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"input":N,"output":N,"cost":N},"prs_opened":[],"prs_closed":[]}' \
-  >> "C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl"
-```
-(`YYYY-MM-DD` and `HHMMSS` are local time — same as the stub filename spec above.)
-
-- `prs_opened`: PR numbers opened during this session (e.g., `[54]`). Empty array if none.
-- `prs_closed`: PR numbers reviewed/merged during this session (e.g., `[54]`). Empty array if none.
-- `priorities` (optional): array of items to surface on the top-level README "Start here" dashboard.
-  Each entry: `label` (required string, short title); `ref` (optional string, `owner/repo#N` or
-  freeform key used for dedupe); `why` (optional string, one-sentence rationale). Example:
-  `"priorities":[{"label":"Staging gate fix","ref":"lifting-logbook#346","why":"blocks next deploy"}]`.
-  `/journal-compose` aggregates these across all projects (deduped by `ref`, capped at 5) — see
-  [ADR-032](https://github.com/brownm09/dev-env/blob/main/docs/adr/032-journal-start-here-dashboard.md).
-
-The manifest lets `/journal-compose` see the session count, topics, token data, and PR lifecycle
-without reading individual stubs. It is advisory: if the manifest is missing or has fewer entries
-than the stub glob, stubs are authoritative. Never commit the manifest separately from its stubs
-(include it in the same `git add` / commit step).
-
-**Open-PR tracking file (`sessions/<project>/open-prs.jsonl`):**
-
-Tracks PRs whose full lifecycle (open → review → merge) spans multiple sessions. Lives in the
-engineering-journal repo; carried forward from day to day via the draft branch merge to main.
-
-Schema — one JSON line per open PR:
-```json
-{"pr":54,"url":"https://github.com/brownm09/dev-env/pull/54","topic":"<H2 heading from stub>","stub":"YYYY-MM-DD_HHMMSS.stub.md","opened":"YYYY-MM-DD"}
-```
-
-- `stub`: the stub filename that opened this PR — used by `/journal-compose` to cross-reference the opening session when a PR spans multiple days.
-
-- **When a session opens a PR:** append a line and commit it alongside the stub (see step 7 above).
-- **When a session merges/closes a PR:** remove the matching line using `node -e`, then commit:
-  ```bash
-  node -e "
-    const fs = require('fs');
-    const path = 'C:/Users/brown/Git/engineering-journal/sessions/<project>/open-prs.jsonl';
-    if (!fs.existsSync(path)) process.exit(0);
-    const kept = fs.readFileSync(path,'utf8').trim().split('\n')
-      .filter(l => l && JSON.parse(l).pr !== <PR_NUMBER>);
-    if (kept.length) fs.writeFileSync(path, kept.join('\n') + '\n');
-    else fs.unlinkSync(path);
-  "
-  ```
-  If the last line is removed, the script deletes the file rather than leaving it empty.
-- `/journal-compose` preserves this file unchanged in the merge-to-main commit so it carries forward to the next day.
-
-**Draft branch recovery:**
-
-If `draft/YYYY-MM-DD` was merged or deleted before end of day (e.g., by an accidental mid-day `/journal-compose` run):
-
-1. Create a fresh recovery branch from `origin/main`:
-   ```bash
-   git -C C:/Users/brown/Git/engineering-journal fetch origin
-   git -C C:/Users/brown/Git/engineering-journal checkout -b draft/YYYY-MM-DD-recovery origin/main
-   ```
-2. Copy all session files from the stale local branch onto the recovery branch:
-   ```bash
-   git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- sessions/
-   git -C C:/Users/brown/Git/engineering-journal commit -m "draft: recover YYYY-MM-DD stubs (post-kerfuffle)"
-   git -C C:/Users/brown/Git/engineering-journal push -u origin draft/YYYY-MM-DD-recovery
-   ```
-   This also removes from `main` any stubs that were accidentally merged (they will be deleted from the branch
-   and composed into a journal when `/journal-compose` runs).
-3. If any stub content was committed directly to `main` (e.g., via ad-hoc chore/* PR), revert each accidental commit
-   via a PR to `main` and then re-add the observation to the recovery branch.
-4. Write the stub for the current session normally — commit to `draft/YYYY-MM-DD-recovery` instead of `draft/YYYY-MM-DD`.
-5. When running `/journal-compose`, ensure the engineering-journal working tree is on `draft/YYYY-MM-DD-recovery`.
-
-**Why `draft/YYYY-MM-DD-recovery` instead of `draft/YYYY-MM-DD`:** The pre-push hook blocks pushing to a branch that already has a merged PR (to prevent stale-branch noise). The `-recovery` suffix bypasses the check while keeping the date visible.
-
-If orphaned `chore/*` or `late-stub/*` stub PRs are open (sessions that fell back to ad-hoc branches when the draft was missing):
-```bash
-# Close the ad-hoc PR — its content was already included via the sessions/ checkout above
-gh -R brownm09/engineering-journal pr close <N> \
-  --comment "Content recovered onto draft/YYYY-MM-DD-recovery — closing without merge."
-```
-
-If the engineering-journal working tree is simply on the wrong branch (not the draft branch), no recovery needed:
-```bash
-git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD
-git -C C:/Users/brown/Git/engineering-journal pull
-```
-
-**End of day (last session):**
-1. Run `/journal-compose --force` — it discovers all stubs via manifest (or glob fallback), merges
-   them, produces the canonical 11-section document, and auto-merges the PR. `--force` is required
-   when composing today's branch; past-date composition (`/journal-compose YYYY-MM-DD` for a prior
-   day) does not need the flag
-
----
-
-### Stub structure
-
-Each stub file contains exactly one session block:
-
-```
-<!-- stub: YYYY-MM-DD HHMMSS -->
-
-<!-- opening-brief (first stub of the day only) -->
-Opening brief: <paste the Next Session Context from the previous day's published journal verbatim;
-               use "First session — no prior context." only if this is the project's very first entry>
-
-<!-- session: <slug> -->
-## <Topic>
-...
-<!-- tokens: input=12,450 output=3,200 cost≈$0.08 -->
-<!-- next-session-context -->
-<one paragraph — for the next session to read and open with>
-```
-
-The `<!-- opening-brief -->` block appears **only in the first stub of the day**.
-Subsequent stubs begin directly at `<!-- session: <slug> -->`.
-
----
-
-### Canonical 11-section structure (composed once at day end)
-
-1. Header block (Topic, Repo/Branch, Issues closed, PRs merged)
-2. Table of Contents
-3. Opening Brief (paste the Next Session Context from the previous day verbatim)
-4. Key Decisions (bullet list with links to sections, issues, PRs, ADRs)
-5. Dialogue sections (one H2 per task or topic, drawn from draft)
-6. Open Items / Next Steps (checkbox list)
-7. Token Usage (per-session breakdown tables: model, est. input tokens, est. output tokens,
-   est. cost — drawn from `<!-- tokens: ... -->` comments in the draft; when comments are
-   absent use retroactive estimates based on session scope, labeled as "retroactive estimate";
-   close with a Combined totals table)
-8. Token Optimization Suggestions (2–4 per-session observations grouped under a `### Session N`
-   heading; close with a `### Cross-Session Patterns` subsection for generalizable findings
-   that apply across multiple sessions)
-9. Next Session Context (the final `<!-- next-session-context -->` block from the stubs)
-10. Reflection (gaps, risks, strategic questions — written last)
-11. Further Reading (1–3 primary sources per session that explain the reasoning behind key
-    decisions; intended for deliberate study between sessions — link + one sentence on why
-    it matters)
+**End of day (last session):** Run `/journal-compose --force` — it discovers all stubs via manifest
+(or glob fallback), merges them, produces the canonical 11-section document, and auto-merges the PR.
+`--force` is required when composing today's branch; past-date composition
+(`/journal-compose YYYY-MM-DD` for a prior day) does not need the flag.
 
 ---
 
