@@ -97,7 +97,7 @@ When a PR modifies any of the paths below, update the listed reference docs **in
 
 ## GitHub Project
 
-All new dev-env issues must be added to the **Dev Env** project and given an Impact rating and Why description before work begins. The general single-select option-mutation hazard that applies to **every** project is documented in the global `claude/CLAUDE.md` → GitHub Projects section; the dev-env-specific IDs and procedures are below.
+All new dev-env issues must be added to the **Dev Env** project and given an Impact rating and Why description before work begins. The general single-select option-mutation hazard that applies to **every** project is documented in the global `claude/CLAUDE.md` → Dev-Env & Project Boards section; the dev-env-specific IDs and procedures are below.
 
 **Project IDs:**
 - Project number: `3`, owner: `brownm09`
