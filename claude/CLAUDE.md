@@ -73,6 +73,8 @@ Run `pytest` from the repo root. Integration tests require `DATABASE_URL` set.
 
 If the project has no automated tests, the section must say so explicitly and describe the manual verification steps instead. The `## Testing` section is used by the global "Test before PR" rule — **if no `## Testing` section exists in the project CLAUDE.md, stop before running `gh pr create` and ask the user to add one. Do not open the PR until the section is present.**
 
+Every project CLAUDE.md **must** also include a `## Observability` section describing the project's logging/observability convention — the logger and levels used, structured vs. plain output, where errors and traces go, and what the Observability audit dimension should verify for that project. Projects with no runtime to instrument (content/docs repos) must say so explicitly and name the equivalent verification (e.g. reference-integrity or link-check scripts). The `## Observability` section is what the *Plan-then-optimize → Pass 3* Observability dimension defers to — **if no `## Observability` section exists, note its absence in the plan and ask the user to add one; do not block the PR on it** (advisory, like the `## Testing` reminder — the gate is this CLAUDE.md rule, not a hook).
+
 ---
 
 ## Git Workflow
@@ -276,7 +278,7 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 
 **Mechanical operations:** If a task is fully scriptable with known inputs, write the script rather than running an interactive session. Candidate operations: stale PR remediation, branch cleanup, rebase-and-merge sequences. Use `~/.claude/scripts/merge-stale-pr.sh` for engineering-journal stale draft PRs.
 
-**Plan-then-optimize before acting:** Any task involving an Agent spawn, a skill invocation, reads across more than one file, or a switch to a new primary objective within the same session (e.g., moving from a `/review` or other skill output to addressing findings, or from one issue to another) requires this protocol. State a numbered plan first, then apply two explicit revision passes before taking any action.
+**Plan-then-optimize before acting:** Any task involving an Agent spawn, a skill invocation, reads across more than one file, or a switch to a new primary objective within the same session (e.g., moving from a `/review` or other skill output to addressing findings, or from one issue to another) requires this protocol. State a numbered plan first, then apply three explicit revision passes before taking any action.
 
 **Pass 1 — Token efficiency:** check:
 - Sequential tool calls that can be parallelized
@@ -290,6 +292,17 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 - No Agent scope was narrowed so far that it misses required context
 - The final outputs (files written, PRs opened, commits made) match what the original plan intended
 - If the plan includes multiple PR merges, the stub-writing step appears once, after the last merge — not once per merge
+
+**Pass 3 — Risk-dimension audit:** before acting, the plan must address each of these six dimensions explicitly. For any that don't apply, state **"N/A — \<reason\>"** rather than omitting it. The bar is *stating the decision*, not adding work everywhere.
+
+1. **Testing** — coverage for new behavior (defers to the project `## Testing` section).
+2. **Observability** — what is logged/traced at boundaries and on failure (defers to the project `## Observability` section).
+3. **Security** — authz, input validation, secret handling, sensitive-data/PII exposure.
+4. **Resilience / failure modes** — error handling, timeouts, fallbacks, and how the change is rolled back / reverted.
+5. **Performance** — data-access patterns (N+1), hot paths, payload/bundle size.
+6. **Data integrity & migrations** — schema changes, multi-tenant isolation, reversibility.
+
+**Accessibility** is audited whenever the change touches UI. Each project's CLAUDE.md may declare additional project-specific gates (e.g. lifting-logbook: OTel trace correlation, raw-SQL spans, LLM data scrubbing; career-playbook: `validate.sh`, briefing regeneration, artifact-schema parity) — the audit defers to those.
 
 ---
 
