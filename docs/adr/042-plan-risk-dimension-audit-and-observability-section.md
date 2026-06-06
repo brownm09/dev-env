@@ -45,7 +45,7 @@ specifics to each project**.
 1. **Add Pass 3 — Risk-dimension audit to the plan-then-optimize protocol** in global
    `claude/CLAUDE.md`. Every plan must address six dimensions explicitly — **Testing,
    Observability, Security, Resilience/failure-modes, Performance, Data integrity &
-   migrations** — and for any that don't apply must state `"N/A — <reason>"` rather than
+   migrations** — and for any that don't apply must state `N/A — <reason>` rather than
    omit it. The bar is *stating the decision*, not adding work everywhere. The protocol's
    intro is updated from "two explicit revision passes" to "three."
 

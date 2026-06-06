@@ -47,6 +47,29 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
    `grep -n 'date -u' claude/CLAUDE.md` and confirm every match is in an internal operational
    artifact context (lock files, log timestamps) — not in stub filename or branch name descriptions.
 
+## Observability
+
+dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
+"runtime" is short-lived hook scripts and skills invoked by Claude Code. There is no
+application logger, no log aggregation, and no traces. This section exists to satisfy the
+global per-project `## Observability` requirement and to tell the *Plan-then-optimize → Pass 3*
+Observability dimension what to verify here instead.
+
+Hooks and scripts observe the Claude Code hook contract rather than a logging stack:
+
+- **Diagnostics go to stderr; exit codes carry meaning.** Blocking hooks emit to stderr and
+  use per-session marker files; non-blocking advisories exit 0. See
+  [ADR-027](docs/adr/027-userpromptsubmit-blocking-hook-conventions.md) and
+  [ADR-007](docs/adr/007-hook-command-invocation.md) for the invocation and output model.
+- **The equivalent of "is it observable / correct at its boundaries" is the verification
+  suite in `## Testing` above** — the hook-script syntax check, the `pyw -3` stdio test, and
+  the pre-push self-test. A change to a hook or script must keep those green.
+
+What the Pass 3 Observability dimension should verify for a dev-env change: any new or changed
+hook/script routes diagnostics to stderr (not stdout, which Claude Code consumes), chooses its
+exit code deliberately (0 = advisory, non-zero = blocking), and is covered by the relevant
+`## Testing` self-test. Pure docs/config changes (like this one) answer "N/A — no runtime."
+
 ## Documentation Maintenance
 
 When a PR modifies any of the paths below, update the listed reference docs **in the same PR**.

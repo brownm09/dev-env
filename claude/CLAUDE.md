@@ -293,7 +293,7 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 - The final outputs (files written, PRs opened, commits made) match what the original plan intended
 - If the plan includes multiple PR merges, the stub-writing step appears once, after the last merge — not once per merge
 
-**Pass 3 — Risk-dimension audit:** before acting, the plan must address each of these six dimensions explicitly. For any that don't apply, state **"N/A — \<reason\>"** rather than omitting it. The bar is *stating the decision*, not adding work everywhere.
+**Pass 3 — Risk-dimension audit:** before acting, the plan must address each of these six dimensions explicitly. For any that don't apply, state **`N/A — <reason>`** rather than omitting it. The bar is *stating the decision*, not adding work everywhere.
 
 1. **Testing** — coverage for new behavior (defers to the project `## Testing` section).
 2. **Observability** — what is logged/traced at boundaries and on failure (defers to the project `## Observability` section).
