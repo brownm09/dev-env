@@ -401,9 +401,13 @@ the GitHub REST API via `gh`, which goes over authenticated HTTPS and bypasses s
 gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"
 ```
 
-For the merge case, prefer `gh pr merge --squash --delete-branch` — its branch delete already uses
-the API path and is unaffected. Alternatively, defer deletion to GitHub's "automatically delete
-head branches" repo setting or the weekly `prune-stale-worktrees` routine.
+For the merge case, prefer `gh pr merge --squash --delete-branch` — its remote branch delete already
+uses the API path, so it is unaffected by *this* send-pack proxy issue. Note the separate worktree
+caveat: when the merge is run *from a worktree*, gh aborts at its local-checkout step before reaching
+that API delete, so the remote branch is left in place regardless — see
+[Merging a PR developed in a worktree](#merging-a-pr-developed-in-a-worktree) below. Alternatively,
+defer deletion to GitHub's "automatically delete head branches" repo setting or the weekly
+`prune-stale-worktrees` routine.
 
 **Upstream fix (Claude Code sandbox).** Proxy the send-pack sideband for delete-only ref updates
 — relay the full `git-receive-pack` response before closing the POST. (A full-clone fallback would
