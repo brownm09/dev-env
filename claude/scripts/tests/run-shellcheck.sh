@@ -33,7 +33,10 @@ mapfile -t FILES < <(
   {
     ls claude/scripts/*.sh claude/scripts/tests/*.sh claude/hooks/tests/*.sh 2>/dev/null
     for f in claude/hooks/*; do
-      [ -f "$f" ] && head -1 "$f" | grep -qE '^#!.*\bsh\b' && echo "$f"
+      # `.*sh\b` (not `\bsh\b`): the interpreter basename ENDS in sh — matches
+      # `#!/bin/sh`, `#!/usr/bin/env bash`, `zsh`. A leading `\b` would miss
+      # `bash` (no word boundary inside "bash"), silently skipping bash hooks.
+      [ -f "$f" ] && head -1 "$f" | grep -qE '^#!.*sh\b' && echo "$f"
     done
   } | sort -u
 )
