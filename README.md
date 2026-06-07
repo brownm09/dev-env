@@ -40,7 +40,7 @@ Custom slash commands loaded from `claude/skills/`. Invoke with `/skill-name [ar
 ## Hooks
 
 Hook scripts run automatically via Claude Code's `hooks` configuration in `claude/settings.json`.
-Most hooks are advisory — they emit reminders but do not block tool execution. The exception is `pre-tool-use-worktree-path-check.py`, which blocks `Write`, `Edit`, and `NotebookEdit` calls that target the canonical repo root instead of the active worktree.
+Most hooks are advisory — they emit reminders but do not block tool execution. The exception is `pre-tool-use-worktree-path-check.py`, which blocks `Write`, `Edit`, and `NotebookEdit` calls that target the canonical repo root instead of the active worktree, **and** blocks any such call issued from an orphaned/disconnected worktree (one whose `.git` link is gone, so git silently resolves to the canonical repo).
 
 Hooks that spawn subprocesses (`git`, `gh`, `bash`, …) must `import _winsubp` — a helper module at `claude/scripts/_winsubp.py` that patches `subprocess.Popen.__init__` to set `CREATE_NO_WINDOW` so children don't flash a console window under `pythonw.exe`. See [ADR-007](docs/adr/007-hook-command-invocation.md).
 
@@ -58,7 +58,7 @@ Hooks that spawn subprocesses (`git`, `gh`, `bash`, …) must `import _winsubp` 
 | PreToolUse (Bash) | `pre-commit-branch-check.py` | Emits current branch as a checkpoint before `git commit` |
 | PreToolUse (Bash) | `pre-pr-create-check.py` | Emits test-verification checklist, documentation-gap warning, and pre-existing-failure baseline advisory before `gh pr create` |
 | PreToolUse (Bash) | `pre-merge-findings-gate.py` | Blocks `gh pr merge` when a `/review` comment reports open findings and the PR body records no disposition — mechanical enforcement of the all-findings merge gate (see [ADR-039](docs/adr/039-merge-gate-findings-enforcement.md)) |
-| PreToolUse (Write/Edit/NotebookEdit) | `pre-tool-use-worktree-path-check.py` | Blocks file writes whose absolute path targets the canonical repo root instead of the active worktree |
+| PreToolUse (Write/Edit/NotebookEdit) | `pre-tool-use-worktree-path-check.py` | Blocks file writes whose absolute path targets the canonical repo root instead of the active worktree, and blocks all writes from an orphaned worktree whose `.git` link no longer resolves (see [ADR-024](docs/adr/024-worktree-path-guard-hook.md)) |
 | PostToolUse (Bash) | `pr-merge-reminder.py` | Reminds to write a journal stub after `gh pr create`, `gh pr merge`, or `git push` (when the pushed branch has an open PR) |
 | PostToolUse (Bash) | `post-tool-use.py` | Auto-adds issues/PRs to configured GitHub Project; exits 2 with `required_fields` reminders |
 | PostToolUse (Bash) | `post-pr-merge-pull.py` | Fast-forwards local `main` after `gh pr merge` |

@@ -1,8 +1,8 @@
 # ADR-024: PreToolUse Hook to Block Canonical-Root Writes from Worktrees
 
-**Date:** 2026-05-23
+**Date:** 2026-05-23 (amended 2026-06-06)
 **Status:** Accepted
-**Tags:** hooks, worktrees, pre-tool-use, file-safety, write, edit
+**Tags:** hooks, worktrees, pre-tool-use, file-safety, write, edit, orphaned-worktree
 
 ---
 
@@ -64,10 +64,97 @@ On Windows, `os.path.relpath` raises `ValueError` when source and target are on 
 
 ---
 
+## Addendum (2026-06-06): orphaned-worktree liveness guard (dev-env#328)
+
+### Problem the original decision missed
+
+The original logic keys entirely on the cwd **path string**. It extracts
+`worktree_root` from the path and checks whether `file_path` is lexically inside
+it — but never verifies the worktree directory is a *live, registered* git
+worktree.
+
+An **orphaned worktree** — a `.claude/worktrees/<name>/` directory that still
+exists on disk but has lost its `.git` link file and is no longer in
+`git worktree list` — defeats this. Git, finding no `.git` at the directory,
+walks **up** the tree and resolves every command to the **canonical** repo's
+`.git`. The harness still treats the directory as the session's worktree (sets
+cwd there, force-resets cwd to it after each command), so the failure is silent:
+
+- `git status`/`branch`/`stash`/`checkout` operate on the canonical checkout —
+  `git stash -u` stashed an unrelated branch's WIP; `git checkout -b` moved the
+  canonical checkout onto a new branch.
+- `Write`/`Edit` (absolute paths) landed files in the disconnected directory,
+  invisible to git.
+
+For this case the original hook computes `worktree_root` from the path, sees the
+target is "inside" it, and **passes** — missing the exact case it most needs to
+catch. Observed in a career-playbook session on 2026-06-06; recovery took several
+careful steps (restore canonical branch, `git stash pop`, `git worktree add
+--force`, move stranded files back).
+
+### Extended decision
+
+Before the path-scoping check, `main()` now asserts the worktree is **live** via
+`_worktree_is_live(worktree_root, cwd)`:
+
+1. `<worktree_root>/.git` must exist (the worktree link file). Missing → **not
+   live** (the documented orphan signature; caught without spawning git).
+2. `git -C <cwd> rev-parse --show-toplevel` must equal `worktree_root`. A
+   resolution to the canonical root (or anywhere else) → **not live** (subtle
+   mis-resolution).
+3. If git cannot run at all (returns `None`) but the `.git` link is present →
+   treated as **live** — a transient git failure must not block every write when
+   the link file clearly exists.
+
+Not-live → exit 2 with a `{"reason": ...}` message naming the worktree and cwd
+and giving the recovery recipe `git worktree add --force <worktree_root> <branch>`.
+
+### Judgment calls (addendum)
+
+- **Check placed before path-scoping.** The orphan risk applies to *any* write
+  from the dead cwd — relative paths and in-worktree absolute paths included, not
+  just canonical-root absolute paths — so the liveness gate runs first and covers
+  all three.
+- **Fail-closed on a genuine orphan, fail-open on transient git failure.** A
+  block is recoverable (clear message + recipe); a silent wrong-tree write is
+  not. But blocking every write when git is momentarily unavailable yet the
+  `.git` link plainly exists would be a worse failure mode, so step 3 fails open.
+- **Both signals retained despite the per-write git spawn.** The `.git`-existence
+  check (signal 1) catches the documented incident — an orphan whose link file is
+  gone — with no subprocess. Signal 2 (`git rev-parse --show-toplevel`) is *not*
+  merely belt-and-suspenders: it catches a distinct, real orphan mode where the
+  `.git` file still exists but its `gitdir:` target was removed (e.g. a later
+  `git worktree prune` deleted `<canonical>/.git/worktrees/<name>` while the
+  checkout dir remained), so git silently resolves up to the canonical repo even
+  though signal 1 passes. The cost — one fast, windowless `git rev-parse` per
+  file write *in a worktree only* (~10–30 ms, `CREATE_NO_WINDOW`) — is acceptable
+  for closing that second mode; memoizing liveness per session was considered and
+  rejected to keep the hook stateless.
+- **Extend the hook, not a new SessionStart guard.** Option A (this) converts the
+  silent failure into a hard block at the moment of risk and is testable in the
+  same hermetic style; Options B/C (issue #328) were not pursued.
+- **`import _winsubp`.** The hook now spawns `git` under `pythonw`, so it adopts
+  the console-flash-suppression module per ADR-007.
+
+### Consequences (addendum)
+
+- **Performance:** one `git rev-parse --show-toplevel` per file write *in a
+  worktree only*, short-circuited (no subprocess) when the `.git` link is already
+  missing. No-op outside worktrees is unchanged.
+- **Coverage:** still limited to `Write`/`Edit`/`NotebookEdit`; Bash writes from
+  an orphan remain uncovered (same deferral as the original decision).
+- Covered by `claude/scripts/tests/test_worktree_path_check.py` (hermetic unit +
+  subprocess integration tests).
+
+---
+
 ## References
 
 - `claude/scripts/pre-tool-use-worktree-path-check.py` — implementation
+- `claude/scripts/tests/test_worktree_path_check.py` — self-test (addendum)
 - `claude/settings.json` — hook wiring
-- `brownm09/career-playbook#276` — downstream symptom tracker
+- `brownm09/career-playbook#276` — downstream symptom tracker (original)
+- `brownm09/dev-env#328` — orphaned-worktree hardening (addendum)
 - Engineering-journal `sessions/career-playbook/2026-05-22_140307.stub.md` — third occurrence
+- Engineering-journal `sessions/career-playbook/2026-06-06_105718.stub.md` — orphaned-worktree incident
 - [Claude Code Hooks documentation](https://docs.anthropic.com/en/docs/claude-code/hooks) — hook exit codes and JSON output format
