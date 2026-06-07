@@ -50,7 +50,18 @@ git pull origin "$BRANCH"
 
 # ── Step 3: check for composed journal ────────────────────────────────────────
 DATE_PART="${BRANCH#draft/}"  # e.g. "2026-04-19"
-COMPOSED_FILE=$(ls sessions/**/"${DATE_PART}"*.md 2>/dev/null | grep -v '_draft\.md' | grep -v '\.stub\.md' | head -1 || true)
+# First sessions/**/<date>*.md that is not a _draft.md or .stub.md. A glob loop
+# (globstar enabled above) instead of `ls | grep` so the match is robust to
+# unusual filenames and the exclusions are exact suffix tests (SC2010).
+COMPOSED_FILE=""
+for _cand in sessions/**/"${DATE_PART}"*.md; do
+  [ -e "$_cand" ] || continue   # pattern with no match expands to itself — skip
+  case "$_cand" in
+    *_draft.md|*.stub.md) continue ;;
+  esac
+  COMPOSED_FILE="$_cand"
+  break
+done
 
 if [[ -z "$COMPOSED_FILE" ]]; then
   echo "WARNING: No composed journal file found for $DATE_PART." >&2

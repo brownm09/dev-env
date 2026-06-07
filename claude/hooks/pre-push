@@ -8,7 +8,7 @@
 # This hook WARNS only (exit 0) — it does not block the push.
 # Install globally: git config --global core.hooksPath ~/.claude/hooks
 
-while read local_ref local_sha remote_ref remote_sha; do
+while read -r _ local_sha remote_ref remote_sha; do
   # skip deletes
   [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
 

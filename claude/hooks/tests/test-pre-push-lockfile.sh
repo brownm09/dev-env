@@ -16,7 +16,6 @@ set -u
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 HOOK="$SCRIPT_DIR/../pre-push"
-ZERO="0000000000000000000000000000000000000000"
 
 PASS=0
 FAIL=0
@@ -121,8 +120,17 @@ SHIM=""
 if [ -z "$NPM_PATH" ]; then
   FINALPATH="$PATH"   # npm already absent on this host
 else
-  NPM_DIR=$(dirname "$NPM_PATH")
-  FINALPATH=$(printf '%s\n' $(echo "$PATH" | tr ':' '\n') | grep -v -F -x "$NPM_DIR" | paste -sd: -)
+  # Drop EVERY PATH dir that holds an npm executable — npm can live in more than
+  # one (here: an nvm4w shim dir AND a system "Program Files/nodejs" dir), so
+  # removing only `dirname $(command -v npm)` leaves npm resolvable elsewhere and
+  # the coverage check below fails. Iterate ':'-split entries so dirs with spaces
+  # are matched exactly. (The previous `printf '%s\n' $(...)` form word-split on
+  # spaces — SC2046 — and only "worked" by corrupting the spaced npm entry.)
+  FINALPATH=$(echo "$PATH" | tr ':' '\n' | while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    if [ -e "$d/npm" ] || [ -e "$d/npm.cmd" ] || [ -e "$d/npm.exe" ]; then continue; fi
+    printf '%s\n' "$d"
+  done | paste -sd: -)
   # If dropping npm's dir also dropped a tool the hook needs, shim that tool back in
   # (handles the pathological case where npm shares a directory with coreutils/git).
   SHIM=$(mktemp -d)
