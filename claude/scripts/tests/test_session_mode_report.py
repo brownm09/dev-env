@@ -155,6 +155,26 @@ def test_main_runs_clean_on_fixture() -> str:
     return "main() returns 0 against the fixture log"
 
 
+def test_main_handles_non_ascii_prompt() -> str:
+    # A prompt with characters outside cp1252's comfort zone (em-dash, smart
+    # quotes, emoji). render() echoes prompt_prefix verbatim; main() must not
+    # raise UnicodeEncodeError even when stdout's locale encoding is narrow.
+    fd = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".log", delete=False, encoding="utf-8"
+    )
+    fd.write(_line("sess-uni-005", "2026-06-05T12:00:00", "plan",
+                    "Refactor — use “smart” quotes \U0001F600") + "\n")
+    fd.close()
+    fixture = Path(fd.name)
+    try:
+        rc = smr.main(["--log", str(fixture)])
+    finally:
+        fixture.unlink()
+    if rc != 0:
+        raise AssertionError("main() should exit 0 on a non-ASCII prompt, got {}".format(rc))
+    return "main() renders a non-ASCII prompt without a UnicodeEncodeError"
+
+
 def test_main_missing_log_returns_nonzero() -> str:
     rc = smr.main(["--log", "C:/nonexistent/definitely/not/here.log"])
     if rc == 0:
@@ -169,6 +189,7 @@ def main() -> int:
         ("classification and flagging", test_classification_and_flagging),
         ("filters (since / interactive-only / non-plan-only)", test_filters),
         ("main runs clean on fixture", test_main_runs_clean_on_fixture),
+        ("main handles a non-ASCII prompt", test_main_handles_non_ascii_prompt),
         ("main returns non-zero on missing log", test_main_missing_log_returns_nonzero),
     ]
     failed = 0

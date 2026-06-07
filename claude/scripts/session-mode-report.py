@@ -195,7 +195,24 @@ def render(rows, stats, total_sessions):
     return lines
 
 
+def _force_utf8_streams():
+    """Make stdout/stderr robust to arbitrary prompt content.
+
+    The report echoes ``prompt_prefix`` verbatim, which is uncontrolled user
+    input and may contain non-cp1252 characters (smart quotes, em-dashes,
+    emoji). On Windows an interactive console handles these via WriteConsoleW,
+    but a *redirected* stdout (``> file`` / ``| grep``) falls back to the cp1252
+    locale encoding and ``print`` raises UnicodeEncodeError mid-report. Reconfigure
+    to UTF-8 with a replacement fallback so neither redirection nor exotic prompt
+    content can abort the output.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv=None):
+    _force_utf8_streams()
     parser = argparse.ArgumentParser(
         description="Summarize per-session startup permission mode from the "
         "session-mode-prompt hook log."
