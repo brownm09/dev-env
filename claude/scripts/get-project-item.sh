@@ -23,25 +23,28 @@ fi
 PROJECT_NUMBER="${2:-${PROJECT_NUMBER:-3}}"
 OWNER="${3:-${PROJECT_OWNER:-brownm09}}"
 
-SCRATCH="${HOME}/.claude/scratch"
+# Literal Windows-style path (not "${HOME}/...") so Git Bash and Node resolve it
+# identically. Under Git Bash $HOME is the MSYS path /c/Users/brown; Node on Windows
+# resolves a leading /c/... against the current drive (-> C:\c\Users\...), so the
+# redirect-write and the node-read would target different files (dev-env#334). This
+# matches the repo convention (DEFAULT_LOG in session-mode-report.py).
+SCRATCH="C:/Users/brown/.claude/scratch"
 TMPFILE="${SCRATCH}/tmp_project_item_$$.json"
+trap 'rm -f "$TMPFILE"' EXIT
 
 gh project item-list "$PROJECT_NUMBER" \
   --owner "$OWNER" \
   --format json \
   --limit 1000 > "$TMPFILE"
 
+# Under `set -e` a non-zero exit from node (e.g. no matching item) aborts the script
+# with that status; the EXIT trap above removes the temp file either way. (The former
+# `EXIT_CODE=$?` guard here was dead code — set -e aborted before it could run.)
 ITEM_ID=$(node -e "
   const d = JSON.parse(require('fs').readFileSync('$TMPFILE', 'utf8'));
   const item = d.items.find(i => i.content && i.content.number === $ISSUE_NUMBER);
   if (!item) { process.stderr.write('get-project-item: no item found for #$ISSUE_NUMBER\n'); process.exit(1); }
   console.log(item.id);
 ")
-EXIT_CODE=$?
-rm -f "$TMPFILE"
-
-if [[ $EXIT_CODE -ne 0 ]]; then
-  exit 1
-fi
 
 echo "$ITEM_ID"
