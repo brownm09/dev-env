@@ -47,6 +47,37 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
    `grep -n 'date -u' claude/CLAUDE.md` and confirm every match is in an internal operational
    artifact context (lock files, log timestamps) — not in stub filename or branch name descriptions.
 
+5. **Script path-hygiene lint** — required when adding or changing any `claude/scripts/*.sh` or
+   `claude/hooks/*` shell script. Flags the [dev-env#334](https://github.com/brownm09/dev-env/issues/334)
+   failure class: a `$HOME`-rooted scratch/temp path passed to `node` (Git Bash writes
+   `/c/Users/...` → `C:\Users\...`, but Node-on-Windows re-resolves the same string to
+   `C:\c\Users\...` → ENOENT). Scripts must use the literal `C:/Users/brown/.claude/scratch`
+   instead. Hermetic; comments mentioning `$HOME` are ignored.
+
+   ```bash
+   bash claude/scripts/tests/check-script-path-hygiene.sh
+   ```
+
+6. **`get-project-item.sh` smoke test** — required when changing `claude/scripts/get-project-item.sh`.
+   Actually *runs* the script (which `bash -n` cannot — #334 parsed cleanly yet failed at runtime):
+   asserts a known issue resolves to a `PVTI_` id, the no-match path exits 1, and the temp file is
+   cleaned up. Network-dependent — SKIPs (exit 0) when `gh` is unauthenticated/offline, so it is a
+   local pre-PR check, not a CI gate.
+
+   ```bash
+   bash claude/scripts/tests/test-get-project-item.sh
+   ```
+
+7. **shellcheck gate** — recommended when changing any shell script. Blocking at `--severity=error`
+   (the tree is error-clean as of 2026-06-07); pre-existing warnings/info are printed advisorily and
+   not gated. SKIPs (exit 0) with an install hint when `shellcheck` is absent — it is not installed by
+   default here and `choco install shellcheck` needs an elevated shell, so set `SHELLCHECK_BIN` to a
+   [portable binary](https://github.com/koalaman/shellcheck/releases) to run it locally.
+
+   ```bash
+   bash claude/scripts/tests/run-shellcheck.sh
+   ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
