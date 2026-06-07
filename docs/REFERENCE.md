@@ -116,7 +116,7 @@ Scaffolds a new project's journal home (`sessions/<slug>/`) in engineering-journ
 
 ## Hooks
 
-Most hooks are **advisory** — they emit `systemMessage` reminders but do not block tool execution. The exception is `pre-tool-use-worktree-path-check.py` (a `PreToolUse` hook), which exits 2 with a `{"reason": "..."}` payload to block `Write`, `Edit`, and `NotebookEdit` calls that target the canonical repo root instead of the active worktree.
+Most hooks are **advisory** — they emit `systemMessage` reminders but do not block tool execution. The exception is `pre-tool-use-worktree-path-check.py` (a `PreToolUse` hook), which exits 2 with a `{"reason": "..."}` payload to block `Write`, `Edit`, and `NotebookEdit` calls that target the canonical repo root instead of the active worktree, or that are issued from an orphaned worktree whose `.git` link no longer resolves (so git silently operates on the canonical repo).
 
 Configuration is in `claude/settings.json` (symlinked to `~/.claude/settings.json`).
 See [ADR-007](adr/007-hook-command-invocation.md) for why hooks invoke scripts via `pyw -3` (the windowless variant of the Windows Python Launcher) rather than `python3` directly, wrapped in `bash -c`, or via `py -3` (which flashes a console window per spawn). Shell-invoked Python (the `## Testing` command, skill `py -3` examples, and the `pre-push` hook) continues to use `py -3`.
@@ -169,7 +169,7 @@ Fires before matched tool calls. Matcher values are set per entry in `settings.j
 
 | Script | Trigger condition | What it does |
 |--------|------------------|-------------|
-| `pre-tool-use-worktree-path-check.py` | Session `cwd` is inside a Claude-managed worktree and `file_path` (or `notebook_path`) is absolute and starts with the canonical repo root | **Blocks** the tool call (exit 2) with a message naming the attempted path, the active worktree root, and the corrected path. No-op when the session is not in a worktree or when the path already targets the worktree root. **Bypass for intentional canonical edits:** use `Bash` with `node -e`, `sed`, or `python3` — the hook only covers the three file tools, not `Bash`. [ADR-024](adr/024-worktree-path-guard-hook.md) |
+| `pre-tool-use-worktree-path-check.py` | Session `cwd` is inside a Claude-managed worktree and either (a) the worktree is **orphaned** — its `.git` link is missing or `git rev-parse --show-toplevel` does not resolve to the worktree root — or (b) `file_path`/`notebook_path` is absolute and starts with the canonical repo root | **Blocks** the tool call (exit 2). For an orphaned worktree, the message names the worktree + cwd and gives the recovery recipe `git worktree add --force <worktree_root> <branch>` (covers all writes from the orphan, not just canonical-root paths). Otherwise the message names the attempted path, the active worktree root, and the corrected path. No-op when the session is not in a worktree, or (for case b) when the path already targets the worktree root. The liveness check runs one `git rev-parse` per file write in a worktree, short-circuited when the `.git` link is already missing. **Bypass for intentional canonical edits:** use `Bash` with `node -e`, `sed`, or `python3` — the hook only covers the three file tools, not `Bash`. [ADR-024](adr/024-worktree-path-guard-hook.md) |
 
 ---
 

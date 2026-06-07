@@ -10,11 +10,18 @@ silently. This hook intercepts those calls before the write happens.
 Logic:
   1. If cwd does not contain `/.claude/worktrees/<name>/`, pass immediately.
   2. Extract canonical_root (repo root) and worktree_root from cwd.
-  3. Read file_path (Write/Edit) or notebook_path (NotebookEdit) from tool input.
-  4. If the path is absolute and starts with canonical_root but NOT with
+  3. Liveness guard (ADR-024 addendum, dev-env#328): assert the worktree is a
+     *live* registered worktree, not an orphan whose `.git` link is gone. An
+     orphaned worktree dir silently resolves every git command up the tree to
+     the canonical repo's `.git`, so writes land on the wrong tree or in a
+     disconnected directory invisible to git. If `<worktree_root>/.git` is
+     missing, or `git -C <cwd> rev-parse --show-toplevel` resolves to anything
+     other than worktree_root → exit 2 with the recovery recipe.
+  4. Read file_path (Write/Edit) or notebook_path (NotebookEdit) from tool input.
+  5. If the path is absolute and starts with canonical_root but NOT with
      worktree_root → exit 2 with a blocking message naming both paths and the
      corrected worktree-relative path.
-  5. Otherwise pass (exit 0).
+  6. Otherwise pass (exit 0).
 
 Blocking: exits 2 with JSON {"reason": "..."} — the harness refuses the tool
 call and shows the reason to Claude so it can re-issue with the correct path.
@@ -28,9 +35,11 @@ Stdin JSON shape (PreToolUse):
     "cwd": "..."
   }
 """
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import os
 import re
+import subprocess
 import sys
 
 # Matches `.claude/worktrees/<name>` anywhere in a path, capturing the repo
@@ -50,6 +59,57 @@ _PATH_FIELD = {
 
 def _normalize(path: str) -> str:
     return os.path.normcase(os.path.normpath(path))
+
+
+def _resolve_git_toplevel(cwd: str):
+    """Return git's worktree top-level for `cwd`, or None if git can't resolve it.
+
+    For a live worktree this is the worktree root. For an *orphaned* worktree dir
+    (no `.git` link file), git walks up the tree and returns the canonical repo
+    root instead — that mismatch is the orphan signature the liveness guard keys
+    on. Any execution failure (git missing, timeout, non-zero exit) returns None.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    top = result.stdout.strip()
+    return top or None
+
+
+def _worktree_is_live(
+    worktree_root: str,
+    cwd: str,
+    *,
+    path_exists=os.path.exists,
+    git_toplevel=_resolve_git_toplevel,
+) -> bool:
+    """True if `worktree_root` is a live registered worktree, not an orphan.
+
+    Two signals, cheapest first:
+      1. The `.git` link file must exist at the worktree root. An orphaned dir
+         has lost it — this is the documented incident (dev-env#328), caught
+         without spawning git.
+      2. git's resolved top-level for `cwd` must equal `worktree_root`. This
+         catches the subtle case where git mis-resolves up to the canonical repo.
+
+    If git cannot run (returns None) but the `.git` link is present, treat the
+    worktree as live — a transient git failure must not block every write when
+    the link file clearly exists.
+    """
+    if not path_exists(os.path.join(worktree_root, ".git")):
+        return False
+    top = git_toplevel(cwd)
+    if top is None:
+        return True
+    return _normalize(top) == _normalize(worktree_root)
 
 
 def main() -> None:
@@ -73,6 +133,29 @@ def main() -> None:
 
     canonical_root = m.group(1)   # e.g. C:/Users/brown/Git/dev-env
     worktree_root = m.group(0)    # e.g. C:/Users/brown/Git/dev-env/.claude/worktrees/dreamy-feistel-e004d7
+
+    # Liveness guard (dev-env#328): an orphaned worktree dir silently resolves
+    # git up to the canonical repo, so *any* write from here — relative paths and
+    # in-worktree absolute paths included — risks landing on the wrong tree or in
+    # a disconnected directory. Check before the path-scoping below so it covers
+    # all three cases, not just canonical-root absolute paths.
+    if not _worktree_is_live(worktree_root, cwd):
+        reason = (
+            f"[worktree-path-guard] BLOCKED: {tool_name} issued from an orphaned / "
+            f"disconnected worktree. The worktree directory exists but is not a live "
+            f"registered worktree (its `.git` link is missing or git resolves to the "
+            f"canonical repo), so git silently operates on the CANONICAL repo and writes "
+            f"land on the wrong tree or in a directory invisible to git.\n"
+            f"\n"
+            f"  Worktree : {worktree_root}\n"
+            f"  cwd      : {cwd}\n"
+            f"\n"
+            f"Recover by re-creating the path as a real worktree, then retry:\n"
+            f"  git worktree add --force {worktree_root} <branch>\n"
+            f"(<branch> is typically claude/<worktree-name>; confirm with `git branch -a`.)"
+        )
+        print(json.dumps({"reason": reason}))
+        sys.exit(2)
 
     file_path = data.get("tool_input", {}).get(_PATH_FIELD[tool_name], "")
     if not file_path or not os.path.isabs(file_path):
