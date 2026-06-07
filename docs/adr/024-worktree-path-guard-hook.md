@@ -119,6 +119,17 @@ and giving the recovery recipe `git worktree add --force <worktree_root> <branch
   block is recoverable (clear message + recipe); a silent wrong-tree write is
   not. But blocking every write when git is momentarily unavailable yet the
   `.git` link plainly exists would be a worse failure mode, so step 3 fails open.
+- **Both signals retained despite the per-write git spawn.** The `.git`-existence
+  check (signal 1) catches the documented incident — an orphan whose link file is
+  gone — with no subprocess. Signal 2 (`git rev-parse --show-toplevel`) is *not*
+  merely belt-and-suspenders: it catches a distinct, real orphan mode where the
+  `.git` file still exists but its `gitdir:` target was removed (e.g. a later
+  `git worktree prune` deleted `<canonical>/.git/worktrees/<name>` while the
+  checkout dir remained), so git silently resolves up to the canonical repo even
+  though signal 1 passes. The cost — one fast, windowless `git rev-parse` per
+  file write *in a worktree only* (~10–30 ms, `CREATE_NO_WINDOW`) — is acceptable
+  for closing that second mode; memoizing liveness per session was considered and
+  rejected to keep the hook stateless.
 - **Extend the hook, not a new SessionStart guard.** Option A (this) converts the
   silent failure into a hard block at the moment of risk and is testable in the
   same hermetic style; Options B/C (issue #328) were not pursued.
