@@ -422,10 +422,32 @@ behavioral *rules* stay in CLAUDE.md; these are the step-by-step details.
 ### Merging a PR developed in a worktree
 
 Run `gh pr merge --squash --delete-branch` directly from the worktree. Do **not** call `ExitWorktree`
-first — it is session-bound and becomes a no-op after `/compact` (the common case). `gh` will fail to
-check out main locally and fail to delete the local branch (the worktree holds it checked out), but
-the remote merge and remote branch delete complete successfully — those errors are benign. The local
-worktree directory and branch are cleaned up by the weekly `prune-merged-worktrees.py` run.
+first — it is session-bound and becomes a no-op after `/compact` (the common case).
+
+**The merge itself succeeds, but `--delete-branch` does not delete the remote branch from a worktree.**
+`gh pr merge` performs the squash-merge first (a server-side API call that completes), then runs its
+`--delete-branch` cleanup in *local-then-remote* order: it checks out the default branch and deletes
+the **local** branch, *then* deletes the **remote** branch. From a worktree the local checkout step
+fails — `gh` prints `failed to run git: fatal: 'main' is already checked out at C:/Users/brown/Git/dev-env`
+(the canonical clone holds `main`, and the worktree holds the PR branch) — and `gh` aborts at that
+point. Because the abort happens *before* the remote-delete step, **both the local branch delete and
+the remote branch delete are skipped.** Confirmed on dev-env PRs #327 and #329 (2026-06-06): each
+left the remote ref in place, requiring a manual delete that reported `[deleted]`.
+
+After the merge, delete the remote ref manually:
+
+```bash
+git push origin --delete <branch>
+# or, in a web/cloud session where send-pack is blocked (see the web-session runbook below):
+gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"
+```
+
+The local worktree directory and branch are cleaned up by the weekly `prune-merged-worktrees.py` run.
+
+**Secondary effect — no post-merge usage snapshot.** Because the `gh pr merge` invocation exits
+non-zero on the failed local-checkout tail, the `PostToolUse` post-merge hook does **not** emit its
+`### Usage Snapshot (post-merge)` block — it keys off a clean `gh pr merge`. When merging from a
+worktree, expect the snapshot to be absent and capture usage by other means for the journal stub.
 
 ### Separate clones for fully independent parallel work
 
