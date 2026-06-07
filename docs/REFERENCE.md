@@ -401,9 +401,13 @@ the GitHub REST API via `gh`, which goes over authenticated HTTPS and bypasses s
 gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"
 ```
 
-For the merge case, prefer `gh pr merge --squash --delete-branch` — its branch delete already uses
-the API path and is unaffected. Alternatively, defer deletion to GitHub's "automatically delete
-head branches" repo setting or the weekly `prune-stale-worktrees` routine.
+For the merge case, prefer `gh pr merge --squash --delete-branch` — its remote branch delete already
+uses the API path, so it is unaffected by *this* send-pack proxy issue. Note the separate worktree
+caveat: when the merge is run *from a worktree*, gh aborts at its local-checkout step before reaching
+that API delete, so the remote branch is left in place regardless — see
+[Merging a PR developed in a worktree](#merging-a-pr-developed-in-a-worktree) below. Alternatively,
+defer deletion to GitHub's "automatically delete head branches" repo setting or the weekly
+`prune-stale-worktrees` routine.
 
 **Upstream fix (Claude Code sandbox).** Proxy the send-pack sideband for delete-only ref updates
 — relay the full `git-receive-pack` response before closing the POST. (A full-clone fallback would
@@ -422,10 +426,32 @@ behavioral *rules* stay in CLAUDE.md; these are the step-by-step details.
 ### Merging a PR developed in a worktree
 
 Run `gh pr merge --squash --delete-branch` directly from the worktree. Do **not** call `ExitWorktree`
-first — it is session-bound and becomes a no-op after `/compact` (the common case). `gh` will fail to
-check out main locally and fail to delete the local branch (the worktree holds it checked out), but
-the remote merge and remote branch delete complete successfully — those errors are benign. The local
-worktree directory and branch are cleaned up by the weekly `prune-merged-worktrees.py` run.
+first — it is session-bound and becomes a no-op after `/compact` (the common case).
+
+**The merge itself succeeds, but `--delete-branch` does not delete the remote branch from a worktree.**
+`gh pr merge` performs the squash-merge first (a server-side API call that completes), then runs its
+`--delete-branch` cleanup in *local-then-remote* order: it checks out the default branch and deletes
+the **local** branch, *then* deletes the **remote** branch. From a worktree the local checkout step
+fails — `gh` prints `failed to run git: fatal: 'main' is already checked out at C:/Users/brown/Git/dev-env`
+(the canonical clone holds `main`, and the worktree holds the PR branch) — and `gh` aborts at that
+point. Because the abort happens *before* the remote-delete step, **both the local branch delete and
+the remote branch delete are skipped.** Confirmed on dev-env PRs #327 and #329 (2026-06-06): each
+left the remote ref in place, requiring a manual delete that reported `[deleted]`.
+
+After the merge, delete the remote ref manually:
+
+```bash
+git push origin --delete <branch>
+# or, in a web/cloud session where send-pack is blocked (see the web-session runbook below):
+gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"
+```
+
+The local worktree directory and branch are cleaned up by the weekly `prune-merged-worktrees.py` run.
+
+**Secondary effect — no post-merge usage snapshot.** Because the `gh pr merge` invocation exits
+non-zero on the failed local-checkout tail, the `PostToolUse` post-merge hook does **not** emit its
+`### Usage Snapshot (post-merge)` block — it keys off a clean `gh pr merge`. When merging from a
+worktree, expect the snapshot to be absent and capture usage by other means for the journal stub.
 
 ### Separate clones for fully independent parallel work
 
