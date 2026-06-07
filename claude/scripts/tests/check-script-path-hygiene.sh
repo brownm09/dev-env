@@ -33,14 +33,18 @@ mapfile -t FILES < <(
   } | sort -u
 )
 
+# grep the file for $1 with real line numbers, dropping full-line comments so a
+# script that merely *documents* the hazard (mentions node or $HOME in a comment)
+# is not flagged. Real file line numbers are preserved (grep -n on the file, then
+# filter out `N:   # ...` comment lines) so offender output points at the true line.
 OFFENDERS=0
 for f in "${FILES[@]}"; do
   [ -f "$f" ] || continue
-  # (a) does it call node?
-  grep -qE '\bnode\b' "$f" || continue
-  # (b) non-comment line assigning a $HOME-rooted path? Strip full-line comments
-  # first so a documentation mention of $HOME does not match.
-  hits=$(grep -vE '^[[:space:]]*#' "$f" | grep -nE '=[[:space:]]*"?'"'"'?\$\{?HOME\}?/' || true)
+  code_lines() { grep -nE "$1" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' || true; }
+  # (a) does it actually call node (outside comments)?
+  [ -n "$(code_lines '\bnode\b')" ] || continue
+  # (b) does it assign a $HOME-rooted path (outside comments)?
+  hits=$(code_lines '=[[:space:]]*"?'"'"'?\$\{?HOME\}?/')
   if [ -n "$hits" ]; then
     OFFENDERS=$((OFFENDERS + 1))
     {
