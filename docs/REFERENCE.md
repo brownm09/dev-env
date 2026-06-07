@@ -337,6 +337,19 @@ On-demand scripts — not wired to any event. Run manually or from other scripts
 | `get-project-item.sh` | `ITEM_ID=$(bash get-project-item.sh <issue-number> [project-number] [owner])` | Resolves a GitHub Project item node ID from an issue/PR number. Defaults to project 3, owner `brownm09`. Overridable via args or `PROJECT_NUMBER`/`PROJECT_OWNER` env vars. Requires `project` scope: `gh auth refresh -s project`. |
 | `session-mode-report.py` | `py -3 session-mode-report.py [--since YYYY-MM-DD] [--interactive-only] [--non-plan-only] [--log PATH]` | Reports the startup permission mode per session by parsing the `session-mode-prompt.py` hook log (`scratch/session-mode-prompt.log`). For each `session_id` it takes the earliest entry as the startup mode, classifies sessions as interactive vs. automated (scheduled-task / `<tag>` prompts), and flags (`!`) interactive sessions that started outside `plan`. Desktop/web and spawn-task sessions launch in `bypassPermissions` by design (overriding `defaultMode: plan`); this surfaces that. Read-only; report to stdout, diagnostics to stderr. |
 
+### Script verification suite
+
+Execution-level checks for the shell scripts themselves, run from the dev-env `## Testing`
+section (the canonical list of when to run each). `bash -n` catches only syntax — these catch
+runtime and environment bugs it misses, the motivating case being [dev-env#334](https://github.com/brownm09/dev-env/issues/334)
+(a path-resolution bug that parsed cleanly yet failed on every run).
+
+| Script | Invocation | What it does |
+|--------|-----------|-------------|
+| `tests/check-script-path-hygiene.sh` | `bash claude/scripts/tests/check-script-path-hygiene.sh` | Lints for the #334 class — a `$HOME`-rooted scratch/temp path passed to `node`, which Git Bash and Node-on-Windows resolve to different files. Scripts must use the literal `C:/Users/brown/.claude/scratch`. Hermetic; comment mentions of `$HOME` are ignored. Exit 1 on any offender. |
+| `tests/test-get-project-item.sh` | `bash claude/scripts/tests/test-get-project-item.sh` | Smoke-tests `get-project-item.sh` end-to-end: asserts a known issue resolves to a `PVTI_` id, the no-match path exits 1 with a diagnostic, and the temp file is cleaned up. Network-dependent — SKIPs (exit 0) when `gh` is unauthenticated/offline. |
+| `tests/run-shellcheck.sh` | `bash claude/scripts/tests/run-shellcheck.sh` | Runs shellcheck over all repo shell scripts/hooks. Blocking at `--severity=error` (tree is error-clean as of 2026-06-07); warnings/info printed advisorily. SKIPs (exit 0) with an install hint when shellcheck is absent — set `SHELLCHECK_BIN` to a [portable binary](https://github.com/koalaman/shellcheck/releases) to run it. |
+
 ---
 
 ## Model Selection
