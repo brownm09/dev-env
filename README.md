@@ -80,6 +80,7 @@ Autonomous scheduled agents in `claude/routines/`. No user interaction.
 | Daily 8am local | `prune-stale-worktrees` | Removes merged `claude/*` worktrees and stale `main` checkouts across all repos under `C:/Users/brown/Git` |
 | Every 6 hours | `reclaim-worktree-disk` | Strips regenerable `node_modules`/`.turbo` from idle Claude worktrees under `.claude/worktrees/`, reclaiming disk between weekly prune runs |
 | Nightly 8:00 UTC (3 AM CDT) | `nightly-research` | Researches pending topics from the queue and writes structured markdown notes to `research-notes/` |
+| Biweekly (every other Sun 9am local) | `biweekly-retro` | Synthesizes a retrospective from the trailing 4 weeks of journal entries across all projects; opens a report PR in `engineering-journal` and an action-item issue in dev-env |
 
 ## Adding new configs
 
