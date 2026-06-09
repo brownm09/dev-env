@@ -53,7 +53,7 @@ Set one value in `claude/settings.json`:
 
 **Symptom that prompted this:** `defaultMode: plan` had been live since this ADR (2026-05-23), yet interactive sessions kept starting in `bypassPermissions`. An audit with `session-mode-report.py` showed 36 of 48 interactive sessions started off-plan, including SDK-launched worktree sessions. This looked like a broken hook or an unpersisted setting and was investigated as such ([#341](https://github.com/brownm09/dev-env/issues/341)).
 
-**Root cause — by design, not a bug.** `defaultMode` is applied by Claude Code only when *it* starts a session, i.e. a fresh **local CLI** invocation. **Desktop/web-app sessions and spawn-task / SDK-launched sessions are started by the platform with a `bypassPermissions` startup flag that overrides `defaultMode`.** That override happens at launch, so:
+**Root cause — by design, not a bug.** `defaultMode` is applied by Claude Code only when *it* starts a session, i.e. a fresh **local CLI** invocation. **Desktop/web-app sessions and spawn-task / SDK-launched sessions are started by the platform in `bypassPermissions`, which overrides `defaultMode`.** (The mechanism — a `bypassPermissions` startup flag passed at launch — is *observed behavior*: Claude Code does not publicly document the launch-mode contract, so this is the empirically-confirmed cause, not a cited guarantee.) That override happens at launch, so:
 
 - `settings.json` cannot countermand it — there is no setting that forces platform-launched sessions into plan.
 - Restarting does not help — the config is already correct and already applied; the override is re-imposed at each platform launch.
