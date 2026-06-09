@@ -321,6 +321,35 @@ Reads `C:/Users/brown/Git/research-notes/research-queue.md`, processes pending t
 
 ---
 
+### biweekly-retro
+
+**Schedule:** `0 9 * * 0` — Sunday 09:00 **local** time (the `scheduled-tasks` scheduler evaluates
+cron in local time). The weekly trigger is gated to **even ISO week numbers** (`date +%V`) so the
+effective cadence is every other Sunday. Known minor caveat: a year-boundary ISO 52→1 / 53→1
+transition can nudge one cycle by a week.
+
+Runs `sync-routine-worktree` as Step 0 (`REPO=engineering-journal`,
+`VERIFY_FILE=sessions/meta/README.md`). Reads the trailing **28 days** of composed daily journals
+(`YYYY-MM-DD-<slug>.md`) across every project under `engineering-journal/sessions/`, fans out one
+background `Explore` subagent per active project to digest each project's window, then synthesizes a
+retrospective: what went well, where to push back, recommended improvements, and a tracked
+**process-to-product ratio** for cross-run trend visibility.
+
+**Outputs (two artifacts):**
+- A committed report at `engineering-journal/sessions/meta/retro/YYYY-MM-DD-retro.md`, opened as a PR
+  to `main` (never auto-merged — ADR-031; the user reviews and merges).
+- An action-item issue in **dev-env** (`Biweekly retro YYYY-MM-DD — action items`) built from the
+  run's recommended-improvement checklist, linking back to the report PR. (engineering-journal has no
+  issue tracker, so process issues land in dev-env.)
+
+**Resilience:** an off-week parity gate, an empty-window check, and the Step-0 sync ABORT all exit
+cleanly with a push notification; a single project's subagent failure degrades to a partial report
+rather than aborting the run.
+
+**Origin:** dev-env#343; cadence and 4-week window chosen by the user 2026-06-09.
+
+---
+
 ## Utilities
 
 On-demand scripts — not wired to any event. Run manually or from other scripts.
