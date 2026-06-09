@@ -87,5 +87,6 @@ The allowlist is closed: `win11-init-tools/install_base_apps.ps1`, `set_irfanvie
 - [ADR-040](040-global-claudemd-layering-and-slimming.md) — global CLAUDE.md layering rule (cross-project content only).
 - [ADR-039](039-merge-gate-findings-enforcement.md) — mechanical all-findings merge gate (pairs with this rule's blocking review enforcement).
 - [win11-init-tools#19](https://github.com/brownm09/win11-init-tools/pull/19) — the missed-flag incident that motivated the ADR.
+- [win11-init-tools#20](https://github.com/brownm09/win11-init-tools/issues/20) — followup tracking conversion of `configure_dev_env.ps1` and subsequent allowlist shrink.
 - Microsoft Learn — [`Start-Process` parameter reference](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.management/start-process) (documents `-Verb`, `-NoNewWindow`, `-PassThru` and confirms `-Verb RunAs` triggers UAC).
 - Microsoft Learn — [`#Requires` statement](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_requires) (documents `-RunAsAdministrator`, the recommended replacement).
