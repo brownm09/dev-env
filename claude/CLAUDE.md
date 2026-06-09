@@ -132,6 +132,18 @@ Fix any error you encounter in any project, including issues unrelated to the ta
 
 See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md).
 
+### No spawning new terminal windows (Windows scripts)
+
+For PowerShell or batch scripts on Windows, do not author or accept patterns that spawn a new console window or trigger UAC re-launch from inside the script: `Start-Process -Verb RunAs` self-relaunch, `Start-Process ... -NoExit` sibling consoles, `cmd /c start ... powershell ...`, or any equivalent round-trip. In agent-driven and non-interactive contexts the UAC dialog has no desktop to render against, the prompt hangs the session or is silently dismissed, the new console dies before producing output, and the user pays cleanup tokens to disentangle the orphan processes.
+
+**Instead:** put `#Requires -RunAsAdministrator` at the top of any script that needs elevation (fail-fast), or use an inline `IsInRole(Administrator)` check that `Write-Error`s and `exit 1`s. Tell the user to open an elevated terminal — do not relaunch one. For "keep the window open" debugging, redirect to `Documents\LOGS\<script>_<ts>.txt` rather than `Start-Process -NoExit`.
+
+**Pre-existing exemption (closed allowlist).** `win11-init-tools/install_base_apps.ps1`, `win11-init-tools/set_irfanview_image_assoc.ps1`, and `win11-init-tools/configure_dev_env.ps1` already use self-relaunch for the Explorer-double-click UX. New files needing elevation must use `#Requires` instead.
+
+**At review time**, surface as a **blocking [reliability] finding** when a new file introduces any of the patterns above. Do not downgrade on the grounds that a project CLAUDE.md "documents" the self-relaunch pattern — that documentation only covers the allowlist.
+
+See [ADR-041](../docs/adr/041-no-terminal-spawn-in-windows-scripts.md).
+
 ### Suppression policy
 
 A *suppression* is any of the following: `!` (non-null assertion), `?? null` to coerce away `undefined`, `// @ts-ignore`, `// @ts-expect-error`, `eslint-disable` (line or block), or an explicit type cast used to silence an error rather than for a legitimate narrowing.
