@@ -332,15 +332,18 @@ Runs `sync-routine-worktree` as Step 0 (`REPO=engineering-journal`,
 `VERIFY_FILE=sessions/meta/README.md`). Reads the trailing **28 days** of composed daily journals
 (`YYYY-MM-DD-<slug>.md`) across every project under `engineering-journal/sessions/`, fans out one
 background `Explore` subagent per active project to digest each project's window, then synthesizes a
-retrospective: what went well, where to push back, recommended improvements, and a tracked
-**process-to-product ratio** for cross-run trend visibility.
+retrospective in a fixed **v2 structure**: **§1** global cross-repo readout (+ global action items)
+→ **§2** per-repo sections (each with its own action items) → **§3** a tracked
+**process-to-product ratio** with the trend vs. the prior retro.
 
-**Outputs (two artifacts):**
+**Outputs:**
 - A committed report at `engineering-journal/sessions/meta/retro/YYYY-MM-DD-retro.md`, opened as a PR
   to `main` (never auto-merged — ADR-031; the user reviews and merges).
-- An action-item issue in **dev-env** (`Biweekly retro YYYY-MM-DD — action items`) built from the
-  run's recommended-improvement checklist, linking back to the report PR. (engineering-journal has no
-  issue tracker, so process issues land in dev-env.)
+- **Deduped action-item issues routed to the correct repo** (label `retro-action`): each repo's §2
+  findings → that repo's tracker; §1 global/cross-cutting + meta + no-remote (research-notes) →
+  dev-env (engineering-journal declares no issue tracker by convention). A **dedup guard** reads each
+  repo's existing open `retro-action` issues and skips findings already covered, so the biweekly
+  cadence never re-files the same item. Origin of this routing: dev-env#348.
 
 **Resilience:** an off-week parity gate, an empty-window check, and the Step-0 sync ABORT all exit
 cleanly with a push notification; a single project's subagent failure degrades to a partial report
