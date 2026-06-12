@@ -259,6 +259,13 @@ npm install --package-lock-only --ignore-scripts && git diff --exit-code package
 ```
 A non-empty diff means the lockfile is out of sync — run `npm install`, commit the result, and re-run the check. The same check runs automatically in the global `pre-push` hook (it blocks the push on drift) and should run in each repo's CI as an early step; the pre-PR run catches it before either fires.
 
+**Rule 3 — Upstream in-range float (green→red with no dependency edit of yours).**
+A direct *or transitive* caret dependency can publish a new in-range version while a PR is open or after a merge; `npm install --package-lock-only` then regenerates the lockfile to that newer version and the sync check flags the committed lockfile as stale — a PR that was green an hour ago, or `main` itself, goes red **with no dependency change of yours**. (npm's sync check rebuilds the ideal tree from the *current* registry, so the passage of time alone can break it.) Motivating incidents: lifting-logbook #432/#433/#501/#520 — `@clerk/backend` and the transitive `@clerk/shared` under its own caret. Two cases, opposite responses:
+- **Uncommitted local float** — the Rule 2 pre-PR check floats a bump you did not intend into your working tree. **Discard it** (`git checkout -- package-lock.json`); it does not belong in your PR.
+- **CI red on a pushed branch / open PR** — the regenerated lockfile is what CI now resolves. **Regenerate and commit** (`npm install`; verify `npm ci` exits 0 locally before pushing).
+
+**Enforcement context — scope the CI sync gate to `pull_request`, not `main` pushes.** The latest-in-range check belongs on PRs, where it catches a contributor editing `package.json` without regenerating the lockfile (its real purpose). Run on every `push` to `main`, it instead recomputes the ideal tree from live-registry time, so an upstream in-range publish reddens `main` with no contributor action; `npm ci` on `main` still catches install-breaking drift. This mirrors the **Layer 3** pre-push hook (ADR-036), which already runs the drift check only when a pushed `package.json` actually changed. Precedent: lifting-logbook #523.
+
 **Scope note.** Applies to npm/`package-lock.json` repos. Yarn (`yarn.lock`) and pnpm (`pnpm-lock.yaml`) have equivalent drift failure modes but different regeneration commands (`yarn install`, `pnpm install --lockfile-only`) — extend the check per repo before relying on it there.
 
 ---
