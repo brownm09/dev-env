@@ -124,3 +124,38 @@ Layer 4 is the forcing function at authoring time; Layer 3 is the automated back
   aborts the push).
 - [Git `core.hooksPath`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath)
   — how a single global hooks directory applies across all repos (see [ADR-005](005-global-core-hooks-path.md)).
+- [lifting-logbook#523 / PR #524](https://github.com/brownm09/lifting-logbook/pull/524) — the
+  precedent that scoped a Layer-2 CI sync gate to `pull_request` (see Addendum).
+
+---
+
+## Addendum (2026-06-11) — operational float rule + Layer-2 enforcement context
+
+Two refinements emerged from recurring lifting-logbook incidents (#501, #516, #520, #523), captured
+here and as **Rule 3** of the `claude/CLAUDE.md` "Dependency and lockfile policy".
+
+**Upstream in-range float — discard vs. regenerate.** A caret dependency, **direct or transitive**
+(e.g. `@clerk/backend` and the transitive `@clerk/shared` pinned under its own `^` range), can
+publish a new in-range version while a PR is open or after a merge. Because the sync check
+(`npm install --package-lock-only`) rebuilds the ideal tree from the *current* registry, the
+committed lockfile can be flagged stale **with no dependency edit by any contributor** — the passage
+of time alone breaks it. The response depends on context:
+
+- **Uncommitted local float** surfaced by the pre-PR check → **discard** (`git checkout -- package-lock.json`); it does not belong in the PR.
+- **CI red on a pushed branch / open PR** → **regenerate and commit** (`npm install`; verify `npm ci` exits 0 locally); the regenerated lockfile is what CI now resolves.
+
+Distinguishing the two is non-obvious — the reflexive "discard the clerk float" is correct for a
+local working-tree float but wrong when CI on a pushed branch demands it. Read the *emitting* signal
+(per [ADR-034](034-error-message-diligence.md)): a pre-PR working-tree diff ≠ CI's `npm ci`/sync-gate
+failure on a pushed ref.
+
+**Layer-2 (CI sync gate) must be PR-scoped, not `main`-scoped.** The Layer-2 CI guard's purpose is to
+catch a contributor editing `package.json` without regenerating the lockfile — a *pull-request-time*
+mistake. Run on every `push` to `main`, the same step instead recomputes the ideal tree from
+live-registry time, so any upstream in-range publish reddens `main` with no contributor action
+(the #432/#433/#501/#516/#520 class). The CI step should therefore be gated to `pull_request`
+(`if: github.event_name == 'pull_request'`); `npm ci` on `main` still guards install-breaking drift
+(the `EUSAGE` class). This brings Layer 2 into line with the **Layer 3** pre-push hook above, which
+already runs the drift check only when a pushed `package.json` is in the push range — i.e. only on a
+real authored change, never on registry time. Precedent: lifting-logbook
+[#523 / PR #524](https://github.com/brownm09/lifting-logbook/pull/524) (`ci.yml`).
