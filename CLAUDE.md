@@ -78,6 +78,17 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
    bash claude/scripts/tests/run-shellcheck.sh
    ```
 
+8. **usage-snapshot classifier test** — required when changing `claude/scripts/usage-snapshot.py`.
+   Exercises the pure `classify_token()` helper offline (no network, no credentials file): pins the
+   `no_expiry` / `ok` / `expiring` / `expired` states and the expiry boundary, asserting an expired
+   token now yields a user-facing advisory rather than the silent skip it did before
+   [#355](https://github.com/brownm09/dev-env/issues/355). The live usage API call is not covered
+   (the repo avoids urllib mocks).
+
+   ```bash
+   py -3 claude/scripts/tests/test_usage_snapshot.py
+   ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

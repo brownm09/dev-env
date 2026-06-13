@@ -221,6 +221,36 @@ def compute_cumulative_target(resets_at_str: str, config: dict) -> tuple[int, in
         return 0, 0, 7
 
 
+def classify_token(expires_at_ms: int, now_ms: float) -> tuple[str, str]:
+    """Classify the stored OAuth token by expiry, returning (state, advisory).
+
+    state is one of:
+      "no_expiry" — no expiry recorded (expires_at_ms falsy); proceed silently.
+      "ok"        — token valid with > 1h remaining; proceed silently.
+      "expiring"  — token valid but expires within 1 hour; advisory, do not proceed.
+      "expired"   — token already expired; advisory, do not proceed.
+
+    For "no_expiry"/"ok" the advisory is "". For "expiring"/"expired" the advisory
+    is a one-line message intended for stderr. Mirrors the visibility of the
+    expiring-within-1h path so an already-expired token no longer fails silently.
+    """
+    if not expires_at_ms:
+        return "no_expiry", ""
+    if expires_at_ms <= now_ms:
+        days_ago = (now_ms - expires_at_ms) / 86_400_000
+        return "expired", (
+            f"[usage-snapshot] Skipped: OAuth token in .credentials.json expired "
+            f"{days_ago:.1f} days ago. This client isn't refreshing that file — run "
+            f"`claude` interactively once to rewrite it."
+        )
+    if (expires_at_ms - now_ms) < 3_600_000:
+        return "expiring", (
+            "[usage-snapshot] OAuth token expires within 1 hour — open Claude Code "
+            "interactively to refresh before the next check."
+        )
+    return "ok", ""
+
+
 def status_emoji(util: float, target: int, margin: int) -> str:
     if target == 0:
         return ""
@@ -439,18 +469,20 @@ def main() -> None:
 
     token, expires_at_ms = get_access_token(creds)
     if not token:
-        sys.exit(0)
-
-    # Skip silently if token is already expired; warn if it expires within 1 hour
-    now_ms = time.time() * 1000
-    if expires_at_ms and expires_at_ms <= now_ms:
-        sys.exit(0)
-    if expires_at_ms and (expires_at_ms - now_ms) < 3_600_000:
+        # Creds file exists but holds no usable token — surface it rather than
+        # failing silently (creds-file-absent is handled silently above).
         print(
-            "[usage-snapshot] OAuth token expires within 1 hour — open Claude Code "
-            "interactively to refresh before the next check.",
+            "[usage-snapshot] Skipped: .credentials.json has no usable OAuth token "
+            "(missing or unparseable). Run `claude` interactively to rewrite it.",
             file=sys.stderr,
         )
+        sys.exit(2)
+
+    # Make an expired or about-to-expire token visible instead of silently skipping.
+    now_ms = time.time() * 1000
+    state, advisory = classify_token(expires_at_ms, now_ms)
+    if state in ("expired", "expiring"):
+        print(advisory, file=sys.stderr)
         sys.exit(2)
 
     util_data = fetch_usage(token)
