@@ -79,8 +79,12 @@ function Format-State($s) {
 function Resolve-ClaudeExe {
     $base = Join-Path $env:LOCALAPPDATA 'Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code'
     if (Test-Path $base) {
+        # Sort by parsed version of the parent dir (e.g. "2.1.170"), NOT lexically — a
+        # path string sorts "2.1.170" before "2.1.99", which would pick the older binary.
+        # Mirrors `sort -V` in ~/bin/claude. Non-version dir names fall back to 0.0.0.
         $exe = Get-ChildItem -Path $base -Filter 'claude.exe' -Recurse -ErrorAction SilentlyContinue |
-               Sort-Object FullName | Select-Object -Last 1
+               Sort-Object { try { [version]$_.Directory.Name } catch { [version]'0.0.0' } } |
+               Select-Object -Last 1
         if ($exe) { return $exe.FullName }
     }
     # Fallback to PATH resolution if the package layout ever changes.
@@ -100,23 +104,30 @@ if (-not $claudeExe) {
 
 $exitCode = $null
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
+# Run the CLI as a directly-killable child so a hung claude.exe is never orphaned past this
+# run. ProcessStartInfo (not Start-Process -PassThru, whose .ExitCode is unreliable) gives a
+# dependable exit code and a Kill handle. stdout/stderr are drained async into the void to
+# avoid a full-pipe deadlock; stdin is closed for EOF so `-p` (prompt is an argument) never
+# blocks. We rely on the before/after token state — not the output — for the REFRESHED signal.
 try {
-    # Run in a child job so we can enforce a hard timeout; the child inherits the
-    # user environment (and thus credential access). Output is discarded — we care
-    # only about the side effect on .credentials.json, observed via before/after state.
-    $job = Start-Job -ScriptBlock {
-        param($exe, $model)
-        & $exe -p 'ok' --model $model *> $null
-        $LASTEXITCODE
-    } -ArgumentList $claudeExe, $Model
-
-    if (Wait-Job $job -Timeout $TimeoutSeconds) {
-        $exitCode = Receive-Job $job
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $claudeExe
+    $psi.Arguments = "-p ok --model $Model"
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $proc.StandardInput.Close()
+    [void]$proc.StandardOutput.ReadToEndAsync()
+    [void]$proc.StandardError.ReadToEndAsync()
+    if ($proc.WaitForExit($TimeoutSeconds * 1000)) {
+        $exitCode = $proc.ExitCode
     } else {
-        Stop-Job $job -ErrorAction SilentlyContinue
+        try { $proc.Kill() } catch { }
         $exitCode = 'TIMEOUT'
     }
-    Remove-Job $job -Force -ErrorAction SilentlyContinue
 } catch {
     $exitCode = "EXC:$($_.Exception.GetType().Name)"
 }
