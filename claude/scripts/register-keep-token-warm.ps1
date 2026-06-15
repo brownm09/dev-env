@@ -52,7 +52,7 @@ if ($Unregister) {
 }
 
 if (-not (Test-Path $PayloadPath)) {
-    Write-Warning "Payload not found at $PayloadPath. Registering anyway; it will resolve once dev-env `main` (junctioned to ~/.claude/scripts) contains keep-token-warm.ps1."
+    Write-Warning "Payload not found at $PayloadPath. Registering anyway; it will resolve once dev-env main (junctioned to ~/.claude/scripts) contains keep-token-warm.ps1."
 }
 
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
