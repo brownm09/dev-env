@@ -28,12 +28,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "claude" / "scripts" / "usage-snapshot.py"
 
+# The script now imports _winsubp (a sibling in scripts/); make it resolvable
+# when exec_module runs the module body.
+sys.path.insert(0, str(SCRIPT.parent))
+
 # The script filename is hyphenated, so import it by path rather than `import`.
 _spec = importlib.util.spec_from_file_location("usage_snapshot", SCRIPT)
 assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 usage_snapshot = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(usage_snapshot)  # safe: main() is guarded by __main__
 classify_token = usage_snapshot.classify_token
+snapshot_action = usage_snapshot.snapshot_action
 
 NOW_MS = 1_700_000_000_000  # fixed synthetic "now"; real time never consulted
 HOUR_MS = 3_600_000
@@ -76,6 +81,23 @@ def test_exact_expiry_boundary_counts_as_expired() -> str:
     return "expires_at_ms == now_ms -> expired (boundary inclusive)"
 
 
+def test_expired_state_triggers_refresh() -> str:
+    assert snapshot_action("expired") == "refresh", "expired must trigger an on-demand refresh"
+    return "expired -> refresh (on-demand CLI refresh before giving up)"
+
+
+def test_expiring_state_now_fetches() -> str:
+    # Behavior change (dev-env#361): an expiring-but-valid token is used, not skipped.
+    assert snapshot_action("expiring") == "fetch", "expiring is still valid -> fetch, not block"
+    return "expiring -> fetch (valid token no longer discarded)"
+
+
+def test_valid_states_fetch() -> str:
+    for st in ("ok", "no_expiry"):
+        assert snapshot_action(st) == "fetch", f"{st} should fetch, got {snapshot_action(st)}"
+    return "ok / no_expiry -> fetch"
+
+
 def main() -> int:
     tests = [
         ("no-expiry token proceeds silently", test_no_expiry_proceeds_silently),
@@ -83,6 +105,9 @@ def main() -> int:
         ("token expiring within 1h warns", test_expiring_within_hour_warns),
         ("expired token now yields advisory", test_expired_token_now_visible),
         ("exact-expiry boundary is expired", test_exact_expiry_boundary_counts_as_expired),
+        ("expired state triggers on-demand refresh", test_expired_state_triggers_refresh),
+        ("expiring state now fetches (not skipped)", test_expiring_state_now_fetches),
+        ("ok / no_expiry states fetch", test_valid_states_fetch),
     ]
     failed = 0
     for name, fn in tests:

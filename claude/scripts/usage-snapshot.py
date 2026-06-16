@@ -20,11 +20,15 @@ Stdin JSON shape (PostToolUse):
     "cwd": "..."
   }
 
-Exit 0  — not a merge command, token missing/unparseable, or API error; silent
-Exit 2  — snapshot emitted via stderr, OR token expires within 1 hour (advisory warning)
+Exit 0  — not a merge command, creds file absent, or API error; silent
+Exit 2  — snapshot emitted via stderr, OR an expired token whose on-demand refresh
+          failed (advisory). An expired token is first refreshed on demand via the
+          CLI (keep-token-warm.ps1); a still-valid "expiring" token proceeds to fetch.
 """
+import _winsubp  # noqa: F401  -- patches subprocess to suppress console windows
 import json
 import re
+import subprocess
 import sys
 import time
 import urllib.request
@@ -37,6 +41,7 @@ CONFIG_PATH = "C:/Users/brown/Git/dev-env/claude/usage-config.json"
 PROJECTS_ROOT = Path("C:/Users/brown/.claude/projects")
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 BETA_HEADER = "oauth-2025-04-20"
+KEEP_WARM_PS1 = "C:/Users/brown/.claude/scripts/keep-token-warm.ps1"
 
 # --- merge detection (mirrors post-pr-merge-project.py) ---
 _MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
@@ -249,6 +254,46 @@ def classify_token(expires_at_ms: int, now_ms: float) -> tuple[str, str]:
             "interactively to refresh before the next check."
         )
     return "ok", ""
+
+
+def snapshot_action(state: str) -> str:
+    """Map a token state to the snapshot action (pure; unit-testable offline).
+
+    "expired"                       -> "refresh"  (try an on-demand refresh, then re-check)
+    "ok" / "expiring" / "no_expiry" -> "fetch"    (token is still valid; use it)
+
+    An "expiring" token (<1h left) is still valid, so it now proceeds to the fetch
+    instead of being skipped — only a truly-expired token triggers a refresh.
+    """
+    return "refresh" if state == "expired" else "fetch"
+
+
+def refresh_token_now(timeout: int = 45) -> bool:
+    """Best-effort on-demand OAuth-token refresh via the CLI.
+
+    Delegates to keep-token-warm.ps1 (the same script the ClaudeKeepTokenWarm
+    scheduled task runs), which invokes the Claude CLI — the CLI owns the token
+    refresh and the credential-file write, so this carries none of the raw-OAuth
+    rotation risk that gated dev-env#356. The .ps1 gets a shorter internal timeout
+    so it kills its own claude child cleanly; this subprocess timeout is the outer
+    backstop, kept under Claude Code's ~60s hook budget.
+
+    Returns True if the refresh ran to completion. The caller confirms a token was
+    actually obtained by re-reading and re-classifying the credentials.
+    """
+    try:
+        subprocess.run(
+            [
+                "powershell", "-NoProfile", "-NonInteractive",
+                "-ExecutionPolicy", "Bypass", "-File", KEEP_WARM_PS1,
+                "-TimeoutSeconds", "35",
+            ],
+            timeout=timeout,
+            capture_output=True,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def status_emoji(util: float, target: int, margin: int) -> str:
@@ -478,12 +523,23 @@ def main() -> None:
         )
         sys.exit(2)
 
-    # Make an expired or about-to-expire token visible instead of silently skipping.
-    now_ms = time.time() * 1000
-    state, advisory = classify_token(expires_at_ms, now_ms)
-    if state in ("expired", "expiring"):
-        print(advisory, file=sys.stderr)
-        sys.exit(2)
+    # Only a truly-expired token blocks the snapshot. Claude Code refreshes lazily,
+    # so a scheduled keep-warm can't fully close the gap; instead, refresh on demand
+    # right here. A still-valid "expiring" token (<1h) proceeds to the fetch rather
+    # than being discarded.
+    state, _ = classify_token(expires_at_ms, time.time() * 1000)
+    if snapshot_action(state) == "refresh":
+        if refresh_token_now():
+            creds = load_credentials() or creds
+            token, expires_at_ms = get_access_token(creds)
+            state, _ = classify_token(expires_at_ms, time.time() * 1000)
+        if state == "expired" or not token:
+            print(
+                "[usage-snapshot] OAuth token expired and on-demand refresh failed "
+                "(the refresh token may be dead) — run `claude` interactively to re-auth.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     util_data = fetch_usage(token)
     if not util_data:
