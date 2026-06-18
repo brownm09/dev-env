@@ -89,6 +89,11 @@ def _run_reclaim_ladder(protect_cwd: str) -> None:
     recommends it as a manual lever instead.
     """
     # Tier 1 — strip node_modules/.turbo from idle eligible worktrees.
+    # timeout=300 mirrors the install's own ceiling: Windows rmtree over the many
+    # small files of dozens of worktree node_modules trees (the dominant consumer,
+    # dev-env#364) is slow, and the reclaim script early-exits the moment it reaches
+    # --min-free-gb, so the cap only bites when the disk is genuinely deep underwater
+    # — exactly when we want reclamation to keep going rather than abort prematurely.
     exe = sys.executable or "pythonw.exe"
     try:
         subprocess.run(
@@ -99,14 +104,20 @@ def _run_reclaim_ladder(protect_cwd: str) -> None:
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=300,
         )
     except (subprocess.TimeoutExpired, OSError):
         pass
 
     # Tier 2 — npm cache (fully regenerable; safe to clear automatically).
-    if _free_gb(TARGET_DRIVE) >= HARD_FLOOR_GB:
-        return
+    # The mid-ladder measurement fails open like the gate's other _free_gb calls:
+    # a disk_usage error must never suppress the install via the safe-exit guard, so
+    # on error we fall through to Tier 2 rather than let the exception propagate.
+    try:
+        if _free_gb(TARGET_DRIVE) >= HARD_FLOOR_GB:
+            return
+    except OSError:
+        pass
     try:
         subprocess.run(
             "npm cache clean --force",
