@@ -580,7 +580,7 @@ and the disk has ample free space, it is the tarball issue, not ENOSPC.
 
 | Consumer | Typical size | Reclaim with |
 |---|---|---|
-| `lifting-logbook/.claude/worktrees/*/node_modules` | **dominant** — dozens of worktrees × ~1–2 GB each (≈30–60+ GB) | `reclaim-worktree-disk.py` (idle) → `prune-stale-worktrees` (merged) |
+| `lifting-logbook/.claude/worktrees/*/node_modules` | **dominant** — ~14 GB aggregate across ~60 worktrees (measured `du`; avg ~230 MB — a full install is ~1–2 GB, but idle trees get reclaimed so most are partial) | `reclaim-worktree-disk.py` (idle) → `prune-stale-worktrees` (merged) |
 | Docker Desktop (Testcontainers images/volumes) | ~5–6 GB | `docker system prune` (destructive — see below) |
 | Playwright browser bundles | ~700 MB | `npx playwright uninstall` (reinstalled on next test run) |
 | npm cache | ~700 MB | `npm cache clean --force` |

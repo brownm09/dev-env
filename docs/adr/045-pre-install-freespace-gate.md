@@ -37,10 +37,16 @@ and the 6-hourly `reclaim-worktree-disk` routine. Yet the disk still saturated t
    already critical, a detached reclaim *races* an install already in flight rather than preventing it.
 
 **Dominant consumer (acceptance criterion 1), measured 2026-06-18.** `lifting-logbook/.claude/worktrees/`
-held **60 worktrees**, each carrying a full monorepo `node_modules` (~1–2 GB ⇒ ~30–60+ GB) — the project
-mandates a per-worktree install for its Husky `turbo` binary. Secondary: Docker (~5.9 GB), Playwright
-(~685 MB), npm cache (~684 MB). The dev-env worktrees themselves were negligible (~17 MB, no
-`node_modules`). This matches ADR-037's diagnosis and confirms idle worktree `node_modules` is the lever.
+held **60 worktrees** totalling **~14 GB** of `node_modules` (a direct `du`), averaging ~230 MB each —
+*not* every worktree carries a full install, because ADR-037's routine reclaims idle ones; a
+freshly-installed monorepo tree is ~1–2 GB, which is the per-worktree *upper* bound, not the typical
+footprint. The project mandates a per-worktree install for its Husky `turbo` binary. Secondary:
+lifting-logbook's own `node_modules` (~858 MB), Docker (~5.9 GB), Playwright (~685 MB), npm cache
+(~684 MB). The dev-env worktrees themselves were negligible (~17 MB, no `node_modules`). At ~14 GB the
+worktree bucket is still the largest single consumer — more than twice Docker's ~5.9 GB — confirming
+ADR-037's diagnosis that idle worktree `node_modules` is the lever. (An earlier draft of this ADR cited
+the ~1–2 GB-per-worktree upper bound as a ~30–60 GB aggregate; that was an extrapolation, not the
+measured total — corrected to the measured ~14 GB per dev-env#366.)
 
 ## Decision
 
