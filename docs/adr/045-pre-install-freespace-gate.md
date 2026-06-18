@@ -37,7 +37,7 @@ and the 6-hourly `reclaim-worktree-disk` routine. Yet the disk still saturated t
    already critical, a detached reclaim *races* an install already in flight rather than preventing it.
 
 **Dominant consumer (acceptance criterion 1), measured 2026-06-18.** `lifting-logbook/.claude/worktrees/`
-held **60 worktrees** totalling **~14 GB** of `node_modules` (a direct `du`), averaging ~230 MB each —
+held **60 worktrees** totalling **~14 GB** of `node_modules` (a direct `du`), averaging ~240 MB each —
 *not* every worktree carries a full install, because ADR-037's routine reclaims idle ones; a
 freshly-installed monorepo tree is ~1–2 GB, which is the per-worktree *upper* bound, not the typical
 footprint. The project mandates a per-worktree install for its Husky `turbo` binary. Secondary:
