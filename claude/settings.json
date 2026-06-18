@@ -175,6 +175,10 @@
           },
           {
             "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-pr-merge-reclaim.py"
+          },
+          {
+            "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/scripts/stub-push-archive-reminder.py"
           },
           {

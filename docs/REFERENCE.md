@@ -149,6 +149,7 @@ Fires on every user prompt, before Claude processes it.
 | `multi-worktree-alert.py` | When ≥2 git worktrees are active, emits a list in `repo:branch` format, starring the current one. Fires on every prompt. Suppressed in Claude-managed worktree sessions (`.claude/worktrees/` in cwd). |
 | `reconcile-open-prs.py` | Runs once per session (per-session sentinel in `scratch/`). Calls `gh pr view` for each entry in every `sessions/*/open-prs.jsonl` in engineering-journal; removes entries whose PRs are MERGED or CLOSED; emits a `systemMessage` listing surviving open PRs and any removals. Does not commit — modified files are picked up by the next stub commit. Fails safe: `gh` errors leave the entry intact. [ADR-018](adr/018-reconcile-open-prs-hook.md) |
 | `disk-space-check.py` | Free-space safety net for `C:`. Checks `shutil.disk_usage` on every prompt. Below 20 GB free: emits a one-time `systemMessage` warning. Below 10 GB free: spawns `reclaim-worktree-disk.py --scan-dir C:/Users/brown/Git --min-free-gb 10 --protect-cwd <cwd>` **detached** (via `sys.executable`, never the `py` launcher — dev-env#300) so the heavy delete never blocks the prompt, and emits a `systemMessage`. Each band fires at most once per session via a `session_id`-keyed marker (`scratch/disk_space_check_<session_id>_<band>.flag`, ADR-027). Advisory only — exit 0 always; any exception is swallowed. Thresholds are hardcoded constants. [ADR-037](adr/037-worktree-disk-reclamation.md) |
+| `worktree-npm-install.py` | When the session `cwd` is a Claude-managed worktree (`.claude/worktrees/`) of an npm repo whose `node_modules` is absent, runs `npm ci` (or `npm install`) so tests don't fail on missing deps (ADR-016). **Pre-install free-space gate (ADR-045):** before installing it checks free `C:` space — at ≥10 GB it installs as before; below 10 GB it runs a synchronous reclamation ladder (Tier 1 `reclaim-worktree-disk.py --min-free-gb 10`, Tier 2 `npm cache clean --force`) and re-measures; if still below a 5 GB hard floor it **refuses the install** and emits a loud advisory rather than risk a silently-truncated `node_modules` (ENOSPC, dev-env#364). Reclamation is synchronous (the install it guards is synchronous, so a detached reclaim would race it). Fails open on any measurement error; advisory only — exit 0 always. The pure `install_decision()` helper is unit-tested by `tests/test_worktree_npm_install.py`. [ADR-045](adr/045-pre-install-freespace-gate.md) |
 | `awake-blocker.py` (start) | On UserPromptSubmit, spawns a detached watcher (if not already running) that holds a Windows system-sleep lock via `kernel32!SetThreadExecutionState(ES_CONTINUOUS \| ES_SYSTEM_REQUIRED)`. Refreshes the sentinel heartbeat on every prompt. Watcher self-terminates if the sentinel is missing or older than 30 minutes (crash safety). Idempotent. Display sleep is not blocked — only system sleep. [ADR-033](adr/033-prevent-system-sleep-while-processing.md) |
 
 ---
@@ -182,6 +183,7 @@ Fires after each Bash tool call completes. Matched with `"matcher": "Bash"`.
 | `pr-merge-reminder.py` | Command contains `gh pr create`, `gh pr merge`, or `git push` (when the pushed branch has an open PR) | Exits 2 with a `systemMessage` reminding Claude to write a journal stub. For `git push`, runs `git branch --show-current` and `gh pr list --head <branch>` as subprocesses to confirm an open PR exists before emitting the reminder. Skips `engineering-journal` pushes (handled by `stub-push-archive-reminder.py`). |
 | `post-tool-use.py` | Command contains `gh issue create` or `gh pr create` | Auto-adds the created item to the configured GitHub Project, then exits 2 with a `systemMessage` listing the exact `gh project item-edit` commands to set any `required_fields` defined in `hook-config.json`. Opt-in via `project_number` + `project_owner` in `.claude/hook-config.json`. [ADR-023](adr/023-generic-required-fields-issue-hook.md) |
 | `post-pr-merge-pull.py` | Command contains `gh pr merge` | Fast-forwards the local `main` branch via `git fetch origin main:main` so the local clone stays current after a merge. |
+| `post-pr-merge-reclaim.py` | Command contains `gh pr merge` and the merge succeeded (exit 0 or a stdout success marker — worktree merges exit non-zero on local cleanup, mirroring `post-pr-merge-pull.py`) | Spawns `reclaim-worktree-disk.py --scan-dir C:/Users/brown/Git --protect-cwd <cwd>` **detached** (via `sys.executable`, never the `py` launcher) to strip regenerable `node_modules`/`.turbo` from now-idle merged worktrees — the dominant `C:` consumer — at the idle event instead of waiting for the 6-hourly routine. No `--min-free-gb` (the trigger is the merge, not low space); `--protect-cwd` shields the active worktree. Does **not** remove the worktree directory/branch — that requires an out-of-process context (Windows cwd lock) and stays the daily `prune-stale-worktrees` job. Informational only — exit 0 always. The pure `is_successful_merge()` helper is unit-tested by `tests/test_post_pr_merge_reclaim.py`. [ADR-045](adr/045-pre-install-freespace-gate.md) |
 | `post-pr-merge-project.py` | Command contains `gh pr merge` | Auto-moves the linked issue (`Closes/Fixes/Resolves #N` in PR body) to Done on the configured GitHub Project. Opt-in via `status_field_id` and `done_option_id` in `hook-config.json`. [ADR-014](adr/014-auto-move-project-item-done-on-merge.md) |
 | `usage-snapshot.py` | Command contains `gh pr merge` | Queries `https://api.anthropic.com/api/oauth/usage` (via OAuth Bearer token from `~/.claude/.credentials.json`) and parses the session JSONL for the top-5 costliest exchanges. Emits a `### Usage Snapshot (post-merge)` markdown block showing weekly/5-hour utilisation vs. day-of-week soft targets (configured in `claude/usage-config.json`). Global — fires for all repos without opt-in. Include the emitted block verbatim in the post-merge journal stub. A still-valid "expiring" token is used (not skipped); an **expired** token is **refreshed on demand** at merge via the CLI (`keep-token-warm.ps1`) before fetching, so the snapshot only falls back to the stderr advisory ([#357](https://github.com/brownm09/dev-env/pull/357)) when the refresh token itself is dead ([ADR-044](adr/044-eliminate-usage-snapshot-gap-on-demand-refresh.md)). The `ClaudeKeepTokenWarm` scheduled task (see Utilities) keeps the token usually-fresh so on-demand refresh rarely fires ([ADR-043](adr/043-keep-warm-scheduled-task-for-token-freshness.md)). |
 | `stub-push-archive-reminder.py` | `git push` to `engineering-journal` with a stub commit | Writes a sentinel file (`~/.claude/scratch/stub-pushed.flag`) and exits 0. Verifies the most-recent commit in the journal repo touches a `.stub.md` file before writing the flag. The Stop hook (`journal-stop-check.py`) consumes the sentinel and issues the archive reminder via exit 2. |
@@ -538,6 +540,74 @@ migrate its hooks into `~/.claude/hooks/` rather than overriding. If another too
 owns the global value, coordinate rather than overwrite — two tools cannot share `core.hooksPath`.
 Once clear: `git config --global core.hooksPath ~/.claude/hooks`. The hook chains to any per-repo
 `.git/hooks/pre-push`, so existing repo-level hooks are preserved.
+
+---
+
+## Disk-Full (ENOSPC) Recovery
+
+The `C:` drive has saturated to 0 bytes free more than once (dev-env#306, dev-env#364), each time
+mid-`npm install` and each time surfacing *indirectly* as corrupted dependencies rather than an obvious
+"disk full" error. This runbook captures the failure signature so it is recognized in seconds, the
+dominant consumers so the right thing is cleaned, and the recovery steps. The *automated* defenses are
+the `disk-space-check.py` and `worktree-npm-install.py` hooks plus the `reclaim-worktree-disk` /
+`prune-stale-worktrees` routines ([ADR-037](adr/037-worktree-disk-reclamation.md),
+[ADR-045](adr/045-pre-install-freespace-gate.md)); this section is the manual fallback.
+
+### Recognizing an ENOSPC-truncated install
+
+When `C:` runs out mid-install, **npm can still report exit 0** while leaving packages partially
+extracted. The corruption then surfaces downstream as confidently-misleading errors — read past the
+top-line message (Error-Message-Diligence rule):
+
+- **Jest:** `Preset ts-jest not found` whose real cause is `bs-logger/dist/index.js` `MODULE_NOT_FOUND`
+  deep in ts-jest's load chain — i.e. a *truncated* package, not a missing config.
+- **Next.js:** `next dev` crashes on boot because a native binary is truncated —
+  `@next/swc-win32-x64-msvc` at **32.5 MB** instead of the valid **136.8 MB** — producing a downstream
+  `next.config.compiled.js` "Unexpected token 'export'". Cascades into every Playwright test failing
+  with `ERR_CONNECTION_REFUSED`.
+
+**First diagnostic step, always:** `df -h /c`. If free space is near zero (or was recently), suspect
+truncation before chasing the named error.
+
+**Distinguish from Node-24 incomplete tarballs (lifting-logbook#373):** that is a different root cause
+with overlapping symptoms — it happens on Node 24 *regardless* of free space. If `node --version` is 24
+and the disk has ample free space, it is the tarball issue, not ENOSPC.
+
+**Confirm a suspected truncation:** compare a native binary's on-disk size to its published size, e.g.
+`ls -la node_modules/@next/swc-win32-x64-msvc/*.node`.
+
+### Dominant `C:` consumers (where the space goes)
+
+| Consumer | Typical size | Reclaim with |
+|---|---|---|
+| `lifting-logbook/.claude/worktrees/*/node_modules` | **dominant** — dozens of worktrees × ~1–2 GB each (≈30–60+ GB) | `reclaim-worktree-disk.py` (idle) → `prune-stale-worktrees` (merged) |
+| Docker Desktop (Testcontainers images/volumes) | ~5–6 GB | `docker system prune` (destructive — see below) |
+| Playwright browser bundles | ~700 MB | `npx playwright uninstall` (reinstalled on next test run) |
+| npm cache | ~700 MB | `npm cache clean --force` |
+| `dev-env/.claude/worktrees` | ~tens of MB (no `node_modules`) | negligible |
+
+### Recovery steps
+
+```bash
+df -h /c                                   # 1. confirm it really is disk exhaustion
+npm cache clean --force                    # 2. ~700 MB, fully regenerable
+
+# 3. reclaim regenerable artifacts from idle worktrees (the bulk), then remove merged ones
+py -3 ~/.claude/scripts/reclaim-worktree-disk.py --scan-dir C:/Users/brown/Git
+git worktree prune                         #    drop stale worktree admin entries
+
+docker system prune                        # 4. ~5–6 GB — DESTRUCTIVE: removes stopped containers,
+                                           #    unused networks, dangling images. Re-pulled on next use.
+
+# 5. re-extract any package confirmed truncated, then a clean reinstall
+rm -rf node_modules/<pkg> && npm install <pkg> --no-save
+npm ci                                     #    full clean reinstall once space is recovered
+```
+
+`docker system prune` is deliberately **not** run by any hook — it deletes images/volumes that may be
+expensive to rebuild and is not transparently regenerable, so it stays a manual decision. The automated
+ladder in `worktree-npm-install.py` (idle-worktree reclaim → `npm cache clean`) covers only the
+regenerable tiers, then *refuses* a low-space install rather than risk truncation.
 
 ---
 

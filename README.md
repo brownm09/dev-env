@@ -54,6 +54,7 @@ Hooks that spawn subprocesses (`git`, `gh`, `bash`, …) must `import _winsubp` 
 | UserPromptSubmit | `multi-worktree-alert.py` | Lists active worktrees in `repo:branch` format when ≥2 are open |
 | UserPromptSubmit | `reconcile-open-prs.py` | Removes stale entries from `open-prs.jsonl` whose PRs are now merged/closed; emits surviving open PRs as session context |
 | UserPromptSubmit | `disk-space-check.py` | Watches free space on `C:`; warns once per session below 20 GB and spawns detached `node_modules`/`.turbo` reclamation below 10 GB |
+| UserPromptSubmit | `worktree-npm-install.py` | Auto-runs `npm ci`/`install` when a Claude worktree lacks `node_modules`; gates on free space first — below 10 GB it reclaims (idle worktrees, then npm cache) and re-checks, and below a 5 GB floor it refuses the install rather than risk a silently-truncated `node_modules` (ENOSPC, see [ADR-045](docs/adr/045-pre-install-freespace-gate.md)) |
 | UserPromptSubmit / Stop / Notification | `awake-blocker.py` | Spawns a detached watcher that holds a Windows system-sleep lock while Claude is processing; releases on Stop or Notification |
 | PreToolUse (Bash) | `pre-commit-branch-check.py` | Emits current branch as a checkpoint before `git commit` |
 | PreToolUse (Bash) | `pre-pr-create-check.py` | Emits test-verification checklist, documentation-gap warning, and pre-existing-failure baseline advisory before `gh pr create` |
@@ -62,6 +63,7 @@ Hooks that spawn subprocesses (`git`, `gh`, `bash`, …) must `import _winsubp` 
 | PostToolUse (Bash) | `pr-merge-reminder.py` | Reminds to write a journal stub after `gh pr create`, `gh pr merge`, or `git push` (when the pushed branch has an open PR) |
 | PostToolUse (Bash) | `post-tool-use.py` | Auto-adds issues/PRs to configured GitHub Project; exits 2 with `required_fields` reminders |
 | PostToolUse (Bash) | `post-pr-merge-pull.py` | Fast-forwards local `main` after `gh pr merge` |
+| PostToolUse (Bash) | `post-pr-merge-reclaim.py` | After a successful `gh pr merge`, spawns detached reclamation of `node_modules`/`.turbo` from now-idle worktrees (the dominant `C:` consumer), reclaiming at the idle event instead of waiting for the 6-hourly routine (see [ADR-045](docs/adr/045-pre-install-freespace-gate.md)) |
 | PostToolUse (Bash) | `post-pr-merge-project.py` | Auto-moves linked issue to Done on configured GitHub Project after `gh pr merge` |
 | PostToolUse (Bash) | `usage-snapshot.py` | Emits weekly/5-hour utilisation vs. daily soft targets and top-5 session exchanges after `gh pr merge` |
 | PostToolUse (Bash) | `stub-push-archive-reminder.py` | Writes a sentinel flag after a stub is pushed to engineering-journal; Stop hook consumes it to remind Claude to archive |

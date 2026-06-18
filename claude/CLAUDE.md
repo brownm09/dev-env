@@ -42,6 +42,7 @@ See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md).
 - **Scratch directory:** `C:/Users/brown/.claude/scratch/` — all processing tmp files (`gh` output, JSON parsing intermediaries, etc.) go here regardless of which project is active. Never write tmp files into a project repo working directory.
 - **`gh` CLI** is available and authenticated. The `project` scope must be added separately when needed: `gh auth refresh -s project`.
 - **Prefer Git Bash** over PowerShell for scripting — PowerShell handles arrays and arithmetic differently and has caused failures in this environment.
+- **Disk-full (ENOSPC):** `C:` saturating to 0 GB surfaces *indirectly* as truncated `node_modules` (npm exits 0 but a native binary is partial), not an obvious "disk full" error. If an install fails with a confusing downstream error, run `df -h /c` first. Recovery runbook + failure signature + dominant consumers: [`docs/REFERENCE.md` → Disk-Full (ENOSPC) Recovery](../docs/REFERENCE.md#disk-full-enospc-recovery). The `worktree-npm-install.py` gate now refuses a low-space install rather than truncate ([ADR-045](../docs/adr/045-pre-install-freespace-gate.md)).
 
 ---
 
