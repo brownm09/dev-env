@@ -89,6 +89,26 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
    py -3 claude/scripts/tests/test_usage_snapshot.py
    ```
 
+9. **worktree-npm-install gate test** — required when changing `claude/scripts/worktree-npm-install.py`.
+   Exercises the pure `install_decision()` helper offline (no disk, no network, no npm): pins the
+   `proceed` / `reclaim-first` / `abort` decisions and the 10 GB / 5 GB threshold boundaries that gate a
+   low-space install against silent ENOSPC truncation ([ADR-045](docs/adr/045-pre-install-freespace-gate.md)).
+   The synchronous reclamation ladder and the real install are not covered (they shell out; the repo
+   avoids subprocess mocks).
+
+   ```bash
+   py -3 claude/scripts/tests/test_worktree_npm_install.py
+   ```
+
+10. **post-pr-merge-reclaim test** — required when changing `claude/scripts/post-pr-merge-reclaim.py`.
+    Exercises the pure `is_successful_merge()` predicate offline: a `gh pr merge` with exit 0 or a stdout
+    success marker triggers reclamation; a non-merge command or a genuinely failed merge does not. The
+    detached reclaim spawn is not covered (it shells out).
+
+    ```bash
+    py -3 claude/scripts/tests/test_post_pr_merge_reclaim.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
