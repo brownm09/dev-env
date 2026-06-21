@@ -56,8 +56,15 @@ def test_write_with_adr_ref_silent() -> str:
 
 
 def test_write_with_claudemd_ref_silent() -> str:
-    assert not should("Write", MEM, "Documented in repo: claude/CLAUDE.md.")
-    return "memory body cites CLAUDE.md / 'Documented in repo' -> silent"
+    # The 'CLAUDE.md' substring alone (no other link token) must suppress.
+    assert not should("Write", MEM, "see claude/CLAUDE.md for the rule")
+    return "memory body cites CLAUDE.md -> silent"
+
+
+def test_write_with_documented_in_repo_silent() -> str:
+    # The 'Documented in repo' substring alone (no other link token) must suppress.
+    assert not should("Write", MEM, "Documented in repo under docs/")
+    return "memory body says 'Documented in repo' -> silent"
 
 
 def test_memory_index_silent() -> str:
@@ -94,6 +101,7 @@ def main() -> int:
         ("write with issue ref silent", test_write_with_issue_ref_silent),
         ("write with ADR ref silent", test_write_with_adr_ref_silent),
         ("write with CLAUDE.md ref silent", test_write_with_claudemd_ref_silent),
+        ("write with 'Documented in repo' silent", test_write_with_documented_in_repo_silent),
         ("MEMORY.md index silent", test_memory_index_silent),
         ("non-memory path silent", test_non_memory_path_silent),
         ("non-.md in memory silent", test_non_md_in_memory_silent),

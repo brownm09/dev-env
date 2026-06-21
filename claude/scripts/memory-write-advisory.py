@@ -18,6 +18,11 @@ MEMORY.md pointer. Transient/session-local notes are exempt — the link-absence
 heuristic keeps this nudge quiet on writes that already carry a link, and the
 agent (not this hook) judges whether a given note is durable.
 
+The link check is an intentionally permissive proxy (plain substring / loose
+regex), so it errs toward staying silent — the safe direction for a non-blocking
+nudge. Do not "tighten" it into a stricter check: a missed nudge is harmless (the
+agent still follows the rule), whereas a noisier one trains the reader to ignore it.
+
 Stdin JSON shape (PostToolUse):
   {"tool_name": "Write", "tool_input": {"file_path": "...", "content": "..."}, ...}
 
@@ -29,6 +34,8 @@ import re
 import sys
 
 # An immortalization link anywhere in the written body suppresses the nudge.
+# Intentionally permissive (substring / loose regex): over-suppression is the safe
+# direction for a non-blocking advisory — see the module docstring before tightening.
 _LINK_PATTERNS = (
     re.compile(r"#\d+"),            # GitHub issue / PR reference
     re.compile(r"ADR-\d+", re.I),  # ADR reference
