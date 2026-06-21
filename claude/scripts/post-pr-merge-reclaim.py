@@ -29,7 +29,7 @@ Stdin JSON shape (PostToolUse):
     "hook_event_name": "PostToolUse",
     "tool_name": "Bash",
     "tool_input": {"command": "...", "description": "..."},
-    "tool_response": {"output": "...", "exitCode": 0},
+    "tool_response": {"stdout": "...", "stderr": "..."},  # NOT "output" — ADR-049
     "cwd": "..."
   }
 
@@ -41,7 +41,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _hookio import read_command_output
+from _hookio import output_has_merge_marker, read_command_output
 
 SCAN_DIR = "C:/Users/brown/Git"
 RECLAIM_SCRIPT = Path(__file__).resolve().parent / "reclaim-worktree-disk.py"
@@ -57,12 +57,7 @@ def is_successful_merge(command: str, exit_code: int, output: str) -> bool:
     """
     if "gh pr merge" not in command:
         return False
-    return (
-        exit_code == 0
-        or "Merged pull request" in output
-        or "Squashed and merged" in output
-        or "Rebased and merged" in output
-    )
+    return exit_code == 0 or output_has_merge_marker(output)
 
 
 def _spawn_reclaim(protect_cwd: str) -> bool:

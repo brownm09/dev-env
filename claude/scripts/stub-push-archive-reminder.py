@@ -20,7 +20,7 @@ Stdin JSON shape (PostToolUse):
     "hook_event_name": "PostToolUse",
     "tool_name": "Bash",
     "tool_input": {"command": "...", ...},
-    "tool_response": {"output": "...", ...}
+    "tool_response": {"stdout": "...", "stderr": "..."}  # NOT "output" — ADR-049
   }
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows

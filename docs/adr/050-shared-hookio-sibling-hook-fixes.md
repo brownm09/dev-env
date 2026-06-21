@@ -35,11 +35,17 @@ been copied into four sibling PostToolUse hooks and left them as a tracked follo
    pattern as `_winsubp` ([ADR-007](007-hook-command-invocation.md)). One implementation
    means the field-precedence rule cannot be re-derived divergently. New PostToolUse Bash
    hooks that read command output must `from _hookio import read_command_output` rather than
-   touching `tool_response` directly.
+   touching `tool_response` directly. `_hookio` also owns the merge-success-marker detection
+   the `post-pr-merge-*` hooks share (`output_has_merge_marker` / `merge_pr_number_from_output`,
+   anchored on a verb + `pull request #N` regex), so the marker set lives in one place rather
+   than triplicated across the three merge hooks.
 
 2. **`post-pr-merge-project.py` derives the PR number from the command, then the output
    marker.** `gh pr merge` output has no `/pull/N` URL, so the command is the reliable source
-   when the PR is named (`gh pr merge 380` or a `/pull/380` URL). The dominant
+   when the PR is named (`gh pr merge 380` or a `/pull/380` URL) — extraction is scoped to the
+   merge invocation's own arguments (not the whole command) and prefers the positional number
+   over a URL argument, so a `/pull/N` in a `--subject`/`--body` value or a chained sibling
+   command cannot hijack it. The dominant
    `gh pr merge --squash --delete-branch` form names no PR, so extraction falls back to gh's
    success marker (`Squashed and merged pull request #N`, including the cross-repo
    `owner/repo#N` variant) now visible via the shared read. Move-to-Done therefore works from
@@ -54,14 +60,17 @@ been copied into four sibling PostToolUse hooks and left them as a tracked follo
    printed even from a worktree (before gh's non-zero local-cleanup tail), so this also makes
    move-to-Done work from worktrees, where the old `exitCode != 0` early-exit would have
    suppressed it. (The real payload omits `exitCode` entirely — ADR-049 — so the old check was
-   a no-op in practice; the marker gate replaces it with a correct, observable signal.)
+   a no-op in practice; the marker gate replaces it with a correct, observable signal.) For
+   completeness, `post-pr-merge-{pull,reclaim}.py` default the absent `exitCode` to `-1` (not
+   `0`) and rely on the marker fallback — correcting ADR-049's note that the sibling `exitCode`
+   reads "default to `0`".
 
 4. **`post-pr-merge-pull.py` gains the same pure `is_successful_merge()` predicate as
    reclaim**, plus the safe-exit `try/except` guard its `__main__` was missing (a Hook-Safety
    invariant). `stub-push-archive-reminder.py` gains a pure `has_push_error()` guard. Both
    extractions exist so the revived behavior is unit-testable offline.
 
-5. **Offline, fixture-only tests cover each change:** `test_hookio.py` (the shared read — the
+5. **Offline, fixture-only tests cover each change:** `test_hookio.py` (the shared read and merge-marker helpers — the
    common fix for all five hooks), `test_post_pr_merge_project.py` (command/marker extraction
    + the `--auto`-safe `merge_succeeded` gate), `test_post_pr_merge_pull.py`
    (`is_successful_merge`), and `test_stub_push_archive_reminder.py` (`has_push_error`).

@@ -132,7 +132,7 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     ```
 
 13. **_hookio shared-read test** — required when changing `claude/scripts/_hookio.py`. Exercises the pure
-    `read_command_output()` helper offline (no network, no gh): pins that the real `stdout`/`stderr`-shaped
+    `read_command_output()` and merge-marker helpers (`output_has_merge_marker` / `merge_pr_number_from_output`) offline (no network, no gh): pins that the real `stdout`/`stderr`-shaped
     Bash payload yields the command output (the pre-#380 `output` read was always `""`), that stdout and
     stderr are joined, that the legacy `output` field is still honored as a fallback, and that a missing /
     empty / `None` / non-dict `tool_response` yields `""` without raising. `_hookio` is imported by all five

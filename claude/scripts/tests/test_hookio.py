@@ -22,7 +22,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = REPO_ROOT / "claude" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from _hookio import read_command_output  # noqa: E402
+from _hookio import (  # noqa: E402
+    merge_pr_number_from_output,
+    output_has_merge_marker,
+    read_command_output,
+)
 
 URL = "https://github.com/brownm09/dev-env/issues/377"
 
@@ -78,6 +82,30 @@ def test_old_output_read_would_have_been_empty() -> str:
     return "pre-fix `output` read was '' on the real payload; fixed read recovers it"
 
 
+def test_merge_marker_detected() -> str:
+    assert output_has_merge_marker("✓ Squashed and merged pull request #380 (T)")
+    assert output_has_merge_marker("✓ Merged pull request #1")
+    assert output_has_merge_marker("✓ Rebased and merged pull request brownm09/dev-env#7")
+    return "real merge markers (incl. cross-repo owner/repo#N) -> True"
+
+
+def test_merge_marker_excludes_auto_failure_and_stray() -> str:
+    assert not output_has_merge_marker("✓ Pull request #380 will be automatically merged")
+    assert not output_has_merge_marker("X Pull request #380 is not mergeable")
+    # A stray verb phrase WITHOUT "pull request #N" must not count — this is the
+    # chained-output false positive the line-anchored regex closes (#380 review).
+    assert not output_has_merge_marker("note: it was 'Squashed and merged' last time")
+    assert not output_has_merge_marker("")
+    return "queued --auto / failure / stray phrase / empty -> False"
+
+
+def test_merge_pr_number_from_output() -> str:
+    assert merge_pr_number_from_output("✓ Squashed and merged pull request #380 (T)") == 380
+    assert merge_pr_number_from_output("✓ Rebased and merged pull request o/r#7") == 7
+    assert merge_pr_number_from_output("no marker here") is None
+    return "marker PR number extracted; None when absent"
+
+
 def main() -> int:
     tests = [
         ("reads command output from stdout", test_reads_stdout),
@@ -87,6 +115,9 @@ def main() -> int:
         ("stdout preferred over legacy output", test_stdout_preferred_over_legacy_output),
         ("empty/malformed payloads yield ''", test_empty_and_malformed_payloads),
         ("pre-fix output read was empty (#377 root cause)", test_old_output_read_would_have_been_empty),
+        ("merge marker detected (incl cross-repo)", test_merge_marker_detected),
+        ("merge marker excludes auto/failure/stray", test_merge_marker_excludes_auto_failure_and_stray),
+        ("merge PR number from output", test_merge_pr_number_from_output),
     ]
     failed = 0
     for name, fn in tests:

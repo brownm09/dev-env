@@ -69,6 +69,32 @@ def test_cmd_bare_no_number_is_none() -> str:
     return "bare gh pr merge --squash --delete-branch -> None (falls back to output)"
 
 
+def test_cmd_flag_before_arg() -> str:
+    assert extract_pr_number_from_command("gh pr merge --squash 380") == 380
+    return "gh pr merge --squash 380 (flag before positional) -> 380"
+
+
+def test_cmd_url_in_flag_value_not_hijacked() -> str:
+    # A /pull/N URL inside a --subject value must NOT override the merged number
+    # (the whole-command search bug the review caught).
+    cmd = 'gh pr merge 380 --squash --subject "see https://github.com/o/r/pull/200"'
+    assert extract_pr_number_from_command(cmd) == 380
+    return "URL in --subject value does not hijack the number -> 380"
+
+
+def test_cmd_chained_url_ignored() -> str:
+    # A /pull/N URL in a chained sibling command must not be picked up.
+    cmd = "echo https://github.com/o/r/pull/55 && gh pr merge 380 --squash"
+    assert extract_pr_number_from_command(cmd) == 380
+    return "chained-command URL ignored (statement-scoped) -> 380"
+
+
+def test_cmd_branch_name_no_number() -> str:
+    # Merging by branch name names no PR number -> None (falls back to output).
+    assert extract_pr_number_from_command("gh pr merge my-feature-2 --squash") is None
+    return "merge by branch name -> None (digit inside name is not a token)"
+
+
 # --- extract_pr_number (output) ------------------------------------------
 
 def test_output_squash_marker() -> str:
@@ -129,6 +155,10 @@ def main() -> int:
         ("command: pull URL", test_cmd_url),
         ("command: cd-prefixed", test_cmd_with_cd_prefix),
         ("command: bare merge has no number", test_cmd_bare_no_number_is_none),
+        ("command: flag before arg", test_cmd_flag_before_arg),
+        ("command: URL in flag value not hijacked", test_cmd_url_in_flag_value_not_hijacked),
+        ("command: chained URL ignored", test_cmd_chained_url_ignored),
+        ("command: branch name -> None", test_cmd_branch_name_no_number),
         ("output: squash marker", test_output_squash_marker),
         ("output: merged marker", test_output_merged_marker),
         ("output: cross-repo marker", test_output_cross_repo_marker),
