@@ -1,7 +1,7 @@
 # ADR-038 — Durable Preferences Must Be Documented in the Repo, Not Only in Memory
 
 **Date:** 2026-06-04
-**Status:** Accepted
+**Status:** Accepted — extended by [ADR-048](048-memory-immortalization-issue-pairing.md)
 **Closes:** [dev-env#311](https://github.com/brownm09/dev-env/issues/311)
 **Tags:** workflow, memory, claude-behavior, documentation, global-rule, code-quality
 **Related:** [ADR-003](003-config-in-version-control.md), [ADR-008](008-plan-then-optimize-forcing-function.md)

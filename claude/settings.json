@@ -190,6 +190,15 @@
             "command": "pyw -3 C:/Users/brown/.claude/scripts/usage-snapshot.py"
           }
         ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/memory-write-advisory.py"
+          }
+        ]
       }
     ]
   },
