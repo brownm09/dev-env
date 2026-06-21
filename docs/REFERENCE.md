@@ -593,6 +593,33 @@ owns the global value, coordinate rather than overwrite — two tools cannot sha
 Once clear: `git config --global core.hooksPath ~/.claude/hooks`. The hook chains to any per-repo
 `.git/hooks/pre-push`, so existing repo-level hooks are preserved.
 
+### Post-merge follow-up tiles (chips)
+
+The post-merge checklist ([`claude/CLAUDE.md`](../claude/CLAUDE.md) → Git Workflow) asks you to capture
+any out-of-scope follow-ups the work surfaced. The harness mechanism for this is the `spawn_task`
+background-task tool (full name `mcp__ccd_session__spawn_task`), which renders a clickable **tile**
+(chip) in the UI. One click spins the follow-up into its own Claude Code session and git worktree,
+seeded with the tile's prompt; otherwise the user dismisses it. The current turn continues
+uninterrupted either way.
+
+**When to use it.** At the post-merge follow-up checkpoint of
+[ADR-046](adr/046-post-merge-followup-tiles.md) — right after `gh pr merge`, one tile per genuine,
+actionable, out-of-scope item (a fix spotted in adjacent code, deferred work, tech debt, an idea worth
+pursuing). The bar is the file-and-link bar ([ADR-028](adr/028-all-findings-merge-gate.md)): real
+follow-ups, not speculative musings, so the tile surface stays signal-rich. (`spawn_task`'s own guidance
+names other good moments too — right after verification passes, right before summarizing completed
+work; ADR-046 formalizes the merge boundary specifically.)
+
+**Tiles capture; they do not track.** A tile is *ephemeral* — chip IDs are not persisted across app
+restarts, and a tile becomes real work only when the user clicks it. For a follow-up that must be
+durably tracked, still file a GitHub issue; the tile's spawned session is a natural place to do that.
+The tile and the issue are complementary, not redundant.
+
+**Fallback where `spawn_task` is unavailable.** The tool is not present in every session (e.g. some
+terminal CLI sessions). There, file a follow-up issue instead, so the capture still happens.
+
+Rationale, alternatives, and consequences: [ADR-046](adr/046-post-merge-followup-tiles.md).
+
 ---
 
 ## Disk-Full (ENOSPC) Recovery
