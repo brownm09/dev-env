@@ -532,6 +532,58 @@ gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"
 Root cause and upstream fix: [ADR-035](adr/035-git-push-delete-web-session-constraint.md) /
 [Platform Constraints](#platform-constraints).
 
+### Remote git ops hang on the Git Credential Manager GUI (agent / worktree sessions)
+
+**Symptom.** In Claude-managed worktree / non-interactive agent sessions on Windows, every *remote*
+git operation — `git push`, `git fetch`, `git ls-remote` — hangs indefinitely. Git for Windows ships
+**Git Credential Manager (GCM)** as the default `credential.helper`; on a credential lookup it launches
+the `GitHub.UI.exe` GUI OAuth dialog, which never resolves in a session with no interactive desktop
+driving it, so the command blocks until timeout. Stuck dialogs accumulate (~15 in one session) and
+must be force-killed:
+
+```bash
+taskkill //F //IM GitHub.UI.exe
+```
+
+`gh` itself stays authenticated the whole time — its OAuth token lives in the OS keyring, not behind
+the GUI — so only raw git-over-HTTPS is affected, never gh-mediated operations.
+
+**Per-command workaround (fail-fast, no global change).** Point the single op at gh's token and
+disable the prompt so it errors instead of hanging:
+
+```bash
+GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c 'credential.helper=!gh auth git-credential' <push|fetch|ls-remote|...>
+```
+
+The empty `-c credential.helper=` clears any inherited helper (so GCM does not run); the second `-c`
+uses gh's credential helper; `GIT_TERMINAL_PROMPT=0` makes it fail fast if no credential is available.
+
+**Persistent fix (standardized 2026-06-20).** Run once to point git's `github.com` credential helper
+at gh's token globally, so *all* remote ops resolve credentials over authenticated HTTPS and never
+invoke the GCM GUI:
+
+```bash
+gh auth setup-git
+```
+
+This sets the global config `credential.https://github.com.helper` to `!gh auth git-credential`
+([gh manual](https://cli.github.com/manual/gh_auth_setup-git)). Verify with a no-hang smoke test —
+it should return immediately instead of blocking:
+
+```bash
+git ls-remote --heads origin >/dev/null && echo OK
+```
+
+A fresh machine or a wiped git config must re-run `gh auth setup-git` (or use the per-command fallback
+above). Revert if ever undesired — this restores GCM as the `github.com` helper, and the hang in agent
+sessions:
+
+```bash
+git config --global --unset-all credential.https://github.com.helper
+```
+
+Root cause, decision, and alternatives: [ADR-047](adr/047-standardize-gh-credential-helper.md).
+
 ### Pre-push hook wiring (one-time setup)
 
 Before setting, check for an existing value: `git config --system core.hooksPath` and
