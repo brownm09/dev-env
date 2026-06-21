@@ -24,6 +24,8 @@ import re
 import subprocess
 import sys
 
+from _hookio import read_command_output
+
 # Map GitHub repo slugs to local clone paths.
 # Repos with no local clone (e.g. profile-only repos) map to None.
 REPO_LOCAL_PATHS: dict[str, str | None] = {
@@ -91,6 +93,26 @@ def pull_main(local_path: str, repo: str) -> None:
         )
 
 
+def is_successful_merge(command: str, exit_code: int, output: str) -> bool:
+    """Pure predicate: did this Bash call complete a `gh pr merge`?
+
+    `gh pr merge` from a worktree exits non-zero because local cleanup
+    (`git checkout main`, branch delete) fails even though the remote merge
+    succeeded, so the stdout/stderr success markers are trusted too (issue #275;
+    mirrors post-pr-merge-reclaim.py). The output is read via the shared
+    `read_command_output` helper — reading the legacy `output` field left this
+    fallback dead because the real payload carries `stdout`/`stderr` (#380).
+    """
+    if "gh pr merge" not in command:
+        return False
+    return (
+        exit_code == 0
+        or "Merged pull request" in output
+        or "Squashed and merged" in output
+        or "Rebased and merged" in output
+    )
+
+
 def main() -> None:
     raw = sys.stdin.read().strip()
     if not raw:
@@ -106,22 +128,10 @@ def main() -> None:
 
     command = data.get("tool_input", {}).get("command", "")
     exit_code = data.get("tool_response", {}).get("exitCode", -1)
-    output = data.get("tool_response", {}).get("output", "")
+    output = read_command_output(data)
     cwd = data.get("cwd", "")
 
-    if "gh pr merge" not in command:
-        sys.exit(0)
-
-    # `gh pr merge` from a worktree exits non-zero because local cleanup
-    # (`git checkout main`, branch delete) fails — even though the remote
-    # merge succeeded. Trust the stdout success marker too. (issue #275)
-    merge_succeeded = (
-        exit_code == 0
-        or "Merged pull request" in output
-        or "Squashed and merged" in output
-        or "Rebased and merged" in output
-    )
-    if not merge_succeeded:
+    if not is_successful_merge(command, exit_code, output):
         sys.exit(0)
 
     repo = extract_repo(command, cwd)
@@ -145,4 +155,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # Safe-exit guard: an informational hook must never block Claude.
+        sys.exit(0)

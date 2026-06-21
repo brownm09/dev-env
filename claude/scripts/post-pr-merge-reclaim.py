@@ -41,6 +41,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _hookio import read_command_output
+
 SCAN_DIR = "C:/Users/brown/Git"
 RECLAIM_SCRIPT = Path(__file__).resolve().parent / "reclaim-worktree-disk.py"
 
@@ -106,7 +108,7 @@ def main() -> None:
 
     command = data.get("tool_input", {}).get("command", "")
     exit_code = data.get("tool_response", {}).get("exitCode", -1)
-    output = data.get("tool_response", {}).get("output", "")
+    output = read_command_output(data)
     cwd = data.get("cwd", "")
 
     if not is_successful_merge(command, exit_code, output):

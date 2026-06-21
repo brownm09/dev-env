@@ -29,6 +29,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _hookio import read_command_output
+
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SENTINEL = Path.home() / ".claude" / "scratch" / "stub-pushed.flag"
 
@@ -50,6 +52,19 @@ def most_recent_commit_has_stub(repo: Path) -> bool:
         return False
 
 
+def has_push_error(output: str) -> bool:
+    """Return True if push output shows an obvious failure.
+
+    git reports push failures with `error:` / `fatal:` lines on stderr. Before
+    #380 this guard read the legacy `output` field, which is always empty on the
+    real payload, so the guard was a no-op — a failed journal push could still
+    arm the archive reminder. The shared `read_command_output` helper now feeds
+    it the real stdout/stderr.
+    """
+    lower = output.lower()
+    return "error:" in lower or "fatal:" in lower
+
+
 def main() -> None:
     raw = sys.stdin.read().strip()
     if not raw:
@@ -61,7 +76,7 @@ def main() -> None:
         sys.exit(0)
 
     command = (data.get("tool_input") or {}).get("command", "")
-    output = str((data.get("tool_response") or {}).get("output", ""))
+    output = read_command_output(data)
 
     # Must be a git push
     if "git push" not in command:
@@ -72,8 +87,7 @@ def main() -> None:
         sys.exit(0)
 
     # Must not show an obvious error
-    lower_output = output.lower()
-    if "error:" in lower_output or "fatal:" in lower_output:
+    if has_push_error(output):
         sys.exit(0)
 
     # Confirm the pushed commit contains a stub file

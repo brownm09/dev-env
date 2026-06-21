@@ -131,6 +131,50 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_post_tool_use.py
     ```
 
+13. **_hookio shared-read test** — required when changing `claude/scripts/_hookio.py`. Exercises the pure
+    `read_command_output()` helper offline (no network, no gh): pins that the real `stdout`/`stderr`-shaped
+    Bash payload yields the command output (the pre-#380 `output` read was always `""`), that stdout and
+    stderr are joined, that the legacy `output` field is still honored as a fallback, and that a missing /
+    empty / `None` / non-dict `tool_response` yields `""` without raising. `_hookio` is imported by all five
+    PostToolUse Bash hooks ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_hookio.py
+    ```
+
+14. **post-pr-merge-project test** — required when changing `claude/scripts/post-pr-merge-project.py`.
+    Exercises the pure `extract_pr_number_from_command()`, `extract_pr_number()`, and `merge_succeeded()`
+    helpers offline: pins command-based extraction (`gh pr merge 380` / a `/pull/380` URL / bare form →
+    `None`), output-marker extraction (`Squashed and merged pull request #N`, the cross-repo `owner/repo#N`
+    variant, and the legacy `/pull/N` URL), and the `--auto`-safe merge gate (a queued `--auto` or a failed
+    merge yields no completed-merge number and `merge_succeeded` is `False`). The live `gh` calls
+    (`get_pr_body` / `find_project_item` / `move_to_done`) are not covered
+    ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_post_pr_merge_project.py
+    ```
+
+15. **post-pr-merge-pull test** — required when changing `claude/scripts/post-pr-merge-pull.py`. Exercises
+    the pure `is_successful_merge()` predicate offline: a `gh pr merge` with exit 0 or a stdout/stderr success
+    marker triggers the local-`main` fast-forward (worktree merges exit non-zero but print the marker —
+    issue #275); a non-merge command or a genuinely failed merge does not. The `pull_main` / `extract_repo`
+    git calls are not covered ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_post_pr_merge_pull.py
+    ```
+
+16. **stub-push-archive-reminder test** — required when changing
+    `claude/scripts/stub-push-archive-reminder.py`. Exercises the pure `has_push_error()` guard offline: a
+    successful push output arms the archive reminder, while an `error:` / `fatal:` line (case-insensitive)
+    blocks it. The pre-#380 read of the legacy `output` field was always empty, so this guard was a no-op
+    ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_stub_push_archive_reminder.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

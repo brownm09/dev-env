@@ -45,6 +45,8 @@ Most hooks are advisory — they emit reminders but do not block tool execution.
 
 Hooks that spawn subprocesses (`git`, `gh`, `bash`, …) must `import _winsubp` — a helper module at `claude/scripts/_winsubp.py` that patches `subprocess.Popen.__init__` to set `CREATE_NO_WINDOW` so children don't flash a console window under `pythonw.exe`. See [ADR-007](docs/adr/007-hook-command-invocation.md).
 
+PostToolUse Bash hooks that read a command's output must use `read_command_output` from `claude/scripts/_hookio.py` — Claude Code's payload exposes output under `tool_response.stdout`/`stderr`, not `output`, so reading the wrong field silently disables the hook. See [ADR-049](docs/adr/049-hook-payload-output-field.md) and [ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md).
+
 | Event | Script | Purpose |
 |---|---|---|
 | UserPromptSubmit | `session-mode-prompt.py` | Injects a one-time mode-confirmation reminder into Claude's context on the first prompt of each new session |
