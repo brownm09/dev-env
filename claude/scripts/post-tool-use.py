@@ -51,6 +51,23 @@ def load_config(cwd: str) -> dict | None:
         return None
 
 
+def read_command_output(data: dict) -> str:
+    """Return the Bash command's output from a PostToolUse hook payload.
+
+    Claude Code exposes a Bash command's output under ``tool_response.stdout``
+    (and ``stderr``), NOT ``output``. Reading ``output`` yields ``""`` and
+    silently breaks URL extraction (dev-env #377). Read stdout/stderr first and
+    fall back to the legacy ``output`` key for forward/backward compatibility.
+    """
+    tr = data.get("tool_response") or {}
+    if not isinstance(tr, dict):
+        return ""
+    parts = [p for p in (tr.get("stdout"), tr.get("stderr")) if p]
+    if parts:
+        return "\n".join(parts)
+    return str(tr.get("output", "") or "")
+
+
 def extract_github_url(output: str, repo: str | None = None) -> str | None:
     """Return the last GitHub URL found in command output, or None.
 
@@ -176,7 +193,7 @@ def main() -> None:
         sys.exit(0)
 
     command = data.get("tool_input", {}).get("command", "")
-    output = data.get("tool_response", {}).get("output", "")
+    output = read_command_output(data)
     exit_code = data.get("tool_response", {}).get("exitCode", 0)
     cwd = data.get("cwd", "")
 
@@ -200,9 +217,13 @@ def main() -> None:
 
     url = extract_github_url(output, repo)
     if not url:
-        # If a repo filter is configured, a missing URL most likely means the
-        # command targeted a different repo — exit silently rather than warning.
-        if repo:
+        # A configured repo filter can legitimately miss: the command may have
+        # created the item in a *different* repo than this cwd's project. Stay
+        # silent only in that case — some GitHub URL is present, just not ours.
+        # If a successful create produced no GitHub URL at all, that is the
+        # symptom of a real failure (e.g. reading the wrong payload field — the
+        # bug behind #377) and must surface rather than be swallowed silently.
+        if repo and extract_github_url(output, None):
             sys.exit(0)
         print(
             f"[project-hook] {item_type} created but no GitHub URL found in output.\n"

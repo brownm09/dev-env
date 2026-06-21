@@ -53,3 +53,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [046](046-post-merge-followup-tiles.md) | Post-Merge Follow-Up Tiles | 2026-06-20 | Accepted | git-workflow, post-merge, follow-ups, spawn-task, tiles |
 | [047](047-standardize-gh-credential-helper.md) | Standardize git's GitHub Credential Helper on `gh` for Agent Sessions | 2026-06-20 | Accepted | git, credential-manager, worktree, agent-session, windows, gh-cli, workflow, global-rule |
 | [048](048-memory-immortalization-issue-pairing.md) | Memory Writes Must Be Paired with an Immortalization Issue | 2026-06-20 | Accepted | workflow, memory, claude-behavior, documentation, global-rule, hooks, skill |
+| [049](049-hook-payload-output-field.md) | PostToolUse Bash Hooks Read Output from `stdout`, Not `output` | 2026-06-21 | Accepted | hooks, post-tool-use, tool_response, payload, github-project, automation, reliability |

@@ -120,6 +120,17 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_memory_write_advisory.py
     ```
 
+12. **post-tool-use test** — required when changing `claude/scripts/post-tool-use.py`. Exercises the pure
+    `read_command_output()` and `extract_github_url()` helpers offline: pins that the real `stdout`-shaped
+    Bash payload yields a non-empty output (the pre-fix `output` read was `""` — the [#377](https://github.com/brownm09/dev-env/issues/377)
+    silent no-op), that the legacy `output` field still works, and that the de-silenced no-URL path
+    distinguishes a different-repo miss from a genuine empty ([ADR-049](docs/adr/049-hook-payload-output-field.md)).
+    The live `gh project item-add` call is not covered (the repo avoids subprocess mocks).
+
+    ```bash
+    py -3 claude/scripts/tests/test_post_tool_use.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
