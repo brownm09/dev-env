@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Unit tests for post-pr-merge-pull.py's merge-detection predicate.
+
+`post-pr-merge-pull.py` fast-forwards the local `main` after a successful
+`gh pr merge`. The "was this a successful merge?" decision is the pure
+`is_successful_merge()` predicate (extracted in #380, mirroring
+post-pr-merge-reclaim.py), exercised offline here. Before #380 the hook read the
+legacy `output` field (always empty on the real payload), so the stdout/stderr
+success-marker fallback was dead and only a clean exit-0 merge triggered the
+pull; the predicate now receives output via the shared `read_command_output`.
+
+The `pull_main` / `extract_repo` git calls are intentionally not tested (they
+shell out and the repo avoids subprocess mocks).
+
+Usage:
+    py -3 claude/scripts/tests/test_post_pr_merge_pull.py
+
+Exit 0 = all pass.
+"""
+
+import importlib.util
+import sys
+from pathlib import Path
+
+# tests/ -> scripts/ -> claude/ -> repo root
+REPO_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT = REPO_ROOT / "claude" / "scripts" / "post-pr-merge-pull.py"
+
+# The script imports _winsubp and _hookio (siblings in scripts/); make resolvable.
+sys.path.insert(0, str(SCRIPT.parent))
+
+# Hyphenated filename — import by path rather than `import`.
+_spec = importlib.util.spec_from_file_location("post_pr_merge_pull", SCRIPT)
+assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
+ppmp = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ppmp)  # safe: main() is guarded by __main__
+is_successful_merge = ppmp.is_successful_merge
+
+
+def test_clean_merge_exit_zero() -> str:
+    assert is_successful_merge("gh pr merge 380 --squash --delete-branch", 0, "")
+    return "gh pr merge + exit 0 -> pull"
+
+
+def test_worktree_merge_marker_in_stderr() -> str:
+    # From a worktree gh exits non-zero on local-checkout cleanup; the marker
+    # (now read from stderr via the shared helper) confirms the remote merge.
+    assert is_successful_merge(
+        "gh pr merge 380 --squash --delete-branch", 1,
+        "Squashed and merged pull request #380",
+    )
+    return "gh pr merge + exit 1 + 'Squashed and merged' marker -> pull"
+
+
+def test_non_merge_command_ignored() -> str:
+    assert not is_successful_merge("gh pr create --fill", 0, "")
+    assert not is_successful_merge("git push", 0, "")
+    return "non-merge commands -> no-op"
+
+
+def test_failed_merge_no_marker_ignored() -> str:
+    # A genuine merge failure (non-zero, no success marker) must not pull.
+    assert not is_successful_merge(
+        "gh pr merge 380 --squash", 1, "X Pull request #380 is not mergeable",
+    )
+    return "gh pr merge failed (exit 1, no marker) -> no-op"
+
+
+def main() -> int:
+    tests = [
+        ("clean merge (exit 0) pulls", test_clean_merge_exit_zero),
+        ("worktree merge (exit 1 + marker) pulls", test_worktree_merge_marker_in_stderr),
+        ("non-merge command ignored", test_non_merge_command_ignored),
+        ("failed merge with no marker ignored", test_failed_merge_no_marker_ignored),
+    ]
+    failed = 0
+    for name, fn in tests:
+        try:
+            detail = fn()
+            print(f"PASS: {name}")
+            print(f"      {detail}")
+        except AssertionError as e:
+            failed += 1
+            print(f"FAIL: {name}")
+            for line in str(e).splitlines():
+                print(f"      {line}")
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            print(f"ERROR: {name}: {type(e).__name__}: {e}")
+    print()
+    print(f"Tests: {len(tests) - failed} passed, 0 skipped, {failed} failed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

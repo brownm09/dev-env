@@ -23,7 +23,7 @@ Stdin JSON shape (PostToolUse):
     "hook_event_name": "PostToolUse",
     "tool_name": "Bash",
     "tool_input": {"command": "...", "description": "..."},
-    "tool_response": {"output": "...", "exitCode": 0},
+    "tool_response": {"stdout": "...", "stderr": "..."},  # NOT "output" — ADR-049
     "session_id": "...",
     "cwd": "..."
   }
@@ -38,6 +38,8 @@ import re
 import subprocess
 import sys
 
+from _hookio import read_command_output
+
 CONFIG_FILE = ".claude/hook-config.json"
 
 
@@ -49,23 +51,6 @@ def load_config(cwd: str) -> dict | None:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
-
-
-def read_command_output(data: dict) -> str:
-    """Return the Bash command's output from a PostToolUse hook payload.
-
-    Claude Code exposes a Bash command's output under ``tool_response.stdout``
-    (and ``stderr``), NOT ``output``. Reading ``output`` yields ``""`` and
-    silently breaks URL extraction (dev-env #377). Read stdout/stderr first and
-    fall back to the legacy ``output`` key for forward/backward compatibility.
-    """
-    tr = data.get("tool_response") or {}
-    if not isinstance(tr, dict):
-        return ""
-    parts = [p for p in (tr.get("stdout"), tr.get("stderr")) if p]
-    if parts:
-        return "\n".join(parts)
-    return str(tr.get("output", "") or "")
 
 
 def extract_github_url(output: str, repo: str | None = None) -> str | None:

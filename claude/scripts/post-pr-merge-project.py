@@ -21,12 +21,12 @@ Stdin JSON shape (PostToolUse):
     "hook_event_name": "PostToolUse",
     "tool_name": "Bash",
     "tool_input": {"command": "...", "description": "..."},
-    "tool_response": {"output": "...", "exitCode": 0},
+    "tool_response": {"stdout": "...", "stderr": "..."},  # NOT "output" — ADR-049
     "session_id": "...",
     "cwd": "..."
   }
 
-Exit 0  — gh pr merge not detected, no config, or no Closes ref; silent
+Exit 0  — no confirmed merge, no config, or no Closes ref; silent
 Exit 2  — item moved to Done (success) or move failed (fallback command shown)
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
@@ -36,12 +36,23 @@ import re
 import subprocess
 import sys
 
+from _hookio import (
+    merge_pr_number_from_output,
+    output_has_merge_marker,
+    read_command_output,
+)
+
 CONFIG_FILE = ".claude/hook-config.json"
 
 # _scan_top_level and helpers below are duplicated from pr-merge-reminder.py.
 _MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
 _CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
 _PR_URL_RE = re.compile(r"https://github\.com/\S+/pull/(\d+)")
+# The argument list of the `gh pr merge` invocation only — up to the next shell
+# separator — so a /pull/N URL in a --subject/--body value or a chained sibling
+# command cannot hijack the PR-number extraction (the whole-command search did;
+# #380). The merge-success markers themselves live in _hookio (one source).
+_MERGE_ARGS_RE = re.compile(r"\bgh\s+pr\s+merge\b([^\n;|&]*)")
 
 
 def _check_merge_stmt(token: str) -> bool:
@@ -165,12 +176,61 @@ def load_config(cwd: str) -> dict | None:
         return None
 
 
+def merge_succeeded(output: str) -> bool:
+    """Return True only if the output confirms a completed merge.
+
+    Gated on gh's merge success markers (not the exit code): a queued `--auto`
+    exits 0 but prints no merge marker, and a worktree merge exits non-zero yet
+    prints the marker to stderr before its local-cleanup tail fails (issue #275).
+    Marker-only is deliberately stricter than the exit-0-OR-marker check in
+    post-pr-merge-{pull,reclaim}.py — moving an issue to Done on a not-yet-merged
+    `--auto` would be wrong, whereas a premature pull/reclaim is harmless. (#380)
+    """
+    return output_has_merge_marker(output)
+
+
+def extract_pr_number_from_command(command: str) -> int | None:
+    """Derive the merged PR number from the `gh pr merge` invocation.
+
+    `gh pr merge` output carries no `/pull/N` URL, so the command is the reliable
+    source when the PR is named. Extraction is scoped to the merge invocation's
+    own arguments (`_MERGE_ARGS_RE`), not the whole command, so a `/pull/N` URL in
+    a `--subject`/`--body` value or a chained sibling command cannot hijack it.
+    The positional number is preferred over a URL argument:
+        gh pr merge 380 --squash             -> 380
+        gh pr merge --squash 380             -> 380  (flag-before-arg)
+        gh pr merge <url>/pull/380 --squash  -> 380
+    A bare `gh pr merge --squash --delete-branch` (the current branch's PR) names
+    no number; the caller then falls back to the output success marker. (#380)
+    """
+    m = _MERGE_ARGS_RE.search(command)
+    if not m:
+        return None
+    args = m.group(1)
+    # Positional number token (`380`), tolerant of flags before it; a digit run
+    # inside a flag value (`--foo=12`) or a branch name (`my-branch-2`) is not a
+    # standalone token and is correctly ignored.
+    num = re.search(r"(?<!\S)(\d+)(?=\s|$)", args)
+    if num:
+        return int(num.group(1))
+    url = _PR_URL_RE.search(args)
+    if url:
+        return int(url.group(1))
+    return None
+
+
 def extract_pr_number(output: str) -> int | None:
+    """Find the merged PR number in command output.
+
+    Prefers a legacy `/pull/N` URL (most recent line); otherwise reads gh's
+    success marker "Squashed and merged pull request #N" — including the
+    cross-repo "owner/repo#N" variant — via the shared `_hookio` helper.
+    """
     for line in reversed(output.strip().splitlines()):
-        m = _PR_URL_RE.search(line.strip())
+        m = _PR_URL_RE.search(line)
         if m:
             return int(m.group(1))
-    return None
+    return merge_pr_number_from_output(output)
 
 
 def get_pr_body(pr_number: int, repo: str) -> str | None:
@@ -249,14 +309,19 @@ def main() -> None:
     if data.get("tool_name") != "Bash":
         sys.exit(0)
 
-    if data.get("tool_response", {}).get("exitCode", 0) != 0:
-        sys.exit(0)
-
     command = data.get("tool_input", {}).get("command", "")
     if not _scan_top_level(command):
         sys.exit(0)
 
-    output = data.get("tool_response", {}).get("output", "")
+    output = read_command_output(data)
+
+    # Confirm an actual merge (not a queued --auto or a failed merge). The
+    # success marker is printed even from a worktree, where gh exits non-zero on
+    # local-checkout cleanup (issue #275) — so gate on the marker, not the exit
+    # code (which the real payload omits anyway; ADR-049).
+    if not merge_succeeded(output):
+        sys.exit(0)
+
     cwd = data.get("cwd", "")
 
     config = load_config(cwd)
@@ -270,7 +335,11 @@ def main() -> None:
     if not repo:
         sys.exit(0)
 
-    pr_number = extract_pr_number(output)
+    # Prefer the PR number named in the command; fall back to gh's success marker
+    # for the bare `gh pr merge --squash --delete-branch` form (#380).
+    pr_number = extract_pr_number_from_command(command)
+    if pr_number is None:
+        pr_number = extract_pr_number(output)
     if pr_number is None:
         sys.exit(0)
 
