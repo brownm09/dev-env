@@ -36,6 +36,7 @@ Custom slash commands loaded from `claude/skills/`. Invoke with `/skill-name [ar
 | [`/research [tag:] <decision> [--compare <alt>]`](claude/skills/research/SKILL.md) | Finds 1–3 primary sources. Greps shared source library first; spawns a subagent only on cache miss. |
 | [`/review <PR-URL> [flags]`](claude/skills/review/SKILL.md) | Reviews a PR for correctness, security, reliability, maintainability, documentation reconciliation, test coverage (ADR-022), and test integrity (ADR-029). Posts report as PR comment by default. |
 | [`/journal-onboard [slug]`](claude/skills/journal-onboard/SKILL.md) | Scaffolds `sessions/<project>/` in engineering-journal and optionally creates `.claude/CLAUDE.md` in the project repo. |
+| [`/memory-audit`](claude/skills/memory-audit/SKILL.md) | Reconciles agent memory against the version-controlled instructions and emits a table (per entry: durable? instruction-home? disposition). Catches never-ported durables, stale notes, and index drift. |
 
 ## Hooks
 
@@ -67,6 +68,7 @@ Hooks that spawn subprocesses (`git`, `gh`, `bash`, …) must `import _winsubp` 
 | PostToolUse (Bash) | `post-pr-merge-project.py` | Auto-moves linked issue to Done on configured GitHub Project after `gh pr merge` |
 | PostToolUse (Bash) | `usage-snapshot.py` | Emits weekly/5-hour utilisation vs. daily soft targets and top-5 session exchanges after `gh pr merge` |
 | PostToolUse (Bash) | `stub-push-archive-reminder.py` | Writes a sentinel flag after a stub is pushed to engineering-journal; Stop hook consumes it to remind Claude to archive |
+| PostToolUse (Write) | `memory-write-advisory.py` | Reminds Claude to pair a durable memory write with an immortalization issue when a memory file is written without an issue/ADR/`CLAUDE.md` link; non-blocking advisory (see [ADR-048](docs/adr/048-memory-immortalization-issue-pairing.md)) |
 | Stop | `token-tracker.py` | Aggregates session token usage to `scratch/token-sessions.jsonl` |
 | Stop | `journal-stop-check.py` | Checks sentinel flag and stale open journal stubs at session end; emits closing reminder if stub was pushed this session |
 | PostCompact | `post-compact.py` | Emits compaction status line (trigger type + remaining tokens) |

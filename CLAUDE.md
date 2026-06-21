@@ -109,6 +109,17 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_post_pr_merge_reclaim.py
     ```
 
+11. **memory-write-advisory test** — required when changing `claude/scripts/memory-write-advisory.py`.
+    Exercises the pure `should_advise_memory_write()` predicate offline (no stdin, no Claude session):
+    pins that a durable memory write with no immortalization link advises, while a write that already
+    cites an issue/ADR/`CLAUDE.md`, the `MEMORY.md` index, a non-`memory/` path, a non-`.md` file, or the
+    `Edit` tool stays silent ([ADR-048](docs/adr/048-memory-immortalization-issue-pairing.md)). The stdin
+    plumbing and exit-2 emission are not covered (pure-helper convention).
+
+    ```bash
+    py -3 claude/scripts/tests/test_memory_write_advisory.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

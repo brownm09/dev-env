@@ -113,6 +113,18 @@ Scaffolds a new project's journal home (`sessions/<slug>/`) in engineering-journ
 
 ---
 
+### /memory-audit
+
+```
+/memory-audit
+```
+
+Reconciles the active project's agent memory against the version-controlled instructions and emits a table — per entry: `type`, durable?, instruction home?, and a disposition (`remain-as-cache` / `promote-to-instructions` / `delete-stale`). Catches the three rot modes ADR-038's write-time rule does not: never-ported durables, stale notes (cited PRs/issues merged, "next steps" shipped), and `MEMORY.md` index drift.
+
+**How it works:** reads every memory file and `MEMORY.md`, verifies any *claimed* instruction home actually exists on current `origin/main` (so a stale worktree base can't produce a false "drift" finding), classifies each entry, and prints the reconciliation table. Read-only by default — promotions and deletions are confirmed with the user before acting. Audit-time complement to the write-time rule and hook ([ADR-048](adr/048-memory-immortalization-issue-pairing.md), [ADR-038](adr/038-durable-preferences-documented-in-repo.md)).
+
+---
+
 
 ## Hooks
 
@@ -174,9 +186,13 @@ Fires before matched tool calls. Matcher values are set per entry in `settings.j
 
 ---
 
-### PostToolUse (Bash only)
+### PostToolUse
 
-Fires after each Bash tool call completes. Matched with `"matcher": "Bash"`.
+Fires after a matched tool call completes. Matcher values are set per entry in `settings.json`.
+
+#### Bash hooks
+
+Matched with `"matcher": "Bash"`.
 
 | Script | Trigger condition | What it does |
 |--------|------------------|-------------|
@@ -187,6 +203,14 @@ Fires after each Bash tool call completes. Matched with `"matcher": "Bash"`.
 | `post-pr-merge-project.py` | Command contains `gh pr merge` | Auto-moves the linked issue (`Closes/Fixes/Resolves #N` in PR body) to Done on the configured GitHub Project. Opt-in via `status_field_id` and `done_option_id` in `hook-config.json`. [ADR-014](adr/014-auto-move-project-item-done-on-merge.md) |
 | `usage-snapshot.py` | Command contains `gh pr merge` | Queries `https://api.anthropic.com/api/oauth/usage` (via OAuth Bearer token from `~/.claude/.credentials.json`) and parses the session JSONL for the top-5 costliest exchanges. Emits a `### Usage Snapshot (post-merge)` markdown block showing weekly/5-hour utilisation vs. day-of-week soft targets (configured in `claude/usage-config.json`). Global — fires for all repos without opt-in. Include the emitted block verbatim in the post-merge journal stub. A still-valid "expiring" token is used (not skipped); an **expired** token is **refreshed on demand** at merge via the CLI (`keep-token-warm.ps1`) before fetching, so the snapshot only falls back to the stderr advisory ([#357](https://github.com/brownm09/dev-env/pull/357)) when the refresh token itself is dead ([ADR-044](adr/044-eliminate-usage-snapshot-gap-on-demand-refresh.md)). The `ClaudeKeepTokenWarm` scheduled task (see Utilities) keeps the token usually-fresh so on-demand refresh rarely fires ([ADR-043](adr/043-keep-warm-scheduled-task-for-token-freshness.md)). |
 | `stub-push-archive-reminder.py` | `git push` to `engineering-journal` with a stub commit | Writes a sentinel file (`~/.claude/scratch/stub-pushed.flag`) and exits 0. Verifies the most-recent commit in the journal repo touches a `.stub.md` file before writing the flag. The Stop hook (`journal-stop-check.py`) consumes the sentinel and issues the archive reminder via exit 2. |
+
+#### Write hooks
+
+Matched with `"matcher": "Write"`.
+
+| Script | Trigger condition | What it does |
+|--------|------------------|-------------|
+| `memory-write-advisory.py` | The `Write` tool targets a `.md` file inside a `…/memory/` directory (not the `MEMORY.md` index) **and** the written body carries no immortalization link — no `#\d+` issue/PR ref, no `ADR-\d+`, no `CLAUDE.md`, no "Documented in repo" | Emits a one-line stderr reminder and exits 2 (the `Write` already ran — exit 2 *surfaces* the reminder, it does not block) telling Claude to pair the durable memory with an immortalization issue and link it from the memory body + `MEMORY.md`. The link-absence heuristic keeps it quiet on writes that already carry a link; the agent (not the hook) judges durability. Spawns no subprocess; fails open (exit 0). The pure `should_advise_memory_write()` helper is unit-tested by `tests/test_memory_write_advisory.py`. [ADR-048](adr/048-memory-immortalization-issue-pairing.md) |
 
 ---
 

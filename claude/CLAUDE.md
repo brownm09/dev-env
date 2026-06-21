@@ -13,13 +13,14 @@ Project-specific CLAUDE.md files extend these conventions — they do not repeat
 
 ## Durable Preferences & Memory
 
-Agent memory (`~/.claude/projects/.../memory/`) is a private cache, not the source of truth. It is invisible to the user and to everyone else who works in these repos and processes, and it is not reliably consulted at the moments it matters.
+Agent memory (`~/.claude/projects/.../memory/`) is a private cache, not the source of truth. It is invisible to the user and to everyone else who works in these repos and processes, and it is not reliably consulted at the moments it matters. The instructions (`CLAUDE.md` and project docs) are loaded every session and visible to everyone — that is where durable rules must live.
 
-- **Any durable user preference or workflow rule committed to memory must also be documented in the version-controlled repo** — in the appropriate `CLAUDE.md` (global or project) or project docs — **or, at minimum, captured in a GitHub issue.** Never let a standing instruction live *exclusively* in memory.
-- Do this **in the same session** the preference is stated. When you write the memory entry, link it back to where it is recorded in the repo so the two stay connected.
-- Memory may still hold session-local or fast-changing context; this rule governs durable, cross-session preferences and rules — the things a human collaborator would need to know to work the way the user expects.
+- **Never let a durable preference or workflow rule live only in memory.** Whenever you commit one to a `user`/`feedback`/`project` memory file, **pair it — in the same session — with a GitHub issue whose explicit job is to immortalize it into the instructions** (the appropriate `CLAUDE.md`, global or project, or project docs). Link that issue from **both** the memory body and its `MEMORY.md` pointer so the two never drift apart.
+- **Filing the issue is the floor, not the finish.** The issue exists to drive the rule *into* the instructions — not to substitute for doing so. Prefer to make the instruction edit immediately and close the issue in the same session; a deferred issue is the backstop that keeps the rule from being forgotten, not a place to park it indefinitely.
+- **Transient context is exempt.** Session-local or fast-changing notes (open-PR lists, in-flight working state) may live in memory and expire there — no issue required. This rule governs only durable, cross-session rules: the things a human collaborator would need to know to work the way the user expects.
+- A non-blocking write-time hook (`memory-write-advisory.py`) reminds you when a memory file is written without such a link, and the `/memory-audit` skill reconciles memory against the instructions on demand.
 
-See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md).
+See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md), [ADR-048](../docs/adr/048-memory-immortalization-issue-pairing.md).
 
 ---
 
