@@ -244,7 +244,7 @@ Fires after `/compact` or auto-compact completes.
 
 | Script | What it does |
 |--------|-------------|
-| `post-compact.py` | Emits a `[compact]` or `[auto-compact]` status line with the trigger type and remaining token count. Visible in all environments. |
+| `post-compact.py` | Emits a `[compact]` or `[auto-compact]` status line with the trigger type and remaining token count. Visible in all environments. On a manual `/compact`, also reads the project's open-PR records (per-PR `open-prs/<N>.json` shards plus any legacy `open-prs.jsonl`, deduped by PR — [ADR-055](adr/055-per-session-sharding-journal-companion-files.md)) and emits a `systemMessage` reminding Claude to run `/review` on each. |
 
 ---
 

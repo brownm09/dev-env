@@ -184,7 +184,11 @@ def reconcile_shard_dir(shard_dir: Path, state_fn=None) -> tuple[list[dict], lis
     if not shard_dir.is_dir():
         return surviving, removed
 
-    for shard in sorted(shard_dir.glob("*.json")):
+    # Numeric sort (PR 2 before PR 10), matching post-compact's reader. Order is
+    # immaterial to the keep/delete decision (each shard is judged independently),
+    # but keeping both readers consistent avoids confusing drift.
+    for shard in sorted(shard_dir.glob("*.json"),
+                        key=lambda p: int(p.stem) if p.stem.isdigit() else 1 << 30):
         if shard_pr_number(shard) is None:
             continue  # not a PR shard — ignore
         try:
@@ -206,6 +210,9 @@ def reconcile_shard_dir(shard_dir: Path, state_fn=None) -> tuple[list[dict], lis
         else:
             surviving.append(entry)
 
+    # Best-effort cleanup of an emptied dir, race-tolerant: if a concurrent session
+    # writes a new shard between the iterdir() check and rmdir(), rmdir() raises
+    # OSError (dir not empty) and we leave the dir — the new shard is never lost.
     try:
         if shard_dir.is_dir() and not any(shard_dir.iterdir()):
             shard_dir.rmdir()

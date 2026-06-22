@@ -115,6 +115,22 @@ def test_malformed_shard_skipped() -> str:
     return "an unparseable shard is skipped; valid shards still returned"
 
 
+def test_prless_records_skipped() -> str:
+    # Records that parse but carry no `pr` must be skipped, not (a) collapsed into one
+    # via a None dedup key, nor (b) passed to the consumer where pr['pr'] would KeyError
+    # and silently drop the whole /review reminder (review findings A1/A2).
+    with tempfile.TemporaryDirectory() as root:
+        proj = Path(root)
+        _write_shard(proj, 5)
+        sd = proj / "open-prs"
+        (sd / "noprA.json").write_text(json.dumps({"url": URL.format(n=1), "topic": "no pr a"}), encoding="utf-8")
+        (sd / "noprB.json").write_text(json.dumps({"url": URL.format(n=2), "topic": "no pr b"}), encoding="utf-8")
+        entries = read_open_pr_entries(proj)
+        assert [e["pr"] for e in entries] == [5], "only the record with a pr survives"
+        assert all(e.get("pr") is not None for e in entries), "no pr-less record leaks to the consumer"
+    return "pr-less records are skipped (no collapse, no downstream KeyError)"
+
+
 def main() -> int:
     tests = [
         ("shards only", test_shards_only),
@@ -123,6 +139,7 @@ def main() -> int:
         ("numeric shard ordering", test_numeric_shard_ordering),
         ("missing both -> []", test_missing_both),
         ("malformed shard skipped", test_malformed_shard_skipped),
+        ("pr-less records skipped (A1/A2)", test_prless_records_skipped),
     ]
     failed = 0
     for name, fn in tests:

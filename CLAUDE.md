@@ -210,7 +210,8 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
 19. **post-compact open-PR reader test** — required when changing `claude/scripts/post-compact.py`. Exercises
     the pure `read_open_pr_entries()` offline (tmp dirs, no `git`): pins that per-PR shards `open-prs/<N>.json`
     and the legacy `open-prs.jsonl` are unioned and deduped by PR number (shard wins), that shards sort
-    numerically (not lexically), and that a malformed shard is skipped without dropping valid ones
+    numerically (not lexically), that a malformed shard is skipped without dropping valid ones, and that a
+    record with no `pr` is skipped (no None-key collapse, no downstream KeyError)
     ([ADR-055](docs/adr/055-per-session-sharding-journal-companion-files.md)). `get_journal_project` (a git
     call) and the systemMessage emission are not covered.
 

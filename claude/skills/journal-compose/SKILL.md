@@ -105,7 +105,8 @@ If any manifests exist, read them to get a session overview before touching stub
 - Topics (for slug synthesis and day structure)
 - Token data per session (supplemental for Step 4 — JSONL log is still authoritative)
 
-If the manifest count differs from the stub glob count below, treat stubs as authoritative.
+If the manifest entry count (shards + any legacy lines, deduped by `stub`) differs from the stub glob
+count below, treat stubs as authoritative.
 
 **Check for open-PR context:**
 

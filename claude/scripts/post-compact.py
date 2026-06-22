@@ -34,6 +34,10 @@ def read_open_pr_entries(project_dir: Path) -> list[dict]:
 
     def add(entry: dict) -> None:
         pr = entry.get("pr")
+        if pr is None:
+            return  # a record with no PR number can't drive a /review reminder — skip
+            # (also keeps the consumer's pr['pr'] access safe and stops two distinct
+            #  pr-less records collapsing to one via a None dedup key)
         if pr in seen:
             return
         seen.add(pr)
