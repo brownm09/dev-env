@@ -13,7 +13,9 @@ the engineering-journal repo it reconciles two formats (see ADR-056):
     reads the current on-disk file, so it is safe); the file is deleted when empty.
 
 Both formats are read so the transition needs no forced migration: the legacy file drains
-to empty as its PRs merge, and new PRs are tracked only as shards.
+to empty as its PRs merge, and new PRs are tracked only as shards. The shard enumeration
+and legacy-line parsing are delegated to the shared `_journal_shards` reader (ADR-057),
+which `post-compact.py` imports too, so the two hooks cannot drift on the shard semantics.
 
 Modified files are left dirty for Claude to pick up in the next stub commit.
 Always exits 0 — never blocks.
@@ -30,6 +32,12 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import urlparse
+
+# iter_pr_shards / read_legacy_entries are the shared open-PR readers (ADR-057), also used
+# by post-compact.py. shard_pr_number is re-exported for tests/back-compat — the reconcile
+# loop no longer calls it directly (iter_pr_shards owns the numeric-filename filtering).
+from _journal_shards import iter_pr_shards, read_legacy_entries
+from _journal_shards import shard_pr_number  # noqa: F401  (re-exported for tests)
 
 SCRATCH = Path.home() / ".claude" / "scratch"
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
@@ -83,15 +91,6 @@ def should_remove(state: str | None) -> bool:
     return state in ("MERGED", "CLOSED")
 
 
-def shard_pr_number(path: Path) -> int | None:
-    """Parse the PR number from an `open-prs/<N>.json` shard filename.
-    Returns None for any non-numeric stem so stray files are ignored."""
-    try:
-        return int(path.stem)
-    except (ValueError, TypeError):
-        return None
-
-
 def entry_repo_and_pr(entry: dict) -> tuple[str | None, int | None]:
     """Resolve (owner/repo, pr_number) from a tracking entry, or (None, *)/(*, None)."""
     repo = repo_from_url(entry.get("url", ""))
@@ -112,19 +111,6 @@ def project_dirs(journal_repo: Path) -> list[Path]:
 # --- legacy single-file path -------------------------------------------------
 
 
-def load_entries(path: Path) -> list[dict]:
-    entries = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entries.append(json.loads(line))
-        except json.JSONDecodeError:
-            pass
-    return entries
-
-
 def write_entries(path: Path, entries: list[dict]) -> None:
     if not entries:
         path.unlink(missing_ok=True)
@@ -138,10 +124,11 @@ def write_entries(path: Path, entries: list[dict]) -> None:
 def reconcile_file(path: Path, state_fn=None) -> tuple[list[dict], list[tuple[dict, str]]]:
     """Legacy `open-prs.jsonl`: return (surviving_entries, [(removed_entry, state), ...]).
     Rewrites the file in place (safe — derived from the current on-disk contents).
+    Lines are parsed by the shared `read_legacy_entries` (ADR-057).
     `state_fn(pr, repo) -> state` is injectable for offline tests; defaults to gh."""
     if state_fn is None:
         state_fn = check_pr_state
-    entries = load_entries(path)
+    entries = read_legacy_entries(path)
     if not entries:
         return [], []
 
@@ -184,21 +171,14 @@ def reconcile_shard_dir(shard_dir: Path, state_fn=None) -> tuple[list[dict], lis
     if not shard_dir.is_dir():
         return surviving, removed
 
-    # Numeric sort (PR 2 before PR 10), matching post-compact's reader. Order is
-    # immaterial to the keep/delete decision (each shard is judged independently),
-    # but keeping both readers consistent avoids confusing drift.
-    for shard in sorted(shard_dir.glob("*.json"),
-                        key=lambda p: int(p.stem) if p.stem.isdigit() else 1 << 30):
-        if shard_pr_number(shard) is None:
-            continue  # not a PR shard — ignore
-        try:
-            entry = json.loads(shard.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue  # leave unparseable shards for a human
-
+    # Enumeration/parse is delegated to the shared _journal_shards.iter_pr_shards (the
+    # single source of truth shared with post-compact.py): numeric-named *.json, numerically
+    # sorted, unparseable/non-object shards skipped. It materialises the list before
+    # returning, so unlinking shards while we iterate the result is safe.
+    for shard, entry in iter_pr_shards(shard_dir):
         repo, pr_number = entry_repo_and_pr(entry)
         if not repo or not pr_number:
-            continue  # leave malformed shards in place
+            continue  # leave malformed shards (no resolvable repo/PR) in place
 
         state = state_fn(pr_number, repo)
         if should_remove(state):

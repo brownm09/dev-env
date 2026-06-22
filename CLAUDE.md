@@ -236,6 +236,19 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_post_compact.py
     ```
 
+21. **journal-shards shared-reader test** — required when changing `claude/scripts/_journal_shards.py`.
+    Exercises the pure shard/legacy readers offline (tmp dirs, no network, no `gh`): pins `shard_pr_number`
+    parsing, that `iter_pr_shards` returns `(path, entry)` pairs numerically sorted (PR 2 before 10) with
+    non-numeric-named, unparseable, and non-object shards skipped and a missing/non-dir path yielding `[]`,
+    that a pr-less dict shard is still returned (the reader stays content-agnostic — the consumer dedups),
+    and that `read_legacy_entries` drains one JSON object per line while skipping blank/malformed/non-dict
+    lines and a missing file. The two consuming hooks (`reconcile-open-prs.py`, `post-compact.py`) import
+    these helpers as one source of truth ([ADR-057](docs/adr/057-shared-journal-shard-reader.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_journal_shards.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

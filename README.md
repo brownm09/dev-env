@@ -49,6 +49,8 @@ PostToolUse Bash hooks that read a command's output must use `read_command_outpu
 
 The worktree-maintenance scripts (`prune-merged-worktrees.py`, `reclaim-worktree-disk.py`) skip a worktree with a live Claude session via `worktree_session_is_live` from `claude/scripts/_worktree_liveness.py` — it reads the worktree's transcript-dir mtime under `~/.claude/projects/`, the only signal by which an out-of-process routine can detect (and avoid severing) an active session in *another* worktree. See [ADR-051](docs/adr/051-worktree-liveness-guard.md).
 
+The journal open-PR hooks (`reconcile-open-prs.py`, `post-compact.py`) enumerate the per-PR shards `sessions/<project>/open-prs/<N>.json` and the legacy `open-prs.jsonl` through one shared reader, `claude/scripts/_journal_shards.py` (`iter_pr_shards` returns `(path, entry)` pairs so reconcile can `unlink` and post-compact can read; `read_legacy_entries` drains the legacy file) — so the two hooks can't drift on how shards are enumerated, sorted, and parsed, and the legacy format has a single retirement point. See [ADR-057](docs/adr/057-shared-journal-shard-reader.md).
+
 | Event | Script | Purpose |
 |---|---|---|
 | UserPromptSubmit | `session-mode-prompt.py` | Injects a one-time mode-confirmation reminder into Claude's context on the first prompt of each new session |

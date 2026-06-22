@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _journal_shards import iter_pr_shards, read_legacy_entries
+
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 
 
@@ -27,8 +29,11 @@ def get_journal_project() -> str | None:
 def read_open_pr_entries(project_dir: Path) -> list[dict]:
     """Union the per-PR shards `open-prs/<N>.json` (current format, ADR-056) with the
     legacy single `open-prs.jsonl` file, deduped by PR number. Pure filesystem read,
-    no network — unit-tested in tests/test_post_compact.py. Reading both formats lets
-    the transition need no forced migration; the legacy file drains as its PRs merge."""
+    no network — unit-tested in tests/test_post_compact.py. Enumeration/parse of both
+    formats is delegated to the shared `_journal_shards` reader (ADR-057), the single
+    source of truth `reconcile-open-prs.py` imports too. Reading both formats lets the
+    transition need no forced migration; the legacy file drains as its PRs merge. Shards
+    are read first, so a shard wins the dedup over a stale legacy line for the same PR."""
     entries: list[dict] = []
     seen: set = set()
 
@@ -43,28 +48,10 @@ def read_open_pr_entries(project_dir: Path) -> list[dict]:
         seen.add(pr)
         entries.append(entry)
 
-    shard_dir = project_dir / "open-prs"
-    if shard_dir.is_dir():
-        shards = sorted(
-            shard_dir.glob("*.json"),
-            key=lambda p: int(p.stem) if p.stem.isdigit() else 1 << 30,
-        )
-        for shard in shards:
-            try:
-                add(json.loads(shard.read_text(encoding="utf-8")))
-            except (json.JSONDecodeError, OSError):
-                continue
-
-    legacy = project_dir / "open-prs.jsonl"
-    if legacy.exists():
-        for line in legacy.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                add(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    for _shard, entry in iter_pr_shards(project_dir / "open-prs"):
+        add(entry)
+    for entry in read_legacy_entries(project_dir / "open-prs.jsonl"):
+        add(entry)
 
     return entries
 
