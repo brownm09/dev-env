@@ -23,8 +23,9 @@ exercised end-to-end against a hermetic temp dir.
 
 These tests exercise the pure helpers offline (no network, no gh subprocess),
 matching the repo's fixture-only test convention. `add_to_project` (the live gh
-call) and `canonical_root_via_git` (the sibling-worktree git fallback) are
-intentionally not tested — both shell out.
+call) and the `subprocess.run` in `canonical_root_via_git` are not tested — they
+shell out — but the pure resolver it delegates to, `_canonical_root_from_common_dir`,
+is covered.
 
 Usage:
     py -3 claude/scripts/tests/test_post_tool_use.py
@@ -55,6 +56,7 @@ _spec.loader.exec_module(post_tool_use)  # safe: main() is guarded by __main__
 read_command_output = post_tool_use.read_command_output
 extract_github_url = post_tool_use.extract_github_url
 canonical_root_from_worktree = post_tool_use.canonical_root_from_worktree
+_canonical_root_from_common_dir = post_tool_use._canonical_root_from_common_dir
 load_config = post_tool_use.load_config
 
 URL = "https://github.com/brownm09/dev-env/issues/377"
@@ -193,6 +195,40 @@ def test_load_config_falls_back_to_canonical() -> str:
     return "worktree-local config absent -> canonical checkout config used (the #378 fix)"
 
 
+# --- pure resolver behind canonical_root_via_git (the sibling git fallback) ---
+
+
+def test_common_dir_relative() -> str:
+    # Main checkout: `git rev-parse --git-common-dir` returns ".git" relative to cwd.
+    assert _canonical_root_from_common_dir("/repo", ".git") == os.path.normpath("/repo")
+    return "relative '.git' -> cwd is the canonical root"
+
+
+def test_common_dir_absolute_sibling() -> str:
+    # Sibling worktree: --git-common-dir returns the canonical <root>/.git (absolute).
+    got = _canonical_root_from_common_dir("/repo-188", "/repo/.git")
+    assert got == os.path.normpath("/repo"), f"got {got!r}"
+    return "absolute '<root>/.git' -> <root> (sibling worktree case)"
+
+
+def test_common_dir_strips_whitespace() -> str:
+    # Raw subprocess stdout carries a trailing newline.
+    got = _canonical_root_from_common_dir("/repo-188", "/repo/.git\n")
+    assert got == os.path.normpath("/repo"), f"got {got!r}"
+    return "trailing newline in --git-common-dir output is stripped"
+
+
+def test_common_dir_non_git_basename_none() -> str:
+    assert _canonical_root_from_common_dir("/repo", "/repo/.bare") is None
+    return "common dir not named '.git' -> None"
+
+
+def test_common_dir_empty_none() -> str:
+    assert _canonical_root_from_common_dir("/repo", "") is None
+    assert _canonical_root_from_common_dir("/repo", "  \n") is None
+    return "empty / whitespace common-dir output -> None"
+
+
 def main() -> int:
     tests = [
         ("reads command output from stdout", test_reads_stdout),
@@ -212,6 +248,11 @@ def main() -> int:
         ("canonical root from POSIX worktree", test_canonical_root_posix),
         ("empty/None cwd -> no canonical root", test_canonical_root_empty_and_none),
         ("load_config falls back to canonical config (#378)", test_load_config_falls_back_to_canonical),
+        ("git common-dir: relative .git -> cwd", test_common_dir_relative),
+        ("git common-dir: absolute <root>/.git -> root", test_common_dir_absolute_sibling),
+        ("git common-dir: stdout whitespace stripped", test_common_dir_strips_whitespace),
+        ("git common-dir: non-.git basename -> None", test_common_dir_non_git_basename_none),
+        ("git common-dir: empty output -> None", test_common_dir_empty_none),
     ]
     failed = 0
     for name, fn in tests:

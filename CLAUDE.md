@@ -121,15 +121,16 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     ```
 
 12. **post-tool-use test** — required when changing `claude/scripts/post-tool-use.py`. Exercises the pure
-    `read_command_output()`, `extract_github_url()`, and `canonical_root_from_worktree()` helpers offline:
-    pins that the real `stdout`-shaped Bash payload yields a non-empty output (the pre-fix `output` read was
-    `""` — the [#377](https://github.com/brownm09/dev-env/issues/377) silent no-op), that the legacy `output`
-    field still works, that the de-silenced no-URL path distinguishes a different-repo miss from a genuine
-    empty ([ADR-049](docs/adr/049-hook-payload-output-field.md)), and that a Claude-managed worktree cwd whose
-    gitignored `hook-config.json` is absent resolves the canonical checkout's config — verified end-to-end via
-    a hermetic temp dir ([ADR-052](docs/adr/052-worktree-config-canonical-fallback.md)). The live
-    `gh project item-add` call and `canonical_root_via_git()` (the sibling-worktree git fallback) are not
-    covered (the repo avoids subprocess mocks).
+    `read_command_output()`, `extract_github_url()`, `canonical_root_from_worktree()`, and
+    `_canonical_root_from_common_dir()` helpers offline: pins that the real `stdout`-shaped Bash payload yields
+    a non-empty output (the pre-fix `output` read was `""` — the [#377](https://github.com/brownm09/dev-env/issues/377)
+    silent no-op), that the legacy `output` field still works, that the de-silenced no-URL path distinguishes a
+    different-repo miss from a genuine empty ([ADR-049](docs/adr/049-hook-payload-output-field.md)), that a
+    Claude-managed worktree cwd whose gitignored `hook-config.json` is absent resolves the canonical checkout's
+    config — verified end-to-end via a hermetic temp dir — and that the sibling-worktree `git --git-common-dir`
+    output resolves to the canonical root ([ADR-052](docs/adr/052-worktree-config-canonical-fallback.md)). The
+    live `gh project item-add` call and the `subprocess.run` in `canonical_root_via_git()` are not covered (the
+    repo avoids subprocess mocks).
 
     ```bash
     py -3 claude/scripts/tests/test_post_tool_use.py

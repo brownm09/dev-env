@@ -59,12 +59,27 @@ def canonical_root_from_worktree(cwd: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _canonical_root_from_common_dir(cwd: str, common: str) -> str | None:
+    """Resolve the canonical repo root from a `git rev-parse --git-common-dir`
+    result. `common` may be absolute or relative to `cwd`; it is the canonical
+    checkout's `.git` dir, so its parent is the root. Returns None when the output
+    is empty or does not name a `.git` dir. Pure — no I/O, offline-testable."""
+    common = (common or "").strip()
+    if not common:
+        return None
+    common_abs = common if os.path.isabs(common) else os.path.join(cwd, common)
+    common_norm = os.path.normpath(common_abs)
+    if os.path.basename(common_norm).lower() != ".git":
+        return None
+    return os.path.dirname(common_norm)
+
+
 def canonical_root_via_git(cwd: str) -> str | None:
     """Canonical repo root for a *sibling* worktree (e.g. `dev-env-188`, which the
-    path regex above cannot derive) via `git rev-parse --git-common-dir`. The common
-    dir is the canonical checkout's `.git`; its parent is the canonical root. Returns
+    path regex above cannot derive) via `git rev-parse --git-common-dir`. Returns
     None on any git failure so load_config degrades to a silent skip rather than
-    raising. Not unit-tested — it shells out (repo convention, cf. add_to_project)."""
+    raising. Only the `subprocess.run` call is untested (repo convention,
+    cf. add_to_project); the pure resolution is `_canonical_root_from_common_dir`."""
     try:
         result = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
@@ -76,14 +91,7 @@ def canonical_root_via_git(cwd: str) -> str | None:
         return None
     if result.returncode != 0:
         return None
-    common = result.stdout.strip()
-    if not common:
-        return None
-    common_abs = common if os.path.isabs(common) else os.path.join(cwd, common)
-    common_norm = os.path.normpath(common_abs)
-    if os.path.basename(common_norm).lower() != ".git":
-        return None
-    return os.path.dirname(common_norm)
+    return _canonical_root_from_common_dir(cwd, result.stdout)
 
 
 def _read_config(path: str) -> dict | None:
