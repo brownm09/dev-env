@@ -194,6 +194,14 @@ Fires before matched tool calls. Matcher values are set per entry in `settings.j
 
 Fires after a matched tool call completes. Matcher values are set per entry in `settings.json`.
 
+> **Background / SDK-launched sessions:** every PostToolUse hook below can be **silently inert** in a
+> session launched as a background task / via `spawn_task` — while the `UserPromptSubmit`,
+> `PreToolUse`, and `Stop` hooks from the same `settings.json` still fire. This is an upstream Claude
+> Code Desktop limitation, not a hook defect: no change here can invoke an un-invoked hook. Detection
+> signature (silent missing side-effects + `spawn_task` chips not rendering + `{"command":"callback"}`
+> hooks in the `stop_hook_summary`) and the manual-fallback recovery are documented in
+> [ADR-052](adr/052-posttooluse-hooks-inert-in-background-sessions.md).
+
 #### Bash hooks
 
 Matched with `"matcher": "Bash"`.
