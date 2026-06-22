@@ -194,6 +194,23 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_worktree_liveness.py
     ```
 
+18. **posttooluse-inert-advisory test** — required when changing
+    `claude/scripts/posttooluse-inert-advisory.py`. Exercises the pure transcript-scanning helpers offline
+    (synthetic records; no stdin, network, gh, or disk): pins that an `attachment` record with
+    `hookEvent == "PostToolUse"` (both the exit-0 `hook_success` and exit-2 `hook_blocking_error` shapes)
+    proves PostToolUse fired, that `iter_bash_calls` pairs each Bash command with its result by `tool_use_id`
+    (so parallel calls don't cross), that `detect_board_actions` triggers only on dev-env (project #3)
+    creates/merges and ignores other-repo URLs, URL-less creates, hard-merge-failures, and bare merges from a
+    non-dev-env cwd, that `should_emit` stays silent whenever any PostToolUse attachment is present (the
+    healthy session), and that the advisory is ASCII/cp1252-encodable so it can't vanish under Claude Code's
+    cp1252-piped hook stdout ([ADR-053](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md),
+    [ADR-055](docs/adr/055-reliable-event-inert-posttooluse-advisory.md)). The `main()` I/O (stdin, transcript
+    locate, sentinel) is not covered (pure-helper convention).
+
+    ```bash
+    py -3 claude/scripts/tests/test_posttooluse_inert_advisory.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
