@@ -11,10 +11,13 @@ Stdin JSON shape (PostToolUse):
     "hook_event_name": "PostToolUse",
     "tool_name": "Bash",
     "tool_input": {"command": "...", "description": "..."},
-    "tool_response": {"output": "...", "exitCode": 0},
+    "tool_response": {"stdout": "...", "stderr": "...", "exitCode": 0},
     "session_id": "...",
     "cwd": "..."
   }
+
+Output is read via _hookio.read_command_output (stdout+stderr, legacy output fallback)
+per ADR-049/ADR-050 — do NOT read tool_response.output directly.
 
 Exit 0  — no relevant command detected; no action
 Exit 2  — gh pr create, gh pr merge, or git push (open PR) detected;
@@ -26,6 +29,8 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable
+
+from _hookio import read_command_output
 
 # Matches the start of a statement token against `gh pr merge`, `gh pr create`,
 # or `git push`.
@@ -239,7 +244,7 @@ def _create_shard_step(output: str) -> str:
     """
     pr_url_match = re.search(r"https://github\.com/\S+/pull/(\d+)", output)
     if pr_url_match:
-        pr_url = pr_url_match.group(0).rstrip(".")
+        pr_url = pr_url_match.group(0)
         pr_number = pr_url_match.group(1)
         return (
             f"\n  3a. Write the open-PR shard for PR #{pr_number}:\n"
@@ -287,8 +292,7 @@ def main() -> None:
     messages = []
 
     if is_create:
-        output = data.get("tool_response", {}).get("output", "")
-        shard_step = _create_shard_step(output)
+        shard_step = _create_shard_step(read_command_output(data))
         messages.append(
             "[journal-reminder] gh pr create detected — write the journal stub AND"
             " open-PR shard NOW:\n"

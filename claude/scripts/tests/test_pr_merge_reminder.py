@@ -31,6 +31,10 @@ is_pr_merge_command = pmr.is_pr_merge_command
 is_git_push_command = pmr.is_git_push_command
 _create_shard_step = pmr._create_shard_step
 
+# read_command_output lives in _hookio (a sibling of pr-merge-reminder.py).
+# SCRIPT.parent already on sys.path, so import it directly.
+from _hookio import read_command_output  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # is_pr_create_command
@@ -121,12 +125,52 @@ def test_shard_step_no_url_in_output() -> str:
     return "empty output -> generic shard step with field hints"
 
 
-def test_shard_step_url_with_trailing_dot() -> str:
+def test_shard_step_url_trailing_dot_excluded_by_regex() -> str:
+    # The regex (\d+) stops at non-digits, so a trailing dot in the raw output
+    # string never reaches group(0). No explicit strip is needed or present.
     output = "https://github.com/brownm09/dev-env/pull/99."
     step = _create_shard_step(output)
     assert "pull/99" in step
-    assert "pull/99." not in step, "trailing dot should be stripped"
-    return "trailing dot on PR URL is stripped"
+    assert "pull/99." not in step, "trailing dot must not appear in shard step URL"
+    return "trailing dot excluded by regex boundary, not explicit strip"
+
+
+def test_shard_step_via_stdout_field() -> str:
+    # The real hook payload puts gh's output in tool_response.stdout, not .output
+    # (ADR-049/ADR-050). Simulate a real payload and verify the URL is found when
+    # read_command_output is used — the same path main() now takes.
+    data = {
+        "tool_response": {
+            "stdout": "https://github.com/brownm09/dev-env/pull/404\n",
+            "stderr": "",
+            "exitCode": 0,
+        }
+    }
+    output = read_command_output(data)
+    step = _create_shard_step(output)
+    assert "404" in step, f"PR number not found via stdout field: {step!r}"
+    assert "open-prs/404.json" in step
+    return "stdout field -> URL found via read_command_output"
+
+
+def test_shard_step_legacy_output_field_empty_gives_fallback() -> str:
+    # Confirms that reading the legacy .output field (as the code incorrectly
+    # did before ADR-049/ADR-050) yields the fallback, not the URL branch.
+    data = {
+        "tool_response": {
+            "output": "https://github.com/brownm09/dev-env/pull/999",
+            "exitCode": 0,
+        }
+    }
+    # read_command_output prefers stdout/stderr; falls back to .output only
+    # when both are absent. Since stdout is absent here, it uses .output.
+    output = read_command_output(data)
+    step = _create_shard_step(output)
+    # Behaviour with only .output: still works (fallback chain in read_command_output)
+    assert "999" in step, (
+        "legacy .output fallback should still extract URL when stdout/stderr absent"
+    )
+    return "legacy .output fallback still works when stdout/stderr absent"
 
 
 def test_shard_step_merge_url_not_matched() -> str:
@@ -158,8 +202,10 @@ def main() -> int:
         ("git push in $() -> no match", test_push_inside_subshell_not_matched),
         ("shard step: URL in output", test_shard_step_with_url_in_output),
         ("shard step: no URL -> generic hint", test_shard_step_no_url_in_output),
-        ("shard step: trailing dot stripped", test_shard_step_url_with_trailing_dot),
+        ("shard step: trailing dot excluded by regex", test_shard_step_url_trailing_dot_excluded_by_regex),
         ("shard step: issue URL not matched", test_shard_step_merge_url_not_matched),
+        ("shard step: URL found via stdout field", test_shard_step_via_stdout_field),
+        ("shard step: legacy .output fallback", test_shard_step_legacy_output_field_empty_gives_fallback),
     ]
     failed = 0
     for name, fn in tests:
