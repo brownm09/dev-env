@@ -249,6 +249,24 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_journal_shards.py
     ```
 
+22. **worktree-topology test** — required when changing `claude/scripts/_worktree_topology.py` or the
+    squat-detection paths in `prune-merged-worktrees.py` / `post-pr-merge-pull.py` / `dev-env-sync.py`.
+    Exercises the pure topology + decision helpers offline (no git, no network, no disk; paths need not
+    exist): pins `parse_worktree_porcelain` (path/branch/detached/`refs/heads/` stripping), `canonical_worktree`
+    (first entry), `park_branch_for` (`claude/<basename>`, Windows + POSIX spellings), `main_squatter`
+    (a non-canonical worktree on `main`, and `None` when the canonical holds `main` or the ref is free),
+    `diagnose_main_topology` (healthy / squat / canonical-off-main-no-squatter), `canonical_sync_action`
+    (`warn-squatter` / `return-canonical` / `warn-dirty` / `on-main` — what `dev-env-sync` does), and
+    `merge_park_target` (parks a repo's own worktree left on `main`; `None` for the canonical / not-on-main /
+    empty / **cross-repo** cwd-not-a-worktree-of-the-merged-repo / Windows-vs-POSIX spelling — what
+    `post-pr-merge-pull` does). `prune`'s park is exercised
+    end-to-end by `--dry-run` / a throwaway-repo run in the PR, not here (it shells out to git)
+    ([ADR-058](docs/adr/058-worktree-squatting-main-detection-correction.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_worktree_topology.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

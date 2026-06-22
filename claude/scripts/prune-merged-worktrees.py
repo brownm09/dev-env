@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 """Remove claude/* worktrees whose branches have been merged into origin/main.
 
-Also removes non-primary worktrees accidentally checked out on main (e.g. after a
-session runs 'git checkout main' as part of post-merge cleanup, locking main for
-other checkouts like VSCode's branch switcher).
+Also parks non-primary worktrees accidentally checked out on main back onto their own
+claude/<slug> branch (recreated at the worktree's current commit) — e.g. after
+`gh pr merge --delete-branch` from a worktree checks main out there while the canonical
+is momentarily off main. Squatting main locks the ref: it blocks gh's local post-merge
+checkout for every other worktree's merge and stops the canonical ~/Git/dev-env from
+returning to main, leaving newly-merged hooks/scripts inert in the live ~/.claude/
+(dev-env#396, ADR-058). Parking is non-destructive — `git checkout -b` frees the ref
+without changing any working-tree files, so it frees main even for a dirty squatter that
+the old `git worktree remove` refused. The freed worktree is removed on a later run by
+the normal merged-branch path once it is idle and clean.
 
-Safe: skips the current worktree, dirty worktrees, and any non-claude/* branch
-      (unless that branch is main, which is always safe to remove from a non-primary
-       worktree since main cannot have unmerged work by definition).
-Uses git branch -d (not -D) and git worktree remove (no --force).
+Safe: skips the current worktree, dirty worktrees, live-session worktrees (ADR-051), and
+      any non-claude/* branch (unless that branch is main, which is parked off — main
+      cannot have unmerged work by definition).
+Uses git branch -d (not -D), git worktree remove (no --force), and git checkout -b (parking).
 
 Auto-detects the GitHub repo slug from the remote URL, so the script works
 correctly in any repo — not just brownm09/dev-env.
@@ -34,6 +41,7 @@ import sys
 from pathlib import Path
 
 from _worktree_liveness import parse_liveness_window_seconds, worktree_session_is_live
+from _worktree_topology import park_branch_for, parse_worktree_porcelain
 
 
 # Default: the repo that owns this script (dev-env). Override with --repo-path.
@@ -105,24 +113,6 @@ def detect_gh_repo(repo: str) -> str:
     raise RuntimeError(f"Cannot parse GitHub repo from remote URL: {url!r}")
 
 
-def parse_worktrees(output: str) -> list[dict]:
-    worktrees: list[dict] = []
-    current: dict | None = None
-    for line in output.splitlines():
-        if line.startswith("worktree "):
-            if current is not None:
-                worktrees.append(current)
-            current = {"path": line[len("worktree "):].strip(), "branch": ""}
-        elif line.startswith("branch ") and current is not None:
-            ref = line[len("branch "):].strip()
-            current["branch"] = ref.removeprefix("refs/heads/")
-        elif line == "detached" and current is not None:
-            current["branch"] = "<detached>"
-    if current is not None:
-        worktrees.append(current)
-    return worktrees
-
-
 def is_merged(branch: str, gh_repo: str, repo: str) -> bool:
     # Regular merge: commit is an ancestor of origin/main
     r = run(["git", "merge-base", "--is-ancestor", branch, "origin/main"], cwd=repo)
@@ -170,7 +160,7 @@ def prune_one(repo: str, dry_run: bool, liveness_window_seconds: int) -> tuple[i
         print(f"  ERROR: git worktree list failed: {result.stderr}", file=sys.stderr)
         return 0, 0, fetch_failed
 
-    worktrees = parse_worktrees(result.stdout)
+    worktrees = parse_worktree_porcelain(result.stdout)
     primary = primary_worktree_path(worktrees)
     cwd = str(Path(os.getcwd()).resolve())
 
@@ -195,19 +185,25 @@ def prune_one(repo: str, dry_run: bool, liveness_window_seconds: int) -> tuple[i
             skipped.append((path, "active Claude session (recent transcript activity)"))
             continue
 
-        # Non-primary worktrees checked out on main: always safe to remove — main
-        # cannot contain unmerged work, and the checkout just locks the branch name.
+        # Non-primary worktree squatting main: park it back onto its own claude/<slug>
+        # branch (recreated at HEAD) to free the main ref. Non-destructive — `git
+        # checkout -b` changes no working-tree files, so it frees main even for a dirty
+        # squatter that `git worktree remove` (no --force) would refuse. The freed
+        # worktree is removed on a later run via the normal merged path once idle+clean
+        # (dev-env#396, ADR-058). The ADR-051 liveness guard above already spared a live
+        # squatter, so parking only ever moves an idle one.
         if branch == "main":
+            park = park_branch_for(path)
             if dry_run:
                 pruned.append(path)
-                print(f"  [dry-run] would remove stale main checkout: {path}")
+                print(f"  [dry-run] would park stale main checkout off main: {path} -> {park}")
                 continue
-            r = run(["git", "worktree", "remove", path], cwd=repo)
+            r = run(["git", "-C", path, "checkout", "-b", park], cwd=repo)
             if r.returncode != 0:
-                skipped.append((path, f"worktree remove failed: {r.stderr.strip()}"))
+                skipped.append((path, f"park off main failed (branch {park} may already exist): {r.stderr.strip()}"))
                 continue
             pruned.append(path)
-            print(f"  pruned (stale main): {path}")
+            print(f"  parked off main: {path} ({park}) — freed the main ref")
             continue
 
         if not branch.startswith(BRANCH_PREFIX):

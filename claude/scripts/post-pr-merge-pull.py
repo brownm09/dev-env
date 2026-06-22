@@ -25,6 +25,7 @@ import subprocess
 import sys
 
 from _hookio import output_has_merge_marker, read_command_output
+from _worktree_topology import merge_park_target, parse_worktree_porcelain
 
 # Map GitHub repo slugs to local clone paths.
 # Repos with no local clone (e.g. profile-only repos) map to None.
@@ -93,6 +94,57 @@ def pull_main(local_path: str, repo: str) -> None:
         )
 
 
+def park_worktree_off_main(cwd: str, local_path: str) -> None:
+    """If `gh pr merge --delete-branch` left this worktree squatting main, park it off.
+
+    gh deletes the merged local branch and checks out the default branch; from a worktree
+    that checkout only succeeds when the canonical had freed the main ref (it was off main),
+    so the worktree grabs main and blocks every other worktree's local post-merge checkout.
+    Recreate the worktree's own claude/<slug> branch at HEAD to free main again — this acts
+    on the hook's OWN just-merged session worktree (cwd), so no ADR-051 liveness check is
+    needed. Non-destructive: `git checkout -b` changes no working-tree files (dev-env#396,
+    ADR-058).
+
+    `merge_park_target` is fed the *merged repo's* worktree list (resolved from `local_path`),
+    so it parks only when `cwd` is genuinely a worktree of that repo on main — a `gh pr merge
+    --repo X` run from an unrelated checkout never touches that other repo (correctness review).
+    """
+    if not cwd:
+        return
+    try:
+        wt = subprocess.run(
+            ["git", "-C", local_path, "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception:
+        return
+    worktrees = parse_worktree_porcelain(wt.stdout) if wt.returncode == 0 else []
+    park = merge_park_target(cwd, worktrees)
+    if not park:
+        return
+    try:
+        r = subprocess.run(
+            ["git", "-C", cwd, "checkout", "-b", park],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception as exc:
+        print(f"[post-merge-pull] could not park worktree off main — {exc}", file=sys.stderr)
+        return
+    if r.returncode == 0:
+        print(
+            f"[post-merge-pull] parked this worktree off main onto {park} — freed the main ref. "
+            "The canonical ~/Git/dev-env is off main; dev-env-sync returns it on the next prompt "
+            "if clean (else switch it back manually to refresh ~/.claude/).",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"[post-merge-pull] could not park worktree off main (branch {park} may already exist) "
+            f"— {r.stderr.strip()}",
+            file=sys.stderr,
+        )
+
+
 def is_successful_merge(command: str, exit_code: int, output: str) -> bool:
     """Pure predicate: did this Bash call complete a `gh pr merge`?
 
@@ -146,6 +198,7 @@ def main() -> None:
         sys.exit(0)
 
     pull_main(local_path, repo)
+    park_worktree_off_main(cwd, local_path)
     sys.exit(0)
 
 
