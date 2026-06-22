@@ -75,6 +75,7 @@ The worktree-maintenance scripts (`prune-merged-worktrees.py`, `reclaim-worktree
 | PostToolUse (Write) | `memory-write-advisory.py` | Reminds Claude to pair a durable memory write with an immortalization issue when a memory file is written without an issue/ADR/`CLAUDE.md` link; non-blocking advisory (see [ADR-048](docs/adr/048-memory-immortalization-issue-pairing.md)) |
 | Stop | `token-tracker.py` | Aggregates session token usage to `scratch/token-sessions.jsonl` |
 | Stop | `journal-stop-check.py` | Checks sentinel flag and stale open journal stubs at session end; emits closing reminder if stub was pushed this session |
+| Stop | `posttooluse-inert-advisory.py` | Safety net for [ADR-053](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md): when a dev-env `gh issue/pr create` or `gh pr merge` ran but no PostToolUse hook fired all session (background/SDK-launched), emits a one-line advisory to apply the manual board fallback. Non-blocking (exit 0), once per session ([ADR-054](docs/adr/054-reliable-event-inert-posttooluse-advisory.md)) |
 | PostCompact | `post-compact.py` | Emits compaction status line (trigger type + remaining tokens) |
 | Git pre-push | `hooks/pre-push` | Warns when branch merge base diverges from `origin/main` in squash-merge repos; blocks engineering-journal pushes to already-merged draft branches; blocks pushes that drift `package-lock.json` from `package.json` (see [ADR-036](docs/adr/036-lockfile-drift-prevention.md)) |
 
