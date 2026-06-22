@@ -42,15 +42,81 @@ from _hookio import read_command_output
 
 CONFIG_FILE = ".claude/hook-config.json"
 
+# Matches `<root>/.claude/worktrees/<name>` at the start of a path, capturing the
+# canonical repo root (everything before `/.claude/`). Mirrors the proven prefix
+# regex in pre-tool-use-worktree-path-check.py; tolerates `/` and `\` separators.
+_WORKTREE_RE = re.compile(
+    r"^(.+?)[/\\]\.claude[/\\]worktrees[/\\][^/\\]+",
+    re.IGNORECASE,
+)
 
-def load_config(cwd: str) -> dict | None:
-    """Load hook-config.json from the project root, or return None."""
-    path = os.path.join(cwd, CONFIG_FILE)
+
+def canonical_root_from_worktree(cwd: str) -> str | None:
+    """Canonical repo root for a Claude-managed worktree cwd
+    (`<root>/.claude/worktrees/<name>/...`), else None. Pure — no I/O, so it is
+    exercised offline by the unit tests."""
+    m = _WORKTREE_RE.match(cwd or "")
+    return m.group(1) if m else None
+
+
+def canonical_root_via_git(cwd: str) -> str | None:
+    """Canonical repo root for a *sibling* worktree (e.g. `dev-env-188`, which the
+    path regex above cannot derive) via `git rev-parse --git-common-dir`. The common
+    dir is the canonical checkout's `.git`; its parent is the canonical root. Returns
+    None on any git failure so load_config degrades to a silent skip rather than
+    raising. Not unit-tested — it shells out (repo convention, cf. add_to_project)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    common = result.stdout.strip()
+    if not common:
+        return None
+    common_abs = common if os.path.isabs(common) else os.path.join(cwd, common)
+    common_norm = os.path.normpath(common_abs)
+    if os.path.basename(common_norm).lower() != ".git":
+        return None
+    return os.path.dirname(common_norm)
+
+
+def _read_config(path: str) -> dict | None:
     try:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
+
+
+def load_config(cwd: str) -> dict | None:
+    """Load hook-config.json for the project, or None.
+
+    The config is gitignored and machine-local, so it lives only in the canonical
+    checkout — `git worktree add` never checks it out and the harness copies it into
+    Claude-managed worktrees only inconsistently (dev-env #378). Read the cwd-local
+    copy first; when it is absent in a worktree, fall back to the canonical
+    checkout's copy so worktree sessions behave like main-checkout sessions.
+    """
+    cfg = _read_config(os.path.join(cwd, CONFIG_FILE))
+    if cfg is not None:
+        return cfg
+    # Claude-managed worktree (`<root>/.claude/worktrees/<name>`): pure, no subprocess.
+    root = canonical_root_from_worktree(cwd)
+    if root:
+        cfg = _read_config(os.path.join(root, CONFIG_FILE))
+        if cfg is not None:
+            return cfg
+    # Sibling worktree (`<root>-<suffix>`): resolve the canonical root via git.
+    root = canonical_root_via_git(cwd)
+    if root and os.path.normpath(root) != os.path.normpath(cwd):
+        return _read_config(os.path.join(root, CONFIG_FILE))
+    return None
 
 
 def extract_github_url(output: str, repo: str | None = None) -> str | None:
