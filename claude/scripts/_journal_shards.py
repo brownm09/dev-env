@@ -62,10 +62,8 @@ def iter_pr_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
       - non-numeric stems (``index.json``, ``bad.json``) are skipped (not a PR shard);
       - shards sort by PR number ascending (PR 2 before PR 10), not lexically;
       - unparseable JSON (and any ``OSError`` reading the file) is skipped, left for a human;
-      - a parsed **non-object** value (a JSON list/scalar) is skipped — a downstream
-        ``entry.get(...)`` on it would raise, and the consuming hooks only swallow that in
-        an outer guard that would discard *all* of a project's open-PR context (the
-        hardening recorded in ADR-057).
+      - a parsed **non-object** value (a JSON list/scalar) is skipped — without this a
+        downstream ``entry.get(...)`` would raise into a context-dropping guard (see ADR-057).
 
     A missing / non-directory ``shard_dir`` yields ``[]``, so callers may invoke it
     unconditionally.

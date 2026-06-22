@@ -34,10 +34,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 # iter_pr_shards / read_legacy_entries are the shared open-PR readers (ADR-057), also used
-# by post-compact.py. shard_pr_number is re-exported for tests/back-compat — the reconcile
-# loop no longer calls it directly (iter_pr_shards owns the numeric-filename filtering).
+# by post-compact.py. iter_pr_shards owns the numeric-filename filtering, so the reconcile
+# loop no longer needs shard_pr_number directly.
 from _journal_shards import iter_pr_shards, read_legacy_entries
-from _journal_shards import shard_pr_number  # noqa: F401  (re-exported for tests)
 
 SCRATCH = Path.home() / ".claude" / "scratch"
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"

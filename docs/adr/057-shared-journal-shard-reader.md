@@ -86,7 +86,21 @@ promoted to one importable sibling module — `_hookio`
   imports it rather than re-deriving the enumeration.
 - A malformed (non-object) tracking record now costs only its own shard/line, not a project's whole
   open-PR context.
-- Pure refactor: no file format, schema, or on-disk behaviour changes; rollback is a plain revert.
+- **Behaviour-precision on malformed input (intentional, safe-direction).** For *well-formed* inputs
+  this is a pure refactor — no file format, schema, or on-disk change; rollback is a plain revert. For
+  *malformed* inputs the shared readers are strictly more graceful than the originals, in three ways
+  recorded here so they read as deliberate rather than accidental drift:
+  - `post-compact.py` now also ignores **non-numeric-named** files in `open-prs/` (e.g. `index.json`),
+    matching `reconcile-open-prs.py` (which already filtered) and the `open-prs/<N>.json` contract — the
+    old post-compact reader had no name filter and could surface such a file in the `/review` reminder.
+  - `iter_pr_shards` / `read_legacy_entries` tolerate `OSError` — a mid-read TOCTOU failure now degrades
+    to "skip that shard/line", where the originals propagated (reconcile skipped the whole project,
+    post-compact dropped all open-PR context).
+  - a **non-object legacy line** in `open-prs.jsonl` is now dropped on the next rewrite instead of
+    *freezing* all cleanup of that file: the old `reconcile_file` crashed on it and the swallowed
+    exception meant the file was never rewritten (so stale merged entries also survived). The file is
+    system-written (`json.dumps(dict)` per line) and draining toward retirement, so a corrupt line
+    carries no tracking data. Pinned by a new `test_reconcile_open_prs.py` case + `test_journal_shards.py`.
 - Continues the shared-helper line `_winsubp` ([ADR-007](007-hook-command-invocation.md)) → `_hookio`
   (ADR-050) → `_worktree_liveness` (ADR-051) → `_journal_shards`.
 
