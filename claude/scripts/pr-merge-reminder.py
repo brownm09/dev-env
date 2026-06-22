@@ -11,10 +11,13 @@ Stdin JSON shape (PostToolUse):
     "hook_event_name": "PostToolUse",
     "tool_name": "Bash",
     "tool_input": {"command": "...", "description": "..."},
-    "tool_response": {"output": "...", "exitCode": 0},
+    "tool_response": {"stdout": "...", "stderr": "...", "exitCode": 0},
     "session_id": "...",
     "cwd": "..."
   }
+
+Output is read via _hookio.read_command_output (stdout+stderr, legacy output fallback)
+per ADR-049/ADR-050 — do NOT read tool_response.output directly.
 
 Exit 0  — no relevant command detected; no action
 Exit 2  — gh pr create, gh pr merge, or git push (open PR) detected;
@@ -26,6 +29,8 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable
+
+from _hookio import read_command_output
 
 # Matches the start of a statement token against `gh pr merge`, `gh pr create`,
 # or `git push`.
@@ -231,6 +236,32 @@ def _open_pr_for_cwd(cwd: str) -> dict | None:
         return None
 
 
+def _create_shard_step(output: str) -> str:
+    """Return the shard-writing instruction lines for a gh pr create reminder.
+
+    When *output* contains the PR URL printed by gh pr create, includes the
+    parsed PR number and URL so the session doesn't have to look them up.
+    """
+    pr_url_match = re.search(r"https://github\.com/\S+/pull/(\d+)", output)
+    if pr_url_match:
+        pr_url = pr_url_match.group(0)
+        pr_number = pr_url_match.group(1)
+        return (
+            f"\n  3a. Write the open-PR shard for PR #{pr_number}:\n"
+            f'       echo \'{{"pr":{pr_number},"url":"{pr_url}",'
+            '"topic":"<H2 heading from stub>","stub":"YYYY-MM-DD_HHMMSS.stub.md",'
+            '"opened":"YYYY-MM-DD"}\''
+            f"\n         > sessions/<project>/open-prs/{pr_number}.json\n"
+            "  3b. Stage it alongside the stub: git add sessions/<project>/open-prs/"
+        )
+    return (
+        "\n  3a. Write the open-PR shard: sessions/<project>/open-prs/<N>.json\n"
+        "       Fields: pr (int), url, topic (H2 from stub), stub (filename),"
+        " opened (YYYY-MM-DD)\n"
+        "  3b. Stage it alongside the stub: git add sessions/<project>/open-prs/"
+    )
+
+
 def main() -> None:
     raw = sys.stdin.read().strip()
     if not raw:
@@ -261,14 +292,17 @@ def main() -> None:
     messages = []
 
     if is_create:
+        shard_step = _create_shard_step(read_command_output(data))
         messages.append(
-            "[journal-reminder] gh pr create detected — write the journal stub NOW:\n"
+            "[journal-reminder] gh pr create detected — write the journal stub AND"
+            " open-PR shard NOW:\n"
             f"  cwd: {cwd}\n"
             "  Rationale: the stub captures session context while it's intact;\n"
             "  compaction or session corruption after this point loses it permanently.\n"
             "  1. Identify the project journal path from cwd.\n"
             "  2. Check out or create the draft branch in engineering-journal.\n"
-            "  3. Write a <!-- session: <slug> --> block for this session.\n"
+            "  3. Write a <!-- session: <slug> --> block for this session."
+            + shard_step + "\n"
             "  4. Add token comment and <!-- next-session-context --> paragraph.\n"
             '  5. git commit -m "draft: YYYY-MM-DD session N" && git push'
         )
