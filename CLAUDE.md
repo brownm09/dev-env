@@ -175,6 +175,20 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_stub_push_archive_reminder.py
     ```
 
+17. **worktree-liveness guard test** — required when changing `claude/scripts/_worktree_liveness.py` or the
+    prune/reclaim scripts' use of it. Exercises the pure `encode_project_slug()` / `is_recent()` and the
+    filesystem `transcript_dir_for()` / `newest_jsonl_mtime()` / `worktree_session_is_live()` helpers
+    offline (tmp projects root + `os.utime`, no live session): pins the slug encoding (`:` `\` `/` `.` all
+    become `-`), the recency boundary (incl. unknown and future mtimes), exact-slug and basename-suffix
+    transcript-dir resolution, recursive newest-`.jsonl` mtime (incl. `subagents/`), the live/stale/no-session
+    verdicts that stop prune/reclaim from severing an active session, and the prune=24h / reclaim=6h default
+    windows ([ADR-051](docs/adr/051-worktree-liveness-guard.md)). The git-driven prune/reclaim loops are
+    exercised by `--dry-run` in the PR, not here.
+
+    ```bash
+    py -3 claude/scripts/tests/test_worktree_liveness.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

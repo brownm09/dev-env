@@ -41,6 +41,10 @@ Usage:
   --protect-cwd P Never strip this worktree (defaults to os.getcwd()). A hook that
                   spawns this script detached passes the active session's worktree so
                   the dir in use is never touched even in --scan-dir mode.
+  --liveness-window-min N
+                  Skip any worktree whose Claude transcript was written within the last N
+                  minutes (an active session), protecting live sessions in *other*
+                  worktrees that --protect-cwd cannot reach. Defaults to 360 (6h). ADR-051.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import os
@@ -50,6 +54,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _worktree_liveness import parse_liveness_window_seconds, worktree_session_is_live
+
 
 # Default: the repo that owns this script (dev-env). Override with --repo-path.
 _DEFAULT_REPO = str(Path(__file__).resolve().parents[2])
@@ -57,6 +63,15 @@ _DEFAULT_REPO = str(Path(__file__).resolve().parents[2])
 # Regenerable directory names stripped from eligible worktrees. node_modules can be
 # reinstalled (worktree-npm-install.py / npm ci); .turbo is a rebuildable cache.
 RECLAIM_DIR_NAMES = ("node_modules", ".turbo")
+
+# Skip a worktree whose Claude session wrote its transcript within this window — stripping
+# node_modules out from under a live build/dev-server breaks it (dev-env#384). 6h, shorter
+# than prune's 24h: stripping is self-healing (worktree-npm-install reinstalls on next use)
+# and only disrupts a process running *now*, so the short window keeps disk reclamation
+# aggressive against ENOSPC (ADR-037/045) and matches the 6-hourly routine cadence.
+# --protect-cwd only shields THIS session; this guard shields live sessions in *other*
+# worktrees the routine cannot otherwise see. Override with --liveness-window-min.
+LIVENESS_WINDOW_SECONDS = 6 * 60 * 60
 
 
 def _arg_value(flag: str) -> str | None:
@@ -92,6 +107,13 @@ def _protect_cwd_from_args() -> str:
     val = _arg_value("--protect-cwd")
     base = val if val else os.getcwd()
     return str(Path(base).resolve())
+
+
+def _liveness_window_seconds_from_args() -> int:
+    try:
+        return parse_liveness_window_seconds(sys.argv[1:], LIVENESS_WINDOW_SECONDS)
+    except ValueError as exc:
+        sys.exit(str(exc))
 
 
 def run(args: list[str], cwd: str) -> subprocess.CompletedProcess:
@@ -277,7 +299,7 @@ def free_gb(path: str) -> float:
     return shutil.disk_usage(path).free / (1024 ** 3)
 
 
-def reclaim_one(repo: str, dry_run: bool, protect_cwd: str) -> int:
+def reclaim_one(repo: str, dry_run: bool, protect_cwd: str, liveness_window_seconds: int) -> int:
     """Reclaim from idle worktrees in a single repo. Returns total bytes reclaimed."""
     try:
         gh_repo = detect_gh_repo(repo)
@@ -308,6 +330,13 @@ def reclaim_one(repo: str, dry_run: bool, protect_cwd: str) -> int:
 
         if path == primary or path == protect_cwd:
             skipped.append((path, "primary or protected worktree"))
+            continue
+        # Skip a worktree with a live Claude session (recent transcript activity).
+        # --protect-cwd only shields THIS session; stripping node_modules out from under a
+        # build/dev-server running in *another* worktree breaks it (dev-env#384, ADR-051).
+        # Additive: only ever adds a skip, never reclaims more than the checks below.
+        if worktree_session_is_live(path, window_seconds=liveness_window_seconds):
+            skipped.append((path, "active Claude session (recent transcript activity)"))
             continue
         if not is_claude_managed_worktree(path):
             skipped.append((path, "not under .claude/worktrees/ (no auto-reinstall safety net)"))
@@ -349,6 +378,7 @@ def main() -> None:
     scan_dir = _scan_dir_from_args()
     protect_cwd = _protect_cwd_from_args()
     min_free = _min_free_gb_from_args()
+    liveness_window_seconds = _liveness_window_seconds_from_args()
 
     if dry_run:
         print("[dry-run] no changes will be made")
@@ -370,10 +400,10 @@ def main() -> None:
         print(f"Found {len(repos)} repos under {scan_dir}")
         grand_total = 0
         for repo in repos:
-            grand_total += reclaim_one(repo, dry_run, protect_cwd)
+            grand_total += reclaim_one(repo, dry_run, protect_cwd, liveness_window_seconds)
         print(f"\nTotal — {'would reclaim' if dry_run else 'reclaimed'} {_fmt_gb(grand_total)}")
     else:
-        reclaim_one(_repo_from_args(), dry_run, protect_cwd)
+        reclaim_one(_repo_from_args(), dry_run, protect_cwd, liveness_window_seconds)
 
 
 if __name__ == "__main__":

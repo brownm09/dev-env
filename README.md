@@ -47,6 +47,8 @@ Hooks that spawn subprocesses (`git`, `gh`, `bash`, …) must `import _winsubp` 
 
 PostToolUse Bash hooks that read a command's output must use `read_command_output` from `claude/scripts/_hookio.py` — Claude Code's payload exposes output under `tool_response.stdout`/`stderr`, not `output`, so reading the wrong field silently disables the hook. See [ADR-049](docs/adr/049-hook-payload-output-field.md) and [ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md).
 
+The worktree-maintenance scripts (`prune-merged-worktrees.py`, `reclaim-worktree-disk.py`) skip a worktree with a live Claude session via `worktree_session_is_live` from `claude/scripts/_worktree_liveness.py` — it reads the worktree's transcript-dir mtime under `~/.claude/projects/`, the only signal by which an out-of-process routine can detect (and avoid severing) an active session in *another* worktree. See [ADR-051](docs/adr/051-worktree-liveness-guard.md).
+
 | Event | Script | Purpose |
 |---|---|---|
 | UserPromptSubmit | `session-mode-prompt.py` | Injects a one-time mode-confirmation reminder into Claude's context on the first prompt of each new session |
@@ -83,8 +85,8 @@ Autonomous scheduled agents in `claude/routines/`. No user interaction.
 | Schedule | Routine | Purpose |
 |---|---|---|
 | Daily midnight UTC | `daily-journal-compose` | Assembles stub files into canonical journal entries and opens PRs |
-| Daily 8am local | `prune-stale-worktrees` | Removes merged `claude/*` worktrees and stale `main` checkouts across all repos under `C:/Users/brown/Git` |
-| Every 6 hours | `reclaim-worktree-disk` | Strips regenerable `node_modules`/`.turbo` from idle Claude worktrees under `.claude/worktrees/`, reclaiming disk between weekly prune runs |
+| Daily 8am local | `prune-stale-worktrees` | Removes merged `claude/*` worktrees and stale `main` checkouts across all repos under `C:/Users/brown/Git`; skips any worktree with an active Claude session (transcript activity within 24h, see [ADR-051](docs/adr/051-worktree-liveness-guard.md)) |
+| Every 6 hours | `reclaim-worktree-disk` | Strips regenerable `node_modules`/`.turbo` from idle Claude worktrees under `.claude/worktrees/`, reclaiming disk between weekly prune runs; skips any worktree with an active Claude session (transcript activity within 6h, see [ADR-051](docs/adr/051-worktree-liveness-guard.md)) |
 | Nightly 8:00 UTC (3 AM CDT) | `nightly-research` | Researches pending topics from the queue and writes structured markdown notes to `research-notes/` |
 | Biweekly (every other Sun 9am local) | `biweekly-retro` | Synthesizes a retrospective (global readout + per-repo sections + tracked ratio) from the trailing 4 weeks of journal entries; opens a report PR in `engineering-journal` and files deduped action-item issues in the correct repo per finding (cross-cutting → dev-env) |
 

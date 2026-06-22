@@ -26,6 +26,6 @@ Reclaim regenerable disk artifacts from idle Claude session worktrees across all
 **Constraints:**
 - The script deletes only `node_modules` and `.turbo` — never the worktree, branch, or any git state.
 - Only worktrees under `.claude/worktrees/` are considered (they auto-reinstall via ADR-016). The primary repo and manual sibling worktrees are left untouched.
-- Dirty worktrees, the primary worktree, the current/protected worktree, and worktrees with unpushed commits ahead of `origin/main` (and not merged) are never touched.
+- Dirty worktrees, the primary worktree, the current/protected worktree, worktrees with an active Claude session (transcript activity within 6h — shorter than prune's 24h since stripping is self-healing; ADR-051), and worktrees with unpushed commits ahead of `origin/main` (and not merged) are never touched.
 - Repos with no GitHub remote are silently skipped.
 - Temp files (if needed) go to `C:/Users/brown/.claude/scratch/`.
