@@ -207,5 +207,7 @@
     ]
   },
   "effortLevel": "medium",
-  "agentPushNotifEnabled": true
+  "theme": "dark",
+  "agentPushNotifEnabled": true,
+  "tui": "fullscreen"
 }
