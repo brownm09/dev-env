@@ -1,4 +1,4 @@
-# ADR-052 — PostToolUse Hooks Are Inert in Background / SDK-Launched Sessions (Upstream Harness Limitation)
+# ADR-053 — PostToolUse Hooks Are Inert in Background / SDK-Launched Sessions (Upstream Harness Limitation)
 
 **Date:** 2026-06-22
 **Status:** Accepted
