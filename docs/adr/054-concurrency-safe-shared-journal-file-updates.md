@@ -31,7 +31,7 @@ added that the rewriting session did not know about.
 ### Incident (2026-06-22)
 
 Two sessions shared one engineering-journal clone on `draft/2026-06-22`. Session B had appended its
-manifest entry (PRs #381/#387). Session A then ran a post-merge update that regenerated the whole
+manifest entry (issue #381 / PR #387). Session A then ran a post-merge update that regenerated the whole
 manifest via `cat >` from A's stale view, which did not include B's line — destroying B's entry. It
 was recovered with `git checkout HEAD -- <manifest>` followed by surgically string-replacing only A's
 line, but nothing had warned: the failure is silent, and the journal is the durable record, so an

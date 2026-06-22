@@ -763,10 +763,11 @@ whose `stub` field matches this session, deriving the new content from the *curr
 node -e "
   const fs = require('fs');
   const path = 'C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl';
-  const stub = '<this session's exact \"stub\" field value>';
+  const stub = '<THIS_SESSION_STUB>';   // e.g. sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md
   const lines = fs.readFileSync(path,'utf8').trim().split('\n').map(l => {
     const o = JSON.parse(l);
-    if (o.stub === stub) o.prs_closed = [<PR_NUMBER>];   // mutate only this session's entry
+    if (o.stub !== stub) return l;        // preserve every other session's line verbatim
+    o.prs_closed = [<PR_NUMBER>];          // mutate only this session's entry
     return JSON.stringify(o);
   });
   fs.writeFileSync(path, lines.join('\n') + '\n');
