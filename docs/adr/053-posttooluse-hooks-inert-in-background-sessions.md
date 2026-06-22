@@ -50,8 +50,10 @@ Four observations make the cause **per-session launch context**, not hook code o
    three `gh issue create` calls produced **no** PostToolUse attachment. The hook scripts run from
    `~/.claude/scripts` (junctioned to the canonical worktree on `main`), so the code *changed*
    between #378 and #383 while the inert behavior did **not** — the failure is fixed at session
-   launch, independent of hook-code version. Peer sessions emitted PostToolUse attachments even with
-   the *pre*-#377 code, so the output-field bug has a different, non-silent signature.
+   launch, independent of hook-code version. The output-field bug is also a *different, non-silent*
+   signature: it suppresses `post-tool-use.py`'s URL *extraction*, not PostToolUse *dispatch* — with
+   the [ADR-049](049-hook-payload-output-field.md) de-silencing it exits 2 with a "no URL" advisory
+   (an attachment), rather than producing no PostToolUse attachment at all as seen here.
 
 2. **Launch fingerprint.** The affected session's `stop_hook_summary` system record lists the three
    configured Stop hooks **plus two `{"command":"callback"}` entries** — in-process hooks injected by
