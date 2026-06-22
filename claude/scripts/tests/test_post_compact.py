@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Unit tests for post-compact.py open-PR reading (ADR-055).
+"""Unit tests for post-compact.py open-PR reading (ADR-056).
 
 `post-compact.py` reads the open-PR tracking on a manual `/compact` to remind
-Claude to run `/review`. ADR-055 reshaped that tracking into per-PR shards
-`sessions/<project>/open-prs/<N>.json`, with the pre-ADR-055 single
+Claude to run `/review`. ADR-056 reshaped that tracking into per-PR shards
+`sessions/<project>/open-prs/<N>.json`, with the pre-ADR-056 single
 `open-prs.jsonl` still read during the transition. `read_open_pr_entries` unions
 both, deduped by PR number — these tests pin that union, the numeric (not lexical)
 shard ordering, and the malformed-input tolerance, all offline.

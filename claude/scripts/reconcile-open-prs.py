@@ -2,13 +2,13 @@
 """UserPromptSubmit hook: reconcile open-PR tracking against live GitHub PR state.
 
 Runs once per session (per-session sentinel in scratch/). For every project under
-the engineering-journal repo it reconciles two formats (see ADR-055):
+the engineering-journal repo it reconciles two formats (see ADR-056):
 
   - Per-PR shards `sessions/<project>/open-prs/<N>.json` (current format) — for each
     shard whose PR is MERGED or CLOSED, the shard file is unlinked individually. No
     surviving shard is ever rewritten, so a concurrent session's shard can never be
     clobbered. The `open-prs/` dir is removed when its last shard is gone.
-  - The legacy single file `sessions/<project>/open-prs.jsonl` (pre-ADR-055) — entries
+  - The legacy single file `sessions/<project>/open-prs.jsonl` (pre-ADR-056) — entries
     whose PRs are MERGED or CLOSED are removed via the existing read-filter-write (which
     reads the current on-disk file, so it is safe); the file is deleted when empty.
 
@@ -166,7 +166,7 @@ def reconcile_file(path: Path, state_fn=None) -> tuple[list[dict], list[tuple[di
     return surviving, removed
 
 
-# --- per-PR shard path (ADR-055) ---------------------------------------------
+# --- per-PR shard path (ADR-056) ---------------------------------------------
 
 
 def reconcile_shard_dir(shard_dir: Path, state_fn=None) -> tuple[list[dict], list[tuple[dict, str]]]:

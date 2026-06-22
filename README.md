@@ -57,7 +57,7 @@ The worktree-maintenance scripts (`prune-merged-worktrees.py`, `reclaim-worktree
 | UserPromptSubmit | `journal-onboard-check.py` | Warns when the active project has no journal home in engineering-journal |
 | UserPromptSubmit | `turn-count-hook.py` | Warns when session context token count exceeds threshold |
 | UserPromptSubmit | `multi-worktree-alert.py` | Lists active worktrees in `repo:branch` format when ≥2 are open |
-| UserPromptSubmit | `reconcile-open-prs.py` | Removes stale open-PR records whose PRs are now merged/closed — deletes per-PR `open-prs/<N>.json` shards ([ADR-055](docs/adr/055-per-session-sharding-journal-companion-files.md)) and drains the legacy `open-prs.jsonl`; emits surviving open PRs as session context |
+| UserPromptSubmit | `reconcile-open-prs.py` | Removes stale open-PR records whose PRs are now merged/closed — deletes per-PR `open-prs/<N>.json` shards ([ADR-056](docs/adr/056-per-session-sharding-journal-companion-files.md)) and drains the legacy `open-prs.jsonl`; emits surviving open PRs as session context |
 | UserPromptSubmit | `disk-space-check.py` | Watches free space on `C:`; warns once per session below 20 GB and spawns detached `node_modules`/`.turbo` reclamation below 10 GB |
 | UserPromptSubmit | `worktree-npm-install.py` | Auto-runs `npm ci`/`install` when a Claude worktree lacks `node_modules`; gates on free space first — below 10 GB it reclaims (idle worktrees, then npm cache) and re-checks, and below a 5 GB floor it refuses the install rather than risk a silently-truncated `node_modules` (ENOSPC, see [ADR-045](docs/adr/045-pre-install-freespace-gate.md)) |
 | UserPromptSubmit / Stop / Notification | `awake-blocker.py` | Spawns a detached watcher that holds a Windows system-sleep lock while Claude is processing; releases on Stop or Notification |
@@ -75,6 +75,7 @@ The worktree-maintenance scripts (`prune-merged-worktrees.py`, `reclaim-worktree
 | PostToolUse (Write) | `memory-write-advisory.py` | Reminds Claude to pair a durable memory write with an immortalization issue when a memory file is written without an issue/ADR/`CLAUDE.md` link; non-blocking advisory (see [ADR-048](docs/adr/048-memory-immortalization-issue-pairing.md)) |
 | Stop | `token-tracker.py` | Aggregates session token usage to `scratch/token-sessions.jsonl` |
 | Stop | `journal-stop-check.py` | Checks sentinel flag and stale open journal stubs at session end; emits closing reminder if stub was pushed this session |
+| Stop | `posttooluse-inert-advisory.py` | Safety net for [ADR-053](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md): when a dev-env `gh issue/pr create` or `gh pr merge` ran but no PostToolUse hook fired all session (background/SDK-launched), emits a one-line advisory to apply the manual board fallback. Non-blocking (exit 0), once per session ([ADR-055](docs/adr/055-reliable-event-inert-posttooluse-advisory.md)) |
 | PostCompact | `post-compact.py` | Emits compaction status line (trigger type + remaining tokens) |
 | Git pre-push | `hooks/pre-push` | Warns when branch merge base diverges from `origin/main` in squash-merge repos; blocks engineering-journal pushes to already-merged draft branches; blocks pushes that drift `package-lock.json` from `package.json` (see [ADR-036](docs/adr/036-lockfile-drift-prevention.md)) |
 

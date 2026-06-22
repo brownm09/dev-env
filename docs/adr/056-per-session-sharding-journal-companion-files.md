@@ -1,4 +1,4 @@
-# ADR-055 — Per-Session Sharding of Journal Manifest + open-PR Tracking
+# ADR-056 — Per-Session Sharding of Journal Manifest + open-PR Tracking
 
 **Date:** 2026-06-22
 **Status:** Accepted
@@ -105,8 +105,8 @@ true for an `open-prs/` directory).
 - The companion engineering-journal change (`validate-jsonl.js` shard schemas + an optional, reversible
   data migration) is tracked separately in [engineering-journal#128](https://github.com/brownm09/engineering-journal/issues/128);
   the dev-env tooling does not depend on it — the validator merely gains coverage of the new shards.
-- This completes the ADR-001 → ADR-054 → ADR-055 line: ADR-001 isolated the stubs, ADR-054 made the shared
-  files safe **by discipline**, ADR-055 makes them safe **by structure**.
+- This completes the ADR-001 → ADR-054 → ADR-056 line: ADR-001 isolated the stubs, ADR-054 made the shared
+  files safe **by discipline**, ADR-056 makes them safe **by structure**.
 
 ## References
 

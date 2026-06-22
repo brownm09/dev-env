@@ -25,7 +25,7 @@ def get_journal_project() -> str | None:
 
 
 def read_open_pr_entries(project_dir: Path) -> list[dict]:
-    """Union the per-PR shards `open-prs/<N>.json` (current format, ADR-055) with the
+    """Union the per-PR shards `open-prs/<N>.json` (current format, ADR-056) with the
     legacy single `open-prs.jsonl` file, deduped by PR number. Pure filesystem read,
     no network — unit-tested in tests/test_post_compact.py. Reading both formats lets
     the transition need no forced migration; the legacy file drains as its PRs merge."""

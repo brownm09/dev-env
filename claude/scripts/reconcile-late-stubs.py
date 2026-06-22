@@ -69,7 +69,7 @@ def get_stub_files_in_commits(commits: list[str]) -> list[str]:
             status, path = parts
             if status.startswith("D"):
                 continue
-            # Per-session manifest shards (YYYY-MM-DD_HHMMSS.manifest.jsonl, ADR-055)
+            # Per-session manifest shards (YYYY-MM-DD_HHMMSS.manifest.jsonl, ADR-056)
             # match the same suffix as the legacy per-day manifest, so both move.
             # Open-PR records (legacy open-prs.jsonl and open-prs/<N>.json shards) are
             # excluded — the target branch's copy is authoritative.

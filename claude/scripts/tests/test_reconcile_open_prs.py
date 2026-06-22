@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Unit tests for reconcile-open-prs.py shard/legacy reconciliation (ADR-055).
+"""Unit tests for reconcile-open-prs.py shard/legacy reconciliation (ADR-056).
 
 `reconcile-open-prs.py` is a UserPromptSubmit hook that, once per session, removes
-open-PR tracking records whose PRs are now MERGED/CLOSED. ADR-055 reshaped the
+open-PR tracking records whose PRs are now MERGED/CLOSED. ADR-056 reshaped the
 tracking from a single shared `open-prs.jsonl` into per-PR shards
 `sessions/<project>/open-prs/<N>.json`, so the structural guarantee the hook now
 relies on is: **removing one PR's record is a per-file `unlink` that never rewrites
@@ -111,7 +111,7 @@ def test_project_dirs() -> str:
     return "project_dirs lists sorted sessions/<project>/ dirs; [] when absent"
 
 
-# --- per-PR shard reconciliation (the ADR-055 structural guarantee) ----------
+# --- per-PR shard reconciliation (the ADR-056 structural guarantee) ----------
 
 
 def test_shard_removes_only_merged_leaves_others_intact() -> str:
@@ -198,7 +198,7 @@ def main() -> int:
         ("repo_from_url extraction", test_repo_from_url),
         ("entry_repo_and_pr resolution", test_entry_repo_and_pr),
         ("project_dirs discovery", test_project_dirs),
-        ("shard removal leaves others byte-identical (ADR-055 guarantee)", test_shard_removes_only_merged_leaves_others_intact),
+        ("shard removal leaves others byte-identical (ADR-056 guarantee)", test_shard_removes_only_merged_leaves_others_intact),
         ("empty open-prs/ dir cleaned up", test_shard_dir_removed_when_emptied),
         ("malformed/non-numeric shards left in place", test_shard_malformed_and_nonnumeric_left_in_place),
         ("missing shard dir -> no error", test_shard_missing_dir),

@@ -163,7 +163,7 @@ Fires on every user prompt, before Claude processes it.
 | `journal-onboard-check.py` | Checks whether the active git repo has a `sessions/<repo-name>/` directory in engineering-journal. Emits a one-line advisory and `/journal-onboard` hint if not. Fires once per session. |
 | `turn-count-hook.py` | Warns when session context accumulates past a threshold. Primary signal: token count; secondary: turn count. Configurable via `"turn_threshold"` in `.claude/hook-config.json` (default: 50). |
 | `multi-worktree-alert.py` | When ≥2 git worktrees are active, emits a list in `repo:branch` format, starring the current one. Fires on every prompt. Suppressed in Claude-managed worktree sessions (`.claude/worktrees/` in cwd). |
-| `reconcile-open-prs.py` | Runs once per session (per-session sentinel in `scratch/`). Calls `gh pr view` for each tracked PR across every project in engineering-journal — both the per-PR shards `sessions/<project>/open-prs/<N>.json` ([ADR-055](adr/055-per-session-sharding-journal-companion-files.md)) and the legacy `sessions/<project>/open-prs.jsonl`. A MERGED/CLOSED shard is unlinked individually (no survivor rewrite; empty `open-prs/` dirs are removed); legacy entries are dropped via a safe read-filter-write. Emits a `systemMessage` listing surviving open PRs and any removals. Does not commit — modified files are picked up by the next stub commit. Fails safe: `gh` errors leave the entry intact. [ADR-018](adr/018-reconcile-open-prs-hook.md), [ADR-055](adr/055-per-session-sharding-journal-companion-files.md) |
+| `reconcile-open-prs.py` | Runs once per session (per-session sentinel in `scratch/`). Calls `gh pr view` for each tracked PR across every project in engineering-journal — both the per-PR shards `sessions/<project>/open-prs/<N>.json` ([ADR-056](adr/056-per-session-sharding-journal-companion-files.md)) and the legacy `sessions/<project>/open-prs.jsonl`. A MERGED/CLOSED shard is unlinked individually (no survivor rewrite; empty `open-prs/` dirs are removed); legacy entries are dropped via a safe read-filter-write. Emits a `systemMessage` listing surviving open PRs and any removals. Does not commit — modified files are picked up by the next stub commit. Fails safe: `gh` errors leave the entry intact. [ADR-018](adr/018-reconcile-open-prs-hook.md), [ADR-056](adr/056-per-session-sharding-journal-companion-files.md) |
 | `disk-space-check.py` | Free-space safety net for `C:`. Checks `shutil.disk_usage` on every prompt. Below 20 GB free: emits a one-time `systemMessage` warning. Below 10 GB free: spawns `reclaim-worktree-disk.py --scan-dir C:/Users/brown/Git --min-free-gb 10 --protect-cwd <cwd>` **detached** (via `sys.executable`, never the `py` launcher — dev-env#300) so the heavy delete never blocks the prompt, and emits a `systemMessage`. Each band fires at most once per session via a `session_id`-keyed marker (`scratch/disk_space_check_<session_id>_<band>.flag`, ADR-027). Advisory only — exit 0 always; any exception is swallowed. Thresholds are hardcoded constants. [ADR-037](adr/037-worktree-disk-reclamation.md) |
 | `worktree-npm-install.py` | When the session `cwd` is a Claude-managed worktree (`.claude/worktrees/`) of an npm repo whose `node_modules` is absent, runs `npm ci` (or `npm install`) so tests don't fail on missing deps (ADR-016). **Pre-install free-space gate (ADR-045):** before installing it checks free `C:` space — at ≥10 GB it installs as before; below 10 GB it runs a synchronous reclamation ladder (Tier 1 `reclaim-worktree-disk.py --min-free-gb 10`, Tier 2 `npm cache clean --force`) and re-measures; if still below a 5 GB hard floor it **refuses the install** and emits a loud advisory rather than risk a silently-truncated `node_modules` (ENOSPC, dev-env#364). Reclamation is synchronous (the install it guards is synchronous, so a detached reclaim would race it). Fails open on any measurement error; advisory only — exit 0 always. The pure `install_decision()` helper is unit-tested by `tests/test_worktree_npm_install.py`. [ADR-045](adr/045-pre-install-freespace-gate.md) |
 | `awake-blocker.py` (start) | On UserPromptSubmit, spawns a detached watcher (if not already running) that holds a Windows system-sleep lock via `kernel32!SetThreadExecutionState(ES_CONTINUOUS \| ES_SYSTEM_REQUIRED)`. Refreshes the sentinel heartbeat on every prompt. Watcher self-terminates if the sentinel is missing or older than 30 minutes (crash safety). Idempotent. Display sleep is not blocked — only system sleep. [ADR-033](adr/033-prevent-system-sleep-while-processing.md) |
@@ -234,6 +234,7 @@ Fires when the Claude Code session ends (user exits or `/stop`).
 |--------|-------------|
 | `token-tracker.py` | Reads the session JSONL, aggregates token usage, and appends a record to `~/.claude/scratch/token-sessions.jsonl`. Supports Sonnet 4.6, Opus 4.6, and Haiku 4.5 pricing. |
 | `journal-stop-check.py` | Checks for the stub-push sentinel flag (emits a closing message reminding the user to archive if found), then checks for stale open journal stubs and unmerged draft branches, emitting a closing message if any are found. Exit 0 always. |
+| `posttooluse-inert-advisory.py` | Reliable-event safety net for the [ADR-053](adr/053-posttooluse-hooks-inert-in-background-sessions.md) inert-PostToolUse limitation. Scans the just-ended transcript; if a dev-env (project #3) `gh issue/pr create` or `gh pr merge` ran but **no** `attachment` record carries `hookEvent == "PostToolUse"` (the inert signature — no `gh` call, no `project` scope), prints a one-line advisory pointing to the dev-env `CLAUDE.md` → GitHub Project → Fallback. Detection is dev-env-scoped (created URL / merged PR must be `brownm09/dev-env`) and any PostToolUse attachment all session keeps it silent, so the legitimate different-repo/no-config silent paths ([ADR-049](adr/049-hook-payload-output-field.md)) never trip it. Non-blocking (stdout, exit 0), once per session via a scratch sentinel. [ADR-055](adr/055-reliable-event-inert-posttooluse-advisory.md) |
 | `awake-blocker.py` (stop) | Removes the sleep-block sentinel; the detached watcher polls every second and exits within ~1s, releasing the system-sleep lock. Also registered on `Notification` for the same effect when Claude pauses for input/permission. [ADR-033](adr/033-prevent-system-sleep-while-processing.md) |
 
 ---
@@ -244,7 +245,7 @@ Fires after `/compact` or auto-compact completes.
 
 | Script | What it does |
 |--------|-------------|
-| `post-compact.py` | Emits a `[compact]` or `[auto-compact]` status line with the trigger type and remaining token count. Visible in all environments. On a manual `/compact`, also reads the project's open-PR records (per-PR `open-prs/<N>.json` shards plus any legacy `open-prs.jsonl`, deduped by PR — [ADR-055](adr/055-per-session-sharding-journal-companion-files.md)) and emits a `systemMessage` reminding Claude to run `/review` on each. |
+| `post-compact.py` | Emits a `[compact]` or `[auto-compact]` status line with the trigger type and remaining token count. Visible in all environments. On a manual `/compact`, also reads the project's open-PR records (per-PR `open-prs/<N>.json` shards plus any legacy `open-prs.jsonl`, deduped by PR — [ADR-056](adr/056-per-session-sharding-journal-companion-files.md)) and emits a `systemMessage` reminding Claude to run `/review` on each. |
 
 ---
 
@@ -735,7 +736,7 @@ and recovery procedures that section points to.
 
 ### Manifest shard format (`YYYY-MM-DD_HHMMSS.manifest.jsonl`)
 
-Per [ADR-055](adr/055-per-session-sharding-journal-companion-files.md), each session writes its **own**
+Per [ADR-056](adr/056-per-session-sharding-journal-companion-files.md), each session writes its **own**
 manifest shard — a single JSON object in `YYYY-MM-DD_HHMMSS.manifest.jsonl`, named to pair 1:1 with the
 session's stub `YYYY-MM-DD_HHMMSS.stub.md`. Written after the token comment is known (end of session).
 `/journal-compose` globs `YYYY-MM-DD_*.manifest.jsonl`, merges the shards in filename order (= session
@@ -771,7 +772,7 @@ node -e "
 "
 ```
 
-**Legacy per-day manifest (`YYYY-MM-DD.manifest.jsonl`).** Days written before ADR-055 used a single
+**Legacy per-day manifest (`YYYY-MM-DD.manifest.jsonl`).** Days written before ADR-056 used a single
 per-day file with one JSON line per session. Readers (`/journal-compose`, the Start-here dashboard
 aggregation) union it with the shards during the transition, and it is deleted at compose alongside the
 shards. No new writes go to it; the superseded ADR-054 surgical-update helper is no longer needed.
@@ -779,7 +780,7 @@ shards. No new writes go to it; the superseded ADR-054 surgical-update helper is
 ### Open-PR tracking shards (`sessions/<project>/open-prs/<N>.json`)
 
 Tracks PRs whose full lifecycle (open → review → merge) spans multiple sessions. Per
-[ADR-055](adr/055-per-session-sharding-journal-companion-files.md), each open PR is its **own** shard —
+[ADR-056](adr/056-per-session-sharding-journal-companion-files.md), each open PR is its **own** shard —
 one JSON object in `sessions/<project>/open-prs/<N>.json`, keyed by PR number. Carried forward day to
 day via the draft branch merge to main; `/journal-compose` preserves the `open-prs/` directory unchanged
 (it is **not** deleted at compose). Within a `sessions/<project>/` directory all PRs belong to that
@@ -812,7 +813,7 @@ rm -f "C:/Users/brown/Git/engineering-journal/sessions/<project>/open-prs/<N>.js
 The `reconcile-open-prs.py` hook unlinks the shards of any PRs it finds MERGED/CLOSED at session start,
 and removes the `open-prs/` directory once its last shard is gone.
 
-**Legacy single file (`sessions/<project>/open-prs.jsonl`).** PRs opened before ADR-055 may still live
+**Legacy single file (`sessions/<project>/open-prs.jsonl`).** PRs opened before ADR-056 may still live
 as lines in a single per-day-carried file. Readers union it with the shards; the reconcile hook drains
 it (removing merged/closed lines via a safe read-filter-write, deleting the file when empty). To close a
 PR that still lives there, remove its one line instead of deleting a shard.

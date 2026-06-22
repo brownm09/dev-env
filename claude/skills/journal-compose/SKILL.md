@@ -86,16 +86,16 @@ If the date is not today, proceed normally (regardless of `FORCE`).
 
 **Check for manifests (fast path):**
 
-Per [ADR-055](https://github.com/brownm09/dev-env/blob/main/docs/adr/055-per-session-sharding-journal-companion-files.md),
+Per [ADR-056](https://github.com/brownm09/dev-env/blob/main/docs/adr/056-per-session-sharding-journal-companion-files.md),
 each session writes its own manifest shard `YYYY-MM-DD_HHMMSS.manifest.jsonl` (a single JSON object,
-paired 1:1 with its stub). A day composed before ADR-055 may instead have one legacy per-day
+paired 1:1 with its stub). A day composed before ADR-056 may instead have one legacy per-day
 `YYYY-MM-DD.manifest.jsonl` (one line per session). Read **both** and union the entries, deduped by the
 `stub` field:
 
 ```bash
 # per-session manifest shards (current format — one object per file)
 ls C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD_*.manifest.jsonl 2>/dev/null
-# legacy per-day manifest (pre-ADR-055; one line per session; may be absent)
+# legacy per-day manifest (pre-ADR-056; one line per session; may be absent)
 ls C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD.manifest.jsonl 2>/dev/null
 ```
 
@@ -110,14 +110,14 @@ count below, treat stubs as authoritative.
 
 **Check for open-PR context:**
 
-Per [ADR-055](https://github.com/brownm09/dev-env/blob/main/docs/adr/055-per-session-sharding-journal-companion-files.md),
+Per [ADR-056](https://github.com/brownm09/dev-env/blob/main/docs/adr/056-per-session-sharding-journal-companion-files.md),
 open PRs are tracked as per-PR shards `sessions/<project>/open-prs/<N>.json` (one object per open PR). A
-pre-ADR-055 day may instead carry a single legacy `sessions/<project>/open-prs.jsonl`. Read **both**:
+pre-ADR-056 day may instead carry a single legacy `sessions/<project>/open-prs.jsonl`. Read **both**:
 
 ```bash
 # per-PR shards (current format — one object per file)
 ls C:/Users/brown/Git/engineering-journal/sessions/*/open-prs/*.json 2>/dev/null
-# legacy single file (pre-ADR-055; one line per open PR; may be absent)
+# legacy single file (pre-ADR-056; one line per open PR; may be absent)
 ls C:/Users/brown/Git/engineering-journal/sessions/*/open-prs.jsonl 2>/dev/null
 ```
 
@@ -215,8 +215,8 @@ Step 1 — Acquire compose lock for this project using this project-scoped path:
   Follow the lock check/create procedure in SKILL.md Step 1 ("Acquire the compose lock").
 
 Step 1b — Read this day's manifest for a session overview (topics, token data) before reading
-  individual stubs. Per ADR-055 each session has its own shard `YYYY-MM-DD_HHMMSS.manifest.jsonl`
-  (one object per file); a pre-ADR-055 day may instead have a legacy per-day
+  individual stubs. Per ADR-056 each session has its own shard `YYYY-MM-DD_HHMMSS.manifest.jsonl`
+  (one object per file); a pre-ADR-056 day may instead have a legacy per-day
   `YYYY-MM-DD.manifest.jsonl` (one line per session). Read both globs and union by `stub`.
 
 Step 2 — Read stubs following SKILL.md Step 2 extraction format.
@@ -847,7 +847,7 @@ node -e "
   const sessionsDir = path.join(root, 'sessions');
   const projects = fs.readdirSync(sessionsDir).filter(d =>
     fs.statSync(path.join(sessionsDir, d)).isDirectory());
-  // Source 1: today's manifests — per-session shards (ADR-055) + legacy per-day file
+  // Source 1: today's manifests — per-session shards (ADR-056) + legacy per-day file
   for (const proj of projects) {
     const projDir = path.join(sessionsDir, proj);
     const manifestLines = [];
@@ -873,7 +873,7 @@ node -e "
       } catch (e) {}
     }
   }
-  // Source 2: open PRs across projects — per-PR shards (ADR-055) + legacy file (fills to 5)
+  // Source 2: open PRs across projects — per-PR shards (ADR-056) + legacy file (fills to 5)
   if (items.length < 5) {
     for (const proj of projects) {
       if (items.length >= 5) break;
@@ -890,7 +890,7 @@ node -e "
           }
         }
       }
-      // legacy single file (pre-ADR-055)
+      // legacy single file (pre-ADR-056)
       const legacy = path.join(projDir, 'open-prs.jsonl');
       if (fs.existsSync(legacy)) {
         for (const line of fs.readFileSync(legacy,'utf8').split('\n').filter(Boolean)) prLines.push(line);
@@ -992,14 +992,14 @@ The label is auto-created on first use. Remove it when the issue is no longer to
 ## Step 9 — Delete stub files and release lock
 
 Delete all stubs and this day's manifest for the date and release the compose lock. Delete the
-per-session manifest shards (ADR-055) **and** any legacy per-day manifest. **Do not** delete the
+per-session manifest shards (ADR-056) **and** any legacy per-day manifest. **Do not** delete the
 open-PR records (`open-prs.jsonl` or the `open-prs/` shard directory) — they are carried forward to
 the next day:
 ```bash
 rm C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_*.stub.md
-# per-session manifest shards (ADR-055)
+# per-session manifest shards (ADR-056)
 rm -f C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_*.manifest.jsonl
-# legacy per-day manifest (pre-ADR-055; harmless if absent)
+# legacy per-day manifest (pre-ADR-056; harmless if absent)
 rm -f C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl
 rm -f C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock
 ```
@@ -1061,7 +1061,7 @@ git -C C:/Users/brown/Git/engineering-journal checkout -b compose/YYYY-MM-DD ori
 
 # 2. Cherry-pick only the composed output files from the draft branch.
 #    Include the open-PR records if present — today's sessions may have updated them.
-#    Per ADR-055 these are per-PR shards under open-prs/; a pre-ADR-055 day uses open-prs.jsonl.
+#    Per ADR-056 these are per-PR shards under open-prs/; a pre-ADR-056 day uses open-prs.jsonl.
 git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \
   sessions/<project>/YYYY-MM-DD-<slug>.md \
   sessions/<project>/README.md \
@@ -1100,7 +1100,7 @@ git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \
   sessions/lifting-logbook/YYYY-MM-DD-<slug-b>.md \
   sessions/lifting-logbook/README.md \
   README.md
-# open-PR records per project (conditional) — legacy file and/or ADR-055 shard dir
+# open-PR records per project (conditional) — legacy file and/or ADR-056 shard dir
 for proj in meta lifting-logbook; do
   [ -f "C:/Users/brown/Git/engineering-journal/sessions/$proj/open-prs.jsonl" ] && \
     git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \

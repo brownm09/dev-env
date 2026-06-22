@@ -194,10 +194,27 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_worktree_liveness.py
     ```
 
-18. **reconcile-open-prs test** — required when changing `claude/scripts/reconcile-open-prs.py`. Exercises
+18. **posttooluse-inert-advisory test** — required when changing
+    `claude/scripts/posttooluse-inert-advisory.py`. Exercises the pure transcript-scanning helpers offline
+    (synthetic records; no stdin, network, gh, or disk): pins that an `attachment` record with
+    `hookEvent == "PostToolUse"` (both the exit-0 `hook_success` and exit-2 `hook_blocking_error` shapes)
+    proves PostToolUse fired, that `iter_bash_calls` pairs each Bash command with its result by `tool_use_id`
+    (so parallel calls don't cross), that `detect_board_actions` triggers only on dev-env (project #3)
+    creates/merges and ignores other-repo URLs, URL-less creates, hard-merge-failures, and bare merges from a
+    non-dev-env cwd, that `should_emit` stays silent whenever any PostToolUse attachment is present (the
+    healthy session), and that the advisory is ASCII/cp1252-encodable so it can't vanish under Claude Code's
+    cp1252-piped hook stdout ([ADR-053](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md),
+    [ADR-055](docs/adr/055-reliable-event-inert-posttooluse-advisory.md)). The `main()` I/O (stdin, transcript
+    locate, sentinel) is not covered (pure-helper convention).
+
+    ```bash
+    py -3 claude/scripts/tests/test_posttooluse_inert_advisory.py
+    ```
+
+19. **reconcile-open-prs test** — required when changing `claude/scripts/reconcile-open-prs.py`. Exercises
     the pure helpers and the per-PR shard reconciler offline (tmp dirs + an injected `state_fn`, no `gh`):
     pins `should_remove` (MERGED/CLOSED remove; OPEN/None/unknown keep), `shard_pr_number` /
-    `repo_from_url` / `entry_repo_and_pr` parsing, and the [ADR-055](docs/adr/055-per-session-sharding-journal-companion-files.md)
+    `repo_from_url` / `entry_repo_and_pr` parsing, and the [ADR-056](docs/adr/056-per-session-sharding-journal-companion-files.md)
     structural guarantee that `reconcile_shard_dir` unlinks only the merged shard and leaves the surviving
     shard **byte-identical** (the no-clobber property), removes an emptied `open-prs/` dir, never auto-deletes
     malformed/non-numeric shards, and that the legacy `reconcile_file` still drains `open-prs.jsonl`. The live
@@ -207,12 +224,12 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_reconcile_open_prs.py
     ```
 
-19. **post-compact open-PR reader test** — required when changing `claude/scripts/post-compact.py`. Exercises
+20. **post-compact open-PR reader test** — required when changing `claude/scripts/post-compact.py`. Exercises
     the pure `read_open_pr_entries()` offline (tmp dirs, no `git`): pins that per-PR shards `open-prs/<N>.json`
     and the legacy `open-prs.jsonl` are unioned and deduped by PR number (shard wins), that shards sort
     numerically (not lexically), that a malformed shard is skipped without dropping valid ones, and that a
     record with no `pr` is skipped (no None-key collapse, no downstream KeyError)
-    ([ADR-055](docs/adr/055-per-session-sharding-journal-companion-files.md)). `get_journal_project` (a git
+    ([ADR-056](docs/adr/056-per-session-sharding-journal-companion-files.md)). `get_journal_project` (a git
     call) and the systemMessage emission are not covered.
 
     ```bash
