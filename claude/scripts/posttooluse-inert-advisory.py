@@ -47,7 +47,7 @@ transcript re-scan on later Stops. Advisory only — exit 0 always.
 Stdin JSON shape (Stop):
   {"session_id": "uuid", "transcript_path": "/abs/path/to/session.jsonl", ...}
 
-See ADR-053 (the inert-PostToolUse limitation) and ADR-054 (this safety net).
+See ADR-053 (the inert-PostToolUse limitation) and ADR-055 (this safety net).
 """
 from __future__ import annotations
 

@@ -204,7 +204,7 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     non-dev-env cwd, that `should_emit` stays silent whenever any PostToolUse attachment is present (the
     healthy session), and that the advisory is ASCII/cp1252-encodable so it can't vanish under Claude Code's
     cp1252-piped hook stdout ([ADR-053](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md),
-    [ADR-054](docs/adr/054-reliable-event-inert-posttooluse-advisory.md)). The `main()` I/O (stdin, transcript
+    [ADR-055](docs/adr/055-reliable-event-inert-posttooluse-advisory.md)). The `main()` I/O (stdin, transcript
     locate, sentinel) is not covered (pure-helper convention).
 
     ```bash

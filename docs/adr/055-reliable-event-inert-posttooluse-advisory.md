@@ -1,4 +1,4 @@
-# ADR-054 — Reliable-Event Safety Net: A Stop-Hook Advisory for Inert PostToolUse Hooks
+# ADR-055 — Reliable-Event Safety Net: A Stop-Hook Advisory for Inert PostToolUse Hooks
 
 **Date:** 2026-06-22
 **Status:** Accepted

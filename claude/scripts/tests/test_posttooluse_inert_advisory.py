@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for posttooluse-inert-advisory.py — the Stop-hook safety net that
-surfaces inert PostToolUse hooks (ADR-053 / ADR-054).
+surfaces inert PostToolUse hooks (ADR-053 / ADR-055).
 
 In background / `spawn_task`-launched sessions, every PostToolUse hook is silently
 inert (upstream Claude Code limitation; ADR-053). This Stop hook reads the

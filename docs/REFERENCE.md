@@ -234,7 +234,7 @@ Fires when the Claude Code session ends (user exits or `/stop`).
 |--------|-------------|
 | `token-tracker.py` | Reads the session JSONL, aggregates token usage, and appends a record to `~/.claude/scratch/token-sessions.jsonl`. Supports Sonnet 4.6, Opus 4.6, and Haiku 4.5 pricing. |
 | `journal-stop-check.py` | Checks for the stub-push sentinel flag (emits a closing message reminding the user to archive if found), then checks for stale open journal stubs and unmerged draft branches, emitting a closing message if any are found. Exit 0 always. |
-| `posttooluse-inert-advisory.py` | Reliable-event safety net for the [ADR-053](adr/053-posttooluse-hooks-inert-in-background-sessions.md) inert-PostToolUse limitation. Scans the just-ended transcript; if a dev-env (project #3) `gh issue/pr create` or `gh pr merge` ran but **no** `attachment` record carries `hookEvent == "PostToolUse"` (the inert signature — no `gh` call, no `project` scope), prints a one-line advisory pointing to the dev-env `CLAUDE.md` → GitHub Project → Fallback. Detection is dev-env-scoped (created URL / merged PR must be `brownm09/dev-env`) and any PostToolUse attachment all session keeps it silent, so the legitimate different-repo/no-config silent paths ([ADR-049](adr/049-hook-payload-output-field.md)) never trip it. Non-blocking (stdout, exit 0), once per session via a scratch sentinel. [ADR-054](adr/054-reliable-event-inert-posttooluse-advisory.md) |
+| `posttooluse-inert-advisory.py` | Reliable-event safety net for the [ADR-053](adr/053-posttooluse-hooks-inert-in-background-sessions.md) inert-PostToolUse limitation. Scans the just-ended transcript; if a dev-env (project #3) `gh issue/pr create` or `gh pr merge` ran but **no** `attachment` record carries `hookEvent == "PostToolUse"` (the inert signature — no `gh` call, no `project` scope), prints a one-line advisory pointing to the dev-env `CLAUDE.md` → GitHub Project → Fallback. Detection is dev-env-scoped (created URL / merged PR must be `brownm09/dev-env`) and any PostToolUse attachment all session keeps it silent, so the legitimate different-repo/no-config silent paths ([ADR-049](adr/049-hook-payload-output-field.md)) never trip it. Non-blocking (stdout, exit 0), once per session via a scratch sentinel. [ADR-055](adr/055-reliable-event-inert-posttooluse-advisory.md) |
 | `awake-blocker.py` (stop) | Removes the sleep-block sentinel; the detached watcher polls every second and exits within ~1s, releasing the system-sleep lock. Also registered on `Notification` for the same effect when Claude pauses for input/permission. [ADR-033](adr/033-prevent-system-sleep-while-processing.md) |
 
 ---
@@ -754,6 +754,30 @@ echo '{"stub":"YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"inpu
   `/journal-compose` aggregates these across projects (deduped by `ref`, capped at 5) — see
   [ADR-032](adr/032-journal-start-here-dashboard.md).
 
+**Updating an existing line (concurrency-safe).** Appending your own line (above) is safe. *Editing* a
+line already in the file — e.g. setting `prs_closed:[N]` after a same-session merge — must not
+regenerate the whole file. The manifest is shared by every session that day, so `git pull` the draft
+branch first (to pull in any concurrent session's committed lines), then mutate **only** the line
+whose `stub` field matches this session, deriving the new content from the *current on-disk file*:
+
+```bash
+node -e "
+  const fs = require('fs');
+  const path = 'C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl';
+  const stub = '<THIS_SESSION_STUB>';   // e.g. sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md
+  const lines = fs.readFileSync(path,'utf8').trim().split('\n').map(l => {
+    const o = JSON.parse(l);
+    if (o.stub !== stub) return l;        // preserve every other session's line verbatim
+    o.prs_closed = [<PR_NUMBER>];          // mutate only this session's entry
+    return JSON.stringify(o);
+  });
+  fs.writeFileSync(path, lines.join('\n') + '\n');
+"
+```
+
+Never rebuild the manifest with `cat >` / `echo` from the session's own in-memory view — that
+overwrites concurrent sessions' lines (the 2026-06-22 incident). See [ADR-054](adr/054-concurrency-safe-shared-journal-file-updates.md).
+
 ### Open-PR tracking file (`sessions/<project>/open-prs.jsonl`)
 
 Tracks PRs whose full lifecycle (open → review → merge) spans multiple sessions. Carried forward
@@ -766,7 +790,11 @@ merge-to-main commit. Schema — one JSON line per open PR:
 
 `stub` is the filename that opened the PR — used to cross-reference the opening session when a PR
 spans multiple days. **When a session opens a PR:** append a line, commit alongside the stub.
-**When a session merges/closes a PR:** remove the matching line, then commit:
+**When a session merges/closes a PR:** `git pull` the draft branch first (so any concurrent session's
+lines are present), then remove the matching line and commit. This helper reads the *current on-disk
+file* and drops only the line whose `pr` matches — do **not** replace it with a hand-built `cat >` /
+`echo` rewrite, which would clobber a concurrent session's open-PR entries
+([ADR-054](adr/054-concurrency-safe-shared-journal-file-updates.md)):
 
 ```bash
 node -e "
