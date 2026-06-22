@@ -40,7 +40,6 @@ mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)  # safe: main() is guarded by __main__
 
 should_remove = mod.should_remove
-shard_pr_number = mod.shard_pr_number
 repo_from_url = mod.repo_from_url
 entry_repo_and_pr = mod.entry_repo_and_pr
 project_dirs = mod.project_dirs
@@ -73,14 +72,6 @@ def test_should_remove() -> str:
     assert should_remove("") is False
     assert should_remove("DRAFT") is False, "unknown state -> keep"
     return "MERGED/CLOSED -> remove; OPEN/None/unknown -> keep (conservative)"
-
-
-def test_shard_pr_number() -> str:
-    assert shard_pr_number(Path("open-prs/386.json")) == 386
-    assert shard_pr_number(Path("54.json")) == 54
-    assert shard_pr_number(Path("index.json")) is None, "non-numeric stem -> ignored"
-    assert shard_pr_number(Path("abc.json")) is None
-    return "numeric stems parse to PR numbers; non-numeric files are ignored"
 
 
 def test_repo_from_url() -> str:
@@ -191,10 +182,34 @@ def test_legacy_file_deleted_when_empty() -> str:
     return "legacy open-prs.jsonl deleted once its last entry merges"
 
 
+def test_legacy_non_object_line_dropped_on_rewrite() -> str:
+    # A non-object legacy line (manual corruption) used to crash reconcile_file via
+    # entry.get(...), which main() swallowed — so the file was NEVER rewritten and the corrupt
+    # line froze all cleanup (stale merged entries survived too). read_legacy_entries now skips
+    # the non-object line, so reconciliation proceeds and the line is dropped on the rewrite.
+    # Intended, tested behaviour (ADR-057): open-prs.jsonl is system-written and draining; a
+    # corrupt line carries no tracking data.
+    with tempfile.TemporaryDirectory() as root:
+        f = Path(root) / "open-prs.jsonl"
+        f.write_text(
+            json.dumps(_entry(386, URL_386)) + "\n"      # merged -> removed
+            + '["corrupt", 1]\n'                          # non-object -> skipped at read
+            + json.dumps(_entry(387, URL_387)) + "\n",    # open -> survives
+            encoding="utf-8",
+        )
+        state_fn = lambda pr, repo: "MERGED" if pr == 386 else "OPEN"
+        surviving, removed = reconcile_file(f, state_fn=state_fn)
+        assert [e["pr"] for e in surviving] == [387], "only the open PR survives"
+        assert [(e["pr"], st) for e, st in removed] == [(386, "MERGED")]
+        kept = [l for l in f.read_text(encoding="utf-8").splitlines() if l.strip()]
+        assert len(kept) == 1 and json.loads(kept[0])["pr"] == 387, \
+            f"corrupt line dropped, merged removed, open kept; got {kept}"
+    return "a non-object legacy line no longer freezes cleanup — dropped on the rewrite (ADR-057)"
+
+
 def main() -> int:
     tests = [
         ("should_remove predicate", test_should_remove),
-        ("shard_pr_number parsing", test_shard_pr_number),
         ("repo_from_url extraction", test_repo_from_url),
         ("entry_repo_and_pr resolution", test_entry_repo_and_pr),
         ("project_dirs discovery", test_project_dirs),
@@ -204,6 +219,7 @@ def main() -> int:
         ("missing shard dir -> no error", test_shard_missing_dir),
         ("legacy file drops only merged", test_legacy_file_drops_only_merged),
         ("legacy file deleted when empty", test_legacy_file_deleted_when_empty),
+        ("legacy non-object line dropped on rewrite (ADR-057)", test_legacy_non_object_line_dropped_on_rewrite),
     ]
     failed = 0
     for name, fn in tests:
