@@ -7,12 +7,14 @@ knocked off `main`) and decides the non-destructive correction (dev-env#396, ADR
   1. parse_worktree_porcelain()  — path/branch/detached/refs-heads-stripping (pure).
   2. canonical_worktree()        — first entry is the primary; empty -> None.
   3. park_branch_for()           — basename -> claude/<slug> (Windows + POSIX spellings).
-  4. main_squatter()             — the non-canonical worktree on main, or None.
+  4. main_squatter()             — the non-canonical worktree on main, or None (incl. a
+                                   squatter at a non-adjacent index, and None for a bare /
+                                   detached canonical that can't hold main itself).
   5. canonical_on_main()         — primary-on-main predicate.
   6. diagnose_main_topology()    — healthy vs. squat vs. canonical-off-main-no-squatter.
   7. canonical_sync_action()     — warn-squatter / return-canonical / warn-dirty / on-main.
-  8. merge_park_target()         — park a non-canonical worktree left on main; else None
-                                   (empty cwd / cwd==canonical / not-on-main / path spelling).
+  8. merge_park_target()         — park a repo's own worktree left on main; else None
+                                   (empty / cwd==canonical / not-on-main / cross-repo / spelling).
 
 Fully offline — no git, no network, no filesystem writes (paths need not exist; the
 module resolves them for comparison only). The git-driven prune/post-merge/dev-env-sync
@@ -112,6 +114,34 @@ def test_main_squatter_none_when_main_free() -> str:
     return "canonical off main, ref free -> no squatter"
 
 
+def test_main_squatter_multiple_worktrees() -> str:
+    # Several non-canonical worktrees; a LATER one squats main (exercises the worktrees[1:]
+    # loop past index 1, not just an adjacent pair).
+    worktrees = wt.parse_worktree_porcelain(_porcelain([
+        (CANON, "pr-385"),
+        (WT_FOO, "claude/foo-bar-abc123"),
+        (WT_SQUAT, "main"),
+    ]))
+    sq = wt.main_squatter(worktrees)
+    if sq is None or sq["path"] != WT_SQUAT:
+        raise AssertionError(f"a squatter at a non-adjacent index must be found, got {sq}")
+    return "squatter found at index>1 among several non-canonical worktrees"
+
+
+def test_main_squatter_bare_or_detached_canonical() -> str:
+    # A bare/empty-branch primary cannot hold a working-tree checkout of main, so a secondary
+    # worktree on main there is LEGITIMATE (main must live somewhere) — never a squatter. Else
+    # prune/dev-env-sync would mis-park a bare/detached-primary repo's real main worktree.
+    bare = wt.parse_worktree_porcelain(_porcelain([(CANON, ""), (WT_FOO, "main")]))
+    if wt.main_squatter(bare) is not None:
+        raise AssertionError("bare/empty-branch canonical -> no squatter (secondary-on-main is legit)")
+    # A detached primary likewise can't assert the on-main invariant.
+    det = wt.parse_worktree_porcelain(_porcelain([(CANON, None), (WT_FOO, "main")]))
+    if wt.main_squatter(det) is not None:
+        raise AssertionError("detached canonical -> no squatter")
+    return "bare or detached canonical never flags a main worktree as a squatter"
+
+
 def test_canonical_on_main() -> str:
     on = wt.parse_worktree_porcelain(_porcelain([(CANON, "main")]))
     off = wt.parse_worktree_porcelain(_porcelain([(CANON, "pr-385")]))
@@ -171,22 +201,34 @@ def test_canonical_sync_action() -> str:
 
 
 def test_merge_park_target() -> str:
-    # A non-canonical worktree left on main after a merge -> park it.
-    if wt.merge_park_target(WT_FOO, CANON, "main") != "claude/foo-bar-abc123":
-        raise AssertionError("worktree on main after merge must be parked")
-    # Merge run from the canonical itself (on main) -> nothing to park.
-    if wt.merge_park_target(CANON, CANON, "main") is not None:
+    # `merge_park_target(cwd, worktrees)` is fed the MERGED REPO's worktree list.
+    squat = wt.parse_worktree_porcelain(_porcelain([(CANON, "pr-385"), (WT_FOO, "main")]))
+    # A worktree OF THE MERGED REPO, left on main after a merge -> park it (branch read from list).
+    if wt.merge_park_target(WT_FOO, squat) != "claude/foo-bar-abc123":
+        raise AssertionError("a repo's own worktree on main after merge must be parked")
+    # Merge run from the canonical itself -> nothing to park.
+    canon_main = wt.parse_worktree_porcelain(_porcelain([(CANON, "main"), (WT_FOO, "claude/x")]))
+    if wt.merge_park_target(CANON, canon_main) is not None:
         raise AssertionError("cwd == canonical -> no park")
-    # Normal case: gh's local checkout failed, worktree kept its own branch -> no park.
-    if wt.merge_park_target(WT_FOO, CANON, "claude/foo-bar-abc123") is not None:
+    # Normal case: gh's local checkout failed, the worktree kept its own branch -> no park.
+    normal = wt.parse_worktree_porcelain(_porcelain([(CANON, "pr-385"), (WT_FOO, "claude/foo-bar-abc123")]))
+    if wt.merge_park_target(WT_FOO, normal) is not None:
         raise AssertionError("worktree not on main -> no park")
-    # Empty cwd must never resolve to os.getcwd() and park something.
-    if wt.merge_park_target("", CANON, "main") is not None:
+    # CROSS-REPO GUARD: cwd is NOT a worktree of the merged repo (e.g. `gh pr merge --repo X`
+    # run from an unrelated repo's checkout sitting on main) -> must NOT park that other repo.
+    unrelated = "C:/Users/brown/Git/lifting-logbook"
+    if wt.merge_park_target(unrelated, squat) is not None:
+        raise AssertionError("cwd not a worktree of the merged repo -> no park (cross-repo guard)")
+    # Empty cwd / empty worktree list -> no park.
+    if wt.merge_park_target("", squat) is not None:
         raise AssertionError("empty cwd -> no park")
+    if wt.merge_park_target(WT_FOO, []) is not None:
+        raise AssertionError("empty worktree list -> no park")
     # Windows vs POSIX spelling of the canonical must compare equal (no spurious park).
-    if wt.merge_park_target(r"C:\Users\brown\Git\dev-env", CANON, "main") is not None:
+    win = wt.parse_worktree_porcelain(_porcelain([(r"C:\Users\brown\Git\dev-env", "main"), (WT_FOO, "claude/x")]))
+    if wt.merge_park_target(CANON, win) is not None:
         raise AssertionError("canonical in Windows spelling must equal canonical -> no park")
-    return "parks a non-canonical worktree on main; None for canonical/not-main/empty/spelling"
+    return "parks a repo's own worktree on main; None for canonical / not-main / cross-repo / empty / spelling"
 
 
 def main() -> int:
@@ -197,6 +239,8 @@ def main() -> int:
         ("main_squatter found", test_main_squatter_found),
         ("main_squatter none when canonical on main", test_main_squatter_none_when_canonical_on_main),
         ("main_squatter none when main free", test_main_squatter_none_when_main_free),
+        ("main_squatter across multiple worktrees", test_main_squatter_multiple_worktrees),
+        ("main_squatter none for bare/detached canonical", test_main_squatter_bare_or_detached_canonical),
         ("canonical_on_main predicate", test_canonical_on_main),
         ("diagnose healthy", test_diagnose_healthy),
         ("diagnose squat", test_diagnose_squat),

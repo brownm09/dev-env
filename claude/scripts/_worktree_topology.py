@@ -57,7 +57,15 @@ def parse_worktree_porcelain(text: str) -> "list[dict]":
 
 
 def _norm(path: "str | Path") -> str:
-    """Resolved string form for robust path comparison (matches prune/reclaim)."""
+    """Resolved string form for robust path comparison (matches prune/reclaim).
+
+    A falsy path returns ``""`` rather than resolving to the *current working directory*
+    (which ``Path("").resolve()`` does) — so an empty path can never compare-equal to a real
+    worktree and trick a caller into acting on cwd. Callers still guard empties up front; this
+    is defence in depth for any future caller.
+    """
+    if not path:
+        return ""
     return str(Path(path).resolve())
 
 
@@ -80,10 +88,19 @@ def main_squatter(worktrees: "list[dict]") -> "dict | None":
     """The first NON-canonical worktree checked out on ``main``, or ``None``.
 
     Git checks ``main`` out in at most one worktree, so if it's the canonical there's no
-    squatter. The path guard is belt-and-suspenders against a malformed list.
+    squatter. A non-canonical worktree on ``main`` is an *anomalous* squatter only when the
+    canonical is a normal checkout sitting on a real, non-``main`` branch — that is what frees
+    the ``main`` ref. A **bare or detached** canonical cannot hold a working-tree checkout of
+    ``main`` at all, so a secondary worktree on ``main`` there is *legitimate* (``main`` must
+    live somewhere) — never flag it, or prune/dev-env-sync would mis-park a bare/detached-
+    primary repo's real ``main`` worktree (correctness review, PR #398). The path guard is
+    belt-and-suspenders against a malformed list.
     """
     canonical = canonical_worktree(worktrees)
     if canonical is None:
+        return None
+    cbranch = canonical["branch"]
+    if not cbranch or cbranch == "main" or cbranch == "<detached>":
         return None
     canonical_path = _norm(canonical["path"])
     for wt in worktrees[1:]:
@@ -151,19 +168,29 @@ def canonical_sync_action(topo: MainTopology, canonical_clean: bool) -> SyncActi
     return SyncAction("warn-dirty", None, None)
 
 
-def merge_park_target(cwd: str, canonical_path: str, cwd_branch: str) -> "str | None":
+def merge_park_target(cwd: str, worktrees: "list[dict]") -> "str | None":
     """The branch to park ``cwd`` on after a merge, or ``None``.
 
-    Returns ``claude/<basename(cwd)>`` when ``cwd`` is a NON-canonical worktree currently on
-    ``main`` — i.e. ``gh pr merge --delete-branch`` checked ``main`` out in the worktree (only
-    possible when the canonical had freed the ref). Returns ``None`` when ``cwd`` is empty, is
-    the canonical itself, or is not on ``main`` (the normal case, where gh's local checkout
-    failed because the canonical holds ``main`` and the worktree kept its own branch).
+    ``worktrees`` is the **merged repo's** parsed ``git worktree list``. Returns
+    ``claude/<basename(cwd)>`` only when ``cwd`` is a NON-canonical worktree **of that repo**
+    currently on ``main`` — i.e. ``gh pr merge --delete-branch`` checked ``main`` out in the
+    session's worktree (only possible when the canonical had freed the ref). The branch is read
+    from the authoritative worktree list, not a separate ``symbolic-ref`` call.
+
+    Returns ``None`` when ``cwd`` is empty, is the canonical itself, is **not one of the repo's
+    worktrees** (e.g. ``gh pr merge --repo X`` was run from an unrelated checkout — never park
+    that other repo; correctness review, PR #398), or is not on ``main`` (the normal case, where
+    gh's local checkout failed because the canonical holds ``main`` and the worktree kept its own
+    branch).
     """
-    if not cwd or not canonical_path:
+    if not cwd or not worktrees:
         return None
-    if cwd_branch != "main":
-        return None
-    if _norm(cwd) == _norm(canonical_path):
-        return None
-    return park_branch_for(cwd)
+    canonical = canonical_worktree(worktrees)
+    norm_cwd = _norm(cwd)
+    if canonical is not None and _norm(canonical["path"]) == norm_cwd:
+        return None  # merge ran from the canonical itself
+    for wt in worktrees:
+        if _norm(wt["path"]) == norm_cwd:
+            # cwd is a worktree of the merged repo — park it only if it grabbed main.
+            return park_branch_for(cwd) if wt["branch"] == "main" else None
+    return None  # cwd is not a worktree of the merged repo

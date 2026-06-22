@@ -257,8 +257,9 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     (a non-canonical worktree on `main`, and `None` when the canonical holds `main` or the ref is free),
     `diagnose_main_topology` (healthy / squat / canonical-off-main-no-squatter), `canonical_sync_action`
     (`warn-squatter` / `return-canonical` / `warn-dirty` / `on-main` — what `dev-env-sync` does), and
-    `merge_park_target` (parks a worktree left on `main`; `None` for the canonical / not-on-main / empty cwd /
-    Windows-vs-POSIX canonical spelling — what `post-pr-merge-pull` does). `prune`'s park is exercised
+    `merge_park_target` (parks a repo's own worktree left on `main`; `None` for the canonical / not-on-main /
+    empty / **cross-repo** cwd-not-a-worktree-of-the-merged-repo / Windows-vs-POSIX spelling — what
+    `post-pr-merge-pull` does). `prune`'s park is exercised
     end-to-end by `--dry-run` / a throwaway-repo run in the PR, not here (it shells out to git)
     ([ADR-058](docs/adr/058-worktree-squatting-main-detection-correction.md)).
 

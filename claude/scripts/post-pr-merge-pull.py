@@ -25,7 +25,7 @@ import subprocess
 import sys
 
 from _hookio import output_has_merge_marker, read_command_output
-from _worktree_topology import merge_park_target
+from _worktree_topology import merge_park_target, parse_worktree_porcelain
 
 # Map GitHub repo slugs to local clone paths.
 # Repos with no local clone (e.g. profile-only repos) map to None.
@@ -94,19 +94,7 @@ def pull_main(local_path: str, repo: str) -> None:
         )
 
 
-def current_branch(path: str) -> str:
-    """Short branch name checked out at `path`, or "" if undeterminable/detached."""
-    try:
-        r = subprocess.run(
-            ["git", "-C", path, "symbolic-ref", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=10,
-        )
-        return r.stdout.strip() if r.returncode == 0 else ""
-    except Exception:
-        return ""
-
-
-def park_worktree_off_main(cwd: str, canonical: str) -> None:
+def park_worktree_off_main(cwd: str, local_path: str) -> None:
     """If `gh pr merge --delete-branch` left this worktree squatting main, park it off.
 
     gh deletes the merged local branch and checks out the default branch; from a worktree
@@ -116,8 +104,22 @@ def park_worktree_off_main(cwd: str, canonical: str) -> None:
     on the hook's OWN just-merged session worktree (cwd), so no ADR-051 liveness check is
     needed. Non-destructive: `git checkout -b` changes no working-tree files (dev-env#396,
     ADR-058).
+
+    `merge_park_target` is fed the *merged repo's* worktree list (resolved from `local_path`),
+    so it parks only when `cwd` is genuinely a worktree of that repo on main — a `gh pr merge
+    --repo X` run from an unrelated checkout never touches that other repo (correctness review).
     """
-    park = merge_park_target(cwd, canonical, current_branch(cwd))
+    if not cwd:
+        return
+    try:
+        wt = subprocess.run(
+            ["git", "-C", local_path, "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception:
+        return
+    worktrees = parse_worktree_porcelain(wt.stdout) if wt.returncode == 0 else []
+    park = merge_park_target(cwd, worktrees)
     if not park:
         return
     try:

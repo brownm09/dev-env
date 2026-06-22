@@ -66,7 +66,18 @@ def main() -> None:
         # checked it out there), which blocks the canonical's return entirely (dev-env#396,
         # ADR-058). This is the rare/broken path, so the extra git calls are cheap.
         wt = run(["git", "worktree", "list", "--porcelain"])
-        worktrees = parse_worktree_porcelain(wt.stdout) if wt.returncode == 0 else []
+        if wt.returncode != 0:
+            # Topology undeterminable — don't auto-correct on incomplete data (a silent []
+            # would misdiagnose as "dirty drift", review finding). Emit the plain off-main
+            # warning and let the user switch back manually.
+            print(
+                f"[dev-env-sync] ⚠️  Canonical worktree is on '{current_branch}' and its worktree "
+                "list could not be read — ~/.claude/ symlinks may serve stale hooks/scripts.\n"
+                f"Switch it back manually: git -C {DEV_ENV_REPO} checkout main",
+                file=sys.stderr,
+            )
+            sys.exit(0)
+        worktrees = parse_worktree_porcelain(wt.stdout)
         topo = diagnose_main_topology(worktrees)
         status = run(["git", "status", "--porcelain"])
         canonical_clean = status.returncode == 0 and not status.stdout.strip()
