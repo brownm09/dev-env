@@ -94,7 +94,7 @@ Every project CLAUDE.md **must** also include a `## Observability` section descr
 - **PR first, then merge.** Open the PR immediately after pushing; don't prompt the user to run `gh pr create`.
 - **Write the journal stub immediately after `gh pr create`** — defer and a corrupted session loses all context. Then report the PR URL, prompt `/compact`, and after compaction run `/review <PR-URL> --post-comment`. **Address all findings — fixed-in-PR or filed-and-linked, never "left as-is"** — and merge in the same session. Each finding's disposition (fixed in `<sha>` | filed `#N`) goes in a "Review findings disposition" PR-body section; the `pre-merge-findings-gate` hook blocks merge until it's present, and `/review` applies the `reviewed-by-claude` label ([ADR-028](../docs/adr/028-all-findings-merge-gate.md), [ADR-039](../docs/adr/039-merge-gate-findings-enforcement.md)).
 - **Fix everything, always — never ask which findings to address.** Resolve all `/review` / `/code-review` findings as part of the same work; default to fixing in-PR, file-and-link only when genuinely out of scope. Prefer the root-cause fix over the smaller band-aid. Escalate only for a product/design decision the code can't settle or a breach of the *Code Quality → Fix errors on encounter* scope guard ([ADR-028 → Addendum](../docs/adr/028-all-findings-merge-gate.md)).
-- **Write a stub on PR merge** — a merge is a session boundary. After `gh pr merge`, the `PostToolUse` hook emits a `### Usage Snapshot (post-merge)` block; include it verbatim in the stub (preserved in journal Section 7). Same session as the PR open: update the existing stub, append a `prs_closed:[N]` manifest line, remove the PR from `open-prs.jsonl`. New session: update the opening stub in place for minor merges, or write a new stub for substantial follow-up. Either way set `prs_closed:[N]` and remove from `open-prs.jsonl`.
+- **Write a stub on PR merge** — a merge is a session boundary. After `gh pr merge`, the `PostToolUse` hook emits a `### Usage Snapshot (post-merge)` block; include it verbatim in the stub (preserved in journal Section 7). Same session as the PR open: update the existing stub, set `prs_closed:[N]` on this session's manifest line, remove the PR from `open-prs.jsonl`. New session: update the opening stub in place for minor merges, or write a new stub for substantial follow-up. Either way set `prs_closed:[N]` and remove from `open-prs.jsonl`. **The manifest and `open-prs.jsonl` are shared per-day files — apply both updates concurrency-safely (pull the draft branch first, then surgically edit only this session's entry; never whole-file-rewrite), per the Stub file workflow → Shared-file exception and [ADR-054](../docs/adr/054-concurrency-safe-shared-journal-file-updates.md).**
 - **Multiple PRs/merges in one session:** defer stub writing until after the last `gh pr create` / `gh pr merge`; produce one consolidated stub. Never write an intermediate stub between PR opens or merges.
 - **PR closed without merging:** the stub was already written at creation; stopping is optional.
 - **After merging:** move the linked project board item to Done (command is project-specific — see the project's CLAUDE.md; for dev-env, its GitHub Project section). When a work stream completes (milestone, issue group, feature sequence), move the item from Active Work to Shipped in the project roadmap — don't leave roadmaps contradicting shipping history.
@@ -409,6 +409,18 @@ Use that path wherever `sessions/<project>/` appears below.
 
 Each session writes an isolated stub file — no shared mutable draft. This eliminates write
 contention when multiple sessions run in parallel. Slug is determined at day end.
+
+**Shared-file exception — concurrency-safe updates.** Two companion files are *not* isolated:
+`YYYY-MM-DD.manifest.jsonl` and `open-prs.jsonl` are single per-day files every session appends to
+and updates, so the stub isolation above does not protect them. Appending your *own* new line is
+safe, but any update that *edits existing content* — **setting `prs_closed:[N]` on your manifest line,
+or removing a PR from `open-prs.jsonl`** — must be concurrency-safe: (1) `git pull` the draft branch
+first, then (2) **surgically edit only this session's entry** — read the *current on-disk file*,
+mutate the single line matched by stub filename (manifest) or PR number (`open-prs.jsonl`), and write
+it back. **Never** whole-file-rewrite from memory (`cat >`, or regenerate the whole file from the
+session's own view): that silently clobbers a concurrent session's entry, as happened on 2026-06-22.
+The surgical-update helpers are in [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals);
+rationale in [ADR-054](../docs/adr/054-concurrency-safe-shared-journal-file-updates.md).
 
 **Branch:** `draft/YYYY-MM-DD` — created at the first session of the day, merged to main at day end.
 
