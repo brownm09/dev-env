@@ -69,7 +69,10 @@ def get_stub_files_in_commits(commits: list[str]) -> list[str]:
             status, path = parts
             if status.startswith("D"):
                 continue
-            # open-prs.jsonl is excluded — the target branch's copy is authoritative
+            # Per-session manifest shards (YYYY-MM-DD_HHMMSS.manifest.jsonl, ADR-056)
+            # match the same suffix as the legacy per-day manifest, so both move.
+            # Open-PR records (legacy open-prs.jsonl and open-prs/<N>.json shards) are
+            # excluded — the target branch's copy is authoritative.
             if (path.endswith(".stub.md")
                     or path.endswith(".manifest.jsonl")):
                 if path not in seen:

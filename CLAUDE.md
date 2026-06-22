@@ -211,6 +211,31 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_posttooluse_inert_advisory.py
     ```
 
+19. **reconcile-open-prs test** — required when changing `claude/scripts/reconcile-open-prs.py`. Exercises
+    the pure helpers and the per-PR shard reconciler offline (tmp dirs + an injected `state_fn`, no `gh`):
+    pins `should_remove` (MERGED/CLOSED remove; OPEN/None/unknown keep), `shard_pr_number` /
+    `repo_from_url` / `entry_repo_and_pr` parsing, and the [ADR-056](docs/adr/056-per-session-sharding-journal-companion-files.md)
+    structural guarantee that `reconcile_shard_dir` unlinks only the merged shard and leaves the surviving
+    shard **byte-identical** (the no-clobber property), removes an emptied `open-prs/` dir, never auto-deletes
+    malformed/non-numeric shards, and that the legacy `reconcile_file` still drains `open-prs.jsonl`. The live
+    `gh pr view` boundary (`check_pr_state`) is not covered (the repo avoids subprocess mocks).
+
+    ```bash
+    py -3 claude/scripts/tests/test_reconcile_open_prs.py
+    ```
+
+20. **post-compact open-PR reader test** — required when changing `claude/scripts/post-compact.py`. Exercises
+    the pure `read_open_pr_entries()` offline (tmp dirs, no `git`): pins that per-PR shards `open-prs/<N>.json`
+    and the legacy `open-prs.jsonl` are unioned and deduped by PR number (shard wins), that shards sort
+    numerically (not lexically), that a malformed shard is skipped without dropping valid ones, and that a
+    record with no `pr` is skipped (no None-key collapse, no downstream KeyError)
+    ([ADR-056](docs/adr/056-per-session-sharding-journal-companion-files.md)). `get_journal_project` (a git
+    call) and the systemMessage emission are not covered.
+
+    ```bash
+    py -3 claude/scripts/tests/test_post_compact.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Unit tests for reconcile-open-prs.py shard/legacy reconciliation (ADR-056).
+
+`reconcile-open-prs.py` is a UserPromptSubmit hook that, once per session, removes
+open-PR tracking records whose PRs are now MERGED/CLOSED. ADR-056 reshaped the
+tracking from a single shared `open-prs.jsonl` into per-PR shards
+`sessions/<project>/open-prs/<N>.json`, so the structural guarantee the hook now
+relies on is: **removing one PR's record is a per-file `unlink` that never rewrites
+another PR's file.** These tests pin that — `reconcile_shard_dir` unlinks only the
+merged shard and leaves the surviving shard byte-identical — plus the pure helpers,
+and confirm the legacy `open-prs.jsonl` path still drains.
+
+The reconcilers take an injectable `state_fn(pr, repo) -> state` so the unlink/keep
+logic runs offline; the live `gh pr view` boundary (`check_pr_state`) is not tested,
+matching the repo's fixture-only / no-subprocess-mock convention.
+
+Usage:
+    py -3 claude/scripts/tests/test_reconcile_open_prs.py
+
+Exit 0 = all pass.
+"""
+
+import importlib.util
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+# tests/ -> scripts/ -> claude/ -> repo root
+REPO_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT = REPO_ROOT / "claude" / "scripts" / "reconcile-open-prs.py"
+
+# The script imports _winsubp (a sibling in scripts/); make it resolvable.
+sys.path.insert(0, str(SCRIPT.parent))
+
+# Hyphenated filename — import by path rather than `import`.
+_spec = importlib.util.spec_from_file_location("reconcile_open_prs", SCRIPT)
+assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
+mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(mod)  # safe: main() is guarded by __main__
+
+should_remove = mod.should_remove
+shard_pr_number = mod.shard_pr_number
+repo_from_url = mod.repo_from_url
+entry_repo_and_pr = mod.entry_repo_and_pr
+project_dirs = mod.project_dirs
+reconcile_shard_dir = mod.reconcile_shard_dir
+reconcile_file = mod.reconcile_file
+
+URL_386 = "https://github.com/brownm09/dev-env/pull/386"
+URL_387 = "https://github.com/brownm09/dev-env/pull/387"
+
+
+def _entry(pr, url):
+    return {"pr": pr, "url": url, "topic": f"PR {pr}", "stub": "s.stub.md", "opened": "2026-06-22"}
+
+
+def _write_shard(shard_dir: Path, pr, url):
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    p = shard_dir / f"{pr}.json"
+    p.write_text(json.dumps(_entry(pr, url)), encoding="utf-8")
+    return p
+
+
+# --- pure helpers ------------------------------------------------------------
+
+
+def test_should_remove() -> str:
+    assert should_remove("MERGED") is True
+    assert should_remove("CLOSED") is True
+    assert should_remove("OPEN") is False
+    assert should_remove(None) is False, "gh failure (None) is conservative — keep"
+    assert should_remove("") is False
+    assert should_remove("DRAFT") is False, "unknown state -> keep"
+    return "MERGED/CLOSED -> remove; OPEN/None/unknown -> keep (conservative)"
+
+
+def test_shard_pr_number() -> str:
+    assert shard_pr_number(Path("open-prs/386.json")) == 386
+    assert shard_pr_number(Path("54.json")) == 54
+    assert shard_pr_number(Path("index.json")) is None, "non-numeric stem -> ignored"
+    assert shard_pr_number(Path("abc.json")) is None
+    return "numeric stems parse to PR numbers; non-numeric files are ignored"
+
+
+def test_repo_from_url() -> str:
+    assert repo_from_url(URL_386) == "brownm09/dev-env"
+    assert repo_from_url("") is None
+    assert repo_from_url("not a url") is None
+    return "owner/repo extracted from a PR URL; empty/garbage -> None"
+
+
+def test_entry_repo_and_pr() -> str:
+    assert entry_repo_and_pr(_entry(386, URL_386)) == ("brownm09/dev-env", 386)
+    assert entry_repo_and_pr({"pr": 5}) == (None, 5), "missing url -> repo None"
+    assert entry_repo_and_pr({"url": URL_386}) == ("brownm09/dev-env", None), "missing pr -> None"
+    assert entry_repo_and_pr({"url": URL_386, "pr": "x"}) == ("brownm09/dev-env", None), "non-int pr -> None"
+    return "entry -> (repo, pr); missing/typo fields resolve to None safely"
+
+
+def test_project_dirs() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        rootp = Path(root)
+        (rootp / "sessions" / "dev-env").mkdir(parents=True)
+        (rootp / "sessions" / "career-playbook").mkdir(parents=True)
+        (rootp / "sessions" / "note.txt").write_text("x", encoding="utf-8")  # not a dir
+        got = [p.name for p in project_dirs(rootp)]
+        assert got == ["career-playbook", "dev-env"], f"sorted project dirs, got {got}"
+    with tempfile.TemporaryDirectory() as root2:
+        assert project_dirs(Path(root2)) == [], "no sessions/ -> []"
+    return "project_dirs lists sorted sessions/<project>/ dirs; [] when absent"
+
+
+# --- per-PR shard reconciliation (the ADR-056 structural guarantee) ----------
+
+
+def test_shard_removes_only_merged_leaves_others_intact() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        shard_dir = Path(root) / "open-prs"
+        _write_shard(shard_dir, 386, URL_386)
+        survivor = _write_shard(shard_dir, 387, URL_387)
+        survivor_bytes = survivor.read_bytes()
+
+        # 386 merged, 387 still open.
+        state_fn = lambda pr, repo: "MERGED" if pr == 386 else "OPEN"
+        surviving, removed = reconcile_shard_dir(shard_dir, state_fn=state_fn)
+
+        assert not (shard_dir / "386.json").exists(), "merged shard must be unlinked"
+        assert (shard_dir / "387.json").exists(), "open shard must remain"
+        assert survivor.read_bytes() == survivor_bytes, "survivor shard must be byte-identical (not rewritten)"
+        assert [e["pr"] for e in surviving] == [387]
+        assert [(e["pr"], st) for e, st in removed] == [(386, "MERGED")]
+    return "merged shard unlinked; the survivor file is untouched byte-for-byte (no clobber)"
+
+
+def test_shard_dir_removed_when_emptied() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        shard_dir = Path(root) / "open-prs"
+        _write_shard(shard_dir, 386, URL_386)
+        surviving, removed = reconcile_shard_dir(shard_dir, state_fn=lambda pr, repo: "CLOSED")
+        assert surviving == []
+        assert not shard_dir.exists(), "open-prs/ dir removed once its last shard is gone"
+    return "last shard removed -> the empty open-prs/ directory is cleaned up"
+
+
+def test_shard_malformed_and_nonnumeric_left_in_place() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        shard_dir = Path(root) / "open-prs"
+        shard_dir.mkdir(parents=True)
+        (shard_dir / "bad.json").write_text("{not json", encoding="utf-8")     # unparseable
+        (shard_dir / "index.json").write_text("{}", encoding="utf-8")          # non-numeric name
+        (shard_dir / "99.json").write_text(json.dumps({"topic": "x"}), encoding="utf-8")  # no url/pr
+        surviving, removed = reconcile_shard_dir(shard_dir, state_fn=lambda pr, repo: "MERGED")
+        assert surviving == [] and removed == []
+        assert (shard_dir / "bad.json").exists(), "unparseable shard left for a human"
+        assert (shard_dir / "index.json").exists(), "non-numeric file ignored, not deleted"
+        assert (shard_dir / "99.json").exists(), "malformed (no pr/url) shard left in place"
+    return "unparseable / non-numeric / malformed shards are never auto-deleted (conservative)"
+
+
+def test_shard_missing_dir() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        surviving, removed = reconcile_shard_dir(Path(root) / "open-prs", state_fn=lambda pr, repo: "MERGED")
+        assert surviving == [] and removed == []
+    return "missing open-prs/ dir -> ([], []) with no error"
+
+
+# --- legacy single-file path still drains ------------------------------------
+
+
+def test_legacy_file_drops_only_merged() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        f = Path(root) / "open-prs.jsonl"
+        f.write_text(json.dumps(_entry(386, URL_386)) + "\n" + json.dumps(_entry(387, URL_387)) + "\n",
+                     encoding="utf-8")
+        state_fn = lambda pr, repo: "MERGED" if pr == 386 else "OPEN"
+        surviving, removed = reconcile_file(f, state_fn=state_fn)
+        assert [e["pr"] for e in surviving] == [387]
+        assert [(e["pr"], st) for e, st in removed] == [(386, "MERGED")]
+        kept = [json.loads(l)["pr"] for l in f.read_text(encoding="utf-8").splitlines() if l.strip()]
+        assert kept == [387], f"legacy file rewritten to surviving lines only, got {kept}"
+    return "legacy open-prs.jsonl: merged line dropped, open line kept (drains over time)"
+
+
+def test_legacy_file_deleted_when_empty() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        f = Path(root) / "open-prs.jsonl"
+        f.write_text(json.dumps(_entry(386, URL_386)) + "\n", encoding="utf-8")
+        reconcile_file(f, state_fn=lambda pr, repo: "MERGED")
+        assert not f.exists(), "legacy file deleted when its last entry is removed"
+    return "legacy open-prs.jsonl deleted once its last entry merges"
+
+
+def main() -> int:
+    tests = [
+        ("should_remove predicate", test_should_remove),
+        ("shard_pr_number parsing", test_shard_pr_number),
+        ("repo_from_url extraction", test_repo_from_url),
+        ("entry_repo_and_pr resolution", test_entry_repo_and_pr),
+        ("project_dirs discovery", test_project_dirs),
+        ("shard removal leaves others byte-identical (ADR-056 guarantee)", test_shard_removes_only_merged_leaves_others_intact),
+        ("empty open-prs/ dir cleaned up", test_shard_dir_removed_when_emptied),
+        ("malformed/non-numeric shards left in place", test_shard_malformed_and_nonnumeric_left_in_place),
+        ("missing shard dir -> no error", test_shard_missing_dir),
+        ("legacy file drops only merged", test_legacy_file_drops_only_merged),
+        ("legacy file deleted when empty", test_legacy_file_deleted_when_empty),
+    ]
+    failed = 0
+    for name, fn in tests:
+        try:
+            detail = fn()
+            print(f"PASS: {name}")
+            print(f"      {detail}")
+        except AssertionError as e:
+            failed += 1
+            print(f"FAIL: {name}")
+            for line in str(e).splitlines():
+                print(f"      {line}")
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            print(f"ERROR: {name}: {type(e).__name__}: {e}")
+    print()
+    print(f"Tests: {len(tests) - failed} passed, 0 skipped, {failed} failed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

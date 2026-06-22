@@ -57,7 +57,7 @@ The worktree-maintenance scripts (`prune-merged-worktrees.py`, `reclaim-worktree
 | UserPromptSubmit | `journal-onboard-check.py` | Warns when the active project has no journal home in engineering-journal |
 | UserPromptSubmit | `turn-count-hook.py` | Warns when session context token count exceeds threshold |
 | UserPromptSubmit | `multi-worktree-alert.py` | Lists active worktrees in `repo:branch` format when ≥2 are open |
-| UserPromptSubmit | `reconcile-open-prs.py` | Removes stale entries from `open-prs.jsonl` whose PRs are now merged/closed; emits surviving open PRs as session context |
+| UserPromptSubmit | `reconcile-open-prs.py` | Removes stale open-PR records whose PRs are now merged/closed — deletes per-PR `open-prs/<N>.json` shards ([ADR-056](docs/adr/056-per-session-sharding-journal-companion-files.md)) and drains the legacy `open-prs.jsonl`; emits surviving open PRs as session context |
 | UserPromptSubmit | `disk-space-check.py` | Watches free space on `C:`; warns once per session below 20 GB and spawns detached `node_modules`/`.turbo` reclamation below 10 GB |
 | UserPromptSubmit | `worktree-npm-install.py` | Auto-runs `npm ci`/`install` when a Claude worktree lacks `node_modules`; gates on free space first — below 10 GB it reclaims (idle worktrees, then npm cache) and re-checks, and below a 5 GB floor it refuses the install rather than risk a silently-truncated `node_modules` (ENOSPC, see [ADR-045](docs/adr/045-pre-install-freespace-gate.md)) |
 | UserPromptSubmit / Stop / Notification | `awake-blocker.py` | Spawns a detached watcher that holds a Windows system-sleep lock while Claude is processing; releases on Stop or Notification |

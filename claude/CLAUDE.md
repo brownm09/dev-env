@@ -94,7 +94,7 @@ Every project CLAUDE.md **must** also include a `## Observability` section descr
 - **PR first, then merge.** Open the PR immediately after pushing; don't prompt the user to run `gh pr create`.
 - **Write the journal stub immediately after `gh pr create`** — defer and a corrupted session loses all context. Then report the PR URL, prompt `/compact`, and after compaction run `/review <PR-URL> --post-comment`. **Address all findings — fixed-in-PR or filed-and-linked, never "left as-is"** — and merge in the same session. Each finding's disposition (fixed in `<sha>` | filed `#N`) goes in a "Review findings disposition" PR-body section; the `pre-merge-findings-gate` hook blocks merge until it's present, and `/review` applies the `reviewed-by-claude` label ([ADR-028](../docs/adr/028-all-findings-merge-gate.md), [ADR-039](../docs/adr/039-merge-gate-findings-enforcement.md)).
 - **Fix everything, always — never ask which findings to address.** Resolve all `/review` / `/code-review` findings as part of the same work; default to fixing in-PR, file-and-link only when genuinely out of scope. Prefer the root-cause fix over the smaller band-aid. Escalate only for a product/design decision the code can't settle or a breach of the *Code Quality → Fix errors on encounter* scope guard ([ADR-028 → Addendum](../docs/adr/028-all-findings-merge-gate.md)).
-- **Write a stub on PR merge** — a merge is a session boundary. After `gh pr merge`, the `PostToolUse` hook emits a `### Usage Snapshot (post-merge)` block; include it verbatim in the stub (preserved in journal Section 7). Same session as the PR open: update the existing stub, set `prs_closed:[N]` on this session's manifest line, remove the PR from `open-prs.jsonl`. New session: update the opening stub in place for minor merges, or write a new stub for substantial follow-up. Either way set `prs_closed:[N]` and remove from `open-prs.jsonl`. **The manifest and `open-prs.jsonl` are shared per-day files — apply both updates concurrency-safely (pull the draft branch first, then surgically edit only this session's entry; never whole-file-rewrite), per the Stub file workflow → Shared-file exception and [ADR-054](../docs/adr/054-concurrency-safe-shared-journal-file-updates.md).**
+- **Write a stub on PR merge** — a merge is a session boundary. After `gh pr merge`, the `PostToolUse` hook emits a `### Usage Snapshot (post-merge)` block; include it verbatim in the stub (preserved in journal Section 7). Same session as the PR open: update the existing stub, set `prs_closed:[N]` in this session's manifest shard, and delete the PR's `sessions/<project>/open-prs/<N>.json` shard. New session: update the opening stub in place for minor merges, or write a new stub for substantial follow-up. Either way set `prs_closed:[N]` in this session's manifest shard and delete the PR's open-PR shard. **Both updates are now structurally clobber-safe — the manifest shard is this session's own file and the open-PR shard is a per-PR `rm` — so the superseded ADR-054 surgical-edit discipline is no longer required (just delete `open-prs/<N>.json`; if the PR predates the shard transition and still lives in a legacy `open-prs.jsonl`, remove its single line instead). See Stub file workflow → Sharded companion files and [ADR-056](../docs/adr/056-per-session-sharding-journal-companion-files.md).**
 - **Multiple PRs/merges in one session:** defer stub writing until after the last `gh pr create` / `gh pr merge`; produce one consolidated stub. Never write an intermediate stub between PR opens or merges.
 - **PR closed without merging:** the stub was already written at creation; stopping is optional.
 - **After merging:** move the linked project board item to Done (command is project-specific — see the project's CLAUDE.md; for dev-env, its GitHub Project section). When a work stream completes (milestone, issue group, feature sequence), move the item from Active Work to Shipped in the project roadmap — don't leave roadmaps contradicting shipping history.
@@ -398,9 +398,10 @@ Use that path wherever `sessions/<project>/` appears below.
   `prs_opened`, another in `prs_closed`), compose them under a single H2 dialogue section
   rather than producing a separate H2 per stub. Annotate with "→ merged in session N" (where
   N is the 1-based ordinal of the closing stub for that day) at the end of the section. Any
-  stub written on a day where `open-prs.jsonl` shows the same PR as open should also be grouped
-  under that H2, even if neither `prs_opened` nor `prs_closed` is set for that PR in its
-  manifest entry — this covers PRs that span more than two sessions. This prevents the composed
+  stub written on a day where the open-PR records (`open-prs/<N>.json` shards or a legacy
+  `open-prs.jsonl`) show the same PR as open should also be grouped under that H2, even if neither
+  `prs_opened` nor `prs_closed` is set for that PR in its manifest shard — this covers PRs that span
+  more than two sessions. This prevents the composed
   journal from fragmenting create-iterate-review sequences into unrelated-looking sections.
 
 ---
@@ -410,17 +411,23 @@ Use that path wherever `sessions/<project>/` appears below.
 Each session writes an isolated stub file — no shared mutable draft. This eliminates write
 contention when multiple sessions run in parallel. Slug is determined at day end.
 
-**Shared-file exception — concurrency-safe updates.** Two companion files are *not* isolated:
-`YYYY-MM-DD.manifest.jsonl` and `open-prs.jsonl` are single per-day files every session appends to
-and updates, so the stub isolation above does not protect them. Appending your *own* new line is
-safe, but any update that *edits existing content* — **setting `prs_closed:[N]` on your manifest line,
-or removing a PR from `open-prs.jsonl`** — must be concurrency-safe: (1) `git pull` the draft branch
-first, then (2) **surgically edit only this session's entry** — read the *current on-disk file*,
-mutate the single line matched by stub filename (manifest) or PR number (`open-prs.jsonl`), and write
-it back. **Never** whole-file-rewrite from memory (`cat >`, or regenerate the whole file from the
-session's own view): that silently clobbers a concurrent session's entry, as happened on 2026-06-22.
-The surgical-update helpers are in [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals);
-rationale in [ADR-054](../docs/adr/054-concurrency-safe-shared-journal-file-updates.md).
+**Sharded companion files — no shared-file editing.** The stub's two companion files are also sharded
+per session / per PR ([ADR-056](../docs/adr/056-per-session-sharding-journal-companion-files.md)), so
+the stub isolation above extends to them and **no session ever writes a file another session also
+writes**:
+
+- **Manifest:** each session writes its own shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl`
+  (one JSON object, paired 1:1 with the stub). Setting `prs_closed:[N]` after a merge edits *this
+  session's own shard* — never a file another session touches.
+- **Open PRs:** each open PR is its own shard `sessions/<project>/open-prs/<N>.json`. Opening PR #N
+  writes `<N>.json`; merging/closing it **deletes** that file — a per-PR delete that cannot touch any
+  other PR's record, even when a *different* session or the `reconcile-open-prs.py` hook does the removal.
+
+Because shards are disjoint files, git merges concurrent sessions' writes cleanly and removal is a
+per-file delete — the pull-first + surgical-edit discipline of the superseded ADR-054 is **no longer
+needed** (ordinary pull-before-push git hygiene still applies). Readers still accept the legacy
+single-file `YYYY-MM-DD.manifest.jsonl` / `open-prs.jsonl` during the transition; writers emit only
+shards. Schemas and write/delete steps: [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals).
 
 **Branch:** `draft/YYYY-MM-DD` — created at the first session of the day, merged to main at day end.
 
@@ -441,27 +448,27 @@ operational artifacts (compose lock files, log file timestamps).
    git -C C:/Users/brown/Git/engineering-journal merge-base HEAD origin/main
    git -C C:/Users/brown/Git/engineering-journal rev-parse origin/main
    ```
-3. Read `sessions/<project>/open-prs.jsonl` if it exists — include its PR list as session context before starting work.
+3. Read the open-PR records (`sessions/<project>/open-prs/*.json` shards, plus any legacy `open-prs.jsonl`) if present — include their PR list as session context before starting work (the `reconcile-open-prs.py` hook also surfaces this at session start).
 4. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
-6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
-7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD.manifest.jsonl sessions/<project>/open-prs.jsonl`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
-   *(omit `open-prs.jsonl` from the add command if it was not modified this session)*
+6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` — one JSON object (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
+7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
+   *(include `sessions/<project>/open-prs/` only if this session opened or merged a PR — it stages the added/deleted shard)*
 
 **Subsequent sessions:**
 1. `git -C C:/Users/brown/Git/engineering-journal pull origin draft/YYYY-MM-DD`
-2. Read `sessions/<project>/open-prs.jsonl` if it exists — include its PR list as session context before starting work.
+2. Read the open-PR records (`sessions/<project>/open-prs/*.json` shards, plus any legacy `open-prs.jsonl`) if present — include their PR list as session context before starting work (the `reconcile-open-prs.py` hook also surfaces this at session start).
 3. Find the most recent stub and read only its `<!-- next-session-context -->` paragraph:
    ```bash
    ls C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_*.stub.md | sort | tail -1
    ```
 4. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` with the current session block
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
-6. Append a manifest entry to `sessions/<project>/YYYY-MM-DD.manifest.jsonl` (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
-7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD.manifest.jsonl sessions/<project>/open-prs.jsonl`, `git commit -m "draft: YYYY-MM-DD session N"`, `git push`
-   *(omit `open-prs.jsonl` from the add command if it was not modified this session)*
+6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` — one JSON object (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
+7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/`, `git commit -m "draft: YYYY-MM-DD session N"`, `git push`
+   *(include `sessions/<project>/open-prs/` only if this session opened or merged a PR — it stages the added/deleted shard)*
 
-**File formats, stub template, and recovery:** the `.manifest.jsonl` and `open-prs.jsonl` schemas
+**File formats, stub template, and recovery:** the manifest-shard and open-PR-shard schemas
 (referenced in the workflow steps above), the stub-file template, the canonical 11-section compose
 structure, and the draft-branch recovery procedure are documented in
 [`docs/REFERENCE.md` → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals).

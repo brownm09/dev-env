@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook: reconcile open-prs.jsonl against live GitHub PR state.
+"""UserPromptSubmit hook: reconcile open-PR tracking against live GitHub PR state.
 
-Runs once per session (per-session sentinel in scratch/). For every
-sessions/*/open-prs.jsonl in the engineering-journal repo:
-  - Calls `gh pr view` for each entry to check current state.
-  - Removes entries whose PRs are MERGED or CLOSED (in-place rewrite).
-  - Deletes the file when the last entry is removed.
+Runs once per session (per-session sentinel in scratch/). For every project under
+the engineering-journal repo it reconciles two formats (see ADR-056):
+
+  - Per-PR shards `sessions/<project>/open-prs/<N>.json` (current format) — for each
+    shard whose PR is MERGED or CLOSED, the shard file is unlinked individually. No
+    surviving shard is ever rewritten, so a concurrent session's shard can never be
+    clobbered. The `open-prs/` dir is removed when its last shard is gone.
+  - The legacy single file `sessions/<project>/open-prs.jsonl` (pre-ADR-056) — entries
+    whose PRs are MERGED or CLOSED are removed via the existing read-filter-write (which
+    reads the current on-disk file, so it is safe); the file is deleted when empty.
+
+Both formats are read so the transition needs no forced migration: the legacy file drains
+to empty as its PRs merge, and new PRs are tracked only as shards.
 
 Modified files are left dirty for Claude to pick up in the next stub commit.
 Always exits 0 — never blocks.
 
 Stdout: one JSON line with a systemMessage listing surviving open PRs (and any
-removals), so Claude has correct context from turn 1 without reading the file.
+removals), so Claude has correct context from turn 1 without reading the files.
 """
 from __future__ import annotations
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
-import os
 import subprocess
 import sys
 import time
@@ -55,33 +62,54 @@ def mark_done(session_id: str) -> None:
         pass
 
 
+# --- pure helpers (unit-tested in tests/test_reconcile_open_prs.py) ----------
+
+
 def repo_from_url(url: str) -> str | None:
     """Extract 'owner/repo' from a GitHub PR URL."""
     try:
         parts = urlparse(url).path.strip("/").split("/")
         # expected: ['owner', 'repo', 'pull', 'N']
-        if len(parts) >= 2:
+        if len(parts) >= 2 and parts[0] and parts[1]:
             return f"{parts[0]}/{parts[1]}"
     except Exception:
         pass
     return None
 
 
-def check_pr_state(pr_number: int, repo: str) -> str | None:
-    """Return 'OPEN', 'MERGED', or 'CLOSED'; None on any failure."""
+def should_remove(state: str | None) -> bool:
+    """A tracked PR is removed only when GitHub confirms it MERGED or CLOSED.
+    OPEN, an unknown state, or None (a gh failure) is conservative — keep it."""
+    return state in ("MERGED", "CLOSED")
+
+
+def shard_pr_number(path: Path) -> int | None:
+    """Parse the PR number from an `open-prs/<N>.json` shard filename.
+    Returns None for any non-numeric stem so stray files are ignored."""
     try:
-        result = subprocess.run(
-            ["gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "state"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if result.returncode != 0:
-            return None
-        data = json.loads(result.stdout)
-        return data.get("state")
-    except Exception:
+        return int(path.stem)
+    except (ValueError, TypeError):
         return None
+
+
+def entry_repo_and_pr(entry: dict) -> tuple[str | None, int | None]:
+    """Resolve (owner/repo, pr_number) from a tracking entry, or (None, *)/(*, None)."""
+    repo = repo_from_url(entry.get("url", ""))
+    pr_number = entry.get("pr")
+    if not isinstance(pr_number, int):
+        pr_number = None
+    return repo, pr_number
+
+
+def project_dirs(journal_repo: Path) -> list[Path]:
+    """Every `sessions/<project>/` directory, sorted; [] if sessions/ is absent."""
+    sessions = journal_repo / "sessions"
+    if not sessions.is_dir():
+        return []
+    return sorted(p for p in sessions.iterdir() if p.is_dir())
+
+
+# --- legacy single-file path -------------------------------------------------
 
 
 def load_entries(path: Path) -> list[dict]:
@@ -107,8 +135,12 @@ def write_entries(path: Path, entries: list[dict]) -> None:
         )
 
 
-def reconcile_file(path: Path) -> tuple[list[dict], list[tuple[dict, str]]]:
-    """Return (surviving_entries, [(removed_entry, state), ...])."""
+def reconcile_file(path: Path, state_fn=None) -> tuple[list[dict], list[tuple[dict, str]]]:
+    """Legacy `open-prs.jsonl`: return (surviving_entries, [(removed_entry, state), ...]).
+    Rewrites the file in place (safe — derived from the current on-disk contents).
+    `state_fn(pr, repo) -> state` is injectable for offline tests; defaults to gh."""
+    if state_fn is None:
+        state_fn = check_pr_state
     entries = load_entries(path)
     if not entries:
         return [], []
@@ -116,16 +148,13 @@ def reconcile_file(path: Path) -> tuple[list[dict], list[tuple[dict, str]]]:
     surviving = []
     removed: list[tuple[dict, str]] = []
     for entry in entries:
-        url = entry.get("url", "")
-        pr_number = entry.get("pr")
-        repo = repo_from_url(url)
-
+        repo, pr_number = entry_repo_and_pr(entry)
         if not repo or not pr_number:
             removed.append((entry, "malformed"))
             continue
 
-        state = check_pr_state(pr_number, repo)
-        if state in ("MERGED", "CLOSED"):
+        state = state_fn(pr_number, repo)
+        if should_remove(state):
             removed.append((entry, state))
         else:
             # OPEN, unknown (gh failed), or None — keep the entry
@@ -135,6 +164,82 @@ def reconcile_file(path: Path) -> tuple[list[dict], list[tuple[dict, str]]]:
         write_entries(path, surviving)
 
     return surviving, removed
+
+
+# --- per-PR shard path (ADR-056) ---------------------------------------------
+
+
+def reconcile_shard_dir(shard_dir: Path, state_fn=None) -> tuple[list[dict], list[tuple[dict, str]]]:
+    """Per-PR shards `open-prs/<N>.json`: return (surviving, [(removed, state), ...]).
+
+    Each merged/closed shard is unlinked on its own — surviving shards are never
+    rewritten, so concurrent sessions' shards cannot be clobbered. Unparseable or
+    malformed shards are left untouched (conservative). Removes the dir when empty.
+    `state_fn(pr, repo) -> state` is injectable for offline tests; defaults to gh.
+    """
+    if state_fn is None:
+        state_fn = check_pr_state
+    surviving: list[dict] = []
+    removed: list[tuple[dict, str]] = []
+    if not shard_dir.is_dir():
+        return surviving, removed
+
+    # Numeric sort (PR 2 before PR 10), matching post-compact's reader. Order is
+    # immaterial to the keep/delete decision (each shard is judged independently),
+    # but keeping both readers consistent avoids confusing drift.
+    for shard in sorted(shard_dir.glob("*.json"),
+                        key=lambda p: int(p.stem) if p.stem.isdigit() else 1 << 30):
+        if shard_pr_number(shard) is None:
+            continue  # not a PR shard — ignore
+        try:
+            entry = json.loads(shard.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue  # leave unparseable shards for a human
+
+        repo, pr_number = entry_repo_and_pr(entry)
+        if not repo or not pr_number:
+            continue  # leave malformed shards in place
+
+        state = state_fn(pr_number, repo)
+        if should_remove(state):
+            try:
+                shard.unlink()
+            except OSError:
+                pass
+            removed.append((entry, state))
+        else:
+            surviving.append(entry)
+
+    # Best-effort cleanup of an emptied dir, race-tolerant: if a concurrent session
+    # writes a new shard between the iterdir() check and rmdir(), rmdir() raises
+    # OSError (dir not empty) and we leave the dir — the new shard is never lost.
+    try:
+        if shard_dir.is_dir() and not any(shard_dir.iterdir()):
+            shard_dir.rmdir()
+    except OSError:
+        pass
+
+    return surviving, removed
+
+
+# --- network boundary (not unit-tested; repo avoids subprocess/urllib mocks) --
+
+
+def check_pr_state(pr_number: int, repo: str) -> str | None:
+    """Return 'OPEN', 'MERGED', or 'CLOSED'; None on any failure."""
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "state"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+        return data.get("state")
+    except Exception:
+        return None
 
 
 def main() -> None:
@@ -156,13 +261,24 @@ def main() -> None:
     all_surviving: list[str] = []
     all_removed: list[str] = []
 
-    jsonl_files = sorted(JOURNAL_REPO.glob("sessions/*/open-prs.jsonl"))
-    for path in jsonl_files:
-        project = path.parent.name
+    for project_dir in project_dirs(JOURNAL_REPO):
+        project = project_dir.name
+
+        # Current format: per-PR shards.
         try:
-            surviving, removed = reconcile_file(path)
+            surviving, removed = reconcile_shard_dir(project_dir / "open-prs")
         except Exception:
-            continue
+            surviving, removed = [], []
+
+        # Legacy format: single open-prs.jsonl (drains as its PRs merge).
+        legacy = project_dir / "open-prs.jsonl"
+        if legacy.exists():
+            try:
+                s2, r2 = reconcile_file(legacy)
+            except Exception:
+                s2, r2 = [], []
+            surviving = surviving + s2
+            removed = removed + r2
 
         for entry in surviving:
             all_surviving.append(f"{project}#{entry.get('pr')} ({entry.get('url', '')})")
@@ -177,9 +293,9 @@ def main() -> None:
     parts: list[str] = []
     if all_removed:
         parts.append(
-            "Reconciled open-prs.jsonl — removed stale entries: "
+            "Reconciled open-PR tracking — removed stale entries: "
             + ", ".join(all_removed)
-            + ". Files updated; include open-prs.jsonl in your next stub commit."
+            + ". Files updated; include the open-PR changes in your next stub commit."
         )
     if all_surviving:
         parts.append("Open PRs: " + ", ".join(all_surviving))

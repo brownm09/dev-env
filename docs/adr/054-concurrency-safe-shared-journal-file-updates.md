@@ -1,8 +1,17 @@
 # ADR-054 — Concurrency-Safe Updates to Shared Journal Files (Manifest + open-prs.jsonl)
 
 **Date:** 2026-06-22
-**Status:** Accepted
+**Status:** Superseded by [ADR-056](056-per-session-sharding-journal-companion-files.md)
 **Tags:** journal, stubs, manifest, open-prs, concurrency, data-loss, workflow, global-rule
+
+---
+
+> **Superseded by [ADR-056](056-per-session-sharding-journal-companion-files.md) (2026-06-22).** This ADR
+> made shared-file updates safe by *documented discipline* (pull-first + surgical single-entry edit). ADR-056
+> implements the structural fix recorded below under *Considered alternatives* — per-session/per-PR sharding,
+> so no session ever writes a file another session also writes — making the hazard impossible rather than
+> disallowed. The surgical-edit discipline this ADR introduced is retired; consult ADR-056 for the current
+> mechanism. This record is retained for the incident history and the reasoning that led to the structural fix.
 
 ---
 

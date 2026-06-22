@@ -24,22 +24,56 @@ def get_journal_project() -> str | None:
     return None
 
 
+def read_open_pr_entries(project_dir: Path) -> list[dict]:
+    """Union the per-PR shards `open-prs/<N>.json` (current format, ADR-056) with the
+    legacy single `open-prs.jsonl` file, deduped by PR number. Pure filesystem read,
+    no network — unit-tested in tests/test_post_compact.py. Reading both formats lets
+    the transition need no forced migration; the legacy file drains as its PRs merge."""
+    entries: list[dict] = []
+    seen: set = set()
+
+    def add(entry: dict) -> None:
+        pr = entry.get("pr")
+        if pr is None:
+            return  # a record with no PR number can't drive a /review reminder — skip
+            # (also keeps the consumer's pr['pr'] access safe and stops two distinct
+            #  pr-less records collapsing to one via a None dedup key)
+        if pr in seen:
+            return
+        seen.add(pr)
+        entries.append(entry)
+
+    shard_dir = project_dir / "open-prs"
+    if shard_dir.is_dir():
+        shards = sorted(
+            shard_dir.glob("*.json"),
+            key=lambda p: int(p.stem) if p.stem.isdigit() else 1 << 30,
+        )
+        for shard in shards:
+            try:
+                add(json.loads(shard.read_text(encoding="utf-8")))
+            except (json.JSONDecodeError, OSError):
+                continue
+
+    legacy = project_dir / "open-prs.jsonl"
+    if legacy.exists():
+        for line in legacy.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                add(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    return entries
+
+
 def load_open_prs() -> list[dict]:
     project = get_journal_project()
     if not project:
         return []
-    path = JOURNAL_REPO / "sessions" / project / "open-prs.jsonl"
-    if not path.exists():
-        return []
-    entries = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
-    return entries
+    return read_open_pr_entries(JOURNAL_REPO / "sessions" / project)
 
 
 def main():

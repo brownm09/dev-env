@@ -163,7 +163,7 @@ Fires on every user prompt, before Claude processes it.
 | `journal-onboard-check.py` | Checks whether the active git repo has a `sessions/<repo-name>/` directory in engineering-journal. Emits a one-line advisory and `/journal-onboard` hint if not. Fires once per session. |
 | `turn-count-hook.py` | Warns when session context accumulates past a threshold. Primary signal: token count; secondary: turn count. Configurable via `"turn_threshold"` in `.claude/hook-config.json` (default: 50). |
 | `multi-worktree-alert.py` | When ≥2 git worktrees are active, emits a list in `repo:branch` format, starring the current one. Fires on every prompt. Suppressed in Claude-managed worktree sessions (`.claude/worktrees/` in cwd). |
-| `reconcile-open-prs.py` | Runs once per session (per-session sentinel in `scratch/`). Calls `gh pr view` for each entry in every `sessions/*/open-prs.jsonl` in engineering-journal; removes entries whose PRs are MERGED or CLOSED; emits a `systemMessage` listing surviving open PRs and any removals. Does not commit — modified files are picked up by the next stub commit. Fails safe: `gh` errors leave the entry intact. [ADR-018](adr/018-reconcile-open-prs-hook.md) |
+| `reconcile-open-prs.py` | Runs once per session (per-session sentinel in `scratch/`). Calls `gh pr view` for each tracked PR across every project in engineering-journal — both the per-PR shards `sessions/<project>/open-prs/<N>.json` ([ADR-056](adr/056-per-session-sharding-journal-companion-files.md)) and the legacy `sessions/<project>/open-prs.jsonl`. A MERGED/CLOSED shard is unlinked individually (no survivor rewrite; empty `open-prs/` dirs are removed); legacy entries are dropped via a safe read-filter-write. Emits a `systemMessage` listing surviving open PRs and any removals. Does not commit — modified files are picked up by the next stub commit. Fails safe: `gh` errors leave the entry intact. [ADR-018](adr/018-reconcile-open-prs-hook.md), [ADR-056](adr/056-per-session-sharding-journal-companion-files.md) |
 | `disk-space-check.py` | Free-space safety net for `C:`. Checks `shutil.disk_usage` on every prompt. Below 20 GB free: emits a one-time `systemMessage` warning. Below 10 GB free: spawns `reclaim-worktree-disk.py --scan-dir C:/Users/brown/Git --min-free-gb 10 --protect-cwd <cwd>` **detached** (via `sys.executable`, never the `py` launcher — dev-env#300) so the heavy delete never blocks the prompt, and emits a `systemMessage`. Each band fires at most once per session via a `session_id`-keyed marker (`scratch/disk_space_check_<session_id>_<band>.flag`, ADR-027). Advisory only — exit 0 always; any exception is swallowed. Thresholds are hardcoded constants. [ADR-037](adr/037-worktree-disk-reclamation.md) |
 | `worktree-npm-install.py` | When the session `cwd` is a Claude-managed worktree (`.claude/worktrees/`) of an npm repo whose `node_modules` is absent, runs `npm ci` (or `npm install`) so tests don't fail on missing deps (ADR-016). **Pre-install free-space gate (ADR-045):** before installing it checks free `C:` space — at ≥10 GB it installs as before; below 10 GB it runs a synchronous reclamation ladder (Tier 1 `reclaim-worktree-disk.py --min-free-gb 10`, Tier 2 `npm cache clean --force`) and re-measures; if still below a 5 GB hard floor it **refuses the install** and emits a loud advisory rather than risk a silently-truncated `node_modules` (ENOSPC, dev-env#364). Reclamation is synchronous (the install it guards is synchronous, so a detached reclaim would race it). Fails open on any measurement error; advisory only — exit 0 always. The pure `install_decision()` helper is unit-tested by `tests/test_worktree_npm_install.py`. [ADR-045](adr/045-pre-install-freespace-gate.md) |
 | `awake-blocker.py` (start) | On UserPromptSubmit, spawns a detached watcher (if not already running) that holds a Windows system-sleep lock via `kernel32!SetThreadExecutionState(ES_CONTINUOUS \| ES_SYSTEM_REQUIRED)`. Refreshes the sentinel heartbeat on every prompt. Watcher self-terminates if the sentinel is missing or older than 30 minutes (crash safety). Idempotent. Display sleep is not blocked — only system sleep. [ADR-033](adr/033-prevent-system-sleep-while-processing.md) |
@@ -245,7 +245,7 @@ Fires after `/compact` or auto-compact completes.
 
 | Script | What it does |
 |--------|-------------|
-| `post-compact.py` | Emits a `[compact]` or `[auto-compact]` status line with the trigger type and remaining token count. Visible in all environments. |
+| `post-compact.py` | Emits a `[compact]` or `[auto-compact]` status line with the trigger type and remaining token count. Visible in all environments. On a manual `/compact`, also reads the project's open-PR records (per-PR `open-prs/<N>.json` shards plus any legacy `open-prs.jsonl`, deduped by PR — [ADR-056](adr/056-per-session-sharding-journal-companion-files.md)) and emits a `systemMessage` reminding Claude to run `/review` on each. |
 
 ---
 
@@ -734,16 +734,20 @@ Mechanical reference for the engineering-journal stub/compose workflow. The **be
 [`claude/CLAUDE.md`](../claude/CLAUDE.md) → Engineering Journal. This section holds the file formats
 and recovery procedures that section points to.
 
-### Manifest format (`YYYY-MM-DD.manifest.jsonl`)
+### Manifest shard format (`YYYY-MM-DD_HHMMSS.manifest.jsonl`)
 
-One JSON line per session, appended after the token comment is known (end of session). The manifest
-lets `/journal-compose` see the session count, topics, token data, and PR lifecycle without reading
-individual stubs. It is advisory: if missing or shorter than the stub glob, stubs are authoritative.
-Never commit the manifest separately from its stubs.
+Per [ADR-056](adr/056-per-session-sharding-journal-companion-files.md), each session writes its **own**
+manifest shard — a single JSON object in `YYYY-MM-DD_HHMMSS.manifest.jsonl`, named to pair 1:1 with the
+session's stub `YYYY-MM-DD_HHMMSS.stub.md`. Written after the token comment is known (end of session).
+`/journal-compose` globs `YYYY-MM-DD_*.manifest.jsonl`, merges the shards in filename order (= session
+order), and reads the session count, topics, token data, and PR lifecycle without opening the stubs.
+Advisory: if the shard set is missing or smaller than the stub glob, stubs are authoritative. Commit
+each shard with its stub — because shards are disjoint per-session files, two concurrent sessions never
+write the same file and git merges their shards cleanly.
 
 ```bash
-echo '{"stub":"YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"input":N,"output":N,"cost":N},"prs_opened":[],"prs_closed":[]}' \
-  >> "C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl"
+echo '{"stub":"sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"input":N,"output":N,"cost":N},"prs_opened":[],"prs_closed":[]}' \
+  > "C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl"
 ```
 
 - `prs_opened` / `prs_closed`: PR numbers opened / reviewed-or-merged this session (e.g., `[54]`); empty array if none.
@@ -754,61 +758,65 @@ echo '{"stub":"YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"inpu
   `/journal-compose` aggregates these across projects (deduped by `ref`, capped at 5) — see
   [ADR-032](adr/032-journal-start-here-dashboard.md).
 
-**Updating an existing line (concurrency-safe).** Appending your own line (above) is safe. *Editing* a
-line already in the file — e.g. setting `prs_closed:[N]` after a same-session merge — must not
-regenerate the whole file. The manifest is shared by every session that day, so `git pull` the draft
-branch first (to pull in any concurrent session's committed lines), then mutate **only** the line
-whose `stub` field matches this session, deriving the new content from the *current on-disk file*:
+**Updating after a merge (no shared-file edit).** Setting `prs_closed:[N]` after a same-session merge
+rewrites **this session's own shard** — a single-object file no other session touches — so there is no
+concurrency hazard and no surgical-edit dance. Read the shard, mutate the field, write it back:
 
 ```bash
 node -e "
   const fs = require('fs');
-  const path = 'C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl';
-  const stub = '<THIS_SESSION_STUB>';   // e.g. sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md
-  const lines = fs.readFileSync(path,'utf8').trim().split('\n').map(l => {
-    const o = JSON.parse(l);
-    if (o.stub !== stub) return l;        // preserve every other session's line verbatim
-    o.prs_closed = [<PR_NUMBER>];          // mutate only this session's entry
-    return JSON.stringify(o);
-  });
-  fs.writeFileSync(path, lines.join('\n') + '\n');
+  const path = 'C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl';
+  const o = JSON.parse(fs.readFileSync(path,'utf8'));
+  o.prs_closed = [<PR_NUMBER>];
+  fs.writeFileSync(path, JSON.stringify(o) + '\n');
 "
 ```
 
-Never rebuild the manifest with `cat >` / `echo` from the session's own in-memory view — that
-overwrites concurrent sessions' lines (the 2026-06-22 incident). See [ADR-054](adr/054-concurrency-safe-shared-journal-file-updates.md).
+**Legacy per-day manifest (`YYYY-MM-DD.manifest.jsonl`).** Days written before ADR-056 used a single
+per-day file with one JSON line per session. Readers (`/journal-compose`, the Start-here dashboard
+aggregation) union it with the shards during the transition, and it is deleted at compose alongside the
+shards. No new writes go to it; the superseded ADR-054 surgical-update helper is no longer needed.
 
-### Open-PR tracking file (`sessions/<project>/open-prs.jsonl`)
+### Open-PR tracking shards (`sessions/<project>/open-prs/<N>.json`)
 
-Tracks PRs whose full lifecycle (open → review → merge) spans multiple sessions. Carried forward
-day to day via the draft branch merge to main. `/journal-compose` preserves it unchanged in the
-merge-to-main commit. Schema — one JSON line per open PR:
+Tracks PRs whose full lifecycle (open → review → merge) spans multiple sessions. Per
+[ADR-056](adr/056-per-session-sharding-journal-companion-files.md), each open PR is its **own** shard —
+one JSON object in `sessions/<project>/open-prs/<N>.json`, keyed by PR number. Carried forward day to
+day via the draft branch merge to main; `/journal-compose` preserves the `open-prs/` directory unchanged
+(it is **not** deleted at compose). Within a `sessions/<project>/` directory all PRs belong to that
+project's one repo, so the bare PR number is a unique filename (the repo is still carried in `url`).
+Schema:
 
 ```json
 {"pr":54,"url":"https://github.com/brownm09/dev-env/pull/54","topic":"<H2 heading from stub>","stub":"YYYY-MM-DD_HHMMSS.stub.md","opened":"YYYY-MM-DD"}
 ```
 
-`stub` is the filename that opened the PR — used to cross-reference the opening session when a PR
-spans multiple days. **When a session opens a PR:** append a line, commit alongside the stub.
-**When a session merges/closes a PR:** `git pull` the draft branch first (so any concurrent session's
-lines are present), then remove the matching line and commit. This helper reads the *current on-disk
-file* and drops only the line whose `pr` matches — do **not** replace it with a hand-built `cat >` /
-`echo` rewrite, which would clobber a concurrent session's open-PR entries
-([ADR-054](adr/054-concurrency-safe-shared-journal-file-updates.md)):
+`stub` is the filename that opened the PR — used to cross-reference the opening session when a PR spans
+multiple days.
+
+**When a session opens PR #N:** write the shard, commit it alongside the stub:
 
 ```bash
-node -e "
-  const fs = require('fs');
-  const path = 'C:/Users/brown/Git/engineering-journal/sessions/<project>/open-prs.jsonl';
-  if (!fs.existsSync(path)) process.exit(0);
-  const kept = fs.readFileSync(path,'utf8').trim().split('\n')
-    .filter(l => l && JSON.parse(l).pr !== <PR_NUMBER>);
-  if (kept.length) fs.writeFileSync(path, kept.join('\n') + '\n');
-  else fs.unlinkSync(path);
-"
+echo '{"pr":<N>,"url":"<url>","topic":"<H2 heading from stub>","stub":"YYYY-MM-DD_HHMMSS.stub.md","opened":"YYYY-MM-DD"}' \
+  > "C:/Users/brown/Git/engineering-journal/sessions/<project>/open-prs/<N>.json"
 ```
 
-If the last line is removed, the script deletes the file rather than leaving it empty.
+**When a session merges/closes PR #N:** delete its shard. This is a per-PR `rm` that cannot touch any
+other PR's record — even when a *different* session or the `reconcile-open-prs.py` hook does the
+removal — so the superseded ADR-054 surgical-removal helper is no longer needed and no shared-file
+read-modify-write is involved:
+
+```bash
+rm -f "C:/Users/brown/Git/engineering-journal/sessions/<project>/open-prs/<N>.json"
+```
+
+The `reconcile-open-prs.py` hook unlinks the shards of any PRs it finds MERGED/CLOSED at session start,
+and removes the `open-prs/` directory once its last shard is gone.
+
+**Legacy single file (`sessions/<project>/open-prs.jsonl`).** PRs opened before ADR-056 may still live
+as lines in a single per-day-carried file. Readers union it with the shards; the reconcile hook drains
+it (removing merged/closed lines via a safe read-filter-write, deleting the file when empty). To close a
+PR that still lives there, remove its one line instead of deleting a shard.
 
 ### Stub structure
 
