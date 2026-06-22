@@ -43,6 +43,7 @@ detect_board_actions = mod.detect_board_actions
 should_emit = mod.should_emit
 _result_text = mod._result_text
 _is_devenv_cwd = mod._is_devenv_cwd
+_devenv_merge_pr = mod._devenv_merge_pr
 format_advisory = mod.format_advisory
 
 DEVENV_ISSUE_URL = "https://github.com/brownm09/dev-env/issues/390"
@@ -241,6 +242,47 @@ def test_detect_merge_bare_number_other_cwd_ignored() -> str:
     return "bare `gh pr merge <N>` from a non-dev-env cwd -> no action (unknown repo)"
 
 
+def test_detect_merge_auto_ignored() -> str:
+    # A queued --auto only enables auto-merge; even a healthy session would not
+    # Done-move it yet (cf. post-pr-merge-project.py's marker gate). Don't advise.
+    calls = [(f"gh pr merge --auto {DEVENV_PR_URL} --squash", "merged", DEVENV_CWD)]
+    assert detect_board_actions(calls) == []
+    return "gh pr merge --auto (queued, not completed) -> no action"
+
+
+def test_detect_merge_explicit_other_repo_ignored() -> str:
+    # The reviewer's repro: a non-dev-env merge with a dev-env URL buried in --body
+    # must not be misattributed to dev-env. --repo is the authority, not the URL.
+    calls = [(
+        "gh pr merge 42 --repo brownm09/lifting-logbook "
+        f'--body "see {DEVENV_PR_URL}"', "merged", DEVENV_CWD,
+    )]
+    assert detect_board_actions(calls) == []
+    return "merge --repo <other> with a dev-env URL in --body -> no action (no hijack)"
+
+
+def test_detect_merge_chained_url_not_hijacked() -> str:
+    # A /pull/N URL in a chained sibling command (after &&) is outside the merge
+    # invocation's arg span and must not hijack the PR number.
+    calls = [(
+        f"gh pr merge 241 --squash && echo {DEVENV_PR_URL.replace('241','999')}",
+        "merged", DEVENV_CWD,
+    )]
+    actions = detect_board_actions(calls)
+    assert actions == [{"action": "merge", "label": "PR #241"}], actions
+    return "chained `&& echo .../pull/999` does not hijack the merged PR number"
+
+
+def test_devenv_merge_pr_direct() -> str:
+    assert _devenv_merge_pr(f"gh pr merge {DEVENV_PR_URL} --squash", DEVENV_CWD) == "241"
+    assert _devenv_merge_pr("gh pr merge 390 --squash", DEVENV_CWD) == "390"
+    assert _devenv_merge_pr("gh pr merge 42 --repo brownm09/dev-env", "/other") == "42"
+    assert _devenv_merge_pr("gh pr merge 42 --repo brownm09/lifting-logbook", DEVENV_CWD) is None
+    assert _devenv_merge_pr(f"gh pr merge --auto {DEVENV_PR_URL}", DEVENV_CWD) is None
+    assert _devenv_merge_pr("gh pr merge 7 --squash", "/some/other/repo") is None
+    return "_devenv_merge_pr: URL/number/--repo/--auto/cwd scoping all resolve correctly"
+
+
 def test_detect_unrelated_command_ignored() -> str:
     calls = [("git status", "clean", DEVENV_CWD), ("npm test", "ok", DEVENV_CWD)]
     assert detect_board_actions(calls) == []
@@ -342,6 +384,10 @@ def main() -> int:
         ("detect: merge hard-fail ignored", test_detect_merge_hard_fail_ignored),
         ("detect: merge bare number + dev-env cwd", test_detect_merge_bare_number_devenv_cwd),
         ("detect: merge bare number + other cwd ignored", test_detect_merge_bare_number_other_cwd_ignored),
+        ("detect: merge --auto ignored", test_detect_merge_auto_ignored),
+        ("detect: merge --repo other ignored (no URL hijack)", test_detect_merge_explicit_other_repo_ignored),
+        ("detect: merge chained URL not hijacked", test_detect_merge_chained_url_not_hijacked),
+        ("_devenv_merge_pr direct cases", test_devenv_merge_pr_direct),
         ("detect: unrelated command ignored", test_detect_unrelated_command_ignored),
         ("_is_devenv_cwd", test_is_devenv_cwd),
         ("should_emit: inert create -> advise", test_should_emit_inert_create),

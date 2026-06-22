@@ -40,7 +40,9 @@ False-positive guards:
     dev-env PR scope + absence of a hard-merge-failure, treating the issue-#275
     worktree cleanup-failure tail as a successful merge.
 
-Fires once per session (scratch sentinel). Advisory only — exit 0 always.
+Fires at most once per session; once it has advised or confirmed the session is
+healthy (any PostToolUse attachment present), a scratch sentinel short-circuits the
+transcript re-scan on later Stops. Advisory only — exit 0 always.
 
 Stdin JSON shape (Stop):
   {"session_id": "uuid", "transcript_path": "/abs/path/to/session.jsonl", ...}
@@ -58,7 +60,7 @@ from pathlib import Path
 
 SCRATCH = Path.home() / ".claude" / "scratch"
 PROJECTS = Path.home() / ".claude" / "projects"
-SENTINEL_PREFIX = "posttooluse-inert-advised-"
+SENTINEL_PREFIX = "posttooluse-inert-resolved-"
 MAX_AGE_DAYS = 30
 
 # --- dev-env (project #3) scoping ----------------------------------------------
@@ -72,9 +74,20 @@ _DEVENV_CREATE_URL_RE = re.compile(
     r"https://github\.com/brownm09/dev-env/(issues|pull)/(\d+)"
 )
 _DEVENV_PR_URL_RE = re.compile(r"https://github\.com/brownm09/dev-env/pull/(\d+)")
-# Bare `gh pr merge <N>` form (number, tolerant of flags before it); scoped to a
-# dev-env cwd since the number alone names no repo.
-_MERGE_NUM_RE = re.compile(r"\bgh\s+pr\s+merge\s+(?:--\S+\s+)*?(\d+)\b")
+DEVENV_REPO = "brownm09/dev-env"
+# The argument span of the `gh pr merge` invocation only (up to the next shell
+# separator) -- so a `/pull/N` URL in an unrelated flag value or a chained sibling
+# command cannot hijack the dev-env scoping or the PR-number extraction. Mirrors
+# post-pr-merge-project.py's _MERGE_ARGS_RE.
+_MERGE_ARGS_RE = re.compile(r"\bgh\s+pr\s+merge\b([^\n;|&]*)")
+# A bare positional PR-number token (`42`) within those args; a digit run inside a
+# URL (`/pull/42`) or a flag value (`--foo=12`) is not a standalone token.
+_MERGE_POS_NUM_RE = re.compile(r"(?<!\S)(\d+)(?=\s|$)")
+# A queued `--auto` only *enables* auto-merge -- it is not a completed merge, and
+# even a healthy session would not Done-move it yet (cf. post-pr-merge-project.py).
+_AUTO_FLAG_RE = re.compile(r"(?<!\S)--auto(?:=\S+)?(?=\s|$)")
+# An explicit `--repo owner/name` on the merge invocation overrides the cwd scope.
+_REPO_FLAG_RE = re.compile(r"--repo[=\s]+(\S+)")
 # A genuine merge *failure* (not the harmless issue-#275 worktree cleanup tail,
 # which means the PR merged but the local branch could not be deleted).
 _HARD_MERGE_FAIL_RE = re.compile(
@@ -171,14 +184,48 @@ def _is_devenv_cwd(cwd: str) -> bool:
     return bool(_DEVENV_CWD_RE.search(cwd or ""))
 
 
+def _devenv_merge_pr(command: str, cwd: str) -> str | None:
+    """Return the dev-env PR number a `gh pr merge` invocation targets, else None.
+
+    Scoped to the merge invocation's own argument span (`_MERGE_ARGS_RE`) so a
+    `/pull/N` URL in an unrelated flag value or a chained sibling command can't
+    hijack it. Returns None for a queued `--auto` (not a completed merge) or an
+    explicit non-dev-env `--repo`. Repo identity: an explicit `--repo` wins, else a
+    dev-env `/pull/N` URL self-identifies, else a bare positional number is dev-env
+    only from a dev-env cwd. PR number: positional token preferred, then the URL.
+    """
+    am = _MERGE_ARGS_RE.search(command)
+    if not am:
+        return None
+    args = am.group(1)
+    if _AUTO_FLAG_RE.search(args):
+        return None
+
+    repo_m = _REPO_FLAG_RE.search(args)
+    url_m = _DEVENV_PR_URL_RE.search(args)
+    if repo_m:
+        is_devenv = repo_m.group(1) == DEVENV_REPO
+    elif url_m:
+        is_devenv = True  # a dev-env /pull/N URL names the repo itself
+    else:
+        is_devenv = _is_devenv_cwd(cwd)
+    if not is_devenv:
+        return None
+
+    num_m = _MERGE_POS_NUM_RE.search(args)
+    if num_m:
+        return num_m.group(1)
+    return url_m.group(1) if url_m else None
+
+
 def detect_board_actions(calls: list[tuple[str, str, str]]) -> list[dict]:
     """Detect high-confidence dev-env board actions among paired Bash calls.
 
     A *create* counts when the command is `gh issue/pr create` and its output
     carries a dev-env issue/PR URL (a successful create → board add expected).
-    A *merge* counts when the command is `gh pr merge` naming a dev-env PR (URL,
-    or a bare number from a dev-env cwd) and the output shows no hard merge
-    failure (Done-move + usage snapshot expected).
+    A *merge* counts when the command is a completed `gh pr merge` naming a dev-env
+    PR (see `_devenv_merge_pr`: not a queued `--auto`, not another `--repo`) and the
+    output shows no hard merge failure (Done-move + usage snapshot expected).
     """
     actions: list[dict] = []
     for command, output, cwd in calls:
@@ -189,14 +236,7 @@ def detect_board_actions(calls: list[tuple[str, str, str]]) -> list[dict]:
                 kind = "issue" if m.group(1) == "issues" else "PR"
                 actions.append({"action": "create", "label": f"{kind} {m.group(0)}"})
         if _MERGE_RE.search(command):
-            pr = None
-            m = _DEVENV_PR_URL_RE.search(command) or _DEVENV_PR_URL_RE.search(output)
-            if m:
-                pr = m.group(1)
-            elif _is_devenv_cwd(cwd):
-                num = _MERGE_NUM_RE.search(command)
-                if num:
-                    pr = num.group(1)
+            pr = _devenv_merge_pr(command, cwd)
             if pr and not _HARD_MERGE_FAIL_RE.search(output):
                 actions.append({"action": "merge", "label": f"PR #{pr}"})
     return actions
@@ -246,6 +286,17 @@ def sentinel_path(session_id: str) -> Path:
     return SCRATCH / f"{SENTINEL_PREFIX}{session_id}.flag"
 
 
+def mark_resolved(session_id: str) -> None:
+    """Record that this session needs no further checking on later Stops."""
+    if not session_id:
+        return
+    try:
+        SCRATCH.mkdir(exist_ok=True)
+        sentinel_path(session_id).write_text("")
+    except Exception:
+        pass
+
+
 def find_transcript(session_id: str) -> Path | None:
     matches = list(PROJECTS.glob(f"**/{session_id}.jsonl"))
     return matches[0] if matches else None
@@ -286,7 +337,8 @@ def main() -> None:
 
     session_id = data.get("session_id") or ""
 
-    # Fire at most once per session.
+    # Resolved once per session — skip the transcript re-scan on later Stops. (Stop
+    # fires at every turn-end, many times per session.)
     if session_id and sentinel_path(session_id).exists():
         sys.exit(0)
 
@@ -303,17 +355,15 @@ def main() -> None:
         sys.exit(0)
 
     actions = should_emit(records)
-    if not actions:
-        sys.exit(0)
-
-    if session_id:
-        try:
-            SCRATCH.mkdir(exist_ok=True)
-            sentinel_path(session_id).write_text("")
-        except Exception:
-            pass
-
-    print(format_advisory(actions))
+    if actions:
+        mark_resolved(session_id)
+        print(format_advisory(actions))
+    elif posttooluse_attachment_present(records):
+        # PostToolUse dispatch works this session (a session-level property; ADR-053),
+        # so it can never be inert — resolve it so later Stops skip the full re-scan.
+        # A session with no board action *and* no PostToolUse attachment stays
+        # unresolved, so a board action later in the session is still caught.
+        mark_resolved(session_id)
     sys.exit(0)
 
 
