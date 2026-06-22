@@ -22,6 +22,9 @@ Usage:
   --scan-dir   Discover and prune all git repos directly under the given directory.
                Skips repos with no GitHub remote or no claude/* worktrees.
                Example: --scan-dir C:/Users/brown/Git
+  --liveness-window-min N
+               Skip any worktree whose Claude transcript was written within the last N
+               minutes (an active session). Defaults to 1440 (24h). See ADR-051.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import os
@@ -30,10 +33,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _worktree_liveness import worktree_session_is_live
+
 
 # Default: the repo that owns this script (dev-env). Override with --repo-path.
 _DEFAULT_REPO = str(Path(__file__).resolve().parents[2])
 BRANCH_PREFIX = "claude/"
+
+# Skip a worktree whose Claude session wrote its transcript within this window — removing
+# a live session's worktree severs it mid-task (dev-env#384). 24h, not the shorter reclaim
+# window: `git worktree remove` is destructive, so the long guard is warranted; the only
+# cost is a merged worktree lingering up to a day longer. Override with --liveness-window-min.
+LIVENESS_WINDOW_SECONDS = 24 * 60 * 60
 
 
 def _repo_from_args() -> str:
@@ -52,6 +63,18 @@ def _scan_dir_from_args() -> str | None:
                 return str(Path(sys.argv[i + 1]).resolve())
             sys.exit("--scan-dir requires an argument")
     return None
+
+
+def _liveness_window_seconds_from_args() -> int:
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg == "--liveness-window-min":
+            if i + 1 < len(sys.argv):
+                try:
+                    return int(float(sys.argv[i + 1]) * 60)
+                except ValueError:
+                    sys.exit("--liveness-window-min requires a numeric argument")
+            sys.exit("--liveness-window-min requires an argument")
+    return LIVENESS_WINDOW_SECONDS
 
 
 def run(args: list[str], cwd: str, check: bool = False) -> subprocess.CompletedProcess:
@@ -130,7 +153,7 @@ def primary_worktree_path(worktrees: list[dict]) -> str:
     return str(Path(worktrees[0]["path"]).resolve()) if worktrees else ""
 
 
-def prune_one(repo: str, dry_run: bool) -> tuple[int, int, bool]:
+def prune_one(repo: str, dry_run: bool, liveness_window_seconds: int) -> tuple[int, int, bool]:
     """Prune merged claude/* worktrees in a single repo. Returns (pruned, skipped, fetch_failed)."""
     try:
         gh_repo = detect_gh_repo(repo)
@@ -166,6 +189,15 @@ def prune_one(repo: str, dry_run: bool) -> tuple[int, int, bool]:
         # Always skip the primary worktree and wherever this process is running
         if path == primary or path == cwd:
             skipped.append((path, "primary or current worktree"))
+            continue
+
+        # Skip a worktree with a live Claude session (recent transcript activity). The
+        # cwd guard above only covers THIS process; an out-of-process routine cannot see
+        # another worktree's active session except via its transcript mtime — removing a
+        # live worktree severs the session mid-task (dev-env#384, ADR-051). Additive: this
+        # only ever adds a skip, never removes more than the merged/clean checks below.
+        if worktree_session_is_live(path, window_seconds=liveness_window_seconds):
+            skipped.append((path, "active Claude session (recent transcript activity)"))
             continue
 
         # Non-primary worktrees checked out on main: always safe to remove — main
@@ -225,6 +257,7 @@ def prune_one(repo: str, dry_run: bool) -> tuple[int, int, bool]:
 def main() -> None:
     dry_run = "--dry-run" in sys.argv
     scan_dir = _scan_dir_from_args()
+    liveness_window_seconds = _liveness_window_seconds_from_args()
 
     if dry_run:
         print("[dry-run] no changes will be made")
@@ -238,7 +271,7 @@ def main() -> None:
         total_pruned = total_skipped = 0
         fetch_failed_repos: list[str] = []
         for repo in repos:
-            p, s, ff = prune_one(repo, dry_run)
+            p, s, ff = prune_one(repo, dry_run, liveness_window_seconds)
             total_pruned += p
             total_skipped += s
             if ff:
@@ -249,7 +282,7 @@ def main() -> None:
         print(summary)
     else:
         repo = _repo_from_args()
-        prune_one(repo, dry_run)
+        prune_one(repo, dry_run, liveness_window_seconds)
 
 
 if __name__ == "__main__":

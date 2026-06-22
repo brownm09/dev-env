@@ -27,4 +27,5 @@ Prune stale Claude session worktrees across all git repos under `C:/Users/brown/
 - Script uses `git branch -d` (not `-D`) and `git worktree remove` (no `--force`) — safe by default
 - Repos with no GitHub remote are silently skipped
 - Never remove the current session's worktree or any non-`claude/*` branch worktree
+- Never remove a worktree with an active Claude session — transcript activity within 24h. This routine runs out-of-process and cannot see other sessions via cwd, so the script's transcript-mtime guard is what protects them (ADR-051)
 - Temp files (if needed) go to `C:/Users/brown/.claude/scratch/`
