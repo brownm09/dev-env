@@ -54,7 +54,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _worktree_liveness import worktree_session_is_live
+from _worktree_liveness import parse_liveness_window_seconds, worktree_session_is_live
 
 
 # Default: the repo that owns this script (dev-env). Override with --repo-path.
@@ -110,13 +110,10 @@ def _protect_cwd_from_args() -> str:
 
 
 def _liveness_window_seconds_from_args() -> int:
-    val = _arg_value("--liveness-window-min")
-    if val is None:
-        return LIVENESS_WINDOW_SECONDS
     try:
-        return int(float(val) * 60)
-    except ValueError:
-        sys.exit("--liveness-window-min requires a numeric argument")
+        return parse_liveness_window_seconds(sys.argv[1:], LIVENESS_WINDOW_SECONDS)
+    except ValueError as exc:
+        sys.exit(str(exc))
 
 
 def run(args: list[str], cwd: str) -> subprocess.CompletedProcess:

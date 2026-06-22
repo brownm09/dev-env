@@ -50,9 +50,12 @@ loops, **in addition to** (never instead of) the existing merged/clean/cwd check
 Import-only module (no `_winsubp`, no `main()`) so its helpers unit-test offline:
 
 - `encode_project_slug(path)` — replicates the `:`/`\`/`/`/`.` → `-` transcript-dir encoding.
-- `transcript_dir_for(worktree, projects_root)` — exact-slug dir, else a fallback matching a
-  `projects/` subdir ending in `-worktrees-<basename>` (the random worktree basename is globally
-  unique, hedging a future encoding change; a collision only ever over-protects).
+- `transcript_dirs_for(worktree, projects_root)` — the exact-slug dir alone if it exists, else
+  *every* `projects/` subdir ending in `-worktrees-<basename>`; `worktree_session_is_live` takes the
+  newest `.jsonl` mtime **across all** matches. The random worktree basename hedges a future
+  encoding change, and aggregating the newest across matches keeps the over-protect-only property
+  even if a same-basename dir from another repo is also matched (a stale wrong-repo match can't mask
+  a live correct one). The `projects/` scan runs only on the rare exact-miss fallback path.
 - `newest_jsonl_mtime(dir)` — newest `*.jsonl` mtime found **recursively** (so an active
   `<uuid>/subagents/*.jsonl` keeps a worktree live even when the top transcript is briefly quiet).
 - `worktree_session_is_live(worktree, *, window_seconds, …)` — composes the above; `now`/
@@ -99,6 +102,13 @@ classification stays.
   process heartbeat would close this gap; Claude Code exposes none today. The windows are tuned so
   this is rare and the failure is the survivable one (a stripped `node_modules` reinstalls; a removed
   idle-merged worktree is recreatable).
+- **TOCTOU:** the check is non-locking, so a session could in principle begin in the sub-second gap
+  between the liveness check and the `git worktree remove` / `rmtree`. This is vanishingly unlikely
+  and self-correcting (the next run protects a now-active worktree); a lock file was rejected as
+  disproportionate for a periodic maintenance routine.
+- A negative `--liveness-window-min` would make `is_recent()` false for every real transcript and
+  silently disable the guard, so `parse_liveness_window_seconds` rejects it (`>= 0` only); `0` is
+  allowed as an explicit opt-out.
 - The two-window split is observable: in the verification dry-run, a worktree active within 24h but
   not 6h was protected by prune yet eligible for reclaim — the design working as intended.
 - Adds one `is_dir()` + a small recursive `*.jsonl` glob per candidate worktree (few per repo);
