@@ -12,6 +12,7 @@ fi
 # Scratch temp file — use the literal scratch dir, not $TMPDIR (Git Bash sets $TMPDIR to a
 # Unix path that Node-on-Windows can't resolve; see the global temp-path rule / dev-env#334).
 TMPFILE="C:/Users/brown/.claude/scratch/mergeready_$$.json"
+trap 'rm -f "$TMPFILE"' EXIT
 
 for REPO in "${REPOS[@]}"; do
   echo "================ $REPO ================"
@@ -32,7 +33,7 @@ for REPO in "${REPOS[@]}"; do
   const ready=[], waiting=[];
   for (const p of prs) {
     if (p.isDraft) continue;
-    const c = sum(p.statusCheckRollup);
+    const c = sum(p.statusCheckRollup || []);
     const line = `#${p.number} ${p.title}  [${p.mergeStateStatus}] ${c.ok}✓ ${c.pending}… ${c.fail}✗`;
     if (p.mergeable==="MERGEABLE" && p.mergeStateStatus==="CLEAN" && c.fail===0 && c.pending===0) ready.push(line);
     else waiting.push(line);
