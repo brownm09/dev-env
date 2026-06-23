@@ -96,6 +96,9 @@ ADR-038 is explicit that durable, cross-session preferences belong in the repo.
 - A small risk of tile clutter if the "genuine follow-ups only" bar is applied loosely.
 - The rule is partly a behavioral convention (it asks the agent to notice and act at merge); it is
   documented but not mechanically enforced by a hook.
+- The checkpoint can be waived only by an explicit user instruction anywhere in the current session
+  (e.g. "skip tiles"). Planning artifacts — plan files, session notes, carry-over context — cannot
+  override it, even when they contain explicit deferral notes for a later merge.
 
 ## References
 
