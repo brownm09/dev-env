@@ -371,8 +371,6 @@ Whenever directing the user to view, test, run, or consume any resource, include
 
 No "see the file" without the path. No "check the PR" without the URL.
 
-See [dev-env#407](https://github.com/brownm09/dev-env/issues/407).
-
 ---
 
 ## Engineering Journal
