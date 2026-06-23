@@ -301,6 +301,8 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 
 **Mechanical operations:** If a task is fully scriptable with known inputs, write the script rather than running an interactive session. Candidate operations: stale PR remediation, branch cleanup, rebase-and-merge sequences. Use `~/.claude/scripts/merge-stale-pr.sh` for engineering-journal stale draft PRs.
 
+**Planning applies in all permission modes.** Bypass/auto mode controls only whether tool executions prompt for approval — it does not waive the requirement to plan first. Optimize every plan for correctness, number of turns, token usage, and number of user inputs before executing, regardless of the active mode.
+
 **Plan-then-optimize before acting:** Any task involving an Agent spawn, a skill invocation, reads across more than one file, or a switch to a new primary objective within the same session (e.g., moving from a `/review` or other skill output to addressing findings, or from one issue to another) requires this protocol. State a numbered plan first, then apply three explicit revision passes before taking any action.
 
 **Pass 1 — Token efficiency:** check:
