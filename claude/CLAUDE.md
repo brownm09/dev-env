@@ -362,6 +362,17 @@ When writing or updating any architectural documentation (ADRs, design docs, REA
 
 ---
 
+## User-Actionable References
+
+Whenever directing the user to view, test, run, or consume any resource, include the exact reference inline — never make the user ask for it:
+
+- **Local files, scripts, and logs** — provide the absolute path or the exact invocation string. Never say "run the script" without the full path, or "see the log" without the file path.
+- **Remote resources (PRs, issues, deployed URLs)** — provide the full URL. Never say "check the PR" without the link, or "see the issue" without the URL.
+
+No "see the file" without the path. No "check the PR" without the URL.
+
+---
+
 ## Engineering Journal
 
 After each session (or at natural breakpoints for long sessions), create or update a session
