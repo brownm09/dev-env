@@ -278,6 +278,18 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_post_merge_tile_checkpoint.py
     ```
 
+24. **pre-merge-message-check test** — required when changing `claude/scripts/pre-merge-message-check.py`.
+    Exercises the pure `_GH_PR_MERGE_RE` regex and the `_read_queue()` helper offline (tmp files for
+    queue content; no network, no gh): pins that the merge-detection regex fires on bare / flagged /
+    chained `gh pr merge` invocations and stays silent on non-merge commands, that `_read_queue` returns
+    content verbatim, returns `""` for an empty or whitespace-only file, and returns `""` when the queue
+    file is absent (fail-open). The stdin plumbing and exit-2 emission are not covered (pure-helper
+    convention). ([ADR-061](docs/adr/061-pre-merge-message-queue.md))
+
+    ```bash
+    py -3 claude/scripts/tests/test_pre_merge_message_check.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

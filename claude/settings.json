@@ -41,6 +41,10 @@
           },
           {
             "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-message-check.py"
+          },
+          {
+            "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-findings-gate.py"
           }
         ]
