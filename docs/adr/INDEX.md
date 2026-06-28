@@ -65,3 +65,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [058](058-worktree-squatting-main-detection-correction.md) | Detect & Auto-Correct a Worktree Squatting `main` (Canonical Off `main`) | 2026-06-22 | Accepted | worktrees, main, squat, canonical, prune, dev-env-sync, post-merge, park, safety, hooks, symlinks |
 | [059](059-multi-pr-issue-hierarchy.md) | Multi-PR Decomposition: Top-Level Issue + Sub-Issue Hierarchy with Tile Context | 2026-06-23 | Accepted | issues, decomposition, tiles, workflow, global-rule |
 | [060](060-post-merge-tile-checkpoint-hook.md) | Post-Merge Tile Checkpoint Hook | 2026-06-28 | Accepted | hooks, post-tool-use, tiles, spawn-task, post-merge, enforcement, ADR-046 |
+| [061](061-pre-merge-message-queue.md) | Pre-Merge User Message Queue | 2026-06-28 | Accepted | hooks, pre-tool-use, merge, workflow, bypass-mode, feedback, global-rule |
