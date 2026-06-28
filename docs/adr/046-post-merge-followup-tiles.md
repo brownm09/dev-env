@@ -100,9 +100,24 @@ ADR-038 is explicit that durable, cross-session preferences belong in the repo.
   (e.g. "skip tiles"). Planning artifacts — plan files, session notes, carry-over context — cannot
   override it, even when they contain explicit deferral notes for a later merge.
 
+## Addendum — 2026-06-27: plan approval is not an override
+
+**Incident.** career-playbook PR #537 (Upstart SEM Cash Line) merged. Three follow-up PRs (#541, #542, #543) were identified during the session. The agent continued in-session on those PRs without spawning tiles, reasoning that an approved plan already scoped the follow-up work. Mike flagged this as the wrong behavior.
+
+**Clarification.** The existing rule addresses deferred planning artifacts ("plan files, session notes, carry-over context"). An approved in-session plan is different in character — it is an active user action — but it is still not an explicit instruction *about the tile checkpoint itself*. The principle is:
+
+> The tile checkpoint fires unconditionally after every `gh pr merge`. If follow-up work is already in-session or in an approved plan, spawn the tile anyway. The spawned sessions can be dismissed if the work is already underway. The tile is cheap; missing the capture is not.
+
+The only valid override remains a direct verbal instruction that names the tile step: "skip tiles", "don't spawn tiles", or equivalent. Plan approval — even when the approved plan explicitly scopes the follow-up work — does not qualify.
+
+**CLAUDE.md update.** The override sentence in `claude/CLAUDE.md` was amended to add: "Plan approval is not that instruction: even when the approved plan explicitly scopes the follow-up work in-session, the tile checkpoint still fires; spawn the tiles and let the user dismiss any whose work is already underway." Closes [dev-env#413](https://github.com/brownm09/dev-env/issues/413).
+
+---
+
 ## References
 
 - [dev-env#369](https://github.com/brownm09/dev-env/issues/369) — issue this ADR closes.
+- [dev-env#413](https://github.com/brownm09/dev-env/issues/413) — issue clarifying plan-approval edge case; closed by addendum above.
 - [ADR-012](012-post-merge-checklist-board-done-roadmap-update.md) — the post-merge checklist this extends.
 - [ADR-028](028-all-findings-merge-gate.md) — the file-and-link guidance the "genuine follow-ups" bar mirrors.
 - [ADR-038](038-durable-preferences-documented-in-repo.md) — durable preferences must be documented in the repo, not only in memory.
