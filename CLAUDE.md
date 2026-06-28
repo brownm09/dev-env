@@ -267,6 +267,17 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_worktree_topology.py
     ```
 
+23. **post-merge-tile-checkpoint test** — required when changing
+    `claude/scripts/post-merge-tile-checkpoint.py`. Exercises the pure
+    `is_successful_merge()` predicate offline (no subprocess, no network, no disk):
+    pins that a successful merge (exit 0 or stdout marker) triggers the tile checkpoint
+    reminder, while a non-merge command or a genuinely failed merge (non-zero exit,
+    no success marker) does not ([ADR-060](docs/adr/060-post-merge-tile-checkpoint-hook.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_post_merge_tile_checkpoint.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
