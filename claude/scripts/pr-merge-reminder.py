@@ -30,7 +30,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 
-from _hookio import read_command_output
+from _hookio import output_has_merge_marker, read_command_output
 
 # Matches the start of a statement token against `gh pr merge`, `gh pr create`,
 # or `git push`.
@@ -262,6 +262,16 @@ def _create_shard_step(output: str) -> str:
     )
 
 
+def _is_successful_merge_call(exit_code: int, output: str) -> bool:
+    """Return True iff a gh pr merge call completed the remote merge.
+
+    Worktree merges exit non-zero on local cleanup (e.g. 'main is already
+    checked out') even when the remote merge succeeded — check the success
+    marker too (issue #275 behaviour, mirrors post-merge-tile-checkpoint.py).
+    """
+    return exit_code == 0 or output_has_merge_marker(output)
+
+
 def main() -> None:
     raw = sys.stdin.read().strip()
     if not raw:
@@ -275,12 +285,9 @@ def main() -> None:
     if data.get("tool_name") != "Bash":
         sys.exit(0)
 
-    exit_code = data.get("tool_response", {}).get("exitCode", 0)
-    if exit_code != 0:
-        sys.exit(0)
-
     command = data.get("tool_input", {}).get("command", "")
     cwd = data.get("cwd", "<unknown>")
+    exit_code = data.get("tool_response", {}).get("exitCode", 0)
 
     is_create = is_pr_create_command(command)
     is_merge = is_pr_merge_command(command)
@@ -289,10 +296,20 @@ def main() -> None:
     if not (is_create or is_merge or is_push):
         sys.exit(0)
 
+    # gh pr merge in a worktree exits non-zero on local cleanup even when the
+    # remote merge succeeded; check the output marker too.
+    # gh pr create and git push are only acted on when they exit cleanly.
+    output = read_command_output(data)
+    if is_merge:
+        if not _is_successful_merge_call(exit_code, output):
+            sys.exit(0)
+    elif exit_code != 0:
+        sys.exit(0)
+
     messages = []
 
     if is_create:
-        shard_step = _create_shard_step(read_command_output(data))
+        shard_step = _create_shard_step(output)
         messages.append(
             "[journal-reminder] gh pr create detected — write the journal stub AND"
             " open-PR shard NOW:\n"
