@@ -43,6 +43,9 @@ def test_merge_with_number():
 def test_merge_chained():
     assert _check_regex("git fetch origin && gh pr merge --squash")
 
+def test_merge_after_semicolon():
+    assert _check_regex("git status; gh pr merge")
+
 def test_non_merge_gh_command():
     assert not _check_regex("gh pr create --title foo")
 
@@ -50,7 +53,7 @@ def test_unrelated_command():
     assert not _check_regex("git push origin main")
 
 def test_merge_in_string_but_not_command():
-    # "merge" appears in a comment but not as a gh subcommand
+    # "merge" appears inside a string argument, not as a gh subcommand
     assert not _check_regex("echo 'about to merge' && git push")
 
 
