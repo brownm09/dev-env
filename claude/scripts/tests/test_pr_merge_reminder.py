@@ -30,6 +30,7 @@ is_pr_create_command = pmr.is_pr_create_command
 is_pr_merge_command = pmr.is_pr_merge_command
 is_git_push_command = pmr.is_git_push_command
 _create_shard_step = pmr._create_shard_step
+_is_successful_merge_call = pmr._is_successful_merge_call
 
 # read_command_output lives in _hookio (a sibling of pr-merge-reminder.py).
 # SCRIPT.parent already on sys.path, so import it directly.
@@ -185,6 +186,38 @@ def test_shard_step_merge_url_not_matched() -> str:
 
 
 # ---------------------------------------------------------------------------
+# _is_successful_merge_call
+# ---------------------------------------------------------------------------
+
+def test_merge_call_clean_exit() -> str:
+    assert _is_successful_merge_call(0, "")
+    return "exit 0 + empty output -> fires"
+
+
+def test_merge_call_worktree_nonzero_with_marker() -> str:
+    # Worktree merges exit non-zero on local cleanup; the stdout success marker
+    # confirms the remote merge actually completed (issue #275 behaviour).
+    assert _is_successful_merge_call(
+        1, "Squashed and merged pull request #419"
+    )
+    return "exit 1 + 'Squashed and merged' marker -> fires"
+
+
+def test_merge_call_failed_no_marker() -> str:
+    # A genuine merge failure (non-zero, no success marker) must not fire.
+    assert not _is_successful_merge_call(
+        1, "X Pull request #419 is not mergeable"
+    )
+    return "exit 1 + no success marker -> no-op"
+
+
+def test_merge_call_exit_zero_trumps_no_marker() -> str:
+    # exit 0 is sufficient even when no success text appears (dry-run / quiet mode).
+    assert _is_successful_merge_call(0, "some other output with no merge line")
+    return "exit 0 + no marker -> fires (exit code is authoritative)"
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 
@@ -206,6 +239,10 @@ def main() -> int:
         ("shard step: issue URL not matched", test_shard_step_merge_url_not_matched),
         ("shard step: URL found via stdout field", test_shard_step_via_stdout_field),
         ("shard step: legacy .output fallback", test_shard_step_legacy_output_field_empty_gives_fallback),
+        ("merge call: exit 0 fires", test_merge_call_clean_exit),
+        ("merge call: exit 1 + marker fires (worktree case)", test_merge_call_worktree_nonzero_with_marker),
+        ("merge call: exit 1 no marker -> no-op", test_merge_call_failed_no_marker),
+        ("merge call: exit 0 trumps no marker", test_merge_call_exit_zero_trumps_no_marker),
     ]
     failed = 0
     for name, fn in tests:
