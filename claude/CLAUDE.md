@@ -105,6 +105,22 @@ Every project CLAUDE.md **must** also include a `## Observability` section descr
 - **PR branch state comes from the remote, not the local worktree.** Before judging whether a PR addressed findings or is mergeable: `git fetch origin <headRefName>`, then read via `git show origin/<headRefName>:<path>` — never the local tree, which may be stale or on another branch ([ADR-004](../docs/adr/004-pr-review-reads-from-remote.md)).
 - **Runbooks** for merging a PR from a worktree, separate clones for independent parallel work, deleting a remote branch in web sessions ([ADR-035](../docs/adr/035-git-push-delete-web-session-constraint.md)), and one-time `core.hooksPath` setup are in [`docs/REFERENCE.md` → Git Workflow Runbooks](../docs/REFERENCE.md#git-workflow-runbooks).
 
+### CI not firing — merge conflict silences GitHub Actions
+
+**Pattern:** A PR in `CONFLICTING` (merge conflict) state causes GitHub Actions `pull_request` events to never fire. GitHub cannot create the virtual merge commit at `refs/pull/N/merge`, so the event is silently dropped — no checks are queued, no runs appear.
+
+**Symptom:** `gh pr checks` returns "no checks reported" and `gh run list --branch <branch-name>` shows only stale runs from before the conflict.
+
+**Diagnosis:**
+```bash
+gh pr view <N> --json mergeable,mergeStateStatus
+# mergeable: "CONFLICTING" — direct conflict indicator; mergeStateStatus will also be "DIRTY"
+```
+
+**Fix:** Rebase (or squash-rebase) the branch onto `origin/main` and force-push. Once the conflict is resolved, GitHub recreates the merge ref and CI fires normally on the next push.
+
+Motivating incident: [lifting-logbook PR #604](https://github.com/brownm09/lifting-logbook/pull/604).
+
 ---
 
 ## Dev-Env & Project Boards
