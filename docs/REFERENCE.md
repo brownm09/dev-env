@@ -855,6 +855,18 @@ Opening brief: <paste the Next Session Context from the previous day's published
 <one paragraph — for the next session to read and open with>
 ```
 
+### Report / analysis artifacts (`sessions/<project>/reports/`)
+
+When a session produces a report or analysis the user requested (an audit, investigation
+write-up, comparison, findings summary, etc.), the full output is saved as
+`sessions/<project>/reports/YYYY-MM-DD-<slug>.md` and linked from that session's stub dialogue
+section. The behavioral trigger — report/analysis generation is a journal boundary, no PR
+required — lives in [`claude/CLAUDE.md`](../claude/CLAUDE.md) → Engineering Journal → Update
+triggers → *Report / analysis generated*. The artifact is committed alongside the stub on the
+day's `draft/YYYY-MM-DD` branch; `/journal-compose` does not inline it — the composed daily
+document references it through the stub's link. Short analyses (≲ one screen) may be inlined in
+the stub instead of linked.
+
 ### Canonical 11-section structure (composed once at day end)
 
 1. Header block (Topic, Repo/Branch, Issues closed, PRs merged)

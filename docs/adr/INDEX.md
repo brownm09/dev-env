@@ -66,3 +66,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [059](059-multi-pr-issue-hierarchy.md) | Multi-PR Decomposition: Top-Level Issue + Sub-Issue Hierarchy with Tile Context | 2026-06-23 | Accepted | issues, decomposition, tiles, workflow, global-rule |
 | [060](060-post-merge-tile-checkpoint-hook.md) | Post-Merge Tile Checkpoint Hook | 2026-06-28 | Accepted | hooks, post-tool-use, tiles, spawn-task, post-merge, enforcement, ADR-046 |
 | [061](061-pre-merge-message-queue.md) | Pre-Merge User Message Queue | 2026-06-28 | Accepted | hooks, pre-tool-use, merge, workflow, bypass-mode, feedback, global-rule |
+| [062](062-journal-report-analysis-trigger.md) | Report / Analysis Generation as a Journal Update Trigger | 2026-06-29 | Accepted | journal, stubs, reports, update-trigger, workflow, global-rule |

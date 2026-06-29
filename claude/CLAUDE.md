@@ -516,6 +516,7 @@ structure, and the draft-branch recovery procedure are documented in
   - PR merged (including auto-merge) — write or update a stub for the merge session (see Git Workflow → Write a stub on PR merge), then stop.
   - PR closed without merging — stub was already written at PR creation; stopping is optional (see Git Workflow → PR closed without merging)
   - PR updated (push to a branch with an open PR) — when the hook reminder fires after `git push`, update the engineering journal immediately: if a stub already exists for the current session, update it in place; otherwise create a new stub. Document what changed in this session (review findings addressed, approach decisions, what was pushed).
+  - **Report / analysis generated** — whenever the user requests any report or analysis (an audit, an investigation write-up, a comparison, a findings summary, etc.), capture it in the journal: save the full output as an artifact under `sessions/<project>/reports/YYYY-MM-DD-<slug>.md` and link it from the session stub (create the stub if none exists yet for the session). Report/analysis generation is itself a journal boundary — it does not require a PR. Short analyses (≲ one screen) may be inlined in the stub instead of linked; anything longer must be a linked artifact so the stub stays scannable. Applies to all projects.
 - The following do **not** auto-create a stub — they are not session boundaries:
   - Review-only sessions (`/review <PR-URL>`)
 
