@@ -35,6 +35,7 @@ assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 ppmp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ppmp)  # safe: main() is guarded by __main__
 is_successful_merge = ppmp.is_successful_merge
+extract_repo = ppmp.extract_repo
 
 
 def test_clean_merge_exit_zero() -> str:
@@ -66,12 +67,51 @@ def test_failed_merge_no_marker_ignored() -> str:
     return "gh pr merge failed (exit 1, no marker) -> no-op"
 
 
+# ---------------------------------------------------------------------------
+# extract_repo — pure-string resolution paths (dev-env#446 / ADR-067)
+#
+# The git-remote subprocess fallback is not tested (repo convention: no mocks).
+# The --repo flag path is already exercised implicitly by is_successful_merge
+# tests; these cover the new URL-extraction path added in ADR-067.
+# ---------------------------------------------------------------------------
+
+def test_extract_repo_from_url_in_command() -> str:
+    repo = extract_repo(
+        "gh pr merge https://github.com/brownm09/dev-env/pull/443 --squash --delete-branch",
+        "/Git/lifting-logbook",
+    )
+    assert repo == "brownm09/dev-env", f"got {repo!r}"
+    return "GitHub PR URL in command -> correct owner/repo regardless of cwd"
+
+
+def test_extract_repo_from_url_other_repo() -> str:
+    repo = extract_repo(
+        "gh pr merge https://github.com/brownm09/lifting-logbook/pull/99 --squash",
+        "/Git/dev-env",
+    )
+    assert repo == "brownm09/lifting-logbook", f"got {repo!r}"
+    return "GitHub PR URL for a different repo -> that repo's slug"
+
+
+def test_extract_repo_repo_flag_takes_precedence() -> str:
+    # --repo flag wins over any URL in the command string (first check in order).
+    repo = extract_repo(
+        "gh pr merge --repo brownm09/dev-env https://github.com/brownm09/lifting-logbook/pull/1",
+        "/Git/lifting-logbook",
+    )
+    assert repo == "brownm09/dev-env", f"--repo flag should win: got {repo!r}"
+    return "--repo flag takes precedence over GitHub URL in command"
+
+
 def main() -> int:
     tests = [
         ("clean merge (exit 0) pulls", test_clean_merge_exit_zero),
         ("worktree merge (exit 1 + marker) pulls", test_worktree_merge_marker_in_stderr),
         ("non-merge command ignored", test_non_merge_command_ignored),
         ("failed merge with no marker ignored", test_failed_merge_no_marker_ignored),
+        ("extract_repo: GitHub URL in command -> owner/repo", test_extract_repo_from_url_in_command),
+        ("extract_repo: URL for different repo", test_extract_repo_from_url_other_repo),
+        ("extract_repo: --repo flag beats URL", test_extract_repo_repo_flag_takes_precedence),
     ]
     failed = 0
     for name, fn in tests:

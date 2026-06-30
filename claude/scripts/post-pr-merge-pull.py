@@ -24,7 +24,7 @@ import re
 import subprocess
 import sys
 
-from _hookio import output_has_merge_marker, read_command_output
+from _hookio import effective_merge_dir, output_has_merge_marker, read_command_output
 from _worktree_topology import merge_park_target, parse_worktree_porcelain
 
 # Map GitHub repo slugs to local clone paths.
@@ -40,23 +40,43 @@ REPO_LOCAL_PATHS: dict[str, str | None] = {
 
 
 def extract_repo(command: str, cwd: str) -> str | None:
-    """Return 'owner/repo' from --repo flag, or infer from cwd via git remote."""
+    """Return 'owner/repo' for the merged PR, or None.
+
+    Resolution order (ADR-067):
+    1. ``--repo owner/repo`` flag — explicit, highest confidence.
+    2. GitHub PR URL in the command string — e.g. ``gh pr merge
+       https://github.com/owner/repo/pull/N``.  Pure parse, no subprocess.
+    3. ``cd <path> && gh pr merge`` chain: run git-remote on <path> so a
+       cross-repo merge correctly identifies the other repo, not cwd's repo.
+    4. Bare fallback: git-remote on cwd (pre-ADR-067 behaviour — still correct
+       when the merge was run directly from the target repo's cwd).
+    """
     m = re.search(r"--repo\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", command)
     if m:
         return m.group(1)
 
-    # Fall back: ask git for the remote URL in cwd
+    # GitHub PR URL in the command (e.g. `gh pr merge https://…/pull/N`)
+    m2 = re.search(
+        r"github\.com[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)/pull/\d+",
+        command,
+    )
+    if m2:
+        return m2.group(1)
+
+    # cd-chain scoping: a `cd /other/repo && gh pr merge` should query that
+    # repo's remote, not cwd's (the cross-repo incident from the #442 session).
+    effective_dir = effective_merge_dir(command, cwd)
     try:
         result = subprocess.run(
-            ["git", "-C", cwd, "remote", "get-url", "origin"],
+            ["git", "-C", effective_dir, "remote", "get-url", "origin"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
             url = result.stdout.strip()
             # https://github.com/owner/repo(.git)
-            m2 = re.search(r"github\.com[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?$", url)
-            if m2:
-                return m2.group(1)
+            m3 = re.search(r"github\.com[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?$", url)
+            if m3:
+                return m3.group(1)
     except Exception:
         pass
 

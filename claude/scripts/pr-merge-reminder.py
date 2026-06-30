@@ -31,7 +31,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 
-from _hookio import output_has_merge_marker, read_command_output
+from _hookio import effective_merge_dir, output_has_merge_marker, read_command_output
 
 # Matches the start of a statement token against `gh pr merge`, `gh pr create`,
 # or `git push`.
@@ -365,10 +365,12 @@ def main() -> None:
         )
 
     if is_merge:
+        merge_dir = effective_merge_dir(command, cwd)
         messages.append(
             "[journal-reminder] gh pr merge detected — update the engineering journal now:\n"
             f"  cwd: {cwd}\n"
-            "  1. Identify the project journal path from cwd.\n"
+            f"  repo: {merge_dir}\n"
+            "  1. Identify the project journal path from the repo above.\n"
             "  2. Check out or create the draft branch in engineering-journal.\n"
             "  3. Append a <!-- session: <slug> --> block documenting this PR merge.\n"
             "  4. Add token comment and <!-- next-session-context --> paragraph.\n"
