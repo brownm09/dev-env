@@ -99,6 +99,7 @@ Autonomous scheduled agents in `claude/routines/`. No user interaction.
 | Nightly 8:00 UTC (3 AM CDT) | `nightly-research` | Researches pending topics from the queue and writes structured markdown notes to `research-notes/` |
 | Biweekly (every other Sun 9am local) | `biweekly-retro` | Synthesizes a retrospective (global readout + per-repo sections + tracked ratio) from the trailing 4 weeks of journal entries; opens a report PR in `engineering-journal` and files deduped action-item issues in the correct repo per finding (cross-cutting → dev-env) |
 | Daily 6am local | `reconcile-project-board` | Adds open dev-env issues missing from the **Dev Env** board (#3) and surfaces any still missing Impact/Why; backstop for issues filed in background/`spawn_task` sessions where the add-hook is inert ([ADR-068](docs/adr/068-reconcile-project-board-orphan-issues.md)) |
+| Weekly (Mon 9am local) | `weekly-memory-audit` | Sweeps every project's memory store for never-ported durables, stale notes, and drift; auto-files deduped *promote* issues (label `memory-audit`) in the correct repo; commits a cross-project reconciliation report to `engineering-journal`. Read-only on memory — never edits or deletes a memory file. |
 
 ## Adding new configs
 

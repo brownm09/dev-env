@@ -73,3 +73,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [066](066-worktree-session-safety-rules.md) | Worktree Session Safety: Origin Verification, Bash cd Prevention, Deregistration Recovery | 2026-06-30 | Accepted | git, worktree, workflow, memory, documentation, global-rule |
 | [067](067-scope-merge-keyed-hooks-to-target-repo.md) | Scope Merge-Keyed Hook Operations to the Merge-Target Repo | 2026-06-30 | Accepted | hooks, post-tool-use, gh-pr-merge, cross-repo, correction |
 | [068](068-reconcile-project-board-orphan-issues.md) | Reconcile the Project Board Against Orphaned Issues (Backstop for the Inert Add-Hook) | 2026-06-30 | Accepted | routines, github-project, post-tool-use, hook-config, reconciliation, background-sessions, automation |
+| [069](069-weekly-memory-audit-routine.md) | Weekly Memory Audit Routine | 2026-06-30 | Accepted | routines, memory, scheduled-tasks, autonomy, dedup, ADR-038, ADR-048, ADR-013 |

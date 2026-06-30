@@ -1,0 +1,322 @@
+---
+name: weekly-memory-audit
+description: Every Monday, reconcile agent memory against the repos across all projects (read-only on memory) — auto-file deduped promote issues for never-ported durables in the correct repo, report stale/drift findings, and commit a reconciliation report to engineering-journal.
+schedule: "0 9 * * 1"
+# Monday 09:00 LOCAL time (the scheduled-tasks scheduler evaluates cron in local time, not UTC).
+# Weekly, every week — NO parity gate (unlike biweekly-retro, which gates to even ISO weeks).
+---
+
+Reconcile agent memory against the version-controlled instructions across every project. Run
+**fully autonomously** — never call `AskUserQuestion`, never wait for input, never prompt for
+approval.
+
+**Objective:** Every Monday, walk every project's memory store, classify each entry against the
+repos, and act in a deliberately **safe** shape: **read-only on memory — never edit or delete a
+memory file**. Auto-file a deduped *promote* issue for each never-ported durable (a durable rule
+with no current instruction home and no open tracking issue), routed to the **correct repo**.
+Report stale/drift findings without auto-actioning them (they need human judgment). Produce a
+committed cross-project reconciliation report in the engineering-journal repo, and report
+completion via push notification.
+
+This is the audit-time, cross-project, **non-destructive** complement to the single-project,
+interactive `/memory-audit` skill (which can delete, human-in-the-loop). It extends the
+memory-immortalization family — write-time porting (ADR-038), the write-time advisory hook
+(ADR-048) — with a recurring audit-time backstop. The weekly cadence and read-only-on-memory shape
+were chosen by the user on 2026-06-30 (see dev-env#439, child of dev-env#363).
+
+---
+
+## Step 0 — Sync the engineering-journal working tree
+
+Read `~/.claude/skills/sync-routine-worktree/SKILL.md` and execute its Behavior section end-to-end
+with these parameters:
+
+- `REPO` = `C:/Users/brown/Git/engineering-journal`
+- `VERIFY_FILE` = `sessions/meta/README.md`
+- `PREFIX` = `weekly-memory-audit`
+
+On **SUCCESS**, continue. On **ABORT**, exit cleanly — the push notification has already been sent;
+do not commit, do not open a PR, do not create an issue.
+
+The other repos (lifting-logbook, career-playbook, dev-env, …) are **not** synced here — their
+instruction homes are verified by reading `origin/main` directly (`git fetch` + `git show
+origin/main:<path>` in Step 2), so no working-tree sync is needed for them. The memory stores under
+`~/.claude/projects/.../memory/` are machine-local live state, not a repo — nothing to sync.
+
+---
+
+## Step 1 — Enumerate the memory stores in scope
+
+```bash
+RUN_DATE=$(date +%Y-%m-%d)
+SCRATCH="C:/Users/brown/.claude/scratch"
+PROJECTS="C:/Users/brown/.claude/projects"
+mkdir -p "$SCRATCH"
+DIRS="$SCRATCH/memaudit_dirs_${RUN_DATE}.txt"
+: > "$DIRS"
+
+for memdir in "$PROJECTS"/*/memory/; do
+  [ -d "$memdir" ] || continue
+  projdir=$(basename "$(dirname "$memdir")")
+  # EXCLUDE Claude-managed worktree project dirs — they hold subagent JSON, not durable memory.
+  case "$projdir" in *--claude-worktrees-*) continue ;; esac
+  # Require at least one memory entry (any .md, including MEMORY.md).
+  shopt -s nullglob; mds=("$memdir"*.md); shopt -u nullglob
+  [ ${#mds[@]} -gt 0 ] || continue
+  echo "${projdir}|${memdir}" >> "$DIRS"
+done
+```
+
+If `$DIRS` is empty, send a push notification — `weekly-memory-audit: no memory stores found —
+nothing to audit` — and exit cleanly with status 0.
+
+**Decode each project dir to its repo + GitHub slug** (used for instruction-home verification and
+issue routing). The project dir encodes the working-tree path with separators replaced by `-`:
+
+```bash
+# projdir e.g. "C--Users-brown-Git-lifting-logbook"
+base="${projdir#C--Users-brown-Git-}"     # -> "lifting-logbook"
+wt="C:/Users/brown/Git/${base}"           # working tree (may not exist)
+slug=""                                    # GitHub "owner/repo", empty if no remote
+if [ -d "$wt" ]; then
+  url=$(git -C "$wt" remote get-url origin 2>/dev/null || true)
+  if [ -n "$url" ]; then
+    slug=$(printf '%s' "$url" | sed -E 's#\.git$##; s#^git@[^:]+:##; s#^https?://[^/]+/##')
+  fi
+fi
+```
+
+Resolve the slug from the **actual git remote**, not the dir name — e.g. the `job-search` working
+tree may push to `brownm09/job-search-agent`. A project with no working tree or no remote routes its
+findings to **dev-env** (see Step 3).
+
+---
+
+## Step 2 — Classify each project's memory in parallel (read-only)
+
+For each project line in `$DIRS`, spawn **one background subagent** (`Agent` tool,
+`subagent_type: Explore`, `run_in_background: true`) in a **single message with all spawns together**
+(no synchronous preflight agent). `Explore` cannot Edit/Write, which structurally enforces the
+read-only-on-memory guarantee. Give each a self-contained prompt naming that project's exact
+`memory/` path and its decoded repo worktree + GitHub slug, and asking it to apply the read-only
+classification subset of the `/memory-audit` skill.
+
+For every `*.md` file in the memory dir **except `MEMORY.md`**, the subagent must:
+
+1. Parse the frontmatter: `name`, `description`, and the entry type (accept either a top-level
+   `type:` or a nested `metadata.type:` — both spellings exist). Read the body.
+2. Detect an **immortalization link** in the body using the same patterns as
+   `memory-write-advisory.py`: a GitHub ref `#\d+`, an `ADR-\d+` (case-insensitive), or the
+   substrings `CLAUDE.md` or `Documented in repo`.
+3. When the body **claims** an instruction home (a `CLAUDE.md`/docs path or "Documented in repo:
+   <path>"), verify it on the **current remote**, not the local worktree:
+   `git -C <repo-worktree> fetch origin --quiet` then `git show origin/main:<claimed-path>` — the
+   claim is real only if the path resolves on `origin/main`. (The worktree can be a commit behind;
+   verifying against `origin/main` avoids false "gap" flags.)
+4. Assign exactly one **disposition**:
+   - **remain** — durable (`user`/`feedback`/`project` encoding a cross-session rule) **and** a
+     verified, current instruction home exists. Keep as a recall cache.
+   - **promote** — durable, **no** immortalization link, **and** no verified instruction home: a
+     *never-ported durable*. This is the forbidden state ADR-038 targets. (If the entry has a link
+     to an **open** tracking issue but no instruction home yet, it is **tracked-pending** —
+     report-only, do **not** promote; the existing issue is its dedup.)
+   - **stale** — the body cites merged/closed/shipped work as still-pending, or is contradicted by
+     current code. Report-only.
+   - **drift** — the body names a file/function/flag that has moved or no longer exists.
+     Report-only.
+   - **transient** — session-local / fast-changing (open-PR lists, in-flight state). Not durable;
+     no action (ADR-048 exempts these).
+   - Also flag **index-drift**: the entry is missing from `MEMORY.md`, or its `MEMORY.md` line
+     disagrees with the file. Report-only.
+
+The subagent returns a structured findings list — one record per memory file with: file name, type,
+durable? (yes/no), instruction-home (path + verified yes/no, or "none"), disposition, a one-line
+rationale, and **for `promote` records additionally**: the rule text (verbatim or tight paraphrase),
+the suggested instruction home (which `CLAUDE.md`/doc it belongs in), and the entry's `name` slug.
+
+If a subagent fails or returns nothing for a project, **do not abort the whole run** — note the gap
+and continue with a partial report.
+
+---
+
+## Step 3 — Aggregate and route the promote findings
+
+Collect every subagent's findings. For each **promote** finding, determine the target repo:
+
+- **Project-specific durable** (a rule that governs only that project) → that project's own repo
+  (its resolved GitHub `slug`), when it has a remote with Issues enabled.
+- **Global / cross-cutting durable** (a workflow rule that applies across projects) → **dev-env**
+  (`brownm09/dev-env`).
+- A project with **no working tree / no remote**, and the **engineering-journal** project
+  (no issue tracker by convention) → **dev-env**.
+
+Build a project-qualified dedup slug for each promote finding: `memory-slug = <projdir>/<name>`
+(qualified by project dir so two projects' identically-named entries — and global rules from
+different projects, which all land in dev-env — never collide).
+
+---
+
+## Step 4 — File the deduped promote issues (one per never-ported durable)
+
+File **one issue per never-ported durable** — not one consolidated issue per repo. Per-rule issues
+match ADR-048's immortalization model (each durable gets its own issue that drives it into the
+instructions).
+
+**Dedup guard (mandatory — keeps the weekly cadence from re-filing the same gap).** For each target
+repo `R`, read its existing open `memory-audit` issues once, then skip any finding whose slug already
+appears (no `jq` — parse with `node -e`):
+
+```bash
+ISSUES="$SCRATCH/memaudit_issues_${R//\//_}.json"
+gh issue list --repo "brownm09/${R}" --label memory-audit --state open \
+  --json number,title,body > "$ISSUES" 2>/dev/null || echo '[]' > "$ISSUES"
+
+# returns DUP or NEW for a given slug
+node -e '
+  const fs=require("fs");
+  const issues=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+  const slug=process.argv[2];
+  const hit=issues.some(i=>((i.title||"")+"\n"+(i.body||"")).includes(slug));
+  console.log(hit?"DUP":"NEW");
+' "$ISSUES" "$slug"
+```
+
+For each remaining (NEW) finding, ensure the label exists then file the issue:
+
+```bash
+gh label create memory-audit --repo "brownm09/${R}" --color 5319e7 \
+  --description "Never-ported durable surfaced by the weekly-memory-audit routine" 2>/dev/null || true
+
+gh issue create --repo "brownm09/${R}" --label memory-audit \
+  --title "[memory-audit] Promote durable: ${NAME} (${PROJ})" \
+  --body "$(cat <<EOF
+A durable rule in agent memory has no current instruction home and no open tracking issue. The
+weekly-memory-audit routine surfaced it for promotion into the version-controlled instructions
+(per ADR-038 / ADR-048): memory is a private cache, not the source of truth.
+
+**Memory file:** \`${MEMORY_FILE}\`
+**Rule (from memory):**
+> ${RULE_TEXT}
+
+**Suggested instruction home:** ${SUGGESTED_HOME}
+
+**To resolve:** port the rule into the suggested instruction file, link this issue from both the
+memory body and its \`MEMORY.md\` pointer (ADR-048), then close.
+
+memory-slug: ${PROJ}/${NAME}
+
+_Filed automatically by the \`weekly-memory-audit\` routine (dev-env
+\`claude/routines/weekly-memory-audit/\`). Parents: dev-env#363, dev-env#439._
+EOF
+)"
+```
+
+Capture every filed issue URL, and keep a running count of **filed** vs **deduped** (skipped) per
+repo. If a repo has zero genuinely-new promote findings this run, file nothing for it.
+
+Stale, drift, index-drift, tracked-pending, and remain dispositions are **never** auto-actioned —
+they go to the report only (Step 5).
+
+---
+
+## Step 5 — Write and PR the reconciliation report
+
+1. Ensure the audit folder exists; create a one-time README if missing:
+
+```bash
+EJ="C:/Users/brown/Git/engineering-journal"
+AUDIT_DIR="$EJ/sessions/meta/memory-audit"
+mkdir -p "$AUDIT_DIR"
+if [ ! -f "$AUDIT_DIR/README.md" ]; then
+  cat > "$AUDIT_DIR/README.md" <<'EOF'
+# Cross-Project Memory→Repo Reconciliation Audits
+
+Auto-generated by the `weekly-memory-audit` routine (dev-env `claude/routines/weekly-memory-audit/`).
+Each `YYYY-MM-DD-audit.md` reconciles every project's agent memory against the version-controlled
+instructions. The routine is **read-only on memory** — it never edits or deletes a memory file
+(deletion stays human-in-the-loop via the `/memory-audit` skill). It auto-files deduped *promote*
+issues (label `memory-audit`) for never-ported durables, routed to the correct repo
+(project-specific → that repo; global/cross-cutting → dev-env); stale / drift / index-drift findings
+are reported here only. See ADR-069, ADR-038, ADR-048.
+EOF
+fi
+```
+
+2. Write the report to `${AUDIT_DIR}/${RUN_DATE}-audit.md`:
+   - A title + the run date + the projects scanned.
+   - A one-line summary: `<N> projects, <F> memory files; <G> never-ported durables → <I> issues
+     filed (<D> deduped); <S> stale/drift/index-drift findings (report-only)`.
+   - The full **cross-project reconciliation table**, grouped by project:
+
+     ```
+     | Project | Memory file | Type | Durable? | Instruction home (verified) | Drift | Disposition |
+     |---|---|---|---|---|---|---|
+     ```
+   - A **"Promote issues filed"** subsection — each new issue (repo#N + URL) and the deduped/skipped
+     slugs.
+   - A **"Stale / drift / index-drift (report-only)"** subsection — each finding with file, what is
+     stale/wrong, and the suggested human fix. These are *not* auto-actioned by design.
+
+3. Commit on a dedicated branch and open a PR to `main` (this repo squash-merges; do **not** commit
+   to `main` directly, and do **not** auto-merge — auto-merge is disabled by ADR-031, the user
+   reviews and merges):
+
+```bash
+cd "$EJ"
+git checkout -b "memory-audit/${RUN_DATE}" origin/main 2>/dev/null || git checkout "memory-audit/${RUN_DATE}"
+git add "sessions/meta/memory-audit/${RUN_DATE}-audit.md" "sessions/meta/memory-audit/README.md"
+git commit -m "[docs] Weekly memory audit ${RUN_DATE} (cross-project reconciliation)"
+git push -u origin "memory-audit/${RUN_DATE}"
+gh pr create --repo brownm09/engineering-journal \
+  --base main --head "memory-audit/${RUN_DATE}" \
+  --title "Weekly memory audit ${RUN_DATE}" \
+  --body "Automated cross-project memory→repo reconciliation for ${RUN_DATE}. Read-only on memory (no memory file was edited or deleted). Promote issues filed: <Step 4 urls>. Stale/drift findings are report-only — see the report."
+```
+
+If any git/PR step fails, push-notify `weekly-memory-audit: report git/PR step failed — draft at
+${AUDIT_DIR}/${RUN_DATE}-audit.md` and continue to Step 6 (the report file still exists locally for
+recovery).
+
+---
+
+## Step 6 — Report
+
+Send a push notification summarizing the run:
+
+```
+weekly-memory-audit ${RUN_DATE} complete — <N> projects, <F> memory files.
+<G> never-ported durables; <I> issues filed (<D> deduped).
+<S> stale/drift findings (report-only).
+Report PR: <url>
+```
+
+Clean up any scratch files this run created.
+
+---
+
+## Constraints
+
+- **Read-only on memory.** The routine **never** edits or deletes a memory file or `MEMORY.md`.
+  Deletion and in-place fixes stay human-in-the-loop via the interactive `/memory-audit` skill. An
+  unattended cron must not mutate the user's memory.
+- **Memory stores:** `C:/Users/brown/.claude/projects/*/memory/`; exclude `*--claude-worktrees-*`
+  project dirs.
+- **Engineering-journal repo:** `C:/Users/brown/Git/engineering-journal`; report path
+  `sessions/meta/memory-audit/YYYY-MM-DD-audit.md`.
+- **Cadence:** weekly Monday 09:00 local trigger — **no parity gate** (runs every week).
+- **One promote issue per never-ported durable**, labelled `memory-audit`, deduped by the
+  project-qualified `memory-slug`. **Never** call `AskUserQuestion`.
+- **Never** commit to `main`; open a PR. **Never** auto-merge (ADR-031).
+- **Scratch dir:** `C:/Users/brown/.claude/scratch/` — all temp files; never `/tmp/`.
+- **No `jq`** — use `node -e` for JSON parsing.
+- **Platform:** Windows 11, Git Bash syntax.
+- **App-open caveat:** scheduled tasks run while the Claude app is open; if it was closed when the
+  task was due, the run happens on next launch.
+
+> **Dual-copy registration caveat (dev-env#344).** This file is the **canonical, version-controlled**
+> definition (`dev-env/claude/routines/weekly-memory-audit/`, surfaced at
+> `~/.claude/routines/weekly-memory-audit/` via the directory junction). The scheduler reads a
+> **separate** live copy at `~/.claude/scheduled-tasks/weekly-memory-audit/SKILL.md`, materialized by
+> the `create_scheduled_task` MCP tool — the two do **not** auto-sync. Any edit to this routine must
+> be applied to **both** copies (update this file in a dev-env PR, then re-register / update the live
+> task via the scheduled-tasks MCP). See ADR-069.
