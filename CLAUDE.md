@@ -327,7 +327,7 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     scratch directory is absent, and that `find_transcript` returns the matching path (or `None`)
     including when the JSONL is nested under a project subdirectory. Imported by
     `posttooluse-inert-advisory.py`, `reconcile-open-prs.py`, and `token-tracker.py`
-    ([ADR-063](docs/adr/063-shared-hookutil-sentinel-transcript-locate.md)).
+    ([ADR-064](docs/adr/064-shared-hookutil-sentinel-transcript-locate.md)).
 
     ```bash
     py -3 claude/scripts/tests/test_hookutil.py

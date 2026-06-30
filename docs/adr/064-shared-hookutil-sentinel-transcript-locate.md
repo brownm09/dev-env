@@ -1,4 +1,4 @@
-# ADR-063 — Shared `_hookutil` Module for Per-Session Sentinel and Transcript-Locate Helpers
+# ADR-064 — Shared `_hookutil` Module for Per-Session Sentinel and Transcript-Locate Helpers
 
 **Date:** 2026-06-30
 **Status:** Accepted
