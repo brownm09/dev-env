@@ -38,11 +38,17 @@ def cleanup_stale_sentinels(prefix: str, scratch: Path | None = None) -> None:
     root = scratch if scratch is not None else SCRATCH
     cutoff = time.time() - MAX_AGE_DAYS * 86400
     try:
-        for f in root.glob(f"{prefix}*.flag"):
+        flags = list(root.glob(f"{prefix}*.flag"))
+    except Exception:
+        return
+    # Guard each file independently — a single stat()/unlink() failure (race,
+    # permission) must not abort cleanup of the remaining sentinels.
+    for f in flags:
+        try:
             if f.stat().st_mtime < cutoff:
                 f.unlink(missing_ok=True)
-    except Exception:
-        pass
+        except Exception:
+            continue
 
 
 def sentinel_path(prefix: str, session_id: str, scratch: Path | None = None) -> Path:
@@ -62,5 +68,6 @@ def find_transcript(session_id: str, projects: Path | None = None) -> Path | Non
     ``~/.claude/projects/``).  *projects* is injectable for offline tests.
     """
     root = projects if projects is not None else PROJECTS
-    matches = list(root.glob(f"**/{session_id}.jsonl"))
-    return matches[0] if matches else None
+    # Session ids are unique, so the first match is the answer — next() short-circuits
+    # instead of materializing every JSONL under ~/.claude/projects/.
+    return next(root.glob(f"**/{session_id}.jsonl"), None)

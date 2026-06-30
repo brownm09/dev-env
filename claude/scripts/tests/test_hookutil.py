@@ -98,11 +98,13 @@ def test_find_transcript_not_found() -> str:
 
 
 def test_find_transcript_nested() -> str:
+    # Transcript two levels below the projects root (e.g. a subagent JSONL under
+    # a project dir) — the `**` glob must still find it.
     with tempfile.TemporaryDirectory() as root:
         projects = Path(root)
         nested = projects / "proj" / "subagents"
         nested.mkdir(parents=True)
-        jsonl = projects / "proj" / "sid42.jsonl"
+        jsonl = nested / "sid42.jsonl"
         jsonl.write_text("")
         result = _hookutil.find_transcript("sid42", projects=projects)
         assert result == jsonl, f"expected {jsonl}, got {result}"
