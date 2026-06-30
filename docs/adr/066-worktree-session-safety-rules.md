@@ -1,4 +1,4 @@
-# ADR-065 — Worktree Session Safety: Origin Verification, Bash `cd` Prevention, and Deregistration Recovery
+# ADR-066 — Worktree Session Safety: Origin Verification, Bash `cd` Prevention, and Deregistration Recovery
 
 **Date:** 2026-06-30
 **Status:** Accepted

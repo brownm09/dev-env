@@ -598,7 +598,7 @@ npm install                                          # from the recreated worktr
 **Root cause.** Disk pressure from many worktrees each carrying a full monorepo `node_modules`
 (dev-env#306). Complements the orphan-liveness guard of
 [ADR-024](adr/024-worktree-path-guard-hook.md) with the recovery procedure; decision:
-[ADR-065](adr/065-worktree-session-safety-rules.md).
+[ADR-066](adr/066-worktree-session-safety-rules.md).
 
 ### Deleting a remote branch in Claude Code web sessions
 
