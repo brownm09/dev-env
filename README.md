@@ -98,6 +98,7 @@ Autonomous scheduled agents in `claude/routines/`. No user interaction.
 | Every 6 hours | `reclaim-worktree-disk` | Strips regenerable `node_modules`/`.turbo` from idle Claude worktrees under `.claude/worktrees/`, reclaiming disk between weekly prune runs; skips any worktree with an active Claude session (transcript activity within 6h, see [ADR-051](docs/adr/051-worktree-liveness-guard.md)) |
 | Nightly 8:00 UTC (3 AM CDT) | `nightly-research` | Researches pending topics from the queue and writes structured markdown notes to `research-notes/` |
 | Biweekly (every other Sun 9am local) | `biweekly-retro` | Synthesizes a retrospective (global readout + per-repo sections + tracked ratio) from the trailing 4 weeks of journal entries; opens a report PR in `engineering-journal` and files deduped action-item issues in the correct repo per finding (cross-cutting → dev-env) |
+| Daily 6am local | `reconcile-project-board` | Adds open dev-env issues missing from the **Dev Env** board (#3) and surfaces any still missing Impact/Why; backstop for issues filed in background/`spawn_task` sessions where the add-hook is inert ([ADR-067](docs/adr/067-reconcile-project-board-orphan-issues.md)) |
 
 ## Adding new configs
 

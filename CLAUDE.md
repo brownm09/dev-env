@@ -346,6 +346,23 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_pr_merge_reminder.py
     ```
 
+29. **reconcile-project-board test** — required when changing `claude/scripts/reconcile-project-board.py`.
+    Exercises the pure helpers offline (no network/gh/disk): pins `canonical_repo_root` (a Claude-managed
+    worktree path resolves to the canonical checkout where the machine-local hook-config lives), `field_key`
+    (field name -> item-list JSON key), `board_issue_numbers` (ignores PRs / cross-repo / number-less items),
+    the `compute_orphans` set difference (open issues minus board issues — the #434/#435/#436 case),
+    `item_missing_fields` / `board_items_missing_fields` (a field is missing unless it holds a non-empty
+    value; only OPEN same-repo issues are surfaced), `looks_like_scope_error`, and `render_report` —
+    including the **no-guessing contract** (it emits `gh project item-edit` commands but never assigns a
+    field value), the dry-run wording, and the machine-readable `RESULT:` line the routine reads. The `gh`
+    boundary (`fetch_open_issues` / `fetch_board_items` / `add_to_project`) is not mocked (repo convention) —
+    it is exercised by the `--dry-run` integration run in the PR
+    ([ADR-067](docs/adr/067-reconcile-project-board-orphan-issues.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_reconcile_project_board.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
