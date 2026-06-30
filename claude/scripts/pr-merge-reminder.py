@@ -24,7 +24,6 @@ Exit 2  — gh pr create, gh pr merge, or git push (open PR) detected;
           reminder(s) emitted via stderr
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
-import _hookutil
 import json
 import os
 import re
@@ -43,11 +42,6 @@ _PUSH_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?git\s+push\b")
 # Path fragment that identifies the engineering-journal repo — push events
 # there are handled by stub-push-archive-reminder.py, not this script.
 _EJ_REPO_FRAGMENT = "engineering-journal"
-
-# Per-session, per-PR sentinel prefix.  The git-push journal reminder is
-# idempotent guidance, so it fires at most once per open PR per session instead
-# of on every push.  cleanup_stale_sentinels(SENTINEL_PREFIX) reaps old flags.
-SENTINEL_PREFIX = "pr-merge-reminder-"
 
 # A `cd <path> &&` (or `;`) prefix chains a later `git push` into <path>'s repo,
 # not cwd's.  Captures the directory token (quoted or bare) so the open-PR lookup
@@ -282,34 +276,6 @@ def _effective_push_dir(command: str, cwd: str) -> str:
     return path
 
 
-def _push_sentinel(pr_number: int, session_id: str, scratch=None):
-    """Per-PR, per-session sentinel-flag path for the git-push reminder.
-
-    *scratch* overrides ``_hookutil.SCRATCH`` (used by the offline tests)."""
-    return _hookutil.sentinel_path(f"{SENTINEL_PREFIX}{pr_number}-", session_id, scratch)
-
-
-def _push_reminder_already_sent(pr_number: int, session_id: str, scratch=None) -> bool:
-    """True iff this PR's push reminder has already fired in this session.
-
-    On any error, returns False so the reminder still fires — the reminder is
-    advisory and over-firing once is preferable to silent suppression."""
-    try:
-        return _push_sentinel(pr_number, session_id, scratch).exists()
-    except Exception:
-        return False
-
-
-def _mark_push_reminder_sent(pr_number: int, session_id: str, scratch=None) -> None:
-    """Record that this PR's push reminder fired this session (best-effort)."""
-    try:
-        root = scratch if scratch is not None else _hookutil.SCRATCH
-        root.mkdir(parents=True, exist_ok=True)
-        _push_sentinel(pr_number, session_id, scratch).write_text("")
-    except Exception:
-        pass
-
-
 def _create_shard_step(output: str) -> str:
     """Return the shard-writing instruction lines for a gh pr create reminder.
 
@@ -362,7 +328,6 @@ def main() -> None:
     command = data.get("tool_input", {}).get("command", "")
     cwd = data.get("cwd", "<unknown>")
     exit_code = data.get("tool_response", {}).get("exitCode", 0)
-    session_id = data.get("session_id") or "unknown-session"
 
     is_create = is_pr_create_command(command)
     is_merge = is_pr_merge_command(command)
@@ -414,31 +379,28 @@ def main() -> None:
         # Scope the open-PR lookup to the repo the push actually targets: a
         # `cd <other-repo> && git push` must not fire the session cwd's reminder
         # (issue #442 / ADR-065).  Engineering-journal pushes route into the
-        # _open_pr_for_cwd EJ skip once their real target dir is used.
+        # _open_pr_for_cwd EJ skip once their real target dir is used.  The
+        # reminder fires on every qualifying push (each carries new journalable
+        # content); scoping — not dedup — is what removes the #442 cross-repo noise.
         push_dir = _effective_push_dir(command, cwd)
         pr = _open_pr_for_cwd(push_dir)
         if pr:
-            # Idempotent guidance — fire at most once per PR per session.
-            _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
-            pr_number = pr["number"]
-            if not _push_reminder_already_sent(pr_number, session_id):
-                _mark_push_reminder_sent(pr_number, session_id)
-                messages.append(
-                    f"[journal-reminder] git push detected for PR #{pr_number} — "
-                    f"update the engineering journal NOW:\n"
-                    f"  PR: {pr['url']} — {pr['title']}\n"
-                    f"  repo: {push_dir}\n"
-                    "  Check whether a stub already exists for this session:\n"
-                    "  - If YES: update it in place (append new content to the session block).\n"
-                    "  - If NO: create a new stub for this push session.\n"
-                    "  Document what changed and why (review findings addressed,\n"
-                    "  approach decisions, what was pushed).\n"
-                    "  1. Identify the project journal path from the repo above.\n"
-                    "  2. Check out the draft branch in engineering-journal.\n"
-                    "  3. Find today's stub for this session, or create one if absent.\n"
-                    "  4. Add/update token comment and <!-- next-session-context --> paragraph.\n"
-                    '  5. git commit -m "draft: YYYY-MM-DD session N" && git push'
-                )
+            messages.append(
+                f"[journal-reminder] git push detected for PR #{pr['number']} — "
+                f"update the engineering journal NOW:\n"
+                f"  PR: {pr['url']} — {pr['title']}\n"
+                f"  repo: {push_dir}\n"
+                "  Check whether a stub already exists for this session:\n"
+                "  - If YES: update it in place (append new content to the session block).\n"
+                "  - If NO: create a new stub for this push session.\n"
+                "  Document what changed and why (review findings addressed,\n"
+                "  approach decisions, what was pushed).\n"
+                "  1. Identify the project journal path from the repo above.\n"
+                "  2. Check out the draft branch in engineering-journal.\n"
+                "  3. Find today's stub for this session, or create one if absent.\n"
+                "  4. Add/update token comment and <!-- next-session-context --> paragraph.\n"
+                '  5. git commit -m "draft: YYYY-MM-DD session N" && git push'
+            )
 
     if not messages:
         sys.exit(0)

@@ -1,9 +1,9 @@
-# ADR-065 — Scope the git-push Journal Reminder to the Push-Target Repo, Once Per PR Per Session
+# ADR-065 — Scope the git-push Journal Reminder to the Push-Target Repo
 
 **Date:** 2026-06-30
 **Status:** Accepted
 **Refines:** [ADR-021](021-auto-stub-on-pr-push.md)
-**Tags:** hooks, post-tool-use, git-push, journal, sentinel, cross-repo, token-efficiency, correction
+**Tags:** hooks, post-tool-use, git-push, journal, cross-repo, correction
 
 ---
 
@@ -27,15 +27,16 @@ for cross-repo pushes, which are routine here:
   not the push target, so it missed entirely.
 
 The result was pure noise: a reminder naming a PR unrelated to what was pushed, repeated on
-every push of the session. ADR-021's own "reminder only, no subprocess lookup" alternative was
-rejected for being "too noisy"; the cwd-keyed lookup reintroduced noise by a different route
-once cross-repo pushes are in play.
+every push of the session. The defect was **misattribution** — the wrong repo's reminder
+firing on an unrelated push — *not* the per-push cadence itself. ADR-021's own "reminder only,
+no subprocess lookup" alternative was rejected for being "too noisy"; the cwd-keyed lookup
+reintroduced noise by a different route once cross-repo pushes are in play.
 
 ---
 
 ## Decision
 
-Three changes to the `is_push` branch of `pr-merge-reminder.py`:
+Two changes to the `is_push` branch of `pr-merge-reminder.py`, plus a hardening wrap:
 
 **1. Scope the open-PR lookup to the repo the push actually targets.**
 `_effective_push_dir(command, cwd)` parses a `cd <path> &&` (or `;`) prefix that chains into
@@ -47,20 +48,23 @@ and a journal push (`cd <engineering-journal> && …`) routes correctly into the
 confidently falls back to `cwd` (the pre-this-ADR behavior), and a mis-resolved directory
 simply yields no open PR downstream — a silent no-op, never a wrong-repo positive.
 
-**2. Fire at most once per open PR per session.**
-The reminder is idempotent guidance ("keep this PR's stub current"), so repeating it on every
-push is waste. A per-PR, per-session sentinel
-(`~/.claude/scratch/pr-merge-reminder-<pr>-<session_id>.flag`, via the shared `_hookutil`
-helpers from [ADR-064](064-shared-hookutil-sentinel-transcript-locate.md)) suppresses repeat
-fires for the same PR in the same session. `cleanup_stale_sentinels(SENTINEL_PREFIX)` reaps
-flags older than 30 days and runs **lazily** — only when an open PR is actually found, not on
-every Bash command (so the common no-PR push pays no extra cost).
+**2. Keep firing on every qualifying push — no per-session dedup.**
+Once attribution is correct, the reminder fires on every push to a branch that has an open PR
+**in the repo actually pushed**. This is intentional and matches ADR-021's update-trigger
+framing: each push in a review cycle (initial → after review-fix-1 → after review-fix-2)
+carries *new* journalable content, so re-nudging on each push is the wanted behavior. Scoping
+(change 1) — not deduplication — is what removes the #442 cross-repo noise: an
+`engineering-journal` push no longer fires `lifting-logbook`'s reminder, and a cross-repo
+`dev-env` push fires `dev-env`'s reminder (correct) or none. The fires that remain are all
+correct, repo-appropriate nudges. A once-per-PR-per-session sentinel was considered and
+**rejected** (see Alternatives) because it would suppress exactly those wanted later-push
+nudges.
 
 **3. Non-blocking hardening.**
 The `__main__` entry is wrapped in `try / except Exception: sys.exit(0)` so any internal error
-(sentinel I/O, parsing) exits 0 and never crashes the user's push flow. `sys.exit(2)` (the
-intentional reminder path) raises `SystemExit`, a `BaseException`, so it still propagates and
-the exit-2 contract is preserved.
+(parsing, I/O) exits 0 and never crashes the user's push flow. `sys.exit(2)` (the intentional
+reminder path) raises `SystemExit`, a `BaseException`, so it still propagates and the exit-2
+contract is preserved.
 
 ---
 
@@ -69,9 +73,10 @@ the exit-2 contract is preserved.
 **Positive:**
 - Cross-repo pushes no longer fire a misattributed reminder — it names the repo actually
   pushed, or stays silent.
-- A given PR's push reminder fires once per session instead of on every push: the ~6×/session
-  noise collapses to ≤ 1×.
-- `engineering-journal` pushes from a non-EJ cwd now correctly hit the EJ skip.
+- `engineering-journal` pushes from a non-EJ cwd now correctly hit the EJ skip, so the
+  journal-stub pushes that dominated the observed ~6×/session noise stop firing entirely.
+- Genuine pushes to an open-PR branch still nudge on every push (per ADR-021), now attributed
+  to the correct repo — preserving the per-push journal-update prompt the workflow relies on.
 - The hook is strictly more crash-safe than before (it previously had no top-level guard).
 
 **Trade-off / limits:**
@@ -87,21 +92,27 @@ the exit-2 contract is preserved.
 - `git -C <path> push` is not matched by the push detector at all (pre-existing; `_PUSH_RE`
   requires `git push` adjacency) and so never fires — unchanged by this ADR. (This is why
   pushing this very PR via `git -C <worktree> push` does not trip the reminder.)
-- The sentinel is keyed on `session_id`; a payload missing it degrades to a stable
-  `"unknown-session"` key (still dedupes within that session) rather than disabling dedup.
+- The reminder still fires once per qualifying push, so a multi-push session to the same open
+  PR gets one nudge per push. That is the intended cadence (each push carries new content), not
+  a regression — it is deliberately *not* deduplicated.
 
 ---
 
 ## Alternatives considered
 
-**Per-session sentinel only (no push-target scoping).** Collapses the 6× to 1×, but the single
-surviving fire is still misattributed to the cwd repo and can burn the cwd PR's
-once-per-session budget on an unrelated cross-repo push. Rejected alone; adopted *with* scoping
-so the two compose.
+**Add a once-per-PR-per-session sentinel (dedup the reminder).** A per-PR, per-session flag
+(`~/.claude/scratch/pr-merge-reminder-<pr>-<session>.flag`, via the shared `_hookutil`
+helpers from [ADR-064](064-shared-hookutil-sentinel-transcript-locate.md)) would suppress
+repeat fires for the same PR in one session, collapsing any residual repetition to ≤ 1×.
+**Rejected:** once scoping fixes attribution, the remaining fires are all correct, and each
+later push in a review cycle carries new journalable content the reminder is meant to prompt.
+Dedup would suppress precisely those wanted later-push nudges to buy a noise reduction that
+scoping already delivers. (An earlier draft of this ADR adopted the sentinel; it was dropped
+before merge in favor of every-push firing.)
 
-**Push-target scoping only (no sentinel).** Fixes attribution but still fires on every push to
-a genuinely-open-PR branch in the target repo. Rejected alone; the reminder is idempotent, so
-once per session suffices.
+**Reminder only, no subprocess lookup.** ADR-021 already rejected this for being too noisy
+(fires on every push regardless of PR state). Scoping keeps the subprocess lookup but points it
+at the right repo, which is the precise fix.
 
 **Rewrite ADR-021's cwd lookup to parse the push refspec.** ADR-021 already noted the
 `git branch --show-current` vs. refspec gap. Parsing `origin other:target` refspecs is
@@ -113,7 +124,7 @@ orthogonal to the cross-repo *directory* problem and far rarer in practice; out 
 
 - [ADR-021](021-auto-stub-on-pr-push.md) — the original auto-stub-on-push decision this refines.
 - [ADR-064](064-shared-hookutil-sentinel-transcript-locate.md) — the shared `_hookutil`
-  per-session sentinel helpers reused here.
+  per-session sentinel helpers, evaluated for the rejected dedup alternative above.
 - Git, *git-push Documentation* — https://git-scm.com/docs/git-push (a push resolves its remote
   from the repository it runs in; the working directory determines the target repo).
 - Issue [#442](https://github.com/brownm09/dev-env/issues/442) — tracked this fix.

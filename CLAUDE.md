@@ -337,11 +337,10 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     Exercises the pure command predicates (`is_pr_create_command` / `is_pr_merge_command` /
     `is_git_push_command`), the `_create_shard_step` / `_is_successful_merge_call` helpers, and the
     [ADR-065](docs/adr/065-scope-push-reminder-to-target-repo.md) push-scoping behavior offline
-    (injected tmp scratch dir, no network/gh): pins that `_effective_push_dir` redirects the open-PR
-    lookup to a `cd <repo> && git push` target — so a cross-repo push is evaluated against THAT repo,
-    not the session cwd — and falls back to cwd for a bare push, and that `_push_reminder_already_sent`
-    / `_mark_push_reminder_sent` fire the reminder at most once per PR per session. The live
-    `_open_pr_for_cwd` subprocess boundary is not covered (the repo avoids subprocess mocks).
+    (no network/gh): pins that `_effective_push_dir` redirects the open-PR lookup to a
+    `cd <repo> && git push` target — so a cross-repo push is evaluated against THAT repo, not the
+    session cwd — and falls back to cwd for a bare push. The live `_open_pr_for_cwd` subprocess
+    boundary is not covered (the repo avoids subprocess mocks).
 
     ```bash
     py -3 claude/scripts/tests/test_pr_merge_reminder.py
