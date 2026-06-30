@@ -307,8 +307,8 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     ```
 
 26. **prune-merged-worktrees test** — required when changing `claude/scripts/prune-merged-worktrees.py`.
-    Exercises `prune_one()` via subprocess mocking (the one exception to the pure-helper convention):
-    pins that a `subprocess.TimeoutExpired` from a slow `git worktree remove` is caught, the timed-out
+    Exercises `prune_one()` via subprocess mocking (subprocess.run mocking, unlike the other offline
+    pure-helper tests): pins that a `subprocess.TimeoutExpired` from a slow `git worktree remove` is caught, the timed-out
     worktree is counted as skipped, and the prune loop continues rather than propagating the exception
     and aborting the scan ([dev-env#350](https://github.com/brownm09/dev-env/issues/350)). The
     merge-detection and worktree-list steps are not covered here — they are exercised end-to-end by
