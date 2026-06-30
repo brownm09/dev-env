@@ -486,7 +486,7 @@ operational artifacts (compose lock files, log file timestamps).
    *(include `sessions/<project>/open-prs/` only if this session opened or merged a PR — it stages the added/deleted shard)*
 
 **Subsequent sessions:**
-1. `git -C C:/Users/brown/Git/engineering-journal pull origin draft/YYYY-MM-DD`
+1. `git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD && git -C C:/Users/brown/Git/engineering-journal pull`
 2. Read the open-PR records (`sessions/<project>/open-prs/*.json` shards, plus any legacy `open-prs.jsonl`) if present — include their PR list as session context before starting work (the `reconcile-open-prs.py` hook also surfaces this at session start).
 3. Find the most recent stub and read only its `<!-- next-session-context -->` paragraph:
    ```bash
