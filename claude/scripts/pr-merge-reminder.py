@@ -274,6 +274,10 @@ def _effective_push_dir(command: str, cwd: str) -> str:
         return cwd
     path = target.strip("\"'")
     if not os.path.isabs(path):
+        # A relative target resolves against cwd, not against any earlier `cd` in
+        # the same chain (`cd /a && cd b && git push` -> cwd/b, not /a/b).  That
+        # mis-resolve is a downstream silent no-op (no such dir -> no open PR),
+        # never a wrong-repo positive — a documented ADR-065 limit.
         path = os.path.normpath(os.path.join(cwd, path))
     return path
 

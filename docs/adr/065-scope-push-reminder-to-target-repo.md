@@ -79,6 +79,11 @@ the exit-2 contract is preserved.
   whose governing `cd` is hidden behind quoting or an unusual construct falls back to `cwd`
   (i.e. ADR-021 behavior) — it under-corrects rather than mis-fires. Accepted: the dominant
   real shape is a simple `cd <repo> && … && git push` chain, which is handled and unit-tested.
+- A *relative* `cd` in a multi-`cd` chain resolves against `cwd`, not against an earlier
+  absolute `cd` in the same chain — `cd /a && cd b && git push` is read as `cwd/b`, not
+  `/a/b`. This too under-corrects (a non-existent dir yields no open PR downstream — a silent
+  no-op, never a wrong-repo positive), and the shape is rare enough that threading the running
+  directory through each `cd` is not worth the complexity.
 - `git -C <path> push` is not matched by the push detector at all (pre-existing; `_PUSH_RE`
   requires `git push` adjacency) and so never fires — unchanged by this ADR. (This is why
   pushing this very PR via `git -C <worktree> push` does not trip the reminder.)
