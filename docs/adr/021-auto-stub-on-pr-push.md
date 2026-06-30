@@ -2,6 +2,7 @@
 
 **Date:** 2026-05-11
 **Status:** Accepted
+**Refined by:** [ADR-065](065-scope-push-reminder-to-target-repo.md) — push-target scoping + once-per-PR-per-session
 **Tags:** journal, stubs, hooks, post-tool-use, git-push, automation
 
 ---

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Unit tests for pr-merge-reminder.py.
 
-Tests the pure predicate functions and the _create_shard_step helper introduced
-in dev-env#403 (add open-PR shard instruction to gh pr create reminder).
+Tests the pure predicate functions, the _create_shard_step helper (dev-env#403),
+and the push-scoping behavior added in dev-env#442 / ADR-065: _effective_push_dir
+(scope the open-PR lookup to the repo a `cd <path> && git push` actually targets)
+and the per-PR-per-session sentinel that fires the push reminder at most once.
 
-Subprocess calls (_open_pr_for_cwd) are not exercised here.
+The live _open_pr_for_cwd subprocess boundary is not exercised here (repo
+convention: no subprocess mocks). The sentinel tests use an injected tmp scratch
+dir, never the real ~/.claude/scratch.
 
 Usage:
     py -3 claude/scripts/tests/test_pr_merge_reminder.py
@@ -13,7 +17,9 @@ Exit 0 = all pass.
 """
 
 import importlib.util
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -31,6 +37,9 @@ is_pr_merge_command = pmr.is_pr_merge_command
 is_git_push_command = pmr.is_git_push_command
 _create_shard_step = pmr._create_shard_step
 _is_successful_merge_call = pmr._is_successful_merge_call
+_effective_push_dir = pmr._effective_push_dir
+_push_reminder_already_sent = pmr._push_reminder_already_sent
+_mark_push_reminder_sent = pmr._mark_push_reminder_sent
 
 # read_command_output lives in _hookio (a sibling of pr-merge-reminder.py).
 # SCRIPT.parent already on sys.path, so import it directly.
@@ -218,6 +227,89 @@ def test_merge_call_exit_zero_trumps_no_marker() -> str:
 
 
 # ---------------------------------------------------------------------------
+# _effective_push_dir  (dev-env#442 / ADR-065)
+# ---------------------------------------------------------------------------
+
+def test_push_dir_bare_push_is_cwd() -> str:
+    assert _effective_push_dir("git push -u origin feat/foo", "/session/cwd") == "/session/cwd"
+    return "bare git push -> session cwd"
+
+
+def test_push_dir_cd_chain_redirects() -> str:
+    # `cd <other-repo> && git push` is the cross-repo shape behind the false positive.
+    out = _effective_push_dir("cd /Git/dev-env && git push", "/Git/lifting-logbook")
+    assert out == "/Git/dev-env", f"expected /Git/dev-env, got {out!r}"
+    return "cd <repo> && git push -> that repo, not session cwd"
+
+
+def test_push_dir_cd_chain_multi_segment() -> str:
+    # The push is usually the tail of a longer add/commit/push chain.
+    out = _effective_push_dir(
+        'cd /Git/engineering-journal && git add . && git commit -m "x" && git push',
+        "/Git/lifting-logbook",
+    )
+    assert out == "/Git/engineering-journal", f"got {out!r}"
+    return "cd <ej> && ... && git push -> the ej dir (then _open_pr_for_cwd skips it)"
+
+
+def test_push_dir_quoted_path() -> str:
+    out = _effective_push_dir('cd "/Git/dir with spaces" && git push', "/base")
+    assert out == "/Git/dir with spaces", f"got {out!r}"
+    return "quoted cd path -> unquoted target dir"
+
+
+def test_push_dir_relative_resolved_against_cwd() -> str:
+    out = _effective_push_dir("cd sub/repo && git push", "/base")
+    assert os.path.isabs(out), f"relative target not resolved: {out!r}"
+    assert os.path.basename(out) == "repo"
+    assert out == os.path.normpath(os.path.join("/base", "sub/repo"))
+    return "relative cd path -> normalized join under cwd"
+
+
+def test_push_dir_semicolon_chain() -> str:
+    out = _effective_push_dir("cd /Git/dev-env ; git push", "/base")
+    assert out == "/Git/dev-env", f"got {out!r}"
+    return "cd <repo> ; git push -> that repo (semicolon chain)"
+
+
+def test_push_dir_cd_after_push_ignored() -> str:
+    # A cd appearing only AFTER the push does not govern it -> fall back to cwd.
+    out = _effective_push_dir("git push && cd /Git/elsewhere", "/base")
+    assert out == "/base", f"cd after push must not redirect: {out!r}"
+    return "cd after the push -> cwd (push region excludes it)"
+
+
+# ---------------------------------------------------------------------------
+# per-PR-per-session push sentinel  (dev-env#442 / ADR-065)
+# ---------------------------------------------------------------------------
+
+def test_push_reminder_once_per_pr_per_session() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        scratch = Path(d)
+        # First push for PR 442 in session A: not yet sent -> fires.
+        assert not _push_reminder_already_sent(442, "sess-A", scratch)
+        _mark_push_reminder_sent(442, "sess-A", scratch)
+        # Subsequent pushes for the same PR in the same session: suppressed.
+        assert _push_reminder_already_sent(442, "sess-A", scratch)
+        # A different open PR in the same session still fires.
+        assert not _push_reminder_already_sent(628, "sess-A", scratch)
+        # The same PR in a different session still fires.
+        assert not _push_reminder_already_sent(442, "sess-B", scratch)
+    return "push reminder fires at most once per PR per session"
+
+
+def test_push_sentinel_filename_is_per_pr_and_session() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        scratch = Path(d)
+        _mark_push_reminder_sent(442, "sess-A", scratch)
+        flags = sorted(p.name for p in scratch.glob("*.flag"))
+        assert flags == ["pr-merge-reminder-442-sess-A.flag"], f"got {flags!r}"
+        # cleanup_stale_sentinels(SENTINEL_PREFIX) reaps these via the shared prefix.
+        assert flags[0].startswith(pmr.SENTINEL_PREFIX)
+    return "sentinel filename encodes PR + session under the shared prefix"
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 
@@ -243,6 +335,15 @@ def main() -> int:
         ("merge call: exit 1 + marker fires (worktree case)", test_merge_call_worktree_nonzero_with_marker),
         ("merge call: exit 1 no marker -> no-op", test_merge_call_failed_no_marker),
         ("merge call: exit 0 trumps no marker", test_merge_call_exit_zero_trumps_no_marker),
+        ("push dir: bare push -> cwd", test_push_dir_bare_push_is_cwd),
+        ("push dir: cd <repo> && push -> that repo", test_push_dir_cd_chain_redirects),
+        ("push dir: cd <ej> && ... && push -> ej dir", test_push_dir_cd_chain_multi_segment),
+        ("push dir: quoted cd path", test_push_dir_quoted_path),
+        ("push dir: relative path resolved vs cwd", test_push_dir_relative_resolved_against_cwd),
+        ("push dir: semicolon chain", test_push_dir_semicolon_chain),
+        ("push dir: cd after push ignored", test_push_dir_cd_after_push_ignored),
+        ("push sentinel: once per PR per session", test_push_reminder_once_per_pr_per_session),
+        ("push sentinel: filename per PR+session", test_push_sentinel_filename_is_per_pr_and_session),
     ]
     failed = 0
     for name, fn in tests:
