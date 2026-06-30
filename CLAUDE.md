@@ -306,6 +306,18 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_validate_manifest.py
     ```
 
+26. **prune-merged-worktrees test** — required when changing `claude/scripts/prune-merged-worktrees.py`.
+    Exercises `prune_one()` via subprocess mocking (the one exception to the pure-helper convention):
+    pins that a `subprocess.TimeoutExpired` from a slow `git worktree remove` is caught, the timed-out
+    worktree is counted as skipped, and the prune loop continues rather than propagating the exception
+    and aborting the scan ([dev-env#350](https://github.com/brownm09/dev-env/issues/350)). The
+    merge-detection and worktree-list steps are not covered here — they are exercised end-to-end by
+    `--dry-run` in the PR.
+
+    ```bash
+    py -3 claude/scripts/tests/test_prune_merged_worktrees.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
