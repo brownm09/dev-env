@@ -574,6 +574,32 @@ git clone --local C:/Users/brown/Git/<repo> C:/Users/brown/Git/<repo>-2
 objects. Use worktrees (default) when sessions share context; a separate clone only when the two
 workstreams are completely independent.
 
+### Worktree deregistration recovery (lost `.git` link routes git to main)
+
+**Trigger.** A disk-full event or worktree cleanup removes a worktree's `.git` link file (and its
+`.git/worktrees/<name>/` admin dir under the main repo). git from that worktree dir then silently
+walks up and resolves to the **main** repo.
+
+**Symptoms.** `git rev-parse --git-dir` points at the main `.git`; `git ls-files` returns 0 from the
+worktree; `git worktree list` omits it; a `git checkout -b` intended for the worktree lands the new
+branch on **main**. Mid-session the harness surfaces it as
+`PreToolUse:Edit hook error: [...worktree-path-check.py]: No stderr output` — the session's own cwd
+worktree is orphaned, which blocks **every** Edit (the hook keys off session cwd, not the target path).
+
+**Recovery** (validated 2026-06-04):
+
+```bash
+git -C <main-repo-path> checkout main                # frees the branch
+git -C <main-repo-path> worktree prune               # drop stale admin entries
+git -C <main-repo-path> worktree add --force .claude/worktrees/<name> <feature-branch>   # --force: orphaned dir still has files
+npm install                                          # from the recreated worktree, no cd
+```
+
+**Root cause.** Disk pressure from many worktrees each carrying a full monorepo `node_modules`
+(dev-env#306). Complements the orphan-liveness guard of
+[ADR-024](adr/024-worktree-path-guard-hook.md) with the recovery procedure; decision:
+[ADR-066](adr/066-worktree-session-safety-rules.md).
+
 ### Deleting a remote branch in Claude Code web sessions
 
 Never use `git push origin --delete <branch>` in a web/cloud session — the sandbox HTTP git proxy does
