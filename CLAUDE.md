@@ -333,6 +333,19 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_hookutil.py
     ```
 
+28. **pr-merge-reminder test** — required when changing `claude/scripts/pr-merge-reminder.py`.
+    Exercises the pure command predicates (`is_pr_create_command` / `is_pr_merge_command` /
+    `is_git_push_command`), the `_create_shard_step` / `_is_successful_merge_call` helpers, and the
+    [ADR-065](docs/adr/065-scope-push-reminder-to-target-repo.md) push-scoping behavior offline
+    (no network/gh): pins that `_effective_push_dir` redirects the open-PR lookup to a
+    `cd <repo> && git push` target — so a cross-repo push is evaluated against THAT repo, not the
+    session cwd — and falls back to cwd for a bare push. The live `_open_pr_for_cwd` subprocess
+    boundary is not covered (the repo avoids subprocess mocks).
+
+    ```bash
+    py -3 claude/scripts/tests/test_pr_merge_reminder.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
