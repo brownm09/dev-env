@@ -55,6 +55,7 @@ import sys
 from pathlib import Path
 
 from _worktree_liveness import parse_liveness_window_seconds, worktree_session_is_live
+from _worktree_topology import parse_worktree_porcelain
 
 
 # Default: the repo that owns this script (dev-env). Override with --repo-path.
@@ -116,8 +117,8 @@ def _liveness_window_seconds_from_args() -> int:
         sys.exit(str(exc))
 
 
-def run(args: list[str], cwd: str) -> subprocess.CompletedProcess:
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=30)
+def run(args: list[str], cwd: str, timeout: int = 30) -> subprocess.CompletedProcess:
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout)
 
 
 def find_git_repos(scan_dir: str) -> list[str]:
@@ -146,24 +147,6 @@ def detect_gh_repo(repo: str) -> str:
     if m:
         return m.group(1)
     raise RuntimeError(f"Cannot parse GitHub repo from remote URL: {url!r}")
-
-
-def parse_worktrees(output: str) -> list[dict]:
-    worktrees: list[dict] = []
-    current: dict | None = None
-    for line in output.splitlines():
-        if line.startswith("worktree "):
-            if current is not None:
-                worktrees.append(current)
-            current = {"path": line[len("worktree "):].strip(), "branch": ""}
-        elif line.startswith("branch ") and current is not None:
-            ref = line[len("branch "):].strip()
-            current["branch"] = ref.removeprefix("refs/heads/")
-        elif line == "detached" and current is not None:
-            current["branch"] = "<detached>"
-    if current is not None:
-        worktrees.append(current)
-    return worktrees
 
 
 def is_merged(branch: str, gh_repo: str, repo: str) -> bool:
@@ -318,7 +301,7 @@ def reclaim_one(repo: str, dry_run: bool, protect_cwd: str, liveness_window_seco
         print(f"  ERROR: git worktree list failed: {result.stderr}", file=sys.stderr)
         return 0
 
-    worktrees = parse_worktrees(result.stdout)
+    worktrees = parse_worktree_porcelain(result.stdout)
     primary = primary_worktree_path(worktrees)
 
     total = 0
@@ -333,7 +316,7 @@ def reclaim_one(repo: str, dry_run: bool, protect_cwd: str, liveness_window_seco
             continue
         # Skip a worktree with a live Claude session (recent transcript activity).
         # --protect-cwd only shields THIS session; stripping node_modules out from under a
-        # build/dev-server running in *another* worktree breaks it (dev-env#384, ADR-051).
+        # build/dev-server running in *another* worktree breaks it (dev-env#383, ADR-051).
         # Additive: only ever adds a skip, never reclaims more than the checks below.
         if worktree_session_is_live(path, window_seconds=liveness_window_seconds):
             skipped.append((path, "active Claude session (recent transcript activity)"))

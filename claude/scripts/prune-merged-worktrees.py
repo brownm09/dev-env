@@ -41,7 +41,7 @@ import sys
 from pathlib import Path
 
 from _worktree_liveness import parse_liveness_window_seconds, worktree_session_is_live
-from _worktree_topology import park_branch_for, parse_worktree_porcelain
+from _worktree_topology import main_squatter, park_branch_for, parse_worktree_porcelain
 
 
 # Default: the repo that owns this script (dev-env). Override with --repo-path.
@@ -80,8 +80,8 @@ def _liveness_window_seconds_from_args() -> int:
         sys.exit(str(exc))
 
 
-def run(args: list[str], cwd: str, check: bool = False) -> subprocess.CompletedProcess:
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=30, check=check)
+def run(args: list[str], cwd: str, check: bool = False, timeout: int = 30) -> subprocess.CompletedProcess:
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=check)
 
 
 def find_git_repos(scan_dir: str) -> list[str]:
@@ -164,6 +164,14 @@ def prune_one(repo: str, dry_run: bool, liveness_window_seconds: int) -> tuple[i
     primary = primary_worktree_path(worktrees)
     cwd = str(Path(os.getcwd()).resolve())
 
+    # Identify the squatter (if any) using the topology helper — handles bare/detached
+    # canonicals that legitimately yield a secondary worktree on main (dev-env#399, ADR-058).
+    # A bare/detached primary can't hold a working-tree checkout of main itself, so a
+    # secondary worktree on main there is the real home of main and must NOT be parked.
+    # main_squatter() returns None in that case; the naive `branch == "main"` check did not.
+    squatter = main_squatter(worktrees)
+    squatter_path = str(Path(squatter["path"]).resolve()) if squatter else None
+
     pruned: list[str] = []
     skipped: list[tuple[str, str]] = []
 
@@ -179,7 +187,7 @@ def prune_one(repo: str, dry_run: bool, liveness_window_seconds: int) -> tuple[i
         # Skip a worktree with a live Claude session (recent transcript activity). The
         # cwd guard above only covers THIS process; an out-of-process routine cannot see
         # another worktree's active session except via its transcript mtime — removing a
-        # live worktree severs the session mid-task (dev-env#384, ADR-051). Additive: this
+        # live worktree severs the session mid-task (dev-env#383, ADR-051). Additive: this
         # only ever adds a skip, never removes more than the merged/clean checks below.
         if worktree_session_is_live(path, window_seconds=liveness_window_seconds):
             skipped.append((path, "active Claude session (recent transcript activity)"))
@@ -192,7 +200,7 @@ def prune_one(repo: str, dry_run: bool, liveness_window_seconds: int) -> tuple[i
         # worktree is removed on a later run via the normal merged path once idle+clean
         # (dev-env#396, ADR-058). The ADR-051 liveness guard above already spared a live
         # squatter, so parking only ever moves an idle one.
-        if branch == "main":
+        if path == squatter_path:
             park = park_branch_for(path)
             if dry_run:
                 pruned.append(path)
@@ -223,7 +231,15 @@ def prune_one(repo: str, dry_run: bool, liveness_window_seconds: int) -> tuple[i
             print(f"  [dry-run] would remove: {path} ({branch})")
             continue
 
-        r = run(["git", "worktree", "remove", path], cwd=repo)
+        # Use a generous timeout: git worktree remove runs an internal untracked-file scan
+        # that is slow when node_modules is present. With timeout=30 the scan aborts the
+        # entire run (dev-env#350); 300s lets even a 1 GB worktree complete. TimeoutExpired
+        # is caught so one slow removal skips that worktree and continues the scan.
+        try:
+            r = run(["git", "worktree", "remove", path], cwd=repo, timeout=300)
+        except subprocess.TimeoutExpired:
+            skipped.append((path, "git worktree remove timed out — worktree may be large; retry manually"))
+            continue
         if r.returncode != 0:
             skipped.append((path, f"worktree remove failed: {r.stderr.strip()}"))
             continue
