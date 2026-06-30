@@ -23,6 +23,7 @@ SCRIPTS_DIR = REPO_ROOT / "claude" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from _hookio import (  # noqa: E402
+    effective_merge_dir,
     merge_pr_number_from_output,
     output_has_merge_marker,
     read_command_output,
@@ -106,6 +107,59 @@ def test_merge_pr_number_from_output() -> str:
     return "marker PR number extracted; None when absent"
 
 
+# ---------------------------------------------------------------------------
+# effective_merge_dir  (dev-env#446 / ADR-067)
+# ---------------------------------------------------------------------------
+
+def test_merge_dir_bare_merge_is_cwd() -> str:
+    assert effective_merge_dir("gh pr merge --squash --delete-branch", "/session/cwd") == "/session/cwd"
+    return "bare gh pr merge -> session cwd"
+
+
+def test_merge_dir_cd_chain_redirects() -> str:
+    out = effective_merge_dir("cd /Git/dev-env && gh pr merge --squash", "/Git/lifting-logbook")
+    assert out == "/Git/dev-env", f"expected /Git/dev-env, got {out!r}"
+    return "cd <repo> && gh pr merge -> that repo, not session cwd"
+
+
+def test_merge_dir_cd_chain_multi_segment() -> str:
+    # The merge is usually the tail of a longer chain.
+    out = effective_merge_dir(
+        "cd /Git/dev-env && git add . && gh pr merge --squash --delete-branch",
+        "/Git/lifting-logbook",
+    )
+    assert out == "/Git/dev-env", f"got {out!r}"
+    return "cd <repo> && ... && gh pr merge -> the repo dir"
+
+
+def test_merge_dir_quoted_path() -> str:
+    out = effective_merge_dir('cd "/Git/dir with spaces" && gh pr merge --squash', "/base")
+    assert out == "/Git/dir with spaces", f"got {out!r}"
+    return "quoted cd path -> unquoted target dir"
+
+
+def test_merge_dir_relative_resolved_against_cwd() -> str:
+    import os
+    out = effective_merge_dir("cd sub/repo && gh pr merge --squash", "/base")
+    assert os.path.isabs(out), f"relative target not resolved: {out!r}"
+    assert os.path.basename(out) == "repo"
+    assert out == os.path.normpath(os.path.join("/base", "sub/repo"))
+    return "relative cd path -> normalized join under cwd"
+
+
+def test_merge_dir_semicolon_chain() -> str:
+    out = effective_merge_dir("cd /Git/dev-env ; gh pr merge --squash", "/base")
+    assert out == "/Git/dev-env", f"got {out!r}"
+    return "cd <repo> ; gh pr merge -> that repo (semicolon chain)"
+
+
+def test_merge_dir_cd_after_merge_ignored() -> str:
+    # A cd appearing only AFTER the merge does not govern it -> fall back to cwd.
+    out = effective_merge_dir("gh pr merge --squash && cd /Git/elsewhere", "/base")
+    assert out == "/base", f"cd after merge must not redirect: {out!r}"
+    return "cd after the merge -> cwd (merge region excludes it)"
+
+
 def main() -> int:
     tests = [
         ("reads command output from stdout", test_reads_stdout),
@@ -118,6 +172,13 @@ def main() -> int:
         ("merge marker detected (incl cross-repo)", test_merge_marker_detected),
         ("merge marker excludes auto/failure/stray", test_merge_marker_excludes_auto_failure_and_stray),
         ("merge PR number from output", test_merge_pr_number_from_output),
+        ("merge dir: bare merge -> cwd", test_merge_dir_bare_merge_is_cwd),
+        ("merge dir: cd <repo> && merge -> that repo", test_merge_dir_cd_chain_redirects),
+        ("merge dir: cd <repo> && ... && merge -> repo dir", test_merge_dir_cd_chain_multi_segment),
+        ("merge dir: quoted cd path", test_merge_dir_quoted_path),
+        ("merge dir: relative path resolved vs cwd", test_merge_dir_relative_resolved_against_cwd),
+        ("merge dir: semicolon chain", test_merge_dir_semicolon_chain),
+        ("merge dir: cd after merge ignored", test_merge_dir_cd_after_merge_ignored),
     ]
     failed = 0
     for name, fn in tests:

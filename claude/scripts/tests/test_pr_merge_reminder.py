@@ -37,9 +37,9 @@ _create_shard_step = pmr._create_shard_step
 _is_successful_merge_call = pmr._is_successful_merge_call
 _effective_push_dir = pmr._effective_push_dir
 
-# read_command_output lives in _hookio (a sibling of pr-merge-reminder.py).
-# SCRIPT.parent already on sys.path, so import it directly.
-from _hookio import read_command_output  # noqa: E402
+# read_command_output and effective_merge_dir live in _hookio (a sibling).
+# SCRIPT.parent already on sys.path, so import them directly.
+from _hookio import effective_merge_dir, read_command_output  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +276,31 @@ def test_push_dir_cd_after_push_ignored() -> str:
 
 
 # ---------------------------------------------------------------------------
+# effective_merge_dir  (dev-env#446 / ADR-067)
+#
+# The full test suite for effective_merge_dir lives in test_hookio.py; these
+# cases focus on the merge-reminder context (reminder shows the resolved dir,
+# not raw cwd, when a cd-chain is present).
+# ---------------------------------------------------------------------------
+
+def test_merge_dir_bare_merge_is_cwd() -> str:
+    out = effective_merge_dir("gh pr merge --squash --delete-branch", "/session/cwd")
+    assert out == "/session/cwd", f"bare merge should return cwd, got {out!r}"
+    return "bare gh pr merge -> session cwd (reminder shows cwd, unchanged)"
+
+
+def test_merge_dir_cd_chain_redirects_for_reminder() -> str:
+    # `cd <dev-env> && gh pr merge` from a lifting-logbook session should report
+    # /Git/dev-env in the reminder, not /Git/lifting-logbook.
+    out = effective_merge_dir(
+        "cd /Git/dev-env && gh pr merge --squash --delete-branch",
+        "/Git/lifting-logbook",
+    )
+    assert out == "/Git/dev-env", f"expected /Git/dev-env, got {out!r}"
+    return "cd <dev-env> && gh pr merge from lb cwd -> dev-env dir in reminder"
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 
@@ -308,6 +333,8 @@ def main() -> int:
         ("push dir: relative path resolved vs cwd", test_push_dir_relative_resolved_against_cwd),
         ("push dir: semicolon chain", test_push_dir_semicolon_chain),
         ("push dir: cd after push ignored", test_push_dir_cd_after_push_ignored),
+        ("merge dir: bare merge -> cwd (reminder unchanged)", test_merge_dir_bare_merge_is_cwd),
+        ("merge dir: cd <dev-env> && merge from lb cwd -> dev-env", test_merge_dir_cd_chain_redirects_for_reminder),
     ]
     failed = 0
     for name, fn in tests:

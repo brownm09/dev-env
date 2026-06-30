@@ -71,3 +71,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [064](064-shared-hookutil-sentinel-transcript-locate.md) | Shared `_hookutil` Module for Per-Session Sentinel and Transcript-Locate Helpers | 2026-06-30 | Accepted | hooks, stop-hook, UserPromptSubmit, sentinel, transcript, dry, maintainability, shared-module |
 | [065](065-scope-push-reminder-to-target-repo.md) | Scope the git-push Journal Reminder to the Push-Target Repo | 2026-06-30 | Accepted | hooks, post-tool-use, git-push, journal, cross-repo, correction |
 | [066](066-worktree-session-safety-rules.md) | Worktree Session Safety: Origin Verification, Bash cd Prevention, Deregistration Recovery | 2026-06-30 | Accepted | git, worktree, workflow, memory, documentation, global-rule |
+| [067](067-scope-merge-keyed-hooks-to-target-repo.md) | Scope Merge-Keyed Hook Operations to the Merge-Target Repo | 2026-06-30 | Accepted | hooks, post-tool-use, gh-pr-merge, cross-repo, correction |

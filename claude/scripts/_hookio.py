@@ -9,19 +9,26 @@ Centralising the correct read here — plus the merge-success-marker detection t
 ``post-pr-merge-*`` hooks share — means every hook depends on one implementation
 instead of re-deriving (and re-breaking) the field precedence or the marker set.
 
+``effective_merge_dir`` (ADR-067) mirrors ``_effective_push_dir`` from
+``pr-merge-reminder.py`` (ADR-065) but scans to ``gh pr merge`` instead of
+``git push``.  It is shared here because both ``post-pr-merge-pull.py`` and
+``pr-merge-reminder.py`` need it.
+
 Imported the same way as ``_winsubp``: a sibling module in ``scripts/`` that the
 ``pyw -3`` hook launcher (which puts the script's own directory on ``sys.path``)
 and the test harness (``sys.path.insert(0, scripts_dir)``) both resolve.
 
 Usage:
     from _hookio import read_command_output, output_has_merge_marker
+    from _hookio import effective_merge_dir
 
 See ADR-049 (root cause + canonical read) and ADR-050 (shared helper + sibling
-hook fixes).
+hook fixes).  See ADR-067 for the merge-dir scoping.
 """
 
 from __future__ import annotations
 
+import os
 import re
 
 # gh's completed-merge success line, e.g. "Squashed and merged pull request #380
@@ -74,3 +81,38 @@ def merge_pr_number_from_output(output: str) -> int | None:
         if m:
             return int(m.group(1))
     return None
+
+
+# Locates the `gh pr merge` token so the pre-merge region can be bounded.
+_BARE_MERGE_RE = re.compile(r"\bgh\s+pr\s+merge\b")
+# Matches a `cd <path>` followed by `&&` or `;` — identical pattern to the push
+# equivalent in pr-merge-reminder.py but scoped to merge commands here.
+_MERGE_CD_CHAIN_RE = re.compile(r"""cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)""")
+
+
+def effective_merge_dir(command: str, cwd: str) -> str:
+    """Best-effort directory a top-level ``gh pr merge`` in *command* runs in.
+
+    When a ``cd <path> &&`` (or ``;``) prefix chains into the merge — e.g.
+    ``cd /other/repo && gh pr merge --squash`` — return <path> (resolved
+    against *cwd* when relative), so operations that key off the merge target
+    use the repo that was actually merged, not the session cwd.  A bare
+    ``gh pr merge`` returns *cwd*.
+
+    Conservative by design: any shape it cannot parse falls back to *cwd* so
+    the worst case is the pre-ADR-067 behaviour — under-corrects rather than
+    mis-fires.  Mirrors ``_effective_push_dir`` in ``pr-merge-reminder.py``
+    (ADR-065); shared here so both ``post-pr-merge-pull.py`` and
+    ``pr-merge-reminder.py`` use one implementation.
+    """
+    merge = _BARE_MERGE_RE.search(command)
+    region = command[: merge.start()] if merge else command
+    target = None
+    for m in _MERGE_CD_CHAIN_RE.finditer(region):
+        target = m.group(1)  # last cd before the merge governs it
+    if not target:
+        return cwd
+    path = target.strip("\"'")
+    if not os.path.isabs(path):
+        path = os.path.normpath(os.path.join(cwd, path))
+    return path
