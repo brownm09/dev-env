@@ -68,4 +68,6 @@ complexity for what is fundamentally a behavioral clarification.
 ## References
 
 - [`claude/CLAUDE.md` → Context & Token Efficiency](../claude/CLAUDE.md#context--token-efficiency)
+- [ADR-025](025-default-plan-mode.md) — established plan mode as the settings default
+- [ADR-008](008-plan-then-optimize-forcing-function.md) — Plan-Then-Optimize protocol this rule contextualizes
 - [dev-env issue #409](https://github.com/brownm09/dev-env/issues/409) — motivating issue
