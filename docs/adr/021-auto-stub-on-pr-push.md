@@ -2,6 +2,7 @@
 
 **Date:** 2026-05-11
 **Status:** Accepted
+**Refined by:** [ADR-065](065-scope-push-reminder-to-target-repo.md) — scope the git-push reminder to the push-target repo
 **Tags:** journal, stubs, hooks, post-tool-use, git-push, automation
 
 ---

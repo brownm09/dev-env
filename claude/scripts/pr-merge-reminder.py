@@ -25,6 +25,7 @@ Exit 2  — gh pr create, gh pr merge, or git push (open PR) detected;
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
+import os
 import re
 import subprocess
 import sys
@@ -41,6 +42,15 @@ _PUSH_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?git\s+push\b")
 # Path fragment that identifies the engineering-journal repo — push events
 # there are handled by stub-push-archive-reminder.py, not this script.
 _EJ_REPO_FRAGMENT = "engineering-journal"
+
+# A `cd <path> &&` (or `;`) prefix chains a later `git push` into <path>'s repo,
+# not cwd's.  Captures the directory token (quoted or bare) so the open-PR lookup
+# can be scoped to the repo the push actually targets — the cross-repo
+# false-positive fixed in issue #442 / ADR-065.
+_CD_CHAIN_RE = re.compile(r"""cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)""")
+# Bare `git push` locator — bounds the cd search to the region *before* the push.
+# Distinct from _PUSH_RE (which optionally eats a cd prefix and would hide it).
+_BARE_PUSH_RE = re.compile(r"\bgit\s+push\b")
 
 
 def _check_merge_stmt(token: str) -> bool:
@@ -236,6 +246,36 @@ def _open_pr_for_cwd(cwd: str) -> dict | None:
         return None
 
 
+def _effective_push_dir(command: str, cwd: str) -> str:
+    """Best-effort directory a top-level ``git push`` in *command* runs in.
+
+    When a ``cd <path> &&`` (or ``;``) prefix chains into the push — e.g.
+    ``cd /other/repo && git push`` — return <path> (resolved against *cwd* when
+    relative), so the open-PR lookup is scoped to the repo the push actually
+    targets rather than the session cwd.  A bare ``git push`` returns *cwd*.
+
+    Conservative by design: any shape it cannot parse confidently (no governing
+    ``cd``, the push hidden behind quoting, etc.) falls back to *cwd*, so the
+    worst case is the pre-#442 behavior — never a wrong-repo positive — and a
+    mis-resolved directory simply yields no open PR downstream (a silent no-op).
+    """
+    push = _BARE_PUSH_RE.search(command)
+    region = command[: push.start()] if push else command
+    target = None
+    for m in _CD_CHAIN_RE.finditer(region):
+        target = m.group(1)  # the last cd before the push is the one that governs it
+    if not target:
+        return cwd
+    path = target.strip("\"'")
+    if not os.path.isabs(path):
+        # A relative target resolves against cwd, not against any earlier `cd` in
+        # the same chain (`cd /a && cd b && git push` -> cwd/b, not /a/b).  That
+        # mis-resolve is a downstream silent no-op (no such dir -> no open PR),
+        # never a wrong-repo positive — a documented ADR-065 limit.
+        path = os.path.normpath(os.path.join(cwd, path))
+    return path
+
+
 def _create_shard_step(output: str) -> str:
     """Return the shard-writing instruction lines for a gh pr create reminder.
 
@@ -336,19 +376,26 @@ def main() -> None:
         )
 
     if is_push and not (is_create or is_merge):
-        pr = _open_pr_for_cwd(cwd)
+        # Scope the open-PR lookup to the repo the push actually targets: a
+        # `cd <other-repo> && git push` must not fire the session cwd's reminder
+        # (issue #442 / ADR-065).  Engineering-journal pushes route into the
+        # _open_pr_for_cwd EJ skip once their real target dir is used.  The
+        # reminder fires on every qualifying push (each carries new journalable
+        # content); scoping — not dedup — is what removes the #442 cross-repo noise.
+        push_dir = _effective_push_dir(command, cwd)
+        pr = _open_pr_for_cwd(push_dir)
         if pr:
             messages.append(
                 f"[journal-reminder] git push detected for PR #{pr['number']} — "
                 f"update the engineering journal NOW:\n"
                 f"  PR: {pr['url']} — {pr['title']}\n"
-                f"  cwd: {cwd}\n"
+                f"  repo: {push_dir}\n"
                 "  Check whether a stub already exists for this session:\n"
                 "  - If YES: update it in place (append new content to the session block).\n"
                 "  - If NO: create a new stub for this push session.\n"
                 "  Document what changed and why (review findings addressed,\n"
                 "  approach decisions, what was pushed).\n"
-                "  1. Identify the project journal path from cwd.\n"
+                "  1. Identify the project journal path from the repo above.\n"
                 "  2. Check out the draft branch in engineering-journal.\n"
                 "  3. Find today's stub for this session, or create one if absent.\n"
                 "  4. Add/update token comment and <!-- next-session-context --> paragraph.\n"
@@ -363,4 +410,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Never crash the user's push/PR flow — any unexpected error exits 0.
+    # SystemExit (raised by the intentional sys.exit(2) reminder path) is a
+    # BaseException, not Exception, so it still propagates and exit 2 is honored.
+    try:
+        main()
+    except Exception:
+        sys.exit(0)
