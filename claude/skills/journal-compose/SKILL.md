@@ -35,6 +35,34 @@ Before reading any file or spawning any agent, write out:
 
 Do not proceed to Step 1 until this plan is written. No tool calls before the revision pass completes.
 
+## Step 0.7 — Validate manifest field completeness
+
+Before reading any stubs or running any subagent, validate that every manifest shard has all
+five required fields (`stub`, `topic`, `tokens`, `prs_opened`, `prs_closed`). Missing fields
+cause mid-compose failures that are hand-patched; this gate surfaces them up front (dev-env #423).
+
+Locate the manifest shards for the compose date (substitute the resolved date for `YYYY-MM-DD`):
+
+```bash
+ls C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD_*.manifest.jsonl 2>/dev/null
+ls C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD.manifest.jsonl 2>/dev/null
+```
+
+Pass every path found to the validator:
+
+```bash
+py -3 C:/Users/brown/.claude/scripts/validate-manifest.py \
+  C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD_*.manifest.jsonl \
+  C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD.manifest.jsonl
+```
+
+- **Exit 0:** All manifest entries have the required fields — proceed to Step 0.8.
+- **Exit 1:** Stop immediately. The script prints every entry with its missing fields and its
+  file path + line number. Fix each entry (add the missing fields with correct values), then
+  re-run the validator. Do not proceed with composition until every entry passes.
+
+If no manifest files exist for the date, the validator exits 0 (nothing to validate) — proceed.
+
 ## Step 0.8 — Validate JSONL files
 
 Before reading any stubs or manifests, run the JSONL validator:

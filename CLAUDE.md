@@ -290,6 +290,22 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_pre_merge_message_check.py
     ```
 
+25. **manifest field validator test** — required when changing `claude/scripts/validate-manifest.py`.
+    Exercises the pure `missing_required_fields()`, `find_entries_missing_fields()`, and
+    `parse_manifest_text()` helpers offline (no disk, no network, no subprocess): pins that a
+    fully-valid entry (all five required fields) reports no missing fields; that a single absent field
+    is returned in canonical schema order; that a non-dict entry (list or scalar) is treated as missing
+    every required field; that `find_entries_missing_fields` skips valid entries and preserves input
+    order; and that `parse_manifest_text` handles blank-line skipping, ADR-056 single-object shards,
+    legacy multi-line manifests, invalid JSON, and JSON non-objects — all returning `(lineno, None)` so
+    callers can report parse errors with a file-and-line reference. The `main()` I/O (argv, file reads,
+    exit code) is not covered (pure-helper convention). Converts the silent-skip class from #423 (missing
+    field found mid-compose, hand-patched) into a visible up-front gate in `/journal-compose` Step 0.7.
+
+    ```bash
+    py -3 claude/scripts/tests/test_validate_manifest.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
