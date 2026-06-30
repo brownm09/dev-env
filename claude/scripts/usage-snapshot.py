@@ -20,9 +20,10 @@ Stdin JSON shape (PostToolUse):
     "cwd": "..."
   }
 
-Exit 0  — not a merge command, creds file absent, or API error; silent
+Exit 0  — not a merge command, or creds file absent; silent
 Exit 2  — snapshot emitted via stderr, OR an expired token whose on-demand refresh
-          failed (advisory). An expired token is first refreshed on demand via the
+          failed (advisory), OR the usage API was unreachable after one retry
+          (advisory — #302). An expired token is first refreshed on demand via the
           CLI (keep-token-warm.ps1); a still-valid "expiring" token proceeds to fetch.
 """
 import _winsubp  # noqa: F401  -- patches subprocess to suppress console windows
@@ -543,8 +544,16 @@ def main() -> None:
 
     util_data = fetch_usage(token)
     if not util_data:
-        # Silently skip — don't block session on API failure
-        sys.exit(0)
+        # Retry once — transient network blips often self-heal
+        time.sleep(1)
+        util_data = fetch_usage(token)
+    if not util_data:
+        print(
+            "[usage-snapshot] Skipped: usage API unavailable (network error or "
+            "transient 5xx). The snapshot was omitted for this merge.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     config = load_config()
     session_id = data.get("session_id", "")

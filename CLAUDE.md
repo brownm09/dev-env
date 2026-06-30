@@ -318,6 +318,21 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_prune_merged_worktrees.py
     ```
 
+27. **_hookutil shared-helper test** — required when changing `claude/scripts/_hookutil.py`.
+    Exercises the pure `cleanup_stale_sentinels(prefix)`, `sentinel_path(prefix, session_id)`,
+    and `find_transcript(session_id)` helpers offline (injected tmp dirs, no real
+    `~/.claude/scratch` or `~/.claude/projects`): pins sentinel-path correctness, that
+    `cleanup_stale_sentinels` removes flags older than `MAX_AGE_DAYS` matching the given prefix
+    while leaving fresh ones and files with other prefixes intact, that it does not raise when the
+    scratch directory is absent, and that `find_transcript` returns the matching path (or `None`)
+    including when the JSONL is nested under a project subdirectory. Imported by
+    `posttooluse-inert-advisory.py`, `reconcile-open-prs.py`, and `token-tracker.py`
+    ([ADR-064](docs/adr/064-shared-hookutil-sentinel-transcript-locate.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_hookutil.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

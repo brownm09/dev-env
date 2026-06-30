@@ -52,16 +52,13 @@ See ADR-053 (the inert-PostToolUse limitation) and ADR-055 (this safety net).
 from __future__ import annotations
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+import _hookutil
 import json
 import re
 import sys
-import time
 from pathlib import Path
 
-SCRATCH = Path.home() / ".claude" / "scratch"
-PROJECTS = Path.home() / ".claude" / "projects"
 SENTINEL_PREFIX = "posttooluse-inert-resolved-"
-MAX_AGE_DAYS = 30
 
 # --- dev-env (project #3) scoping ----------------------------------------------
 # A board action only counts when it is unambiguously dev-env's, so the advisory
@@ -272,34 +269,15 @@ def format_advisory(actions: list[dict]) -> str:
 
 # --- I/O (thin, untested per the pure-helper convention) -----------------------
 
-def cleanup_stale_sentinels() -> None:
-    cutoff = time.time() - MAX_AGE_DAYS * 86400
-    try:
-        for f in SCRATCH.glob(f"{SENTINEL_PREFIX}*.flag"):
-            if f.stat().st_mtime < cutoff:
-                f.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-
-def sentinel_path(session_id: str) -> Path:
-    return SCRATCH / f"{SENTINEL_PREFIX}{session_id}.flag"
-
-
 def mark_resolved(session_id: str) -> None:
     """Record that this session needs no further checking on later Stops."""
     if not session_id:
         return
     try:
-        SCRATCH.mkdir(exist_ok=True)
-        sentinel_path(session_id).write_text("")
+        _hookutil.SCRATCH.mkdir(exist_ok=True)
+        _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).write_text("")
     except Exception:
         pass
-
-
-def find_transcript(session_id: str) -> Path | None:
-    matches = list(PROJECTS.glob(f"**/{session_id}.jsonl"))
-    return matches[0] if matches else None
 
 
 def load_records(transcript_path: Path) -> list[dict]:
@@ -325,7 +303,7 @@ def main() -> None:
     except Exception:
         pass
 
-    cleanup_stale_sentinels()
+    _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
     raw = sys.stdin.read().strip()
     if not raw:
@@ -339,13 +317,13 @@ def main() -> None:
 
     # Resolved once per session — skip the transcript re-scan on later Stops. (Stop
     # fires at every turn-end, many times per session.)
-    if session_id and sentinel_path(session_id).exists():
+    if session_id and _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).exists():
         sys.exit(0)
 
     tpath_str = data.get("transcript_path") or ""
     tpath = Path(tpath_str) if tpath_str else None
     if (tpath is None or not tpath.exists()) and session_id:
-        tpath = find_transcript(session_id)
+        tpath = _hookutil.find_transcript(session_id)
     if tpath is None or not tpath.exists():
         sys.exit(0)
 

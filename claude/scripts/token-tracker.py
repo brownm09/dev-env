@@ -9,6 +9,7 @@ Outputs:
     ~/.claude/scratch/token-sessions.jsonl   — one record per session (append)
     ~/.claude/scratch/latest-session.json    — latest session (overwrite)
 """
+import _hookutil
 import json
 import sys
 from datetime import datetime, timezone
@@ -43,12 +44,6 @@ def compute_cost(usage: dict, prices: dict) -> float:
         + usage.get("cache_read_input_tokens", 0)  * prices["cache_read"]  / 1_000_000
         + usage.get("cache_creation_input_tokens", 0) * prices["cache_write"] / 1_000_000
     )
-
-
-def find_transcript(session_id: str) -> Path | None:
-    projects_dir = CLAUDE_DIR / "projects"
-    matches = list(projects_dir.glob(f"**/{session_id}.jsonl"))
-    return matches[0] if matches else None
 
 
 def _count_turns(jsonl_path: Path) -> tuple[dict, int, str]:
@@ -167,7 +162,7 @@ def main() -> None:
             transcript_path = p
 
     if transcript_path is None and session_id:
-        transcript_path = find_transcript(session_id)
+        transcript_path = _hookutil.find_transcript(session_id)
 
     if transcript_path is None:
         print(f"[token-tracker] ERROR: cannot locate transcript for session {session_id!r}", file=sys.stderr)

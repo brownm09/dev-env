@@ -106,6 +106,11 @@ def main():
                     "Per CLAUDE.md workflow: invoke /review on the relevant PR --post-comment now."
                 )
             print(json.dumps({"systemMessage": msg}))
+            print(
+                "[compact] Open PR(s) detected — type any reply to trigger /review, "
+                "or press Enter to skip.",
+                file=sys.stderr,
+            )
 
 
 if __name__ == "__main__":

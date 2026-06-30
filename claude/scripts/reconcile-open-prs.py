@@ -26,6 +26,7 @@ removals), so Claude has correct context from turn 1 without reading the files.
 from __future__ import annotations
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+import _hookutil
 import json
 import subprocess
 import sys
@@ -38,33 +39,18 @@ from urllib.parse import urlparse
 # loop no longer needs shard_pr_number directly.
 from _journal_shards import iter_pr_shards, read_legacy_entries
 
-SCRATCH = Path.home() / ".claude" / "scratch"
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SENTINEL_PREFIX = "open-prs-reconciled-"
-MAX_AGE_DAYS = 30
-
-
-def cleanup_stale_sentinels() -> None:
-    cutoff = time.time() - MAX_AGE_DAYS * 86400
-    try:
-        for f in SCRATCH.glob(f"{SENTINEL_PREFIX}*.flag"):
-            if f.stat().st_mtime < cutoff:
-                f.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-
-def sentinel_path(session_id: str) -> Path:
-    return SCRATCH / f"{SENTINEL_PREFIX}{session_id}.flag"
 
 
 def already_ran(session_id: str) -> bool:
-    return sentinel_path(session_id).exists()
+    return _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).exists()
 
 
 def mark_done(session_id: str) -> None:
     try:
-        sentinel_path(session_id).write_text("")
+        _hookutil.SCRATCH.mkdir(exist_ok=True)
+        _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).write_text("")
     except Exception:
         pass
 
@@ -222,7 +208,7 @@ def check_pr_state(pr_number: int, repo: str) -> str | None:
 
 
 def main() -> None:
-    cleanup_stale_sentinels()
+    _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
     raw = sys.stdin.read().strip()
     data: dict = {}
