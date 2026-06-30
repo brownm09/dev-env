@@ -68,3 +68,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [061](061-pre-merge-message-queue.md) | Pre-Merge User Message Queue | 2026-06-28 | Accepted | hooks, pre-tool-use, merge, workflow, bypass-mode, feedback, global-rule |
 | [062](062-journal-report-analysis-trigger.md) | Report / Analysis Generation as a Journal Update Trigger | 2026-06-29 | Accepted | journal, stubs, reports, update-trigger, workflow, global-rule |
 | [063](063-always-plan-rule-permission-mode-does-not-bypass-planning.md) | Always-Plan Rule: Permission Mode Does Not Bypass Planning | 2026-06-30 | Accepted | workflow, planning, permission-mode, bypass, auto, claude-behavior, global-rule |
+| [063](063-shared-hookutil-sentinel-transcript-locate.md) | Shared `_hookutil` Module for Per-Session Sentinel and Transcript-Locate Helpers | 2026-06-30 | Accepted | hooks, stop-hook, UserPromptSubmit, sentinel, transcript, dry, maintainability, shared-module |

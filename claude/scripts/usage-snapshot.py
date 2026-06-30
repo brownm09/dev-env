@@ -543,8 +543,16 @@ def main() -> None:
 
     util_data = fetch_usage(token)
     if not util_data:
-        # Silently skip — don't block session on API failure
-        sys.exit(0)
+        # Retry once — transient network blips often self-heal
+        time.sleep(1)
+        util_data = fetch_usage(token)
+    if not util_data:
+        print(
+            "[usage-snapshot] Skipped: usage API unavailable (network error or "
+            "transient 5xx). The snapshot was omitted for this merge.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     config = load_config()
     session_id = data.get("session_id", "")
