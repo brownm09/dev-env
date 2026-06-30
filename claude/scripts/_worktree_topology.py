@@ -36,8 +36,8 @@ def parse_worktree_porcelain(text: str) -> "list[dict]":
     """Parse ``git worktree list --porcelain`` into ``[{path, branch}, ...]``.
 
     ``branch`` is the short name, ``"<detached>"`` for a detached HEAD, or ``""`` when
-    unspecified. Used by ``dev-env-sync.py`` and ``prune-merged-worktrees.py``;
-    ``reclaim-worktree-disk.py`` keeps an equivalent local copy (not in this fix's scope).
+    unspecified. Used by ``dev-env-sync.py``, ``prune-merged-worktrees.py``, and
+    ``reclaim-worktree-disk.py``.
     """
     worktrees: "list[dict]" = []
     current: "dict | None" = None
