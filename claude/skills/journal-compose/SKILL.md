@@ -387,7 +387,10 @@ If the user confirms (`y` or equivalent):
    meta-relevant content. Use a slug like `platform-constraint-<topic>` or `dev-env-pr-N`.
 3. Add `<!-- tokens: input=0 output=0 cost≈$0.00 -->` and a `<!-- next-session-context -->`
    paragraph at the end of each block.
-4. `git add`, `git commit -m "draft: YYYY-MM-DD meta — <topic>"`, `git push`.
+4. `git add sessions/meta/YYYY-MM-DD_draft.md`, `git commit -m "draft: YYYY-MM-DD meta — <topic>" -- sessions/meta/YYYY-MM-DD_draft.md`, `git push`.
+   This checkout is shared by every concurrent Claude Code session — always pass the `--` pathspec so
+   this commit can't sweep in another session's already-staged files (see `claude/CLAUDE.md` →
+   Engineering Journal → Stub file workflow → "Commit with an explicit pathspec").
 5. Resume at Step 3.
 
 If the user declines (`n` or equivalent), continue to Step 3 without creating a meta entry.
@@ -1052,6 +1055,26 @@ git -C C:/Users/brown/Git/engineering-journal add sessions/<project>/README.md
 git -C C:/Users/brown/Git/engineering-journal add README.md
 # Stage deleted stubs (and any other modifications/deletions in sessions/<project>/)
 git -C C:/Users/brown/Git/engineering-journal add -u sessions/<project>/
+```
+
+**Verify before committing — this checkout is shared by every concurrent Claude Code session.** Unlike
+the per-session stub workflow (which pathspecs its commit to a short, fixed file list), this step's
+`git add -u sessions/<project>/` stages a variable number of deleted stubs/shards, so a static pathspec
+doesn't fit cleanly. Check what's actually staged before committing:
+
+```bash
+git -C C:/Users/brown/Git/engineering-journal diff --cached --name-only
+```
+
+Every line must be `README.md`, `sessions/<project>/README.md`, `sessions/<project>/YYYY-MM-DD-<slug>.md`,
+or a path under `sessions/<project>/` that this compose run itself just consumed (a stub, a manifest
+shard, or a legacy `.manifest.jsonl` / `open-prs.jsonl` being drained — never an `open-prs/<N>.json`
+shard, which compose never deletes). If anything else appears — a path under a different project, or a
+file you don't recognize as something this run touched — **stop**; do not commit. It means a concurrent
+session staged a file in this same checkout. Investigate before proceeding rather than blindly committing
+or discarding it.
+
+```bash
 git -C C:/Users/brown/Git/engineering-journal commit -m "[docs] Add YYYY-MM-DD journal: <slug>"
 git -C C:/Users/brown/Git/engineering-journal push
 ```

@@ -458,8 +458,8 @@ writes**:
 Because shards are disjoint files, git merges concurrent sessions' writes cleanly and removal is a
 per-file delete — the pull-first + surgical-edit discipline of the superseded ADR-054 is **no longer
 needed** (ordinary pull-before-push git hygiene still applies). That disjointness is a content-merge
-guarantee only — it does not extend to the local git index, which every concurrent session sharing this
-checkout also shares. **Commit with an explicit pathspec, not a bare `git commit`:** a bare `git commit`
+guarantee only — it does not extend to the local git index, which every concurrent session in this
+checkout shares. **Commit with an explicit pathspec, not a bare `git commit`:** a bare `git commit`
 commits the *entire* staged index, not just this session's `git add`-ed files, and can sweep a concurrent
 session's already-staged shard into this session's commit — see the `--` pathspec in the commit steps
 below ([ADR-056 → Addendum](../docs/adr/056-per-session-sharding-journal-companion-files.md)). Readers
