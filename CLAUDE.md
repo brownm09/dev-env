@@ -336,7 +336,8 @@ When a PR modifies any of the paths below, update the listed reference docs **in
 | Change | Required updates |
 |---|---|
 | Add / remove / rename a skill in `claude/skills/` | Skills table in `README.md` + `docs/REFERENCE.md` Skills section |
-| Add / remove / rename a script in `claude/scripts/` or `claude/hooks/` | Hooks table in `README.md` + `docs/REFERENCE.md` Hooks section |
+| Add / remove / rename an event-driven hook script in `claude/hooks/` (or a script in `claude/scripts/` that fires on a Claude Code hook event) | Hooks table in `README.md` + `docs/REFERENCE.md` Hooks section |
+| Add / remove / rename a utility/on-demand script in `claude/scripts/` (no hook event — invoked manually or from a skill) | Utilities table (On-demand scripts) in `docs/REFERENCE.md` |
 | Add / remove / rename a routine in `claude/routines/` | Routines table in `README.md` + `docs/REFERENCE.md` Routines section |
 | Change `hook-config.json` schema (new field, removed field, type change) | Configuration subsection in `docs/REFERENCE.md` |
 | Change a skill's invocation syntax or options | Skill entry in `docs/REFERENCE.md` |
