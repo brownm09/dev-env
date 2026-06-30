@@ -457,9 +457,14 @@ writes**:
 
 Because shards are disjoint files, git merges concurrent sessions' writes cleanly and removal is a
 per-file delete — the pull-first + surgical-edit discipline of the superseded ADR-054 is **no longer
-needed** (ordinary pull-before-push git hygiene still applies). Readers still accept the legacy
-single-file `YYYY-MM-DD.manifest.jsonl` / `open-prs.jsonl` during the transition; writers emit only
-shards. Schemas and write/delete steps: [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals).
+needed** (ordinary pull-before-push git hygiene still applies). That disjointness is a content-merge
+guarantee only — it does not extend to the local git index, which every concurrent session sharing this
+checkout also shares. **Commit with an explicit pathspec, not a bare `git commit`:** a bare `git commit`
+commits the *entire* staged index, not just this session's `git add`-ed files, and can sweep a concurrent
+session's already-staged shard into this session's commit — see the `--` pathspec in the commit steps
+below ([ADR-056 → Addendum](../docs/adr/056-per-session-sharding-journal-companion-files.md)). Readers
+still accept the legacy single-file `YYYY-MM-DD.manifest.jsonl` / `open-prs.jsonl` during the transition;
+writers emit only shards. Schemas and write/delete steps: [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals).
 
 **Branch:** `draft/YYYY-MM-DD` — created at the first session of the day, merged to main at day end.
 
@@ -484,8 +489,10 @@ operational artifacts (compose lock files, log file timestamps).
 4. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
 6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` — one JSON object (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
-7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/`, `git commit -m "draft: YYYY-MM-DD session 1"`, `git push -u origin draft/YYYY-MM-DD`
-   *(include `sessions/<project>/open-prs/` only if this session opened or merged a PR — it stages the added/deleted shard)*
+7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/`, `git commit -m "draft: YYYY-MM-DD session 1" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/`, `git push -u origin draft/YYYY-MM-DD`
+   *(include `sessions/<project>/open-prs/` in both the `git add` and the `git commit` pathspec only if
+   this session opened or merged a PR. The `--` pathspec on `git commit` is required, not optional — see
+   "Commit with an explicit pathspec" above.)*
 
 **Subsequent sessions:**
 1. `git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD && git -C C:/Users/brown/Git/engineering-journal pull`
@@ -497,8 +504,10 @@ operational artifacts (compose lock files, log file timestamps).
 4. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` with the current session block
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
 6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` — one JSON object (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
-7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/`, `git commit -m "draft: YYYY-MM-DD session N"`, `git push`
-   *(include `sessions/<project>/open-prs/` only if this session opened or merged a PR — it stages the added/deleted shard)*
+7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/`, `git commit -m "draft: YYYY-MM-DD session N" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/`, `git push`
+   *(include `sessions/<project>/open-prs/` in both the `git add` and the `git commit` pathspec only if
+   this session opened or merged a PR. The `--` pathspec on `git commit` is required, not optional — see
+   "Commit with an explicit pathspec" above.)*
 
 **File formats, stub template, and recovery:** the manifest-shard and open-PR-shard schemas
 (referenced in the workflow steps above), the stub-file template, the canonical 11-section compose

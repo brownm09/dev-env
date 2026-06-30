@@ -790,7 +790,11 @@ session's stub `YYYY-MM-DD_HHMMSS.stub.md`. Written after the token comment is k
 order), and reads the session count, topics, token data, and PR lifecycle without opening the stubs.
 Advisory: if the shard set is missing or smaller than the stub glob, stubs are authoritative. Commit
 each shard with its stub — because shards are disjoint per-session files, two concurrent sessions never
-write the same file and git merges their shards cleanly.
+write the same file and git merges their *committed content* cleanly. That guarantee covers file content,
+not the shared git index in this checkout; the explicit-pathspec commit discipline that keeps one
+session's commit from sweeping in another session's staged-but-uncommitted files is a behavioral rule,
+not a file format — see `claude/CLAUDE.md` → Engineering Journal → Stub file workflow and
+[ADR-056 → Addendum](adr/056-per-session-sharding-journal-companion-files.md).
 
 ```bash
 echo '{"stub":"sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"input":N,"output":N,"cost":N},"prs_opened":[],"prs_closed":[]}' \

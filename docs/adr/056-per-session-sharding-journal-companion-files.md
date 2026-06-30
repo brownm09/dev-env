@@ -119,3 +119,44 @@ true for an `open-prs/` directory).
   Internals (shard schemas + write/delete steps).
 - Issue [#392](https://github.com/brownm09/dev-env/issues/392); supersedes [#389](https://github.com/brownm09/dev-env/pull/389).
 - Incident: engineering-journal `draft/2026-06-22`.
+
+---
+
+## Addendum (2026-06-30) — Explicit pathspec required on every commit step
+
+ADR-056's "Why this is structurally safe" section states that disjoint shard files mean "git merges
+concurrent sessions' writes cleanly... with no conflict and no clobber." That claim is correct for
+**file content** — two sessions' shards never collide on disk or in a merge — but it does not extend to
+the **git index** (staging area), which is a single shared resource within one local checkout
+(`C:/Users/brown/Git/engineering-journal`), used by every concurrent Claude Code session across every
+project. The documented commit step (`claude/CLAUDE.md` → Stub file workflow, both "First session" and
+"Subsequent sessions" step 7) was a bare `git add <this session's files>` followed by a bare
+`git commit -m "..."` with no pathspec. **A bare `git commit` commits the entire staged index**, not just
+the files just `git add`-ed — so if a concurrent session had already staged its own files via its own
+`git add` before this session's `git commit` ran, those files were swept into this session's commit too.
+
+**Incident:** engineering-journal commit `a876284` ("draft: 2026-06-30 dev-env #443 review complete"),
+produced by a bare `git commit` in a dev-env session, also contains a concurrent lifting-logbook
+session's pre-staged `sessions/lifting-logbook/2026-06-30_135019.stub.md` and
+`sessions/lifting-logbook/2026-06-30_141746.manifest.jsonl`. Harmless in this instance — the shards are
+disjoint, additive, and content-intact, and `/journal-compose` reads shards by glob regardless of which
+commit they landed in — but it entangled two unrelated sessions' work into one commit, undermining the
+per-session attribution the stub/shard model exists to provide.
+
+**Fix:** every commit step in the Stub file workflow now passes an explicit pathspec to `git commit`:
+
+```bash
+git commit -m "draft: YYYY-MM-DD session N" -- \
+  sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md \
+  sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl \
+  sessions/<project>/open-prs/
+```
+
+`git commit -- <pathspec>` commits only the working-tree content of the named paths (auto-staging them if
+not already staged) and explicitly leaves any *other* already-staged changes in the index untouched for a
+future commit — the correct, minimal fix. No architectural change (e.g., per-session worktrees for the
+engineering-journal checkout) is warranted: the hazard is in the *commit invocation*, not the sharding
+design, which remains structurally sound for what it claims (content-level disjointness).
+
+**Status:** this is a refinement, not a reversal — ADR-056's Decision, Considered alternatives, and
+Consequences stand unchanged; Status remains Accepted. Tracked in [dev-env#449](https://github.com/brownm09/dev-env/issues/449).
