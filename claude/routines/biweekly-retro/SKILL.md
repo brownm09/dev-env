@@ -168,7 +168,10 @@ fi
 cd "$EJ"
 git checkout -b "retro/${RUN_DATE}" origin/main 2>/dev/null || git checkout "retro/${RUN_DATE}"
 git add "sessions/meta/retro/${RUN_DATE}-retro.md" "sessions/meta/retro/README.md"
-git commit -m "[docs] Biweekly retro ${RUN_DATE} (trailing 4 weeks)"
+# This checkout is shared by every concurrent Claude Code session — the explicit `--` pathspec keeps
+# this commit from sweeping in another session's already-staged files (see dev-env claude/CLAUDE.md →
+# Engineering Journal → Stub file workflow → "Commit with an explicit pathspec").
+git commit -m "[docs] Biweekly retro ${RUN_DATE} (trailing 4 weeks)" -- "sessions/meta/retro/${RUN_DATE}-retro.md" "sessions/meta/retro/README.md"
 git push -u origin "retro/${RUN_DATE}"
 ```
 
