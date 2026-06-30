@@ -104,9 +104,6 @@ def test_missing_multiple_fields():
 def test_missing_all_five():
     assert missing_required_fields({}) == list(REQUIRED_FIELDS)
 
-def test_empty_dict():
-    assert set(missing_required_fields({})) == set(REQUIRED_FIELDS)
-
 def test_non_dict_list():
     # A JSON list that snuck in is treated as missing every field.
     result = missing_required_fields(["stub", "topic"])

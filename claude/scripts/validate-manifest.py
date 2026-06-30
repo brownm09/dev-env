@@ -44,7 +44,7 @@ import sys
 REQUIRED_FIELDS = ("stub", "topic", "tokens", "prs_opened", "prs_closed")
 
 
-def missing_required_fields(entry: dict) -> list[str]:
+def missing_required_fields(entry: object) -> list[str]:
     """Return the required fields absent from a single parsed manifest entry.
 
     Returned in canonical schema order so reports are stable. A non-dict entry (a JSON
@@ -143,7 +143,7 @@ def main(argv) -> int:
             sys.stderr.write(f"  - {src}\n      stub: {stub}\n      missing: {', '.join(missing)}\n")
         sys.stderr.write("\n")
     if parse_errors:
-        sys.stderr.write("Lines that are not a JSON object (parse error):\n")
+        sys.stderr.write("Unparseable lines or unreadable files:\n")
         for src in parse_errors:
             sys.stderr.write(f"  - {src}\n")
         sys.stderr.write("\n")
