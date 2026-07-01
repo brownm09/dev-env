@@ -152,6 +152,11 @@ git commit -m "draft: YYYY-MM-DD session N" -- \
   sessions/<project>/open-prs/
 ```
 
+> **2026-07-01 update:** the `sessions/<project>/open-prs/` line above is superseded — see the
+> "Addendum (2026-07-01) — open-PR shard pathspec narrowed from directory to exact file" section
+> near the end of this ADR. The correct pathspec is the exact shard file,
+> `sessions/<project>/open-prs/<N>.json`, not the bare directory.
+
 `git commit -- <pathspec>` commits only the working-tree content of the named paths (auto-staging them if
 not already staged) and explicitly leaves any *other* already-staged changes in the index untouched for a
 future commit — the correct, minimal fix. No architectural change (e.g., per-session worktrees for the
