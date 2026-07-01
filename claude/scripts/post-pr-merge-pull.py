@@ -2,8 +2,12 @@
 """Claude Code PostToolUse hook — after 'gh pr merge', fast-forward the local
 main branch of the affected repo so the local clone stays current.
 
-Uses `git fetch origin main:main` which updates the local main ref even when
-a feature branch is currently checked out.
+Uses `git fetch origin main:main` to update the local main ref without requiring
+a checkout — except when the repo's canonical checkout is itself on `main` (e.g.
+dev-env's own canonical, which must always stay on `main` per its symlink
+architecture, CLAUDE.md -> Dev-Env Architecture): git refuses that fetch
+('refusing to fetch into branch ... checked out'), so a plain `pull --ff-only`
+is used there instead (dev-env#488).
 
 Stdin JSON shape (PostToolUse):
   {
@@ -25,7 +29,7 @@ import subprocess
 import sys
 
 from _hookio import effective_merge_dir, output_has_merge_marker, read_command_output
-from _worktree_topology import merge_park_target, parse_worktree_porcelain
+from _worktree_topology import canonical_on_main, merge_park_target, parse_worktree_porcelain
 
 # Map GitHub repo slugs to local clone paths.
 # Repos with no local clone (e.g. profile-only repos) map to None.
@@ -83,15 +87,48 @@ def extract_repo(command: str, cwd: str) -> str | None:
     return None
 
 
-def pull_main(local_path: str, repo: str) -> None:
-    """Fast-forward local main from origin without requiring a checkout."""
+def list_worktrees(local_path: str) -> list[dict]:
+    """Return `git worktree list --porcelain` for *local_path*'s repo, parsed; [] on failure.
+
+    Shared by pull_main's on-main detection and park_worktree_off_main's squatter
+    detection so a merge event runs `git worktree list` once, not twice.
+    """
     try:
-        result = subprocess.run(
-            ["git", "-C", local_path, "fetch", "origin", "main:main"],
-            capture_output=True, text=True, timeout=30,
+        wt = subprocess.run(
+            ["git", "-C", local_path, "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=15,
         )
+    except Exception:
+        return []
+    return parse_worktree_porcelain(wt.stdout) if wt.returncode == 0 else []
+
+
+def pull_command(local_path: str, on_main: bool) -> list[str]:
+    """Pure: the git invocation that fast-forwards local main from origin.
+
+    `git fetch origin main:main` fails ('refusing to fetch into branch
+    "refs/heads/main" checked out at ...') whenever `main` is the branch currently
+    checked out at *local_path* — always true for dev-env's canonical (CLAUDE.md ->
+    Dev-Env Architecture requires it stay on `main`; its tree is symlinked into
+    ~/.claude/). Use a plain `pull --ff-only` there instead. Otherwise (a feature
+    branch is checked out — the case the fetch-into-ref trick was written for,
+    issue #275) the fetch updates main without disturbing the current checkout,
+    unchanged.
+    """
+    if on_main:
+        return ["git", "-C", local_path, "pull", "--ff-only", "origin", "main"]
+    return ["git", "-C", local_path, "fetch", "origin", "main:main"]
+
+
+def pull_main(local_path: str, repo: str, on_main: bool) -> None:
+    """Fast-forward local main from origin (see pull_command for command choice)."""
+    cmd = pull_command(local_path, on_main)
+    kind = "pull" if on_main else "fetch"
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
-            detail = result.stderr.strip() or "already up to date"
+            parts = [p for p in (result.stdout.strip(), result.stderr.strip()) if p]
+            detail = "\n".join(parts) or "already up to date"
             print(
                 f"[post-merge-pull] {repo}: local main updated — {detail}",
                 file=sys.stderr,
@@ -99,12 +136,12 @@ def pull_main(local_path: str, repo: str) -> None:
         else:
             err = (result.stderr or result.stdout).strip()
             print(
-                f"[post-merge-pull] {repo}: git fetch failed — {err}",
+                f"[post-merge-pull] {repo}: git {kind} failed — {err}",
                 file=sys.stderr,
             )
     except subprocess.TimeoutExpired:
         print(
-            f"[post-merge-pull] {repo}: git fetch timed out",
+            f"[post-merge-pull] {repo}: git {kind} timed out",
             file=sys.stderr,
         )
     except Exception as exc:
@@ -114,7 +151,7 @@ def pull_main(local_path: str, repo: str) -> None:
         )
 
 
-def park_worktree_off_main(cwd: str, local_path: str) -> None:
+def park_worktree_off_main(cwd: str, worktrees: list[dict]) -> None:
     """If `gh pr merge --delete-branch` left this worktree squatting main, park it off.
 
     gh deletes the merged local branch and checks out the default branch; from a worktree
@@ -125,20 +162,13 @@ def park_worktree_off_main(cwd: str, local_path: str) -> None:
     needed. Non-destructive: `git checkout -b` changes no working-tree files (dev-env#396,
     ADR-058).
 
-    `merge_park_target` is fed the *merged repo's* worktree list (resolved from `local_path`),
+    `merge_park_target` is fed the *merged repo's* worktree list (shared with pull_main's
+    on-main detection via `list_worktrees` — one `git worktree list` call per merge event),
     so it parks only when `cwd` is genuinely a worktree of that repo on main — a `gh pr merge
     --repo X` run from an unrelated checkout never touches that other repo (correctness review).
     """
     if not cwd:
         return
-    try:
-        wt = subprocess.run(
-            ["git", "-C", local_path, "worktree", "list", "--porcelain"],
-            capture_output=True, text=True, timeout=15,
-        )
-    except Exception:
-        return
-    worktrees = parse_worktree_porcelain(wt.stdout) if wt.returncode == 0 else []
     park = merge_park_target(cwd, worktrees)
     if not park:
         return
@@ -217,8 +247,9 @@ def main() -> None:
         )
         sys.exit(0)
 
-    pull_main(local_path, repo)
-    park_worktree_off_main(cwd, local_path)
+    worktrees = list_worktrees(local_path)
+    pull_main(local_path, repo, canonical_on_main(worktrees))
+    park_worktree_off_main(cwd, worktrees)
     sys.exit(0)
 
 

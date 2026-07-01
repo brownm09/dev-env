@@ -168,8 +168,13 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
 15. **post-pr-merge-pull test** — required when changing `claude/scripts/post-pr-merge-pull.py`. Exercises
     the pure `is_successful_merge()` predicate offline: a `gh pr merge` with exit 0 or a stdout/stderr success
     marker triggers the local-`main` fast-forward (worktree merges exit non-zero but print the marker —
-    issue #275); a non-merge command or a genuinely failed merge does not. The `pull_main` / `extract_repo`
-    git calls are not covered ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)).
+    issue #275); a non-merge command or a genuinely failed merge does not. Also exercises the pure
+    `pull_command()` predicate: a canonical checked out on `main` gets a plain `pull --ff-only` (the
+    fetch-into-ref trick fails with 'refusing to fetch into branch ... checked out' there — dev-env#488,
+    [ADR-058 amendment](docs/adr/058-worktree-squatting-main-detection-correction.md)); a feature branch
+    (or squatting worktree) checked out gets the original fetch-into-ref, unchanged. The `pull_main` /
+    `extract_repo` / `list_worktrees` git calls are not covered
+    ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)).
 
     ```bash
     py -3 claude/scripts/tests/test_post_pr_merge_pull.py

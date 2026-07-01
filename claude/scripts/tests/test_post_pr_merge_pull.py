@@ -9,6 +9,13 @@ legacy `output` field (always empty on the real payload), so the stdout/stderr
 success-marker fallback was dead and only a clean exit-0 merge triggered the
 pull; the predicate now receives output via the shared `read_command_output`.
 
+`pull_command()` (dev-env#488) is the pure decision of which git invocation
+fast-forwards local main: `git fetch origin main:main` fails ('refusing to fetch
+into branch ... checked out') whenever main is the branch currently checked out
+at the target path — always true for dev-env's own canonical, which must stay on
+`main` per its symlink architecture — so a plain `pull --ff-only` is used there
+instead; the feature-branch-checked-out case (issue #275) is unchanged.
+
 The `pull_main` / `extract_repo` git calls are intentionally not tested (they
 shell out and the repo avoids subprocess mocks).
 
@@ -36,6 +43,7 @@ ppmp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ppmp)  # safe: main() is guarded by __main__
 is_successful_merge = ppmp.is_successful_merge
 extract_repo = ppmp.extract_repo
+pull_command = ppmp.pull_command
 
 
 def test_clean_merge_exit_zero() -> str:
@@ -103,6 +111,18 @@ def test_extract_repo_repo_flag_takes_precedence() -> str:
     return "--repo flag takes precedence over GitHub URL in command"
 
 
+def test_pull_command_on_main_uses_ff_only_pull() -> str:
+    cmd = pull_command("C:/Users/brown/Git/dev-env", True)
+    assert cmd == ["git", "-C", "C:/Users/brown/Git/dev-env", "pull", "--ff-only", "origin", "main"], cmd
+    return "canonical on main -> plain ff-only pull ('git fetch origin main:main' would fail: refusing to fetch into branch ... checked out)"
+
+
+def test_pull_command_off_main_uses_fetch_into_ref() -> str:
+    cmd = pull_command("C:/Users/brown/Git/lifting-logbook", False)
+    assert cmd == ["git", "-C", "C:/Users/brown/Git/lifting-logbook", "fetch", "origin", "main:main"], cmd
+    return "canonical on a feature branch (or worktree squatting main) -> fetch-into-ref, unchanged (issue #275)"
+
+
 def main() -> int:
     tests = [
         ("clean merge (exit 0) pulls", test_clean_merge_exit_zero),
@@ -112,6 +132,8 @@ def main() -> int:
         ("extract_repo: GitHub URL in command -> owner/repo", test_extract_repo_from_url_in_command),
         ("extract_repo: URL for different repo", test_extract_repo_from_url_other_repo),
         ("extract_repo: --repo flag beats URL", test_extract_repo_repo_flag_takes_precedence),
+        ("pull_command: canonical on main -> ff-only pull", test_pull_command_on_main_uses_ff_only_pull),
+        ("pull_command: canonical off main -> fetch-into-ref", test_pull_command_off_main_uses_fetch_into_ref),
     ]
     failed = 0
     for name, fn in tests:
