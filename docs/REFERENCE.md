@@ -639,10 +639,25 @@ pre-merge tooling. This is now auto-corrected: `post-pr-merge-pull.py` parks the
 `main`), then `git -C ~/Git/dev-env checkout main`. See
 [ADR-058](adr/058-worktree-squatting-main-detection-correction.md) (incident: dev-env#396).
 
-**Secondary effect — no post-merge usage snapshot.** Because the `gh pr merge` invocation exits
-non-zero on the failed local-checkout tail, the `PostToolUse` post-merge hook does **not** emit its
-`### Usage Snapshot (post-merge)` block — it keys off a clean `gh pr merge`. When merging from a
-worktree, expect the snapshot to be absent and capture usage by other means for the journal stub.
+**Secondary effect — no post-merge usage snapshot (fixed by dev-env#474 / PR #477).** Before
+2026-07-01, `usage-snapshot.py` gated on `tool_response.exitCode != 0`, so a worktree merge's
+failed local-checkout tail (above) discarded the snapshot even though the remote merge had
+succeeded. The hook now gates on gh's output success marker instead (`merge_confirmed()`,
+matching `post-pr-merge-project.py`'s marker-based detection) and fires correctly on worktree
+merges — confirmed in practice merging PR #477 itself, which hit this exact failure: the real
+payload contained gh's success marker (`post-pr-merge-project.py`, using the same `_hookio`
+dependency, correctly moved dev-env#474's linked issue to Done), and credentials/token were
+independently healthy. `usage-snapshot.py`'s own output was not directly observed in chat (see
+the next note), but it shares the identical marker-detection call. The snapshot can still be
+legitimately absent for reasons unrelated to the worktree-exit-code case: `.credentials.json`
+missing or unparseable, an expired refresh token, or the usage API unreachable after one retry —
+all intentionally silent-or-advisory per the hook's own docstring, not a regression of this fix.
+Separately: a PostToolUse hook's own stderr was not observed to surface to the assistant in chat
+in either of the two instances behind this fix — worth confirming with more data points before
+treating as a firm platform rule — when the *parent* `gh pr merge` call itself is shown as an
+error (non-zero exit); until then, confirm a hook
+actually ran by checking its side effect (e.g. the linked issue's board status) rather than
+assuming absence of visible reminder text means the hook didn't fire.
 
 ### Stacked PR squash-merge sequencing — never `--delete-branch` a base with an open child
 
