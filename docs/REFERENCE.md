@@ -406,6 +406,60 @@ Reconciles the **Dev Env** project board (#3) against the repo's open issues: li
 
 ---
 
+### weekly-memory-audit
+
+**Schedule:** `0 9 * * 1` — Monday 09:00 **local** time (the `scheduled-tasks` scheduler evaluates
+cron in local time). Weekly every Monday — **no parity gate** (unlike `biweekly-retro`).
+
+Runs `sync-routine-worktree` as Step 0 (`REPO=engineering-journal`,
+`VERIFY_FILE=sessions/meta/README.md`). Enumerates every project's memory store under
+`~/.claude/projects/*/memory/`, excluding Claude-managed worktree project dirs
+(`*--claude-worktrees-*`). Decodes each project dir to its repo working tree and GitHub slug via the
+actual `git remote get-url origin` (not the dir name — handles mismatches like
+`job-search` → `job-search-agent`). For each project, fans out one background `Explore` subagent
+(all spawned in a single message — no synchronous preflight) to classify every non-`MEMORY.md`
+memory entry. Dispositions: **remain** (durable + verified instruction home on `origin/main`),
+**promote** (durable + no home + no open tracking issue = never-ported), **stale** (cites
+merged/closed work or is contradicted by current code), **drift** (names a moved/renamed file or
+flag), **transient** (session-local/fast-changing), **tracked-pending** (has an open issue but no
+instruction home yet — report-only, not re-filed), or **index-drift** (missing from or disagreeing
+with `MEMORY.md`).
+
+**Read-only on memory.** The routine **never** edits or deletes a memory file or `MEMORY.md`.
+Deletion and in-place fixes stay human-in-the-loop via the interactive `/memory-audit` skill.
+
+**Outputs:**
+- **Deduped promote issues, one per never-ported durable** (label `memory-audit`). The issue body
+  carries the rule text, memory file path, suggested instruction home, and a machine-readable
+  `memory-slug: <projdir>/<name>` line (project-qualified to prevent cross-project collisions when
+  global rules from different projects all land in dev-env). A dedup guard reads each target repo's
+  open `memory-audit` issues before filing, skipping slugs already present — the weekly cadence
+  never re-files the same gap. Routing: project-specific durable → that project's repo;
+  global/cross-cutting + no-remote + engineering-journal (no issue tracker by convention) → dev-env.
+- A committed reconciliation report at
+  `engineering-journal/sessions/meta/memory-audit/YYYY-MM-DD-audit.md` with a cross-project table
+  (project · file · type · durable? · instruction home · drift · disposition), a "Promote issues
+  filed" subsection, and a "Stale / drift / index-drift (report-only)" subsection. Opened as a PR
+  to `main` (never auto-merged — ADR-031; the user reviews and merges).
+
+Stale, drift, index-drift, and tracked-pending findings are included in the report but are **not**
+auto-actioned — they require human judgment.
+
+**Resilience:** no-memory-stores exit (push-notify + EXIT 0), per-project subagent failure →
+partial report (does not abort the run), git/PR failure → push-notify + keep draft for recovery.
+A push notification summarizes the run on every completion or abort path.
+
+**Dual-copy caveat (dev-env#344):** `claude/routines/weekly-memory-audit/` (version-controlled, via
+junction) is the canonical definition. The live task copy at
+`~/.claude/scheduled-tasks/weekly-memory-audit/SKILL.md` is written by the `create_scheduled_task`
+MCP tool into a *separate real directory* and does **not** auto-sync — both must be updated on any
+edit (PR for the canonical; re-register/update via MCP for the live copy).
+
+**Origin:** dev-env#439 (child of dev-env#363); cadence and read-only-on-memory shape chosen by the
+user 2026-06-30. [ADR-069](adr/069-weekly-memory-audit-routine.md)
+
+---
+
 ## Utilities
 
 On-demand scripts — not wired to any event. Run manually or from other scripts.

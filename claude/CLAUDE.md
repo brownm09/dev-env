@@ -18,9 +18,9 @@ Agent memory (`~/.claude/projects/.../memory/`) is a private cache, not the sour
 - **Never let a durable preference or workflow rule live only in memory.** Whenever you commit one to a `user`/`feedback`/`project` memory file, **pair it — in the same session — with a GitHub issue whose explicit job is to immortalize it into the instructions** (the appropriate `CLAUDE.md`, global or project, or project docs). Link that issue from **both** the memory body and its `MEMORY.md` pointer so the two never drift apart.
 - **Filing the issue is the floor, not the finish.** The issue exists to drive the rule *into* the instructions — not to substitute for doing so. Prefer to make the instruction edit immediately and close the issue in the same session; a deferred issue is the backstop that keeps the rule from being forgotten, not a place to park it indefinitely.
 - **Transient context is exempt.** Session-local or fast-changing notes (open-PR lists, in-flight working state) may live in memory and expire there — no issue required. This rule governs only durable, cross-session rules: the things a human collaborator would need to know to work the way the user expects.
-- A non-blocking write-time hook (`memory-write-advisory.py`) reminds you when a memory file is written without such a link, and the `/memory-audit` skill reconciles memory against the instructions on demand.
+- A non-blocking write-time hook (`memory-write-advisory.py`) reminds you when a memory file is written without such a link, the `/memory-audit` skill reconciles memory against the instructions on demand, and the `weekly-memory-audit` routine runs every Monday to sweep existing memory across all projects for never-ported durables (auto-filing deduped *promote* issues in the correct repo) and report stale/drift findings without modifying any memory file.
 
-See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md), [ADR-048](../docs/adr/048-memory-immortalization-issue-pairing.md).
+See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md), [ADR-048](../docs/adr/048-memory-immortalization-issue-pairing.md), [ADR-069](../docs/adr/069-weekly-memory-audit-routine.md).
 
 ---
 
