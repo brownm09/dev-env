@@ -212,7 +212,7 @@ The test-before-PR run must emit a summary of the form `Tests: N passed, N skipp
 **Rule 3 — Pre-PR test-integrity check (required before `gh pr create`).**
 Run this alongside the suppression grep:
 ```bash
-git diff origin/main -- . | grep -E '(it\.skip|xit\(|xdescribe\(|test\.skip|describe\.skip|\.todo\(|pending\(|passWithNoTests|--bail|testPathIgnorePatterns)'
+git diff origin/main -- . | grep -E '(it\.skip|\bxit\(|xdescribe\(|test\.skip|describe\.skip|\.todo\(|pending\(|passWithNoTests|--bail|testPathIgnorePatterns)'
 ```
 Also check for deleted test files and lowered coverage thresholds:
 ```bash
