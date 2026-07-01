@@ -14,10 +14,17 @@ difference (orphans), adds them, and reports the issues still missing a required
   - that render_report emits `gh project item-edit` *commands* but assigns no value
     (no-guessing) and ends in the machine-readable RESULT line the routine reads, and
   - that render_scan_summary (dev-env#462, ADR-070) emits the --scan-dir aggregate
-    RESULT line the routine reads as its *final* line in scan-dir mode.
+    RESULT line the routine reads as its *final* line in scan-dir mode, and
+  - that _validated_config (dev-env#465 review) resolves ok / no-config / bad-config
+    against a real tmp-dir hook-config.json — including a valid-but-non-object JSON
+    payload, the regression case for a crash that used to abort an entire --scan-dir
+    sweep on one malformed file — and that _added_and_failed's added/failed split
+    matches what render_report and _reconcile_repo each derive from it.
 
 The gh boundary (fetch_open_issues / fetch_board_items / add_to_project) is not mocked,
-matching the repo's fixture-only / no-subprocess-mock convention.
+matching the repo's fixture-only / no-subprocess-mock convention. _validated_config only
+touches the filesystem (a real tmp-dir hook-config.json), so it is tested directly rather
+than via --dry-run integration runs.
 
 Usage:
     py -3 claude/scripts/tests/test_reconcile_project_board.py
@@ -26,7 +33,9 @@ Exit 0 = all pass.
 """
 
 import importlib.util
+import json
 import sys
+import tempfile
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -54,6 +63,8 @@ looks_like_scope_error = mod.looks_like_scope_error
 is_truncated = mod.is_truncated
 render_report = mod.render_report
 render_scan_summary = mod.render_scan_summary
+_added_and_failed = mod._added_and_failed
+_validated_config = mod._validated_config
 
 REPO = "brownm09/dev-env"
 
@@ -94,6 +105,15 @@ def _item(number, *, type="Issue", repo=REPO, impact=None, why=None, item_id=Non
     if why is not None:
         item["why"] = why
     return item
+
+
+def _write_config(repo_root, payload) -> None:
+    """Write `payload` (any JSON-serializable value, not necessarily a dict) as
+    repo_root's hook-config.json, creating .claude/ as needed -- mirrors what a real
+    repo checkout has, no mocking required."""
+    config_dir = Path(repo_root) / ".claude"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "hook-config.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
 # --- canonical worktree root -------------------------------------------------
@@ -295,6 +315,83 @@ def test_render_scan_summary_dry_run() -> str:
     return "dry_run=true is reflected in the aggregate line, matching render_report's flag"
 
 
+# --- _added_and_failed: shared by render_report and _reconcile_repo (dev-env#465) ---
+
+
+def test_added_and_failed_dry_run() -> str:
+    orphans = [{"number": 1, "item_id": "PVTI_1"}, {"number": 2, "item_id": None}]
+    assert _added_and_failed(orphans, dry_run=True) == (0, 0), "dry-run attempts nothing"
+    return "dry-run always reports (0, 0) regardless of orphans' item_id state"
+
+
+def test_added_and_failed_partial() -> str:
+    orphans = [
+        {"number": 1, "item_id": "PVTI_1"},
+        {"number": 2, "item_id": None},
+        {"number": 3, "item_id": "PVTI_3"},
+    ]
+    assert _added_and_failed(orphans, dry_run=False) == (2, 1), "2 succeeded, 1 failed"
+    return "added/failed split matches which orphans ended up with a real item_id"
+
+
+def test_added_and_failed_all_added() -> str:
+    orphans = [{"number": 1, "item_id": "PVTI_1"}, {"number": 2, "item_id": "PVTI_2"}]
+    assert _added_and_failed(orphans, dry_run=False) == (2, 0)
+    return "every orphan added -> (len(orphans), 0)"
+
+
+# --- _validated_config: ok / no-config / bad-config (dev-env#465 review) -----
+
+
+def test_validated_config_ok() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, CONFIG)
+        config, status, message = _validated_config(tmp)
+        assert status == "ok" and message is None
+        assert config == CONFIG
+    return "a well-formed hook-config.json validates as ok; config is returned as-is"
+
+
+def test_validated_config_no_config() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        # no .claude/hook-config.json written at all
+        result = _validated_config(tmp)
+        assert result == (None, "no-config", None)
+    return "a repo with no hook-config.json at all is 'no-config', not an error"
+
+
+def test_validated_config_missing_required_keys() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, {"repo": REPO})  # no project_number / project_owner
+        config, status, message = _validated_config(tmp)
+        assert config is None and status == "bad-config"
+        assert "missing repo / project_number / project_owner" in message
+    return "a config missing repo/project_number/project_owner is 'bad-config' with a specific message"
+
+
+def test_validated_config_colliding_required_fields() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        bad = dict(CONFIG, required_fields=[{"name": "Status", "field_id": "x", "type": "text"}])
+        _write_config(tmp, bad)
+        config, status, message = _validated_config(tmp)
+        assert config is None and status == "bad-config"
+        assert "collide" in message
+    return "a required_fields name colliding with a reserved gh item key is 'bad-config'"
+
+
+def test_validated_config_non_dict_json() -> str:
+    # dev-env#465 review: a valid-but-non-object hook-config.json (e.g. a bare JSON
+    # array) used to crash _validated_config's config.get(...) with an AttributeError,
+    # uncaught anywhere in the --scan-dir loop -- one malformed file anywhere under the
+    # scan directory aborted the entire nightly sweep. Must be "bad-config", not a crash.
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, [])  # valid JSON, not a JSON object
+        config, status, message = _validated_config(tmp)
+        assert config is None and status == "bad-config"
+        assert "JSON object" in message and "not a dict" in message
+    return "a valid-but-non-object hook-config.json (e.g. a bare array) is 'bad-config', not a crash"
+
+
 def main() -> int:
     tests = [
         ("canonical_repo_root resolution", test_canonical_repo_root),
@@ -315,6 +412,14 @@ def main() -> int:
         ("render_scan_summary all-clean", test_render_scan_summary_all_clean),
         ("render_scan_summary mixed counts", test_render_scan_summary_mixed),
         ("render_scan_summary dry-run", test_render_scan_summary_dry_run),
+        ("_added_and_failed dry-run", test_added_and_failed_dry_run),
+        ("_added_and_failed partial", test_added_and_failed_partial),
+        ("_added_and_failed all added", test_added_and_failed_all_added),
+        ("_validated_config ok", test_validated_config_ok),
+        ("_validated_config no-config", test_validated_config_no_config),
+        ("_validated_config missing required keys", test_validated_config_missing_required_keys),
+        ("_validated_config colliding required_fields", test_validated_config_colliding_required_fields),
+        ("_validated_config non-dict JSON (dev-env#465 crash regression)", test_validated_config_non_dict_json),
     ]
     failed = 0
     for name, fn in tests:
