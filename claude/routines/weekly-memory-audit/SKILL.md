@@ -71,7 +71,9 @@ If `$DIRS` is empty, send a push notification — `weekly-memory-audit: no memor
 nothing to audit` — and exit cleanly with status 0.
 
 **Decode each project dir to its repo + GitHub slug** (used for instruction-home verification and
-issue routing). The project dir encodes the working-tree path with separators replaced by `-`:
+issue routing). The project dir encodes the working-tree path with separators replaced by `-`. Apply
+this decode **once per entry when reading `$DIRS` in Step 2** — it is per-entry pseudocode, not a
+sequential post-loop script:
 
 ```bash
 # projdir e.g. "C--Users-brown-Git-lifting-logbook"
@@ -167,8 +169,11 @@ repo `R`, read its existing open `memory-audit` issues once, then skip any findi
 appears (no `jq` — parse with `node -e`):
 
 ```bash
+# R, PROJ, NAME, RULE_TEXT, SUGGESTED_HOME, MEMORY_FILE are model-filled placeholders —
+# the agent substitutes values from its Step 2/3 findings context (not shell assignments).
+# R is the FULL owner/repo slug (e.g., "brownm09/lifting-logbook") from Step 3 routing.
 ISSUES="$SCRATCH/memaudit_issues_${R//\//_}.json"
-gh issue list --repo "brownm09/${R}" --label memory-audit --state open \
+gh issue list --repo "${R}" --label memory-audit --state open --limit 500 \
   --json number,title,body > "$ISSUES" 2>/dev/null || echo '[]' > "$ISSUES"
 
 # returns DUP or NEW for a given slug
@@ -184,31 +189,23 @@ node -e '
 For each remaining (NEW) finding, ensure the label exists then file the issue:
 
 ```bash
-gh label create memory-audit --repo "brownm09/${R}" --color 5319e7 \
+gh label create memory-audit --repo "${R}" --color 5319e7 \
   --description "Never-ported durable surfaced by the weekly-memory-audit routine" 2>/dev/null || true
 
-gh issue create --repo "brownm09/${R}" --label memory-audit \
-  --title "[memory-audit] Promote durable: ${NAME} (${PROJ})" \
-  --body "$(cat <<EOF
+BODY_FILE="$SCRATCH/memaudit_body_$$.md"
+cat > "$BODY_FILE" << 'BODY_DELIM'
 A durable rule in agent memory has no current instruction home and no open tracking issue. The
 weekly-memory-audit routine surfaced it for promotion into the version-controlled instructions
 (per ADR-038 / ADR-048): memory is a private cache, not the source of truth.
-
-**Memory file:** \`${MEMORY_FILE}\`
-**Rule (from memory):**
-> ${RULE_TEXT}
-
-**Suggested instruction home:** ${SUGGESTED_HOME}
-
-**To resolve:** port the rule into the suggested instruction file, link this issue from both the
-memory body and its \`MEMORY.md\` pointer (ADR-048), then close.
-
-memory-slug: ${PROJ}/${NAME}
-
-_Filed automatically by the \`weekly-memory-audit\` routine (dev-env
-\`claude/routines/weekly-memory-audit/\`). Parents: dev-env#363, dev-env#439._
-EOF
-)"
+BODY_DELIM
+printf '\n**Memory file:** `%s`\n**Rule (from memory):**\n' "$MEMORY_FILE" >> "$BODY_FILE"
+printf '> %s\n' "$RULE_TEXT" >> "$BODY_FILE"
+printf '\n**Suggested instruction home:** %s\n\n**To resolve:** port the rule into the suggested instruction file, link this issue from both the\nmemory body and its `MEMORY.md` pointer (ADR-048), then close.\n\nmemory-slug: %s/%s\n\n_Filed automatically by the `weekly-memory-audit` routine (dev-env\n`claude/routines/weekly-memory-audit/`). Parents: dev-env#363, dev-env#439._\n' \
+  "$SUGGESTED_HOME" "$PROJ" "$NAME" >> "$BODY_FILE"
+gh issue create --repo "${R}" --label memory-audit \
+  --title "[memory-audit] Promote durable: ${NAME} (${PROJ})" \
+  --body-file "$BODY_FILE"
+rm -f "$BODY_FILE"
 ```
 
 Capture every filed issue URL, and keep a running count of **filed** vs **deduped** (skipped) per
@@ -262,11 +259,12 @@ fi
    reviews and merges):
 
 ```bash
-cd "$EJ"
-git checkout -b "memory-audit/${RUN_DATE}" origin/main 2>/dev/null || git checkout "memory-audit/${RUN_DATE}"
-git add "sessions/meta/memory-audit/${RUN_DATE}-audit.md" "sessions/meta/memory-audit/README.md"
-git commit -m "[docs] Weekly memory audit ${RUN_DATE} (cross-project reconciliation)"
-git push -u origin "memory-audit/${RUN_DATE}"
+git -C "$EJ" checkout -b "memory-audit/${RUN_DATE}" origin/main 2>/dev/null \
+  || git -C "$EJ" checkout "memory-audit/${RUN_DATE}"
+git -C "$EJ" add "sessions/meta/memory-audit/${RUN_DATE}-audit.md" "sessions/meta/memory-audit/README.md"
+git -C "$EJ" diff --cached --quiet \
+  || git -C "$EJ" commit -m "[docs] Weekly memory audit ${RUN_DATE} (cross-project reconciliation)"
+git -C "$EJ" push -u origin "memory-audit/${RUN_DATE}"
 gh pr create --repo brownm09/engineering-journal \
   --base main --head "memory-audit/${RUN_DATE}" \
   --title "Weekly memory audit ${RUN_DATE}" \
