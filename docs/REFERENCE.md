@@ -721,6 +721,61 @@ npm install                                          # from the recreated worktr
 [ADR-024](adr/024-worktree-path-guard-hook.md) with the recovery procedure; decision:
 [ADR-066](adr/066-worktree-session-safety-rules.md).
 
+### Concurrent-session HEAD thrashing in a canonical (non-worktree) checkout
+
+**Trigger.** Two Claude Code sessions both work directly in the same repo's canonical checkout at
+once — no worktree involved on either side. One session's `git checkout` (branch switch, not
+necessarily `-b`) silently moves HEAD and the working tree out from under the other, mid-session,
+with no intervening user action on the affected side.
+
+**Symptoms / detection tell.** `git branch --show-current` or `git log --oneline -1` returns a
+**different branch or HEAD** than the one just created or committed on, across consecutive tool
+calls in the same turn. A local `grep`/`Read` for content just committed returns nothing, while the
+**remote** (`gh pr diff`, `git show origin/<branch>:<path>`) shows it correctly — that mismatch
+(local absent, remote present) is the tell that the working tree has been thrashed onto a different
+branch than the one the session's own commits actually landed on.
+
+**Recovery — reconstruct first, never trust local state until diffed against `origin/main`**
+(validated against both dev-env#453 incidents, 2026-07-01):
+
+```bash
+git -C <canonical-repo-path> reflog                              # reconstruct the true sequence of events
+git -C <canonical-repo-path> branch --contains <your-commit-sha> # find which branch(es) actually carry your commit
+git -C <canonical-repo-path> diff origin/main <your-branch> -- <touched files>   # confirm before trusting/opening a PR
+```
+
+Two recovery paths depending on what the diff shows:
+
+1. **Attribution scrambled, but the change is intact somewhere upstream.** If `git cat-file -t
+   <sha>` still resolves and `git branch --contains <sha>` shows it landed on someone else's branch
+   (already merged or about to be), do not force-move it back — that repeats the same collision in
+   reverse. Close the loop by editing the issue/PR record after the fact: close the original
+   issue(s) with a resolution comment tracing the actual carrying commit/PR, rather than
+   cherry-picking or resetting the local tree.
+2. **Your branch is stale relative to `origin/main` and a PR may already be open on it.** Do **not**
+   `git checkout` your branch back into the shared canonical tree to "fix" it — that is the
+   reciprocal collision, yanking the *other* session's tree out from under it. Finish entirely via
+   remote-only reads: `gh pr diff`, `git show origin/<branch>:<path>`, `gh api`. If the diff against
+   `origin/main` is empty for your touched files, your change is already upstream — no action
+   needed beyond closing your issue with a pointer to the carrying commit. If a PR is open and safe
+   to merge, complete review and merge without ever touching the local displaced tree; prefer
+   `gh api -X DELETE repos/{owner}/{repo}/git/refs/heads/<branch>` over `gh pr merge
+   --delete-branch` for branch cleanup in this situation, since `--delete-branch` also tries to
+   switch the local checkout — exactly the touch you're avoiding.
+
+**Second failure dimension — API rate-limit contention.** Two sessions sharing one checkout also
+share (and can exhaust) the GitHub GraphQL API's 5,000/hr rate-limit bucket, disabling
+`gh pr merge` / `gh pr comment` / `gh pr view --json` (all GraphQL-backed) for **both** sessions
+mid-work. The REST `core` bucket is a separate quota and typically stays healthy — prefer
+REST-backed `gh api` calls over GraphQL-backed `gh pr *` subcommands when the GraphQL bucket is
+known to be exhausted (`gh api rate_limit` shows the remaining count per bucket).
+
+**Prevention.** A `PreToolUse(Bash)` hook (`pre-tool-use-canonical-mutate-guard.py`) now hard-blocks
+git-mutating commands issued with cwd at a canonical (non-worktree) root — isolate into a worktree
+before this recovery sequence is ever needed. This runbook is the fallback for what the hook can't
+catch: a manual terminal session outside Claude Code, or a command that redirects into the canonical
+root via `cd`/`-C` from elsewhere (the hook's documented v1 gap). Decision: [ADR-071](adr/071-canonical-checkout-mutate-guard-hook.md).
+
 ### Deleting a remote branch in Claude Code web sessions
 
 Never use `git push origin --delete <branch>` in a web/cloud session — the sandbox HTTP git proxy does
