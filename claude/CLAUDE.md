@@ -493,8 +493,10 @@ operational artifacts (compose lock files, log file timestamps).
 7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json`, `git commit -m "draft: YYYY-MM-DD session 1" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json`, `git push -u origin draft/YYYY-MM-DD`
    *(include `sessions/<project>/open-prs/<N>.json` — the exact shard file(s) this session itself
    created or removed, never the bare `open-prs/` directory — in both the `git add` and the `git commit`
-   pathspec only if this session opened or merged a PR. A directory pathspec stages whatever shard a
-   *different* concurrent session has just written into that same folder, sweeping it into this
+   pathspec only if this session opened or merged a PR. More than one PR touched in the same session
+   means more than one shard path, space-separated (e.g. `open-prs/54.json open-prs/55.json`) — never
+   fall back to the bare directory for convenience. A directory pathspec stages whatever shard a
+   different concurrent session has just written into that same folder, sweeping it into this
    session's commit under an unrelated message ([dev-env#480](https://github.com/brownm09/dev-env/issues/480)).
    The `--` pathspec on `git commit` is required, not optional — see "Commit with an explicit pathspec"
    above.)*
@@ -512,8 +514,10 @@ operational artifacts (compose lock files, log file timestamps).
 7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json`, `git commit -m "draft: YYYY-MM-DD session N" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json`, `git push`
    *(include `sessions/<project>/open-prs/<N>.json` — the exact shard file(s) this session itself
    created or removed, never the bare `open-prs/` directory — in both the `git add` and the `git commit`
-   pathspec only if this session opened or merged a PR. A directory pathspec stages whatever shard a
-   *different* concurrent session has just written into that same folder, sweeping it into this
+   pathspec only if this session opened or merged a PR. More than one PR touched in the same session
+   means more than one shard path, space-separated (e.g. `open-prs/54.json open-prs/55.json`) — never
+   fall back to the bare directory for convenience. A directory pathspec stages whatever shard a
+   different concurrent session has just written into that same folder, sweeping it into this
    session's commit under an unrelated message ([dev-env#480](https://github.com/brownm09/dev-env/issues/480)).
    The `--` pathspec on `git commit` is required, not optional — see "Commit with an explicit pathspec"
    above.)*
