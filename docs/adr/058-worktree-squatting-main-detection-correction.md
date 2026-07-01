@@ -2,6 +2,7 @@
 
 **Date:** 2026-06-22
 **Status:** Accepted
+**Amended:** 2026-07-01 (see Amendment section below)
 **Tags:** worktrees, main, squat, canonical, prune, dev-env-sync, post-merge, park, safety, hooks, symlinks
 
 ---
@@ -118,3 +119,33 @@ canonical → prune is the daily backstop for any squatter that slipped through.
   than one linked working tree" (the invariant that makes a squatter imply the canonical is off `main`).
 - ² [gh pr merge](https://cli.github.com/manual/gh_pr_merge) — `--delete-branch` deletes the local + remote
   branch after merge (the local step checks out the default branch in the current worktree).
+
+## Amendment (2026-07-01) — `post-pr-merge-pull.py`'s `pull_main()` needed the same canonical-on-`main` correction (dev-env#488)
+
+This ADR's three wirings correct a worktree *squatting* `main` (a non-canonical worktree holding the
+ref) and the canonical drifting *off* `main`. They did not cover the far more common topology for
+dev-env's own repo: the canonical **itself** sitting on `main`, exactly as this ADR's own invariant
+requires — which is precisely where `pull_main()`'s `git fetch origin main:main` (issue #275's fix)
+breaks.
+
+**Symptom (dev-env#488):** merging PR #476 left the canonical `C:/Users/brown/Git/dev-env` behind
+`origin/main`. Git refuses `fetch origin main:main` whenever `main` is checked out anywhere,
+including at the fetch's own target path:
+
+    fatal: refusing to fetch into branch 'refs/heads/main' checked out at 'C:/Users/brown/Git/dev-env'
+
+Because dev-env's canonical must always stay on `main`, `pull_main()` was guaranteed to fail this way
+on **every** dev-env PR merge from a worktree — the only way dev-env PRs ever merge. The failure is
+non-blocking (exit 0) and easy to miss, so the canonical silently drifted until the next prompt's
+`dev-env-sync` caught up (this ADR's `return-canonical` wiring) — quietly defeating issue #275's whole
+point (avoid waiting for the next prompt) for dev-env's own repo specifically.
+
+**Fix:** `post-pr-merge-pull.py` now calls this ADR's own `canonical_on_main()` against the *same*
+`git worktree list --porcelain` output it already fetches for `park_worktree_off_main`'s squatter
+check (one list call per merge event, via the new `list_worktrees()` helper, not two). When the
+target repo's canonical is on `main`, it runs a plain `git pull --ff-only origin main` instead of the
+fetch-into-ref trick; when a feature branch (or a squatting worktree) holds `main`, the original
+fetch-into-ref behavior is unchanged. The command choice itself is a pure `pull_command()` helper,
+unit-tested offline in `test_post_pr_merge_pull.py` per this repo's no-subprocess-mock convention.
+This ADR's existing squatter/off-main wirings are untouched — the amendment only adds the missing
+third topology case (canonical on `main`) to `pull_main()`.
