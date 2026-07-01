@@ -42,12 +42,14 @@ _spec.loader.exec_module(mod)  # safe: main() is guarded by __main__
 
 canonical_repo_root = mod.canonical_repo_root
 field_key = mod.field_key
+colliding_required_fields = mod.colliding_required_fields
 open_issue_numbers = mod.open_issue_numbers
 board_issue_numbers = mod.board_issue_numbers
 compute_orphans = mod.compute_orphans
 item_missing_fields = mod.item_missing_fields
 board_items_missing_fields = mod.board_items_missing_fields
 looks_like_scope_error = mod.looks_like_scope_error
+is_truncated = mod.is_truncated
 render_report = mod.render_report
 
 REPO = "brownm09/dev-env"
@@ -117,6 +119,14 @@ def test_field_key() -> str:
     return "field name -> item-list JSON key (lowercased, trimmed, interior spaces kept)"
 
 
+def test_colliding_required_fields() -> str:
+    assert colliding_required_fields(["Impact", "Why"]) == [], "the real dev-env config has no collision"
+    assert colliding_required_fields(["Status", "Impact"]) == ["Status"], "built-in key -> flagged"
+    assert colliding_required_fields(["title", "Repository", "Why"]) == ["title", "Repository"], "case-insensitive"
+    assert colliding_required_fields([]) == []
+    return "required_fields names colliding with gh's built-in item keys are flagged, not silently mis-detected"
+
+
 def test_open_issue_numbers() -> str:
     issues = [_issue(439), _issue(447), {"url": "x"}]  # one malformed (no number)
     assert open_issue_numbers(issues) == {439, 447}, "non-int / missing numbers dropped"
@@ -182,6 +192,16 @@ def test_looks_like_scope_error() -> str:
     return "the missing-project-scope gh error is recognized so the refresh hint can fire"
 
 
+# --- gh --limit truncation detection ------------------------------------------
+
+
+def test_is_truncated() -> str:
+    assert is_truncated(1000, 1000) is True, "count == limit -> may be capped"
+    assert is_truncated(999, 1000) is False, "under the limit -> safe"
+    assert is_truncated(0, 1000) is False
+    return "is_truncated flags a result count that hit the gh --limit cap (count >= limit)"
+
+
 # --- render_report: the no-guessing contract + RESULT line -------------------
 
 
@@ -198,7 +218,7 @@ def test_render_report_adds_and_lists_commands() -> str:
     # chosen `--single-select-option-id 08de2558`.
     assert "--single-select-option-id 08de2558" not in report, "must NOT guess Impact=High"
     assert "options: High=08de2558" in report, "option ids shown only as a hint"
-    assert "RESULT: orphans_added=1 needs_attention=1 dry_run=false" in report
+    assert "RESULT: orphans_added=1 add_failed=0 needs_attention=1 dry_run=false" in report
     return "added orphans -> edit commands emitted, value never set (no guessing), RESULT line correct"
 
 
@@ -207,7 +227,7 @@ def test_render_report_dry_run() -> str:
     report = render_report(orphans, [], CONFIG, dry_run=True)
     assert "Would add 1 orphan issue(s)" in report
     assert "(add to the board first, then set fields)" in report, "no item id yet in dry-run"
-    assert "RESULT: orphans_added=0 needs_attention=1 dry_run=true" in report
+    assert "RESULT: orphans_added=0 add_failed=0 needs_attention=1 dry_run=true" in report
     return "dry-run reports would-add orphans, sets nothing, RESULT shows orphans_added=0 dry_run=true"
 
 
@@ -215,7 +235,7 @@ def test_render_report_all_clean() -> str:
     report = render_report([], [], CONFIG, dry_run=False)
     assert "No orphan issues" in report
     assert "All open board issues have their required fields set." in report
-    assert "RESULT: orphans_added=0 needs_attention=0 dry_run=false" in report
+    assert "RESULT: orphans_added=0 add_failed=0 needs_attention=0 dry_run=false" in report
     return "no orphans + no gaps -> clean report, needs_attention=0"
 
 
@@ -225,24 +245,42 @@ def test_render_report_preexisting_gap() -> str:
     report = render_report([], preexisting, CONFIG, dry_run=False)
     assert "#368 missing: Why" in report
     assert "--id PVTI_368" in report and '--text "<why>"' in report
-    assert "RESULT: orphans_added=0 needs_attention=1 dry_run=false" in report
+    assert "RESULT: orphans_added=0 add_failed=0 needs_attention=1 dry_run=false" in report
     return "pre-existing on-board issues missing a field are surfaced with their edit command"
+
+
+def test_render_report_partial_add_failure() -> str:
+    # One add succeeded (item_id set), one failed (item_id stays None) -- the header and
+    # RESULT must both reflect the real outcome, not the attempt count (dev-env #447
+    # review: the header previously said "Added 2" here, which was true only of attempts).
+    orphans = [
+        {"number": 434, "url": f"https://github.com/{REPO}/issues/434", "title": "a", "item_id": "PVTI_434"},
+        {"number": 435, "url": f"https://github.com/{REPO}/issues/435", "title": "b", "item_id": None},
+    ]
+    report = render_report(orphans, [], CONFIG, dry_run=False)
+    assert "Added 1/2 orphan issue(s) to project 3 (1 failed):" in report
+    assert "#435  b  [ADD FAILED - re-run]" in report
+    assert "RESULT: orphans_added=1 add_failed=1 needs_attention=2 dry_run=false" in report
+    return "a partial add failure shows in both the header and RESULT.add_failed, not just the per-item flag"
 
 
 def main() -> int:
     tests = [
         ("canonical_repo_root resolution", test_canonical_repo_root),
         ("field_key derivation", test_field_key),
+        ("colliding_required_fields reserved-key guard", test_colliding_required_fields),
         ("open_issue_numbers", test_open_issue_numbers),
         ("board_issue_numbers filtering", test_board_issue_numbers_filters),
         ("compute_orphans set difference", test_compute_orphans_set_difference),
         ("item_missing_fields presence rule", test_item_missing_fields),
         ("board_items_missing_fields scope", test_board_items_missing_fields_scope),
         ("looks_like_scope_error", test_looks_like_scope_error),
+        ("is_truncated gh --limit cap detection", test_is_truncated),
         ("render_report adds + emits commands (no guessing)", test_render_report_adds_and_lists_commands),
         ("render_report dry-run", test_render_report_dry_run),
         ("render_report all-clean", test_render_report_all_clean),
         ("render_report pre-existing gap", test_render_report_preexisting_gap),
+        ("render_report partial add failure", test_render_report_partial_add_failure),
     ]
     failed = 0
     for name, fn in tests:

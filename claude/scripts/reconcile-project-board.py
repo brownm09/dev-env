@@ -37,10 +37,11 @@ Exit 0  — ran successfully (whether or not anything needed attention)
 Exit 1  — operational failure (no config, gh list failed, missing `project` scope)
 
 The pure helpers (canonical_repo_root / open_issue_numbers / board_issue_numbers /
-compute_orphans / field_key / item_missing_fields / board_items_missing_fields /
-looks_like_scope_error / render_report) are unit-tested offline in
-tests/test_reconcile_project_board.py. The gh boundary (fetch_* / add_to_project) is
-not mocked, matching the repo's no-subprocess-mock convention.
+compute_orphans / field_key / colliding_required_fields / is_truncated /
+item_missing_fields / board_items_missing_fields / looks_like_scope_error /
+render_report) are unit-tested offline in tests/test_reconcile_project_board.py. The
+gh boundary (fetch_* / add_to_project) is not mocked, matching the repo's
+no-subprocess-mock convention.
 """
 from __future__ import annotations
 
@@ -62,6 +63,17 @@ _WORKTREE_RE = re.compile(
     r"^(.+?)[/\\]\.claude[/\\]worktrees[/\\][^/\\]+",
     re.IGNORECASE,
 )
+
+# `gh project item-list --format json` always emits these top-level keys regardless of
+# which custom fields the project defines. A `required_fields` entry whose name
+# lowercases to one of these would silently read the wrong value in item_missing_fields
+# (e.g. a field literally named "Status" would read the built-in status string and
+# always appear "present") — colliding_required_fields() guards against that at
+# config-load time rather than letting it silently mask a real gap.
+_RESERVED_ITEM_KEYS = frozenset({
+    "id", "type", "title", "body", "content", "repository", "url",
+    "status", "labels", "milestone", "assignees", "reviewers", "number",
+})
 
 
 class GhError(RuntimeError):
@@ -86,6 +98,14 @@ def field_key(field_name: str) -> str:
     value: the field name lowercased (interior spaces preserved). 'Impact' -> 'impact',
     'Why' -> 'why', 'Linked pull requests' -> 'linked pull requests'."""
     return (field_name or "").strip().lower()
+
+
+def colliding_required_fields(required_names: list[str]) -> list[str]:
+    """Which of `required_names` collide with a reserved gh item key (case-insensitive
+    on the lowercased field_key) — these cannot be reliably detected by
+    item_missing_fields, since the built-in key is always present and would make the
+    field look set when it never was. Returns names in input order; [] when clean."""
+    return [name for name in required_names if field_key(name) in _RESERVED_ITEM_KEYS]
 
 
 def open_issue_numbers(issues: list[dict]) -> set[int]:
@@ -166,7 +186,9 @@ def board_items_missing_fields(
 
 def looks_like_scope_error(stderr: str) -> bool:
     """True when a `gh` failure is the missing-`project`-scope error, so the caller can
-    print the `gh auth refresh -s project` hint instead of a raw stderr dump."""
+    print the `gh auth refresh -s project` hint instead of a raw stderr dump. Best-effort
+    substring heuristic — a false negative just falls through to the raw-stderr branch,
+    which is still a safe (if less helpful) outcome."""
     s = (stderr or "").lower()
     return "scope" in s and "project" in s
 
@@ -207,19 +229,31 @@ def render_report(
                   present but lacking a required field.
 
     Pure: emits `gh project item-edit` commands for every field that needs a human
-    decision but sets nothing itself. Returns the report text."""
+    decision but sets nothing itself. Returns the report text, ending in
+    `RESULT: orphans_added=N add_failed=N needs_attention=N dry_run=...` — the routine
+    reads add_failed too, since a partial add failure must not look like a clean run."""
     required_fields = config.get("required_fields", [])
     required_names = [f.get("name", "Field") for f in required_fields]
     by_name = {f.get("name"): f for f in required_fields}
     node_id = config.get("project_node_id", "<project-node-id>")
     proj_num = config.get("project_number", "<n>")
 
+    added_count = sum(1 for o in orphans if o.get("item_id")) if not dry_run else 0
+    add_failed = (len(orphans) - added_count) if not dry_run else 0
+
     lines: list[str] = []
 
     # --- orphans ------------------------------------------------------------
     if orphans:
-        verb = "Would add" if dry_run else "Added"
-        lines.append(f"{verb} {len(orphans)} orphan issue(s) to project {proj_num}:")
+        if dry_run:
+            lines.append(f"Would add {len(orphans)} orphan issue(s) to project {proj_num}:")
+        elif add_failed:
+            lines.append(
+                f"Added {added_count}/{len(orphans)} orphan issue(s) to project "
+                f"{proj_num} ({add_failed} failed):"
+            )
+        else:
+            lines.append(f"Added {added_count} orphan issue(s) to project {proj_num}:")
         for o in orphans:
             flag = "" if (dry_run or o.get("item_id")) else "  [ADD FAILED - re-run]"
             lines.append(f"  #{o['number']}  {o.get('title', '')}{flag}")
@@ -245,8 +279,6 @@ def render_report(
     attention.extend(preexisting_missing)
     attention.sort(key=lambda a: a["number"])
 
-    added_count = sum(1 for o in orphans if o.get("item_id")) if not dry_run else 0
-
     if attention:
         lines.append("")
         lines.append(
@@ -270,8 +302,8 @@ def render_report(
 
     lines.append("")
     lines.append(
-        f"RESULT: orphans_added={added_count} needs_attention={len(attention)} "
-        f"dry_run={'true' if dry_run else 'false'}"
+        f"RESULT: orphans_added={added_count} add_failed={add_failed} "
+        f"needs_attention={len(attention)} dry_run={'true' if dry_run else 'false'}"
     )
     return "\n".join(lines)
 
@@ -297,6 +329,13 @@ def default_repo_root() -> str:
     return canonical_repo_root(script_root)
 
 
+def is_truncated(count: int, limit: int) -> bool:
+    """True when a gh list call may have been silently capped at `limit` — `gh` caps
+    results at --limit with no truncation signal, so a result count equal to the limit
+    means more items might exist beyond it. Pure; the caller decides what to do (warn)."""
+    return count >= limit
+
+
 # --- network boundary (not unit-tested; repo avoids subprocess mocks) --------
 
 
@@ -310,7 +349,14 @@ def fetch_open_issues(repo: str, limit: int = 1000) -> list[dict]:
     )
     if result.returncode != 0:
         raise GhError(result.stderr.strip() or "gh issue list failed")
-    return json.loads(result.stdout or "[]")
+    issues = json.loads(result.stdout or "[]")
+    if is_truncated(len(issues), limit):
+        print(
+            f"[reconcile-board] WARNING: gh issue list hit the --limit {limit} cap - "
+            f"results may be truncated and some open issues skipped this run.",
+            file=sys.stderr,
+        )
+    return issues
 
 
 def fetch_board_items(project_number: str, owner: str, limit: int = 1000) -> list[dict]:
@@ -323,7 +369,14 @@ def fetch_board_items(project_number: str, owner: str, limit: int = 1000) -> lis
     )
     if result.returncode != 0:
         raise GhError(result.stderr.strip() or "gh project item-list failed")
-    return json.loads(result.stdout or "{}").get("items", [])
+    items = json.loads(result.stdout or "{}").get("items", [])
+    if is_truncated(len(items), limit):
+        print(
+            f"[reconcile-board] WARNING: gh project item-list hit the --limit {limit} "
+            f"cap - results may be truncated and some board items missed this run.",
+            file=sys.stderr,
+        )
+    return items
 
 
 def add_to_project(url: str, project_number: str, owner: str) -> str | None:
@@ -383,6 +436,17 @@ def main() -> int:
         print(
             "[reconcile-board] hook-config.json is missing repo / project_number / "
             "project_owner — cannot reconcile.",
+            file=sys.stderr,
+        )
+        return 1
+
+    colliding = colliding_required_fields(required_names)
+    if colliding:
+        print(
+            "[reconcile-board] required_fields name(s) collide with gh's built-in "
+            f"item keys and cannot be reliably detected: {', '.join(colliding)}. "
+            "Rename the field in hook-config.json (or extend _RESERVED_ITEM_KEYS if "
+            "the collision is unavoidable) before running this script.",
             file=sys.stderr,
         )
         return 1

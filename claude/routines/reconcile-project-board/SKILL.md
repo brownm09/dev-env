@@ -28,13 +28,18 @@ the gap ADR-053 documents).
    ```
    The script reads `.claude/hook-config.json` from the canonical dev-env checkout (it
    canonicalizes its own worktree path), so no `--repo-root` is needed.
-2. Report the script output: how many orphan issues were added, and the per-issue list of
-   issues still missing Impact and/or Why (the script prints the exact `gh project item-edit`
-   commands for each).
-3. If the final `RESULT:` line shows `needs_attention` greater than 0, send a push
-   notification listing the issue numbers that need Impact/Why, so the user (or a later
-   interactive session) can fill them. **Do not set Impact/Why yourself** — they require
-   human judgment per the no-guessing rule.
+2. Report the script output: how many orphan issues were added (vs. attempted — a partial
+   failure shows as `Added M/N ... (K failed)`), and the per-issue list of issues still
+   missing Impact and/or Why (the script prints the exact `gh project item-edit` commands
+   for each).
+3. Read the final `RESULT:` line (`orphans_added=M add_failed=K needs_attention=N
+   dry_run=...`) and send a push notification when either:
+   - `needs_attention` is greater than 0 — list the issue numbers that need Impact/Why, so
+     the user (or a later interactive session) can fill them. **Do not set Impact/Why
+     yourself** — they require human judgment per the no-guessing rule.
+   - `add_failed` is greater than 0 — an orphan failed to add (e.g. a transient `gh`
+     error); note it self-heals on the next nightly run since the issue stays orphaned,
+     but surface it so a persistent failure doesn't go unnoticed.
 
 **Constraints:**
 - The script is **add-only + report-only**: it adds orphans and prints the `gh project
