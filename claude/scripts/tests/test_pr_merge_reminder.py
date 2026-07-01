@@ -19,11 +19,21 @@ must still get the create reminder even when the merge sub-check is
 incomplete (a queued --auto, or --help) — previously the shared early exit
 inside the is_merge branch suppressed the create message too.
 
+The create/push gate is `exit_code == 0 or merge_ok`, NOT `is_merge` alone —
+an earlier draft of the #494 fix used `is_merge or exit_code == 0`, which
+reintroduced a false positive: `is_merge` is a static text match, true even
+when `&&` short-circuited before merge ever ran (create itself failing), so
+that draft fired a false "PR created" reminder. `merge_ok` (the confirmed-
+merge marker) is used instead because a completed merge is independent proof
+create already succeeded, valid evidence even when the chain's aggregate
+exit code is non-zero (the #275 worktree case, chained with a preceding
+create).
+
 The live _open_pr_for_cwd subprocess boundary is not exercised here (repo
 convention: no subprocess mocks). The _build_messages cases below avoid ever
-reaching that call by only combining is_push=True with a failing exit_ok or
-with is_create/is_merge also true — both conditions short-circuit before
-_open_pr_for_cwd would be invoked.
+reaching that call by only combining is_push=True with a failing
+create_push_ok or with is_create/is_merge also true — both conditions
+short-circuit before _open_pr_for_cwd would be invoked.
 
 Usage:
     py -3 claude/scripts/tests/test_pr_merge_reminder.py
@@ -485,6 +495,52 @@ def test_build_messages_single_push_failure_no_message() -> str:
     return "single failed git push (exit != 0) -> no message, no subprocess call (unchanged)"
 
 
+def test_build_messages_create_fails_merge_never_ran_no_message() -> str:
+    # gh pr create --fill && gh pr merge --auto, where create ITSELF fails.
+    # bash's && short-circuits: gh pr merge never runs, so is_merge is still
+    # True (static text match) but merge_ok is False (no marker) and the
+    # overall exit_code correctly reflects create's own failure. Must not
+    # fire a false "PR created" reminder for a PR that doesn't exist -- this
+    # is the regression an earlier `is_merge or exit_code == 0` draft of the
+    # #494 fix introduced.
+    messages = _build_messages(
+        command="gh pr create --fill && gh pr merge --auto",
+        cwd="/session/cwd",
+        exit_code=1,
+        output="pull request create failed: no commits between main and branch",
+        is_create=True,
+        is_merge=True,
+        is_push=False,
+    )
+    assert messages == [], f"create failure (merge never ran) must not fire, got {messages!r}"
+    return "chained create fails, merge never ran (no marker, exit != 0) -> no message"
+
+
+def test_build_messages_chained_create_and_worktree_merge_nonzero_exit_both_fire() -> str:
+    # dev-env#275 chained with a preceding create: the merge completes
+    # remotely (marker present) but the worktree's local cleanup exits
+    # non-zero, dragging the chain's aggregate exit_code negative. A
+    # confirmed merge is independent proof create already succeeded, so both
+    # messages must still fire -- unlike a plain `exit_code == 0` gate, which
+    # would incorrectly suppress the create message here.
+    messages = _build_messages(
+        command="gh pr create --fill && gh pr merge --squash --delete-branch",
+        cwd="/session/cwd",
+        exit_code=1,
+        output=(
+            "https://github.com/brownm09/dev-env/pull/500\n"
+            "Squashed and merged pull request #500"
+        ),
+        is_create=True,
+        is_merge=True,
+        is_push=False,
+    )
+    assert len(messages) == 2, f"expected both messages, got {len(messages)}: {messages!r}"
+    assert any("gh pr create detected" in m for m in messages)
+    assert any("gh pr merge detected" in m for m in messages)
+    return "chained create + worktree-merge success (marker, nonzero exit) -> both fire (#275)"
+
+
 def test_build_messages_push_suppressed_when_also_create() -> str:
     # is_push is only actionable when the command is NOT also a create/merge
     # (unchanged from before this fix) -- `not (is_create or is_merge)` is
@@ -549,6 +605,8 @@ def main() -> int:
         ("build_messages: single merge, no marker -> no message", test_build_messages_single_merge_no_marker_no_message),
         ("build_messages: single merge, worktree nonzero exit -> fires (#275)", test_build_messages_single_merge_worktree_nonzero_exit_still_fires),
         ("build_messages: single failed push -> no message", test_build_messages_single_push_failure_no_message),
+        ("build_messages: create fails, merge never ran -> no message", test_build_messages_create_fails_merge_never_ran_no_message),
+        ("build_messages: chained create + worktree-merge success -> both fire (#275)", test_build_messages_chained_create_and_worktree_merge_nonzero_exit_both_fire),
         ("build_messages: push suppressed when also create", test_build_messages_push_suppressed_when_also_create),
     ]
     failed = 0

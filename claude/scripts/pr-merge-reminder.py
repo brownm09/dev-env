@@ -359,15 +359,24 @@ def _build_messages(
     gh pr merge is confirmed via the output marker alone, not the exit code —
     a worktree exits non-zero on local cleanup despite a real merge (#275),
     while a clean exit 0 does NOT mean a merge happened (--help, a queued
-    --auto). gh pr create and git push are only acted on when the overall
-    command exits cleanly — except when is_merge is also true, where exit_code
-    has never been consulted for them (only the merge marker matters); that
-    quirk predates this fix and is preserved here rather than widened.
+    --auto).
+
+    gh pr create and git push are gated on `exit_code == 0 or merge_ok` — NOT
+    on `is_merge` alone (a static text match, true even when `&&` short-
+    circuited before merge ever ran: `gh pr create --fill && gh pr merge
+    --auto` with create itself failing has is_merge True and merge_ok False,
+    so this gate correctly stays False, matching the pre-#494-fix behavior of
+    suppressing everything). A *confirmed* merge (merge_ok True) is
+    independent proof create already succeeded — merge cannot complete
+    against a PR that was never opened — so it counts as evidence for create
+    even when the chain's aggregate exit code is non-zero (the #275 worktree
+    case, chained with a preceding create).
     """
-    exit_ok = is_merge or exit_code == 0
+    merge_ok = is_merge and _is_successful_merge_call(output)
+    create_push_ok = exit_code == 0 or merge_ok
     messages = []
 
-    if is_create and exit_ok:
+    if is_create and create_push_ok:
         shard_step = _create_shard_step(output)
         messages.append(
             "[journal-reminder] gh pr create detected — write the journal stub AND"
@@ -385,7 +394,7 @@ def _build_messages(
             " && git push"
         )
 
-    if is_merge and _is_successful_merge_call(output):
+    if merge_ok:
         merge_dir = _effective_merge_repo(command, cwd)
         messages.append(
             "[journal-reminder] gh pr merge detected — update the engineering journal now:\n"
@@ -400,7 +409,7 @@ def _build_messages(
             " && git push"
         )
 
-    if is_push and not (is_create or is_merge) and exit_ok:
+    if is_push and not (is_create or is_merge) and create_push_ok:
         # Scope the open-PR lookup to the repo the push actually targets: a
         # `cd <other-repo> && git push` must not fire the session cwd's reminder
         # (issue #442 / ADR-065).  Engineering-journal pushes route into the
