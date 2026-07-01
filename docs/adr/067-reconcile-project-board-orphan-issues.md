@@ -53,7 +53,7 @@ runs it — mirroring the existing `prune-merged-worktrees.py` (script) + `prune
 4. **Reports** — but does **not** guess — the orphans (each needs all required fields) and any
    *pre-existing* open board items already missing a required field, emitting the exact
    `gh project item-edit` commands plus the option IDs from config. Ends in a machine-readable
-   `RESULT: orphans_added=N needs_attention=M dry_run=…` line the routine reads.
+   `RESULT: orphans_added=N add_failed=N needs_attention=M dry_run=…` line the routine reads.
 5. `--dry-run` reports without adding. Missing-`project`-scope `gh` failures are detected and
    surface the `gh auth refresh -s project` hint instead of a raw stderr dump.
 

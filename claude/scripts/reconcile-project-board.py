@@ -64,12 +64,16 @@ _WORKTREE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# `gh project item-list --format json` always emits these top-level keys regardless of
-# which custom fields the project defines. A `required_fields` entry whose name
-# lowercases to one of these would silently read the wrong value in item_missing_fields
-# (e.g. a field literally named "Status" would read the built-in status string and
-# always appear "present") — colliding_required_fields() guards against that at
-# config-load time rather than letting it silently mask a real gap.
+# `gh project item-list --format json` items may expose any of these as gh's own built-in
+# top-level keys — the exact set observed varies by which system fields a given project
+# surfaces (dev-env's board currently emits content/id/labels/repository/status/title plus
+# whichever custom fields are set). Kept as a conservative superset, not the exact set of
+# any one board, so the guard stays safe when this script is reused against a different
+# project's board. A `required_fields` entry whose name lowercases to one of these would
+# silently read the wrong value in item_missing_fields (e.g. a field literally named
+# "Status" would read the built-in status string and always appear "present") —
+# colliding_required_fields() guards against that at config-load time rather than letting
+# it silently mask a real gap.
 _RESERVED_ITEM_KEYS = frozenset({
     "id", "type", "title", "body", "content", "repository", "url",
     "status", "labels", "milestone", "assignees", "reviewers", "number",
@@ -379,8 +383,13 @@ def fetch_board_items(project_number: str, owner: str, limit: int = 1000) -> lis
     return items
 
 
-def add_to_project(url: str, project_number: str, owner: str) -> str | None:
-    """Add an issue URL to the project; return the new item ID, or None on failure."""
+def add_to_project(url: str, project_number: str, owner: str) -> tuple[str | None, str]:
+    """Add an issue URL to the project; return (new item ID, stderr). item ID is None on
+    failure; stderr is "" on success. The caller uses stderr to tell a transient failure
+    (self-heals on the next run) apart from a `project`-scope failure (persists every run
+    until `gh auth refresh -s project`) — read-scope and write-scope are distinct GitHub
+    OAuth scopes, so a token that can list but not add would otherwise fail every orphan,
+    every night, as an indistinguishable [ADD FAILED - re-run]."""
     try:
         result = subprocess.run(
             [
@@ -390,10 +399,10 @@ def add_to_project(url: str, project_number: str, owner: str) -> str | None:
             capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
         if result.returncode != 0:
-            return None
-        return json.loads(result.stdout).get("id")
-    except Exception:
-        return None
+            return None, (result.stderr or "").strip()
+        return json.loads(result.stdout).get("id"), ""
+    except Exception as e:
+        return None, str(e)
 
 
 def main() -> int:
@@ -473,8 +482,18 @@ def main() -> int:
     preexisting_missing = board_items_missing_fields(items, required_names, open_nums, repo)
 
     if not args.dry_run:
+        scope_warned = False
         for o in orphans:
-            o["item_id"] = add_to_project(o["url"], project_number, owner)
+            item_id, err = add_to_project(o["url"], project_number, owner)
+            o["item_id"] = item_id
+            if item_id is None and not scope_warned and looks_like_scope_error(err):
+                print(
+                    "[reconcile-board] WARNING: an add failed due to a missing 'project' "
+                    "scope. Run:\n    gh auth refresh -s project\nthen re-run this script "
+                    "to add the remaining orphans.",
+                    file=sys.stderr,
+                )
+                scope_warned = True
 
     print(render_report(orphans, preexisting_missing, config, dry_run=args.dry_run))
     return 0
