@@ -588,12 +588,12 @@ parent with `gh pr merge --squash --delete-branch` **orphans the child, unrecove
 unrecoverable. Replay just the child's commits onto the new `main` and open a fresh PR:
 
 ```bash
-git rebase --onto origin/main <old-base-tip-SHA> <child-branch>
+git rebase --onto origin/main <parent-tip-SHA> <child-branch>
 git push --force-with-lease origin <child-branch>
 # then: gh pr create — the old PR number is lost, its base can't be fixed
 ```
 
-`<old-base-tip-SHA>` is the parent branch's tip commit before it was squashed into `main` (`git log
+`<parent-tip-SHA>` is the parent branch's tip commit before it was squashed into `main` (`git log
 <child-branch>` to find where the parent's commits end and the child's begin). The rebase drops the
 now-squashed parent commits and keeps only the child's, producing a clean single-purpose diff against
 `main`.
