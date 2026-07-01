@@ -1,4 +1,4 @@
-# ADR 067 — Reconcile the Project Board Against Orphaned Issues (Backstop for the Inert Add-Hook)
+# ADR 068 — Reconcile the Project Board Against Orphaned Issues (Backstop for the Inert Add-Hook)
 
 **Date:** 2026-06-30
 **Status:** Accepted

@@ -357,7 +357,7 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     field value), the dry-run wording, and the machine-readable `RESULT:` line the routine reads. The `gh`
     boundary (`fetch_open_issues` / `fetch_board_items` / `add_to_project`) is not mocked (repo convention) —
     it is exercised by the `--dry-run` integration run in the PR
-    ([ADR-067](docs/adr/067-reconcile-project-board-orphan-issues.md)).
+    ([ADR-068](docs/adr/068-reconcile-project-board-orphan-issues.md)).
 
     ```bash
     py -3 claude/scripts/tests/test_reconcile_project_board.py
