@@ -490,10 +490,14 @@ operational artifacts (compose lock files, log file timestamps).
 4. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
 6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` — one JSON object (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
-7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/`, `git commit -m "draft: YYYY-MM-DD session 1" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/`, `git push -u origin draft/YYYY-MM-DD`
-   *(include `sessions/<project>/open-prs/` in both the `git add` and the `git commit` pathspec only if
-   this session opened or merged a PR. The `--` pathspec on `git commit` is required, not optional — see
-   "Commit with an explicit pathspec" above.)*
+7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json`, `git commit -m "draft: YYYY-MM-DD session 1" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json`, `git push -u origin draft/YYYY-MM-DD`
+   *(include `sessions/<project>/open-prs/<N>.json` — the exact shard file(s) this session itself
+   created or removed, never the bare `open-prs/` directory — in both the `git add` and the `git commit`
+   pathspec only if this session opened or merged a PR. A directory pathspec stages whatever shard a
+   *different* concurrent session has just written into that same folder, sweeping it into this
+   session's commit under an unrelated message ([dev-env#480](https://github.com/brownm09/dev-env/issues/480)).
+   The `--` pathspec on `git commit` is required, not optional — see "Commit with an explicit pathspec"
+   above.)*
 
 **Subsequent sessions:**
 1. `git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD && git -C C:/Users/brown/Git/engineering-journal pull`
@@ -505,10 +509,14 @@ operational artifacts (compose lock files, log file timestamps).
 4. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` with the current session block
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
 6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` — one JSON object (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
-7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/`, `git commit -m "draft: YYYY-MM-DD session N" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/`, `git push`
-   *(include `sessions/<project>/open-prs/` in both the `git add` and the `git commit` pathspec only if
-   this session opened or merged a PR. The `--` pathspec on `git commit` is required, not optional — see
-   "Commit with an explicit pathspec" above.)*
+7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json`, `git commit -m "draft: YYYY-MM-DD session N" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json`, `git push`
+   *(include `sessions/<project>/open-prs/<N>.json` — the exact shard file(s) this session itself
+   created or removed, never the bare `open-prs/` directory — in both the `git add` and the `git commit`
+   pathspec only if this session opened or merged a PR. A directory pathspec stages whatever shard a
+   *different* concurrent session has just written into that same folder, sweeping it into this
+   session's commit under an unrelated message ([dev-env#480](https://github.com/brownm09/dev-env/issues/480)).
+   The `--` pathspec on `git commit` is required, not optional — see "Commit with an explicit pathspec"
+   above.)*
 
 **File formats, stub template, and recovery:** the manifest-shard and open-PR-shard schemas
 (referenced in the workflow steps above), the stub-file template, the canonical 11-section compose
