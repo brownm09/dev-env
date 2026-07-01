@@ -60,6 +60,7 @@ On Windows, `os.path.relpath` raises `ValueError` when source and target are on 
 - **No-op outside worktrees** — the hook exits 0 instantly when `cwd` does not match the worktree pattern.
 - **Coverage gap remains for Bash** — commands like `cp`, `tee`, or here-doc redirects that write to the canonical root are not intercepted. This is acceptable for now given the complexity; extend if recurrence is observed.
 - **Bypass for intentional canonical edits from a worktree:** The hook blocks `Write`, `Edit`, and `NotebookEdit` — not `Bash`. When a worktree session legitimately needs to modify a canonical repo file (e.g., editing `settings.json` on a config branch checked out in the main working tree), use `Bash` with `node -e` or a targeted `sed`/`py -3` invocation. This is the correct pattern — the hook is designed to surface accidental path mistakes, not to prevent deliberate file operations through a different tool surface.
+- **Block reason is written to stderr, not stdout** — Claude Code discards a `PreToolUse` hook's stdout on exit code 2, so a reason printed to stdout is silently invisible to the model even though the block itself still works. Both `main()` block sites emit through a shared `_block()` helper to keep this from drifting (dev-env#469 — the hook originally printed to stdout at both sites for over a month before this was caught and fixed).
 - **ADR warranted** because the hook is a new file under `claude/scripts/`, is wired in `claude/settings.json`, and establishes a harness-level safety invariant applicable to all repos using Claude-managed worktrees.
 
 ---
@@ -155,6 +156,7 @@ and giving the recovery recipe `git worktree add --force <worktree_root> <branch
 - `claude/settings.json` — hook wiring
 - `brownm09/career-playbook#276` — downstream symptom tracker (original)
 - `brownm09/dev-env#328` — orphaned-worktree hardening (addendum)
+- `brownm09/dev-env#469` — stdout→stderr block-reason fix (both sites), `_block()` helper introduced
 - Engineering-journal `sessions/career-playbook/2026-05-22_140307.stub.md` — third occurrence
 - Engineering-journal `sessions/career-playbook/2026-06-06_105718.stub.md` — orphaned-worktree incident
 - [Claude Code Hooks documentation](https://docs.anthropic.com/en/docs/claude-code/hooks) — hook exit codes and JSON output format
