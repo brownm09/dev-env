@@ -318,13 +318,13 @@ PreToolUse hooks that exit non-zero **block the matched tool call silently** —
 
 ## Routines
 
-Autonomous scheduled agents in `claude/routines/`. They run on a cron schedule with no user interaction. Managed via the `scheduled-tasks` MCP tool; stored in `claude/routines/` (directory junction to `~/.claude/scheduled-tasks/`).
+Autonomous scheduled agents. They run on a cron schedule with no user interaction. Canonical source is authored and reviewed in `claude/routines/<name>/SKILL.md`, which is mirrored read-only at `~/.claude/routines/` via a directory junction — but the `scheduled-tasks` MCP tool never reads through that junction. It owns a separate, real, non-linked directory, `~/.claude/scheduled-tasks/<taskId>/SKILL.md`, holding the *live* prompt for each registered task. Merging a routine to `main` does not update or create a live task; that requires a separate `create_scheduled_task` / `update_scheduled_task` call, and nothing keeps the two copies in sync afterward short of repeating that step. Prefer having the live prompt read its own canonical file at run time and fall back to an embedded copy when unreachable (the pattern `weekly-memory-audit` uses) — see [ADR-003 amendment](adr/003-config-in-version-control.md) and [dev-env#344](https://github.com/brownm09/dev-env/issues/344).
 
 ---
 
 ### daily-journal-compose
 
-**Schedule:** `0 0 * * *` (midnight UTC, daily)
+**Schedule:** `0 7 * * *` (7:09am local, daily — the scheduler applies a small deterministic jitter on top of the base cron)
 
 Assembles all `YYYY-MM-DD_*.stub.md` files across all configured projects into the canonical 11-section journal entries and opens PRs against `engineering-journal`.
 
