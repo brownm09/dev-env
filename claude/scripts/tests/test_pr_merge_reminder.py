@@ -12,8 +12,28 @@ entirely: `exit_code == 0 OR marker` fired on any exit-0 command matching
 solely on the success marker, mirroring post-pr-merge-project.py's
 `merge_succeeded()` and usage-snapshot.py's `merge_confirmed()`.
 
+dev-env#494 extracted main()'s message dispatch into `_build_messages()` so
+each message is gated on its own condition: a chained command matching both
+is_create and is_merge (e.g. `gh pr create --fill && gh pr merge --auto`)
+must still get the create reminder even when the merge sub-check is
+incomplete (a queued --auto, or --help) — previously the shared early exit
+inside the is_merge branch suppressed the create message too.
+
+The create/push gate is `exit_code == 0 or merge_ok`, NOT `is_merge` alone —
+an earlier draft of the #494 fix used `is_merge or exit_code == 0`, which
+reintroduced a false positive: `is_merge` is a static text match, true even
+when `&&` short-circuited before merge ever ran (create itself failing), so
+that draft fired a false "PR created" reminder. `merge_ok` (the confirmed-
+merge marker) is used instead because a completed merge is independent proof
+create already succeeded, valid evidence even when the chain's aggregate
+exit code is non-zero (the #275 worktree case, chained with a preceding
+create).
+
 The live _open_pr_for_cwd subprocess boundary is not exercised here (repo
-convention: no subprocess mocks).
+convention: no subprocess mocks). The _build_messages cases below avoid ever
+reaching that call by only combining is_push=True with a failing
+create_push_ok or with is_create/is_merge also true — both conditions
+short-circuit before _open_pr_for_cwd would be invoked.
 
 Usage:
     py -3 claude/scripts/tests/test_pr_merge_reminder.py
@@ -43,6 +63,7 @@ _create_shard_step = pmr._create_shard_step
 _is_successful_merge_call = pmr._is_successful_merge_call
 _effective_push_dir = pmr._effective_push_dir
 _effective_merge_repo = pmr._effective_merge_repo
+_build_messages = pmr._build_messages
 
 # read_command_output and effective_merge_dir live in _hookio (a sibling).
 # SCRIPT.parent already on sys.path, so import them directly.
@@ -340,6 +361,206 @@ def test_merge_repo_no_flag_falls_back_to_effective_merge_dir() -> str:
 
 
 # ---------------------------------------------------------------------------
+# _build_messages  (dev-env#494 — chained create+merge must not suppress an
+# independently-successful create when the merge sub-check is incomplete)
+# ---------------------------------------------------------------------------
+
+def test_build_messages_chained_create_and_queued_auto_still_creates() -> str:
+    # gh pr create --fill && gh pr merge --auto, where --auto only queues the
+    # merge (no success marker yet, exit 0) -- the create half still
+    # succeeded and must still get its reminder. This is the dev-env#494 repro.
+    messages = _build_messages(
+        command="gh pr create --fill && gh pr merge --auto",
+        cwd="/session/cwd",
+        exit_code=0,
+        output="https://github.com/brownm09/dev-env/pull/500\n",
+        is_create=True,
+        is_merge=True,
+        is_push=False,
+    )
+    assert len(messages) == 1, f"expected exactly the create message, got {messages!r}"
+    assert "gh pr create detected" in messages[0]
+    return "chained create + queued --auto (no marker) -> create reminder still fires (dev-env#494)"
+
+
+def test_build_messages_chained_create_and_help_shaped_merge_still_creates() -> str:
+    # The --help-shaped case from the issue: no marker, exit 0.
+    messages = _build_messages(
+        command="gh pr create --fill && gh pr merge --help",
+        cwd="/session/cwd",
+        exit_code=0,
+        output="Merge a pull request\n\nUSAGE\n  gh pr merge [<number> | <url> | <branch>] [flags]",
+        is_create=True,
+        is_merge=True,
+        is_push=False,
+    )
+    assert len(messages) == 1, f"expected exactly the create message, got {messages!r}"
+    assert "gh pr create detected" in messages[0]
+    return "chained create + --help-shaped merge (no marker) -> create reminder still fires (dev-env#494)"
+
+
+def test_build_messages_chained_create_and_successful_merge_both_fire() -> str:
+    messages = _build_messages(
+        command="gh pr create --fill && gh pr merge --squash --delete-branch",
+        cwd="/session/cwd",
+        exit_code=0,
+        output=(
+            "https://github.com/brownm09/dev-env/pull/500\n"
+            "Squashed and merged pull request #500"
+        ),
+        is_create=True,
+        is_merge=True,
+        is_push=False,
+    )
+    assert len(messages) == 2, f"expected both messages, got {len(messages)}: {messages!r}"
+    assert any("gh pr create detected" in m for m in messages)
+    assert any("gh pr merge detected" in m for m in messages)
+    return "chained create + successful merge -> both reminders fire"
+
+
+def test_build_messages_single_create_failure_no_message() -> str:
+    messages = _build_messages(
+        command="gh pr create --fill",
+        cwd="/session/cwd",
+        exit_code=1,
+        output="",
+        is_create=True,
+        is_merge=False,
+        is_push=False,
+    )
+    assert messages == [], f"failed single create must not fire, got {messages!r}"
+    return "single failed gh pr create (exit != 0) -> no message (unchanged)"
+
+
+def test_build_messages_single_create_success_fires() -> str:
+    messages = _build_messages(
+        command="gh pr create --fill",
+        cwd="/session/cwd",
+        exit_code=0,
+        output="https://github.com/brownm09/dev-env/pull/501\n",
+        is_create=True,
+        is_merge=False,
+        is_push=False,
+    )
+    assert len(messages) == 1
+    assert "gh pr create detected" in messages[0]
+    return "single successful gh pr create -> create reminder fires (unchanged)"
+
+
+def test_build_messages_single_merge_no_marker_no_message() -> str:
+    messages = _build_messages(
+        command="gh pr merge --squash",
+        cwd="/session/cwd",
+        exit_code=0,
+        output="X Pull request #1 is not mergeable",
+        is_create=False,
+        is_merge=True,
+        is_push=False,
+    )
+    assert messages == [], f"merge with no marker must not fire, got {messages!r}"
+    return "single gh pr merge, no marker -> no message (unchanged)"
+
+
+def test_build_messages_single_merge_worktree_nonzero_exit_still_fires() -> str:
+    # dev-env#275: a worktree merge exits non-zero on local cleanup despite a
+    # real remote merge. Marker present -> must still fire regardless of
+    # exit_code (unchanged from before this fix).
+    messages = _build_messages(
+        command="gh pr merge --squash --delete-branch",
+        cwd="/session/cwd",
+        exit_code=1,
+        output="Squashed and merged pull request #419",
+        is_create=False,
+        is_merge=True,
+        is_push=False,
+    )
+    assert len(messages) == 1
+    assert "gh pr merge detected" in messages[0]
+    return "single gh pr merge, marker present, nonzero exit (worktree #275) -> fires (unchanged)"
+
+
+def test_build_messages_single_push_failure_no_message() -> str:
+    # exit_ok is False here, so the `is_push and ... and exit_ok` condition
+    # short-circuits before _open_pr_for_cwd is ever called.
+    messages = _build_messages(
+        command="git push",
+        cwd="/session/cwd",
+        exit_code=1,
+        output="",
+        is_create=False,
+        is_merge=False,
+        is_push=True,
+    )
+    assert messages == [], f"failed single push must not fire, got {messages!r}"
+    return "single failed git push (exit != 0) -> no message, no subprocess call (unchanged)"
+
+
+def test_build_messages_create_fails_merge_never_ran_no_message() -> str:
+    # gh pr create --fill && gh pr merge --auto, where create ITSELF fails.
+    # bash's && short-circuits: gh pr merge never runs, so is_merge is still
+    # True (static text match) but merge_ok is False (no marker) and the
+    # overall exit_code correctly reflects create's own failure. Must not
+    # fire a false "PR created" reminder for a PR that doesn't exist -- this
+    # is the regression an earlier `is_merge or exit_code == 0` draft of the
+    # #494 fix introduced.
+    messages = _build_messages(
+        command="gh pr create --fill && gh pr merge --auto",
+        cwd="/session/cwd",
+        exit_code=1,
+        output="pull request create failed: no commits between main and branch",
+        is_create=True,
+        is_merge=True,
+        is_push=False,
+    )
+    assert messages == [], f"create failure (merge never ran) must not fire, got {messages!r}"
+    return "chained create fails, merge never ran (no marker, exit != 0) -> no message"
+
+
+def test_build_messages_chained_create_and_worktree_merge_nonzero_exit_both_fire() -> str:
+    # dev-env#275 chained with a preceding create: the merge completes
+    # remotely (marker present) but the worktree's local cleanup exits
+    # non-zero, dragging the chain's aggregate exit_code negative. A
+    # confirmed merge is independent proof create already succeeded, so both
+    # messages must still fire -- unlike a plain `exit_code == 0` gate, which
+    # would incorrectly suppress the create message here.
+    messages = _build_messages(
+        command="gh pr create --fill && gh pr merge --squash --delete-branch",
+        cwd="/session/cwd",
+        exit_code=1,
+        output=(
+            "https://github.com/brownm09/dev-env/pull/500\n"
+            "Squashed and merged pull request #500"
+        ),
+        is_create=True,
+        is_merge=True,
+        is_push=False,
+    )
+    assert len(messages) == 2, f"expected both messages, got {len(messages)}: {messages!r}"
+    assert any("gh pr create detected" in m for m in messages)
+    assert any("gh pr merge detected" in m for m in messages)
+    return "chained create + worktree-merge success (marker, nonzero exit) -> both fire (#275)"
+
+
+def test_build_messages_push_suppressed_when_also_create() -> str:
+    # is_push is only actionable when the command is NOT also a create/merge
+    # (unchanged from before this fix) -- `not (is_create or is_merge)` is
+    # False here, so this also never reaches _open_pr_for_cwd.
+    messages = _build_messages(
+        command="gh pr create --fill && git push",
+        cwd="/session/cwd",
+        exit_code=0,
+        output="https://github.com/brownm09/dev-env/pull/500\n",
+        is_create=True,
+        is_merge=False,
+        is_push=True,
+    )
+    assert len(messages) == 1
+    assert "gh pr create detected" in messages[0]
+    assert not any("git push detected" in m for m in messages)
+    return "is_push suppressed when is_create also true -> only create message (unchanged)"
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 
@@ -376,6 +597,17 @@ def main() -> int:
         ("merge repo: --repo flag overrides cwd", test_merge_repo_explicit_flag_overrides_cwd),
         ("merge repo: --repo flag overrides cd-chain", test_merge_repo_explicit_flag_overrides_cd_chain),
         ("merge repo: no flag -> falls back to effective_merge_dir", test_merge_repo_no_flag_falls_back_to_effective_merge_dir),
+        ("build_messages: chained create + queued --auto -> create still fires (dev-env#494)", test_build_messages_chained_create_and_queued_auto_still_creates),
+        ("build_messages: chained create + --help merge -> create still fires (dev-env#494)", test_build_messages_chained_create_and_help_shaped_merge_still_creates),
+        ("build_messages: chained create + successful merge -> both fire", test_build_messages_chained_create_and_successful_merge_both_fire),
+        ("build_messages: single failed create -> no message", test_build_messages_single_create_failure_no_message),
+        ("build_messages: single successful create -> fires", test_build_messages_single_create_success_fires),
+        ("build_messages: single merge, no marker -> no message", test_build_messages_single_merge_no_marker_no_message),
+        ("build_messages: single merge, worktree nonzero exit -> fires (#275)", test_build_messages_single_merge_worktree_nonzero_exit_still_fires),
+        ("build_messages: single failed push -> no message", test_build_messages_single_push_failure_no_message),
+        ("build_messages: create fails, merge never ran -> no message", test_build_messages_create_fails_merge_never_ran_no_message),
+        ("build_messages: chained create + worktree-merge success -> both fire (#275)", test_build_messages_chained_create_and_worktree_merge_nonzero_exit_both_fire),
+        ("build_messages: push suppressed when also create", test_build_messages_push_suppressed_when_also_create),
     ]
     failed = 0
     for name, fn in tests:

@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01 (three amendments — see Amendment sections below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback
+**Amended:** 2026-07-01 (four amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch
 
 ---
 
@@ -189,3 +189,37 @@ place to share one result across independent hook invocations without a caching 
 `should_confirm_via_gh` is covered offline in `test_hookio.py`. `confirm_merge_via_gh` itself is
 not (it shells out), per this repo's no-subprocess-mock convention — consistent with every other
 live `gh`/`git` call in this hook family.
+
+## Amendment 4 (2026-07-01) — decoupling create/push message gating from `is_merge` in `pr-merge-reminder.py`
+
+Amendment 2 converged `pr-merge-reminder.py` (and its three siblings) onto a marker-only gate for
+the *merge* message. It did not address a separate bug in the same function's dispatch structure:
+`is_create` / `is_merge` / `is_push` messages shared **one** early-exit gate keyed on the merge
+marker check, so a chained command matching both `is_create` and `is_merge` (e.g.
+`gh pr create --fill && gh pr merge --auto`) had its create reminder suppressed whenever the merge
+sub-check was incomplete.
+
+**Symptom (dev-env#494):** surfaced as a non-blocking finding during `/review` of PR #491
+(Amendment 2's own PR). `if is_merge: if not marker: sys.exit(0)` exited the whole function before
+the messages section ever built the `is_create` message, for any chained command where merge
+queued (`--auto`) or was probed (`--help`) — both exit 0 but print no marker.
+
+**Fix:** extracted the dispatch into a pure `_build_messages()`, gating each message
+independently. A first draft (`exit_ok = is_merge or exit_code == 0`) reproduced the original
+truth table except for the reported bug — but `/review` on the resulting PR #500 caught a *new*
+regression: `is_merge` is a static text match, true even when create fails and `&&`
+short-circuits before merge ever runs, so the draft fired a false "PR created" message for a PR
+that was never opened. Final gate: `create_push_ok = exit_code == 0 or merge_ok` — a confirmed
+merge (marker present) is independent proof the earlier chain steps already succeeded (merge
+cannot complete against a nonexistent PR), valid evidence even when the aggregate exit code is
+non-zero (the worktree case, #275, chained with a preceding create); a create failure with no
+confirmed merge correctly suppresses everything, matching pre-fix behavior.
+
+Covered offline in `test_pr_merge_reminder.py` (13 new cases: the #494 repro, the regression the
+review caught, and the #275-chained case).
+
+**General lesson (continuing Amendment 2's):** the same discipline — gate each side effect on its
+own confirming signal, not a proxy or a signal borrowed from an unrelated branch — applies to more
+than the merge marker itself; the *dispatch structure* around multiple signals sharing one
+function needs the same scrutiny. A shared early-exit is itself a proxy for "everything in this
+function is OK," which breaks the moment two independently-gated outcomes share one command.
