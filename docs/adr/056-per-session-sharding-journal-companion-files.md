@@ -152,6 +152,11 @@ git commit -m "draft: YYYY-MM-DD session N" -- \
   sessions/<project>/open-prs/
 ```
 
+> **2026-07-01 update:** the `sessions/<project>/open-prs/` line above is superseded — see the
+> "Addendum (2026-07-01) — open-PR shard pathspec narrowed from directory to exact file" section
+> near the end of this ADR. The correct pathspec is the exact shard file,
+> `sessions/<project>/open-prs/<N>.json`, not the bare directory.
+
 `git commit -- <pathspec>` commits only the working-tree content of the named paths (auto-staging them if
 not already staged) and explicitly leaves any *other* already-staged changes in the index untouched for a
 future commit — the correct, minimal fix. No architectural change (e.g., per-session worktrees for the
@@ -206,3 +211,34 @@ was scoped to `claude/skills/` and `claude/routines/`) surfaced two more.
 
 **Status:** this is a scope extension of the same fix, not a reversal — ADR-056's Decision and both
 addenda's Fix stand unchanged. Tracked in [dev-env#459](https://github.com/brownm09/dev-env/issues/459).
+
+---
+
+## Addendum (2026-07-01) — open-PR shard pathspec narrowed from directory to exact file (dev-env#480)
+
+The 2026-06-30 addendum's Fix eliminated the *bare* `git commit` but its own code block still pathspecs
+`sessions/<project>/open-prs/` — a **directory**, not a file. `git add <dir>/` stages everything currently
+untracked or modified under that directory, and `git commit -- <pathspec including that dir>` commits
+everything staged under it, not just this session's own shard. `open-prs/` is exactly the directory this
+ADR's own Decision keys **by PR number, per-file** (`open-prs/<N>.json`) so that removal never touches
+another PR's record — the 2026-06-30 addendum narrowed the *commit* to an explicit pathspec but left that
+pathspec's own tail pointing at the whole shard directory, re-opening at the directory level almost
+exactly the hazard the addendum had just closed at the whole-index level.
+
+**Incident:** 2026-07-01, closing out PR #473, the documented `git add`/`git commit` pattern (directory
+pathspec included) swept a concurrent session's just-written `sessions/dev-env/open-prs/477.json` into an
+unrelated commit message. No data was lost — the shard's content was correct and disjoint per this ADR's
+Decision — but it broke the per-session attribution the shard model exists to provide, the same category
+of harm the 2026-06-30 incident described.
+
+**Fix:** both `git add`/`git commit` steps in the Stub file workflow (`claude/CLAUDE.md` → Engineering
+Journal → Stub file workflow, "First session of the day" and "Subsequent sessions" step 7) now pathspec
+the exact shard file, `sessions/<project>/open-prs/<N>.json`, never the bare directory — space-separated
+when a session opens or closes more than one PR. **This supersedes the open-prs/ line in the 2026-06-30
+addendum's Fix code block above**, which should now be read with `sessions/<project>/open-prs/<N>.json` in
+place of `sessions/<project>/open-prs/`; that block is left unedited as the historical record of what was
+fixed at the time.
+
+**Status:** this is a refinement of the 2026-06-30 addendum, not a reversal — ADR-056's Decision and
+Consequences stand unchanged. Tracked in [dev-env#480](https://github.com/brownm09/dev-env/issues/480) /
+[PR #486](https://github.com/brownm09/dev-env/pull/486).
