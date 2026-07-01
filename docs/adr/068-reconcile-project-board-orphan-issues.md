@@ -109,4 +109,5 @@ board the brief names; the pure helpers are written to generalize cleanly.
 - A new `## Testing` self-test (`test_reconcile_project_board.py`) pins the set-difference,
   field-detection, and no-guessing contracts offline; the `gh` boundary stays unmocked per the
   repo convention.
-- Generalizing to all project-configured repos remains open (#447).
+- Generalized to all project-configured repos via `--scan-dir` (dev-env#462,
+  [ADR-070](070-reconcile-project-board-scan-dir.md)).

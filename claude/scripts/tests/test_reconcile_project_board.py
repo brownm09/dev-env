@@ -10,9 +10,11 @@ difference (orphans), adds them, and reports the issues still missing a required
   - the set-difference core (open issues - board issues = orphans),
   - the board-membership and missing-required-field detection (Impact/Why),
   - the canonical-worktree-root resolution that lets a worktree invocation find the
-    machine-local hook-config, and
+    machine-local hook-config,
   - that render_report emits `gh project item-edit` *commands* but assigns no value
-    (no-guessing) and ends in the machine-readable RESULT line the routine reads.
+    (no-guessing) and ends in the machine-readable RESULT line the routine reads, and
+  - that render_scan_summary (dev-env#462, ADR-070) emits the --scan-dir aggregate
+    RESULT line the routine reads as its *final* line in scan-dir mode.
 
 The gh boundary (fetch_open_issues / fetch_board_items / add_to_project) is not mocked,
 matching the repo's fixture-only / no-subprocess-mock convention.
@@ -51,6 +53,7 @@ board_items_missing_fields = mod.board_items_missing_fields
 looks_like_scope_error = mod.looks_like_scope_error
 is_truncated = mod.is_truncated
 render_report = mod.render_report
+render_scan_summary = mod.render_scan_summary
 
 REPO = "brownm09/dev-env"
 
@@ -264,6 +267,34 @@ def test_render_report_partial_add_failure() -> str:
     return "a partial add failure shows in both the header and RESULT.add_failed, not just the per-item flag"
 
 
+# --- render_scan_summary: the --scan-dir aggregate RESULT line (dev-env#462, ADR-070) ---
+
+
+def test_render_scan_summary_all_clean() -> str:
+    line = render_scan_summary(5, 3, 0, 0, 0, 0, dry_run=False)
+    assert line == (
+        "RESULT: repos_scanned=5 repos_skipped=3 repos_failed=0 orphans_added=0 "
+        "add_failed=0 needs_attention=0 dry_run=false"
+    )
+    return "an all-clean scan reports zero orphans/failures with the repo counts intact"
+
+
+def test_render_scan_summary_mixed() -> str:
+    line = render_scan_summary(10, 6, 1, 4, 1, 5, dry_run=False)
+    assert line == (
+        "RESULT: repos_scanned=10 repos_skipped=6 repos_failed=1 orphans_added=4 "
+        "add_failed=1 needs_attention=5 dry_run=false"
+    )
+    return "repos_scanned/skipped/failed and the summed orphan/attention counts all appear"
+
+
+def test_render_scan_summary_dry_run() -> str:
+    line = render_scan_summary(2, 0, 0, 0, 0, 3, dry_run=True)
+    assert line.endswith("dry_run=true"), "dry_run flag reflected, matching render_report's own flag"
+    assert line.startswith("RESULT: repos_scanned=2 repos_skipped=0 repos_failed=0")
+    return "dry_run=true is reflected in the aggregate line, matching render_report's flag"
+
+
 def main() -> int:
     tests = [
         ("canonical_repo_root resolution", test_canonical_repo_root),
@@ -281,6 +312,9 @@ def main() -> int:
         ("render_report all-clean", test_render_report_all_clean),
         ("render_report pre-existing gap", test_render_report_preexisting_gap),
         ("render_report partial add failure", test_render_report_partial_add_failure),
+        ("render_scan_summary all-clean", test_render_scan_summary_all_clean),
+        ("render_scan_summary mixed counts", test_render_scan_summary_mixed),
+        ("render_scan_summary dry-run", test_render_scan_summary_dry_run),
     ]
     failed = 0
     for name, fn in tests:
