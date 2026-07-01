@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01 (two amendments — see Amendment sections below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder
+**Amended:** 2026-07-01 (three amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback
 
 ---
 
@@ -145,3 +145,47 @@ regression case: exit 0, no marker, must not fire). The "Consequences" and decis
 framing above should now be read as superseded — there is no longer a looser OR-based predicate
 anywhere in this hook family; all six hooks (five original + `usage-snapshot.py`) gate solely on
 `output_has_merge_marker()`.
+
+## Amendment 3 (2026-07-01) — a live `gh pr view` fallback for when the marker itself is lost
+
+Amendments 1 and 2 (and decision point 3) all assume gh's success marker reliably reaches
+`tool_response.stdout`/`stderr` whenever gh actually prints it. That assumption itself does not
+always hold.
+
+**Symptom (dev-env#489):** merging dev-env PR #493 hit the same worktree local-cleanup failure
+this ADR's Context section describes ("main is already checked out"). gh's own source
+(`pkg/cmd/pr/merge/merge.go`, `mergeRun`) confirms the success line prints via `infof()` *before*
+`deleteLocalBranch()` (the step that fails) ever runs — so the marker is logically emitted. It did
+not, however, survive to the captured Bash-tool result: only the local-cleanup fatal error was
+visible, `gh pr view` confirmed the remote merge had genuinely succeeded, and **none** of the six
+marker-gated hooks fired (concretely verified, not just "no message seen" — the canonical
+`C:/Users/brown/Git/dev-env`'s `HEAD` stayed unchanged, proving `post-pr-merge-pull.py`'s
+fast-forward never ran). A control (`echo "MARKER"; exit 1`) proved stdout generally survives a
+non-zero exit in this harness, ruling out a blanket "Bash tool drops stdout on failure" explanation
+— the loss is specific to `gh pr merge`'s output on this exact failure path, most likely gh (a Go
+CLI) buffering stdout to a non-TTY pipe and exiting abruptly right after the failing git subprocess
+without flushing that buffer.
+
+**Fix:** two new `_hookio` functions, usable as an explicit fallback *after* the cheap marker check
+finds nothing:
+
+- `should_confirm_via_gh(exit_code, output)` — pure predicate: only worth a live check when
+  `exit_code != 0` and the marker is absent, so the common non-merge / clean-exit paths (`gh pr
+  create`, `git push`, a queued `--auto`, `gh pr merge --help`) never pay a network call.
+- `confirm_merge_via_gh(pr_number, repo, cwd)` — shells out to `gh pr view` (an explicit
+  `pr_number` + `--repo` when known; otherwise no argument, letting `gh` infer the PR from *cwd*'s
+  checked-out branch) and returns the confirmed PR number when `state == "MERGED"`, else `None`.
+
+Wired into `post-pr-merge-project.py` only, for this PR — the one hook of the six with **no other
+eventual-consistency backstop** for a missed action (`post-pr-merge-pull.py` has `dev-env-sync`
+catching up the canonical on the next prompt, ADR-058; `post-pr-merge-reclaim.py` has the 6-hourly
+reclaim routine, ADR-037; the reminder/tile-checkpoint/usage-snapshot hooks are reminders/reports,
+not persistent state). Rolling this out to the other five is tracked separately
+(dev-env, follow-up issue filed alongside #489's fix) rather than bundled here, because each of
+the six runs as an **independent PostToolUse process** — wiring the fallback into all six naively
+would mean up to six redundant `gh pr view` calls for a single failed-merge event, with no natural
+place to share one result across independent hook invocations without a caching layer.
+
+`should_confirm_via_gh` is covered offline in `test_hookio.py`. `confirm_merge_via_gh` itself is
+not (it shells out), per this repo's no-subprocess-mock convention — consistent with every other
+live `gh`/`git` call in this hook family.

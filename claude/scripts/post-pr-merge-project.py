@@ -37,9 +37,11 @@ import subprocess
 import sys
 
 from _hookio import (
+    confirm_merge_via_gh,
     merge_pr_number_from_output,
     output_has_merge_marker,
     read_command_output,
+    should_confirm_via_gh,
 )
 
 CONFIG_FILE = ".claude/hook-config.json"
@@ -314,14 +316,6 @@ def main() -> None:
         sys.exit(0)
 
     output = read_command_output(data)
-
-    # Confirm an actual merge (not a queued --auto or a failed merge). The
-    # success marker is printed even from a worktree, where gh exits non-zero on
-    # local-checkout cleanup (issue #275) — so gate on the marker, not the exit
-    # code (which the real payload omits anyway; ADR-049).
-    if not merge_succeeded(output):
-        sys.exit(0)
-
     cwd = data.get("cwd", "")
 
     config = load_config(cwd)
@@ -340,6 +334,23 @@ def main() -> None:
     pr_number = extract_pr_number_from_command(command)
     if pr_number is None:
         pr_number = extract_pr_number(output)
+
+    # Confirm an actual merge (not a queued --auto or a failed merge). The
+    # success marker is printed even from a worktree, where gh exits non-zero on
+    # local-checkout cleanup (issue #275) — so gate on the marker first. gh's
+    # already-printed success marker does not always survive to this hook's
+    # captured output when it exits abruptly right after that same local-cleanup
+    # failure (dev-env#489) — a missed move-to-Done has no other backstop, so
+    # confirm via a live `gh pr view` call rather than silently giving up.
+    if not merge_succeeded(output):
+        exit_code = data.get("tool_response", {}).get("exitCode", -1)
+        if not should_confirm_via_gh(exit_code, output):
+            sys.exit(0)
+        confirmed_number = confirm_merge_via_gh(pr_number, repo, cwd)
+        if confirmed_number is None:
+            sys.exit(0)
+        pr_number = confirmed_number
+
     if pr_number is None:
         sys.exit(0)
 

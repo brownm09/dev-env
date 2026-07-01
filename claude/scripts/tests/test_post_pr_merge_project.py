@@ -13,9 +13,19 @@ from the command (`gh pr merge 380` / a `/pull/380` URL) with a fallback to gh's
 success marker in the output, and gate the move on a confirmed merge marker so a
 queued `--auto` or a failed merge does not move an issue to Done.
 
+dev-env#489: gh's success marker does not always survive to this hook's captured
+output when gh exits abruptly right after a worktree's local-cleanup git
+subprocess fails ("main is already checked out") — even though gh prints the
+marker before that failure. `main()` now falls back to a live `gh pr view`
+confirmation (`_hookio.confirm_merge_via_gh`, gated by `_hookio.
+should_confirm_via_gh`) when the marker is absent and the exit code is
+non-zero, since a missed move-to-Done has no other backstop. `should_confirm_via_gh`
+is covered in `test_hookio.py`; `confirm_merge_via_gh` itself is not (it shells
+out to `gh pr view`).
+
 These tests exercise the pure helpers offline (no network, no gh). The live gh
-calls (`get_pr_body`, `find_project_item`, `move_to_done`) are intentionally not
-tested.
+calls (`get_pr_body`, `find_project_item`, `move_to_done`, `confirm_merge_via_gh`)
+are intentionally not tested.
 
 Usage:
     py -3 claude/scripts/tests/test_post_pr_merge_project.py

@@ -28,8 +28,10 @@ hook fixes).  See ADR-067 for the merge-dir scoping.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import subprocess
 
 # gh's completed-merge success line, e.g. "Squashed and merged pull request #380
 # (Title)" — and the cross-repo "... pull request brownm09/dev-env#380" variant.
@@ -116,3 +118,55 @@ def effective_merge_dir(command: str, cwd: str) -> str:
     if not os.path.isabs(path):
         path = os.path.normpath(os.path.join(cwd, path))
     return path
+
+
+def should_confirm_via_gh(exit_code: int, output: str) -> bool:
+    """Pure: should a caller pay a live `gh pr view` call to confirm the merge?
+
+    Only when the cheap marker check found nothing AND the exit code signals a
+    possible loss (non-zero) — an exit-0 non-merge (a queued `--auto`, or any
+    other clean-exit command that merely matched `gh pr merge` textually) never
+    pays the network call. See `confirm_merge_via_gh` for why the check exists
+    at all (dev-env#489).
+    """
+    return exit_code != 0 and not output_has_merge_marker(output)
+
+
+def confirm_merge_via_gh(pr_number: int | None, repo: str, cwd: str) -> int | None:
+    """Best-effort live confirmation that a `gh pr merge` actually merged.
+
+    Returns the merged PR's number when `gh pr view` confirms ``state ==
+    "MERGED"``, else ``None``. Fallback only — costs a network round-trip, so
+    callers should gate on `should_confirm_via_gh` first.
+
+    gh prints its completed-merge success line before attempting the local
+    branch checkout/delete that can fail with "main is already checked out"
+    (confirmed by reading gh's own source: the `infof` success print in
+    `mergeRun` happens before `deleteLocalBranch` runs) — but that line does not
+    reliably survive to a PostToolUse hook's captured stdout/stderr when gh
+    exits abruptly right after the failing git subprocess (dev-env#489, live
+    reproduction: merging dev-env PR #493 lost the marker on the identical
+    failure shape). This asks GitHub directly rather than trusting local output.
+
+    *pr_number*, when already known (e.g. from `extract_pr_number_from_command`),
+    is passed as an explicit argument together with *repo* for a cwd-independent
+    lookup. When absent (the bare `gh pr merge --squash --delete-branch` form
+    names no PR), `gh pr view` with no argument infers the PR from *cwd*'s
+    checked-out branch, and the returned number comes from that same call.
+    """
+    args = ["gh", "pr", "view"]
+    if pr_number is not None:
+        args.append(str(pr_number))
+        if repo:
+            args += ["--repo", repo]
+    args += ["--json", "state,number"]
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=15, cwd=cwd)
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+        if data.get("state") != "MERGED":
+            return None
+        return data.get("number", pr_number)
+    except Exception:
+        return None
