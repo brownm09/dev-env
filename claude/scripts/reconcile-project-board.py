@@ -64,9 +64,10 @@ render_report / render_scan_summary / _added_and_failed / _validated_config) are
 unit-tested offline in tests/test_reconcile_project_board.py — _validated_config needs
 only a real tmp-dir hook-config.json, no gh/mocking, so its ok / no-config / bad-config
 statuses (including a non-dict top-level JSON payload) are pinned directly. The gh
-boundary (fetch_* / add_to_project) and the filesystem boundary (find_git_repos) are not
-mocked, matching the repo's no-subprocess-mock convention — find_git_repos is exercised
-via a --dry-run --scan-dir integration run instead (mirrors prune-merged-worktrees.py).
+boundary (fetch_* / add_to_project) is not mocked, matching the repo's no-subprocess-mock
+convention. find_git_repos is imported from the shared _repo_scan module (ADR-072) —
+its own unit tests live in tests/test_repo_scan.py, shared with prune-merged-worktrees.py
+and reclaim-worktree-disk.py's --scan-dir mode, which import the same helper.
 """
 from __future__ import annotations
 
@@ -77,6 +78,8 @@ import os
 import re
 import subprocess
 import sys
+
+from _repo_scan import find_git_repos
 
 CONFIG_FILE = ".claude/hook-config.json"
 
@@ -399,34 +402,6 @@ def is_truncated(count: int, limit: int) -> bool:
     results at --limit with no truncation signal, so a result count equal to the limit
     means more items might exist beyond it. Pure; the caller decides what to do (warn)."""
     return count >= limit
-
-
-# --- scan-dir discovery (filesystem I/O, not subprocess; not unit-tested — mirrors
-# prune-merged-worktrees.py / reclaim-worktree-disk.py, exercised via --dry-run) ------
-
-
-def find_git_repos(scan_dir: str) -> list[str] | None:
-    """Return paths of primary git repos (with a .git directory) directly under
-    scan_dir, or None if scan_dir itself could not be scanned (missing / no permission)
-    — distinct from an empty list, which means the scan succeeded and simply found zero
-    repos. A worktree's .git is a file, not a directory, so worktrees are excluded
-    automatically — --scan-dir only ever reconciles primary checkouts. A top-level entry
-    that is itself a symlink/junction to a directory is also excluded (follow_symlinks=
-    False below) — deliberate, so --scan-dir never double-reconciles a repo reachable
-    through both its real path and an alias under the same scan directory."""
-    repos: list[str] = []
-    try:
-        with os.scandir(scan_dir) as it:
-            entries = sorted(it, key=lambda e: e.name.lower())
-    except (PermissionError, FileNotFoundError) as exc:
-        print(f"[reconcile-board] WARNING: cannot scan {scan_dir}: {exc}", file=sys.stderr)
-        return None
-    for entry in entries:
-        if not entry.is_dir(follow_symlinks=False):
-            continue
-        if os.path.isdir(os.path.join(entry.path, ".git")):
-            repos.append(entry.path)
-    return repos
 
 
 # --- network boundary (not unit-tested; repo avoids subprocess mocks) --------

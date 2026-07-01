@@ -76,3 +76,4 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [069](069-weekly-memory-audit-routine.md) | Weekly Memory Audit Routine | 2026-06-30 | Accepted | routines, memory, scheduled-tasks, autonomy, dedup, ADR-038, ADR-048, ADR-013 |
 | [070](070-reconcile-project-board-scan-dir.md) | Generalize reconcile-project-board to Multi-Repo via --scan-dir | 2026-07-01 | Accepted | routines, github-project, hook-config, reconciliation, multi-repo, scan-dir, automation |
 | [071](071-canonical-checkout-mutate-guard-hook.md) | PreToolUse Hook to Block Git-Mutating Bash Commands in a Canonical (Non-Worktree) Checkout | 2026-07-01 | Accepted | hooks, worktrees, pre-tool-use, bash, git, concurrency, canonical-checkout, rate-limit |
+| [072](072-shared-repo-scan-module.md) | Shared `_repo_scan` Module for `find_git_repos()` Directory Discovery | 2026-07-01 | Accepted | worktrees, github-project, scan-dir, dry, maintainability, shared-module |

@@ -363,6 +363,35 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_reconcile_project_board.py
     ```
 
+30. **reclaim-worktree-disk test** — required when changing `claude/scripts/reclaim-worktree-disk.py`.
+    Exercises the pure decision/discovery helpers offline (real tmp-dir fixtures, no mocking): pins the
+    `is_idle_eligible` merged/commits-ahead decision table, the `.claude/worktrees/` membership gate
+    (`is_claude_managed_worktree`), `find_reclaim_dirs` (discovers top-level and nested-workspace
+    `node_modules`/`.turbo`, does not descend into a found reclaim dir, skips `.git`), `dir_size_bytes`,
+    and `reclaim_worktree` (dry-run reports without deleting; a real run deletes only the reclaim dirs,
+    preserving source files and `.git`). The git-dependent eligibility guards (dirty check, primary/cwd
+    exclusion, merge detection) are exercised end-to-end by `--dry-run` in the PR, not here. This test
+    file pre-dates this list — added here to close the gap where it existed but was never
+    cross-referenced ([ADR-037](docs/adr/037-worktree-disk-reclamation.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_reclaim_worktree_disk.py
+    ```
+
+31. **_repo_scan shared-module test** — required when changing `claude/scripts/_repo_scan.py` or the
+    `--scan-dir` discovery path in `prune-merged-worktrees.py` / `reclaim-worktree-disk.py` /
+    `reconcile-project-board.py`. Exercises the pure `find_git_repos(scan_dir)` helper offline (real
+    `tempfile.TemporaryDirectory()` fixtures, no mocking): pins that a primary repo (`.git` directory) is
+    discovered while a worktree (`.git` file), a plain non-repo directory, and a bare file are all
+    excluded; case-insensitive sort order; a nonexistent `scan_dir` returning `None` (distinct from
+    `[]`); and an empty-but-readable `scan_dir` returning `[]`. `PermissionError` shares the same
+    `except` tuple as the tested `FileNotFoundError` path and is not separately exercised (mirrors the
+    pure-helper convention elsewhere in this list). [ADR-072](docs/adr/072-shared-repo-scan-module.md)
+
+    ```bash
+    py -3 claude/scripts/tests/test_repo_scan.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

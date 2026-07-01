@@ -40,6 +40,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _repo_scan import find_git_repos
 from _worktree_liveness import parse_liveness_window_seconds, worktree_session_is_live
 from _worktree_topology import main_squatter, park_branch_for, parse_worktree_porcelain
 
@@ -82,24 +83,6 @@ def _liveness_window_seconds_from_args() -> int:
 
 def run(args: list[str], cwd: str, check: bool = False, timeout: int = 30) -> subprocess.CompletedProcess:
     return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=check)
-
-
-def find_git_repos(scan_dir: str) -> list[str]:
-    """Return paths of primary git repos (with a .git directory) directly under scan_dir."""
-    repos = []
-    try:
-        entries = sorted(os.scandir(scan_dir), key=lambda e: e.name.lower())
-    except PermissionError as exc:
-        print(f"WARNING: cannot scan {scan_dir}: {exc}", file=sys.stderr)
-        return repos
-    for entry in entries:
-        if not entry.is_dir(follow_symlinks=False):
-            continue
-        git_path = Path(entry.path) / ".git"
-        # .git is a directory for primary repos; a file for git worktrees — skip worktrees
-        if git_path.is_dir():
-            repos.append(entry.path)
-    return repos
 
 
 def detect_gh_repo(repo: str) -> str:
