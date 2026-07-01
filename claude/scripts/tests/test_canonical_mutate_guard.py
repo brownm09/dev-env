@@ -11,7 +11,11 @@ no worktrees needed):
      branch --show-current, rev-parse, ls-tree, blame, remote -v, plain
      branch, stash list/show, checkout -- <path>, pull --ff-only), plus the
      segment-split/anchor and redirect-skip behavior (career-playbook #442
-     heredoc-mention lesson; `cd`/`-C`/`--git-dir` redirects are out of scope).
+     heredoc-mention lesson; `cd`/`-C`/`--git-dir` redirects are out of scope;
+     dev-env#481 heredoc-command-substitution-body exclusion — a body line
+     that itself STARTS with a mutating verb or the override token inside a
+     `$(cat <<'MARKER' ... MARKER)` span, applied to both classify() and
+     _has_override()).
   2. End-to-end main() via subprocess — drives the real hook over stdin against
      a real throwaway git repo (so `git -C <cwd> rev-parse --show-toplevel`
      resolves for real) and asserts exit codes for:
@@ -156,6 +160,96 @@ def test_heredoc_mention_does_not_trigger() -> str:
             f"heredoc body mentioning mutating verbs should not trigger, got {matched!r}"
         )
     return "heredoc/prose mention of a mutating verb does not trigger (career-playbook #442 lesson)"
+
+
+def test_heredoc_command_substitution_body_not_classified() -> str:
+    """A heredoc body line that itself STARTS with a mutating verb — e.g. a
+    markdown code-fence example inside a `gh issue create --body "$(cat
+    <<'EOF' ... EOF)"` invocation — must not trigger. Distinct from
+    test_heredoc_mention_does_not_trigger (mid-line mention): there, the body
+    line does not start with `git`, so the pre-existing anchor-at-segment-
+    start check already handled it. Here, the body line genuinely BEGINS with
+    `git ...` after the `\\n`-split, making it indistinguishable from a real
+    invocation without the dev-env#481 fix (`_strip_heredoc_command_subs()`
+    removing the whole `$(cat <<'MARKER' ... MARKER)` span before segment
+    splitting even happens).
+
+    Reproduction (dev-env#481, 2026-07-01): the actual invoked command was
+    `gh issue create` (a remote API call touching no local git state at all),
+    but the pre-fix hook reported a `git commit` line lifted from inside the
+    quoted (`<<'EOF'`, no shell expansion) heredoc body string as the blocked
+    command.
+    """
+    cmd = (
+        'gh issue create --repo brownm09/dev-env '
+        '--title "canonical-mutate-guard heredoc gap" '
+        '--body "$(cat <<\'EOF\'\n'
+        '## Suggested fix\n'
+        'Run this to land the change:\n'
+        'git commit -m "fix: heredoc gap" -- sessions/some-project/stub.md\n'
+        'EOF\n'
+        ')"'
+    )
+    matched = cmg.classify(cmd)
+    if matched is not None:
+        raise AssertionError(
+            f"heredoc body line starting with a mutating verb inside a "
+            f"$(cat <<'MARKER'...) command-substitution argument should not "
+            f"trigger, got {matched!r}"
+        )
+    return (
+        "heredoc body line starting with a mutating verb inside "
+        "$(cat <<'MARKER'...) does not trigger (dev-env#481)"
+    )
+
+
+def test_real_command_after_heredoc_catsub_still_classified() -> str:
+    """The dev-env#481 fix must stay precise: a REAL mutating command chained
+    (via `&&`) after a heredoc-fed `$(cat <<'MARKER'...)` command
+    substitution closes must still be caught — the fix strips only the span
+    between the opening heredoc line and its own closing MARKER line, not
+    everything that follows it.
+    """
+    cmd = (
+        'gh issue create --body "$(cat <<\'EOF\'\n'
+        'git commit example text\n'
+        'EOF\n'
+        ')" && git checkout -b evil'
+    )
+    matched = cmg.classify(cmd)
+    if matched is None or "checkout" not in matched:
+        raise AssertionError(
+            f"a real mutating command chained after a heredoc-fed command "
+            f"substitution must still be caught, got {matched!r}"
+        )
+    return (
+        "real mutating command after a $(cat <<'MARKER'...) span still "
+        "classified (dev-env#481 fix stays precise)"
+    )
+
+
+def test_override_mention_at_heredoc_body_line_start_does_not_bypass() -> str:
+    """The override token appearing at the START of a heredoc body line
+    inside a `$(cat <<'MARKER' ... MARKER)` command-substitution argument
+    (e.g. documentation prose showing the override syntax) must not bypass
+    the block — the same class of gap as classify()'s heredoc-body false
+    positive (dev-env#481), but on the override-detection path in
+    _has_override() instead.
+    """
+    cmd = (
+        'gh issue create --body "$(cat <<\'EOF\'\n'
+        'ALLOW_CANONICAL_MUTATE=1 git checkout -b foo\n'
+        'EOF\n'
+        ')" && git checkout -b real-branch'
+    )
+    if cmg._has_override(cmd):
+        raise AssertionError(
+            f"override token at the start of a heredoc body line should not bypass: {cmd!r}"
+        )
+    return (
+        "override token at heredoc-body-line-start (inside $(cat <<'MARKER'...)) "
+        "does not bypass (dev-env#481)"
+    )
 
 
 def test_env_prefixed_mutating_command_still_classified() -> str:
@@ -316,6 +410,9 @@ def main_unit() -> list:
         ("classify() finds first mutating segment", test_classify_returns_first_mutating_segment),
         ("classify() returns None when all safe", test_classify_returns_none_when_all_segments_safe),
         ("heredoc mention does not trigger", test_heredoc_mention_does_not_trigger),
+        ("heredoc command-substitution body not classified", test_heredoc_command_substitution_body_not_classified),
+        ("real command after heredoc catsub still classified", test_real_command_after_heredoc_catsub_still_classified),
+        ("override mention at heredoc body line start does not bypass", test_override_mention_at_heredoc_body_line_start_does_not_bypass),
         ("env-prefixed mutating command still classified", test_env_prefixed_mutating_command_still_classified),
         ("cd redirect takes whole command out of scope", test_cd_redirect_takes_whole_command_out_of_scope),
         ("-C/--git-dir redirect skips only its own segment", test_dashC_redirect_only_skips_its_own_segment),
