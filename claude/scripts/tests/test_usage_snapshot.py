@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for usage-snapshot.py token classification.
+"""Unit tests for usage-snapshot.py token classification and merge detection.
 
 `usage-snapshot.py` is a PostToolUse hook that fires after `gh pr merge` and
 emits a usage snapshot. Before the fix in dev-env#355, an already-expired OAuth
@@ -10,6 +10,16 @@ The fix extracts the expiry decision into the pure `classify_token()` helper so
 it can be exercised offline (no network, no credentials file), matching the
 repo's fixture-only test convention. These tests pin the four states and assert
 the previously-silent `expired` path now yields a user-facing advisory.
+
+dev-env#474 fixed a second, separate silent-drop path: the hook used to gate on
+`tool_response.exitCode != 0`, which discards the snapshot on every worktree
+merge (a worktree merge exits non-zero on local branch cleanup even though the
+remote merge succeeded — issue #275), the exact defect ADR-049/ADR-050 fixed in
+the sibling `post-pr-merge-*` hooks. The fix replaces that gate with the pure
+`merge_confirmed(command, output)` predicate, gated on gh's output success
+marker instead of the exit code. These tests pin that a worktree-merge payload
+(marker present, exit non-zero) now confirms, while an unconfirmed merge (no
+marker) and a non-merge command do not.
 
 The live network call (`fetch_usage`) is intentionally not tested — the repo
 avoids urllib mocks, consistent with the other script tests.
@@ -39,6 +49,7 @@ usage_snapshot = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(usage_snapshot)  # safe: main() is guarded by __main__
 classify_token = usage_snapshot.classify_token
 snapshot_action = usage_snapshot.snapshot_action
+merge_confirmed = usage_snapshot.merge_confirmed
 
 NOW_MS = 1_700_000_000_000  # fixed synthetic "now"; real time never consulted
 HOUR_MS = 3_600_000
@@ -98,6 +109,35 @@ def test_valid_states_fetch() -> str:
     return "ok / no_expiry -> fetch"
 
 
+def test_merge_confirmed_true_for_worktree_merge_despite_nonzero_exit() -> str:
+    # Issue #275: a worktree merge exits non-zero on local branch cleanup
+    # ("'main' is already checked out") even though the remote merge
+    # succeeded. gh prints the success marker before that cleanup tail runs.
+    command = "gh pr merge --squash --delete-branch"
+    output = (
+        "Squashed and merged pull request #466 (fix: correct scheduled-tasks/routines "
+        "junction topology in docs)\n"
+        "error: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'"
+    )
+    assert merge_confirmed(command, output) is True
+    return "worktree-merge output (marker present, exit non-zero) -> confirmed"
+
+
+def test_merge_confirmed_false_without_marker() -> str:
+    # A queued --auto exits 0 but has not actually merged yet.
+    command = "gh pr merge --auto --squash --delete-branch"
+    output = "Pull request #466 will be automatically merged when checks pass"
+    assert merge_confirmed(command, output) is False
+    return "queued --auto output (no marker yet) -> not confirmed"
+
+
+def test_merge_confirmed_false_for_non_merge_command() -> str:
+    command = "git push origin main"
+    output = "Squashed and merged pull request #466 (unrelated coincidental text)"
+    assert merge_confirmed(command, output) is False
+    return "non-merge command -> not confirmed even if output text coincidentally matches"
+
+
 def main() -> int:
     tests = [
         ("no-expiry token proceeds silently", test_no_expiry_proceeds_silently),
@@ -108,6 +148,12 @@ def main() -> int:
         ("expired state triggers on-demand refresh", test_expired_state_triggers_refresh),
         ("expiring state now fetches (not skipped)", test_expiring_state_now_fetches),
         ("ok / no_expiry states fetch", test_valid_states_fetch),
+        (
+            "worktree-merge output confirms despite non-zero exit",
+            test_merge_confirmed_true_for_worktree_merge_despite_nonzero_exit,
+        ),
+        ("unconfirmed merge (no marker) is not confirmed", test_merge_confirmed_false_without_marker),
+        ("non-merge command is not confirmed", test_merge_confirmed_false_for_non_merge_command),
     ]
     failed = 0
     for name, fn in tests:

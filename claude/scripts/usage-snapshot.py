@@ -15,12 +15,13 @@ Stdin JSON shape (PostToolUse):
     "hook_event_name": "PostToolUse",
     "tool_name": "Bash",
     "tool_input": {"command": "...", "description": "..."},
-    "tool_response": {"output": "...", "exitCode": 0},
+    "tool_response": {"stdout": "...", "stderr": "...", "exitCode": 0},
     "session_id": "...",
     "cwd": "..."
   }
 
-Exit 0  — not a merge command, or creds file absent; silent
+Exit 0  — not a merge command, an unconfirmed merge (no success marker in the
+          output — e.g. a queued `--auto`), or creds file absent; silent
 Exit 2  — snapshot emitted via stderr, OR an expired token whose on-demand refresh
           failed (advisory), OR the usage API was unreachable after one retry
           (advisory — #302). An expired token is first refreshed on demand via the
@@ -37,6 +38,8 @@ import urllib.error
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+from _hookio import output_has_merge_marker, read_command_output
+
 CREDS_PATH = "C:/Users/brown/.claude/.credentials.json"
 CONFIG_PATH = "C:/Users/brown/Git/dev-env/claude/usage-config.json"
 PROJECTS_ROOT = Path("C:/Users/brown/.claude/projects")
@@ -44,7 +47,8 @@ USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 BETA_HEADER = "oauth-2025-04-20"
 KEEP_WARM_PS1 = "C:/Users/brown/.claude/scripts/keep-token-warm.ps1"
 
-# --- merge detection (mirrors post-pr-merge-project.py) ---
+# --- merge detection (command-shape scan; success confirmed via _hookio's
+# output marker — mirrors post-pr-merge-project.py) ---
 _MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
 
 
@@ -155,6 +159,21 @@ def _scan_top_level(command: str) -> bool:
     if stack == ["top"]:
         return _check_merge_stmt(command[stmt_start:])
     return False
+
+
+def merge_confirmed(command: str, output: str) -> bool:
+    """Return True iff *command* is a top-level `gh pr merge` whose *output*
+    confirms a completed merge via gh's success marker.
+
+    Gated on the marker, not the exit code: a worktree merge exits non-zero on
+    local branch cleanup ("'main' is already checked out") even though the
+    remote merge succeeded (issue #275) — the marker prints before that
+    cleanup tail runs. Trusting the exit code here (as this hook did before)
+    silently dropped the snapshot on every worktree merge, the default flow in
+    this repo (dev-env#474; mirrors post-pr-merge-project.py's
+    merge_succeeded(), see ADR-049/ADR-050).
+    """
+    return _scan_top_level(command) and output_has_merge_marker(output)
 
 
 # --- credentials ---
@@ -502,11 +521,9 @@ def main() -> None:
     if data.get("tool_name") != "Bash":
         sys.exit(0)
 
-    if data.get("tool_response", {}).get("exitCode", 0) != 0:
-        sys.exit(0)
-
     command = data.get("tool_input", {}).get("command", "")
-    if not _scan_top_level(command):
+    output = read_command_output(data)
+    if not merge_confirmed(command, output):
         sys.exit(0)
 
     creds = load_credentials()

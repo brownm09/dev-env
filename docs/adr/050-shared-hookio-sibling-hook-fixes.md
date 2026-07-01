@@ -2,7 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry
+**Amended:** 2026-07-01 (see Amendment section below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot
 
 ---
 
@@ -91,3 +92,25 @@ been copied into four sibling PostToolUse hooks and left them as a tracked follo
 - General lesson (continuing ADR-049): a guard's confirmation signal must be the same one the
   action depends on — here the merge marker — not a proxy (`exitCode`) that the payload may
   omit or that a queued `--auto` satisfies without merging.
+
+## Amendment (2026-07-01) — `usage-snapshot.py` was a sixth, missed sibling
+
+ADR-049's sweep named four sibling hooks with the wrong-field read (`post-pr-merge-project.py`,
+`post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`, `stub-push-archive-reminder.py`); this ADR
+fixed all four plus `post-tool-use.py` itself. **`usage-snapshot.py` was not on that list** —
+it fires on the same `gh pr merge` event and its header comment claimed to "mirror
+post-pr-merge-project.py," but it never imported `_hookio` and gated solely on
+`tool_response.exitCode != 0`, exactly the proxy this ADR's "General lesson" warns against.
+
+**Symptom (dev-env#474):** merging dev-env PR #466 from a worktree hit the documented
+worktree-cleanup failure ("'main' is already checked out") — `gh pr merge` exited 1, the
+squash-merge itself succeeded, and `post-pr-merge-project.py` correctly moved the linked issue
+to Done. But no `### Usage Snapshot (post-merge)` block appeared: the exit-code gate discarded
+the event before the hook ever read `stdout`/`stderr` or reached the credential/token logic.
+
+**Fix:** `usage-snapshot.py` now imports `output_has_merge_marker` / `read_command_output` from
+`_hookio` and gates on a new pure `merge_confirmed(command, output)` predicate — the same
+marker-based check as `post-pr-merge-project.py`'s `merge_succeeded()` — instead of the exit
+code. Covered offline in `claude/scripts/tests/test_usage_snapshot.py`. `usage-snapshot.py` is
+effectively a sixth hook brought into this ADR's pattern; the count in "Consequences" above
+("All five PostToolUse Bash hooks...") should be read as five-plus-this-one going forward.
