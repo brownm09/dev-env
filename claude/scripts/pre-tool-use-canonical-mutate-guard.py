@@ -24,10 +24,25 @@ is actually found):
   2. If `cwd` matches the worktree path pattern (`.../.claude/worktrees/<name>`),
      exit 0 — out of scope, ADR-024's hook already covers that surface, and any
      command (mutating or not) is fine from inside a worktree.
-  3. Split the command into logical segments (`&&`, `||`, `;`, `\n`, `|` — same
-     splitter career-playbook's hooks use). Two redirect shapes are out of
-     scope for this hook's cwd-based check (known, documented gap — see
-     module-level note below):
+  3. Strip every `$(cat <<[-]['"]MARKER['"] ... MARKER)` span from the command
+     before any segment splitting happens — a heredoc fed to `cat` and used as
+     a command-substitution argument (the `gh issue create --body "$(cat
+     <<'EOF' ... EOF)"` idiom this repo's own CLAUDE.md documents extensively
+     for git-commit-message heredocs). The body between the opening heredoc
+     line and the closing MARKER line is pure string data being assembled for
+     an argument value, never something the shell itself parses and executes
+     — so a body line that happens to *start* with a mutating verb (e.g. a
+     markdown code-fence example inside an issue/PR body) must never surface
+     as a candidate segment at all. This closes a gap the career-playbook #442
+     mid-line-mention lesson in step 5 below does not cover: #442's
+     anchor-at-segment-start fix means a verb merely mentioned *mid-line*
+     doesn't trigger, but a heredoc body line that itself *begins* with the
+     verb is (after the `\n`-split in step 4) indistinguishable from a
+     genuinely invoked command — see dev-env#481 for the reproduction.
+  4. Split the (now heredoc-command-sub-stripped) command into logical
+     segments (`&&`, `||`, `;`, `\n`, `|` — same splitter career-playbook's
+     hooks use). Two redirect shapes are out of scope for this hook's
+     cwd-based check (known, documented gap — see module-level note below):
        - A bare `cd <path>` in ANY segment persists for the rest of the shell
          invocation (that's what `&&`-chaining a `cd` means), so the whole
          command is treated as out of scope the moment a `cd` appears anywhere
@@ -41,20 +56,22 @@ is actually found):
      default-cwd collision #453 documents, so deferring both shapes is
      acceptable for v1 — same class of scope-limiting judgment ADR-024 made
      for its own Bash coverage.
-  4. Classify each remaining segment, anchored at the segment start (not a
+  5. Classify each remaining segment, anchored at the segment start (not a
      substring match — the career-playbook #442 heredoc-mention lesson: a
      mutating verb merely *mentioned* inside a heredoc body or prose must not
      trigger). If no segment is mutating, exit 0 — nothing here needs a git
      subprocess at all.
-  5. If the `ALLOW_CANONICAL_MUTATE=1` override token appears as a genuine
+  6. If the `ALLOW_CANONICAL_MUTATE=1` override token appears as a genuine
      leading prefix on the command or on one of its `&&`/`||`/`;`/`|`-split
      segments (not merely mentioned as a substring anywhere, e.g. inside a
-     commit message argument), exit 0 — a deliberate, visible human override.
-  6. Resolve the git toplevel for `cwd` via `git -C <cwd> rev-parse
+     commit message argument or a heredoc-command-substitution body line —
+     step 3's stripping applies identically here), exit 0 — a deliberate,
+     visible human override.
+  7. Resolve the git toplevel for `cwd` via `git -C <cwd> rev-parse
      --show-toplevel`. Fail open if git can't resolve one at all (not a repo,
      git missing, timeout) — that toplevel, once resolved, *is* the canonical
      root by definition (cwd already failed the worktree-pattern check above).
-  7. Exit 2 with a blocking JSON `{"reason": ...}` naming the matched command,
+  8. Exit 2 with a blocking JSON `{"reason": ...}` naming the matched command,
      the canonical root, why it's dangerous, and the two remedies (isolate via
      a worktree, or override).
 
@@ -118,6 +135,29 @@ _SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\n|\|")
 # the rest of the command, not just the segment it appears in.)
 _REDIRECT_RE = re.compile(r"(?:^|\s)git\s+(?:-C\s+\S|--git-dir=\S)")
 
+# A `$(cat <<[-]['"]MARKER['"] ... \nMARKER)` span -- a heredoc fed to `cat`
+# and used as a command-substitution argument (the `gh issue create --body
+# "$(cat <<'EOF' ... EOF)"` idiom career-playbook's own CLAUDE.md documents
+# extensively for git-commit-message heredocs). dev-env#481: a body line that
+# itself STARTS with a mutating verb (e.g. a markdown code-fence example
+# inside an issue/PR body) is, after classify()'s `\n`-split, indistinguishable
+# from a genuinely invoked command -- the segment-anchor fix for
+# career-playbook#442 (a verb merely MENTIONED mid-line) does not cover a body
+# line that begins with the verb. `_strip_heredoc_command_subs()` below
+# removes the whole span (opening `$(cat <<MARKER` line through the closing
+# MARKER line) before segment classification runs, so none of its body lines
+# ever become a candidate segment at all. Scoped deliberately narrow (`cat`
+# only, not any command before `<<`) to match the one idiom actually observed
+# in this codebase's own heredoc conventions, rather than attempting a general
+# heredoc parser -- consistent with this hook's stated non-goal of being a
+# full shell parser (see the `cd`/`-C` deferrals above).
+_HEREDOC_CATSUB_RE = re.compile(
+    r"\$\(\s*cat\s+<<-?(['\"]?)(\w+)\1[^\n]*\n"
+    r".*?"
+    r"^[ \t]*\2[ \t]*$",
+    re.DOTALL | re.MULTILINE,
+)
+
 # `cd <path>` at the start of a segment (after stripping leading env-var
 # assignments — see `_strip_leading_env`). Compiled once; reused by both the
 # cd-scan loop in classify() and anywhere else that needs to detect a cd.
@@ -146,6 +186,24 @@ _LEADING_ENV = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*")
 
 def _strip_leading_env(segment: str) -> str:
     return _LEADING_ENV.sub("", segment, count=1)
+
+
+def _strip_heredoc_command_subs(cmd: str) -> str:
+    """Remove every `$(cat <<[-]['"]MARKER['"] ... MARKER)` span from `cmd`,
+    replacing each whole match with a single space so a real segment boundary
+    immediately before/after the span is never fused with adjacent text.
+
+    Called at the top of both classify() and _has_override() -- each must be
+    independently correct against a heredoc-as-command-substitution body,
+    since both split `cmd` into segments the same way and both are exercised
+    directly (not just through main()) by the test suite. Without this,
+    _has_override() has the identical false-positive shape as classify(): a
+    heredoc body line documenting the override syntax (e.g.
+    "ALLOW_CANONICAL_MUTATE=1 git checkout -b foo" as example prose) would be
+    read as a genuine leading-prefix override and silently bypass the block
+    for an unrelated real mutating segment elsewhere in the same command.
+    """
+    return _HEREDOC_CATSUB_RE.sub(" ", cmd)
 
 
 def _skip_git_level_flags(tokens: list) -> list:
@@ -254,7 +312,18 @@ def classify(cmd: str):
       - `git -C <path>` / `git --git-dir=<path>` redirects only the single
         git invocation it appears on — that segment alone is skipped; other
         segments in the same command are still classified normally.
+
+    Before any of the above, `_strip_heredoc_command_subs()` removes every
+    `$(cat <<'MARKER' ... MARKER)` span entirely (dev-env#481) — otherwise a
+    heredoc body line that happens to *start* with a mutating verb (e.g. a
+    markdown code-fence example inside a `gh issue create --body` argument)
+    becomes its own segment after the `\n`-split below and is indistinguishable
+    from a real invocation. This also means a `cd`-looking or mutating-looking
+    line inside such a heredoc body can no longer skew the cd-scan or the
+    classification loop below — both now only ever see segments from outside
+    the stripped spans.
     """
+    cmd = _strip_heredoc_command_subs(cmd)
     segments = _SEGMENT_SPLIT.split(cmd)
     for seg in segments:
         if _CD_RE.match(_strip_leading_env(seg)):
@@ -276,7 +345,15 @@ def _has_override(cmd: str) -> bool:
     recognized in exactly the positions a real shell would treat it as an
     env-var assignment: at the very start of the command, or at the start of
     any `&&`/`||`/`;`/`|`-separated segment.
+
+    Also strips heredoc-command-substitution spans first (dev-env#481, same
+    helper `classify()` uses) — otherwise a heredoc body line that happens to
+    *start* with the override token (e.g. documentation prose showing the
+    override syntax inside a `gh issue create --body` argument) would read as
+    a genuine leading-prefix override and silently bypass the block for an
+    unrelated real mutating segment elsewhere in the same command.
     """
+    cmd = _strip_heredoc_command_subs(cmd)
     for seg in _SEGMENT_SPLIT.split(cmd):
         stripped = seg.strip()
         if stripped == OVERRIDE_TOKEN or stripped.startswith(OVERRIDE_TOKEN + " "):
