@@ -397,6 +397,54 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_repo_scan.py
     ```
 
+32. **worktree-path-check test** — required when changing `claude/scripts/pre-tool-use-worktree-path-check.py`.
+    Exercises the pure `_worktree_is_live()` decision table offline (stubbed `path_exists` / `git_toplevel`
+    helpers, no real git): pins the six liveness combinations — a live worktree, a missing `.git` link, git
+    resolving up to the canonical root, git resolving to an unrelated path, a failed git call treated as live
+    rather than false-blocking, and a live match differing only by case/separator — plus that the `.git`-link
+    check short-circuits before git is ever spawned. End-to-end `main()` tests drive the real hook over stdin:
+    an Edit from an orphaned worktree cwd (missing `.git` link) is blocked with the orphan recovery recipe; a
+    Write whose absolute path escapes a *live* worktree to the canonical root is blocked with the escape
+    recovery recipe (ADR-024's primary, most-documented scenario, and a code path the orphan test doesn't
+    reach); and a call from a non-worktree cwd is a no-op. Both block scenarios assert the reason lands on
+    stderr with empty stdout — Claude Code discards a PreToolUse hook's stdout on exit code 2, so a reason
+    printed there would be silently invisible to the model even though the block itself still worked
+    ([dev-env#469](https://github.com/brownm09/dev-env/issues/469)). This test file pre-dates this list —
+    added here to close the gap where it existed but was never cross-referenced
+    ([ADR-024](docs/adr/024-worktree-path-guard-hook.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_worktree_path_check.py
+    ```
+
+33. **canonical-mutate-guard test** — required when changing `claude/scripts/pre-tool-use-canonical-mutate-guard.py`.
+    Exercises the pure `classify()` / `is_mutating_segment()` helpers offline: pins the full mutating-verb
+    matrix (checkout / `checkout -b`, switch, commit, merge, rebase, reset, cherry-pick, revert, stash
+    pop/apply — including flag-prefixed forms like `git -c gc.auto=0 stash pop` — `branch -d`/`-D`/`--delete`,
+    and bare pull) against the explicitly-allowed read-only surface (status, log, diff, show, fetch,
+    `branch --show-current`, rev-parse, ls-tree, blame, `remote -v`, plain branch, stash list/show,
+    `checkout -- <path>`, `pull --ff-only`, and non-git commands); the segment-split/anchor behavior so a
+    mutating verb merely mentioned inside a heredoc body does not trigger (the career-playbook
+    [#442](https://github.com/brownm09/career-playbook/issues/442) lesson); the redirect-scoping asymmetry
+    between a `cd <path>` (takes the *whole* command out of scope, including env-prefixed forms) and
+    `git -C <path>` / `--git-dir=<path>` (skips only its own segment, so a later unredirected mutating segment
+    in the same command is still caught); and the override token's anchored-prefix requirement
+    (`ALLOW_CANONICAL_MUTATE=1` as a genuine leading prefix bypasses, while the same string merely mentioned
+    inside a commit message argument does not). End-to-end `main()` tests drive the real hook over stdin
+    against a real throwaway `git init` repo: a mutating command from a canonical (non-worktree) checkout —
+    the concurrent-session HEAD-thrashing collision the hook exists to prevent
+    ([dev-env#453](https://github.com/brownm09/dev-env/issues/453)) — is blocked with the reason on stderr
+    and empty stdout; read-only commands and `pull --ff-only` are allowed while bare `pull` is blocked; any
+    command from a worktree-pattern cwd is allowed (out of scope — ADR-024's hook covers that surface); the
+    override token bypasses the block; and a non-git cwd, malformed JSON, non-dict JSON (`[]`, `"x"`, `123`,
+    `null`), missing/empty `cwd`, and a non-Bash `tool_name` all fail open. The documented v1 gap — a command
+    that `cd`s or `-C`s *into* the canonical root from elsewhere — is a deliberate scope limitation, not a
+    tested case ([ADR-071](docs/adr/071-canonical-checkout-mutate-guard-hook.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_canonical_mutate_guard.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
