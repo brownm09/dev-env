@@ -131,19 +131,27 @@ For every `*.md` file in the memory dir **except `MEMORY.md`**, the subagent mus
    - Also flag **index-drift**: the entry is missing from `MEMORY.md`, or its `MEMORY.md` line
      disagrees with the file. Report-only.
 
-The subagent returns a structured findings list — one record per memory file with: file name, type,
-durable? (yes/no), instruction-home (path + verified yes/no, or "none"), disposition, a one-line
-rationale, and **for `promote` records additionally**: the rule text (verbatim or tight paraphrase),
-the suggested instruction home (which `CLAUDE.md`/doc it belongs in), and the entry's `name` slug.
+The subagent returns a structured findings response with two top-level fields:
+- **`scanned`** (bool, required): `true` if the subagent successfully read and classified the memory
+  files; `false` if it could not (permission error, empty-dir race, unexpected crash). This field
+  distinguishes a "subagent failure" from a legitimate "0 findings" result.
+- **`findings`** (list): one record per memory file with: file name, type, durable? (yes/no),
+  instruction-home (path + verified yes/no, or "none"), disposition, a one-line rationale, and
+  **for `promote` records additionally**: the rule text (verbatim or tight paraphrase), the suggested
+  instruction home (which `CLAUDE.md`/doc it belongs in), and the entry's `name` slug. Must be an
+  empty list when `scanned: false`.
 
-If a subagent fails or returns nothing for a project, **do not abort the whole run** — note the gap
-and continue with a partial report.
+If a subagent returns `scanned: false`, or returns nothing at all, **do not abort the whole run** —
+record the project name and the reason (or "subagent returned no data") in a running not-scanned
+list for Step 5, and continue with a partial report.
 
 ---
 
 ## Step 3 — Aggregate and route the promote findings
 
-Collect every subagent's findings. For each **promote** finding, determine the target repo:
+Collect every subagent's findings. Responses where `scanned` is `false` (or where nothing was
+returned) are already tracked in the not-scanned list — exclude them from promote routing. For each
+**promote** finding from a successfully-scanned project, determine the target repo:
 
 - **Project-specific durable** (a rule that governs only that project) → that project's own repo
   (its resolved GitHub `slug`), when it has a remote with Issues enabled.
@@ -253,6 +261,16 @@ fi
      slugs.
    - A **"Stale / drift / index-drift (report-only)"** subsection — each finding with file, what is
      stale/wrong, and the suggested human fix. These are *not* auto-actioned by design.
+   - A **"Projects not scanned (subagent failures)"** subsection — **include only when at least one
+     subagent returned `scanned: false` or returned no data at all**. Format:
+     ```
+     ## Projects not scanned (subagent failures)
+     | Project | Reason |
+     |---|---|
+     | lifting-logbook | Subagent returned no data |
+     ```
+     Omit this section entirely when every subagent returned `scanned: true`. A missing section means
+     "no scan failures" — not that failures were silently swallowed.
 
 3. Commit on a dedicated branch and open a PR to `main` (this repo squash-merges; do **not** commit
    to `main` directly, and do **not** auto-merge — auto-merge is disabled by ADR-031, the user
