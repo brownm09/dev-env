@@ -641,13 +641,18 @@ pre-merge tooling. This is now auto-corrected: `post-pr-merge-pull.py` parks the
 failed local-checkout tail (above) discarded the snapshot even though the remote merge had
 succeeded. The hook now gates on gh's output success marker instead (`merge_confirmed()`,
 matching `post-pr-merge-project.py`'s marker-based detection) and fires correctly on worktree
-merges — validated in practice merging PR #477 itself, which hit this exact failure and still
-moved dev-env#474's linked issue to Done via the same marker. The snapshot can still be
+merges — confirmed in practice merging PR #477 itself, which hit this exact failure: the real
+payload contained gh's success marker (`post-pr-merge-project.py`, using the same `_hookio`
+dependency, correctly moved dev-env#474's linked issue to Done), and credentials/token were
+independently healthy. `usage-snapshot.py`'s own output was not directly observed in chat (see
+the next note), but it shares the identical marker-detection call. The snapshot can still be
 legitimately absent for reasons unrelated to the worktree-exit-code case: `.credentials.json`
 missing or unparseable, an expired refresh token, or the usage API unreachable after one retry —
 all intentionally silent-or-advisory per the hook's own docstring, not a regression of this fix.
-Separately: a PostToolUse hook's own stderr does not reliably surface to the assistant in chat
-when the *parent* `gh pr merge` call itself is shown as an error (non-zero exit) — confirm a hook
+Separately: a PostToolUse hook's own stderr was not observed to surface to the assistant in chat
+in either of the two instances behind this fix — worth confirming with more data points before
+treating as a firm platform rule — when the *parent* `gh pr merge` call itself is shown as an
+error (non-zero exit); until then, confirm a hook
 actually ran by checking its side effect (e.g. the linked issue's board status) rather than
 assuming absence of visible reminder text means the hook didn't fire.
 
