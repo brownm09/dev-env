@@ -146,8 +146,12 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     `read_command_output()` and merge-marker helpers (`output_has_merge_marker` / `merge_pr_number_from_output`) offline (no network, no gh): pins that the real `stdout`/`stderr`-shaped
     Bash payload yields the command output (the pre-#380 `output` read was always `""`), that stdout and
     stderr are joined, that the legacy `output` field is still honored as a fallback, and that a missing /
-    empty / `None` / non-dict `tool_response` yields `""` without raising. `_hookio` is imported by all five
-    PostToolUse Bash hooks ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)).
+    empty / `None` / non-dict `tool_response` yields `""` without raising. Also exercises the pure
+    `should_confirm_via_gh(exit_code, output)` predicate: only a non-zero exit code with no marker present
+    is worth a live `gh pr view` confirmation (dev-env#489, [ADR-050 amendment 3](docs/adr/050-shared-hookio-sibling-hook-fixes.md));
+    a clean exit or a marker already found never pays the network call. `_hookio` is imported by all five
+    PostToolUse Bash hooks ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)). `confirm_merge_via_gh()`
+    itself is not covered (it shells out to `gh pr view`).
 
     ```bash
     py -3 claude/scripts/tests/test_hookio.py
@@ -159,7 +163,7 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     `None`), output-marker extraction (`Squashed and merged pull request #N`, the cross-repo `owner/repo#N`
     variant, and the legacy `/pull/N` URL), and the `--auto`-safe merge gate (a queued `--auto` or a failed
     merge yields no completed-merge number and `merge_succeeded` is `False`). The live `gh` calls
-    (`get_pr_body` / `find_project_item` / `move_to_done`) are not covered
+    (`get_pr_body` / `find_project_item` / `move_to_done` / `confirm_merge_via_gh`) are not covered
     ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)).
 
     ```bash

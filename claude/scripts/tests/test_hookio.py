@@ -27,6 +27,7 @@ from _hookio import (  # noqa: E402
     merge_pr_number_from_output,
     output_has_merge_marker,
     read_command_output,
+    should_confirm_via_gh,
 )
 
 URL = "https://github.com/brownm09/dev-env/issues/377"
@@ -108,6 +109,43 @@ def test_merge_pr_number_from_output() -> str:
 
 
 # ---------------------------------------------------------------------------
+# should_confirm_via_gh  (dev-env#489)
+#
+# confirm_merge_via_gh itself shells out to `gh pr view` and is intentionally
+# not tested (repo convention: no subprocess mocks) -- these tests cover only
+# the pure "is it worth paying for a live confirmation?" decision.
+# ---------------------------------------------------------------------------
+
+def test_should_confirm_nonzero_exit_no_marker() -> str:
+    # The dev-env#489 case: gh exited non-zero and its success marker did not
+    # survive to the captured output -- worth a live confirmation.
+    assert should_confirm_via_gh(1, "failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'")
+    return "exit 1, no marker -> confirm (the lost-marker case)"
+
+
+def test_should_confirm_false_when_marker_present() -> str:
+    # The marker already confirms the merge -- no need to pay for a network call.
+    assert not should_confirm_via_gh(1, "Squashed and merged pull request #380")
+    return "exit 1, marker present -> no confirm needed (cheap path already succeeded)"
+
+
+def test_should_confirm_false_on_clean_exit() -> str:
+    # A clean exit 0 with no marker is a genuine non-merge (gh pr create, git
+    # push, or a queued --auto) -- never worth a network call.
+    assert not should_confirm_via_gh(0, "")
+    assert not should_confirm_via_gh(0, "✓ Pull request #380 will be automatically merged")
+    return "exit 0, no marker -> no confirm (common non-merge path stays cheap)"
+
+
+def test_should_confirm_default_exit_code_attempts() -> str:
+    # The real payload can omit exitCode (ADR-049); hooks default it to -1, which
+    # is != 0 -- so a missing exit code still attempts confirmation rather than
+    # silently skipping a possibly-real merge.
+    assert should_confirm_via_gh(-1, "")
+    return "default/missing exit code (-1) with no marker -> confirm (safer default)"
+
+
+# ---------------------------------------------------------------------------
 # effective_merge_dir  (dev-env#446 / ADR-067)
 # ---------------------------------------------------------------------------
 
@@ -172,6 +210,10 @@ def main() -> int:
         ("merge marker detected (incl cross-repo)", test_merge_marker_detected),
         ("merge marker excludes auto/failure/stray", test_merge_marker_excludes_auto_failure_and_stray),
         ("merge PR number from output", test_merge_pr_number_from_output),
+        ("should_confirm_via_gh: exit!=0, no marker -> True", test_should_confirm_nonzero_exit_no_marker),
+        ("should_confirm_via_gh: marker present -> False", test_should_confirm_false_when_marker_present),
+        ("should_confirm_via_gh: clean exit -> False", test_should_confirm_false_on_clean_exit),
+        ("should_confirm_via_gh: default exit code -> True", test_should_confirm_default_exit_code_attempts),
         ("merge dir: bare merge -> cwd", test_merge_dir_bare_merge_is_cwd),
         ("merge dir: cd <repo> && merge -> that repo", test_merge_dir_cd_chain_redirects),
         ("merge dir: cd <repo> && ... && merge -> repo dir", test_merge_dir_cd_chain_multi_segment),
