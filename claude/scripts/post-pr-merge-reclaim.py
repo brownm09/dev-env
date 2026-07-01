@@ -47,17 +47,19 @@ SCAN_DIR = "C:/Users/brown/Git"
 RECLAIM_SCRIPT = Path(__file__).resolve().parent / "reclaim-worktree-disk.py"
 
 
-def is_successful_merge(command: str, exit_code: int, output: str) -> bool:
+def is_successful_merge(command: str, output: str) -> bool:
     """Pure predicate: did this Bash call complete a `gh pr merge`?
 
-    `gh pr merge` from a worktree exits non-zero because local cleanup
-    (`git checkout main`, branch delete) fails even though the remote merge
-    succeeded, so the stdout success markers are trusted too (mirrors
-    post-pr-merge-pull.py / issue #275).
+    Gated on gh's success marker alone, not the exit code: a worktree exits
+    non-zero because local cleanup (`git checkout main`, branch delete) fails
+    even though the remote merge succeeded (mirrors post-pr-merge-pull.py /
+    issue #275), while a clean exit 0 is also true for non-merge invocations
+    like `gh pr merge --help` or a queued `--auto` — an exit-0-alone gate
+    misfired on exactly that shape (dev-env#485).
     """
     if "gh pr merge" not in command:
         return False
-    return exit_code == 0 or output_has_merge_marker(output)
+    return output_has_merge_marker(output)
 
 
 def _spawn_reclaim(protect_cwd: str) -> bool:
@@ -102,11 +104,10 @@ def main() -> None:
         sys.exit(0)
 
     command = data.get("tool_input", {}).get("command", "")
-    exit_code = data.get("tool_response", {}).get("exitCode", -1)
     output = read_command_output(data)
     cwd = data.get("cwd", "")
 
-    if not is_successful_merge(command, exit_code, output):
+    if not is_successful_merge(command, output):
         sys.exit(0)
 
     if _spawn_reclaim(cwd):

@@ -30,16 +30,19 @@ import sys
 from _hookio import output_has_merge_marker, read_command_output
 
 
-def is_successful_merge(command: str, exit_code: int, output: str) -> bool:
+def is_successful_merge(command: str, output: str) -> bool:
     """Pure predicate: did this Bash call complete a `gh pr merge`?
 
-    Mirrors post-pr-merge-reclaim.py and post-pr-merge-pull.py:
-    worktree merges exit non-zero on local cleanup even when the remote merge
-    succeeded (issue #275), so the stdout success marker is also checked.
+    Gated on gh's success marker alone, not the exit code. Mirrors
+    post-pr-merge-reclaim.py and post-pr-merge-pull.py: worktree merges exit
+    non-zero on local cleanup even when the remote merge succeeded (issue
+    #275), while a clean exit 0 is also true for non-merge invocations like
+    `gh pr merge --help` or a queued `--auto` — an exit-0-alone gate misfired
+    on exactly that shape (dev-env#485).
     """
     if "gh pr merge" not in command:
         return False
-    return exit_code == 0 or output_has_merge_marker(output)
+    return output_has_merge_marker(output)
 
 
 def main() -> None:
@@ -56,10 +59,9 @@ def main() -> None:
         sys.exit(0)
 
     command = data.get("tool_input", {}).get("command", "")
-    exit_code = data.get("tool_response", {}).get("exitCode", -1)
     output = read_command_output(data)
 
-    if not is_successful_merge(command, exit_code, output):
+    if not is_successful_merge(command, output):
         sys.exit(0)
 
     print(
