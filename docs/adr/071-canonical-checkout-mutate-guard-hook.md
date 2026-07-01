@@ -195,9 +195,11 @@ of decision.
   (ADR-024's hook) re-run unmodified as a regression check — the two hooks do not interfere, since
   their trigger conditions are mutually exclusive by construction (worktree cwd vs. non-worktree
   cwd).
-- **Observability.** The block reason is printed as hook JSON output surfaced directly to the
-  model — no separate log needed; a blocked attempt is visible in the same session transcript that
-  triggered it.
+- **Observability.** The block reason is written as hook JSON output to **stderr** — Claude Code
+  discards a `PreToolUse` hook's stdout on exit code 2 and surfaces only stderr to the model, so
+  stdout would have silently hidden the reason. No separate log needed; a blocked attempt is
+  visible in the same session transcript that triggered it, on the same stream career-playbook's
+  `block-artifact-merge.py`/`block-letter-violations.py` already use for this reason.
 - **Security.** The `ALLOW_CANONICAL_MUTATE=1` override is a deliberate, visible bypass — typed
   inline on the command the model is about to run — matching the override pattern of both
   career-playbook precedent hooks (`block-artifact-merge.py`'s `ALLOW_ARTIFACT_MERGE=1`,

@@ -46,8 +46,10 @@ is actually found):
      mutating verb merely *mentioned* inside a heredoc body or prose must not
      trigger). If no segment is mutating, exit 0 — nothing here needs a git
      subprocess at all.
-  5. If the command contains the `ALLOW_CANONICAL_MUTATE=1` override token,
-     exit 0 — a deliberate, visible human override.
+  5. If the `ALLOW_CANONICAL_MUTATE=1` override token appears as a genuine
+     leading prefix on the command or on one of its `&&`/`||`/`;`/`|`-split
+     segments (not merely mentioned as a substring anywhere, e.g. inside a
+     commit message argument), exit 0 — a deliberate, visible human override.
   6. Resolve the git toplevel for `cwd` via `git -C <cwd> rev-parse
      --show-toplevel`. Fail open if git can't resolve one at all (not a repo,
      git missing, timeout) — that toplevel, once resolved, *is* the canonical
@@ -101,7 +103,10 @@ _WORKTREE_RE = re.compile(
     re.IGNORECASE,
 )
 
-OVERRIDE_TOKENS = ("ALLOW_CANONICAL_MUTATE=1", "canonical-mutate-approved")
+# The sole override token. A genuine leading prefix on a command/segment (not
+# a substring appearing anywhere, e.g. inside a commit message) bypasses the
+# block — see the anchored check in `_has_override()` below.
+OVERRIDE_TOKEN = "ALLOW_CANONICAL_MUTATE=1"
 
 # Logical-segment splitter — a real command is one of these segments, never a
 # substring buried in a heredoc body or prose (career-playbook #442 lesson).
@@ -113,6 +118,26 @@ _SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\n|\|")
 # the rest of the command, not just the segment it appears in.)
 _REDIRECT_RE = re.compile(r"(?:^|\s)git\s+(?:-C\s+\S|--git-dir=\S)")
 
+# `cd <path>` at the start of a segment (after stripping leading env-var
+# assignments — see `_strip_leading_env`). Compiled once; reused by both the
+# cd-scan loop in classify() and anywhere else that needs to detect a cd.
+_CD_RE = re.compile(r"^\s*cd(?:\s|$)")
+
+# A git invocation at the start of a segment (after stripping leading env-var
+# assignments) — captures the rest of the command (the subcommand + its
+# args) for verb classification in is_mutating_segment().
+_GIT_INVOCATION_RE = re.compile(r"^git(?:\.exe)?\s+(.*)$", re.IGNORECASE)
+
+# Git-level options that can precede the actual subcommand (git's own option
+# grammar, not the subcommand's) — e.g. `git -c gc.auto=0 stash pop` or
+# `git --no-optional-locks stash apply`. `-c <name>=<value>` takes a
+# space-separated value token; the rest are flags with no separate value
+# token. `-C <path>` / `--git-dir=<path>` are deliberately NOT in this list —
+# those are handled upstream by `_REDIRECT_RE`, which skips the whole segment
+# rather than classifying it, so a redirected invocation never reaches here.
+_GIT_LEVEL_FLAG_NO_VALUE = {"--no-optional-locks", "--no-pager", "-p", "--paginate", "--bare"}
+_GIT_LEVEL_FLAG_WITH_VALUE = {"-c"}
+
 # Leading env-var assignments (VAR=val VAR2=val2 ...) that may precede the
 # actual command in a segment — stripped before verb classification so
 # `ALLOW_CANONICAL_MUTATE=1 git checkout -b foo` still classifies on `git`.
@@ -121,6 +146,27 @@ _LEADING_ENV = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*")
 
 def _strip_leading_env(segment: str) -> str:
     return _LEADING_ENV.sub("", segment, count=1)
+
+
+def _skip_git_level_flags(tokens: list) -> list:
+    """Drop a leading run of git-level options (`git -c gc.auto=0 stash
+    pop`, `git --no-optional-locks stash apply`) so the actual subcommand
+    lands at index 0 for verb classification — otherwise `tokens[0]` is `-c`
+    or `--no-optional-locks`, not the real verb, and the whole invocation
+    silently falls through the `if verb == ...` chain to the default `False`
+    (not mutating), unblocking a real stash pop/apply.
+    """
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in _GIT_LEVEL_FLAG_WITH_VALUE:
+            i += 2  # flag + its value token
+            continue
+        if tok in _GIT_LEVEL_FLAG_NO_VALUE:
+            i += 1
+            continue
+        break
+    return tokens[i:]
 
 
 def is_mutating_segment(segment: str) -> bool:
@@ -132,16 +178,26 @@ def is_mutating_segment(segment: str) -> bool:
     does not trigger; only the actual invoked git subcommand does.
     """
     stripped = _strip_leading_env(segment).strip()
-    m = re.match(r"^git(?:\.exe)?\s+(.*)$", stripped, re.IGNORECASE)
+    m = _GIT_INVOCATION_RE.match(stripped)
     if not m:
         return False
     rest = m.group(1).strip()
     if not rest:
         return False
 
-    tokens = rest.split()
+    tokens = _skip_git_level_flags(rest.split())
+    if not tokens:
+        return False
     verb = tokens[0].lower()
 
+    # NOTE: the mutating-verb list is spread across this branch chain with no
+    # single canonical source. It is independently re-spelled in four prose
+    # locations that must stay in sync whenever a verb is added, removed, or
+    # its condition changes: the module docstring above ("Mutating verbs
+    # blocked:"), claude/CLAUDE.md's "Never mutate git state directly..."
+    # bullet, docs/adr/071-canonical-checkout-mutate-guard-hook.md's
+    # "Mutating verbs blocked:" line, and docs/REFERENCE.md's ADR-071
+    # pointer. Update all four when this branch chain changes.
     if verb in ("switch", "commit", "merge", "rebase", "reset", "cherry-pick", "revert"):
         return True
 
@@ -154,8 +210,15 @@ def is_mutating_segment(segment: str) -> bool:
         return True
 
     if verb == "stash":
-        sub = tokens[1].lower() if len(tokens) > 1 else ""
-        return sub in ("pop", "apply")
+        # Scan all remaining tokens for the subcommand, not just tokens[1] —
+        # a stash-level flag can precede pop/apply, e.g. `git -c gc.auto=0
+        # stash pop`, `git --no-optional-locks stash apply`, or
+        # `git stash --quiet pop`, pushing the real subcommand off a fixed
+        # tokens[1] position. Every other verb branch here already scans
+        # tokens[1:] for its flags — make stash consistent rather than
+        # trusting a fixed position (a prior version checked only tokens[1]
+        # and silently let flag-prefixed stash pop/apply through unblocked).
+        return any(t.lower() in ("pop", "apply") for t in tokens[1:])
 
     if verb == "branch":
         # Plain `git branch` (list) or `git branch <name>` (create, no switch)
@@ -182,20 +245,43 @@ def classify(cmd: str):
         segment actually executes in that other directory, not `cwd`. Once a
         `cd` appears anywhere in the command, the whole command is out of
         scope: exit early with None rather than flagging a later segment
-        whose real execution directory this hook cannot determine.
+        whose real execution directory this hook cannot determine. The cd
+        check runs against the env-stripped segment (same helper
+        `is_mutating_segment` uses) so `FOO=1 cd /tmp && git checkout -b x`
+        is still recognized as a cd-redirect — an unstripped match would miss
+        it and let the checkout get falsely blocked even though it targets
+        `/tmp`, not the canonical root.
       - `git -C <path>` / `git --git-dir=<path>` redirects only the single
         git invocation it appears on — that segment alone is skipped; other
         segments in the same command are still classified normally.
     """
-    for seg in _SEGMENT_SPLIT.split(cmd):
-        if re.match(r"^\s*cd(?:\s|$)", seg):
+    segments = _SEGMENT_SPLIT.split(cmd)
+    for seg in segments:
+        if _CD_RE.match(_strip_leading_env(seg)):
             return None  # cd persists across the rest of the command — out of scope entirely
-    for seg in _SEGMENT_SPLIT.split(cmd):
+    for seg in segments:
         if _REDIRECT_RE.search(seg):
             continue
         if is_mutating_segment(seg):
             return seg.strip()
     return None
+
+
+def _has_override(cmd: str) -> bool:
+    """True if the override token is a genuine leading prefix on some
+    segment of `cmd` — not merely a substring appearing anywhere (e.g. inside
+    a commit message: `git commit -m "ALLOW_CANONICAL_MUTATE=1 was
+    mentioned"` must NOT bypass the block). Reuses the same segment-split and
+    leading-env-strip helpers `classify()` uses, so the override is
+    recognized in exactly the positions a real shell would treat it as an
+    env-var assignment: at the very start of the command, or at the start of
+    any `&&`/`||`/`;`/`|`-separated segment.
+    """
+    for seg in _SEGMENT_SPLIT.split(cmd):
+        stripped = seg.strip()
+        if stripped == OVERRIDE_TOKEN or stripped.startswith(OVERRIDE_TOKEN + " "):
+            return True
+    return False
 
 
 def _resolve_git_toplevel(cwd: str):
@@ -227,6 +313,9 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
+    if not isinstance(data, dict):
+        sys.exit(0)  # valid JSON but not an object (e.g. `[]`, `"x"`, `123`, `null`) -> fail open
+
     if data.get("tool_name") != "Bash":
         sys.exit(0)
 
@@ -245,8 +334,8 @@ def main() -> None:
     if matched is None:
         sys.exit(0)  # no mutating segment found
 
-    if any(tok in cmd for tok in OVERRIDE_TOKENS):
-        sys.exit(0)  # explicit, visible human override
+    if _has_override(cmd):
+        sys.exit(0)  # explicit, visible human override (anchored prefix, not a substring mention)
 
     canonical_root = _resolve_git_toplevel(cwd)
     if canonical_root is None:
@@ -270,7 +359,11 @@ def main() -> None:
         f"  2. If you've confirmed no other session is active in this checkout, override:\n"
         f"     ALLOW_CANONICAL_MUTATE=1 {matched}"
     )
-    print(json.dumps({"reason": reason}))
+    # Claude Code discards stdout on a PreToolUse hook exit code 2 — only
+    # stderr is surfaced to the model. Write there, matching the working
+    # pattern in career-playbook's block-artifact-merge.py /
+    # block-letter-violations.py.
+    sys.stderr.write(json.dumps({"reason": reason}) + "\n")
     sys.exit(2)
 
 

@@ -207,6 +207,108 @@ def test_dashC_redirect_only_skips_its_own_segment() -> str:
     return "git -C/--git-dir skips only its own segment; other segments still classified"
 
 
+def test_flag_prefixed_stash_pop_apply_classified_as_mutating() -> str:
+    """`git -c gc.auto=0 stash pop`, `git --no-optional-locks stash apply`,
+    and `git stash --quiet pop` all put a flag between the verb and the real
+    subcommand, pushing it off a fixed tokens[1] position — a prior version
+    checked only tokens[1] and let these slip through unblocked. The stash
+    branch now scans tokens[1:] like every other verb branch.
+    """
+    cases = [
+        "git -c gc.auto=0 stash pop",
+        "git --no-optional-locks stash apply",
+        "git stash --quiet pop",
+        "git stash -u apply",
+    ]
+    for cmd in cases:
+        if not cmg.is_mutating_segment(cmd):
+            raise AssertionError(f"flag-prefixed stash pop/apply should be classified as mutating: {cmd!r}")
+    return f"{len(cases)} flag-prefixed stash pop/apply cases correctly classified as mutating"
+
+
+def test_env_prefixed_cd_recognized_as_redirect() -> str:
+    """`FOO=1 cd /tmp && git checkout -b x` must be recognized as a cd-redirect
+    (whole command out of scope) — an unstripped cd match would miss the env
+    prefix and let the checkout get falsely blocked even though it targets
+    `/tmp`, not the canonical root.
+    """
+    cases = [
+        "FOO=1 cd /tmp && git checkout -b x",
+        "FOO=1 BAR=2 cd C:/Users/brown/Git/dev-env && git checkout -b x",
+    ]
+    for cmd in cases:
+        matched = cmg.classify(cmd)
+        if matched is not None:
+            raise AssertionError(f"env-prefixed cd should take the whole command out of scope, got {matched!r} for {cmd!r}")
+    return f"{len(cases)} env-prefixed cd commands correctly recognized as a redirect (out of scope)"
+
+
+def test_override_anchored_prefix_bypasses() -> str:
+    """A genuine leading prefix on the command or a segment bypasses the
+    block — the existing, intended override usage.
+    """
+    cases = [
+        "ALLOW_CANONICAL_MUTATE=1 git checkout -b foo",
+        "git status && ALLOW_CANONICAL_MUTATE=1 git checkout -b foo",
+    ]
+    for cmd in cases:
+        if not cmg._has_override(cmd):
+            raise AssertionError(f"expected override to be recognized as a leading prefix: {cmd!r}")
+    return f"{len(cases)} genuine leading-prefix override cases correctly bypass"
+
+
+def test_override_mention_only_does_not_bypass() -> str:
+    """The override token merely MENTIONED inside a commit message (a
+    substring, not a leading prefix on any segment) must NOT bypass the
+    block — this was the #2 bug: a bare `tok in cmd` substring test let
+    `git commit -m "ALLOW_CANONICAL_MUTATE=1 was mentioned"` silently
+    disable the guard.
+    """
+    cases = [
+        'git commit -m "ALLOW_CANONICAL_MUTATE=1 was mentioned"',
+        'git commit -m "please dont ALLOW_CANONICAL_MUTATE=1 here"',
+        "echo ALLOW_CANONICAL_MUTATE=1 && git checkout -b foo",
+    ]
+    for cmd in cases:
+        if cmg._has_override(cmd):
+            raise AssertionError(f"mention-only occurrence should NOT bypass the block: {cmd!r}")
+    return f"{len(cases)} mention-only (non-prefix) occurrences correctly do NOT bypass"
+
+
+def test_resolve_git_toplevel_failsopen_on_timeout_and_oserror() -> str:
+    """`_resolve_git_toplevel` is the actual fail-open guarantee for the whole
+    hook — every caller treats `None` as "can't determine a canonical root,
+    exit 0." Inject a stub `subprocess.run` that raises
+    `subprocess.TimeoutExpired` (a hung git process) and one that raises
+    `OSError` (e.g. git binary missing / exec failure) and assert both paths
+    return None rather than propagating the exception.
+    """
+    import subprocess as _subprocess_module
+
+    original_run = cmg.subprocess.run
+
+    def _raise_timeout(*args, **kwargs):
+        raise _subprocess_module.TimeoutExpired(cmd="git", timeout=10)
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError("git binary not found")
+
+    try:
+        cmg.subprocess.run = _raise_timeout
+        result = cmg._resolve_git_toplevel("C:/some/cwd")
+        if result is not None:
+            raise AssertionError(f"expected None on TimeoutExpired, got {result!r}")
+
+        cmg.subprocess.run = _raise_oserror
+        result = cmg._resolve_git_toplevel("C:/some/cwd")
+        if result is not None:
+            raise AssertionError(f"expected None on OSError, got {result!r}")
+    finally:
+        cmg.subprocess.run = original_run
+
+    return "_resolve_git_toplevel returns None on both TimeoutExpired and OSError (fail-open guarantee)"
+
+
 def main_unit() -> list:
     return [
         ("mutating verbs classified as mutating", test_mutating_verbs_classified_as_mutating),
@@ -217,6 +319,11 @@ def main_unit() -> list:
         ("env-prefixed mutating command still classified", test_env_prefixed_mutating_command_still_classified),
         ("cd redirect takes whole command out of scope", test_cd_redirect_takes_whole_command_out_of_scope),
         ("-C/--git-dir redirect skips only its own segment", test_dashC_redirect_only_skips_its_own_segment),
+        ("flag-prefixed stash pop/apply classified as mutating", test_flag_prefixed_stash_pop_apply_classified_as_mutating),
+        ("env-prefixed cd recognized as redirect", test_env_prefixed_cd_recognized_as_redirect),
+        ("override anchored prefix bypasses", test_override_anchored_prefix_bypasses),
+        ("override mention-only does not bypass", test_override_mention_only_does_not_bypass),
+        ("_resolve_git_toplevel fails open on timeout/OSError", test_resolve_git_toplevel_failsopen_on_timeout_and_oserror),
     ]
 
 
@@ -239,8 +346,19 @@ def _init_throwaway_repo(root: Path) -> None:
     """Initialize a minimal real git repo at `root` so `git -C <root> rev-parse
     --show-toplevel` resolves for real — the hook's canonical-root resolution
     step needs an actual repo, not a bare temp dir.
+
+    `-c init.templateDir= -c core.hooksPath=` neutralizes any global template
+    directory / hooks path the developer's machine has configured, so this
+    throwaway repo's `git init` can't pick up unrelated local hooks/templates
+    and behave differently across machines.
     """
-    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git", "-c", "init.templateDir=", "-c", "core.hooksPath=",
+            "init", "-q", str(root),
+        ],
+        check=True, capture_output=True,
+    )
     subprocess.run(
         ["git", "-C", str(root), "config", "user.email", "test@example.com"],
         check=True, capture_output=True,
@@ -252,6 +370,11 @@ def _init_throwaway_repo(root: Path) -> None:
 
 
 def test_main_blocks_mutating_command_from_canonical_root() -> str:
+    """The block reason must land on stderr, not stdout — Claude Code
+    discards stdout on a PreToolUse hook exit code 2 and surfaces only
+    stderr to the model. Asserting against proc.stdout here would pass even
+    if the reason were silently invisible to the model.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp) / "canonical-repo"
         repo.mkdir()
@@ -268,13 +391,15 @@ def test_main_blocks_mutating_command_from_canonical_root() -> str:
                 f"expected exit 2 (block), got {proc.returncode}. "
                 f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
             )
+        if proc.stdout.strip():
+            raise AssertionError(f"expected empty stdout (reason must go to stderr), got {proc.stdout!r}")
         try:
-            reason = json.loads(proc.stdout).get("reason", "")
+            reason = json.loads(proc.stderr).get("reason", "")
         except json.JSONDecodeError:
-            raise AssertionError(f"stdout was not JSON: {proc.stdout!r}")
+            raise AssertionError(f"stderr was not JSON: {proc.stderr!r}")
         if "canonical-mutate-guard" not in reason or "ALLOW_CANONICAL_MUTATE=1" not in reason:
             raise AssertionError(f"block reason missing expected markers: {reason!r}")
-    return "mutating command from a canonical (non-worktree) git repo blocked (exit 2)"
+    return "mutating command from a canonical (non-worktree) git repo blocked (exit 2), reason on stderr"
 
 
 def test_main_allows_readonly_command_from_canonical_root() -> str:
@@ -399,6 +524,28 @@ def test_main_failsopen_on_malformed_json() -> str:
     return "malformed JSON fails open (exit 0)"
 
 
+def test_main_failsopen_on_nondict_json() -> str:
+    """Valid JSON that is not an object (`[]`, `"x"`, `123`, `null`) must fail
+    open, not raise an uncaught AttributeError from `data.get(...)` — the
+    hook's own documented contract is "fail open on anything unparseable,"
+    and a non-dict payload is exactly that even though json.loads() succeeds.
+    """
+    for payload_str in ("[]", '"x"', "123", "null"):
+        proc = subprocess.run(
+            [sys.executable, str(MODULE_PATH)],
+            input=payload_str,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"expected exit 0 (fail open) on non-dict JSON {payload_str!r}, "
+                f"got {proc.returncode}. stderr={proc.stderr!r}"
+            )
+    return "non-dict JSON payloads ([], \"x\", 123, null) all fail open (exit 0)"
+
+
 def test_main_failsopen_on_missing_cwd() -> str:
     payload = {
         "hook_event_name": "PreToolUse",
@@ -464,6 +611,7 @@ def main_e2e() -> list:
         ("main() override token bypasses block", test_main_override_token_bypasses_block),
         ("main() fails open on non-git cwd", test_main_failsopen_on_nongit_cwd),
         ("main() fails open on malformed JSON", test_main_failsopen_on_malformed_json),
+        ("main() fails open on non-dict JSON", test_main_failsopen_on_nondict_json),
         ("main() fails open on missing cwd", test_main_failsopen_on_missing_cwd),
         ("main() fails open on empty cwd", test_main_failsopen_on_empty_cwd),
         ("main() no-ops on non-Bash tool", test_main_noop_on_non_bash_tool),
