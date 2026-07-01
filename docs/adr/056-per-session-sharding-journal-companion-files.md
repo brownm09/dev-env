@@ -160,3 +160,49 @@ design, which remains structurally sound for what it claims (content-level disjo
 
 **Status:** this is a refinement, not a reversal — ADR-056's Decision, Considered alternatives, and
 Consequences stand unchanged; Status remains Accepted. Tracked in [dev-env#449](https://github.com/brownm09/dev-env/issues/449).
+
+---
+
+## Addendum (2026-07-01) — Extended to propose, nightly-research, and merge-stale-pr.sh
+
+The first addendum (2026-06-30) scoped the explicit-pathspec fix to the engineering-journal Stub
+file workflow in `claude/CLAUDE.md`, plus `claude/skills/journal-compose/SKILL.md` and
+`claude/routines/biweekly-retro/SKILL.md` — the sites confirmed at the time to write the shared
+`C:/Users/brown/Git/engineering-journal` checkout. A `/review` pass on that PR flagged two more
+bare-`git commit` sites pending verification of their shared-checkout status, and a follow-up
+repo-wide grep across `claude/scripts/*.py` and `*.sh` (not covered by the original audit, which
+was scoped to `claude/skills/` and `claude/routines/`) surfaced two more.
+
+**Investigated and fixed** (same hazard: a persistent, non-worktree-isolated checkout with a bare
+`git commit` that would silently absorb anything else staged in that checkout's index):
+
+- `claude/skills/propose/SKILL.md` Step 10 — commits to whatever repo `config.roadmap_file` /
+  `config.github_repo` targets. Step 6 does `git checkout main && git pull && git checkout -b
+  docs/propose-<slug>` directly in the current working directory; no worktree isolation is set up
+  anywhere in the skill.
+- `claude/routines/nightly-research/SKILL.md` Step 4 — commits to `C:/Users/brown/Git/research-notes`.
+  This repo has exactly one automated writer across all of `claude/` (confirmed by grep: the
+  `/research` skill's "shared source library" is a different path, `~/.claude/skills/sources.md`;
+  `biweekly-retro` only routes issue-filing there, never writes) — materially lower concurrency risk
+  than engineering-journal. Fixed anyway: the script already computes the exact paths it stages, so
+  scoping the commit is free and matches the pattern established for the structurally identical
+  engineering-journal case.
+- `claude/scripts/merge-stale-pr.sh` Step 4 — operates directly on the shared engineering-journal
+  checkout (`cd "$JOURNAL_REPO"`, no worktree). Was `git add -u` (repo-wide stage) followed by a bare
+  commit — broader than the original bug, since even the `add` was untargeted, not just the `commit`.
+- `claude/scripts/pr-merge-reminder.py` (3 sites) — does not itself commit, but printed reminder text
+  instructing the *next* session to run a bare `git commit` for the same stub workflow this ADR
+  already fixed in `claude/CLAUDE.md`. Left uncorrected, the hook's own guidance would keep
+  reintroducing the hazard it exists to help prevent. Reminder text updated to match the pathspec
+  convention.
+
+**Investigated and confirmed exempt (no change):**
+
+- `claude/scripts/reconcile-late-stubs.py:198` — a bare `git commit`, but it runs inside a freshly
+  created, detached, single-purpose temporary worktree (`git worktree add --detach <temp_dir>
+  origin/<target_branch>`, line ~174) that is removed in the `finally` block immediately after. A
+  fresh worktree has its own index; nothing else can be staged there. Adding a pathspec would be
+  redundant defensive code for a scenario the isolation already rules out — left as-is.
+
+**Status:** this is a scope extension of the same fix, not a reversal — ADR-056's Decision and both
+addenda's Fix stand unchanged. Tracked in [dev-env#459](https://github.com/brownm09/dev-env/issues/459).

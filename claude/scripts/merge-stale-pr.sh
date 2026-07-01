@@ -79,12 +79,17 @@ fi
 DRAFTS=$(find sessions -name "*_draft.md" 2>/dev/null || true)
 if [[ -n "$DRAFTS" ]]; then
   echo "==> Deleting orphaned draft files:"
-  echo "$DRAFTS" | while IFS= read -r f; do
+  mapfile -t DRAFT_FILES <<< "$DRAFTS"
+  for f in "${DRAFT_FILES[@]}"; do
     echo "    $f"
     rm -f "$f"
   done
-  git add -u
-  git commit -m "chore: remove orphaned draft files from $DATE_PART" || true
+  # Explicit pathspec on both add and commit -- not `add -u` + a bare commit --
+  # so this only touches the draft files just deleted, not anything else a
+  # concurrent session may have staged in this shared engineering-journal
+  # checkout (docs/adr/056-per-session-sharding-journal-companion-files.md -> Addendum).
+  git add -- "${DRAFT_FILES[@]}"
+  git commit -m "chore: remove orphaned draft files from $DATE_PART" -- "${DRAFT_FILES[@]}" || true
 fi
 
 # ── Step 5: rebase against main ───────────────────────────────────────────────

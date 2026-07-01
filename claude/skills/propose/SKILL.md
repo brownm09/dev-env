@@ -286,6 +286,12 @@ If `config.roadmap_file` is non-null:
 git add <config.roadmap_file>
 ```
 
+Commit with an explicit pathspec — not a bare `git commit` — scoped to exactly the file(s)
+staged above. Step 6 checked out `main` and branched directly in the current working
+directory with no worktree isolation, so a bare commit here would sweep in anything else
+staged by a concurrent session in this checkout (see
+`docs/adr/056-per-session-sharding-journal-companion-files.md` → Addendum):
+
 ```bash
 git commit -m "$(cat <<'EOF'
 [docs] Propose: <title>
@@ -293,7 +299,7 @@ git commit -m "$(cat <<'EOF'
 Adds proposal doc and links GitHub issue #N.
 
 EOF
-)"
+)" -- <config.proposals_dir>/YYYY-MM-DD-<slug>.md <config.roadmap_file, if staged above>
 git push -u origin docs/propose-<slug>
 ```
 

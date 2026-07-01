@@ -210,14 +210,20 @@ Before committing, check whether any note files were actually written. If `notes
 cd C:/Users/brown/Git/research-notes
 
 # Stage notes only if any were written
+NOTES_STAGED=""
 if [ -n "$(ls -A "notes/${RUN_DATE}" 2>/dev/null)" ]; then
   git add "notes/${RUN_DATE}/"
+  NOTES_STAGED="notes/${RUN_DATE}/"
 fi
 
 # Always stage the queue file (may have failure annotations even if no notes were written)
 git add research-queue.md
 
-git commit -m "research: ${RUN_DATE} — <N> topic(s): <comma-separated titles>"
+# Explicit pathspec, not a bare commit — this is a persistent checkout, not a
+# worktree isolated per run (see docs/adr/056-per-session-sharding-journal-companion-files.md
+# -> Addendum). Scoping to exactly what was staged above costs nothing and keeps
+# this commit from ever picking up an unrelated change in this checkout.
+git commit -m "research: ${RUN_DATE} — <N> topic(s): <comma-separated titles>" -- research-queue.md $NOTES_STAGED
 ```
 
 The commit message includes the count and titles so the git log is scannable without opening files.
