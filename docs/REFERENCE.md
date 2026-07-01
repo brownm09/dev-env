@@ -454,14 +454,17 @@ Deletion and in-place fixes stay human-in-the-loop via the interactive `/memory-
 - A committed reconciliation report at
   `engineering-journal/sessions/meta/memory-audit/YYYY-MM-DD-audit.md` with a cross-project table
   (project · file · type · durable? · instruction home · drift · disposition), a "Promote issues
-  filed" subsection, and a "Stale / drift / index-drift (report-only)" subsection. Opened as a PR
+  filed" subsection, a "Stale / drift / index-drift (report-only)" subsection, and a "Projects not
+  scanned (subagent failures)" subsection (omitted when every subagent returned `scanned: true` —
+  absent section means no scan failures, not that failures were silently swallowed). Opened as a PR
   to `main` (never auto-merged — ADR-031; the user reviews and merges).
 
 Stale, drift, index-drift, and tracked-pending findings are included in the report but are **not**
 auto-actioned — they require human judgment.
 
 **Resilience:** no-memory-stores exit (push-notify + EXIT 0), per-project subagent failure →
-partial report (does not abort the run), git/PR failure → push-notify + keep draft for recovery.
+accumulated in a not-scanned list (project + reason) and surfaced as a "Projects not scanned"
+table in the report (does not abort the run), git/PR failure → push-notify + keep draft for recovery.
 A push notification summarizes the run on every completion or abort path.
 
 **Dual-copy caveat (dev-env#344):** `claude/routines/weekly-memory-audit/` (version-controlled, via
