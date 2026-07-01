@@ -46,9 +46,17 @@ worktree/board maintenance scripts instead of the hook scripts. Issue
    `_hookio` / `_worktree_liveness` / `_hookutil`. Signature:
    `find_git_repos(scan_dir: str) -> list[str] | None`.
 
-2. **Backport `reconcile-project-board.py`'s more-complete behavior**, rather than keeping the
-   more conservative version, per explicit recommendation in issue #471:
-   - Catches both `PermissionError` and `FileNotFoundError`.
+2. **Backport `reconcile-project-board.py`'s more-complete behavior, then go one step further**,
+   rather than keeping the more conservative version, per explicit recommendation in issue #471:
+   - Catches `OSError` broadly — not just the `(PermissionError, FileNotFoundError)` tuple
+     `reconcile-project-board.py` originally used. Review of this PR (dev-env#478) found that
+     tuple still missed `NotADirectoryError` (`--scan-dir` pointed at a path that exists but is
+     a file, not a directory) — a sibling `OSError` subtype neither original copy caught. Since
+     the function's own contract is "`None` if scan_dir itself could not be scanned... for any
+     reason," catching the common `OSError` base class matches that contract instead of
+     re-enumerating subtypes one crash report at a time. `ValueError`/`TypeError` (a non-string
+     argument, an embedded null byte) still propagate — those indicate a caller bug, not an
+     unusable directory.
    - Returns `None` when `scan_dir` itself could not be scanned, distinct from `[]` (scanned
      fine, zero repos found) — callers that want to distinguish "scan failed" from "nothing
      here" now can.
@@ -64,13 +72,13 @@ worktree/board maintenance scripts instead of the hook scripts. Issue
 
 4. **Offline, fixture-only test:** `tests/test_repo_scan.py` pins the helper using real
    `tempfile.TemporaryDirectory()` trees (no mocking) — mixed primary-repo/worktree/plain-dir/
-   file discovery, case-insensitive sort order, a nonexistent `scan_dir` returning `None`, and
-   an empty-but-readable `scan_dir` returning `[]` (proving the `None`-vs-`[]` distinction).
-   `PermissionError` is not separately exercised (it shares the same `except` tuple as
-   `FileNotFoundError`, which the nonexistent-dir case already drives through the same
-   catch-and-return-`None` branch); reliably triggering a permission error portably, especially
-   on Windows, would require mocking `os.scandir` for no additional coverage. The three
-   consuming scripts' existing test suites (`test_prune_merged_worktrees.py`,
+   file discovery, case-insensitive sort order, a nonexistent `scan_dir` returning `None`, a
+   `scan_dir` that is a file returning `None` (the `NotADirectoryError` case above — reproduced
+   on Windows as `WinError 267`), and an empty-but-readable `scan_dir` returning `[]` (proving
+   the `None`-vs-`[]` distinction). `PermissionError` is not separately exercised — reliably
+   triggering one portably, especially on Windows, would require mocking `os.scandir` for no
+   additional branch coverage beyond what the other two real-`OSError`-subtype cases already
+   prove. The three consuming scripts' existing test suites (`test_prune_merged_worktrees.py`,
    `test_reclaim_worktree_disk.py`, `test_reconcile_project_board.py`) remain unchanged and
    green, confirming the extraction preserved call-site behavior.
 
@@ -99,11 +107,12 @@ worktree/board maintenance scripts instead of the hook scripts. Issue
 - `_repo_scan` is the single source of truth for "primary git repos directly under a
   directory" in this repo; a future `--scan-dir`-style script imports it rather than
   re-deriving the pattern.
-- **Behavior-preserving at every call site**, with one incidental fix:
+- **Behavior-preserving at every call site**, with two incidental fixes:
   `prune-merged-worktrees.py --scan-dir <nonexistent path>` no longer crashes with an
   unhandled `FileNotFoundError` traceback — it now prints the same graceful
   `WARNING: cannot scan ...` / `No git repos found under ...` / exit 0 path the other two
-  scripts already had.
+  scripts already had — and none of the three scripts crash anymore on `--scan-dir <a file>`
+  (`NotADirectoryError`, caught for the first time in any of the three original copies).
 - `reconcile-project-board.py`'s scan-failure warning loses its `[reconcile-board]` prefix
   (now reads identically to the other two scripts' plain `WARNING: cannot scan ...`) — a
   cosmetic, non-machine-parsed change (see Considered Alternatives).

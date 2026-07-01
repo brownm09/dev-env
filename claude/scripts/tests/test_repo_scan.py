@@ -7,11 +7,13 @@ near-identical copies (dev-env#471, ADR-070's deferred follow-up). See ADR-072.
 
 Exercises the pure, filesystem-only helper offline (real tmp dirs, no subprocess, no
 mocking) — matching the fixture-only convention of test_reclaim_worktree_disk.py and
-test_worktree_topology.py. PermissionError is caught by the same `except` tuple as
-FileNotFoundError (see _repo_scan.py) and is not separately exercised here, since
-reliably triggering a permission error portably (esp. on Windows) would require
-mocking os.scandir — the FileNotFoundError case below already proves the except-and-
-return-None branch.
+test_worktree_topology.py. find_git_repos() catches the broad OSError (see _repo_scan.py)
+so that FileNotFoundError, NotADirectoryError, and PermissionError are all handled
+identically; the two cases below that are reliably triggerable without mocking
+(a missing path, and a path that is a file) each exercise a different OSError subtype
+through the same except-and-return-None branch. PermissionError itself is not separately
+exercised, since reliably triggering one portably (esp. on Windows) would require mocking
+os.scandir for no additional branch coverage.
 
 Usage:
     py -3 claude/scripts/tests/test_repo_scan.py
@@ -81,6 +83,18 @@ def test_nonexistent_scan_dir_returns_none() -> str:
     return "a nonexistent scan_dir returns None (not [], and does not raise)"
 
 
+def test_scan_dir_is_a_file_returns_none() -> str:
+    """A scan_dir that exists but is a file (not a directory) raises NotADirectoryError,
+    a sibling OSError subclass to PermissionError/FileNotFoundError — must be caught too."""
+    with tempfile.TemporaryDirectory() as tmp:
+        a_file = Path(tmp) / "not-a-directory.txt"
+        a_file.write_text("x", encoding="utf-8")
+        result = _repo_scan.find_git_repos(str(a_file))
+        if result is not None:
+            raise AssertionError(f"expected None when scan_dir is a file, got {result!r}")
+    return "a scan_dir that is a file (NotADirectoryError) returns None, does not raise"
+
+
 def test_empty_existing_dir_returns_empty_list() -> str:
     with tempfile.TemporaryDirectory() as tmp:
         result = _repo_scan.find_git_repos(tmp)
@@ -96,6 +110,7 @@ def main() -> int:
         ("finds primary repos; skips worktrees/non-repos", test_finds_primary_repos_skips_worktrees_and_non_repos),
         ("case-insensitive sort order", test_case_insensitive_sort_order),
         ("nonexistent scan_dir -> None", test_nonexistent_scan_dir_returns_none),
+        ("scan_dir is a file -> None", test_scan_dir_is_a_file_returns_none),
         ("empty existing dir -> [] (not None)", test_empty_existing_dir_returns_empty_list),
     ]
     failed = 0

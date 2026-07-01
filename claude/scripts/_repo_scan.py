@@ -41,7 +41,12 @@ def find_git_repos(scan_dir: str) -> list[str] | None:
     try:
         with os.scandir(scan_dir) as it:
             entries = sorted(it, key=lambda e: e.name.lower())
-    except (PermissionError, FileNotFoundError) as exc:
+    except OSError as exc:
+        # OSError covers PermissionError, FileNotFoundError, NotADirectoryError (scan_dir
+        # is a file, not a directory), and any other OS-level reason the path is unusable —
+        # deliberately broad, matching the "or None if scan_dir itself could not be scanned"
+        # contract above. ValueError/TypeError (a non-string argument, an embedded null byte)
+        # are not caught here — those indicate a caller bug and should propagate.
         print(f"WARNING: cannot scan {scan_dir}: {exc}", file=sys.stderr)
         return None
     for entry in entries:
