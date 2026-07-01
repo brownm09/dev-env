@@ -76,6 +76,12 @@ setup_windows() {
     echo "  Linked $subdir/"
   done
 
+  # Read-only mirror so a routine can self-reference its own canonical source at
+  # run time. Does NOT register scheduled tasks — the scheduled-tasks MCP tool owns
+  # a separate, non-linked ~/.claude/scheduled-tasks/ directory. See ADR-003 amendment.
+  win_link "$REPO_DIR/claude/routines" "$HOME/.claude/routines" junction
+  echo "  Linked routines/ (junction)"
+
   mkdir -p "$HOME/.claude/scratch"
   echo "  Created scratch/"
 
@@ -134,6 +140,12 @@ setup_unix() {
     ln -sf "$REPO_DIR/claude/$subdir" "$HOME/.claude/$subdir"
     echo "  Linked $subdir/"
   done
+
+  # Read-only mirror so a routine can self-reference its own canonical source at
+  # run time. Does NOT register scheduled tasks — the scheduled-tasks MCP tool owns
+  # a separate, non-linked ~/.claude/scheduled-tasks/ directory. See ADR-003 amendment.
+  ln -sf "$REPO_DIR/claude/routines" "$HOME/.claude/routines"
+  echo "  Linked routines/"
 
   mkdir -p "$HOME/.claude/scratch"
   echo "  Created scratch/"

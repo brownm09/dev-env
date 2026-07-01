@@ -10,6 +10,7 @@ Development environment configuration for cross-device use.
 | `claude/settings.json` | `~/.claude/settings.json` | Claude Code hooks and permissions |
 | `claude/scripts/` | `~/.claude/scripts/` (junction) | Hook scripts and utilities |
 | `claude/skills/` | `~/.claude/skills/` (junction) | Custom slash command skills |
+| `claude/routines/` | `~/.claude/routines/` (junction) | Scheduled-task source definitions — registering a live task is a separate step, see [Routines](#routines) |
 | `claude/templates/` | read at runtime by skills | Document templates |
 
 ## Setup
@@ -89,11 +90,11 @@ Per-session sentinel helpers and transcript-locate are extracted into `claude/sc
 
 ## Routines
 
-Autonomous scheduled agents in `claude/routines/`. No user interaction.
+Autonomous scheduled agents. Their canonical source lives in `claude/routines/` (junctioned read-only to `~/.claude/routines/`), but registering or updating the *live* task is a separate, manual step via the `scheduled-tasks` MCP tool — the tool owns `~/.claude/scheduled-tasks/` directly and never reads through the junction. See [ADR-003 amendment](docs/adr/003-config-in-version-control.md). No user interaction once scheduled.
 
 | Schedule | Routine | Purpose |
 |---|---|---|
-| Daily midnight UTC | `daily-journal-compose` | Assembles stub files into canonical journal entries and opens PRs |
+| Daily 7:09am local | `daily-journal-compose` | Assembles stub files into canonical journal entries and opens PRs |
 | Daily 8am local | `prune-stale-worktrees` | Removes merged `claude/*` worktrees and parks any non-primary worktree squatting `main` back onto its own branch (freeing the ref, [ADR-058](docs/adr/058-worktree-squatting-main-detection-correction.md)) across all repos under `C:/Users/brown/Git`; skips any worktree with an active Claude session (transcript activity within 24h, see [ADR-051](docs/adr/051-worktree-liveness-guard.md)) |
 | Every 6 hours | `reclaim-worktree-disk` | Strips regenerable `node_modules`/`.turbo` from idle Claude worktrees under `.claude/worktrees/`, reclaiming disk between weekly prune runs; skips any worktree with an active Claude session (transcript activity within 6h, see [ADR-051](docs/adr/051-worktree-liveness-guard.md)) |
 | Nightly 8:00 UTC (3 AM CDT) | `nightly-research` | Researches pending topics from the queue and writes structured markdown notes to `research-notes/` |
