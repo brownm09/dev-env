@@ -276,6 +276,28 @@ def _effective_push_dir(command: str, cwd: str) -> str:
     return path
 
 
+
+# An explicit `--repo owner/repo` flag names the merge target directly — the
+# highest-confidence signal, ahead of any cd-chain or cwd resolution. Mirrors
+# extract_repo's resolution order in post-pr-merge-pull.py (ADR-067).
+_REPO_FLAG_RE = re.compile(r"--repo\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
+
+
+def _effective_merge_repo(command: str, cwd: str) -> str:
+    """Best-effort repo label for a top-level ``gh pr merge`` in *command*.
+
+    An explicit ``--repo owner/repo`` flag takes precedence over cwd and any
+    ``cd``-chain prefix — e.g. ``gh pr merge 110 --repo other/repo`` run from an
+    unrelated cwd reports ``other/repo``, not the session directory (dev-env#470).
+    Falls back to ``effective_merge_dir(command, cwd)`` (the cd-chain / cwd
+    resolution, ADR-067) when no ``--repo`` flag is present.
+    """
+    m = _REPO_FLAG_RE.search(command)
+    if m:
+        return m.group(1)
+    return effective_merge_dir(command, cwd)
+
+
 def _create_shard_step(output: str) -> str:
     """Return the shard-writing instruction lines for a gh pr create reminder.
 
@@ -367,7 +389,7 @@ def main() -> None:
         )
 
     if is_merge:
-        merge_dir = effective_merge_dir(command, cwd)
+        merge_dir = _effective_merge_repo(command, cwd)
         messages.append(
             "[journal-reminder] gh pr merge detected — update the engineering journal now:\n"
             f"  cwd: {cwd}\n"

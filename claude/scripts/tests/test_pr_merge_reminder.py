@@ -36,6 +36,7 @@ is_git_push_command = pmr.is_git_push_command
 _create_shard_step = pmr._create_shard_step
 _is_successful_merge_call = pmr._is_successful_merge_call
 _effective_push_dir = pmr._effective_push_dir
+_effective_merge_repo = pmr._effective_merge_repo
 
 # read_command_output and effective_merge_dir live in _hookio (a sibling).
 # SCRIPT.parent already on sys.path, so import them directly.
@@ -301,6 +302,44 @@ def test_merge_dir_cd_chain_redirects_for_reminder() -> str:
 
 
 # ---------------------------------------------------------------------------
+# _effective_merge_repo  (dev-env#470)
+# ---------------------------------------------------------------------------
+
+def test_merge_repo_explicit_flag_overrides_cwd() -> str:
+    # The dev-env#470 repro: an explicit --repo run from an unrelated cwd with
+    # no cd-chain must report the flag's repo, not cwd.
+    out = _effective_merge_repo(
+        "gh pr merge 110 --repo brownm09/engineering-journal --squash --delete-branch",
+        "C:\\Users\\brown\\Git\\dev-env",
+    )
+    assert out == "brownm09/engineering-journal", f"got {out!r}"
+    return "gh pr merge --repo other/repo from unrelated cwd -> that repo, not cwd"
+
+
+def test_merge_repo_explicit_flag_overrides_cd_chain() -> str:
+    # --repo is the highest-confidence signal (ADR-067 resolution order) — it
+    # wins even when a cd-chain prefix is also present.
+    out = _effective_merge_repo(
+        "cd /Git/other-repo && gh pr merge 5 --repo brownm09/engineering-journal",
+        "/Git/lifting-logbook",
+    )
+    assert out == "brownm09/engineering-journal", f"got {out!r}"
+    return "cd <other-repo> && gh pr merge --repo X -> X, not the cd-chain dir"
+
+
+def test_merge_repo_no_flag_falls_back_to_effective_merge_dir() -> str:
+    # No --repo flag -> delegate to effective_merge_dir unchanged (bare merge
+    # returns cwd; a cd-chain prefix still redirects).
+    bare = _effective_merge_repo("gh pr merge --squash --delete-branch", "/session/cwd")
+    assert bare == "/session/cwd", f"got {bare!r}"
+    chained = _effective_merge_repo(
+        "cd /Git/dev-env && gh pr merge --squash --delete-branch", "/Git/lifting-logbook"
+    )
+    assert chained == "/Git/dev-env", f"got {chained!r}"
+    return "no --repo flag -> falls back to effective_merge_dir (cwd / cd-chain)"
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 
@@ -335,6 +374,9 @@ def main() -> int:
         ("push dir: cd after push ignored", test_push_dir_cd_after_push_ignored),
         ("merge dir: bare merge -> cwd (reminder unchanged)", test_merge_dir_bare_merge_is_cwd),
         ("merge dir: cd <dev-env> && merge from lb cwd -> dev-env", test_merge_dir_cd_chain_redirects_for_reminder),
+        ("merge repo: --repo flag overrides cwd", test_merge_repo_explicit_flag_overrides_cwd),
+        ("merge repo: --repo flag overrides cd-chain", test_merge_repo_explicit_flag_overrides_cd_chain),
+        ("merge repo: no flag -> falls back to effective_merge_dir", test_merge_repo_no_flag_falls_back_to_effective_merge_dir),
     ]
     failed = 0
     for name, fn in tests:
