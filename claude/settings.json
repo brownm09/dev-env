@@ -46,6 +46,10 @@
           {
             "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-findings-gate.py"
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-canonical-mutate-guard.py"
           }
         ]
       },
