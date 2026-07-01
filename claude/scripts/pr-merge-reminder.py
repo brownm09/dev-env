@@ -276,7 +276,6 @@ def _effective_push_dir(command: str, cwd: str) -> str:
     return path
 
 
-
 # An explicit `--repo owner/repo` flag names the merge target directly — the
 # highest-confidence signal, ahead of any cd-chain or cwd resolution. Mirrors
 # extract_repo's resolution order in post-pr-merge-pull.py (ADR-067).
