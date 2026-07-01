@@ -9,39 +9,64 @@ a session are silently never added to the board, missing their Impact, Why, and 
 Status workflow entirely (motivating instance: dev-env #434/#435/#436, filed by the
 background memory-audit session #363).
 
-This script lists the repo's open issues and the project's items, computes the set
+This script lists a repo's open issues and the project's items, computes the set
 difference (orphans = open issues not on the board), adds each orphan, then reports
 the orphans — and any *pre-existing* open board items — still missing a required
 field, emitting the exact `gh project item-edit` commands. It **never guesses** a
 field value and **never** mutates single-select *options* (so it cannot trip the
 option-mutation hazard documented in the global CLAUDE.md), which is what makes it
 safe to run unattended (the nightly `reconcile-project-board` routine) as well as by
-hand.
+hand. `--scan-dir` applies the same add-only + report-only reconcile to every
+configured repo under a directory in one run (dev-env#462, ADR-070) instead of just
+the repo the script is invoked from.
 
 Config: reads `.claude/hook-config.json` from the repo root — the same file
 `post-tool-use.py` reads, so the project number/owner/node-id and the required-field
-IDs never drift between the add-hook and this reconciler. A repo with no such config
-is not reconcilable; the script exits 1. The default repo root is the *canonical*
-checkout of the repo this script lives in: when invoked from a Claude-managed worktree
-(`.../.claude/worktrees/<name>/...`, where the gitignored hook-config is absent) the
-canonical root is derived by stripping the worktree segment, matching `post-tool-use.py`.
+IDs never drift between the add-hook and this reconciler. In single-repo mode, a repo
+with no such config is not reconcilable and the script exits 1. In `--scan-dir` mode a
+repo with no config (most repos — board tracking is opt-in) is silently skipped
+instead; only a `gh` `project`-scope failure aborts the whole scan. The default repo
+root is the *canonical* checkout of the repo this script lives in: when invoked from a
+Claude-managed worktree (`.../.claude/worktrees/<name>/...`, where the gitignored
+hook-config is absent) the canonical root is derived by stripping the worktree
+segment, matching `post-tool-use.py`. Repos discovered by `--scan-dir` are always
+primary checkouts (worktrees are excluded by construction — see `find_git_repos`), so
+canonicalization never applies to them.
 
 Usage:
     py -3 reconcile-project-board.py [--repo-root PATH] [--dry-run]
+    py -3 reconcile-project-board.py --scan-dir PATH [--dry-run]
 
     --repo-root PATH   repo whose .claude/hook-config.json drives the reconcile
                        (default: the canonical checkout of this script's repo)
+    --scan-dir PATH    discover and reconcile every git repo directly under PATH that
+                       has a .claude/hook-config.json with repo/project_number/
+                       project_owner set (repos without one are skipped, not failed).
+                       Takes precedence over --repo-root when both are given.
     --dry-run          report orphans + missing fields without adding anything
 
-Exit 0  — ran successfully (whether or not anything needed attention)
-Exit 1  — operational failure (no config, gh list failed, missing `project` scope)
+Exit 0  — single-repo mode ran successfully; or a --scan-dir sweep completed (even if
+          individual repos were skipped/failed — see repos_skipped/repos_failed in the
+          final RESULT line)
+Exit 1  — single-repo mode: operational failure (no config, gh list failed, missing
+          `project` scope). --scan-dir mode: scan_dir itself could not be read
+          (missing/no permission), or the scan aborted early because gh is missing the
+          `project` scope for listing OR adding — a token-level failure that would
+          repeat identically for every remaining repo, so the scan stops immediately
+          instead of repeating the same error once per repo. A RESULT: line is always
+          printed before exiting, in every case above, so the routine's "read the final
+          RESULT: line" instruction always has something to read.
 
 The pure helpers (canonical_repo_root / open_issue_numbers / board_issue_numbers /
 compute_orphans / field_key / colliding_required_fields / is_truncated /
 item_missing_fields / board_items_missing_fields / looks_like_scope_error /
-render_report) are unit-tested offline in tests/test_reconcile_project_board.py. The
-gh boundary (fetch_* / add_to_project) is not mocked, matching the repo's
-no-subprocess-mock convention.
+render_report / render_scan_summary / _added_and_failed / _validated_config) are
+unit-tested offline in tests/test_reconcile_project_board.py — _validated_config needs
+only a real tmp-dir hook-config.json, no gh/mocking, so its ok / no-config / bad-config
+statuses (including a non-dict top-level JSON payload) are pinned directly. The gh
+boundary (fetch_* / add_to_project) and the filesystem boundary (find_git_repos) are not
+mocked, matching the repo's no-subprocess-mock convention — find_git_repos is exercised
+via a --dry-run --scan-dir integration run instead (mirrors prune-merged-worktrees.py).
 """
 from __future__ import annotations
 
@@ -219,6 +244,17 @@ def _edit_command(item_id: str, field: dict, node_id: str) -> str:
     )
 
 
+def _added_and_failed(orphans: list[dict], dry_run: bool) -> tuple[int, int]:
+    """(added, failed) counts for a list of orphans after the add attempt. dry_run means
+    nothing was attempted, so both are 0. Shared by render_report (per-repo RESULT line)
+    and _reconcile_repo (the --scan-dir aggregate) so the two definitions of "added" can
+    never drift apart."""
+    if dry_run:
+        return 0, 0
+    added = sum(1 for o in orphans if o.get("item_id"))
+    return added, len(orphans) - added
+
+
 def render_report(
     orphans: list[dict],
     preexisting_missing: list[dict],
@@ -242,8 +278,7 @@ def render_report(
     node_id = config.get("project_node_id", "<project-node-id>")
     proj_num = config.get("project_number", "<n>")
 
-    added_count = sum(1 for o in orphans if o.get("item_id")) if not dry_run else 0
-    add_failed = (len(orphans) - added_count) if not dry_run else 0
+    added_count, add_failed = _added_and_failed(orphans, dry_run)
 
     lines: list[str] = []
 
@@ -312,6 +347,32 @@ def render_report(
     return "\n".join(lines)
 
 
+def render_scan_summary(
+    repos_scanned: int,
+    repos_skipped: int,
+    repos_failed: int,
+    orphans_added: int,
+    add_failed: int,
+    needs_attention: int,
+    dry_run: bool = False,
+) -> str:
+    """The final aggregate line --scan-dir mode prints after every per-repo report, so
+    "read the final RESULT: line" (the routine's existing instruction) still means the
+    aggregate even though scan-dir mode prints one RESULT: line per repo along the way.
+
+    repos_scanned  — git repos found under the scan directory
+    repos_skipped  — of those, repos with no (or an incomplete) hook-config.json
+    repos_failed   — repos with valid config where a non-scope `gh` call failed
+    orphans_added / add_failed / needs_attention — summed across every successfully
+        reconciled repo, same semantics as render_report's RESULT line."""
+    return (
+        f"RESULT: repos_scanned={repos_scanned} repos_skipped={repos_skipped} "
+        f"repos_failed={repos_failed} orphans_added={orphans_added} "
+        f"add_failed={add_failed} needs_attention={needs_attention} "
+        f"dry_run={'true' if dry_run else 'false'}"
+    )
+
+
 # --- config ------------------------------------------------------------------
 
 
@@ -338,6 +399,34 @@ def is_truncated(count: int, limit: int) -> bool:
     results at --limit with no truncation signal, so a result count equal to the limit
     means more items might exist beyond it. Pure; the caller decides what to do (warn)."""
     return count >= limit
+
+
+# --- scan-dir discovery (filesystem I/O, not subprocess; not unit-tested — mirrors
+# prune-merged-worktrees.py / reclaim-worktree-disk.py, exercised via --dry-run) ------
+
+
+def find_git_repos(scan_dir: str) -> list[str] | None:
+    """Return paths of primary git repos (with a .git directory) directly under
+    scan_dir, or None if scan_dir itself could not be scanned (missing / no permission)
+    — distinct from an empty list, which means the scan succeeded and simply found zero
+    repos. A worktree's .git is a file, not a directory, so worktrees are excluded
+    automatically — --scan-dir only ever reconciles primary checkouts. A top-level entry
+    that is itself a symlink/junction to a directory is also excluded (follow_symlinks=
+    False below) — deliberate, so --scan-dir never double-reconciles a repo reachable
+    through both its real path and an alias under the same scan directory."""
+    repos: list[str] = []
+    try:
+        with os.scandir(scan_dir) as it:
+            entries = sorted(it, key=lambda e: e.name.lower())
+    except (PermissionError, FileNotFoundError) as exc:
+        print(f"[reconcile-board] WARNING: cannot scan {scan_dir}: {exc}", file=sys.stderr)
+        return None
+    for entry in entries:
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        if os.path.isdir(os.path.join(entry.path, ".git")):
+            repos.append(entry.path)
+    return repos
 
 
 # --- network boundary (not unit-tested; repo avoids subprocess mocks) --------
@@ -405,6 +494,214 @@ def add_to_project(url: str, project_number: str, owner: str) -> tuple[str | Non
         return None, str(e)
 
 
+def _reconcile_repo(config: dict, dry_run: bool) -> dict:
+    """Fetch, compute orphans, add them (unless dry_run), and print the report for one
+    repo whose config has already been validated (repo/project_number/project_owner
+    present, no colliding required fields — see _validated_config). Returns
+    {"status": "ok"|"scope-error"|"gh-error", "orphans_added": int, "add_failed": int,
+    "needs_attention": int, "add_scope_error": bool}. Never raises — gh failures come
+    back in "status" so each caller can apply its own fatal-vs-skip policy (single-repo
+    mode fails fast on any status other than "ok"; --scan-dir mode isolates "gh-error"
+    to one repo, aborts the whole scan on "scope-error", and also aborts on
+    add_scope_error=True — a project-scope failure that only shows up at add time
+    because gh's read and write project scopes are distinct; single-repo mode leaves
+    that case under status "ok", unchanged from pre-refactor behavior, since it has no
+    "remaining repos" to protect by aborting early)."""
+    repo = config.get("repo", "")
+    project_number = config.get("project_number", "")
+    owner = config.get("project_owner", "")
+    required_names = [f.get("name", "Field") for f in config.get("required_fields", [])]
+
+    try:
+        issues = fetch_open_issues(repo)
+        items = fetch_board_items(project_number, owner)
+    except GhError as e:
+        msg = str(e)
+        if looks_like_scope_error(msg):
+            return {"status": "scope-error", "orphans_added": 0, "add_failed": 0, "needs_attention": 0, "add_scope_error": False}
+        print(f"[reconcile-board] gh call failed: {msg}", file=sys.stderr)
+        return {"status": "gh-error", "orphans_added": 0, "add_failed": 0, "needs_attention": 0, "add_scope_error": False}
+
+    open_nums = open_issue_numbers(issues)
+    board_nums = board_issue_numbers(items, repo)
+    orphans = compute_orphans(issues, board_nums)
+    preexisting_missing = board_items_missing_fields(items, required_names, open_nums, repo)
+
+    scope_warned = False
+    if not dry_run:
+        for o in orphans:
+            item_id, err = add_to_project(o["url"], project_number, owner)
+            o["item_id"] = item_id
+            if item_id is None and not scope_warned and looks_like_scope_error(err):
+                print(
+                    "[reconcile-board] WARNING: an add failed due to a missing 'project' "
+                    "scope. Run:\n    gh auth refresh -s project\nthen re-run this script "
+                    "to add the remaining orphans.",
+                    file=sys.stderr,
+                )
+                scope_warned = True
+
+    print(render_report(orphans, preexisting_missing, config, dry_run=dry_run))
+
+    added_count, add_failed = _added_and_failed(orphans, dry_run)
+    return {
+        "status": "ok",
+        "orphans_added": added_count,
+        "add_failed": add_failed,
+        "needs_attention": len(orphans) + len(preexisting_missing),
+        "add_scope_error": scope_warned,
+    }
+
+
+def _validated_config(repo_root: str) -> tuple[dict | None, str, str | None]:
+    """Load and validate repo_root's hook-config.json. Returns (config, status, message):
+      status="ok"         — config is usable, message=None
+      status="no-config"  — config=None, message=None (repo simply hasn't adopted board
+                             tracking — the expected case for most --scan-dir repos)
+      status="bad-config" — config=None, message=<fully-formatted stderr text> (config is
+                             present but missing repo/project_number/project_owner, a
+                             required_fields name collides with a reserved gh item key,
+                             or the file's top-level JSON is not an object — e.g. a bare
+                             array/string/number, which parses cleanly but isn't a usable
+                             config)
+    Shared by single-repo and scan-dir modes so the two can never validate a config
+    differently; they differ only in how they react to each status."""
+    config = load_config(repo_root)
+    if config is None:
+        return None, "no-config", None
+    if not isinstance(config, dict):
+        return None, "bad-config", (
+            "[reconcile-board] hook-config.json does not contain a JSON object "
+            "(top-level value is not a dict) — cannot reconcile."
+        )
+
+    repo = config.get("repo", "")
+    project_number = config.get("project_number", "")
+    owner = config.get("project_owner", "")
+    if not (repo and project_number and owner):
+        return None, "bad-config", (
+            "[reconcile-board] hook-config.json is missing repo / project_number / "
+            "project_owner — cannot reconcile."
+        )
+
+    required_names = [f.get("name", "Field") for f in config.get("required_fields", [])]
+    colliding = colliding_required_fields(required_names)
+    if colliding:
+        return None, "bad-config", (
+            "[reconcile-board] required_fields name(s) collide with gh's built-in "
+            f"item keys and cannot be reliably detected: {', '.join(colliding)}. "
+            "Rename the field in hook-config.json (or extend _RESERVED_ITEM_KEYS if "
+            "the collision is unavoidable) before running this script."
+        )
+    return config, "ok", None
+
+
+def _main_single_repo(repo_root: str, dry_run: bool) -> int:
+    config, status, message = _validated_config(repo_root)
+    if status == "no-config":
+        print(
+            f"[reconcile-board] no .claude/hook-config.json under {repo_root} - "
+            f"nothing to reconcile.",
+            file=sys.stderr,
+        )
+        return 1
+    if status == "bad-config":
+        print(message, file=sys.stderr)
+        return 1
+
+    result = _reconcile_repo(config, dry_run)
+    if result["status"] == "scope-error":
+        print(
+            "[reconcile-board] gh is missing the 'project' scope. Run:\n"
+            "    gh auth refresh -s project\n"
+            "then re-run this script.",
+            file=sys.stderr,
+        )
+        return 1
+    if result["status"] == "gh-error":
+        return 1
+    return 0
+
+
+def _main_scan_dir(scan_dir: str, dry_run: bool) -> int:
+    repos = find_git_repos(scan_dir)
+    if repos is None:
+        # find_git_repos already printed the WARNING with the underlying OSError.
+        # Still emit a RESULT line (all-zero) so "read the final RESULT: line" has
+        # something to read on this path too, instead of looking identical to the
+        # zero-repos-found case below.
+        print(f"[reconcile-board] scan of {scan_dir} failed - nothing was reconciled")
+        print()
+        print(render_scan_summary(0, 0, 0, 0, 0, 0, dry_run=dry_run))
+        return 1
+    if not repos:
+        print(f"[reconcile-board] no git repos found under {scan_dir}")
+        print()
+        print(render_scan_summary(0, 0, 0, 0, 0, 0, dry_run=dry_run))
+        return 0
+    print(f"[reconcile-board] found {len(repos)} repo(s) under {scan_dir}")
+
+    totals = {"orphans_added": 0, "add_failed": 0, "needs_attention": 0}
+    repos_skipped = 0
+    repos_failed = 0
+    scope_aborted = False
+
+    for repo_root in repos:
+        config, status, message = _validated_config(repo_root)
+        if status == "no-config":
+            repos_skipped += 1
+            continue
+        if status == "bad-config":
+            print(f"\nRepo: {repo_root}")
+            print(message, file=sys.stderr)
+            repos_skipped += 1
+            continue
+
+        print(f"\nRepo: {config.get('repo', '')} ({repo_root})")
+        result = _reconcile_repo(config, dry_run)
+        if result["status"] == "scope-error":
+            print(
+                "[reconcile-board] gh is missing the 'project' scope. Run:\n"
+                "    gh auth refresh -s project\n"
+                "then re-run this script. Stopping the scan — every remaining repo "
+                "would fail identically (the scope belongs to the gh token, not the "
+                "repo).",
+                file=sys.stderr,
+            )
+            scope_aborted = True
+            break
+        if result["status"] == "gh-error":
+            repos_failed += 1
+            continue
+
+        totals["orphans_added"] += result["orphans_added"]
+        totals["add_failed"] += result["add_failed"]
+        totals["needs_attention"] += result["needs_attention"]
+
+        if result["add_scope_error"]:
+            print(
+                "[reconcile-board] gh is missing the 'project' scope for add operations "
+                "(list succeeded, add failed). Run:\n"
+                "    gh auth refresh -s project\n"
+                "then re-run this script. Stopping the scan — every remaining repo's "
+                "adds would fail identically (the scope belongs to the gh token, not "
+                "the repo).",
+                file=sys.stderr,
+            )
+            scope_aborted = True
+            break
+
+    print()
+    print(
+        render_scan_summary(
+            len(repos), repos_skipped, repos_failed,
+            totals["orphans_added"], totals["add_failed"], totals["needs_attention"],
+            dry_run=dry_run,
+        )
+    )
+    return 1 if scope_aborted else 0
+
+
 def main() -> int:
     # gh emits UTF-8 JSON and issue titles can contain non-cp1252 characters; force
     # UTF-8 on our own streams so printing a title (or punctuation) can't raise on a
@@ -423,80 +720,22 @@ def main() -> int:
         "(default: canonical checkout of this script's repo)",
     )
     parser.add_argument(
+        "--scan-dir",
+        default=None,
+        help="discover and reconcile every git repo directly under PATH that has a "
+        ".claude/hook-config.json (repos without one are skipped). Takes precedence "
+        "over --repo-root when both are given.",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="report without adding anything"
     )
     args = parser.parse_args()
 
+    if args.scan_dir:
+        return _main_scan_dir(args.scan_dir, args.dry_run)
+
     repo_root = args.repo_root or default_repo_root()
-    config = load_config(repo_root)
-    if config is None:
-        print(
-            f"[reconcile-board] no .claude/hook-config.json under {repo_root} - "
-            f"nothing to reconcile.",
-            file=sys.stderr,
-        )
-        return 1
-
-    repo = config.get("repo", "")
-    project_number = config.get("project_number", "")
-    owner = config.get("project_owner", "")
-    required_names = [f.get("name", "Field") for f in config.get("required_fields", [])]
-    if not (repo and project_number and owner):
-        print(
-            "[reconcile-board] hook-config.json is missing repo / project_number / "
-            "project_owner — cannot reconcile.",
-            file=sys.stderr,
-        )
-        return 1
-
-    colliding = colliding_required_fields(required_names)
-    if colliding:
-        print(
-            "[reconcile-board] required_fields name(s) collide with gh's built-in "
-            f"item keys and cannot be reliably detected: {', '.join(colliding)}. "
-            "Rename the field in hook-config.json (or extend _RESERVED_ITEM_KEYS if "
-            "the collision is unavoidable) before running this script.",
-            file=sys.stderr,
-        )
-        return 1
-
-    try:
-        issues = fetch_open_issues(repo)
-        items = fetch_board_items(project_number, owner)
-    except GhError as e:
-        msg = str(e)
-        if looks_like_scope_error(msg):
-            print(
-                "[reconcile-board] gh is missing the 'project' scope. Run:\n"
-                "    gh auth refresh -s project\n"
-                "then re-run this script.",
-                file=sys.stderr,
-            )
-        else:
-            print(f"[reconcile-board] gh call failed: {msg}", file=sys.stderr)
-        return 1
-
-    open_nums = open_issue_numbers(issues)
-    board_nums = board_issue_numbers(items, repo)
-    orphans = compute_orphans(issues, board_nums)
-    preexisting_missing = board_items_missing_fields(items, required_names, open_nums, repo)
-
-    if not args.dry_run:
-        scope_warned = False
-        for o in orphans:
-            item_id, err = add_to_project(o["url"], project_number, owner)
-            o["item_id"] = item_id
-            if item_id is None and not scope_warned and looks_like_scope_error(err):
-                print(
-                    "[reconcile-board] WARNING: an add failed due to a missing 'project' "
-                    "scope. Run:\n    gh auth refresh -s project\nthen re-run this script "
-                    "to add the remaining orphans.",
-                    file=sys.stderr,
-                )
-                scope_warned = True
-
-    print(render_report(orphans, preexisting_missing, config, dry_run=args.dry_run))
-    return 0
+    return _main_single_repo(repo_root, args.dry_run)
 
 
 if __name__ == "__main__":
