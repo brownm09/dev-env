@@ -154,7 +154,11 @@ def main() -> None:
             f"  git worktree add --force {worktree_root} <branch>\n"
             f"(<branch> is typically claude/<worktree-name>; confirm with `git branch -a`.)"
         )
-        print(json.dumps({"reason": reason}))
+        # Claude Code discards stdout on a PreToolUse hook exit code 2 — only
+        # stderr is surfaced to the model. Write there, matching the working
+        # pattern in career-playbook's block-artifact-merge.py /
+        # block-letter-violations.py.
+        sys.stderr.write(json.dumps({"reason": reason}) + "\n")
         sys.exit(2)
 
     file_path = data.get("tool_input", {}).get(_PATH_FIELD[tool_name], "")
@@ -191,7 +195,11 @@ def main() -> None:
         f"\n"
         f"Re-issue with the corrected path."
     )
-    print(json.dumps({"reason": reason}))
+    # Claude Code discards stdout on a PreToolUse hook exit code 2 — only
+    # stderr is surfaced to the model. Write there, matching the working
+    # pattern in career-playbook's block-artifact-merge.py /
+    # block-letter-violations.py.
+    sys.stderr.write(json.dumps({"reason": reason}) + "\n")
     sys.exit(2)
 
 
