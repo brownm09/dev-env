@@ -337,44 +337,37 @@ def _is_successful_merge_call(output: str) -> bool:
     return output_has_merge_marker(output)
 
 
-def main() -> None:
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
+def _build_messages(
+    command: str,
+    cwd: str,
+    exit_code: int,
+    output: str,
+    is_create: bool,
+    is_merge: bool,
+    is_push: bool,
+) -> list[str]:
+    """Build the reminder message(s) for a detected create/merge/push command.
 
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
+    Each message is gated on its own success condition rather than a shared
+    early exit, so a chained command matching more than one of is_create /
+    is_merge / is_push (e.g. `gh pr create --fill && gh pr merge --auto`)
+    still gets the reminder for whichever half actually succeeded — an
+    incomplete merge sub-check (no success marker: a queued --auto, or
+    --help) must not suppress an otherwise-legitimate create reminder in the
+    same command (dev-env#494).
 
-    if data.get("tool_name") != "Bash":
-        sys.exit(0)
-
-    command = data.get("tool_input", {}).get("command", "")
-    cwd = data.get("cwd", "<unknown>")
-    exit_code = data.get("tool_response", {}).get("exitCode", 0)
-
-    is_create = is_pr_create_command(command)
-    is_merge = is_pr_merge_command(command)
-    is_push = is_git_push_command(command)
-
-    if not (is_create or is_merge or is_push):
-        sys.exit(0)
-
-    # gh pr merge is confirmed via the output marker alone, not the exit code —
-    # a worktree exits non-zero on local cleanup despite a real merge, while a
-    # clean exit 0 does NOT mean a merge happened (--help, a queued --auto).
-    # gh pr create and git push are only acted on when they exit cleanly.
-    output = read_command_output(data)
-    if is_merge:
-        if not _is_successful_merge_call(output):
-            sys.exit(0)
-    elif exit_code != 0:
-        sys.exit(0)
-
+    gh pr merge is confirmed via the output marker alone, not the exit code —
+    a worktree exits non-zero on local cleanup despite a real merge (#275),
+    while a clean exit 0 does NOT mean a merge happened (--help, a queued
+    --auto). gh pr create and git push are only acted on when the overall
+    command exits cleanly — except when is_merge is also true, where exit_code
+    has never been consulted for them (only the merge marker matters); that
+    quirk predates this fix and is preserved here rather than widened.
+    """
+    exit_ok = is_merge or exit_code == 0
     messages = []
 
-    if is_create:
+    if is_create and exit_ok:
         shard_step = _create_shard_step(output)
         messages.append(
             "[journal-reminder] gh pr create detected — write the journal stub AND"
@@ -392,7 +385,7 @@ def main() -> None:
             " && git push"
         )
 
-    if is_merge:
+    if is_merge and _is_successful_merge_call(output):
         merge_dir = _effective_merge_repo(command, cwd)
         messages.append(
             "[journal-reminder] gh pr merge detected — update the engineering journal now:\n"
@@ -407,7 +400,7 @@ def main() -> None:
             " && git push"
         )
 
-    if is_push and not (is_create or is_merge):
+    if is_push and not (is_create or is_merge) and exit_ok:
         # Scope the open-PR lookup to the repo the push actually targets: a
         # `cd <other-repo> && git push` must not fire the session cwd's reminder
         # (issue #442 / ADR-065).  Engineering-journal pushes route into the
@@ -435,6 +428,38 @@ def main() -> None:
                 '  6. git commit -m "draft: YYYY-MM-DD session N" -- <those same files>'
                 " && git push"
             )
+
+    return messages
+
+
+def main() -> None:
+    raw = sys.stdin.read().strip()
+    if not raw:
+        sys.exit(0)
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        sys.exit(0)
+
+    if data.get("tool_name") != "Bash":
+        sys.exit(0)
+
+    command = data.get("tool_input", {}).get("command", "")
+    cwd = data.get("cwd", "<unknown>")
+    exit_code = data.get("tool_response", {}).get("exitCode", 0)
+
+    is_create = is_pr_create_command(command)
+    is_merge = is_pr_merge_command(command)
+    is_push = is_git_push_command(command)
+
+    if not (is_create or is_merge or is_push):
+        sys.exit(0)
+
+    output = read_command_output(data)
+    messages = _build_messages(
+        command, cwd, exit_code, output, is_create, is_merge, is_push
+    )
 
     if not messages:
         sys.exit(0)
