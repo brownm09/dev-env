@@ -106,8 +106,9 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
    ```
 
 10. **post-pr-merge-reclaim test** — required when changing `claude/scripts/post-pr-merge-reclaim.py`.
-    Exercises the pure `is_successful_merge()` predicate offline: a `gh pr merge` with exit 0 or a stdout
-    success marker triggers reclamation; a non-merge command or a genuinely failed merge does not. The
+    Exercises the pure `is_successful_merge()` predicate offline: a `gh pr merge` whose output carries
+    gh's success marker triggers reclamation, regardless of exit code; a non-merge command, a genuinely
+    failed merge, or an exit-0 non-merge invocation like `gh pr merge --help` (dev-env#485) does not. The
     detached reclaim spawn is not covered (it shells out).
 
     ```bash
@@ -166,9 +167,10 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     ```
 
 15. **post-pr-merge-pull test** — required when changing `claude/scripts/post-pr-merge-pull.py`. Exercises
-    the pure `is_successful_merge()` predicate offline: a `gh pr merge` with exit 0 or a stdout/stderr success
-    marker triggers the local-`main` fast-forward (worktree merges exit non-zero but print the marker —
-    issue #275); a non-merge command or a genuinely failed merge does not. The `pull_main` / `extract_repo`
+    the pure `is_successful_merge()` predicate offline: a `gh pr merge` whose output carries gh's success
+    marker triggers the local-`main` fast-forward regardless of exit code (worktree merges exit non-zero but
+    print the marker — issue #275); a non-merge command, a genuinely failed merge, or an exit-0 non-merge
+    invocation like `gh pr merge --help` (dev-env#485) does not. The `pull_main` / `extract_repo`
     git calls are not covered ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)).
 
     ```bash
@@ -275,9 +277,11 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
 23. **post-merge-tile-checkpoint test** — required when changing
     `claude/scripts/post-merge-tile-checkpoint.py`. Exercises the pure
     `is_successful_merge()` predicate offline (no subprocess, no network, no disk):
-    pins that a successful merge (exit 0 or stdout marker) triggers the tile checkpoint
-    reminder, while a non-merge command or a genuinely failed merge (non-zero exit,
-    no success marker) does not ([ADR-060](docs/adr/060-post-merge-tile-checkpoint-hook.md)).
+    pins that a successful merge (gh's stdout success marker present, regardless of exit
+    code) triggers the tile checkpoint reminder, while a non-merge command, a genuinely
+    failed merge (no success marker), or an exit-0 non-merge invocation like
+    `gh pr merge --help` (dev-env#485) does not
+    ([ADR-060](docs/adr/060-post-merge-tile-checkpoint-hook.md)).
 
     ```bash
     py -3 claude/scripts/tests/test_post_merge_tile_checkpoint.py
@@ -344,8 +348,10 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     [ADR-065](docs/adr/065-scope-push-reminder-to-target-repo.md) push-scoping behavior offline
     (no network/gh): pins that `_effective_push_dir` redirects the open-PR lookup to a
     `cd <repo> && git push` target — so a cross-repo push is evaluated against THAT repo, not the
-    session cwd — and falls back to cwd for a bare push. The live `_open_pr_for_cwd` subprocess
-    boundary is not covered (the repo avoids subprocess mocks).
+    session cwd — and falls back to cwd for a bare push; and that `_is_successful_merge_call` gates
+    solely on gh's success marker, not the exit code, so an exit-0 non-merge invocation like
+    `gh pr merge --help` no longer fires the reminder (dev-env#485). The live `_open_pr_for_cwd`
+    subprocess boundary is not covered (the repo avoids subprocess mocks).
 
     ```bash
     py -3 claude/scripts/tests/test_pr_merge_reminder.py

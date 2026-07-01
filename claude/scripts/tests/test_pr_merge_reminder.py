@@ -6,6 +6,12 @@ and the push-scoping behavior added in dev-env#442 / ADR-065: _effective_push_di
 scopes the open-PR lookup to the repo a `cd <path> && git push` actually targets,
 so a cross-repo push is evaluated against THAT repo, not the session cwd.
 
+dev-env#485 dropped the `exit_code` parameter from `_is_successful_merge_call`
+entirely: `exit_code == 0 OR marker` fired on any exit-0 command matching
+"gh pr merge" as a substring, including `gh pr merge --help`. It now gates
+solely on the success marker, mirroring post-pr-merge-project.py's
+`merge_succeeded()` and usage-snapshot.py's `merge_confirmed()`.
+
 The live _open_pr_for_cwd subprocess boundary is not exercised here (repo
 convention: no subprocess mocks).
 
@@ -192,35 +198,29 @@ def test_shard_step_merge_url_not_matched() -> str:
 
 
 # ---------------------------------------------------------------------------
-# _is_successful_merge_call
+# _is_successful_merge_call  (dev-env#485 — marker-only, no exit-code branch)
 # ---------------------------------------------------------------------------
 
-def test_merge_call_clean_exit() -> str:
-    assert _is_successful_merge_call(0, "")
-    return "exit 0 + empty output -> fires"
-
-
-def test_merge_call_worktree_nonzero_with_marker() -> str:
-    # Worktree merges exit non-zero on local cleanup; the stdout success marker
-    # confirms the remote merge actually completed (issue #275 behaviour).
-    assert _is_successful_merge_call(
-        1, "Squashed and merged pull request #419"
-    )
-    return "exit 1 + 'Squashed and merged' marker -> fires"
+def test_merge_call_marker_present_fires() -> str:
+    # The marker is what confirms a completed merge; the exit code is no
+    # longer consulted at all — true whether it came from a clean exit
+    # (canonical checkout) or a worktree's non-zero cleanup failure (#275).
+    assert _is_successful_merge_call("Squashed and merged pull request #419")
+    return "'Squashed and merged' marker present -> fires"
 
 
 def test_merge_call_failed_no_marker() -> str:
-    # A genuine merge failure (non-zero, no success marker) must not fire.
-    assert not _is_successful_merge_call(
-        1, "X Pull request #419 is not mergeable"
-    )
-    return "exit 1 + no success marker -> no-op"
+    # A genuine merge failure (no success marker) must not fire.
+    assert not _is_successful_merge_call("X Pull request #419 is not mergeable")
+    return "no success marker -> no-op"
 
 
-def test_merge_call_exit_zero_trumps_no_marker() -> str:
-    # exit 0 is sufficient even when no success text appears (dry-run / quiet mode).
-    assert _is_successful_merge_call(0, "some other output with no merge line")
-    return "exit 0 + no marker -> fires (exit code is authoritative)"
+def test_merge_call_clean_exit_no_marker_does_not_fire() -> str:
+    # dev-env#485 regression: `gh pr merge --help` (or a queued --auto) exits 0
+    # but prints no success marker. The old exit_code==0 OR marker gate fired
+    # on this shape; gating on the marker alone fixes it.
+    assert not _is_successful_merge_call("some other output with no merge marker")
+    return "no marker at all (e.g. --help output) -> does not fire (dev-env#485)"
 
 
 # ---------------------------------------------------------------------------
@@ -361,10 +361,9 @@ def main() -> int:
         ("shard step: issue URL not matched", test_shard_step_merge_url_not_matched),
         ("shard step: URL found via stdout field", test_shard_step_via_stdout_field),
         ("shard step: legacy .output fallback", test_shard_step_legacy_output_field_empty_gives_fallback),
-        ("merge call: exit 0 fires", test_merge_call_clean_exit),
-        ("merge call: exit 1 + marker fires (worktree case)", test_merge_call_worktree_nonzero_with_marker),
-        ("merge call: exit 1 no marker -> no-op", test_merge_call_failed_no_marker),
-        ("merge call: exit 0 trumps no marker", test_merge_call_exit_zero_trumps_no_marker),
+        ("merge call: marker present fires", test_merge_call_marker_present_fires),
+        ("merge call: no marker -> no-op", test_merge_call_failed_no_marker),
+        ("merge call: --help-shaped (no marker) -> no-op (dev-env#485)", test_merge_call_clean_exit_no_marker_does_not_fire),
         ("push dir: bare push -> cwd", test_push_dir_bare_push_is_cwd),
         ("push dir: cd <repo> && push -> that repo", test_push_dir_cd_chain_redirects),
         ("push dir: cd <ej> && ... && push -> ej dir", test_push_dir_cd_chain_multi_segment),

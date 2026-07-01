@@ -323,14 +323,18 @@ def _create_shard_step(output: str) -> str:
     )
 
 
-def _is_successful_merge_call(exit_code: int, output: str) -> bool:
+def _is_successful_merge_call(output: str) -> bool:
     """Return True iff a gh pr merge call completed the remote merge.
 
-    Worktree merges exit non-zero on local cleanup (e.g. 'main is already
-    checked out') even when the remote merge succeeded — check the success
-    marker too (issue #275 behaviour, mirrors post-merge-tile-checkpoint.py).
+    Gated on gh's success marker alone, not the exit code: a worktree merge
+    exits non-zero on local cleanup ('main is already checked out') even when
+    the remote merge succeeded (issue #275), while a clean exit 0 is also true
+    for non-merge invocations like `gh pr merge --help` or a queued `--auto` —
+    neither of which the caller's `is_pr_merge_command` command-shape check
+    filters out. Mirrors merge_succeeded() in post-pr-merge-project.py and
+    merge_confirmed() in usage-snapshot.py (dev-env#485).
     """
-    return exit_code == 0 or output_has_merge_marker(output)
+    return output_has_merge_marker(output)
 
 
 def main() -> None:
@@ -357,12 +361,13 @@ def main() -> None:
     if not (is_create or is_merge or is_push):
         sys.exit(0)
 
-    # gh pr merge in a worktree exits non-zero on local cleanup even when the
-    # remote merge succeeded; check the output marker too.
+    # gh pr merge is confirmed via the output marker alone, not the exit code —
+    # a worktree exits non-zero on local cleanup despite a real merge, while a
+    # clean exit 0 does NOT mean a merge happened (--help, a queued --auto).
     # gh pr create and git push are only acted on when they exit cleanly.
     output = read_command_output(data)
     if is_merge:
-        if not _is_successful_merge_call(exit_code, output):
+        if not _is_successful_merge_call(output):
             sys.exit(0)
     elif exit_code != 0:
         sys.exit(0)
