@@ -8,6 +8,11 @@ merge?" is extracted into the pure `is_successful_merge()` predicate so it can b
 exercised offline (no subprocess spawn, no git/gh), matching the repo's
 fixture-only test convention.
 
+dev-env#485 removed the `exit_code` parameter entirely: `exit_code == 0 OR
+marker` fired on any exit-0 command matching "gh pr merge" as a substring,
+including `gh pr merge --help`. The predicate now gates solely on the success
+marker, matching post-pr-merge-project.py's `merge_succeeded()`.
+
 The detached spawn (`_spawn_reclaim`) is intentionally not tested — it shells out
 and the repo avoids subprocess mocks.
 
@@ -36,41 +41,49 @@ _spec.loader.exec_module(ppmr)  # safe: main() is guarded by __main__
 is_successful_merge = ppmr.is_successful_merge
 
 
-def test_clean_merge_exit_zero() -> str:
-    assert is_successful_merge("gh pr merge 364 --squash --delete-branch", 0, "")
-    return "gh pr merge + exit 0 -> reclaim"
-
-
-def test_worktree_merge_nonzero_but_marker() -> str:
-    # From a worktree gh exits non-zero on local-checkout cleanup; stdout marker
-    # confirms the remote merge succeeded (issue #275 behavior, mirrored here).
+def test_clean_merge_with_marker_reclaims() -> str:
+    # The success marker is what confirms a completed merge; the exit code is
+    # no longer consulted at all (dev-env#485) — true whether it came from a
+    # clean canonical-checkout exit or a worktree's non-zero cleanup failure
+    # (issue #275).
     assert is_successful_merge(
-        "gh pr merge 364 --squash --delete-branch", 1,
+        "gh pr merge 364 --squash --delete-branch",
         "Squashed and merged pull request #364",
     )
-    return "gh pr merge + exit 1 + 'Squashed and merged' marker -> reclaim"
+    return "'Squashed and merged' marker -> reclaim"
 
 
 def test_non_merge_command_ignored() -> str:
-    assert not is_successful_merge("gh pr create --fill", 0, "")
-    assert not is_successful_merge("npm test", 0, "")
+    assert not is_successful_merge("gh pr create --fill", "")
+    assert not is_successful_merge("npm test", "")
     return "non-merge commands -> no-op"
 
 
 def test_failed_merge_no_marker_ignored() -> str:
-    # A genuine merge failure (non-zero, no success marker) must not reclaim.
+    # A genuine merge failure (no success marker) must not reclaim.
     assert not is_successful_merge(
-        "gh pr merge 364 --squash", 1, "X Pull request #364 is not mergeable",
+        "gh pr merge 364 --squash", "X Pull request #364 is not mergeable",
     )
-    return "gh pr merge failed (exit 1, no success marker) -> no-op"
+    return "gh pr merge failed (no success marker) -> no-op"
+
+
+def test_help_invocation_no_marker_ignored() -> str:
+    # dev-env#485 regression: `gh pr merge --help` exits 0 but prints no
+    # success marker. The old exit_code==0 OR marker gate fired here; gating
+    # on the marker alone fixes it.
+    assert not is_successful_merge(
+        "gh pr merge --help",
+        "FLAGS\n      --admin   Use administrator privileges to merge a pull request",
+    )
+    return "gh pr merge --help (exit 0, no marker) -> no-op (dev-env#485)"
 
 
 def main() -> int:
     tests = [
-        ("clean merge (exit 0) reclaims", test_clean_merge_exit_zero),
-        ("worktree merge (exit 1 + marker) reclaims", test_worktree_merge_nonzero_but_marker),
+        ("merge marker present -> reclaims", test_clean_merge_with_marker_reclaims),
         ("non-merge command ignored", test_non_merge_command_ignored),
         ("failed merge with no marker ignored", test_failed_merge_no_marker_ignored),
+        ("gh pr merge --help (no marker) ignored (dev-env#485)", test_help_invocation_no_marker_ignored),
     ]
     failed = 0
     for name, fn in tests:

@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01 (see Amendment section below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot
+**Amended:** 2026-07-01 (two amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder
 
 ---
 
@@ -93,7 +93,7 @@ been copied into four sibling PostToolUse hooks and left them as a tracked follo
   action depends on — here the merge marker — not a proxy (`exitCode`) that the payload may
   omit or that a queued `--auto` satisfies without merging.
 
-## Amendment (2026-07-01) — `usage-snapshot.py` was a sixth, missed sibling
+## Amendment 1 (2026-07-01) — `usage-snapshot.py` was a sixth, missed sibling
 
 ADR-049's sweep named four sibling hooks with the wrong-field read (`post-pr-merge-project.py`,
 `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`, `stub-push-archive-reminder.py`); this ADR
@@ -114,3 +114,34 @@ marker-based check as `post-pr-merge-project.py`'s `merge_succeeded()` — inste
 code. Covered offline in `claude/scripts/tests/test_usage_snapshot.py`. `usage-snapshot.py` is
 effectively a sixth hook brought into this ADR's pattern; the count in "Consequences" above
 ("All five PostToolUse Bash hooks...") should be read as five-plus-this-one going forward.
+
+## Amendment 2 (2026-07-01) — retiring the `exitCode==0 OR marker` predicate in pull/reclaim/tile-checkpoint/reminder
+
+Decision point 3 above and Amendment 1 both framed the `exitCode==0 OR marker` predicate shared
+by `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`, `post-merge-tile-checkpoint.py`, and
+`pr-merge-reminder.py` as a *deliberate*, safe choice: "a premature local-`main` pull or
+`node_modules` reclaim is harmless." That framing assumed the false positive was limited to
+*premature* races — a merge that's about to succeed, just not confirmed yet. It does not hold:
+the `exitCode == 0` branch fires on **any** exit-0 command matched as `gh pr merge`, including
+one that never attempts a merge at all.
+
+**Symptom (dev-env#485):** running `gh pr merge --help` (checking flag syntax per the CLI
+Scripting Checklist's own "run `--help` first" step) exits 0 with no merge marker in its output.
+All four hooks misdetected it as a completed merge — firing the journal-update reminder, the
+tile-checkpoint reminder, a local-`main` fetch, and a `node_modules` reclaim spawn, for a command
+that merged nothing. Reproduced live in the session that filed #485.
+
+**Fix:** converge all four hooks onto the same marker-only gate `post-pr-merge-project.py` and
+`usage-snapshot.py` already use — drop the `exit_code` parameter from each hook's
+`is_successful_merge()` / `_is_successful_merge_call()` entirely; a real merge always prints the
+marker (confirmed via `gh pr merge --help`'s own flag list: no `--quiet`/dry-run flag exists), so
+this is a strict improvement with no false-negative regression. Also fixes, as a side effect, the
+previously-permitted false positive on a queued `--auto` (exits 0, not yet merged) for these four
+hooks — the same fix Amendment 1 and decision point 3 already applied to
+`post-pr-merge-project.py` and `usage-snapshot.py`.
+
+Covered offline in the four hooks' `test_*.py` files (added a `gh pr merge --help`-shaped
+regression case: exit 0, no marker, must not fire). The "Consequences" and decision-point-3
+framing above should now be read as superseded — there is no longer a looser OR-based predicate
+anywhere in this hook family; all six hooks (five original + `usage-snapshot.py`) gate solely on
+`output_has_merge_marker()`.
