@@ -112,6 +112,19 @@ def _worktree_is_live(
     return _normalize(top) == _normalize(worktree_root)
 
 
+def _block(reason: str) -> None:
+    """Emit a blocking {"reason": ...} payload and exit 2.
+
+    Claude Code discards stdout on a PreToolUse hook exit code 2 — only
+    stderr is surfaced to the model. Write there, matching the working
+    pattern in career-playbook's block-artifact-merge.py /
+    block-letter-violations.py. Centralized so main()'s two independent
+    block sites can't drift out of sync on this again (dev-env#469).
+    """
+    sys.stderr.write(json.dumps({"reason": reason}) + "\n")
+    sys.exit(2)
+
+
 def main() -> None:
     raw = sys.stdin.read().strip()
     if not raw:
@@ -154,12 +167,7 @@ def main() -> None:
             f"  git worktree add --force {worktree_root} <branch>\n"
             f"(<branch> is typically claude/<worktree-name>; confirm with `git branch -a`.)"
         )
-        # Claude Code discards stdout on a PreToolUse hook exit code 2 — only
-        # stderr is surfaced to the model. Write there, matching the working
-        # pattern in career-playbook's block-artifact-merge.py /
-        # block-letter-violations.py.
-        sys.stderr.write(json.dumps({"reason": reason}) + "\n")
-        sys.exit(2)
+        _block(reason)
 
     file_path = data.get("tool_input", {}).get(_PATH_FIELD[tool_name], "")
     if not file_path or not os.path.isabs(file_path):
@@ -195,12 +203,7 @@ def main() -> None:
         f"\n"
         f"Re-issue with the corrected path."
     )
-    # Claude Code discards stdout on a PreToolUse hook exit code 2 — only
-    # stderr is surfaced to the model. Write there, matching the working
-    # pattern in career-playbook's block-artifact-merge.py /
-    # block-letter-violations.py.
-    sys.stderr.write(json.dumps({"reason": reason}) + "\n")
-    sys.exit(2)
+    _block(reason)
 
 
 if __name__ == "__main__":
