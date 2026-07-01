@@ -133,8 +133,13 @@ For every `*.md` file in the memory dir **except `MEMORY.md`**, the subagent mus
 
 The subagent returns a structured findings response with two top-level fields:
 - **`scanned`** (bool, required): `true` if the subagent successfully read and classified the memory
-  files; `false` if it could not (permission error, empty-dir race, unexpected crash). This field
-  distinguishes a "subagent failure" from a legitimate "0 findings" result.
+  files; `false` if it could not (permission error, empty-dir race, unexpected crash). A missing or
+  null `scanned` field is treated as `false`. This field distinguishes a "subagent failure" from a
+  legitimate "0 findings" result.
+- **`reason`** (string, optional): when `scanned` is `false`, a one-line explanation of the failure
+  (e.g., "permission error reading memory dir", "memory dir was empty during scan"). Omit when
+  `scanned: true`. The orchestrator falls back to "subagent returned no data" when this field is
+  absent and the subagent returned nothing at all.
 - **`findings`** (list): one record per memory file with: file name, type, durable? (yes/no),
   instruction-home (path + verified yes/no, or "none"), disposition, a one-line rationale, and
   **for `promote` records additionally**: the rule text (verbatim or tight paraphrase), the suggested
@@ -142,8 +147,9 @@ The subagent returns a structured findings response with two top-level fields:
   empty list when `scanned: false`.
 
 If a subagent returns `scanned: false`, or returns nothing at all, **do not abort the whole run** —
-record the project name and the reason (or "subagent returned no data") in a running not-scanned
-list for Step 5, and continue with a partial report.
+record the project name and the `reason` field value (or "subagent returned no data" if the
+subagent returned nothing) in a running not-scanned list for Step 5, and continue with a partial
+report.
 
 ---
 
