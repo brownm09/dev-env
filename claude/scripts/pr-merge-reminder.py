@@ -361,7 +361,9 @@ def main() -> None:
             "  3. Write a <!-- session: <slug> --> block for this session."
             + shard_step + "\n"
             "  4. Add token comment and <!-- next-session-context --> paragraph.\n"
-            '  5. git commit -m "draft: YYYY-MM-DD session N" && git push'
+            "  5. git add the stub, manifest shard, and open-PR shard written above.\n"
+            '  6. git commit -m "draft: YYYY-MM-DD session N" -- <those same files>'
+            " && git push"
         )
 
     if is_merge:
@@ -374,7 +376,9 @@ def main() -> None:
             "  2. Check out or create the draft branch in engineering-journal.\n"
             "  3. Append a <!-- session: <slug> --> block documenting this PR merge.\n"
             "  4. Add token comment and <!-- next-session-context --> paragraph.\n"
-            '  5. git commit -m "draft: YYYY-MM-DD session N" && git push'
+            "  5. git add the updated stub (and manifest shard, if this session's own).\n"
+            '  6. git commit -m "draft: YYYY-MM-DD session N" -- <those same files>'
+            " && git push"
         )
 
     if is_push and not (is_create or is_merge):
@@ -401,7 +405,9 @@ def main() -> None:
                 "  2. Check out the draft branch in engineering-journal.\n"
                 "  3. Find today's stub for this session, or create one if absent.\n"
                 "  4. Add/update token comment and <!-- next-session-context --> paragraph.\n"
-                '  5. git commit -m "draft: YYYY-MM-DD session N" && git push'
+                "  5. git add the stub (and manifest shard, if this session's own).\n"
+                '  6. git commit -m "draft: YYYY-MM-DD session N" -- <those same files>'
+                " && git push"
             )
 
     if not messages:
