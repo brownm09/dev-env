@@ -66,6 +66,23 @@ A *test integrity violation* is defined as: adding a skip marker, deleting a tes
 
 ---
 
+## Amendment (2026-07-01) — word-boundary fix for the `xit\(` false positive
+
+Rule 3's grep pattern used bare `xit\(` to catch Mocha's `xit(` skip function. Because the check is a plain substring match, `xit\(` also matches inside any identifier ending in `...exit(` — most commonly Python's `exit(` / `sys.exit(` / `os._exit(` calls used throughout this repo's hook scripts as part of the safe-exit-guard convention, and any function name ending in `_exit(` (e.g. `..._on_clean_exit()`).
+
+This produced real false positives, each requiring a manual "these are not skip markers" note in the PR body: [dev-env#493](https://github.com/brownm09/dev-env/pull/493) (`sys.exit(0)`) and [dev-env#497](https://github.com/brownm09/dev-env/pull/497) (`sys.exit(0)` plus a `..._on_clean_exit()` function name).
+
+Fix: anchor the pattern on a word boundary — `\bxit\(` instead of `xit\(` — using GNU grep's `\b` extension (available in `-E` mode; confirmed on this repo's Git Bash / GNU grep). Verified empirically:
+
+```
+$ printf 'sys.exit(0)\nos._exit(1)\ndef clean_exit():\n  xit(%s\n' "'foo', () => {})" | grep -E '\bxit\('
+  xit('foo', () => {})
+```
+
+`sys.exit(0)`, `os._exit(1)`, and `clean_exit():` no longer match — there is no word boundary between `e` and `x` in either case — while a real Mocha `xit(` call still matches, since it is always preceded by whitespace, a quote, a paren, or line start, never by another word character. `claude/CLAUDE.md` Rule 3 was updated to `\bxit\(`; this ADR's original Decision code block above is left unchanged as the historical record. See [dev-env#501](https://github.com/brownm09/dev-env/issues/501).
+
+---
+
 ## References
 
 - [ADR-022 — Test Coverage Gate Before PR](022-test-coverage-gate-before-pr.md) — companion gate for *missing* tests on new behavior
