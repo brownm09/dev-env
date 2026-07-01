@@ -48,7 +48,7 @@ BETA_HEADER = "oauth-2025-04-20"
 KEEP_WARM_PS1 = "C:/Users/brown/.claude/scripts/keep-token-warm.ps1"
 
 # --- merge detection (command-shape scan; success confirmed via _hookio's
-# output marker -- mirrors post-pr-merge-project.py) ---
+# output marker — mirrors post-pr-merge-project.py) ---
 _MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
 
 
@@ -167,7 +167,7 @@ def merge_confirmed(command: str, output: str) -> bool:
 
     Gated on the marker, not the exit code: a worktree merge exits non-zero on
     local branch cleanup ("'main' is already checked out") even though the
-    remote merge succeeded (issue #275) -- the marker prints before that
+    remote merge succeeded (issue #275) — the marker prints before that
     cleanup tail runs. Trusting the exit code here (as this hook did before)
     silently dropped the snapshot on every worktree merge, the default flow in
     this repo (dev-env#474; mirrors post-pr-merge-project.py's
