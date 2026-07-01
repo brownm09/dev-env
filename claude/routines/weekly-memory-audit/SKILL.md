@@ -175,6 +175,10 @@ appears (no `jq` — parse with `node -e`):
 ISSUES="$SCRATCH/memaudit_issues_${R//\//_}.json"
 gh issue list --repo "${R}" --label memory-audit --state open --limit 500 \
   --json number,title,body > "$ISSUES" 2>/dev/null || echo '[]' > "$ISSUES"
+if ! node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" "$ISSUES" 2>/dev/null; then
+  echo "WARN: gh issue list failed for ${R} — skipping filing this run to avoid duplicates" >&2
+  continue
+fi
 
 # returns DUP or NEW for a given slug
 node -e '
