@@ -570,6 +570,49 @@ non-zero on the failed local-checkout tail, the `PostToolUse` post-merge hook do
 `### Usage Snapshot (post-merge)` block — it keys off a clean `gh pr merge`. When merging from a
 worktree, expect the snapshot to be absent and capture usage by other means for the journal stub.
 
+### Stacked PR squash-merge sequencing — never `--delete-branch` a base with an open child
+
+When a child PR's base branch is another (still-open) PR's branch — a *stacked PR* — merging the
+parent with `gh pr merge --squash --delete-branch` **orphans the child, unrecoverably**:
+
+- Deleting the base branch **auto-closes** the child PR (GitHub closes any PR whose base branch no
+  longer exists).
+- A closed PR's base **cannot be retargeted** — `gh pr edit <child> --base main` fails with
+  *"Cannot change the base branch of a closed pull request"* — and the PR **cannot be reopened**
+  (its base branch is gone). Both `gh pr edit --base` and `gh pr reopen` fail.
+- The child's diff also goes `CONFLICTING`: `main` now carries the **squashed** base content, while
+  the child branch still carries the base's original commits separately, underneath its own — so a
+  3-way merge sees the base's changes on both sides at the same locations.
+
+**Recovery (validated 2026-06-30).** The child branch's own commits are fine — only the PR object is
+unrecoverable. Replay just the child's commits onto the new `main` and open a fresh PR:
+
+```bash
+git rebase --onto origin/main <old-base-tip-SHA> <child-branch>
+git push --force-with-lease origin <child-branch>
+# then: gh pr create — the old PR number is lost, its base can't be fixed
+```
+
+`<old-base-tip-SHA>` is the parent branch's tip commit before it was squashed into `main` (`git log
+<child-branch>` to find where the parent's commits end and the child's begin). The rebase drops the
+now-squashed parent commits and keeps only the child's, producing a clean single-purpose diff against
+`main`.
+
+**Prevention.** For a stacked PR pair (child's base = parent's branch), sequence the merge so the
+child is never left pointing at a branch you're about to delete:
+
+1. Merge the parent with `--squash` **without** `--delete-branch`.
+2. Retarget the child to `main` while it's still open: `gh pr edit <child> --base main`.
+3. `git rebase --onto origin/main <parent-tip-SHA> <child-branch>` and force-push, so the child's
+   diff is clean against `main`.
+4. Merge the child, *then* delete both branches.
+
+Simplest alternative: don't stack when the two changes can ship as independent PRs off `main`.
+
+Motivating incident: career-playbook [#587](https://github.com/brownm09/career-playbook/pull/587)
+(Step 4.7) / [#591](https://github.com/brownm09/career-playbook/pull/591) (Step 4.8, which superseded
+the orphaned #588).
+
 ### Separate clones for fully independent parallel work
 
 Worktrees share the `.git` ref database (branches, stash, FETCH_HEAD, packed-refs). When two sessions
