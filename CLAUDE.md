@@ -489,6 +489,23 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     bash claude/scripts/tests/test-merge-stale-pr.sh
     ```
 
+35. **worktree-canon shared-module test** — required when changing `claude/scripts/_worktree_canon.py`.
+    Exercises the pure `canonical_root_from_worktree()` / `canonical_repo_root()` helpers offline (no
+    I/O): pins the shared `_WORKTREE_RE` match (forward-slash, backslash, a cwd nested below the
+    worktree name, POSIX paths) side by side with each function's own no-match contract —
+    `canonical_root_from_worktree` returns `None` (post-tool-use.py's `load_config()` uses this to know
+    whether to fall through to the sibling-worktree git fallback, which is not shared here), while
+    `canonical_repo_root` returns the input unchanged (reconcile-project-board.py's `default_repo_root()`
+    always has a real path and would crash `os.path.join` on `None`) — including on a sibling worktree
+    path (e.g. `dev-env-188`, outside `.claude/worktrees/`, so the regex misses it by design) and on
+    empty/`None` input. `post-tool-use.py`'s and `reconcile-project-board.py`'s own test files continue
+    to exercise the same functions unchanged, through the module-attribute indirection `from X import Y`
+    preserves. [ADR-073](docs/adr/073-shared-worktree-canon-gh-project-modules.md)
+
+    ```bash
+    py -3 claude/scripts/tests/test_worktree_canon.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

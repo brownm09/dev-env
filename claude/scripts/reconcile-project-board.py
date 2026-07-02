@@ -29,7 +29,8 @@ instead; only a `gh` `project`-scope failure aborts the whole scan. The default 
 root is the *canonical* checkout of the repo this script lives in: when invoked from a
 Claude-managed worktree (`.../.claude/worktrees/<name>/...`, where the gitignored
 hook-config is absent) the canonical root is derived by stripping the worktree
-segment, matching `post-tool-use.py`. Repos discovered by `--scan-dir` are always
+segment, via the shared `_worktree_canon.canonical_repo_root` (dev-env#454, ADR-073) —
+the same resolver `post-tool-use.py` uses. Repos discovered by `--scan-dir` are always
 primary checkouts (worktrees are excluded by construction — see `find_git_repos`), so
 canonicalization never applies to them.
 
@@ -57,13 +58,16 @@ Exit 1  — single-repo mode: operational failure (no config, gh list failed, mi
           printed before exiting, in every case above, so the routine's "read the final
           RESULT: line" instruction always has something to read.
 
-The pure helpers (canonical_repo_root / open_issue_numbers / board_issue_numbers /
+The pure helpers (open_issue_numbers / board_issue_numbers /
 compute_orphans / field_key / colliding_required_fields / is_truncated /
 item_missing_fields / board_items_missing_fields / looks_like_scope_error /
 render_report / render_scan_summary / _added_and_failed / _validated_config) are
 unit-tested offline in tests/test_reconcile_project_board.py — _validated_config needs
 only a real tmp-dir hook-config.json, no gh/mocking, so its ok / no-config / bad-config
-statuses (including a non-dict top-level JSON payload) are pinned directly. The gh
+statuses (including a non-dict top-level JSON payload) are pinned directly.
+`canonical_repo_root` and `add_to_project` are shared with post-tool-use.py via
+`_worktree_canon.py` and `_gh_project.py` respectively (dev-env#454, ADR-073) —
+`canonical_repo_root` is unit-tested offline in tests/test_worktree_canon.py, and the gh
 boundary (fetch_* / add_to_project) is not mocked, matching the repo's no-subprocess-mock
 convention. find_git_repos is imported from the shared _repo_scan module (ADR-072) —
 its own unit tests live in tests/test_repo_scan.py, shared with prune-merged-worktrees.py
@@ -75,22 +79,14 @@ import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 
+from _gh_project import add_to_project
 from _repo_scan import find_git_repos
+from _worktree_canon import canonical_repo_root
 
 CONFIG_FILE = ".claude/hook-config.json"
-
-# Matches `<root>/.claude/worktrees/<name>` at the start of a path, capturing the
-# canonical repo root (everything before `/.claude/`). Identical to the prefix regex
-# in post-tool-use.py so the two agree on where a Claude-managed worktree's canonical
-# checkout lives; tolerates `/` and `\` separators.
-_WORKTREE_RE = re.compile(
-    r"^(.+?)[/\\]\.claude[/\\]worktrees[/\\][^/\\]+",
-    re.IGNORECASE,
-)
 
 # `gh project item-list --format json` items may expose any of these as gh's own built-in
 # top-level keys — the exact set observed varies by which system fields a given project
@@ -113,16 +109,6 @@ class GhError(RuntimeError):
 
 
 # --- pure helpers (unit-tested in tests/test_reconcile_project_board.py) ------
-
-
-def canonical_repo_root(path: str) -> str:
-    """Canonical checkout root for `path`. If `path` is inside a Claude-managed
-    worktree (`.../.claude/worktrees/<name>/...`), return everything before
-    `/.claude/worktrees/` — the canonical checkout, where the machine-local
-    `.claude/hook-config.json` actually lives. Otherwise return `path` unchanged.
-    Pure — no I/O, so it is exercised offline by the unit tests."""
-    m = _WORKTREE_RE.match(path or "")
-    return m.group(1) if m else (path or "")
 
 
 def field_key(field_name: str) -> str:
@@ -447,28 +433,6 @@ def fetch_board_items(project_number: str, owner: str, limit: int = 1000) -> lis
     return items
 
 
-def add_to_project(url: str, project_number: str, owner: str) -> tuple[str | None, str]:
-    """Add an issue URL to the project; return (new item ID, stderr). item ID is None on
-    failure; stderr is "" on success. The caller uses stderr to tell a transient failure
-    (self-heals on the next run) apart from a `project`-scope failure (persists every run
-    until `gh auth refresh -s project`) — read-scope and write-scope are distinct GitHub
-    OAuth scopes, so a token that can list but not add would otherwise fail every orphan,
-    every night, as an indistinguishable [ADD FAILED - re-run]."""
-    try:
-        result = subprocess.run(
-            [
-                "gh", "project", "item-add", str(project_number), "--owner", owner,
-                "--url", url, "--format", "json",
-            ],
-            capture_output=True, text=True, encoding="utf-8", timeout=30,
-        )
-        if result.returncode != 0:
-            return None, (result.stderr or "").strip()
-        return json.loads(result.stdout).get("id"), ""
-    except Exception as e:
-        return None, str(e)
-
-
 def _reconcile_repo(config: dict, dry_run: bool) -> dict:
     """Fetch, compute orphans, add them (unless dry_run), and print the report for one
     repo whose config has already been validated (repo/project_number/project_owner
@@ -505,7 +469,7 @@ def _reconcile_repo(config: dict, dry_run: bool) -> dict:
     scope_warned = False
     if not dry_run:
         for o in orphans:
-            item_id, err = add_to_project(o["url"], project_number, owner)
+            item_id, err = add_to_project(o["url"], project_number, owner, timeout=30)
             o["item_id"] = item_id
             if item_id is None and not scope_warned and looks_like_scope_error(err):
                 print(
