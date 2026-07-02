@@ -348,7 +348,13 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     Exercises `prune_one()` via subprocess mocking (subprocess.run mocking, unlike the other offline
     pure-helper tests): pins that a `subprocess.TimeoutExpired` from a slow `git worktree remove` is caught, the timed-out
     worktree is counted as skipped, and the prune loop continues rather than propagating the exception
-    and aborting the scan ([dev-env#350](https://github.com/brownm09/dev-env/issues/350)). The
+    and aborting the scan ([dev-env#350](https://github.com/brownm09/dev-env/issues/350)). Also exercises
+    the ADR-075 ephemeral-diff prunability signal offline: `files_are_all_ephemeral()` (matches-all,
+    one-mismatch, the empty-patterns opt-in gate, and empty-files all resolve correctly) and
+    `load_ephemeral_patterns()` against a real tmp `.claude/hook-config.json` (reads a configured
+    list; fails open to `[]` on a missing file, missing key, malformed JSON, a non-list value, a
+    non-string element, or an invalid regex — the last case also prints a `WARNING:` line, captured
+    via `redirect_stdout`). The
     merge-detection and worktree-list steps are not covered here — they are exercised end-to-end by
     `--dry-run` in the PR.
 

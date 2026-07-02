@@ -14,7 +14,10 @@ the normal merged-branch path once it is idle and clean.
 
 Safe: skips the current worktree, dirty worktrees, live-session worktrees (ADR-051), and
       any non-claude/* branch (unless that branch is main, which is parked off — main
-      cannot have unmerged work by definition).
+      cannot have unmerged work by definition). Also treats a branch as merged if its
+      entire diff vs. origin/main matches a per-repo opt-in prune_ephemeral_patterns
+      config (see .claude/hook-config.json; ADR-075) — an additional signal that stays
+      off unless a repo explicitly configures it.
 Uses git branch -d (not -D), git worktree remove (no --force), and git checkout -b (parking).
 
 Auto-detects the GitHub repo slug from the remote URL, so the script works
@@ -32,8 +35,21 @@ Usage:
   --liveness-window-min N
                Skip any worktree whose Claude transcript was written within the last N
                minutes (an active session). Defaults to 1440 (24h). See ADR-051.
+
+Per-repo opt-in config (.claude/hook-config.json):
+  "prune_ephemeral_patterns": [<regex strings>]
+               A branch not otherwise detected as merged is still treated as merged if
+               every file in its diff vs. origin/main matches at least one of these
+               regexes. For a workflow where a throwaway branch's content is folded into
+               another branch and then deleted (e.g. engineering-journal's
+               journal-compose, which deletes per-session scaffolding from main after
+               composing it into a canonical doc), that scaffolding is safe to discard
+               even though the branch itself was never merged or given its own PR.
+               Absent or empty -> feature off (default, zero behavior change). See
+               ADR-075.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+import json
 import os
 import re
 import subprocess
@@ -114,6 +130,74 @@ def is_dirty(path: str) -> bool:
         return True
     r = run(["git", "status", "--porcelain"], cwd=path)
     return bool(r.stdout.strip())
+
+
+CONFIG_FILE = ".claude/hook-config.json"
+
+
+def diff_files(branch: str, repo: str) -> list[str]:
+    """Files changed on branch relative to origin/main, via git diff --name-only.
+
+    Uses the three-dot form (origin/main...branch, i.e. diff against the merge-base, not
+    origin/main's current tip) — origin/main normally moves on while a worktree sits idle,
+    so two-dot (direct tip-to-tip) would silently change semantics. Returns [] on any git
+    failure -- the caller treats an empty list as "no files to prove ephemeral", which the
+    empty-patterns guard already makes safe: it can only ever suppress a prune, never force
+    one.
+    """
+    r = run(["git", "diff", "--name-only", f"origin/main...{branch}"], cwd=repo)
+    if r.returncode != 0:
+        return []
+    return [line for line in r.stdout.splitlines() if line.strip()]
+
+
+def files_are_all_ephemeral(files: list[str], patterns: list[str]) -> bool:
+    """True when every file in files matches at least one regex in patterns.
+
+    Empty patterns -> always False (an unconfigured repo's diff is never treated as
+    ephemeral -- this is the opt-in gate). Empty files -> also False (nothing to prove
+    ephemeral; a zero-diff branch is already caught by is_merged()'s ancestor check before
+    this function is ever consulted). A malformed regex propagates re.error to the caller,
+    which catches it per-repo (see load_ephemeral_patterns) so one bad pattern cannot raise
+    mid-scan.
+    """
+    if not patterns or not files:
+        return False
+    compiled = [re.compile(p) for p in patterns]
+    return all(any(c.search(f) for c in compiled) for f in files)
+
+
+def load_ephemeral_patterns(repo: str) -> list[str]:
+    """Read prune_ephemeral_patterns (list[str] of regexes) from repo's hook-config.json.
+
+    Fail-open to [] (feature off) on: missing file, missing key, malformed JSON, or a
+    present-but-non-list value -- matching this codebase's existing hook-config.json reader
+    conventions (e.g. turn-count-hook.py's load_prompt_threshold). An empty list value (key
+    present, explicitly []) also returns [] and is indistinguishable from "absent" by design
+    -- both mean "feature off", never "everything matches".
+
+    Also validates every pattern compiles as a regex; if any does not, prints a warning and
+    returns [] for the WHOLE list (not just the bad entry) -- a config with one malformed
+    pattern must not partially enable the feature with silently-different semantics than
+    what the user wrote.
+    """
+    path = os.path.join(repo, CONFIG_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    patterns = config.get("prune_ephemeral_patterns", [])
+    if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
+        return []
+    try:
+        for p in patterns:
+            re.compile(p)
+    except re.error as exc:
+        print(f"  WARNING: invalid prune_ephemeral_patterns regex in {path}: {exc} -- "
+              f"ephemeral-diff pruning disabled for this repo")
+        return []
+    return patterns
 
 
 def primary_worktree_path(worktrees: list[dict]) -> str:
@@ -202,8 +286,10 @@ def prune_one(repo: str, dry_run: bool, liveness_window_seconds: int) -> tuple[i
             continue
 
         if not is_merged(branch, gh_repo, repo):
-            skipped.append((path, "not merged into origin/main"))
-            continue
+            patterns = load_ephemeral_patterns(repo)
+            if not (patterns and files_are_all_ephemeral(diff_files(branch, repo), patterns)):
+                skipped.append((path, "not merged into origin/main"))
+                continue
 
         if is_dirty(path):
             skipped.append((path, "has uncommitted changes"))
