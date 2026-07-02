@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01 (four amendments — see Amendment sections below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch
+**Amended:** 2026-07-01, 2026-07-02 (five amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex
 
 ---
 
@@ -223,3 +223,85 @@ own confirming signal, not a proxy or a signal borrowed from an unrelated branch
 than the merge marker itself; the *dispatch structure* around multiple signals sharing one
 function needs the same scrutiny. A shared early-exit is itself a proxy for "everything in this
 function is OK," which breaks the moment two independently-gated outcomes share one command.
+
+## Amendment 5 (2026-07-02) — extracting `scan_top_level` into `_hookio.py` fixes `post-tool-use.py`'s unanchored create-detection
+
+Unlike Amendments 1-4 (all about the output-reading fix — the field-precedence bug ADR-049
+identified and its knock-on effects), this amendment extends `_hookio.py`'s shared surface with an
+unrelated command-*parsing* engine, for the same practical reason as every prior amendment: one
+shared implementation instead of drifting copies across sibling hooks.
+
+`pr-merge-reminder.py`'s stack-based statement parser (`_scan_top_level` / `_find_heredoc_end`) was
+already settled, correct infrastructure for its own `gh pr merge` / `gh pr create` / `git push`
+detection. `post-tool-use.py` (the project-board-add hook) never had that infrastructure at all: it
+detected `gh issue create` / `gh pr create` with a plain, unanchored
+`re.search(r"\bgh\s+issue\s+create\b", command)` / `re.search(r"\bgh\s+pr\s+create\b", command)`
+over the **entire raw Bash command string** — the exact naive-substring-match failure mode
+`_scan_top_level` was built to prevent, just never ported to this hook.
+
+**Symptom (dev-env#499):** reproduced four times in the dev-env#494 fix session (2026-07-01) alone —
+a `git commit -m "..."` message, a `grep -E '...'` pattern argument, a `gh project item-edit --text
+"..."` value, and a `gh pr comment --body "..."` all quoted the example command `gh pr create --fill
+&& gh pr merge --auto` while describing the #494 fix, and each spuriously matched `is_pr_create`. No
+harmful mutation occurred in any of the four (no GitHub URL was present in the unrelated command's
+output, so `add_to_project` was never reached) — the impact was a misleading stderr advisory each
+time — but a false-positive command whose output *happens* to contain an unrelated GitHub URL could
+add the wrong item to the project board.
+
+**Fix:** promoted `_scan_top_level` (renamed `scan_top_level`, now public since it is a cross-hook
+API) and `_find_heredoc_end` (stays private — nothing outside `scan_top_level` calls it directly)
+from `pr-merge-reminder.py` into `_hookio.py`, unchanged in behavior. `pr-merge-reminder.py` now
+imports `scan_top_level` rather than defining its own copy; its three `is_pr_merge_command` /
+`is_pr_create_command` / `is_git_push_command` wrappers are otherwise untouched, and its previously
+sole consumer of `from collections.abc import Callable` moved with the function, so that import was
+removed. `post-tool-use.py` gains its own `is_issue_create_command` / `is_pr_create_command`
+wrappers (new regexes + anchored check functions, mirroring `pr-merge-reminder.py`'s existing style
+down to the harmless-but-consistent optional `cd ... &&` prefix tolerance) built on the shared
+`scan_top_level` engine, replacing the two unanchored `re.search` calls in `main()`.
+
+**Scope decision — only the engine is shared, not the wrapper functions.** `pr-merge-reminder.py`'s
+`is_pr_create_command` and `post-tool-use.py`'s new `is_pr_create_command` are separate, near-
+identical 2-line functions, not one hoisted implementation. This was a deliberate choice, not an
+oversight: the two hooks' create-detection needs already diverge (`post-tool-use.py` needs an
+issue-vs-PR union; `pr-merge-reminder.py` needs PR-only), so a single shared wrapper would need
+immediate parameterization neither caller asks for today — premature generalization with a real
+coupling cost (a future divergence in one hook's needs would ripple into the other) and no present
+duplication of the part that actually matters (the ~130-line parser, which *is* shared). This
+mirrors the existing precedent of `effective_merge_dir` (shared) coexisting with
+`_effective_push_dir` (deliberately not shared) in this exact module.
+
+**A related but narrower implementation, left out of scope.**
+`pre-tool-use-canonical-mutate-guard.py` also has heredoc/quote-adjacent handling
+(`_strip_heredoc_command_subs` + a `_SEGMENT_SPLIT` regex), but it is not equivalent protection to
+`scan_top_level`: it targets one specific `$(cat <<[-]['"]MARKER['"] ... MARKER)` idiom, and its
+segment splitter has no quote-tracking at all (a `git commit -m "text && rm -rf /"`-shaped command is
+mis-split by that hook's splitter today — it merely doesn't matter yet because "text" isn't a
+mutating verb it scans for). Converging it onto `scan_top_level` would need that hook to also expose
+per-segment iteration with cwd-redirect detection, not just a boolean reducer — a real API mismatch,
+not simple reuse. Flagged as a candidate follow-up (tracked via a spawned background task after this
+PR merges), not bundled here.
+
+**Coverage:** `test_hookio.py` gains direct engine-level tests for `scan_top_level` (anchored-match
+semantics; non-splitting inside single/double quotes, `$()` subshells, and heredoc bodies; splitting
+on `&&`, `;`, `||`, and newline). `test_post_tool_use.py` gains tests for the two new wrapper
+functions, including the four dev-env#499 false-positive reproductions (heredoc-embedded commit
+body, quoted commit message, grep pattern argument, `--text` field value) for **both**
+`gh pr create` and `gh issue create`, plus subshell/double-quote/cd-prefix/chained-with-merge cases
+mirroring the ones already proven in `test_pr_merge_reminder.py`, plus an end-to-end pair driving the
+real hook over stdin (`subprocess.run([sys.executable, ...])`, the same pattern
+`test_worktree_path_check.py` and `test_canonical_mutate_guard.py` already use) that pins the
+pre-existing `exit_code != 0` gate immediately downstream of the detection swap: identical
+command/config/output differing only in `exitCode` yields exit 0 (silent) vs. exit 2 (the "no
+GitHub URL found" advisory) — proving detection fired correctly *and* the gate still short-circuits,
+without either branch ever invoking a live `gh`/network call. `test_pr_merge_reminder.py` is
+unchanged and continues to pass (42/42), now exercising `scan_top_level` through its `_hookio` import
+rather than a local definition — its four subshell/quote/heredoc-specific cases
+(`test_create_inside_subshell_not_matched`, `test_create_inside_double_quotes_not_matched`,
+`test_create_in_heredoc_not_matched`, `test_push_inside_subshell_not_matched`) are the canaries most
+likely to catch any behavior drift from the relocation, and all four still pass unchanged.
+
+**General lesson (continuing Amendments 1 and 2's):** a fix scoped to one hook in this family is a
+standing invitation to check whether every sibling hook that does the same *kind* of thing (read
+command output; detect a specific CLI invocation) has the same fix — the sweep in Amendment 1 found
+one missed sibling for the output-reading fix; this amendment is that same sweep for the
+statement-scanning fix, one release later.
