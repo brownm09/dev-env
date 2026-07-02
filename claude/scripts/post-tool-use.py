@@ -100,6 +100,8 @@ def canonical_root_via_git(cwd: str) -> str | None:
     raising. Only the `subprocess.run` call is untested (repo convention,
     cf. add_to_project); the pure resolution is `_canonical_root_from_common_dir`."""
     try:
+        # text=True decodes as UTF-8 (not the Windows cp1252 default) via the
+        # _winsubp patch imported above — dev-env#503.
         result = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
             capture_output=True,

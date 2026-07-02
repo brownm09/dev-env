@@ -506,6 +506,32 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_worktree_canon.py
     ```
 
+36. **`_winsubp` shared-module test** — required when changing `claude/scripts/_winsubp.py`. Exercises the
+    pure `_apply_windows_subprocess_defaults(kwargs)` helper offline (a plain dict in, no subprocess spawn,
+    no mock): pins the `CREATE_NO_WINDOW` constant value, that `creationflags` is OR-merged (not overwritten)
+    with any existing value (the dev-env#297 behavior, now covered for the first time), that
+    `encoding="utf-8", errors="replace"` is defaulted onto a call requesting text mode (`text=True`, the
+    legacy `universal_newlines=True`, or `errors=` alone — Popen enters text mode whenever any of
+    `encoding`/`errors`/`text`/`universal_newlines` is truthy) with no `encoding=` of its own, that
+    binary-mode calls are left untouched, that an explicit `encoding=` (or `errors=`) from the caller is
+    never overridden, and that the function mutates and returns the *same* dict object — an invariant the
+    patched `Popen.__init__` relies on since it doesn't reassign the return value. A second check in
+    `claude/scripts/tests/test_pyw_stdio.py` reproduces the exact dev-env#503 crash end-to-end under a
+    real `pyw -3` child: byte `0x9d` (unmapped in cp1252, the Windows default codepage) is written by a
+    grandchild process and asserted to decode as U+FFFD rather than being silently lost (the reader-thread
+    exception does not propagate to the caller — see that test's docstring for the mechanism). Originally
+    motivated by a crash reading `gh project item-add`'s output in `post-tool-use.py`'s `add_to_project` —
+    independently fixed by PR #507's extraction of that function into `_gh_project.py` (explicit
+    `encoding="utf-8"`) before this fix merged. This module's ongoing value is the repo-wide default for
+    every *other* subprocess-using script's text-mode call that doesn't set its own encoding (e.g.
+    `canonical_root_via_git` in `post-tool-use.py`, `confirm_merge_via_gh` in `_hookio.py`, and ~20 further
+    scripts that all already import `_winsubp`) ([ADR-007 → 2026-07-02 follow-up](docs/adr/007-hook-command-invocation.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_winsubp.py
+    py -3 claude/scripts/tests/test_pyw_stdio.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

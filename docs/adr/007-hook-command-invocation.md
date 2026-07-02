@@ -80,6 +80,20 @@ After the `_winsubp` follow-up above, a residual `py.exe` flash persisted on eve
 
 **Verification:** Test suite still passes (5/5). Cosmetic flash absence is verified manually after Claude Code reloads the patched script — there is no programmatic way to detect "no console window was allocated."
 
+### 2026-07-02 (follow-up 3) — Default subprocess text-mode output to UTF-8 via `_winsubp` ([dev-env#503](https://github.com/brownm09/dev-env/issues/503))
+
+`post-tool-use.py`'s `add_to_project()` crashed with `UnicodeDecodeError: 'charmap' codec can't decode byte 0x9d` reading `gh project item-add`'s stdout, immediately after a successful `gh pr create` for PR #502. Root cause: `subprocess.run(..., text=True)` with no `encoding=` decodes a child's output using `locale.getpreferredencoding(False)` — cp1252 on this machine — rather than UTF-8. `gh`/`git` can emit UTF-8 multi-byte sequences (e.g. em-dashes or curly quotes echoed back from a PR/issue title), and cp1252 cannot represent every UTF-8 byte value, so the read crashes. The same gap existed in `canonical_root_via_git()` (same file) and `confirm_merge_via_gh()` in `_hookio.py`.
+
+The crash happens inside `subprocess.run`'s internal stdout-reader *thread*, so it never reaches the calling code's `try/except` — Python's default unhandled-thread-exception hook prints it to stderr and the read is simply lost (`result.stdout` ends up `None`). `add_to_project()`'s own `except Exception: return None` then caught the *secondary* failure (`json.loads(None)`), which is why the hook's user-visible symptom was the generic "auto-add to project failed" fallback rather than a stack trace pointing at the real cause.
+
+**Fix:** Extend the same `_winsubp.py` seam the 2026-06-01 follow-up above established, rather than editing each call site. `_apply_windows_subprocess_defaults` (the creationflags-merge logic, now extracted into a standalone pure function) also defaults `encoding="utf-8", errors="replace"` when a call requests text mode (`text=True` / `universal_newlines=True`) and doesn't already specify an encoding. An explicit `encoding=` (or `errors=`) from the caller is never overridden.
+
+**Why extend `_winsubp` rather than fix the 3 known call sites:** identical reasoning to the 2026-06-01 follow-up above — one well-defined seam, invariant-preserving (no existing call passes `encoding=`, so defaulting it is safe), and it protects every subprocess-using script in the repo for free, since `test_pyw_stdio.py` already requires all of them to import `_winsubp`. Verified: a repo-wide scan at fix time found the identical `text=True`-without-`encoding=` gap in ~20 other scripts; extending `_winsubp` closed all of them in one change instead of ~20 individual edits.
+
+**Also fixed:** `_hookio.py`'s `confirm_merge_via_gh` used `subprocess.run` without `_hookio.py` itself importing `_winsubp` — it was only protected because every current caller happens to import `_winsubp` first. Added the import directly to `_hookio.py` so the module is self-sufficiently correct regardless of caller diligence. (The blanket underscore-prefixed-file exemption in `test_every_subprocess_using_hook_imports_winsubp`, which is why this gap wasn't already caught statically, is tracked as a separate follow-up rather than fixed here.)
+
+**Verification:** `claude/scripts/tests/test_winsubp.py` (new) pins `_apply_windows_subprocess_defaults`'s behavior offline — pure-function tests, no subprocess spawn, matching this repo's test convention. `test_pyw_stdio.py` gained a 7th check that reproduces the exact reported crash end-to-end: a `pyw -3` child spawns a grandchild that writes byte `0x9d` (the exact byte from the dev-env#503 traceback) and asserts it decodes to U+FFFD instead of being silently lost.
+
 ---
 
 ## Decision
@@ -102,6 +116,7 @@ If a future Claude Code version invokes hooks through a different shell context 
 - Any new hook that imports `subprocess` (directly or indirectly) **must** add `import _winsubp` near the top of its imports. The static test in `test_pyw_stdio.py` fails the build if a subprocess-using hook ships without it.
 - Any hook in `claude/scripts/` that spawns Python as a subprocess **must** use `sys.executable` (or `pyw -3` if the command must be a literal string), never `py` or `py -3`. Naming `py` chains through the `py.exe` console-subsystem launcher, which spawns `python.exe` without propagating `CREATE_NO_WINDOW` — Windows then allocates a fresh console for the grandchild, re-introducing the flash that `_winsubp` thought it had eliminated. Enforced by `test_pyw_stdio.py` test 6 (AST-based scan).
 - If `py.exe` or `pyw.exe` is missing on a future machine, install the python.org distribution which bundles the launcher.
+- Any text-mode (`text=True` / `universal_newlines=True`) `subprocess.run`/`Popen` call made anywhere in a process that has imported `_winsubp` is decoded as UTF-8 with `errors="replace"` by default, unless the caller explicitly passes its own `encoding=`. New subprocess calls do **not** need to (and should not redundantly) pass `encoding="utf-8"` themselves. This is process-wide, not per-file: it takes effect once *anything* in the process has imported `_winsubp` (typically the entry-point hook script, near its top), not only in the file that happens to make the call — see `_hookio.py`'s subprocess call for an example that relies on this. `test_winsubp.py`'s tests of `_apply_windows_subprocess_defaults` are the source of truth for the exact defaulting rules (creationflags OR-merge + encoding/errors default, both caller-overridable).
 
 ---
 

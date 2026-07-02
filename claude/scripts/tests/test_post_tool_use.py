@@ -25,7 +25,10 @@ These tests exercise the pure helpers offline (no network, no gh subprocess),
 matching the repo's fixture-only test convention. `add_to_project` (the live gh
 call) and the `subprocess.run` in `canonical_root_via_git` are not tested — they
 shell out — but the pure resolver it delegates to, `_canonical_root_from_common_dir`,
-is covered.
+is covered. Their UTF-8 output-decoding behavior (dev-env#503 — both calls used to
+crash with UnicodeDecodeError on Windows) is covered separately by
+`test_winsubp.py`'s tests of `_apply_windows_subprocess_defaults`, the shared
+helper both calls now go through via the `_winsubp` import at the top of this file.
 
 Usage:
     py -3 claude/scripts/tests/test_post_tool_use.py
