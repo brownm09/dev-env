@@ -93,6 +93,7 @@ make_fixture() {
 
     git checkout -q -b "$branch"
     date_part="${branch#draft/}"
+    mkdir -p sessions/testproj
     echo "session marker" > sessions/testproj/.session-marker
     if [[ "${SKIP_COMPOSED:-0}" != "1" ]]; then
       echo "composed journal" > "sessions/testproj/${date_part}-composed.md"
@@ -104,7 +105,7 @@ make_fixture() {
     git add -A
     git commit -qm "session work for $date_part"
     git push -q -u origin "$branch"
-  ) >/dev/null 2>&1
+  ) >/dev/null 2>&1 || { echo "FATAL: fixture setup failed for branch $branch" >&2; exit 1; }
   pre_sha=$(git -C "$work" rev-parse HEAD)
   echo "$work $bare $pre_sha"
 }

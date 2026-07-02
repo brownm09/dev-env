@@ -469,8 +469,8 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     branch with no orphaned drafts skips Step 4 without a spurious commit and runs to completion; that
     multiple orphaned drafts across different directories are all included in one commit (guards the
     `"${DRAFT_FILES[@]}"` array handling); and that a missing composed-journal file plus a declined prompt
-    aborts before any mutation. The rebase (Step 5) and push (Step 6) steps run for real against the fixture
-    remote; `gh pr view` / `gh pr merge` are the only stubbed calls.
+    aborts before any mutation. Rebase and push (Step 5) run for real against the fixture remote; only
+    `gh pr view` (Step 1) and `gh pr merge` (Step 6) are stubbed.
 
     ```bash
     bash claude/scripts/tests/test-merge-stale-pr.sh
