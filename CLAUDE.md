@@ -389,8 +389,13 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `cd <repo> && git push` target — so a cross-repo push is evaluated against THAT repo, not the
     session cwd — and falls back to cwd for a bare push; and that `_is_successful_merge_call` gates
     solely on gh's success marker, not the exit code, so an exit-0 non-merge invocation like
-    `gh pr merge --help` no longer fires the reminder (dev-env#485). The live `_open_pr_for_cwd`
-    subprocess boundary is not covered (the repo avoids subprocess mocks).
+    `gh pr merge --help` no longer fires the reminder (dev-env#485). Also exercises `_build_messages`'s
+    `live_confirmed: bool | None` parameter (dev-env#504 — the live `gh pr view` fallback for when the
+    marker itself is lost, dev-env#489): `True` overrides a marker-less `merge_ok` to fire the merge
+    reminder, `False` leaves it unfired, and the default `None` (every pre-existing call in this suite)
+    reproduces the exact pre-#504 marker-only behavior — `main()`, not `_build_messages`, decides
+    whether to attempt the live call, so this suite never shells out. The live `_open_pr_for_cwd` and
+    `confirm_merge_via_gh` subprocess boundaries are not covered (the repo avoids subprocess mocks).
 
     ```bash
     py -3 claude/scripts/tests/test_pr_merge_reminder.py

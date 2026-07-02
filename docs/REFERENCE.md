@@ -666,20 +666,25 @@ legitimately absent for reasons unrelated to the worktree-exit-code case: `.cred
 missing or unparseable, an expired refresh token, or the usage API unreachable after one retry —
 all intentionally silent-or-advisory per the hook's own docstring, not a regression of this fix.
 Separately: the observed *symptom* — no PostToolUse hook output surfacing in chat when the
-*parent* `gh pr merge` call itself is shown as an error (non-zero exit) — has now recurred in all
-three occurrences examined (the two instances behind this fix, plus dev-env PR #512 on
-2026-07-02). The *mechanism* remains unconfirmed and is likely confounded rather than a distinct
-platform behavior: gh's own stdout success marker is independently known to be lost on this exact
-failure path (dev-env#489, root-caused), the `gh pr view` fallback that works around that covers
-only 1 of the 6 marker-gated hooks (dev-env#504, open), and even that one hook's silence is
-inconclusive on its own — the fallback could race or fail silently rather than its stderr being
-dropped (dev-env#498, open). No occurrence yet isolates a hook whose merge-detection is
-independently known to have succeeded — not just inferred from a Done-status that GitHub's native
-close automation equally explains — with its stderr still failing to surface (dev-env#521). Until
-dev-env#498/#504 resolve that ambiguity, confirm a hook actually ran by checking its side effect
-(e.g. the linked issue's board status) rather than assuming absence of visible reminder text means
-the hook didn't fire — and don't over-read that absence as proof the hook's stderr specifically
-was dropped.
+*parent* `gh pr merge` call itself is shown as an error (non-zero exit) — has now recurred in at
+least four occurrences examined (the two instances behind this fix, dev-env PR #512 on
+2026-07-02, and career-playbook PR #635 on 2026-07-02 — the first occurrence outside dev-env
+itself, confirming the gap is a property of the shared *global* hook architecture rather than
+anything specific to dev-env's own worktree/board setup, since these hooks fire for every repo
+without a `hook-config.json` opt-in requirement). The *mechanism* remains partially unconfirmed:
+gh's own stdout success marker is independently known to be lost on this exact failure path
+(dev-env#489, root-caused), and the `gh pr view` fallback that works around that now covers all
+6 marker-gated hooks (dev-env#504, closed by the dev-env#504 rollout PR — [ADR-050 Amendment
+8](adr/050-shared-hookio-sibling-hook-fixes.md)) — but even the original hook to receive that
+fallback (`post-pr-merge-project.py`, Amendment 3) has inconclusive evidence of it actually firing
+on its own: the fallback could race or fail silently rather than its stderr being dropped
+(dev-env#498, open). No occurrence yet isolates a hook whose merge-detection is independently
+known to have succeeded — not just inferred from a Done-status that GitHub's native close
+automation equally explains — with its stderr still failing to surface (dev-env#521). Until
+dev-env#498 resolves that ambiguity, confirm a hook actually ran by checking its side effect (e.g.
+the linked issue's board status) rather than assuming absence of visible reminder text means the
+hook didn't fire — and don't over-read that absence as proof the hook's stderr specifically was
+dropped.
 
 ### Stacked PR squash-merge sequencing — never `--delete-branch` a base with an open child
 

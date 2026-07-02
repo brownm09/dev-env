@@ -35,6 +35,15 @@ reaching that call by only combining is_push=True with a failing
 create_push_ok or with is_create/is_merge also true — both conditions
 short-circuit before _open_pr_for_cwd would be invoked.
 
+dev-env#504 added a live `gh pr view` fallback (dev-env#489's fix, already
+wired into post-pr-merge-project.py) for when gh's marker doesn't survive a
+worktree merge's local-cleanup failure. `main()` resolves that live check
+itself and passes the result into `_build_messages` as `live_confirmed` —
+the function itself never shells out, so its existing direct-call tests
+above are unaffected (they all omit the parameter, which defaults to None).
+The three `live_confirmed` tests below exercise only the pure override
+logic, not the live call.
+
 Usage:
     py -3 claude/scripts/tests/test_pr_merge_reminder.py
 
@@ -561,6 +570,66 @@ def test_build_messages_push_suppressed_when_also_create() -> str:
 
 
 # ---------------------------------------------------------------------------
+# _build_messages: live_confirmed override (dev-env#504 — main() resolves the
+# live gh-pr-view fallback itself and passes the result in; this function
+# never shells out, so these tests stay offline like every other case above.
+# ---------------------------------------------------------------------------
+
+def test_build_messages_live_confirmed_true_overrides_marker_less_merge() -> str:
+    # Simulates main()'s live confirmation succeeding after the marker was
+    # lost on the dev-env#489 worktree-cleanup failure shape — merge_ok must
+    # be forced True even though the marker-based check alone says False.
+    messages = _build_messages(
+        command="gh pr merge --squash --delete-branch",
+        cwd="/session/cwd",
+        exit_code=1,
+        output="failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'",
+        is_create=False,
+        is_merge=True,
+        is_push=False,
+        live_confirmed=True,
+    )
+    assert len(messages) == 1
+    assert "gh pr merge detected" in messages[0]
+    return "live_confirmed=True overrides marker-less merge_ok -> merge reminder fires (dev-env#504)"
+
+
+def test_build_messages_live_confirmed_false_stays_unfired() -> str:
+    # main() attempted the live check and it came back negative (genuinely
+    # not merged, or gh pr view itself failed) -> no message, same as if the
+    # marker check alone had run.
+    messages = _build_messages(
+        command="gh pr merge --squash --delete-branch",
+        cwd="/session/cwd",
+        exit_code=1,
+        output="failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'",
+        is_create=False,
+        is_merge=True,
+        is_push=False,
+        live_confirmed=False,
+    )
+    assert messages == [], f"live_confirmed=False must not fire, got {messages!r}"
+    return "live_confirmed=False -> no message (live check attempted, not confirmed)"
+
+
+def test_build_messages_live_confirmed_default_none_unchanged() -> str:
+    # Omitting the parameter entirely (every pre-existing test call above, and
+    # main()'s own "never attempted" case) must behave exactly as before this
+    # change -- marker-only.
+    messages = _build_messages(
+        command="gh pr merge --squash",
+        cwd="/session/cwd",
+        exit_code=1,
+        output="X Pull request #1 is not mergeable",
+        is_create=False,
+        is_merge=True,
+        is_push=False,
+    )
+    assert messages == [], "default live_confirmed=None must not change prior marker-only behavior"
+    return "live_confirmed omitted -> unchanged marker-only behavior"
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 
@@ -608,6 +677,9 @@ def main() -> int:
         ("build_messages: create fails, merge never ran -> no message", test_build_messages_create_fails_merge_never_ran_no_message),
         ("build_messages: chained create + worktree-merge success -> both fire (#275)", test_build_messages_chained_create_and_worktree_merge_nonzero_exit_both_fire),
         ("build_messages: push suppressed when also create", test_build_messages_push_suppressed_when_also_create),
+        ("build_messages: live_confirmed=True overrides marker-less merge (dev-env#504)", test_build_messages_live_confirmed_true_overrides_marker_less_merge),
+        ("build_messages: live_confirmed=False stays unfired", test_build_messages_live_confirmed_false_stays_unfired),
+        ("build_messages: live_confirmed omitted -> unchanged", test_build_messages_live_confirmed_default_none_unchanged),
     ]
     failed = 0
     for name, fn in tests:
