@@ -1,6 +1,6 @@
 # ADR 073 — Shared `_worktree_canon` and `_gh_project` Modules for the Project-Board Hook Pair
 
-**Date:** 2026-07-01
+**Date:** 2026-07-02
 **Status:** Accepted
 **Tags:** hooks, post-tool-use, github-project, worktree, reconciliation, shared-module, maintainability, dry
 
