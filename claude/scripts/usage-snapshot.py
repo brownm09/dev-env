@@ -42,7 +42,6 @@ from pathlib import Path
 from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
-    merge_pr_number_from_output,
     output_has_merge_marker,
     read_command_output,
     scan_top_level,
@@ -441,8 +440,13 @@ def main() -> None:
         exit_code = data.get("tool_response", {}).get("exitCode", -1)
         if not should_confirm_via_gh(exit_code, output):
             sys.exit(0)
-        pr_number = merge_pr_number_from_output(output)
-        if confirm_merge_via_gh(pr_number, "", effective_merge_dir(command, cwd)) is None:
+        # No PR number to extract here: merge_confirmed() already ruled out "not a
+        # merge command" above, so its False result means the marker itself is
+        # missing from `output` — and merge_pr_number_from_output() scans that same
+        # `output` for the identical marker regex, so it would always return None
+        # too. `gh pr view` with no number infers the PR from cwd's checked-out
+        # branch instead (matching the other five hooks' identical fallback call).
+        if confirm_merge_via_gh(None, "", effective_merge_dir(command, cwd)) is None:
             sys.exit(0)
 
     creds = load_credentials()
