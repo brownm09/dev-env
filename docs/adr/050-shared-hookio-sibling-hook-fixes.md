@@ -416,9 +416,54 @@ to pass unchanged. `test_pr_merge_reminder.py` and `test_post_tool_use.py` — t
 `scan_top_level` consumers — were re-run as a regression check and pass unchanged (neither file was
 edited).
 
+**`/review` caught an equal-and-opposite regression before merge.** The fix above closes two false
+positives but, in doing so, changed a load-bearing assumption every classification helper in the
+guard was written against: a segment used to always be one physical line (the old regex splitter split
+on every `\n`), and `split_top_level`'s whole point is to let a segment span multiple physical lines
+when a heredoc/`$(...)` span is part of it. Two of the guard's regexes were never updated for that:
+
+- `_GIT_INVOCATION_RE = ^git(?:\.exe)?\s+(.*)$` has no `re.DOTALL`, so `.*` cannot cross the first
+  embedded `\n` and `$` (not `re.MULTILINE`) requires the true end of string — on a multi-line
+  segment the match fails outright. A real `git commit -m "$(cat <<'EOF' ... EOF)"` (this repo's own
+  documented commit-message idiom, used throughout this very CLAUDE.md) was silently classified as
+  **non-mutating** — the guard's most common trigger, silently unguarded.
+- `_REDIRECT_RE.search(seg)` is unanchored and its `(?:^|\s)` alternation treats an embedded `\n`
+  exactly like a space, so a commit whose heredoc *body* merely mentioned `git -C /somewhere` as
+  prose was wrongly read as "this git invocation redirects to another repo" and skipped —
+  `classify()`'s `continue` branch fired on a segment that was never actually redirected at all.
+
+Both are false negatives in the direction that matters most for a collision-prevention guard: a real
+mutating command slips through unblocked. Fixed with a single new helper, `_first_line(segment)`,
+used by both call sites — the git invocation and its flags only ever appear on a segment's own first
+physical line; anything after an embedded newline is heredoc/command-substitution body data. A
+tempting alternative — add `re.DOTALL` to `_GIT_INVOCATION_RE` instead — was considered and rejected:
+it fixes the match, but then `rest.split()` tokenizes the *entire* segment including heredoc body
+words, re-exposing them to the `stash pop`/`apply` and `checkout --` token scans (a read-only
+`git stash list` whose heredoc body happens to contain the word "apply" would then wrongly block).
+`_first_line()` fixes both call sites without that tradeoff, verified by construction against a
+`git stash list <<EOF\nplease apply this later\nEOF` case that must stay allowed.
+
+Also gained, in the same fix, a small performance correction the same review pass raised: `main()`
+previously called `classify(cmd)` then `_has_override(cmd)`, each independently re-running
+`split_top_level` over the same command string. Both functions now accept an optional `segments`
+parameter — `main()` computes it once and passes it to both; every existing direct caller (all of
+`test_canonical_mutate_guard.py`) keeps calling either function with just `cmd` unchanged.
+
+**Coverage (follow-up):** five more tests in `test_canonical_mutate_guard.py` — the two real-command
+false negatives above (heredoc command-substitution and bare-heredoc commit messages), the
+heredoc-body-mentions-`-C` false skip, the DOTALL-would-have-been-wrong `stash list` regression guard,
+and an end-to-end `main()` subprocess proof that `git commit -m "$(cat <<'EOF' ...)"` is blocked for
+real. 38 tests total in that file, all passing.
+
 **General lesson (continuing Amendment 5's):** "a real API mismatch, not simple reuse" is a reason to
 design the right shared primitive, not a reason to accept parallel implementations permanently. The
 mismatch here was that `scan_top_level` exposed a reducer when a second caller needed a sequence —
 the fix was to expose the sequence and make the reducer a trivial wrapper over it, the same shape as
 `effective_merge_dir` remaining unshared beside `_effective_push_dir` (Amendment 5's own
-scope-decision precedent) when two callers' needs *don't* converge. Here they did.
+scope-decision precedent) when two callers' needs *don't* converge. Here they did. A second lesson,
+specific to this amendment: generalizing a data shape (single segment → possibly-multi-line segment)
+is not free — every downstream consumer that pattern-matches on the old shape's implicit invariants
+needs the same audit the shape change itself got. `/review`'s adversarial pass, not the hand-written
+test suite, is what caught this; the test suite only exercised the *inverse* direction (heredoc body
+text that must NOT trigger) because that was the bug being fixed, not the one this fix could
+introduce.

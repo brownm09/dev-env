@@ -60,6 +60,9 @@ is actually found):
        - `git -C <path>` / `git --git-dir=<path>` redirects only the single
          git invocation carrying the flag — just that segment is skipped;
          other segments in the same command are still classified normally.
+         Checked against only the segment's first physical line (see
+         `_first_line()`) so a heredoc body that merely *mentions* `-C`
+         cannot skip a genuinely mutating segment.
      A command that redirects *into* the canonical root from elsewhere
      requires deliberate, visible authorship rather than the silent
      default-cwd collision #453 documents, so deferring both shapes is
@@ -192,16 +195,46 @@ def _skip_git_level_flags(tokens: list) -> list:
     return tokens[i:]
 
 
+def _first_line(segment: str) -> str:
+    """Return `segment`'s own first physical line.
+
+    A segment's git invocation and its flags only ever appear on this line —
+    `split_top_level` (dev-env#511) can return a segment spanning multiple
+    physical lines when a heredoc/`$(...)` span is part of it (that's the
+    point of its opacity: the span stays inside the segment rather than being
+    split out), and everything after that first line is heredoc/command-
+    substitution BODY data, never additional invocation syntax.
+
+    Used by both the `_REDIRECT_RE` check in `classify()` and
+    `is_mutating_segment()` below so neither can be tricked by body text that
+    happens to look like a `-C`/`--git-dir` redirect or a mutating verb/flag:
+    `_GIT_INVOCATION_RE` is `$`-anchored with no `re.DOTALL`, so without this
+    it fails to match a multi-line segment at all (a real `git commit -m
+    "$(cat <<'EOF' ...)"` — this repo's own documented commit-message idiom —
+    was silently classified as non-mutating); `_REDIRECT_RE.search()` is
+    unanchored, and its `(?:^|\\s)` alternation treats an embedded newline
+    the same as a space, so a commit whose heredoc body merely *mentions*
+    "git -C /somewhere" as prose was wrongly treated as redirected to another
+    repo and skipped. Adding `re.DOTALL` to `_GIT_INVOCATION_RE` instead would
+    trade the first false negative for a different one — heredoc/subshell
+    body words leaking into the stash pop/apply and checkout `--` token scans
+    below (e.g. a read-only `git stash list` heredoc body that happens to say
+    "please apply this later" would wrongly block on "apply").
+    """
+    return segment.split("\n", 1)[0]
+
+
 def is_mutating_segment(segment: str) -> bool:
     """True if `segment` (after stripping leading env-var assignments) is a
     git invocation whose verb mutates working-tree/branch/history state.
 
     Anchored at the start of the (env-stripped) segment — a mention of one of
     these verbs later in the string (e.g. inside a commit message argument)
-    does not trigger; only the actual invoked git subcommand does.
+    does not trigger; only the actual invoked git subcommand does. Only the
+    segment's first physical line is examined — see `_first_line()`.
     """
     stripped = _strip_leading_env(segment).strip()
-    m = _GIT_INVOCATION_RE.match(stripped)
+    m = _GIT_INVOCATION_RE.match(_first_line(stripped))
     if not m:
         return False
     rest = m.group(1).strip()
@@ -257,25 +290,19 @@ def is_mutating_segment(segment: str) -> bool:
     return False
 
 
-def classify(cmd: str):
+def classify(cmd: str, segments: list = None):
     """Return the first mutating segment in `cmd`, or None if none found.
 
     Segments come from the shared `_hookio.split_top_level(cmd,
-    split_pipe=True)` engine (dev-env#511, ADR-050 Amendment 7) — a
-    quote/subshell/heredoc-aware stack parser, not a plain regex split. This
-    means `&&`/`||`/`;`/`\n`/`|` characters inside a quoted string (e.g.
-    `git log --grep="foo && git checkout -b evil"`) are never mistaken for
-    segment boundaries, and a `$(...)` command substitution — including a
-    heredoc fed to it, e.g. the `gh issue create --body "$(cat <<'EOF' ...
-    EOF)"` idiom this repo's own CLAUDE.md documents for git-commit-message
-    heredocs — stays opaque: its entire span, heredoc body included, never
-    produces its own spurious segment. This generalizes the former
-    dev-env#481 fix (which only recognized the exact `$(cat <<MARKER...)`
-    shape via a dedicated regex) to any heredoc inside any `$(...)`, and
-    additionally covers a *bare* (non-command-substitution) heredoc body,
-    which the old regex never touched at all — a body line that itself
-    *begins* with a mutating verb (e.g. `git status <<EOF` / `git commit
-    --amend` / `EOF`) no longer becomes its own segment.
+    split_pipe=True)` engine (dev-env#511, ADR-050 Amendment 7) — see that
+    function's own docstring for exactly how it splits (quote/subshell/
+    heredoc-aware, not a plain regex) and the module docstring's step 3
+    above for the consequences specific to this hook.
+
+    *segments*, when already computed by the caller (`main()` passes the same
+    list it also hands `_has_override()`, avoiding a redundant re-parse of
+    `cmd` per Bash call), is used as-is; otherwise it is computed here. Tests
+    and other direct callers can keep passing just `cmd`.
 
     Two distinct redirect shapes, both out of scope for this hook's cwd-based
     check (documented v1 gap), handled at different granularities on top of
@@ -294,21 +321,28 @@ def classify(cmd: str):
         `/tmp`, not the canonical root.
       - `git -C <path>` / `git --git-dir=<path>` redirects only the single
         git invocation it appears on — that segment alone is skipped; other
-        segments in the same command are still classified normally.
+        segments in the same command are still classified normally. Checked
+        against only the segment's first physical line (`_first_line()`) —
+        `_REDIRECT_RE.search()` is unanchored, so without this a commit whose
+        heredoc body merely *mentions* "git -C /somewhere" as prose text
+        would be wrongly treated as redirected to another repo and skipped,
+        letting a real mutating commit through unblocked (dev-env#511
+        follow-up, caught in /review — see `_first_line()`'s docstring).
     """
-    segments = split_top_level(cmd, split_pipe=True)
+    if segments is None:
+        segments = split_top_level(cmd, split_pipe=True)
     for seg in segments:
         if _CD_RE.match(_strip_leading_env(seg)):
             return None  # cd persists across the rest of the command — out of scope entirely
     for seg in segments:
-        if _REDIRECT_RE.search(seg):
+        if _REDIRECT_RE.search(_first_line(seg)):
             continue
         if is_mutating_segment(seg):
             return seg.strip()
     return None
 
 
-def _has_override(cmd: str) -> bool:
+def _has_override(cmd: str, segments: list = None) -> bool:
     """True if the override token is a genuine leading prefix on some
     segment of `cmd` — not merely a substring appearing anywhere (e.g. inside
     a commit message: `git commit -m "ALLOW_CANONICAL_MUTATE=1 was
@@ -322,8 +356,15 @@ def _has_override(cmd: str) -> bool:
     issue create --body "$(cat <<'EOF' ... EOF)"` argument must not bypass
     the block for an unrelated real mutating segment elsewhere in the same
     command).
+
+    *segments*, when already computed by the caller, is used as-is (see
+    `classify()`'s matching parameter) — avoids re-parsing `cmd` a second
+    time in `main()`, which always calls this right after `classify()` on the
+    same command. Tests and other direct callers can keep passing just `cmd`.
     """
-    for seg in split_top_level(cmd, split_pipe=True):
+    if segments is None:
+        segments = split_top_level(cmd, split_pipe=True)
+    for seg in segments:
         stripped = seg.strip()
         if stripped == OVERRIDE_TOKEN or stripped.startswith(OVERRIDE_TOKEN + " "):
             return True
@@ -376,11 +417,17 @@ def main() -> None:
     if not cmd:
         sys.exit(0)
 
-    matched = classify(cmd)
+    # Parsed once and handed to both classify() and _has_override() below —
+    # each independently accepts a bare `cmd` for tests/direct callers, but
+    # main() is the actual per-Bash-invocation hot path and both calls would
+    # otherwise re-run the same O(n) parse over the same string.
+    segments = split_top_level(cmd, split_pipe=True)
+
+    matched = classify(cmd, segments)
     if matched is None:
         sys.exit(0)  # no mutating segment found
 
-    if _has_override(cmd):
+    if _has_override(cmd, segments):
         sys.exit(0)  # explicit, visible human override (anchored prefix, not a substring mention)
 
     canonical_root = _resolve_git_toplevel(cwd)
