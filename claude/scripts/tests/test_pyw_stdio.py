@@ -28,6 +28,10 @@ the shape Claude Code uses — and asserting:
      disk under `claude/scripts/` and is syntactically valid Python —
      the test does not invoke real hooks (many have side effects:
      scratch writes, git fetches, project board mutations).
+  6. A `subprocess.run(..., text=True)` call made after `import _winsubp`
+     decodes a child's UTF-8 output as UTF-8, not the Windows cp1252
+     default codepage — the dev-env#503 crash, reproduced end-to-end with
+     the exact byte from its traceback and proven fixed.
 
 If any check fails, the `pyw -3` swap in `claude/settings.json` is not
 safe and should be reverted.
@@ -246,6 +250,64 @@ def test_winsubp_patches_subprocess_under_pyw() -> str:
     return "subprocess patched (CREATE_NO_WINDOW applied) and subprocess.run still functions"
 
 
+def test_winsubp_decodes_utf8_not_cp1252_under_pyw() -> str:
+    """The exact dev-env#503 crash, reproduced end-to-end and proven fixed.
+
+    Before the fix, a hook whose `subprocess.run(..., text=True)` captured a
+    child's stdout containing byte 0x9d (unmapped in cp1252, the Windows
+    default text-mode codepage) crashed with `UnicodeDecodeError: 'charmap'
+    codec can't decode byte 0x9d` — verbatim the traceback in dev-env#503,
+    which crashed post-tool-use.py's `gh project item-add` read.
+
+    That crash happens inside `subprocess.run`'s internal stdout-reader
+    THREAD (confirmed empirically while writing this test), so it does not
+    raise as a catchable exception in the caller: the default
+    unhandled-thread-exception hook prints it to stderr and the read is
+    simply lost — `proc.stdout` ends up `None` rather than raising. So the
+    observable, testable effect of the bug is "the captured output silently
+    disappears," not "a UnicodeDecodeError propagates to my try/except."
+
+    This spawns a grandchild that writes that exact byte and asserts the
+    patched `_winsubp` default (`encoding="utf-8", errors="replace"`)
+    decodes it to U+FFFD — a normal, non-None result — instead. The JSON
+    status crossing back to this (unpatched) test-runner process is
+    ASCII-only (`json.dumps` escapes non-ASCII by default), so it never
+    itself depends on the fix being tested.
+    """
+    _require_pyw()
+    scripts_dir = (REPO_ROOT / "claude" / "scripts").as_posix()
+    grandchild = "import sys; sys.stdout.buffer.write(bytes([0x9d]))"
+    program = (
+        f"import sys; sys.path.insert(0, {scripts_dir!r})\n"
+        "import _winsubp  # noqa: F401\n"
+        "import subprocess, json\n"
+        f"proc = subprocess.run([sys.executable, '-c', {grandchild!r}], capture_output=True, text=True)\n"
+        "sys.stdout.write(json.dumps({'decoded': proc.stdout}))\n"
+    )
+    proc = subprocess.run(
+        ["pyw", "-3", "-c", program],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(f"pyw child exited {proc.returncode}; stderr={proc.stderr!r}")
+    if "UnicodeDecodeError" in proc.stderr or "Exception in thread" in proc.stderr:
+        raise AssertionError(
+            "the dev-env#503 crash is NOT fixed -- the reader thread still raised:\n"
+            f"{proc.stderr}"
+        )
+    result = json.loads(proc.stdout)
+    if result["decoded"] != chr(0xFFFD):
+        raise AssertionError(
+            "byte 0x9d was not decoded as U+FFFD (got "
+            f"{result['decoded']!r}) -- the dev-env#503 crash is NOT fixed. Pre-fix, "
+            "this reader-thread UnicodeDecodeError does not raise in the caller; it "
+            "prints to stderr and leaves stdout as None (see docstring above)."
+        )
+    return "byte 0x9d (dev-env#503's exact crash byte) decodes to U+FFFD instead of being silently lost"
+
+
 # Regexes used by the static-scan guard below. Defined at module scope so
 # the negative-control assertion at the bottom of this test exercises the
 # exact same patterns the real scan uses.
@@ -401,6 +463,7 @@ def main() -> int:
         ("pyw -3 runs Claude-Code-shaped hook end-to-end", test_pyw_runs_claude_code_shaped_hook_end_to_end),
         ("all settings.json hooks use pyw -3 and resolve", test_all_settings_hooks_use_pyw_and_resolve_to_repo),
         ("_winsubp patches subprocess under pyw -3", test_winsubp_patches_subprocess_under_pyw),
+        ("_winsubp decodes UTF-8 not cp1252 under pyw -3", test_winsubp_decodes_utf8_not_cp1252_under_pyw),
         ("every subprocess-using hook imports _winsubp", test_every_subprocess_using_hook_imports_winsubp),
         ("no hook spawns Python via the `py` launcher", test_no_hook_spawns_python_via_py_launcher),
     ]

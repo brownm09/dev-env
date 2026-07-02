@@ -114,7 +114,10 @@ def test_merge_pr_number_from_output() -> str:
 #
 # confirm_merge_via_gh itself shells out to `gh pr view` and is intentionally
 # not tested (repo convention: no subprocess mocks) -- these tests cover only
-# the pure "is it worth paying for a live confirmation?" decision.
+# the pure "is it worth paying for a live confirmation?" decision. Its UTF-8
+# output-decoding behavior (dev-env#503) is covered separately by
+# test_winsubp.py's tests of _apply_windows_subprocess_defaults, the shared
+# helper the call now goes through via the _winsubp import this module added.
 # ---------------------------------------------------------------------------
 
 def test_should_confirm_nonzero_exit_no_marker() -> str:

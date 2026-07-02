@@ -36,6 +36,7 @@ hook fixes).  See ADR-067 for the merge-dir scoping.
 
 from __future__ import annotations
 
+import _winsubp  # noqa: F401  -- suppress console windows + default UTF-8 decoding on Windows
 import json
 import os
 import re
@@ -170,6 +171,8 @@ def confirm_merge_via_gh(pr_number: int | None, repo: str, cwd: str) -> int | No
             args += ["--repo", repo]
     args += ["--json", "state,number"]
     try:
+        # text=True decodes as UTF-8 (not the Windows cp1252 default) via the
+        # _winsubp patch imported above — dev-env#503.
         result = subprocess.run(args, capture_output=True, text=True, timeout=15, cwd=cwd)
         if result.returncode != 0:
             return None
