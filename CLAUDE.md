@@ -460,6 +460,22 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     py -3 claude/scripts/tests/test_canonical_mutate_guard.py
     ```
 
+34. **merge-stale-pr self-test** — required when changing `claude/scripts/merge-stale-pr.sh`. Drives the
+    REAL script against throwaway fixture repos (a bare "origin" + a working clone standing in for the
+    shared engineering-journal checkout) with `gh` stubbed — no network, no auth. Asserts the Step 4
+    orphaned-draft-file commit touches only the files it just deleted, never a file already staged by a
+    simulated concurrent session in the same shared checkout (the explicit-pathspec `git add --` / `git
+    commit --` safety fix from [dev-env#461](https://github.com/brownm09/dev-env/pull/461)); that a clean
+    branch with no orphaned drafts skips Step 4 without a spurious commit and runs to completion; that
+    multiple orphaned drafts across different directories are all included in one commit (guards the
+    `"${DRAFT_FILES[@]}"` array handling); and that a missing composed-journal file plus a declined prompt
+    aborts before any mutation. Rebase and push (Step 5) run for real against the fixture remote; only
+    `gh pr view` (Step 1) and `gh pr merge` (Step 6) are stubbed.
+
+    ```bash
+    bash claude/scripts/tests/test-merge-stale-pr.sh
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
