@@ -194,7 +194,10 @@ of decision.
   paths against a real throwaway git repo. `claude/scripts/tests/test_worktree_path_check.py`
   (ADR-024's hook) re-run unmodified as a regression check — the two hooks do not interfere, since
   their trigger conditions are mutually exclusive by construction (worktree cwd vs. non-worktree
-  cwd).
+  cwd). Since dev-env#511 ([ADR-050](050-shared-hookio-sibling-hook-fixes.md) Amendment 7), segment
+  splitting comes from the shared `_hookio.split_top_level` engine rather than this hook's own regex
+  splitter — same block/allow behavior, now with quote-tracking and general heredoc-opacity instead
+  of the narrower `$(cat <<MARKER...)`-only stripping.
 - **Observability.** The block reason is written as hook JSON output to **stderr** — Claude Code
   discards a `PreToolUse` hook's stdout on exit code 2 and surfaces only stderr to the model, so
   stdout would have silently hidden the reason. No separate log needed; a blocked attempt is
@@ -237,6 +240,10 @@ of decision.
   trigger condition)
 - [ADR-066](066-worktree-session-safety-rules.md) — worktree session safety rules; addresses a
   different collision shape (worktree vs. main), not two sessions both in main
+- [ADR-050](050-shared-hookio-sibling-hook-fixes.md) Amendment 7 — this hook's segment splitting was
+  converged onto the shared `_hookio.split_top_level` engine (dev-env#511), fixing two false
+  positives the original regex-based splitter had (a quoted `&&`/`|` containing a fake mutating verb;
+  a bare heredoc body line starting with one)
 - `brownm09/career-playbook/.claude/hooks/block-artifact-merge.py`,
   `block-letter-violations.py` — segment-split/anchor pattern and override-token style this hook
   follows

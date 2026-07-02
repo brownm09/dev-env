@@ -16,6 +16,32 @@ no worktrees needed):
      that itself STARTS with a mutating verb or the override token inside a
      `$(cat <<'MARKER' ... MARKER)` span, applied to both classify() and
      _has_override()).
+
+     Since dev-env#511 (ADR-050 Amendment 7), segmenting comes from the
+     shared `_hookio.split_top_level(cmd, split_pipe=True)` engine rather
+     than a narrow regex splitter — the heredoc/override tests above still
+     pass unchanged (the engine subsumes that behavior), and this file adds
+     coverage for two false positives the narrow regex splitter had that the
+     shared engine's quote-tracking and general heredoc-opacity fix: a
+     mutating-looking verb inside a quoted `&&`/`|` (e.g. a `git log
+     --grep=` pattern), and a *bare* (non-command-substitution) heredoc body
+     line that itself starts with a mutating verb — plus the guard's new
+     `split_pipe=True` capability (a mutating command after a pipe, e.g.
+     `echo msg | git commit -F -`, is now correctly classified as mutating).
+
+     `/review` on the dev-env#511 PR caught the equal-and-opposite regression
+     the convergence introduced: `split_top_level`'s heredoc/subshell opacity
+     means a segment can now span multiple physical lines, which
+     `is_mutating_segment()`'s `$`-anchored, non-DOTALL `_GIT_INVOCATION_RE`
+     and `classify()`'s unanchored `_REDIRECT_RE.search()` were never
+     designed for — a real `git commit -m "$(cat <<'EOF' ...)"` (this repo's
+     own documented commit-message idiom) silently failed to match at all,
+     and a real commit whose heredoc body merely *mentioned* "git -C
+     /somewhere" as prose was wrongly treated as redirected to another repo
+     and skipped. Both are now restricted to each segment's first physical
+     line via `_first_line()`; see its docstring for why `re.DOTALL` would
+     have been the wrong fix (it re-exposes heredoc body words to the stash
+     pop/apply and checkout `--` token scans).
   2. End-to-end main() via subprocess — drives the real hook over stdin against
      a real throwaway git repo (so `git -C <cwd> rev-parse --show-toplevel`
      resolves for real) and asserts exit codes for:
@@ -252,6 +278,156 @@ def test_override_mention_at_heredoc_body_line_start_does_not_bypass() -> str:
     )
 
 
+def test_quoted_ampersand_with_fake_verb_not_misclassified() -> str:
+    """dev-env#511: without quote-tracking, the prior regex-based `_SEGMENT_SPLIT`
+    splitter would carve `git checkout -b evil"` out of this grep pattern as
+    its own segment and misclassify a harmless `git log` search as a
+    `checkout`. The shared `_hookio.split_top_level` engine tracks quote
+    state, so `&&` inside the double-quoted `--grep` value is never a segment
+    boundary — the whole command stays one `git log` segment.
+    """
+    cmd = 'git log --grep="foo && git checkout -b evil"'
+    matched = cmg.classify(cmd)
+    if matched is not None:
+        raise AssertionError(
+            f"&& inside a quoted --grep value should not split out a fake "
+            f"mutating segment, got {matched!r}"
+        )
+    return "quoted && containing a fake mutating verb does not misclassify a git log (dev-env#511)"
+
+
+def test_bare_heredoc_body_starting_with_verb_not_misclassified() -> str:
+    """dev-env#511: the pre-existing `_HEREDOC_CATSUB_RE` only stripped the
+    `$(cat <<MARKER...)` command-substitution idiom (dev-env#481) — a *bare*
+    heredoc (no command substitution wrapper) was never touched by it, so a
+    body line that itself starts with a mutating verb would become its own
+    segment after the old splitter's `\\n`-split and be misclassified as a
+    real invocation. The shared engine treats any heredoc body (bare or
+    inside a subshell) as one opaque span.
+    """
+    cmd = "git status <<EOF\ngit commit --amend\nEOF"
+    matched = cmg.classify(cmd)
+    if matched is not None:
+        raise AssertionError(
+            f"a bare heredoc body line starting with a mutating verb should "
+            f"not be classified as a real invocation, got {matched!r}"
+        )
+    return "bare heredoc body line starting with a mutating verb does not misclassify (dev-env#511)"
+
+
+def test_pipe_splits_and_classifies_mutating_segment() -> str:
+    """The guard passes `split_pipe=True` to the shared engine (unlike
+    `scan_top_level`'s other two callers) because a mutating git invocation
+    can read its input from a pipe, e.g. `git commit -F -` reading a piped
+    commit message. This is unchanged behavior from the pre-#511 regex
+    splitter (which also split on `|`) — pinned here against the new engine.
+    """
+    cmd = "echo commit message | git commit -F -"
+    matched = cmg.classify(cmd)
+    if matched is None or "commit" not in matched:
+        raise AssertionError(f"a mutating command after a pipe should be classified, got {matched!r}")
+    return "a mutating command after a pipe is still classified (split_pipe=True)"
+
+
+def test_pipe_inside_quotes_does_not_falsely_split() -> str:
+    """Quote-tracking applies to `|` exactly as it does to `&&` — a `|`
+    character inside a quoted string must not be mistaken for a pipe even
+    though the guard enables `split_pipe=True`.
+    """
+    cmd = 'git log --grep="foo | git checkout -b evil"'
+    matched = cmg.classify(cmd)
+    if matched is not None:
+        raise AssertionError(
+            f"| inside a quoted --grep value should not split out a fake "
+            f"mutating segment, got {matched!r}"
+        )
+    return "quoted | containing a fake mutating verb does not misclassify a git log"
+
+
+def test_commit_with_heredoc_command_sub_message_still_classified() -> str:
+    """/review finding (dev-env#511): `split_top_level`'s heredoc/subshell
+    opacity means a segment can now span multiple physical lines, but
+    `_GIT_INVOCATION_RE` is `$`-anchored with no `re.DOTALL` — without
+    `is_mutating_segment()` restricting its match to the segment's first
+    physical line (`_first_line()`), this real commit (this repo's own
+    documented commit-message idiom) silently failed to match at all and was
+    classified as non-mutating. The existing suite only covered the inverse
+    (a heredoc body line that merely *looks* like a command must not
+    trigger) — this covers a REAL command whose own argument happens to
+    contain a heredoc/command substitution.
+    """
+    cmd = (
+        "git commit -m \"$(cat <<'EOF'\n"
+        "subject line\n"
+        "EOF\n"
+        ")\""
+    )
+    matched = cmg.classify(cmd)
+    if matched is None:
+        raise AssertionError(
+            f"a real git commit whose -m argument is a heredoc command "
+            f"substitution must still be classified as mutating, got {matched!r}"
+        )
+    return "git commit -m \"$(cat <<'EOF'...)\" (this repo's own commit idiom) still classified as mutating (dev-env#511 follow-up)"
+
+
+def test_bare_heredoc_commit_message_still_classified() -> str:
+    """Same class of bug as above, for the bare (non-command-substitution)
+    heredoc-as-stdin idiom `git commit -F - <<EOF ... EOF`.
+    """
+    cmd = "git commit -F - <<EOF\nsome commit message\nEOF"
+    matched = cmg.classify(cmd)
+    if matched is None:
+        raise AssertionError(
+            f"a real git commit reading a piped/heredoc message must still "
+            f"be classified as mutating, got {matched!r}"
+        )
+    return "git commit -F - <<EOF...EOF still classified as mutating (dev-env#511 follow-up)"
+
+
+def test_redirect_mention_in_heredoc_body_does_not_skip_real_mutating_command() -> str:
+    """/review finding (dev-env#511): `_REDIRECT_RE.search()` is unanchored,
+    and its `(?:^|\\s)` alternation treats an embedded newline the same as a
+    space — so a commit whose heredoc BODY merely mentions "git -C
+    /somewhere" as prose text was wrongly treated as redirected to another
+    repo and skipped, letting a real mutating commit through unblocked.
+    `_first_line()` restricts the `_REDIRECT_RE` check in `classify()` to
+    the segment's own first physical line, where the actual git invocation
+    lives.
+    """
+    cmd = (
+        "git commit -m \"$(cat <<'EOF'\n"
+        "See also: git -C /tmp status for context\n"
+        "EOF\n"
+        ")\""
+    )
+    matched = cmg.classify(cmd)
+    if matched is None:
+        raise AssertionError(
+            f"a real commit must not be skipped just because its heredoc "
+            f"body mentions 'git -C' as prose, got {matched!r}"
+        )
+    return "heredoc body merely mentioning 'git -C' does not skip a real mutating commit (dev-env#511 follow-up)"
+
+
+def test_dotall_alternative_would_have_been_wrong() -> str:
+    """Documents why the fix is 'restrict to first line', not 'add
+    re.DOTALL to _GIT_INVOCATION_RE': DOTALL would make `rest.split()`
+    tokenize the ENTIRE segment including heredoc body words, so a
+    read-only `git stash list` whose heredoc body happens to contain the
+    word "apply" would wrongly match the stash verb's pop/apply token scan.
+    This must stay allowed.
+    """
+    cmd = "git stash list <<EOF\nplease apply this later\nEOF"
+    matched = cmg.classify(cmd)
+    if matched is not None:
+        raise AssertionError(
+            f"a read-only git stash list must not be blocked just because "
+            f"its heredoc body contains the word 'apply', got {matched!r}"
+        )
+    return "read-only git stash list with 'apply' in its heredoc body stays allowed (dev-env#511 follow-up)"
+
+
 def test_env_prefixed_mutating_command_still_classified() -> str:
     cmd = "ALLOW_CANONICAL_MUTATE=1 git checkout -b foo"
     if not cmg.is_mutating_segment(cmd):
@@ -413,6 +589,14 @@ def main_unit() -> list:
         ("heredoc command-substitution body not classified", test_heredoc_command_substitution_body_not_classified),
         ("real command after heredoc catsub still classified", test_real_command_after_heredoc_catsub_still_classified),
         ("override mention at heredoc body line start does not bypass", test_override_mention_at_heredoc_body_line_start_does_not_bypass),
+        ("quoted && with fake verb not misclassified (dev-env#511)", test_quoted_ampersand_with_fake_verb_not_misclassified),
+        ("bare heredoc body starting with verb not misclassified (dev-env#511)", test_bare_heredoc_body_starting_with_verb_not_misclassified),
+        ("pipe splits and classifies mutating segment", test_pipe_splits_and_classifies_mutating_segment),
+        ("pipe inside quotes does not falsely split", test_pipe_inside_quotes_does_not_falsely_split),
+        ("commit with heredoc command-sub message still classified (dev-env#511 follow-up)", test_commit_with_heredoc_command_sub_message_still_classified),
+        ("bare heredoc commit message still classified (dev-env#511 follow-up)", test_bare_heredoc_commit_message_still_classified),
+        ("redirect mention in heredoc body does not skip real mutating command (dev-env#511 follow-up)", test_redirect_mention_in_heredoc_body_does_not_skip_real_mutating_command),
+        ("DOTALL alternative would have been wrong (dev-env#511 follow-up)", test_dotall_alternative_would_have_been_wrong),
         ("env-prefixed mutating command still classified", test_env_prefixed_mutating_command_still_classified),
         ("cd redirect takes whole command out of scope", test_cd_redirect_takes_whole_command_out_of_scope),
         ("-C/--git-dir redirect skips only its own segment", test_dashC_redirect_only_skips_its_own_segment),
@@ -516,6 +700,60 @@ def test_main_allows_readonly_command_from_canonical_root() -> str:
                 f"expected exit 0 (allow), got {proc.returncode}. stderr={proc.stderr!r}"
             )
     return "git status from a canonical root is allowed (exit 0)"
+
+
+def test_main_allows_quoted_fake_verb_git_log_from_canonical_root() -> str:
+    """End-to-end proof the dev-env#511 fix reaches the real hook process,
+    not just the pure classify() function: before the shared-engine
+    convergence, this git log would have been wrongly BLOCKED (exit 2) by
+    the old regex splitter's quote-mis-split.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "canonical-repo"
+        repo.mkdir()
+        _init_throwaway_repo(repo)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git log --grep="foo && git checkout -b evil"'},
+            "cwd": str(repo),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"expected exit 0 (allow), got {proc.returncode}. stderr={proc.stderr!r}"
+            )
+    return "git log with a quoted && + fake verb is allowed end-to-end (dev-env#511)"
+
+
+def test_main_blocks_commit_with_heredoc_message_from_canonical_root() -> str:
+    """End-to-end proof of the /review-caught regression fix: before
+    `_first_line()` was added, a real `git commit -m "$(cat <<'EOF' ...)"`
+    (this repo's own documented commit-message idiom) would have been
+    wrongly ALLOWED (exit 0) — `_GIT_INVOCATION_RE`'s `$`-anchored,
+    non-DOTALL match failed outright on the multi-line segment
+    `split_top_level` now produces for it.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "canonical-repo"
+        repo.mkdir()
+        _init_throwaway_repo(repo)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "git commit -m \"$(cat <<'EOF'\nsubject line\nEOF\n)\""
+            },
+            "cwd": str(repo),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (block), got {proc.returncode}. "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+    return "git commit -m \"$(cat <<'EOF'...)\" is blocked end-to-end (dev-env#511 follow-up)"
+
 
 def test_main_allows_pull_ff_only_blocks_bare_pull() -> str:
     with tempfile.TemporaryDirectory() as tmp:
@@ -703,6 +941,8 @@ def main_e2e() -> list:
     return [
         ("main() blocks mutating command from canonical root", test_main_blocks_mutating_command_from_canonical_root),
         ("main() allows read-only command from canonical root", test_main_allows_readonly_command_from_canonical_root),
+        ("main() allows quoted fake-verb git log (dev-env#511)", test_main_allows_quoted_fake_verb_git_log_from_canonical_root),
+        ("main() blocks commit with heredoc message (dev-env#511 follow-up)", test_main_blocks_commit_with_heredoc_message_from_canonical_root),
         ("main() allows pull --ff-only, blocks bare pull", test_main_allows_pull_ff_only_blocks_bare_pull),
         ("main() allows any command from worktree cwd", test_main_allows_any_command_from_worktree_cwd),
         ("main() override token bypasses block", test_main_override_token_bypasses_block),

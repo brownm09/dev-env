@@ -14,13 +14,19 @@ instead of re-deriving (and re-breaking) the field precedence or the marker set.
 ``git push``.  It is shared here because both ``post-pr-merge-pull.py`` and
 ``pr-merge-reminder.py`` need it.
 
-``scan_top_level`` (dev-env#499, ADR-050 Amendment 5) is a stack-based command
-parser originally written for ``pr-merge-reminder.py``'s ``gh pr merge`` /
-``gh pr create`` / ``git push`` detection. It is shared here so
-``post-tool-use.py`` can detect a top-level ``gh issue create`` / ``gh pr
-create`` too, instead of its previous unanchored ``re.search`` over the whole
-raw command string — which matched the pattern anywhere, including inside a
-heredoc body, a quoted commit message, or a ``--text`` field value.
+``split_top_level`` / ``scan_top_level`` (dev-env#499, ADR-050 Amendment 5; the
+split/scan extraction is dev-env#511, ADR-050 Amendment 7) are a stack-based
+command parser originally written for ``pr-merge-reminder.py``'s ``gh pr
+merge`` / ``gh pr create`` / ``git push`` detection. ``scan_top_level`` is
+shared with ``post-tool-use.py`` so it can detect a top-level ``gh issue
+create`` / ``gh pr create`` too, instead of its previous unanchored
+``re.search`` over the whole raw command string — which matched the pattern
+anywhere, including inside a heredoc body, a quoted commit message, or a
+``--text`` field value. ``split_top_level`` (the segment-yielding engine
+``scan_top_level`` is now built on) is additionally shared with
+``pre-tool-use-canonical-mutate-guard.py``, which needs the actual segment
+list — not just a boolean — for its own per-segment cd-scope /
+``-C``-redirect-skip / mutating-verb classification.
 
 Imported the same way as ``_winsubp``: a sibling module in ``scripts/`` that the
 ``pyw -3`` hook launcher (which puts the script's own directory on ``sys.path``)
@@ -28,7 +34,7 @@ and the test harness (``sys.path.insert(0, scripts_dir)``) both resolve.
 
 Usage:
     from _hookio import read_command_output, output_has_merge_marker
-    from _hookio import effective_merge_dir, scan_top_level
+    from _hookio import effective_merge_dir, scan_top_level, split_top_level
 
 See ADR-049 (root cause + canonical read) and ADR-050 (shared helper + sibling
 hook fixes).  See ADR-067 for the merge-dir scoping.
@@ -191,6 +197,14 @@ def confirm_merge_via_gh(pr_number: int | None, repo: str, cwd: str) -> int | No
 # git push detection; shared here so post-tool-use.py's gh issue create / gh
 # pr create detection gets the same top-level-statement-only guarantee instead
 # of an unanchored re.search over the whole raw command string.
+#
+# split_top_level() (dev-env#511, ADR-050 Amendment 7) extracts the segment-
+# yielding core so pre-tool-use-canonical-mutate-guard.py can converge onto
+# the same quote/subshell/heredoc-aware engine instead of its own narrower
+# regex-based splitter — that hook needs the actual segment list (not just a
+# boolean) to find cd-redirects, skip git -C/--git-dir segments, and report
+# which segment matched. scan_top_level() is now a thin boolean-reducer
+# wrapper over split_top_level(); its own two callers are unaffected.
 # ---------------------------------------------------------------------------
 
 
@@ -240,9 +254,9 @@ def _find_heredoc_end(cmd: str, start: int) -> int:
     return i
 
 
-def scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
-    """Return True when *command* contains a top-level statement matched by
-    *check_fn* — i.e. not inside a quoted string, $() subshell, or heredoc body.
+def split_top_level(command: str, *, split_pipe: bool = False) -> list[str]:
+    """Split *command* into its top-level statements/segments — i.e. not
+    inside a quoted string, $() subshell, or heredoc body.
 
     Uses a stack-based parser with four states ('top', 'single', 'double',
     'subshell') so that shell operators buried inside quoted arguments, command
@@ -250,13 +264,29 @@ def scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
     separators.  Specifically handles:
     - Single/double quotes
     - $() subshells (including $() inside "…")
-    - <<DELIM / <<'DELIM' heredoc bodies
+    - <<DELIM / <<'DELIM' heredoc bodies (both bare and inside a subshell)
 
-    *check_fn* is called with each top-level statement/segment (unstripped);
-    callers typically do ``token.lstrip()`` then an anchored ``.match()`` so
-    that a target phrase appearing mid-segment (rather than at its start) is
-    not mistaken for a genuine invocation.
+    Always splits on ``;``, ``\\n``, ``&&``, and ``||``. A lone ``|`` (not part
+    of ``||``) is also a split point when *split_pipe* is True — off by
+    default so `scan_top_level`'s existing callers (`pr-merge-reminder.py`,
+    `post-tool-use.py`, neither of which needs pipe-awareness) see zero
+    behavior change from this function's introduction.
+    `pre-tool-use-canonical-mutate-guard.py` passes `split_pipe=True`, since a
+    mutating git invocation can appear after a pipe (e.g.
+    `echo msg | git commit -F -`).
+
+    Segments are returned unstripped, in original order — callers typically
+    do ``segment.lstrip()`` then an anchored ``.match()`` so that a target
+    phrase appearing mid-segment (rather than at its start) is not mistaken
+    for a genuine invocation.
+
+    If *command* ends with an unterminated quote/subshell/heredoc, the
+    trailing (malformed) segment is dropped rather than returned — mirrors
+    `scan_top_level`'s pre-existing fail-permissive behavior for an
+    unparseable tail (a caller scanning for a match sees no match from that
+    segment either way).
     """
+    segments: list[str] = []
     n = len(command)
     i = 0
     stmt_start = 0
@@ -310,22 +340,37 @@ def scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
                 i = _find_heredoc_end(command, i)
                 continue
             elif c in (";", "\n"):
-                if check_fn(command[stmt_start:i]):
-                    return True
+                segments.append(command[stmt_start:i])
                 stmt_start = i + 1
             elif c == "&" and i + 1 < n and command[i + 1] == "&":
-                if check_fn(command[stmt_start:i]):
-                    return True
+                segments.append(command[stmt_start:i])
                 stmt_start = i + 2
                 i += 1
-            elif c == "|" and i + 1 < n and command[i + 1] == "|":
-                if check_fn(command[stmt_start:i]):
-                    return True
-                stmt_start = i + 2
-                i += 1
+            elif c == "|":
+                if i + 1 < n and command[i + 1] == "|":
+                    segments.append(command[stmt_start:i])
+                    stmt_start = i + 2
+                    i += 1
+                elif split_pipe:
+                    segments.append(command[stmt_start:i])
+                    stmt_start = i + 1
 
         i += 1
 
     if stack == ["top"]:
-        return check_fn(command[stmt_start:])
-    return False
+        segments.append(command[stmt_start:])
+    return segments
+
+
+def scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
+    """Return True when *command* contains a top-level statement matched by
+    *check_fn* — i.e. not inside a quoted string, $() subshell, or heredoc body.
+
+    Thin wrapper over `split_top_level` (pipe-unaware — see that function's
+    docstring for why `split_pipe` defaults off here). *check_fn* is called
+    with each top-level statement/segment (unstripped); callers typically do
+    ``token.lstrip()`` then an anchored ``.match()`` so that a target phrase
+    appearing mid-segment (rather than at its start) is not mistaken for a
+    genuine invocation.
+    """
+    return any(check_fn(seg) for seg in split_top_level(command))
