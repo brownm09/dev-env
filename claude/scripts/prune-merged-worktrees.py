@@ -170,11 +170,16 @@ def files_are_all_ephemeral(files: list[str], patterns: list[str]) -> bool:
 def load_ephemeral_patterns(repo: str) -> list[str]:
     """Read prune_ephemeral_patterns (list[str] of regexes) from repo's hook-config.json.
 
-    Fail-open to [] (feature off) on: missing file, missing key, malformed JSON, or a
-    present-but-non-list value -- matching this codebase's existing hook-config.json reader
-    conventions (e.g. turn-count-hook.py's load_prompt_threshold). An empty list value (key
-    present, explicitly []) also returns [] and is indistinguishable from "absent" by design
-    -- both mean "feature off", never "everything matches".
+    Fail-open to [] (feature off) on: missing file, an unreadable file (any OSError -- e.g. a
+    transient PermissionError from a Windows antivirus/indexer lock, which this repo has hit in
+    practice), missing key, malformed JSON, or a present-but-non-list value -- matching this
+    codebase's existing hook-config.json reader conventions (e.g. turn-count-hook.py's
+    load_prompt_threshold). OSError is caught broadly (not just FileNotFoundError) because an
+    uncaught exception here propagates out of prune_one() and, in --scan-dir mode, aborts
+    scanning every remaining repo over one repo's transient config-read hiccup -- disproportionate
+    for a feature that is supposed to only ever add prunability, never break the scan. An empty
+    list value (key present, explicitly []) also returns [] and is indistinguishable from
+    "absent" by design -- both mean "feature off", never "everything matches".
 
     Also validates every pattern compiles as a regex; if any does not, prints a warning and
     returns [] for the WHOLE list (not just the bad entry) -- a config with one malformed
@@ -185,7 +190,7 @@ def load_ephemeral_patterns(repo: str) -> list[str]:
     try:
         with open(path, encoding="utf-8") as f:
             config = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
         return []
     patterns = config.get("prune_ephemeral_patterns", [])
     if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
@@ -212,6 +217,12 @@ def prune_one(repo: str, dry_run: bool, liveness_window_seconds: int) -> tuple[i
     except RuntimeError as exc:
         print(f"  SKIP {repo}: {exc}")
         return 0, 0, False
+
+    # Read once per repo, not once per worktree — every not-yet-merged claude/* worktree in
+    # this repo would otherwise re-read and re-validate the same config file (the repos this
+    # feature targets are exactly the ones with many stale worktrees, where that redundancy is
+    # largest).
+    ephemeral_patterns = load_ephemeral_patterns(repo)
 
     print(f"\nRepo: {gh_repo} ({repo})")
 
@@ -286,8 +297,7 @@ def prune_one(repo: str, dry_run: bool, liveness_window_seconds: int) -> tuple[i
             continue
 
         if not is_merged(branch, gh_repo, repo):
-            patterns = load_ephemeral_patterns(repo)
-            if not (patterns and files_are_all_ephemeral(diff_files(branch, repo), patterns)):
+            if not (ephemeral_patterns and files_are_all_ephemeral(diff_files(branch, repo), ephemeral_patterns)):
                 skipped.append((path, "not merged into origin/main"))
                 continue
 

@@ -352,9 +352,11 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     the ADR-075 ephemeral-diff prunability signal offline: `files_are_all_ephemeral()` (matches-all,
     one-mismatch, the empty-patterns opt-in gate, and empty-files all resolve correctly) and
     `load_ephemeral_patterns()` against a real tmp `.claude/hook-config.json` (reads a configured
-    list; fails open to `[]` on a missing file, missing key, malformed JSON, a non-list value, a
-    non-string element, or an invalid regex — the last case also prints a `WARNING:` line, captured
-    via `redirect_stdout`). The
+    list; fails open to `[]` on a missing file, an unreadable file (`OSError`, e.g. a transient
+    `PermissionError` — a review finding, since the original code only caught `FileNotFoundError`
+    and an uncaught exception here would abort every remaining repo in a `--scan-dir` run), missing
+    key, malformed JSON, a non-list value, a non-string element, or an invalid regex — the last
+    case also prints a `WARNING:` line, captured via `redirect_stdout`). The
     merge-detection and worktree-list steps are not covered here — they are exercised end-to-end by
     `--dry-run` in the PR.
 

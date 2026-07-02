@@ -5,13 +5,13 @@ Covers the TimeoutExpired recovery introduced for dev-env#350:
   prune_one() must skip a worktree when `git worktree remove` times out and
   continue the loop — the exception must NOT propagate and abort the scan.
 
-Also covers the ADR-073 ephemeral-diff prunability signal: files_are_all_ephemeral()
+Also covers the ADR-075 ephemeral-diff prunability signal: files_are_all_ephemeral()
 (matches-all / one-mismatch / empty-patterns opt-in gate / empty-files) and
 load_ephemeral_patterns() (reads a real tmp .claude/hook-config.json; fail-open to []
-on a missing file, missing key, malformed JSON, non-list value, non-string element, or
-an invalid regex — the last case also prints a WARNING: line, captured via
-redirect_stdout). diff_files() and the prune_one() integration point are not covered
-here — see "Scope note" below.
+on a missing file, an unreadable file (OSError, e.g. a transient PermissionError),
+missing key, malformed JSON, non-list value, non-string element, or an invalid regex —
+the last case also prints a WARNING: line, captured via redirect_stdout). diff_files()
+and the prune_one() integration point are not covered here — see "Scope note" below.
 
 Pure-helper tests follow the pattern of test_reclaim_worktree_disk.py and
 test_worktree_topology.py; the load_ephemeral_patterns tests use a real
@@ -156,6 +156,23 @@ def test_load_ephemeral_patterns_missing_file_returns_empty() -> str:
     return "no .claude/hook-config.json at all -> []"
 
 
+def test_load_ephemeral_patterns_unreadable_file_returns_empty() -> str:
+    """A PermissionError (or any other OSError) reading the file must not propagate.
+
+    Regression coverage for a review finding: catching only FileNotFoundError left a
+    transient Windows lock (antivirus/indexer holding the handle -- observed in practice in
+    this exact repo the same day this feature was built, dev-env#525) free to raise an
+    uncaught exception out of prune_one() and, in --scan-dir mode, abort every remaining
+    repo in the scan over one repo's momentary config-read hiccup.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, '{"prune_ephemeral_patterns": ["\\\\.stub\\\\.md$"]}')
+        with unittest.mock.patch("builtins.open", side_effect=PermissionError("Access is denied")):
+            result = prune.load_ephemeral_patterns(tmp)
+    assert result == [], f"expected [], got {result}"
+    return "PermissionError opening the config -> [] (caught, does not propagate)"
+
+
 def test_load_ephemeral_patterns_missing_key_returns_empty() -> str:
     with tempfile.TemporaryDirectory() as tmp:
         _write_config(tmp, '{"some_other_key": true}')
@@ -216,6 +233,7 @@ def main() -> int:
         ("files_are_all_ephemeral: empty files -> False", test_files_are_all_ephemeral_empty_files_is_false),
         ("load_ephemeral_patterns: reads real config", test_load_ephemeral_patterns_reads_config),
         ("load_ephemeral_patterns: missing file -> []", test_load_ephemeral_patterns_missing_file_returns_empty),
+        ("load_ephemeral_patterns: unreadable file (OSError) -> []", test_load_ephemeral_patterns_unreadable_file_returns_empty),
         ("load_ephemeral_patterns: missing key -> []", test_load_ephemeral_patterns_missing_key_returns_empty),
         ("load_ephemeral_patterns: malformed JSON -> []", test_load_ephemeral_patterns_malformed_json_returns_empty),
         ("load_ephemeral_patterns: non-list value -> []", test_load_ephemeral_patterns_non_list_value_returns_empty),
