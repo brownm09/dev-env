@@ -38,7 +38,7 @@ import urllib.error
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from _hookio import output_has_merge_marker, read_command_output
+from _hookio import output_has_merge_marker, read_command_output, scan_top_level
 
 CREDS_PATH = "C:/Users/brown/.claude/.credentials.json"
 CONFIG_PATH = "C:/Users/brown/Git/dev-env/claude/usage-config.json"
@@ -56,111 +56,6 @@ def _check_merge_stmt(token: str) -> bool:
     return bool(_MERGE_RE.match(token.lstrip()))
 
 
-def _find_heredoc_end(cmd: str, start: int) -> int:
-    n = len(cmd)
-    i = start + 2
-    strip_tabs = False
-    if i < n and cmd[i] == "-":
-        strip_tabs = True
-        i += 1
-    quote: str | None = None
-    if i < n and cmd[i] in ("'", '"'):
-        quote = cmd[i]
-        i += 1
-    stop_chars = "\n\r" + (quote or "")
-    delim_start = i
-    while i < n and cmd[i] not in stop_chars:
-        i += 1
-    delimiter = cmd[delim_start:i]
-    if quote and i < n and cmd[i] == quote:
-        i += 1
-    while i < n and cmd[i] not in ("\n", "\r"):
-        i += 1
-    if i < n:
-        i += 1
-    while i < n:
-        line_start = i
-        if strip_tabs:
-            while i < n and cmd[i] == "\t":
-                i += 1
-            line_start = i
-        while i < n and cmd[i] not in ("\n", "\r"):
-            i += 1
-        if cmd[line_start:i] == delimiter:
-            if i < n:
-                i += 1
-            return i
-        if i < n:
-            i += 1
-    return i
-
-
-def _scan_top_level(command: str) -> bool:
-    """Return True when command contains a top-level `gh pr merge` statement."""
-    n = len(command)
-    i = 0
-    stmt_start = 0
-    stack = ["top"]
-    while i < n:
-        c = command[i]
-        state = stack[-1]
-        if state == "single":
-            if c == "'":
-                stack.pop()
-        elif state == "double":
-            if c == "\\" and i + 1 < n:
-                i += 1
-            elif c == '"':
-                stack.pop()
-            elif c == "$" and i + 1 < n and command[i + 1] == "(":
-                stack.append("subshell")
-                i += 1
-        elif state == "subshell":
-            if c == ")":
-                stack.pop()
-            elif c == "'":
-                stack.append("single")
-            elif c == '"':
-                stack.append("double")
-            elif c == "$" and i + 1 < n and command[i + 1] == "(":
-                stack.append("subshell")
-                i += 1
-            elif c == "(":
-                stack.append("subshell")
-            elif c == "<" and i + 1 < n and command[i + 1] == "<":
-                i = _find_heredoc_end(command, i)
-                continue
-        else:  # top
-            if c == "'":
-                stack.append("single")
-            elif c == '"':
-                stack.append("double")
-            elif c == "$" and i + 1 < n and command[i + 1] == "(":
-                stack.append("subshell")
-                i += 1
-            elif c == "<" and i + 1 < n and command[i + 1] == "<":
-                i = _find_heredoc_end(command, i)
-                continue
-            elif c in (";", "\n"):
-                if _check_merge_stmt(command[stmt_start:i]):
-                    return True
-                stmt_start = i + 1
-            elif c == "&" and i + 1 < n and command[i + 1] == "&":
-                if _check_merge_stmt(command[stmt_start:i]):
-                    return True
-                stmt_start = i + 2
-                i += 1
-            elif c == "|" and i + 1 < n and command[i + 1] == "|":
-                if _check_merge_stmt(command[stmt_start:i]):
-                    return True
-                stmt_start = i + 2
-                i += 1
-        i += 1
-    if stack == ["top"]:
-        return _check_merge_stmt(command[stmt_start:])
-    return False
-
-
 def merge_confirmed(command: str, output: str) -> bool:
     """Return True iff *command* is a top-level `gh pr merge` whose *output*
     confirms a completed merge via gh's success marker.
@@ -173,7 +68,7 @@ def merge_confirmed(command: str, output: str) -> bool:
     this repo (dev-env#474; mirrors post-pr-merge-project.py's
     merge_succeeded(), see ADR-049/ADR-050).
     """
-    return _scan_top_level(command) and output_has_merge_marker(output)
+    return scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output)
 
 
 # --- credentials ---

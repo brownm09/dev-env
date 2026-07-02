@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02 (five amendments — see Amendment sections below)
+**Amended:** 2026-07-01, 2026-07-02 (six amendments — see Amendment sections below)
 **Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex
 
 ---
@@ -305,3 +305,49 @@ standing invitation to check whether every sibling hook that does the same *kind
 command output; detect a specific CLI invocation) has the same fix — the sweep in Amendment 1 found
 one missed sibling for the output-reading fix; this amendment is that same sweep for the
 statement-scanning fix, one release later.
+
+## Amendment 6 (2026-07-02) — completing the sweep: `usage-snapshot.py` and `post-pr-merge-project.py`
+
+Amendment 5 promoted `scan_top_level` out of `pr-merge-reminder.py` and wired it into
+`post-tool-use.py`, but did not touch two other hooks that had independently reinvented the same
+parser before Amendment 5 ever existed. `/review` of Amendment 5's own PR ([#508](https://github.com/brownm09/dev-env/pull/508))
+surfaced them:
+
+- **`usage-snapshot.py`** carried its own `_find_heredoc_end` plus a merge-only
+  `_scan_top_level(command: str) -> bool`, hardcoded to `_check_merge_stmt` rather than
+  parameterized.
+- **`post-pr-merge-project.py`** carried the identical shape, with a comment that admitted it
+  outright: `# _scan_top_level and helpers below are duplicated from pr-merge-reminder.py.`
+
+**Symptom (dev-env#509):** no functional bug — both local copies handled `;`, `\n`, `&&`, `||`,
+single/double quotes, `$()` subshells, and heredoc bodies identically to the by-then-shared
+`_hookio.scan_top_level`. The issue was purely the drift `scan_top_level` was created to end: two
+more hand-maintained copies of a ~100-line stack-based parser, invisible to Amendment 5's sweep
+because neither hook was on ADR-049's original four-sibling list (both were fixed later — in
+Amendment 1 and the base decision, respectively — for the unrelated output-reading bug) and
+Amendment 5 scoped its own sweep to `post-tool-use.py` alone.
+
+**Fix:** for each of the two files — import `scan_top_level` from `_hookio` in place of the local
+`_scan_top_level` definition; delete the now-redundant local `_find_heredoc_end`; change the call
+site from `_scan_top_level(command)` to `scan_top_level(command, _check_merge_stmt)`, using the
+`_check_merge_stmt` predicate each file already defined for its own single-purpose regex match.
+Behavior-preserving by construction — the two local copies and the shared engine were verified
+character-for-character equivalent in control flow before this PR, so this is deletion of dead
+duplication, not a rewrite. `post-pr-merge-project.py` also drops its now-inaccurate "duplicated
+from pr-merge-reminder.py" comment.
+
+**Coverage:** `test_usage_snapshot.py` and `test_post_pr_merge_project.py` exercise only the public
+`merge_confirmed()` / `merge_succeeded()` and extraction helpers, never the private
+`_scan_top_level` / `_find_heredoc_end` names directly, so both suites pass unchanged — confirming
+the refactor is behavior-preserving rather than requiring test updates. `test_hookio.py`'s existing
+`scan_top_level` coverage (Amendment 5) now backs all four hooks that need top-level statement
+scanning (`pr-merge-reminder.py`, `post-tool-use.py`, `usage-snapshot.py`,
+`post-pr-merge-project.py`) from one implementation.
+
+**General lesson (continuing Amendments 1 and 5's):** a sweep is only as complete as the list it
+started from. Amendment 5's sweep was scoped to "hooks needing `gh pr create` detection like
+`pr-merge-reminder.py`," which correctly caught `post-tool-use.py` but missed two hooks whose need
+was narrower (merge detection only), so their duplication didn't look like the same shape at a
+glance. Generalized: when consolidating a cross-hook utility, grep for the *engine* (the parser
+body itself), not just the *call pattern* that motivated the current fix — the two would have
+surfaced together.
