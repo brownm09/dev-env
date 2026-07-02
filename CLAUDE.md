@@ -17,6 +17,13 @@ guidelines, and journal conventions are defined there and apply to every project
 This is the canonical, complete set of dev-env verification commands. The global "Test
 before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section.
 
+Item numbers below (and `docs/adr/INDEX.md`'s ADR numbers) are checked for collisions against
+`origin/main` immediately before every `gh pr merge`, by `pre-merge-numbering-check.py`
+([ADR-074](docs/adr/074-pre-merge-numbering-collision-check.md); dev-env#516) — concurrent PRs
+routinely pick the same "next number" from a stale snapshot, and the collision is only ever
+visible at merge time. If blocked, `git fetch origin main && git rebase origin/main`, renumber
+the colliding item(s) to the next free number, and re-run `gh pr merge`.
+
 1. **Hook-script syntax check** — run from the repo root to verify all hook scripts parse:
 
    ```bash
@@ -530,6 +537,24 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     ```bash
     py -3 claude/scripts/tests/test_winsubp.py
     py -3 claude/scripts/tests/test_pyw_stdio.py
+    ```
+
+37. **numbering-collision check test** — required when changing
+    `claude/scripts/pre-merge-numbering-check.py`. Exercises the pure `extract_section`,
+    `extract_testing_numbers`, `extract_adr_numbers`, `is_dev_env_repo`, `find_new_collisions`,
+    `find_gaps`, and `format_block_message` helpers offline (no disk, no network, no subprocess):
+    pins that a number this branch newly claims (absent at the merge-base) which origin/main has
+    also claimed is a collision, while an edit to an *existing* item is never flagged even when
+    branch and main's text for it diverge; pins the CLAUDE.md Testing-section and
+    docs/adr/INDEX.md table extractors against realistic samples (an indented code block inside
+    an item, and the ADR table's header/separator rows, must not be mistaken for list entries);
+    and pins the dev-env repo-scope check against https, ssh, and other-repo origin URLs.
+    `main()`'s git/subprocess calls (fetch, merge-base, show) are not covered, matching
+    `pre-merge-message-check.py`'s documented boundary
+    ([ADR-074](docs/adr/074-pre-merge-numbering-collision-check.md); dev-env#516).
+
+    ```bash
+    py -3 claude/scripts/tests/test_pre_merge_numbering_check.py
     ```
 
 ## Observability
