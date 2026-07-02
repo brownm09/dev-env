@@ -27,6 +27,13 @@ Fails OPEN: any error resolving or fetching the PR exits 0 with an advisory
 systemMessage, so a transient `gh`/network problem never wedges a legitimate
 merge. The gate is one layer; CLAUDE.md and the reviewer remain responsible.
 
+Merge detection is built on `_hookio.scan_top_level` (dev-env#519), the same
+quote/subshell/heredoc-aware engine `pre-merge-numbering-check.py` and
+`pr-merge-reminder.py` already use — not a plain unanchored `re.search` over
+the whole command string, which could spuriously fire on a `gh pr merge`
+mentioned only inside a heredoc body or `$()` subshell (dev-env#499) and pay
+this hook's live `gh pr view` call for a command that never actually merges.
+
 Stdin JSON shape (PreToolUse): {"tool_name":"Bash","tool_input":{"command":...},"cwd":...}
 
 Exit 2 — block the merge (stderr shown to Claude).
@@ -39,7 +46,9 @@ import re
 import subprocess
 import sys
 
-_GH_PR_MERGE_RE = re.compile(r"(?:^|&&|\|+|;|\n)\s*gh\s+pr\s+merge\b")
+from _hookio import scan_top_level
+
+_MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
 _MARKER_RE = re.compile(
     r"<!--\s*review-findings:\s*blocking\s*=\s*(\d+)\s+non_blocking\s*=\s*(\d+)\s*-->"
 )
@@ -50,6 +59,19 @@ _DISPOSED_RE = re.compile(r"findings[\s\-]dispos", re.IGNORECASE)
 # Flags to `gh pr merge` that consume the following token as their value.
 _VALUE_FLAGS = {"--repo", "-R", "-b", "--body", "-t", "--subject", "--match-head-commit",
                 "--author-email"}
+
+
+def _check_merge_stmt(token):
+    return bool(_MERGE_STMT_RE.match(token.lstrip()))
+
+
+def is_pr_merge_command(command):
+    """True iff *command* contains a top-level `gh pr merge` -- i.e. not one
+    merely mentioned inside a quoted string, $() subshell, or heredoc body
+    (dev-env#499). Mirrors `pre-merge-numbering-check.py`'s identically-named
+    predicate (dev-env#519).
+    """
+    return scan_top_level(command, _check_merge_stmt)
 
 
 def _parse_merge_target(command):
@@ -136,7 +158,7 @@ def main() -> None:
     if data.get("tool_name") != "Bash":
         sys.exit(0)
     command = data.get("tool_input", {}).get("command", "")
-    if not _GH_PR_MERGE_RE.search(command):
+    if not is_pr_merge_command(command):
         sys.exit(0)
 
     cwd = data.get("cwd", "") or None
