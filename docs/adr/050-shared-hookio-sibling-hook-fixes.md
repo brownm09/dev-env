@@ -294,7 +294,7 @@ pre-existing `exit_code != 0` gate immediately downstream of the detection swap:
 command/config/output differing only in `exitCode` yields exit 0 (silent) vs. exit 2 (the "no
 GitHub URL found" advisory) — proving detection fired correctly *and* the gate still short-circuits,
 without either branch ever invoking a live `gh`/network call. `test_pr_merge_reminder.py` is
-unchanged and continues to pass (42/42), now exercising `scan_top_level` through its `_hookio` import
+unchanged and continues to pass in full, now exercising `scan_top_level` through its `_hookio` import
 rather than a local definition — its four subshell/quote/heredoc-specific cases
 (`test_create_inside_subshell_not_matched`, `test_create_inside_double_quotes_not_matched`,
 `test_create_in_heredoc_not_matched`, `test_push_inside_subshell_not_matched`) are the canaries most
