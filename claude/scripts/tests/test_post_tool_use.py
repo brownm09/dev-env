@@ -36,6 +36,7 @@ Exit 0 = all pass.
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -58,6 +59,8 @@ extract_github_url = post_tool_use.extract_github_url
 canonical_root_from_worktree = post_tool_use.canonical_root_from_worktree
 _canonical_root_from_common_dir = post_tool_use._canonical_root_from_common_dir
 load_config = post_tool_use.load_config
+is_issue_create_command = post_tool_use.is_issue_create_command
+is_pr_create_command = post_tool_use.is_pr_create_command
 
 URL = "https://github.com/brownm09/dev-env/issues/377"
 OTHER_REPO_URL = "https://github.com/someone/other-repo/issues/5"
@@ -229,6 +232,210 @@ def test_common_dir_empty_none() -> str:
     return "empty / whitespace common-dir output -> None"
 
 
+# ---------------------------------------------------------------------------
+# is_issue_create_command / is_pr_create_command  (dev-env#499)
+#
+# Before this fix, main() detected these with an unanchored
+# re.search(r"\bgh\s+issue\s+create\b", command) / re.search(r"\bgh\s+pr\s+create\b",
+# command) over the WHOLE raw command string -- matching the substring anywhere,
+# including inside a heredoc body, a quoted commit message, a grep pattern
+# argument, or a --text field value. These two functions now share
+# _hookio.scan_top_level with pr-merge-reminder.py's equivalent detection, so
+# only a genuine top-level invocation counts.
+# ---------------------------------------------------------------------------
+
+
+def test_pr_create_simple_matches() -> str:
+    assert is_pr_create_command("gh pr create --fill")
+    return "bare gh pr create -> match"
+
+
+def test_issue_create_simple_matches() -> str:
+    assert is_issue_create_command('gh issue create --title "x" --body "y"')
+    return "bare gh issue create -> match"
+
+
+def test_pr_create_with_cd_prefix_matches() -> str:
+    assert is_pr_create_command("cd /some/path && gh pr create --fill")
+    return "cd ... && gh pr create -> match"
+
+
+def test_pr_create_chained_with_merge_still_matches() -> str:
+    # A genuine top-level create chained with a merge must still be detected --
+    # the fix must not overcorrect into false negatives.
+    assert is_pr_create_command("gh pr create --fill && gh pr merge --auto")
+    return "top-level gh pr create chained with gh pr merge -> still matches"
+
+
+def test_pr_create_not_matched_as_issue_create() -> str:
+    assert not is_issue_create_command("gh pr create --fill")
+    return "gh pr create -> not an issue-create match"
+
+
+def test_issue_create_not_matched_as_pr_create() -> str:
+    assert not is_pr_create_command("gh issue create --title x")
+    return "gh issue create -> not a pr-create match"
+
+
+# --- dev-env#499 false-positive reproductions (both PR- and issue-create) ---
+# Each repro embeds the literal example command `gh pr create --fill && gh pr
+# merge --auto` (or the issue-create equivalent) the way the real dev-env#494
+# fix session did -- inside text that is NOT a real invocation.
+
+def test_pr_create_in_heredoc_commit_body_not_matched() -> str:
+    cmd = (
+        "git commit -m \"$(cat <<'EOF'\n"
+        "fix(hooks): explain the gh pr create --fill && gh pr merge --auto example\n"
+        "EOF\n"
+        ')"'
+    )
+    assert not is_pr_create_command(cmd)
+    return "gh pr create inside a heredoc commit body -> no match (dev-env#499)"
+
+
+def test_issue_create_in_heredoc_commit_body_not_matched() -> str:
+    cmd = (
+        "git commit -m \"$(cat <<'EOF'\n"
+        'fix(hooks): explain the gh issue create --title "x" example\n'
+        "EOF\n"
+        ')"'
+    )
+    assert not is_issue_create_command(cmd)
+    return "gh issue create inside a heredoc commit body -> no match (dev-env#499)"
+
+
+def test_pr_create_in_quoted_commit_message_not_matched() -> str:
+    cmd = 'git commit -m "document gh pr create --fill && gh pr merge --auto behavior"'
+    assert not is_pr_create_command(cmd)
+    return "gh pr create inside a quoted commit message -> no match (dev-env#499 repro 1)"
+
+
+def test_issue_create_in_quoted_commit_message_not_matched() -> str:
+    cmd = 'git commit -m "document the gh issue create --title flag behavior"'
+    assert not is_issue_create_command(cmd)
+    return "gh issue create inside a quoted commit message -> no match"
+
+
+def test_grep_pattern_argument_not_matched_for_either() -> str:
+    # The actual dev-env#499 repro 2: a single grep whose PATTERN argument
+    # names both literal strings, run against the hook's own source.
+    cmd = (
+        'grep -n "gh pr create\\|gh issue create\\|gh pr merge" '
+        "claude/scripts/post-tool-use.py"
+    )
+    assert not is_pr_create_command(cmd)
+    assert not is_issue_create_command(cmd)
+    return "grep pattern argument naming both strings -> neither detector fires (dev-env#499 repro 2)"
+
+
+def test_pr_create_in_project_item_edit_text_not_matched() -> str:
+    cmd = (
+        "gh project item-edit --project-id PVT_x --id ITEM --field-id FIELD "
+        '--text "fixed the gh pr create --fill && gh pr merge --auto detection bug"'
+    )
+    assert not is_pr_create_command(cmd)
+    return "gh pr create inside a --text field value -> no match (dev-env#499 repro 3)"
+
+
+def test_issue_create_in_project_item_edit_text_not_matched() -> str:
+    cmd = (
+        "gh project item-edit --project-id PVT_x --id ITEM --field-id FIELD "
+        '--text "fixed the gh issue create detection bug"'
+    )
+    assert not is_issue_create_command(cmd)
+    return "gh issue create inside a --text field value -> no match"
+
+
+def test_pr_create_in_pr_comment_body_not_matched() -> str:
+    cmd = 'gh pr comment 500 --body "Example: gh pr create --fill && gh pr merge --auto"'
+    assert not is_pr_create_command(cmd)
+    return "gh pr create inside a PR comment body -> no match (dev-env#499 repro 4)"
+
+
+# --- subshell / double-quote negatives (mirroring test_pr_merge_reminder.py) ---
+
+def test_pr_create_in_subshell_not_matched() -> str:
+    assert not is_pr_create_command("echo $(gh pr create --fill)")
+    return "gh pr create inside $() subshell -> no match"
+
+
+def test_issue_create_in_subshell_not_matched() -> str:
+    assert not is_issue_create_command("echo $(gh issue create --title x)")
+    return "gh issue create inside $() subshell -> no match"
+
+
+def test_pr_create_in_double_quotes_not_matched() -> str:
+    assert not is_pr_create_command('echo "gh pr create --fill"')
+    return "gh pr create inside double quotes -> no match"
+
+
+# ---------------------------------------------------------------------------
+# main() end-to-end: the exit_code != 0 gate (lines immediately following the
+# detection swap) must still short-circuit correctly. Both cases share cwd,
+# command, and output -- differing only in exitCode -- so the outcome
+# difference (exit 0 vs exit 2) isolates exactly the gate under test, without
+# ever invoking a live `gh`/network call in either branch (the "no GitHub URL
+# found" advisory path is reached, not add_to_project).
+# ---------------------------------------------------------------------------
+
+def _run_hook(payload: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def _hook_config_cwd(tmp_root: str) -> str:
+    cfg_dir = os.path.join(tmp_root, ".claude")
+    os.makedirs(cfg_dir, exist_ok=True)
+    with open(os.path.join(cfg_dir, "hook-config.json"), "w", encoding="utf-8") as f:
+        json.dump({"project_number": "999", "project_owner": "testowner"}, f)
+    return tmp_root
+
+
+def test_main_exit_code_nonzero_short_circuits_even_when_create_detected() -> str:
+    with tempfile.TemporaryDirectory() as tmp_root:
+        cwd = _hook_config_cwd(tmp_root)
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh pr create --fill"},
+            "tool_response": {"stdout": "done", "stderr": "", "exitCode": 1},
+            "cwd": cwd,
+        }
+        result = _run_hook(payload)
+        assert result.returncode == 0, (
+            f"expected exit 0 (exit_code gate short-circuits), got {result.returncode}: "
+            f"stderr={result.stderr!r}"
+        )
+        assert result.stderr == "", f"expected no stderr output, got {result.stderr!r}"
+    return "genuine top-level create + exitCode!=0 -> exit 0, silent (gate unaffected by the fix)"
+
+
+def test_main_exit_code_zero_proceeds_past_gate_to_no_url_advisory() -> str:
+    # Control for the test above: same command/config/output, only exitCode
+    # differs. This proves detection really fired True (the run reaches the
+    # downstream "no GitHub URL found" branch, exit 2) rather than the exit-0
+    # result above being coincidental (e.g. config missing regardless).
+    with tempfile.TemporaryDirectory() as tmp_root:
+        cwd = _hook_config_cwd(tmp_root)
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh pr create --fill"},
+            "tool_response": {"stdout": "done", "stderr": "", "exitCode": 0},
+            "cwd": cwd,
+        }
+        result = _run_hook(payload)
+        assert result.returncode == 2, (
+            f"expected exit 2 (no GitHub URL found advisory), got {result.returncode}: "
+            f"stderr={result.stderr!r}"
+        )
+        assert "no GitHub URL found" in result.stderr, f"got {result.stderr!r}"
+    return "genuine top-level create + exitCode==0, no URL in output -> exit 2 advisory (detection fired)"
+
+
 def main() -> int:
     tests = [
         ("reads command output from stdout", test_reads_stdout),
@@ -253,6 +460,25 @@ def main() -> int:
         ("git common-dir: stdout whitespace stripped", test_common_dir_strips_whitespace),
         ("git common-dir: non-.git basename -> None", test_common_dir_non_git_basename_none),
         ("git common-dir: empty output -> None", test_common_dir_empty_none),
+        ("pr-create: bare match", test_pr_create_simple_matches),
+        ("issue-create: bare match", test_issue_create_simple_matches),
+        ("pr-create: cd prefix match", test_pr_create_with_cd_prefix_matches),
+        ("pr-create: chained with merge still matches", test_pr_create_chained_with_merge_still_matches),
+        ("pr-create not matched as issue-create", test_pr_create_not_matched_as_issue_create),
+        ("issue-create not matched as pr-create", test_issue_create_not_matched_as_pr_create),
+        ("pr-create in heredoc commit body -> no match (dev-env#499)", test_pr_create_in_heredoc_commit_body_not_matched),
+        ("issue-create in heredoc commit body -> no match (dev-env#499)", test_issue_create_in_heredoc_commit_body_not_matched),
+        ("pr-create in quoted commit message -> no match (dev-env#499)", test_pr_create_in_quoted_commit_message_not_matched),
+        ("issue-create in quoted commit message -> no match", test_issue_create_in_quoted_commit_message_not_matched),
+        ("grep pattern argument -> neither fires (dev-env#499)", test_grep_pattern_argument_not_matched_for_either),
+        ("pr-create in --text field value -> no match (dev-env#499)", test_pr_create_in_project_item_edit_text_not_matched),
+        ("issue-create in --text field value -> no match", test_issue_create_in_project_item_edit_text_not_matched),
+        ("pr-create in PR comment body -> no match (dev-env#499)", test_pr_create_in_pr_comment_body_not_matched),
+        ("pr-create in $() subshell -> no match", test_pr_create_in_subshell_not_matched),
+        ("issue-create in $() subshell -> no match", test_issue_create_in_subshell_not_matched),
+        ("pr-create in double quotes -> no match", test_pr_create_in_double_quotes_not_matched),
+        ("main(): exitCode!=0 short-circuits even when create detected", test_main_exit_code_nonzero_short_circuits_even_when_create_detected),
+        ("main(): exitCode==0 proceeds to no-URL advisory", test_main_exit_code_zero_proceeds_past_gate_to_no_url_advisory),
     ]
     failed = 0
     for name, fn in tests:
