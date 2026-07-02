@@ -665,12 +665,21 @@ the next note), but it shares the identical marker-detection call. The snapshot 
 legitimately absent for reasons unrelated to the worktree-exit-code case: `.credentials.json`
 missing or unparseable, an expired refresh token, or the usage API unreachable after one retry —
 all intentionally silent-or-advisory per the hook's own docstring, not a regression of this fix.
-Separately: a PostToolUse hook's own stderr was not observed to surface to the assistant in chat
-in either of the two instances behind this fix — worth confirming with more data points before
-treating as a firm platform rule — when the *parent* `gh pr merge` call itself is shown as an
-error (non-zero exit); until then, confirm a hook
-actually ran by checking its side effect (e.g. the linked issue's board status) rather than
-assuming absence of visible reminder text means the hook didn't fire.
+Separately: the observed *symptom* — no PostToolUse hook output surfacing in chat when the
+*parent* `gh pr merge` call itself is shown as an error (non-zero exit) — has now recurred in all
+three occurrences examined (the two instances behind this fix, plus dev-env PR #512 on
+2026-07-02). The *mechanism* remains unconfirmed and is likely confounded rather than a distinct
+platform behavior: gh's own stdout success marker is independently known to be lost on this exact
+failure path (dev-env#489, root-caused), the `gh pr view` fallback that works around that covers
+only 1 of the 6 marker-gated hooks (dev-env#504, open), and even that one hook's silence is
+inconclusive on its own — the fallback could race or fail silently rather than its stderr being
+dropped (dev-env#498, open). No occurrence yet isolates a hook whose merge-detection is
+independently known to have succeeded — not just inferred from a Done-status that GitHub's native
+close automation equally explains — with its stderr still failing to surface (dev-env#521). Until
+dev-env#498/#504 resolve that ambiguity, confirm a hook actually ran by checking its side effect
+(e.g. the linked issue's board status) rather than assuming absence of visible reminder text means
+the hook didn't fire — and don't over-read that absence as proof the hook's stderr specifically
+was dropped.
 
 ### Stacked PR squash-merge sequencing — never `--delete-branch` a base with an open child
 
