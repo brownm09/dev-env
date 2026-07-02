@@ -174,9 +174,13 @@ appears (no `jq` — parse with `node -e`):
 # R is the FULL owner/repo slug (e.g., "brownm09/lifting-logbook") from Step 3 routing.
 ISSUES="$SCRATCH/memaudit_issues_${R//\//_}.json"
 gh issue list --repo "${R}" --label memory-audit --state open --limit 500 \
-  --json number,title,body > "$ISSUES" 2>/dev/null || echo '[]' > "$ISSUES"
-if ! node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" "$ISSUES" 2>/dev/null; then
+  --json number,title,body > "$ISSUES" 2>/dev/null
+if [ $? -ne 0 ]; then
   echo "WARN: gh issue list failed for ${R} — skipping filing this run to avoid duplicates" >&2
+  continue
+fi
+if ! node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" "$ISSUES" 2>/dev/null; then
+  echo "WARN: gh issue list returned non-JSON for ${R} — skipping filing this run to avoid duplicates" >&2
   continue
 fi
 
