@@ -27,9 +27,11 @@ How it decides (mechanical, not a content judgment):
   4. A number this branch newly introduces (absent at the merge-base) that
      origin/main has *also* claimed since the branch point is a genuine
      collision -> BLOCK (exit 2) naming both colliding lines and the fix. A
-     gap in the resulting sequence (no collision, just non-contiguous) is
-     advisory only, never blocking -- it is cosmetic, and a legitimate item
-     deletion can produce one.
+     gap that this branch's own new numbers create or extend (no collision,
+     just non-contiguous) is advisory only, never blocking -- it is cosmetic,
+     and a legitimate item deletion can produce one. A gap that already
+     existed on origin/main before this branch is never advised on, so a
+     long-standing hole doesn't re-nag on every future merge.
 
 Fails OPEN: any git/network/parse error exits 0 (with an advisory
 systemMessage where relevant), so this check can never wedge a legitimate
@@ -37,10 +39,14 @@ merge on its own failure -- matching `pre-merge-findings-gate.py` and
 `pre-merge-message-check.py`, its two siblings in this hook family.
 
 Pure-helper convention (matches the rest of `claude/scripts/`): extraction,
-collision-detection, and message-formatting are pure functions, unit-tested
-offline in `tests/test_pre_merge_numbering_check.py` with no subprocess,
-network, or disk. `main()`'s git/subprocess calls are the only impure surface
-and are not unit-tested.
+collision-detection, gap-detection, message-formatting, and merge-command
+detection (`is_pr_merge_command`, built on `_hookio.scan_top_level`) are pure
+functions, unit-tested offline in `tests/test_pre_merge_numbering_check.py`
+with no subprocess, network, or disk. `main()`'s git/subprocess orchestration
+is additionally covered end-to-end by a handful of real-subprocess tests in
+the same file (throwaway `git init` repos, no live network) -- unlike this
+hook's `pre-merge-message-check.py` sibling, whose main() has no such
+coverage since it never shells out to git.
 
 Stdin JSON shape (PreToolUse): {"tool_name":"Bash","tool_input":{"command":...},"cwd":...}
 
@@ -55,11 +61,27 @@ import re
 import subprocess
 import sys
 
-from _hookio import effective_merge_dir
+from _hookio import effective_merge_dir, scan_top_level
 
-_GH_PR_MERGE_RE = re.compile(r"(?:^|&&|\|+|;|\n)\s*gh\s+pr\s+merge\b")
+_MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
 _TESTING_ITEM_RE = re.compile(r'^(\d+)\.\s+\*\*')
 _ADR_ROW_RE = re.compile(r'^\|\s*\[(\d+)\]\(')
+
+
+def _check_merge_stmt(token):
+    return bool(_MERGE_STMT_RE.match(token.lstrip()))
+
+
+def is_pr_merge_command(command):
+    """True iff *command* contains a top-level `gh pr merge` -- i.e. not one
+    merely mentioned inside a quoted string, $() subshell, or heredoc body
+    (dev-env#499). Mirrors `pr-merge-reminder.py`'s identically-named
+    predicate. Unlike this hook's two older PreToolUse-merge siblings
+    (`pre-merge-message-check.py`, `pre-merge-findings-gate.py`), which still
+    use an unanchored regex, this one is built on the shared engine those two
+    predate -- dev-env#519 tracks migrating them for consistency.
+    """
+    return scan_top_level(command, _check_merge_stmt)
 
 
 def extract_section(text, heading):
@@ -146,6 +168,20 @@ def find_gaps(numbers):
     return [n for n in range(1, hi + 1) if n not in numbers]
 
 
+def find_new_gaps(main_numbers, branch_new):
+    """Gaps this branch's own new numbers create or extend -- excludes any
+    gap that already existed in *main_numbers* on its own.
+
+    Without this exclusion, a long-standing legitimate gap already on
+    origin/main (e.g. a retired item) would re-advise on every future merge
+    forever, training the operator to ignore the advisory. Only a gap that
+    is new *because of* this branch's additions is worth surfacing here.
+    """
+    pre_existing = set(find_gaps(set(main_numbers)))
+    projected = set(find_gaps(set(main_numbers) | set(branch_new)))
+    return sorted(projected - pre_existing)
+
+
 def format_block_message(findings):
     """{label: {number: (branch_line, main_line)}} -> the exit-2 stderr message."""
     lines = ["[numbering-check] BLOCKED: this merge would create a duplicate number.", ""]
@@ -201,7 +237,7 @@ def main():
     if data.get("tool_name") != "Bash":
         sys.exit(0)
     command = data.get("tool_input", {}).get("command", "")
-    if not _GH_PR_MERGE_RE.search(command):
+    if not is_pr_merge_command(command):
         sys.exit(0)
 
     cwd = data.get("cwd") or os.getcwd()
@@ -211,7 +247,7 @@ def main():
     if not is_dev_env_repo(remote_url):
         sys.exit(0)
 
-    if _run_git(["fetch", "origin", "main"], repo_dir) is None:
+    if _run_git(["fetch", "origin", "+main:refs/remotes/origin/main"], repo_dir) is None:
         _advisory(
             "[numbering-check] Could not fetch origin/main (offline?). Merge allowed -- "
             "manually confirm CLAUDE.md's Testing section and docs/adr/INDEX.md don't "
@@ -228,7 +264,13 @@ def main():
     for path, extractor, label in _CHECKED_FILES:
         base_text = _run_git(["show", f"{merge_base}:{path}"], repo_dir) or ""
         branch_text = _run_git(["show", f"HEAD:{path}"], repo_dir) or ""
-        main_text = _run_git(["show", f"origin/main:{path}"], repo_dir) or ""
+        main_text = _run_git(["show", f"origin/main:{path}"], repo_dir)
+        if main_text is None:
+            # A failed read must never be treated as "main claims no
+            # numbers" -- that would silently defeat the one check this
+            # file exists to make. Skip visibly instead of passing silently.
+            gap_notes.append(f"{label}: could not read origin/main -- collision check skipped for this file")
+            continue
 
         base_numbers = extractor(base_text)
         branch_numbers = extractor(branch_text)
@@ -240,7 +282,7 @@ def main():
             continue
 
         branch_new = set(branch_numbers) - set(base_numbers)
-        gaps = find_gaps(set(main_numbers) | branch_new)
+        gaps = find_new_gaps(main_numbers, branch_new)
         if gaps:
             gap_notes.append(f"{label}: gap at {', '.join(str(n) for n in gaps)}")
 

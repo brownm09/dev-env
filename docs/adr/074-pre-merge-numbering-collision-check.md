@@ -76,10 +76,15 @@ globally in `~/.claude/settings.json` but the two files being checked are dev-en
 
 3. **Pure/impure split, matching every other hook in `claude/scripts/`.** `extract_section`,
    `extract_testing_numbers`, `extract_adr_numbers`, `is_dev_env_repo`, `find_new_collisions`,
-   `find_gaps`, and `format_block_message` are pure functions, unit-tested offline with no
-   subprocess/network/disk in `tests/test_pre_merge_numbering_check.py`. `main()`'s git calls are
-   the only impure surface and are not unit-tested — the same coverage boundary
-   `pre-merge-message-check.py` documents for its own `main()`.
+   `find_gaps`, `find_new_gaps`, `format_block_message`, and `is_pr_merge_command` are pure
+   functions, unit-tested offline with no subprocess/network/disk in
+   `tests/test_pre_merge_numbering_check.py`. Unlike `pre-merge-message-check.py` (whose `main()`
+   never shells out to git and so has no such layer), this hook's git/subprocess orchestration —
+   the actual point of the review-driven revisions below — is exercised by a second, end-to-end
+   test layer: the real `main()` driven over stdin via subprocess against throwaway git repos
+   (a bare "origin" plus independent clones, mirroring `test_canonical_mutate_guard.py`'s Layer 2
+   pattern), proving a genuine cross-branch collision is discovered only because the hook's own
+   `git fetch` pulls in a competing branch's already-pushed commit.
 
 4. **`CLAUDE.md`'s own Testing section gets a pointer note** (not a new prose rule) near its
    header, naming this hook and the fix procedure — since the check is now mechanically enforced,
@@ -146,8 +151,9 @@ globally in `~/.claude/settings.json` but the two files being checked are dev-en
   `pre-merge-findings-gate.py`, the precedent for converting a prose merge-time rule into a
   mechanical, fail-open gate.
 - [ADR-061](061-pre-merge-message-queue.md) — `pre-merge-message-check.py`, this hook's closest
-  structural sibling (same stdin shape, same `_GH_PR_MERGE_RE`, same documented "main() not
-  covered" test boundary).
+  structural sibling (same stdin shape, same PreToolUse merge-gate role). Its `main()` never
+  shells out to git, so it has no equivalent to this hook's end-to-end git-orchestration test
+  layer — the two hooks share a shape, not a test-coverage boundary.
 - [ADR-067](067-scope-merge-keyed-hooks-to-target-repo.md) — `effective_merge_dir()`, reused here
   to scope this check to the actual merge-target repo through a `cd`-chain.
 - [ADR-004](004-pr-review-reads-from-remote.md) — the established "read from remote, not local

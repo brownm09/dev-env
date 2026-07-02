@@ -540,18 +540,30 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     ```
 
 37. **numbering-collision check test** — required when changing
-    `claude/scripts/pre-merge-numbering-check.py`. Exercises the pure `extract_section`,
-    `extract_testing_numbers`, `extract_adr_numbers`, `is_dev_env_repo`, `find_new_collisions`,
-    `find_gaps`, and `format_block_message` helpers offline (no disk, no network, no subprocess):
-    pins that a number this branch newly claims (absent at the merge-base) which origin/main has
-    also claimed is a collision, while an edit to an *existing* item is never flagged even when
-    branch and main's text for it diverge; pins the CLAUDE.md Testing-section and
-    docs/adr/INDEX.md table extractors against realistic samples (an indented code block inside
-    an item, and the ADR table's header/separator rows, must not be mistaken for list entries);
-    and pins the dev-env repo-scope check against https, ssh, and other-repo origin URLs.
-    `main()`'s git/subprocess calls (fetch, merge-base, show) are not covered, matching
-    `pre-merge-message-check.py`'s documented boundary
-    ([ADR-074](docs/adr/074-pre-merge-numbering-collision-check.md); dev-env#516).
+    `claude/scripts/pre-merge-numbering-check.py`. Two layers. Pure-helper tests exercise
+    `extract_section`, `extract_testing_numbers`, `extract_adr_numbers`, `is_dev_env_repo`,
+    `find_new_collisions`, `find_gaps`, `find_new_gaps`, `format_block_message`, and
+    `is_pr_merge_command` offline (no disk, no network, no subprocess): pins that a number this
+    branch newly claims (absent at the merge-base) which origin/main has also claimed is a
+    collision, while an edit to an *existing* item is never flagged even when branch and main's
+    text for it diverge; pins the CLAUDE.md Testing-section and docs/adr/INDEX.md table extractors
+    against realistic samples (an indented code block inside an item, and the ADR table's
+    header/separator rows, must not be mistaken for list entries); pins the dev-env repo-scope
+    check against https, ssh, and other-repo origin URLs; pins that a gap already present on
+    `origin/main` alone is never re-advised (only a gap this branch's own numbers create or
+    extend is), so a long-standing legitimate hole doesn't nag on every future merge; and pins
+    `is_pr_merge_command` (built on the shared `_hookio.scan_top_level`, matching
+    `pr-merge-reminder.py`'s identically-named predicate) against a bare invocation, a
+    `cd`-chained one, and a `gh pr merge` mentioned only inside a heredoc body, which must NOT
+    match (dev-env#499). A second, end-to-end layer drives the real `main()` over stdin via
+    subprocess against real throwaway git repos (a bare "origin" plus independent clones,
+    mirroring `test_canonical_mutate_guard.py`'s Layer 2 pattern): a non-dev-env repo and a
+    non-merge command are both a silent no-op, and a genuine cross-branch collision — discovered
+    only because the hook's own `git fetch` pulls in a competing branch's already-pushed commit —
+    blocks the merge (exit 2) with the reason on stderr and empty stdout. Unlike
+    `pre-merge-message-check.py` (whose `main()` never shells out to git and has no such layer),
+    this hook's git/subprocess orchestration is exercised directly rather than left as a
+    documented gap ([ADR-074](docs/adr/074-pre-merge-numbering-collision-check.md); dev-env#516).
 
     ```bash
     py -3 claude/scripts/tests/test_pre_merge_numbering_check.py
