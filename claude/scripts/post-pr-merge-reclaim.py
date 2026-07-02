@@ -37,6 +37,7 @@ Exit 0 always — informational only; never blocks Claude.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -46,11 +47,20 @@ from _hookio import (
     effective_merge_dir,
     output_has_merge_marker,
     read_command_output,
+    scan_top_level,
     should_confirm_via_gh,
 )
 
 SCAN_DIR = "C:/Users/brown/Git"
 RECLAIM_SCRIPT = Path(__file__).resolve().parent / "reclaim-worktree-disk.py"
+
+# Anchored top-level match — mirrors usage-snapshot.py / pr-merge-reminder.py /
+# post-pr-merge-project.py's identical _check_merge_stmt (ADR-050 Amendments 5/6).
+_MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
+
+
+def _check_merge_stmt(token: str) -> bool:
+    return bool(_MERGE_RE.match(token.lstrip()))
 
 
 def is_successful_merge(command: str, output: str) -> bool:
@@ -62,8 +72,14 @@ def is_successful_merge(command: str, output: str) -> bool:
     issue #275), while a clean exit 0 is also true for non-merge invocations
     like `gh pr merge --help` or a queued `--auto` — an exit-0-alone gate
     misfired on exactly that shape (dev-env#485).
+
+    The command-shape check itself is `scan_top_level`-anchored rather than a
+    raw substring test, so `gh pr merge` text inside a heredoc body, a quoted
+    argument, or a `$()` subshell no longer counts as an invocation — matching
+    the pattern already used in usage-snapshot.py / pr-merge-reminder.py /
+    post-pr-merge-project.py (dev-env#529, ADR-050 Amendment 9).
     """
-    if "gh pr merge" not in command:
+    if not scan_top_level(command, _check_merge_stmt):
         return False
     return output_has_merge_marker(output)
 
@@ -118,7 +134,7 @@ def main() -> None:
         # when gh exits abruptly right after a worktree's local-cleanup
         # failure (dev-env#489) — fall back to a live `gh pr view` confirmation
         # rather than silently skipping the disk reclaim (dev-env#504).
-        if "gh pr merge" not in command:
+        if not scan_top_level(command, _check_merge_stmt):
             sys.exit(0)
         exit_code = data.get("tool_response", {}).get("exitCode", -1)
         if not should_confirm_via_gh(exit_code, output):
