@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02 (seven amendments — see Amendment sections below)
+**Amended:** 2026-07-01, 2026-07-02 (nine amendments — see Amendment sections below)
 **Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use
 
 ---
@@ -547,3 +547,69 @@ direct synthetic-input test coverage requires checking every existing test case 
 path before assuming "add the fallback the same way as the reference hook" is a safe copy — one of
 `pr-merge-reminder.py`'s own pre-existing tests would have started shelling out to `gh` for real had the
 fallback been added inside `_build_messages` rather than gated in `main()`.
+
+## Amendment 9 (2026-07-02) — converging the 3 remaining marker-gated hooks' command-shape check onto `scan_top_level` (dev-env#529)
+
+Amendments 5 and 6 converged `pr-merge-reminder.py`, `post-tool-use.py`, `usage-snapshot.py`, and
+`post-pr-merge-project.py` onto the shared `scan_top_level` engine for command-shape detection. Three
+siblings sharing the identical `is_successful_merge(command, output)` predicate shape —
+`post-merge-tile-checkpoint.py`, `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py` — were left on the
+original crude `if "gh pr merge" not in command: return False` substring test, missed by both sweeps for
+the same reason Amendment 6 named its own two misses: their need (merge detection only) didn't visually
+match the `gh pr create`-detection shape either sweep was scoped to look for.
+
+**Concrete consequence, surfaced during dev-env#504's rollout review ([PR #528](https://github.com/brownm09/dev-env/pull/528)):**
+before #528 wired `confirm_merge_via_gh` into these three hooks, a false substring match — literal
+`gh pr merge` text inside a heredoc body or a quoted argument, not a real invocation — combined with a
+missing `exitCode` (defaulting to `-1`, per this ADR's own Context section noting the real payload often
+omits the field entirely) and no success marker was harmless: the hook just exited 0 after
+`is_successful_merge` returned `False`. After #528, that same false match now reaches
+`should_confirm_via_gh(-1, output)` — `True`, since `-1 != 0` and no marker is present — and pays a real
+`gh pr view` subprocess call before exiting 0.
+
+**Symptom, live-reproduced during this very fix's own session (dev-env#529):** a Bash command that wrote
+and ran a Python fixture script containing the literal text `"gh pr merge --squash --delete-branch"`
+inside a heredoc (test data for this fix's own regression tests, below) false-triggered the *canonical*,
+not-yet-fixed `post-merge-tile-checkpoint.py`: `should_confirm_via_gh` saw the substring-matched command,
+the absent `exitCode`, and no marker in the fixture script's own stdout, so it proceeded to a live
+`confirm_merge_via_gh` call — which found a real `MERGED` PR against the session's actual checked-out
+branch (unrelated to the Bash command that triggered the check) and fired the tile-checkpoint reminder for
+a merge that did not happen in that Bash call at all. The blast radius: a misattributed reminder, plus a
+paid `gh pr view` network round-trip, for a command that never invoked `gh` — reproducing the "Concrete
+consequence" paragraph above firsthand rather than only by inspection.
+
+**Fix:** for each of the three files — added a local `_MERGE_RE` / `_check_merge_stmt` pair, identical to
+the one already defined in `usage-snapshot.py` / `pr-merge-reminder.py` / `post-pr-merge-project.py`
+(`(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b`, anchored via `.match()` on the lstripped token); replaced both
+occurrences of `if "gh pr merge" not in command` — one inside each file's `is_successful_merge()`, one
+inside `main()`'s live-confirmation fallback gate — with `if not scan_top_level(command,
+_check_merge_stmt)`. Behavior-preserving for every pre-existing test case (a real `gh pr merge`
+invocation, bare or `--help`-flagged, is still matched or rejected identically); the only behavior change
+is that a `gh pr merge`-shaped substring inside a heredoc body, a quoted argument, or a `$()` subshell no
+longer counts as an invocation. A repo-wide grep for `"gh pr merge" not in command` after the fix returns
+zero matches in `claude/scripts/*.py` — the pattern survives only in this ADR's own history and in the
+new tests' explanatory comments describing the pre-fix behavior.
+
+**Coverage:** each file's existing `is_successful_merge()` test suite — marker-detection only before this
+amendment, per the issue's own framing — gains three new cases mirroring the dev-env#499 false-positive
+shapes `test_hookio.py`'s own `scan_top_level` suite already covers at the engine level: a heredoc body, a
+double-quoted argument (the `&&`-inside-quotes shape that would otherwise carve out a second top-level
+segment starting with `gh pr merge`), and a `$()` subshell. Each new case pairs the false-match command
+with an output string that DOES carry a genuine success marker, isolating the command-shape check from the
+marker check — the old substring test would have proceeded past a false match straight to the (passing)
+marker check and returned `True`. Verified directly against the extracted pre-fix predicate logic before
+writing the fix (re-running the three new command/output pairs through a standalone
+`if "gh pr merge" not in command: return False` implementation) that all three genuinely reproduce the old
+bug (`True`), confirming the new tests are real regressions, not vacuously-true assertions. 26 total tests
+across the three files (7 + 12 + 7), up from 17 (4 + 9 + 4) pre-amendment.
+
+**General lesson (continuing Amendments 1 and 6's):** a sweep is only as complete as the list it started
+from, a third time. Amendment 6 already drew this lesson from missing `usage-snapshot.py` and
+`post-pr-merge-project.py`; this amendment is the same lesson applied to a *different* narrow-need shape
+(marker-gated merge detection with no `gh pr create`/`git push` sibling need) that neither Amendment 5's
+nor Amendment 6's sweep enumerated. A durable mechanical proxy going forward: grep the whole
+`claude/scripts/` tree for the literal string `"gh pr merge" not in command` (and its `"gh pr create"` /
+`"git push"` analogs, still live in `stub-push-archive-reminder.py`'s unrelated `git push`-only check,
+left untouched here as out of scope for this issue) before declaring any future `scan_top_level`
+convergence sweep complete — a textual grep catches what a conceptual "which hooks need this kind of
+detection" sweep can miss, as it did three times running.

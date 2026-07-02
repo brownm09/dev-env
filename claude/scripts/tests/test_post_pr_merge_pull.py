@@ -14,6 +14,14 @@ marker` fired on any exit-0 command matching "gh pr merge" as a substring,
 including `gh pr merge --help`. The predicate now gates solely on the success
 marker, matching post-pr-merge-project.py's `merge_succeeded()`.
 
+dev-env#529 (ADR-050 Amendment 9) converged the command-shape check itself
+from a raw `"gh pr merge" not in command` substring test onto the
+`scan_top_level`-anchored predicate already used by usage-snapshot.py /
+pr-merge-reminder.py / post-pr-merge-project.py. The three
+heredoc/quote/subshell tests below pin the false-positive shapes that
+substring test was blind to (dev-env#499's original repro class) but the
+anchored predicate correctly rejects.
+
 `pull_command()` (dev-env#488) is the pure decision of which git invocation
 fast-forwards local main: `git fetch origin main:main` fails ('refusing to fetch
 into branch ... checked out') whenever main is the branch currently checked out
@@ -89,6 +97,40 @@ def test_help_invocation_no_marker_ignored() -> str:
 
 
 # ---------------------------------------------------------------------------
+# command-shape anchoring (dev-env#529, ADR-050 Amendment 9)
+#
+# Each command below contains the literal substring "gh pr merge" but not as
+# a genuine top-level invocation. Paired with an output that DOES carry a
+# real success marker, isolating the command-shape check: the old crude
+# `"gh pr merge" not in command` substring test would have proceeded past
+# this check straight to the (passing) marker check and fired -- a false
+# positive. The scan_top_level-anchored check returns False before the
+# marker is ever consulted.
+# ---------------------------------------------------------------------------
+
+def test_merge_text_in_heredoc_body_not_matched() -> str:
+    command = "git commit -F - <<'EOF'\ngh pr merge --squash --delete-branch\nEOF"
+    assert not is_successful_merge(command, "Squashed and merged pull request #380")
+    return "'gh pr merge' text inside a heredoc body -> no match (dev-env#529)"
+
+
+def test_merge_text_inside_double_quotes_not_matched() -> str:
+    # The && inside the quoted commit message would, without quote-tracking,
+    # wrongly carve out a second top-level segment starting with "gh pr
+    # merge" -- the dev-env#499 false-positive class scan_top_level exists
+    # to prevent.
+    command = 'git commit -m "gh pr create --fill && gh pr merge --auto"'
+    assert not is_successful_merge(command, "Squashed and merged pull request #380")
+    return "'gh pr merge' text inside a double-quoted commit message -> no match (dev-env#529)"
+
+
+def test_merge_text_inside_subshell_not_matched() -> str:
+    command = "echo $(gh pr create --fill && gh pr merge --auto)"
+    assert not is_successful_merge(command, "Squashed and merged pull request #380")
+    return "'gh pr merge' text inside a $() subshell -> no match (dev-env#529)"
+
+
+# ---------------------------------------------------------------------------
 # extract_repo — pure-string resolution paths (dev-env#446 / ADR-067)
 #
 # The git-remote subprocess fallback is not tested (repo convention: no mocks).
@@ -142,6 +184,9 @@ def main() -> int:
         ("non-merge command ignored", test_non_merge_command_ignored),
         ("failed merge with no marker ignored", test_failed_merge_no_marker_ignored),
         ("gh pr merge --help (no marker) ignored (dev-env#485)", test_help_invocation_no_marker_ignored),
+        ("'gh pr merge' text in heredoc body ignored (dev-env#529)", test_merge_text_in_heredoc_body_not_matched),
+        ("'gh pr merge' text in double quotes ignored (dev-env#529)", test_merge_text_inside_double_quotes_not_matched),
+        ("'gh pr merge' text in $() subshell ignored (dev-env#529)", test_merge_text_inside_subshell_not_matched),
         ("extract_repo: GitHub URL in command -> owner/repo", test_extract_repo_from_url_in_command),
         ("extract_repo: URL for different repo", test_extract_repo_from_url_other_repo),
         ("extract_repo: --repo flag beats URL", test_extract_repo_repo_flag_takes_precedence),

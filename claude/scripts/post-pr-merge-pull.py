@@ -33,9 +33,19 @@ from _hookio import (
     effective_merge_dir,
     output_has_merge_marker,
     read_command_output,
+    scan_top_level,
     should_confirm_via_gh,
 )
 from _worktree_topology import canonical_on_main, merge_park_target, parse_worktree_porcelain
+
+# Anchored top-level match — mirrors usage-snapshot.py / pr-merge-reminder.py /
+# post-pr-merge-project.py's identical _check_merge_stmt (ADR-050 Amendments 5/6).
+_MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
+
+
+def _check_merge_stmt(token: str) -> bool:
+    return bool(_MERGE_RE.match(token.lstrip()))
+
 
 # Map GitHub repo slugs to local clone paths.
 # Repos with no local clone (e.g. profile-only repos) map to None.
@@ -213,8 +223,14 @@ def is_successful_merge(command: str, output: str) -> bool:
     is read via the shared `read_command_output` helper — reading the legacy
     `output` field left this fallback dead because the real payload carries
     `stdout`/`stderr` (#380).
+
+    The command-shape check itself is `scan_top_level`-anchored rather than a
+    raw substring test, so `gh pr merge` text inside a heredoc body, a quoted
+    argument, or a `$()` subshell no longer counts as an invocation — matching
+    the pattern already used in usage-snapshot.py / pr-merge-reminder.py /
+    post-pr-merge-project.py (dev-env#529, ADR-050 Amendment 9).
     """
-    if "gh pr merge" not in command:
+    if not scan_top_level(command, _check_merge_stmt):
         return False
     return output_has_merge_marker(output)
 
@@ -241,7 +257,7 @@ def main() -> None:
         # when gh exits abruptly right after a worktree's local-cleanup
         # failure (dev-env#489) — fall back to a live `gh pr view` confirmation
         # rather than silently skipping the local-main fast-forward (dev-env#504).
-        if "gh pr merge" not in command:
+        if not scan_top_level(command, _check_merge_stmt):
             sys.exit(0)
         exit_code = data.get("tool_response", {}).get("exitCode", -1)
         if not should_confirm_via_gh(exit_code, output):

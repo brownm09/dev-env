@@ -115,8 +115,11 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 10. **post-pr-merge-reclaim test** — required when changing `claude/scripts/post-pr-merge-reclaim.py`.
     Exercises the pure `is_successful_merge()` predicate offline: a `gh pr merge` whose output carries
     gh's success marker triggers reclamation, regardless of exit code; a non-merge command, a genuinely
-    failed merge, or an exit-0 non-merge invocation like `gh pr merge --help` (dev-env#485) does not. The
-    detached reclaim spawn is not covered (it shells out).
+    failed merge, an exit-0 non-merge invocation like `gh pr merge --help` (dev-env#485), or `gh pr merge`
+    text mentioned only inside a heredoc body, a quoted argument, or a `$()` subshell (dev-env#529, the
+    command-shape check is `scan_top_level`-anchored, not a raw substring test —
+    [ADR-050 Amendment 9](docs/adr/050-shared-hookio-sibling-hook-fixes.md)) does not. The detached reclaim
+    spawn is not covered (it shells out).
 
     ```bash
     py -3 claude/scripts/tests/test_post_pr_merge_reclaim.py
@@ -191,14 +194,17 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 15. **post-pr-merge-pull test** — required when changing `claude/scripts/post-pr-merge-pull.py`. Exercises
     the pure `is_successful_merge()` predicate offline: a `gh pr merge` whose output carries gh's success
     marker triggers the local-`main` fast-forward regardless of exit code (worktree merges exit non-zero but
-    print the marker — issue #275); a non-merge command, a genuinely failed merge, or an exit-0 non-merge
-    invocation like `gh pr merge --help` (dev-env#485) does not. Also exercises the pure `pull_command()`
+    print the marker — issue #275); a non-merge command, a genuinely failed merge, an exit-0 non-merge
+    invocation like `gh pr merge --help` (dev-env#485), or `gh pr merge` text mentioned only inside a
+    heredoc body, a quoted argument, or a `$()` subshell (dev-env#529 — the command-shape check is
+    `scan_top_level`-anchored, not a raw substring test) does not. Also exercises the pure `pull_command()`
     predicate: a canonical checked out on `main` gets a plain `pull --ff-only` (the fetch-into-ref trick
     fails with 'refusing to fetch into branch ... checked out' there — dev-env#488,
     [ADR-058 amendment](docs/adr/058-worktree-squatting-main-detection-correction.md)); a feature branch
     (or squatting worktree) checked out gets the original fetch-into-ref, unchanged. The `pull_main` /
     `extract_repo` / `list_worktrees` git calls are not covered
-    ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)).
+    ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md), incl. Amendment 9 for the command-shape
+    anchoring).
 
     ```bash
     py -3 claude/scripts/tests/test_post_pr_merge_pull.py
@@ -306,9 +312,12 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `is_successful_merge()` predicate offline (no subprocess, no network, no disk):
     pins that a successful merge (gh's stdout success marker present, regardless of exit
     code) triggers the tile checkpoint reminder, while a non-merge command, a genuinely
-    failed merge (no success marker), or an exit-0 non-merge invocation like
-    `gh pr merge --help` (dev-env#485) does not
-    ([ADR-060](docs/adr/060-post-merge-tile-checkpoint-hook.md)).
+    failed merge (no success marker), an exit-0 non-merge invocation like
+    `gh pr merge --help` (dev-env#485), or `gh pr merge` text mentioned only inside a
+    heredoc body, a quoted argument, or a `$()` subshell (dev-env#529 — the command-shape
+    check is `scan_top_level`-anchored, not a raw substring test) does not
+    ([ADR-060](docs/adr/060-post-merge-tile-checkpoint-hook.md);
+    [ADR-050 Amendment 9](docs/adr/050-shared-hookio-sibling-hook-fixes.md)).
 
     ```bash
     py -3 claude/scripts/tests/test_post_merge_tile_checkpoint.py
