@@ -83,6 +83,17 @@ def test_encoding_defaulted_when_universal_newlines_true() -> str:
     return "universal_newlines=True (legacy alias) also gets the UTF-8 default"
 
 
+def test_encoding_defaulted_when_errors_set_alone() -> str:
+    # errors= alone (no text=, no universal_newlines=) also puts real Popen
+    # into text mode -- confirmed empirically against subprocess.Popen itself.
+    # A caller that only sets errors= must still get encoding defaulted, or
+    # they'd fall through to CPython's own cp1252 default.
+    result = _apply_windows_subprocess_defaults({"errors": "replace"})
+    assert result["encoding"] == "utf-8", f"got {result!r}"
+    assert result["errors"] == "replace", f"got {result!r}"
+    return "errors= alone (no text=) still gets encoding='utf-8' defaulted"
+
+
 def test_no_encoding_default_without_text_mode() -> str:
     # Binary-mode calls (no text/universal_newlines/encoding at all) must be
     # left untouched -- injecting encoding/errors would break a caller reading
@@ -143,10 +154,11 @@ def main() -> int:
         ("creationflags OR-merged with existing", test_creationflags_or_merged_with_existing),
         ("encoding defaulted for text=True", test_encoding_defaulted_when_text_true),
         ("encoding defaulted for universal_newlines=True", test_encoding_defaulted_when_universal_newlines_true),
+        ("encoding defaulted for errors= set alone", test_encoding_defaulted_when_errors_set_alone),
         ("no encoding default without text mode", test_no_encoding_default_without_text_mode),
         ("no encoding default when text=False", test_no_encoding_default_when_text_false),
         ("explicit encoding= respected", test_explicit_encoding_respected),
-        ("explicit errors= alone still gets encoding defaulted", test_explicit_errors_only_still_gets_encoding_defaulted),
+        ("explicit errors= (with text=True) still gets encoding defaulted", test_explicit_errors_only_still_gets_encoding_defaulted),
         ("creationflags + encoding combine", test_combined_creationflags_and_encoding),
         ("mutates and returns the same dict", test_mutates_and_returns_same_dict),
     ]

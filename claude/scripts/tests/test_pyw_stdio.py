@@ -284,10 +284,17 @@ def test_winsubp_decodes_utf8_not_cp1252_under_pyw() -> str:
         f"proc = subprocess.run([sys.executable, '-c', {grandchild!r}], capture_output=True, text=True)\n"
         "sys.stdout.write(json.dumps({'decoded': proc.stdout}))\n"
     )
+    # encoding/errors set explicitly (not left to default) even though this
+    # outer capture only ever carries ASCII-safe content in practice (json.dumps
+    # defaults to ensure_ascii=True, and Python tracebacks are ASCII) -- a test
+    # that proves UTF-8-vs-cp1252 decoding matters should not itself rely on an
+    # unspecified default for its own capture.
     proc = subprocess.run(
         ["pyw", "-3", "-c", program],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=15,
     )
     if proc.returncode != 0:

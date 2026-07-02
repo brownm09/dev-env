@@ -104,7 +104,12 @@ def _apply_windows_subprocess_defaults(kwargs: dict) -> dict:
         # flash returns; hook never crashes.
         pass
     try:
-        wants_text = kwargs.get("text") or kwargs.get("universal_newlines")
+        # `errors=` alone (no text=/universal_newlines=) also puts Popen into
+        # text mode -- confirmed empirically: Popen(cmd, stdout=PIPE,
+        # errors="replace") returns str, not bytes. Without checking it here,
+        # a caller that sets only errors= would still fall through to
+        # CPython's own cp1252 default for encoding.
+        wants_text = kwargs.get("text") or kwargs.get("universal_newlines") or kwargs.get("errors")
         if wants_text and not kwargs.get("encoding"):
             kwargs["encoding"] = "utf-8"
             kwargs.setdefault("errors", "replace")
