@@ -38,25 +38,11 @@ import re
 import subprocess
 import sys
 
+from _gh_project import add_to_project
 from _hookio import read_command_output
+from _worktree_canon import canonical_root_from_worktree
 
 CONFIG_FILE = ".claude/hook-config.json"
-
-# Matches `<root>/.claude/worktrees/<name>` at the start of a path, capturing the
-# canonical repo root (everything before `/.claude/`). Mirrors the proven prefix
-# regex in pre-tool-use-worktree-path-check.py; tolerates `/` and `\` separators.
-_WORKTREE_RE = re.compile(
-    r"^(.+?)[/\\]\.claude[/\\]worktrees[/\\][^/\\]+",
-    re.IGNORECASE,
-)
-
-
-def canonical_root_from_worktree(cwd: str) -> str | None:
-    """Canonical repo root for a Claude-managed worktree cwd
-    (`<root>/.claude/worktrees/<name>/...`), else None. Pure — no I/O, so it is
-    exercised offline by the unit tests."""
-    m = _WORKTREE_RE.match(cwd or "")
-    return m.group(1) if m else None
 
 
 def _canonical_root_from_common_dir(cwd: str, common: str) -> str | None:
@@ -146,28 +132,6 @@ def extract_github_url(output: str, repo: str | None = None) -> str | None:
             if match:
                 return match.group(0).rstrip(".")
     return None
-
-
-def add_to_project(url: str, config: dict) -> str | None:
-    """Add item to the configured project and return the item ID, or None."""
-    try:
-        result = subprocess.run(
-            [
-                "gh", "project", "item-add", config["project_number"],
-                "--owner", config["project_owner"],
-                "--url", url,
-                "--format", "json",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if result.returncode != 0:
-            return None
-        data = json.loads(result.stdout)
-        return data.get("id")
-    except Exception:
-        return None
 
 
 def format_reminder(item_type: str, url: str, item_id: str, config: dict) -> str:
@@ -293,7 +257,7 @@ def main() -> None:
         )
         sys.exit(2)
 
-    item_id = add_to_project(url, config)
+    item_id, _ = add_to_project(url, config["project_number"], config["project_owner"])
 
     if item_id:
         print(format_reminder(item_type, url, item_id, config), file=sys.stderr)
