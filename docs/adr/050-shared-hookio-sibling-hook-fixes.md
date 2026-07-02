@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02 (six amendments — see Amendment sections below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex
+**Amended:** 2026-07-01, 2026-07-02 (seven amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use
 
 ---
 
@@ -281,6 +281,10 @@ per-segment iteration with cwd-redirect detection, not just a boolean reducer �
 not simple reuse. Flagged as a candidate follow-up (tracked via a spawned background task after this
 PR merges), not bundled here.
 
+*Resolved in Amendment 7 (dev-env#511):* the API mismatch was fixed, not accepted — `scan_top_level`'s
+segmenting core was extracted into a standalone `split_top_level`, letting the guard consume the
+segment list directly while `scan_top_level` itself stays a thin wrapper for its original two callers.
+
 **Coverage:** `test_hookio.py` gains direct engine-level tests for `scan_top_level` (anchored-match
 semantics; non-splitting inside single/double quotes, `$()` subshells, and heredoc bodies; splitting
 on `&&`, `;`, `||`, and newline). `test_post_tool_use.py` gains tests for the two new wrapper
@@ -351,3 +355,70 @@ was narrower (merge detection only), so their duplication didn't look like the s
 glance. Generalized: when consolidating a cross-hook utility, grep for the *engine* (the parser
 body itself), not just the *call pattern* that motivated the current fix — the two would have
 surfaced together.
+
+## Amendment 7 (2026-07-02) — converging `pre-tool-use-canonical-mutate-guard.py` onto a shared `split_top_level` engine (dev-env#511)
+
+Amendment 5's "related but narrower implementation, left out of scope" section flagged that
+`pre-tool-use-canonical-mutate-guard.py` had its own heredoc/quote-adjacent handling that was not
+equivalent protection to `scan_top_level`, and that converging it "would need that hook to also
+expose per-segment iteration with cwd-redirect detection, not just a boolean reducer — a real API
+mismatch, not simple reuse." This amendment resolves that mismatch rather than accepting it as a
+permanent limitation: the fix is not "make the guard call `scan_top_level`" but "extract the
+segment-yielding engine `scan_top_level` was already built on, and let the guard consume segments
+directly."
+
+**Concrete impact — two false positives, verified by hand-tracing the pre-fix code (dev-env#511):**
+
+1. **Quote-mis-split.** `git log --grep="foo && git checkout -b evil"` — the guard's own
+   `_SEGMENT_SPLIT` regex (`&&|\|\||;|\n|\|`) had no quote-tracking, so it split *inside* the quoted
+   `--grep` value, producing a fake segment `git checkout -b evil"` that the verb classifier flagged
+   as a `checkout`. A harmless `git log` search would have been blocked in a canonical checkout.
+2. **Bare heredoc body.** `git status <<EOF` / `git commit --amend` (body) / `EOF` — the guard's
+   `_HEREDOC_CATSUB_RE` only recognized the `$(cat <<MARKER...)` command-substitution idiom (the
+   dev-env#481 fix). A *bare* heredoc (no command-substitution wrapper) was untouched by it; after
+   the regex splitter's `\n`-split, the body line `git commit --amend` became its own segment and was
+   misclassified as a real invocation — same failure class as #481, just the untested
+   non-command-substitution variant.
+
+**Fix:**
+
+1. **Extract `split_top_level(command, *, split_pipe: bool = False) -> list[str]`** from
+   `scan_top_level`'s internals in `_hookio.py`. It is the exact same stack-based
+   quote/subshell/heredoc-aware parser, just returning the segment list instead of reducing it to a
+   boolean via `check_fn`. `scan_top_level` becomes a thin wrapper —
+   `any(check_fn(seg) for seg in split_top_level(command))` — behavior-preserving for its existing
+   two callers (`pr-merge-reminder.py`, `post-tool-use.py`), both of which continue to call it
+   unchanged and pass their full test suites with zero modification.
+2. **`split_pipe` is opt-in, defaulting `False`.** `scan_top_level`'s two existing callers never need
+   pipe-awareness (`gh pr merge`/`gh pr create`/`gh issue create`/`git push` detection has no
+   pipe-input idiom); `pre-tool-use-canonical-mutate-guard.py` passes `split_pipe=True` because a
+   mutating git invocation can read piped stdin (e.g. `echo msg | git commit -F -`, an idiom the
+   guard's original `_SEGMENT_SPLIT` regex already split on). The flag keeps the behavior change
+   scoped to exactly the one caller that needs it — zero risk to the other two.
+3. **The guard imports `split_top_level(cmd, split_pipe=True)`** in both `classify()` and
+   `_has_override()`, replacing `_SEGMENT_SPLIT.split(cmd)`. `_HEREDOC_CATSUB_RE` and
+   `_strip_heredoc_command_subs()` are deleted entirely — the shared engine's `$()`-subshell and
+   heredoc opacity subsumes the narrow regex, fixing both false positives above as a side effect of
+   convergence rather than as separate patches. The `cd`-whole-command-scope and
+   `git -C`/`--git-dir`-single-segment-skip logic (the guard's own domain-specific classification,
+   not something `split_top_level` needs to know about) is unchanged — it now just runs over
+   `split_top_level`'s segment list instead of the regex splitter's.
+
+**Coverage:** `test_hookio.py` gains 13 new `split_top_level`-specific tests (segment order/whitespace
+contract, quote-tracking for `&&`/`|`, opt-in pipe-splitting including the `||`-vs-lone-`|`
+distinction, bare and command-substitution heredoc opacity, the unterminated-quote fail-permissive
+contract) alongside the pre-existing `scan_top_level` tests, all of which continue to pass unchanged
+against the new implementation. `test_canonical_mutate_guard.py` gains 5 new tests: the two
+false-positive fixes above (pure `classify()` plus one end-to-end `main()` subprocess test proving
+the fix reaches the real hook process, not just the pure function), a pipe-splits-and-classifies
+test, and a pipe-inside-quotes-does-not-split test. All 28 pre-existing tests in that file continue
+to pass unchanged. `test_pr_merge_reminder.py` and `test_post_tool_use.py` — the two other
+`scan_top_level` consumers — were re-run as a regression check and pass unchanged (neither file was
+edited).
+
+**General lesson (continuing Amendment 5's):** "a real API mismatch, not simple reuse" is a reason to
+design the right shared primitive, not a reason to accept parallel implementations permanently. The
+mismatch here was that `scan_top_level` exposed a reducer when a second caller needed a sequence —
+the fix was to expose the sequence and make the reducer a trivial wrapper over it, the same shape as
+`effective_merge_dir` remaining unshared beside `_effective_push_dir` (Amendment 5's own
+scope-decision precedent) when two callers' needs *don't* converge. Here they did.

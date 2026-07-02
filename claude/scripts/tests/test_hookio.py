@@ -29,6 +29,7 @@ from _hookio import (  # noqa: E402
     read_command_output,
     scan_top_level,
     should_confirm_via_gh,
+    split_top_level,
 )
 
 URL = "https://github.com/brownm09/dev-env/issues/377"
@@ -279,6 +280,122 @@ def test_scan_top_level_splits_on_newline() -> str:
     return "newline splits into independently-checked statements"
 
 
+# ---------------------------------------------------------------------------
+# split_top_level  (dev-env#511, ADR-050 Amendment 7)
+#
+# scan_top_level (above) is now a thin `any(check_fn(seg) for seg in
+# split_top_level(command))` wrapper over this segment-yielding engine --
+# every scan_top_level test above already re-runs against split_top_level's
+# implementation, so these tests focus on what only split_top_level exposes:
+# the actual segment list (needed by pre-tool-use-canonical-mutate-guard.py's
+# per-segment cd-scope / -C-redirect-skip / verb classification) and the
+# opt-in split_pipe behavior scan_top_level never uses.
+# ---------------------------------------------------------------------------
+
+
+def test_split_top_level_no_separators_returns_whole_command() -> str:
+    assert split_top_level("git status") == ["git status"]
+    return "no separators -> single-element list of the whole command"
+
+
+def test_split_top_level_splits_and_preserves_order() -> str:
+    out = split_top_level("git status && git checkout -b foo ; git log")
+    assert [s.strip() for s in out] == ["git status", "git checkout -b foo", "git log"], out
+    return "&&/; split into segments, in original order"
+
+
+def test_split_top_level_segments_are_unstripped() -> str:
+    out = split_top_level("git status && git log")
+    assert out == ["git status ", " git log"], out
+    return "segments are returned unstripped (leading/trailing whitespace preserved)"
+
+
+def test_split_top_level_no_split_inside_double_quotes() -> str:
+    # The dev-env#511 false-positive: without quote-tracking, a naive splitter
+    # carves "git checkout -b evil" out as its own segment from inside this
+    # grep pattern, misclassifying a harmless git log as a checkout.
+    cmd = 'git log --grep="foo && git checkout -b evil"'
+    assert split_top_level(cmd) == [cmd]
+    return "&& inside double quotes stays inside one segment (dev-env#511)"
+
+
+def test_split_top_level_no_split_inside_single_quotes() -> str:
+    cmd = "git log --grep='foo && git checkout -b evil'"
+    assert split_top_level(cmd) == [cmd]
+    return "&& inside single quotes stays inside one segment"
+
+
+def test_split_top_level_pipe_not_split_by_default() -> str:
+    # split_pipe defaults to False so scan_top_level's existing two callers
+    # (pr-merge-reminder.py, post-tool-use.py, neither pipe-aware) see zero
+    # behavior change from this function's introduction.
+    cmd = "echo hi | git checkout -b foo"
+    assert split_top_level(cmd) == [cmd]
+    return "lone | is not a split point when split_pipe=False (default)"
+
+
+def test_split_top_level_pipe_split_when_enabled() -> str:
+    out = split_top_level("echo hi | git checkout -b foo", split_pipe=True)
+    assert [s.strip() for s in out] == ["echo hi", "git checkout -b foo"], out
+    return "lone | splits into segments when split_pipe=True (canonical-mutate-guard's need)"
+
+
+def test_split_top_level_double_pipe_stays_one_operator_even_with_split_pipe() -> str:
+    # || must stay the single or-operator, not two lone-pipe splits, even
+    # when split_pipe=True enables lone-| splitting.
+    out = split_top_level("false || git checkout -b foo", split_pipe=True)
+    assert [s.strip() for s in out] == ["false", "git checkout -b foo"], out
+    return "|| is not double-counted as two pipe-splits when split_pipe=True"
+
+
+def test_split_top_level_pipe_inside_quotes_not_split_even_when_enabled() -> str:
+    cmd = 'git log --grep="foo | git checkout -b evil"'
+    assert split_top_level(cmd, split_pipe=True) == [cmd]
+    return "quote-tracking applies to | too -- not split inside quotes even with split_pipe=True"
+
+
+def test_split_top_level_bare_heredoc_body_not_its_own_segment() -> str:
+    # A body line that itself STARTS with a mutating-looking verb must not
+    # become its own segment -- the bare-heredoc analogue of dev-env#481
+    # (which only covered a heredoc fed through a $(cat <<...) command sub).
+    cmd = "git status <<EOF\ngit commit --amend\nEOF"
+    assert split_top_level(cmd) == [cmd]
+    return "bare (non-command-sub) heredoc body stays inside one segment"
+
+
+def test_split_top_level_command_sub_heredoc_not_its_own_segment() -> str:
+    cmd = (
+        "gh issue create --body \"$(cat <<'EOF'\n"
+        "git commit example\n"
+        "EOF\n"
+        ")\""
+    )
+    assert split_top_level(cmd) == [cmd]
+    return "$(cat <<'MARKER'...) span stays inside one segment (dev-env#481, generalized)"
+
+
+def test_split_top_level_real_command_after_heredoc_still_split() -> str:
+    cmd = (
+        "gh issue create --body \"$(cat <<'EOF'\n"
+        "git commit example\n"
+        "EOF\n"
+        ")\" && git checkout -b evil"
+    )
+    out = split_top_level(cmd)
+    assert len(out) == 2 and out[1].strip() == "git checkout -b evil", out
+    return "a real segment chained after a heredoc-containing segment still splits out"
+
+
+def test_split_top_level_unterminated_quote_drops_trailing_segment() -> str:
+    # Mirrors scan_top_level's pre-existing fail-permissive contract: an
+    # unterminated quote/subshell/heredoc means the trailing segment is
+    # dropped rather than returned (matches the original `if stack ==
+    # ["top"]: ...` guard this function was extracted from).
+    out = split_top_level('git status && git commit -m "unterminated')
+    assert out == ["git status "], out
+    return "unterminated trailing quote drops that segment (matches scan_top_level's prior contract)"
+
+
 def main() -> int:
     tests = [
         ("reads command output from stdout", test_reads_stdout),
@@ -312,6 +429,19 @@ def main() -> int:
         ("scan_top_level: splits on ;", test_scan_top_level_splits_on_semicolon),
         ("scan_top_level: splits on ||", test_scan_top_level_splits_on_or_or),
         ("scan_top_level: splits on newline", test_scan_top_level_splits_on_newline),
+        ("split_top_level: no separators -> whole command", test_split_top_level_no_separators_returns_whole_command),
+        ("split_top_level: splits and preserves order", test_split_top_level_splits_and_preserves_order),
+        ("split_top_level: segments are unstripped", test_split_top_level_segments_are_unstripped),
+        ("split_top_level: no split inside double quotes (dev-env#511)", test_split_top_level_no_split_inside_double_quotes),
+        ("split_top_level: no split inside single quotes", test_split_top_level_no_split_inside_single_quotes),
+        ("split_top_level: pipe not split by default", test_split_top_level_pipe_not_split_by_default),
+        ("split_top_level: pipe split when enabled", test_split_top_level_pipe_split_when_enabled),
+        ("split_top_level: || stays one operator with split_pipe", test_split_top_level_double_pipe_stays_one_operator_even_with_split_pipe),
+        ("split_top_level: pipe inside quotes not split even when enabled", test_split_top_level_pipe_inside_quotes_not_split_even_when_enabled),
+        ("split_top_level: bare heredoc body not its own segment", test_split_top_level_bare_heredoc_body_not_its_own_segment),
+        ("split_top_level: $(cat <<'MARKER'...) not its own segment", test_split_top_level_command_sub_heredoc_not_its_own_segment),
+        ("split_top_level: real command after heredoc still split", test_split_top_level_real_command_after_heredoc_still_split),
+        ("split_top_level: unterminated quote drops trailing segment", test_split_top_level_unterminated_quote_drops_trailing_segment),
     ]
     failed = 0
     for name, fn in tests:
