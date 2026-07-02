@@ -29,9 +29,13 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable
 
-from _hookio import effective_merge_dir, output_has_merge_marker, read_command_output
+from _hookio import (
+    effective_merge_dir,
+    output_has_merge_marker,
+    read_command_output,
+    scan_top_level,
+)
 
 # Matches the start of a statement token against `gh pr merge`, `gh pr create`,
 # or `git push`.
@@ -65,151 +69,19 @@ def _check_push_stmt(token: str) -> bool:
     return bool(_PUSH_RE.match(token.lstrip()))
 
 
-def _find_heredoc_end(cmd: str, start: int) -> int:
-    """start = index of first '<' in '<<…'. Returns index just past the heredoc body.
-
-    Handles <<DELIM, <<'DELIM', <<"DELIM", and <<-DELIM (tab-stripping) forms.
-    """
-    n = len(cmd)
-    i = start + 2  # skip '<<'
-    strip_tabs = False
-    if i < n and cmd[i] == "-":
-        strip_tabs = True
-        i += 1
-    # Read delimiter — may be wrapped in ' or "
-    quote: str | None = None
-    if i < n and cmd[i] in ("'", '"'):
-        quote = cmd[i]
-        i += 1
-    stop_chars = "\n\r" + (quote or "")
-    delim_start = i
-    while i < n and cmd[i] not in stop_chars:
-        i += 1
-    delimiter = cmd[delim_start:i]
-    if quote and i < n and cmd[i] == quote:
-        i += 1  # skip closing quote
-    # Skip to end of the <<… declaration line
-    while i < n and cmd[i] not in ("\n", "\r"):
-        i += 1
-    if i < n:
-        i += 1  # skip newline
-    # Scan lines until we find the terminator
-    while i < n:
-        line_start = i
-        if strip_tabs:
-            while i < n and cmd[i] == "\t":
-                i += 1
-            line_start = i
-        while i < n and cmd[i] not in ("\n", "\r"):
-            i += 1
-        if cmd[line_start:i] == delimiter:
-            if i < n:
-                i += 1  # skip terminator's newline
-            return i
-        if i < n:
-            i += 1  # skip newline
-    return i
-
-
-def _scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
-    """Return True when *command* contains a top-level statement matched by
-    *check_fn* — i.e. not inside a quoted string, $() subshell, or heredoc body.
-
-    Uses a stack-based parser with four states ('top', 'single', 'double',
-    'subshell') so that shell operators buried inside quoted arguments, command
-    substitutions, or heredoc content are never mistaken for top-level statement
-    separators.  Specifically handles:
-    - Single/double quotes
-    - $() subshells (including $() inside "…")
-    - <<DELIM / <<'DELIM' heredoc bodies
-    """
-    n = len(command)
-    i = 0
-    stmt_start = 0
-    # Stack entries: 'top' | 'single' | 'double' | 'subshell'
-    stack = ["top"]
-
-    while i < n:
-        c = command[i]
-        state = stack[-1]
-
-        if state == "single":
-            if c == "'":
-                stack.pop()
-
-        elif state == "double":
-            if c == "\\" and i + 1 < n:
-                i += 1  # skip escaped char
-            elif c == '"':
-                stack.pop()
-            elif c == "$" and i + 1 < n and command[i + 1] == "(":
-                # $() inside "…" — track subshell so its content is opaque
-                stack.append("subshell")
-                i += 1  # skip '('
-
-        elif state == "subshell":
-            if c == ")":
-                stack.pop()
-            elif c == "'":
-                stack.append("single")
-            elif c == '"':
-                stack.append("double")
-            elif c == "$" and i + 1 < n and command[i + 1] == "(":
-                stack.append("subshell")
-                i += 1
-            elif c == "(":
-                stack.append("subshell")
-            elif c == "<" and i + 1 < n and command[i + 1] == "<":
-                # heredoc inside subshell — skip body entirely
-                i = _find_heredoc_end(command, i)
-                continue
-
-        else:  # state == 'top'
-            if c == "'":
-                stack.append("single")
-            elif c == '"':
-                stack.append("double")
-            elif c == "$" and i + 1 < n and command[i + 1] == "(":
-                stack.append("subshell")
-                i += 1
-            elif c == "<" and i + 1 < n and command[i + 1] == "<":
-                i = _find_heredoc_end(command, i)
-                continue
-            elif c in (";", "\n"):
-                if check_fn(command[stmt_start:i]):
-                    return True
-                stmt_start = i + 1
-            elif c == "&" and i + 1 < n and command[i + 1] == "&":
-                if check_fn(command[stmt_start:i]):
-                    return True
-                stmt_start = i + 2
-                i += 1
-            elif c == "|" and i + 1 < n and command[i + 1] == "|":
-                if check_fn(command[stmt_start:i]):
-                    return True
-                stmt_start = i + 2
-                i += 1
-
-        i += 1
-
-    if stack == ["top"]:
-        return check_fn(command[stmt_start:])
-    return False
-
-
 def is_pr_merge_command(command: str) -> bool:
     """Return True only when *command* contains a top-level `gh pr merge`."""
-    return _scan_top_level(command, _check_merge_stmt)
+    return scan_top_level(command, _check_merge_stmt)
 
 
 def is_pr_create_command(command: str) -> bool:
     """Return True only when *command* contains a top-level `gh pr create`."""
-    return _scan_top_level(command, _check_create_stmt)
+    return scan_top_level(command, _check_create_stmt)
 
 
 def is_git_push_command(command: str) -> bool:
     """Return True only when *command* contains a top-level `git push`."""
-    return _scan_top_level(command, _check_push_stmt)
+    return scan_top_level(command, _check_push_stmt)
 
 
 def _open_pr_for_cwd(cwd: str) -> dict | None:

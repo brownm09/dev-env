@@ -134,9 +134,15 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     different-repo miss from a genuine empty ([ADR-049](docs/adr/049-hook-payload-output-field.md)), that a
     Claude-managed worktree cwd whose gitignored `hook-config.json` is absent resolves the canonical checkout's
     config — verified end-to-end via a hermetic temp dir — and that the sibling-worktree `git --git-common-dir`
-    output resolves to the canonical root ([ADR-052](docs/adr/052-worktree-config-canonical-fallback.md)). The
-    live `gh project item-add` call and the `subprocess.run` in `canonical_root_via_git()` are not covered (the
-    repo avoids subprocess mocks).
+    output resolves to the canonical root ([ADR-052](docs/adr/052-worktree-config-canonical-fallback.md)). Also
+    exercises `is_issue_create_command()` / `is_pr_create_command()` (built on the shared
+    `_hookio.scan_top_level`, [ADR-050 Amendment 5](docs/adr/050-shared-hookio-sibling-hook-fixes.md)): the four
+    dev-env#499 false-positive reproductions (heredoc-embedded commit body, quoted commit message, grep pattern
+    argument, `--text` field value) for both PR- and issue-create, plus subshell/quote/cd-prefix/chained cases;
+    and a `subprocess`-driven end-to-end pair (`_run_hook`, mirroring `test_worktree_path_check.py`'s pattern)
+    pinning that the pre-existing `exit_code != 0` gate still short-circuits immediately after the detection
+    swap, without either branch invoking a live `gh` call. The live `gh project item-add` call and the
+    `subprocess.run` in `canonical_root_via_git()` are not covered (the repo avoids subprocess mocks).
 
     ```bash
     py -3 claude/scripts/tests/test_post_tool_use.py
@@ -149,8 +155,13 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
     empty / `None` / non-dict `tool_response` yields `""` without raising. Also exercises the pure
     `should_confirm_via_gh(exit_code, output)` predicate: only a non-zero exit code with no marker present
     is worth a live `gh pr view` confirmation (dev-env#489, [ADR-050 amendment 3](docs/adr/050-shared-hookio-sibling-hook-fixes.md));
-    a clean exit or a marker already found never pays the network call. `_hookio` is imported by all five
-    PostToolUse Bash hooks ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)). `confirm_merge_via_gh()`
+    a clean exit or a marker already found never pays the network call. Also exercises `effective_merge_dir()`
+    (cd-chain / cwd resolution, [ADR-067](docs/adr/067-scope-merge-keyed-hooks-to-target-repo.md)) and
+    `scan_top_level()` — the stack-based top-level-statement parser shared with `pr-merge-reminder.py` and
+    `post-tool-use.py` ([ADR-050 Amendment 5](docs/adr/050-shared-hookio-sibling-hook-fixes.md)): anchored-match
+    semantics, non-splitting inside single/double quotes, `$()` subshells, and heredoc bodies, and correct
+    splitting on `&&`, `;`, `||`, and newline. `_hookio` is imported by all five PostToolUse Bash hooks plus
+    `pr-merge-reminder.py` ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)). `confirm_merge_via_gh()`
     itself is not covered (it shells out to `gh pr view`).
 
     ```bash
@@ -353,7 +364,9 @@ before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section
 
 28. **pr-merge-reminder test** — required when changing `claude/scripts/pr-merge-reminder.py`.
     Exercises the pure command predicates (`is_pr_create_command` / `is_pr_merge_command` /
-    `is_git_push_command`), the `_create_shard_step` / `_is_successful_merge_call` helpers, and the
+    `is_git_push_command` — now built on the shared `_hookio.scan_top_level`,
+    [ADR-050 Amendment 5](docs/adr/050-shared-hookio-sibling-hook-fixes.md)), the `_create_shard_step` /
+    `_is_successful_merge_call` helpers, and the
     [ADR-065](docs/adr/065-scope-push-reminder-to-target-repo.md) push-scoping behavior offline
     (no network/gh): pins that `_effective_push_dir` redirects the open-PR lookup to a
     `cd <repo> && git push` target — so a cross-repo push is evaluated against THAT repo, not the

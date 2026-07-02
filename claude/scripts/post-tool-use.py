@@ -2,6 +2,10 @@
 """Claude Code PostToolUse hook — detects 'gh issue create' or 'gh pr create'
 and automatically adds the item to the configured GitHub project.
 
+Detection matches only a top-level CLI invocation (via _hookio.scan_top_level),
+not the string appearing inside commit messages, heredocs, grep patterns, or
+other quoted arguments (dev-env#499).
+
 Project opt-in: add .claude/hook-config.json to the project root.
 Projects without that file are silently skipped.
 
@@ -39,10 +43,39 @@ import subprocess
 import sys
 
 from _gh_project import add_to_project
-from _hookio import read_command_output
+from _hookio import read_command_output, scan_top_level
 from _worktree_canon import canonical_root_from_worktree
 
 CONFIG_FILE = ".claude/hook-config.json"
+
+# Matches the start of a statement token against `gh issue create` or
+# `gh pr create` (dev-env#499). The check functions below anchor via
+# .match(), and scan_top_level only ever calls them on top-level statements —
+# never a substring buried in a heredoc body, a quoted commit message, a grep
+# pattern, or a --text field value (the false-positive class fixed here; the
+# previous unanchored re.search(r"\bgh\s+issue\s+create\b", command) /
+# re.search(r"\bgh\s+pr\s+create\b", command) matched the pattern ANYWHERE in
+# the raw command string).
+_ISSUE_CREATE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+issue\s+create\b")
+_PR_CREATE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+create\b")
+
+
+def _check_issue_create_stmt(token: str) -> bool:
+    return bool(_ISSUE_CREATE_RE.match(token.lstrip()))
+
+
+def _check_pr_create_stmt(token: str) -> bool:
+    return bool(_PR_CREATE_RE.match(token.lstrip()))
+
+
+def is_issue_create_command(command: str) -> bool:
+    """Return True only when *command* contains a top-level `gh issue create`."""
+    return scan_top_level(command, _check_issue_create_stmt)
+
+
+def is_pr_create_command(command: str) -> bool:
+    """Return True only when *command* contains a top-level `gh pr create`."""
+    return scan_top_level(command, _check_pr_create_stmt)
 
 
 def _canonical_root_from_common_dir(cwd: str, common: str) -> str | None:
@@ -220,8 +253,8 @@ def main() -> None:
     exit_code = data.get("tool_response", {}).get("exitCode", 0)
     cwd = data.get("cwd", "")
 
-    is_issue_create = bool(re.search(r"\bgh\s+issue\s+create\b", command))
-    is_pr_create = bool(re.search(r"\bgh\s+pr\s+create\b", command))
+    is_issue_create = is_issue_create_command(command)
+    is_pr_create = is_pr_create_command(command)
 
     if not (is_issue_create or is_pr_create):
         sys.exit(0)

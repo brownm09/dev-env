@@ -27,6 +27,7 @@ from _hookio import (  # noqa: E402
     merge_pr_number_from_output,
     output_has_merge_marker,
     read_command_output,
+    scan_top_level,
     should_confirm_via_gh,
 )
 
@@ -198,6 +199,83 @@ def test_merge_dir_cd_after_merge_ignored() -> str:
     return "cd after the merge -> cwd (merge region excludes it)"
 
 
+# ---------------------------------------------------------------------------
+# scan_top_level  (dev-env#499, ADR-050 Amendment 5)
+#
+# The generic engine originally written for pr-merge-reminder.py, now the
+# shared home for both pr-merge-reminder.py's and post-tool-use.py's command
+# detection. Callers anchor check_fn via .match() on the lstripped token; the
+# engine's job is only to make sure a top-level `;`/`\n`/`&&`/`||` split never
+# happens INSIDE quoted/subshell/heredoc content in a way that would carve out
+# a token whose start happens to look like a real invocation.
+# ---------------------------------------------------------------------------
+
+
+def _starts_with(*prefixes: str):
+    return lambda token: token.lstrip().startswith(prefixes)
+
+
+def test_scan_top_level_matches_bare_statement() -> str:
+    assert scan_top_level("gh pr create --fill", _starts_with("gh pr create"))
+    return "bare statement -> check_fn sees it"
+
+
+def test_scan_top_level_no_match_returns_false() -> str:
+    assert not scan_top_level("echo hello world", _starts_with("gh pr create"))
+    return "no matching statement anywhere -> False"
+
+
+def test_scan_top_level_does_not_split_inside_double_quotes() -> str:
+    # Without quote-tracking, the && inside the quoted string would wrongly
+    # split into a second token starting with "gh pr merge" -- exactly the
+    # dev-env#499 false-positive class. Quote-tracking keeps this one unsplit
+    # token, which starts with "git", not "gh pr create"/"gh pr merge".
+    cmd = 'git commit -m "gh pr create --fill && gh pr merge --auto"'
+    assert not scan_top_level(cmd, _starts_with("gh pr create", "gh pr merge"))
+    return "&& inside double quotes is not a statement separator (dev-env#499)"
+
+
+def test_scan_top_level_does_not_split_inside_single_quotes() -> str:
+    cmd = "git commit -m 'gh pr create --fill && gh pr merge --auto'"
+    assert not scan_top_level(cmd, _starts_with("gh pr create", "gh pr merge"))
+    return "&& inside single quotes is not a statement separator"
+
+
+def test_scan_top_level_does_not_split_inside_subshell() -> str:
+    cmd = "echo $(gh pr create --fill && gh pr merge --auto)"
+    assert not scan_top_level(cmd, _starts_with("gh pr create", "gh pr merge"))
+    return "&& inside $() subshell is not a statement separator"
+
+
+def test_scan_top_level_skips_heredoc_body() -> str:
+    # The heredoc body is data (e.g. a commit message), not commands -- its
+    # internal newline must not be treated as a statement separator, and its
+    # content must never reach check_fn as its own token.
+    cmd = "git commit -F - <<'EOF'\ngh pr create --fill\nEOF"
+    assert not scan_top_level(cmd, _starts_with("gh pr create"))
+    return "heredoc body lines are not scanned as top-level statements (dev-env#499)"
+
+
+def test_scan_top_level_splits_on_and_and() -> str:
+    assert scan_top_level("cd /a && gh pr create --fill", _starts_with("gh pr create"))
+    return "&& outside quotes splits into independently-checked statements"
+
+
+def test_scan_top_level_splits_on_semicolon() -> str:
+    assert scan_top_level("cd /a ; gh pr create --fill", _starts_with("gh pr create"))
+    return "; splits into independently-checked statements"
+
+
+def test_scan_top_level_splits_on_or_or() -> str:
+    assert scan_top_level("false || gh pr create --fill", _starts_with("gh pr create"))
+    return "|| splits into independently-checked statements"
+
+
+def test_scan_top_level_splits_on_newline() -> str:
+    assert scan_top_level("echo hi\ngh pr create --fill", _starts_with("gh pr create"))
+    return "newline splits into independently-checked statements"
+
+
 def main() -> int:
     tests = [
         ("reads command output from stdout", test_reads_stdout),
@@ -221,6 +299,16 @@ def main() -> int:
         ("merge dir: relative path resolved vs cwd", test_merge_dir_relative_resolved_against_cwd),
         ("merge dir: semicolon chain", test_merge_dir_semicolon_chain),
         ("merge dir: cd after merge ignored", test_merge_dir_cd_after_merge_ignored),
+        ("scan_top_level: bare statement matches", test_scan_top_level_matches_bare_statement),
+        ("scan_top_level: no match anywhere -> False", test_scan_top_level_no_match_returns_false),
+        ("scan_top_level: no split inside double quotes (dev-env#499)", test_scan_top_level_does_not_split_inside_double_quotes),
+        ("scan_top_level: no split inside single quotes", test_scan_top_level_does_not_split_inside_single_quotes),
+        ("scan_top_level: no split inside $() subshell", test_scan_top_level_does_not_split_inside_subshell),
+        ("scan_top_level: heredoc body skipped (dev-env#499)", test_scan_top_level_skips_heredoc_body),
+        ("scan_top_level: splits on &&", test_scan_top_level_splits_on_and_and),
+        ("scan_top_level: splits on ;", test_scan_top_level_splits_on_semicolon),
+        ("scan_top_level: splits on ||", test_scan_top_level_splits_on_or_or),
+        ("scan_top_level: splits on newline", test_scan_top_level_splits_on_newline),
     ]
     failed = 0
     for name, fn in tests:
