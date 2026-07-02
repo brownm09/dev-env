@@ -575,8 +575,8 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     Two layers, mirroring this hook family's established split. A pure-helper Python test exercises
     `is_pr_merge_command` offline (built on the shared `_hookio.scan_top_level`, matching
     `pre-merge-numbering-check.py`'s and `pre-merge-message-check.py`'s identically-named predicate —
-    dev-env#519): pins a bare and a `cd`-chained top-level `gh pr merge` match, and that a non-merge
-    command or a `gh pr merge` mentioned only inside a heredoc body (dev-env#499) does not match, so
+    dev-env#519): pins a bare, `&&`-chained, and `cd`-chained top-level `gh pr merge` match, and that
+    a non-merge command or a `gh pr merge` mentioned only inside a heredoc body (dev-env#499) does not match, so
     the hook's live `gh pr view` call is never paid for a command that never actually merges. A
     behavioral shell test drives the real hook end-to-end via the `MERGE_GATE_TEST_JSON` seam (no
     live `gh`, no network): pins the clean-review / open-findings-blocked / disposition-recorded /
