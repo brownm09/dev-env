@@ -14,6 +14,12 @@ then re-attempts the merge.
 Fails OPEN: any I/O or JSON error exits 0 so a misconfigured queue file never
 permanently wedges a merge.
 
+Merge detection is built on `_hookio.scan_top_level` (dev-env#519), the same
+quote/subshell/heredoc-aware engine `pre-merge-numbering-check.py` and
+`pr-merge-reminder.py` already use — not a plain unanchored `re.search` over
+the whole command string, which could spuriously fire on a `gh pr merge`
+mentioned only inside a heredoc body or `$()` subshell (dev-env#499).
+
 Stdin JSON shape (PreToolUse): {"tool_name":"Bash","tool_input":{"command":...},"cwd":...}
 
 Exit 2 — block the merge and show queued messages (queue has content).
@@ -24,8 +30,23 @@ import json
 import re
 import sys
 
+from _hookio import scan_top_level
+
 _QUEUE_FILE = "C:/Users/brown/.claude/merge-queue.md"
-_GH_PR_MERGE_RE = re.compile(r"(?:^|&&|\|+|;|\n)\s*gh\s+pr\s+merge\b")
+_MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
+
+
+def _check_merge_stmt(token):
+    return bool(_MERGE_STMT_RE.match(token.lstrip()))
+
+
+def is_pr_merge_command(command):
+    """True iff *command* contains a top-level `gh pr merge` -- i.e. not one
+    merely mentioned inside a quoted string, $() subshell, or heredoc body
+    (dev-env#499). Mirrors `pre-merge-numbering-check.py`'s identically-named
+    predicate (dev-env#519).
+    """
+    return scan_top_level(command, _check_merge_stmt)
 
 
 def _read_queue():
@@ -48,7 +69,7 @@ def main() -> None:
     if data.get("tool_name") != "Bash":
         sys.exit(0)
     command = data.get("tool_input", {}).get("command", "")
-    if not _GH_PR_MERGE_RE.search(command):
+    if not is_pr_merge_command(command):
         sys.exit(0)
 
     content = _read_queue().strip()

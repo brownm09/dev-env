@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Tests for pre-merge-message-check.py pure helpers.
 
-Exercises the command-detection regex and queue-read helper offline (no disk I/O
-for the regex tests, a tmp file for the read tests). The stdin plumbing and exit-2
-emission are not covered (pure-helper convention).
+Exercises the command-detection predicate and queue-read helper offline (no
+disk I/O for the detection tests, a tmp file for the read tests). The stdin
+plumbing and exit-2 emission are not covered (pure-helper convention).
 """
 import importlib.util
 import os
@@ -14,47 +14,53 @@ import tempfile
 # Load the module under test without executing main()
 # ---------------------------------------------------------------------------
 _SCRIPT = os.path.join(os.path.dirname(__file__), "..", "pre-merge-message-check.py")
-# The script imports _winsubp (a sibling in scripts/); make it resolvable.
+# The script imports _winsubp and _hookio (siblings in scripts/); make them resolvable.
 sys.path.insert(0, os.path.dirname(_SCRIPT))
 spec = importlib.util.spec_from_file_location("pre_merge_message_check", _SCRIPT)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-_RE = mod._GH_PR_MERGE_RE
-
-
-def _check_regex(cmd: str) -> bool:
-    return bool(_RE.search(cmd))
+is_pr_merge_command = mod.is_pr_merge_command
 
 
 # ---------------------------------------------------------------------------
-# Regex tests
+# is_pr_merge_command tests
 # ---------------------------------------------------------------------------
 
 def test_bare_merge():
-    assert _check_regex("gh pr merge")
+    assert is_pr_merge_command("gh pr merge")
 
 def test_merge_with_flags():
-    assert _check_regex("gh pr merge --squash --delete-branch")
+    assert is_pr_merge_command("gh pr merge --squash --delete-branch")
 
 def test_merge_with_number():
-    assert _check_regex("gh pr merge 42")
+    assert is_pr_merge_command("gh pr merge 42")
 
 def test_merge_chained():
-    assert _check_regex("git fetch origin && gh pr merge --squash")
+    assert is_pr_merge_command("git fetch origin && gh pr merge --squash")
 
 def test_merge_after_semicolon():
-    assert _check_regex("git status; gh pr merge")
+    assert is_pr_merge_command("git status; gh pr merge")
+
+def test_merge_cd_chained():
+    assert is_pr_merge_command("cd C:/Users/brown/Git/dev-env && gh pr merge --squash")
 
 def test_non_merge_gh_command():
-    assert not _check_regex("gh pr create --title foo")
+    assert not is_pr_merge_command("gh pr create --title foo")
 
 def test_unrelated_command():
-    assert not _check_regex("git push origin main")
+    assert not is_pr_merge_command("git push origin main")
 
 def test_merge_in_string_but_not_command():
     # "merge" appears inside a string argument, not as a gh subcommand
-    assert not _check_regex("echo 'about to merge' && git push")
+    assert not is_pr_merge_command("echo 'about to merge' && git push")
+
+def test_merge_heredoc_body_not_matched():
+    # dev-env#499: a "gh pr merge" mentioned only inside a heredoc body
+    # (e.g. as prose in a commit message) must not count as a genuine
+    # top-level invocation.
+    command = 'git commit -m "$(cat <<\'EOF\'\nmentions gh pr merge in prose\nEOF\n)"'
+    assert is_pr_merge_command(command) is False
 
 
 # ---------------------------------------------------------------------------

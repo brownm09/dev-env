@@ -315,12 +315,14 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     ```
 
 24. **pre-merge-message-check test** — required when changing `claude/scripts/pre-merge-message-check.py`.
-    Exercises the pure `_GH_PR_MERGE_RE` regex and the `_read_queue()` helper offline (tmp files for
-    queue content; no network, no gh): pins that the merge-detection regex fires on bare / flagged /
-    chained `gh pr merge` invocations and stays silent on non-merge commands, that `_read_queue` returns
-    content verbatim, returns `""` for an empty or whitespace-only file, and returns `""` when the queue
-    file is absent (fail-open). The stdin plumbing and exit-2 emission are not covered (pure-helper
-    convention). ([ADR-061](docs/adr/061-pre-merge-message-queue.md))
+    Exercises the pure `is_pr_merge_command` predicate (built on the shared `_hookio.scan_top_level`,
+    matching `pre-merge-numbering-check.py`'s identically-named predicate — dev-env#519) and the
+    `_read_queue()` helper offline (tmp files for queue content; no network, no gh): pins that
+    detection fires on a bare / flagged / chained / `cd`-chained `gh pr merge` invocation and stays
+    silent on a non-merge command or a `gh pr merge` mentioned only inside a heredoc body
+    (dev-env#499), that `_read_queue` returns content verbatim, returns `""` for an empty or
+    whitespace-only file, and returns `""` when the queue file is absent (fail-open). The stdin
+    plumbing and exit-2 emission are not covered (pure-helper convention). ([ADR-061](docs/adr/061-pre-merge-message-queue.md))
 
     ```bash
     py -3 claude/scripts/tests/test_pre_merge_message_check.py
@@ -567,6 +569,25 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 
     ```bash
     py -3 claude/scripts/tests/test_pre_merge_numbering_check.py
+    ```
+
+38. **pre-merge-findings-gate test** — required when changing `claude/scripts/pre-merge-findings-gate.py`.
+    Two layers, mirroring this hook family's established split. A pure-helper Python test exercises
+    `is_pr_merge_command` offline (built on the shared `_hookio.scan_top_level`, matching
+    `pre-merge-numbering-check.py`'s and `pre-merge-message-check.py`'s identically-named predicate —
+    dev-env#519): pins a bare, `&&`-chained, and `cd`-chained top-level `gh pr merge` match, and that
+    a non-merge command or a `gh pr merge` mentioned only inside a heredoc body (dev-env#499) does not match, so
+    the hook's live `gh pr view` call is never paid for a command that never actually merges. A
+    behavioral shell test drives the real hook end-to-end via the `MERGE_GATE_TEST_JSON` seam (no
+    live `gh`, no network): pins the clean-review / open-findings-blocked / disposition-recorded /
+    no-review-marker / gh-failure-fail-open / non-merge-command decision paths, and that `--repo` and
+    `--repo=` both parse to the right repo in `_parse_merge_target`. The shell test file pre-dates
+    this list — added here (alongside the new pure-helper file) to close the gap where it existed but
+    was never cross-referenced ([ADR-028](docs/adr/028-all-findings-merge-gate.md), [ADR-039](docs/adr/039-merge-gate-findings-enforcement.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_pre_merge_findings_gate.py
+    bash claude/scripts/tests/test-merge-findings-gate.sh
     ```
 
 ## Observability
