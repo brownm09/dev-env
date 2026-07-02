@@ -339,6 +339,18 @@ _SUBPROCESS_USE_RE = re.compile(
 )
 
 
+def _is_winsubp_module(name: str) -> bool:
+    """True only for the literal filename `_winsubp.py`.
+
+    This is the one hook-directory module structurally exempt from the
+    "subprocess use requires `import _winsubp`" rule below — it cannot
+    import itself. Every other underscore-prefixed support module
+    (`_hookio.py`, `_gh_project.py`, etc.) is a normal scan target: if it
+    uses subprocess, it must import `_winsubp` like any other script.
+    """
+    return name == "_winsubp.py"
+
+
 def test_every_subprocess_using_hook_imports_winsubp() -> str:
     """Every hook script in claude/scripts/ that uses subprocess must import _winsubp.
 
@@ -350,8 +362,9 @@ def test_every_subprocess_using_hook_imports_winsubp() -> str:
     missing: list[str] = []
     checked = 0
     for path in sorted(hooks_dir.glob("*.py")):
-        # Skip the helper itself and any underscore-prefixed support modules.
-        if path.name.startswith("_"):
+        # Skip only _winsubp.py itself — it cannot import itself. Every
+        # other underscore-prefixed support module is scanned normally.
+        if _is_winsubp_module(path.name):
             continue
         text = path.read_text(encoding="utf-8")
         if not _SUBPROCESS_USE_RE.search(text):
@@ -374,6 +387,14 @@ def test_every_subprocess_using_hook_imports_winsubp() -> str:
         raise AssertionError("import regex false-positive on a docstring mentioning _winsubp")
     if not _SUBPROCESS_USE_RE.search("from subprocess import run\nrun(['x'])\n"):
         raise AssertionError("subprocess-use regex missed the `from subprocess import` idiom")
+    if not _is_winsubp_module("_winsubp.py"):
+        raise AssertionError("_is_winsubp_module rejected the one file it must exempt")
+    for representative_name in ("_hookio.py", "_gh_project.py", "_hookutil.py"):
+        if _is_winsubp_module(representative_name):
+            raise AssertionError(
+                f"_is_winsubp_module wrongly exempted {representative_name!r} — "
+                "the blanket underscore-prefix skip has regressed"
+            )
 
     return f"all {checked} subprocess-using hook scripts import _winsubp"
 
