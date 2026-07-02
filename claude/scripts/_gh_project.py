@@ -19,6 +19,11 @@
     because it runs inside a live interactive-session hook). reconcile-project-board.py's
     call site passes `timeout=30` explicitly to preserve its own original, looser
     (unattended-nightly-batch) timeout exactly.
+  - `str(project_number)` normalizes the arg before it reaches the subprocess call —
+    reconcile-project-board.py's original already did this; post-tool-use.py's original
+    passed `config["project_number"]` straight through. A no-op today (the JSON config
+    schema always stores it as a string already), carried over from reconcile's contract
+    for completeness (/review, dev-env#454).
 
 Imports `_winsubp` itself even though the entry-point script will already have — the patch
 is a one-time, idempotent mutation of `subprocess.Popen.__init__` guarded on the
