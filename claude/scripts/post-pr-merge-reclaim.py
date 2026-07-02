@@ -41,7 +41,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _hookio import output_has_merge_marker, read_command_output
+from _hookio import (
+    confirm_merge_via_gh,
+    effective_merge_dir,
+    output_has_merge_marker,
+    read_command_output,
+    should_confirm_via_gh,
+)
 
 SCAN_DIR = "C:/Users/brown/Git"
 RECLAIM_SCRIPT = Path(__file__).resolve().parent / "reclaim-worktree-disk.py"
@@ -108,7 +114,17 @@ def main() -> None:
     cwd = data.get("cwd", "")
 
     if not is_successful_merge(command, output):
-        sys.exit(0)
+        # gh's marker does not always survive to this hook's captured output
+        # when gh exits abruptly right after a worktree's local-cleanup
+        # failure (dev-env#489) — fall back to a live `gh pr view` confirmation
+        # rather than silently skipping the disk reclaim (dev-env#504).
+        if "gh pr merge" not in command:
+            sys.exit(0)
+        exit_code = data.get("tool_response", {}).get("exitCode", -1)
+        if not should_confirm_via_gh(exit_code, output):
+            sys.exit(0)
+        if confirm_merge_via_gh(None, "", effective_merge_dir(command, cwd)) is None:
+            sys.exit(0)
 
     if _spawn_reclaim(cwd):
         print(

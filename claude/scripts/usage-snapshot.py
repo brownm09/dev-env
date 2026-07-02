@@ -20,8 +20,9 @@ Stdin JSON shape (PostToolUse):
     "cwd": "..."
   }
 
-Exit 0  — not a merge command, an unconfirmed merge (no success marker in the
-          output — e.g. a queued `--auto`), or creds file absent; silent
+Exit 0  — not a merge command, an unconfirmed merge (no success marker and the
+          live `gh pr view` fallback also found nothing — e.g. a queued
+          `--auto`, or a genuinely failed merge), or creds file absent; silent
 Exit 2  — snapshot emitted via stderr, OR an expired token whose on-demand refresh
           failed (advisory), OR the usage API was unreachable after one retry
           (advisory — #302). An expired token is first refreshed on demand via the
@@ -38,7 +39,15 @@ import urllib.error
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from _hookio import output_has_merge_marker, read_command_output, scan_top_level
+from _hookio import (
+    confirm_merge_via_gh,
+    effective_merge_dir,
+    merge_pr_number_from_output,
+    output_has_merge_marker,
+    read_command_output,
+    scan_top_level,
+    should_confirm_via_gh,
+)
 
 CREDS_PATH = "C:/Users/brown/.claude/.credentials.json"
 CONFIG_PATH = "C:/Users/brown/Git/dev-env/claude/usage-config.json"
@@ -67,6 +76,12 @@ def merge_confirmed(command: str, output: str) -> bool:
     silently dropped the snapshot on every worktree merge, the default flow in
     this repo (dev-env#474; mirrors post-pr-merge-project.py's
     merge_succeeded(), see ADR-049/ADR-050).
+
+    gh's already-printed marker does not always survive to this hook's
+    captured output when gh exits abruptly right after that same
+    local-cleanup failure (dev-env#489) — main() falls back to a live
+    `gh pr view` confirmation when this predicate returns False but the
+    command was still a `gh pr merge` invocation (dev-env#504).
     """
     return scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output)
 
@@ -418,8 +433,17 @@ def main() -> None:
 
     command = data.get("tool_input", {}).get("command", "")
     output = read_command_output(data)
+    cwd = data.get("cwd", "")
+
     if not merge_confirmed(command, output):
-        sys.exit(0)
+        if not scan_top_level(command, _check_merge_stmt):
+            sys.exit(0)
+        exit_code = data.get("tool_response", {}).get("exitCode", -1)
+        if not should_confirm_via_gh(exit_code, output):
+            sys.exit(0)
+        pr_number = merge_pr_number_from_output(output)
+        if confirm_merge_via_gh(pr_number, "", effective_merge_dir(command, cwd)) is None:
+            sys.exit(0)
 
     creds = load_credentials()
     if not creds:
@@ -469,7 +493,6 @@ def main() -> None:
 
     config = load_config()
     session_id = data.get("session_id", "")
-    cwd = data.get("cwd", "")
 
     jsonl_path = find_session_jsonl(cwd, session_id)
     exchanges = top_exchanges(jsonl_path) if jsonl_path else []

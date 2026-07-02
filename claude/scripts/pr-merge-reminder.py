@@ -31,10 +31,12 @@ import subprocess
 import sys
 
 from _hookio import (
+    confirm_merge_via_gh,
     effective_merge_dir,
     output_has_merge_marker,
     read_command_output,
     scan_top_level,
+    should_confirm_via_gh,
 )
 
 # Matches the start of a statement token against `gh pr merge`, `gh pr create`,
@@ -217,6 +219,7 @@ def _build_messages(
     is_create: bool,
     is_merge: bool,
     is_push: bool,
+    live_confirmed: bool | None = None,
 ) -> list[str]:
     """Build the reminder message(s) for a detected create/merge/push command.
 
@@ -243,8 +246,21 @@ def _build_messages(
     against a PR that was never opened — so it counts as evidence for create
     even when the chain's aggregate exit code is non-zero (the #275 worktree
     case, chained with a preceding create).
+
+    *live_confirmed* — dev-env#504: gh's marker does not always survive to
+    this hook's captured output when gh exits abruptly right after a
+    worktree's local-cleanup failure (dev-env#489). `main()` resolves the
+    live `gh pr view` fallback (a subprocess call) itself, BEFORE calling this
+    function, and passes the result here — this function never shells out.
+    `None` (the default) means main() never attempted the live check (marker
+    already found, or exit_code/output didn't warrant it) and `merge_ok` keeps
+    its marker-only value, so every existing caller/test that omits this
+    parameter is unaffected. `True`/`False` means main() did attempt it and
+    authoritatively overrides `merge_ok`.
     """
     merge_ok = is_merge and _is_successful_merge_call(output)
+    if live_confirmed is not None:
+        merge_ok = live_confirmed
     create_push_ok = exit_code == 0 or merge_ok
     messages = []
 
@@ -338,8 +354,25 @@ def main() -> None:
         sys.exit(0)
 
     output = read_command_output(data)
+
+    # dev-env#504: when the marker-based check fails but the command was a
+    # genuine gh pr merge with a non-zero exit code, fall back to a live
+    # `gh pr view` confirmation (dev-env#489) before conceding no merge
+    # happened. Resolved here, not inside _build_messages, so that function's
+    # existing direct-call test suite can never trigger a live subprocess.
+    live_confirmed = None
+    if (
+        is_merge
+        and not _is_successful_merge_call(output)
+        and should_confirm_via_gh(exit_code, output)
+    ):
+        live_confirmed = (
+            confirm_merge_via_gh(None, "", effective_merge_dir(command, cwd)) is not None
+        )
+
     messages = _build_messages(
-        command, cwd, exit_code, output, is_create, is_merge, is_push
+        command, cwd, exit_code, output, is_create, is_merge, is_push,
+        live_confirmed=live_confirmed,
     )
 
     if not messages:

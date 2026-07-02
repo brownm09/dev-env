@@ -467,3 +467,83 @@ needs the same audit the shape change itself got. `/review`'s adversarial pass, 
 test suite, is what caught this; the test suite only exercised the *inverse* direction (heredoc body
 text that must NOT trigger) because that was the bug being fixed, not the one this fix could
 introduce.
+
+## Amendment 8 (2026-07-02) — rolling `confirm_merge_via_gh` out to the five remaining marker-gated hooks (dev-env#504)
+
+Amendment 3 added a live `gh pr view` fallback (`should_confirm_via_gh` / `confirm_merge_via_gh` in
+`_hookio.py`) for when gh's merge-success marker doesn't survive to a PostToolUse hook's captured
+output — but wired it into `post-pr-merge-project.py` **only**, per that PR's own stated rationale: it
+is the one hook of the six with no other eventual-consistency backstop for a missed action
+(dev-env#498 later found even that one hook's own confirmation inconclusive to observe — a separate,
+still-open question this amendment does not resolve). dev-env#504 tracked the rollout to the other
+five as an explicit follow-up rather than leaving it implied. This amendment closes that gap.
+
+**Evidence the gap was live, not theoretical:** the identical worktree-cleanup failure
+(`fatal: 'main' is already checked out`) recurred on dev-env PRs #491, #493, and #512, and — new since
+#504 was filed — on a **different repo entirely**, career-playbook PR #635. Since these hooks are
+global (fire "for every repo without a hook-config.json opt-in requirement," per `usage-snapshot.py`'s
+own docstring), the career-playbook occurrence confirms the gap is a property of the shared hook
+architecture, not something specific to dev-env's own worktree/board setup.
+
+**Fix:** wired `should_confirm_via_gh` / `confirm_merge_via_gh` into the remaining five hooks —
+`usage-snapshot.py`, `post-merge-tile-checkpoint.py`, `post-pr-merge-pull.py`,
+`post-pr-merge-reclaim.py`, `pr-merge-reminder.py` — mirroring `post-pr-merge-project.py`'s existing
+pattern: when the marker-based check fails but the command was still a genuine `gh pr merge` with a
+non-zero exit code, fall back to a live confirmation before conceding no merge happened. Per #504's own
+"Scope" section, this takes the simpler of the two named options — accepting up to six independent
+(redundant) `gh pr view` calls per failed-merge event rather than building a cross-hook shared-result
+cache, since each PostToolUse hook is a separate process with no natural place to share one result
+short of new infrastructure that six calls to a cheap, read-only `gh` command don't justify.
+
+Four of the five hooks (`usage-snapshot.py`, `post-merge-tile-checkpoint.py`, `post-pr-merge-pull.py`,
+`post-pr-merge-reclaim.py`) gate on a simple 2-argument marker predicate
+(`merge_confirmed(command, output)` / `is_successful_merge(command, output)`) that existing tests call
+directly and offline. The fallback was added only in each hook's own `main()`, never inside those
+tested predicates, so no existing test's behavior or coverage changed.
+
+`pr-merge-reminder.py` needed a different shape: its `_build_messages()` helper — which computes
+`merge_ok` from the marker alone — is itself directly unit-tested with ~20 synthetic `(command,
+exit_code, output)` combinations, several of which have a non-zero `exit_code` and no marker (e.g. the
+dev-env#494 "create fails, merge never ran" case). Naively calling `confirm_merge_via_gh` from inside
+`_build_messages` would have made those existing tests shell out to a **real** `gh pr view` subprocess
+call — one of them stayed accidentally safe only because its synthetic `cwd` doesn't exist on disk
+(`subprocess.run(cwd=...)` raises before `gh` ever runs, caught by `confirm_merge_via_gh`'s broad
+exception handler). Relying on that accident would have been fragile, and violates the repo's own
+"avoids subprocess mocks by never reaching the live boundary in a pure-helper test" convention. Instead,
+`_build_messages` gained a `live_confirmed: bool | None = None` parameter: `None` (the default, and
+every pre-existing test call) leaves `merge_ok` exactly as the marker-only check already computed it;
+`True`/`False` authoritatively overrides it. `main()` — never `_build_messages` — decides whether to
+attempt the live check and calls `confirm_merge_via_gh` itself, before the `_build_messages` call. This
+keeps the live subprocess boundary exactly where every sibling hook already keeps it: in `main()`,
+untested by convention, never inside a function synthetic inputs can reach.
+
+All six hooks resolve the `gh pr view` cwd via `effective_merge_dir(command, cwd)` rather than the raw
+session `cwd` — a `cd <other-repo> && gh pr merge` chain must confirm against the repo the merge
+actually targeted, matching the existing cd-chain-scoping convention `pr-merge-reminder.py` and
+`post-pr-merge-pull.py` already use for their own repo/dir resolution (ADR-067). `post-pr-merge-pull.py`
+and `post-pr-merge-reclaim.py` keep their pre-existing raw-`cwd` uses (`extract_repo`'s cd-chain
+resolution; `_spawn_reclaim`'s `--protect-cwd`) untouched — those are semantically distinct from "which
+directory should `gh pr view` run from," so the new `effective_merge_dir` call is additive, not a
+replacement.
+
+**Coverage:** all five hooks' existing marker-predicate tests pass unchanged — no existing test was
+modified or reinterpreted, only new code paths added around them in each `main()`.
+`pr-merge-reminder.py`'s suite gained three new tests exercising `live_confirmed=True` / `False` /
+omitted directly — pure, no subprocess — bringing that file's suite to 45 passing tests. The live
+`confirm_merge_via_gh` calls themselves remain untested across all six hooks, per this ADR's and
+`post-pr-merge-project.py`'s own established convention (it shells out to `gh pr view`; the repo avoids
+subprocess mocks).
+
+**What this amendment does not resolve:** dev-env#498's question — whether even
+`post-pr-merge-project.py`'s original, longer-lived fallback is provably firing, versus GitHub's native
+project-automation masking the result — stands independent of this rollout and is not touched here.
+
+**General lesson (continuing Amendments 1, 5, and 6's):** a fix scoped to "the one hook that needs it
+most" is a deliberate, load-bearing decision (Amendment 3 was explicit about this), but it leaves a
+tracked-but-open gap for every sibling hook until a follow-up closes it — dev-env#504 existed
+specifically so that gap wasn't just implied by re-reading Amendment 3's rationale later. A second,
+narrower lesson specific to this amendment: wiring a live-call fallback into a function that already has
+direct synthetic-input test coverage requires checking every existing test case against the new code
+path before assuming "add the fallback the same way as the reference hook" is a safe copy — one of
+`pr-merge-reminder.py`'s own pre-existing tests would have started shelling out to `gh` for real had the
+fallback been added inside `_build_messages` rather than gated in `main()`.

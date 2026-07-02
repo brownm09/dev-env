@@ -21,13 +21,20 @@ Stdin JSON shape (PostToolUse):
 Output is read via _hookio.read_command_output (stdout+stderr, legacy output
 fallback) per ADR-049/ADR-050 — do NOT read tool_response.output directly.
 
-Exit 0 — not a successful `gh pr merge` call; no action.
+Exit 0 — not a successful `gh pr merge` call (including a genuinely-failed
+         merge the live `gh pr view` fallback also could not confirm); no action.
 Exit 2 — successful merge detected; tile-checkpoint reminder emitted via stderr.
 """
 import json
 import sys
 
-from _hookio import output_has_merge_marker, read_command_output
+from _hookio import (
+    confirm_merge_via_gh,
+    effective_merge_dir,
+    output_has_merge_marker,
+    read_command_output,
+    should_confirm_via_gh,
+)
 
 
 def is_successful_merge(command: str, output: str) -> bool:
@@ -60,9 +67,20 @@ def main() -> None:
 
     command = data.get("tool_input", {}).get("command", "")
     output = read_command_output(data)
+    cwd = data.get("cwd", "")
 
     if not is_successful_merge(command, output):
-        sys.exit(0)
+        # gh's marker does not always survive to this hook's captured output
+        # when gh exits abruptly right after a worktree's local-cleanup
+        # failure (dev-env#489) — fall back to a live `gh pr view` confirmation
+        # rather than silently dropping the tile-checkpoint reminder (dev-env#504).
+        if "gh pr merge" not in command:
+            sys.exit(0)
+        exit_code = data.get("tool_response", {}).get("exitCode", -1)
+        if not should_confirm_via_gh(exit_code, output):
+            sys.exit(0)
+        if confirm_merge_via_gh(None, "", effective_merge_dir(command, cwd)) is None:
+            sys.exit(0)
 
     print(
         "[tile-checkpoint] PR merged — spawn follow-up tiles now via spawn_task for "
