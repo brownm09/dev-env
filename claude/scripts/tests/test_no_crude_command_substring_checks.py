@@ -37,6 +37,18 @@ a JoinedStr node, not a Constant, so it is not detected. No check in this repo
 uses an f-string for a literal comparison today; unwrapping JoinedStr is not
 worth the complexity unless that changes.
 
+Also scoped to one AST shape, not just to specific literals: only a bare
+`Name` spelled exactly `command` in the literal-then-command operand order
+(see find_command_substring_checks's own docstring). A future check that
+aliases the command string to a differently-named variable, reaches it
+through an attribute/subscript (`self.command`, `event["command"]`), or is
+phrased in reverse or via a different method (`command.find(literal) == -1`)
+is the same bug in a different syntactic shape and will not be caught -- true
+of any AST-based check, and true here today only in principle: every check in
+claude/scripts/*.py currently uses the literal-then-`command`-Name shape.
+Flagged so a clean run reads as "no crude substring checks in this shape,"
+not "no crude substring checks of any shape."
+
 Usage:
     py -3 claude/scripts/tests/test_no_crude_command_substring_checks.py
 
@@ -45,6 +57,7 @@ Exit 0 = all pass.
 
 import ast
 import sys
+from collections import Counter
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -113,11 +126,45 @@ def _scan_real_repo() -> dict[str, list[tuple[int, str]]]:
     non-recursive glob). Returns {filename: [(lineno, literal), ...]}."""
     results: dict[str, list[tuple[int, str]]] = {}
     for path in sorted(SCRIPTS_DIR.glob("*.py")):
-        source = path.read_text(encoding="utf-8")
-        offenses = find_command_substring_checks(source, filename=path.name)
+        try:
+            source = path.read_text(encoding="utf-8")
+            offenses = find_command_substring_checks(source, filename=path.name)
+        except (SyntaxError, UnicodeDecodeError) as e:
+            # ast.parse's filename= kwarg already attributes a SyntaxError to
+            # the right file, but a UnicodeDecodeError from read_text() has no
+            # filename of its own -- re-raise with it attached either way so a
+            # scan failure always names the offending file, not just the
+            # codec/parse error text.
+            raise RuntimeError(f"failed to scan {path.name}: {e}") from e
         if offenses:
             results[path.name] = offenses
     return results
+
+
+def _diff_against_known_exceptions(
+    found: dict[str, list[tuple[int, str]]], known_exceptions: set[tuple[str, str]]
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]], dict[tuple[str, str], int]]:
+    """Compare scan results against the allowlist.
+
+    Returns (unexpected, stale, duplicated):
+      - unexpected: live (filename, literal) offenses not covered by an entry.
+      - stale: allowlist entries with no matching live offense.
+      - duplicated: allowlist entries whose live occurrence count is > 1 --
+        matching is on (filename, literal), not line number (see
+        _KNOWN_EXCEPTIONS' own comment), so a second, distinct call site that
+        happens to reuse an already-allowlisted literal would otherwise be
+        silently absorbed into that single entry instead of surfacing as a
+        new offense. Counting occurrences closes that gap without
+        reintroducing line-number sensitivity to refactors.
+    """
+    occurrence_counts = Counter(
+        (filename, literal) for filename, offenses in found.items() for _, literal in offenses
+    )
+    live_offenses = set(occurrence_counts)
+    unexpected = live_offenses - known_exceptions
+    stale = known_exceptions - live_offenses
+    duplicated = {key: occurrence_counts[key] for key in known_exceptions if occurrence_counts[key] > 1}
+    return unexpected, stale, duplicated
 
 
 # ---------------------------------------------------------------------------
@@ -229,28 +276,49 @@ def test_ignores_pr530_style_explanatory_comment() -> str:
     return "PR #530's own explanatory comment: naive grep -> false positive; AST detector -> 0 offenses"
 
 
+def test_diff_detects_duplicated_offense_behind_allowlist_entry() -> str:
+    # Two distinct call sites in the same file both check the SAME literal
+    # text -- one is the audited, allowlisted offense; the other is a new,
+    # unrelated offense hiding behind it. Set-only (filename, literal)
+    # matching would silently absorb both into the one exception; this proves
+    # the occurrence-count check catches the second one instead.
+    found = {"x.py": [(10, "gh pr merge"), (40, "gh pr merge")]}
+    known = {("x.py", "gh pr merge")}
+    unexpected, stale, duplicated = _diff_against_known_exceptions(found, known)
+    assert unexpected == set(), unexpected
+    assert stale == set(), stale
+    assert duplicated == {("x.py", "gh pr merge"): 2}, duplicated
+    return "2 occurrences of an allowlisted literal in one file -> flagged as duplicated, not silently absorbed"
+
+
+def test_diff_single_occurrence_is_not_duplicated() -> str:
+    # The common case -- exactly one live occurrence per allowlist entry --
+    # must not itself trip the new duplicate check.
+    found = {"x.py": [(10, "gh pr merge")]}
+    known = {("x.py", "gh pr merge")}
+    unexpected, stale, duplicated = _diff_against_known_exceptions(found, known)
+    assert unexpected == set() and stale == set() and duplicated == {}, (unexpected, stale, duplicated)
+    return "exactly 1 occurrence of an allowlisted literal -> 0 unexpected, 0 stale, 0 duplicated"
+
+
 def test_repo_has_no_unexpected_or_stale_command_substring_checks() -> str:
     """The actual regression gate. Fails on (a) a live offense not covered by
     _KNOWN_EXCEPTIONS (a new or regressed crude check anywhere in the tree),
-    or (b) a _KNOWN_EXCEPTIONS entry with no matching live offense (a stale
+    (b) a _KNOWN_EXCEPTIONS entry with no matching live offense (a stale
     exception left behind after the underlying code was fixed -- this is not
     hypothetical: dev-env#532/PR#533 converged stub-push-archive-reminder.py's
     `"git push" not in command` check onto scan_top_level while this very test
     was being authored, which is exactly why that exception is not in the set
     above -- had it been hardcoded and left in place, this check would have
-    failed the moment that PR merged)."""
+    failed the moment that PR merged), or (c) a _KNOWN_EXCEPTIONS entry whose
+    literal now has more than one live occurrence in its file (a second,
+    unrelated offense reusing the same literal text would otherwise hide
+    behind the existing exception -- see
+    test_diff_detects_duplicated_offense_behind_allowlist_entry)."""
     found = _scan_real_repo()
+    unexpected, stale, duplicated = _diff_against_known_exceptions(found, _KNOWN_EXCEPTIONS)
 
-    live_offenses = {
-        (filename, literal)
-        for filename, offenses in found.items()
-        for _, literal in offenses
-    }
-
-    unexpected = live_offenses - _KNOWN_EXCEPTIONS
-    stale = _KNOWN_EXCEPTIONS - live_offenses
-
-    if unexpected or stale:
+    if unexpected or stale or duplicated:
         lines = []
         if unexpected:
             lines.append("New/unlisted crude command-substring checks found:")
@@ -266,10 +334,22 @@ def test_repo_has_no_unexpected_or_stale_command_substring_checks() -> str:
             lines.append("Stale _KNOWN_EXCEPTIONS entries (no longer a live offense -- remove them):")
             for filename, literal in sorted(stale):
                 lines.append(f"  {(filename, literal)!r}")
+        if duplicated:
+            lines.append(
+                "Allowlisted literal has more than one live occurrence -- a new offense may be "
+                "hiding behind the existing exception; audit each site and either fix the new one "
+                "or, if both are genuinely the same accepted exception, this test needs a way to "
+                "tell them apart (e.g. line number):"
+            )
+            for (filename, literal), count in sorted(duplicated.items()):
+                lines.append(f"  {(filename, literal)!r}: {count} occurrences")
         raise AssertionError("\n".join(lines))
 
     scanned = len(list(SCRIPTS_DIR.glob("*.py")))
-    return f"scanned {scanned} files in claude/scripts/: {len(live_offenses)} known exception(s), 0 unexpected, 0 stale"
+    return (
+        f"scanned {scanned} files in claude/scripts/: {len(_KNOWN_EXCEPTIONS)} known exception(s), "
+        "0 unexpected, 0 stale, 0 duplicated"
+    )
 
 
 def main() -> int:
@@ -284,7 +364,9 @@ def main() -> int:
         ("ignores reverse operand order", test_ignores_reverse_operand_order),
         ("detects offense in non-first link of chained comparison", test_detects_offense_in_non_first_link_of_chained_comparison),
         ("ignores PR #530-style explanatory comment (calibration proof)", test_ignores_pr530_style_explanatory_comment),
-        ("repo-wide gate: no unexpected or stale checks", test_repo_has_no_unexpected_or_stale_command_substring_checks),
+        ("diff: duplicated offense behind an allowlist entry is flagged", test_diff_detects_duplicated_offense_behind_allowlist_entry),
+        ("diff: single occurrence is not duplicated", test_diff_single_occurrence_is_not_duplicated),
+        ("repo-wide gate: no unexpected, stale, or duplicated checks", test_repo_has_no_unexpected_or_stale_command_substring_checks),
     ]
     failed = 0
     for name, fn in tests:
