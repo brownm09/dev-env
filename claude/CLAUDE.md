@@ -169,6 +169,19 @@ For PowerShell or batch scripts on Windows, do not author or accept patterns tha
 
 See [ADR-041](../docs/adr/041-no-terminal-spawn-in-windows-scripts.md).
 
+### Back up before you mutate (data & config)
+
+Any operation that mutates persistent **data or configuration** — a database row or schema, a registry key, a config file, a file association, an installed-package or environment (`PATH`) change — must be reversible by construction. Before the first mutating write:
+
+1. **Capture prior state to a restorable artifact first**, read *live* at backup time (not from an earlier diagnostic read), and **refuse to proceed if a restorable backup cannot be captured** — changing state you could not back up leaves no way back.
+2. **Provide an idempotent restore path** that returns the system to the *captured* state, not merely a generic "reset to default"; fall back to a default only when no backup exists.
+3. **Prefer a written-if-absent anchor that restore does not delete** — so repeated apply runs never overwrite the original captured state and repeated restore runs converge (re-baseline by deleting the artifact deliberately).
+4. **Verify each mutating write by read-back**, and record a no-op as a skip without inflating the change count.
+
+This complements the confirm-before-destructive-action guidance: confirmation makes a risky action *deliberate*; a captured backup plus an idempotent restore makes it *reversible*. The concrete per-platform form lives in the project CLAUDE.md — see win11-init-tools' `## Backup & restore` for the Windows/PowerShell anchor convention (`Documents\LOGS\<Script>Backup.json`, verified WMI/registry writes, `#Requires -RunAsAdministrator`), with `configure_pagefile.ps1` as the reference implementation.
+
+See [ADR-079](../docs/adr/079-backup-restore-convention.md).
+
 ### Suppression policy
 
 A *suppression* is any of the following: `!` (non-null assertion), `?? null` to coerce away `undefined`, `// @ts-ignore`, `// @ts-expect-error`, `eslint-disable` (line or block), or an explicit type cast used to silence an error rather than for a legitimate narrowing.
