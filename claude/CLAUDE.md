@@ -301,6 +301,16 @@ A PR that adds new failures or lists no PR-body justification for outstanding `p
 
 **Scope note.** The first implementation supports Jest only. Pytest, Go `testing`, and Rust have different JSON output formats and each needs its own parser — a clean run in a non-Jest repo is not evidence the policy applies. The opt-in flag should stay off in repos whose test runners are not yet supported.
 
+### Privilege-restricted test defaults
+
+When a project enforces a security or isolation guarantee via a specific runtime identity distinct from the default/admin one — a restricted DB role, a scoped service account, a sandboxed permission set, a tenant-scoped API credential — test suites and local dev must default to that restricted identity. The privileged/bypass identity is the opt-in exception, not the default. A test that passes under an admin/superuser/root connection proves nothing about whether the boundary it's supposed to exercise actually enforces anything.
+
+Before adding coverage for a permission or isolation boundary, confirm the test actually runs under the identity the boundary is scoped to — not just that the code path is exercised. A test harness that resolves the dependency graph by hand (manually constructing objects) rather than through the real framework/DI machinery is equally blind to bugs that live specifically in that machinery's resolution order or timing.
+
+**Why:** lifting-logbook's Postgres Row-Level Security was inert in production for 3+ weeks ([issue #644](https://github.com/brownm09/lifting-logbook/issues/644)) because every test and local-dev environment ran as the Postgres superuser, which bypasses RLS by design — the one enforcement bug that existed was invisible everywhere except real user traffic, and cost a multi-hour investigation to find. See [ADR-089](../docs/adr/089-privilege-restricted-test-defaults.md) for the full incident and rationale.
+
+**How to apply:** this extends the Plan-then-optimize → Pass 3 Security dimension (below) — for any change touching a permission/authorization/isolation boundary, state explicitly whether test coverage runs under the restricted identity or the admin one, rather than leaving it implicit. Not mechanically greppable the way the suppression/test-integrity checks are — this is a judgment call during the Security audit, not a static pattern.
+
 ### Dependency and lockfile policy
 
 In any npm repo, `package-lock.json` must stay in sync with the dependency ranges declared in `package.json`. When they drift, `npm ci` refuses to install (it requires an in-sync lockfile) and CI fails at the install step with a cryptic `EUSAGE` error — and `main` can go red. The motivating incident is lifting-logbook #432/#433, where clerk-backend, clerk-shared, and react drift reddened `main` and required reactive recovery PRs. See [ADR-036](../docs/adr/036-lockfile-drift-prevention.md) for the full defense-in-depth rationale.
@@ -375,7 +385,7 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 
 1. **Testing** — coverage for new behavior (defers to the project `## Testing` section).
 2. **Observability** — what is logged/traced at boundaries and on failure (defers to the project `## Observability` section).
-3. **Security** — authz, input validation, secret handling, sensitive-data/PII exposure.
+3. **Security** — authz, input validation, secret handling, sensitive-data/PII exposure. When the change touches a permission, authorization, or isolation boundary, explicitly confirm test coverage runs under the restricted identity the boundary is scoped to, not just the admin/superuser one (see Code Quality → Privilege-restricted test defaults).
 4. **Resilience / failure modes** — error handling, timeouts, fallbacks, and how the change is rolled back / reverted.
 5. **Performance** — data-access patterns (N+1), hot paths, payload/bundle size.
 6. **Data integrity & migrations** — schema changes, multi-tenant isolation, reversibility.
