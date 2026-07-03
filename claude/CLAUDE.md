@@ -138,7 +138,8 @@ Procedure (mandatory before adding/removing/renaming any single-select option on
 2. Commit the snapshot.
 3. Run the mutation with the full desired option list.
 4. Update the project's CLAUDE.md option-ID table with the regenerated IDs in the same PR.
-5. Restore assignments by re-issuing `gh project item-edit` for each item, mapping snapshot option name → new option ID.
+5. Refresh every machine-local cache of the old option IDs, in the same PR, with the regenerated IDs from step 4 — most commonly `.claude/hook-config.json` (the `required_fields`/`epic_options` the `post-tool-use.py` project-board hook reads) and `.claude/propose.json` (the `epics` array `/propose` reads). `post-tool-use.py` now live-fetches `single_select` field options at hook-fire time and falls back to this cache only when the live call fails ([ADR-076](../docs/adr/076-live-fetch-project-hook-single-select-options.md)), so a stale cache degrades to a labeled fallback rather than blocking — refreshing it here still matters for that fallback path and for `/propose`, which has no live-fetch equivalent. Don't assume `hook-config.json` is gitignored: that's dev-env's own convention (`.gitignore` ignores all of `.claude/`), not a universal one — e.g. lifting-logbook deliberately tracks it in git, so refreshing it there means a normal commit in this PR, not a local-only edit.
+6. Restore assignments by re-issuing `gh project item-edit` for each item, mapping snapshot option name → new option ID.
 
 If a mutation runs without a prior snapshot commit, stop and recover from the latest snapshot before any other work.
 

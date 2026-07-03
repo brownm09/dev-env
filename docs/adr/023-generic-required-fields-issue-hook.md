@@ -56,7 +56,7 @@ Supported `type` values: `single_select` (emits `--single-select-option-id`), `t
 
 **Safe-exit guard:** add a top-level `try/except Exception: sys.exit(0)` around `main()` in the `__main__` block, satisfying the invariant from ADR-007.
 
-**`hook-config.json` update (machine-local, not committed):** add `required_fields` with Impact and Why entries for dev-env, using the field IDs from the GitHub Project section of `claude/CLAUDE.md`.
+**`hook-config.json` update (machine-local for dev-env's own copy — dev-env gitignores all of `.claude/`; not every project does, e.g. lifting-logbook tracks it in git, dev-env#527):** add `required_fields` with Impact and Why entries for dev-env, using the field IDs from the GitHub Project section of `claude/CLAUDE.md`.
 
 ---
 
@@ -68,3 +68,4 @@ Supported `type` values: `single_select` (emits `--single-select-option-id`), `t
 - Lifting-logbook can optionally migrate to `required_fields` by adding the array to its `hook-config.json` and removing `epic_field_id` / `milestones` — no script changes needed.
 - Adding a new required field to any project's workflow now requires only a `hook-config.json` edit; no script changes are needed.
 - `docs/REFERENCE.md` Configuration table updated to document `required_fields`, `repo`, `project_number`, `project_owner`, `project_node_id`, and the deprecated `epic_field_id` / `milestones` fallback keys.
+- [ADR-076](076-live-fetch-project-hook-single-select-options.md) later extends `single_select`-type fields' `options` to be live-fetched from GitHub at reminder time (cached `options` above becomes a fallback only), fixing the silent-drift failure mode this schema was otherwise exposed to (dev-env#527).
