@@ -626,6 +626,26 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     bash claude/scripts/tests/test-merge-findings-gate.sh
     ```
 
+39. **Crude command-substring-check regression test** — required when adding or changing any
+    `claude/scripts/*.py` file. AST-based (not grep-based, so a comment or docstring merely
+    *mentioning* the pattern is structurally invisible to it, not just filtered — see
+    [ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md) Amendment 11) repo-wide gate
+    against the recurring `if "<cli-invocation>" not in command: return False` false-positive
+    class (Amendments 5/6/9/10): a raw substring test matches literal text inside a heredoc body,
+    a quoted argument, or a `$()` subshell as if it were a real top-level statement. Generalizes
+    beyond the ADR's three originally-named literals (`gh pr merge` / `gh pr create` / `git push`)
+    to flag *any* string-literal `in`/`not in` check against a variable named `command` — this is
+    what caught two previously-untracked checks of the identical shape in
+    `stub-push-archive-reminder.py` (dev-env#534) that neither Amendment 9's nor Amendment 10's own
+    three-literal grep would have found. A small, auditable `_KNOWN_EXCEPTIONS` allowlist (matched
+    on file + literal text, not line number) covers pre-existing, not-yet-fixed debt; the test
+    fails on both a new unlisted offense and a stale listed exception whose underlying check has
+    since been fixed, so the allowlist can't silently rot.
+
+    ```bash
+    py -3 claude/scripts/tests/test_no_crude_command_substring_checks.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
