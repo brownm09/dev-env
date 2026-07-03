@@ -137,6 +137,11 @@ def test_push_simple() -> str:
     return "bare git push -> match"
 
 
+def test_push_with_cd_prefix_matched() -> str:
+    assert is_git_push_command("cd /Git/engineering-journal && git push")
+    return "cd <dir> && git push -> matched (_PUSH_RE's optional cd-prefix branch)"
+
+
 def test_push_inside_subshell_not_matched() -> str:
     assert not is_git_push_command("echo $(git push)")
     return "git push inside $() -> no match"
@@ -644,6 +649,7 @@ def main() -> int:
         ("bare gh pr merge -> match", test_merge_simple),
         ("gh pr create not a merge", test_create_not_matched_as_merge),
         ("bare git push -> match", test_push_simple),
+        ("cd ... && git push -> match", test_push_with_cd_prefix_matched),
         ("git push in $() -> no match", test_push_inside_subshell_not_matched),
         ("shard step: URL in output", test_shard_step_with_url_in_output),
         ("shard step: no URL -> generic hint", test_shard_step_no_url_in_output),
