@@ -82,6 +82,8 @@ _canonical_root_from_common_dir = post_tool_use._canonical_root_from_common_dir
 load_config = post_tool_use.load_config
 is_issue_create_command = post_tool_use.is_issue_create_command
 is_pr_create_command = post_tool_use.is_pr_create_command
+extract_repo_flag = post_tool_use.extract_repo_flag
+_sibling_repo_config = post_tool_use._sibling_repo_config
 _parse_live_options = post_tool_use._parse_live_options
 _resolve_required_fields = post_tool_use._resolve_required_fields
 fetch_live_required_field_options = post_tool_use.fetch_live_required_field_options
@@ -221,6 +223,125 @@ def test_load_config_falls_back_to_canonical() -> str:
         assert cfg is not None, "worktree cwd must fall back to canonical config"
         assert cfg.get("project_number") == "3", f"got {cfg!r}"
     return "worktree-local config absent -> canonical checkout config used (the #378 fix)"
+
+
+# --- _sibling_repo_config / load_config cross-repo resolution (dev-env#542) ---
+#
+# The bug: `gh issue create --repo <other-repo>` filed from a session whose
+# cwd belongs to a DIFFERENT, unconfigured project silently no-oped -- twice
+# in one day (dev-env#532, #537) -- because load_config(cwd) only ever
+# resolved from the session's own cwd/worktree lineage, never from the
+# command's --repo flag. These tests pin the fix: a sibling checkout under
+# the same parent directory is used, but only when it independently
+# self-identifies as the target repo -- never a directory-name guess alone.
+
+
+def test_sibling_repo_config_matches() -> str:
+    with tempfile.TemporaryDirectory() as parent:
+        own_root = os.path.join(parent, "career-playbook")
+        sibling_root = os.path.join(parent, "dev-env")
+        os.makedirs(own_root)
+        sib_cfg_dir = os.path.join(sibling_root, ".claude")
+        os.makedirs(sib_cfg_dir)
+        with open(os.path.join(sib_cfg_dir, "hook-config.json"), "w", encoding="utf-8") as f:
+            json.dump({"repo": "brownm09/dev-env", "project_number": "3"}, f)
+        cfg = _sibling_repo_config(own_root, "brownm09/dev-env")
+        assert cfg is not None and cfg.get("project_number") == "3", f"got {cfg!r}"
+    return "sibling checkout with matching repo field -> its config is used"
+
+
+def test_sibling_repo_config_name_mismatch_ignored() -> str:
+    with tempfile.TemporaryDirectory() as parent:
+        own_root = os.path.join(parent, "career-playbook")
+        sibling_root = os.path.join(parent, "dev-env")
+        os.makedirs(own_root)
+        sib_cfg_dir = os.path.join(sibling_root, ".claude")
+        os.makedirs(sib_cfg_dir)
+        # Directory is named "dev-env" but its own config self-identifies as a
+        # DIFFERENT repo -- must never be trusted on directory name alone.
+        with open(os.path.join(sib_cfg_dir, "hook-config.json"), "w", encoding="utf-8") as f:
+            json.dump({"repo": "someoneelse/dev-env-fork", "project_number": "1"}, f)
+        cfg = _sibling_repo_config(own_root, "brownm09/dev-env")
+        assert cfg is None, f"got {cfg!r}"
+    return "sibling directory name matches but its own repo field doesn't -> None (never a directory-name guess)"
+
+
+def test_sibling_repo_config_no_sibling_dir() -> str:
+    with tempfile.TemporaryDirectory() as parent:
+        own_root = os.path.join(parent, "career-playbook")
+        os.makedirs(own_root)
+        cfg = _sibling_repo_config(own_root, "brownm09/dev-env")
+        assert cfg is None, f"got {cfg!r}"
+    return "no such sibling checkout on disk -> None"
+
+
+def test_sibling_repo_config_sibling_has_no_config() -> str:
+    with tempfile.TemporaryDirectory() as parent:
+        own_root = os.path.join(parent, "career-playbook")
+        sibling_root = os.path.join(parent, "dev-env")
+        os.makedirs(own_root)
+        os.makedirs(sibling_root)  # exists, but no .claude/hook-config.json
+        cfg = _sibling_repo_config(own_root, "brownm09/dev-env")
+        assert cfg is None, f"got {cfg!r}"
+    return "sibling checkout exists but has no hook-config.json -> None"
+
+
+def test_sibling_repo_config_self_reference_guarded() -> str:
+    with tempfile.TemporaryDirectory() as parent:
+        own_root = os.path.join(parent, "dev-env")
+        os.makedirs(own_root)
+        cfg = _sibling_repo_config(own_root, "brownm09/dev-env")
+        assert cfg is None, f"got {cfg!r}"
+    return "repo_flag's own name resolves back to own_root itself -> None (self-reference guard)"
+
+
+def test_load_config_cross_repo_resolves_sibling() -> str:
+    # The dev-env#542 regression, end-to-end: `gh issue create --repo
+    # brownm09/dev-env` run from a career-playbook cwd (no hook-config.json
+    # of its own) must resolve dev-env's sibling config instead of silently
+    # returning None.
+    with tempfile.TemporaryDirectory() as parent:
+        own_root = os.path.join(parent, "career-playbook")
+        sibling_root = os.path.join(parent, "dev-env")
+        os.makedirs(own_root)  # career-playbook has no .claude/hook-config.json
+        sib_cfg_dir = os.path.join(sibling_root, ".claude")
+        os.makedirs(sib_cfg_dir)
+        with open(os.path.join(sib_cfg_dir, "hook-config.json"), "w", encoding="utf-8") as f:
+            json.dump({"repo": "brownm09/dev-env", "project_number": "3"}, f)
+        command = 'gh issue create --repo brownm09/dev-env --title "x" --body-file /tmp/f.md'
+        cfg = load_config(own_root, command)
+        assert cfg is not None and cfg.get("project_number") == "3", f"got {cfg!r}"
+    return "gh issue create --repo <sibling> from an unconfigured cwd -> sibling's config resolved (dev-env#542 fix)"
+
+
+def test_load_config_cross_repo_no_flag_stays_none() -> str:
+    # No --repo flag at all: gh itself would infer the repo from cwd, so no
+    # cross-repo attempt should be made -- behavior must stay exactly as
+    # silent as before this fix.
+    with tempfile.TemporaryDirectory() as parent:
+        own_root = os.path.join(parent, "career-playbook")
+        os.makedirs(own_root)
+        sib_cfg_dir = os.path.join(parent, "dev-env", ".claude")
+        os.makedirs(sib_cfg_dir)
+        with open(os.path.join(sib_cfg_dir, "hook-config.json"), "w", encoding="utf-8") as f:
+            json.dump({"repo": "brownm09/dev-env", "project_number": "3"}, f)
+        cfg = load_config(own_root, 'gh issue create --title "x"')
+        assert cfg is None, f"got {cfg!r}"
+    return "bare gh issue create with no --repo flag -> no cross-repo attempt, None unchanged"
+
+
+def test_load_config_cross_repo_case_insensitive_match() -> str:
+    with tempfile.TemporaryDirectory() as parent:
+        own_root = os.path.join(parent, "career-playbook")
+        sibling_root = os.path.join(parent, "dev-env")
+        os.makedirs(own_root)
+        sib_cfg_dir = os.path.join(sibling_root, ".claude")
+        os.makedirs(sib_cfg_dir)
+        with open(os.path.join(sib_cfg_dir, "hook-config.json"), "w", encoding="utf-8") as f:
+            json.dump({"repo": "BrownM09/Dev-Env", "project_number": "3"}, f)
+        cfg = load_config(own_root, "gh issue create --repo brownm09/dev-env --title x")
+        assert cfg is not None and cfg.get("project_number") == "3", f"got {cfg!r}"
+    return "repo field comparison is case-insensitive"
 
 
 # --- pure resolver behind canonical_root_via_git (the sibling git fallback) ---
@@ -392,6 +513,51 @@ def test_issue_create_in_subshell_not_matched() -> str:
 def test_pr_create_in_double_quotes_not_matched() -> str:
     assert not is_pr_create_command('echo "gh pr create --fill"')
     return "gh pr create inside double quotes -> no match"
+
+
+# ---------------------------------------------------------------------------
+# extract_repo_flag (dev-env#542) -- feeds load_config's cross-repo
+# resolution. Shares is_issue_create_command's top-level-statement scoping:
+# only the segment that itself matched the create predicate is searched.
+# ---------------------------------------------------------------------------
+
+
+def test_extract_repo_flag_simple() -> str:
+    cmd = 'gh issue create --repo brownm09/dev-env --title "x" --body-file /tmp/f.md'
+    assert extract_repo_flag(cmd) == "brownm09/dev-env"
+    return "--repo <owner/name> extracted from a top-level gh issue create"
+
+
+def test_extract_repo_flag_short_flag() -> str:
+    assert extract_repo_flag("gh pr create -R brownm09/dev-env --fill") == "brownm09/dev-env"
+    return "-R short flag extracted from a top-level gh pr create"
+
+
+def test_extract_repo_flag_equals_form() -> str:
+    got = extract_repo_flag("gh issue create --repo=brownm09/dev-env --title x")
+    assert got == "brownm09/dev-env", f"got {got!r}"
+    return "--repo=<owner/name> equals-form extracted"
+
+
+def test_extract_repo_flag_absent() -> str:
+    assert extract_repo_flag('gh issue create --title "x"') is None
+    return "no --repo/-R flag -> None (bare command, repo inferred from cwd by gh itself)"
+
+
+def test_extract_repo_flag_not_a_create_command() -> str:
+    # --repo is valid gh syntax on other subcommands too; must not match --
+    # extract_repo_flag only looks inside a genuine issue/pr create statement.
+    assert extract_repo_flag("gh issue list --repo brownm09/dev-env") is None
+    return "--repo on a non-create gh subcommand -> None"
+
+
+def test_extract_repo_flag_other_segment_not_leaked() -> str:
+    # A --repo occurrence on an earlier, unrelated top-level statement must
+    # not leak into the (flagless) create statement's extraction -- mirrors
+    # dev-env#499's top-level-scoping discipline for the new helper.
+    cmd = 'gh issue list --repo brownm09/other-repo && gh issue create --title "x"'
+    assert extract_repo_flag(cmd) is None
+    return "--repo on an earlier unrelated top-level statement -> not leaked into the create statement"
 
 
 # ---------------------------------------------------------------------------
@@ -646,6 +812,14 @@ def main() -> int:
         ("canonical root from POSIX worktree", test_canonical_root_posix),
         ("empty/None cwd -> no canonical root", test_canonical_root_empty_and_none),
         ("load_config falls back to canonical config (#378)", test_load_config_falls_back_to_canonical),
+        ("sibling repo config: matching repo field used (#542)", test_sibling_repo_config_matches),
+        ("sibling repo config: name match alone is not trusted (#542)", test_sibling_repo_config_name_mismatch_ignored),
+        ("sibling repo config: no sibling checkout -> None (#542)", test_sibling_repo_config_no_sibling_dir),
+        ("sibling repo config: sibling has no config -> None (#542)", test_sibling_repo_config_sibling_has_no_config),
+        ("sibling repo config: self-reference guarded (#542)", test_sibling_repo_config_self_reference_guarded),
+        ("load_config: cross-repo --repo resolves sibling config (#542)", test_load_config_cross_repo_resolves_sibling),
+        ("load_config: no --repo flag -> no cross-repo attempt (#542)", test_load_config_cross_repo_no_flag_stays_none),
+        ("load_config: cross-repo match is case-insensitive (#542)", test_load_config_cross_repo_case_insensitive_match),
         ("git common-dir: relative .git -> cwd", test_common_dir_relative),
         ("git common-dir: absolute <root>/.git -> root", test_common_dir_absolute_sibling),
         ("git common-dir: stdout whitespace stripped", test_common_dir_strips_whitespace),
@@ -668,6 +842,12 @@ def main() -> int:
         ("pr-create in $() subshell -> no match", test_pr_create_in_subshell_not_matched),
         ("issue-create in $() subshell -> no match", test_issue_create_in_subshell_not_matched),
         ("pr-create in double quotes -> no match", test_pr_create_in_double_quotes_not_matched),
+        ("extract_repo_flag: --repo extracted from top-level create (#542)", test_extract_repo_flag_simple),
+        ("extract_repo_flag: -R short flag extracted (#542)", test_extract_repo_flag_short_flag),
+        ("extract_repo_flag: --repo=value equals-form extracted (#542)", test_extract_repo_flag_equals_form),
+        ("extract_repo_flag: no flag -> None (#542)", test_extract_repo_flag_absent),
+        ("extract_repo_flag: non-create gh subcommand -> None (#542)", test_extract_repo_flag_not_a_create_command),
+        ("extract_repo_flag: unrelated earlier segment not leaked (#542)", test_extract_repo_flag_other_segment_not_leaked),
         ("main(): exitCode!=0 short-circuits even when create detected", test_main_exit_code_nonzero_short_circuits_even_when_create_detected),
         ("main(): exitCode==0 proceeds to no-URL advisory", test_main_exit_code_zero_proceeds_past_gate_to_no_url_advisory),
         ("parse live options: valid response", test_parse_live_options_valid),
