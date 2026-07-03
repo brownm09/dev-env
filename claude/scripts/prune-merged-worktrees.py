@@ -14,7 +14,10 @@ the normal merged-branch path once it is idle and clean.
 
 Safe: skips the current worktree, dirty worktrees, live-session worktrees (ADR-051), and
       any non-claude/* branch (unless that branch is main, which is parked off — main
-      cannot have unmerged work by definition). Also treats a branch as merged if its
+      cannot have unmerged work by definition) unless --include-named is passed, in which
+      case a non-claude/* branch falls through to the same merged/dirty/liveness checks
+      instead of being unconditionally skipped (ADR-078; off by default, zero behavior
+      change for existing callers). Also treats a branch as merged if its
       entire diff vs. origin/main matches a per-repo opt-in prune_ephemeral_patterns
       config (see .claude/hook-config.json; ADR-075) — an additional signal that stays
       off unless a repo explicitly configures it.
@@ -35,6 +38,15 @@ Usage:
   --liveness-window-min N
                Skip any worktree whose Claude transcript was written within the last N
                minutes (an active session). Defaults to 1440 (24h). See ADR-051.
+  --include-named
+               Opt-in. Off by default (zero behavior change for existing callers). When
+               passed, a worktree whose branch does NOT start with claude/ is no longer
+               unconditionally skipped by the prefix guard -- it instead falls through to
+               the SAME is_merged() / ephemeral-diff / is_dirty() checks claude/* branches
+               already go through, and is pruned the same way (git worktree remove + git
+               branch -d) if they pass. Every other protection (primary/cwd skip, live-session
+               skip, main-squatter parking) still runs first, unconditionally, for named
+               branches too. See ADR-078.
 
 Per-repo opt-in config (.claude/hook-config.json):
   "prune_ephemeral_patterns": [<regex strings>]
@@ -95,6 +107,10 @@ def _liveness_window_seconds_from_args() -> int:
         return parse_liveness_window_seconds(sys.argv[1:], LIVENESS_WINDOW_SECONDS)
     except ValueError as exc:
         sys.exit(str(exc))
+
+
+def _include_named_from_args() -> bool:
+    return "--include-named" in sys.argv[1:]
 
 
 def run(args: list[str], cwd: str, check: bool = False, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -210,8 +226,17 @@ def primary_worktree_path(worktrees: list[dict]) -> str:
     return str(Path(worktrees[0]["path"]).resolve()) if worktrees else ""
 
 
-def prune_one(repo: str, dry_run: bool, liveness_window_seconds: int) -> tuple[int, int, bool]:
-    """Prune merged claude/* worktrees in a single repo. Returns (pruned, skipped, fetch_failed)."""
+def prune_one(
+    repo: str, dry_run: bool, liveness_window_seconds: int, include_named: bool = False
+) -> tuple[int, int, bool]:
+    """Prune merged claude/* worktrees in a single repo. Returns (pruned, skipped, fetch_failed).
+
+    include_named (opt-in, default False): when True, a worktree whose branch does not start
+    with BRANCH_PREFIX is no longer unconditionally skipped by the prefix guard below -- it
+    falls through to the same is_merged()/ephemeral-diff/is_dirty() checks claude/* branches
+    already go through. Default False preserves the exact pre-existing behavior for every
+    caller that doesn't pass --include-named. See ADR-078.
+    """
     try:
         gh_repo = detect_gh_repo(repo)
     except RuntimeError as exc:
@@ -292,7 +317,7 @@ def prune_one(repo: str, dry_run: bool, liveness_window_seconds: int) -> tuple[i
             print(f"  parked off main: {path} ({park}) — freed the main ref")
             continue
 
-        if not branch.startswith(BRANCH_PREFIX):
+        if not branch.startswith(BRANCH_PREFIX) and not include_named:
             skipped.append((path, f"branch '{branch}' not in {BRANCH_PREFIX}* prefix"))
             continue
 
@@ -344,6 +369,7 @@ def main() -> None:
     dry_run = "--dry-run" in sys.argv
     scan_dir = _scan_dir_from_args()
     liveness_window_seconds = _liveness_window_seconds_from_args()
+    include_named = _include_named_from_args()
 
     if dry_run:
         print("[dry-run] no changes will be made")
@@ -357,7 +383,7 @@ def main() -> None:
         total_pruned = total_skipped = 0
         fetch_failed_repos: list[str] = []
         for repo in repos:
-            p, s, ff = prune_one(repo, dry_run, liveness_window_seconds)
+            p, s, ff = prune_one(repo, dry_run, liveness_window_seconds, include_named)
             total_pruned += p
             total_skipped += s
             if ff:
@@ -368,7 +394,7 @@ def main() -> None:
         print(summary)
     else:
         repo = _repo_from_args()
-        prune_one(repo, dry_run, liveness_window_seconds)
+        prune_one(repo, dry_run, liveness_window_seconds, include_named)
 
 
 if __name__ == "__main__":

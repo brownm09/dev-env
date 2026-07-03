@@ -386,7 +386,12 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `PermissionError` — a review finding, since the original code only caught `FileNotFoundError`
     and an uncaught exception here would abort every remaining repo in a `--scan-dir` run), missing
     key, malformed JSON, a non-list value, a non-string element, or an invalid regex — the last
-    case also prints a `WARNING:` line, captured via `redirect_stdout`). The
+    case also prints a `WARNING:` line, captured via `redirect_stdout`). Also exercises the
+    ADR-078 `--include-named` opt-in via `prune_one()`'s `include_named` parameter: a merged,
+    clean, non-`claude/*` branch worktree is skipped via the unchanged prefix-guard reason when
+    `include_named=False` (the default — regression proof), and pruned via the exact same
+    `is_merged()`/`is_dirty()` path `claude/*` branches already use when `include_named=True`
+    ([dev-env#545](https://github.com/brownm09/dev-env/issues/545)). The
     merge-detection and worktree-list steps are not covered here — they are exercised end-to-end by
     `--dry-run` in the PR.
 
