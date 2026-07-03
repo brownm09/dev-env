@@ -82,3 +82,54 @@ Auto-merge must never be enabled at the repo level (no default branch protection
 - [ADR-028 — All-Findings Merge Gate](028-all-findings-merge-gate.md)
 - GitHub Docs — [Automatically merging a pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request)
 - GitHub Docs — [Managing auto-merge for pull requests in your repository](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-auto-merge-for-pull-requests-in-your-repository)
+
+---
+
+## Addendum (2026-07-03) — the repo-level toggle and the escape hatch are the same switch
+
+The Decision above treats "auto-merge disabled at the repo level" and the "per-PR escape hatch"
+(`gh pr merge --auto`) as independent controls. They are not: GitHub exposes exactly one
+repo-level control for this feature — **Settings → General → Pull Requests → "Allow auto-merge"**
+(API field `allow_auto_merge`) — and it gates *every* per-PR auto-merge request, CLI escape hatch
+included. Per GitHub's docs:
+
+> "If you allow auto-merge for pull requests in your repository, people with write permissions
+> can configure individual pull requests in the repository to merge automatically when all merge
+> requirements are met."
+
+There is no separate "auto-merge everything by default" branch-protection mechanism distinct from
+this toggle — auto-merge is always requested per-PR (via the web UI or `--auto`), and this one
+setting is the only gate on that request. So the Decision's parenthetical ("no default branch
+protection rule that auto-merges on green CI") was guarding against a mechanism GitHub doesn't
+actually have; the real, single toggle also happens to be the escape hatch's prerequisite.
+
+**Observed:** lifting-logbook PR #664 (2026-07-03) — `gh pr merge 664 --squash --delete-branch
+--auto` failed immediately with `GraphQL: Auto merge is not allowed for this repository
+(enablePullRequestAutoMerge)`. `gh api repos/brownm09/lifting-logbook` confirmed
+`allow_auto_merge: false` at the repo-settings level. This is the deterministic, expected result
+of the Decision as literally written — not a bug — but the ADR never previously said so, so a
+session hitting this error had no way to tell from this document alone.
+
+**Consequence the Decision didn't spell out:** with the toggle off, the "Per-PR escape hatch"
+clause describes an operation that cannot be invoked in that repo, full stop — it fails at the
+GitHub API before any in-session judgment about whether the gates have passed even comes into
+play. No `brownm09/*` repo has deliberately opted in, so treat the escape hatch as **currently
+inert everywhere**, not as a case-by-case convenience.
+
+**Operational guidance:** don't rediscover this per-PR.
+
+- The primary path — wait in-session for CI, then run plain `gh pr merge --squash
+  --delete-branch` — is the only path that works today, not merely the preferred one. Plain
+  `gh pr merge` still requires all required status checks to have already completed and passed
+  (GitHub rejects the merge call otherwise), so the session's job is to poll/wait for checks
+  (e.g. `gh pr checks --watch`), not to reach for `--auto` as a way to avoid waiting.
+- To confirm the setting before ever attempting `--auto` on an unfamiliar repo:
+  `gh api repos/{owner}/{repo}` and read the `allow_auto_merge` field (parse with `node -e`, not
+  `jq` — see `claude/CLAUDE.md`).
+
+**Open question, not resolved here:** enabling `allow_auto_merge` at the repo level does not, by
+itself, cause any PR to merge — it only unlocks the per-PR opt-in request the Decision already
+sanctions as the escape hatch. Whether "must never be enabled at the repo level" was meant to
+block that too, or was written assuming the non-existent "auto-merge everything by default"
+mechanism addressed above, is a policy question left for whoever revisits this ADR next. This
+addendum documents the mechanical reality and leaves the Decision's toggle instruction unchanged.
