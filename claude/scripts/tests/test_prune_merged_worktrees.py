@@ -13,6 +13,13 @@ missing key, malformed JSON, non-list value, non-string element, or an invalid r
 the last case also prints a WARNING: line, captured via redirect_stdout). diff_files()
 and the prune_one() integration point are not covered here — see "Scope note" below.
 
+Also covers the ADR-078 --include-named opt-in (dev-env#545) via prune_one()'s
+include_named parameter, using the same subprocess-mocking style as the TimeoutExpired
+case below: a merged, clean, non-claude/* branch worktree is skipped via the prefix-guard
+reason when include_named=False (the default; regression proof of unchanged behavior),
+and pruned via the exact same is_merged()/is_dirty() path claude/* branches already use
+when include_named=True.
+
 Pure-helper tests follow the pattern of test_reclaim_worktree_disk.py and
 test_worktree_topology.py; the load_ephemeral_patterns tests use a real
 tempfile.TemporaryDirectory() rather than mocking open(), matching this codebase's
@@ -65,6 +72,19 @@ _PORCELAIN = (
     "\n"
 )
 
+# Fake worktree porcelain: one primary on main, one merged NAMED (non-claude/*) branch.
+# Used to prove --include-named's opt-in behavior (dev-env#545, ADR-078).
+_PORCELAIN_NAMED = (
+    "worktree /FAKE_PRIMARY_PRUNE_NAMED_9a7\n"
+    "HEAD abc123\n"
+    "branch refs/heads/main\n"
+    "\n"
+    "worktree /FAKE_WORKTREE_PRUNE_NAMED_9a7\n"
+    "HEAD 789abc\n"
+    "branch refs/heads/feat/some-feature\n"
+    "\n"
+)
+
 
 def _ok(stdout=""):
     return types.SimpleNamespace(returncode=0, stdout=stdout, stderr="")
@@ -85,6 +105,71 @@ def _dispatch(args, **_kwargs):
     if args[1:3] == ["worktree", "remove"]:  # the slow operation → timeout
         raise subprocess.TimeoutExpired(cmd=args, timeout=300)
     return _ok()
+
+
+def _dispatch_named(args, **_kwargs):
+    """Like _dispatch, but serves _PORCELAIN_NAMED (a merged, clean, non-claude/* branch)
+    and never times out -- worktree remove succeeds so a full prune can be observed.
+    """
+    if args[1:2] == ["remote"]:              # git remote get-url origin
+        return _ok("git@github.com:brownm09/dev-env.git\n")
+    if args[1:3] == ["fetch", "origin"]:     # git fetch
+        return _ok()
+    if args[1:3] == ["worktree", "list"]:    # git worktree list --porcelain
+        return _ok(_PORCELAIN_NAMED)
+    if args[1:3] == ["status", "--porcelain"]:  # is_dirty → not dirty
+        return _ok("")
+    if args[1:3] == ["merge-base"]:          # is_merged → merged (returncode 0)
+        return _ok()
+    if args[1:3] == ["worktree", "remove"]:  # succeeds (no timeout here)
+        return _ok()
+    if args[1:3] == ["branch", "-d"]:        # git branch -d <branch>
+        return _ok()
+    return _ok()
+
+
+def test_named_branch_skipped_by_default() -> str:
+    """--include-named unset (default False): a merged, clean, non-claude/* branch worktree
+    is still skipped via the prefix-guard reason -- regression proof that default behavior
+    is unchanged (dev-env#545, ADR-078).
+    """
+    with unittest.mock.patch("subprocess.run", side_effect=_dispatch_named):
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                    repo="/FAKE_REPO_NAMED",
+                    dry_run=False,
+                    liveness_window_seconds=86400,
+                    include_named=False,
+                )
+
+    assert pruned_count == 0, f"expected 0 pruned (default unchanged), got {pruned_count}"
+    # skipped = [primary (always), named-branch (prefix guard)]
+    assert skipped_count == 2, f"expected 2 skipped (primary + prefix-guard), got {skipped_count}"
+    assert not fetch_failed, "fetch should not be marked failed"
+    return "include_named=False (default): named branch skipped via prefix-guard reason, pruned=0"
+
+
+def test_named_branch_pruned_with_include_named() -> str:
+    """--include-named set: the SAME merged, clean, non-claude/* branch worktree that the
+    prior test proved is skipped by default now falls through to the same
+    is_merged()/is_dirty() checks claude/* branches use, and is pruned (dev-env#545, ADR-078).
+    """
+    with unittest.mock.patch("subprocess.run", side_effect=_dispatch_named):
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                    repo="/FAKE_REPO_NAMED",
+                    dry_run=False,
+                    liveness_window_seconds=86400,
+                    include_named=True,
+                )
+
+    assert pruned_count == 1, f"expected 1 pruned (named branch now eligible), got {pruned_count}"
+    # skipped = [primary (always)] only
+    assert skipped_count == 1, f"expected 1 skipped (primary only), got {skipped_count}"
+    assert not fetch_failed, "fetch should not be marked failed"
+    return "include_named=True: named branch falls through to merged/dirty checks, pruned=1"
 
 
 def test_timeout_skips_worktree_and_continues() -> str:
@@ -226,6 +311,8 @@ def test_load_ephemeral_patterns_empty_list_behaves_as_absent() -> str:
 
 def main() -> int:
     tests = [
+        ("--include-named unset: named branch still skipped (default unchanged)", test_named_branch_skipped_by_default),
+        ("--include-named set: named branch now pruned", test_named_branch_pruned_with_include_named),
         ("git worktree remove timeout: skip-and-continue, not abort", test_timeout_skips_worktree_and_continues),
         ("files_are_all_ephemeral: all files match", test_files_are_all_ephemeral_matches),
         ("files_are_all_ephemeral: one mismatch -> False", test_files_are_all_ephemeral_one_mismatch),
