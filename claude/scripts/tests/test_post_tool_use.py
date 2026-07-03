@@ -84,6 +84,7 @@ is_issue_create_command = post_tool_use.is_issue_create_command
 is_pr_create_command = post_tool_use.is_pr_create_command
 extract_repo_flag = post_tool_use.extract_repo_flag
 _sibling_repo_config = post_tool_use._sibling_repo_config
+_read_config = post_tool_use._read_config
 _parse_live_options = post_tool_use._parse_live_options
 _resolve_required_fields = post_tool_use._resolve_required_fields
 fetch_live_required_field_options = post_tool_use.fetch_live_required_field_options
@@ -342,6 +343,86 @@ def test_load_config_cross_repo_case_insensitive_match() -> str:
         cfg = load_config(own_root, "gh issue create --repo brownm09/dev-env --title x")
         assert cfg is not None and cfg.get("project_number") == "3", f"got {cfg!r}"
     return "repo field comparison is case-insensitive"
+
+
+# --- /review (PR #544) follow-up fixes: robustness + URL-form --repo ---
+
+
+def test_read_config_non_dict_json_is_none() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "hook-config.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(["not", "a", "dict"], f)
+        assert _read_config(path) is None
+    return "valid JSON that isn't a dict -> None, not an AttributeError later (dev-env#544 review)"
+
+
+def test_read_config_malformed_path_is_none() -> str:
+    # A null byte in a path raises ValueError from open() on every platform --
+    # a portable stand-in for the Windows-reserved-character crash a
+    # misparsed extract_repo_flag value could produce (dev-env#544 review).
+    assert _read_config("bad\x00path/hook-config.json") is None
+    return "path with an embedded null byte -> None, not an unhandled ValueError"
+
+
+def test_load_config_cross_repo_misparsed_repo_flag_degrades_safely() -> str:
+    # dev-env#544 review repro: a quoted --title containing literal "-R
+    # foo:bar" text ahead of the real --repo flag makes extract_repo_flag
+    # capture the invalid-as-a-path value "foo:bar" (':' is a Windows-reserved
+    # filename character). Before the _read_config hardening, opening that
+    # derived path raised OSError instead of returning None -- verified
+    # against the pre-fix code. Must degrade to None per extract_repo_flag's
+    # own documented contract, not crash.
+    with tempfile.TemporaryDirectory() as parent:
+        own_root = os.path.join(parent, "career-playbook")
+        os.makedirs(own_root)
+        command = 'gh issue create --title "use -R foo:bar to target" --repo owner/name'
+        cfg = load_config(own_root, command)
+        assert cfg is None, f"got {cfg!r}"
+    return "misparsed --repo value with reserved path characters -> None, not a crash (dev-env#544 review)"
+
+
+def test_sibling_repo_config_trailing_separator_own_root() -> str:
+    with tempfile.TemporaryDirectory() as parent:
+        own_root = os.path.join(parent, "career-playbook") + os.sep  # trailing separator
+        sibling_root = os.path.join(parent, "dev-env")
+        os.makedirs(os.path.join(parent, "career-playbook"))
+        sib_cfg_dir = os.path.join(sibling_root, ".claude")
+        os.makedirs(sib_cfg_dir)
+        with open(os.path.join(sib_cfg_dir, "hook-config.json"), "w", encoding="utf-8") as f:
+            json.dump({"repo": "brownm09/dev-env", "project_number": "3"}, f)
+        cfg = _sibling_repo_config(own_root, "brownm09/dev-env")
+        assert cfg is not None and cfg.get("project_number") == "3", f"got {cfg!r}"
+    return "own_root with a trailing separator still resolves the correct sibling (dev-env#544 review)"
+
+
+def test_extract_repo_flag_url_form() -> str:
+    cmd = "gh issue create --repo https://github.com/brownm09/dev-env --title x"
+    got = extract_repo_flag(cmd)
+    assert got == "brownm09/dev-env", f"got {got!r}"
+    return "full https://github.com/owner/name URL form normalized to owner/name (dev-env#544 review)"
+
+
+def test_extract_repo_flag_host_prefixed_form() -> str:
+    cmd = "gh issue create --repo github.com/brownm09/dev-env --title x"
+    got = extract_repo_flag(cmd)
+    assert got == "brownm09/dev-env", f"got {got!r}"
+    return "bare github.com/owner/name host-prefixed form normalized to owner/name (dev-env#544 review)"
+
+
+def test_load_config_cross_repo_url_form_resolves() -> str:
+    with tempfile.TemporaryDirectory() as parent:
+        own_root = os.path.join(parent, "career-playbook")
+        sibling_root = os.path.join(parent, "dev-env")
+        os.makedirs(own_root)
+        sib_cfg_dir = os.path.join(sibling_root, ".claude")
+        os.makedirs(sib_cfg_dir)
+        with open(os.path.join(sib_cfg_dir, "hook-config.json"), "w", encoding="utf-8") as f:
+            json.dump({"repo": "brownm09/dev-env", "project_number": "3"}, f)
+        command = "gh issue create --repo https://github.com/brownm09/dev-env --title x"
+        cfg = load_config(own_root, command)
+        assert cfg is not None and cfg.get("project_number") == "3", f"got {cfg!r}"
+    return "URL-form --repo resolves the sibling config end-to-end (dev-env#544 review)"
 
 
 # --- pure resolver behind canonical_root_via_git (the sibling git fallback) ---
@@ -820,6 +901,13 @@ def main() -> int:
         ("load_config: cross-repo --repo resolves sibling config (#542)", test_load_config_cross_repo_resolves_sibling),
         ("load_config: no --repo flag -> no cross-repo attempt (#542)", test_load_config_cross_repo_no_flag_stays_none),
         ("load_config: cross-repo match is case-insensitive (#542)", test_load_config_cross_repo_case_insensitive_match),
+        ("_read_config: non-dict JSON -> None (#544 review)", test_read_config_non_dict_json_is_none),
+        ("_read_config: malformed path -> None, not a raise (#544 review)", test_read_config_malformed_path_is_none),
+        ("load_config: misparsed --repo value degrades safely (#544 review)", test_load_config_cross_repo_misparsed_repo_flag_degrades_safely),
+        ("sibling repo config: trailing separator on own_root (#544 review)", test_sibling_repo_config_trailing_separator_own_root),
+        ("extract_repo_flag: URL-form --repo normalized (#544 review)", test_extract_repo_flag_url_form),
+        ("extract_repo_flag: host-prefixed --repo normalized (#544 review)", test_extract_repo_flag_host_prefixed_form),
+        ("load_config: URL-form --repo resolves sibling (#544 review)", test_load_config_cross_repo_url_form_resolves),
         ("git common-dir: relative .git -> cwd", test_common_dir_relative),
         ("git common-dir: absolute <root>/.git -> root", test_common_dir_absolute_sibling),
         ("git common-dir: stdout whitespace stripped", test_common_dir_strips_whitespace),

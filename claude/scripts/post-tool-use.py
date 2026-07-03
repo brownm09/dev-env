@@ -98,10 +98,17 @@ def is_pr_create_command(command: str) -> bool:
 
 _REPO_FLAG_RE = re.compile(r"(?:--repo|-R)[\s=]+(\"[^\"]+\"|'[^']+'|\S+)")
 
+# `gh --repo` also accepts a full URL or a bare host-prefixed form
+# (https://cli.github.com/manual/gh#--repo-string) -- normalize both down to
+# `owner/name` so _sibling_repo_config's exact-string comparison against a
+# sibling config's own canonical `repo` field still matches (dev-env#544 review).
+_REPO_HOST_PREFIX_RE = re.compile(r"^(?:https?://)?(?:www\.)?github\.com/", re.IGNORECASE)
+
 
 def extract_repo_flag(command: str) -> str | None:
     """Return the `--repo`/`-R` value from *command*'s top-level `gh issue
-    create` / `gh pr create` statement, or None if absent (dev-env#542).
+    create` / `gh pr create` statement, normalized to `owner/name`, or None
+    if absent (dev-env#542).
 
     Only scans the statement segment that itself matched
     `_check_issue_create_stmt` / `_check_pr_create_stmt` -- never a heredoc
@@ -112,14 +119,17 @@ def extract_repo_flag(command: str) -> str | None:
     real flag could match the wrong occurrence. Conservative by design, same
     trade-off as effective_merge_dir in _hookio.py -- the caller
     (_sibling_repo_config) only ever trusts an extracted value that a real
-    sibling checkout's own hook-config.json independently confirms, so a
-    misparse here degrades to today's silent skip, never a wrong add.
+    sibling checkout's own hook-config.json independently confirms (and
+    _read_config never raises on a malformed derived path -- dev-env#544
+    review), so a misparse here degrades to today's silent skip, never a
+    wrong add or a crash.
     """
     for segment in split_top_level(command):
         if _check_issue_create_stmt(segment) or _check_pr_create_stmt(segment):
             m = _REPO_FLAG_RE.search(segment)
             if m:
-                return m.group(1).strip("\"'")
+                value = m.group(1).strip("\"'")
+                return _REPO_HOST_PREFIX_RE.sub("", value).rstrip("/")
     return None
 
 
@@ -161,11 +171,18 @@ def canonical_root_via_git(cwd: str) -> str | None:
 
 
 def _read_config(path: str) -> dict | None:
+    """Load and parse *path* as JSON, or None on any failure to do so --
+    missing file, a malformed path (reserved characters, a null byte -- can
+    reach here via _sibling_repo_config's best-effort *name* derivation,
+    dev-env#544 review), or valid JSON that isn't a dict. `OSError` subsumes
+    `FileNotFoundError`; `ValueError` subsumes `json.JSONDecodeError` -- both
+    listed for clarity. Never raises."""
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+            data = json.load(f)
+    except (OSError, ValueError):
         return None
+    return data if isinstance(data, dict) else None
 
 
 def _sibling_repo_config(own_root: str, repo_flag: str) -> dict | None:
@@ -188,8 +205,13 @@ def _sibling_repo_config(own_root: str, repo_flag: str) -> dict | None:
     name = repo_flag.rsplit("/", 1)[-1]
     if not name or not own_root:
         return None
+    # own_root can be the raw, unnormalized cwd (the `root or cwd` fallback in
+    # load_config, when canonical_root_via_git failed) -- a trailing separator
+    # there makes os.path.dirname return own_root itself instead of its
+    # parent, silently searching one level too deep (dev-env#544 review).
+    own_root = os.path.normpath(own_root)
     sibling_root = os.path.join(os.path.dirname(own_root), name)
-    if os.path.normpath(sibling_root) == os.path.normpath(own_root):
+    if os.path.normpath(sibling_root) == own_root:
         return None
     cfg = _read_config(os.path.join(sibling_root, CONFIG_FILE))
     if cfg is None:
@@ -236,9 +258,12 @@ def load_config(cwd: str, command: str | None = None) -> dict | None:
         cfg = _read_config(os.path.join(root, CONFIG_FILE))
         if cfg is not None:
             return cfg
-    # Cross-repo (dev-env#542): the gh command names an explicit --repo/-R
-    # target different from this session's own repo. Look for it as a
-    # sibling checkout -- see _sibling_repo_config.
+    # Cross-repo (dev-env#542): only reached when this session's own cwd (and
+    # its worktree/sibling-worktree fallbacks) resolved NO config above -- a
+    # session whose cwd already has its own hook-config.json keeps that one
+    # and never attempts this branch (dev-env#544 review). The gh command
+    # names an explicit --repo/-R target different from this session's own
+    # repo; look for it as a sibling checkout -- see _sibling_repo_config.
     if command:
         repo_flag = extract_repo_flag(command)
         if repo_flag:
