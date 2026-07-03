@@ -8,6 +8,16 @@ payload), so it was a no-op — a failed push could still arm the reminder. The
 guard is now the pure `has_push_error()` predicate fed by the shared
 `read_command_output` helper, exercised offline here.
 
+dev-env#532 (ADR-050 Amendment 10) converged the "is this a git push?" check
+itself from a raw `"git push" not in command` substring test onto a new pure
+`is_git_push_command()` predicate, built on the same `scan_top_level` engine
+already used by usage-snapshot.py / pr-merge-reminder.py /
+post-pr-merge-project.py / post-merge-tile-checkpoint.py /
+post-pr-merge-pull.py / post-pr-merge-reclaim.py (dev-env#529, ADR-050
+Amendment 9). The three heredoc/quote/subshell tests below pin the
+false-positive shapes that substring test was blind to (dev-env#499's
+original repro class) but the anchored predicate correctly rejects.
+
 `most_recent_commit_has_stub` (a git call) is intentionally not tested.
 
 Usage:
@@ -33,6 +43,7 @@ assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 spar = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(spar)  # safe: main() is guarded by __main__
 has_push_error = spar.has_push_error
+is_git_push_command = spar.is_git_push_command
 
 
 def test_clean_push_no_error() -> str:
@@ -66,6 +77,47 @@ def test_empty_output_no_error() -> str:
     return "empty output -> no error"
 
 
+# ---------------------------------------------------------------------------
+# is_git_push_command — command-shape anchoring (dev-env#532, ADR-050 Amendment 10)
+#
+# Each command below contains the literal substring "git push" but not as a
+# genuine top-level invocation. The old crude `"git push" not in command`
+# substring test would have matched all three; the scan_top_level-anchored
+# predicate correctly rejects them.
+# ---------------------------------------------------------------------------
+
+def test_bare_push_matched() -> str:
+    assert is_git_push_command("git push -u origin draft/2026-06-21")
+    return "bare git push -> matched (sanity baseline)"
+
+
+def test_push_with_cd_prefix_matched() -> str:
+    assert is_git_push_command("cd /Git/engineering-journal && git push")
+    return "cd <dir> && git push -> matched (_PUSH_RE's optional cd-prefix branch)"
+
+
+def test_push_text_in_heredoc_body_not_matched() -> str:
+    command = "git commit -F - <<'EOF'\ngit push origin main\nEOF"
+    assert not is_git_push_command(command)
+    return "'git push' text inside a heredoc body -> no match (dev-env#532)"
+
+
+def test_push_text_inside_double_quotes_not_matched() -> str:
+    # The && inside the quoted commit message would, without quote-tracking,
+    # wrongly carve out a second top-level segment starting with "git push"
+    # -- the dev-env#499 false-positive class scan_top_level exists to
+    # prevent.
+    command = 'git commit -m "document the git push workflow && git push origin main"'
+    assert not is_git_push_command(command)
+    return "'git push' text inside a double-quoted commit message -> no match (dev-env#532)"
+
+
+def test_push_text_inside_subshell_not_matched() -> str:
+    command = "echo $(git log --oneline -1 && git push origin main)"
+    assert not is_git_push_command(command)
+    return "'git push' text inside a $() subshell -> no match (dev-env#532)"
+
+
 def main() -> int:
     tests = [
         ("clean push has no error", test_clean_push_no_error),
@@ -73,6 +125,11 @@ def main() -> int:
         ("git fatal: detected", test_git_fatal_detected),
         ("case-insensitive match", test_case_insensitive),
         ("empty output has no error", test_empty_output_no_error),
+        ("bare git push matched", test_bare_push_matched),
+        ("cd-prefixed git push matched", test_push_with_cd_prefix_matched),
+        ("'git push' text in heredoc body ignored (dev-env#532)", test_push_text_in_heredoc_body_not_matched),
+        ("'git push' text in double quotes ignored (dev-env#532)", test_push_text_inside_double_quotes_not_matched),
+        ("'git push' text in $() subshell ignored (dev-env#532)", test_push_text_inside_subshell_not_matched),
     ]
     failed = 0
     for name, fn in tests:

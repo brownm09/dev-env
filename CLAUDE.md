@@ -213,8 +213,13 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 16. **stub-push-archive-reminder test** — required when changing
     `claude/scripts/stub-push-archive-reminder.py`. Exercises the pure `has_push_error()` guard offline: a
     successful push output arms the archive reminder, while an `error:` / `fatal:` line (case-insensitive)
-    blocks it. The pre-#380 read of the legacy `output` field was always empty, so this guard was a no-op
-    ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)).
+    blocks it. The pre-#380 read of the legacy `output` field was always empty, so this guard was a no-op.
+    Also exercises the pure `is_git_push_command()` predicate (dev-env#532): a bare top-level `git push`
+    matches, while `git push` text mentioned only inside a heredoc body, a quoted argument, or a `$()`
+    subshell does not — the command-shape check is `scan_top_level`-anchored, not a raw substring test,
+    mirroring `pr-merge-reminder.py`'s identical `is_git_push_command()`
+    ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md), incl. Amendment 10 for the command-shape
+    anchoring).
 
     ```bash
     py -3 claude/scripts/tests/test_stub_push_archive_reminder.py
