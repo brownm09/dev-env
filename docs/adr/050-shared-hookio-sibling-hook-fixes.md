@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02 (nine amendments — see Amendment sections below)
+**Amended:** 2026-07-01, 2026-07-02 (ten amendments — see Amendment sections below)
 **Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use
 
 ---
@@ -613,3 +613,54 @@ nor Amendment 6's sweep enumerated. A durable mechanical proxy going forward: gr
 left untouched here as out of scope for this issue) before declaring any future `scan_top_level`
 convergence sweep complete — a textual grep catches what a conceptual "which hooks need this kind of
 detection" sweep can miss, as it did three times running.
+
+## Amendment 10 (2026-07-02) — converging `stub-push-archive-reminder.py`'s command-shape check onto `scan_top_level` (dev-env#532)
+
+Amendment 9's own "General lesson" named the exact gap this amendment closes: its durable mechanical grep
+proxy explicitly listed `stub-push-archive-reminder.py`'s `git push`-only check as "left untouched here as
+out of scope for this issue." This amendment is that named follow-up, not a new discovery — a repo-wide
+grep for `"gh pr create" not in command` and `"gh pr merge" not in command` immediately before this fix
+confirmed both were already zero matches in `claude/scripts/*.py` (closed by Amendment 5's
+`post-tool-use.py` fix and Amendment 9 respectively); `"git push" not in command` had exactly one, this
+file's line 82.
+
+**Shape difference from Amendment 9's three files:** `post-merge-tile-checkpoint.py`,
+`post-pr-merge-pull.py`, and `post-pr-merge-reclaim.py` each already exposed their substring check as a
+separate, pre-tested pure predicate (`is_successful_merge()`), so Amendment 9 only needed to swap the
+check's implementation. `stub-push-archive-reminder.py`'s `if "git push" not in command` lived inline in
+`main()` with no equivalent — per this repo's own convention that `main()`'s stdin/exit-code I/O is
+untested by design (`test_stub_push_archive_reminder.py`'s own docstring already noted `main()` is out of
+scope), there was nothing pure to attach regression coverage to. This amendment therefore also extracts a
+new named predicate, `is_git_push_command(command)`, mirroring the role `is_successful_merge()` plays in
+the three Amendment 9 hooks.
+
+**Not new regex design — a port.** `pr-merge-reminder.py` already defines the exact predicate this file
+needs: `_PUSH_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?git\s+push\b")`, `_check_push_stmt`, and a wrapper
+`is_git_push_command(command)` (added under Amendment 5, for its own `git push`-triggered journal-update
+reminder). `stub-push-archive-reminder.py` gains an identical, independently-defined trio — consistent
+with this ADR's established scope decision (Amendment 5: "only the engine is shared, not the wrapper
+functions") — rather than a newly-authored regex.
+
+**Fix:** added the `_PUSH_RE` / `_check_push_stmt` / `is_git_push_command()` trio to
+`stub-push-archive-reminder.py`; replaced the sole occurrence of `if "git push" not in command:` in
+`main()` with `if not is_git_push_command(command):`. Behavior-preserving for every real invocation (a
+bare or `cd`-prefixed `git push` still matches identically); the only behavior change is that `git push`
+text inside a heredoc body, a quoted argument, or a `$()` subshell no longer counts as an invocation. A
+repo-wide grep for `"git push" not in command` after the fix returns zero matches in
+`claude/scripts/*.py` — combined with the pre-fix state confirmed above, all three `"X" not in command`
+analogs Amendment 9's "General lesson" named are now closed.
+
+**Coverage:** `test_stub_push_archive_reminder.py` gains four new cases: a bare top-level `git push`
+sanity baseline (this predicate had no pre-existing positive-match test to inherit, unlike the three
+Amendment 9 hooks' already-tested `is_successful_merge()`), plus the same three dev-env#499
+false-positive shapes Amendment 9 covered — a heredoc body, a double-quoted `&&`-embedded argument, and a
+`$()` subshell. Unlike Amendment 9's tests, these don't pair the false-match command with a
+marker-bearing output to isolate the command-shape check from a second gate — `is_git_push_command()` is
+a single-argument, single-purpose predicate with no downstream marker check to isolate from.
+
+**General lesson (continuing Amendments 1, 6, and 9's):** a sweep's own written-down "out of scope" note
+is a checklist, not a closed door — Amendment 9 named this file and this fix by hand; this amendment is
+the mechanical act of doing what was already written down. The three-times-repeated lesson from
+Amendments 1/6/9 (a sweep is only as complete as the list it started from) has a corollary: when a sweep
+*does* write down what it deliberately left out, that note is the cheapest possible seed for the next
+sweep — cheaper than re-deriving the gap from a fresh grep.

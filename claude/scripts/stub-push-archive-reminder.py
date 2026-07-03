@@ -3,7 +3,9 @@
 engineering-journal so the Stop hook can remind Claude to archive the session.
 
 Fires on every Bash tool call. Most calls are skipped quickly:
-  1. Command must contain "git push"
+  1. Command must contain a top-level `git push` invocation (scan_top_level-
+     anchored — not text inside a heredoc body, a quoted argument, or a $()
+     subshell)
   2. Command must reference the engineering-journal repo
   3. Push must have succeeded (no error output)
   4. Most-recent commit in engineering-journal must touch a .stub.md file
@@ -25,14 +27,36 @@ Stdin JSON shape (PostToolUse):
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
-from _hookio import read_command_output
+from _hookio import read_command_output, scan_top_level
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SENTINEL = Path.home() / ".claude" / "scratch" / "stub-pushed.flag"
+
+# Anchored top-level match — identical to pr-merge-reminder.py's
+# _check_push_stmt / is_git_push_command (ADR-050 Amendments 5/6/10).
+_PUSH_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?git\s+push\b")
+
+
+def _check_push_stmt(token: str) -> bool:
+    return bool(_PUSH_RE.match(token.lstrip()))
+
+
+def is_git_push_command(command: str) -> bool:
+    """Return True only when *command* contains a top-level `git push`.
+
+    Anchored via `scan_top_level` rather than a raw substring test, so
+    `git push` text inside a heredoc body, a quoted argument, or a `$()`
+    subshell does not count as an invocation — matching the pattern used in
+    usage-snapshot.py / pr-merge-reminder.py / post-pr-merge-project.py /
+    post-merge-tile-checkpoint.py / post-pr-merge-pull.py /
+    post-pr-merge-reclaim.py (dev-env#532, ADR-050 Amendment 10).
+    """
+    return scan_top_level(command, _check_push_stmt)
 
 
 def most_recent_commit_has_stub(repo: Path) -> bool:
@@ -79,7 +103,7 @@ def main() -> None:
     output = read_command_output(data)
 
     # Must be a git push
-    if "git push" not in command:
+    if not is_git_push_command(command):
         sys.exit(0)
 
     # Must reference engineering-journal
