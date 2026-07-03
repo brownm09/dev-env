@@ -86,6 +86,7 @@ This is a workflow rule other CLAUDE.md files reference, so it is recorded as an
 - [win11-init-tools#37](https://github.com/brownm09/win11-init-tools/issues/37) — project sub-issue for the win11 doc change.
 - win11-init-tools PR #36 (`configure_pagefile.ps1`, commit `c1b75a0`) — the reference implementation.
 - win11-init-tools PR #30 (`fix_quick_access.ps1` pin-backup, commit `8ff463f`; `set_default_explorer.ps1` `Backup-RegKey` / `Restore-RegKey`) — the registry / list-snapshot variants whose wording this convention revives.
+- win11-init-tools PR #38 (`config/backup-restore-convention`) — the companion PR landing the concrete win11 `## Backup & restore` project form of this convention.
 - [ADR-038](038-durable-preferences-documented-in-repo.md) — durable preferences must be documented in the repo, not only in memory.
 - [ADR-040](040-global-claudemd-layering-and-slimming.md) — global/project CLAUDE.md layering.
 - [ADR-048](048-memory-immortalization-issue-pairing.md) — memory writes paired with an immortalization issue.
