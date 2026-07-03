@@ -213,8 +213,20 @@ def _parse_live_options(raw: str) -> dict[str, str] | None:
 def fetch_live_field_options(field_id: str, *, timeout: int = 10) -> dict[str, str] | None:
     """Live current {name: id} options for a ProjectV2SingleSelectField via
     `gh api graphql` (https://cli.github.com/manual/gh_api), or None on any
-    failure: missing field_id, no `gh` binary, timeout, non-zero exit, or a
-    malformed response. Never raises.
+    failure: missing field_id, no `gh` binary, timeout, non-zero exit, a
+    malformed response, or non-UTF-8 output. Never raises.
+
+    UnicodeDecodeError is caught alongside the process-level failures even
+    though `encoding="utf-8"` is passed explicitly: per _winsubp.py's
+    contract, the shared CREATE_NO_WINDOW/errors="replace" patch only
+    defaults `errors=` onto a text-mode call that supplies no `encoding=` of
+    its own -- an explicit `encoding=` (as here) opts out of that safety net,
+    so this call is on its own for decode failures. Catching it here (rather
+    than letting it propagate into fetch_live_required_field_options' loop,
+    which has no per-field try/except) keeps one field's malformed response
+    from silently dropping every other field's live data in the same
+    reminder -- the caller relies on this function's "never raises" promise
+    to isolate failures per-field, not per-reminder (dev-env#527 review).
 
     Not unit-tested: shells out to `gh`, matching the add_to_project /
     canonical_root_via_git convention (repo avoids subprocess mocks). The
@@ -229,7 +241,7 @@ def fetch_live_field_options(field_id: str, *, timeout: int = 10) -> dict[str, s
             encoding="utf-8",
             timeout=timeout,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
         return None
     if result.returncode != 0:
         return None
@@ -274,7 +286,16 @@ def fetch_live_required_field_options(
     {field_id: None} on failure -- one independent attempt per field, so one
     field's failure never affects another's. `fetch_fn` defaults to the real
     live call; injectable so the field-selection logic (which fields get
-    attempted, keyed correctly) is unit-testable without a real subprocess."""
+    attempted, keyed correctly) is unit-testable without a real subprocess.
+
+    Fetches run serially, each bounded by fetch_fn's own timeout (10s for the
+    real fetch_live_field_options) -- cost is multiplicative in the number of
+    single_select fields, not just bounded by a single field's timeout. Both
+    projects onboarded onto this hook today (lifting-logbook's Epic,
+    dev-env's own Impact) have exactly one such field, so this is currently
+    a non-issue in practice; a future config with several single_select
+    fields and a hung `gh` call would block this synchronous PostToolUse
+    hook for field_count * timeout seconds before the reminder prints."""
     live: dict[str, dict[str, str] | None] = {}
     for field in required_fields:
         if field.get("type") != "single_select":
@@ -293,20 +314,32 @@ def format_reminder(
     config: dict,
     *,
     live_options: dict[str, dict[str, str] | None] | None = None,
+    required_fields: list[dict] | None = None,
 ) -> str:
     """live_options, when provided, maps field_id -> live {name: id} (or None
     for a field whose live fetch was attempted and failed). A field_id absent
     from live_options (including when live_options itself is None -- no fetch
     was attempted) renders exactly as before this parameter existed: the
     cached config['options'], unlabeled. This keeps every existing call site
-    and the default byte-identical to pre-live-fetch output."""
+    and the default byte-identical to pre-live-fetch output.
+
+    required_fields, when provided, is rendered directly instead of being
+    re-derived from config via _resolve_required_fields. main() resolves
+    required_fields once (to pick live-fetch targets for
+    fetch_live_required_field_options) and threads that same list in here,
+    so a reminder's live-fetch pass and its rendering pass are guaranteed to
+    agree by construction rather than by calling a pure-but-independent
+    function twice (dev-env#527 review). Defaults to None, which re-derives
+    from config exactly as this function always did before the parameter
+    existed -- every pre-existing call site is unaffected."""
     lines = [
         f"[project-hook] {item_type} added to project.",
         f"  URL:     {url}",
         f"  Item ID: {item_id}",
     ]
 
-    required_fields = _resolve_required_fields(config)
+    if required_fields is None:
+        required_fields = _resolve_required_fields(config)
 
     for field in required_fields:
         name = field.get("name", "Field")
@@ -416,8 +449,15 @@ def main() -> None:
     item_id, _ = add_to_project(url, config["project_number"], config["project_owner"])
 
     if item_id:
-        live_options = fetch_live_required_field_options(_resolve_required_fields(config))
-        print(format_reminder(item_type, url, item_id, config, live_options=live_options), file=sys.stderr)
+        required_fields = _resolve_required_fields(config)
+        live_options = fetch_live_required_field_options(required_fields)
+        print(
+            format_reminder(
+                item_type, url, item_id, config,
+                live_options=live_options, required_fields=required_fields,
+            ),
+            file=sys.stderr,
+        )
     else:
         print(
             f"[project-hook] {item_type} created but auto-add to project failed.\n"

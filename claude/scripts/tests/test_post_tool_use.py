@@ -594,6 +594,25 @@ def test_format_reminder_falls_back_to_cached_on_live_failure() -> str:
     return "failed live fetch -> cached data used, labeled so staleness is visible (the dev-env#527 fix)"
 
 
+def test_format_reminder_required_fields_param_used_directly_over_config() -> str:
+    # main() resolves required_fields once and threads it into both the
+    # live-fetch call and format_reminder, so the two never diverge
+    # (dev-env#527 review). Prove the wiring is live, not dead code: pass a
+    # required_fields list that names a DIFFERENT field than _BASE_CONFIG
+    # would independently resolve, and confirm the passed-in list wins.
+    override_fields = [
+        {"name": "Override", "field_id": "F_OTHER", "type": "single_select", "options": {"X": "override-id"}},
+    ]
+    out = format_reminder(
+        "Issue", "https://github.com/x/y/issues/1", "ITEM1", _BASE_CONFIG,
+        required_fields=override_fields,
+    )
+    assert "Set Override:" in out, out
+    assert "X: override-id" in out, out
+    assert "Epic" not in out, out
+    return "required_fields param, when provided, is rendered directly instead of re-deriving from config"
+
+
 def test_format_reminder_field_not_in_live_options_uses_cached_unlabeled() -> str:
     # live_options was attempted this run but doesn't mention this field_id
     # (e.g. a text/milestone field, or a field skipped for having no
@@ -664,6 +683,7 @@ def main() -> int:
         ("format_reminder: no live_options -> original behavior", test_format_reminder_no_live_options_matches_original_behavior),
         ("format_reminder: live options used and labeled", test_format_reminder_uses_live_options_when_available),
         ("format_reminder: failed live fetch falls back to cached, labeled", test_format_reminder_falls_back_to_cached_on_live_failure),
+        ("format_reminder: required_fields param used directly over config", test_format_reminder_required_fields_param_used_directly_over_config),
         ("format_reminder: field absent from live_options -> cached, unlabeled", test_format_reminder_field_not_in_live_options_uses_cached_unlabeled),
     ]
     failed = 0
