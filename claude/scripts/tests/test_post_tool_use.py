@@ -15,11 +15,29 @@ stderr, with a legacy `output` fallback) and de-silences the no-URL path so a
 successful create that yields no GitHub URL at all surfaces instead of vanishing.
 
 A later fix (dev-env#378) makes `load_config` fall back to the canonical
-checkout's gitignored `hook-config.json` when the worktree-local copy is absent,
-so the hook fires in worktree sessions too (it previously hit a silent
-`sys.exit(0)`). `canonical_root_from_worktree` — the pure path-derivation behind
-that fallback — is covered here, and `load_config`'s canonical-worktree branch is
-exercised end-to-end against a hermetic temp dir.
+checkout's `hook-config.json` when the worktree-local copy is absent, so the
+hook fires in worktree sessions too (it previously hit a silent `sys.exit(0)`).
+That file is gitignored in dev-env's own convention -- not a universal one,
+see post-tool-use.py's module docstring -- so this fallback is the case that
+matters for a project following dev-env's convention; a project that tracks
+the file in git (e.g. lifting-logbook) gets it from the cwd-local read on
+`load_config`'s first line instead. `canonical_root_from_worktree` — the pure
+path-derivation behind the fallback — is covered here, and `load_config`'s
+canonical-worktree branch is exercised end-to-end against a hermetic temp dir.
+
+dev-env#527 (ADR-076) adds a live `gh api graphql` fetch of `single_select`
+field options, replacing the cached hook-config.json values on success and
+falling back to them (labeled, so staleness is visible) on any failure. The
+pure parse (`_parse_live_options`), the pure legacy-config normalization
+shared between rendering and live-fetch target discovery
+(`_resolve_required_fields`), the field-selection logic of
+`fetch_live_required_field_options` (via an injected fake `fetch_fn`, so no
+real subprocess runs), and `format_reminder`'s live/cached/unlabeled rendering
+branches are all covered here. The real `gh api graphql` call inside
+`fetch_live_field_options` is not — it shells out, matching this file's
+existing `add_to_project` / `canonical_root_via_git` convention — and was
+instead verified once by hand against dev-env's own live Impact field during
+development of this fix.
 
 These tests exercise the pure helpers offline (no network, no gh subprocess),
 matching the repo's fixture-only test convention. `add_to_project` (the live gh
@@ -64,6 +82,10 @@ _canonical_root_from_common_dir = post_tool_use._canonical_root_from_common_dir
 load_config = post_tool_use.load_config
 is_issue_create_command = post_tool_use.is_issue_create_command
 is_pr_create_command = post_tool_use.is_pr_create_command
+_parse_live_options = post_tool_use._parse_live_options
+_resolve_required_fields = post_tool_use._resolve_required_fields
+fetch_live_required_field_options = post_tool_use.fetch_live_required_field_options
+format_reminder = post_tool_use.format_reminder
 
 URL = "https://github.com/brownm09/dev-env/issues/377"
 OTHER_REPO_URL = "https://github.com/someone/other-repo/issues/5"
@@ -439,6 +461,153 @@ def test_main_exit_code_zero_proceeds_past_gate_to_no_url_advisory() -> str:
     return "genuine top-level create + exitCode==0, no URL in output -> exit 2 advisory (detection fired)"
 
 
+# ---------------------------------------------------------------------------
+# dev-env#527 (ADR-076): live-fetch of single_select field options, with
+# graceful fallback to the cached hook-config.json value on failure.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_live_options_valid() -> str:
+    raw = '{"data":{"node":{"options":[{"id":"08de2558","name":"High"},{"id":"6320e8a6","name":"Medium"}]}}}'
+    assert _parse_live_options(raw) == {"High": "08de2558", "Medium": "6320e8a6"}
+    return "well-formed gh api graphql response -> {name: id}"
+
+
+def test_parse_live_options_empty_options_is_empty_dict_not_none() -> str:
+    # A field with zero options (all deleted) is a real, distinct state from
+    # a failed fetch -- must not collapse to the same None the caller uses
+    # to mean "fetch failed, fall back to cache".
+    raw = '{"data":{"node":{"options":[]}}}'
+    assert _parse_live_options(raw) == {}
+    return "field with zero live options -> {} (not None -- distinct from a failed fetch)"
+
+
+def test_parse_live_options_wrong_node_type_is_none() -> str:
+    # node(id: $id) resolving to a non-ProjectV2SingleSelectField (or a
+    # deleted/inaccessible node) makes the inline fragment yield node: null.
+    raw = '{"data":{"node":null}}'
+    assert _parse_live_options(raw) is None
+    return "node null (wrong type / deleted / inaccessible) -> None"
+
+
+def test_parse_live_options_malformed_json_is_none() -> str:
+    assert _parse_live_options("not json") is None
+    assert _parse_live_options("") is None
+    return "non-JSON / empty response -> None"
+
+
+def test_parse_live_options_missing_keys_is_none() -> str:
+    assert _parse_live_options('{"data":{}}') is None
+    assert _parse_live_options('{}') is None
+    return "well-formed JSON missing the expected data/node/options path -> None"
+
+
+def test_resolve_required_fields_passthrough() -> str:
+    config = {"required_fields": [{"name": "Impact", "field_id": "F1", "type": "single_select", "options": {}}]}
+    assert _resolve_required_fields(config) == config["required_fields"]
+    return "required_fields present -> returned unchanged"
+
+
+def test_resolve_required_fields_legacy_epic_fallback() -> str:
+    config = {
+        "epic_field_id": "F_EPIC",
+        "epic_options": {"Backend": "opt1"},
+        "milestones": ["v0.1"],
+    }
+    resolved = _resolve_required_fields(config)
+    assert resolved == [
+        {"name": "Epic", "field_id": "F_EPIC", "type": "single_select", "options": {"Backend": "opt1"}},
+        {"name": "Milestone", "type": "milestone", "options_list": ["v0.1"]},
+    ], resolved
+    return "legacy epic_field_id/milestones config -> normalized required_fields (ADR-023 fallback)"
+
+
+def test_resolve_required_fields_empty_config_is_empty_list() -> str:
+    assert _resolve_required_fields({}) == []
+    return "config with none of the known keys -> []"
+
+
+def test_fetch_live_required_field_options_filters_and_keys_by_field_id() -> str:
+    required_fields = [
+        {"name": "Impact", "field_id": "F1", "type": "single_select"},
+        {"name": "Why", "field_id": "F2", "type": "text"},
+        {"name": "Milestone", "type": "milestone"},
+        {"name": "NoId", "type": "single_select"},  # no field_id -- must be skipped
+    ]
+    calls = []
+
+    def fake_fetch(field_id):
+        calls.append(field_id)
+        return {"fake": field_id}
+
+    result = fetch_live_required_field_options(required_fields, fetch_fn=fake_fetch)
+    assert calls == ["F1"], f"expected only the single_select field with a field_id queried, got {calls!r}"
+    assert result == {"F1": {"fake": "F1"}}, result
+    return "only single_select fields with a field_id are queried; text/milestone/no-id fields are skipped"
+
+
+def test_fetch_live_required_field_options_records_failure_as_none() -> str:
+    result = fetch_live_required_field_options(
+        [{"name": "Impact", "field_id": "F1", "type": "single_select"}],
+        fetch_fn=lambda field_id: None,
+    )
+    assert result == {"F1": None}, result
+    return "a failed live fetch is recorded as None, not omitted"
+
+
+_BASE_CONFIG = {
+    "project_node_id": "PVT_1",
+    "required_fields": [
+        {"name": "Epic", "field_id": "F_EPIC", "type": "single_select", "options": {"Backend": "cached-id"}},
+    ],
+}
+
+
+def test_format_reminder_no_live_options_matches_original_behavior() -> str:
+    # Default call (no live_options) must render identically to the
+    # pre-dev-env#527 output: cached options, no freshness label.
+    out = format_reminder("Issue", "https://github.com/x/y/issues/1", "ITEM1", _BASE_CONFIG)
+    assert "Epic options:" in out, out
+    assert "Backend: cached-id" in out, out
+    assert "(live)" not in out and "cached — live fetch failed" not in out
+    return "no live_options arg -> byte-identical to pre-live-fetch rendering (cached, unlabeled)"
+
+
+def test_format_reminder_uses_live_options_when_available() -> str:
+    out = format_reminder(
+        "Issue", "https://github.com/x/y/issues/1", "ITEM1", _BASE_CONFIG,
+        live_options={"F_EPIC": {"Backend": "fresh-live-id"}},
+    )
+    assert "Epic options (live):" in out, out
+    assert "Backend: fresh-live-id" in out, out
+    assert "cached-id" not in out, out
+    return "successful live fetch -> live data used and labeled '(live)', cached value not shown"
+
+
+def test_format_reminder_falls_back_to_cached_on_live_failure() -> str:
+    out = format_reminder(
+        "Issue", "https://github.com/x/y/issues/1", "ITEM1", _BASE_CONFIG,
+        live_options={"F_EPIC": None},
+    )
+    assert "Epic options (cached — live fetch failed; may be stale):" in out, out
+    assert "Backend: cached-id" in out, out
+    return "failed live fetch -> cached data used, labeled so staleness is visible (the dev-env#527 fix)"
+
+
+def test_format_reminder_field_not_in_live_options_uses_cached_unlabeled() -> str:
+    # live_options was attempted this run but doesn't mention this field_id
+    # (e.g. a text/milestone field, or a field skipped for having no
+    # field_id) -- must render like the "not attempted at all" case, not
+    # like a failure.
+    out = format_reminder(
+        "Issue", "https://github.com/x/y/issues/1", "ITEM1", _BASE_CONFIG,
+        live_options={},
+    )
+    assert "Epic options:" in out, out
+    assert "(live)" not in out and "cached — live fetch failed" not in out
+    return "field_id absent from live_options -> cached data, unlabeled (not mistaken for a failure)"
+
+
 def main() -> int:
     tests = [
         ("reads command output from stdout", test_reads_stdout),
@@ -482,6 +651,20 @@ def main() -> int:
         ("pr-create in double quotes -> no match", test_pr_create_in_double_quotes_not_matched),
         ("main(): exitCode!=0 short-circuits even when create detected", test_main_exit_code_nonzero_short_circuits_even_when_create_detected),
         ("main(): exitCode==0 proceeds to no-URL advisory", test_main_exit_code_zero_proceeds_past_gate_to_no_url_advisory),
+        ("parse live options: valid response", test_parse_live_options_valid),
+        ("parse live options: empty options -> {} not None", test_parse_live_options_empty_options_is_empty_dict_not_none),
+        ("parse live options: node null -> None", test_parse_live_options_wrong_node_type_is_none),
+        ("parse live options: malformed JSON -> None", test_parse_live_options_malformed_json_is_none),
+        ("parse live options: missing keys -> None", test_parse_live_options_missing_keys_is_none),
+        ("resolve required fields: passthrough", test_resolve_required_fields_passthrough),
+        ("resolve required fields: legacy epic/milestone fallback", test_resolve_required_fields_legacy_epic_fallback),
+        ("resolve required fields: empty config -> []", test_resolve_required_fields_empty_config_is_empty_list),
+        ("fetch live required fields: filters to single_select with field_id", test_fetch_live_required_field_options_filters_and_keys_by_field_id),
+        ("fetch live required fields: failure recorded as None", test_fetch_live_required_field_options_records_failure_as_none),
+        ("format_reminder: no live_options -> original behavior", test_format_reminder_no_live_options_matches_original_behavior),
+        ("format_reminder: live options used and labeled", test_format_reminder_uses_live_options_when_available),
+        ("format_reminder: failed live fetch falls back to cached, labeled", test_format_reminder_falls_back_to_cached_on_live_failure),
+        ("format_reminder: field absent from live_options -> cached, unlabeled", test_format_reminder_field_not_in_live_options_uses_cached_unlabeled),
     ]
     failed = 0
     for name, fn in tests:

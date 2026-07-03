@@ -142,7 +142,8 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     a non-empty output (the pre-fix `output` read was `""` — the [#377](https://github.com/brownm09/dev-env/issues/377)
     silent no-op), that the legacy `output` field still works, that the de-silenced no-URL path distinguishes a
     different-repo miss from a genuine empty ([ADR-049](docs/adr/049-hook-payload-output-field.md)), that a
-    Claude-managed worktree cwd whose gitignored `hook-config.json` is absent resolves the canonical checkout's
+    Claude-managed worktree cwd whose `hook-config.json` is absent (a project that gitignores it, dev-env's own
+    convention — not every project's, e.g. lifting-logbook tracks it) resolves the canonical checkout's
     config — verified end-to-end via a hermetic temp dir — and that the sibling-worktree `git --git-common-dir`
     output resolves to the canonical root ([ADR-052](docs/adr/052-worktree-config-canonical-fallback.md)). Also
     exercises `is_issue_create_command()` / `is_pr_create_command()` (built on the shared
@@ -151,8 +152,16 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     argument, `--text` field value) for both PR- and issue-create, plus subshell/quote/cd-prefix/chained cases;
     and a `subprocess`-driven end-to-end pair (`_run_hook`, mirroring `test_worktree_path_check.py`'s pattern)
     pinning that the pre-existing `exit_code != 0` gate still short-circuits immediately after the detection
-    swap, without either branch invoking a live `gh` call. The live `gh project item-add` call and the
-    `subprocess.run` in `canonical_root_via_git()` are not covered (the repo avoids subprocess mocks).
+    swap, without either branch invoking a live `gh` call. Also exercises the dev-env#527 / [ADR-076](docs/adr/076-live-fetch-project-hook-single-select-options.md)
+    live-fetch of `single_select` field options: the pure `_parse_live_options()` response parser (valid, empty-options,
+    null-node, and malformed-JSON shapes), the pure `_resolve_required_fields()` legacy-config normalization shared
+    between rendering and live-fetch target discovery, `fetch_live_required_field_options()`'s field-selection logic
+    (single_select-with-field_id only) via an injected fake `fetch_fn`, and `format_reminder()`'s three rendering
+    branches — live data used and labeled, a failed fetch falling back to cached data labeled as possibly stale, and
+    the no-`live_options`-passed case matching pre-#527 output exactly. The live `gh project item-add` call, the
+    `subprocess.run` in `canonical_root_via_git()`, and the live `gh api graphql` call in `fetch_live_field_options()`
+    are not covered (the repo avoids subprocess mocks) — the last was instead verified once by hand against dev-env's
+    own live Impact field during development of the #527 fix.
 
     ```bash
     py -3 claude/scripts/tests/test_post_tool_use.py

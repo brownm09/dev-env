@@ -27,9 +27,10 @@ with no such config is not reconcilable and the script exits 1. In `--scan-dir` 
 repo with no config (most repos — board tracking is opt-in) is silently skipped
 instead; only a `gh` `project`-scope failure aborts the whole scan. The default repo
 root is the *canonical* checkout of the repo this script lives in: when invoked from a
-Claude-managed worktree (`.../.claude/worktrees/<name>/...`, where the gitignored
-hook-config is absent) the canonical root is derived by stripping the worktree
-segment, via the shared `_worktree_canon.canonical_repo_root` (dev-env#454, ADR-073) —
+Claude-managed worktree (`.../.claude/worktrees/<name>/...`, where hook-config is
+absent in a project that gitignores it — dev-env's own convention, not every project's,
+dev-env#527) the canonical root is derived by stripping the worktree segment, via the
+shared `_worktree_canon.canonical_repo_root` (dev-env#454, ADR-073) —
 the same resolver `post-tool-use.py` uses. Repos discovered by `--scan-dir` are always
 primary checkouts (worktrees are excluded by construction — see `find_git_repos`), so
 canonicalization never applies to them.

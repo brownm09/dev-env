@@ -6,8 +6,11 @@ Detection matches only a top-level CLI invocation (via _hookio.scan_top_level),
 not the string appearing inside commit messages, heredocs, grep patterns, or
 other quoted arguments (dev-env#499).
 
-Project opt-in: add .claude/hook-config.json to the project root.
-Projects without that file are silently skipped.
+Project opt-in: add .claude/hook-config.json to the project root. That file is
+gitignored by dev-env's own convention (.gitignore ignores all of .claude/),
+but that is a per-project choice, not a universal one -- e.g. lifting-logbook
+deliberately tracks it in git (dev-env#527). Projects without the file at all
+are silently skipped.
 
 hook-config.json schema:
   {
@@ -31,6 +34,13 @@ Stdin JSON shape (PostToolUse):
     "session_id": "...",
     "cwd": "..."
   }
+
+`required_fields` entries of type `single_select` are refreshed at reminder
+time via a live `gh api graphql` fetch of that field's current options
+(dev-env#527, ADR-076) -- the cached `options` map above is used only as a
+fallback when the live fetch fails (network, auth, timeout), and the printed
+reminder labels which source it used so staleness is visible instead of
+silent, the way it drifted undetected in lifting-logbook#628.
 
 Exit 0  — not a relevant command, no config, or gh command itself failed; silent
 Exit 2  — item added (or failed to add); structured reminder emitted via stderr
@@ -126,11 +136,16 @@ def _read_config(path: str) -> dict | None:
 def load_config(cwd: str) -> dict | None:
     """Load hook-config.json for the project, or None.
 
-    The config is gitignored and machine-local, so it lives only in the canonical
-    checkout — `git worktree add` never checks it out and the harness copies it into
-    Claude-managed worktrees only inconsistently (dev-env #378). Read the cwd-local
-    copy first; when it is absent in a worktree, fall back to the canonical
-    checkout's copy so worktree sessions behave like main-checkout sessions.
+    In projects that gitignore the config (dev-env's own convention -- not a
+    universal one, see the module docstring), it lives only in the canonical
+    checkout: `git worktree add` never checks out a gitignored file, and the
+    harness copies it into Claude-managed worktrees only inconsistently
+    (dev-env #378). Read the cwd-local copy first; when it is absent in a
+    worktree, fall back to the canonical checkout's copy so worktree sessions
+    behave like main-checkout sessions. A project that tracks the config in
+    git (e.g. lifting-logbook) never hits the fallback: `git worktree add`
+    checks out tracked files normally, so the cwd-local read on the first
+    line already finds it.
     """
     cfg = _read_config(os.path.join(cwd, CONFIG_FILE))
     if cfg is not None:
@@ -169,13 +184,64 @@ def extract_github_url(output: str, repo: str | None = None) -> str | None:
     return None
 
 
-def format_reminder(item_type: str, url: str, item_id: str, config: dict) -> str:
-    lines = [
-        f"[project-hook] {item_type} added to project.",
-        f"  URL:     {url}",
-        f"  Item ID: {item_id}",
-    ]
+# GraphQL query for a ProjectV2SingleSelectField's current options
+# (https://docs.github.com/en/graphql/reference/objects#projectv2singleselectfield).
+# `id` is supplied as a `-f` variable by the caller, never string-interpolated
+# into the query, so a field_id value cannot inject additional query structure.
+_FIELD_OPTIONS_QUERY = """
+query($id: ID!) {
+  node(id: $id) {
+    ... on ProjectV2SingleSelectField {
+      options { id name }
+    }
+  }
+}
+"""
 
+
+def _parse_live_options(raw: str) -> dict[str, str] | None:
+    """Parse a `gh api graphql` response for `_FIELD_OPTIONS_QUERY` into
+    {name: id}. None on any malformed shape -- non-JSON, wrong/missing node
+    type, absent keys -- never raises. Pure, no I/O."""
+    try:
+        options = json.loads(raw)["data"]["node"]["options"]
+        return {opt["name"]: opt["id"] for opt in options}
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def fetch_live_field_options(field_id: str, *, timeout: int = 10) -> dict[str, str] | None:
+    """Live current {name: id} options for a ProjectV2SingleSelectField via
+    `gh api graphql` (https://cli.github.com/manual/gh_api), or None on any
+    failure: missing field_id, no `gh` binary, timeout, non-zero exit, or a
+    malformed response. Never raises.
+
+    Not unit-tested: shells out to `gh`, matching the add_to_project /
+    canonical_root_via_git convention (repo avoids subprocess mocks). The
+    pure parse is `_parse_live_options`."""
+    if not field_id:
+        return None
+    try:
+        result = subprocess.run(
+            ["gh", "api", "graphql", "-f", f"query={_FIELD_OPTIONS_QUERY}", "-f", f"id={field_id}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    return _parse_live_options(result.stdout)
+
+
+def _resolve_required_fields(config: dict) -> list[dict]:
+    """Return config's required_fields, normalizing the legacy epic_field_id /
+    milestones keys into the same shape when required_fields is absent
+    (ADR-023's backward-compat rule). Pure, no I/O -- shared by
+    format_reminder (rendering) and fetch_live_required_field_options
+    (live-fetch target discovery) so the two rules can never diverge."""
     required_fields = list(config.get("required_fields", []))
 
     # Backward compat: convert old epic_field_id / milestones shape
@@ -194,6 +260,53 @@ def format_reminder(item_type: str, url: str, item_id: str, config: dict) -> str
                 "type": "milestone",
                 "options_list": config["milestones"],
             })
+
+    return required_fields
+
+
+def fetch_live_required_field_options(
+    required_fields: list[dict],
+    *,
+    fetch_fn=fetch_live_field_options,
+) -> dict[str, dict[str, str] | None]:
+    """Attempt a live options fetch for every single_select field that has a
+    field_id. Returns {field_id: {name: id}} on a successful fetch or
+    {field_id: None} on failure -- one independent attempt per field, so one
+    field's failure never affects another's. `fetch_fn` defaults to the real
+    live call; injectable so the field-selection logic (which fields get
+    attempted, keyed correctly) is unit-testable without a real subprocess."""
+    live: dict[str, dict[str, str] | None] = {}
+    for field in required_fields:
+        if field.get("type") != "single_select":
+            continue
+        field_id = field.get("field_id")
+        if not field_id:
+            continue
+        live[field_id] = fetch_fn(field_id)
+    return live
+
+
+def format_reminder(
+    item_type: str,
+    url: str,
+    item_id: str,
+    config: dict,
+    *,
+    live_options: dict[str, dict[str, str] | None] | None = None,
+) -> str:
+    """live_options, when provided, maps field_id -> live {name: id} (or None
+    for a field whose live fetch was attempted and failed). A field_id absent
+    from live_options (including when live_options itself is None -- no fetch
+    was attempted) renders exactly as before this parameter existed: the
+    cached config['options'], unlabeled. This keeps every existing call site
+    and the default byte-identical to pre-live-fetch output."""
+    lines = [
+        f"[project-hook] {item_type} added to project.",
+        f"  URL:     {url}",
+        f"  Item ID: {item_id}",
+    ]
+
+    required_fields = _resolve_required_fields(config)
 
     for field in required_fields:
         name = field.get("name", "Field")
@@ -214,9 +327,17 @@ def format_reminder(item_type: str, url: str, item_id: str, config: dict) -> str
                 f"      --field-id {field_id} \\",
                 f"      --single-select-option-id <option-id>",
             ]
-            opts = field.get("options", {})
+            cached_opts = field.get("options", {})
+            if live_options is not None and field_id in live_options:
+                live_result = live_options[field_id]
+                if live_result is not None:
+                    opts, freshness = live_result, " (live)"
+                else:
+                    opts, freshness = cached_opts, " (cached — live fetch failed; may be stale)"
+            else:
+                opts, freshness = cached_opts, ""
             if opts:
-                lines.append(f"  {name} options:")
+                lines.append(f"  {name} options{freshness}:")
                 for opt_name, opt_id in opts.items():
                     lines.append(f"      {opt_name}: {opt_id}")
         elif ftype == "text":
@@ -295,7 +416,8 @@ def main() -> None:
     item_id, _ = add_to_project(url, config["project_number"], config["project_owner"])
 
     if item_id:
-        print(format_reminder(item_type, url, item_id, config), file=sys.stderr)
+        live_options = fetch_live_required_field_options(_resolve_required_fields(config))
+        print(format_reminder(item_type, url, item_id, config, live_options=live_options), file=sys.stderr)
     else:
         print(
             f"[project-hook] {item_type} created but auto-add to project failed.\n"

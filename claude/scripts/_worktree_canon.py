@@ -4,10 +4,11 @@
 `post-tool-use.py` (the PostToolUse project-board add-hook) and
 `reconcile-project-board.py` (its background-session backstop, ADR-068) both independently
 defined an identical `_WORKTREE_RE` regex to resolve a Claude-managed worktree cwd
-(`<root>/.claude/worktrees/<name>/...`) to the canonical checkout root, where the
-gitignored, machine-local `.claude/hook-config.json` actually lives (`git worktree add`
-never checks it out; the harness copies it into Claude-managed worktrees only
-inconsistently — dev-env#378).
+(`<root>/.claude/worktrees/<name>/...`) to the canonical checkout root, where
+`.claude/hook-config.json` actually lives in a project that gitignores it (dev-env's own
+convention, not a universal one — some projects track it in git, e.g. lifting-logbook,
+dev-env#527): `git worktree add` never checks out a gitignored file, and the harness
+copies it into Claude-managed worktrees only inconsistently — dev-env#378.
 
 The two scripts want different "no match" behavior, so this module exposes both shapes
 over one shared regex + primitive rather than picking one and breaking the other:
