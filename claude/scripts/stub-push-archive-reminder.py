@@ -6,7 +6,9 @@ Fires on every Bash tool call. Most calls are skipped quickly:
   1. Command must contain a top-level `git push` invocation (scan_top_level-
      anchored — not text inside a heredoc body, a quoted argument, or a $()
      subshell)
-  2. Command must reference the engineering-journal repo
+  2. Command must reference the engineering-journal repo via a top-level `cd`
+     or `git -C` directory argument (also scan_top_level-anchored — not text
+     inside a heredoc body, a quoted argument, or a $() subshell)
   3. Push must have succeeded (no error output)
   4. Most-recent commit in engineering-journal must touch a .stub.md file
 
@@ -59,6 +61,34 @@ def is_git_push_command(command: str) -> bool:
     return scan_top_level(command, _check_push_stmt)
 
 
+# A genuine reference to the engineering-journal repo: the literal name
+# (either spelling) appears as the directory argument of a top-level `cd` or
+# `git -C` at the START of a scan_top_level segment — not merely present
+# anywhere in the raw command, which would also match text buried in a
+# heredoc body, a quoted argument, or a $() subshell (dev-env#539, ADR-050
+# Amendment 12).
+_EJ_REF_RE = re.compile(r"(?:cd|git\s+-C)\s+\S*engineering[-_]journal\S*")
+
+
+def _check_engineering_journal_ref(token: str) -> bool:
+    return bool(_EJ_REF_RE.match(token.lstrip()))
+
+
+def references_engineering_journal(command: str) -> bool:
+    """Return True only when *command* contains a top-level reference to the
+    engineering-journal repo, via a `cd <path>` or `git -C <path>` directory
+    argument (either the hyphenated or underscored spelling).
+
+    Anchored via `scan_top_level` rather than a raw substring test, so
+    "engineering-journal"/"engineering_journal" text inside a heredoc body, a
+    quoted argument, or a `$()` subshell does not count as a reference — same
+    false-positive shape `is_git_push_command` above already guards against
+    (dev-env#532, ADR-050 Amendment 10), applied to a repo-name literal
+    instead of a CLI-invocation literal (dev-env#539, ADR-050 Amendment 12).
+    """
+    return scan_top_level(command, _check_engineering_journal_ref)
+
+
 def most_recent_commit_has_stub(repo: Path) -> bool:
     """Return True if HEAD commit in the repo touches at least one .stub.md file."""
     try:
@@ -107,7 +137,7 @@ def main() -> None:
         sys.exit(0)
 
     # Must reference engineering-journal
-    if "engineering-journal" not in command and "engineering_journal" not in command:
+    if not references_engineering_journal(command):
         sys.exit(0)
 
     # Must not show an obvious error

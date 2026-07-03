@@ -228,6 +228,13 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     subshell does not — the command-shape check is `scan_top_level`-anchored, not a raw substring test,
     mirroring `pr-merge-reminder.py`'s identical `is_git_push_command()`
     ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md), incl. Amendment 10 for the command-shape
+    anchoring). Also exercises the pure `references_engineering_journal()` predicate (dev-env#539): a
+    `cd <path>` or `git -C <path>` naming the engineering-journal repo (either the hyphenated or
+    underscored spelling) matches, while the same text mentioned only inside a heredoc body, a quoted
+    argument, or a `$()` subshell does not — anchored the same `scan_top_level` way as
+    `is_git_push_command()`, but keyed on the `cd`/`-C` directory-argument prefix rather than a CLI verb,
+    since the target text is itself an argument *value*, never the start of its own statement
+    ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md), incl. Amendment 12 for the command-shape
     anchoring).
 
     ```bash
@@ -631,16 +638,17 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     *mentioning* the pattern is structurally invisible to it, not just filtered — see
     [ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md) Amendment 11) repo-wide gate
     against the recurring `if "<cli-invocation>" not in command: return False` false-positive
-    class (Amendments 5/6/9/10): a raw substring test matches literal text inside a heredoc body,
+    class (Amendments 5/6/9/10/12): a raw substring test matches literal text inside a heredoc body,
     a quoted argument, or a `$()` subshell as if it were a real top-level statement. Generalizes
     beyond the ADR's three originally-named literals (`gh pr merge` / `gh pr create` / `git push`)
     to flag *any* string-literal `in`/`not in` check against a variable named `command` — this is
     what caught two previously-untracked checks of the identical shape in
-    `stub-push-archive-reminder.py` (dev-env#534) that neither Amendment 9's nor Amendment 10's own
-    three-literal grep would have found. A small, auditable `_KNOWN_EXCEPTIONS` allowlist (matched
-    on file + literal text, not line number) covers pre-existing, not-yet-fixed debt; the test
-    fails on both a new unlisted offense and a stale listed exception whose underlying check has
-    since been fixed, so the allowlist can't silently rot.
+    `stub-push-archive-reminder.py` (dev-env#534), since converged onto `scan_top_level` (dev-env#539,
+    Amendment 12), that neither Amendment 9's nor Amendment 10's own three-literal grep would have
+    found. A small, auditable `_KNOWN_EXCEPTIONS` allowlist (matched on file + literal text, not line
+    number) covers pre-existing, not-yet-fixed debt — currently empty, since Amendment 12 converged
+    the last two tracked entries — and the test fails on both a new unlisted offense and a stale
+    listed exception whose underlying check has since been fixed, so the allowlist can't silently rot.
 
     ```bash
     py -3 claude/scripts/tests/test_no_crude_command_substring_checks.py

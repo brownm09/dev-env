@@ -741,3 +741,84 @@ missable as a conceptual sweep until it stops being something a session has to r
 it happen without a second dedicated issue. The durable form of a "remember to grep for X" note is not a
 better-worded note — it is the grep, committed, enforced, and running on every future change to this
 directory.
+
+## Amendment 12 (2026-07-02) — converging `stub-push-archive-reminder.py`'s engineering-journal reference checks onto `scan_top_level` (dev-env#539)
+
+Amendment 11's own "Follow-up, not fixed here" note named this exact gap: the two
+`engineering-journal`/`engineering_journal` checks it surfaced were deliberately left as
+`_KNOWN_EXCEPTIONS` debt, tracked via a `spawn_task` tile and a linked follow-up issue, because
+converging them was a hook-behavior change out of scope for that test-only PR. This amendment is that
+named follow-up.
+
+**Shape difference from Amendments 9/10's `scan_top_level` uses.** Every prior `scan_top_level`
+convergence in this ADR — `is_pr_merge_command`, `is_pr_create_command`, `is_git_push_command`,
+`is_successful_merge`'s internal merge check — detects whether a command **invokes** a specific CLI verb
+(`gh pr merge`, `git push`, ...). The check itself sits at the very start of its governing statement, so
+anchoring `check_fn` with `<regex>.match(token.lstrip())` — matching only from position 0 of a top-level
+segment — is sufficient: a CLI-invocation phrase embedded mid-segment (inside a heredoc body, a quoted
+argument, or a `$()` subshell that a single un-split segment absorbs) never appears at that segment's own
+start. `references_engineering_journal()` detects something structurally different: not an invocation,
+but a **directory-argument value** — `engineering-journal` (or `engineering_journal`) as the target of a
+`cd` or `git -C`, which by construction never sits at position 0 of its segment (it follows the `cd
+`/`git -C ` prefix). A naive "check each top-level segment for substring containment" — the seemingly
+obvious analog of the old whole-command `in` check, just scoped to `scan_top_level`'s segments — would
+**not** have fixed the bug: a segment like `git commit -m "sync notes with engineering-journal"` is
+exactly one top-level segment (the quoted `-m` argument has no top-level `&&`/`;` to split on), and the
+literal text is still `in` that segment string even after splitting. Verified directly before writing the
+fix: re-running each of the three new false-positive commands (heredoc, quoted argument, subshell)
+through a standalone `any(literal in seg for seg in split_top_level(command))` implementation confirmed
+all three still incorrectly match, ruling out that simpler design and confirming the fix needs an
+anchored-prefix predicate, not just a re-scoped substring test. The fix instead anchors `_EJ_REF_RE` to
+the same `.match()`-from-segment-start discipline the CLI-invocation checks use, but keyed on the
+*prefix* that can legitimately carry a directory argument (`cd `/`git -C `) rather than on a CLI verb.
+
+**Not a port, unlike Amendment 10.** Amendment 10 could lift `is_git_push_command`'s predicate wholesale
+from `pr-merge-reminder.py`, which already needed identical `git push` detection. No sibling hook has
+ever needed "does this command reference the engineering-journal repo by directory argument" detection —
+`pr-merge-reminder.py`'s own `_EJ_REPO_FRAGMENT` check (`_EJ_REPO_FRAGMENT in cwd.replace("\\", "/")`) is
+a same-named but unrelated shape: it substring-tests an already-resolved OS directory path (`cwd`), never
+raw shell command text, so it was never subject to the heredoc/quote/subshell false-positive class in the
+first place and needed no `scan_top_level` anchoring of its own. `_EJ_REF_RE` /
+`_check_engineering_journal_ref` / `references_engineering_journal()` are new, purpose-built for this
+file.
+
+**Fix:** added the `_EJ_REF_RE` / `_check_engineering_journal_ref` / `references_engineering_journal()`
+trio to `stub-push-archive-reminder.py`, immediately below the existing `is_git_push_command()` trio;
+replaced the sole occurrence of `if "engineering-journal" not in command and "engineering_journal" not in
+command:` in `main()` with `if not references_engineering_journal(command):`; updated the module
+docstring's four-condition summary so condition 2 also documents the `scan_top_level` anchoring. `_EJ_REF_RE
+= re.compile(r"(?:cd|git\s+-C)\s+\S*engineering[-_]journal\S*")` — no `re.IGNORECASE`, preserving the old
+check's case-sensitivity exactly (Amendment 10's own framing: behavior-preserving except for the named
+false-positive shapes). A repo-wide grep for `"engineering-journal" not in command` / `"engineering_journal"
+not in command` after the fix returns zero matches in `claude/scripts/*.py`.
+
+**Allowlist closure — the self-enforcing step named in the issue.** With both checks converged,
+`test_no_crude_command_substring_checks.py`'s `_KNOWN_EXCEPTIONS` set (Amendment 11) no longer has a live
+offense to cover; its own two-sided gate (a listed exception with no matching live offense fails the test
+as "stale") means simply forgetting to remove the two entries would have failed the suite immediately,
+rather than silently leaving stale debt behind. `_KNOWN_EXCEPTIONS` is now `set()` — left as an
+explicitly-typed empty set rather than deleted, so the next genuinely-new crude check (should one ever
+reappear) has an established, documented place to land. Confirmed: the repo-wide gate now reports "47
+files ... 0 known exception(s), 0 unexpected, 0 stale, 0 duplicated" — the crude-command-substring-check
+class named across Amendments 5, 6, 9, 10, and 11 has zero known instances left anywhere in
+`claude/scripts/*.py`.
+
+**Coverage:** `test_stub_push_archive_reminder.py` gains seven new cases, mirroring Amendment 10's own
+four-case shape but expanded for this check's two independent axes (two accepted prefixes — `cd` and
+`git -C` — and two accepted spellings — hyphenated and underscored): a `cd`-prefix positive baseline, a
+`git -C`-prefix positive baseline, an underscore-spelling positive baseline, an unrelated-repo negative
+sanity baseline, and the same three dev-env#499 false-positive shapes Amendment 10 covered (a heredoc
+body, a double-quoted argument — embedding both spellings and an internal `&&` to also re-prove the
+quote-tracking non-split guarantee in the same case — and a `$()` subshell). 17 total tests in the file,
+up from 10 pre-amendment.
+
+**General lesson (continuing Amendments 1, 6, 9, 10, and 11's):** `scan_top_level` is an engine for
+finding top-level statement boundaries, not a complete false-positive fix by itself — the anchoring
+strategy layered on top of it has to match the *shape* of what's being detected. A CLI-invocation check
+can safely anchor to "segment start" because a genuine invocation always begins its own statement. A
+directory-argument-value check cannot reuse that same anchor unmodified — the value never begins the
+statement, the governing keyword (`cd`/`-C`) does — so the anchor has to move to "does the segment start
+with a known argument-taking prefix, followed by a value containing the target." Reusing `scan_top_level`
+(the segmentation engine) without reasoning through this distinction would have produced a predicate that
+*looked* converged — it calls `scan_top_level`, it has a regex, it has tests — while remaining just as
+false-positive-prone as the crude check it replaced, for exactly the shapes this ADR exists to close.

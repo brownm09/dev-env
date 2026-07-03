@@ -18,6 +18,16 @@ Amendment 9). The three heredoc/quote/subshell tests below pin the
 false-positive shapes that substring test was blind to (dev-env#499's
 original repro class) but the anchored predicate correctly rejects.
 
+dev-env#539 (ADR-050 Amendment 12) converges the companion "does this push
+target engineering-journal?" check the same way: the raw
+`"engineering-journal" not in command and "engineering_journal" not in
+command` substring test is replaced by a new pure
+`references_engineering_journal()` predicate, also built on `scan_top_level`
+but anchored to a `cd <path>` / `git -C <path>` directory argument rather than
+a CLI-invocation verb. The `test_ej_ref_*` tests below pin the same
+dev-env#499 false-positive shapes applied to a repo-name literal instead of a
+command literal.
+
 `most_recent_commit_has_stub` (a git call) is intentionally not tested.
 
 Usage:
@@ -44,6 +54,7 @@ spar = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(spar)  # safe: main() is guarded by __main__
 has_push_error = spar.has_push_error
 is_git_push_command = spar.is_git_push_command
+references_engineering_journal = spar.references_engineering_journal
 
 
 def test_clean_push_no_error() -> str:
@@ -118,6 +129,60 @@ def test_push_text_inside_subshell_not_matched() -> str:
     return "'git push' text inside a $() subshell -> no match (dev-env#532)"
 
 
+# ---------------------------------------------------------------------------
+# references_engineering_journal — command-shape anchoring (dev-env#539, ADR-050 Amendment 12)
+#
+# Each false-positive command below contains the literal substring
+# "engineering-journal" (or the underscored spelling) but not as a genuine
+# top-level `cd`/`git -C` directory reference. The old crude
+# `"engineering-journal" not in command and "engineering_journal" not in
+# command` substring test would have matched all three; the
+# scan_top_level-anchored predicate correctly rejects them.
+# ---------------------------------------------------------------------------
+
+def test_ej_ref_with_cd_prefix_matched() -> str:
+    assert references_engineering_journal("cd ~/Git/engineering-journal && git push")
+    return "cd <engineering-journal dir> && git push -> matched (sanity baseline)"
+
+
+def test_ej_ref_with_dash_c_matched() -> str:
+    command = "git -C C:/Users/brown/Git/engineering-journal push -u origin draft/2026-07-02"
+    assert references_engineering_journal(command)
+    return "git -C <engineering-journal dir> push -> matched"
+
+
+def test_ej_ref_underscore_spelling_matched() -> str:
+    assert references_engineering_journal("cd /Git/engineering_journal && git push")
+    return "underscore spelling 'engineering_journal' -> also matched (both spellings supported, mirrors old check)"
+
+
+def test_ej_ref_unrelated_repo_not_matched() -> str:
+    assert not references_engineering_journal("cd /Git/career-playbook && git push")
+    return "cd <unrelated dir> && git push -> no match (sanity baseline)"
+
+
+def test_ej_ref_text_in_heredoc_body_not_matched() -> str:
+    command = "git commit -F - <<'EOF'\nsync notes with engineering-journal\nEOF"
+    assert not references_engineering_journal(command)
+    return "'engineering-journal' text inside a heredoc body -> no match (dev-env#539)"
+
+
+def test_ej_ref_text_inside_double_quotes_not_matched() -> str:
+    # The && inside the quoted commit message would, without quote-tracking,
+    # wrongly carve out a second top-level segment -- the dev-env#499
+    # false-positive class scan_top_level exists to prevent. Both spellings
+    # are embedded to cover the check's dual-spelling support in one case.
+    command = 'git commit -m "sync notes with engineering-journal && update engineering_journal path"'
+    assert not references_engineering_journal(command)
+    return "'engineering-journal' text inside a double-quoted commit message -> no match (dev-env#539)"
+
+
+def test_ej_ref_text_inside_subshell_not_matched() -> str:
+    command = "echo $(cat notes-about-engineering-journal.txt && echo engineering_journal)"
+    assert not references_engineering_journal(command)
+    return "'engineering-journal' text inside a $() subshell -> no match (dev-env#539)"
+
+
 def main() -> int:
     tests = [
         ("clean push has no error", test_clean_push_no_error),
@@ -130,6 +195,13 @@ def main() -> int:
         ("'git push' text in heredoc body ignored (dev-env#532)", test_push_text_in_heredoc_body_not_matched),
         ("'git push' text in double quotes ignored (dev-env#532)", test_push_text_inside_double_quotes_not_matched),
         ("'git push' text in $() subshell ignored (dev-env#532)", test_push_text_inside_subshell_not_matched),
+        ("cd-prefixed engineering-journal reference matched", test_ej_ref_with_cd_prefix_matched),
+        ("git -C engineering-journal reference matched", test_ej_ref_with_dash_c_matched),
+        ("underscore-spelled engineering_journal reference matched", test_ej_ref_underscore_spelling_matched),
+        ("unrelated repo reference not matched", test_ej_ref_unrelated_repo_not_matched),
+        ("'engineering-journal' text in heredoc body ignored (dev-env#539)", test_ej_ref_text_in_heredoc_body_not_matched),
+        ("'engineering-journal' text in double quotes ignored (dev-env#539)", test_ej_ref_text_inside_double_quotes_not_matched),
+        ("'engineering-journal' text in $() subshell ignored (dev-env#539)", test_ej_ref_text_inside_subshell_not_matched),
     ]
     failed = 0
     for name, fn in tests:
