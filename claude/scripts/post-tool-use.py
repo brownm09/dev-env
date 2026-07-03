@@ -12,6 +12,14 @@ but that is a per-project choice, not a universal one -- e.g. lifting-logbook
 deliberately tracks it in git (dev-env#527). Projects without the file at all
 are silently skipped.
 
+Cross-repo resolution (dev-env#542): when the invoking session's own cwd has
+no resolvable hook-config.json but the gh command names an explicit
+`--repo owner/name` for a DIFFERENT, locally-checked-out repo, load_config
+looks for that repo as a sibling checkout and uses its config instead --
+otherwise a `gh issue create --repo <other-repo>` filed from an unrelated
+project's session always silently no-ops, since cwd never matches the
+command's actual target. See extract_repo_flag / _sibling_repo_config.
+
 hook-config.json schema:
   {
     "project_number":  "2",
@@ -53,7 +61,7 @@ import subprocess
 import sys
 
 from _gh_project import add_to_project
-from _hookio import read_command_output, scan_top_level
+from _hookio import read_command_output, scan_top_level, split_top_level
 from _worktree_canon import canonical_root_from_worktree
 
 CONFIG_FILE = ".claude/hook-config.json"
@@ -86,6 +94,43 @@ def is_issue_create_command(command: str) -> bool:
 def is_pr_create_command(command: str) -> bool:
     """Return True only when *command* contains a top-level `gh pr create`."""
     return scan_top_level(command, _check_pr_create_stmt)
+
+
+_REPO_FLAG_RE = re.compile(r"(?:--repo|-R)[\s=]+(\"[^\"]+\"|'[^']+'|\S+)")
+
+# `gh --repo` also accepts a full URL or a bare host-prefixed form
+# (https://cli.github.com/manual/gh#--repo-string) -- normalize both down to
+# `owner/name` so _sibling_repo_config's exact-string comparison against a
+# sibling config's own canonical `repo` field still matches (dev-env#544 review).
+_REPO_HOST_PREFIX_RE = re.compile(r"^(?:https?://)?(?:www\.)?github\.com/", re.IGNORECASE)
+
+
+def extract_repo_flag(command: str) -> str | None:
+    """Return the `--repo`/`-R` value from *command*'s top-level `gh issue
+    create` / `gh pr create` statement, normalized to `owner/name`, or None
+    if absent (dev-env#542).
+
+    Only scans the statement segment that itself matched
+    `_check_issue_create_stmt` / `_check_pr_create_stmt` -- never a heredoc
+    body, quoted string, or $() subshell elsewhere in the command -- so this
+    shares is_issue_create_command's top-level-only discipline (dev-env#499).
+    Best-effort within that segment: an unusual construction where a quoted
+    --title/--body value itself contains literal "--repo" text before the
+    real flag could match the wrong occurrence. Conservative by design, same
+    trade-off as effective_merge_dir in _hookio.py -- the caller
+    (_sibling_repo_config) only ever trusts an extracted value that a real
+    sibling checkout's own hook-config.json independently confirms (and
+    _read_config never raises on a malformed derived path -- dev-env#544
+    review), so a misparse here degrades to today's silent skip, never a
+    wrong add or a crash.
+    """
+    for segment in split_top_level(command):
+        if _check_issue_create_stmt(segment) or _check_pr_create_stmt(segment):
+            m = _REPO_FLAG_RE.search(segment)
+            if m:
+                value = m.group(1).strip("\"'")
+                return _REPO_HOST_PREFIX_RE.sub("", value).rstrip("/")
+    return None
 
 
 def _canonical_root_from_common_dir(cwd: str, common: str) -> str | None:
@@ -126,14 +171,57 @@ def canonical_root_via_git(cwd: str) -> str | None:
 
 
 def _read_config(path: str) -> dict | None:
+    """Load and parse *path* as JSON, or None on any failure to do so --
+    missing file, a malformed path (reserved characters, a null byte -- can
+    reach here via _sibling_repo_config's best-effort *name* derivation,
+    dev-env#544 review), or valid JSON that isn't a dict. `OSError` subsumes
+    `FileNotFoundError`; `ValueError` subsumes `json.JSONDecodeError` -- both
+    listed for clarity. Never raises."""
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+            data = json.load(f)
+    except (OSError, ValueError):
         return None
+    return data if isinstance(data, dict) else None
 
 
-def load_config(cwd: str) -> dict | None:
+def _sibling_repo_config(own_root: str, repo_flag: str) -> dict | None:
+    """Best-effort cross-repo hook-config.json lookup (dev-env#542).
+
+    *own_root* is this session's own canonical checkout root; *repo_flag* is
+    an `owner/name` parsed off an explicit `gh issue/pr create --repo` flag
+    naming a DIFFERENT repo. Looks for `name` as a sibling checkout under the
+    same parent directory this whole fleet already uses -- the convention
+    reconcile-project-board.py's `--scan-dir C:/Users/brown/Git` invocation
+    and _repo_scan.find_git_repos already rely on.
+
+    Never a directory-name guess alone: only returned when the sibling's own
+    hook-config.json self-reports a `repo` field matching *repo_flag*
+    exactly (case-insensitive). A same-named-but-unrelated sibling directory,
+    a sibling with no config, or no sibling checkout at all all yield None --
+    the same silent-skip behavior as before this function existed, never a
+    wrong-project add.
+    """
+    name = repo_flag.rsplit("/", 1)[-1]
+    if not name or not own_root:
+        return None
+    # own_root can be the raw, unnormalized cwd (the `root or cwd` fallback in
+    # load_config, when canonical_root_via_git failed) -- a trailing separator
+    # there makes os.path.dirname return own_root itself instead of its
+    # parent, silently searching one level too deep (dev-env#544 review).
+    own_root = os.path.normpath(own_root)
+    sibling_root = os.path.join(os.path.dirname(own_root), name)
+    if os.path.normpath(sibling_root) == own_root:
+        return None
+    cfg = _read_config(os.path.join(sibling_root, CONFIG_FILE))
+    if cfg is None:
+        return None
+    if str(cfg.get("repo", "")).strip().lower() != repo_flag.strip().lower():
+        return None
+    return cfg
+
+
+def load_config(cwd: str, command: str | None = None) -> dict | None:
     """Load hook-config.json for the project, or None.
 
     In projects that gitignore the config (dev-env's own convention -- not a
@@ -146,6 +234,14 @@ def load_config(cwd: str) -> dict | None:
     git (e.g. lifting-logbook) never hits the fallback: `git worktree add`
     checks out tracked files normally, so the cwd-local read on the first
     line already finds it.
+
+    *command*, when given, enables one more resolution attempt after the cwd
+    / worktree branches above all miss: `gh issue create --repo owner/name`
+    (or `gh pr create`) may name a DIFFERENT repo than this session's own cwd
+    (dev-env#542) -- a common cross-repo filing pattern this function
+    otherwise has no way to route correctly, since cwd is the *session's*
+    repo, not the command's target. See `_sibling_repo_config` for the
+    resolution + verification strategy.
     """
     cfg = _read_config(os.path.join(cwd, CONFIG_FILE))
     if cfg is not None:
@@ -159,7 +255,21 @@ def load_config(cwd: str) -> dict | None:
     # Sibling worktree (`<root>-<suffix>`): resolve the canonical root via git.
     root = canonical_root_via_git(cwd)
     if root and os.path.normpath(root) != os.path.normpath(cwd):
-        return _read_config(os.path.join(root, CONFIG_FILE))
+        cfg = _read_config(os.path.join(root, CONFIG_FILE))
+        if cfg is not None:
+            return cfg
+    # Cross-repo (dev-env#542): only reached when this session's own cwd (and
+    # its worktree/sibling-worktree fallbacks) resolved NO config above -- a
+    # session whose cwd already has its own hook-config.json keeps that one
+    # and never attempts this branch (dev-env#544 review). The gh command
+    # names an explicit --repo/-R target different from this session's own
+    # repo; look for it as a sibling checkout -- see _sibling_repo_config.
+    if command:
+        repo_flag = extract_repo_flag(command)
+        if repo_flag:
+            cfg = _sibling_repo_config(root or cwd, repo_flag)
+            if cfg is not None:
+                return cfg
     return None
 
 
@@ -420,7 +530,7 @@ def main() -> None:
         sys.exit(0)
 
     # Load project config — skip silently if not present
-    config = load_config(cwd)
+    config = load_config(cwd, command)
     if config is None:
         sys.exit(0)
 
