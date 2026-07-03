@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02 (ten amendments — see Amendment sections below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use
+**Amended:** 2026-07-01, 2026-07-02 (eleven amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist
 
 ---
 
@@ -666,3 +666,78 @@ the mechanical act of doing what was already written down. The three-times-repea
 Amendments 1/6/9 (a sweep is only as complete as the list it started from) has a corollary: when a sweep
 *does* write down what it deliberately left out, that note is the cheapest possible seed for the next
 sweep — cheaper than re-deriving the gap from a fresh grep.
+
+## Amendment 11 (2026-07-02) — automating Amendment 9's durable mechanical grep proxy into a regression test (dev-env#534)
+
+Amendment 9's closing "General lesson" proposed a specific, concrete mitigation for the pattern all of
+Amendments 1, 6, and 9 kept re-discovering — a sweep is only as complete as the list it started from:
+"grep the whole `claude/scripts/` tree for the literal string `\"gh pr merge\" not in command` (and its
+`\"gh pr create\"` / `\"git push\"` analogs...) before declaring any future `scan_top_level` convergence
+sweep complete." That proxy was itself never more than prose in this ADR — a manual step a human or a
+future session had to remember to run. Amendment 10 is direct proof the reminder alone wasn't durable
+enough on its own: it required a *second* named issue (dev-env#532) and PR to actually close the gap
+Amendment 9 had already written down by hand. This amendment converts the reminder from a checklist item
+into `claude/scripts/tests/test_no_crude_command_substring_checks.py`, an enforced regression test.
+
+**Why AST, not grep.** A grep-based version would face exactly the problem PR #530's own diff had to
+navigate carefully by hand: the fix's explanatory comments and test docstrings *quote* the crude pattern's
+literal text to describe the bug it replaced (see this ADR's own Amendment 9/10 prose above, and the
+`test_post_merge_tile_checkpoint.py` / `test_post_pr_merge_pull.py` / `test_post_pr_merge_reclaim.py`
+comment blocks PR #530 added), so a naive text search for `"gh pr merge" not in command` matches its own
+documentation. `ast.parse` sidesteps this categorically rather than approximately: a comment is stripped
+by the tokenizer before the parser ever produces a node for it, and a docstring's string constant is never
+itself an operand of a `Compare` node unless it is literally live code performing the comparison. The new
+test's `test_ignores_pr530_style_explanatory_comment` case proves this directly — it feeds PR #530's own
+verbatim comment text through both a naive substring grep (which reports a false positive, as predicted)
+and the AST detector (which correctly reports none).
+
+**Generalized beyond the three named literals.** Amendment 10's own repo-wide grep, run immediately before
+that fix, checked specifically for `"gh pr create" not in command`, `"gh pr merge" not in command`, and
+`"git push" not in command` — the three literals Amendment 9 named — and correctly found zero, zero, and
+one match respectively. The new test's detector instead flags *any* string-literal `in`/`not in` check
+against a variable named `command`, because an AST walk costs no more to make generic than to hardcode to
+three strings. Running the generalized detector against the current tree surfaced **two previously
+untracked instances of the identical shape**, both in `stub-push-archive-reminder.py`:
+`"engineering-journal" not in command` and `"engineering_journal" not in command` (checking whether the
+raw command references the engineering-journal repo by name, not whether it invokes a specific CLI
+subcommand). Neither has ever been named by any prior ADR text or issue — a grep scoped to the three
+historical literals, including Amendment 10's own, would not have found them, because they were never on
+anyone's list of "known" instances to check for. This is the concrete value of grepping for the *shape* of
+the bug rather than its previously-observed instances, one level more thoroughly than Amendment 6's own
+"grep for the engine, not the call pattern" lesson already argued for.
+
+**The allowlist is two-sided, not a one-way exemption list.** Since converging
+`stub-push-archive-reminder.py`'s two `engineering-journal` checks onto `scan_top_level` is a
+hook-behavior change and out of scope for a test-only PR, the new test carries a small
+`_KNOWN_EXCEPTIONS` set (matched on filename + literal text, not line number) so it passes today instead
+of failing on introduction against known, pre-existing debt. That set is checked in both directions: a
+live offense absent from it fails the test (the actual regression-prevention purpose), and an entry
+present in it with no matching live offense *also* fails the test, so a future fix can't leave a stale
+exception behind to rot silently. This is not a hypothetical concern invented for symmetry — it is exactly
+what would have happened to this same test had it existed a day earlier: dev-env#532/PR #533 converged
+`stub-push-archive-reminder.py`'s `"git push" not in command` check (Amendment 10, above) while this
+amendment's own test was being authored, so a `("stub-push-archive-reminder.py", "git push")` exception
+drafted before that merge would have gone stale within the same PR's lifetime. The two-sided check is what
+makes that self-correcting rather than silently permissive.
+
+**Follow-up, not fixed here.** The two `engineering-journal` checks are tracked via a `spawn_task` tile and
+a linked follow-up issue at merge time (per [ADR-046](046-post-merge-followup-tiles.md)'s "durable
+tracking still needs an issue, the tile and the issue are complementary" rule), not converged in this PR.
+
+**Coverage:** the new test's own detector is self-tested against ten synthetic fixtures (a live check; a
+fourth literal outside the ADR's original three, proving genericity; a full-line comment; a trailing
+inline comment; a docstring mention; unrelated variable names `cmd`/`commands`; an unrelated membership
+check on a different variable — the real `"error:" in lower` shape from this same file's own
+`has_push_error()`; reverse operand order; an offense as the second link of a chained comparison, not the
+first, verified empirically via `ast.dump` before the assertion was written; and the PR #530
+calibration case above), plus the repo-wide gate itself (11 cases total). All existing suites
+(`test_hookio.py`, `test_stub_push_archive_reminder.py`, and the item-1 syntax check over every
+`claude/scripts/*.py` file) were re-run unchanged and continue to pass — no hook runtime behavior is
+touched by this amendment.
+
+**General lesson (continuing Amendments 1, 6, and 9's):** a written-down mechanical proxy is exactly as
+missable as a conceptual sweep until it stops being something a session has to remember to run. Amendment
+9 wrote the grep down; Amendment 10 is proof that writing it down was not, by itself, sufficient to make
+it happen without a second dedicated issue. The durable form of a "remember to grep for X" note is not a
+better-worded note — it is the grep, committed, enforced, and running on every future change to this
+directory.
