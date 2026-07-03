@@ -72,20 +72,15 @@ SCRIPTS_DIR = REPO_ROOT / "claude" / "scripts"
 # underlying code was fixed) fails the test too, so this set cannot silently
 # rot -- see test_repo_has_no_unexpected_or_stale_command_substring_checks.
 #
-# Both entries below check whether the raw command references the
-# engineering-journal repo by name, via the same unanchored substring shape
-# ADR-050 documents for CLI-invocation detection -- just applied to a repo-name
-# literal instead of a `gh`/`git` subcommand literal. Neither is named by any
-# prior ADR or issue; both were surfaced by this test (dev-env#534), not by
-# Amendment 9's or Amendment 10's own narrower, three-literal greps (Amendment
-# 10's own repo-wide grep, run immediately before that fix, checked only for
-# the "gh pr create" / "gh pr merge" / "git push" literals -- exactly the scope
-# this test intentionally goes beyond). Converging them onto scan_top_level is
-# a hook-behavior change and is out of scope for this test-only PR.
-_KNOWN_EXCEPTIONS = {
-    ("stub-push-archive-reminder.py", "engineering-journal"),
-    ("stub-push-archive-reminder.py", "engineering_journal"),
-}
+# Empty as of dev-env#539 (ADR-050 Amendment 12): the two entries previously
+# here -- stub-push-archive-reminder.py's "engineering-journal" and
+# "engineering_journal" checks, surfaced by this test itself (dev-env#534) and
+# left as tracked debt by Amendment 11 -- are now converged onto
+# scan_top_level via references_engineering_journal(). Left as an explicitly
+# typed empty set (not deleted) so a future genuinely-new crude check has an
+# established place to land, with the two-sided gate above still enforcing it
+# can't rot.
+_KNOWN_EXCEPTIONS: set[tuple[str, str]] = set()
 
 
 def find_command_substring_checks(source: str, filename: str = "<string>") -> list[tuple[int, str]]:
