@@ -85,7 +85,7 @@ Auto-merge must never be enabled at the repo level (no default branch protection
 
 ---
 
-## Addendum (2026-07-03) — the repo-level toggle and the escape hatch are the same switch
+## Addendum (2026-07-03) — The repo-level toggle and the escape hatch are the same switch
 
 The Decision above treats "auto-merge disabled at the repo level" and the "per-PR escape hatch"
 (`gh pr merge --auto`) as independent controls. They are not: GitHub exposes exactly one
@@ -113,8 +113,12 @@ session hitting this error had no way to tell from this document alone.
 **Consequence the Decision didn't spell out:** with the toggle off, the "Per-PR escape hatch"
 clause describes an operation that cannot be invoked in that repo, full stop — it fails at the
 GitHub API before any in-session judgment about whether the gates have passed even comes into
-play. No `brownm09/*` repo has deliberately opted in, so treat the escape hatch as **currently
-inert everywhere**, not as a case-by-case convenience.
+play. `allow_auto_merge: false` was confirmed for lifting-logbook this session (`gh api
+repos/brownm09/lifting-logbook`); no repo-by-repo survey was run across the rest of `brownm09/*`.
+ADR-031's Decision sets the toggle-off posture as the repo-wide default with no documented
+exceptions, so absent evidence of a deliberate opt-in elsewhere, treat the escape hatch as
+**currently inert everywhere** — but a session on an unfamiliar repo should still verify rather
+than assume (see Operational guidance below).
 
 **Operational guidance:** don't rediscover this per-PR.
 
