@@ -38,7 +38,8 @@ JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SENTINEL = Path.home() / ".claude" / "scratch" / "stub-pushed.flag"
 
 # Anchored top-level match — identical to pr-merge-reminder.py's
-# _check_push_stmt / is_git_push_command (ADR-050 Amendments 5/6/10).
+# _check_push_stmt / is_git_push_command (ADR-050 Amendment 5 and this
+# Amendment 10).
 _PUSH_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?git\s+push\b")
 
 
@@ -51,10 +52,9 @@ def is_git_push_command(command: str) -> bool:
 
     Anchored via `scan_top_level` rather than a raw substring test, so
     `git push` text inside a heredoc body, a quoted argument, or a `$()`
-    subshell does not count as an invocation — matching the pattern used in
-    usage-snapshot.py / pr-merge-reminder.py / post-pr-merge-project.py /
-    post-merge-tile-checkpoint.py / post-pr-merge-pull.py /
-    post-pr-merge-reclaim.py (dev-env#532, ADR-050 Amendment 10).
+    subshell does not count as an invocation — identical to
+    pr-merge-reminder.py's own `is_git_push_command()`, the only other hook
+    with a git-push-detection need (dev-env#532, ADR-050 Amendment 10).
     """
     return scan_top_level(command, _check_push_stmt)
 

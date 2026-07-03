@@ -91,6 +91,11 @@ def test_bare_push_matched() -> str:
     return "bare git push -> matched (sanity baseline)"
 
 
+def test_push_with_cd_prefix_matched() -> str:
+    assert is_git_push_command("cd /Git/engineering-journal && git push")
+    return "cd <dir> && git push -> matched (_PUSH_RE's optional cd-prefix branch)"
+
+
 def test_push_text_in_heredoc_body_not_matched() -> str:
     command = "git commit -F - <<'EOF'\ngit push origin main\nEOF"
     assert not is_git_push_command(command)
@@ -121,6 +126,7 @@ def main() -> int:
         ("case-insensitive match", test_case_insensitive),
         ("empty output has no error", test_empty_output_no_error),
         ("bare git push matched", test_bare_push_matched),
+        ("cd-prefixed git push matched", test_push_with_cd_prefix_matched),
         ("'git push' text in heredoc body ignored (dev-env#532)", test_push_text_in_heredoc_body_not_matched),
         ("'git push' text in double quotes ignored (dev-env#532)", test_push_text_inside_double_quotes_not_matched),
         ("'git push' text in $() subshell ignored (dev-env#532)", test_push_text_inside_subshell_not_matched),

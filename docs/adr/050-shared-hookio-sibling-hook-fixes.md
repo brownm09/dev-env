@@ -620,9 +620,11 @@ Amendment 9's own "General lesson" named the exact gap this amendment closes: it
 proxy explicitly listed `stub-push-archive-reminder.py`'s `git push`-only check as "left untouched here as
 out of scope for this issue." This amendment is that named follow-up, not a new discovery — a repo-wide
 grep for `"gh pr create" not in command` and `"gh pr merge" not in command` immediately before this fix
-confirmed both were already zero matches in `claude/scripts/*.py` (closed by Amendment 5's
-`post-tool-use.py` fix and Amendment 9 respectively); `"git push" not in command` had exactly one, this
-file's line 82.
+confirmed both were already zero matches in `claude/scripts/*.py` (the `"gh pr merge"` shape closed by
+Amendment 9; the `"gh pr create"` shape appears to have never existed in that literal form —
+`post-tool-use.py`'s pre-Amendment-5 bug was a differently-shaped unanchored `re.search`, not this literal
+substring test, so the zero-match count isn't evidence any amendment specifically "closed" it); `"git push"
+not in command` had exactly one match, this file's line 82.
 
 **Shape difference from Amendment 9's three files:** `post-merge-tile-checkpoint.py`,
 `post-pr-merge-pull.py`, and `post-pr-merge-reclaim.py` each already exposed their substring check as a
