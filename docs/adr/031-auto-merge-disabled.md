@@ -161,7 +161,8 @@ all-findings gate, project-board automation) have already run in the same sessio
 it would downgrade their protection from "impossible to skip" to "skipped only if the session
 remembers to sequence `--auto` correctly," which is exactly the discipline-only enforcement this
 environment avoids relying on elsewhere (see the canonical-checkout-mutate-guard hook, ADR-071;
-the memory-immortalization issue-pairing rule; the pre-install-freespace-gate hook, ADR-045).
+the memory-immortalization issue-pairing rule, ADR-048; the pre-install-freespace-gate hook,
+ADR-045).
 Rejecting Alternative B in the original Rationale ("per-PR auto-merge without the in-session
 gates... is no different from skipping them on every PR") already made this argument for the
 manual-invocation case; the same logic applies to trusting a session to self-police *when* it
@@ -186,5 +187,10 @@ addendum: it does not describe an available operation.
 verifies, at the moment `--auto` is invoked, that `/review`, ADR-warrant checkpoint 3, and
 doc-reconciliation checkpoint 3 have already completed in the current session — i.e., something
 that restores the "impossible to skip" property this addendum is unwilling to trade away for
-convenience. Absent such a gate, re-opening this question should default to "no" for the same
-reasons given here.
+convenience. Only these three are named because they are the only ones a pre-invocation check
+could ever verify: the other three rules (`usage-snapshot.py`, the post-merge journal stub,
+project-board automation) are tied to the physical merge moment itself, which `--auto` always
+defers to an async, out-of-session event — no pre-check, however sophisticated, can make an
+async merge produce an in-session moment to hook. Their loss is inherent to using `--auto` at
+all, not a gap this future gate could close. Absent the three-rule gate, re-opening this question
+should default to "no" for the same reasons given here.
