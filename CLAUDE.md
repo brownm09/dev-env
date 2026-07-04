@@ -526,6 +526,17 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     that `cd`s or `-C`s *into* the canonical root from elsewhere — is a deliberate scope limitation, not a
     tested case ([ADR-071](docs/adr/071-canonical-checkout-mutate-guard-hook.md)).
 
+    Also exercises `is_mutating_gh_segment()` ([ADR-071 Amendment 1](docs/adr/071-canonical-checkout-mutate-guard-hook.md);
+    dev-env#558): `gh pr merge --delete-branch`/`-d` (any flag order, other flags present) is classified as
+    mutating — it checks out the base branch and deletes the local branch locally, the same silent-HEAD-thrash
+    harm model reached through a `gh` invocation instead of a `git` verb — while a bare `gh pr merge` or
+    `gh pr merge --squash` (no delete-branch flag, remote-API-only) stays classified as safe; the same
+    heredoc-mention and anchored-override-prefix guarantees apply to the `gh` classifier as to the `git` one.
+    End-to-end: `gh pr merge --delete-branch`/`-d` from a canonical (non-worktree) checkout is blocked (exit 2)
+    with the matched command named in the reason; the same command from a worktree-pattern cwd is allowed
+    (out of scope, unchanged); a bare `gh pr merge`/`--squash` is allowed from a canonical root; and the
+    override token bypasses the block.
+
     ```bash
     py -3 claude/scripts/tests/test_canonical_mutate_guard.py
     ```

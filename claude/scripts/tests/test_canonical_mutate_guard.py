@@ -17,6 +17,15 @@ no worktrees needed):
      `$(cat <<'MARKER' ... MARKER)` span, applied to both classify() and
      _has_override()).
 
+     Also covers `classify()` / `is_mutating_gh_segment()` (dev-env#558,
+     ADR-071 Amendment 1): `gh pr merge -d`/`--delete-branch` (any flag order,
+     other flags present) is classified as mutating — it checks out the base
+     branch and deletes the local branch locally, the same silent-HEAD-thrash
+     harm model reached through a `gh` invocation instead of a `git` verb —
+     while a bare `gh pr merge` or `gh pr merge --squash` (no delete-branch
+     flag, remote-API-only) stays classified as safe. Same anchoring/heredoc-
+     mention/override machinery as the git-verb classifier, reused as-is.
+
      Since dev-env#511 (ADR-050 Amendment 7), segmenting comes from the
      shared `_hookio.split_top_level(cmd, split_pipe=True)` engine rather
      than a narrow regex splitter — the heredoc/override tests above still
@@ -53,7 +62,12 @@ no worktrees needed):
        - malformed JSON / missing cwd / non-Bash tool_name fail open (exit 0);
        - a read-only command (git status) from a canonical root is allowed;
        - `git pull --ff-only` is allowed, bare `git pull` is blocked;
-       - a mutating verb mentioned only inside a heredoc body does not trigger.
+       - a mutating verb mentioned only inside a heredoc body does not trigger;
+       - `gh pr merge --delete-branch`/`-d` from a canonical root is BLOCKED
+         (exit 2); the same command from a worktree-pattern cwd is allowed
+         (exit 0); a bare `gh pr merge` / `gh pr merge --squash` is allowed
+         from a canonical root; and the override token bypasses the block
+         (dev-env#558, ADR-071 Amendment 1).
 
 Usage:
     py -3 claude/scripts/tests/test_canonical_mutate_guard.py
@@ -148,6 +162,99 @@ def test_readonly_commands_classified_as_safe() -> str:
         if cmg.is_mutating_segment(cmd):
             raise AssertionError(f"{label!r} ({cmd!r}) should NOT be classified as mutating")
     return f"{len(_READONLY_CASES)} read-only cases correctly classified as safe"
+
+
+_GH_MUTATING_CASES = [
+    ("gh pr merge --delete-branch", "gh pr merge --delete-branch"),
+    ("gh pr merge -d", "gh pr merge -d"),
+    ("gh pr merge --squash --delete-branch", "gh pr merge --squash --delete-branch (flag order/other flags present)"),
+    ("gh pr merge -d --squash", "gh pr merge -d --squash (delete-branch flag first)"),
+]
+
+_GH_READONLY_CASES = [
+    ("gh pr merge", "bare gh pr merge (remote-only, no local mutation)"),
+    ("gh pr merge --squash", "gh pr merge --squash (no delete-branch flag)"),
+    ("gh pr merge --auto", "gh pr merge --auto (no delete-branch flag)"),
+    ("gh pr create --title foo", "gh pr create (not a merge)"),
+    ("gh pr view 42", "gh pr view (not a merge)"),
+    ("gh issue create --title foo", "gh issue create (not pr merge)"),
+]
+
+
+def test_gh_pr_merge_delete_branch_classified_as_mutating() -> str:
+    """dev-env#558: `gh pr merge -d`/`--delete-branch`, run from the branch
+    it's merging, must check out the base branch and delete the local branch
+    locally (a checked-out branch can't be deleted) — the exact same silent
+    local-HEAD-thrash harm model is_mutating_segment() already blocks for
+    `git checkout`/`git branch -d`, reached through a `gh` invocation instead
+    of a `git` verb.
+    """
+    for cmd, label in _GH_MUTATING_CASES:
+        if not cmg.is_mutating_gh_segment(cmd):
+            raise AssertionError(f"{label!r} ({cmd!r}) should be classified as mutating")
+    return f"{len(_GH_MUTATING_CASES)} gh pr merge -d/--delete-branch cases correctly classified as mutating"
+
+
+def test_gh_pr_merge_without_delete_branch_classified_as_safe() -> str:
+    """A bare `gh pr merge` (no delete-branch flag) merges only remotely via
+    the GitHub API and touches no local state at all — must stay unblocked,
+    matching gh's own remote-only behavior and this hook's zero-friction
+    treatment of every other non-mutating command.
+    """
+    for cmd, label in _GH_READONLY_CASES:
+        if cmg.is_mutating_gh_segment(cmd):
+            raise AssertionError(f"{label!r} ({cmd!r}) should NOT be classified as mutating")
+    return f"{len(_GH_READONLY_CASES)} gh commands without delete-branch correctly classified as safe"
+
+
+def test_classify_flags_gh_pr_merge_delete_branch() -> str:
+    """classify()'s per-segment loop must catch a `gh pr merge -d` segment
+    exactly like a `git checkout -b` segment — same severity, same existing
+    cd-scope/override machinery, wired via the same loop.
+    """
+    cmd = "git status && gh pr merge --delete-branch"
+    matched = cmg.classify(cmd)
+    if matched is None or "gh pr merge" not in matched:
+        raise AssertionError(f"expected the gh pr merge segment to be flagged, got {matched!r}")
+    return "classify() finds a gh pr merge --delete-branch segment among safe ones"
+
+
+def test_classify_allows_bare_gh_pr_merge() -> str:
+    cmd = "git status && gh pr merge --squash"
+    matched = cmg.classify(cmd)
+    if matched is not None:
+        raise AssertionError(f"expected no match for a delete-branch-less gh pr merge, got {matched!r}")
+    return "classify() allows gh pr merge --squash (no delete-branch flag)"
+
+
+def test_gh_pr_merge_override_bypasses() -> str:
+    """The override token must bypass a gh pr merge -d match exactly like it
+    bypasses a git-verb match — same generic override machinery, no
+    gh-specific carve-out needed.
+    """
+    cmd = "ALLOW_CANONICAL_MUTATE=1 gh pr merge -d"
+    if not cmg._has_override(cmd):
+        raise AssertionError(f"expected override to be recognized ahead of a gh pr merge -d: {cmd!r}")
+    return "ALLOW_CANONICAL_MUTATE=1 override recognized ahead of gh pr merge -d"
+
+
+def test_gh_pr_merge_delete_branch_mention_in_heredoc_does_not_trigger() -> str:
+    """A heredoc body merely mentioning "gh pr merge -d" as prose (e.g. a
+    commit message describing this very fix) must not trigger — mirrors
+    test_heredoc_mention_does_not_trigger for the git-verb classifier.
+    """
+    cmd = (
+        'cat <<EOF > notes.txt\n'
+        'This hook now also blocks gh pr merge -d and gh pr merge --delete-branch.\n'
+        'EOF\n'
+        'git status'
+    )
+    matched = cmg.classify(cmd)
+    if matched is not None:
+        raise AssertionError(
+            f"heredoc body mentioning 'gh pr merge -d' should not trigger, got {matched!r}"
+        )
+    return "heredoc/prose mention of 'gh pr merge -d' does not trigger"
 
 
 def test_classify_returns_first_mutating_segment() -> str:
@@ -583,6 +690,12 @@ def main_unit() -> list:
     return [
         ("mutating verbs classified as mutating", test_mutating_verbs_classified_as_mutating),
         ("read-only commands classified as safe", test_readonly_commands_classified_as_safe),
+        ("gh pr merge -d/--delete-branch classified as mutating (dev-env#558)", test_gh_pr_merge_delete_branch_classified_as_mutating),
+        ("gh pr merge without delete-branch classified as safe (dev-env#558)", test_gh_pr_merge_without_delete_branch_classified_as_safe),
+        ("classify() flags gh pr merge --delete-branch (dev-env#558)", test_classify_flags_gh_pr_merge_delete_branch),
+        ("classify() allows bare gh pr merge (dev-env#558)", test_classify_allows_bare_gh_pr_merge),
+        ("gh pr merge -d override bypasses (dev-env#558)", test_gh_pr_merge_override_bypasses),
+        ("gh pr merge -d mention in heredoc does not trigger (dev-env#558)", test_gh_pr_merge_delete_branch_mention_in_heredoc_does_not_trigger),
         ("classify() finds first mutating segment", test_classify_returns_first_mutating_segment),
         ("classify() returns None when all safe", test_classify_returns_none_when_all_segments_safe),
         ("heredoc mention does not trigger", test_heredoc_mention_does_not_trigger),
@@ -753,6 +866,107 @@ def test_main_blocks_commit_with_heredoc_message_from_canonical_root() -> str:
                 f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
             )
     return "git commit -m \"$(cat <<'EOF'...)\" is blocked end-to-end (dev-env#511 follow-up)"
+
+
+def test_main_blocks_gh_pr_merge_delete_branch_from_canonical_root() -> str:
+    """dev-env#558 end-to-end: `gh pr merge -d`/`--delete-branch` from a
+    canonical (non-worktree) checkout is blocked exactly like a `git
+    checkout -b` — same severity, same reason format, same override/worktree
+    machinery, reached through is_mutating_gh_segment() instead of
+    is_mutating_segment().
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "canonical-repo"
+        repo.mkdir()
+        _init_throwaway_repo(repo)
+        for cmd in ("gh pr merge --delete-branch", "gh pr merge -d"):
+            payload = {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+                "cwd": str(repo),
+            }
+            proc = _run_hook(payload)
+            if proc.returncode != 2:
+                raise AssertionError(
+                    f"expected exit 2 (block) for {cmd!r}, got {proc.returncode}. "
+                    f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+                )
+            if proc.stdout.strip():
+                raise AssertionError(f"expected empty stdout for {cmd!r}, got {proc.stdout!r}")
+            try:
+                reason = json.loads(proc.stderr).get("reason", "")
+            except json.JSONDecodeError:
+                raise AssertionError(f"stderr was not JSON for {cmd!r}: {proc.stderr!r}")
+            if "canonical-mutate-guard" not in reason or cmd not in reason:
+                raise AssertionError(f"block reason missing expected markers for {cmd!r}: {reason!r}")
+    return "gh pr merge --delete-branch and gh pr merge -d both blocked (exit 2) from a canonical root (dev-env#558)"
+
+
+def test_main_allows_bare_gh_pr_merge_from_canonical_root() -> str:
+    """A bare `gh pr merge` (no delete-branch flag) merges only via the
+    GitHub API and touches no local state — must stay allowed even from a
+    canonical (non-worktree) root.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "canonical-repo"
+        repo.mkdir()
+        _init_throwaway_repo(repo)
+        for cmd in ("gh pr merge", "gh pr merge --squash"):
+            payload = {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+                "cwd": str(repo),
+            }
+            proc = _run_hook(payload)
+            if proc.returncode != 0:
+                raise AssertionError(
+                    f"expected exit 0 (allow) for {cmd!r}, got {proc.returncode}. stderr={proc.stderr!r}"
+                )
+    return "bare gh pr merge and gh pr merge --squash allowed (exit 0) from a canonical root (dev-env#558)"
+
+
+def test_main_allows_gh_pr_merge_delete_branch_from_worktree_cwd() -> str:
+    """cwd matching the worktree pattern is out of scope for every mutating
+    command this hook recognizes, gh-based or git-based alike — ADR-024's
+    hook covers the worktree surface.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = Path(tmp) / ".claude" / "worktrees" / "some-worktree-name"
+        wt.mkdir(parents=True)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh pr merge --delete-branch"},
+            "cwd": str(wt),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"expected exit 0 (out of scope) from worktree cwd, got {proc.returncode}. "
+                f"stdout={proc.stdout!r}"
+            )
+    return "gh pr merge --delete-branch from a worktree-pattern cwd allowed (out of scope, exit 0, dev-env#558)"
+
+
+def test_main_gh_pr_merge_delete_branch_override_bypasses() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "canonical-repo"
+        repo.mkdir()
+        _init_throwaway_repo(repo)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ALLOW_CANONICAL_MUTATE=1 gh pr merge -d"},
+            "cwd": str(repo),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"expected exit 0 (override applied), got {proc.returncode}. stderr={proc.stderr!r}"
+            )
+    return "ALLOW_CANONICAL_MUTATE=1 override bypasses a gh pr merge -d block (exit 0, dev-env#558)"
 
 
 def test_main_allows_pull_ff_only_blocks_bare_pull() -> str:
@@ -943,6 +1157,10 @@ def main_e2e() -> list:
         ("main() allows read-only command from canonical root", test_main_allows_readonly_command_from_canonical_root),
         ("main() allows quoted fake-verb git log (dev-env#511)", test_main_allows_quoted_fake_verb_git_log_from_canonical_root),
         ("main() blocks commit with heredoc message (dev-env#511 follow-up)", test_main_blocks_commit_with_heredoc_message_from_canonical_root),
+        ("main() blocks gh pr merge --delete-branch/-d from canonical root (dev-env#558)", test_main_blocks_gh_pr_merge_delete_branch_from_canonical_root),
+        ("main() allows bare gh pr merge from canonical root (dev-env#558)", test_main_allows_bare_gh_pr_merge_from_canonical_root),
+        ("main() allows gh pr merge --delete-branch from worktree cwd (dev-env#558)", test_main_allows_gh_pr_merge_delete_branch_from_worktree_cwd),
+        ("main() override token bypasses gh pr merge -d block (dev-env#558)", test_main_gh_pr_merge_delete_branch_override_bypasses),
         ("main() allows pull --ff-only, blocks bare pull", test_main_allows_pull_ff_only_blocks_bare_pull),
         ("main() allows any command from worktree cwd", test_main_allows_any_command_from_worktree_cwd),
         ("main() override token bypasses block", test_main_override_token_bypasses_block),

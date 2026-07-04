@@ -92,12 +92,18 @@ branch argument and blocked — use `git checkout -- <path>` for file restores),
 switch, commit, merge, rebase, reset, cherry-pick, revert, stash pop/apply,
 branch -d/-D, and pull *except* when the same segment also contains
 `--ff-only` (fast-forwarding a canonical checkout to origin/main is the
-common, safe sync operation and must stay zero-friction).
+common, safe sync operation and must stay zero-friction). Also blocked (added
+dev-env#558, ADR-071 Amendment 1): `gh pr merge` carrying `-d`/`--delete-branch`
+— that flag makes `gh` check out the base branch and delete the local branch
+locally, the exact same silent-HEAD-thrash harm model reached through a `gh`
+invocation instead of a `git` verb.
 
 Explicitly NOT blocked (must stay zero-friction): status, log, diff, show,
 fetch, branch --show-current, rev-parse, ls-tree, blame, remote -v, plain
 `git branch` (no -d/-D), `git stash list`/`show`, `git checkout -- <path>`,
-`git pull --ff-only`, and anything non-git. Plain Read/Grep/Glob against a
+`git pull --ff-only`, a bare `gh pr merge` or `gh pr merge --squash` (no
+delete-branch flag — merges only remotely via the GitHub API, touches no
+local state), and anything non-git/non-gh. Plain Read/Grep/Glob against a
 canonical checkout is untouched entirely since this hook only matches Bash.
 
 Known, documented gap (not solved, v1 deferral): a command that `cd`s or
@@ -153,6 +159,18 @@ _CD_RE = re.compile(r"^\s*cd(?:\s|$)")
 # assignments) — captures the rest of the command (the subcommand + its
 # args) for verb classification in is_mutating_segment().
 _GIT_INVOCATION_RE = re.compile(r"^git(?:\.exe)?\s+(.*)$", re.IGNORECASE)
+
+# A `gh` invocation at the start of a segment (after stripping leading env-var
+# assignments) — captures the rest of the command for classification in
+# is_mutating_gh_segment(). Mirrors _GIT_INVOCATION_RE's shape exactly; `gh`
+# is a distinct binary from `git`, so this is a separate regex rather than a
+# shared one.
+_GH_INVOCATION_RE = re.compile(r"^gh(?:\.exe)?\s+(.*)$", re.IGNORECASE)
+
+# Standalone flag tokens on a `gh pr merge` invocation that make it mutate
+# LOCAL state (checks out the base branch, deletes the local branch) rather
+# than merging purely via the GitHub API. See is_mutating_gh_segment().
+_GH_DELETE_BRANCH_FLAGS = {"-d", "--delete-branch"}
 
 # Git-level options that can precede the actual subcommand (git's own option
 # grammar, not the subcommand's) — e.g. `git -c gc.auto=0 stash pop` or
@@ -290,6 +308,45 @@ def is_mutating_segment(segment: str) -> bool:
     return False
 
 
+def is_mutating_gh_segment(segment: str) -> bool:
+    """True if `segment` is a `gh pr merge` invocation carrying -d/--delete-branch.
+
+    `gh pr merge --help` documents `-d, --delete-branch: Delete the local and
+    remote branch after merge` — run from the branch it's merging, this must
+    check out the base branch and delete the local branch locally (a checked-
+    out branch can't be deleted), which is the exact same silent
+    local-HEAD-thrash harm model `is_mutating_segment()` already blocks for
+    `git checkout`/`git branch -d`, just reached through a `gh` invocation
+    instead of a literal `git` verb (dev-env#558). A bare `gh pr merge` (no
+    delete-branch flag) merges only remotely via the GitHub API and touches no
+    local state at all, so it must stay unblocked — mirrors the zero-friction
+    treatment `is_mutating_segment()` gives plain `git branch <name>` (create,
+    no switch) and `git checkout -- <path>` (no branch/HEAD movement).
+
+    Anchored at the start of the (env-stripped) segment's first physical line
+    only (`_strip_leading_env()` + `_first_line()`, exactly like
+    `is_mutating_segment()`) — a heredoc/`$()` body merely *mentioning*
+    "gh pr merge -d" as prose (e.g. a commit message describing this fix) must
+    not trigger, the same career-playbook #442 lesson `is_mutating_segment()`
+    already observes. Deliberately does NOT special-case a `--repo owner/repo`
+    flag on `gh pr merge -d` — matches this hook's own established
+    "block when in doubt" judgment call for a bare `git checkout <path>`.
+    """
+    stripped = _strip_leading_env(segment).strip()
+    m = _GH_INVOCATION_RE.match(_first_line(stripped))
+    if not m:
+        return False
+    rest = m.group(1).strip()
+    if not rest:
+        return False
+
+    tokens = rest.split()
+    if len(tokens) < 2 or tokens[0].lower() != "pr" or tokens[1].lower() != "merge":
+        return False
+
+    return any(t in _GH_DELETE_BRANCH_FLAGS for t in tokens[2:])
+
+
 def classify(cmd: str, segments: list = None):
     """Return the first mutating segment in `cmd`, or None if none found.
 
@@ -337,7 +394,7 @@ def classify(cmd: str, segments: list = None):
     for seg in segments:
         if _REDIRECT_RE.search(_first_line(seg)):
             continue
-        if is_mutating_segment(seg):
+        if is_mutating_segment(seg) or is_mutating_gh_segment(seg):
             return seg.strip()
     return None
 
@@ -435,8 +492,8 @@ def main() -> None:
         sys.exit(0)  # not a git repo at all / git unavailable -> fail open
 
     reason = (
-        f"[canonical-mutate-guard] BLOCKED: a git-mutating command was issued directly "
-        f"in a canonical (non-worktree) checkout. Two Claude Code sessions sharing one "
+        f"[canonical-mutate-guard] BLOCKED: a command that mutates local git state was "
+        f"issued directly in a canonical (non-worktree) checkout. Two Claude Code sessions sharing one "
         f"canonical checkout can collide — one session's checkout/commit/reset silently "
         f"thrashes HEAD out from under another concurrent session, scrambling commit "
         f"attribution or risking a stale-branch PR reverting the other session's already-"

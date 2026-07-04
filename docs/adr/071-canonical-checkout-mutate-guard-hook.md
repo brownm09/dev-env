@@ -1,8 +1,8 @@
 # ADR-071: PreToolUse Hook to Block Git-Mutating Bash Commands in a Canonical (Non-Worktree) Checkout
 
-**Date:** 2026-07-01
+**Date:** 2026-07-01 (amended 2026-07-04)
 **Status:** Accepted
-**Tags:** hooks, worktrees, pre-tool-use, bash, git, concurrency, canonical-checkout, rate-limit
+**Tags:** hooks, worktrees, pre-tool-use, bash, git, gh-cli, concurrency, canonical-checkout, rate-limit
 
 ---
 
@@ -253,3 +253,117 @@ of decision.
   false-positive lesson behind the segment-anchoring design
 - [Claude Code Hooks documentation](https://docs.anthropic.com/en/docs/claude-code/hooks) — hook exit
   codes and JSON output format
+- [dev-env#558](https://github.com/brownm09/dev-env/issues/558) — Amendment 1's motivating gap:
+  `gh pr merge -d`/`--delete-branch` was invisible to the guard
+- [`gh pr merge` manual](https://cli.github.com/manual/gh_pr_merge) — documents `-d`/`--delete-branch`:
+  "Delete the local and remote branch after merge"
+
+---
+
+## Amendment 1 (2026-07-04) — `gh pr merge -d`/`--delete-branch` reaches the same harm model through a `gh` invocation (dev-env#558)
+
+### The gap
+
+`is_mutating_segment()` only classifies `git`/`git.exe`-prefixed invocations (see `_GIT_INVOCATION_RE`
+and this file's own "Mutating verbs blocked" list above) — the command surface this hook watches for
+was scoped to literal `git` verbs from the start. `gh pr merge --help` documents:
+
+```
+-d, --delete-branch          Delete the local and remote branch after merge
+```
+
+Run from the branch it's merging, `gh pr merge -d`/`--delete-branch` must locally check out the base
+branch and delete the local branch to fulfil `--delete-branch` (a checked-out branch can't be deleted)
+— **the exact same silent local-HEAD-thrash harm model this hook already blocks for `git
+checkout`/`git branch -d`**, just reached through a `gh` invocation instead of a literal `git` verb. A
+`gh pr merge -d` issued directly in a canonical (non-worktree) checkout was, before this amendment,
+completely invisible to the guard: no block, no override needed, the same silent collision
+dev-env#453 documents for `git checkout` — just via a different CLI binary. This repo's own documented
+convention (`gh pr merge --squash --delete-branch`, used throughout `claude/CLAUDE.md`'s Git Workflow
+section) is the common path that hits this gap.
+
+A **bare** `gh pr merge` (no `-d`/`--delete-branch`) merges only remotely via the GitHub API and
+touches no local state at all — same class as `git push`/`gh pr create` in dev-env#558's original
+investigation (which explicitly concluded those stay unblocked, since GitHub/git already reject
+double-merge/duplicate-PR loudly at the remote layer). That conclusion is unchanged by this amendment;
+only the specific `-d`/`--delete-branch` flag combination is newly in scope.
+
+### The fix
+
+Added a new, separate classifier function, `is_mutating_gh_segment(segment)`, alongside the existing
+`is_mutating_segment()` — **not folded into it**, preserving that function's specific, documented
+contract as a *git*-invocation classifier. The new function:
+
+- Matches a `gh`/`gh.exe` invocation at the start of the (env-stripped) segment's first physical line
+  only, via a new `_GH_INVOCATION_RE` mirroring `_GIT_INVOCATION_RE`'s shape exactly, and reusing the
+  same `_strip_leading_env()` + `_first_line()` helpers `is_mutating_segment()` already uses — so a
+  heredoc/`$()` body merely *mentioning* "gh pr merge -d" as prose (e.g. this very commit's message)
+  cannot trigger it, the identical career-playbook #442 anchoring guarantee.
+- Returns True only when that invocation's subcommand is `pr merge` **and** its remaining arguments
+  contain `-d` or `--delete-branch` as a standalone token (not a substring of a longer flag).
+- Deliberately does **not** special-case a `--repo owner/repo` flag on `gh pr merge -d` — matches this
+  hook's own established "block when in doubt" judgment call for a bare `git checkout <path>` (see
+  Judgment calls above).
+
+Wired into `classify()`'s existing per-segment loop: a segment matching *either*
+`is_mutating_segment(seg)` **or** `is_mutating_gh_segment(seg)` is treated as the mutating match — same
+severity (block, exit 2), same existing `cd`-scope-out / `-C`/`--git-dir`-redirect-scope /
+`ALLOW_CANONICAL_MUTATE=1`-override machinery in `classify()`, `main()`, and `_has_override()`, all of
+which already operate generically on the segment list and needed **zero** changes. `_REDIRECT_RE` (git
+`-C`/`--git-dir` skip) is git-specific by construction (its pattern requires the literal word `git`) and
+never matches a `gh` segment, so no interaction to reason about there either.
+
+The `main()` block-message `reason` text previously opened with "a git-mutating command was issued
+directly..." — technically inaccurate for a `gh pr merge -d` match (the invoked binary is `gh`, not
+`git`, even though it mutates git state). Reworded to "a command that mutates local git state was
+issued directly..." — accurate for both invocation shapes, no other change to the message's structure,
+severity, or remedies.
+
+### Why this is an amendment, not a new ADR
+
+Same harm model (silent local-HEAD-thrash between two sessions sharing a canonical checkout), same
+severity (hard block, exit 2), same file, same hook, same override/worktree-scope machinery — only a
+previously-unrecognized command surface reaching that already-decided harm model through a different
+CLI binary. This mirrors [ADR-050](050-shared-hookio-sibling-hook-fixes.md)'s own amendment
+convention for extending an already-shipped hook's coverage (e.g. Amendment 6's "completing the sweep"
+pattern) rather than re-litigating the original decision.
+
+### Sync-location update
+
+This hook's module docstring warns the mutating-verb list is independently re-spelled in four places
+that must stay in sync (see the `NOTE:` comment inside `is_mutating_segment()`). All four were updated
+in the same PR as this amendment:
+
+1. The module docstring in `pre-tool-use-canonical-mutate-guard.py` ("Mutating verbs blocked:" section)
+   — added a paragraph documenting the `gh pr merge -d`/`--delete-branch` addition and its zero-friction
+   bare-`gh pr merge` counterpart.
+2. `claude/CLAUDE.md`'s "Never mutate git state directly..." bullet — added the same clause plus this
+   issue's cross-reference alongside dev-env#453.
+3. This ADR's own "Mutating verbs blocked:" line (in the Decision section, above) — left **unedited**
+   for history; this Amendment section is the addition, per this repo's established amended-ADR
+   convention (see ADR-058, ADR-050).
+4. `docs/REFERENCE.md`'s ADR-071 Hooks-table pointer — extended the trigger-condition cell with the
+   `gh pr merge -d`/`--delete-branch` clause.
+
+### Coverage
+
+`claude/scripts/tests/test_canonical_mutate_guard.py` gains 10 new tests, split across the file's
+existing two-layer convention:
+
+- **Pure-function layer:** `is_mutating_gh_segment()` classifies `gh pr merge --delete-branch`, `-d`
+  (either flag, any position among other flags) as mutating, and a bare `gh pr merge` /
+  `gh pr merge --squash` / `gh pr merge --auto` / non-merge `gh pr`/`gh issue` commands as safe;
+  `classify()` flags a `gh pr merge --delete-branch` segment among otherwise-safe segments and allows a
+  delete-branch-less one; the `ALLOW_CANONICAL_MUTATE=1` override bypasses a `gh pr merge -d` match
+  exactly like a git-verb match; a heredoc body merely mentioning "gh pr merge -d" as prose does not
+  trigger (mirrors the existing career-playbook #442 heredoc-mention test).
+- **End-to-end `main()`-via-subprocess layer:** `gh pr merge --delete-branch` and `gh pr merge -d` from
+  a canonical (non-worktree) throwaway git repo both exit 2 with the reason on stderr and the matched
+  command named in it; a bare `gh pr merge` / `gh pr merge --squash` from the same canonical root exit
+  0; the same `gh pr merge --delete-branch` command from a worktree-pattern cwd exits 0 (out of scope,
+  unchanged — ADR-024's hook covers that surface); the override token bypasses the block end-to-end.
+
+All 38 pre-existing tests in that file continue to pass unchanged. The AST-based
+`test_no_crude_command_substring_checks.py` repo-wide gate (dev-env#534/#539, ADR-050 Amendment 11) was
+also re-run and passes — the new classifier uses tokenized parsing (`rest.split()` + membership checks
+against `_GH_DELETE_BRANCH_FLAGS`), not a crude `"<literal>" in command` substring test.
