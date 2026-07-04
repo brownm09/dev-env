@@ -1,4 +1,4 @@
-# ADR-081: Journal-Compose Worktree Isolation, Shard Reconciliation, and Structure Assertion
+# ADR-082: Journal-Compose Worktree Isolation, Shard Reconciliation, and Structure Assertion
 
 **Date:** 2026-07-04
 **Status:** Accepted
@@ -46,15 +46,21 @@ engineering-journal PRs #147, #149, and #150:
   `## Next Session Context` section. Step 6.5's self-check only verifies line-count fidelity, not
   heading conformance.
 
-**Concurrent, related work while this ADR was being written (both merged 2026-07-04, same
-incident cluster):** [ADR-080](080-version-probed-merge-tree-conflict-detection.md) fixed Step
-10.5's conflict-detection grep, which had been a silent no-op on the installed git version and
-missed the exact PR #150 conflict; the change below preserves that fix while relocating Step
-10.5's git invocations onto the compose worktree. A [REFERENCE.md runbook addition](../REFERENCE.md#git-workflow-runbooks)
+**Concurrent, related work landing the same day (same incident cluster):**
+[ADR-080](080-version-probed-merge-tree-conflict-detection.md) fixed Step 10.5's
+conflict-detection grep, which had been a silent no-op on the installed git version and missed
+the exact PR #150 conflict; the change below preserves that fix while relocating Step 10.5's git
+invocations onto the compose worktree. A [REFERENCE.md runbook addition](../REFERENCE.md#git-workflow-runbooks)
 (companion to [ADR-058](058-worktree-squatting-main-detection-correction.md)) documented that
 `gh pr merge --delete-branch` fails whenever the branch being deleted is checked out — as a named
 branch — in *any* worktree, not just the canonical; this directly informs the merge-command
-change in Decision §1 below.
+change in Decision §1 below. **This ADR was originally drafted as ADR-080** (before #551 claimed
+that number for the conflict-detection fix above, discovered before this PR opened) **and then as
+ADR-081** (before a second, independent PR — [dev-env#561](https://github.com/brownm09/dev-env/pull/561),
+`docs/adr/081-write-time-journal-shard-validation-hook.md`, unrelated write-time shard-validation
+work from the same day's incident cluster — was confirmed to have already claimed 081 while both
+PRs were still open); renumbered to 082 proactively upon discovering the second collision, rather
+than waiting for `pre-merge-numbering-check.py` to catch it at merge time.
 
 ---
 
@@ -92,19 +98,23 @@ exist first). It:
   because the draft branch may already be checked out, as a *named* branch, by a stub-writing
   session's own worktree (observed in practice during this incident's investigation). A detached
   checkout never contends for a branch ref, which also matters at merge time (see below).
+- Also accepts a full branch name (e.g. `draft/YYYY-MM-DD-recovery`) in place of a bare date, so
+  the [draft-branch recovery runbook](../REFERENCE.md#engineering-journal-internals) can target a
+  recovery branch explicitly instead of the plain (already merged/deleted) `draft/YYYY-MM-DD`.
 
 All subsequent commits happen in the worktree; the push is
-`git -C "$WT" push origin HEAD:refs/heads/draft/YYYY-MM-DD` rather than a branch-relative push.
-A rejected push means `origin/draft` advanced mid-compose (new stubs landed) — the skill aborts
-and re-runs from Step 0.6 rather than rebasing over content it hasn't read, except when the
-rejection is the pre-push hook's merged-draft-branch block (blocks pushing to a `draft/YYYY-MM-DD`
-that already has a merged PR, except same-day) — that case routes to the existing Step 10.5
-`compose/YYYY-MM-DD` recovery branch instead, since the hook's pattern only matches `draft/*`.
+`git -C "$WT" push origin HEAD:refs/heads/$SOURCE_BRANCH` rather than a branch-relative push.
+A rejected push means `origin/$SOURCE_BRANCH` advanced mid-compose (new stubs landed) — the
+skill aborts and re-runs from Step 0.6 rather than rebasing over content it hasn't read, except
+when the rejection is the pre-push hook's merged-draft-branch block (blocks pushing to a
+`draft/YYYY-MM-DD` that already has a merged PR, except same-day) — that case routes to the
+existing Step 10.5 `compose/YYYY-MM-DD` recovery branch instead, since the hook's pattern only
+matches undecorated `draft/YYYY-MM-DD`.
 
 **Merge step avoids `--delete-branch`.** Per the REFERENCE.md runbook noted above, `gh pr merge
 --delete-branch`'s local-branch-delete step fails outright if the branch being deleted is checked
 out — as a *named* branch — anywhere in the repo. The compose worktree itself is detached and
-never at risk, but `draft/YYYY-MM-DD` can still be checked out as a named branch in a
+never at risk, but `$SOURCE_BRANCH` can still be checked out as a named branch in a
 *stub-writing* session's worktree (per `claude/CLAUDE.md`'s stub workflow, which does
 `checkout -b draft/YYYY-MM-DD`) at the exact moment compose tries to merge. Step 11 therefore
 splits the merge into two calls — `gh pr merge <N> --squash` (server-side only, always succeeds)
@@ -206,7 +216,9 @@ today-guard refuses any same-day compose without it, the automated 7am run has l
 successfully composed anything — a real, pre-existing defect. Fixing it requires a product
 decision (compose *yesterday* at 7am instead? always pass `--force`, permanently overriding the
 today-guard's purpose for every automated run?) orthogonal to concurrency hardening. Left as a
-follow-up per the "truly unrelated errors go in a separate PR" default in `claude/CLAUDE.md`.
+follow-up per the "truly unrelated errors go in a separate PR" default in `claude/CLAUDE.md`. The
+same gap exists independently in `claude/scripts/journal-compose-with-retry.sh`'s Windows Task
+Scheduler invocation (a bare `/journal-compose` with no date), so both share the same follow-up.
 
 ---
 
@@ -298,5 +310,8 @@ follow-up per the "truly unrelated errors go in a separate PR" default in `claud
 - [ADR-078](078-opt-in-named-branch-worktree-pruning.md) — `--include-named` worktree pruning;
   confirms the branch-prefix skip that keeps the detached compose worktree prune-safe
 - [ADR-080](080-version-probed-merge-tree-conflict-detection.md) — version-probed `merge-tree`
-  conflict detection in Step 10.5, landed concurrently; preserved as-is and relocated onto the
+  conflict detection in Step 10.5, landed the same day; preserved as-is and relocated onto the
   compose worktree by this ADR's Decision §1
+- [dev-env#561](https://github.com/brownm09/dev-env/pull/561) / `docs/adr/081-write-time-journal-shard-validation-hook.md` —
+  the concurrent PR whose independent claim on ADR number 081 (same incident cluster, unrelated
+  shard-validation work) is why this ADR is numbered 082

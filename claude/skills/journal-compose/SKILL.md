@@ -40,7 +40,7 @@ Do not proceed to Step 1 until this plan is written. No tool calls before the re
 Every read, write, and git operation in the steps below happens inside a dedicated, disposable
 worktree of the engineering-journal repo — **never** in the shared canonical checkout
 `C:/Users/brown/Git/engineering-journal`, which other sessions may be using concurrently at any
-moment ([ADR-081](https://github.com/brownm09/dev-env/blob/main/docs/adr/081-journal-compose-worktree-isolation.md)).
+moment ([ADR-082](https://github.com/brownm09/dev-env/blob/main/docs/adr/082-journal-compose-worktree-isolation.md)).
 Define, and use verbatim throughout every remaining step:
 
 ```bash

@@ -47,7 +47,7 @@ Expands a one-line idea into a full proposal document, creates a linked GitHub i
 Composes the end-of-day engineering journal from the day's stub files. Isolates itself into a
 dedicated, disposable, detached worktree of engineering-journal (`.claude/worktrees/compose-YYYY-MM-DD`,
 built from `origin/draft/YYYY-MM-DD`) before touching anything — the shared canonical checkout is
-never branch-switched or written to ([ADR-081](adr/081-journal-compose-worktree-isolation.md)).
+never branch-switched or written to ([ADR-082](adr/082-journal-compose-worktree-isolation.md)).
 Runs a field-completeness validator (Step 0.7) before any stub read — aborts with a per-entry error
 listing if any manifest shard is missing a required field. Discovers all `YYYY-MM-DD_*.stub.md`
 files, sorts and merges them, produces the canonical 11-section document (asserting the required
@@ -1125,7 +1125,7 @@ one JSON object in `sessions/<project>/open-prs/<N>.json`, keyed by PR number. C
 day via the draft branch merge to main. `/journal-compose` does **not** blanket-delete the `open-prs/`
 directory at compose — it deliberately reconciles it instead: each shard's PR state is checked via
 `gh pr view` and only shards for a `MERGED`/`CLOSED` PR are removed, verified one at a time
-([ADR-081](adr/081-journal-compose-worktree-isolation.md)); a shard for a still-`OPEN` PR carries
+([ADR-082](adr/082-journal-compose-worktree-isolation.md)); a shard for a still-`OPEN` PR carries
 forward unchanged. Within a `sessions/<project>/` directory all PRs belong to that project's one
 repo, so the bare PR number is a unique filename (the repo is still carried in `url`).
 Schema:
@@ -1232,7 +1232,7 @@ If `draft/YYYY-MM-DD` was merged or deleted before end of day (e.g., an accident
 4. Write the current session's stub normally — commit to `draft/YYYY-MM-DD-recovery`.
 5. Invoke `/journal-compose draft/YYYY-MM-DD-recovery` — pass the full branch name explicitly,
    not just the bare date. The skill isolates itself into its own detached worktree built from
-   whatever source branch it's given ([ADR-081](adr/081-journal-compose-worktree-isolation.md));
+   whatever source branch it's given ([ADR-082](adr/082-journal-compose-worktree-isolation.md));
    passing the full `-recovery` name is how you tell it to source from the recovery branch
    instead of the (already merged/deleted) plain `draft/YYYY-MM-DD`.
 

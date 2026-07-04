@@ -15,10 +15,10 @@ across projects internally), then report the resulting PR URL(s).
    git -C C:/Users/brown/Git/engineering-journal fetch origin
    ```
    No canonical-checkout sync is needed here — `/journal-compose` isolates itself into its own
-   detached worktree ([ADR-081](https://github.com/brownm09/dev-env/blob/main/docs/adr/081-journal-compose-worktree-isolation.md))
+   detached worktree ([ADR-082](https://github.com/brownm09/dev-env/blob/main/docs/adr/082-journal-compose-worktree-isolation.md))
    and never reads from or writes to the canonical's working tree. Skipping the sync also avoids
    this routine mutating the canonical checkout itself (the prior `sync-routine-worktree` call
-   could `rebase`/`reset --hard` it), the same class of hazard ADR-081 closes for the skill it
+   could `rebase`/`reset --hard` it), the same class of hazard ADR-082 closes for the skill it
    invokes.
 
 1. Determine today's date in Git Bash:
@@ -26,7 +26,7 @@ across projects internally), then report the resulting PR URL(s).
    DATE=$(date -u +%Y-%m-%d)
    ```
 2. Check the remote for today's stubs. The canonical checkout permanently rests on `main` now
-   (ADR-081) and never holds stubs directly — read from `origin/draft/${DATE}` instead of any
+   (ADR-082) and never holds stubs directly — read from `origin/draft/${DATE}` instead of any
    local working tree:
    ```bash
    git -C C:/Users/brown/Git/engineering-journal show-ref --verify --quiet \
@@ -43,7 +43,7 @@ across projects internally), then report the resulting PR URL(s).
    internally and composes them in parallel; do not loop and invoke it once per project (that
    directly contradicts the skill's own "do NOT compose projects sequentially" guidance). The
    `/journal-compose` skill:
-   - Creates an isolated compose worktree from `origin/draft/${DATE}` (ADR-081) — everything
+   - Creates an isolated compose worktree from `origin/draft/${DATE}` (ADR-082) — everything
      below happens inside that worktree, not the canonical checkout
    - Discovers all `sessions/<project>/${DATE}_*.stub.md` files for every project with stubs
    - Merges each project's stubs into the canonical 11-section document

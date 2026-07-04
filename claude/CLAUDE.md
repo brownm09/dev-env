@@ -546,7 +546,7 @@ structure, and the draft-branch recovery procedure are documented in
 `--force` is required when composing today's branch; past-date composition
 (`/journal-compose YYYY-MM-DD` for a prior day) does not need the flag. Composition runs inside a
 dedicated, disposable engineering-journal worktree — the shared canonical checkout is never
-branch-switched or committed to ([ADR-081](../docs/adr/081-journal-compose-worktree-isolation.md)).
+branch-switched or committed to ([ADR-082](../docs/adr/082-journal-compose-worktree-isolation.md)).
 
 ---
 
