@@ -700,8 +700,8 @@ failed to run git: fatal: 'main' is already checked out at
 ```
 
 `fix+issue-646-restrict-db-e2e-default-role` was an idle, already-merged worktree left squatting
-`main` from an earlier merge (the same root-cause chain as [ADR-058](adr/058-worktree-squatting-main-detection-correction.md)'s
-original dev-env incident) — unrelated to PR #664 itself. As before, the squash-merge had already
+`main`, most likely via the same root-cause chain as [ADR-058](adr/058-worktree-squatting-main-detection-correction.md)'s
+original dev-env incident — unrelated to PR #664 itself. As before, the squash-merge had already
 succeeded via the GitHub API; only the local checkout-and-delete step failed, so **both** the local
 and remote branch deletes were skipped.
 
