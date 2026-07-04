@@ -137,3 +137,54 @@ sanctions as the escape hatch. Whether "must never be enabled at the repo level"
 block that too, or was written assuming the non-existent "auto-merge everything by default"
 mechanism addressed above, is a policy question left for whoever revisits this ADR next. This
 addendum documents the mechanical reality and leaves the Decision's toggle instruction unchanged.
+
+---
+
+## Addendum (2026-07-04) — Open question resolved: escape hatch stays inert by design ([dev-env#565](https://github.com/brownm09/dev-env/issues/565))
+
+The question the 2026-07-03 addendum left open is resolved: **`allow_auto_merge` stays `false`
+across every `brownm09/*` repo, with no exceptions, and the Decision's "Per-PR escape hatch"
+clause is permanently inert by design** — not a temporarily-off convenience awaiting activation.
+
+**Survey.** `gh api repos/brownm09/{repo}` was run against all 52 active (non-archived,
+non-fork) `brownm09/*` repos on 2026-07-04. Every one reports `allow_auto_merge: false`. No repo
+has drifted to an accidental opt-in since the Decision was written.
+
+**Why this isn't merely "leave it as-is."** The 2026-07-03 addendum's mechanical correction — that
+GitHub has no distinct "auto-merge everything by default" mechanism, so the fear behind "never
+enable at repo level" targeted something that doesn't exist — is right, but it doesn't make the
+toggle purposeless. With the toggle off, `gh pr merge --auto` cannot be invoked, by anyone or
+anything, before the six in-session rules this ADR protects (`usage-snapshot.py`, the post-merge
+journal stub, ADR-warrant checkpoint 3, doc-reconciliation checkpoint 3, the `/review`
+all-findings gate, project-board automation) have already run in the same session. That is a
+*mechanical* guarantee. Turning the toggle on would not itself break any of the six rules — but
+it would downgrade their protection from "impossible to skip" to "skipped only if the session
+remembers to sequence `--auto` correctly," which is exactly the discipline-only enforcement this
+environment avoids relying on elsewhere (see the canonical-checkout-mutate-guard hook, ADR-071;
+the memory-immortalization issue-pairing rule; the pre-install-freespace-gate hook, ADR-045).
+Rejecting Alternative B in the original Rationale ("per-PR auto-merge without the in-session
+gates... is no different from skipping them on every PR") already made this argument for the
+manual-invocation case; the same logic applies to trusting a session to self-police *when* it
+reaches for `--auto`.
+
+**Evidence there's no real cost to closing this off.** The only concrete attempt to use the
+escape hatch — lifting-logbook PR #664 — failed at the GitHub API (`allow_auto_merge` was, and
+is, `false` there) and the session fell back to the primary path: wait for CI, then plain
+`gh pr merge --squash --delete-branch`. PR #664 merged cleanly through that path with no further
+incident. Combined with the original Rationale's already-accepted cost (CI runs 2–10 minutes;
+"sleeping through CI is not a significant cost"), there is no evidenced case where the escape
+hatch's unavailability blocked real work.
+
+**Operational guidance, updated.** Do not attempt `gh pr merge --auto` on any `brownm09/*` repo.
+A failure from it is expected, permanent behavior, not a bug or a gap to fix — go straight to the
+primary path (poll/wait for CI, then plain `gh pr merge --squash --delete-branch`). The
+"Per-PR escape hatch" paragraph in the Decision above is retained for historical context (it
+explains why `--auto` was once considered sanctioned) but should be read as superseded by this
+addendum: it does not describe an available operation.
+
+**What would change this.** This resolution stands until a *mechanical* pre-check exists that
+verifies, at the moment `--auto` is invoked, that `/review`, ADR-warrant checkpoint 3, and
+doc-reconciliation checkpoint 3 have already completed in the current session — i.e., something
+that restores the "impossible to skip" property this addendum is unwilling to trade away for
+convenience. Absent such a gate, re-opening this question should default to "no" for the same
+reasons given here.
