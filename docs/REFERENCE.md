@@ -686,6 +686,38 @@ the linked issue's board status) rather than assuming absence of visible reminde
 hook didn't fire — and don't over-read that absence as proof the hook's stderr specifically was
 dropped.
 
+### `gh pr create` infers its head branch from cwd, not the pushed branch
+
+**Trigger.** Running `gh pr create` with no `--head` flag from a cwd whose git checkout is not the
+worktree branch that was just pushed — most commonly `cd`-ing into a repo's canonical checkout (kept
+on `main` by the architecture rule above) to run the command from there instead of from the worktree
+itself.
+
+**Symptom.** `gh pr create` resolves head from the *current git checkout at cwd*, not from whatever
+branch was most recently pushed. From a canonical checkout parked on `main`, it infers `head=main,
+base=main` and fails with an error to the effect of:
+
+```
+head branch 'main' is the same as base branch 'main', cannot create a pull request
+```
+
+**No git state is mutated by this failure** — confirmed via `git -C <canonical-path> status` staying
+clean, still on `main` — so it is always safe to just retry with the fix below; there is nothing to
+recover.
+
+**Fix.** Pass `--head <branch> --repo <owner>/<repo>` explicitly so head resolution never depends on
+cwd:
+
+```bash
+gh pr create --head <branch> --repo <owner>/<repo> --title "..." --body "..."
+```
+
+Distinct from the general Bash-`cd`-into-canonical rule ([ADR-066](adr/066-worktree-session-safety-rules.md))
+— that rule covers `git`/`npm` commands silently acting on the wrong checkout; this is specifically
+`gh pr create`'s head-branch inference, which trips on whatever the process cwd is at the moment
+`gh pr create` runs (a one-off `cd <repo> && gh pr create` is enough to trigger it — the session's cwd
+need not persist there). Motivating incident: dev-env [#555](https://github.com/brownm09/dev-env/pull/555).
+
 ### A sibling worktree squatting `main` blocks a different merge's `--delete-branch`
 
 The failure above is framed as "worktree's own merge blocked by the canonical holding `main`," but
