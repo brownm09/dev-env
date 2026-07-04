@@ -129,3 +129,86 @@ share the same root cause; fixing only one leaves the other silently wrong.
   `claude/scripts/pr-merge-reminder.py`.
 - `claude/scripts/tests/test_hookio.py`; `claude/scripts/tests/test_post_pr_merge_pull.py`;
   `claude/scripts/tests/test_pr_merge_reminder.py`.
+
+## Amendment 1 (2026-07-04) — `post-pr-merge-project.py` was a sixth merge-triggered hook, missed by this ADR's own audit (dev-env#559)
+
+**Symptom:** a session pinned to lifting-logbook's cwd ran `gh pr merge
+"https://github.com/brownm09/dev-env/pull/554" --squash --delete-branch` — a bare
+PR URL, no `cd`-chain, no `--repo` flag. `post-pr-merge-project.py` resolved
+`repo = config.get("repo", "")` from `load_config(cwd)` (lifting-logbook's own
+`.claude/hook-config.json`), fetched **lifting-logbook's own PR #554** instead of
+dev-env's, parsed its unrelated "Closes #537", and moved that (coincidentally
+still-Done) lifting-logbook issue to Done on lifting-logbook's own project board.
+Harmless only because the issue was already Done weeks earlier — a still-open
+issue would have been silently corrupted with no error.
+
+**Root cause: this ADR's own audit table missed a sixth hook.** The Context
+section above states "all five, for completeness" and lists `post-pr-merge-pull.py`,
+`pr-merge-reminder.py`, `post-pr-merge-reclaim.py`, `post-merge-tile-checkpoint.py`,
+and `post-tool-use.py` (issue/PR-create board add) — but never
+`post-pr-merge-project.py` (the *merge*-triggered board-**move** hook, a distinct
+file from `post-tool-use.py`'s create-time board **add**). Unlike the other two
+"Bug — fixed here" hooks, `post-pr-merge-project.py`'s repo-targeting shape doesn't
+match a `git remote get-url` inference or a displayed `cwd:`/`repo:` string — it
+goes through a *config file load* (`load_config(cwd)` → `config.get("repo")`),
+which reads as a different code shape at a glance even though it has the identical
+cwd-vs-target gap. This is the same lesson
+[ADR-050 Amendment 6](050-shared-hookio-sibling-hook-fixes.md) already drew for the
+*sibling* `scan_top_level` consolidation ("a sweep is only as complete as the list
+it started from... grep for the engine, not just the call pattern") — recurring
+here one ADR later, for the *repo-resolution* engine instead of the
+command-parsing engine.
+
+**Fix — a different mechanism than `effective_merge_dir`'s cd-chain scoping.** The
+reported incident has no `cd`-chain to resolve; the merge command's own argument is
+a full PR URL. `extract_repo_from_command()` parses the owner/repo out of that URL
+(mirroring the existing `extract_pr_number_from_command`, scoped to the same
+`_MERGE_ARGS_RE` region). When the parsed repo does not match `config.get("repo")`,
+`main()` now exits before calling `get_pr_body`, `find_project_item`, or
+`move_to_done` — cwd's config (`project_number`/`project_node_id`/`status_field_id`/
+`done_option_id`) is scoped to *config's* repo and does not apply to a different one
+regardless of which PR's body gets fetched. This is stricter than fixing `repo`
+alone: `get_pr_body(pr_number, repo)` fetching the *correct* cross-repo PR body
+would still leave `find_project_item` searching *cwd's own* project board by issue
+number — a same-numbered-issue collision between the two repos would reproduce the
+identical corruption via a different trigger. Skipping outright, rather than
+guessing, is consistent with this ADR's own "under-corrects rather than mis-fires"
+philosophy for `effective_merge_dir`.
+
+A more complete fix — resolving the *correct* repo's own config via
+[ADR-077](077-cross-repo-config-resolution-for-issue-pr-create.md)'s
+`_sibling_repo_config` pattern (verified sibling-checkout lookup, already proven for
+`post-tool-use.py`'s equivalent create-time gap) — would let the Done-move complete
+against the right board instead of just skipping it. Deferred to follow-up
+[#571](https://github.com/brownm09/dev-env/issues/571): meaningfully more code
+(generalizing a pattern across two independent `load_config` implementations) than
+this amendment's guard, which is already a complete, correct fix for the reported
+corruption.
+
+**Scope note — cd-chain scoping for this hook remains open.** This amendment adds
+URL-argument scoping only. `post-pr-merge-project.py`'s `load_config(cwd)` still
+uses raw `cwd`, not `effective_merge_dir(command, cwd)` — a
+`cd /Git/dev-env && gh pr merge --squash --delete-branch` (no URL, no `--repo`) run
+from a lifting-logbook-pinned session would still mis-resolve today. Filed as
+follow-up issue [#569](https://github.com/brownm09/dev-env/issues/569) rather than
+folded into dev-env#559: it is the *same* conceptual gap this ADR already closed for
+`post-pr-merge-pull.py` and `pr-merge-reminder.py`, so extending it to
+`post-pr-merge-project.py` should be low-risk, but it is a distinct code change from
+the URL-parsing fix above and was outside dev-env#559's reported scope. A related
+but separately-mechanismed gap — `pr-merge-reminder.py`'s `is_create` branch has no
+directory resolution at all, unlike its `is_merge`/`is_push` siblings — is tracked
+as [#570](https://github.com/brownm09/dev-env/issues/570).
+
+**Coverage:** `extract_repo_from_command()` is exercised offline in
+`test_post_pr_merge_project.py` (cross-repo URL, bare-number, bare-form,
+cd-prefixed URL, chained-command scoping, and case-insensitive matching). The
+`main()`-level skip gate itself is not separately unit-tested, consistent with this
+file's existing convention of testing only the pure extraction helpers, never
+`main()`'s orchestration or the live `gh` calls.
+
+**References:** Issue [#559](https://github.com/brownm09/dev-env/issues/559);
+follow-ups [#569](https://github.com/brownm09/dev-env/issues/569),
+[#570](https://github.com/brownm09/dev-env/issues/570), and
+[#571](https://github.com/brownm09/dev-env/issues/571); `claude/scripts/post-pr-merge-project.py`;
+`claude/scripts/tests/test_post_pr_merge_project.py`;
+[ADR-077](077-cross-repo-config-resolution-for-issue-pr-create.md).

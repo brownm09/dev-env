@@ -188,13 +188,20 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     ```
 
 14. **post-pr-merge-project test** — required when changing `claude/scripts/post-pr-merge-project.py`.
-    Exercises the pure `extract_pr_number_from_command()`, `extract_pr_number()`, and `merge_succeeded()`
-    helpers offline: pins command-based extraction (`gh pr merge 380` / a `/pull/380` URL / bare form →
-    `None`), output-marker extraction (`Squashed and merged pull request #N`, the cross-repo `owner/repo#N`
-    variant, and the legacy `/pull/N` URL), and the `--auto`-safe merge gate (a queued `--auto` or a failed
-    merge yields no completed-merge number and `merge_succeeded` is `False`). The live `gh` calls
+    Exercises the pure `extract_pr_number_from_command()`, `extract_pr_number()`, `merge_succeeded()`, and
+    `extract_repo_from_command()` helpers offline: pins command-based extraction (`gh pr merge 380` / a
+    `/pull/380` URL / bare form → `None`), output-marker extraction (`Squashed and merged pull request #N`,
+    the cross-repo `owner/repo#N` variant, and the legacy `/pull/N` URL), the `--auto`-safe merge gate (a
+    queued `--auto` or a failed merge yields no completed-merge number and `merge_succeeded` is `False`),
+    and the dev-env#559 repo resolution (a PR URL's owner/repo parsed from the merge command, scoped to
+    the same merge-args region as the PR-number extraction so a chained sibling command can't hijack it;
+    a bare number or bare form both yield `None`, falling back to cwd's config). `main()` skips the whole
+    operation when the parsed repo doesn't match cwd's config — cwd's project-board fields don't apply to
+    a different repo regardless of which PR's body gets fetched — but that gate itself is not separately
+    unit-tested, consistent with this file's pure-helper-only convention. The live `gh` calls
     (`get_pr_body` / `find_project_item` / `move_to_done` / `confirm_merge_via_gh`) are not covered
-    ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)).
+    ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md),
+    [ADR-067](docs/adr/067-scope-merge-keyed-hooks-to-target-repo.md)).
 
     ```bash
     py -3 claude/scripts/tests/test_post_pr_merge_project.py

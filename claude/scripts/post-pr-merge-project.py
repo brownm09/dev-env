@@ -51,6 +51,10 @@ CONFIG_FILE = ".claude/hook-config.json"
 _MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
 _CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
 _PR_URL_RE = re.compile(r"https://github\.com/\S+/pull/(\d+)")
+# Same PR-URL shape as _PR_URL_RE but capturing the owner/repo segment instead
+# of discarding it — used to detect when a merge command names a DIFFERENT
+# repo than cwd's own config (dev-env#559).
+_PR_URL_REPO_RE = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/\d+")
 # The argument list of the `gh pr merge` invocation only — up to the next shell
 # separator — so a /pull/N URL in a --subject/--body value or a chained sibling
 # command cannot hijack the PR-number extraction (the whole-command search did;
@@ -112,6 +116,28 @@ def extract_pr_number_from_command(command: str) -> int | None:
     if url:
         return int(url.group(1))
     return None
+
+
+def extract_repo_from_command(command: str) -> str | None:
+    """Derive the owner/repo a `gh pr merge` invocation explicitly targets.
+
+    Mirrors `extract_pr_number_from_command`: scoped to the merge invocation's
+    own arguments (`_MERGE_ARGS_RE`) so a `/pull/N` URL in a `--subject`/`--body`
+    value or a chained sibling command cannot hijack it. Only a PR URL names a
+    repo explicitly — `gh pr merge 380 --squash` (bare number) and
+    `gh pr merge --squash --delete-branch` (the current branch's own PR) both
+    return None; the caller then falls back to cwd's own config.
+
+    This is what `get_pr_body`/`confirm_merge_via_gh` should query — the merge
+    command's actual target repo, not necessarily the one named in cwd's
+    config (dev-env#559: a `gh pr merge <cross-repo URL>` run from an unrelated
+    cwd silently resolved to cwd's own repo and fetched the wrong PR's body).
+    """
+    m = _MERGE_ARGS_RE.search(command)
+    if not m:
+        return None
+    url = _PR_URL_REPO_RE.search(m.group(1))
+    return url.group(1) if url else None
 
 
 def extract_pr_number(output: str) -> int | None:
@@ -221,6 +247,26 @@ def main() -> None:
     repo = config.get("repo", "")
     if not repo:
         sys.exit(0)
+
+    # Prefer the repo named in an explicit PR URL over cwd's own config — the
+    # merge's actual target, not necessarily the session's pinned directory
+    # (dev-env#559: a bare cross-repo PR URL, with no cd-chain and no --repo
+    # flag, silently resolved to cwd's repo and fetched the wrong PR's body).
+    # A bare `gh pr merge --squash --delete-branch` names no repo — keep
+    # config's, unchanged from pre-#559 behavior.
+    command_repo = extract_repo_from_command(command)
+    if command_repo is not None and command_repo.lower() != repo.lower():
+        # cwd's config (project_number/project_node_id/status_field_id/
+        # done_option_id below) is scoped to `repo`, not the repo actually
+        # named in the command — those fields don't apply cross-repo, and
+        # proceeding risks moving an unrelated, same-numbered issue on the
+        # WRONG repo's board (the #559 incident: a dev-env merge, resolved
+        # against a lifting-logbook-pinned cwd, moved a same-numbered
+        # lifting-logbook issue to Done). Skip the whole operation rather
+        # than guess.
+        sys.exit(0)
+    if command_repo is not None:
+        repo = command_repo
 
     # Prefer the PR number named in the command; fall back to gh's success marker
     # for the bare `gh pr merge --squash --delete-branch` form (#380).
