@@ -44,17 +44,25 @@ import re
 import sys
 from pathlib import Path
 
-from _journal_schema import (
-    decode_shard_bytes,
-    missing_open_pr_fields,
-    missing_required_fields,
-    parse_manifest_text,
-)
-from _journal_shards import shard_pr_number
+try:
+    from _journal_schema import (
+        decode_shard_bytes,
+        missing_open_pr_fields,
+        missing_required_fields,
+        parse_manifest_text,
+    )
+    from _journal_shards import shard_pr_number
+except Exception:
+    # Module-level import failure would otherwise crash before main()'s own
+    # try/except is ever reached, escaping the safe-exit guard entirely (an
+    # advisory hook must exit 0 on every code path, not just the ones inside
+    # __main__ — see docs/REFERENCE.md -> Hooks -> Authoring rules #2).
+    sys.exit(0)
 
 MAX_CANDIDATES = 20
 MAX_SHARD_BYTES = 1_048_576
 MAX_FILES_SHOWN = 10
+MAX_COMMAND_CHARS = 2_000
 JOURNAL_FALLBACK = Path.home() / "Git" / "engineering-journal"
 
 # Raw scans over the whole command text — see module docstring for why this is
@@ -115,7 +123,20 @@ def classify_shard_path(path: str) -> str | None:
 
 def extract_candidate_tokens(command: str) -> list[str]:
     """Harvest candidate shard-path tokens from a raw Bash command string, deduped
-    (preserving first-seen order) and capped at ``MAX_CANDIDATES``."""
+    (preserving first-seen order) and capped at ``MAX_CANDIDATES``.
+
+    Commands longer than ``MAX_COMMAND_CHARS`` are skipped entirely (return ``[]``)
+    before either regex runs. Both token regexes lead with an unbounded greedy
+    character class followed by a required literal suffix — a shape that costs
+    O(n^2) via `re.findall`'s per-start-position retries when the suffix never
+    appears in a long run of matching characters (verified: ~10s for one regex
+    against a 40,000-character run of plain word characters). Real journal-touching
+    commands are always short (a handful of file paths), so this cap costs nothing
+    for legitimate use while bounding the worst case to a few tens of milliseconds —
+    this hook fires on every Bash call in every session, not just journal work.
+    """
+    if len(command) > MAX_COMMAND_CHARS:
+        return []
     tokens = []
     seen = set()
     for pattern in (_MANIFEST_TOKEN_RE, _OPEN_PR_TOKEN_RE):
@@ -214,6 +235,16 @@ def validate_shard_bytes(raw: bytes, kind: str, stem: str, pr_from_name: int | N
     if text is None:
         return problems
 
+    # Checked before the empty/parse-failure returns below: the filename is invalid
+    # regardless of whether the content is also empty or malformed, and it's the more
+    # important diagnosis (every reader enumerates open-PR shards by filename) — an
+    # empty-but-numeric-stem file shouldn't hide a non-numeric-stem problem or vice versa.
+    if kind == "open-pr" and pr_from_name is None:
+        problems.append(
+            f"non-numeric filename '{stem}.json' - invisible to every open-PR reader "
+            "(reconcile/post-compact/compose)"
+        )
+
     if not text.strip():
         problems.append("empty shard (no JSON object)")
         return problems
@@ -240,12 +271,7 @@ def validate_shard_bytes(raw: bytes, kind: str, stem: str, pr_from_name: int | N
     missing = missing_open_pr_fields(entry)
     if missing:
         problems.append(f"missing {', '.join(missing)}")
-    if pr_from_name is None:
-        problems.append(
-            f"non-numeric filename '{stem}.json' - invisible to every open-PR reader "
-            "(reconcile/post-compact/compose)"
-        )
-    elif "pr" in entry and entry["pr"] != pr_from_name:
+    if pr_from_name is not None and "pr" in entry and entry["pr"] != pr_from_name:
         problems.append(f"filename stem '{stem}' does not match embedded pr={entry['pr']!r}")
     return problems
 
@@ -335,6 +361,11 @@ def main() -> None:
         sys.exit(0)
 
     tool_input = data.get("tool_input", {}) or {}
+    if not isinstance(tool_input, dict):
+        # PostToolUse always sends tool_input as an object; guard explicitly
+        # rather than relying on the outer safe-exit guard to catch the
+        # AttributeError a non-dict payload would otherwise raise.
+        sys.exit(0)
     cwd = data.get("cwd", "") or ""
 
     paths = candidate_paths(tool_name, tool_input, cwd)

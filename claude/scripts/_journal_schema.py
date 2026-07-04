@@ -66,6 +66,9 @@ def find_entries_missing_fields(entries):
     required fields are omitted. The list preserves input order. This is the function
     the issue (#423) specifies — `journal-compose` uses ``main`` for source-aware
     reporting, but this is the stable, testable core.
+
+    Manifest-schema only (fixed at the ``REQUIRED_FIELDS`` default) — open-PR shards are
+    single-object files validated directly via ``missing_open_pr_fields``, not as a list.
     """
     result = []
     for entry in entries:

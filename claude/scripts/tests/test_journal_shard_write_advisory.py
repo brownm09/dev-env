@@ -150,6 +150,26 @@ def test_extract_cap_at_20():
     cmd = " ".join(f"sessions/p/f{i}.manifest.jsonl" for i in range(30))
     assert len(extract_candidate_tokens(cmd)) == 20
 
+def test_extract_skips_oversized_command():
+    # dev-env#556 /review finding: the token regexes lead with an unbounded greedy
+    # class followed by a required literal suffix -- O(n^2) via re.findall's
+    # per-start-position retries when the suffix never appears (verified: ~10s for
+    # one regex against a 40,000-char run of plain word characters). A command over
+    # MAX_COMMAND_CHARS must be skipped entirely, before either regex runs.
+    oversized = "a" * (mod.MAX_COMMAND_CHARS + 1)
+    assert extract_candidate_tokens(oversized) == []
+
+def test_extract_pathological_input_completes_quickly():
+    # Regression proof for the fix above: a much larger pathological blob (no path
+    # suffix anywhere) must still return promptly rather than hang for seconds.
+    import time
+    blob = "a" * 200_000
+    start = time.time()
+    result = extract_candidate_tokens(blob)
+    elapsed = time.time() - start
+    assert result == []
+    assert elapsed < 1.0, f"took {elapsed:.2f}s -- cap did not bound the regex scan"
+
 
 # ---------------------------------------------------------------------------
 # extract_base_dirs / resolve_candidates
@@ -282,11 +302,13 @@ def test_validate_empty_file_manifest():
     assert validate_shard_bytes(b"", "manifest", "x") == ["empty shard (no JSON object)"]
 
 def test_validate_empty_file_open_pr():
-    assert validate_shard_bytes(b"   \n  ", "open-pr", "x") == ["empty shard (no JSON object)"]
+    # Numeric stem/pr_from_name isolates this from the non-numeric-filename path
+    # (covered separately by test_validate_open_pr_non_numeric_stem_reported_even_when_empty).
+    assert validate_shard_bytes(b"   \n  ", "open-pr", "1", pr_from_name=1) == ["empty shard (no JSON object)"]
 
 def test_validate_non_dict_json():
     raw = b'["not", "a", "dict"]'
-    assert validate_shard_bytes(raw, "open-pr", "x") == ["not a JSON object"]
+    assert validate_shard_bytes(raw, "open-pr", "1", pr_from_name=1) == ["not a JSON object"]
 
 def test_validate_open_pr_non_numeric_stem():
     raw = json.dumps(_valid_open_pr_entry(pr=1)).encode("utf-8")
@@ -303,6 +325,22 @@ def test_validate_open_pr_stem_pr_mismatch():
 def test_validate_open_pr_matching_stem_pr_silent():
     raw = json.dumps(_valid_open_pr_entry(pr=147)).encode("utf-8")
     assert validate_shard_bytes(raw, "open-pr", "147", pr_from_name=147) == []
+
+def test_validate_open_pr_non_numeric_stem_reported_even_when_empty():
+    # dev-env#556 /review finding: the non-numeric-filename check must fire even when
+    # the shard is ALSO empty/malformed -- previously the empty-shard early return
+    # meant the (arguably more important) filename diagnosis never surfaced.
+    problems = validate_shard_bytes(b"", "open-pr", "index", pr_from_name=None)
+    assert problems[0] == (
+        "non-numeric filename 'index.json' - invisible to every open-PR reader "
+        "(reconcile/post-compact/compose)"
+    )
+    assert "empty shard (no JSON object)" in problems
+
+def test_validate_open_pr_non_numeric_stem_reported_even_when_not_json():
+    problems = validate_shard_bytes(b"not json", "open-pr", "index", pr_from_name=None)
+    assert problems[0].startswith("non-numeric filename 'index.json'")
+    assert "not a JSON object" in problems
 
 
 # ---------------------------------------------------------------------------
