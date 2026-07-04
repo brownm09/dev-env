@@ -44,6 +44,20 @@ above are unaffected (they all omit the parameter, which defaults to None).
 The three `live_confirmed` tests below exercise only the pure override
 logic, not the live call.
 
+dev-env#557 added `and not is_merge_help_only(command)` into that same
+`main()`-inline `if (is_merge and not _is_successful_merge_call(output) and
+should_confirm_via_gh(exit_code, output)):` condition that gates whether
+`main()` even attempts the live `gh pr view` call — a `gh pr merge --help`
+command can categorically never attempt a real merge, so it must never pay
+for (or be misattributed by) that live confirmation. Since this condition is
+inline in `main()` rather than its own function, the composition test below
+directly evaluates the same boolean expression `main()` evaluates, pinning
+that a `--help` command with no marker and a non-zero exit code — which
+would otherwise satisfy every other clause — is excluded once
+`is_merge_help_only` is added, while an equivalent non-help unresolved merge
+still satisfies the full condition (the live check is still attempted for
+that case, matching dev-env#504's existing behavior unchanged).
+
 Usage:
     py -3 claude/scripts/tests/test_pr_merge_reminder.py
 
@@ -74,9 +88,15 @@ _effective_push_dir = pmr._effective_push_dir
 _effective_merge_repo = pmr._effective_merge_repo
 _build_messages = pmr._build_messages
 
-# read_command_output and effective_merge_dir live in _hookio (a sibling).
-# SCRIPT.parent already on sys.path, so import them directly.
-from _hookio import effective_merge_dir, read_command_output  # noqa: E402
+# read_command_output, effective_merge_dir, should_confirm_via_gh, and
+# is_merge_help_only live in _hookio (a sibling). SCRIPT.parent already on
+# sys.path, so import them directly.
+from _hookio import (  # noqa: E402
+    effective_merge_dir,
+    is_merge_help_only,
+    read_command_output,
+    should_confirm_via_gh,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +276,48 @@ def test_merge_call_clean_exit_no_marker_does_not_fire() -> str:
     # on this shape; gating on the marker alone fixes it.
     assert not _is_successful_merge_call("some other output with no merge marker")
     return "no marker at all (e.g. --help output) -> does not fire (dev-env#485)"
+
+
+# ---------------------------------------------------------------------------
+# live_confirmed gate composition (dev-env#557)
+#
+# main()'s live-gh-pr-view-attempt condition is inline, not its own function:
+#   is_merge and not _is_successful_merge_call(output)
+#       and should_confirm_via_gh(exit_code, output)
+#       and not is_merge_help_only(command)
+# These tests evaluate that exact expression directly (mirroring what main()
+# computes) to pin that adding `is_merge_help_only` excludes a --help command
+# that would otherwise satisfy every other clause, while an equivalent
+# non-help unresolved merge still satisfies the full condition unchanged.
+# ---------------------------------------------------------------------------
+
+def _live_confirm_attempted(command: str, output: str, exit_code: int) -> bool:
+    """Re-derive main()'s inline live-confirmation-attempt condition."""
+    is_merge = is_pr_merge_command(command)
+    return (
+        is_merge
+        and not _is_successful_merge_call(output)
+        and should_confirm_via_gh(exit_code, output)
+        and not is_merge_help_only(command)
+    )
+
+
+def test_live_confirm_not_attempted_for_help_command() -> str:
+    # gh pr merge --help: is_merge True, no marker, non-zero/-1 exit would
+    # satisfy should_confirm_via_gh -- but is_merge_help_only excludes it.
+    command = "gh pr merge --help"
+    output = "FLAGS\n      --admin   Use administrator privileges to merge a pull request"
+    assert not _live_confirm_attempted(command, output, -1)
+    return "gh pr merge --help (no marker, exit -1) -> live confirmation NOT attempted (dev-env#557)"
+
+
+def test_live_confirm_still_attempted_for_unresolved_real_merge() -> str:
+    # The dev-env#489/#504 case this fallback exists for: a genuine merge with
+    # a lost marker and non-zero exit must still attempt the live check.
+    command = "gh pr merge --squash --delete-branch"
+    output = "failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'"
+    assert _live_confirm_attempted(command, output, 1)
+    return "unresolved real merge (no marker, non-help, exit 1) -> live confirmation still attempted (unchanged)"
 
 
 # ---------------------------------------------------------------------------
@@ -660,6 +722,8 @@ def main() -> int:
         ("merge call: marker present fires", test_merge_call_marker_present_fires),
         ("merge call: no marker -> no-op", test_merge_call_failed_no_marker),
         ("merge call: --help-shaped (no marker) -> no-op (dev-env#485)", test_merge_call_clean_exit_no_marker_does_not_fire),
+        ("live_confirm: not attempted for --help command (dev-env#557)", test_live_confirm_not_attempted_for_help_command),
+        ("live_confirm: still attempted for unresolved real merge", test_live_confirm_still_attempted_for_unresolved_real_merge),
         ("push dir: bare push -> cwd", test_push_dir_bare_push_is_cwd),
         ("push dir: cd <repo> && push -> that repo", test_push_dir_cd_chain_redirects),
         ("push dir: cd <ej> && ... && push -> ej dir", test_push_dir_cd_chain_multi_segment),

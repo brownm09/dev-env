@@ -33,6 +33,7 @@ import sys
 from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
+    is_merge_help_only,
     output_has_merge_marker,
     read_command_output,
     scan_top_level,
@@ -360,11 +361,19 @@ def main() -> None:
     # `gh pr view` confirmation (dev-env#489) before conceding no merge
     # happened. Resolved here, not inside _build_messages, so that function's
     # existing direct-call test suite can never trigger a live subprocess.
+    #
+    # `gh pr merge --help` (or any other non-mutating gh pr merge invocation
+    # that prints no marker) can categorically never attempt a real merge —
+    # excluded here so it is treated exactly like "not a merge command at
+    # all" rather than paying a live gh pr view confirmation that resolves
+    # against cwd's current branch and can misattribute an unrelated
+    # already-merged PR (dev-env#557).
     live_confirmed = None
     if (
         is_merge
         and not _is_successful_merge_call(output)
         and should_confirm_via_gh(exit_code, output)
+        and not is_merge_help_only(command)
     ):
         live_confirmed = (
             confirm_merge_via_gh(None, "", effective_merge_dir(command, cwd)) is not None

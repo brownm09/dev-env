@@ -21,6 +21,18 @@ marker instead of the exit code. These tests pin that a worktree-merge payload
 (marker present, exit non-zero) now confirms, while an unconfirmed merge (no
 marker) and a non-merge command do not.
 
+dev-env#557: `main()` adds a second guard — `if is_merge_help_only(command):
+sys.exit(0)`, right after the existing `if not scan_top_level(command,
+_check_merge_stmt): sys.exit(0)` line, before computing `exit_code` — so a
+`gh pr merge --help` command never reaches the live `gh pr view` fallback
+that would otherwise misattribute an unrelated already-merged PR to the
+harmless `--help` invocation. The guard fires before the credentials/config
+reads further down in `main()`, so this fix needs no fixture beyond the
+command/output shapes already used elsewhere in this file. `is_merge_help_only`
+itself is exhaustively tested in `test_hookio.py`; the composition test below
+pins that `merge_confirmed` (the predicate the guard sits behind) returns
+False for exactly the `--help` shape `is_merge_help_only` returns True for.
+
 The live network call (`fetch_usage`) is intentionally not tested — the repo
 avoids urllib mocks, consistent with the other script tests.
 
@@ -50,6 +62,10 @@ _spec.loader.exec_module(usage_snapshot)  # safe: main() is guarded by __main__
 classify_token = usage_snapshot.classify_token
 snapshot_action = usage_snapshot.snapshot_action
 merge_confirmed = usage_snapshot.merge_confirmed
+
+# is_merge_help_only lives in _hookio (a sibling); SCRIPT.parent already on
+# sys.path via the insert above.
+from _hookio import is_merge_help_only  # noqa: E402
 
 NOW_MS = 1_700_000_000_000  # fixed synthetic "now"; real time never consulted
 HOUR_MS = 3_600_000
@@ -138,6 +154,29 @@ def test_merge_confirmed_false_for_non_merge_command() -> str:
     return "non-merge command -> not confirmed even if output text coincidentally matches"
 
 
+# ---------------------------------------------------------------------------
+# is_merge_help_only composition (dev-env#557)
+# ---------------------------------------------------------------------------
+
+def test_help_command_not_merge_confirmed_and_is_help_only() -> str:
+    command = "gh pr merge --help"
+    output = "FLAGS\n      --admin   Use administrator privileges to merge a pull request"
+    assert merge_confirmed(command, output) is False, "no success marker -> not merge_confirmed"
+    assert is_merge_help_only(command), "gh pr merge --help -> is_merge_help_only True"
+    return "gh pr merge --help: merge_confirmed False, is_merge_help_only True -> guard fires (dev-env#557)"
+
+
+def test_unresolved_real_merge_is_not_help_only() -> str:
+    # A genuine merge with no marker (e.g. dev-env#489's lost-marker shape) and
+    # a non-zero exit must NOT be classified as help-only -- the live gh-pr-view
+    # fallback must still be attempted for this shape, unchanged.
+    command = "gh pr merge --squash --delete-branch"
+    output = "failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'"
+    assert merge_confirmed(command, output) is False
+    assert not is_merge_help_only(command), "bare merge, no --help -> guard must not suppress it"
+    return "unresolved real merge (no marker, non-help) -> is_merge_help_only False (fallback unaffected)"
+
+
 def main() -> int:
     tests = [
         ("no-expiry token proceeds silently", test_no_expiry_proceeds_silently),
@@ -154,6 +193,8 @@ def main() -> int:
         ),
         ("unconfirmed merge (no marker) is not confirmed", test_merge_confirmed_false_without_marker),
         ("non-merge command is not confirmed", test_merge_confirmed_false_for_non_merge_command),
+        ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_merge_confirmed_and_is_help_only),
+        ("unresolved real merge: guard does not suppress fallback", test_unresolved_real_merge_is_not_help_only),
     ]
     failed = 0
     for name, fn in tests:

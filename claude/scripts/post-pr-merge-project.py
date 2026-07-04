@@ -38,6 +38,7 @@ import sys
 
 from _hookio import (
     confirm_merge_via_gh,
+    is_merge_help_only,
     merge_pr_number_from_output,
     output_has_merge_marker,
     read_command_output,
@@ -235,6 +236,13 @@ def main() -> None:
     # failure (dev-env#489) — a missed move-to-Done has no other backstop, so
     # confirm via a live `gh pr view` call rather than silently giving up.
     if not merge_succeeded(output):
+        # `gh pr merge --help` (or any other non-mutating gh pr merge invocation
+        # that prints no marker) can categorically never attempt a real merge —
+        # treat it exactly like "not a merge command at all" rather than paying
+        # a live gh pr view confirmation that resolves against cwd's current
+        # branch and can misattribute an unrelated already-merged PR (dev-env#557).
+        if is_merge_help_only(command):
+            sys.exit(0)
         exit_code = data.get("tool_response", {}).get("exitCode", -1)
         if not should_confirm_via_gh(exit_code, output):
             sys.exit(0)

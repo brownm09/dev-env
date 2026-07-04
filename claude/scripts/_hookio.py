@@ -32,9 +32,18 @@ Imported the same way as ``_winsubp``: a sibling module in ``scripts/`` that the
 ``pyw -3`` hook launcher (which puts the script's own directory on ``sys.path``)
 and the test harness (``sys.path.insert(0, scripts_dir)``) both resolve.
 
+``is_merge_help_only`` (dev-env#557) closes a gap in the ``is_pr_merge_command``
+family: ``gh pr merge --help`` textually satisfies every one of those
+predicates (it *is* a ``gh pr merge`` invocation), so a hook's marker-absent /
+non-zero-exit fallback pays a live ``gh pr view`` confirmation with no PR
+number — which resolves against cwd's checked-out branch and can misattribute
+an unrelated already-merged PR to the harmless ``--help`` call. Callers treat a
+True result exactly like "not a merge command at all".
+
 Usage:
     from _hookio import read_command_output, output_has_merge_marker
     from _hookio import effective_merge_dir, scan_top_level, split_top_level
+    from _hookio import is_merge_help_only
 
 See ADR-049 (root cause + canonical read) and ADR-050 (shared helper + sibling
 hook fixes).  See ADR-067 for the merge-dir scoping.
@@ -374,3 +383,79 @@ def scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
     genuine invocation.
     """
     return any(check_fn(seg) for seg in split_top_level(command))
+
+
+# ---------------------------------------------------------------------------
+# is_merge_help_only  (dev-env#557)
+#
+# `gh pr merge --help` textually satisfies every `is_pr_merge_command` /
+# `_check_merge_stmt` predicate in this hook family — it *is* a `gh pr merge`
+# invocation, syntactically. Since --help prints no success marker,
+# `should_confirm_via_gh` returns True (no marker + non-zero/-1 exit),
+# triggering a live `gh pr view` confirmation with no explicit PR number —
+# which resolves against cwd's checked-out branch and can misattribute an
+# unrelated already-merged PR to the --help invocation (confirmed incident:
+# dev-env#557). --help/-h can *categorically never* attempt a real merge, so
+# a command consisting only of --help/-h `gh pr merge` invocations should
+# short-circuit before any of that marker/exit-code logic runs at all.
+# ---------------------------------------------------------------------------
+
+_GH_MERGE_INVOCATION_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+merge\b", re.IGNORECASE)
+
+# A standalone --help/-h flag token: bounded by whitespace/start/end so it
+# can't be mistaken for part of a longer token (e.g. `--helpful`, a branch
+# named `-help-me`) or for the "--help" substring inside a longer flag value.
+# Case-insensitive to match _GH_MERGE_INVOCATION_RE's leniency above.
+_HELP_FLAG_RE = re.compile(r"(?:^|\s)(?:--help|-h)(?:\s|$)", re.IGNORECASE)
+
+
+def _first_line(segment: str) -> str:
+    """Return *segment*'s own first physical line.
+
+    A segment's `gh pr merge` invocation and its flags only ever appear on
+    this line — `split_top_level` can return a segment spanning multiple
+    physical lines when a heredoc/`$()` span is part of it (that's the point
+    of its opacity: the span stays inside the segment rather than being split
+    out), and everything after that first line is heredoc/command-
+    substitution BODY data, never additional invocation syntax. A separate,
+    independently-defined but identically-purposed helper of the same name
+    already exists in `pre-tool-use-canonical-mutate-guard.py` for the same
+    reason: a heredoc body that merely *mentions* "--help" (or a mutating
+    verb, in that file's case) as prose must not be mistaken for a real flag
+    on the invocation. Not shared/imported across the two files — each one's
+    own module stays self-contained.
+    """
+    return segment.split("\n", 1)[0].split("\r", 1)[0]
+
+
+def is_merge_help_only(command: str) -> bool:
+    """True iff every top-level `gh pr merge` segment in *command* is a
+    --help/-h invocation.
+
+    Callers already gate on their own `is_pr_merge_command` /
+    `_check_merge_stmt` check first, so the "no merge segments at all" case
+    returns False here too — this predicate only ever needs to answer "given
+    that at least one segment matched, were ALL of them --help-only?".
+
+    A chained ``gh pr merge --help && gh pr merge 380 --squash`` therefore
+    correctly returns False: a real merge attempt elsewhere in the same
+    command must never be suppressed just because an earlier segment was a
+    harmless flag check.
+
+    Each segment's --help/-h check is scoped to its own first physical line
+    (`_first_line()`) so a heredoc/`$()` body that merely *mentions*
+    "--help" as prose cannot be mistaken for a real flag on this segment's
+    own invocation. The merge-invocation match itself is anchored at the
+    (lstripped) start of that first line — mirroring every sibling
+    `_check_merge_stmt`'s ``.match(token.lstrip())`` convention — so a `gh pr
+    merge` phrase appearing mid-segment (e.g. inside an earlier quoted
+    argument on the same segment, such as `git commit -m "reminder: gh pr
+    merge later" && gh pr merge --help`) is never mistaken for a genuine
+    invocation on that segment.
+    """
+    merge_segments = [
+        seg for seg in split_top_level(command) if _GH_MERGE_INVOCATION_RE.match(_first_line(seg).lstrip())
+    ]
+    if not merge_segments:
+        return False
+    return all(_HELP_FLAG_RE.search(_first_line(seg)) for seg in merge_segments)

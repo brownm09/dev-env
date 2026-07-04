@@ -24,6 +24,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from _hookio import (  # noqa: E402
     effective_merge_dir,
+    is_merge_help_only,
     merge_pr_number_from_output,
     output_has_merge_marker,
     read_command_output,
@@ -396,6 +397,118 @@ def test_split_top_level_unterminated_quote_drops_trailing_segment() -> str:
     return "unterminated trailing quote drops that segment (matches scan_top_level's prior contract)"
 
 
+# ---------------------------------------------------------------------------
+# is_merge_help_only  (dev-env#557)
+#
+# `gh pr merge --help` textually satisfies every `is_pr_merge_command` /
+# `_check_merge_stmt` predicate in the hook family -- it *is* a `gh pr merge`
+# invocation. Since --help prints no success marker, `should_confirm_via_gh`
+# returns True (no marker + non-zero/-1 exit), triggering a live `gh pr view`
+# confirmation with no explicit PR number that resolves against cwd's checked-
+# out branch and can misattribute an unrelated already-merged PR to the
+# --help invocation (dev-env#557 -- a live incident: `gh pr merge --help` run
+# purely to check flag semantics moved an unrelated issue's project-board item
+# to Done). --help/-h can *categorically never* attempt a real merge, so a
+# command consisting only of --help/-h `gh pr merge` invocations should
+# short-circuit before that marker/exit-code logic runs at all.
+# ---------------------------------------------------------------------------
+
+def test_is_merge_help_only_bare_help_long_flag() -> str:
+    assert is_merge_help_only("gh pr merge --help")
+    return "gh pr merge --help -> True"
+
+
+def test_is_merge_help_only_bare_help_short_flag() -> str:
+    assert is_merge_help_only("gh pr merge -h")
+    return "gh pr merge -h -> True"
+
+
+def test_is_merge_help_only_real_merge_with_number_is_false() -> str:
+    assert not is_merge_help_only("gh pr merge 380 --squash")
+    return "gh pr merge 380 --squash (no --help) -> False"
+
+
+def test_is_merge_help_only_bare_merge_no_help_is_false() -> str:
+    # The dominant workflow form -- current-branch merge, no --help anywhere.
+    assert not is_merge_help_only("gh pr merge --squash --delete-branch")
+    return "gh pr merge --squash --delete-branch (bare current-branch merge) -> False"
+
+
+def test_is_merge_help_only_no_merge_invocation_at_all_is_false() -> str:
+    # Callers already gate on their own is_pr_merge_command/_check_merge_stmt
+    # check first, so this predicate seeing zero merge segments must also be
+    # False -- it never independently claims "this is a help-only command"
+    # when there was no merge command to begin with.
+    assert not is_merge_help_only("git status")
+    return "no gh pr merge invocation anywhere -> False"
+
+
+def test_is_merge_help_only_chained_help_then_real_merge_is_false() -> str:
+    # A real merge attempt elsewhere in the same command must never be
+    # suppressed just because an earlier segment was a harmless --help check.
+    assert not is_merge_help_only("gh pr merge --help && gh pr merge 380 --squash")
+    return "gh pr merge --help && gh pr merge 380 --squash -> False (real merge not suppressed)"
+
+
+def test_is_merge_help_only_chained_two_help_invocations_is_true() -> str:
+    assert is_merge_help_only("gh pr merge --help && gh pr merge -h")
+    return "gh pr merge --help && gh pr merge -h -> True (all segments are help-only)"
+
+
+def test_is_merge_help_only_heredoc_mention_of_help_text_ignored() -> str:
+    # A heredoc body merely mentioning "--help" as prose must not make an
+    # unrelated real merge elsewhere in the same command look help-only.
+    command = (
+        "git commit -m \"$(cat <<'EOF'\n"
+        "run gh pr merge --help to see flag semantics\n"
+        "EOF\n"
+        ")\" && gh pr merge 380 --squash"
+    )
+    assert not is_merge_help_only(command)
+    return "heredoc prose mentioning 'gh pr merge --help' does not affect a real merge elsewhere (dev-env#557)"
+
+
+def test_is_merge_help_only_heredoc_mention_with_only_help_segment_present() -> str:
+    # Same heredoc-mention shape, but this time the only real top-level `gh pr
+    # merge` segment IS a genuine --help invocation -- the heredoc prose must
+    # not count as a second (non-help) merge segment that would flip the
+    # all() to False.
+    command = (
+        "git commit -m \"$(cat <<'EOF'\n"
+        "run gh pr merge --squash to actually merge\n"
+        "EOF\n"
+        ")\" && gh pr merge --help"
+    )
+    assert is_merge_help_only(command)
+    return "heredoc prose mentioning a non-help 'gh pr merge' is not a segment -> True"
+
+
+def test_is_merge_help_only_quoted_argument_mention_ignored() -> str:
+    # "gh pr merge" appearing only inside a quoted argument (not a genuine
+    # invocation) must not be treated as a second merge segment.
+    command = 'git commit -m "reminder: gh pr merge --squash later" && gh pr merge --help'
+    assert is_merge_help_only(command)
+    return "quoted-argument mention of 'gh pr merge' is not a segment -> True"
+
+
+def test_is_merge_help_only_help_flag_not_confused_with_similar_flag() -> str:
+    # --help must be matched as a standalone token, not as a substring of a
+    # differently-named flag or value.
+    assert not is_merge_help_only("gh pr merge --helpful-flag-name 380")
+    return "a flag merely containing 'help' as a substring is not --help -> False"
+
+
+def test_is_merge_help_only_cd_prefixed_help_is_true() -> str:
+    assert is_merge_help_only("cd C:/Users/brown/Git/dev-env && gh pr merge --help")
+    return "cd <repo> && gh pr merge --help -> True (cd is its own segment, ignored)"
+
+
+def test_is_merge_help_only_case_insensitive() -> str:
+    # gh.exe on Windows and the invocation itself are matched case-insensitively.
+    assert is_merge_help_only("GH.EXE PR MERGE --HELP")
+    return "GH.EXE PR MERGE --HELP -> True (case-insensitive)"
+
+
 def main() -> int:
     tests = [
         ("reads command output from stdout", test_reads_stdout),
@@ -442,6 +555,19 @@ def main() -> int:
         ("split_top_level: $(cat <<'MARKER'...) not its own segment", test_split_top_level_command_sub_heredoc_not_its_own_segment),
         ("split_top_level: real command after heredoc still split", test_split_top_level_real_command_after_heredoc_still_split),
         ("split_top_level: unterminated quote drops trailing segment", test_split_top_level_unterminated_quote_drops_trailing_segment),
+        ("is_merge_help_only: --help long flag -> True", test_is_merge_help_only_bare_help_long_flag),
+        ("is_merge_help_only: -h short flag -> True", test_is_merge_help_only_bare_help_short_flag),
+        ("is_merge_help_only: real merge with number -> False", test_is_merge_help_only_real_merge_with_number_is_false),
+        ("is_merge_help_only: bare merge, no --help -> False", test_is_merge_help_only_bare_merge_no_help_is_false),
+        ("is_merge_help_only: no merge invocation at all -> False", test_is_merge_help_only_no_merge_invocation_at_all_is_false),
+        ("is_merge_help_only: chained help-then-real-merge -> False", test_is_merge_help_only_chained_help_then_real_merge_is_false),
+        ("is_merge_help_only: chained two help invocations -> True", test_is_merge_help_only_chained_two_help_invocations_is_true),
+        ("is_merge_help_only: heredoc mention of --help ignored (dev-env#557)", test_is_merge_help_only_heredoc_mention_of_help_text_ignored),
+        ("is_merge_help_only: heredoc mention, only segment is real --help", test_is_merge_help_only_heredoc_mention_with_only_help_segment_present),
+        ("is_merge_help_only: quoted-argument mention ignored", test_is_merge_help_only_quoted_argument_mention_ignored),
+        ("is_merge_help_only: --help not confused with similar flag", test_is_merge_help_only_help_flag_not_confused_with_similar_flag),
+        ("is_merge_help_only: cd-prefixed --help -> True", test_is_merge_help_only_cd_prefixed_help_is_true),
+        ("is_merge_help_only: case-insensitive match", test_is_merge_help_only_case_insensitive),
     ]
     failed = 0
     for name, fn in tests:

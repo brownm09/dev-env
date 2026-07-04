@@ -822,3 +822,109 @@ with a known argument-taking prefix, followed by a value containing the target."
 (the segmentation engine) without reasoning through this distinction would have produced a predicate that
 *looked* converged — it calls `scan_top_level`, it has a regex, it has tests — while remaining just as
 false-positive-prone as the crude check it replaced, for exactly the shapes this ADR exists to close.
+
+## Amendment 13 (2026-07-04) — `is_merge_help_only`: excluding non-mutating `gh pr merge` invocations from the live-confirmation fallback (dev-env#557)
+
+**The gap.** Amendment 8 (and the sixth-hook sweep of Amendment 6) rolled a live `gh pr view`
+confirmation out to every marker-gated hook: when `should_confirm_via_gh(exit_code, output)` says the
+cheap marker check found nothing and the exit code signals a possible loss, the hook pays a live `gh
+pr view` call rather than silently conceding no merge happened (the dev-env#489 lost-marker case).
+That fallback is correct for a *genuine* unresolved merge, but `gh pr merge --help` (or `-h`) is not
+one — it can *categorically never* attempt a real merge, yet it textually satisfies every
+`is_pr_merge_command` / `_check_merge_stmt` predicate in this hook family (it *is* a `gh pr merge`
+invocation, syntactically), prints no success marker, and typically exits non-zero or leaves the
+payload's `exitCode` at its `-1` default. The fallback it triggers calls `confirm_merge_via_gh(None,
+"", cwd)` with no explicit PR number, which resolves via `gh pr view` scoped to **cwd's currently
+checked-out branch** — if that branch has *any* merged PR on record, the hook attributes that merge to
+the `--help` invocation. Live incident: running `gh pr merge --help` purely to check flag semantics
+during a lifting-logbook session moved an unrelated already-Done issue's project-board item, because
+three PostToolUse siblings (`post-pr-merge-project.py`, `post-merge-tile-checkpoint.py`,
+`usage-snapshot.py`) all independently hit this path. No lasting harm that time (the misattributed
+issue was already Done), but the mechanism is general: `post-pr-merge-pull.py` and
+`post-pr-merge-reclaim.py` share the identical shape (a silent local-main fetch / an unscheduled
+disk-reclaim sweep), and the two `PreToolUse` siblings (`pre-merge-findings-gate.py`,
+`pre-merge-numbering-check.py`) would evaluate or potentially block the `--help` call against an
+unrelated PR's review-findings or numbering-collision state.
+
+**Not a `scan_top_level` shape (unlike Amendments 5–12).** Every prior fix in this ADR converged a
+command-*detection* check — "does this command invoke `gh pr merge`/`gh pr create`/`git push`, as
+opposed to merely mentioning that text in a heredoc/quote/subshell." `is_merge_help_only` answers a
+different question about a command *already known* to invoke `gh pr merge`: "of the top-level `gh pr
+merge` segments this command contains, are they *all* help-only?" It still depends on
+`split_top_level` for the same reason every other predicate in this file does (a heredoc/quoted/
+subshell mention of `--help` must not count, and a chained `gh pr merge --help && gh pr merge 380
+--squash` must not have its real second half suppressed by the harmless first), but it composes on
+top of the existing `is_pr_merge_command`-style gate rather than replacing it — callers keep their own
+`scan_top_level`-anchored merge-detection check first, then add `is_merge_help_only` as a second,
+narrower filter.
+
+**Fix.** Added `is_merge_help_only(command)` to `_hookio.py`, next to `should_confirm_via_gh`: finds
+every top-level segment (`split_top_level`) whose own first physical line (`_first_line()` — a
+second, independently-defined but identically-purposed helper of the same name already exists in
+`pre-tool-use-canonical-mutate-guard.py`; not shared/imported, each module stays self-contained)
+matches `gh(?:\.exe)?\s+pr\s+merge\b` (case-insensitive, anchored at the lstripped segment start —
+mirroring every sibling `_check_merge_stmt`'s `.match(token.lstrip())` convention, so a `gh pr merge`
+phrase inside an *earlier* quoted argument on the same segment is never mistaken for a genuine
+invocation); returns `False` if there are no such segments (callers already gate on their own
+merge-detection check first); otherwise returns `True` only if **every** matched segment's first line
+also carries a standalone `--help`/`-h` token (`_HELP_FLAG_RE`, whitespace/start/end-bounded so
+`--helpful` or a `-help-me` branch name can't false-match). Wired into all 8 files the incident named,
+each as an early exit treating a help-only command exactly like "not a merge command at all":
+
+- `post-pr-merge-project.py`, `usage-snapshot.py`, `post-pr-merge-pull.py`,
+  `post-pr-merge-reclaim.py` — the guard sits right after each file's existing `if not
+  scan_top_level(command, _check_merge_stmt): sys.exit(0)` line, before the `exit_code = ...` read.
+- `post-merge-tile-checkpoint.py` — same placement, inside its `is_successful_merge()`-driven early
+  exit's own inline `scan_top_level` fallback check.
+- `pr-merge-reminder.py` — different shape: its live-confirmation attempt is a single `if (is_merge
+  and not _is_successful_merge_call(output) and should_confirm_via_gh(exit_code, output)):`
+  condition in `main()`; the fix adds `and not is_merge_help_only(command)` into that same
+  condition, so a chained `gh pr create --fill && gh pr merge --help` (the dev-env#494 chaining
+  precedent this file already handles) still gets its create reminder while the help-shaped merge
+  half is correctly excluded from the live-confirmation attempt.
+- `pre-merge-findings-gate.py`, `pre-merge-numbering-check.py` — `PreToolUse` siblings; the guard is
+  `if is_merge_help_only(command): sys.exit(0)` immediately after each file's existing `if not
+  is_pr_merge_command(command): sys.exit(0)` gate, so a `--help` command is never evaluated against
+  (or blocked on) an unrelated PR's review findings or numbering-collision state.
+
+No change to `should_confirm_via_gh`'s deliberate `-1` exit-code default (Amendment 3; still favors a
+live-confirmation attempt over silently missing a real merge for every *other* shape), and no change
+to any file's own `_check_merge_stmt`/`is_pr_merge_command` regex.
+
+**Coverage.** `test_hookio.py` gains 13 new cases for `is_merge_help_only` itself (57 total, up from
+44): bare `--help`/`-h`, a real merge with a PR number, a bare current-branch merge with no `--help`
+anywhere, no merge invocation at all, a chained help-then-real-merge (must stay `False` — the real
+merge is never suppressed), a chained two-help-invocations command (`True` — all segments qualify), a
+heredoc mention of `--help` text not affecting a real merge elsewhere, the mirror case (heredoc
+mentions a *non-help* `gh pr merge` while the only real segment is help-only — still `True`), a
+quoted-argument mention of `gh pr merge` not counted as a second segment, `--help` not confused with a
+similarly-named flag, a `cd`-prefixed `--help`, and case-insensitivity. Each of the 8 wired-in files
+gains a lightweight pure-composition test (rather than a `main()`-driving subprocess test): for the 5
+PostToolUse files whose new guard sits inside `main()` behind an already-tested sibling predicate
+(`merge_succeeded`/`is_successful_merge`/`merge_confirmed`), the test pins that predicate returns
+`False` for the exact `--help` shape `is_merge_help_only` returns `True` for (proving the two
+predicates compose the way the guard depends on), plus that an unresolved *non-help* real merge
+leaves `is_merge_help_only` `False` (the live-confirmation fallback stays reachable, unchanged).
+`post-pr-merge-project.py`'s own `main()` requires a `.claude/hook-config.json` fixture to reach the
+guard at all — building that fixture just to re-prove an already-covered predicate would have broken
+the family's otherwise-uniform test shape for no proportional benefit, so it gets the same
+lightweight composition test as its four PostToolUse siblings. `pr-merge-reminder.py`'s guard is
+inline in `main()`, not its own function, so its test directly re-evaluates the same boolean
+expression `main()` computes. The two PreToolUse files (already `is_pr_merge_command`-pure-tested)
+each gain a two-line composition test plus, for `pre-merge-findings-gate.py`, a new case in its
+existing `test-merge-findings-gate.sh` behavioral self-test proving the guard fires with **no**
+`MERGE_GATE_TEST_JSON` seam set at all — if the guard did not fire, that shape would fall through to
+a live, unstubbed `gh pr view` call. 234 tests total across the touched files, 0 failures.
+
+**General lesson.** Not every fix in this hook family is a `scan_top_level`-detection convergence —
+some incidents (like this one) are about a command *correctly* detected as "yes, this invokes `gh pr
+merge`" but whose *consequences* still need excluding from a downstream fallback that assumes
+detection implies mutation risk. Amendments 5–12 all answered "is this text a genuine invocation, or
+just a heredoc/quote/subshell mention of one?" — this amendment instead answers "given a genuine
+invocation, does its own flag set make it categorically incapable of the side effect the fallback
+exists to catch?" The two questions look similar (both dispatch on segment content) but are
+independent: a predicate answering the first correctly (as `is_pr_merge_command` already did here)
+provides no guarantee about the second, and conflating them would have either re-introduced the
+`--help` false positive (if the second question were skipped) or risked suppressing a real merge (if
+the two were merged into one over-eager check instead of two independently composed, narrowly-scoped
+predicates).

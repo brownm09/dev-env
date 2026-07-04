@@ -42,6 +42,7 @@ from pathlib import Path
 from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
+    is_merge_help_only,
     output_has_merge_marker,
     read_command_output,
     scan_top_level,
@@ -436,6 +437,13 @@ def main() -> None:
 
     if not merge_confirmed(command, output):
         if not scan_top_level(command, _check_merge_stmt):
+            sys.exit(0)
+        # `gh pr merge --help` (or any other non-mutating gh pr merge invocation
+        # that prints no marker) can categorically never attempt a real merge —
+        # treat it exactly like "not a merge command at all" rather than paying
+        # a live gh pr view confirmation that resolves against cwd's current
+        # branch and can misattribute an unrelated already-merged PR (dev-env#557).
+        if is_merge_help_only(command):
             sys.exit(0)
         exit_code = data.get("tool_response", {}).get("exitCode", -1)
         if not should_confirm_via_gh(exit_code, output):

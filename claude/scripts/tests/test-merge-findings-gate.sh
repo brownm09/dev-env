@@ -76,6 +76,13 @@ RC=$(run_gate "$MERGE_CMD" "FAIL"); [ "$RC" = "0" ] && ok "exit 0" || bad "expec
 echo "[6] non-merge command -> allow"
 RC=$(run_gate 'gh pr view 999 --repo o/r' "UNSET"); [ "$RC" = "0" ] && ok "exit 0" || bad "expected 0, got $RC"
 
+echo "[6b] gh pr merge --help -> allow, never evaluated (dev-env#557)"
+# No MERGE_GATE_TEST_JSON seam set at all -- if the guard did not fire, this
+# would fall through to a LIVE gh pr view subprocess call (no seam = real gh).
+# The guard must short-circuit before that ever happens, so this case proves
+# the fix without needing any canned JSON.
+RC=$(run_gate 'gh pr merge --help' "UNSET"); [ "$RC" = "0" ] && ok "exit 0 (never reached gh)" || bad "expected 0, got $RC"
+
 echo "[7] --repo and --repo= forms parse to the right repo"
 OUT=$($PY - "$HOOK" <<'PYEOF'
 import importlib.util, os, sys
