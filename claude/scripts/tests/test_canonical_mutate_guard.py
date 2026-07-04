@@ -169,12 +169,14 @@ _GH_MUTATING_CASES = [
     ("gh pr merge -d", "gh pr merge -d"),
     ("gh pr merge --squash --delete-branch", "gh pr merge --squash --delete-branch (flag order/other flags present)"),
     ("gh pr merge -d --squash", "gh pr merge -d --squash (delete-branch flag first)"),
+    ("gh pr merge --delete-branch=true", "gh pr merge --delete-branch=true (explicit-value Cobra form, review finding on PR #560)"),
 ]
 
 _GH_READONLY_CASES = [
     ("gh pr merge", "bare gh pr merge (remote-only, no local mutation)"),
     ("gh pr merge --squash", "gh pr merge --squash (no delete-branch flag)"),
     ("gh pr merge --auto", "gh pr merge --auto (no delete-branch flag)"),
+    ("gh pr merge --delete-branch=false", "gh pr merge --delete-branch=false (explicit opt-out, no local mutation)"),
     ("gh pr create --title foo", "gh pr create (not a merge)"),
     ("gh pr view 42", "gh pr view (not a merge)"),
     ("gh issue create --title foo", "gh issue create (not pr merge)"),

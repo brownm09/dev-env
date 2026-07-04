@@ -344,7 +344,20 @@ def is_mutating_gh_segment(segment: str) -> bool:
     if len(tokens) < 2 or tokens[0].lower() != "pr" or tokens[1].lower() != "merge":
         return False
 
-    return any(t in _GH_DELETE_BRANCH_FLAGS for t in tokens[2:])
+    # Cobra boolean flags also accept an explicit-value form (`--delete-branch=true`),
+    # not just the bare `-d`/`--delete-branch` most invocations actually use — a token
+    # equality check alone would miss it (review finding on dev-env#558/PR #560). An
+    # explicit `=false`/`=0`/`=no` is a genuine opt-out (no local mutation at all) and
+    # must NOT be treated as mutating -- only the prefix match, not the flag's value,
+    # was the gap.
+    for t in tokens[2:]:
+        if t in _GH_DELETE_BRANCH_FLAGS:
+            return True
+        if t.startswith("--delete-branch="):
+            value = t.split("=", 1)[1].strip().lower()
+            if value not in ("false", "0", "no"):
+                return True
+    return False
 
 
 def classify(cmd: str, segments: list = None):
