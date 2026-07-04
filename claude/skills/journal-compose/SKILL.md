@@ -47,6 +47,15 @@ Define, and use verbatim throughout every remaining step:
 EJ=C:/Users/brown/Git/engineering-journal
 ```
 
+**These are not persisted shell variables.** `$EJ`, `$WT` (defined below), and `$SOURCE_BRANCH`
+(resolved below) are referenced across Steps 0.6 through 11, each of which you run as a separate
+Bash tool call — shell state does not persist between tool calls. Treat these exactly like the
+`<project>`/`YYYY-MM-DD`/`<slug>` placeholder tokens used throughout the rest of this skill: carry
+the concrete resolved value (the literal worktree path, the literal branch name) in your own
+context, and substitute it verbatim into every command you construct in later steps. Do not assume
+a bare `$WT`/`$EJ`/`$SOURCE_BRANCH` reference in a fresh Bash call will resolve to anything —
+substitute the actual value every time.
+
 **Resolve the compose date and source branch.** Normally the source branch is exactly
 `draft/YYYY-MM-DD`; the one documented exception is the
 [draft-branch recovery runbook](https://github.com/brownm09/dev-env/blob/main/docs/REFERENCE.md#engineering-journal-internals),
@@ -62,9 +71,10 @@ merged or deleted mid-day. Resolve `SOURCE_BRANCH` (and the date), in order:
    git -C "$EJ" branch --show-current
    ```
    If it matches `draft/<anything>`, resolve it the same way as step 1.
-3. Otherwise, scan the remote for draft branches:
+3. Otherwise, scan the remote for draft branches (`ls-remote` queries the remote directly, so no
+   prior `fetch` is needed here — the unconditional `fetch` below, right before worktree creation,
+   covers what the rest of this step needs):
    ```bash
-   git -C "$EJ" fetch origin
    git -C "$EJ" ls-remote --heads origin \
      | grep -oE 'refs/heads/draft/[0-9]{4}-[0-9]{2}-[0-9]{2}(-recovery)?$' \
      | sed 's#refs/heads/##' | sort -r
@@ -113,9 +123,17 @@ fi
 # A pre-existing compose worktree is a concurrency signal, not an error: a lock file inside
 # it younger than 10 minutes means another compose is genuinely active; otherwise it's stale
 # (a crashed prior run) and safe to recreate — the worktree is fully regenerable from
-# origin/$SOURCE_BRANCH.
+# origin/$SOURCE_BRANCH. Also honor the .compose-creating sentinel (written immediately below,
+# right after worktree add) — the per-project .draft-compose.lock isn't written until Step 1,
+# so a SECOND compose landing in the narrow window between "worktree created" and "first lock
+# written" would otherwise see no lock at all and wrongly conclude "stale", destroying the
+# first invocation's still-initializing worktree.
 if [ -d "$WT" ]; then
   FRESH=false
+  if [ -f "$WT/.compose-creating" ]; then
+    AGE=$(( $(date +%s) - $(date -d "$(cat "$WT/.compose-creating")" +%s 2>/dev/null || echo 0) ))
+    [ "$AGE" -lt 600 ] && FRESH=true
+  fi
   for LOCK in "$WT"/sessions/*/.draft-compose.lock; do
     [ -f "$LOCK" ] || continue
     AGE=$(( $(date +%s) - $(date -d "$(cat "$LOCK")" +%s 2>/dev/null || echo 0) ))
@@ -128,7 +146,12 @@ if [ -d "$WT" ]; then
 fi
 
 git -C "$EJ" worktree add --detach "$WT" "refs/remotes/origin/$SOURCE_BRANCH"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$WT/.compose-creating"
 ```
+
+`.compose-creating` is untracked (like `.draft-compose.lock`) and must never be committed — it
+exists only so a racing second compose sees "creation in progress" instead of "no lock = stale"
+during the window before Step 1 writes the first per-project lock.
 
 The worktree is **detached** — deliberately, since `$SOURCE_BRANCH` may already be checked out
 as a named branch by a stub-writing session's own worktree. A detached checkout never contends
@@ -140,8 +163,11 @@ not rebase over content you haven't read — fetch, note what's new, and re-run 
 (which recreates the worktree from the new tip). The one exception is the pre-push hook's
 merged-draft-branch block (refuses a push to a `draft/YYYY-MM-DD` that already has a merged PR,
 except same-day — the `-recovery` suffix exists specifically to bypass this for a branch that
-already merged on a prior day) — that failure routes to Step 10.5's `compose/YYYY-MM-DD`
-recovery branch instead, since that hook's pattern only matches undecorated `draft/YYYY-MM-DD`.
+already merged on a prior day). **This specific rejection does not "route to" Step 10.5
+automatically — it requires an explicit jump:** the commit already succeeded (only the push was
+rejected), so go directly to Step 10.5's `CONFLICT_LINES > 0` recovery block, treating the
+rejection exactly like a detected conflict — skip the merge-tree probe and Step 10.5's normal
+push entirely, since there is nothing to push to `$SOURCE_BRANCH` at that point.
 
 From here on, every command in this skill runs against `"$WT"`, not `"$EJ"` — except where a
 step explicitly says otherwise (a handful of read-only canonical queries, and the final branch
@@ -369,7 +395,7 @@ Step 6 — Write the output file to:
 
 Step 6.5 — Self-check before claiming done. After writing the file, run `wc -l` on it and compare to the combined source stub line count. If the journal is < 50% of source length, the compose is incomplete — expand it before proceeding. Report the ratio in your final status as `LINE_COUNT=<n> SOURCE_LINES=<m> FIDELITY=<n/m>`.
 
-Step 6.6 — Structural assertion. A composed journal missing a required section (e.g. no
+Step 6.6 — Structural assertion. <!-- mirrors the main flow's Step 6.5 structural-assertion block — keep the 11 chk() lines in sync between the two copies. --> A composed journal missing a required section (e.g. no
   "## Next Session Context") is a quality failure just like low fidelity. Verify the file you
   just wrote contains every required heading:
     FILE="<worktree-root>/sessions/<project>/YYYY-MM-DD-<slug>.md"
@@ -910,9 +936,10 @@ C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-YYYY-MM-DD/sess
 
 After writing the file, run `wc -l` on it and compare to the combined source stub line count. If the journal is < 50% of source length, the compose is incomplete — expand it before proceeding. Report the ratio: `LINE_COUNT=<n> SOURCE_LINES=<m> FIDELITY=<n/m>`.
 
-**Structural assertion.** Also verify every required section heading is present — a composed
-journal missing a section (e.g. no `## Next Session Context`) is a quality failure just like low
-fidelity:
+**Structural assertion** (mirrors the multi-project subagent template's Step 6.6 — keep the 11
+`chk()` lines in sync between the two copies). Also verify every required section heading is
+present — a composed journal missing a section (e.g. no `## Next Session Context`) is a quality
+failure just like low fidelity:
 
 ```bash
 FILE="$WT/sessions/<project>/YYYY-MM-DD-<slug>.md"
@@ -1011,7 +1038,9 @@ After Step 8, refresh the marker-delimited block at the top of `engineering-jour
 TMPFILE="C:/Users/brown/.claude/scratch/tmp_start_here_$$.json"
 node -e "
   const fs = require('fs'); const path = require('path');
-  const root = 'C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-YYYY-MM-DD';   // <-- substitute the compose date
+  const root = '$WT';   // interpolated directly, same as \$TMPFILE below — no manual date
+                         // substitution needed here (unlike the date constant right below this
+                         // one), since \$WT already has the resolved date baked into its path
   const date = 'YYYY-MM-DD';   // <-- substitute the compose date
   const items = [];
   const seen = new Set();
@@ -1223,6 +1252,10 @@ for SHARD in "$WT"/sessions/<project>/open-prs/*.json; do
   URL=$(node -e "console.log((JSON.parse(require('fs').readFileSync('$SHARD','utf8')).url)||'')")
   N=$(basename "$SHARD" .json)
   REPO=$(echo "$URL" | sed -E 's#https://github.com/([^/]+/[^/]+)/pull/.*#\1#')
+  if [ -z "$REPO" ]; then
+    echo "WARNING: shard $SHARD has no parseable url — cannot reconcile, keeping as-is"
+    continue
+  fi
   STATE=$(gh pr view "$N" --repo "$REPO" --json state --jq .state 2>/dev/null || echo "")
   case "$STATE" in
     MERGED|CLOSED) git -C "$WT" rm --quiet -- "$SHARD" && RECONCILED="$RECONCILED $REPO#$N($STATE)";;
@@ -1273,8 +1306,9 @@ git -C "$WT" push origin "HEAD:refs/heads/$SOURCE_BRANCH"
 
 A rejected push follows the Step 0.6 push-failure rule — except a rejection from the pre-push
 hook's merged-draft-branch block, which means the draft branch already has a merged PR from a
-prior day (the #147-morning/#150-evening shape); that goes straight to Step 10.5's
-`compose/YYYY-MM-DD` recovery path below rather than a retry.
+prior day (the #147-morning/#150-evening shape). This commit already succeeded, so skip Step
+10.5's merge-tree probe entirely and jump directly to its `CONFLICT_LINES > 0` recovery block
+below, exactly as if a conflict had been detected.
 
 **Before proceeding to Step 11**, run Step 10.5 to check whether the draft branch can be
 cleanly merged into main. Do not skip this check — a conflicting draft branch requires a
@@ -1344,12 +1378,20 @@ git -C "$WT" checkout "$PREV" -- \
 [ -d "$WT/sessions/<project>/open-prs" ] && \
   git -C "$WT" checkout "$PREV" -- sessions/<project>/open-prs
 
-# 2b. Re-apply this run's Step 9.5 reconciliation. origin/main's open-prs/ almost certainly
-#     still has the shards Step 9.5 already verified-and-removed (those PRs merged since the
-#     last successful compose, i.e. since origin/main last moved) — checking out origin/main's
-#     tree above can resurrect them. For each entry in this run's RECONCILED_SHARDS, verify the
-#     shard is still absent; if the checkout brought it back, remove it again:
-#       git -C "$WT" rm --quiet -- sessions/<project>/open-prs/<N>.json
+# 2b. Re-apply this run's Step 9.5 reconciliation — REQUIRED, not optional. Empirically
+#     confirmed: `git checkout <commit> -- <dir>` does NOT delete files present in the current
+#     working tree but absent from <commit> — it only adds/updates what <commit> has. The
+#     `checkout -b ... origin/main` above left `open-prs/` at origin/main's STALE state (still
+#     containing shards Step 9.5 already verified-and-removed in $PREV, since those removals
+#     haven't reached main yet); the `checkout "$PREV" -- open-prs` line just above does NOT
+#     remove them — $PREV doesn't have them either, so nothing changes them either way. Without
+#     this step, every reconciled shard from Step 9.5 silently reappears in the branch about to
+#     be pushed. For every PR number this run's Step 9.5 reconciled for this project (you already
+#     have this list from Step 9.5 — do not skip re-deriving it), remove it again explicitly:
+for N in <the exact PR numbers this run's Step 9.5 removed for this project, space-separated>; do
+  [ -f "$WT/sessions/<project>/open-prs/$N.json" ] && \
+    git -C "$WT" rm --quiet -- "sessions/<project>/open-prs/$N.json"
+done
 
 # 3. Commit and push
 git -C "$WT" commit -m \
@@ -1361,6 +1403,14 @@ git -C "$WT" push origin --delete "$SOURCE_BRANCH" || true
 ```
 
 Set `PR_HEAD=compose/YYYY-MM-DD`.
+
+**Caution (pre-existing, not introduced by this change):** step 4 above deletes the remote
+`$SOURCE_BRANCH` unconditionally. If a stub-writing session's worktree still holds that branch and
+intends to push more stubs to it later the same day, this delete forces that session's next push
+to recreate a branch with no composed journal in its history — this assumes no further stubs will
+be written for the date (an end-of-day invariant). This is narrow enough to leave as a documented
+limitation rather than redesign here; do not delete this branch as part of a same-day, mid-day
+recovery unless you've confirmed no other session is actively writing stubs for the same date.
 
 Tell the user: "Draft branch had merge conflicts with main — composed journal pushed to
 `compose/YYYY-MM-DD` instead. Remote draft branch deleted. Opening PR from clean branch."
@@ -1386,7 +1436,15 @@ for proj in meta lifting-logbook; do
   [ -d "$WT/sessions/$proj/open-prs" ] && \
     git -C "$WT" checkout "$PREV" -- "sessions/$proj/open-prs"
 done
-# Re-apply each project's Step 9.5 RECONCILED_SHARDS (see single-project note above)
+# REQUIRED, not optional — see the single-project note above for why: the checkouts above
+# cannot delete a shard that's absent from $PREV but present in origin/main's stale tree. For
+# every PR number each project's own Step 9.5 reconciled, remove it again explicitly:
+for proj in meta lifting-logbook; do
+  for N in <the exact PR numbers this run's Step 9.5 removed for $proj, space-separated>; do
+    [ -f "$WT/sessions/$proj/open-prs/$N.json" ] && \
+      git -C "$WT" rm --quiet -- "sessions/$proj/open-prs/$N.json"
+  done
+done
 git -C "$WT" commit -m \
   "[docs] Add YYYY-MM-DD journals: <slug-a>, <slug-b> (compose branch — draft had conflicts)"
 git -C "$WT" push -u origin compose/YYYY-MM-DD
@@ -1461,12 +1519,18 @@ git -C "$EJ" branch -D "$SOURCE_BRANCH" 2>/dev/null || true    # may be held by 
 git -C "$EJ" branch -D compose/YYYY-MM-DD 2>/dev/null || true  # only exists after a Step 10.5 recovery
 ```
 
-**Post-merge shard-leak check** — surfaces a leak without ever mutating the canonical to fix it:
+**Post-merge shard-leak check** — surfaces a leak without ever mutating the canonical to fix it.
+This checks for a leak of the shards this run's Step 9.5 reconciled (and Step 10.5's "2b", if the
+conflict-recovery path ran) — **not** a shard for the compose PR itself, which by design (see
+"Disregard the pr-merge-reminder hook's..." above) never exists in the first place:
 
 ```bash
 git -C "$EJ" fetch origin main
-git -C "$EJ" ls-tree -r origin/main --name-only | grep "open-prs/<N>.json" && \
-  echo "WARNING: a shard for compose PR #<N> landed on origin/main — remove it in a follow-up commit"
+for N in <the exact PR numbers this run's Step 9.5 (and Step 10.5's re-application, if it ran)
+          reconciled, space-separated>; do
+  git -C "$EJ" ls-tree -r origin/main --name-only | grep -q "open-prs/$N.json" && \
+    echo "WARNING: shard open-prs/$N.json landed back on origin/main despite reconciliation — remove it in a follow-up commit"
+done
 ```
 
 Tell the user: "Merged: <PR-URL>. Journal published." (plus the shard-leak warning above, if any).
