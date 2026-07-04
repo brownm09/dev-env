@@ -23,6 +23,23 @@ non-zero, since a missed move-to-Done has no other backstop. `should_confirm_via
 is covered in `test_hookio.py`; `confirm_merge_via_gh` itself is not (it shells
 out to `gh pr view`).
 
+dev-env#557: `main()` gates that live-confirmation fallback behind a new
+`_hookio.is_merge_help_only(command)` check (`if is_merge_help_only(command):
+sys.exit(0)`, right after `if not merge_succeeded(output):`, before computing
+`exit_code`) — `gh pr merge --help` textually satisfies `merge_succeeded`'s
+own upstream `scan_top_level` gate but can never complete a real merge, and
+without this guard the live `gh pr view` fallback resolves with no PR number
+against cwd's checked-out branch, misattributing an unrelated already-merged
+PR to the harmless `--help` invocation (a confirmed live incident). `main()`'s
+stdin/live-`gh` plumbing is not driven end-to-end here (pure-helper
+convention, and this hook's `main()` requires a `.claude/hook-config.json`
+fixture to reach the guard at all) — `is_merge_help_only` itself is
+exhaustively tested in `test_hookio.py`. The composition test below instead
+pins that `merge_succeeded` (the predicate the guard sits behind) returns
+False for exactly the `--help` shape that `is_merge_help_only` returns True
+for, proving the two predicates line up the way `main()`'s guard depends on,
+while a genuine unresolved-marker real-merge scenario is unaffected.
+
 These tests exercise the pure helpers offline (no network, no gh). The live gh
 calls (`get_pr_body`, `find_project_item`, `move_to_done`, `confirm_merge_via_gh`)
 are intentionally not tested.
@@ -52,6 +69,10 @@ _spec.loader.exec_module(ppmp)  # safe: main() is guarded by __main__
 extract_pr_number_from_command = ppmp.extract_pr_number_from_command
 extract_pr_number = ppmp.extract_pr_number
 merge_succeeded = ppmp.merge_succeeded
+
+# is_merge_help_only lives in _hookio (a sibling); SCRIPT.parent already on
+# sys.path via the insert above.
+from _hookio import is_merge_help_only  # noqa: E402
 
 
 # --- extract_pr_number_from_command --------------------------------------
@@ -159,6 +180,36 @@ def test_merge_succeeded_excludes_auto_and_failure() -> str:
     return "queued --auto / failed / empty -> False (no premature Done move)"
 
 
+# ---------------------------------------------------------------------------
+# is_merge_help_only composition (dev-env#557)
+#
+# main()'s guard sits behind `if not merge_succeeded(output):` — these tests
+# pin that merge_succeeded returns False for exactly the --help shape
+# is_merge_help_only returns True for (so the guard actually fires for the
+# command it's meant to catch), and that a genuine unresolved-marker,
+# non-help merge still leaves is_merge_help_only False (so the guard never
+# suppresses a real merge's live gh-pr-view fallback).
+# ---------------------------------------------------------------------------
+
+def test_help_command_not_merge_succeeded_and_is_help_only() -> str:
+    command = "gh pr merge --help"
+    output = "FLAGS\n      --admin   Use administrator privileges to merge a pull request"
+    assert not merge_succeeded(output), "no success marker -> not merge_succeeded"
+    assert is_merge_help_only(command), "gh pr merge --help -> is_merge_help_only True"
+    return "gh pr merge --help: merge_succeeded False, is_merge_help_only True -> guard fires (dev-env#557)"
+
+
+def test_unresolved_real_merge_is_not_help_only() -> str:
+    # A genuine merge with no marker (e.g. dev-env#489's lost-marker shape) and
+    # a non-zero exit must NOT be classified as help-only -- the live gh-pr-view
+    # fallback must still be attempted for this shape, unchanged.
+    command = "gh pr merge --squash --delete-branch"
+    output = "failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'"
+    assert not merge_succeeded(output)
+    assert not is_merge_help_only(command), "bare merge, no --help -> guard must not suppress it"
+    return "unresolved real merge (no marker, non-help) -> is_merge_help_only False (fallback unaffected)"
+
+
 def main() -> int:
     tests = [
         ("command: bare number", test_cmd_bare_number),
@@ -177,6 +228,8 @@ def main() -> int:
         ("output: empty is None", test_output_empty_is_none),
         ("merge_succeeded: real markers True", test_merge_succeeded_true),
         ("merge_succeeded: excludes auto/failure", test_merge_succeeded_excludes_auto_and_failure),
+        ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_merge_succeeded_and_is_help_only),
+        ("unresolved real merge: guard does not suppress fallback", test_unresolved_real_merge_is_not_help_only),
     ]
     failed = 0
     for name, fn in tests:

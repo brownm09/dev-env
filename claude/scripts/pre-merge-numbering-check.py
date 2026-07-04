@@ -61,7 +61,7 @@ import re
 import subprocess
 import sys
 
-from _hookio import effective_merge_dir, scan_top_level
+from _hookio import effective_merge_dir, is_merge_help_only, scan_top_level
 
 _MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
 _TESTING_ITEM_RE = re.compile(r'^(\d+)\.\s+\*\*')
@@ -238,6 +238,12 @@ def main():
         sys.exit(0)
     command = data.get("tool_input", {}).get("command", "")
     if not is_pr_merge_command(command):
+        sys.exit(0)
+    # `gh pr merge --help` (or any other non-mutating gh pr merge invocation)
+    # can categorically never attempt a real merge, so it must never be
+    # evaluated for -- or blocked on -- an unrelated numbering-collision state
+    # (dev-env#557).
+    if is_merge_help_only(command):
         sys.exit(0)
 
     cwd = data.get("cwd") or os.getcwd()

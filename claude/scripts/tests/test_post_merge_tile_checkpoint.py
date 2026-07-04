@@ -20,6 +20,18 @@ heredoc/quote/subshell tests below pin the false-positive shapes that
 substring test was blind to (dev-env#499's original repro class) but the
 anchored predicate correctly rejects.
 
+dev-env#557: `main()` adds a second guard — `if is_merge_help_only(command):
+sys.exit(0)`, right after the existing `if not scan_top_level(command,
+_check_merge_stmt): sys.exit(0)` line, before computing `exit_code` — so a
+`gh pr merge --help` command (which passes that scan_top_level check, since
+it *is* a `gh pr merge` invocation) never reaches the live `gh pr view`
+fallback that would otherwise misattribute an unrelated already-merged PR
+(dev-env#485's original repro was this same `--help` shape; #557 found the
+fallback path around it). `is_merge_help_only` itself is exhaustively tested
+in `test_hookio.py`; the composition test below pins that `is_successful_merge`
+(the predicate `main()`'s guard sits behind) returns False for exactly the
+`--help` shape `is_merge_help_only` returns True for.
+
 The main() I/O (stdin read, stderr write, sys.exit) is not covered — pure-helper
 convention.
 
@@ -46,6 +58,10 @@ assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 pmtc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(pmtc)  # safe: main() is guarded by __main__
 is_successful_merge = pmtc.is_successful_merge
+
+# is_merge_help_only lives in _hookio (a sibling); SCRIPT.parent already on
+# sys.path via the insert above.
+from _hookio import is_merge_help_only  # noqa: E402
 
 
 def test_clean_merge_with_marker_fires() -> str:
@@ -121,6 +137,29 @@ def test_merge_text_inside_subshell_not_matched() -> str:
     return "'gh pr merge' text inside a $() subshell -> no match (dev-env#529)"
 
 
+# ---------------------------------------------------------------------------
+# is_merge_help_only composition (dev-env#557)
+# ---------------------------------------------------------------------------
+
+def test_help_command_not_successful_merge_and_is_help_only() -> str:
+    command = "gh pr merge --help"
+    output = "FLAGS\n      --admin   Use administrator privileges to merge a pull request"
+    assert not is_successful_merge(command, output), "no success marker -> not is_successful_merge"
+    assert is_merge_help_only(command), "gh pr merge --help -> is_merge_help_only True"
+    return "gh pr merge --help: is_successful_merge False, is_merge_help_only True -> guard fires (dev-env#557)"
+
+
+def test_unresolved_real_merge_is_not_help_only() -> str:
+    # A genuine merge with no marker (e.g. dev-env#489's lost-marker shape) and
+    # a non-zero exit must NOT be classified as help-only -- the live gh-pr-view
+    # fallback must still be attempted for this shape, unchanged.
+    command = "gh pr merge --squash --delete-branch"
+    output = "failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'"
+    assert not is_successful_merge(command, output)
+    assert not is_merge_help_only(command), "bare merge, no --help -> guard must not suppress it"
+    return "unresolved real merge (no marker, non-help) -> is_merge_help_only False (fallback unaffected)"
+
+
 def main() -> int:
     tests = [
         ("merge marker present -> fires", test_clean_merge_with_marker_fires),
@@ -130,6 +169,8 @@ def main() -> int:
         ("'gh pr merge' text in heredoc body ignored (dev-env#529)", test_merge_text_in_heredoc_body_not_matched),
         ("'gh pr merge' text in double quotes ignored (dev-env#529)", test_merge_text_inside_double_quotes_not_matched),
         ("'gh pr merge' text in $() subshell ignored (dev-env#529)", test_merge_text_inside_subshell_not_matched),
+        ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_successful_merge_and_is_help_only),
+        ("unresolved real merge: guard does not suppress fallback", test_unresolved_real_merge_is_not_help_only),
     ]
     failed = 0
     for name, fn in tests:

@@ -38,6 +38,14 @@ Cases pinned:
 - is_pr_merge_command: a bare top-level invocation; a `cd <repo> &&`-chained
   invocation; a `gh pr merge` mentioned only inside a heredoc body (must NOT
   match -- dev-env#499); an unrelated command (must NOT match).
+- is_merge_help_only composition (dev-env#557): main() adds `if
+  is_merge_help_only(command): sys.exit(0)` immediately after its existing
+  `if not is_pr_merge_command(command): sys.exit(0)` gate, so a `gh pr merge
+  --help` command is never evaluated for -- or blocked on -- an unrelated
+  numbering-collision state. Pins that a --help command still passes the
+  upstream is_pr_merge_command gate (so the new guard is actually reached),
+  and that a genuine merge command is unaffected by the new guard.
+  `is_merge_help_only` itself is exhaustively tested in `test_hookio.py`.
 - main() end-to-end: not-dev-env-repo -> exit 0 no-op; a non-merge command
   -> exit 0 no-op; a genuine cross-branch collision -> exit 2 with the
   block message on stderr and empty stdout.
@@ -67,6 +75,10 @@ find_gaps = mod.find_gaps
 find_new_gaps = mod.find_new_gaps
 format_block_message = mod.format_block_message
 is_pr_merge_command = mod.is_pr_merge_command
+
+# is_merge_help_only lives in _hookio (a sibling); SCRIPTS_DIR is already on
+# sys.path via the insert above.
+from _hookio import is_merge_help_only  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +275,26 @@ def test_is_pr_merge_command_heredoc_body_not_matched():
 
 def test_is_pr_merge_command_unrelated_command():
     assert is_pr_merge_command("git status") is False
+
+
+# ---------------------------------------------------------------------------
+# is_merge_help_only composition (dev-env#557)
+# ---------------------------------------------------------------------------
+
+def test_help_command_is_pr_merge_command_and_is_help_only():
+    # The new guard sits BEHIND is_pr_merge_command's own gate -- confirm a
+    # --help command still passes that upstream gate (so the new guard is
+    # actually reached), and that is_merge_help_only correctly classifies it.
+    command = "gh pr merge --help"
+    assert is_pr_merge_command(command) is True, "gh pr merge --help must still pass the upstream gate"
+    assert is_merge_help_only(command) is True
+
+def test_unresolved_real_merge_command_is_not_help_only():
+    # A genuine merge command (no --help anywhere) must not be excluded by
+    # the new guard -- the numbering-collision evaluation must still proceed.
+    command = "gh pr merge 518 --squash --delete-branch"
+    assert is_pr_merge_command(command) is True
+    assert is_merge_help_only(command) is False
 
 
 # ---------------------------------------------------------------------------
