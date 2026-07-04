@@ -55,6 +55,12 @@ _PR_URL_RE = re.compile(r"https://github\.com/\S+/pull/(\d+)")
 # of discarding it — used to detect when a merge command names a DIFFERENT
 # repo than cwd's own config (dev-env#559).
 _PR_URL_REPO_RE = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/\d+")
+# An explicit --repo flag is the highest-confidence signal, ahead of a URL —
+# mirrors _effective_merge_repo's resolution order in pr-merge-reminder.py
+# (dev-env#470). Checked first so a --subject/--body value that happens to
+# mention an unrelated PR URL cannot override an explicitly-named --repo
+# (review finding on dev-env#559 / PR #572).
+_REPO_FLAG_RE = re.compile(r"--repo\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
 # The argument list of the `gh pr merge` invocation only — up to the next shell
 # separator — so a /pull/N URL in a --subject/--body value or a chained sibling
 # command cannot hijack the PR-number extraction (the whole-command search did;
@@ -123,7 +129,15 @@ def extract_repo_from_command(command: str) -> str | None:
 
     Mirrors `extract_pr_number_from_command`: scoped to the merge invocation's
     own arguments (`_MERGE_ARGS_RE`) so a `/pull/N` URL in a `--subject`/`--body`
-    value or a chained sibling command cannot hijack it. Only a PR URL names a
+    value or a chained sibling command cannot hijack it. An explicit `--repo`
+    flag is checked first — the highest-confidence signal, mirroring
+    `_effective_merge_repo`'s resolution order in `pr-merge-reminder.py`
+    (dev-env#470) — so a `--subject`/`--body` value that happens to mention an
+    unrelated PR URL cannot override an explicitly-named `--repo` (review
+    finding on dev-env#559 / PR #572: without this check, `gh pr merge --repo
+    a/b 380 --subject "see https://github.com/c/d/pull/1"` would extract "c/d"
+    instead of "a/b", falsely mismatching a legitimate same-repo merge and
+    silently skipping its Done-move). Only a `--repo` flag or a PR URL names a
     repo explicitly — `gh pr merge 380 --squash` (bare number) and
     `gh pr merge --squash --delete-branch` (the current branch's own PR) both
     return None; the caller then falls back to cwd's own config.
@@ -136,7 +150,11 @@ def extract_repo_from_command(command: str) -> str | None:
     m = _MERGE_ARGS_RE.search(command)
     if not m:
         return None
-    url = _PR_URL_REPO_RE.search(m.group(1))
+    args = m.group(1)
+    flag = _REPO_FLAG_RE.search(args)
+    if flag:
+        return flag.group(1)
+    url = _PR_URL_REPO_RE.search(args)
     return url.group(1) if url else None
 
 

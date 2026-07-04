@@ -180,6 +180,24 @@ def test_repo_from_url_case_preserved() -> str:
     return "mixed-case owner/repo in URL -> parsed verbatim (caller lower()s to compare)"
 
 
+def test_repo_from_repo_flag_wins_over_subject_url() -> str:
+    # Review finding on PR #572: an explicit --repo flag must win over an
+    # unrelated PR URL mentioned in a --subject value, or a legitimate
+    # same-repo merge would falsely mismatch and skip the Done-move.
+    cmd = (
+        'gh pr merge --repo brownm09/dev-env 380 --subject '
+        '"duplicate of https://github.com/other/repo/pull/1"'
+    )
+    assert extract_repo_from_command(cmd) == "brownm09/dev-env"
+    return "--repo flag wins over an unrelated URL in --subject value -> correct repo, not hijacked"
+
+
+def test_repo_from_repo_flag_no_url() -> str:
+    cmd = "gh pr merge 42 --repo brownm09/engineering-journal --squash"
+    assert extract_repo_from_command(cmd) == "brownm09/engineering-journal"
+    return "--repo flag, no PR URL -> flag's repo"
+
+
 # --- extract_pr_number (output) ------------------------------------------
 
 def test_output_squash_marker() -> str:
@@ -280,6 +298,8 @@ def main() -> int:
         ("repo: cd-prefixed URL parsed", test_repo_from_cd_prefixed_url),
         ("repo: chained URL ignored", test_repo_from_chained_command_ignored),
         ("repo: mixed-case URL preserved", test_repo_from_url_case_preserved),
+        ("repo: --repo flag wins over subject URL", test_repo_from_repo_flag_wins_over_subject_url),
+        ("repo: --repo flag, no URL", test_repo_from_repo_flag_no_url),
         ("output: squash marker", test_output_squash_marker),
         ("output: merged marker", test_output_merged_marker),
         ("output: cross-repo marker", test_output_cross_repo_marker),

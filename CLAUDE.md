@@ -195,10 +195,13 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     queued `--auto` or a failed merge yields no completed-merge number and `merge_succeeded` is `False`),
     and the dev-env#559 repo resolution (a PR URL's owner/repo parsed from the merge command, scoped to
     the same merge-args region as the PR-number extraction so a chained sibling command can't hijack it;
-    a bare number or bare form both yield `None`, falling back to cwd's config). `main()` skips the whole
-    operation when the parsed repo doesn't match cwd's config — cwd's project-board fields don't apply to
-    a different repo regardless of which PR's body gets fetched — but that gate itself is not separately
-    unit-tested, consistent with this file's pure-helper-only convention. The live `gh` calls
+    a bare number or bare form both yield `None`, falling back to cwd's config; an explicit `--repo` flag
+    is checked first and wins over a URL mentioned in a `--subject`/`--body` value — review finding on
+    PR #572 — mirroring `_effective_merge_repo`'s flag-first precedence in `pr-merge-reminder.py`).
+    `main()` skips the whole operation when the parsed repo doesn't match cwd's config — cwd's
+    project-board fields don't apply to a different repo regardless of which PR's body gets fetched —
+    but that gate itself is not separately unit-tested, consistent with this file's pure-helper-only
+    convention. The live `gh` calls
     (`get_pr_body` / `find_project_item` / `move_to_done` / `confirm_merge_via_gh`) are not covered
     ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md),
     [ADR-067](docs/adr/067-scope-merge-keyed-hooks-to-target-repo.md)).
