@@ -20,6 +20,12 @@ Cases pinned:
   - A JSON non-object (list, scalar) yields (lineno, None).
   - ADR-056 single-object shard (one line) is parsed as one entry.
   - Legacy per-day manifest (multiple JSON objects, one per line) is parsed as multiple entries.
+
+Since dev-env #556 / ADR-081, the four helpers below live in ``_journal_schema.py`` and
+are re-imported by ``validate-manifest.py`` (module-attribute indirection — see
+``test_worktree_canon.py`` for the same pattern) — this file exercises them unchanged
+through that re-export, plus ``sys.path.insert`` below so the module-under-load's own
+``from _journal_schema import ...`` resolves.
 """
 import importlib.util
 import os
@@ -28,6 +34,8 @@ import sys
 # ---------------------------------------------------------------------------
 # Load the module under test without executing main()
 # ---------------------------------------------------------------------------
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 _SCRIPT = os.path.join(os.path.dirname(__file__), "..", "validate-manifest.py")
 spec = importlib.util.spec_from_file_location("validate_manifest", _SCRIPT)
 mod = importlib.util.module_from_spec(spec)

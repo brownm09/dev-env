@@ -202,6 +202,12 @@ py -3 C:/Users/brown/.claude/scripts/validate-manifest.py \
 
 If no manifest files exist for the date, the validator exits 0 (nothing to validate) — proceed.
 
+This is the compose-time (next-day) half of the gate; the same schema is enforced at write time,
+in the writing session, by the `journal-shard-write-advisory.py` PostToolUse hook — both share
+`claude/scripts/_journal_schema.py`, so a schema change updates one module instead of two gates
+drifting apart. Per [ADR-081](https://github.com/brownm09/dev-env/blob/main/docs/adr/081-write-time-journal-shard-validation-hook.md)
+(dev-env #556).
+
 ## Step 0.8 — Validate JSONL files
 
 Before reading any stubs or manifests, run the JSONL validator against the compose worktree,

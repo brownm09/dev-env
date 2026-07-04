@@ -16,11 +16,13 @@ into the `journal-compose` skill as a Step-0 gate that runs **before any subagen
 it lists every manifest entry missing a required field (and every unparseable line) and exits
 non-zero so composition aborts up front.
 
-Pure-helper convention (matches the rest of `claude/scripts/`): the validation logic lives in
-``missing_required_fields`` / ``find_entries_missing_fields`` / ``parse_manifest_text`` — all
-pure (dict/str in, data out), unit-tested offline in ``tests/test_validate_manifest.py`` with no
-subprocess, network, or disk. ``main()`` is the only impure surface (it reads the files named on
-argv) and is not unit-tested.
+Pure-helper convention (matches the rest of `claude/scripts/`): the validation logic — now
+shared with the write-time `journal-shard-write-advisory.py` PostToolUse hook (dev-env #556,
+ADR-081) — lives in `_journal_schema.py`'s ``missing_required_fields`` /
+``find_entries_missing_fields`` / ``parse_manifest_text`` / ``decode_shard_bytes``, all pure
+(dict/str/bytes in, data out), unit-tested offline in ``tests/test_journal_schema.py`` with no
+subprocess, network, or disk. ``main()`` is the only impure surface here (it reads the files
+named on argv) and is not unit-tested.
 
 Usage (paths may be shell globs — non-matching / absent paths are skipped, so an unmatched
 glob that the shell passes through literally is harmless):
@@ -31,75 +33,29 @@ Both formats are handled by parsing line-by-line: an ADR-056 per-session shard i
 JSON object (one line); a legacy per-day manifest is one JSON object per line.
 
 Exit 0 — every entry has all required fields (or no manifest entries were found).
-Exit 1 — at least one entry is missing a required field, or a line failed to parse.
+Exit 1 — at least one entry is missing a required field, a line failed to parse, or a file
+had an encoding problem (e.g. a UTF-8 BOM).
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 
-# The manifest schema's required fields, in canonical (schema) order. Kept in sync with
-# docs/REFERENCE.md → "Manifest shard format". ``priorities`` is optional and not listed here.
-REQUIRED_FIELDS = ("stub", "topic", "tokens", "prs_opened", "prs_closed")
-
-
-def missing_required_fields(entry: object) -> list[str]:
-    """Return the required fields absent from a single parsed manifest entry.
-
-    Returned in canonical schema order so reports are stable. A non-dict entry (a JSON
-    list/scalar that slipped in) is treated as missing *every* required field — it cannot
-    satisfy the schema. "Missing" means the key is absent; a present-but-null value is out
-    of scope (the issue is *omitted* fields, per #423).
-    """
-    if not isinstance(entry, dict):
-        return list(REQUIRED_FIELDS)
-    return [f for f in REQUIRED_FIELDS if f not in entry]
-
-
-def find_entries_missing_fields(entries):
-    """Pure contract: parsed manifest entries -> [(entry, [missing-fields]), ...].
-
-    One tuple per entry that is missing at least one required field; entries with all five
-    fields are omitted. The list preserves input order. This is the function the issue
-    (#423) specifies — `journal-compose` uses ``main`` for source-aware reporting, but this
-    is the stable, testable core.
-    """
-    result = []
-    for entry in entries:
-        missing = missing_required_fields(entry)
-        if missing:
-            result.append((entry, missing))
-    return result
-
-
-def parse_manifest_text(text: str):
-    """Pure: manifest `.jsonl` text -> [(lineno, entry-or-None), ...].
-
-    Each non-blank line is one JSON object (a shard is a single line; a legacy per-day
-    manifest is one object per line). Blank/whitespace-only lines are skipped. A line that
-    is not valid JSON, or that parses to a non-object (list/scalar), yields ``(lineno, None)``
-    so ``main`` can report it as a parse error rather than silently dropping it.
-    """
-    results = []
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            obj = json.loads(stripped)
-        except json.JSONDecodeError:
-            results.append((lineno, None))
-            continue
-        results.append((lineno, obj if isinstance(obj, dict) else None))
-    return results
+from _journal_schema import (
+    REQUIRED_FIELDS,
+    decode_shard_bytes,
+    find_entries_missing_fields,
+    missing_required_fields,
+    parse_manifest_text,
+)
 
 
 def main(argv) -> int:
     paths = argv[1:]
     entry_count = 0
-    parse_errors = []   # list[str] — "path:lineno"
-    field_errors = []   # list[tuple[str, str, list[str]]] — (path:lineno, stub-label, missing)
+    parse_errors = []     # list[str] — "path:lineno" or "path (unreadable: ...)"
+    field_errors = []     # list[tuple[str, str, list[str]]] — (path:lineno, stub-label, missing)
+    encoding_errors = []  # list[str] — "path: <problem>" (e.g. a named BOM)
 
     for path in paths:
         if not os.path.isfile(path):
@@ -107,10 +63,16 @@ def main(argv) -> int:
             # not a validation failure; nothing to check.
             continue
         try:
-            with open(path, encoding="utf-8") as f:
-                text = f.read()
+            with open(path, "rb") as f:
+                raw = f.read()
         except OSError as exc:
             parse_errors.append(f"{path} (unreadable: {exc})")
+            continue
+        text, problem = decode_shard_bytes(raw)
+        if problem:
+            encoding_errors.append(f"{path}: {problem}")
+        if text is None:
+            # Not valid UTF-8 even past a BOM check — nothing left to parse.
             continue
         for lineno, entry in parse_manifest_text(text):
             src = f"{path}:{lineno}"
@@ -123,7 +85,7 @@ def main(argv) -> int:
                 stub = entry.get("stub", "<no stub field>")
                 field_errors.append((src, stub, missing))
 
-    if not parse_errors and not field_errors:
+    if not parse_errors and not field_errors and not encoding_errors:
         noun = "entry" if entry_count == 1 else "entries"
         print(
             f"[validate-manifest] OK - {entry_count} manifest {noun} valid; "
@@ -137,6 +99,11 @@ def main(argv) -> int:
         "Fix each entry below before composing - this gate exists so the gap surfaces now,\n"
         "up front, instead of mid-compose where it is hand-patched.\n\n"
     )
+    if encoding_errors:
+        sys.stderr.write("Encoding problems:\n")
+        for src in encoding_errors:
+            sys.stderr.write(f"  - {src}\n")
+        sys.stderr.write("\n")
     if field_errors:
         sys.stderr.write("Entries missing required field(s):\n")
         for src, stub, missing in field_errors:

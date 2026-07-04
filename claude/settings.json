@@ -208,6 +208,10 @@
           {
             "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/scripts/usage-snapshot.py"
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-shard-write-advisory.py"
           }
         ]
       },
@@ -217,6 +221,19 @@
           {
             "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/scripts/memory-write-advisory.py"
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-shard-write-advisory.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-shard-write-advisory.py"
           }
         ]
       }

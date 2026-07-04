@@ -359,16 +359,19 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     ```
 
 25. **manifest field validator test** — required when changing `claude/scripts/validate-manifest.py`.
-    Exercises the pure `missing_required_fields()`, `find_entries_missing_fields()`, and
-    `parse_manifest_text()` helpers offline (no disk, no network, no subprocess): pins that a
-    fully-valid entry (all five required fields) reports no missing fields; that a single absent field
-    is returned in canonical schema order; that a non-dict entry (list or scalar) is treated as missing
-    every required field; that `find_entries_missing_fields` skips valid entries and preserves input
-    order; and that `parse_manifest_text` handles blank-line skipping, ADR-056 single-object shards,
-    legacy multi-line manifests, invalid JSON, and JSON non-objects — all returning `(lineno, None)` so
-    callers can report parse errors with a file-and-line reference. The `main()` I/O (argv, file reads,
-    exit code) is not covered (pure-helper convention). Converts the silent-skip class from #423 (missing
-    field found mid-compose, hand-patched) into a visible up-front gate in `/journal-compose` Step 0.7.
+    Since dev-env #556 / [ADR-081](docs/adr/081-write-time-journal-shard-validation-hook.md), the
+    pure helpers this test exercises (`missing_required_fields()`, `find_entries_missing_fields()`,
+    `parse_manifest_text()`) live in `claude/scripts/_journal_schema.py` and are re-imported by
+    `validate-manifest.py` — this test still exercises them unchanged, through that re-export. Run
+    this test, and item 41's, when changing `_journal_schema.py`. Pins that a fully-valid entry (all
+    five required fields) reports no missing fields; that a single absent field is returned in
+    canonical schema order; that a non-dict entry (list or scalar) is treated as missing every required
+    field; that `find_entries_missing_fields` skips valid entries and preserves input order; and that
+    `parse_manifest_text` handles blank-line skipping, ADR-056 single-object shards, legacy multi-line
+    manifests, invalid JSON, and JSON non-objects — all returning `(lineno, None)` so callers can
+    report parse errors with a file-and-line reference. The `main()` I/O (argv, file reads, exit code)
+    is not covered (pure-helper convention). Converts the silent-skip class from #423 (missing field
+    found mid-compose, hand-patched) into a visible up-front gate in `/journal-compose` Step 0.7.
 
     ```bash
     py -3 claude/scripts/tests/test_validate_manifest.py
@@ -668,6 +671,54 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 
     ```bash
     py -3 claude/scripts/tests/test_no_crude_command_substring_checks.py
+    ```
+
+40. **journal-shard-write-advisory test** — required when changing
+    `claude/scripts/journal-shard-write-advisory.py`. This is the write-time PostToolUse
+    (Write/Edit/Bash) hook that validates engineering-journal shards against the schema at the
+    moment they're written, rather than waiting for the next day's compose gate (item 25) to catch
+    them (dev-env #556, [ADR-081](docs/adr/081-write-time-journal-shard-validation-hook.md)).
+    Exercises every pure helper offline: `classify_shard_path` (canonical/backslash/Git-Bash forms,
+    a shard nested under a Claude-managed journal worktree, the `engineering_journal` underscore
+    spelling, both shard kinds, and the non-matches — legacy `open-prs.jsonl`, a non-journal repo, a
+    journal path missing `sessions`, `.stub.md`); `extract_candidate_tokens` (the redirect / heredoc /
+    `node -e`-quoted-string / multi-path `git add` / `rm -f` command shapes, the legacy-file
+    non-match, and the 20-item cap); `extract_base_dirs` / `resolve_candidates` (cwd first, harvested
+    `git -C`/`cd` directories, the constant journal-repo fallback, all via an injected `isfile` so
+    they run fully offline); `validate_shard_bytes` (a healthy shard; missing fields in schema order;
+    a BOM reported alongside missing fields, not instead of them; the open-PR non-numeric-filename
+    and stem-vs-embedded-`pr` mismatch checks — reusing `_journal_shards.shard_pr_number`, computed
+    once against the real path to avoid a `Path.stem` double-strip bug a naive re-derivation from the
+    stem string would hit; an empty shard; non-JSON-object content); `format_advisory` (multi-file
+    aggregation, both schema templates present, and an `.isascii()` + `.encode("cp1252")` pin per
+    `test_posttooluse_inert_advisory.py`'s precedent); and `candidate_paths` (Write/Edit passthrough,
+    Bash harvest, other tools and missing `tool_input` yielding nothing). `collect_problems` is
+    exercised against real `tempfile.TemporaryDirectory()` fixtures (its only impure surface is the
+    filesystem, matching `test_hookutil.py`) including the size-cap skip. `main()`'s stdin plumbing is
+    not covered (pure-helper convention). The token-harvest regexes are deliberately **not**
+    `_hookio.scan_top_level`-anchored — this hook validates on-disk data, not command intent, so a
+    path merely mentioned inside a heredoc/quoted argument/subshell is harmless to check — which also
+    means item 39's AST gate does not apply to this file's `re.findall` calls (confirmed: they are not
+    `Constant-str in/not in Name('command')` Compare nodes).
+
+    ```bash
+    py -3 claude/scripts/tests/test_journal_shard_write_advisory.py
+    ```
+
+41. **`_journal_schema` shared-module test** — required when changing
+    `claude/scripts/_journal_schema.py`. Exercises every export offline: the moved
+    `missing_required_fields` / `find_entries_missing_fields` / `parse_manifest_text` (parity with
+    the coverage item 25 already pinned pre-extraction); `missing_open_pr_fields` against
+    `OPEN_PR_REQUIRED_FIELDS` (all-present, one missing, and the `summary`-instead-of-`topic` shape
+    from the 2026-07-02 meta-shard incident); and `decode_shard_bytes` (plain UTF-8; a UTF-8 BOM,
+    text returned past the BOM with the problem named rather than surfacing as an opaque line-1 JSON
+    parse failure; UTF-16 LE/BE BOMs; invalid UTF-8; empty bytes). This module has no `main()` — it
+    is the shared schema/validation core for both `validate-manifest.py` (item 25) and
+    `journal-shard-write-advisory.py` (item 40), so a schema change here is validated by both gates
+    without duplicating the rule ([ADR-081](docs/adr/081-write-time-journal-shard-validation-hook.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_journal_schema.py
     ```
 
 ## Observability
