@@ -1089,6 +1089,13 @@ After pushing the draft branch, check whether it can be cleanly merged into `ori
 A draft branch that accumulated many commits (e.g., 50+ commits from iterative sessions)
 may have diverged from main via squash-merges, making it unmergeable.
 
+The snippet below probes for modern `git merge-tree --write-tree` (git >= 2.38: the exit
+code carries the result) and falls back to the deprecated 3-argument `merge-tree` on older
+git. Do not "tighten" the fallback grep back to an anchored `^<<<<<<<`: old-style
+merge-tree emits diff-style output whose conflict markers are `+`-prefixed
+(`+<<<<<<< .our`), so the anchored form matches nothing and silently reports 0 conflicts
+on a genuinely conflicting branch (engineering-journal PR #150, 2026-07-03; ADR-080).
+
 ```bash
 git -C C:/Users/brown/Git/engineering-journal fetch origin main
 MERGE_BASE=$(git -C C:/Users/brown/Git/engineering-journal merge-base HEAD origin/main)
@@ -1096,8 +1103,20 @@ if [ -z "$MERGE_BASE" ]; then
   echo "ERROR: could not compute merge base — inspect manually before opening PR"
   exit 1
 fi
-CONFLICT_LINES=$(git -C C:/Users/brown/Git/engineering-journal \
-  merge-tree "$MERGE_BASE" HEAD origin/main | grep -c "^<<<<<<<" || true)
+# Modern git (>= 2.38): --write-tree reports via exit code (0 = clean, 1 = conflicts).
+RC=0
+git -C C:/Users/brown/Git/engineering-journal merge-tree --write-tree HEAD origin/main >/dev/null 2>&1 || RC=$?
+if [ "$RC" -eq 0 ]; then
+  CONFLICT_LINES=0
+elif [ "$RC" -eq 1 ]; then
+  CONFLICT_LINES=1
+else
+  # Old git (< 2.38) rejects --write-tree; fall back to 3-arg merge-tree, whose
+  # diff-style output '+'-prefixes conflict markers — hence "^\+?<<<<<<<", never
+  # a bare "^<<<<<<<" (ADR-080).
+  CONFLICT_LINES=$(git -C C:/Users/brown/Git/engineering-journal \
+    merge-tree "$MERGE_BASE" HEAD origin/main | grep -cE "^\+?<<<<<<<" || true)
+fi
 echo "CONFLICT_LINES=$CONFLICT_LINES"
 ```
 
