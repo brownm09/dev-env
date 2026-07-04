@@ -465,7 +465,11 @@ writes**:
 
 - **Manifest:** each session writes its own shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl`
   (one JSON object, paired 1:1 with the stub). Setting `prs_closed:[N]` after a merge edits *this
-  session's own shard* — never a file another session touches.
+  session's own shard* — never a file another session touches. A shard **re-created after a compose
+  has consumed the original** (e.g. late PR-merge bookkeeping) must carry the **full five-field set**
+  (`stub`, `topic`, `tokens`, `prs_opened`, `prs_closed`) — never just the field being updated; the
+  `journal-shard-write-advisory.py` hook flags violations (and BOMs) at write time (dev-env #556,
+  [ADR-081](../docs/adr/081-write-time-journal-shard-validation-hook.md)).
 - **Open PRs:** each open PR is its own shard `sessions/<project>/open-prs/<N>.json`. Opening PR #N
   writes `<N>.json`; merging/closing it **deletes** that file — a per-PR delete that cannot touch any
   other PR's record, even when a *different* session or the `reconcile-open-prs.py` hook does the removal.
