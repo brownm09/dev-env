@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-22
 **Status:** Accepted
-**Amended:** 2026-07-01 (see Amendment section below)
+**Amended:** 2026-07-01, 2026-07-03 (see Amendment sections below)
 **Tags:** worktrees, main, squat, canonical, prune, dev-env-sync, post-merge, park, safety, hooks, symlinks
 
 ---
@@ -149,3 +149,58 @@ fetch-into-ref behavior is unchanged. The command choice itself is a pure `pull_
 unit-tested offline in `test_post_pr_merge_pull.py` per this repo's no-subprocess-mock convention.
 This ADR's existing squatter/off-main wirings are untouched — the amendment only adds the missing
 third topology case (canonical on `main`) to `pull_main()`.
+
+## Amendment (2026-07-03) — Confirmed outside dev-env; two-step merge workaround + on-demand unsquat remedy (dev-env#553)
+
+This ADR's own Context already showed a squat blocking a *different* merge's local checkout (dev-env
+PR #391, blocked by `agitated-stonebraker-2156f6`). The identical failure recurred in a project repo —
+**lifting-logbook PR #664** (2026-07-03):
+
+    failed to run git: fatal: 'main' is already checked out at
+    'C:/Users/brown/Git/lifting-logbook/.claude/worktrees/fix+issue-646-restrict-db-e2e-default-role'
+
+`git worktree list` confirmed `fix+issue-646-restrict-db-e2e-default-role` was still squatting `main`
+at incident time — an idle, long-since-merged worktree whose own earlier `--delete-branch` checkout
+apparently succeeded (main was free at that moment) rather than failing, landing it on `main` via
+this ADR's exact root-cause chain. This confirms the "Why split this way" section's claim: parking
+is generic and fixes the blast radius beyond dev-env — the squat-blocks-a-merge failure, and the
+existing park wirings that eventually clear it, both apply to any repo, not only dev-env's own.
+
+**Gap this amendment closes.** The wirings are correct but not instant everywhere: a squat in a
+project repo persists until either the next daily `prune-stale-worktrees` run finds it idle and
+parks it, or `post-pr-merge-pull.py`'s own-worktree park fires again on some other merge. Neither
+helps the merge blocked *right now*, and nothing documented a clean way to finish that merge or to
+un-squat on demand instead of waiting for the next 8am run.
+
+**Two-step merge workaround (avoids the noisy failure entirely).** Rather than let `gh pr merge
+--squash --delete-branch` hit the local-checkout failure and clean up after it, split it into two
+calls that never touch the invoking checkout's local state:
+
+```bash
+gh pr merge <N> --squash                                          # server-side only; always succeeds
+gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"    # pure REST ref delete
+```
+
+Both legs are pure API calls — the second is the same REST ref-delete path
+[ADR-035](035-git-push-delete-web-session-constraint.md) already standardizes on — so neither depends
+on which worktree currently holds `main`.
+
+**On-demand remedy for the underlying squat.** Don't wait for the next scheduled
+`prune-stale-worktrees` run if the squat is actively blocking work — `prune-merged-worktrees.py`'s
+squatter-park check (`squatter_path = main_squatter(worktrees)` → park) runs *before* the
+`BRANCH_PREFIX` / `--include-named` gate, so it fires unconditionally regardless of the squatting
+worktree's branch name:
+
+```bash
+py -3 ~/.claude/scripts/prune-merged-worktrees.py --repo-path C:/Users/brown/Git/lifting-logbook
+```
+
+An idle squatter is parked immediately (`git checkout -b claude/<slug>` at its current HEAD, this
+ADR's non-destructive park precedent); a *live* squatter (recent session activity) is left alone per
+the ADR-051 liveness guard, same as the daily routine.
+
+No code change — this amendment is documentation only, closing the operational gap the ADR's
+original wirings left (they correct the squat; they didn't document how to work around one that's
+already blocking a merge). Full runbook entry:
+[docs/REFERENCE.md → Git Workflow Runbooks](../REFERENCE.md#git-workflow-runbooks). Incident:
+lifting-logbook [PR #664](https://github.com/brownm09/lifting-logbook/pull/664); dev-env#553.

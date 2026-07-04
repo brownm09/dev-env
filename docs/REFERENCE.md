@@ -686,6 +686,58 @@ the linked issue's board status) rather than assuming absence of visible reminde
 hook didn't fire — and don't over-read that absence as proof the hook's stderr specifically was
 dropped.
 
+### A sibling worktree squatting `main` blocks a different merge's `--delete-branch`
+
+The failure above is framed as "worktree's own merge blocked by the canonical holding `main`," but
+the same `gh` mechanism fails in the mirror direction too: **any** worktree already holding `main` —
+canonical or sibling — blocks whichever checkout is currently running `gh pr merge --delete-branch`,
+because git allows a branch to be checked out in at most one worktree at a time. Confirmed on
+lifting-logbook PR #664 (2026-07-03), merged from the canonical checkout:
+
+```
+failed to run git: fatal: 'main' is already checked out at
+'C:/Users/brown/Git/lifting-logbook/.claude/worktrees/fix+issue-646-restrict-db-e2e-default-role'
+```
+
+`fix+issue-646-restrict-db-e2e-default-role` was an idle, already-merged worktree left squatting
+`main`, most likely via the same root-cause chain as [ADR-058](adr/058-worktree-squatting-main-detection-correction.md)'s
+original dev-env incident — unrelated to PR #664 itself. As before, the squash-merge had already
+succeeded via the GitHub API; only the local checkout-and-delete step failed, so **both** the local
+and remote branch deletes were skipped.
+
+**Avoid the noisy failure — split the merge into two API-only calls up front**, rather than letting
+`--delete-branch` fail and cleaning up after:
+
+```bash
+gh pr merge <N> --squash                                          # server-side only; always succeeds
+gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"    # pure REST ref delete — see
+                                                                    # "Deleting a remote branch in
+                                                                    # Claude Code web sessions" below
+```
+
+This is preferable to the reactive "run with `--delete-branch`, let the local step fail, delete the
+remote ref manually" pattern documented above whenever a squat is known or suspected — it produces no
+failed-command output at all, and works identically regardless of which worktree currently holds
+`main`.
+
+**Un-squat on demand, rather than waiting for the next scheduled prune.** A squat is auto-corrected
+by the daily `prune-stale-worktrees` routine (or by `post-pr-merge-pull.py` at the moment it is
+created) in **any** repo, not just dev-env — [ADR-058](adr/058-worktree-squatting-main-detection-correction.md)'s
+parking fix is repo-general. If a squat is actively blocking work, run the same script on demand
+instead of waiting for the 8am run:
+
+```bash
+py -3 ~/.claude/scripts/prune-merged-worktrees.py --repo-path C:/Users/brown/Git/lifting-logbook
+```
+
+The squatter-park check runs unconditionally — before the `--include-named` branch-prefix gate — so
+it parks an idle squatter regardless of its branch name; a *live* squatter (recent session activity)
+is left alone per the [ADR-051](adr/051-worktree-liveness-guard.md) liveness guard.
+
+Root cause, the parking mechanism, and this incident: [ADR-058](adr/058-worktree-squatting-main-detection-correction.md)
+(2026-07-03 amendment). See also [ADR-066](adr/066-worktree-session-safety-rules.md) for the broader
+worktree-session-safety rule set this runbook belongs to.
+
 ### Stacked PR squash-merge sequencing — never `--delete-branch` a base with an open child
 
 When a child PR's base branch is another (still-open) PR's branch — a *stacked PR* — merging the
