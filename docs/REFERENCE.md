@@ -41,16 +41,30 @@ Expands a one-line idea into a full proposal document, creates a linked GitHub i
 ### /journal-compose
 
 ```
-/journal-compose [YYYY-MM-DD]
+/journal-compose [YYYY-MM-DD | draft/YYYY-MM-DD-recovery] [--force]
 ```
 
-Composes the end-of-day engineering journal from the day's stub files. Runs a field-completeness validator (Step 0.7) before any stub read — aborts with a per-entry error listing if any manifest shard is missing a required field. Discovers all `YYYY-MM-DD_*.stub.md` files, sorts and merges them, produces the canonical 11-section document, commits to the `draft/YYYY-MM-DD` branch, and opens a PR. Also refreshes the marker-delimited `## Start here` block at the top of `engineering-journal/README.md` (freshness stamp + top 3–5 cross-project priorities aggregated from manifest `priorities` arrays and `open-prs.jsonl` — see [ADR-032](adr/032-journal-start-here-dashboard.md)).
+Composes the end-of-day engineering journal from the day's stub files. Isolates itself into a
+dedicated, disposable, detached worktree of engineering-journal (`.claude/worktrees/compose-YYYY-MM-DD`,
+built from `origin/draft/YYYY-MM-DD`) before touching anything — the shared canonical checkout is
+never branch-switched or written to ([ADR-081](adr/081-journal-compose-worktree-isolation.md)).
+Runs a field-completeness validator (Step 0.7) before any stub read — aborts with a per-entry error
+listing if any manifest shard is missing a required field. Discovers all `YYYY-MM-DD_*.stub.md`
+files, sorts and merges them, produces the canonical 11-section document (asserting the required
+section headings before accepting a composed file as done), reconciles any of the project's
+open-PR shards that have since merged or closed, commits inside the compose worktree, pushes, and
+opens a PR — removing the worktree only after the PR is confirmed merged. Also refreshes the
+marker-delimited `## Start here` block at the top of `engineering-journal/README.md` (freshness
+stamp + top 3–5 cross-project priorities aggregated from manifest `priorities` arrays and
+`open-prs.jsonl` — see [ADR-032](adr/032-journal-start-here-dashboard.md)).
 
 **Constraint:** must run in a dedicated session with no prior task work. If other tasks were handled before invocation, the skill refuses with an error message.
 
 **Source library:** greps `~/.claude/skills/sources.md` before spawning any research subagent (zero-cost cache hit path).
 
-**Date argument:** defaults to today. Pass `YYYY-MM-DD` to compose a specific day's stubs.
+**Date argument:** defaults to today. Pass `YYYY-MM-DD` to compose a specific day's stubs, or the
+full branch name `draft/YYYY-MM-DD-recovery` to source from a
+[recovered draft branch](#engineering-journal-internals) instead of the plain `draft/YYYY-MM-DD`.
 
 ---
 
@@ -1108,9 +1122,12 @@ shards. No new writes go to it; the superseded ADR-054 surgical-update helper is
 Tracks PRs whose full lifecycle (open → review → merge) spans multiple sessions. Per
 [ADR-056](adr/056-per-session-sharding-journal-companion-files.md), each open PR is its **own** shard —
 one JSON object in `sessions/<project>/open-prs/<N>.json`, keyed by PR number. Carried forward day to
-day via the draft branch merge to main; `/journal-compose` preserves the `open-prs/` directory unchanged
-(it is **not** deleted at compose). Within a `sessions/<project>/` directory all PRs belong to that
-project's one repo, so the bare PR number is a unique filename (the repo is still carried in `url`).
+day via the draft branch merge to main. `/journal-compose` does **not** blanket-delete the `open-prs/`
+directory at compose — it deliberately reconciles it instead: each shard's PR state is checked via
+`gh pr view` and only shards for a `MERGED`/`CLOSED` PR are removed, verified one at a time
+([ADR-081](adr/081-journal-compose-worktree-isolation.md)); a shard for a still-`OPEN` PR carries
+forward unchanged. Within a `sessions/<project>/` directory all PRs belong to that project's one
+repo, so the bare PR number is a unique filename (the repo is still carried in `url`).
 Schema:
 
 ```json
@@ -1213,7 +1230,11 @@ If `draft/YYYY-MM-DD` was merged or deleted before end of day (e.g., an accident
 3. If any stub content was committed directly to `main` (e.g., via ad-hoc chore/* PR), revert each
    accidental commit via a PR to `main`, then re-add the observation to the recovery branch.
 4. Write the current session's stub normally — commit to `draft/YYYY-MM-DD-recovery`.
-5. When running `/journal-compose`, ensure the working tree is on `draft/YYYY-MM-DD-recovery`.
+5. Invoke `/journal-compose draft/YYYY-MM-DD-recovery` — pass the full branch name explicitly,
+   not just the bare date. The skill isolates itself into its own detached worktree built from
+   whatever source branch it's given ([ADR-081](adr/081-journal-compose-worktree-isolation.md));
+   passing the full `-recovery` name is how you tell it to source from the recovery branch
+   instead of the (already merged/deleted) plain `draft/YYYY-MM-DD`.
 
 **Why the `-recovery` suffix:** the pre-push hook blocks pushing to a branch that already has a
 merged PR (to prevent stale-branch noise); the suffix bypasses the check while keeping the date visible.

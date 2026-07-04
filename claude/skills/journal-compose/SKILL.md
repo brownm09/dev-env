@@ -1,6 +1,6 @@
 ---
 name: journal-compose
-description: Compose the end-of-day engineering journal from today's stub files. Discovers all YYYY-MM-DD_*.stub.md files, sorts and merges them, produces the canonical 11-section document, updates READMEs, commits, and opens the PR. Invoke as /journal-compose [YYYY-MM-DD] [--force].
+description: Compose the end-of-day engineering journal from today's stub files. Runs inside an isolated engineering-journal worktree — the shared canonical checkout is never branch-switched or committed to. Discovers all YYYY-MM-DD_*.stub.md files, sorts and merges them, produces the canonical 11-section document, updates READMEs, commits, and opens the PR. Invoke as /journal-compose [YYYY-MM-DD] [--force].
 argument-hint: "[YYYY-MM-DD] [--force]"
 allowed-tools: Read Edit Write Bash Glob Grep Agent
 ---
@@ -35,25 +35,138 @@ Before reading any file or spawning any agent, write out:
 
 Do not proceed to Step 1 until this plan is written. No tool calls before the revision pass completes.
 
+## Step 0.6 — Resolve compose date and create the isolated compose worktree
+
+Every read, write, and git operation in the steps below happens inside a dedicated, disposable
+worktree of the engineering-journal repo — **never** in the shared canonical checkout
+`C:/Users/brown/Git/engineering-journal`, which other sessions may be using concurrently at any
+moment ([ADR-081](https://github.com/brownm09/dev-env/blob/main/docs/adr/081-journal-compose-worktree-isolation.md)).
+Define, and use verbatim throughout every remaining step:
+
+```bash
+EJ=C:/Users/brown/Git/engineering-journal
+```
+
+**Resolve the compose date and source branch.** Normally the source branch is exactly
+`draft/YYYY-MM-DD`; the one documented exception is the
+[draft-branch recovery runbook](https://github.com/brownm09/dev-env/blob/main/docs/REFERENCE.md#engineering-journal-internals),
+which recovers onto a `draft/YYYY-MM-DD-recovery` branch when the plain one was accidentally
+merged or deleted mid-day. Resolve `SOURCE_BRANCH` (and the date), in order:
+
+1. If `$ARGUMENTS` (minus any `--force`) matches a full branch name `draft/<anything>` (e.g.
+   `draft/YYYY-MM-DD-recovery`), use it verbatim as `SOURCE_BRANCH` and extract the leading
+   `YYYY-MM-DD` as the date. Otherwise, if it matches a bare `YYYY-MM-DD`, use that date with
+   `SOURCE_BRANCH=draft/YYYY-MM-DD`.
+2. Otherwise, check the canonical's current branch (read-only, legacy compatibility):
+   ```bash
+   git -C "$EJ" branch --show-current
+   ```
+   If it matches `draft/<anything>`, resolve it the same way as step 1.
+3. Otherwise, scan the remote for draft branches:
+   ```bash
+   git -C "$EJ" fetch origin
+   git -C "$EJ" ls-remote --heads origin \
+     | grep -oE 'refs/heads/draft/[0-9]{4}-[0-9]{2}-[0-9]{2}(-recovery)?$' \
+     | sed 's#refs/heads/##' | sort -r
+   ```
+   Exactly one match → resolve it the same way as step 1. Multiple matches → list them (most
+   recent first) and ask the user which to compose, noting that a long list likely means stale
+   drafts need a separate cleanup pass. Zero matches → nothing to compose; stop.
+
+**Parse `$ARGUMENTS` for `--force`:** if present, set `FORCE=true` and strip it before the date
+match above; otherwise `FORCE=false`.
+
+**Today-guard** (unchanged — [ADR-017](https://github.com/brownm09/dev-env/blob/main/docs/adr/017-journal-compose-today-guard.md)):
+
+```bash
+TODAY=$(date +%Y-%m-%d)
+```
+
+If the resolved date equals `$TODAY` **and** `FORCE` is false, stop immediately and respond:
+
+> "`/journal-compose` targets completed days only. `draft/YYYY-MM-DD` is **today's** branch —
+> stubs may still be written during later sessions today.
+> To compose today's journal intentionally (all stubs written, end of day):
+> `/journal-compose --force`"
+
+Do **not** proceed to worktree creation or any further step. If the date equals `$TODAY` and
+`FORCE` is true, or the date is not today, proceed.
+
+**Create the isolated compose worktree:**
+
+```bash
+WT="$EJ/.claude/worktrees/compose-YYYY-MM-DD"
+
+git -C "$EJ" fetch origin
+git -C "$EJ" show-ref --verify --quiet "refs/remotes/origin/$SOURCE_BRANCH" || \
+  { echo "No origin/$SOURCE_BRANCH — nothing to compose (or stubs were never pushed)"; exit 1; }
+
+# Divergence guard: a local ref ahead of origin means unpushed stubs exist somewhere (a
+# stub-writing session's own worktree, or the canonical) — worktrees share refs, so this
+# check sees them regardless of which checkout holds the commits.
+if git -C "$EJ" show-ref --verify --quiet "refs/heads/$SOURCE_BRANCH"; then
+  git -C "$EJ" merge-base --is-ancestor "refs/heads/$SOURCE_BRANCH" \
+      "refs/remotes/origin/$SOURCE_BRANCH" || \
+    { echo "ABORT: local $SOURCE_BRANCH has commits not on origin — unpushed stubs in some session/worktree. Find and push them, then re-run."; exit 1; }
+fi
+
+# A pre-existing compose worktree is a concurrency signal, not an error: a lock file inside
+# it younger than 10 minutes means another compose is genuinely active; otherwise it's stale
+# (a crashed prior run) and safe to recreate — the worktree is fully regenerable from
+# origin/$SOURCE_BRANCH.
+if [ -d "$WT" ]; then
+  FRESH=false
+  for LOCK in "$WT"/sessions/*/.draft-compose.lock; do
+    [ -f "$LOCK" ] || continue
+    AGE=$(( $(date +%s) - $(date -d "$(cat "$LOCK")" +%s 2>/dev/null || echo 0) ))
+    [ "$AGE" -lt 600 ] && FRESH=true
+  done
+  if [ "$FRESH" = true ]; then
+    echo "ABORT: another compose for YYYY-MM-DD appears active (fresh lock in $WT)"; exit 1
+  fi
+  git -C "$EJ" worktree remove --force "$WT" || { rm -rf "$WT"; git -C "$EJ" worktree prune; }
+fi
+
+git -C "$EJ" worktree add --detach "$WT" "refs/remotes/origin/$SOURCE_BRANCH"
+```
+
+The worktree is **detached** — deliberately, since `$SOURCE_BRANCH` may already be checked out
+as a named branch by a stub-writing session's own worktree. A detached checkout never contends
+for the branch ref.
+
+**Push-failure rule (applies to every push from here through Step 10):** a push to
+`$SOURCE_BRANCH` rejected because the remote has moved means new stubs landed mid-compose. Do
+not rebase over content you haven't read — fetch, note what's new, and re-run from this step
+(which recreates the worktree from the new tip). The one exception is the pre-push hook's
+merged-draft-branch block (refuses a push to a `draft/YYYY-MM-DD` that already has a merged PR,
+except same-day — the `-recovery` suffix exists specifically to bypass this for a branch that
+already merged on a prior day) — that failure routes to Step 10.5's `compose/YYYY-MM-DD`
+recovery branch instead, since that hook's pattern only matches undecorated `draft/YYYY-MM-DD`.
+
+From here on, every command in this skill runs against `"$WT"`, not `"$EJ"` — except where a
+step explicitly says otherwise (a handful of read-only canonical queries, and the final branch
+cleanup in Step 11, which can only happen after the worktree is removed).
+
 ## Step 0.7 — Validate manifest field completeness
 
 Before reading any stubs or running any subagent, validate that every manifest shard has all
 five required fields (`stub`, `topic`, `tokens`, `prs_opened`, `prs_closed`). Missing fields
 cause mid-compose failures that are hand-patched; this gate surfaces them up front (dev-env #423).
 
-Locate the manifest shards for the compose date (substitute the resolved date for `YYYY-MM-DD`):
+Locate the manifest shards for the compose date, inside the compose worktree created in Step
+0.6 (substitute the resolved date for `YYYY-MM-DD`):
 
 ```bash
-ls C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD_*.manifest.jsonl 2>/dev/null
-ls C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD.manifest.jsonl 2>/dev/null
+ls "$WT"/sessions/*/YYYY-MM-DD_*.manifest.jsonl 2>/dev/null
+ls "$WT"/sessions/*/YYYY-MM-DD.manifest.jsonl 2>/dev/null
 ```
 
 Pass every path found to the validator:
 
 ```bash
 py -3 C:/Users/brown/.claude/scripts/validate-manifest.py \
-  C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD_*.manifest.jsonl \
-  C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD.manifest.jsonl
+  "$WT"/sessions/*/YYYY-MM-DD_*.manifest.jsonl \
+  "$WT"/sessions/*/YYYY-MM-DD.manifest.jsonl
 ```
 
 - **Exit 0:** All manifest entries have the required fields — proceed to Step 0.8.
@@ -65,12 +178,20 @@ If no manifest files exist for the date, the validator exits 0 (nothing to valid
 
 ## Step 0.8 — Validate JSONL files
 
-Before reading any stubs or manifests, run the JSONL validator:
+Before reading any stubs or manifests, run the JSONL validator against the compose worktree,
+using its own copy of the script where available:
 
 ```bash
-[ -f "C:/Users/brown/Git/engineering-journal/scripts/validate-jsonl.js" ] || \
-  { echo "validate-jsonl.js not found — merge the companion engineering-journal PR first"; exit 1; }
-node "C:/Users/brown/Git/engineering-journal/scripts/validate-jsonl.js"
+if [ -f "$WT/scripts/validate-jsonl.js" ]; then
+  node "$WT/scripts/validate-jsonl.js"
+else
+  # draft branch predates the script — use the canonical's copy, targeted explicitly at $WT
+  # (the script resolves its target from argv[2], or from its own __dirname/../sessions when
+  # no argument is given — an explicit argument is required here since it isn't running from $WT)
+  [ -f "$EJ/scripts/validate-jsonl.js" ] || \
+    { echo "validate-jsonl.js not found — merge the companion engineering-journal PR first"; exit 1; }
+  node "$EJ/scripts/validate-jsonl.js" "$WT/sessions"
+fi
 ```
 
 - **Exit 0:** All `.jsonl` files under `sessions/` are valid — proceed to Step 1.
@@ -80,37 +201,8 @@ node "C:/Users/brown/Git/engineering-journal/scripts/validate-jsonl.js"
 
 ## Step 1 — Locate stubs and acquire compose lock
 
-**Parse `$ARGUMENTS`:**
-
-- If `$ARGUMENTS` contains `--force`, set `FORCE=true` and strip it before further parsing.
-  Otherwise set `FORCE=false`.
-- If the remaining `$ARGUMENTS` matches `YYYY-MM-DD`, use it as the date.
-- Otherwise, detect the date from the current branch:
-  ```bash
-  git -C C:/Users/brown/Git/engineering-journal branch --show-current
-  ```
-  The branch name is `draft/YYYY-MM-DD`. Extract `YYYY-MM-DD` from it.
-
-**Guard — refuse to compose today's branch:**
-
-Compare the resolved date to today's date:
-
-```bash
-TODAY=$(date +%Y-%m-%d)
-```
-
-If the date equals `$TODAY` **and** `FORCE` is false, stop immediately and respond:
-
-> "`/journal-compose` targets completed days only. `draft/YYYY-MM-DD` is **today's** branch —
-> stubs may still be written during later sessions today.  
-> To compose today's journal intentionally (all stubs written, end of day):
-> `/journal-compose --force`"
-
-Do **not** proceed to stub discovery, manifest reading, lock acquisition, or any further step.
-
-If the date equals `$TODAY` and `FORCE` is true, proceed — intentional same-day compose.
-
-If the date is not today, proceed normally (regardless of `FORCE`).
+The compose date and `$WT` were already resolved in Step 0.6 — this step only discovers stubs
+and acquires the lock, both inside the compose worktree.
 
 **Check for manifests (fast path):**
 
@@ -122,9 +214,9 @@ paired 1:1 with its stub). A day composed before ADR-056 may instead have one le
 
 ```bash
 # per-session manifest shards (current format — one object per file)
-ls C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD_*.manifest.jsonl 2>/dev/null
+ls "$WT"/sessions/*/YYYY-MM-DD_*.manifest.jsonl 2>/dev/null
 # legacy per-day manifest (pre-ADR-056; one line per session; may be absent)
-ls C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD.manifest.jsonl 2>/dev/null
+ls "$WT"/sessions/*/YYYY-MM-DD.manifest.jsonl 2>/dev/null
 ```
 
 The two globs are disjoint (the shard glob requires the `_HHMMSS` underscore; the legacy name has none).
@@ -144,9 +236,9 @@ pre-ADR-056 day may instead carry a single legacy `sessions/<project>/open-prs.j
 
 ```bash
 # per-PR shards (current format — one object per file)
-ls C:/Users/brown/Git/engineering-journal/sessions/*/open-prs/*.json 2>/dev/null
+ls "$WT"/sessions/*/open-prs/*.json 2>/dev/null
 # legacy single file (pre-ADR-056; one line per open PR; may be absent)
-ls C:/Users/brown/Git/engineering-journal/sessions/*/open-prs.jsonl 2>/dev/null
+ls "$WT"/sessions/*/open-prs.jsonl 2>/dev/null
 ```
 
 If found, read each shard / line and record the union (deduped by `pr`) as `OPEN_PRS`. This is used in
@@ -159,12 +251,12 @@ Step 5 to group sessions that span multiple days under the same PR. For each ent
 **Find stub files:**
 
 ```bash
-ls C:/Users/brown/Git/engineering-journal/sessions/*/YYYY-MM-DD_*.stub.md 2>/dev/null | sort
+ls "$WT"/sessions/*/YYYY-MM-DD_*.stub.md 2>/dev/null | sort
 ```
 
 If no stubs are found, fall back to a legacy draft:
 ```bash
-find C:/Users/brown/Git/engineering-journal/sessions -name "YYYY-MM-DD_draft.md"
+find "$WT"/sessions -name "YYYY-MM-DD_draft.md"
 ```
 If a legacy draft is found, use it as a monolithic draft (skip the lock step below and proceed
 as in the old single-file workflow — read it once in Step 2).
@@ -177,7 +269,7 @@ sequentially in this session. Proceed directly to that section instead of Step 2
 
 Check for a lock at `sessions/<project>/.draft-compose.lock`:
 ```bash
-LOCK="C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock"
+LOCK="$WT/sessions/<project>/.draft-compose.lock"
 if [ -f "$LOCK" ]; then
   LOCK_TIME=$(cat "$LOCK")
   LOCK_EPOCH=$(date -d "$LOCK_TIME" +%s 2>/dev/null || echo 0)
@@ -198,15 +290,14 @@ fi
 
 Create the lock:
 ```bash
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > \
-  "C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock"
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WT/sessions/<project>/.draft-compose.lock"
 ```
 
 Tell the user: "Composing journal from N stub(s): `<stub1>`, `<stub2>`, ..."
 
-**Note for retries after a crash:** If compose was interrupted and you are re-running it, first
-delete the lock file manually (`rm sessions/<project>/.draft-compose.lock`) and verify that no
-partial output file (e.g., `YYYY-MM-DD-<slug>.md`) was written before restarting from Step 1.
+**Note for retries after a crash:** A crashed compose no longer needs manual lock deletion or
+partial-output checks — Step 0.6 detects a stale lock in a pre-existing compose worktree and
+recreates the worktree fresh. Just re-run `/journal-compose YYYY-MM-DD`.
 
 ## Multi-project mode
 
@@ -229,6 +320,7 @@ You are composing the engineering journal for one project. Follow these steps ex
 
 **Date:** YYYY-MM-DD
 **Project path:** sessions/<project>/
+**Compose worktree root:** C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-YYYY-MM-DD
 **Stub files (in order):** <stub1>, <stub2>, ...
 
 <!-- mirrors Step 0.5 in main flow — keep in sync; intentional differences: item 2 scoped to skip/read (not grep), item 3 broader (all parallel tool calls, not only agent spawns) -->
@@ -238,8 +330,9 @@ Step 0.5 — Plan-then-optimize (required). Before any tool call, write out:
   3. Confirm no sequential tool calls exist that could run in parallel
   Do not proceed until this plan is written.
 
-Step 1 — Acquire compose lock for this project using this project-scoped path:
-  C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock
+Step 1 — Acquire compose lock for this project using this project-scoped path, rooted at the
+  compose worktree root given above:
+  <worktree-root>/sessions/<project>/.draft-compose.lock
   Follow the lock check/create procedure in SKILL.md Step 1 ("Acquire the compose lock").
 
 Step 1b — Read this day's manifest for a session overview (topics, token data) before reading
@@ -267,10 +360,35 @@ Step 5 — Compose the 11-section document. Follow SKILL.md Step 5 exactly.
   **Fidelity floor.** Your composed dialogue sections must preserve the technical detail in the source stubs. As a rough heuristic, your composed document's line count should be ≥ 80% of the combined stub line count. A journal that compresses to < 50% of source-stub length is a quality failure — re-read the stubs and expand before writing. Reproduce code blocks, file paths, exact PR/issue numbers, and decision rationale verbatim where the stub provides them. Synthesis is allowed only when stubs duplicate each other; raw compression of unique content is not.
 
 Step 6 — Write the output file to:
-  C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD-<slug>.md
-  **Canonical path check.** Your output path must begin with `C:/Users/brown/Git/engineering-journal/sessions/<project>/`. If your current working directory is a worktree (path contains `.claude/worktrees/`), DO NOT use the worktree-relative path — use the absolute canonical path. Writing to a worktree path requires a post-hoc file move and breaks the commit flow.
+  <worktree-root>/sessions/<project>/YYYY-MM-DD-<slug>.md
+  **Worktree-root path check.** Your output path must begin with the compose worktree root given
+  above — NOT `C:/Users/brown/Git/engineering-journal/sessions/` (the shared canonical checkout,
+  which this compose must never write to), and NOT any path under your own session's working
+  directory. Writing anywhere else breaks the commit flow and can leak output into an unrelated
+  repo's worktree.
 
 Step 6.5 — Self-check before claiming done. After writing the file, run `wc -l` on it and compare to the combined source stub line count. If the journal is < 50% of source length, the compose is incomplete — expand it before proceeding. Report the ratio in your final status as `LINE_COUNT=<n> SOURCE_LINES=<m> FIDELITY=<n/m>`.
+
+Step 6.6 — Structural assertion. A composed journal missing a required section (e.g. no
+  "## Next Session Context") is a quality failure just like low fidelity. Verify the file you
+  just wrote contains every required heading:
+    FILE="<worktree-root>/sessions/<project>/YYYY-MM-DD-<slug>.md"
+    MISSING=""
+    chk() { grep -qE "$1" "$FILE" || MISSING="${MISSING:+$MISSING,}$2"; }
+    chk '^# Session Transcript — '              'header'
+    chk '^- \[Opening Brief\]\(#opening-brief\)' 'TOC'
+    chk '^## Opening Brief$'                     'Opening Brief'
+    chk '^## Key Decisions$'                     'Key Decisions'
+    chk '^## Session [0-9]+ — '                  'Session dialogue H2'
+    chk '^## Open Items / Next Steps$'           'Open Items / Next Steps'
+    chk '^## Token Usage$'                       'Token Usage'
+    chk '^## Token Optimization Suggestions$'    'Token Optimization Suggestions'
+    chk '^## Next Session Context$'              'Next Session Context'
+    chk '^## Reflection$'                        'Reflection'
+    chk '^## Further Reading$'                   'Further Reading'
+    [ -z "$MISSING" ] && echo "STRUCTURE=ok" || echo "STRUCTURE=missing:$MISSING"
+  If STRUCTURE is not ok, fix the missing section(s) in the file you wrote — re-read SKILL.md
+  Step 5 for the exact heading text and content — and re-run this check before reporting done.
 
 Do NOT do Steps 7–11 (no README edits, no git add/commit/push, no PR).
 
@@ -281,6 +399,7 @@ When done, report exactly this structure:
   LINE_COUNT=<n>
   SOURCE_LINES=<m>
   FIDELITY=<n/m>
+  STRUCTURE=<ok | missing:<list>>
   STATUS=done
 ```
 
@@ -288,13 +407,18 @@ When done, report exactly this structure:
 
 ### Phase 2 — Serial coordinator (this session)
 
-After all subagents complete, collect `OUTPUT_FILE`, `SLUG`, and `META_TRIGGERS` from each.
+After all subagents complete, collect `OUTPUT_FILE`, `SLUG`, `META_TRIGGERS`, and `STRUCTURE`
+from each.
 
-**Error check first:** If any subagent did not return `STATUS=done`, stop immediately and
-report which project(s) failed before touching any README or running git commands. Do not
-proceed with a partial set — a missing output file will cause the commit to fail silently.
+**Error check first:** If any subagent did not return `STATUS=done`, **or** returned
+`STRUCTURE=missing:<list>`, stop immediately and report which project(s) failed — and, for a
+structure failure, which sections were missing — before touching any README or running git
+commands. Do not proceed with a partial set: a missing output file breaks the commit, and a
+malformed journal ships a broken document. Re-spawn a failed subagent once, appending the
+missing-heading list (or the failure reason) to its prompt; if it fails the same way twice, fix
+the file by hand before continuing.
 
-If all subagents returned `STATUS=done`, check meta triggers.
+If all subagents returned `STATUS=done` and `STRUCTURE=ok`, check meta triggers.
 If any subagent reported `META_TRIGGERS` (non-none), present them to the user now:
 ```
 Meta triggers found in <project> session(s): <list>
@@ -306,25 +430,28 @@ Then for each project in sequence:
 - **Step 7** — Update `sessions/<project>/README.md`
 - **Step 8** — Update the top-level `README.md` (one pass covering all projects)
 - **Step 9** — Delete stubs and release lock for this project
+- **Step 9.5** — Reconcile this project's open-PR shards
 
 Finally, do one combined commit and PR (**Steps 10–11**) that stages all projects' files:
 ```bash
+WT=C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-YYYY-MM-DD
 # Stage all composed files and README updates
-git -C C:/Users/brown/Git/engineering-journal add \
+git -C "$WT" add \
   sessions/project-a/YYYY-MM-DD-<slug-a>.md \
   sessions/project-b/YYYY-MM-DD-<slug-b>.md \
   ... \
   sessions/project-a/README.md \
   sessions/project-b/README.md \
   README.md
-# Stage deleted stubs across all projects
-git -C C:/Users/brown/Git/engineering-journal add -u sessions/
-git -C C:/Users/brown/Git/engineering-journal commit -m \
+# Stage deleted stubs/shards and reconciled open-PR shards across all projects
+git -C "$WT" add -u sessions/
+git -C "$WT" commit -m \
   "[docs] Add YYYY-MM-DD journals: <slug-a>, <slug-b>, ..."
-git -C C:/Users/brown/Git/engineering-journal push
+git -C "$WT" push origin "HEAD:refs/heads/$SOURCE_BRANCH"
 ```
 
-Open one PR covering all projects (Step 11). List each composed journal in the PR body.
+Open one PR covering all projects (Step 11). List each composed journal in the PR body, plus
+the combined `RECONCILED_SHARDS` list from every project's Step 9.5.
 
 After completing Phase 2, skip to the end — do not re-run Steps 2–9 individually.
 
@@ -381,16 +508,16 @@ Enter: y (append meta block and continue), n (skip meta, continue composing), or
 ```
 
 If the user confirms (`y` or equivalent):
-1. Check whether `sessions/meta/YYYY-MM-DD_draft.md` exists on the current branch.
+1. Check whether `sessions/meta/YYYY-MM-DD_draft.md` exists in the compose worktree.
    - If not: create it with `<!-- draft: YYYY-MM-DD -->\nOpening brief: Meta entries from project session — see source journal.\n`
 2. Append one `<!-- session: <meta-slug> -->` block per matched trigger, summarizing the
    meta-relevant content. Use a slug like `platform-constraint-<topic>` or `dev-env-pr-N`.
 3. Add `<!-- tokens: input=0 output=0 cost≈$0.00 -->` and a `<!-- next-session-context -->`
    paragraph at the end of each block.
-4. `git add sessions/meta/YYYY-MM-DD_draft.md`, `git commit -m "draft: YYYY-MM-DD meta — <topic>" -- sessions/meta/YYYY-MM-DD_draft.md`, `git push`.
-   This checkout is shared by every concurrent Claude Code session — always pass the `--` pathspec so
-   this commit can't sweep in another session's already-staged files (see `claude/CLAUDE.md` →
-   Engineering Journal → Stub file workflow → "Commit with an explicit pathspec").
+4. `git -C "$WT" add sessions/meta/YYYY-MM-DD_draft.md`, `git -C "$WT" commit -m "draft: YYYY-MM-DD meta — <topic>" -- sessions/meta/YYYY-MM-DD_draft.md`, `git -C "$WT" push origin "HEAD:refs/heads/$SOURCE_BRANCH"`.
+   The compose worktree is private to this run, but keep the `--` pathspec discipline anyway as
+   defense in depth (see `claude/CLAUDE.md` → Engineering Journal → Stub file workflow →
+   "Commit with an explicit pathspec"). A rejected push follows the Step 0.6 push-failure rule.
 5. Resume at Step 3.
 
 If the user declines (`n` or equivalent), continue to Step 3 without creating a meta entry.
@@ -771,18 +898,47 @@ is better than three loose ones.
 
 Write the composed document to:
 ```
-C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD-<slug>.md
+C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-YYYY-MM-DD/sessions/<project>/YYYY-MM-DD-<slug>.md
 ```
 
-- **Canonical path check.** The output path must begin with `C:/Users/brown/Git/engineering-journal/sessions/<project>/`. If the current working directory is a worktree (path contains `.claude/worktrees/`), DO NOT use the worktree-relative path — use the absolute canonical path. Writing to a worktree path requires a post-hoc file move and breaks the commit flow.
+- **Worktree-root path check.** The output path must begin with the compose worktree root
+  created in Step 0.6 (`$WT`) — NOT `C:/Users/brown/Git/engineering-journal/sessions/` (the
+  shared canonical checkout, which this compose must never write to). Writing anywhere else
+  breaks the commit flow.
 
 ## Step 6.5 — Self-check before claiming done
 
-After writing the file, run `wc -l` on it and compare to the combined source stub line count. If the journal is < 50% of source length, the compose is incomplete — expand it before proceeding. Report the ratio in your final status: `LINE_COUNT=<n> SOURCE_LINES=<m> FIDELITY=<n/m>`.
+After writing the file, run `wc -l` on it and compare to the combined source stub line count. If the journal is < 50% of source length, the compose is incomplete — expand it before proceeding. Report the ratio: `LINE_COUNT=<n> SOURCE_LINES=<m> FIDELITY=<n/m>`.
+
+**Structural assertion.** Also verify every required section heading is present — a composed
+journal missing a section (e.g. no `## Next Session Context`) is a quality failure just like low
+fidelity:
+
+```bash
+FILE="$WT/sessions/<project>/YYYY-MM-DD-<slug>.md"
+MISSING=""
+chk() { grep -qE "$1" "$FILE" || MISSING="${MISSING:+$MISSING,}$2"; }
+chk '^# Session Transcript — '              'header'
+chk '^- \[Opening Brief\]\(#opening-brief\)' 'TOC'
+chk '^## Opening Brief$'                     'Opening Brief'
+chk '^## Key Decisions$'                     'Key Decisions'
+chk '^## Session [0-9]+ — '                  'Session dialogue H2'
+chk '^## Open Items / Next Steps$'           'Open Items / Next Steps'
+chk '^## Token Usage$'                       'Token Usage'
+chk '^## Token Optimization Suggestions$'    'Token Optimization Suggestions'
+chk '^## Next Session Context$'              'Next Session Context'
+chk '^## Reflection$'                        'Reflection'
+chk '^## Further Reading$'                   'Further Reading'
+[ -z "$MISSING" ] && echo "STRUCTURE=ok" || echo "STRUCTURE=missing:$MISSING"
+```
+
+If `STRUCTURE` is not `ok`, fix the missing section(s) using Step 5's exact heading text and
+content, then re-run this check before proceeding to Step 7.
 
 ## Step 7 — Update the folder README
 
-Check whether `sessions/<project>/README.md` exists.
+Operating inside the compose worktree (`$WT`) for the rest of this skill. Check whether
+`sessions/<project>/README.md` exists (i.e. `$WT/sessions/<project>/README.md`).
 
 **If it does not exist**, create it with this structure:
 ```markdown
@@ -812,7 +968,7 @@ today's journal.
 
 ## Step 8 — Update the top-level README
 
-Read `C:/Users/brown/Git/engineering-journal/README.md`.
+Read `$WT/README.md`.
 
 The top-level README uses a hub-and-spoke layout: **no inline entry tables**. Each project
 section uses a labeled-bullet structure (defined in `engineering-journal/CLAUDE.md` →
@@ -855,7 +1011,7 @@ After Step 8, refresh the marker-delimited block at the top of `engineering-jour
 TMPFILE="C:/Users/brown/.claude/scratch/tmp_start_here_$$.json"
 node -e "
   const fs = require('fs'); const path = require('path');
-  const root = 'C:/Users/brown/Git/engineering-journal';
+  const root = 'C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-YYYY-MM-DD';   // <-- substitute the compose date
   const date = 'YYYY-MM-DD';   // <-- substitute the compose date
   const items = [];
   const seen = new Set();
@@ -1024,20 +1180,20 @@ The label is auto-created on first use. Remove it when the issue is no longer to
 
 Delete all stubs and this day's manifest for the date and release the compose lock. Delete the
 per-session manifest shards (ADR-056) **and** any legacy per-day manifest. **Do not** delete the
-open-PR records (`open-prs.jsonl` or the `open-prs/` shard directory) — they are carried forward to
-the next day:
+open-PR records (`open-prs.jsonl` or the `open-prs/` shard directory) here — that happens
+deliberately in Step 9.5, which follows:
 ```bash
-rm C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_*.stub.md
+rm "$WT"/sessions/<project>/YYYY-MM-DD_*.stub.md
 # per-session manifest shards (ADR-056)
-rm -f C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_*.manifest.jsonl
+rm -f "$WT"/sessions/<project>/YYYY-MM-DD_*.manifest.jsonl
 # legacy per-day manifest (pre-ADR-056; harmless if absent)
-rm -f C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD.manifest.jsonl
-rm -f C:/Users/brown/Git/engineering-journal/sessions/<project>/.draft-compose.lock
+rm -f "$WT"/sessions/<project>/YYYY-MM-DD.manifest.jsonl
+rm -f "$WT"/sessions/<project>/.draft-compose.lock
 ```
 
 For legacy single-file compose, delete the draft file instead:
 ```bash
-rm C:/Users/brown/Git/engineering-journal/<draft-file-path>
+rm "$WT"/<draft-file-path>
 ```
 
 Tell the user: "Draft artifacts deleted."
@@ -1047,37 +1203,78 @@ appears in `git status` as an untracked file during compose, that is expected �
 (Step 10) will not stage it because it has never been committed. Do not run `git add .` or
 `git add sessions/<project>/` (without `-u`) — that would stage the lock file.
 
+## Step 9.5 — Reconcile open-PR shards
+
+This step deliberately replaces a sweep that worktree isolation removes: `reconcile-open-prs.py`
+(a `UserPromptSubmit` hook) already unlinks merged-PR shards in the *canonical* working tree, but
+never commits — by its own docstring, it leaves them "dirty for the next stub commit" to pick up.
+Since compose no longer touches the canonical's working tree at all, that pickup never happens
+anymore. This step is the deliberate, verified replacement, continuing the exact precedent
+engineering-journal [PR #150](https://github.com/brownm09/engineering-journal/pull/150)'s body
+already set ("...all verified merged via gh before deletion").
+
+For every `open-prs/<N>.json` shard for this project in the compose worktree, look up its PR's
+state and remove it if resolved:
+
+```bash
+RECONCILED=""
+for SHARD in "$WT"/sessions/<project>/open-prs/*.json; do
+  [ -f "$SHARD" ] || continue
+  URL=$(node -e "console.log((JSON.parse(require('fs').readFileSync('$SHARD','utf8')).url)||'')")
+  N=$(basename "$SHARD" .json)
+  REPO=$(echo "$URL" | sed -E 's#https://github.com/([^/]+/[^/]+)/pull/.*#\1#')
+  STATE=$(gh pr view "$N" --repo "$REPO" --json state --jq .state 2>/dev/null || echo "")
+  case "$STATE" in
+    MERGED|CLOSED) git -C "$WT" rm --quiet -- "$SHARD" && RECONCILED="$RECONCILED $REPO#$N($STATE)";;
+    *) : ;;  # OPEN, or gh call failed → keep (conservative — mirrors reconcile-open-prs.py's own default)
+  esac
+done
+echo "RECONCILED_SHARDS=${RECONCILED:-none}"
+```
+
+If a legacy `open-prs.jsonl` exists for this project, apply the same per-entry state check to
+each line, rewrite the file with only the still-open entries (or delete it if now empty), and
+`git -C "$WT" add` the result.
+
+Carry `RECONCILED_SHARDS` forward — it goes into the Step 11 PR body, and (on the Step 10.5
+conflict-recovery path only) may need to be re-applied after checking out `origin/main`'s tree.
+
 ## Step 10 — Commit
 
 ```bash
-git -C C:/Users/brown/Git/engineering-journal add sessions/<project>/YYYY-MM-DD-<slug>.md
-git -C C:/Users/brown/Git/engineering-journal add sessions/<project>/README.md
-git -C C:/Users/brown/Git/engineering-journal add README.md
-# Stage deleted stubs (and any other modifications/deletions in sessions/<project>/)
-git -C C:/Users/brown/Git/engineering-journal add -u sessions/<project>/
+git -C "$WT" add sessions/<project>/YYYY-MM-DD-<slug>.md
+git -C "$WT" add sessions/<project>/README.md
+git -C "$WT" add README.md
+# Stage deleted stubs/shards and Step 9.5's reconciled open-PR shards
+git -C "$WT" add -u sessions/<project>/
 ```
 
-**Verify before committing — this checkout is shared by every concurrent Claude Code session.** Unlike
-the per-session stub workflow (which pathspecs its commit to a short, fixed file list), this step's
-`git add -u sessions/<project>/` stages a variable number of deleted stubs/shards, so a static pathspec
-doesn't fit cleanly. Check what's actually staged before committing:
+**Verify what's staged before committing.** Unlike the per-session stub workflow (which
+pathspecs its commit to a short, fixed file list), this step's `git add -u sessions/<project>/`
+stages a variable number of deletions, so a static pathspec doesn't fit cleanly:
 
 ```bash
-git -C C:/Users/brown/Git/engineering-journal diff --cached --name-only
+git -C "$WT" diff --cached --name-only
 ```
 
-Every line must be `README.md`, `sessions/<project>/README.md`, `sessions/<project>/YYYY-MM-DD-<slug>.md`,
-or a path under `sessions/<project>/` that this compose run itself just consumed (a stub, a manifest
-shard, or a legacy `.manifest.jsonl` / `open-prs.jsonl` being drained — never an `open-prs/<N>.json`
-shard, which compose never deletes). If anything else appears — a path under a different project, or a
-file you don't recognize as something this run touched — **stop**; do not commit. It means a concurrent
-session staged a file in this same checkout. Investigate before proceeding rather than blindly committing
-or discarding it.
+Every line must be `README.md`, `sessions/<project>/README.md`,
+`sessions/<project>/YYYY-MM-DD-<slug>.md`, or a path under `sessions/<project>/` that this
+compose run itself just consumed — a stub, a manifest shard, a legacy `.manifest.jsonl` /
+`open-prs.jsonl` being drained, or an `open-prs/<N>.json` shard **that appears in this run's
+`RECONCILED_SHARDS` list from Step 9.5**. Because the compose worktree is private to this run
+(nothing else ever writes to it), anything else in the staged diff signals a mistake in the
+compose flow itself — not a concurrent session — but still means **stop**; do not commit until
+you understand what produced it.
 
 ```bash
-git -C C:/Users/brown/Git/engineering-journal commit -m "[docs] Add YYYY-MM-DD journal: <slug>"
-git -C C:/Users/brown/Git/engineering-journal push
+git -C "$WT" commit -m "[docs] Add YYYY-MM-DD journal: <slug>"
+git -C "$WT" push origin "HEAD:refs/heads/$SOURCE_BRANCH"
 ```
+
+A rejected push follows the Step 0.6 push-failure rule — except a rejection from the pre-push
+hook's merged-draft-branch block, which means the draft branch already has a merged PR from a
+prior day (the #147-morning/#150-evening shape); that goes straight to Step 10.5's
+`compose/YYYY-MM-DD` recovery path below rather than a retry.
 
 **Before proceeding to Step 11**, run Step 10.5 to check whether the draft branch can be
 cleanly merged into main. Do not skip this check — a conflicting draft branch requires a
@@ -1097,15 +1294,15 @@ merge-tree emits diff-style output whose conflict markers are `+`-prefixed
 on a genuinely conflicting branch (engineering-journal PR #150, 2026-07-03; ADR-080).
 
 ```bash
-git -C C:/Users/brown/Git/engineering-journal fetch origin main
-MERGE_BASE=$(git -C C:/Users/brown/Git/engineering-journal merge-base HEAD origin/main)
+git -C "$WT" fetch origin main
+MERGE_BASE=$(git -C "$WT" merge-base HEAD origin/main)
 if [ -z "$MERGE_BASE" ]; then
   echo "ERROR: could not compute merge base — inspect manually before opening PR"
   exit 1
 fi
 # Modern git (>= 2.38): --write-tree reports via exit code (0 = clean, 1 = conflicts).
 RC=0
-git -C C:/Users/brown/Git/engineering-journal merge-tree --write-tree HEAD origin/main >/dev/null 2>&1 || RC=$?
+git -C "$WT" merge-tree --write-tree HEAD origin/main >/dev/null 2>&1 || RC=$?
 if [ "$RC" -eq 0 ]; then
   CONFLICT_LINES=0
 elif [ "$RC" -eq 1 ]; then
@@ -1114,42 +1311,53 @@ else
   # Old git (< 2.38) rejects --write-tree; fall back to 3-arg merge-tree, whose
   # diff-style output '+'-prefixes conflict markers — hence "^\+?<<<<<<<", never
   # a bare "^<<<<<<<" (ADR-080).
-  CONFLICT_LINES=$(git -C C:/Users/brown/Git/engineering-journal \
+  CONFLICT_LINES=$(git -C "$WT" \
     merge-tree "$MERGE_BASE" HEAD origin/main | grep -cE "^\+?<<<<<<<" || true)
 fi
 echo "CONFLICT_LINES=$CONFLICT_LINES"
 ```
 
 **If `CONFLICT_LINES` is 0** — no conflicts detected; proceed to Step 11 using the
-draft branch as the PR head. Set `PR_HEAD=draft/YYYY-MM-DD`.
+draft branch as the PR head. Set `PR_HEAD=$SOURCE_BRANCH`.
 
 **If `CONFLICT_LINES` > 0** — conflicts detected. Recover via a clean compose branch:
 
 ```bash
-# 1. Create a clean branch from origin/main
-git -C C:/Users/brown/Git/engineering-journal checkout -b compose/YYYY-MM-DD origin/main
+# Capture the compose worktree's current (detached) HEAD before switching it onto a new
+# branch — this is the commit Step 10 just pushed. The worktree is detached, so there is no
+# guarantee a local branch named $SOURCE_BRANCH exists to check out FROM; the worktree's
+# own HEAD is always correct regardless.
+PREV=$(git -C "$WT" rev-parse HEAD)
 
-# 2. Cherry-pick only the composed output files from the draft branch.
+# 1. Move the compose worktree onto a clean branch from origin/main
+git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
+
+# 2. Cherry-pick only the composed output files from the pre-recovery commit.
 #    Include the open-PR records if present — today's sessions may have updated them.
 #    Per ADR-056 these are per-PR shards under open-prs/; a pre-ADR-056 day uses open-prs.jsonl.
-git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \
+git -C "$WT" checkout "$PREV" -- \
   sessions/<project>/YYYY-MM-DD-<slug>.md \
   sessions/<project>/README.md \
   README.md
-[ -f "C:/Users/brown/Git/engineering-journal/sessions/<project>/open-prs.jsonl" ] && \
-  git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \
-    sessions/<project>/open-prs.jsonl
-[ -d "C:/Users/brown/Git/engineering-journal/sessions/<project>/open-prs" ] && \
-  git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \
-    sessions/<project>/open-prs
+[ -f "$WT/sessions/<project>/open-prs.jsonl" ] && \
+  git -C "$WT" checkout "$PREV" -- sessions/<project>/open-prs.jsonl
+[ -d "$WT/sessions/<project>/open-prs" ] && \
+  git -C "$WT" checkout "$PREV" -- sessions/<project>/open-prs
+
+# 2b. Re-apply this run's Step 9.5 reconciliation. origin/main's open-prs/ almost certainly
+#     still has the shards Step 9.5 already verified-and-removed (those PRs merged since the
+#     last successful compose, i.e. since origin/main last moved) — checking out origin/main's
+#     tree above can resurrect them. For each entry in this run's RECONCILED_SHARDS, verify the
+#     shard is still absent; if the checkout brought it back, remove it again:
+#       git -C "$WT" rm --quiet -- sessions/<project>/open-prs/<N>.json
 
 # 3. Commit and push
-git -C C:/Users/brown/Git/engineering-journal commit -m \
+git -C "$WT" commit -m \
   "[docs] Add YYYY-MM-DD journal: <slug> (compose branch — draft had conflicts)"
-git -C C:/Users/brown/Git/engineering-journal push -u origin compose/YYYY-MM-DD
+git -C "$WT" push -u origin compose/YYYY-MM-DD
 
-# 4. Delete the remote draft branch so the stale-branch hook does not fire on it
-git -C C:/Users/brown/Git/engineering-journal push origin --delete draft/YYYY-MM-DD || true
+# 4. Delete the remote source branch so the stale-branch hook does not fire on it
+git -C "$WT" push origin --delete "$SOURCE_BRANCH" || true
 ```
 
 Set `PR_HEAD=compose/YYYY-MM-DD`.
@@ -1163,8 +1371,9 @@ together on a single `compose/YYYY-MM-DD` branch before opening the combined PR.
 for two projects `meta` and `lifting-logbook`:
 
 ```bash
-git -C C:/Users/brown/Git/engineering-journal checkout -b compose/YYYY-MM-DD origin/main
-git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \
+PREV=$(git -C "$WT" rev-parse HEAD)
+git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
+git -C "$WT" checkout "$PREV" -- \
   sessions/meta/YYYY-MM-DD-<slug-a>.md \
   sessions/meta/README.md \
   sessions/lifting-logbook/YYYY-MM-DD-<slug-b>.md \
@@ -1172,26 +1381,27 @@ git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \
   README.md
 # open-PR records per project (conditional) — legacy file and/or ADR-056 shard dir
 for proj in meta lifting-logbook; do
-  [ -f "C:/Users/brown/Git/engineering-journal/sessions/$proj/open-prs.jsonl" ] && \
-    git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \
-      "sessions/$proj/open-prs.jsonl"
-  [ -d "C:/Users/brown/Git/engineering-journal/sessions/$proj/open-prs" ] && \
-    git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD -- \
-      "sessions/$proj/open-prs"
+  [ -f "$WT/sessions/$proj/open-prs.jsonl" ] && \
+    git -C "$WT" checkout "$PREV" -- "sessions/$proj/open-prs.jsonl"
+  [ -d "$WT/sessions/$proj/open-prs" ] && \
+    git -C "$WT" checkout "$PREV" -- "sessions/$proj/open-prs"
 done
-git -C C:/Users/brown/Git/engineering-journal commit -m \
+# Re-apply each project's Step 9.5 RECONCILED_SHARDS (see single-project note above)
+git -C "$WT" commit -m \
   "[docs] Add YYYY-MM-DD journals: <slug-a>, <slug-b> (compose branch — draft had conflicts)"
-git -C C:/Users/brown/Git/engineering-journal push -u origin compose/YYYY-MM-DD
-git -C C:/Users/brown/Git/engineering-journal push origin --delete draft/YYYY-MM-DD || true
+git -C "$WT" push -u origin compose/YYYY-MM-DD
+git -C "$WT" push origin --delete "$SOURCE_BRANCH" || true
 ```
 
 ## Step 11 — Open PR
 
 Open the PR immediately using `gh`, using `PR_HEAD` determined in Step 10.5
-(`draft/YYYY-MM-DD` if clean, `compose/YYYY-MM-DD` if conflicts were detected).
+(`$SOURCE_BRANCH` if clean, `compose/YYYY-MM-DD` if conflicts were detected).
 
 Before composing the PR body, read `~/.claude/templates/pr-body.md` and use it as the
-structural guide. This is a journal PR — use the "Journal PR" pattern from that file.
+structural guide. This is a journal PR — use the "Journal PR" pattern from that file. Include
+the `RECONCILED_SHARDS` list from Step 9.5 in the body (or "none" if empty), continuing the
+precedent set by engineering-journal PR #150.
 
 ```bash
 gh pr create \
@@ -1202,29 +1412,61 @@ gh pr create \
   --body "$(cat <<'EOF'
 End-of-day journal: <one-line topic summary>.
 
+Open-PR shards reconciled (verified merged/closed via gh before removal): <RECONCILED_SHARDS or "none">.
+
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
 ```
 
-**Auto-merge the PR immediately after creation:**
+**Disregard the `pr-merge-reminder` hook's stub/shard instructions for this PR.** The hook fires
+its generic "write the journal stub AND open-PR shard" advice on this `gh pr create` the same as
+any other — it has no way to know this create call *is* the journal-compose operation. This PR
+opens and merges in the same session, so writing a shard for it would go stale the instant it
+merges (the exact defect this change fixes). **Exception:** if the merge below fails and the PR
+is left open, the PR now genuinely spans sessions — write `sessions/<project>/open-prs/<N>.json`
+inside `$WT` (fields per the ADR-056 schema; `stub` = the composed journal's filename, or
+`"journal-compose YYYY-MM-DD"` if no meta journal was composed), `git -C "$WT" add` +
+`git -C "$WT" commit -- <shard>` + `git -C "$WT" push origin HEAD:refs/heads/<PR_HEAD>`, tell
+the user the compose worktree is intentionally left in place until the PR resolves, and
+**stop — do not remove the worktree.**
+
+**Merge — two calls, not `--delete-branch`.** `gh pr merge --delete-branch`'s local-branch-delete
+step fails outright if the branch is checked out as a *named* branch anywhere in the repo. The
+compose worktree itself is detached and never at risk, but `draft/YYYY-MM-DD` can still be
+checked out as a named branch by a stub-writing session's own worktree at the exact moment this
+merge runs (per `claude/CLAUDE.md`'s stub workflow). Split the merge instead:
 
 ```bash
-gh pr merge <PR-URL> \
-  --repo brownm09/engineering-journal \
-  --squash \
-  --delete-branch
+gh pr merge <PR-URL> --repo brownm09/engineering-journal --squash
+gh pr view <PR-URL> --repo brownm09/engineering-journal --json state --jq .state   # expect MERGED
+gh api -X DELETE "repos/brownm09/engineering-journal/git/refs/heads/<PR_HEAD>"
 ```
 
-This squash-merges the branch and deletes the remote branch in one step, preventing
-the stale-branch hook from false-positive firing. Wait for the merge to complete, then
-clean up local branches:
+The squash-merge is server-side only and always succeeds regardless of any local checkout
+state; the ref delete is a pure REST call, independent of what any worktree currently holds.
+Confirm `MERGED` before deleting the ref — if the merge call itself failed, stop and diagnose
+rather than deleting anything.
+
+**Clean up, in this order — the worktree must go first, since a branch checked out in a
+worktree cannot be deleted:**
 
 ```bash
-# Delete whichever branch was used as PR head
-git -C C:/Users/brown/Git/engineering-journal branch -D <PR_HEAD> 2>/dev/null || true
-# If a compose branch was used, also clean up the draft branch locally
-git -C C:/Users/brown/Git/engineering-journal branch -D draft/YYYY-MM-DD 2>/dev/null || true
+# 1. Remove the compose worktree
+git -C "$EJ" worktree remove "$WT" || \
+  { echo "warning: worktree dirty — forcing removal"; git -C "$EJ" worktree remove --force "$WT"; }
+
+# 2. THEN local branch cleanup
+git -C "$EJ" branch -D "$SOURCE_BRANCH" 2>/dev/null || true    # may be held by a stub-session worktree — leave it if so
+git -C "$EJ" branch -D compose/YYYY-MM-DD 2>/dev/null || true  # only exists after a Step 10.5 recovery
 ```
 
-Tell the user: "Merged: <PR-URL>. Journal published."
+**Post-merge shard-leak check** — surfaces a leak without ever mutating the canonical to fix it:
+
+```bash
+git -C "$EJ" fetch origin main
+git -C "$EJ" ls-tree -r origin/main --name-only | grep "open-prs/<N>.json" && \
+  echo "WARNING: a shard for compose PR #<N> landed on origin/main — remove it in a follow-up commit"
+```
+
+Tell the user: "Merged: <PR-URL>. Journal published." (plus the shard-leak warning above, if any).
