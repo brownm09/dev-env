@@ -40,6 +40,18 @@ False for exactly the `--help` shape that `is_merge_help_only` returns True
 for, proving the two predicates line up the way `main()`'s guard depends on,
 while a genuine unresolved-marker real-merge scenario is unaffected.
 
+dev-env#559: `repo` previously always came from cwd's own `.claude/hook-config.json`
+via `load_config(cwd)`, never from the merge command itself — a `gh pr merge
+<cross-repo URL>` run from an unrelated cwd (no `cd`-chain, no `--repo` flag)
+silently resolved to cwd's own repo, fetched the WRONG PR's body via `get_pr_body`,
+and moved an unrelated same-numbered issue to Done on cwd's own project board.
+`extract_repo_from_command` parses the owner/repo out of a PR URL argument
+(mirroring `extract_pr_number_from_command`); `main()` also skips the whole
+operation when that parsed repo does not match cwd's config, since
+`find_project_item`/`move_to_done` use cwd's own project-board fields
+(`project_number`/`project_node_id`/etc.), which do not apply to a different
+repo regardless of which PR's body was fetched.
+
 These tests exercise the pure helpers offline (no network, no gh). The live gh
 calls (`get_pr_body`, `find_project_item`, `move_to_done`, `confirm_merge_via_gh`)
 are intentionally not tested.
@@ -69,6 +81,7 @@ _spec.loader.exec_module(ppmp)  # safe: main() is guarded by __main__
 extract_pr_number_from_command = ppmp.extract_pr_number_from_command
 extract_pr_number = ppmp.extract_pr_number
 merge_succeeded = ppmp.merge_succeeded
+extract_repo_from_command = ppmp.extract_repo_from_command
 
 # is_merge_help_only lives in _hookio (a sibling); SCRIPT.parent already on
 # sys.path via the insert above.
@@ -124,6 +137,65 @@ def test_cmd_branch_name_no_number() -> str:
     # Merging by branch name names no PR number -> None (falls back to output).
     assert extract_pr_number_from_command("gh pr merge my-feature-2 --squash") is None
     return "merge by branch name -> None (digit inside name is not a token)"
+
+
+# --- extract_repo_from_command (dev-env#559) ------------------------------
+
+def test_repo_from_cross_repo_url() -> str:
+    # The #559 repro: a PR URL naming a repo different from cwd's own config.
+    cmd = 'gh pr merge "https://github.com/brownm09/dev-env/pull/554" --squash --delete-branch'
+    assert extract_repo_from_command(cmd) == "brownm09/dev-env"
+    return "gh pr merge <cross-repo pull-url> -> owner/repo parsed from the URL"
+
+
+def test_repo_from_bare_number_is_none() -> str:
+    # A bare positional number names no repo -- caller falls back to config.
+    assert extract_repo_from_command("gh pr merge 380 --squash") is None
+    return "gh pr merge <number> (no URL) -> None"
+
+
+def test_repo_from_bare_form_is_none() -> str:
+    assert extract_repo_from_command("gh pr merge --squash --delete-branch") is None
+    return "bare gh pr merge --squash --delete-branch -> None"
+
+
+def test_repo_from_cd_prefixed_url() -> str:
+    cmd = "cd /c/Users/brown/Git/dev-env && gh pr merge https://github.com/brownm09/dev-env/pull/412 --squash"
+    assert extract_repo_from_command(cmd) == "brownm09/dev-env"
+    return "cd ... && gh pr merge <pull-url> -> owner/repo parsed"
+
+
+def test_repo_from_chained_command_ignored() -> str:
+    # A /pull/N URL in a chained sibling command must not be picked up --
+    # mirrors extract_pr_number_from_command's identical statement-scoping.
+    cmd = "echo https://github.com/o/r/pull/55 && gh pr merge 380 --squash"
+    assert extract_repo_from_command(cmd) is None
+    return "chained-command URL ignored (statement-scoped) -> None"
+
+
+def test_repo_from_url_case_preserved() -> str:
+    # Extraction preserves the URL's own casing; callers compare case-insensitively.
+    cmd = 'gh pr merge "https://github.com/BrownM09/Dev-Env/pull/554" --squash'
+    assert extract_repo_from_command(cmd) == "BrownM09/Dev-Env"
+    return "mixed-case owner/repo in URL -> parsed verbatim (caller lower()s to compare)"
+
+
+def test_repo_from_repo_flag_wins_over_subject_url() -> str:
+    # Review finding on PR #572: an explicit --repo flag must win over an
+    # unrelated PR URL mentioned in a --subject value, or a legitimate
+    # same-repo merge would falsely mismatch and skip the Done-move.
+    cmd = (
+        'gh pr merge --repo brownm09/dev-env 380 --subject '
+        '"duplicate of https://github.com/other/repo/pull/1"'
+    )
+    assert extract_repo_from_command(cmd) == "brownm09/dev-env"
+    return "--repo flag wins over an unrelated URL in --subject value -> correct repo, not hijacked"
+
+
+def test_repo_from_repo_flag_no_url() -> str:
+    cmd = "gh pr merge 42 --repo brownm09/engineering-journal --squash"
+    assert extract_repo_from_command(cmd) == "brownm09/engineering-journal"
+    return "--repo flag, no PR URL -> flag's repo"
 
 
 # --- extract_pr_number (output) ------------------------------------------
@@ -220,6 +292,14 @@ def main() -> int:
         ("command: URL in flag value not hijacked", test_cmd_url_in_flag_value_not_hijacked),
         ("command: chained URL ignored", test_cmd_chained_url_ignored),
         ("command: branch name -> None", test_cmd_branch_name_no_number),
+        ("repo: cross-repo URL parsed (dev-env#559)", test_repo_from_cross_repo_url),
+        ("repo: bare number -> None", test_repo_from_bare_number_is_none),
+        ("repo: bare form -> None", test_repo_from_bare_form_is_none),
+        ("repo: cd-prefixed URL parsed", test_repo_from_cd_prefixed_url),
+        ("repo: chained URL ignored", test_repo_from_chained_command_ignored),
+        ("repo: mixed-case URL preserved", test_repo_from_url_case_preserved),
+        ("repo: --repo flag wins over subject URL", test_repo_from_repo_flag_wins_over_subject_url),
+        ("repo: --repo flag, no URL", test_repo_from_repo_flag_no_url),
         ("output: squash marker", test_output_squash_marker),
         ("output: merged marker", test_output_merged_marker),
         ("output: cross-repo marker", test_output_cross_repo_marker),
