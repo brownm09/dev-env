@@ -1,4 +1,4 @@
-# ADR-084: Bash Repo/Branch Drift Detection at Commit / PR-Create / PR-Merge Checkpoints
+# ADR-085: Bash Repo/Branch Drift Detection at Commit / PR-Create / PR-Merge Checkpoints
 
 **Date:** 2026-07-05
 **Status:** Accepted

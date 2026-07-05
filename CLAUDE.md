@@ -755,7 +755,7 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     fields rendering a `<unknown>` placeholder instead of raising. Backs
     `post-tool-use-cwd-track.py`'s state writes and the drift check in
     `pre-commit-branch-check.py` / `pre-pr-create-check.py` / `pre-merge-branch-check.py`
-    ([ADR-084](docs/adr/084-bash-repo-branch-drift-detection.md); dev-env#573). The `git` subprocess
+    ([ADR-085](docs/adr/085-bash-repo-branch-drift-detection.md); dev-env#573). The `git` subprocess
     calls that produce `repo_root`/`branch` live in each hook, not this module, and are not covered
     here (pure-helper convention).
 
@@ -771,7 +771,7 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     git failure) rendering a display placeholder rather than the raw `None`.
     `current_branch()`/`current_repo_root()` shell out to git and are not covered (pure-helper
     convention). This test file pre-dates this list — added here alongside the drift-check change
-    ([ADR-084](docs/adr/084-bash-repo-branch-drift-detection.md)).
+    ([ADR-085](docs/adr/085-bash-repo-branch-drift-detection.md)).
 
     ```bash
     py -3 claude/scripts/tests/test_pre_commit_branch_check.py
@@ -789,7 +789,7 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     and `current_repo_root()` shell out to git / read files and are not covered (pure-helper
     convention; this file's pre-existing untested logic is not backfilled per the Test Coverage
     Gate, [ADR-022](docs/adr/022-test-coverage-gate-before-pr.md) — only the new behavior is
-    tested). ([ADR-084](docs/adr/084-bash-repo-branch-drift-detection.md))
+    tested). ([ADR-085](docs/adr/085-bash-repo-branch-drift-detection.md))
 
     ```bash
     py -3 claude/scripts/tests/test_pre_pr_create_check.py
@@ -804,7 +804,7 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     appends on its own line after the branch-display text, and `None` branch/repo_root render
     display placeholders. `current_branch()`/`current_repo_root()` shell out to git and are not
     covered (pure-helper convention, matches item 43's identical scope decision for the sibling
-    commit-time hook). ([ADR-084](docs/adr/084-bash-repo-branch-drift-detection.md))
+    commit-time hook). ([ADR-085](docs/adr/085-bash-repo-branch-drift-detection.md))
 
     ```bash
     py -3 claude/scripts/tests/test_pre_merge_branch_check.py
