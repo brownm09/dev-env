@@ -164,11 +164,12 @@ emitting it unconditionally is what makes retroactive `--auto` use possible on a
 reviewed PR):
 
 ```
-<!-- premerge-checkpoints: adr_warrant=<filed|not-warranted> doc_reconciliation=<updated|not-applicable> -->
+<!-- premerge-checkpoints: adr_warrant=<written|not-warranted> doc_reconciliation=<updated|not-applicable> -->
 ```
 
-- `adr_warrant=filed` — a new or amended ADR is included in this PR (or a prior PR already
-  covers it, cited by number).
+- `adr_warrant=written` — a new or amended ADR is included in this PR (or a prior PR already
+  covers it, cited by number). (Named `written`, not `filed`, to avoid colliding with this
+  repo's near-universal use of "file" for GitHub issues — a review finding on this ADR itself.)
 - `adr_warrant=not-warranted` — Step 2f evaluated the four criteria and none applied.
 - `doc_reconciliation=updated` — README.md/REFERENCE.md changes are present per Step 2b/2c.
 - `doc_reconciliation=not-applicable` — the diff doesn't touch `claude/skills/**`,
@@ -187,16 +188,21 @@ A `PreToolUse` hook on `Bash`, wired in `settings.json` immediately after
 1. Reuse `_hookio.scan_top_level` / the existing `is_pr_merge_command` predicate to find a
    top-level `gh pr merge` statement (not one merely mentioned inside a quoted string, `$()`
    subshell, or heredoc — same false-positive class `pre-merge-findings-gate.py` already guards).
-2. If no `--auto` token is present on that statement (bare `--auto`, or `--auto=<value>` — Cobra
-   booleans accept the `=value` form even though `gh pr merge --help` only documents the bare
-   flag; verified live via `gh pr merge --help` during this design, which lists `--auto` as a
-   plain boolean with no short form), **exit 0 immediately.** Plain merges are unaffected;
-   `pre-merge-findings-gate.py` remains their only gate, unchanged. Mirror
-   `is_mutating_gh_segment`'s existing `--delete-branch=false` handling: an explicit
-   `--auto=false`/`=0`/`=no` is a genuine no-op (no auto-merge requested at all) and must not
-   trigger the stricter path. `--disable-auto` (a distinct, real `gh pr merge` flag that *turns
-   off* a pending auto-merge) is never in scope — undoing a pending auto-merge is a safe operation
-   in every case, so it must stay zero-friction.
+2. If no `--auto` token is present on that statement (bare `--auto`, or `--auto=<value>`),
+   **exit 0 immediately.** Plain merges are unaffected; `pre-merge-findings-gate.py` remains their
+   only gate, unchanged. Mirror `is_mutating_gh_segment`'s existing `--delete-branch=false`
+   handling: an explicit `--auto=false`/`=0`/`=no` is a genuine no-op (no auto-merge requested at
+   all) and must not trigger the stricter path. `--disable-auto` (a distinct, real `gh pr merge`
+   flag that *turns off* a pending auto-merge) is never in scope — undoing a pending auto-merge is
+   a safe operation in every case, so it must stay zero-friction.
+
+   `--auto` is confirmed live (via `gh pr merge --help` during this design) as a plain boolean
+   flag with no short form; the `=value` form's support is *not* independently verified against
+   `--auto` specifically — it's assumed by general Cobra/pflag convention (booleans accept
+   `--flag=value` even when `--help` doesn't show it) and by this repo's own precedent of relying
+   on that same assumption for `--delete-branch=false` in `is_mutating_gh_segment`. Follow-up
+   item 3 below calls out closing this assumption for good by exercising `--auto=false` against a
+   real `gh` invocation once the hook exists.
 3. Reuse `is_merge_help_only` to exit 0 on `gh pr merge --help`, same as the sibling hook.
 4. Resolve the target PR with the same `_parse_merge_target` logic `pre-merge-findings-gate.py`
    already has — import it rather than re-deriving, so the two hooks can never drift on how they
@@ -206,22 +212,36 @@ A `PreToolUse` hook on `Bash`, wired in `settings.json` immediately after
    fields verified live against a real merged PR during this design — see the field-name callout
    at the end of this section).
 
-Pass condition (**all** of the following, mirroring ADR-039's existing shape but requiring more):
+**Single-comment requirement (mechanical, not optional).** Unlike `pre-merge-findings-gate.py`,
+which independently finds "the last comment carrying the `review-findings` marker," this hook
+must find **the single most recent comment that carries both markers together**. Do not implement
+this as two independent last-comment searches (one for `review-findings`, one for
+`premerge-checkpoints`) — in the normal flow both are always emitted together by the same Step 8
+template invocation, so the two searches never diverge in practice, but an implementation that
+searches independently would accept a *fresh* clean review paired with a *stale*
+`premerge-checkpoints` marker from an earlier, now-outdated review (e.g. one whose second marker
+line was dropped by a `/review` bug, or a hand-edited comment) — precisely the freshness bypass
+point 5 exists to close, reached from a different angle. A comment carrying only one of the two
+markers does not satisfy the gate at all.
 
-- The last `<!-- review-findings: blocking=N non_blocking=M -->` marker shows a clean review
+Pass condition (**all** of the following, evaluated against that one comment — mirroring
+ADR-039's existing shape but requiring more):
+
+- It carries `<!-- review-findings: blocking=N non_blocking=M -->` showing a clean review
   (`N+M == 0`), or a recorded disposition exists in the PR body (`_DISPOSED_RE`) when `N+M > 0` —
   **identical condition** to `pre-merge-findings-gate.py`'s own pass case; import and reuse its
   marker regex and disposition regex rather than re-implementing them.
-- The **same** comment also carries `<!-- premerge-checkpoints: adr_warrant=... doc_reconciliation=... -->`
+- It also carries `<!-- premerge-checkpoints: adr_warrant=... doc_reconciliation=... -->`
   with both fields present.
-- The marker comment is **fresh**: its `createdAt` is not older than the PR's current head
-  commit's `committedDate` (see point 5).
+- It is **fresh**: its `createdAt` is not older than the PR's current head commit's
+  `committedDate` (see point 5) — freshness is checked against this one comment's timestamp,
+  never a different comment's.
 
-Any other outcome — no `/review` marker at all, no `premerge-checkpoints` marker at all, a stale
-marker, or a `gh`/network error — **exit 2**, naming exactly which condition failed and pointing
-at the two remedies: (re-)run `/review <PR-URL> --post-comment` (now emitting the checkpoint
-marker too), or fall back to the always-available primary path — plain `gh pr merge` (no
-`--auto`) after CI is green, which this gate does not touch at all.
+Any other outcome — no comment carries both markers together, a stale qualifying comment, or a
+`gh`/network error — **exit 2**, naming exactly which condition failed and pointing at the two
+remedies: (re-)run `/review <PR-URL> --post-comment` (now emitting both markers together), or
+fall back to the always-available primary path — plain `gh pr merge` (no `--auto`) after CI is
+green, which this gate does not touch at all.
 
 **Field names used above, verified live during this design** (not assumed): `gh pr view --json
 comments` → each comment has `createdAt` (ISO-8601, e.g. `"2026-07-04T06:52:08Z"`, confirmed
@@ -260,6 +280,11 @@ or they are not, and the non-`--auto` path is a full substitute with no function
 convenience. A bypass token would just become a standing, memorizable "always prefix with X" habit
 — reintroducing the discipline-only failure mode the 2026-07-04 addendum explicitly declined to
 accept for the sake of convenience.
+
+This deliberately does not claim the gate is tamper-proof — see the "PR comments are a procedural
+convention, not an authenticated channel" limitation in Consequences below, inherited unchanged
+from ADR-039. "No analogous fact only a human can verify" is about not needing a *legitimate*
+bypass, not a claim that nothing could type the marker text by hand.
 
 ### 5. Freshness check, and why it's needed even though ADR-039 doesn't have one
 
@@ -316,6 +341,17 @@ there.
   findings dispositions; this design makes the same trade for the same reason (per-finding /
   per-judgment verification would require parsing free-text intent and is disproportionate to the
   value here).
+- **PR comments are a procedural convention, not an authenticated channel.** Neither this hook nor
+  `pre-merge-findings-gate.py` checks comment authorship — both regex over comment *bodies* only.
+  Anyone or anything with comment access to the PR could hand-write a comment containing the exact
+  marker text and satisfy the gate without `/review` ever running. This is not a new hole ADR-083
+  introduces (ADR-039 has had it, unremarked, since it shipped) — but this gate leans on it more
+  heavily than ADR-039 does: it is the *sole* thing standing between `--auto` and an unattended
+  merge, with no override and no fail-open safety valve, so the same gap matters more here. The
+  design accepts this because it assumes the repo's operator (not an adversarial third party)
+  controls what gets posted to their own PRs — real comment-authenticity verification would be
+  disproportionate scope creep for a single-maintainer repo, but that assumption should be stated
+  rather than left implicit.
 - **Governs only the Claude Code-mediated path.** A human merging via the GitHub web UI's own
   auto-merge toggle bypasses this hook entirely (no Bash tool call to intercept) — but that path is
   moot everywhere the repo-level toggle is off, and is a pre-existing, accepted gap for every
@@ -345,7 +381,10 @@ This ADR is design-only. Landing the design requires, in (likely) more than one 
    `MERGE_GATE_TEST_JSON`-seam style, covering at minimum: no `--auto` → allow; `--auto` + all
    checks fresh → allow; missing `/review` marker → block; missing `premerge-checkpoints` marker →
    block; stale marker (commit postdates it) → block; `gh` error → **block** (the flipped default
-   vs. the sibling gate); explicit `--auto=false` → allow without any checks.
+   vs. the sibling gate); explicit `--auto=false` → allow without any checks. Also confirm, once
+   against a real `gh pr merge --auto=false --help`-style dry check, that `gh` itself actually
+   accepts the `=value` form on `--auto` — closing the assumption noted in point 2 above, which
+   this design deliberately did not treat as independently verified.
 4. `settings.json` — wire the new hook after `pre-merge-findings-gate.py`.
 5. `claude/CLAUDE.md` — replace the current "do not attempt `gh pr merge --auto`" blanket guidance
    (added by the 2026-07-04 addendum) with the new conditional path once the hook exists.
