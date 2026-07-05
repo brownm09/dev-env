@@ -17,11 +17,33 @@ to empty as its PRs merge, and new PRs are tracked only as shards. The shard enu
 and legacy-line parsing are delegated to the shared `_journal_shards` reader (ADR-057),
 which `post-compact.py` imports too, so the two hooks cannot drift on the shard semantics.
 
-Modified files are left dirty for Claude to pick up in the next stub commit.
+Unlinking/rewriting happens directly in the canonical checkout's working tree and this
+hook never commits. That is NOT a "the next stub commit will add it" convenience — ADR-018
+claimed that, but it stopped being true once ADR-056 moved stub commits to an explicit
+per-file pathspec (naming only the shard(s) *this* session touched) and ADR-082
+(dev-env#578) removed `/journal-compose`'s old bulk `git add -u sessions/<project>/`, the
+last thing still opportunistically catching a *different* session's dirty unlink. Nothing
+commits a stray unlink today; it self-heals to a clean `git status` only once the canonical
+next pulls a `main` that already contains an equivalent deletion (e.g. from compose's own
+Step 9.5).
+
+The unlink still matters independent of that: `post-compact.py` reads these same shards
+straight off disk (no git, no network) to decide whether to remind Claude to `/review` an
+open PR — the dependency ADR-018 named as this hook's original rationale. Skipping the
+unlink (report-only) would silently regress that reminder's accuracy, so it stays.
+
+To restore ADR-018's "picked up by the next commit" guarantee in a form that fits ADR-056's
+sharded shape, this hook also detects any currently-uncommitted `sessions/*/open-prs*`
+change (this session's own fresh unlinks, or a prior session's never-committed ones) via a
+scoped `git status --porcelain` and surfaces the exact paths in its systemMessage, giving
+Claude a ready-to-use pathspec for its next stub commit.
+
 Always exits 0 — never blocks.
 
-Stdout: one JSON line with a systemMessage listing surviving open PRs (and any
-removals), so Claude has correct context from turn 1 without reading the files.
+Stdout: one JSON line with a systemMessage listing surviving open PRs, any removals, and
+any already-dirty open-PR paths sitting uncommitted in the canonical checkout — so Claude
+has correct context from turn 1 without reading the files, and an actionable path list for
+its next commit.
 """
 from __future__ import annotations
 
@@ -91,6 +113,22 @@ def project_dirs(journal_repo: Path) -> list[Path]:
     if not sessions.is_dir():
         return []
     return sorted(p for p in sessions.iterdir() if p.is_dir())
+
+
+def find_dirty_open_pr_paths(status_lines: list[str]) -> list[str]:
+    """Filter `git status --porcelain` lines to the `sessions/*/open-prs*` shape: shard
+    files (`open-prs/<N>.json`) or the legacy `open-prs.jsonl`, whether added, modified,
+    or deleted. Surfaces disk state nothing currently commits (see module docstring) —
+    this session's own fresh unlinks, or a prior session's never-committed ones. Pure
+    string filter; porcelain format is `XY <path>` (2 status chars + space + path)."""
+    paths: list[str] = []
+    for line in status_lines:
+        if len(line) < 4:
+            continue
+        path = line[3:].strip().replace("\\", "/")
+        if "/open-prs/" in path or path.endswith("/open-prs.jsonl"):
+            paths.append(path)
+    return paths
 
 
 # --- legacy single-file path -------------------------------------------------
@@ -187,7 +225,7 @@ def reconcile_shard_dir(shard_dir: Path, state_fn=None) -> tuple[list[dict], lis
     return surviving, removed
 
 
-# --- network boundary (not unit-tested; repo avoids subprocess/urllib mocks) --
+# --- network / git boundary (not unit-tested; repo avoids subprocess/urllib mocks) --
 
 
 def check_pr_state(pr_number: int, repo: str) -> str | None:
@@ -205,6 +243,24 @@ def check_pr_state(pr_number: int, repo: str) -> str | None:
         return data.get("state")
     except Exception:
         return None
+
+
+def dirty_open_pr_status_lines(journal_repo: Path) -> list[str]:
+    """`git status --porcelain -- sessions` in the canonical checkout; [] on any failure
+    (missing repo, git not on PATH, timeout). Not unit-tested — subprocess boundary,
+    matching `check_pr_state`'s convention."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(journal_repo), "status", "--porcelain", "--", "sessions"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            return []
+        return result.stdout.splitlines()
+    except Exception:
+        return []
 
 
 def main() -> None:
@@ -255,22 +311,30 @@ def main() -> None:
 
     mark_done(session_id)
 
+    try:
+        dirty_paths = find_dirty_open_pr_paths(dirty_open_pr_status_lines(JOURNAL_REPO))
+    except Exception:
+        dirty_paths = []
+
     parts: list[str] = []
     if all_removed:
         parts.append(
-            "Reconciled open-PR tracking — removed stale entries: "
-            + ", ".join(all_removed)
-            + ". Files updated; include the open-PR changes in your next stub commit."
+            "Reconciled open-PR tracking — removed stale entries: " + ", ".join(all_removed) + "."
         )
     if all_surviving:
         parts.append("Open PRs: " + ", ".join(all_surviving))
-    elif not all_removed:
-        # nothing to report — no files found or all are empty
+    if dirty_paths:
+        parts.append(
+            "Uncommitted open-PR shard changes on disk in the canonical checkout (this "
+            "session's or an earlier session's never-committed reconciliation): "
+            + ", ".join(dirty_paths)
+            + ". Include these paths in your next stub commit's git add/commit pathspec."
+        )
+    if not parts:
+        # nothing to report — no files found, all empty, and nothing dirty
         return
 
-    msg = " ".join(parts) if parts else ""
-    if msg:
-        print(json.dumps({"systemMessage": msg}))
+    print(json.dumps({"systemMessage": " ".join(parts)}))
 
 
 if __name__ == "__main__":

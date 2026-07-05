@@ -236,7 +236,8 @@ Scheduler invocation (a bare `/journal-compose` with no date), so both share the
   but nothing commits them anymore — they sit as uncommitted deletions until the canonical next
   pulls a `main` that already contains Step 9.5's equivalent deletions, at which point `git status`
   goes clean on its own. A hook revisit (skip when the canonical is on `main`, or report-only) is
-  a follow-up, not this change.
+  a follow-up, not this change. **Resolved — see Addendum (2026-07-05) below; both floated fixes
+  turned out to have a regression risk neither this ADR nor the original follow-up anticipated.**
 - A prior-date re-compose (the #147-morning/#150-evening shape) can still hit the pre-push
   merged-draft-branch block; it now has an explicit, named recovery path (Step 10.5) rather than
   being a surprise.
@@ -280,6 +281,49 @@ Scheduler invocation (a bare `/journal-compose` with no date), so both share the
 
 ---
 
+## Addendum (2026-07-05): `reconcile-open-prs.py` follow-up resolved
+
+The Consequences section above flagged the canonical-checkout unlinks left permanently
+uncommitted by this ADR, and named two candidate fixes: "skip when the canonical is on
+`main`, or report-only." [dev-env#578](https://github.com/brownm09/dev-env/issues/578)
+found both insufficient and shipped a third.
+
+**Why the two originally-floated fixes don't work:**
+
+- **Skip-when-on-`main`** doesn't address the common case — per the Stub file workflow,
+  the canonical checkout sits on `draft/YYYY-MM-DD` for most of the working day, not
+  `main`. Conditioning on branch state doesn't change the actual mechanism: nothing
+  commits the unlink either way, whichever branch is checked out.
+- **Report-only (never unlink)** regresses a dependency this ADR didn't account for:
+  `claude/scripts/post-compact.py` reads `open-prs/<N>.json` shards **directly off the
+  canonical checkout's disk** — no git, no network — to decide whether to remind Claude
+  to `/review` an open PR. [ADR-018](018-reconcile-open-prs-hook.md) (the hook's founding
+  ADR) names this as the hook's *original, primary rationale* for mutating the working
+  tree at all. Stopping the unlink would silently leave an already-merged PR looking open
+  to `post-compact.py`, within the same or a later same-day session.
+
+**What shipped instead:** the unlink stays (still load-bearing for `post-compact.py`). The
+hook's docstring was corrected — it no longer claims the deletion is "picked up by the next
+stub commit," which stopped being true once ADR-056's per-file-pathspec discipline and this
+ADR's worktree isolation, together, removed every path that used to sweep it in. Instead,
+the hook now runs a scoped `git status --porcelain -- sessions` after its unlink pass and
+surfaces any currently-dirty `sessions/*/open-prs*` paths — this session's own fresh
+unlinks, or a prior session's never-committed ones — in its existing `systemMessage`. This
+restores [ADR-018](018-reconcile-open-prs-hook.md)'s original "picked up by the next
+commit" guarantee, adapted to ADR-056's sharded shape: Claude gets an explicit, ready-to-use
+path list for its next stub commit's pathspec, rather than relying on the now-defunct
+assumption that *something* would blanket-add it.
+
+A hook-side commit (this ADR's rejected option (b), above) remains the wrong direction —
+it would reintroduce exactly the canonical-checkout-mutation risk this ADR eliminates, for
+a purely cosmetic (`git status` noise) gain.
+
+See [dev-env#578](https://github.com/brownm09/dev-env/issues/578) and
+`claude/scripts/reconcile-open-prs.py`'s module docstring for the full causal chain
+(ADR-018 → ADR-056 → this ADR → dev-env#578).
+
+---
+
 ## References
 
 - `claude/skills/journal-compose/SKILL.md` — Step 0.6, 9.5, 6.5/6.6, and the Phase 2 coordinator
@@ -287,6 +331,10 @@ Scheduler invocation (a bare `/journal-compose` with no date), so both share the
 - `claude/routines/daily-journal-compose/SKILL.md` — companion edit
 - [dev-env#467](https://github.com/brownm09/dev-env/issues/467) — motivating issue (both original
   gaps, plus the 2026-07-03 incident comment)
+- [dev-env#578](https://github.com/brownm09/dev-env/issues/578) — Addendum (2026-07-05): resolves
+  the `reconcile-open-prs.py` follow-up this ADR's Consequences section flagged
+- [ADR-018](018-reconcile-open-prs-hook.md) — `reconcile-open-prs.py`'s founding ADR; the
+  Addendum traces the causal chain from here through ADR-056 to this ADR
 - engineering-journal [PR #147](https://github.com/brownm09/engineering-journal/pull/147),
   [PR #149](https://github.com/brownm09/engineering-journal/pull/149),
   [PR #150](https://github.com/brownm09/engineering-journal/pull/150) — shard-staleness and
