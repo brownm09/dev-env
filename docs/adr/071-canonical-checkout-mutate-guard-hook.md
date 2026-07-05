@@ -484,20 +484,78 @@ it):
 4. `docs/REFERENCE.md`'s ADR-071 Hooks-table trigger cell and the Git Workflow Runbook "Prevention"
    note — updated to reflect the redirect coverage and the narrowed v1 gap.
 
+### Review hardening (dev-env#576/PR#584)
+
+`/review` on this PR (Opus-model correctness/security and reliability/performance/maintainability
+subagents, each finding independently verified end-to-end before being accepted) found the first
+implementation of the fix above was itself incomplete in three ways, plus two narrower scope-precision
+gaps — all fixed in the same PR before merge, since each was small, self-contained, and introduced by
+this branch:
+
+1. **Quoted redirect paths with whitespace defeated the block.** `_git_rest_tokens` tokenized with a
+   naive `rest.split()` — a redirect value containing a space (e.g. `-C "C:/Program Files/repo"`, a
+   common shape on the exact platform this hook targets) shattered into multiple bogus tokens, so the
+   captured "target dir" was mangled and the invocation was never even recognized as mutating. Fixed by
+   a new `_tokenize()` helper: `shlex.split(rest, posix=True)` with a fallback to the prior plain
+   `.split()` on `ValueError` — the fallback is not just defensive, it is *required*, since `rest` is
+   only ever a segment's first physical line and a real multi-line heredoc/command-substitution segment
+   (e.g. `git commit -m "$(cat <<'EOF' ...)"`) truncates mid-quote right there, which `shlex` correctly
+   flags as unbalanced.
+2. **Relative redirect targets resolved against the wrong process's cwd.** `_resolve_git_toplevel(d)`
+   was called with the raw captured value; for a relative `d` (`git -C ../other-repo`, or `--git-dir=.git`
+   after normalization), the `git` subprocess it spawns inherits the *hook script's own* cwd (whatever
+   directory happens to launch it), not the Bash command's actual `cwd` from the PreToolUse payload — so
+   a relative redirect into a canonical root silently missed the block. Fixed by resolving a non-absolute
+   redirect value against the payload `cwd` (`os.path.isabs()` guard + `os.path.join()`) before handing
+   it to `_resolve_git_toplevel`; `git rev-parse --show-toplevel` canonicalizes any `..`/`.` segments in
+   the joined path itself.
+3. **A null byte in a redirect value crashed the hook instead of failing open.** `_resolve_git_toplevel`'s
+   `except (FileNotFoundError, subprocess.TimeoutExpired, OSError)` tuple didn't include `ValueError`,
+   which `subprocess.run`'s `Popen` raises on an embedded null character. This was safe when the only
+   caller passed harness-provided `cwd`; it stopped being safe once this PR routed a second,
+   command-string-derived value through the same function — command strings are far less constrained
+   than a harness-provided cwd. Fixed by adding `ValueError` to the tuple.
+4. **The journal carve-out matched on basename alone.** `_is_allowlisted_root` exempted *any* canonical
+   checkout anywhere on disk whose last path segment happened to be named `engineering-journal`, not
+   just the one intended shared checkout. Hardened to an exact (separator- and case-normalized) path
+   match — consistent with, not a new departure from, this codebase's existing convention of hardcoding
+   this exact path elsewhere (the global `CLAUDE.md` Engineering Journal section). The real path is
+   overridable via a `CANONICAL_MUTATE_GUARD_JOURNAL_PATH` environment variable solely so the test suite
+   can point the carve-out at a disposable temp directory instead of ever touching the developer's real
+   engineering-journal checkout.
+5. **No memoization across redirect resolutions.** A command with several `&&`-chained mutating segments,
+   each carrying several redirect flags, could spawn one `git rev-parse` subprocess per redirect-dir
+   *occurrence* rather than per distinct directory — a crafted worst case spawned 15 subprocesses for one
+   command. Bounded and adversarial-only (every ordinary Bash call still triggers 0 or 1 spawn, unchanged),
+   but cheap to close: a dict-based memo shared across `main()`'s per-segment loop now resolves each
+   distinct directory at most once per Bash call.
+
+None of these five change the *shape* of the decision this amendment describes above (target-aware
+redirect resolution, cwd-or-target must be canonical to block, the journal carve-out, the fail-open
+guarantee) — they correct the implementation to actually deliver it.
+
 ### Coverage
 
-`claude/scripts/tests/test_canonical_mutate_guard.py` grows from 48 to 58 tests, split across the
-existing two-layer convention:
+`claude/scripts/tests/test_canonical_mutate_guard.py` grows from 48 to 64 tests (58 at initial
+implementation, +6 from the review-hardening above), split across the existing two-layer convention:
 
 - **Pure-function layer:** `_parse_git_prefix` capture/verb-exposure across `=`/space forms; the
   `--work-tree`/`--git-dir`/`-C` mutating-classification fix; `_segment_redirect_dirs` first-line-only
   anchoring (a heredoc-body `-C` mention injects no target); the `_is_allowlisted_root` journal
-  carve-out; and the repurposed `test_dashC_redirect_captured_and_classified` (the pre-#576 test
-  asserted `classify()` returned `None` for `git -C <canonical> checkout` — the exact gap — and is
-  inverted here, justified in the PR body under the Test Integrity policy).
+  carve-out (exact-path match, plus a same-basename-wrong-path negative case); `_tokenize`'s quoted-path
+  capture and its unbalanced-quote fallback; `_resolve_git_toplevel`'s null-byte fail-open; and the
+  repurposed `test_dashC_redirect_captured_and_classified` (the pre-#576 test asserted `classify()`
+  returned `None` for `git -C <canonical> checkout` — the exact gap — and is inverted here, justified in
+  the PR body under the Test Integrity policy).
 - **End-to-end `main()`-via-subprocess layer:** `git -C <canonical>` from a worktree cwd blocked (exit
-  2, target root named); `git -C <engineering-journal>` from a worktree cwd allowed (carve-out); `git -C
+  2, target root named); `git -C <engineering-journal>` from a worktree cwd allowed (carve-out, via the
+  test-only env override); a same-basename repo at a different path correctly NOT exempt; `git -C
   <worktree>` allowed (target is not canonical); `git -C <other canonical>` from a canonical cwd blocked
   (the `_REDIRECT_RE`-backstop case); `git --work-tree=<canonical> commit` blocked (the misclassification
-  fix); and the override bypassing a redirect block. The `test_no_crude_command_substring_checks.py`
-  AST gate passes — the new parsing is tokenized (`_parse_git_prefix`), not a substring test.
+  fix); the override bypassing a redirect block; a quoted, space-bearing `-C` target blocked; and a
+  relative `-C` target resolved against the command's own cwd, blocked. Test fixtures embedding a path
+  in command TEXT use `Path.as_posix()` (forward slashes) — a raw Windows `str(Path)` would embed
+  backslashes that `shlex.split(posix=True)` treats as escape characters outside quotes, which is exactly
+  the class of bug item 1 above fixes in the hook itself and would otherwise silently corrupt the test
+  fixtures the same way. The `test_no_crude_command_substring_checks.py` AST gate passes — the new
+  parsing is tokenized (`_parse_git_prefix`/`_tokenize`), not a substring test.

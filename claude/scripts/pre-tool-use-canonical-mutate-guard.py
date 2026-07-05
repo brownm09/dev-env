@@ -138,7 +138,9 @@ Stdin JSON shape (PreToolUse):
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
+import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -172,16 +174,34 @@ OVERRIDE_TOKEN = "ALLOW_CANONICAL_MUTATE=1"
 _GIT_REDIRECT_FLAGS = ("-C", "--git-dir", "--work-tree")
 
 # TEMPORARY carve-out (dev-env#576): a redirect target whose resolved canonical
-# toplevel *basename* is in this set is NOT blocked, even though it is a
-# canonical (non-worktree) checkout. The engineering-journal canonical checkout
-# is the shared tree the documented stub workflow mutates via
-# `git -C <journal> checkout/commit/pull` on every PR open/merge (global
-# CLAUDE.md Engineering Journal section + ADR-066); blocking that automated path
-# would force ALLOW_CANONICAL_MUTATE=1 onto it — untenable. Remove this carve-out
-# once journal git work moves into a worktree (dev-env#346), after which no
-# direct canonical-journal mutation happens and the guard covers it like any
-# other repo. Matched by basename, so it is independent of the absolute path.
-_REDIRECT_TARGET_ALLOWLIST = frozenset({"engineering-journal"})
+# toplevel exactly matches one of these (separator- and case-normalized) paths
+# is NOT blocked, even though it is a canonical (non-worktree) checkout. The
+# engineering-journal canonical checkout is the shared tree the documented stub
+# workflow mutates via `git -C <journal> checkout/commit/pull` on every PR
+# open/merge (global CLAUDE.md Engineering Journal section + ADR-066); blocking
+# that automated path would force ALLOW_CANONICAL_MUTATE=1 onto it — untenable.
+# Remove this carve-out once journal git work moves into a worktree
+# (dev-env#346), after which no direct canonical-journal mutation happens and
+# the guard covers it like any other repo.
+#
+# Matched by exact absolute path, not a bare basename (review finding on
+# dev-env#576/PR#584): a basename-only match would exempt ANY canonical
+# checkout anywhere on disk that happens to be named "engineering-journal",
+# not just this one. The global CLAUDE.md already hardcodes this exact path
+# for this single-machine tool ("Repo path: C:/Users/brown/Git/engineering-
+# journal"), so hardcoding it here too is consistent with, not a new
+# departure from, the rest of this codebase's conventions.
+#
+# The real path is overridable via CANONICAL_MUTATE_GUARD_JOURNAL_PATH solely
+# so the end-to-end test suite can point this at a disposable temp directory
+# instead of the developer's actual engineering-journal checkout — a test
+# must never create or resolve toplevel-detection against the real one.
+_REDIRECT_TARGET_ALLOWLIST = frozenset({
+    os.environ.get("CANONICAL_MUTATE_GUARD_JOURNAL_PATH", "C:/Users/brown/Git/engineering-journal")
+    .replace("\\", "/")
+    .rstrip("/")
+    .lower()
+})
 
 # `cd <path>` at the start of a segment (after stripping leading env-var
 # assignments — see `_strip_leading_env`). Compiled once; reused by both the
@@ -296,6 +316,27 @@ def _parse_git_prefix(tokens: list):
     return redirect_dirs, tokens[i:]
 
 
+def _tokenize(rest: str) -> list:
+    """Split `rest` into shell-style tokens, quote-aware — so a redirect value
+    containing whitespace (e.g. `-C "C:/Program Files/repo"`) is captured as
+    one token instead of shattering across several (review finding on
+    dev-env#576/PR#584: the prior plain `.split()` let a quoted, space-bearing
+    `-C`/`--git-dir`/`--work-tree` target silently defeat the new block).
+
+    Falls back to a plain whitespace split on unbalanced quoting rather than
+    raising: `rest` is only ever a segment's first PHYSICAL line
+    (`_first_line()`), so a real multi-line heredoc/command-substitution span
+    (e.g. `git commit -m "$(cat <<'EOF' ...)"`) truncates mid-quote right here
+    — `shlex.split` correctly raises `ValueError` on that truncated line, and
+    falling back to `.split()` preserves the existing, tested "heredoc commit
+    still classifies as mutating" behavior instead of crashing the hook.
+    """
+    try:
+        return shlex.split(rest, posix=True)
+    except ValueError:
+        return rest.split()
+
+
 def _git_rest_tokens(segment: str):
     """Tokens after `git` on the segment's first physical line, or None if the
     (env-stripped) segment isn't a git invocation.
@@ -312,7 +353,7 @@ def _git_rest_tokens(segment: str):
     rest = m.group(1).strip()
     if not rest:
         return None
-    return rest.split()
+    return _tokenize(rest)
 
 
 def _first_line(segment: str) -> str:
@@ -564,7 +605,19 @@ def _has_override(cmd: str, segments: list = None) -> bool:
 
 def _resolve_git_toplevel(cwd: str):
     """Return git's worktree top-level for `cwd`, or None if git can't resolve
-    it (not a repo, git missing, timeout, non-zero exit) — the fail-open path.
+    it (not a repo, git missing, timeout, non-zero exit, or an illegal path) —
+    the fail-open path.
+
+    `cwd` here is either the payload's own `cwd` or a resolved redirect
+    target dir (dev-env#576) — the latter is command-string-derived, so it is
+    far less constrained than a harness-provided cwd. A value containing a
+    null byte makes `subprocess.run`'s `Popen` raise `ValueError: embedded
+    null character` rather than a `FileNotFoundError`/`OSError`; that case is
+    caught here too so an unusual (if unrealistic) redirect value fails open
+    like every other unresolvable path instead of crashing the hook (review
+    finding on dev-env#576/PR#584 — this contract was safe when the only
+    caller was the harness-provided cwd, but is not automatically safe now
+    that a second, command-derived caller exists).
     """
     try:
         result = subprocess.run(
@@ -573,7 +626,7 @@ def _resolve_git_toplevel(cwd: str):
             text=True,
             timeout=10,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
         return None
     if result.returncode != 0:
         return None
@@ -581,20 +634,21 @@ def _resolve_git_toplevel(cwd: str):
     return top or None
 
 
-def _basename(path: str) -> str:
-    """Last path segment of `path`, tolerant of both `/` and `\\` separators
-    (git rev-parse emits `/`, but a Windows cwd may carry `\\`)."""
-    return path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-
-
 def _is_allowlisted_root(root: str) -> bool:
     """True if `root` (a resolved canonical toplevel) is on the temporary
     redirect-target carve-out — currently only the engineering-journal
-    canonical checkout. See `_REDIRECT_TARGET_ALLOWLIST`."""
-    return _basename(root).lower() in _REDIRECT_TARGET_ALLOWLIST
+    canonical checkout. See `_REDIRECT_TARGET_ALLOWLIST`.
+
+    Matches the whole normalized path (`/` separators, no trailing slash,
+    lowercased), not just the last path segment — a basename-only match would
+    exempt any canonical checkout anywhere on disk that happens to share that
+    directory name (review finding on dev-env#576/PR#584).
+    """
+    normalized = root.replace("\\", "/").rstrip("/").lower()
+    return normalized in _REDIRECT_TARGET_ALLOWLIST
 
 
-def _blockable_redirect_root(redirect_dirs: list):
+def _blockable_redirect_root(redirect_dirs: list, cwd: str, toplevel_cache: dict):
     """Resolve each `-C`/`--git-dir`/`--work-tree` dir hint and return the first
     that lands on a canonical (non-worktree) root NOT on the carve-out, or None.
 
@@ -602,9 +656,30 @@ def _blockable_redirect_root(redirect_dirs: list):
     carve-out-exempt root (the journal), or that git can't resolve at all
     (fail-open) is skipped. This is the git-subprocess half that
     `find_mutating_segments()` deliberately leaves to the caller.
+
+    A non-absolute `d` is resolved against `cwd` (the command's OWN cwd, from
+    the PreToolUse payload) before being handed to `_resolve_git_toplevel` —
+    without this, `git -C <relative-dir> ...` would run against the hook
+    SCRIPT's own process cwd (whatever directory it happens to be launched
+    from), which has no relationship to the Bash command's actual working
+    directory, silently missing a relative redirect into a canonical root
+    (review finding on dev-env#576/PR#584). `git rev-parse --show-toplevel`
+    canonicalizes any `..`/`.` segments in the joined path itself, so no
+    extra normalization is needed here.
+
+    `toplevel_cache` memoizes resolved-path -> toplevel across the whole
+    command (one dict per Bash call, shared by every call from the same
+    `main()` invocation) so a command repeating the same redirect target
+    across several `&&`-chained segments spawns at most one `git rev-parse`
+    per distinct resolved path rather than one per occurrence (review finding
+    on dev-env#576/PR#584 — a crafted worst case spawned 15 subprocesses for
+    one command before this memoization).
     """
     for d in redirect_dirs:
-        root = _resolve_git_toplevel(d)
+        resolved = d if os.path.isabs(d) else os.path.join(cwd, d)
+        if resolved not in toplevel_cache:
+            toplevel_cache[resolved] = _resolve_git_toplevel(resolved)
+        root = toplevel_cache[resolved]
         if root and not _WORKTREE_RE.search(root) and not _is_allowlisted_root(root):
             return root
     return None
@@ -695,12 +770,16 @@ def main() -> None:
     # (no-redirect) mutating segment actually needs it.
     cwd_root = None
     cwd_root_resolved = False
+    # Shared across every _blockable_redirect_root() call for this command so
+    # a redirect target repeated across multiple &&-chained segments resolves
+    # via `git rev-parse` at most once (dev-env#576/PR#584 review finding).
+    toplevel_cache = {}
 
     for m in matches:
         if m["redirect_dirs"]:
             # Redirect mutation: blockable iff a target resolves to a canonical
             # (non-worktree, non-carve-out) root — regardless of cwd.
-            block_root = _blockable_redirect_root(m["redirect_dirs"])
+            block_root = _blockable_redirect_root(m["redirect_dirs"], cwd, toplevel_cache)
         elif cwd_is_worktree:
             # Ambient mutation inside a worktree targets the worktree itself — fine.
             continue

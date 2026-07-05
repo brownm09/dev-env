@@ -79,6 +79,7 @@ Exit 0 = all pass.
 """
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -764,9 +765,13 @@ def test_segment_redirect_dirs_first_line_only() -> str:
 
 
 def test_is_allowlisted_root_journal_carveout() -> str:
-    """dev-env#576 carve-out: a redirect target whose resolved toplevel basename
-    is `engineering-journal` is exempt (matched by basename, `/` or `\\`
-    separators), while every other repo is not.
+    """dev-env#576 carve-out: a redirect target whose resolved toplevel EXACTLY
+    matches the configured journal path (default: the real
+    C:/Users/brown/Git/engineering-journal, separator- and case-normalized) is
+    exempt, while every other repo — INCLUDING one that merely shares the same
+    basename at a different path — is not (dev-env#576/PR#584 review finding:
+    the original implementation matched on basename alone, which would have
+    wrongly exempted the last case below).
     """
     exempt = [
         "C:/Users/brown/Git/engineering-journal",
@@ -776,10 +781,66 @@ def test_is_allowlisted_root_journal_carveout() -> str:
     for root in exempt:
         if not cmg._is_allowlisted_root(root):
             raise AssertionError(f"expected {root!r} to be carve-out-exempt")
-    for root in ("C:/Users/brown/Git/career-playbook", "C:/Users/brown/Git/dev-env", "C:/x/engineering-journal-notes"):
+    not_exempt = (
+        "C:/Users/brown/Git/career-playbook",
+        "C:/Users/brown/Git/dev-env",
+        "C:/x/engineering-journal-notes",
+        "C:/other/place/engineering-journal",  # same basename, wrong path -- must NOT match
+    )
+    for root in not_exempt:
         if cmg._is_allowlisted_root(root):
             raise AssertionError(f"{root!r} must NOT be carve-out-exempt")
-    return "engineering-journal redirect target is carve-out-exempt; other repos are not"
+    return "engineering-journal redirect target is carve-out-exempt by exact path; same-basename-elsewhere is not"
+
+
+def test_tokenize_quoted_redirect_path_with_space() -> str:
+    """dev-env#576/PR#584 review finding: a plain whitespace `.split()` shatters
+    a quoted redirect value containing a space into multiple bogus tokens,
+    silently defeating the block for any Windows path under a
+    space-containing directory (e.g. "C:/Program Files/..."). `_tokenize` must
+    capture it as one token via a quote-aware split.
+    """
+    cmd = 'git -C "C:/Program Files/some-canonical" checkout -b foo'
+    dirs = cmg._segment_redirect_dirs(cmd)
+    if dirs != ["C:/Program Files/some-canonical"]:
+        raise AssertionError(f"expected the quoted space-bearing path captured whole, got {dirs!r}")
+    if not cmg.is_mutating_segment(cmd):
+        raise AssertionError("quoted -C target with a mutating verb must still classify as mutating")
+    return "_tokenize captures a quoted, space-bearing redirect path as one token (dev-env#576/PR#584)"
+
+
+def test_tokenize_falls_back_on_unbalanced_quote() -> str:
+    """`_tokenize` must fall back to a plain whitespace split (not raise) when
+    shlex hits unbalanced quoting -- the exact shape `_first_line()` produces
+    when it truncates a real multi-line heredoc/command-substitution segment
+    mid-quote. The real segment is `git commit -m "$(cat <<'EOF'\\n...\\nEOF\\n)"`
+    (see test_commit_with_heredoc_command_sub_message_still_classified);
+    `_first_line()` keeps only `git commit -m "$(cat <<'EOF'` -- one opening
+    double-quote with no closing partner on this truncated line (the `'EOF'`
+    single-quote pair IS balanced on its own). This is what keeps the existing
+    heredoc-still-classifies-as-mutating tests passing rather than crashing
+    the hook on a ValueError.
+    """
+    truncated = "commit -m \"$(cat <<'EOF'"
+    tokens = cmg._tokenize(truncated)
+    if tokens != truncated.split():
+        raise AssertionError(f"expected fallback to plain .split() on unbalanced quote, got {tokens!r}")
+    return "_tokenize falls back to plain split() on unbalanced quoting instead of raising"
+
+
+def test_resolve_git_toplevel_failsopen_on_null_byte() -> str:
+    """dev-env#576/PR#584 review finding: a redirect dir containing a null byte
+    makes `subprocess.run`'s `Popen` raise `ValueError: embedded null
+    character`, which was NOT in `_resolve_git_toplevel`'s except tuple and
+    crashed the hook outright (verified end-to-end before this fix: exit 1
+    with a traceback, instead of exit 0 fail-open). This is a newly-relevant
+    case because dev-env#576 routes a command-string-derived value (a
+    redirect target) into this function, not just the harness-provided cwd.
+    """
+    result = cmg._resolve_git_toplevel("C:/some/path\x00with/null")
+    if result is not None:
+        raise AssertionError(f"expected None (fail open) on a null-byte path, got {result!r}")
+    return "_resolve_git_toplevel returns None (fail open) on a null-byte path rather than raising"
 
 
 def main_unit() -> list:
@@ -818,6 +879,9 @@ def main_unit() -> list:
         ("--work-tree/--git-dir/-C redirect classified as mutating (dev-env#576)", test_work_tree_and_git_dir_redirect_classified_as_mutating),
         ("_segment_redirect_dirs first-line only (dev-env#576)", test_segment_redirect_dirs_first_line_only),
         ("_is_allowlisted_root journal carve-out (dev-env#576)", test_is_allowlisted_root_journal_carveout),
+        ("_tokenize captures quoted space-bearing redirect path (dev-env#576/PR#584)", test_tokenize_quoted_redirect_path_with_space),
+        ("_tokenize falls back on unbalanced quote (dev-env#576/PR#584)", test_tokenize_falls_back_on_unbalanced_quote),
+        ("_resolve_git_toplevel fails open on null byte (dev-env#576/PR#584)", test_resolve_git_toplevel_failsopen_on_null_byte),
     ]
 
 
@@ -826,13 +890,24 @@ def main_unit() -> list:
 # --------------------------------------------------------------------------
 
 
-def _run_hook(payload: dict) -> subprocess.CompletedProcess:
+def _run_hook(payload: dict, env_overrides: dict = None) -> subprocess.CompletedProcess:
+    """Run the real hook over stdin. `env_overrides`, when given, merges onto
+    a copy of the current environment (rather than replacing it wholesale) so
+    a test can redirect e.g. CANONICAL_MUTATE_GUARD_JOURNAL_PATH at a
+    disposable temp dir without losing PATH/other inherited variables the
+    subprocess needs (to find `git`, etc.).
+    """
+    env = None
+    if env_overrides:
+        env = dict(os.environ)
+        env.update(env_overrides)
     return subprocess.run(
         [sys.executable, str(MODULE_PATH)],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
         timeout=30,
+        env=env,
     )
 
 
@@ -1260,6 +1335,13 @@ def test_main_blocks_redirect_into_canonical_from_worktree_cwd() -> str:
     incident shape: `git -C <other-repo> checkout` from a project worktree) — is
     now BLOCKED (exit 2), where the pre-#576 worktree short-circuit allowed it.
     The reason names the resolved TARGET root, not cwd.
+
+    Uses `.as_posix()` for the path embedded in the COMMAND TEXT (not the `cwd`
+    JSON field, which isn't tokenized) — matching this codebase's own universal
+    forward-slash convention for -C targets. A raw Windows `str(Path)` here
+    would embed backslashes that `_tokenize()`'s `shlex.split(posix=True)`
+    treats as escape characters outside quotes, corrupting the path (review
+    finding on dev-env#576/PR#584 while writing this very test file).
     """
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "canonical-target"
@@ -1270,7 +1352,7 @@ def test_main_blocks_redirect_into_canonical_from_worktree_cwd() -> str:
         payload = {
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
-            "tool_input": {"command": f"git -C {target} checkout -b some-branch"},
+            "tool_input": {"command": f"git -C {target.as_posix()} checkout -b some-branch"},
             "cwd": str(wt),
         }
         proc = _run_hook(payload)
@@ -1288,11 +1370,16 @@ def test_main_blocks_redirect_into_canonical_from_worktree_cwd() -> str:
 
 
 def test_main_allows_redirect_into_journal_carveout_from_worktree_cwd() -> str:
-    """dev-env#576 carve-out: a `git -C <engineering-journal> pull` from a
-    worktree cwd stays ALLOWED (exit 0) — the documented stub workflow mutates
-    the shared journal canonical checkout this way on every PR open/merge, and
-    blocking it would force ALLOW_CANONICAL_MUTATE=1 onto an automated path.
-    Matched by the resolved-toplevel basename `engineering-journal`.
+    """dev-env#576 carve-out: a `git -C <journal>` redirect from a worktree cwd
+    stays ALLOWED (exit 0) — the documented stub workflow mutates the shared
+    journal canonical checkout this way on every PR open/merge, and blocking it
+    would force ALLOW_CANONICAL_MUTATE=1 onto an automated path.
+
+    Matched by exact resolved-toplevel path (dev-env#576/PR#584 review finding
+    hardened this from a basename-only match), which is overridden here via
+    CANONICAL_MUTATE_GUARD_JOURNAL_PATH to point at a disposable temp repo
+    rather than the developer's real engineering-journal checkout — this test
+    must never touch that real checkout.
     """
     with tempfile.TemporaryDirectory() as tmp:
         journal = Path(tmp) / "engineering-journal"
@@ -1303,15 +1390,46 @@ def test_main_allows_redirect_into_journal_carveout_from_worktree_cwd() -> str:
         payload = {
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
-            "tool_input": {"command": f"git -C {journal} pull"},
+            "tool_input": {"command": f"git -C {journal.as_posix()} pull"},
             "cwd": str(wt),
         }
-        proc = _run_hook(payload)
+        proc = _run_hook(payload, env_overrides={"CANONICAL_MUTATE_GUARD_JOURNAL_PATH": str(journal)})
         if proc.returncode != 0:
             raise AssertionError(
                 f"expected exit 0 (journal carve-out), got {proc.returncode}. stderr={proc.stderr!r}"
             )
-    return "git -C <engineering-journal> pull from a worktree cwd allowed (carve-out, dev-env#576)"
+    return "git -C <journal carve-out path> from a worktree cwd allowed (dev-env#576)"
+
+
+def test_main_blocks_redirect_into_samename_repo_outside_carveout_path() -> str:
+    """dev-env#576/PR#584 review finding, closed: a canonical checkout that
+    merely happens to be NAMED `engineering-journal` at some OTHER path is NOT
+    exempt — only the one path CANONICAL_MUTATE_GUARD_JOURNAL_PATH names is.
+    Pre-fix, the carve-out matched on basename alone and would have wrongly
+    exempted this too; this pins the hardened exact-path match end-to-end.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        lookalike = Path(tmp) / "engineering-journal"  # same basename, NOT the configured carve-out path
+        lookalike.mkdir()
+        _init_throwaway_repo(lookalike)
+        wt = Path(tmp) / ".claude" / "worktrees" / "some-worktree-name"
+        wt.mkdir(parents=True)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {lookalike.as_posix()} checkout -b x"},
+            "cwd": str(wt),
+        }
+        # Deliberately configure the carve-out path to somewhere else entirely
+        # so `lookalike` (same basename, different path) is provably not it.
+        other_path = Path(tmp) / "actual-carveout-target"
+        proc = _run_hook(payload, env_overrides={"CANONICAL_MUTATE_GUARD_JOURNAL_PATH": str(other_path)})
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (same-basename repo at a different path must NOT be exempt), "
+                f"got {proc.returncode}. stderr={proc.stderr!r}"
+            )
+    return "same-basename-but-wrong-path repo is correctly NOT carve-out-exempt (dev-env#576/PR#584)"
 
 
 def test_main_allows_redirect_into_worktree_target() -> str:
@@ -1330,7 +1448,7 @@ def test_main_allows_redirect_into_worktree_target() -> str:
         payload = {
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
-            "tool_input": {"command": f"git -C {wt_target} checkout -b x"},
+            "tool_input": {"command": f"git -C {wt_target.as_posix()} checkout -b x"},
             "cwd": str(cwd_repo),
         }
         proc = _run_hook(payload)
@@ -1356,7 +1474,7 @@ def test_main_blocks_redirect_into_other_canonical_from_canonical_cwd() -> str:
         payload = {
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
-            "tool_input": {"command": f"git -C {repo_b} checkout -b x"},
+            "tool_input": {"command": f"git -C {repo_b.as_posix()} checkout -b x"},
             "cwd": str(repo_a),
         }
         proc = _run_hook(payload)
@@ -1382,7 +1500,7 @@ def test_main_blocks_work_tree_redirect_into_canonical() -> str:
         payload = {
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
-            "tool_input": {"command": f"git --work-tree={target} commit -m x"},
+            "tool_input": {"command": f"git --work-tree={target.as_posix()} commit -m x"},
             "cwd": str(wt),
         }
         proc = _run_hook(payload)
@@ -1406,7 +1524,7 @@ def test_main_override_bypasses_redirect_block() -> str:
         payload = {
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
-            "tool_input": {"command": f"ALLOW_CANONICAL_MUTATE=1 git -C {target} checkout -b x"},
+            "tool_input": {"command": f"ALLOW_CANONICAL_MUTATE=1 git -C {target.as_posix()} checkout -b x"},
             "cwd": str(wt),
         }
         proc = _run_hook(payload)
@@ -1415,6 +1533,69 @@ def test_main_override_bypasses_redirect_block() -> str:
                 f"expected exit 0 (override applied), got {proc.returncode}. stderr={proc.stderr!r}"
             )
     return "ALLOW_CANONICAL_MUTATE=1 bypasses a -C-into-canonical block (dev-env#576)"
+
+
+def test_main_blocks_quoted_space_bearing_redirect_target() -> str:
+    """dev-env#576/PR#584 review finding, closed end-to-end: a `-C` target
+    quoted because it contains a space (a common shape for a Windows path
+    under a space-containing directory, e.g. "C:/Program Files/...") must
+    still be recognized and blocked, not silently let through by a naive
+    whitespace-based tokenizer.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "canonical target with space"
+        target.mkdir()
+        _init_throwaway_repo(target)
+        wt = Path(tmp) / ".claude" / "worktrees" / "some-worktree-name"
+        wt.mkdir(parents=True)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f'git -C "{target.as_posix()}" checkout -b some-branch'},
+            "cwd": str(wt),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (quoted space-bearing -C target blocked), got {proc.returncode}. "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+    return "quoted, space-bearing -C target blocked end-to-end (dev-env#576/PR#584)"
+
+
+def test_main_blocks_relative_redirect_resolved_against_command_cwd() -> str:
+    """dev-env#576/PR#584 review finding, closed end-to-end: a RELATIVE `-C`
+    target must resolve against the command's OWN cwd (the payload's `cwd`),
+    not the hook script's unrelated process cwd.
+
+    `wt` sits 3 levels below `tmp` (tmp/.claude/worktrees/wt-rel);
+    `canonical_sibling` sits directly under `tmp` — so "../../.." from `wt`
+    reaches `tmp`, and appending the sibling's own name reaches the real
+    canonical repo. Pre-fix, this resolved against the HOOK SCRIPT's own
+    process cwd instead (verified: exit 0, allowed) — an unrelated directory
+    that does not contain any such path, so the redirect silently missed the
+    real collision this PR exists to prevent.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        canonical_sibling = tmp / "canonical-rel-target"
+        canonical_sibling.mkdir()
+        _init_throwaway_repo(canonical_sibling)
+        wt = tmp / ".claude" / "worktrees" / "wt-rel"
+        wt.mkdir(parents=True)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git -C ../../../canonical-rel-target checkout -b some-branch"},
+            "cwd": str(wt),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (relative -C target resolved against command cwd, blocked), "
+                f"got {proc.returncode}. stderr={proc.stderr!r}"
+            )
+    return "relative -C target resolved against the command's own cwd, blocked (dev-env#576/PR#584)"
 
 
 def main_e2e() -> list:
@@ -1432,10 +1613,13 @@ def main_e2e() -> list:
         ("main() override token bypasses block", test_main_override_token_bypasses_block),
         ("main() blocks -C into canonical from worktree cwd (dev-env#576)", test_main_blocks_redirect_into_canonical_from_worktree_cwd),
         ("main() allows -C into journal carve-out from worktree cwd (dev-env#576)", test_main_allows_redirect_into_journal_carveout_from_worktree_cwd),
+        ("main() blocks -C into same-basename repo outside carve-out path (dev-env#576/PR#584)", test_main_blocks_redirect_into_samename_repo_outside_carveout_path),
         ("main() allows -C into worktree target (dev-env#576)", test_main_allows_redirect_into_worktree_target),
         ("main() blocks -C into other canonical from canonical cwd (dev-env#576)", test_main_blocks_redirect_into_other_canonical_from_canonical_cwd),
         ("main() blocks --work-tree into canonical (dev-env#576)", test_main_blocks_work_tree_redirect_into_canonical),
         ("main() override bypasses redirect block (dev-env#576)", test_main_override_bypasses_redirect_block),
+        ("main() blocks quoted space-bearing redirect target (dev-env#576/PR#584)", test_main_blocks_quoted_space_bearing_redirect_target),
+        ("main() blocks relative redirect resolved against command cwd (dev-env#576/PR#584)", test_main_blocks_relative_redirect_resolved_against_command_cwd),
         ("main() fails open on non-git cwd", test_main_failsopen_on_nongit_cwd),
         ("main() fails open on malformed JSON", test_main_failsopen_on_malformed_json),
         ("main() fails open on non-dict JSON", test_main_failsopen_on_nondict_json),
