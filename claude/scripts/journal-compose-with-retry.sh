@@ -9,7 +9,16 @@ RETRY_DELAY=300  # 5 minutes — long enough for transient API issues to clear
 LOG_DIR="C:/Users/brown/.claude/scratch"
 LOG_FILE="$LOG_DIR/journal-compose-$(date -u +%Y-%m-%d).log"
 
-PROMPT="Run /journal-compose. Merge the result. Create a stub for today."
+# Yesterday's LOCAL calendar date (not UTC) — matches the stub-filename/branch-naming convention
+# and always targets a day that's genuinely complete, so /journal-compose's today-guard (ADR-017)
+# never fires and no --force is needed. See ADR-084 for why "yesterday" was chosen over "always
+# --force". LOG_FILE/log() above and below stay on `date -u` deliberately — UTC is reserved for
+# internal operational artifacts (log naming/timestamps), per claude/CLAUDE.md.
+DATE=$(date -d yesterday +%Y-%m-%d)
+
+# "today" below is deliberately the execution day (this maintenance session's own journal
+# entry), not $DATE (the compose target, yesterday) — a distinct, correct concept.
+PROMPT="Run /journal-compose ${DATE}. Merge the result. Create a stub for today."
 
 log() {
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$LOG_FILE"
