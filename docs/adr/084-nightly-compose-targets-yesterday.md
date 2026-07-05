@@ -96,6 +96,17 @@ permanently overriding the guard for every automated run. Rejected because:
   session can never answer.
 - No change to `/journal-compose`, its today-guard, or the pre-push hook's same-day exception
   (ADR-017) — this ADR is entirely about the two callers' input, not the guard itself.
+- **Newly-activated edge case (was purely theoretical before this fix, since the automated compose
+  never actually ran):** a session that starts before local midnight and is still uncommitted past
+  ~7am the next morning writes its stub under *yesterday's* date; if the automated compose merges
+  that date's branch before the session pushes, the push hits the pre-push hook's merged-draft-branch
+  block, and the same-day exception (ADR-017 §2) does not apply (by push time it is already the
+  *next* local day). Not data loss — the push fails with a clear error, and the existing
+  `draft/YYYY-MM-DD-recovery` runbook already covers recovering a merged branch that needs more
+  commits — but worth naming here since nothing checks for an in-progress session before the
+  automated compose proceeds. A future hardening pass could add a liveness check (mirroring
+  `_worktree_liveness.py`'s `worktree_session_is_live()` pattern) before compose runs; not done in
+  this PR, since this user's typical session timing makes the scenario narrow.
 - **Testing.** No `.py` files change. `journal-compose-with-retry.sh` is a `claude/scripts/*.sh`
   file — verified via the repo's script path-hygiene lint and shellcheck (dev-env `## Testing`
   items 5 and 7); it introduces no `$HOME`-rooted path and no new `node` call. The routine

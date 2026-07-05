@@ -16,6 +16,8 @@ LOG_FILE="$LOG_DIR/journal-compose-$(date -u +%Y-%m-%d).log"
 # internal operational artifacts (log naming/timestamps), per claude/CLAUDE.md.
 DATE=$(date -d yesterday +%Y-%m-%d)
 
+# "today" below is deliberately the execution day (this maintenance session's own journal
+# entry), not $DATE (the compose target, yesterday) — a distinct, correct concept.
 PROMPT="Run /journal-compose ${DATE}. Merge the result. Create a stub for today."
 
 log() {
