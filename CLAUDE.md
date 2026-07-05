@@ -741,6 +741,75 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_journal_schema.py
     ```
 
+42. **`_bash_state` shared-module test** — required when changing `claude/scripts/_bash_state.py`.
+    Exercises every pure helper offline (tmp dirs via an injected `scratch=` parameter, mirroring
+    `_hookutil.py`'s test convention — no real `~/.claude/scratch`): `state_path` correctness with
+    and without an override; a `write_state`/`read_state` round-trip; `read_state` returning `None`
+    on a missing file, malformed JSON, or a JSON array (non-dict) rather than raising; `write_state`
+    swallowing an `OSError` when the scratch path is unwritable (a file occupying where a directory
+    is expected); and `format_drift_warning`'s five decision cases — `None` recorded state, an
+    unchanged `(repo_root, branch)` pair (including a same-repo `cwd`-only change, which must **not**
+    fire — the key precision property this module exists for), a `repo_root` change (the
+    worktree-silently-replaced-by-canonical-root incident shape), a branch-only change with the same
+    `repo_root` (the same-repo-branch-reverted incident shape), and a recorded state with `None`
+    fields rendering a `<unknown>` placeholder instead of raising. Backs
+    `post-tool-use-cwd-track.py`'s state writes and the drift check in
+    `pre-commit-branch-check.py` / `pre-pr-create-check.py` / `pre-merge-branch-check.py`
+    ([ADR-084](docs/adr/084-bash-repo-branch-drift-detection.md); dev-env#573). The `git` subprocess
+    calls that produce `repo_root`/`branch` live in each hook, not this module, and are not covered
+    here (pure-helper convention).
+
+    ```bash
+    py -3 claude/scripts/tests/test_bash_state.py
+    ```
+
+43. **pre-commit-branch-check test** — required when changing `claude/scripts/pre-commit-branch-check.py`.
+    Exercises the pure `is_git_commit_command()` detector (bare and `&&`-chained `git commit`
+    matches; an unrelated git command does not) and the new `build_message()` formatter added for
+    the dev-env#573 drift-warning integration: unchanged pre-existing output when there is no drift,
+    the drift warning appended on its own line when present, and a `None` branch (detached HEAD /
+    git failure) rendering a display placeholder rather than the raw `None`.
+    `current_branch()`/`current_repo_root()` shell out to git and are not covered (pure-helper
+    convention). This test file pre-dates this list — added here alongside the drift-check change
+    ([ADR-084](docs/adr/084-bash-repo-branch-drift-detection.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_pre_commit_branch_check.py
+    ```
+
+44. **pre-pr-create-check test** — required when changing `claude/scripts/pre-pr-create-check.py`.
+    Exercises the new `build_checklist()` formatter added for the dev-env#573 branch-display and
+    drift-warning integration: the numbered checklist plus a branch/repo display line always
+    present, `None` branch/repo_root rendering display placeholders, the drift warning appended
+    after the branch-display line when present, and — the fragility this test specifically guards
+    against — that `baseline_line`'s pre-existing hardcoded "4." numbering and `doc_warning`'s
+    relative order are unchanged, since the new branch/drift content is inserted *between* the
+    numbered checklist and those two conditionally-numbered lines rather than into the numbered
+    sequence itself. `_doc_reconciliation_warning()`, `_baseline_advisory()`, `current_branch()`,
+    and `current_repo_root()` shell out to git / read files and are not covered (pure-helper
+    convention; this file's pre-existing untested logic is not backfilled per the Test Coverage
+    Gate, [ADR-022](docs/adr/022-test-coverage-gate-before-pr.md) — only the new behavior is
+    tested). ([ADR-084](docs/adr/084-bash-repo-branch-drift-detection.md))
+
+    ```bash
+    py -3 claude/scripts/tests/test_pre_pr_create_check.py
+    ```
+
+45. **pre-merge-branch-check test** — required when changing `claude/scripts/pre-merge-branch-check.py`.
+    Exercises `is_pr_merge_command()` (built on the shared `_hookio.scan_top_level`, matching the
+    identically-named predicate in `pre-merge-message-check.py` / `pre-merge-numbering-check.py` —
+    dev-env#519): a bare and a `cd`-chained `gh pr merge` match, a `gh pr merge` mentioned only
+    inside a heredoc body does not (dev-env#499), and an unrelated `gh` command does not. Also
+    exercises `build_message()`: no drift is a single line with no warning appended, a drift warning
+    appends on its own line after the branch-display text, and `None` branch/repo_root render
+    display placeholders. `current_branch()`/`current_repo_root()` shell out to git and are not
+    covered (pure-helper convention, matches item 43's identical scope decision for the sibling
+    commit-time hook). ([ADR-084](docs/adr/084-bash-repo-branch-drift-detection.md))
+
+    ```bash
+    py -3 claude/scripts/tests/test_pre_merge_branch_check.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

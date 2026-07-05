@@ -45,6 +45,10 @@
           },
           {
             "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-branch-check.py"
+          },
+          {
+            "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-findings-gate.py"
           },
           {
@@ -212,6 +216,10 @@
           {
             "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-shard-write-advisory.py"
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-tool-use-cwd-track.py"
           }
         ]
       },

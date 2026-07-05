@@ -11,6 +11,14 @@ Enforcement model (layered):
     run `gh pr create` until the project's ## Testing section is satisfied.
     The hook is a secondary reminder, not the gate.
 
+Also shows the current branch/repo (dev-env#573) — `gh pr create` with no
+explicit `--head` silently infers its head branch from the current checkout,
+which is exactly the state that can go stale after a session's tracked cwd
+silently reverts (e.g. after an intermittent Git Bash crash). Additionally
+appends a drift warning when the repo/branch recorded by
+post-tool-use-cwd-track.py after the session's last Bash call differs from
+the repo/branch right now. Both are advisory only; never blocks.
+
 Stdin JSON shape (PreToolUse):
   {
     "hook_event_name": "PreToolUse",
@@ -28,6 +36,8 @@ import os
 import re
 import subprocess
 import sys
+
+import _bash_state
 
 _GH_PR_CREATE_RE = re.compile(
     r"(?:^|&&|\|+|;|\n)\s*gh\s+pr\s+create\b"
@@ -125,6 +135,64 @@ def _baseline_advisory(cwd):
     )
 
 
+def current_branch(cwd: str) -> str | None:
+    """Return the current branch, or None for a detached HEAD / git failure.
+
+    Returning None (rather than a display placeholder) matters: the
+    comparison against post-tool-use-cwd-track.py's recorded state must stay
+    apples-to-apples with that writer's own None convention. build_checklist()
+    maps None to a display placeholder for the printed line.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True, text=True, cwd=cwd or None, timeout=5,
+        )
+        branch = result.stdout.strip()
+        return branch if result.returncode == 0 and branch else None
+    except Exception:
+        return None
+
+
+def current_repo_root(cwd: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, cwd=cwd or None, timeout=5,
+        )
+        root = result.stdout.strip()
+        return root if result.returncode == 0 and root else None
+    except Exception:
+        return None
+
+
+def build_checklist(
+    baseline_line: str,
+    doc_warning: str,
+    branch: str | None,
+    repo_root: str | None,
+    drift_warning: str | None,
+) -> str:
+    display_branch = branch if branch is not None else "<detached HEAD or unknown>"
+    display_repo = repo_root if repo_root is not None else "<unknown>"
+    checklist = (
+        "[pre-pr-check] Before this PR is created, confirm:\n"
+        "  1. Ran the project test command (see ## Testing in project CLAUDE.md)\n"
+        "  2. Tests passed (or documented why they are not applicable)\n"
+        "  3. PR body includes what was tested and the outcome\n"
+        f"  Current branch: {display_branch} (repo: {display_repo}) — confirm "
+        "this is the branch you intend to open a PR from; pass --head <branch> "
+        "explicitly if there's any doubt (dev-env#573)."
+    )
+    if drift_warning:
+        checklist += "\n" + drift_warning
+    if baseline_line:
+        checklist += "\n" + baseline_line
+    if doc_warning:
+        checklist += "\n" + doc_warning
+    return checklist
+
+
 def main() -> None:
     raw = sys.stdin.read().strip()
     if not raw:
@@ -143,19 +211,18 @@ def main() -> None:
         sys.exit(0)
 
     cwd = data.get("cwd", "")
+    session_id = data.get("session_id", "") or ""
     doc_warning = _doc_reconciliation_warning(cwd)
     baseline_line = _baseline_advisory(cwd)
+    branch = current_branch(cwd)
+    repo_root = current_repo_root(cwd)
 
-    checklist = (
-        "[pre-pr-check] Before this PR is created, confirm:\n"
-        "  1. Ran the project test command (see ## Testing in project CLAUDE.md)\n"
-        "  2. Tests passed (or documented why they are not applicable)\n"
-        "  3. PR body includes what was tested and the outcome"
-    )
-    if baseline_line:
-        checklist += "\n" + baseline_line
-    if doc_warning:
-        checklist += "\n" + doc_warning
+    drift_warning = None
+    if session_id:
+        recorded = _bash_state.read_state(session_id)
+        drift_warning = _bash_state.format_drift_warning(recorded, repo_root, branch, cwd)
+
+    checklist = build_checklist(baseline_line, doc_warning, branch, repo_root, drift_warning)
 
     print(json.dumps({"systemMessage": checklist}))
     sys.exit(0)
