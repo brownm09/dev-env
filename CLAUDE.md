@@ -533,10 +533,12 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `branch --show-current`, rev-parse, ls-tree, blame, `remote -v`, plain branch, stash list/show,
     `checkout -- <path>`, `pull --ff-only`, and non-git commands); the segment-split/anchor behavior so a
     mutating verb merely mentioned inside a heredoc body does not trigger (the career-playbook
-    [#442](https://github.com/brownm09/career-playbook/issues/442) lesson); the redirect-scoping asymmetry
-    between a `cd <path>` (takes the *whole* command out of scope, including env-prefixed forms) and
-    `git -C <path>` / `--git-dir=<path>` (skips only its own segment, so a later unredirected mutating segment
-    in the same command is still caught); and the override token's anchored-prefix requirement
+    [#442](https://github.com/brownm09/career-playbook/issues/442) lesson); the redirect handling where a
+    `cd <path>` takes the *whole* command out of scope (including env-prefixed forms) while a
+    `git -C <path>` / `--git-dir=<path>` / `--work-tree=<path>` target is captured by `_parse_git_prefix`
+    and resolved against the canonical-root check (dev-env#576, ADR-071 Amendment 2 — with the
+    engineering-journal checkout a temporary `_REDIRECT_TARGET_ALLOWLIST` carve-out); and the override
+    token's anchored-prefix requirement
     (`ALLOW_CANONICAL_MUTATE=1` as a genuine leading prefix bypasses, while the same string merely mentioned
     inside a commit message argument does not). End-to-end `main()` tests drive the real hook over stdin
     against a real throwaway `git init` repo: a mutating command from a canonical (non-worktree) checkout —
@@ -545,9 +547,12 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     and empty stdout; read-only commands and `pull --ff-only` are allowed while bare `pull` is blocked; any
     command from a worktree-pattern cwd is allowed (out of scope — ADR-024's hook covers that surface); the
     override token bypasses the block; and a non-git cwd, malformed JSON, non-dict JSON (`[]`, `"x"`, `123`,
-    `null`), missing/empty `cwd`, and a non-Bash `tool_name` all fail open. The documented v1 gap — a command
-    that `cd`s or `-C`s *into* the canonical root from elsewhere — is a deliberate scope limitation, not a
-    tested case ([ADR-071](docs/adr/071-canonical-checkout-mutate-guard-hook.md)).
+    `null`), missing/empty `cwd`, and a non-Bash `tool_name` all fail open. A `-C`/`--git-dir`/`--work-tree`
+    redirect *into* a canonical root from elsewhere IS now covered and tested (dev-env#576, ADR-071
+    Amendment 2 — e.g. `git -C <canonical> checkout` from a worktree cwd blocked, `git -C <journal>` allowed
+    by the carve-out, `git --work-tree=<canonical> commit` blocked); the sole remaining documented v1 gap is
+    a bare `cd` *into* a canonical root, a deliberate scope limitation
+    ([ADR-071](docs/adr/071-canonical-checkout-mutate-guard-hook.md)).
 
     Also exercises `is_mutating_gh_segment()` ([ADR-071 Amendment 1](docs/adr/071-canonical-checkout-mutate-guard-hook.md);
     dev-env#558): `gh pr merge --delete-branch`/`-d` (any flag order, other flags present) is classified as
