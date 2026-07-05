@@ -194,3 +194,23 @@ defers to an async, out-of-session event — no pre-check, however sophisticated
 async merge produce an in-session moment to hook. Their loss is inherent to using `--auto` at
 all, not a gap this future gate could close. Absent the three-rule gate, re-opening this question
 should default to "no" for the same reasons given here.
+
+---
+
+## Addendum (2026-07-05) — The mechanical pre-check now exists ([ADR-083](083-auto-merge-checkpoint-gate.md))
+
+The condition the addendum above named — "a mechanical pre-check that verifies, at the moment
+`--auto` is invoked, that `/review`, ADR-warrant checkpoint 3, and doc-reconciliation checkpoint 3
+have already completed in the current session" — is now met. [ADR-083](083-auto-merge-checkpoint-gate.md)
+designed it and [dev-env#574](https://github.com/brownm09/dev-env/issues/574) shipped it as
+`claude/scripts/pre-auto-merge-checkpoint-gate.py`, wired in `settings.json` immediately after
+`pre-merge-findings-gate.py`.
+
+This does **not** reopen `--auto` anywhere by itself. The operational guidance above ("Do not
+attempt `gh pr merge --auto`") is superseded by the new hook's own behavior — it will now
+mechanically block or allow, rather than the operation being universally inert — but
+`allow_auto_merge` still defaults to `false` on every `brownm09/*` repo, so `--auto` still fails at
+the GitHub API today regardless of the hook. Flipping that toggle for any specific repo remains a
+separate, smaller decision (this ADR's Decision point 6 / ADR-083 Follow-up item 7) — this
+addendum does not make it. See `claude/CLAUDE.md` → Git Workflow → "Auto-merge is off by design"
+for the current operational guidance.
