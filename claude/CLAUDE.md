@@ -124,6 +124,25 @@ gh pr view <N> --json mergeable,mergeStateStatus
 
 Motivating incident: [lifting-logbook PR #604](https://github.com/brownm09/lifting-logbook/pull/604).
 
+### Worktree holding the base branch blocks `gh pr merge --delete-branch`'s local step
+
+**Pattern:** `gh pr merge --squash --delete-branch` merges server-side first (a pure API call that always succeeds), then locally checks out the base branch and deletes the merged branch. Git allows a branch to be checked out in at most one worktree at a time, so that local step aborts whenever **any** worktree in the repo — canonical or sibling — already holds the base branch. The abort lands after the remote merge but before the remote branch delete, so **both** the local and the remote branch deletes are silently skipped even though the PR is already merged.
+
+**Symptom:** `failed to run git: fatal: '<base>' is already checked out at '<path>'` immediately after `gh pr merge --squash --delete-branch`, on a PR that nonetheless shows as merged (`gh pr view <N> --json state,mergedAt`).
+
+**Diagnosis:** `git worktree list` from the repo root shows the base branch checked out somewhere other than the checkout the merge ran from. Two distinct causes produce the identical error — the fix is the same either way, but it helps to know which one you hit:
+- The **canonical checkout correctly sitting on the base branch** — its normal, expected state in any repo that keeps its canonical on the default branch by convention. This is the common, "healthy" case, not a bug.
+- An **idle worktree left squatting the base branch** from an earlier merge's `--delete-branch` step.
+
+**Fix — proactive:** split the merge into two pure-API calls that never depend on which worktree currently holds the base branch:
+```bash
+gh pr merge <N> --squash                                          # server-side only; always succeeds
+gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"   # pure REST ref delete
+```
+**Fix — reactive** (already hit the failure): the remote merge already succeeded — delete the ref with the same `gh api -X DELETE` call above, or `git push origin --delete <branch>`.
+
+Confirmed as a **general git-worktree mechanic**, not a quirk of any one repo's worktree count: [dev-env#575](https://github.com/brownm09/dev-env/pull/575) (canonical correctly on `main`) and [lifting-logbook#664](https://github.com/brownm09/lifting-logbook/pull/664) (an idle worktree left squatting `main` by an earlier merge; that repo's CLAUDE.md "Standard Issue Workflow" step 8 carries its own copy of this same two-step pattern). Full detection, root cause, and non-destructive auto-correction (parking idle squatters instead of removing them): dev-env [ADR-058](../docs/adr/058-worktree-squatting-main-detection-correction.md); complete runbook: dev-env [`docs/REFERENCE.md` → Git Workflow Runbooks](../docs/REFERENCE.md#git-workflow-runbooks).
+
 ---
 
 ## Dev-Env & Project Boards
