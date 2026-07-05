@@ -10,8 +10,18 @@ another PR's file.** These tests pin that — `reconcile_shard_dir` unlinks only
 merged shard and leaves the surviving shard byte-identical — plus the pure helpers,
 and confirm the legacy `open-prs.jsonl` path still drains.
 
+Also exercises `find_dirty_open_pr_paths` (dev-env#578): the pure `git status --porcelain`
+line filter that surfaces any currently-uncommitted `sessions/*/open-prs*` change (this
+session's own fresh unlinks, or a prior session's never-committed ones) so the hook's
+systemMessage can hand Claude a ready-to-use pathspec — restoring ADR-018's "picked up by
+the next commit" guarantee in a form compatible with ADR-056's sharded shape, after ADR-082
+removed the last thing (`/journal-compose`'s old bulk `git add -u`) still catching these
+opportunistically. Pins the porcelain `XY <path>` slicing, the shard/legacy-file shape
+filter (unrelated paths ignored), and backslash-path normalization.
+
 The reconcilers take an injectable `state_fn(pr, repo) -> state` so the unlink/keep
-logic runs offline; the live `gh pr view` boundary (`check_pr_state`) is not tested,
+logic runs offline; the live `gh pr view` boundary (`check_pr_state`) and the
+`git status --porcelain` boundary (`dirty_open_pr_status_lines`) are not tested,
 matching the repo's fixture-only / no-subprocess-mock convention.
 
 Usage:
@@ -45,6 +55,7 @@ entry_repo_and_pr = mod.entry_repo_and_pr
 project_dirs = mod.project_dirs
 reconcile_shard_dir = mod.reconcile_shard_dir
 reconcile_file = mod.reconcile_file
+find_dirty_open_pr_paths = mod.find_dirty_open_pr_paths
 
 URL_386 = "https://github.com/brownm09/dev-env/pull/386"
 URL_387 = "https://github.com/brownm09/dev-env/pull/387"
@@ -207,6 +218,52 @@ def test_legacy_non_object_line_dropped_on_rewrite() -> str:
     return "a non-object legacy line no longer freezes cleanup — dropped on the rewrite (ADR-057)"
 
 
+# --- dirty open-PR path detection (dev-env#578) ------------------------------
+
+
+def test_find_dirty_open_pr_paths_filters_to_open_pr_shape() -> str:
+    lines = [
+        " D sessions/dev-env/open-prs/567.json",
+        " M sessions/lifting-logbook/open-prs.jsonl",
+        "?? sessions/dev-env/open-prs/999.json",
+        " M sessions/dev-env/2026-07-05_090000.stub.md",
+        "M  claude/scripts/reconcile-open-prs.py",
+    ]
+    got = find_dirty_open_pr_paths(lines)
+    assert got == [
+        "sessions/dev-env/open-prs/567.json",
+        "sessions/lifting-logbook/open-prs.jsonl",
+        "sessions/dev-env/open-prs/999.json",
+    ], f"expected only open-prs shard/legacy paths, got {got}"
+    return "shard (any status) and legacy-file paths kept; unrelated stub/script paths dropped"
+
+
+def test_find_dirty_open_pr_paths_normalizes_backslashes() -> str:
+    lines = [r" D sessions\dev-env\open-prs\567.json"]
+    assert find_dirty_open_pr_paths(lines) == ["sessions/dev-env/open-prs/567.json"]
+    return "backslash-separated porcelain paths normalized to forward slashes"
+
+
+def test_find_dirty_open_pr_paths_handles_renames() -> str:
+    lines = [
+        "R  sessions/dev-env/open-prs/567.json -> sessions/dev-env/open-prs/568.json",
+        "R  docs/old-name.md -> sessions/lifting-logbook/open-prs/700.json",
+        "R  sessions/dev-env/open-prs/1.json -> docs/unrelated.md",
+    ]
+    got = find_dirty_open_pr_paths(lines)
+    assert got == [
+        "sessions/dev-env/open-prs/568.json",
+        "sessions/lifting-logbook/open-prs/700.json",
+    ], f"expected only destination paths landing in open-prs shape, got {got}"
+    return "rename lines ('old -> new') keep only the destination path, matched against its shape"
+
+
+def test_find_dirty_open_pr_paths_empty_and_short_lines() -> str:
+    assert find_dirty_open_pr_paths([]) == [], "no status lines -> []"
+    assert find_dirty_open_pr_paths(["", "M", " M"]) == [], "lines shorter than 'XY p' are skipped, not crashed on"
+    return "empty input and malformed/short porcelain lines handled without error"
+
+
 def main() -> int:
     tests = [
         ("should_remove predicate", test_should_remove),
@@ -220,6 +277,10 @@ def main() -> int:
         ("legacy file drops only merged", test_legacy_file_drops_only_merged),
         ("legacy file deleted when empty", test_legacy_file_deleted_when_empty),
         ("legacy non-object line dropped on rewrite (ADR-057)", test_legacy_non_object_line_dropped_on_rewrite),
+        ("dirty open-PR paths filtered from git status (dev-env#578)", test_find_dirty_open_pr_paths_filters_to_open_pr_shape),
+        ("dirty open-PR paths normalize backslashes", test_find_dirty_open_pr_paths_normalizes_backslashes),
+        ("dirty open-PR paths handle renames (review finding, PR #581)", test_find_dirty_open_pr_paths_handles_renames),
+        ("dirty open-PR paths handle empty/short lines", test_find_dirty_open_pr_paths_empty_and_short_lines),
     ]
     failed = 0
     for name, fn in tests:

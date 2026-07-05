@@ -288,8 +288,18 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `repo_from_url` / `entry_repo_and_pr` parsing, and the [ADR-056](docs/adr/056-per-session-sharding-journal-companion-files.md)
     structural guarantee that `reconcile_shard_dir` unlinks only the merged shard and leaves the surviving
     shard **byte-identical** (the no-clobber property), removes an emptied `open-prs/` dir, never auto-deletes
-    malformed/non-numeric shards, and that the legacy `reconcile_file` still drains `open-prs.jsonl`. The live
-    `gh pr view` boundary (`check_pr_state`) is not covered (the repo avoids subprocess mocks).
+    malformed/non-numeric shards, and that the legacy `reconcile_file` still drains `open-prs.jsonl`. Also
+    exercises `find_dirty_open_pr_paths` (dev-env#578, [ADR-082 Addendum](docs/adr/082-journal-compose-worktree-isolation.md)):
+    the pure `git status --porcelain` line filter that surfaces any currently-uncommitted
+    `sessions/*/open-prs*` change (this session's own fresh unlinks, or a prior session's
+    never-committed ones) — pins the porcelain `XY <path>` slicing, that shard/legacy-file paths are
+    kept while unrelated paths (stub files, script edits) are dropped, backslash-to-forward-slash
+    path normalization, rename lines (`old -> new`) resolving to just the destination path (review
+    finding on PR #581 — nothing in this hook renames a shard, but a rename from elsewhere no longer
+    produces an unaddable combined string), and graceful handling of empty/short input. The live
+    `gh pr view` boundary (`check_pr_state`) and the `git status --porcelain` boundary
+    (`dirty_open_pr_status_lines`) are
+    not covered (the repo avoids subprocess mocks).
 
     ```bash
     py -3 claude/scripts/tests/test_reconcile_open_prs.py
