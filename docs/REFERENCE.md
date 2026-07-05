@@ -686,38 +686,6 @@ the linked issue's board status) rather than assuming absence of visible reminde
 hook didn't fire — and don't over-read that absence as proof the hook's stderr specifically was
 dropped.
 
-### `gh pr create` infers its head branch from cwd, not the pushed branch
-
-**Trigger.** Running `gh pr create` with no `--head` flag from a cwd whose git checkout is not the
-worktree branch that was just pushed — most commonly `cd`-ing into a repo's canonical checkout (kept
-on `main` by the architecture rule above) to run the command from there instead of from the worktree
-itself.
-
-**Symptom.** `gh pr create` resolves head from the *current git checkout at cwd*, not from whatever
-branch was most recently pushed. From a canonical checkout parked on `main`, it infers `head=main,
-base=main` and fails with an error to the effect of:
-
-```
-head branch 'main' is the same as base branch 'main', cannot create a pull request
-```
-
-**No git state is mutated by this failure** — confirmed via `git -C <canonical-path> status` staying
-clean, still on `main` — so it is always safe to just retry with the fix below; there is nothing to
-recover.
-
-**Fix.** Pass `--head <branch> --repo <owner>/<repo>` explicitly so head resolution never depends on
-cwd:
-
-```bash
-gh pr create --head <branch> --repo <owner>/<repo> --title "..." --body "..."
-```
-
-Distinct from the general Bash-`cd`-into-canonical rule ([ADR-066](adr/066-worktree-session-safety-rules.md))
-— that rule covers `git`/`npm` commands silently acting on the wrong checkout; this is specifically
-`gh pr create`'s head-branch inference, which trips on whatever the process cwd is at the moment
-`gh pr create` runs (a one-off `cd <repo> && gh pr create` is enough to trigger it — the session's cwd
-need not persist there). Motivating incident: dev-env [#555](https://github.com/brownm09/dev-env/pull/555).
-
 ### A sibling worktree squatting `main` blocks a different merge's `--delete-branch`
 
 The failure above is framed as "worktree's own merge blocked by the canonical holding `main`," but
@@ -769,6 +737,40 @@ is left alone per the [ADR-051](adr/051-worktree-liveness-guard.md) liveness gua
 Root cause, the parking mechanism, and this incident: [ADR-058](adr/058-worktree-squatting-main-detection-correction.md)
 (2026-07-03 amendment). See also [ADR-066](adr/066-worktree-session-safety-rules.md) for the broader
 worktree-session-safety rule set this runbook belongs to.
+
+### `gh pr create` infers its head branch from cwd, not the pushed branch
+
+**Trigger.** Running `gh pr create` with no `--head` flag from a cwd whose git checkout is not the
+worktree branch that was just pushed — most commonly `cd`-ing into a repo's canonical checkout (kept
+on `main` by the architecture rule above) to run the command from there instead of from the worktree
+itself.
+
+**Symptom.** `gh pr create` resolves head from the *current git checkout at cwd*, not from whatever
+branch was most recently pushed. Only head resolution is cwd-dependent — base independently resolves
+to the target repo's actual default branch via repo metadata. From a canonical checkout parked on
+`main`, head wrongly resolves to `main` too, colliding with that real default, and the command fails
+with an error to the effect of:
+
+```
+head branch 'main' is the same as base branch 'main', cannot create a pull request
+```
+
+**No git state is mutated by this failure** — confirmed via `git -C <canonical-path> status` staying
+clean, still on `main` — so it is always safe to just retry with the fix below; there is nothing to
+recover.
+
+**Fix.** Pass `--head <branch> --repo <owner>/<repo>` explicitly so head resolution never depends on
+cwd:
+
+```bash
+gh pr create --head <branch> --repo <owner>/<repo> --title "..." --body "..."
+```
+
+Distinct from the general Bash-`cd`-into-canonical rule ([ADR-066](adr/066-worktree-session-safety-rules.md))
+— that rule covers `git`/`npm` commands silently acting on the wrong checkout; this is specifically
+`gh pr create`'s head-branch inference, which trips on whatever the process cwd is at the moment
+`gh pr create` runs (a one-off `cd <repo> && gh pr create` is enough to trigger it — the session's cwd
+need not persist there). Motivating incident: dev-env PR #555.
 
 ### Stacked PR squash-merge sequencing — never `--delete-branch` a base with an open child
 
