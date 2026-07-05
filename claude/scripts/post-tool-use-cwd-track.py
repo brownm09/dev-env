@@ -8,13 +8,20 @@ likely tied to an intermittent Git Bash (MSYS2) crash under resource
 pressure. This hook cannot detect or prevent that crash (it lives in Claude
 Code's own harness / in MSYS2, outside this repo); instead it maintains the
 per-session "last known repo + branch" marker that
-pre-commit-branch-check.py and pre-pr-create-check.py read to flag a
-mismatch at the moment a consequential command runs.
+pre-commit-branch-check.py, pre-pr-create-check.py, and
+pre-merge-branch-check.py read to flag a mismatch at the moment a
+consequential command runs.
 
 Best-effort only: a cwd that isn't inside a git repo (or a `git` call that
 fails/times out) simply records repo_root/branch as None rather than
 raising — the next comparison then sees "no git state" rather than crashing
 this hook.
+
+Also opportunistically sweeps state files older than
+_bash_state.MAX_AGE_DAYS on every call — this hook is the only place a state
+file is ever written, so it is the natural place to also expire them
+(matches every other per-session file in this codebase, e.g. _hookutil.py's
+sentinel cleanup).
 
 Stdin JSON shape (PostToolUse):
   {
@@ -29,40 +36,9 @@ Exit 0 always — pure side-channel recording, never blocks or messages.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
-import subprocess
 import sys
 
 import _bash_state
-
-
-def _repo_root(cwd: str) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            cwd=cwd or None,
-            timeout=5,
-        )
-        root = result.stdout.strip()
-        return root if result.returncode == 0 and root else None
-    except Exception:
-        return None
-
-
-def _branch(cwd: str) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            cwd=cwd or None,
-            timeout=5,
-        )
-        branch = result.stdout.strip()
-        return branch if result.returncode == 0 and branch else None
-    except Exception:
-        return None
 
 
 def main() -> None:
@@ -83,9 +59,9 @@ def main() -> None:
     if not session_id or not cwd:
         sys.exit(0)
 
-    repo_root = _repo_root(cwd)
-    branch = _branch(cwd) if repo_root else None
+    repo_root, branch = _bash_state.current_repo_state(cwd)
     _bash_state.write_state(session_id, repo_root, branch, cwd)
+    _bash_state.cleanup_stale_state()
     sys.exit(0)
 
 

@@ -25,7 +25,6 @@ Exit 0 — always; hook is advisory only.
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import re
-import subprocess
 import sys
 
 import _bash_state
@@ -39,45 +38,6 @@ _GIT_COMMIT_RE = re.compile(
 
 def is_git_commit_command(command: str) -> bool:
     return bool(_GIT_COMMIT_RE.search(command))
-
-
-def current_branch(cwd: str) -> str | None:
-    """Return the current branch, or None for a detached HEAD / git failure.
-
-    Returning None (rather than a display placeholder) here matters:
-    post-tool-use-cwd-track.py's writer also records None for this same
-    case, so the drift comparison in main() stays apples-to-apples — a
-    string placeholder here would otherwise never equal the recorded None
-    and manufacture a spurious drift warning on every detached-HEAD commit.
-    build_message() maps None to a display placeholder for the printed line.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            cwd=cwd or None,
-            timeout=5,
-        )
-        branch = result.stdout.strip()
-        return branch if result.returncode == 0 and branch else None
-    except Exception:
-        return None
-
-
-def current_repo_root(cwd: str) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            cwd=cwd or None,
-            timeout=5,
-        )
-        root = result.stdout.strip()
-        return root if result.returncode == 0 and root else None
-    except Exception:
-        return None
 
 
 def build_message(branch: str | None, drift_warning: str | None) -> str:
@@ -107,8 +67,7 @@ def main() -> None:
 
     cwd = data.get("cwd", "")
     session_id = data.get("session_id", "") or ""
-    branch = current_branch(cwd)
-    repo_root = current_repo_root(cwd)
+    repo_root, branch = _bash_state.current_repo_state(cwd)
 
     drift_warning = None
     if session_id:

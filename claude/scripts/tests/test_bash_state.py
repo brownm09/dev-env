@@ -3,20 +3,25 @@
 
 _bash_state.py is the shared module backing post-tool-use-cwd-track.py's
 per-Bash-call state recording and pre-commit-branch-check.py /
-pre-pr-create-check.py's drift-warning check. See dev-env#573.
+pre-pr-create-check.py / pre-merge-branch-check.py's drift-warning check.
+See dev-env#573.
 
 Exercises the pure helpers offline (tmp dirs, injected scratch paths — no
-real ~/.claude/scratch). The consuming hooks' subprocess (git rev-parse /
-git branch) calls are not covered (pure-helper convention, matches
-_hookutil.py's test suite).
+real ~/.claude/scratch). `current_repo_state()` shells out to a single
+combined `git rev-parse --show-toplevel --abbrev-ref HEAD` call (used by all
+four consuming files instead of each defining its own git-wrapping
+functions) and is not covered here (pure-helper convention, matches
+_hookutil.py's test suite and this module's own write_state/read_state).
 
 Usage:
     py -3 claude/scripts/tests/test_bash_state.py
 
 Exit 0 = all pass.
 """
+import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -74,6 +79,40 @@ def test_read_state_non_dict_json_returns_none() -> str:
     return "read_state returns None when the JSON parses but isn't an object"
 
 
+def test_cleanup_removes_stale_keeps_fresh() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        scratch = Path(root)
+        old = scratch / "bash_state_old-session.json"
+        fresh = scratch / "bash_state_fresh-session.json"
+        old.write_text("{}", encoding="utf-8")
+        fresh.write_text("{}", encoding="utf-8")
+        past = time.time() - (_bash_state.MAX_AGE_DAYS + 1) * 86400
+        os.utime(old, (past, past))
+        _bash_state.cleanup_stale_state(scratch=scratch)
+        assert not old.exists(), "stale state file should have been removed"
+        assert fresh.exists(), "fresh state file should be kept"
+    return "cleanup_stale_state removes files older than MAX_AGE_DAYS, keeps fresh ones"
+
+
+def test_cleanup_ignores_non_matching_files() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        scratch = Path(root)
+        other = scratch / "some-other-file.json"
+        other.write_text("{}", encoding="utf-8")
+        past = time.time() - (_bash_state.MAX_AGE_DAYS + 1) * 86400
+        os.utime(other, (past, past))
+        _bash_state.cleanup_stale_state(scratch=scratch)
+        assert other.exists(), "a file not matching the bash_state_*.json glob must not be removed"
+    return "cleanup_stale_state only removes files matching bash_state_*.json"
+
+
+def test_cleanup_no_crash_on_missing_dir() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        nonexistent = Path(root) / "no-such-dir"
+        _bash_state.cleanup_stale_state(scratch=nonexistent)
+    return "cleanup_stale_state does not raise when the scratch dir is absent"
+
+
 def test_write_state_no_crash_on_unwritable_scratch() -> str:
     with tempfile.TemporaryDirectory() as root:
         # A file (not a directory) at the scratch path makes mkdir/write fail.
@@ -87,6 +126,17 @@ def test_drift_warning_none_when_no_recorded_state() -> str:
     got = _bash_state.format_drift_warning(None, "C:/repo", "main", "C:/repo")
     assert got is None, f"expected None, got {got!r}"
     return "format_drift_warning returns None when there is no prior recorded state"
+
+
+def test_drift_warning_none_when_current_read_fully_failed() -> str:
+    # A transient git failure/timeout at the checkpoint yields (None, None) for
+    # the current values. Recorded state is real, so a naive tuple inequality
+    # would fire — but there is nothing to meaningfully compare against, and
+    # firing here would show the same cwd on both the "was" and "now" lines.
+    recorded = {"repo_root": "C:/repo", "branch": "main", "cwd": "C:/repo"}
+    got = _bash_state.format_drift_warning(recorded, None, None, "C:/repo")
+    assert got is None, f"expected None when current git read fully failed, got {got!r}"
+    return "format_drift_warning suppresses the warning when both current values are None (git read failed, not a real comparison)"
 
 
 def test_drift_warning_none_when_unchanged() -> str:
@@ -131,7 +181,11 @@ def main() -> int:
         ("read: malformed JSON -> None", test_read_state_malformed_json_returns_none),
         ("read: non-dict JSON -> None", test_read_state_non_dict_json_returns_none),
         ("write: no crash on unwritable scratch", test_write_state_no_crash_on_unwritable_scratch),
+        ("cleanup: removes stale, keeps fresh", test_cleanup_removes_stale_keeps_fresh),
+        ("cleanup: ignores non-matching files", test_cleanup_ignores_non_matching_files),
+        ("cleanup: no crash on missing dir", test_cleanup_no_crash_on_missing_dir),
         ("drift: None when no recorded state", test_drift_warning_none_when_no_recorded_state),
+        ("drift: None when current read fully failed", test_drift_warning_none_when_current_read_fully_failed),
         ("drift: None when unchanged", test_drift_warning_none_when_unchanged),
         ("drift: fires on repo_root change", test_drift_warning_fires_on_repo_change),
         ("drift: fires on branch-only change", test_drift_warning_fires_on_branch_only_change),

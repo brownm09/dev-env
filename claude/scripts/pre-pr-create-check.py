@@ -135,37 +135,6 @@ def _baseline_advisory(cwd):
     )
 
 
-def current_branch(cwd: str) -> str | None:
-    """Return the current branch, or None for a detached HEAD / git failure.
-
-    Returning None (rather than a display placeholder) matters: the
-    comparison against post-tool-use-cwd-track.py's recorded state must stay
-    apples-to-apples with that writer's own None convention. build_checklist()
-    maps None to a display placeholder for the printed line.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "branch", "--show-current"],
-            capture_output=True, text=True, cwd=cwd or None, timeout=5,
-        )
-        branch = result.stdout.strip()
-        return branch if result.returncode == 0 and branch else None
-    except Exception:
-        return None
-
-
-def current_repo_root(cwd: str) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, cwd=cwd or None, timeout=5,
-        )
-        root = result.stdout.strip()
-        return root if result.returncode == 0 and root else None
-    except Exception:
-        return None
-
-
 def build_checklist(
     baseline_line: str,
     doc_warning: str,
@@ -214,8 +183,7 @@ def main() -> None:
     session_id = data.get("session_id", "") or ""
     doc_warning = _doc_reconciliation_warning(cwd)
     baseline_line = _baseline_advisory(cwd)
-    branch = current_branch(cwd)
-    repo_root = current_repo_root(cwd)
+    repo_root, branch = _bash_state.current_repo_state(cwd)
 
     drift_warning = None
     if session_id:

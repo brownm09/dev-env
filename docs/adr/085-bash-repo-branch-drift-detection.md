@@ -80,6 +80,10 @@ misfire on every ordinary worktree-then-commit sequence — a genuinely common, 
 This was confirmed with the user directly during planning; see the Judgment calls section.
 
 **New shared module — `claude/scripts/_bash_state.py`:**
+- `current_repo_state(cwd)` — a single `git rev-parse --show-toplevel --abbrev-ref HEAD` call
+  returning `(repo_root, branch)`; both `None` on a non-git cwd or any subprocess failure/timeout,
+  `branch` alone `None` on a detached HEAD. Shared by all four consuming files (see Judgment
+  calls — this consolidates what briefly existed as three near-duplicate copies).
 - `state_path(session_id, scratch=None)` — `~/.claude/scratch/bash_state_<session_id>.json`,
   following `_hookutil.py`'s existing `scratch=` injectable-override convention.
 - `write_state(session_id, repo_root, branch, cwd, scratch=None)` — best-effort JSON write;
@@ -87,9 +91,13 @@ This was confirmed with the user directly during planning; see the Judgment call
 - `read_state(session_id, scratch=None)` — best-effort JSON read; `None` on missing/corrupt
   file or non-dict JSON (fail-open — a session's first Bash call, or a cleared scratch dir, is
   not an error).
+- `cleanup_stale_state(scratch=None)` — removes state files older than `MAX_AGE_DAYS` (30),
+  mirroring `_hookutil.cleanup_stale_sentinels`. Called from `post-tool-use-cwd-track.py` after
+  every write, since that hook is the only place a state file is ever created.
 - `format_drift_warning(recorded, current_repo_root, current_branch, current_cwd)` — **pure**
-  function. Returns `None` when `recorded` is `None` (no prior state yet) or when
-  `(repo_root, branch)` is unchanged; otherwise a formatted multi-line warning naming both
+  function. Returns `None` when `recorded` is `None` (no prior state yet), when *both* current
+  values are `None` (the checkpoint's own git read failed/timed out — see Judgment calls), or
+  when `(repo_root, branch)` is unchanged; otherwise a formatted multi-line warning naming both
   states.
 
 **Comparing on `(repo_root, branch)` rather than raw `cwd` is the key precision choice.** It
@@ -101,18 +109,18 @@ the canonical root (different `repo_root`), and the same repo with its branch si
 reverted (same `repo_root`, different `branch`).
 
 **New hook — `claude/scripts/post-tool-use-cwd-track.py`** (`PostToolUse`, `Bash` matcher):
-after every Bash call, best-effort `git rev-parse --show-toplevel` + `git branch --show-current`
-against the payload's `cwd`, then `_bash_state.write_state(...)`. Always exits 0; a cwd that
-isn't a git repo, or a `git` call that fails/times out, simply records `None` rather than
-raising.
+after every Bash call, `_bash_state.current_repo_state(cwd)` then `_bash_state.write_state(...)`
+and `_bash_state.cleanup_stale_state()`. Always exits 0; a cwd that isn't a git repo, or a `git`
+call that fails/times out, simply records `None` rather than raising.
 
 **Extended `claude/scripts/pre-commit-branch-check.py`** (`git commit`): appends the drift
 warning (if any) to its existing branch-display `systemMessage`. Also fixed a latent
-inconsistency introduced by this same change: `current_branch()` previously returned a display
-placeholder (`"<unknown>"`/`"<detached HEAD>"`) on failure rather than `None` — comparing that
-placeholder string against the writer's `None` would have manufactured a spurious drift warning
-on every detached-HEAD commit. `current_branch()` now returns `None` for that case (matching the
-writer's convention); `build_message()` maps `None` to a display placeholder only at print time.
+inconsistency introduced by this same change: an early version of `current_branch()` returned a
+display placeholder (`"<unknown>"`/`"<detached HEAD>"`) on failure rather than `None` — comparing
+that placeholder string against the writer's `None` would have manufactured a spurious drift
+warning on every detached-HEAD commit. Caught during development, before the function was later
+extracted into `_bash_state.current_repo_state()` entirely (see Judgment calls);
+`build_message()` maps `None` to a display placeholder only at print time.
 
 **Extended `claude/scripts/pre-pr-create-check.py`** (`gh pr create`): adds a
 "Current branch: ... (repo: ...)" display line — this hook previously showed no branch/repo
@@ -167,13 +175,14 @@ committing" discipline `claude/CLAUDE.md` already asks for manually, now automat
 
 `git commit`, `gh pr create`, and `gh pr merge` are the three commands whose whole job is to
 read the *current* repo/branch state as an implicit default — exactly where a silent revert
-causes real, hard-to-undo damage (a bad commit, a wrong-branch PR, a wrong-branch merge). A
-blanket check on every Bash call would run `git rev-parse`/`git branch` subprocesses on
-commands that don't care about branch state at all (an `ls`, a `cat`, a build command),
-adding latency for no corresponding safety benefit. The write side
-(`post-tool-use-cwd-track.py`) still runs on every Bash call — cheap, since it's the read side's
-`git rev-parse`/`git branch` calls that cost anything, and those are now confined to the three
-checkpoints that actually need them.
+causes real, hard-to-undo damage (a bad commit, a wrong-branch PR, a wrong-branch merge). The
+*comparison* work (reading current state and checking it against the record) is confined to
+these three checkpoints rather than running on every Bash call, since only these commands act on
+stale state in a way that matters. The *write* side (`post-tool-use-cwd-track.py`) still has to
+run on every Bash call regardless — any command, including a bare `cd`, can change cwd, so the
+record can't be predicated on command content the way the read side is. That write-side cost is
+real, not negligible (see the "combining the two git calls" Judgment call below), which is why it
+gets its own optimization rather than being waved away as free.
 
 ### `pre-merge-branch-check.py` is a new file, not folded into `pre-merge-message-check.py`
 
@@ -188,18 +197,45 @@ detection, is both cheaper and more consistent with this repo's existing one-hoo
 convention (e.g. ADR-024 and ADR-071 are separate files despite both being worktree/canonical-
 root guards).
 
-### `current_branch()`/`current_repo_root()` duplicated across three files, not shared
+### `current_branch()`/`current_repo_root()` extracted into `_bash_state.py`, reversing an earlier "duplicate, don't share" call
 
-Each of `pre-commit-branch-check.py`, `pre-pr-create-check.py`, and `pre-merge-branch-check.py`
-defines its own small `current_branch()`/`current_repo_root()` pair rather than importing a
-shared version. This mirrors an existing repo precedent — `_first_line()` is independently
-defined in both `_hookio.py` and `pre-tool-use-canonical-mutate-guard.py` "not shared/imported
-across the two files — each one's own module stays self-contained" per that module's own
-docstring. ~15 lines of near-identical subprocess-wrapping code across three files is judged
-cheaper than the coupling of a shared import for logic this small and this unlikely to diverge.
-`_bash_state.py` itself, by contrast, *is* shared — its logic (JSON state file read/write, the
-drift-comparison predicate) is identical across all three call sites and non-trivial enough that
-duplicating it would risk the three copies silently drifting apart.
+The first version of this PR kept each of `pre-commit-branch-check.py`, `pre-pr-create-check.py`,
+and `pre-merge-branch-check.py` defining its own small `current_branch()`/`current_repo_root()`
+pair, reasoning by analogy to `_first_line()`'s existing independent-copies precedent in
+`_hookio.py` / `pre-tool-use-canonical-mutate-guard.py`. A `/review` pass overturned that
+reasoning with a concrete point rather than a hypothetical one: this PR's own history already
+demonstrated the coupling risk (see the `pre-commit-branch-check.py` paragraph above) — the
+duplication had already caused one bug during development, not just a theoretical one `_first_line`'s
+precedent didn't need to worry about. Given the risk was no longer speculative, the three copies
+(plus a fourth, separately-shaped pair in `post-tool-use-cwd-track.py`) were consolidated into one
+`current_repo_state()` in `_bash_state.py`, which all four files now import. This also incidentally
+halves `post-tool-use-cwd-track.py`'s subprocess count (see the next Judgment call).
+
+### Combining the two `git` calls into one, for the every-Bash-call caller
+
+`post-tool-use-cwd-track.py` runs on every single Bash tool call, unlike the three checkpoint
+hooks, which only run at a low-frequency commit/PR-create/PR-merge moment. A `/review` pass flagged
+that this hook was paying for two sequential subprocess spawns (`git rev-parse --show-toplevel`,
+then `git branch --show-current`) on every call — the one place in this hook family where the
+spawn count is not incidental. `current_repo_state()` combines both into one
+`git rev-parse --show-toplevel --abbrev-ref HEAD` invocation (toplevel on the first output line,
+abbreviated ref — literally `"HEAD"` when detached — on the second), halving the per-call cost.
+The three checkpoint hooks get this same combined call for free by importing the same function,
+even though their own call frequency didn't strictly require the optimization.
+
+### Suppressing the drift warning when the current git read itself fails
+
+A `/review` pass found that `format_drift_warning` could fire a *self-contradictory* warning: if
+the checkpoint's own `current_repo_state()` call transiently failed or timed out, both current
+values become `None`, and the naive tuple comparison `(real, real) != (None, None)` read that as
+drift — producing a message that claimed the repo/branch "changed" while showing the *same* cwd on
+both the "was" and "now" lines. This is exactly the noisy-false-positive failure mode the
+`(repo_root, branch)` comparison key was designed to avoid (see the comparison-key Judgment call
+above), just reached via a different path (a failed *current* read, not a stale *recorded* one).
+Fixed by an early-return: both current values `None` means "current git state unknown," which
+can't be meaningfully compared against anything — genuine drift (worktree→canonical,
+branch-only-reversion) always leaves at least one current value populated, so this guard never
+suppresses a real detection.
 
 ---
 
@@ -219,12 +255,14 @@ duplicating it would risk the three copies silently drifting apart.
   either, since nothing consequential ran.
 - **Testing.** `claude/scripts/tests/test_bash_state.py` — pure-function coverage of
   `state_path`/`write_state`/`read_state` (including malformed-JSON and unwritable-scratch
-  fail-open paths) and `format_drift_warning`'s no-drift / repo-changed / branch-only-changed /
-  no-prior-state / missing-field cases. `test_pre_commit_branch_check.py`,
-  `test_pre_pr_create_check.py`, and `test_pre_merge_branch_check.py` cover each hook's own new
+  fail-open paths), `cleanup_stale_state` (stale-removed/fresh-kept/non-matching-ignored/
+  missing-dir-no-crash), and `format_drift_warning`'s six cases (no-drift / current-read-failed /
+  repo-changed / branch-only-changed / no-prior-state / missing-field). `test_pre_commit_branch_check.py`,
+  `test_pre_pr_create_check.py`, and `test_pre_merge_branch_check.py` cover each hook's own
   message-building function and (for the merge hook) the `is_pr_merge_command` detector,
-  following this repo's pure-helper-only testing convention — the `git`-shelling functions
-  themselves are not covered (matches every sibling hook in this family).
+  following this repo's pure-helper-only testing convention — `current_repo_state()`'s `git`
+  subprocess call is not covered (matches every sibling hook in this family; see Judgment calls
+  for why it now lives in one place instead of four).
 - **Observability.** All four scripts print/append `systemMessage` JSON on stdout (the standard
   advisory-hook channel in this repo) and always exit 0 — nothing here can block a tool call or
   hide a reason behind a discarded stream.
@@ -234,13 +272,15 @@ duplicating it would risk the three copies silently drifting apart.
   wrapped and fails open (missing state file, corrupt JSON, non-git cwd, git timeout/failure all
   degrade to "no comparison possible" rather than raising) — matches this repo's established
   advisory-hook safe-exit convention.
-- **Performance.** The write side adds two subprocess spawns (`git rev-parse`, `git branch`) per
-  Bash call — the same cost class `pre-commit-branch-check.py` already paid, just now on every
-  call rather than only at commit time. The read side adds no new subprocess calls beyond what
-  each hook already paid for its own branch display.
+- **Performance.** The write side adds one combined subprocess spawn (`git rev-parse
+  --show-toplevel --abbrev-ref HEAD`) per Bash call — half the cost of the two separate calls an
+  earlier version of this PR shipped, per a `/review` finding (see Judgment calls). The read side
+  adds no new subprocess calls beyond what each hook already paid for its own branch display.
 - **Data integrity.** N/A — the state file is a disposable, per-session advisory cache, not a
   system of record; losing or corrupting it degrades gracefully to "no drift comparison this
-  call," never to incorrect data being trusted downstream.
+  call," never to incorrect data being trusted downstream. It is also now bounded: `/review`
+  flagged that it was the only per-session file in this codebase with no expiration, so
+  `cleanup_stale_state` (30-day `MAX_AGE_DAYS`, matching `_hookutil.py`) now backs it.
 - **ADR warranted** because this introduces two new hook scripts and one new shared module, all
   wired into `claude/settings.json`, and establishes a workflow rule (`claude/CLAUDE.md`'s
   extended branch-verification bullet) that other sessions rely on — the same warranting shape
