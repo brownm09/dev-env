@@ -244,6 +244,20 @@ def test_find_dirty_open_pr_paths_normalizes_backslashes() -> str:
     return "backslash-separated porcelain paths normalized to forward slashes"
 
 
+def test_find_dirty_open_pr_paths_handles_renames() -> str:
+    lines = [
+        "R  sessions/dev-env/open-prs/567.json -> sessions/dev-env/open-prs/568.json",
+        "R  docs/old-name.md -> sessions/lifting-logbook/open-prs/700.json",
+        "R  sessions/dev-env/open-prs/1.json -> docs/unrelated.md",
+    ]
+    got = find_dirty_open_pr_paths(lines)
+    assert got == [
+        "sessions/dev-env/open-prs/568.json",
+        "sessions/lifting-logbook/open-prs/700.json",
+    ], f"expected only destination paths landing in open-prs shape, got {got}"
+    return "rename lines ('old -> new') keep only the destination path, matched against its shape"
+
+
 def test_find_dirty_open_pr_paths_empty_and_short_lines() -> str:
     assert find_dirty_open_pr_paths([]) == [], "no status lines -> []"
     assert find_dirty_open_pr_paths(["", "M", " M"]) == [], "lines shorter than 'XY p' are skipped, not crashed on"
@@ -265,6 +279,7 @@ def main() -> int:
         ("legacy non-object line dropped on rewrite (ADR-057)", test_legacy_non_object_line_dropped_on_rewrite),
         ("dirty open-PR paths filtered from git status (dev-env#578)", test_find_dirty_open_pr_paths_filters_to_open_pr_shape),
         ("dirty open-PR paths normalize backslashes", test_find_dirty_open_pr_paths_normalizes_backslashes),
+        ("dirty open-PR paths handle renames (review finding, PR #581)", test_find_dirty_open_pr_paths_handles_renames),
         ("dirty open-PR paths handle empty/short lines", test_find_dirty_open_pr_paths_empty_and_short_lines),
     ]
     failed = 0

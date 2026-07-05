@@ -118,14 +118,19 @@ def project_dirs(journal_repo: Path) -> list[Path]:
 def find_dirty_open_pr_paths(status_lines: list[str]) -> list[str]:
     """Filter `git status --porcelain` lines to the `sessions/*/open-prs*` shape: shard
     files (`open-prs/<N>.json`) or the legacy `open-prs.jsonl`, whether added, modified,
-    or deleted. Surfaces disk state nothing currently commits (see module docstring) —
-    this session's own fresh unlinks, or a prior session's never-committed ones. Pure
-    string filter; porcelain format is `XY <path>` (2 status chars + space + path)."""
+    deleted, or renamed. Surfaces disk state nothing currently commits (see module
+    docstring) — this session's own fresh unlinks, or a prior session's never-committed
+    ones. Pure string filter; porcelain format is `XY <path>` (2 status chars + space +
+    path), or `XY <old> -> <new>` for a rename — nothing in this hook renames a shard, but
+    a rename from elsewhere is still handled by keeping just the `<new>` half, the only
+    one that's a real, addable path today."""
     paths: list[str] = []
     for line in status_lines:
         if len(line) < 4:
             continue
         path = line[3:].strip().replace("\\", "/")
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
         if "/open-prs/" in path or path.endswith("/open-prs.jsonl"):
             paths.append(path)
     return paths

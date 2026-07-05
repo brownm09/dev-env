@@ -294,8 +294,11 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `sessions/*/open-prs*` change (this session's own fresh unlinks, or a prior session's
     never-committed ones) — pins the porcelain `XY <path>` slicing, that shard/legacy-file paths are
     kept while unrelated paths (stub files, script edits) are dropped, backslash-to-forward-slash
-    path normalization, and graceful handling of empty/short input. The live `gh pr view` boundary
-    (`check_pr_state`) and the `git status --porcelain` boundary (`dirty_open_pr_status_lines`) are
+    path normalization, rename lines (`old -> new`) resolving to just the destination path (review
+    finding on PR #581 — nothing in this hook renames a shard, but a rename from elsewhere no longer
+    produces an unaddable combined string), and graceful handling of empty/short input. The live
+    `gh pr view` boundary (`check_pr_state`) and the `git status --porcelain` boundary
+    (`dirty_open_pr_status_lines`) are
     not covered (the repo avoids subprocess mocks).
 
     ```bash
