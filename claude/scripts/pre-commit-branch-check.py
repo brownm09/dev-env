@@ -5,6 +5,12 @@ emits a systemMessage showing the current branch as a visible checkpoint.
 Does NOT block the commit (exit 0). The message appears in the Claude Code UI
 so the user can catch wrong-branch commits before they land.
 
+Also appends a drift warning (dev-env#573) when the repo/branch recorded by
+post-tool-use-cwd-track.py after the session's last Bash call differs from
+the repo/branch at commit time — a signal that the session's tracked cwd may
+have silently reverted (e.g. after an intermittent Git Bash crash) between
+that call and this one. Advisory only; never blocks.
+
 Stdin JSON shape (PreToolUse):
   {
     "hook_event_name": "PreToolUse",
@@ -19,8 +25,9 @@ Exit 0 — always; hook is advisory only.
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import re
-import subprocess
 import sys
+
+import _bash_state
 
 # Matches `git commit` as an actual command invocation, not inside a string or
 # after --message / -m (where "commit" would be a flag argument value).
@@ -33,19 +40,12 @@ def is_git_commit_command(command: str) -> bool:
     return bool(_GIT_COMMIT_RE.search(command))
 
 
-def current_branch(cwd: str) -> str:
-    try:
-        result = subprocess.run(
-            ["git", "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            cwd=cwd or None,
-            timeout=5,
-        )
-        branch = result.stdout.strip()
-        return branch if branch else "<detached HEAD>"
-    except Exception:
-        return "<unknown>"
+def build_message(branch: str | None, drift_warning: str | None) -> str:
+    display_branch = branch if branch is not None else "<detached HEAD or unknown>"
+    message = f"[branch-check] committing to: {display_branch}"
+    if drift_warning:
+        message += "\n" + drift_warning
+    return message
 
 
 def main() -> None:
@@ -66,9 +66,15 @@ def main() -> None:
         sys.exit(0)
 
     cwd = data.get("cwd", "")
-    branch = current_branch(cwd)
+    session_id = data.get("session_id", "") or ""
+    repo_root, branch = _bash_state.current_repo_state(cwd)
 
-    print(json.dumps({"systemMessage": f"[branch-check] committing to: {branch}"}))
+    drift_warning = None
+    if session_id:
+        recorded = _bash_state.read_state(session_id)
+        drift_warning = _bash_state.format_drift_warning(recorded, repo_root, branch, cwd)
+
+    print(json.dumps({"systemMessage": build_message(branch, drift_warning)}))
     sys.exit(0)
 
 

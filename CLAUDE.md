@@ -741,6 +741,84 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_journal_schema.py
     ```
 
+42. **`_bash_state` shared-module test** — required when changing `claude/scripts/_bash_state.py`.
+    Exercises every pure helper offline (tmp dirs via an injected `scratch=` parameter, mirroring
+    `_hookutil.py`'s test convention — no real `~/.claude/scratch`): `state_path` correctness with
+    and without an override; a `write_state`/`read_state` round-trip; `read_state` returning `None`
+    on a missing file, malformed JSON, or a JSON array (non-dict) rather than raising; `write_state`
+    swallowing an `OSError` when the scratch path is unwritable (a file occupying where a directory
+    is expected); `cleanup_stale_state` removing files older than `MAX_AGE_DAYS` while keeping fresh
+    ones and files that don't match the `bash_state_*.json` glob, and not raising when the scratch
+    dir is absent (mirrors `_hookutil.cleanup_stale_sentinels` — this module was the only
+    per-session-file producer in the codebase without this, caught in `/review`); and
+    `format_drift_warning`'s six decision cases — `None` recorded state, both current values `None`
+    (the checkpoint's own git read failed/timed out — nothing to meaningfully compare, and firing
+    here would show an unchanged cwd on both the "was" and "now" lines, another `/review` catch), an
+    unchanged `(repo_root, branch)` pair (including a same-repo `cwd`-only change, which must **not**
+    fire — the key precision property this module exists for), a `repo_root` change (the
+    worktree-silently-replaced-by-canonical-root incident shape), a branch-only change with the same
+    `repo_root` (the same-repo-branch-reverted incident shape), and a recorded state with `None`
+    fields rendering a `<unknown>` placeholder instead of raising. Backs
+    `post-tool-use-cwd-track.py`'s state writes and the drift check in
+    `pre-commit-branch-check.py` / `pre-pr-create-check.py` / `pre-merge-branch-check.py`
+    ([ADR-085](docs/adr/085-bash-repo-branch-drift-detection.md); dev-env#573). `current_repo_state()`
+    — the single combined `git rev-parse --show-toplevel --abbrev-ref HEAD` call shared by all four
+    consuming files (extracted here after three near-duplicate copies existed briefly and one already
+    diverged in its failure-mode return value) — shells out and is not covered here (pure-helper
+    convention).
+
+    ```bash
+    py -3 claude/scripts/tests/test_bash_state.py
+    ```
+
+43. **pre-commit-branch-check test** — required when changing `claude/scripts/pre-commit-branch-check.py`.
+    Exercises the pure `is_git_commit_command()` detector (bare and `&&`-chained `git commit`
+    matches; an unrelated git command does not) and the new `build_message()` formatter added for
+    the dev-env#573 drift-warning integration: unchanged pre-existing output when there is no drift,
+    the drift warning appended on its own line when present, and a `None` branch (detached HEAD /
+    git failure) rendering a display placeholder rather than the raw `None`. The repo/branch lookup
+    itself is `_bash_state.current_repo_state()` (shared with the other two checkpoint hooks — see
+    item 42), not a function local to this file. This test file pre-dates this list — added here
+    alongside the drift-check change ([ADR-085](docs/adr/085-bash-repo-branch-drift-detection.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_pre_commit_branch_check.py
+    ```
+
+44. **pre-pr-create-check test** — required when changing `claude/scripts/pre-pr-create-check.py`.
+    Exercises the new `build_checklist()` formatter added for the dev-env#573 branch-display and
+    drift-warning integration: the numbered checklist plus a branch/repo display line always
+    present, `None` branch/repo_root rendering display placeholders, the drift warning appended
+    after the branch-display line when present, and — the fragility this test specifically guards
+    against — that `baseline_line`'s pre-existing hardcoded "4." numbering and `doc_warning`'s
+    relative order are unchanged, since the new branch/drift content is inserted *between* the
+    numbered checklist and those two conditionally-numbered lines rather than into the numbered
+    sequence itself. `_doc_reconciliation_warning()` and `_baseline_advisory()` shell out to git /
+    read files and are not covered (pure-helper convention; this file's pre-existing untested logic
+    is not backfilled per the Test Coverage Gate, [ADR-022](docs/adr/022-test-coverage-gate-before-pr.md)
+    — only the new behavior is tested); the repo/branch lookup itself is
+    `_bash_state.current_repo_state()` (shared with the other two checkpoint hooks — see item 42).
+    ([ADR-085](docs/adr/085-bash-repo-branch-drift-detection.md))
+
+    ```bash
+    py -3 claude/scripts/tests/test_pre_pr_create_check.py
+    ```
+
+45. **pre-merge-branch-check test** — required when changing `claude/scripts/pre-merge-branch-check.py`.
+    Exercises `is_pr_merge_command()` (built on the shared `_hookio.scan_top_level`, matching the
+    identically-named predicate in `pre-merge-message-check.py` / `pre-merge-numbering-check.py` —
+    dev-env#519): a bare and a `cd`-chained `gh pr merge` match, a `gh pr merge` mentioned only
+    inside a heredoc body does not (dev-env#499), and an unrelated `gh` command does not. Also
+    exercises `build_message()`: no drift is a single line with no warning appended, a drift warning
+    appends on its own line after the branch-display text, and `None` branch/repo_root render
+    display placeholders. The repo/branch lookup itself is `_bash_state.current_repo_state()`
+    (shared with the other two checkpoint hooks — see item 42), matching item 43's identical scope
+    decision for the sibling commit-time hook. ([ADR-085](docs/adr/085-bash-repo-branch-drift-detection.md))
+
+    ```bash
+    py -3 claude/scripts/tests/test_pre_merge_branch_check.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
