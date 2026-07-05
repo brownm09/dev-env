@@ -119,6 +119,27 @@ RC=$(run_gate 'gh pr merge --auto --help' "UNSET"); [ "$RC" = "0" ] && ok "exit 
 echo "[12] non-merge command -> allow"
 RC=$(run_gate 'gh pr view 999 --repo o/r' "UNSET"); [ "$RC" = "0" ] && ok "exit 0" || bad "expected 0, got $RC"
 
+echo "[13] --auto, commits array at/above the suspect-truncation page size -> BLOCK"
+J=$($PY -c 'import json,sys,tempfile
+data = {
+    "number": 999,
+    "body": "some body",
+    "comments": [{"body": sys.argv[1], "createdAt": sys.argv[2]}],
+    "commits": [{"committedDate": sys.argv[3]} for _ in range(100)],
+}
+f = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json")
+json.dump(data, f)
+f.close()
+print(f.name)' "$MARK_CLEAN $CHECKPOINTS_OK" "$FRESH_CREATED" "$FRESH_HEAD")
+RC=$(run_gate "$AUTO_CMD" "$J"); [ "$RC" = "2" ] && ok "exit 2 (blocked)" || bad "expected 2, got $RC"; rm -f "$J"
+
+echo "[14] --auto, quoted --auto flag (shell-stripped) -> still detected and evaluated"
+J=$(canned "some body" "$MARK_CLEAN $CHECKPOINTS_OK" "$FRESH_CREATED" "$FRESH_HEAD")
+RC=$(run_gate 'gh pr merge 999 --repo o/r --squash "--auto"' "$J"); [ "$RC" = "0" ] && ok "exit 0 (quoted --auto correctly gated and passed)" || bad "expected 0, got $RC"; rm -f "$J"
+
+echo "[15] --auto mentioned only as prose inside --body value -> NOT gated (plain merge)"
+RC=$(run_gate 'gh pr merge 999 --repo o/r --squash --body "please --auto this"' "UNSET"); [ "$RC" = "0" ] && ok "exit 0 (never touches gh -- correctly not treated as --auto)" || bad "expected 0, got $RC"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

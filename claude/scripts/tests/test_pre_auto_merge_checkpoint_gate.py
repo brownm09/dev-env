@@ -79,6 +79,25 @@ def test_auto_scoped_to_merge_tail_not_earlier_chain_segment():
 def test_non_merge_command_never_matches():
     assert not wants_auto_merge("git status --auto")
 
+def test_auto_inside_unrelated_flag_value_not_detected():
+    # "--auto" appearing as prose inside a --body value's quoted text is not a real flag --
+    # a plain whitespace-bounded regex (the pre-fix implementation) incorrectly matched this;
+    # shlex tokenization correctly keeps it inside the --body token's own value.
+    assert not wants_auto_merge('gh pr merge 123 --squash --body "please --auto merge this"')
+
+def test_auto_shell_quoted_is_still_detected():
+    # The shell strips quotes before gh ever sees argv, so `gh pr merge 123 --squash "--auto"`
+    # is identical to an unquoted --auto from gh's own perspective -- a plain whitespace-bounded
+    # regex (the pre-fix implementation) missed this because the quote character, not whitespace,
+    # sat at the token boundary. This was a real bypass: a quoted --auto skipped this hook
+    # entirely and reached the sibling gate alone.
+    assert wants_auto_merge('gh pr merge 123 --squash "--auto"')
+
+def test_unparseable_tail_defaults_to_wanting_auto():
+    # An unterminated quote makes shlex.split raise ValueError -- fail toward the stricter gate
+    # (assume --auto) rather than silently letting an unparseable command through ungated.
+    assert wants_auto_merge('gh pr merge 123 --body "unterminated')
+
 
 # ---------------------------------------------------------------------------
 # is_merge_help_only composition with --auto (dev-env#557's guard, exercised alongside --auto)
@@ -190,6 +209,22 @@ def test_qualifying_comment_marker_order_within_comment_does_not_matter():
 
 def test_qualifying_comment_empty_list():
     assert _qualifying_comment([]) is None
+
+def test_qualifying_comment_last_match_wins_within_a_single_comment_body():
+    # A single comment quoting an earlier stale marker for context, followed by its own real,
+    # current marker later in the same body -- must bind to the LATER occurrence, not the
+    # first one .search() would return. Confirmed as a real (if inherited from the sibling
+    # gate's identical pattern) gap during review; higher-stakes here given fail-closed/no-override.
+    body = (
+        f"quoting the old review for context: {_FINDINGS_CLEAN.replace('blocking=0', 'blocking=5')}"
+        f"<!-- premerge-checkpoints: adr_warrant=missing doc_reconciliation=missing -->\n"
+        f"actual current status: {_FINDINGS_CLEAN}{_CHECKPOINTS_OK}"
+    )
+    found = _qualifying_comment([{"body": body}])
+    assert found is not None
+    _, mk, ck = found
+    assert mk.groups() == ("0", "0")
+    assert ck.groups() == ("written", "updated")
 
 
 # ---------------------------------------------------------------------------

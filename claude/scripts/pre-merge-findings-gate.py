@@ -34,6 +34,12 @@ the whole command string, which could spuriously fire on a `gh pr merge`
 mentioned only inside a heredoc body or `$()` subshell (dev-env#499) and pay
 this hook's live `gh pr view` call for a command that never actually merges.
 
+`is_pr_merge_command`, `_parse_merge_target`, `_MARKER_RE`, `_DISPOSED_RE`, and `_fetch_pr_json`
+are also imported by `pre-auto-merge-checkpoint-gate.py` (ADR-083) via a dynamic
+`importlib.util.spec_from_file_location` load, despite the leading underscore on three of
+them — do not rename, remove, or change the signature/regex-group shape of any of these five
+without updating that file too.
+
 Stdin JSON shape (PreToolUse): {"tool_name":"Bash","tool_input":{"command":...},"cwd":...}
 
 Exit 2 — block the merge (stderr shown to Claude).

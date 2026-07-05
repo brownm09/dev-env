@@ -47,6 +47,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import sys
 
 from _hookio import is_merge_help_only
@@ -63,14 +64,8 @@ _MARKER_RE = _pmfg._MARKER_RE
 _DISPOSED_RE = _pmfg._DISPOSED_RE
 _fetch_pr_json = _pmfg._fetch_pr_json  # carries the MERGE_GATE_TEST_JSON test seam
 
-# A standalone --auto flag token, bare or with an explicit value: --auto, --auto=true, --auto=false.
-# Bounded by whitespace/start/end so it can't match inside --disable-auto (a distinct, real gh pr
-# merge flag that *turns off* a pending auto-merge -- always safe, never in scope here) or a
-# hypothetical --auto-something.
-_AUTO_FLAG_RE = re.compile(r"(?:^|\s)--auto(?:=(\S+))?(?=\s|$)")
 # Falsy values for --auto=<value>, mirroring is_mutating_gh_segment's --delete-branch=false
-# handling in pre-tool-use-canonical-mutate-guard.py verbatim, plus quote-stripping (--auto='false')
-# that precedent doesn't do.
+# handling in pre-tool-use-canonical-mutate-guard.py.
 _FALSY_VALUES = {"false", "0", "no"}
 
 _CHECKPOINTS_RE = re.compile(
@@ -78,6 +73,18 @@ _CHECKPOINTS_RE = re.compile(
 )
 _VALID_ADR_WARRANT = {"written", "not-warranted"}
 _VALID_DOC_RECONCILIATION = {"updated", "not-applicable"}
+
+# `gh pr view --json commits` wraps a paginated GraphQL connection (confirmed live: the
+# underlying `commits(first: N)` field exposes `totalCount` like any other connection) with no
+# documented page size and no `--paginate` equivalent on `gh pr view`. For a PR with more commits
+# than that page's size, `commits[-1]` would silently be the last commit of a truncated page, not
+# the PR's true HEAD commit -- the freshness check would then compare against the wrong date with
+# no error signal. This threshold is a defensive, conservative guess (a common GraphQL default
+# page size), not a confirmed exact limit; treating "at or above it" as "cannot safely trust
+# commits[-1]" costs nothing in the common case (a handful of commits) and fails closed instead of
+# silently trusting a possibly-wrong date in the tail case. Confirmed as a real gap during review
+# (dev-env PR #588).
+_COMMITS_PAGE_SIZE_SUSPECT = 100
 
 
 def _merge_tail(command):
@@ -94,14 +101,33 @@ def _merge_tail(command):
 
 
 def wants_auto_merge(command):
-    """True iff the gh pr merge statement requests --auto (not an explicit falsy value)."""
-    m = _AUTO_FLAG_RE.search(_merge_tail(command))
-    if not m:
-        return False
-    value = m.group(1)
-    if value is None:
-        return True  # bare --auto
-    return value.strip().strip("'\"").lower() not in _FALSY_VALUES
+    """True iff the gh pr merge statement requests --auto (not an explicit falsy value).
+
+    Tokenizes the merge tail with shlex rather than a raw whitespace-bounded regex, so a
+    quoted flag (`gh pr merge "--auto"` -- the shell strips the quotes before `gh` ever sees
+    argv, so this is a real --auto request) is correctly recognized, and so `--auto` merely
+    appearing as prose inside an unrelated flag's value (e.g. `--body "please --auto merge
+    this"`) is correctly NOT recognized. Both were confirmed live as real gaps in an earlier,
+    plain-regex version of this function during review (dev-env PR #588) -- the regex had no
+    quote-awareness, unlike shlex or this codebase's own `_hookio.split_top_level` engine used
+    elsewhere for the same class of problem. shlex also strips quotes from a token's value as
+    part of tokenizing, so `--auto='false'` already arrives as `--auto=false` with no separate
+    manual strip needed.
+
+    A tail that fails to tokenize at all (e.g. an unterminated quote) is treated as wanting
+    --auto defensively: safer to over-apply the stricter gate to an unparseable command than
+    to silently let a real --auto slip through ungated.
+    """
+    try:
+        tokens = shlex.split(_merge_tail(command))
+    except ValueError:
+        return True
+    for tok in tokens:
+        if tok == "--auto":
+            return True
+        if tok.startswith("--auto="):
+            return tok.split("=", 1)[1].strip().lower() not in _FALSY_VALUES
+    return False
 
 
 def _advisory(msg):
@@ -124,6 +150,24 @@ def _is_stale(comment_created_at, head_committed_at):
     return head_committed_at > comment_created_at
 
 
+def _last_match(pattern, text):
+    """Like pattern.search(text) but returns the LAST match in text, not the first.
+
+    A comment can quote an earlier, stale marker for context (e.g. "the old review said
+    <!-- review-findings: blocking=5 ... -->, now fixed: <!-- review-findings: blocking=0
+    ... -->") before its own real, current marker later in the same body. `.search()` binds
+    to the first occurrence, which would silently pick up the quoted-for-context stale value
+    instead of the comment's actual final one. Confirmed as a real (if inherited from the
+    sibling gate's identical `.search()`-per-comment pattern) gap during review (dev-env PR
+    #588); fixed here specifically because this hook's fail-closed, no-override design raises
+    the stakes of the same latent pattern well above the sibling's fail-open one.
+    """
+    last = None
+    for m in pattern.finditer(text):
+        last = m
+    return last
+
+
 def _qualifying_comment(comments):
     """The single most recent comment carrying BOTH markers together, or None.
 
@@ -136,8 +180,8 @@ def _qualifying_comment(comments):
     best = None
     for c in comments:
         body = c.get("body", "") or ""
-        mk = _MARKER_RE.search(body)
-        ck = _CHECKPOINTS_RE.search(body)
+        mk = _last_match(_MARKER_RE, body)
+        ck = _last_match(_CHECKPOINTS_RE, body)
         if mk and ck:
             best = (c, mk, ck)
     return best
@@ -225,6 +269,14 @@ def main() -> None:
         _advisory(
             f"[auto-merge-gate] BLOCKED: could not read PR #{num}'s head commit to check marker "
             f"freshness.\n\nTo proceed: drop --auto and run a plain `gh pr merge`.\n"
+        )
+    if len(commits) >= _COMMITS_PAGE_SIZE_SUSPECT:
+        _advisory(
+            f"[auto-merge-gate] BLOCKED: PR #{num} has {len(commits)} commits in the fetched "
+            f"page -- at or above a page size where `commits[-1]` can no longer be trusted as "
+            f"the true head commit (gh pr view's commits field is a paginated connection with "
+            f"no documented limit).\n\n"
+            f"To proceed: drop --auto and run a plain `gh pr merge`.\n"
         )
     head_committed_at = commits[-1].get("committedDate")
     comment_created_at = comment.get("createdAt")
