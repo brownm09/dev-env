@@ -120,6 +120,17 @@ if git -C "$EJ" show-ref --verify --quiet "refs/heads/$SOURCE_BRANCH"; then
     { echo "ABORT: local $SOURCE_BRANCH has commits not on origin — unpushed stubs in some session/worktree. Find and push them, then re-run."; exit 1; }
 fi
 
+# Liveness guard (ADR-085): the divergence guard above only catches a session that has
+# already committed but not yet pushed. A session that hasn't committed at all — still
+# actively writing this date's stub past compose time (dev-env#579 activated this race; see
+# ADR-084) — leaves the shared $EJ checkout dirty instead, since sessions across every
+# project write here via `git -C`, not a per-session worktree of the journal itself (ADR-051's
+# worktree_session_is_live() doesn't transfer: there's no single worktree path to check here).
+# This is a defense-in-depth check for a manual/interactive `/journal-compose` invocation —
+# the automated nightly path's primary check runs earlier, in journal-compose-with-retry.sh,
+# before this skill is even invoked.
+git -C "$EJ" status --porcelain | py -3 C:/Users/brown/.claude/scripts/check-journal-compose-liveness.py "YYYY-MM-DD" || exit 1
+
 # A pre-existing compose worktree is a concurrency signal, not an error: a lock file inside
 # it younger than 10 minutes means another compose is genuinely active; otherwise it's stale
 # (a crashed prior run) and safe to recreate — the worktree is fully regenerable from
