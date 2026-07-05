@@ -21,9 +21,14 @@ Logic (cheapest checks first — no subprocess spawn unless a mutating segment
 is actually found):
   1. Read stdin JSON. Fail open (exit 0) on anything unparseable, a missing or
      empty `cwd`, or a non-`Bash` tool_name.
-  2. If `cwd` matches the worktree path pattern (`.../.claude/worktrees/<name>`),
-     exit 0 — out of scope, ADR-024's hook already covers that surface, and any
-     command (mutating or not) is fine from inside a worktree.
+  2. Note whether `cwd` matches the worktree path pattern
+     (`.../.claude/worktrees/<name>`). A worktree cwd is out of scope for an
+     *ambient* mutation (a mutating verb targeting the worktree itself is fine —
+     ADR-024's hook covers that surface), but is NOT an unconditional early
+     exit: a command that redirects a mutating verb at a *canonical* checkout
+     via `-C`/`--git-dir`/`--work-tree` (dev-env#576) is still evaluated below.
+     A worktree cwd whose command carries no such redirect exits 0 cheaply,
+     preserving the zero-friction in-worktree path.
   3. Split the command into logical segments via the shared
      `_hookio.split_top_level(cmd, split_pipe=True)` engine (dev-env#511,
      ADR-050 Amendment 7) — a quote/subshell/heredoc-aware stack parser, not
@@ -49,25 +54,24 @@ is actually found):
          body line that itself *begins* with a mutating verb (e.g.
          `git status <<EOF` / `git commit --amend` / `EOF`) would otherwise
          become its own segment and be misclassified as a real invocation.
-     Two redirect shapes are still out of scope for this hook's cwd-based
-     check (known, documented gap — see module-level note below), scanned
-     separately after segmentation:
+     Two redirect shapes are handled specially, scanned per-segment after
+     segmentation:
        - A bare `cd <path>` in ANY segment persists for the rest of the shell
          invocation (that's what `&&`-chaining a `cd` means), so the whole
          command is treated as out of scope the moment a `cd` appears anywhere
          in it — a later segment's real execution directory is then unknown,
-         not `cwd`.
-       - `git -C <path>` / `git --git-dir=<path>` redirects only the single
-         git invocation carrying the flag — just that segment is skipped;
-         other segments in the same command are still classified normally.
-         Checked against only the segment's first physical line (see
-         `_first_line()`) so a heredoc body that merely *mentions* `-C`
-         cannot skip a genuinely mutating segment.
-     A command that redirects *into* the canonical root from elsewhere
-     requires deliberate, visible authorship rather than the silent
-     default-cwd collision #453 documents, so deferring both shapes is
-     acceptable for v1 — same class of scope-limiting judgment ADR-024 made
-     for its own Bash coverage.
+         not `cwd`. (A `cd` *into* a canonical root is still a v1 gap — see the
+         module-level coverage note below.)
+       - `git -C <path>` / `git --git-dir=<path>` / `git --work-tree=<path>`
+         redirect a single git invocation at another repo. As of dev-env#576
+         these are no longer merely skipped: `_parse_git_prefix()` captures the
+         target dir (from the segment's first physical line only — see
+         `_first_line()` — so a heredoc body that merely *mentions* `-C` cannot
+         inject one), and step 6 resolves it and applies the same canonical-root
+         check to the *target* as to cwd. A redirect at a worktree, at the
+         carve-out-exempt engineering-journal checkout
+         (`_REDIRECT_TARGET_ALLOWLIST`), or at a path git can't resolve is not
+         blocked.
   4. Classify each remaining segment, anchored at the segment start (not a
      substring match — the career-playbook #442 heredoc-mention lesson: a
      mutating verb merely *mentioned* inside a heredoc body or prose must not
@@ -78,10 +82,13 @@ is actually found):
      merely mentioned as a substring anywhere, e.g. inside a commit message
      argument or inside a `$(...)`/heredoc span — step 3's opacity applies
      identically here), exit 0 — a deliberate, visible human override.
-  6. Resolve the git toplevel for `cwd` via `git -C <cwd> rev-parse
-     --show-toplevel`. Fail open if git can't resolve one at all (not a repo,
-     git missing, timeout) — that toplevel, once resolved, *is* the canonical
-     root by definition (cwd already failed the worktree-pattern check above).
+  6. For an *ambient* (no-redirect) mutating segment, resolve the git toplevel
+     for `cwd` via `git -C <cwd> rev-parse --show-toplevel`; once resolved it
+     *is* the canonical root by construction (cwd is not a worktree here). For a
+     *redirect* mutating segment, resolve each captured target dir the same way
+     and block iff it lands on a canonical (non-worktree, non-carve-out) root.
+     Fail open if git can't resolve a path at all (not a repo, git missing,
+     timeout).
   7. Exit 2 with a blocking JSON `{"reason": ...}` naming the matched command,
      the canonical root, why it's dangerous, and the two remedies (isolate via
      a worktree, or override).
@@ -106,13 +113,19 @@ delete-branch flag — merges only remotely via the GitHub API, touches no
 local state), and anything non-git/non-gh. Plain Read/Grep/Glob against a
 canonical checkout is untouched entirely since this hook only matches Bash.
 
-Known, documented gap (not solved, v1 deferral): a command that `cd`s or
-`-C`s *into* the canonical root from elsewhere (e.g. from a worktree's Bash,
-`git -C C:/Users/brown/Git/dev-env checkout -b foo`) is not caught by this
-hook's cwd-based check. That requires deliberate, visible authorship rather
-than the silent default-cwd collision #453 documents, so it is an acceptable
-v1 deferral — extend if it recurs in practice (same incremental-hardening
-precedent as ADR-024's own orphan-liveness addendum).
+Coverage note: a `git -C`/`--git-dir`/`--work-tree` redirect *into* a canonical
+root from elsewhere (e.g. from a worktree's Bash,
+`git -C C:/Users/brown/Git/dev-env checkout -b foo`) IS now caught (dev-env#576,
+ADR-071 Amendment 2), except when the target resolves to the carve-out-exempt
+engineering-journal checkout (see `_REDIRECT_TARGET_ALLOWLIST`). Still deferred
+(v1): a bare `cd <path>` *into* a canonical root — a `cd` takes the whole
+command out of scope because a later segment's real execution directory is then
+unknown, so `cd C:/Users/brown/Git/dev-env && git checkout -b foo` from
+elsewhere is not caught. That still requires deliberate, visible authorship
+rather than the silent default-cwd collision #453 documents, so leaving it
+uncovered remains an acceptable deferral — extend if it recurs in practice
+(same incremental-hardening precedent as ADR-024's own orphan-liveness
+addendum).
 
 Stdin JSON shape (PreToolUse):
   {
@@ -144,11 +157,31 @@ _WORKTREE_RE = re.compile(
 # block — see the anchored check in `_has_override()` below.
 OVERRIDE_TOKEN = "ALLOW_CANONICAL_MUTATE=1"
 
-# A segment redirects THAT git invocation to another repo via `git -C <path>`
-# or `git --git-dir=<path>` — out of scope for this hook's cwd-based check.
-# (A bare `cd <path>` is handled separately in classify() — it persists across
-# the rest of the command, not just the segment it appears in.)
-_REDIRECT_RE = re.compile(r"(?:^|\s)git\s+(?:-C\s+\S|--git-dir=\S)")
+# Git-level redirect flags that retarget a git invocation at ANOTHER repo:
+#   -C <dir>              run as if git were started in <dir>
+#   --git-dir[=| ]<dir>   use <dir> as the git dir (its worktree top is the
+#                         parent when <dir> ends in a `.git` segment)
+#   --work-tree[=| ]<dir> use <dir> as the working tree
+# `_parse_git_prefix()` both skips these as git-level options AND captures the
+# dir, so main() can resolve it and apply the canonical-root check to the
+# *target*, not just cwd — the dev-env#576 extension of the original cwd-only
+# check. Both the `=` and space value forms are handled (`-C` has only the space
+# form; git does not accept `-C=<dir>`). A bare `cd <path>` is still handled
+# separately in find_mutating_segments() — it persists across the rest of the
+# command, not just the segment it appears in.
+_GIT_REDIRECT_FLAGS = ("-C", "--git-dir", "--work-tree")
+
+# TEMPORARY carve-out (dev-env#576): a redirect target whose resolved canonical
+# toplevel *basename* is in this set is NOT blocked, even though it is a
+# canonical (non-worktree) checkout. The engineering-journal canonical checkout
+# is the shared tree the documented stub workflow mutates via
+# `git -C <journal> checkout/commit/pull` on every PR open/merge (global
+# CLAUDE.md Engineering Journal section + ADR-066); blocking that automated path
+# would force ALLOW_CANONICAL_MUTATE=1 onto it — untenable. Remove this carve-out
+# once journal git work moves into a worktree (dev-env#346), after which no
+# direct canonical-journal mutation happens and the guard covers it like any
+# other repo. Matched by basename, so it is independent of the absolute path.
+_REDIRECT_TARGET_ALLOWLIST = frozenset({"engineering-journal"})
 
 # `cd <path>` at the start of a segment (after stripping leading env-var
 # assignments — see `_strip_leading_env`). Compiled once; reused by both the
@@ -175,10 +208,12 @@ _GH_DELETE_BRANCH_FLAGS = {"-d", "--delete-branch"}
 # Git-level options that can precede the actual subcommand (git's own option
 # grammar, not the subcommand's) — e.g. `git -c gc.auto=0 stash pop` or
 # `git --no-optional-locks stash apply`. `-c <name>=<value>` takes a
-# space-separated value token; the rest are flags with no separate value
-# token. `-C <path>` / `--git-dir=<path>` are deliberately NOT in this list —
-# those are handled upstream by `_REDIRECT_RE`, which skips the whole segment
-# rather than classifying it, so a redirected invocation never reaches here.
+# space-separated value token; the rest are flags with no separate value token.
+# The redirect flags `-C`/`--git-dir`/`--work-tree` (see `_GIT_REDIRECT_FLAGS`)
+# are handled in `_parse_git_prefix()` alongside these — it both skips them (so
+# the real verb still lands at tokens[0]) and captures their target dir for
+# main()'s canonical-root check (dev-env#576). They are kept in a separate
+# constant because, unlike these, their value is not discarded.
 _GIT_LEVEL_FLAG_NO_VALUE = {"--no-optional-locks", "--no-pager", "-p", "--paginate", "--bare"}
 _GIT_LEVEL_FLAG_WITH_VALUE = {"-c"}
 
@@ -192,17 +227,65 @@ def _strip_leading_env(segment: str) -> str:
     return _LEADING_ENV.sub("", segment, count=1)
 
 
-def _skip_git_level_flags(tokens: list) -> list:
-    """Drop a leading run of git-level options (`git -c gc.auto=0 stash
-    pop`, `git --no-optional-locks stash apply`) so the actual subcommand
-    lands at index 0 for verb classification — otherwise `tokens[0]` is `-c`
-    or `--no-optional-locks`, not the real verb, and the whole invocation
-    silently falls through the `if verb == ...` chain to the default `False`
-    (not mutating), unblocking a real stash pop/apply.
+def _normalize_redirect_dir(flag: str, value: str) -> str:
+    """Normalize a redirect flag's value to a directory suitable for
+    `git -C <dir> rev-parse --show-toplevel`.
+
+    `-C`/`--work-tree` already name a working-tree directory. `--git-dir`
+    points at the git dir itself; when it ends in a `.git` segment the
+    working-tree top is its parent (`/repo/.git` -> `/repo`), and a bare `.git`
+    means the git dir sits in cwd so the worktree top is cwd (`.`). Any other
+    `--git-dir` shape is passed through unchanged and left to rev-parse.
     """
+    if flag == "--git-dir":
+        trimmed = value.replace("\\", "/").rstrip("/")
+        if trimmed.lower().endswith("/.git"):
+            return trimmed[: -len("/.git")] or value
+        if trimmed.lower() == ".git":
+            return "."
+        return value
+    return value
+
+
+def _parse_git_prefix(tokens: list):
+    """Consume a leading run of git-level options, returning
+    `(redirect_dirs, remaining_tokens)`.
+
+    `remaining_tokens[0]` is the real subcommand verb (or the list is empty).
+    `redirect_dirs` holds every `-C`/`--git-dir`/`--work-tree` directory value
+    seen (in `=` or space form), each normalized via `_normalize_redirect_dir`.
+
+    Supersedes the older `_skip_git_level_flags`: it walks the same
+    `-c <v>` / `--no-optional-locks` / `--no-pager` / `-p` / `--paginate` /
+    `--bare` options so the actual subcommand still lands at index 0 for verb
+    classification — PLUS the redirect flags, which the old code left for a
+    separate `_REDIRECT_RE` segment-skip that never resolved the target
+    (dev-env#576).
+    """
+    redirect_dirs = []
     i = 0
-    while i < len(tokens):
+    n = len(tokens)
+    while i < n:
         tok = tokens[i]
+        # redirect flags, space form: `-C <dir>`, `--git-dir <dir>`, `--work-tree <dir>`
+        if tok in _GIT_REDIRECT_FLAGS:
+            if i + 1 < n:
+                redirect_dirs.append(_normalize_redirect_dir(tok, tokens[i + 1]))
+                i += 2
+            else:
+                i += 1  # dangling flag with no value — nothing to capture
+            continue
+        # redirect flags, `=` form: `--git-dir=<dir>`, `--work-tree=<dir>`
+        # (`-C=<dir>` is not valid git syntax, so only the long flags have it)
+        matched_eq = False
+        for flag in ("--git-dir", "--work-tree"):
+            if tok.startswith(flag + "="):
+                redirect_dirs.append(_normalize_redirect_dir(flag, tok.split("=", 1)[1]))
+                i += 1
+                matched_eq = True
+                break
+        if matched_eq:
+            continue
         if tok in _GIT_LEVEL_FLAG_WITH_VALUE:
             i += 2  # flag + its value token
             continue
@@ -210,7 +293,26 @@ def _skip_git_level_flags(tokens: list) -> list:
             i += 1
             continue
         break
-    return tokens[i:]
+    return redirect_dirs, tokens[i:]
+
+
+def _git_rest_tokens(segment: str):
+    """Tokens after `git` on the segment's first physical line, or None if the
+    (env-stripped) segment isn't a git invocation.
+
+    Shared by `is_mutating_segment()` and `_segment_redirect_dirs()` so both see
+    identical tokenization — and both restricted to the first physical line via
+    `_first_line()`, so a heredoc/`$(...)` body can neither inject a spurious
+    mutating verb nor a spurious `-C`/`--git-dir`/`--work-tree` redirect.
+    """
+    stripped = _strip_leading_env(segment).strip()
+    m = _GIT_INVOCATION_RE.match(_first_line(stripped))
+    if not m:
+        return None
+    rest = m.group(1).strip()
+    if not rest:
+        return None
+    return rest.split()
 
 
 def _first_line(segment: str) -> str:
@@ -223,21 +325,22 @@ def _first_line(segment: str) -> str:
     split out), and everything after that first line is heredoc/command-
     substitution BODY data, never additional invocation syntax.
 
-    Used by both the `_REDIRECT_RE` check in `classify()` and
-    `is_mutating_segment()` below so neither can be tricked by body text that
-    happens to look like a `-C`/`--git-dir` redirect or a mutating verb/flag:
-    `_GIT_INVOCATION_RE` is `$`-anchored with no `re.DOTALL`, so without this
-    it fails to match a multi-line segment at all (a real `git commit -m
-    "$(cat <<'EOF' ...)"` — this repo's own documented commit-message idiom —
-    was silently classified as non-mutating); `_REDIRECT_RE.search()` is
-    unanchored, and its `(?:^|\\s)` alternation treats an embedded newline
-    the same as a space, so a commit whose heredoc body merely *mentions*
-    "git -C /somewhere" as prose was wrongly treated as redirected to another
-    repo and skipped. Adding `re.DOTALL` to `_GIT_INVOCATION_RE` instead would
-    trade the first false negative for a different one — heredoc/subshell
-    body words leaking into the stash pop/apply and checkout `--` token scans
-    below (e.g. a read-only `git stash list` heredoc body that happens to say
-    "please apply this later" would wrongly block on "apply").
+    Used via `_git_rest_tokens()` by both `is_mutating_segment()` and
+    `_segment_redirect_dirs()` below, so neither can be tricked by body text
+    that happens to look like a mutating verb/flag or a
+    `-C`/`--git-dir`/`--work-tree` redirect: `_GIT_INVOCATION_RE` is
+    `$`-anchored with no `re.DOTALL`, so without this it fails to match a
+    multi-line segment at all (a real `git commit -m "$(cat <<'EOF' ...)"` —
+    this repo's own documented commit-message idiom — was silently classified
+    as non-mutating). Capturing the redirect dir from only the first line
+    (rather than an unanchored search over the whole segment) is likewise what
+    stops a commit whose heredoc body merely *mentions* "git -C /somewhere" as
+    prose from being wrongly read as redirected to another repo. Adding
+    `re.DOTALL` to `_GIT_INVOCATION_RE` instead would trade the first false
+    negative for a different one — heredoc/subshell body words leaking into the
+    stash pop/apply and checkout `--` token scans below (e.g. a read-only
+    `git stash list` heredoc body that happens to say "please apply this later"
+    would wrongly block on "apply").
     """
     return segment.split("\n", 1)[0]
 
@@ -251,15 +354,15 @@ def is_mutating_segment(segment: str) -> bool:
     does not trigger; only the actual invoked git subcommand does. Only the
     segment's first physical line is examined — see `_first_line()`.
     """
-    stripped = _strip_leading_env(segment).strip()
-    m = _GIT_INVOCATION_RE.match(_first_line(stripped))
-    if not m:
+    tokens = _git_rest_tokens(segment)
+    if not tokens:
         return False
-    rest = m.group(1).strip()
-    if not rest:
-        return False
-
-    tokens = _skip_git_level_flags(rest.split())
+    # Consume git-level options (incl. -C/--git-dir/--work-tree redirects) so
+    # the real verb lands at tokens[0]. This is also what lets a redirected
+    # invocation like `git -C <path> checkout` be recognized as mutating at all
+    # (dev-env#576) and fixes the prior `git --work-tree=<path> commit`
+    # misclassification, where the leading flag was mistaken for the verb.
+    _redirect_dirs, tokens = _parse_git_prefix(tokens)
     if not tokens:
         return False
     verb = tokens[0].lower()
@@ -360,56 +463,74 @@ def is_mutating_gh_segment(segment: str) -> bool:
     return False
 
 
-def classify(cmd: str, segments: list = None):
-    """Return the first mutating segment in `cmd`, or None if none found.
+def _segment_redirect_dirs(segment: str) -> list:
+    """The `-C`/`--git-dir`/`--work-tree` directory hints on a git segment's
+    first physical line (`_first_line()`, via `_git_rest_tokens()`, so a
+    heredoc/`$(...)` body mention can't inject a spurious redirect). Returns
+    `[]` for a non-git segment or a git segment with no redirect flag.
+    """
+    tokens = _git_rest_tokens(segment)
+    if not tokens:
+        return []
+    dirs, _rest = _parse_git_prefix(tokens)
+    return dirs
+
+
+def find_mutating_segments(cmd: str, segments: list = None) -> list:
+    """Return an ordered list of mutating-segment descriptors, or `[]`.
 
     Segments come from the shared `_hookio.split_top_level(cmd,
     split_pipe=True)` engine (dev-env#511, ADR-050 Amendment 7) — see that
     function's own docstring for exactly how it splits (quote/subshell/
-    heredoc-aware, not a plain regex) and the module docstring's step 3
-    above for the consequences specific to this hook.
+    heredoc-aware, not a plain regex) and the module docstring's step 3 above
+    for the consequences specific to this hook. *segments*, when already
+    computed by the caller (`main()` passes the same list it hands
+    `_has_override()`, avoiding a redundant re-parse of `cmd` per Bash call),
+    is used as-is; otherwise it is computed here.
 
-    *segments*, when already computed by the caller (`main()` passes the same
-    list it also hands `_has_override()`, avoiding a redundant re-parse of
-    `cmd` per Bash call), is used as-is; otherwise it is computed here. Tests
-    and other direct callers can keep passing just `cmd`.
+    Each descriptor is `{"segment": <stripped str>, "redirect_dirs": [<dir>...]}`:
+      - `redirect_dirs == []`  -> the segment mutates the *ambient* repo (cwd's);
+        `main()` blocks it iff cwd is a canonical (non-worktree) root — the
+        original pre-#576 behavior.
+      - `redirect_dirs != []`  -> the segment redirects at another repo via
+        `-C`/`--git-dir`/`--work-tree`; `main()` resolves each dir and blocks
+        iff any resolves to a canonical (non-worktree) root that isn't
+        carve-out-exempt (dev-env#576).
 
-    Two distinct redirect shapes, both out of scope for this hook's cwd-based
-    check (documented v1 gap), handled at different granularities on top of
-    that segment list:
-
-      - A bare `cd <path>` in ANY segment persists for the rest of the shell
-        invocation (that's what `&&`-chaining a `cd` means) — every later
-        segment actually executes in that other directory, not `cwd`. Once a
-        `cd` appears anywhere in the command, the whole command is out of
-        scope: exit early with None rather than flagging a later segment
-        whose real execution directory this hook cannot determine. The cd
-        check runs against the env-stripped segment (same helper
-        `is_mutating_segment` uses) so `FOO=1 cd /tmp && git checkout -b x`
-        is still recognized as a cd-redirect — an unstripped match would miss
-        it and let the checkout get falsely blocked even though it targets
-        `/tmp`, not the canonical root.
-      - `git -C <path>` / `git --git-dir=<path>` redirects only the single
-        git invocation it appears on — that segment alone is skipped; other
-        segments in the same command are still classified normally. Checked
-        against only the segment's first physical line (`_first_line()`) —
-        `_REDIRECT_RE.search()` is unanchored, so without this a commit whose
-        heredoc body merely *mentions* "git -C /somewhere" as prose text
-        would be wrongly treated as redirected to another repo and skipped,
-        letting a real mutating commit through unblocked (dev-env#511
-        follow-up, caught in /review — see `_first_line()`'s docstring).
+    Pure/offline by construction: extracting the dirs is string work; the git
+    subprocess that resolves them to canonical roots is deliberately the
+    CALLER's (`main()`'s) job, so the pure-function test layer never shells
+    out. A bare `cd <path>` in ANY segment persists across the rest of the
+    shell invocation (that's what `&&`-chaining a `cd` means), so a later
+    segment's real execution directory is unknown, not `cwd` — the whole
+    command is taken out of scope (`[]`). The cd check runs against the
+    env-stripped segment (same helper `is_mutating_segment` uses) so
+    `FOO=1 cd /tmp && git checkout -b x` is still recognized as a cd-redirect.
     """
     if segments is None:
         segments = split_top_level(cmd, split_pipe=True)
     for seg in segments:
         if _CD_RE.match(_strip_leading_env(seg)):
-            return None  # cd persists across the rest of the command — out of scope entirely
+            return []  # cd persists across the rest of the command — out of scope entirely
+    out = []
     for seg in segments:
-        if _REDIRECT_RE.search(_first_line(seg)):
-            continue
         if is_mutating_segment(seg) or is_mutating_gh_segment(seg):
-            return seg.strip()
-    return None
+            out.append({"segment": seg.strip(), "redirect_dirs": _segment_redirect_dirs(seg)})
+    return out
+
+
+def classify(cmd: str, segments: list = None):
+    """First mutating segment string in `cmd`, or None if none found.
+
+    Compatibility wrapper over `find_mutating_segments()` for tests and direct
+    callers that only need the matched segment text. cwd-agnostic and offline:
+    "mutating" here means "contains a mutating git/gh verb", NOT "blockable" —
+    whether a match is actually blocked depends on cwd- and redirect-target
+    resolution, which is `main()`'s job (`main()` calls `find_mutating_segments`
+    directly so it can inspect each segment's redirect dirs).
+    """
+    matches = find_mutating_segments(cmd, segments)
+    return matches[0]["segment"] if matches else None
 
 
 def _has_override(cmd: str, segments: list = None) -> bool:
@@ -460,6 +581,66 @@ def _resolve_git_toplevel(cwd: str):
     return top or None
 
 
+def _basename(path: str) -> str:
+    """Last path segment of `path`, tolerant of both `/` and `\\` separators
+    (git rev-parse emits `/`, but a Windows cwd may carry `\\`)."""
+    return path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+
+
+def _is_allowlisted_root(root: str) -> bool:
+    """True if `root` (a resolved canonical toplevel) is on the temporary
+    redirect-target carve-out — currently only the engineering-journal
+    canonical checkout. See `_REDIRECT_TARGET_ALLOWLIST`."""
+    return _basename(root).lower() in _REDIRECT_TARGET_ALLOWLIST
+
+
+def _blockable_redirect_root(redirect_dirs: list):
+    """Resolve each `-C`/`--git-dir`/`--work-tree` dir hint and return the first
+    that lands on a canonical (non-worktree) root NOT on the carve-out, or None.
+
+    A dir that resolves to a worktree (target is itself isolated — fine), to a
+    carve-out-exempt root (the journal), or that git can't resolve at all
+    (fail-open) is skipped. This is the git-subprocess half that
+    `find_mutating_segments()` deliberately leaves to the caller.
+    """
+    for d in redirect_dirs:
+        root = _resolve_git_toplevel(d)
+        if root and not _WORKTREE_RE.search(root) and not _is_allowlisted_root(root):
+            return root
+    return None
+
+
+def _emit_block(matched: str, root: str) -> None:
+    """Write the blocking `{"reason": ...}` JSON to stderr and exit 2.
+
+    stderr, not stdout: Claude Code discards a PreToolUse hook's stdout on exit
+    code 2 and surfaces only stderr to the model — matching the working pattern
+    in career-playbook's block-artifact-merge.py / block-letter-violations.py.
+    """
+    reason = (
+        f"[canonical-mutate-guard] BLOCKED: a command that mutates local git state in a "
+        f"canonical (non-worktree) checkout was issued. Two Claude Code sessions sharing one "
+        f"canonical checkout can collide — one session's checkout/commit/reset silently "
+        f"thrashes HEAD out from under another concurrent session, scrambling commit "
+        f"attribution or risking a stale-branch PR reverting the other session's already-"
+        f"merged work. A shared checkout also shares (and can exhaust) the GitHub API "
+        f"rate limit. See dev-env#453 for the two motivating incidents; dev-env#576 for the "
+        f"-C/--git-dir/--work-tree redirect-into-canonical extension (the Root below may be a "
+        f"checkout reached via a redirect flag, not cwd).\n"
+        f"\n"
+        f"  Command : {matched}\n"
+        f"  Root    : {root}\n"
+        f"\n"
+        f"Remedies:\n"
+        f"  1. Isolate into a worktree — EnterWorktree, or a worktree of the target repo:\n"
+        f"     git -C {root} worktree add <path> -b <branch> origin/main\n"
+        f"  2. If you've confirmed no other session is active in this checkout, override:\n"
+        f"     ALLOW_CANONICAL_MUTATE=1 {matched}"
+    )
+    sys.stderr.write(json.dumps({"reason": reason}) + "\n")
+    sys.exit(2)
+
+
 def main() -> None:
     raw = sys.stdin.read().strip()
     if not raw:
@@ -480,54 +661,63 @@ def main() -> None:
     if not cwd:
         sys.exit(0)  # missing/empty cwd -> can't determine scope -> fail open
 
-    if _WORKTREE_RE.search(cwd):
-        sys.exit(0)  # inside a worktree — out of scope, ADR-024 covers this surface
+    # NOTE (dev-env#576): a worktree cwd is NO LONGER an unconditional early
+    # exit. A command issued from a worktree that redirects a mutating git verb
+    # at a *canonical* checkout via -C/--git-dir/--work-tree (the incident:
+    # `git -C <journal> pull` from a project worktree) must still be evaluated.
+    # A worktree cwd with NO such redirect is cleared cheaply below, preserving
+    # the pre-#576 zero-friction path for ordinary in-worktree work.
+    cwd_is_worktree = bool(_WORKTREE_RE.search(cwd))
 
     cmd = (data.get("tool_input") or {}).get("command", "") or ""
     if not cmd:
         sys.exit(0)
 
-    # Parsed once and handed to both classify() and _has_override() below —
-    # each independently accepts a bare `cmd` for tests/direct callers, but
-    # main() is the actual per-Bash-invocation hot path and both calls would
+    # Parsed once and reused by find_mutating_segments() and _has_override()
+    # below — main() is the per-Bash-invocation hot path and both would
     # otherwise re-run the same O(n) parse over the same string.
     segments = split_top_level(cmd, split_pipe=True)
 
-    matched = classify(cmd, segments)
-    if matched is None:
-        sys.exit(0)  # no mutating segment found
+    matches = find_mutating_segments(cmd, segments)
+    if not matches:
+        sys.exit(0)  # no mutating segment at all
+
+    # A worktree cwd with no redirecting mutating segment mutates only the
+    # worktree itself — fine, and cleared before any git subprocess (the common
+    # in-worktree case stays zero-cost beyond the pure parse above).
+    if cwd_is_worktree and not any(m["redirect_dirs"] for m in matches):
+        sys.exit(0)
 
     if _has_override(cmd, segments):
         sys.exit(0)  # explicit, visible human override (anchored prefix, not a substring mention)
 
-    canonical_root = _resolve_git_toplevel(cwd)
-    if canonical_root is None:
-        sys.exit(0)  # not a git repo at all / git unavailable -> fail open
+    # Resolve cwd's own canonical root lazily — only when an ambient
+    # (no-redirect) mutating segment actually needs it.
+    cwd_root = None
+    cwd_root_resolved = False
 
-    reason = (
-        f"[canonical-mutate-guard] BLOCKED: a command that mutates local git state was "
-        f"issued directly in a canonical (non-worktree) checkout. Two Claude Code sessions sharing one "
-        f"canonical checkout can collide — one session's checkout/commit/reset silently "
-        f"thrashes HEAD out from under another concurrent session, scrambling commit "
-        f"attribution or risking a stale-branch PR reverting the other session's already-"
-        f"merged work. A shared checkout also shares (and can exhaust) the GitHub API "
-        f"rate limit. See dev-env#453 for the two motivating incidents.\n"
-        f"\n"
-        f"  Command : {matched}\n"
-        f"  Root    : {canonical_root}\n"
-        f"\n"
-        f"Remedies:\n"
-        f"  1. Isolate into a worktree — EnterWorktree, or:\n"
-        f"     git -C {canonical_root} worktree add <path> -b <branch> origin/main\n"
-        f"  2. If you've confirmed no other session is active in this checkout, override:\n"
-        f"     ALLOW_CANONICAL_MUTATE=1 {matched}"
-    )
-    # Claude Code discards stdout on a PreToolUse hook exit code 2 — only
-    # stderr is surfaced to the model. Write there, matching the working
-    # pattern in career-playbook's block-artifact-merge.py /
-    # block-letter-violations.py.
-    sys.stderr.write(json.dumps({"reason": reason}) + "\n")
-    sys.exit(2)
+    for m in matches:
+        if m["redirect_dirs"]:
+            # Redirect mutation: blockable iff a target resolves to a canonical
+            # (non-worktree, non-carve-out) root — regardless of cwd.
+            block_root = _blockable_redirect_root(m["redirect_dirs"])
+        elif cwd_is_worktree:
+            # Ambient mutation inside a worktree targets the worktree itself — fine.
+            continue
+        else:
+            # Ambient mutation with a non-worktree cwd: blockable iff cwd
+            # resolves to a canonical root (it already failed the worktree
+            # pattern, so any resolved toplevel *is* canonical by construction).
+            if not cwd_root_resolved:
+                cwd_root = _resolve_git_toplevel(cwd)
+                cwd_root_resolved = True
+            block_root = cwd_root  # None -> not a git repo / git unavailable -> fail open
+
+        if block_root is None:
+            continue  # this match isn't blockable — keep scanning later segments
+        _emit_block(m["segment"], block_root)  # writes stderr JSON + exit 2
+
+    sys.exit(0)  # no blockable match found
 
 
 if __name__ == "__main__":

@@ -10,8 +10,10 @@ no worktrees needed):
      explicitly-allowed read-only surface (status, log, diff, show, fetch,
      branch --show-current, rev-parse, ls-tree, blame, remote -v, plain
      branch, stash list/show, checkout -- <path>, pull --ff-only), plus the
-     segment-split/anchor and redirect-skip behavior (career-playbook #442
-     heredoc-mention lesson; `cd`/`-C`/`--git-dir` redirects are out of scope;
+     segment-split/anchor and redirect behavior (career-playbook #442
+     heredoc-mention lesson; a bare `cd` is out of scope, while
+     `-C`/`--git-dir`/`--work-tree` targets are captured and resolved against
+     the canonical-root check per dev-env#576;
      dev-env#481 heredoc-command-substitution-body exclusion — a body line
      that itself STARTS with a mutating verb or the override token inside a
      `$(cat <<'MARKER' ... MARKER)` span, applied to both classify() and
@@ -42,8 +44,9 @@ no worktrees needed):
      the convergence introduced: `split_top_level`'s heredoc/subshell opacity
      means a segment can now span multiple physical lines, which
      `is_mutating_segment()`'s `$`-anchored, non-DOTALL `_GIT_INVOCATION_RE`
-     and `classify()`'s unanchored `_REDIRECT_RE.search()` were never
-     designed for — a real `git commit -m "$(cat <<'EOF' ...)"` (this repo's
+     (and, since dev-env#576, the redirect-dir capture now in
+     `_parse_git_prefix`, historically an unanchored `_REDIRECT_RE.search()`)
+     were never designed for — a real `git commit -m "$(cat <<'EOF' ...)"` (this repo's
      own documented commit-message idiom) silently failed to match at all,
      and a real commit whose heredoc body merely *mentioned* "git -C
      /somewhere" as prose was wrongly treated as redirected to another repo
@@ -562,28 +565,37 @@ def test_cd_redirect_takes_whole_command_out_of_scope() -> str:
     return f"{len(cases)} cd-redirect commands correctly out of scope in full (not just the cd segment)"
 
 
-def test_dashC_redirect_only_skips_its_own_segment() -> str:
-    """`git -C <path>` / `git --git-dir=<path>` redirects only the single git
-    invocation carrying the flag — unlike `cd`, it does not change the shell's
-    directory for later segments, so a DIFFERENT, non-redirected mutating
-    segment elsewhere in the same command must still be caught.
+def test_dashC_redirect_captured_and_classified() -> str:
+    """dev-env#576: `git -C <path>` / `git --git-dir=<path>` /
+    `git --work-tree=<path>` are no longer skipped. The invocation is now
+    recognized as mutating (classify() returns the segment) AND its target dir
+    is captured by _segment_redirect_dirs() so main() can resolve it and apply
+    the canonical-root check to the *target*. `--git-dir=<path>/.git` is
+    normalized to its parent (the worktree top). The pre-#576 behavior asserted
+    the opposite (classify() returned None for these) — that was the gap.
     """
-    only_redirect_cases = [
-        "git -C C:/Users/brown/Git/dev-env checkout -b foo",
-        "git --git-dir=C:/Users/brown/Git/dev-env/.git checkout -b foo",
+    redirect_cases = [
+        ("git -C C:/Users/brown/Git/dev-env checkout -b foo", "C:/Users/brown/Git/dev-env"),
+        ("git --git-dir=C:/Users/brown/Git/dev-env/.git checkout -b foo", "C:/Users/brown/Git/dev-env"),
+        ("git --work-tree=C:/Users/brown/Git/dev-env commit -m x", "C:/Users/brown/Git/dev-env"),
     ]
-    for cmd in only_redirect_cases:
+    for cmd, expected_dir in redirect_cases:
         matched = cmg.classify(cmd)
-        if matched is not None:
-            raise AssertionError(f"-C/--git-dir segment should be skipped, got {matched!r} for {cmd!r}")
+        if matched is None:
+            raise AssertionError(f"a -C/--git-dir/--work-tree mutating invocation must classify, got None for {cmd!r}")
+        dirs = cmg._segment_redirect_dirs(cmd)
+        if expected_dir not in dirs:
+            raise AssertionError(f"expected redirect dir {expected_dir!r} captured for {cmd!r}, got {dirs!r}")
 
+    # A DIFFERENT, non-redirected mutating segment after a read-only -C segment
+    # is still caught (find_mutating_segments returns the first mutating one).
     mixed = "git -C C:/Users/brown/Git/dev-env status && git checkout -b foo"
     matched = cmg.classify(mixed)
     if matched is None or "checkout" not in matched:
         raise AssertionError(
-            f"a non-redirected mutating segment after a -C segment must still be caught, got {matched!r}"
+            f"a non-redirected mutating segment after a read-only -C segment must still be caught, got {matched!r}"
         )
-    return "git -C/--git-dir skips only its own segment; other segments still classified"
+    return "git -C/--git-dir/--work-tree redirect target captured + classified (dev-env#576)"
 
 
 def test_flag_prefixed_stash_pop_apply_classified_as_mutating() -> str:
@@ -688,6 +700,88 @@ def test_resolve_git_toplevel_failsopen_on_timeout_and_oserror() -> str:
     return "_resolve_git_toplevel returns None on both TimeoutExpired and OSError (fail-open guarantee)"
 
 
+def test_parse_git_prefix_captures_redirect_dirs() -> str:
+    """dev-env#576: `_parse_git_prefix` walks git-level options — the existing
+    `-c <v>` / `--no-optional-locks` set PLUS the new redirect flags — leaving
+    the real verb at remaining[0] and capturing every -C/--git-dir/--work-tree
+    target dir (both `=` and space forms; `--git-dir=.../.git` -> its parent).
+    """
+    cases = [
+        (["-C", "/repo", "checkout", "-b", "x"], ["/repo"], ["checkout", "-b", "x"]),
+        (["--git-dir=/repo/.git", "status"], ["/repo"], ["status"]),
+        (["--git-dir", "/repo/.git", "status"], ["/repo"], ["status"]),
+        (["--work-tree=/wt", "commit"], ["/wt"], ["commit"]),
+        (["--work-tree", "/wt", "commit"], ["/wt"], ["commit"]),
+        (["-C", "/a", "--work-tree=/b", "checkout"], ["/a", "/b"], ["checkout"]),
+        (["-c", "gc.auto=0", "stash", "pop"], [], ["stash", "pop"]),
+        (["--no-optional-locks", "stash", "apply"], [], ["stash", "apply"]),
+        (["commit", "-m", "x"], [], ["commit", "-m", "x"]),
+    ]
+    for tokens, want_dirs, want_rest in cases:
+        dirs, rest = cmg._parse_git_prefix(list(tokens))
+        if dirs != want_dirs or rest != want_rest:
+            raise AssertionError(
+                f"_parse_git_prefix({tokens!r}) = ({dirs!r}, {rest!r}), want ({want_dirs!r}, {want_rest!r})"
+            )
+    return f"{len(cases)} _parse_git_prefix cases capture redirect dirs + expose the real verb"
+
+
+def test_work_tree_and_git_dir_redirect_classified_as_mutating() -> str:
+    """dev-env#576: before this fix `git --work-tree=<path> commit` misclassified
+    as NON-mutating (the leading flag was mistaken for the verb, silently falling
+    through to the default `False`). The redirect flags are now consumed as
+    git-level options so the real verb (`commit`/`checkout`) is classified.
+    """
+    cases = [
+        "git --work-tree=C:/Users/brown/Git/dev-env commit -m x",
+        "git --work-tree C:/Users/brown/Git/dev-env checkout -b foo",
+        "git -C C:/Users/brown/Git/dev-env checkout -b foo",
+        "git --git-dir=C:/Users/brown/Git/dev-env/.git reset --hard",
+    ]
+    for cmd in cases:
+        if not cmg.is_mutating_segment(cmd):
+            raise AssertionError(f"redirect-flagged mutating invocation should classify as mutating: {cmd!r}")
+    # A redirect-flagged READ-ONLY verb stays non-mutating.
+    if cmg.is_mutating_segment("git -C C:/Users/brown/Git/dev-env status"):
+        raise AssertionError("git -C <path> status must stay non-mutating")
+    return f"{len(cases)} redirect-flagged mutating invocations classified (dev-env#576 --work-tree fix)"
+
+
+def test_segment_redirect_dirs_first_line_only() -> str:
+    """`_segment_redirect_dirs` reads only the segment's first physical line
+    (via `_git_rest_tokens`/`_first_line`), so a heredoc body that merely
+    *mentions* `git -C /tmp` as prose cannot inject a spurious redirect target
+    into a real (ambient) commit — the same anchoring guarantee is_mutating_segment
+    relies on.
+    """
+    if cmg._segment_redirect_dirs("git -C /repo checkout -b x") != ["/repo"]:
+        raise AssertionError("expected ['/repo'] captured from a first-line -C redirect")
+    heredoc_commit = 'git commit -m "$(cat <<\'EOF\'\nsee git -C /tmp status for context\nEOF\n)"'
+    dirs = cmg._segment_redirect_dirs(heredoc_commit)
+    if dirs:
+        raise AssertionError(f"a heredoc-body -C mention must not be captured as a redirect, got {dirs!r}")
+    return "_segment_redirect_dirs captures first-line redirects only, ignores heredoc-body mentions"
+
+
+def test_is_allowlisted_root_journal_carveout() -> str:
+    """dev-env#576 carve-out: a redirect target whose resolved toplevel basename
+    is `engineering-journal` is exempt (matched by basename, `/` or `\\`
+    separators), while every other repo is not.
+    """
+    exempt = [
+        "C:/Users/brown/Git/engineering-journal",
+        "C:\\Users\\brown\\Git\\engineering-journal",
+        "C:/Users/brown/Git/engineering-journal/",
+    ]
+    for root in exempt:
+        if not cmg._is_allowlisted_root(root):
+            raise AssertionError(f"expected {root!r} to be carve-out-exempt")
+    for root in ("C:/Users/brown/Git/career-playbook", "C:/Users/brown/Git/dev-env", "C:/x/engineering-journal-notes"):
+        if cmg._is_allowlisted_root(root):
+            raise AssertionError(f"{root!r} must NOT be carve-out-exempt")
+    return "engineering-journal redirect target is carve-out-exempt; other repos are not"
+
+
 def main_unit() -> list:
     return [
         ("mutating verbs classified as mutating", test_mutating_verbs_classified_as_mutating),
@@ -714,12 +808,16 @@ def main_unit() -> list:
         ("DOTALL alternative would have been wrong (dev-env#511 follow-up)", test_dotall_alternative_would_have_been_wrong),
         ("env-prefixed mutating command still classified", test_env_prefixed_mutating_command_still_classified),
         ("cd redirect takes whole command out of scope", test_cd_redirect_takes_whole_command_out_of_scope),
-        ("-C/--git-dir redirect skips only its own segment", test_dashC_redirect_only_skips_its_own_segment),
+        ("-C/--git-dir/--work-tree redirect captured + classified (dev-env#576)", test_dashC_redirect_captured_and_classified),
         ("flag-prefixed stash pop/apply classified as mutating", test_flag_prefixed_stash_pop_apply_classified_as_mutating),
         ("env-prefixed cd recognized as redirect", test_env_prefixed_cd_recognized_as_redirect),
         ("override anchored prefix bypasses", test_override_anchored_prefix_bypasses),
         ("override mention-only does not bypass", test_override_mention_only_does_not_bypass),
         ("_resolve_git_toplevel fails open on timeout/OSError", test_resolve_git_toplevel_failsopen_on_timeout_and_oserror),
+        ("_parse_git_prefix captures redirect dirs (dev-env#576)", test_parse_git_prefix_captures_redirect_dirs),
+        ("--work-tree/--git-dir/-C redirect classified as mutating (dev-env#576)", test_work_tree_and_git_dir_redirect_classified_as_mutating),
+        ("_segment_redirect_dirs first-line only (dev-env#576)", test_segment_redirect_dirs_first_line_only),
+        ("_is_allowlisted_root journal carve-out (dev-env#576)", test_is_allowlisted_root_journal_carveout),
     ]
 
 
@@ -998,9 +1096,12 @@ def test_main_allows_pull_ff_only_blocks_bare_pull() -> str:
 
 
 def test_main_allows_any_command_from_worktree_cwd() -> str:
-    """cwd matching the worktree pattern is entirely out of scope — even a
-    mutating command is allowed, since ADR-024's hook covers the worktree
-    surface and this hook's whole purpose is the non-worktree case.
+    """An *ambient* (no -C/--git-dir/--work-tree redirect) mutating command from
+    a worktree-pattern cwd is allowed — it targets the worktree itself, which is
+    fine, and ADR-024's hook covers that surface. Since dev-env#576 this is no
+    longer "entirely out of scope": a worktree command that redirects a mutating
+    verb at a *canonical* checkout IS evaluated (see
+    test_main_blocks_redirect_into_canonical_from_worktree_cwd below).
     """
     with tempfile.TemporaryDirectory() as tmp:
         wt = Path(tmp) / ".claude" / "worktrees" / "some-worktree-name"
@@ -1017,7 +1118,7 @@ def test_main_allows_any_command_from_worktree_cwd() -> str:
                 f"expected exit 0 (out of scope) from worktree cwd, got {proc.returncode}. "
                 f"stdout={proc.stdout!r}"
             )
-    return "mutating command from a worktree-pattern cwd allowed (out of scope, exit 0)"
+    return "ambient (no-redirect) mutating command from a worktree-pattern cwd allowed (exit 0)"
 
 
 def test_main_override_token_bypasses_block() -> str:
@@ -1153,6 +1254,169 @@ def test_main_empty_stdin_noop() -> str:
     return "empty stdin is a no-op (exit 0)"
 
 
+def test_main_blocks_redirect_into_canonical_from_worktree_cwd() -> str:
+    """dev-env#576 core case: a mutating verb redirected at a *canonical*
+    checkout via `git -C <canonical>` — issued from a WORKTREE cwd (the exact
+    incident shape: `git -C <other-repo> checkout` from a project worktree) — is
+    now BLOCKED (exit 2), where the pre-#576 worktree short-circuit allowed it.
+    The reason names the resolved TARGET root, not cwd.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "canonical-target"
+        target.mkdir()
+        _init_throwaway_repo(target)
+        wt = Path(tmp) / ".claude" / "worktrees" / "some-worktree-name"
+        wt.mkdir(parents=True)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {target} checkout -b some-branch"},
+            "cwd": str(wt),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (block redirect into canonical), got {proc.returncode}. "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+        if proc.stdout.strip():
+            raise AssertionError(f"expected empty stdout (reason must go to stderr), got {proc.stdout!r}")
+        reason = json.loads(proc.stderr).get("reason", "")
+        if "canonical-target" not in reason:
+            raise AssertionError(f"block reason must name the resolved target root, got {reason!r}")
+    return "git -C <canonical> mutating verb from a worktree cwd blocked, target named (dev-env#576)"
+
+
+def test_main_allows_redirect_into_journal_carveout_from_worktree_cwd() -> str:
+    """dev-env#576 carve-out: a `git -C <engineering-journal> pull` from a
+    worktree cwd stays ALLOWED (exit 0) — the documented stub workflow mutates
+    the shared journal canonical checkout this way on every PR open/merge, and
+    blocking it would force ALLOW_CANONICAL_MUTATE=1 onto an automated path.
+    Matched by the resolved-toplevel basename `engineering-journal`.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        journal = Path(tmp) / "engineering-journal"
+        journal.mkdir()
+        _init_throwaway_repo(journal)
+        wt = Path(tmp) / ".claude" / "worktrees" / "some-worktree-name"
+        wt.mkdir(parents=True)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {journal} pull"},
+            "cwd": str(wt),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"expected exit 0 (journal carve-out), got {proc.returncode}. stderr={proc.stderr!r}"
+            )
+    return "git -C <engineering-journal> pull from a worktree cwd allowed (carve-out, dev-env#576)"
+
+
+def test_main_allows_redirect_into_worktree_target() -> str:
+    """A `git -C <target>` whose target resolves to a WORKTREE (not a canonical
+    root) is allowed — the target is itself isolated, so no shared-checkout
+    collision. Proves the block keys off the target's canonical-ness, not merely
+    the presence of a redirect flag.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        cwd_repo = Path(tmp) / "canonical-cwd"
+        cwd_repo.mkdir()
+        _init_throwaway_repo(cwd_repo)
+        wt_target = Path(tmp) / ".claude" / "worktrees" / "wt-target"
+        wt_target.mkdir(parents=True)
+        _init_throwaway_repo(wt_target)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {wt_target} checkout -b x"},
+            "cwd": str(cwd_repo),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"expected exit 0 (target is a worktree), got {proc.returncode}. stderr={proc.stderr!r}"
+            )
+    return "git -C <worktree> mutating verb allowed (target is not a canonical root, dev-env#576)"
+
+
+def test_main_blocks_redirect_into_other_canonical_from_canonical_cwd() -> str:
+    """The `_REDIRECT_RE` backstop case: a session in canonical repo A that runs
+    `git -C <canonical repo B> checkout` — the pre-#576 segment-skip let this
+    through even from a non-worktree cwd. Now BLOCKED (exit 2).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_a = Path(tmp) / "canonical-a"
+        repo_a.mkdir()
+        _init_throwaway_repo(repo_a)
+        repo_b = Path(tmp) / "canonical-b"
+        repo_b.mkdir()
+        _init_throwaway_repo(repo_b)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {repo_b} checkout -b x"},
+            "cwd": str(repo_a),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (redirect into other canonical), got {proc.returncode}. stderr={proc.stderr!r}"
+            )
+    return "git -C <other canonical> from a canonical cwd blocked (dev-env#576)"
+
+
+def test_main_blocks_work_tree_redirect_into_canonical() -> str:
+    """The previously-misclassified form: `git --work-tree=<canonical> commit`.
+    Before dev-env#576 the leading flag was mistaken for the verb (classified
+    non-mutating, never blocked). Now the flag is consumed, `commit` is the verb,
+    the target resolves to a canonical root, and it is BLOCKED (exit 2).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "canonical-wt-target"
+        target.mkdir()
+        _init_throwaway_repo(target)
+        wt = Path(tmp) / ".claude" / "worktrees" / "some-worktree-name"
+        wt.mkdir(parents=True)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git --work-tree={target} commit -m x"},
+            "cwd": str(wt),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (--work-tree into canonical), got {proc.returncode}. stderr={proc.stderr!r}"
+            )
+    return "git --work-tree=<canonical> commit blocked (dev-env#576 --work-tree fix)"
+
+
+def test_main_override_bypasses_redirect_block() -> str:
+    """The `ALLOW_CANONICAL_MUTATE=1` override bypasses a redirect-into-canonical
+    block exactly like an ambient block — a deliberate, visible human override.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "canonical-target"
+        target.mkdir()
+        _init_throwaway_repo(target)
+        wt = Path(tmp) / ".claude" / "worktrees" / "some-worktree-name"
+        wt.mkdir(parents=True)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f"ALLOW_CANONICAL_MUTATE=1 git -C {target} checkout -b x"},
+            "cwd": str(wt),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"expected exit 0 (override applied), got {proc.returncode}. stderr={proc.stderr!r}"
+            )
+    return "ALLOW_CANONICAL_MUTATE=1 bypasses a -C-into-canonical block (dev-env#576)"
+
+
 def main_e2e() -> list:
     return [
         ("main() blocks mutating command from canonical root", test_main_blocks_mutating_command_from_canonical_root),
@@ -1166,6 +1430,12 @@ def main_e2e() -> list:
         ("main() allows pull --ff-only, blocks bare pull", test_main_allows_pull_ff_only_blocks_bare_pull),
         ("main() allows any command from worktree cwd", test_main_allows_any_command_from_worktree_cwd),
         ("main() override token bypasses block", test_main_override_token_bypasses_block),
+        ("main() blocks -C into canonical from worktree cwd (dev-env#576)", test_main_blocks_redirect_into_canonical_from_worktree_cwd),
+        ("main() allows -C into journal carve-out from worktree cwd (dev-env#576)", test_main_allows_redirect_into_journal_carveout_from_worktree_cwd),
+        ("main() allows -C into worktree target (dev-env#576)", test_main_allows_redirect_into_worktree_target),
+        ("main() blocks -C into other canonical from canonical cwd (dev-env#576)", test_main_blocks_redirect_into_other_canonical_from_canonical_cwd),
+        ("main() blocks --work-tree into canonical (dev-env#576)", test_main_blocks_work_tree_redirect_into_canonical),
+        ("main() override bypasses redirect block (dev-env#576)", test_main_override_bypasses_redirect_block),
         ("main() fails open on non-git cwd", test_main_failsopen_on_nongit_cwd),
         ("main() fails open on malformed JSON", test_main_failsopen_on_malformed_json),
         ("main() fails open on non-dict JSON", test_main_failsopen_on_nondict_json),

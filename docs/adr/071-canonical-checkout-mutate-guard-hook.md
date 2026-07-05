@@ -367,3 +367,137 @@ All 38 pre-existing tests in that file continue to pass unchanged. The AST-based
 `test_no_crude_command_substring_checks.py` repo-wide gate (dev-env#534/#539, ADR-050 Amendment 11) was
 also re-run and passes — the new classifier uses tokenized parsing (`rest.split()` + membership checks
 against `_GH_DELETE_BRANCH_FLAGS`), not a crude `"<literal>" in command` substring test.
+
+---
+
+## Amendment 2 (2026-07-05) — resolve a `-C`/`--git-dir`/`--work-tree` redirect target and apply the canonical-root check to it, not just cwd (dev-env#576)
+
+### The gap
+
+The original hook is **cwd-centric**: it blocks a mutating verb only when *cwd itself* resolves to a
+canonical (non-worktree) checkout. A command that mutates a *different* canonical checkout via a
+`git -C <path>` / `--git-dir=<path>` / `--work-tree=<path>` redirect was let through by **two
+independent mechanisms**, both confirmed by reading the deciding code:
+
+1. **Worktree short-circuit.** `main()` ran `if _WORKTREE_RE.search(cwd): sys.exit(0)` as its first
+   substantive check, so a worktree cwd exited 0 *before the command was ever parsed*.
+2. **`_REDIRECT_RE` segment-skip.** Even from a non-worktree cwd, `classify()` matched `git -C <path>`
+   / `git --git-dir=<path>` and `continue`d, deliberately skipping the segment without ever resolving
+   the target. (`--work-tree=` was not even in `_REDIRECT_RE`, and `git --work-tree=<path> commit`
+   separately misclassified as non-mutating — the verb detector saw the leading flag, not `commit`.)
+
+Both the original module docstring and this ADR's "Both redirect shapes are still an unresolved v1
+gap" judgment call documented this as a deliberate v1 deferral, framed as *"extend if it recurs in
+practice."*
+
+### The incident (the recurrence)
+
+**[dev-env#576](https://github.com/brownm09/dev-env/issues/576)** (2026-07-05): during engineering-journal
+bookkeeping from a win11-init-tools **worktree**, `git -C C:/Users/brown/Git/engineering-journal pull`
+ran un-blocked while another concurrent session was actively mutating that same shared canonical
+journal checkout (its branch flipped `draft/2026-07-03` → `draft/2026-07-02` between two read-only
+checks seconds apart, with a large uncommitted stub/manifest set). No damage — git's own "local
+changes would be overwritten" safety aborted the pull — but the guard that exists to prevent exactly
+this collision never fired. This is the "recurs in practice" trigger the v1 deferral named. (Same
+command shape as **[dev-env#573](https://github.com/brownm09/dev-env/issues/573)**, a *distinct*
+harness cwd-tracking bug; this fix incidentally blocks the mutating cross-repo command that triggers
+#573's cwd revert.)
+
+### The fix — make the guard target-aware
+
+- **`_parse_git_prefix(tokens)`** replaces `_skip_git_level_flags`: it walks the same git-level options
+  (`-c <v>`, `--no-optional-locks`, …) **and** the redirect flags `-C`/`--git-dir`/`--work-tree` (both
+  `=` and space forms), returning `(redirect_dirs, remaining_tokens)`. Consuming the redirect flags as
+  git-level options simultaneously fixes the `--work-tree=` misclassification (the real verb now lands
+  at `tokens[0]`) and captures the target dir. `--git-dir=…/.git` is normalized to its parent (the
+  worktree top).
+- **`find_mutating_segments()`** replaces `classify()`'s single-match return with an ordered list of
+  `{"segment", "redirect_dirs"}` descriptors, staying pure/offline: it captures the redirect dirs by
+  string work only. Resolving them to canonical roots (a `git rev-parse` subprocess) is deliberately
+  the caller's (`main()`'s) job, so the pure-function test layer never shells out. `classify()` remains
+  as a thin compatibility wrapper (first mutating segment string) for the pure tests.
+- **`main()`** no longer blanket-exits on a worktree cwd. A worktree cwd with **no** redirecting
+  mutating segment is cleared cheaply (the common in-worktree case, still subprocess-free); a worktree
+  cwd **with** such a redirect falls through. For each mutating segment: an *ambient* (no-redirect)
+  segment is blockable iff cwd is canonical (the original behavior); a *redirect* segment is blockable
+  iff a target resolves — via `_blockable_redirect_root()` — to a canonical (non-worktree) root that is
+  not carve-out-exempt, **regardless of cwd**. The `ALLOW_CANONICAL_MUTATE=1` override and all fail-open
+  paths are unchanged.
+
+### The journal carve-out (`_REDIRECT_TARGET_ALLOWLIST`) — and reconciliation with ADR-082
+
+The documented engineering-journal stub workflow (global `CLAUDE.md` Engineering Journal section +
+[ADR-066](066-worktree-session-safety-rules.md)) **automatically** runs
+`git -C <journal-canonical> checkout/commit/pull` on every PR open/merge. A naive "resolve the target,
+block if canonical" would block that automated path, forcing `ALLOW_CANONICAL_MUTATE=1` onto it —
+untenable (it trains reflexive override use and would require a large workflow-doc rewrite). So a
+narrow, **temporary** carve-out (`_REDIRECT_TARGET_ALLOWLIST = {"engineering-journal"}`, matched by
+resolved-toplevel basename) exempts that one checkout. Consequence, stated plainly: the incident's
+*exact* command stays allowed by the carve-out — the general gap closes for every *other* repo (the
+actual [dev-env#453](https://github.com/brownm09/dev-env/issues/453) collision surface), and the
+journal's real fix is worktree isolation, tracked to **[dev-env#346](https://github.com/brownm09/dev-env/issues/346)**;
+removing the carve-out is that issue's job.
+
+**This amendment deliberately revisits a decision ADR-082 recorded as rejected.**
+[ADR-082](082-journal-compose-worktree-isolation.md) → *Alternatives rejected* → "Extend ADR-071's
+guard to parse into `git -C` targets" rejected the extension on two grounds: (a) `git -C` is
+"deliberate, visible authorship" distinct from the silent default-cwd collision the guard catches, and
+(b) parsing redirect targets "would also block compose's own legitimate, deliberate cross-repo
+operations." Both are addressed rather than ignored:
+
+- **(a)** The #576 incident is new evidence that the "deliberate authorship" distinction is
+  *incomplete*: the author deliberately typed `git -C <journal> pull`, but the *collision* with a
+  concurrent session mutating the same shared checkout was still silent and unintended. Deliberately
+  typing the redirect does not make the shared-checkout mutation safe. That is precisely the "extend if
+  it recurs in practice" condition the v1 deferral (and, implicitly, ADR-082's rejection) left open.
+- **(b)** The carve-out surgically preserves exactly those legitimate journal cross-repo operations, so
+  the concern that motivated ADR-082's rejection does not materialize. ADR-082's own worktree-isolation
+  of *compose* is orthogonal and unaffected — it moved compose's git work into a worktree, while the
+  *stub* workflow that the carve-out protects still runs `git -C <journal-canonical>` and is what #346
+  will eventually migrate.
+
+ADR-082's rejected-alternative entry is updated in the same PR to forward-reference this amendment, so
+the two ADRs do not read as contradictory.
+
+### Why an amendment, not a new ADR
+
+Same harm model (silent shared-canonical-checkout collision between two sessions), same severity (hard
+block, exit 2), same file, same hook, same override/worktree-scope machinery — only the *scope of what
+counts as "the canonical root in question"* is widened from cwd to cwd-or-redirect-target. Mirrors
+Amendment 1's "extend an already-shipped hook's coverage" convention rather than re-litigating the
+original decision.
+
+### Sync-location update
+
+The four re-spelled locations the module docstring's `NOTE:` names were all updated in this PR (the
+*mutating-verb list* itself is unchanged; what changed is the *target-awareness* documented alongside
+it):
+
+1. The module docstring in `pre-tool-use-canonical-mutate-guard.py` — logic steps 2/3/6 and the
+   coverage note now describe redirect-target resolution and the carve-out (the `cd`-into-canonical
+   case remains the sole documented v1 gap).
+2. `claude/CLAUDE.md`'s "Never mutate git state directly…" bullet — added the
+   `-C`/`--git-dir`/`--work-tree`-into-canonical clause and the #576 cross-reference.
+3. This ADR's own "Both redirect shapes are still an unresolved v1 gap" Judgment call — left
+   **unedited** for history; this Amendment section is the addition, per this repo's amended-ADR
+   convention.
+4. `docs/REFERENCE.md`'s ADR-071 Hooks-table trigger cell and the Git Workflow Runbook "Prevention"
+   note — updated to reflect the redirect coverage and the narrowed v1 gap.
+
+### Coverage
+
+`claude/scripts/tests/test_canonical_mutate_guard.py` grows from 48 to 58 tests, split across the
+existing two-layer convention:
+
+- **Pure-function layer:** `_parse_git_prefix` capture/verb-exposure across `=`/space forms; the
+  `--work-tree`/`--git-dir`/`-C` mutating-classification fix; `_segment_redirect_dirs` first-line-only
+  anchoring (a heredoc-body `-C` mention injects no target); the `_is_allowlisted_root` journal
+  carve-out; and the repurposed `test_dashC_redirect_captured_and_classified` (the pre-#576 test
+  asserted `classify()` returned `None` for `git -C <canonical> checkout` — the exact gap — and is
+  inverted here, justified in the PR body under the Test Integrity policy).
+- **End-to-end `main()`-via-subprocess layer:** `git -C <canonical>` from a worktree cwd blocked (exit
+  2, target root named); `git -C <engineering-journal>` from a worktree cwd allowed (carve-out); `git -C
+  <worktree>` allowed (target is not canonical); `git -C <other canonical>` from a canonical cwd blocked
+  (the `_REDIRECT_RE`-backstop case); `git --work-tree=<canonical> commit` blocked (the misclassification
+  fix); and the override bypassing a redirect block. The `test_no_crude_command_substring_checks.py`
+  AST gate passes — the new parsing is tokenized (`_parse_git_prefix`), not a substring test.
