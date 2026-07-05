@@ -1,12 +1,10 @@
-# ADR-083 — Mechanical Pre-Check Gate for `gh pr merge --auto` Checkpoints (Design Proposal)
+# ADR-083 — Mechanical Pre-Check Gate for `gh pr merge --auto` Checkpoints
 
 **Date:** 2026-07-05
-**Status:** Proposed — this ADR documents a design only; no hook code ships in the PR that adds
-it. It exists to get the design right *before* spending an implementation session on it, per the
-"create the template at checkpoint 1" guidance in [ADR-011](011-adr-warrant-check.md). See
-"Follow-up work" below and [dev-env#574](https://github.com/brownm09/dev-env/issues/574).
+**Status:** Accepted — implemented in the PR that closes [dev-env#574](https://github.com/brownm09/dev-env/issues/574).
+See "Implementation" below for what shipped and where it diverged from this design.
 **Tags:** git, pr, merge, auto-merge, workflow, hooks, pre-tool-use, review, adr-warrant,
-doc-reconciliation, design-proposal
+doc-reconciliation
 **Related:** [ADR-031](031-auto-merge-disabled.md), [ADR-039](039-merge-gate-findings-enforcement.md),
 [ADR-011](011-adr-warrant-check.md), [ADR-019](019-doc-reconciliation-enforcement.md),
 [ADR-028](028-all-findings-merge-gate.md), [ADR-071](071-canonical-checkout-mutate-guard-hook.md)
@@ -396,6 +394,36 @@ This ADR is design-only. Landing the design requires, in (likely) more than one 
 
 This issue should stay open after this ADR merges; it closes only once the implementation (items
 1–4 above, at minimum) lands.
+
+---
+
+## Implementation
+
+Items 1–6 above shipped in a single PR closing [dev-env#574](https://github.com/brownm09/dev-env/issues/574)
+(item 7 — the per-repo `allow_auto_merge` toggle decision — remains separate and untouched, per
+Decision point 6). Three resolutions this design left open, made during implementation:
+
+1. **Single PR, not the "likely more than one PR" this design predicted.** The hook and `/review`'s
+   SKILL.md changes define one shared contract (the `premerge-checkpoints` marker's exact
+   fields) — splitting risked a half-shipped, inconsistent contract on `main` between merges.
+2. **Step 6 (`/review`'s finding classification) now lists ADR-warrant gaps from Step 2f as
+   Blocking**, category `[documentation]` (not a new category — an ADR is itself a documentation
+   artifact, and adding a fifth/sixth tag would have rippled through Step 4's category enum for no
+   compensating benefit). Resolves the open question this design left in Follow-up item 1, on the
+   same reasoning ADR-011 itself gives for being "enforcement-style... rather than advisory."
+3. **A third literal value, `missing`, exists for both `adr_warrant` and `doc_reconciliation`**,
+   beyond the two "valid" values this design specified. Needed because the marker line is always
+   emitted but a field can be in a real third state (a gap found and still unresolved when Step 8
+   runs) — and because the hook's marker regex requires at least one non-whitespace character per
+   field, a blank value would be indistinguishable from the whole marker line being absent (i.e.
+   from a pre-ADR-083 review). `missing` preserves that distinction for a human reading the
+   comment while still correctly failing the hook's validity check.
+
+**The `--auto=value` assumption (Follow-up item 3) is now confirmed, not assumed.**
+`gh pr merge 999999 --auto=false --repo brownm09/dev-env` returned `GraphQL: Could not resolve to
+a PullRequest with the number of 999999.` — a PR-resolution error, not a flag-parsing error,
+confirming `gh` accepts the `--flag=value` form on `--auto` exactly as it does for
+`--delete-branch`.
 
 ---
 
