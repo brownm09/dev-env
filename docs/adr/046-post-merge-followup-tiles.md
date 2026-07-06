@@ -112,13 +112,36 @@ The only valid override remains a direct verbal instruction that names the tile 
 
 **CLAUDE.md update.** The override sentence in `claude/CLAUDE.md` was amended to add: "Plan approval is not that instruction: even when the approved plan explicitly scopes the follow-up work in-session, the tile checkpoint still fires; spawn the tiles and let the user dismiss any whose work is already underway." Closes [dev-env#413](https://github.com/brownm09/dev-env/issues/413).
 
+## Addendum — 2026-07-05: forcing-function refinement (enumeration + merged-state re-key)
+
+**Incident.** lifting-logbook PR #700 (settings hub, closes #679, merged 2026-07-05). In a single message the session flagged that an idle worktree was now removable *and* asserted "the finalization work surfaced no new follow-ups" — spawning no tile. The user had to prompt twice ("Where's the tile, then?", then "why do I keep having to ask?"). **Auto-merge** had landed the PR while the agent was away, so the literal "after `gh pr merge`" trigger never fired and post-merge was pure bookkeeping — the checkpoint's salience was already lowest exactly when it should have been highest.
+
+**Three mechanisms** ([dev-env#595](https://github.com/brownm09/dev-env/issues/595)):
+
+1. **Discretionary trigger, no forcing function.** The rule fired "*if* the work surfaced any follow-ups." That `if` is a self-assessment made when the agent is most motivated to be done, and completion-bias reliably resolves it to "none" as a bare, unexamined assertion — nothing forced an enumeration of candidates before concluding zero.
+2. **No required artifact, no hook, so a skip is invisible.** Contrast the review-findings gate: the agent MUST write a "Review findings disposition" section and `pre-merge-findings-gate` blocks the merge without it. A skipped tile checkpoint left no trace — the only detector was the user noticing the absence.
+3. **Trigger keyed to the `gh pr merge` command.** When a PR lands via **auto-merge** (GitHub merges it server-side — the #700 case) or a pure `gh api` merge, the literal `gh pr merge` command never runs, so a command-keyed checkpoint is blind to the merge entirely. And even when `gh pr merge` *does* run — a manual merge, or the two-step workaround's `gh pr merge <N> --squash` first step — the post-merge sequence is pure bookkeeping that crowds the checkpoint out. Keying to the merged *state* fires uniformly, whichever path landed the PR.
+
+**Refinement.**
+
+1. **Force an explicit enumeration** at every post-merge checkpoint. Record each considered follow-up as `→ tiled (task_id / #N)` or `→ not tiled, because <reason>`, covering out-of-scope fixes, deferred work, tech debt, and ideas noticed in passing. **"No follow-ups" is valid only as the visible result of that scan — never as a bare assertion.**
+2. **Re-key the trigger** from "after `gh pr merge`" to **"when a PR reaches merged state, however it merged"** — a `gh pr merge` you ran, the two-step REST merge, or auto-merge landing it while you were away.
+3. **Tile, don't ask.** *Identifying* deferred work at the checkpoint means tiling it yourself, not deflecting the triage into a user-facing question ("open it now, or tee it up for a fresh session?"). Pushing the follow-up's scheduling back onto the user is itself a form of the skip (facet observed 2026-07-06 in the #595 thread).
+
+**Relationship to [ADR-060](060-post-merge-tile-checkpoint-hook.md).** The existing `post-merge-tile-checkpoint.py` hook is **command-keyed** (`"gh pr merge" in command`): it fires on a `gh pr merge` you run — including the two-step's first command — but is **blind to auto-merge**, the exact case that motivated this addendum. The durable enforcement #595 envisions is a *different*, **state-keyed** Stop/PostToolUse hook that observes a merged-state transition and requires a recorded tile-enumeration artifact (analogous to `pre-merge-findings-gate`). That hook is **deferred to separate follow-up work** — this addendum lands the `claude/CLAUDE.md` wording floor only.
+
+**CLAUDE.md update.** The "Capture post-merge follow-ups as tiles" bullet's opening sentence was rewritten per mechanisms 1 + 2 and the tile-don't-ask facet; the `docs/REFERENCE.md` "Post-merge follow-up tiles (chips)" runbook was re-keyed to merged state to match. Closes [dev-env#595](https://github.com/brownm09/dev-env/issues/595). Related: [dev-env#413](https://github.com/brownm09/dev-env/issues/413).
+
 ---
 
 ## References
 
 - [dev-env#369](https://github.com/brownm09/dev-env/issues/369) — issue this ADR closes.
-- [dev-env#413](https://github.com/brownm09/dev-env/issues/413) — issue clarifying plan-approval edge case; closed by addendum above.
+- [dev-env#413](https://github.com/brownm09/dev-env/issues/413) — issue clarifying the plan-approval edge case; closed by the 2026-06-27 addendum.
+- [dev-env#595](https://github.com/brownm09/dev-env/issues/595) — issue driving the 2026-07-05 forcing-function refinement (enumeration + merged-state re-key); closed by the addendum above.
+- [lifting-logbook#700](https://github.com/brownm09/lifting-logbook/pull/700) — motivating incident for the 2026-07-05 addendum: auto-merge landed the PR and "no follow-ups" was asserted with no enumeration.
 - [ADR-012](012-post-merge-checklist-board-done-roadmap-update.md) — the post-merge checklist this extends.
 - [ADR-028](028-all-findings-merge-gate.md) — the file-and-link guidance the "genuine follow-ups" bar mirrors.
 - [ADR-038](038-durable-preferences-documented-in-repo.md) — durable preferences must be documented in the repo, not only in memory.
+- [ADR-060](060-post-merge-tile-checkpoint-hook.md) — the command-keyed tile-checkpoint hook; the deferred state-keyed enforcement (per the 2026-07-05 addendum) complements it.
 - `spawn_task` (Claude Code background-task tool) — the harness mechanism that renders the tile/chip.
