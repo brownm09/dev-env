@@ -87,6 +87,18 @@ session, a `PreToolUse(Bash)` call re-warning about the same still-low reading m
 noise, not signal. Sharing one gate per `(session_id, band)` means the two entries cooperate as a
 single logical check with two trigger points, not two independent checks.
 
+### No reset-on-recovery for a repeat within-session exhaustion (accepted gap)
+
+A session that hits the "act" band, triggers reclaim, recovers, and later degrades into "act" again
+does not re-fire — the marker is session-scoped with no recovery-reset path. `PreToolUse(Bash)`'s
+higher sampling rate makes this more observable than it was under the old once-per-prompt check
+(raised in `/review`). Accepted as-is rather than adding a reset-on-recovery path: the first firing's
+reclaim already ran, so the practical gap on a second episode is a missing second warning/spawn, not
+silent total inaction — and a session degrading twice in one sitting is the rare case, not the common
+one this hook optimizes for. A reset-on-recovery mechanism (re-arm the marker once free space is
+observed back above `WARN_GB`) is a reasonable future extension if repeat-episode sessions turn out to
+be common in practice, but is not warranted speculatively.
+
 ### No new race risk from firing on every Bash call
 
 Bash tool calls within one Claude Code session are processed sequentially, not concurrently, so two
