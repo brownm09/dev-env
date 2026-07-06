@@ -132,7 +132,7 @@ ASCII/cp1252-safe by a dedicated test.
 - No change to the divergence guard, the compose-worktree concurrency lock, or the today-guard
   (ADR-017) — this ADR adds a new, narrower check alongside them.
 - **Testing.** New pure-helper test `claude/scripts/tests/test_check_journal_compose_liveness.py`
-  (dev-env `## Testing` item 43) exercises `has_uncommitted_target_date_changes()` and
+  (dev-env `## Testing` item 46) exercises `has_uncommitted_target_date_changes()` and
   `format_abort_message()` offline — no subprocess, no git, no filesystem.
   `journal-compose-with-retry.sh`'s bash changes are verified via the repo's script path-hygiene
   lint and shellcheck (items 5 and 7); no dedicated fixture test is added for the wrapper script

@@ -308,6 +308,50 @@ Record findings:
 If the diff touches no test files, no implementation code, and no test configuration,
 note "No test-affecting changes — integrity gate not applicable." and proceed.
 
+Proceed to Step 2f.
+
+---
+
+## Step 2f — ADR-Warrant Check
+
+Applies to PR_URL mode only. Skip if DIFF_MODE is true.
+
+Using the diff already fetched in Step 2, apply ADR-011's four criteria to determine whether this
+PR's changes warrant a new or amended Architectural Decision Record:
+
+1. Touches a rule, hook, skill, or settings value documented under `claude/` (e.g.
+   `claude/CLAUDE.md`, `claude/settings.json`, `claude/scripts/**`, `claude/skills/**`,
+   `claude/routines/**`, `claude/hooks/**`).
+2. Introduces or restructures a directory under `claude/`.
+3. Establishes or changes a workflow rule that other CLAUDE.md files reference.
+4. The rationale for this change would be hard to recover from `git log` alone six months later.
+
+If none of the four criteria apply, note "ADR-warrant check: not warranted — no qualifying
+criteria met." and record `not-warranted` for the Step 8 marker.
+
+If any criterion applies, check whether the diff already includes a new or amended file under
+`docs/adr/` (or, for a project without its own `docs/adr/`, the project's established ADR
+location per its CLAUDE.md) plus a corresponding `docs/adr/INDEX.md` entry. If a qualifying ADR is
+present in this diff, or the PR body cites a prior PR number that already covers the decision,
+note "ADR-warrant check: written — see `docs/adr/<NNN>-<slug>.md`" (or the cited PR number) and
+record `written` for the Step 8 marker.
+
+If a criterion applies and no qualifying ADR is present in the diff and no prior-PR citation
+appears in the PR body, record a blocking `[documentation]` finding to include in the Step 6
+output (format mirrors Step 2b's finding block) and record `missing` for the Step 8 marker:
+
+> **[documentation]** Missing ADR for a qualifying change
+> This PR [touches a rule/hook/skill/settings under `claude/` | introduces or restructures a
+> `claude/` directory | establishes/changes a workflow rule other CLAUDE.md files reference | has
+> rationale that would be hard to recover from `git log` alone] (ADR-011 criterion `<N>`), but no
+> new or amended ADR appears in this diff, and the PR body cites no prior PR that already covers
+> the decision.
+> **Fix:** Add a `docs/adr/<NNN>-<slug>.md` (or the project's equivalent) recording the decision
+> and its rationale, plus a `docs/adr/INDEX.md` entry, per ADR-011.
+
+The outcome (`written` / `not-warranted` / `missing`) is recorded regardless of which branch was
+taken above — the Step 8 marker field is always emitted, never left implicit.
+
 Proceed to Step 3.
 
 ---
@@ -390,6 +434,7 @@ Assign each finding to one of four buckets:
 - Missing test coverage for a behavior change in a tested codebase
 - Documentation gaps from Step 2b (skill/hook/script/routine changed without updating README.md or docs/REFERENCE.md)
 - Documentation gaps from Step 2c (README exists at a relevant directory level and warrants an update, but was not changed in this PR)
+- ADR-warrant gaps from Step 2f (a qualifying change per ADR-011's four criteria, with no ADR present in the diff and no prior-PR citation in the PR body)
 
 **Non-Blocking** (performance | maintainability | documentation):
 - Performance concerns that do not affect correctness
@@ -501,6 +546,7 @@ merge until that disposition exists (ADR-039).>
 *Reviewed by `<your model ID>` via Claude Code*
 
 <!-- review-findings: blocking=<B> non_blocking=<NB> -->
+<!-- premerge-checkpoints: adr_warrant=<written|not-warranted|missing> doc_reconciliation=<updated|not-applicable|missing> -->
 ```
 
 **Always emit the trailing `<!-- review-findings: blocking=<B> non_blocking=<NB> -->`
@@ -508,6 +554,27 @@ marker** as the last line of the review, substituting the actual counts (e.g.
 `blocking=0 non_blocking=2`; use `0 0` for a clean review). The merge-gate hook
 parses this marker to decide whether a disposition is required, so it must be
 present and accurate in every posted review.
+
+**Always emit the trailing `<!-- premerge-checkpoints: adr_warrant=... doc_reconciliation=... -->`
+marker** immediately below the review-findings marker, on its own line, inside the same code
+fence — never as a separate trailing paragraph outside the block, since Step 9 posts this block
+verbatim as a single PR comment and the `pre-auto-merge-checkpoint-gate` hook (ADR-083) requires
+both markers to land in that same comment. Emit it regardless of whether the author intends to
+use `gh pr merge --auto` — `/review` cannot know that in advance, and emitting it unconditionally
+is what makes retroactive `--auto` use possible on any previously reviewed PR. Substitute:
+- `adr_warrant=written` when Step 2f found a qualifying ADR in the diff (or a cited prior PR),
+  `adr_warrant=not-warranted` when Step 2f found no qualifying criteria, or `adr_warrant=missing`
+  when a criterion applied and no ADR/citation was found.
+- `doc_reconciliation=updated` when Step 2b found the required README.md/docs/REFERENCE.md
+  changes present, `doc_reconciliation=not-applicable` when Step 2b's paths weren't touched (or
+  the repo has no Documentation Maintenance table), or `doc_reconciliation=missing` when Step 2b
+  recorded a blocking documentation gap.
+
+`missing` on either field is a deliberate, hook-recognized non-passing state — not an omission —
+so the marker's presence-vs-content distinction stays visible to a human reading the comment.
+`pre-auto-merge-checkpoint-gate.py` treats only `written`/`not-warranted` and
+`updated`/`not-applicable` as "evaluated"; `missing` on either field blocks `gh pr merge --auto`
+while leaving plain `gh pr merge` completely unaffected.
 
 ---
 

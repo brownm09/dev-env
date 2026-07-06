@@ -269,10 +269,17 @@ Scheduler invocation (a bare `/journal-compose` with no date), so both share the
 - **Stash-by-pathspec runbook** (dev-env#467's original suggestion) — reactive rather than
   preventive, and still mutates the shared canonical checkout's index; only reduces collision
   probability, doesn't eliminate the class.
-- **Extend ADR-071's guard to parse into `git -C` targets** — ADR-071 deliberately scopes `git -C`
-  redirects out as "deliberate, visible authorship" distinct from the silent default-cwd collision
-  it exists to catch; parsing into redirect targets would also block compose's own legitimate,
-  deliberate cross-repo operations.
+- **Extend ADR-071's guard to parse into `git -C` targets** — at the time of this ADR, rejected:
+  ADR-071 deliberately scoped `git -C` redirects out as "deliberate, visible authorship" distinct from
+  the silent default-cwd collision it exists to catch, and parsing into redirect targets would also
+  block the journal workflow's own legitimate, deliberate cross-repo operations. **Superseded by
+  [ADR-071 Amendment 2](071-canonical-checkout-mutate-guard-hook.md) (dev-env#576, 2026-07-05):** the
+  guard now *does* resolve `-C`/`--git-dir`/`--work-tree` targets and applies the canonical-root check
+  to them, after a real recurrence showed the "deliberate authorship" distinction doesn't prevent the
+  collision. The concern raised here — blocking legitimate journal cross-repo ops — is preserved by a
+  narrow, temporary carve-out exempting the engineering-journal checkout (`_REDIRECT_TARGET_ALLOWLIST`,
+  pending the #346 journal→worktree migration). This ADR's compose-in-a-worktree isolation is
+  orthogonal and unaffected.
 - **Full clone per compose** — no added safety over a worktree (same shared-object-store
   correctness), strictly worse on disk and time.
 - **Lock the canonical checkout** — cannot stop a different session's plain `git checkout`, which
