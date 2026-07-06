@@ -860,6 +860,34 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_disk_space_check.py
     ```
 
+48. **stop-tile-enumeration-gate test** — required when changing
+    `claude/scripts/stop-tile-enumeration-gate.py`. Two layers, mirroring this hook family's
+    established split ([ADR-088](docs/adr/088-state-keyed-tile-enumeration-gate.md); dev-env#599).
+    Pure-helper tests exercise the detection/decision core offline (no stdin, network, gh, or disk):
+    `session_merged_prs` across all three merge paths — a `gh pr merge` success marker, a
+    `gh api .../pulls/N/merge` with `"merged":true`, and the auto-merge case (a `--auto` enqueue or a
+    `gh pr create`, then a later `gh pr view` MERGED state, correlated via `acted_on_prs`) — plus the
+    non-matches that must NOT count: a `gh pr view` MERGED for a PR the session never acted on (an
+    unrelated old PR merely inspected), a queued `--auto` alone with no MERGED confirmation, a
+    `gh pr merge --help` (no marker, no PR — dev-env#485 shape), and a `gh pr merge` mentioned only
+    inside a heredoc body or `$()` subshell (the dev-env#499 `split_top_level` anchoring class);
+    `enumeration_recorded` (a `spawn_task` tool call; the prescribed "Follow-ups considered" /
+    "-> not tiled, because" / "-> tiled" text, both ASCII `->` and Unicode `→`) INCLUDING the
+    bare-"no follow-ups" rejection that is the lifting-logbook#700 skip; `skip_override` (a genuine
+    user "skip tiles" / "no tiles" / "don't spawn tiles", and that the phrase inside a `tool_result`
+    does NOT waive); the `evaluate()` composition (fire / resolved / no-op, lowest-PR determinism);
+    `iter_bash_calls` id-pairing (parallel calls don't cross); and the reminder's ASCII/cp1252
+    encodability. A behavioral layer drives the real hook end-to-end over stdin via subprocess against
+    a synthetic transcript, with HOME/USERPROFILE pointed at a temp dir so the once-per-session
+    sentinel is isolated: pins merged-no-enum -> exit 2 with the reason on stderr and empty stdout,
+    merged+enum and no-merge -> exit 0, the `stop_hook_active` loop guard -> exit 0, and that the
+    sentinel suppresses a second fire. `main()`'s stdin/sentinel plumbing beyond the end-to-end runs
+    is not separately unit-tested (pure-helper convention).
+
+    ```bash
+    py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
