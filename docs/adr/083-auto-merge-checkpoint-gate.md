@@ -454,3 +454,49 @@ confirming `gh` accepts the `--flag=value` form on `--auto` exactly as it does f
   (2026-07-05).
 - [GitHub Docs — Automatically merging a pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request) —
   the `allow_auto_merge` repo setting Decision point 6 depends on.
+
+---
+
+## Addendum (2026-07-06) — A GitHub-side required check as a complementary gate for the review checkpoint
+
+Now that Items 1–6 have shipped (see Implementation above), the Consequences section's accepted
+limitation — *"Governs only the Claude Code-mediated path. A human merging via the GitHub web
+UI's own auto-merge toggle bypasses this hook entirely"* — is worth revisiting with a concrete
+answer, rather than left as a named-but-unaddressed gap.
+
+**Why this still matters even though item 7 hasn't happened yet.** The gap is harmless today only
+because `allow_auto_merge` stays `false` everywhere (per the Implementation note above, item 7
+"remains separate and untouched"). The instant any repo's later, separate item-7 decision flips
+that toggle, a human — or GitHub's own web UI — can click "Enable auto-merge" on any PR and it
+will merge once that repo's existing CI-based required checks go green, with **zero** enforcement
+of the review-findings-disposition checkpoint: the shipped hook only ever intercepts a Bash tool
+call inside a Claude Code session, and a GitHub-triggered merge never makes one.
+
+**Why this doesn't reopen the rejected "CI job as required status check" alternative.** This
+design's own "Candidates evaluated" section rejected a CI job re-verifying *all three*
+checkpoints, primarily because two of them (ADR-warrant, doc-reconciliation) are judgment calls
+that would require duplicating Opus-level reasoning in a script. That reasoning does not extend
+to the review-findings checkpoint on its own: it reduces to pure marker-text detection (the same
+`<!-- review-findings: ... -->` regex and PR-body disposition check the hook already runs) —
+something a CI job can evaluate with **no fidelity loss** relative to the hook, because both read
+the identical PR data through the identical regex. The "collapses back to option (b) for no
+benefit" conclusion was correct for the Claude-Code-mediated path (where the hook already gates
+it before any Bash call executes) — it does not hold for the web-UI/human-triggered path, where
+the hook provides no protection at all and a required check is the only mechanism capable of
+providing any.
+
+**Recommendation.** When a specific repo's item-7 decision (flipping `allow_auto_merge`) is made,
+pair it with a GitHub Actions required status check — e.g. "Review Gate" — that mirrors the
+hook's exact marker/disposition/freshness semantics for the review-findings checkpoint only, added
+to that repo's branch protection. This complements the hook rather than replacing it: the hook
+remains the only mechanism covering the ADR-warrant and doc-reconciliation checkpoints for the
+Claude-Code-mediated path, which a required check still cannot verify, for the reasons the
+Candidates-evaluated section already gives. This is being prototyped now, independently of any
+item-7 decision, in [lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718)
+— note that repo's implementation goes further than recommended here by also making review
+mandatory (no marker = fail), which is a separate policy choice specific to that repo, not a claim
+this addendum makes generally.
+
+**Not a decision.** This addendum does not change the Decision or Consequences above, and does not
+itself flip any toggle. It records a design refinement for whoever makes a specific repo's item-7
+call next, so the web-UI gap is weighed explicitly rather than rediscovered.
