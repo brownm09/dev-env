@@ -844,6 +844,22 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_check_journal_compose_liveness.py
     ```
 
+47. **disk-space-check test** — required when changing `claude/scripts/disk-space-check.py`.
+    Exercises the pure `classify_free_space(free_gb, warn_gb, act_gb)` helper extracted from
+    `main()`'s inline threshold if/elif (dev-env#592,
+    [ADR-087](docs/adr/087-pretooluse-disk-space-check.md)): pins the three bands (ample space is
+    `"ok"`, mid-range is `"warn"`, low space is `"act"`) and both threshold boundaries as inclusive
+    on the healthier side (`free_gb == WARN_GB` is `"ok"`, `free_gb == ACT_GB` is `"warn"`, never
+    `"act"`) — the exact behavior the inline if/elif already had, now pinned rather than only
+    implicit. This hook is now registered under both `UserPromptSubmit` and `PreToolUse(Bash)`,
+    reusing the same script and the same per-session marker-file gate for both (ADR-087); the
+    `disk_usage` syscall, marker-file I/O, and the detached `reclaim-worktree-disk.py` spawn are not
+    covered here (pure-helper convention, matching item 9's `install_decision()` precedent).
+
+    ```bash
+    py -3 claude/scripts/tests/test_disk_space_check.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
