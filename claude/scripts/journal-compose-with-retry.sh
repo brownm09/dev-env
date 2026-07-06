@@ -40,8 +40,17 @@ for attempt in $(seq 1 $MAX_RETRIES); do
     # would reflect an in-session abort. Skip only on non-final attempts: on the last attempt,
     # proceed anyway rather than let the day's journal never compose automatically at all — the
     # residual risk is covered by the existing draft/YYYY-MM-DD-recovery runbook.
+    #
+    # Scoped `set -o pipefail` (review finding, PR #587): without it, a bare
+    # `VAR=$(cmd1 | cmd2)` only reports cmd2's exit code, so a `git status` failure (missing
+    # $EJ, corrupt repo, index lock held by a concurrent process — itself a signal contention is
+    # highest) would feed the Python script empty stdin, which exits 0 ("clean"), silently
+    # defeating the guard exactly when it matters most. Setting pipefail inside a `( ... )`
+    # subshell scopes it to this one pipeline only — it doesn't leak into the rest of the script
+    # (e.g. the `tee`-based log() calls elsewhere) — and wrapping the whole subshell in `2>&1`
+    # (not just the last command) captures git's stderr too, not only the Python script's.
     if [ "$attempt" -lt "$MAX_RETRIES" ]; then
-        LIVENESS_OUTPUT=$(git -C "$EJ" status --porcelain | py -3 C:/Users/brown/.claude/scripts/check-journal-compose-liveness.py "$DATE" 2>&1)
+        LIVENESS_OUTPUT=$( (set -o pipefail; git -C "$EJ" status --porcelain | py -3 C:/Users/brown/.claude/scripts/check-journal-compose-liveness.py "$DATE") 2>&1 )
         if [ $? -ne 0 ]; then
             log "Liveness guard: $LIVENESS_OUTPUT"
             log "Skipping this attempt without invoking claude. Retrying in ${RETRY_DELAY}s..."

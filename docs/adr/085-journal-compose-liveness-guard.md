@@ -120,6 +120,15 @@ ASCII/cp1252-safe by a dedicated test.
   ~10 minutes (two retry delays) before proceeding anyway.
 - A manual `/journal-compose <date>` invocation gets the same protection via Step 0.6, independent
   of whether it's run through the retry wrapper.
+- **The liveness guard and the transient-failure retry share one fixed budget (review finding,
+  PR #587).** A liveness-triggered skip consumes a retry attempt exactly like a genuine `claude -p`
+  failure does. In the worst case (both non-final attempts skip for liveness), only the final
+  attempt ever invokes `claude -p` — if *that* attempt then hits a transient API failure, there is
+  no attempt left to absorb it, where before this guard existed the wrapper had all 3 tries
+  available for transient issues alone. This is an accepted trade, not a bug: it only bites when a
+  session is legitimately active on two consecutive attempts *and* the final `claude -p` call also
+  hits a transient failure — already a narrow intersection — and the existing recovery runbook
+  covers the resulting failure the same way it covers every other exhausted-retries case.
 - No change to the divergence guard, the compose-worktree concurrency lock, or the today-guard
   (ADR-017) — this ADR adds a new, narrower check alongside them.
 - **Testing.** New pure-helper test `claude/scripts/tests/test_check_journal_compose_liveness.py`

@@ -129,7 +129,14 @@ fi
 # This is a defense-in-depth check for a manual/interactive `/journal-compose` invocation —
 # the automated nightly path's primary check runs earlier, in journal-compose-with-retry.sh,
 # before this skill is even invoked.
-git -C "$EJ" status --porcelain | py -3 C:/Users/brown/.claude/scripts/check-journal-compose-liveness.py "YYYY-MM-DD" || exit 1
+#
+# Substitute the actual resolved date for "YYYY-MM-DD" below before running this — the script
+# validates its argument is a real YYYY-MM-DD date and exits 2 (loud usage error) rather than
+# silently passing if the literal placeholder is left unsubstituted. The scoped
+# `set -o pipefail` matches journal-compose-with-retry.sh's identical fix (review finding, PR
+# #587): a bare `cmd1 | cmd2 || exit 1` only checks cmd2's exit code, so a `git status` failure
+# would otherwise feed the script empty stdin and silently pass as "clean".
+(set -o pipefail; git -C "$EJ" status --porcelain | py -3 C:/Users/brown/.claude/scripts/check-journal-compose-liveness.py "YYYY-MM-DD") || exit 1
 
 # A pre-existing compose worktree is a concurrency signal, not an error: a lock file inside
 # it younger than 10 minutes means another compose is genuinely active; otherwise it's stale

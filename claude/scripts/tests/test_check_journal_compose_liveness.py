@@ -32,6 +32,7 @@ spec.loader.exec_module(mod)
 
 has_uncommitted_target_date_changes = mod.has_uncommitted_target_date_changes
 format_abort_message = mod.format_abort_message
+main_entrypoint = mod.main
 
 
 def test_empty_output_is_clean() -> str:
@@ -96,6 +97,39 @@ def test_blank_lines_ignored() -> str:
     return "blank lines interspersed -> ignored, no false positive"
 
 
+def test_wrong_extension_at_matching_date_is_clean() -> str:
+    """Tightened matching (review finding, PR #587): the date marker alone is
+    not enough — the path must also end in .stub.md or .manifest.jsonl. Guards
+    against a hypothetical future path merely containing "/YYYY-MM-DD_"."""
+    porcelain = "?? sessions/dev-env/2026-07-05_notes/some-file.txt\n"
+    if has_uncommitted_target_date_changes(porcelain, "2026-07-05") is not False:
+        raise AssertionError("a date-marker match without the shard suffix must be clean")
+    return "date marker present but wrong extension -> clean (suffix-tightened match)"
+
+
+def test_main_rejects_malformed_date() -> str:
+    """Review finding (PR #587): a malformed $DATE (e.g. from a `date -d
+    yesterday` failure) must be a loud usage error, not a silent
+    always-clean pass. Short-circuits before reading stdin, so no stdin
+    mocking is needed."""
+    rc = main_entrypoint(["check-journal-compose-liveness.py", "not-a-date"])
+    if rc != 2:
+        raise AssertionError(f"expected exit 2 for a malformed date, got {rc!r}")
+    return "malformed date argument -> exit 2 (usage error), stdin never read"
+
+
+def test_main_rejects_unsubstituted_placeholder() -> str:
+    """Review finding (PR #587): journal-compose/SKILL.md's Step 0.6 passes the
+    literal "YYYY-MM-DD" as a documentation placeholder that Claude is expected
+    to substitute with the real resolved date at run time. If that
+    substitution is ever skipped, the check must fail loudly rather than
+    silently matching nothing and passing vacuously."""
+    rc = main_entrypoint(["check-journal-compose-liveness.py", "YYYY-MM-DD"])
+    if rc != 2:
+        raise AssertionError(f"expected exit 2 for the unsubstituted placeholder, got {rc!r}")
+    return "unsubstituted 'YYYY-MM-DD' placeholder -> exit 2, not a vacuous pass"
+
+
 def test_abort_message_is_ascii_safe() -> str:
     """Matches the ASCII/cp1252-encodability pin used elsewhere in this repo's
     advisory-emitting scripts (e.g. test_posttooluse_inert_advisory.py,
@@ -122,6 +156,9 @@ def main() -> int:
         ("renamed file checks destination -> dirty", test_renamed_file_checks_destination_path),
         ("multiple lines, one match -> dirty", test_multiple_lines_mixed),
         ("blank lines ignored", test_blank_lines_ignored),
+        ("wrong extension at matching date -> clean", test_wrong_extension_at_matching_date_is_clean),
+        ("main() rejects malformed date -> exit 2", test_main_rejects_malformed_date),
+        ("main() rejects unsubstituted placeholder -> exit 2", test_main_rejects_unsubstituted_placeholder),
         ("abort message is ASCII/cp1252-safe", test_abort_message_is_ascii_safe),
     ]
     failed = 0

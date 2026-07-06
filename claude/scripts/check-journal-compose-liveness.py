@@ -25,15 +25,24 @@ Usage:
 Exit 0: no uncommitted changes for this date — safe to proceed.
 Exit 1: uncommitted changes for this date found — a session may still be
         active; caller should abort/retry rather than compose now.
-Exit 2: usage error.
+Exit 2: usage error (including a date argument that isn't YYYY-MM-DD — this
+        also catches a caller that failed to substitute a "YYYY-MM-DD"
+        placeholder literal, which would otherwise match nothing and pass
+        vacuously).
 """
+import re
 import sys
+
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def has_uncommitted_target_date_changes(porcelain_output, date):
     """True if any changed path under sessions/ belongs to the given date's
     stub/manifest shard (filenames are YYYY-MM-DD_HHMMSS.stub.md or
-    .manifest.jsonl — see claude/CLAUDE.md Stub file workflow)."""
+    .manifest.jsonl — see claude/CLAUDE.md Stub file workflow). Requires the
+    matching shard suffix, not just the date marker, so a hypothetical future
+    path merely containing "/YYYY-MM-DD_" (e.g. a differently-named directory)
+    can't false-positive."""
     marker = f"/{date}_"
     for line in porcelain_output.splitlines():
         if len(line) < 4:
@@ -42,7 +51,7 @@ def has_uncommitted_target_date_changes(porcelain_output, date):
         if " -> " in path:
             # Rename: "OLD -> NEW" — the destination is what's live now.
             path = path.split(" -> ", 1)[1]
-        if marker in path:
+        if marker in path and (path.endswith(".stub.md") or path.endswith(".manifest.jsonl")):
             return True
     return False
 
@@ -59,6 +68,13 @@ def main(argv):
         print("usage: check-journal-compose-liveness.py YYYY-MM-DD", file=sys.stderr)
         return 2
     date = argv[1]
+    if not DATE_RE.match(date):
+        print(
+            f"usage: check-journal-compose-liveness.py YYYY-MM-DD (got {date!r}, "
+            "not a YYYY-MM-DD date)",
+            file=sys.stderr,
+        )
+        return 2
     porcelain = sys.stdin.read()
     if has_uncommitted_target_date_changes(porcelain, date):
         print(format_abort_message(date), file=sys.stderr)
