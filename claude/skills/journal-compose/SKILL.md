@@ -120,7 +120,7 @@ if git -C "$EJ" show-ref --verify --quiet "refs/heads/$SOURCE_BRANCH"; then
     { echo "ABORT: local $SOURCE_BRANCH has commits not on origin — unpushed stubs in some session/worktree. Find and push them, then re-run."; exit 1; }
 fi
 
-# Liveness guard (ADR-085): the divergence guard above only catches a session that has
+# Liveness guard (ADR-086): the divergence guard above only catches a session that has
 # already committed but not yet pushed. A session that hasn't committed at all — still
 # actively writing this date's stub past compose time (dev-env#579 activated this race; see
 # ADR-084) — leaves the shared $EJ checkout dirty instead, since sessions across every

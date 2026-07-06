@@ -34,7 +34,7 @@ log "=== journal-compose-with-retry starting (max $MAX_RETRIES attempts) ==="
 for attempt in $(seq 1 $MAX_RETRIES); do
     log "Attempt $attempt of $MAX_RETRIES"
 
-    # Liveness guard (ADR-085): a session may still be uncommitted for $DATE's stub in the
+    # Liveness guard (ADR-086): a session may still be uncommitted for $DATE's stub in the
     # shared engineering-journal checkout (dev-env#579 activated this race; see ADR-084). This
     # is a deterministic bash pre-check — no dependency on whether claude -p's own exit code
     # would reflect an in-session abort. Skip only on non-final attempts: on the last attempt,

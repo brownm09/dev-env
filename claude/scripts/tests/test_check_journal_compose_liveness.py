@@ -2,7 +2,7 @@
 """Unit tests for check-journal-compose-liveness.py's pure
 has_uncommitted_target_date_changes() helper.
 
-See ADR-085 for why the check reads `git status --porcelain` for the target
+See ADR-086 for why the check reads `git status --porcelain` for the target
 date rather than a transcript-mtime liveness signal (ADR-051's
 worktree_session_is_live() doesn't transfer cleanly here — a session that
 might write to a given date's draft branch could be running from any
