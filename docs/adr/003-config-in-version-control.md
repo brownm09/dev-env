@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-13  
 **Status:** Accepted  
-**Amended:** 2026-07-01 (see Amendment section below)
+**Amended:** 2026-07-01, 2026-07-06 (see Amendment sections below)
 
 ---
 
@@ -59,6 +59,33 @@ This was first correctly diagnosed in [dev-env#344](https://github.com/brownm09/
 
 ---
 
+## Amendment (2026-07-06)
+
+The self-referencing convention adopted 2026-07-01 was applied to `daily-journal-compose-local`
+in the same session that wrote it, but was **not** retroactively swept across the other routines
+already registered at the time. Investigating dev-env#597 (Git Bash fork failures + an 88-worktree
+pileup) found the exact same gap, twice more, in routines that predate the convention:
+
+1. **`prune-stale-worktrees`** — the live copy was a hardcoded, pre-ADR-078 snapshot missing
+   `--include-named`. It ran successfully every day but silently skipped 78 of 88 registered
+   worktrees, since it never picked up the canonical routine's later fix.
+2. **`reclaim-worktree-disk`** — authored with its own intended `0 */6 * * *` schedule in
+   frontmatter, but never actually registered as a live task at all — it had never run
+   automatically.
+
+Both are now fixed to follow the established convention (canonical file read at run time via a
+Step 0.5, embedded fallback only when unreachable) — see their SKILL.md files' own "dual-copy
+registration caveat" notes.
+
+**This is now the second independent occurrence of the same gap** (`daily-journal-compose-local`
+being the first). The convention itself is sound, but relies on each routine's author remembering
+to apply it and remains silent about routines that predate it. A full audit of the remaining
+registered routines (`nightly-cover-letters`, `biweekly-retro`, `nightly-research`,
+`reconcile-project-board`) for the same gap was out of scope for dev-env#597 and has **not** been
+done as part of this amendment — flagged as follow-up work, not resolved here.
+
+---
+
 ## References
 
 - Engineering journal: `sessions/meta/2026-04-13-post-tool-use-hook-and-settings-into-dev-env.md`
@@ -66,3 +93,4 @@ This was first correctly diagnosed in [dev-env#344](https://github.com/brownm09/
 - `claude/CLAUDE.md` § Dev-Env — symlink table and ownership rules
 - [dev-env#344](https://github.com/brownm09/dev-env/issues/344) — original diagnosis of the reversed topology
 - [dev-env#464](https://github.com/brownm09/dev-env/issues/464) — the drift incident that surfaced the undocumented consequence
+- [dev-env#597](https://github.com/brownm09/dev-env/issues/597) — second occurrence, in `prune-stale-worktrees` and `reclaim-worktree-disk`
