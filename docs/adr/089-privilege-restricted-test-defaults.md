@@ -64,7 +64,7 @@ No new hook or script — this is a behavioral rule for Claude to apply during t
 
 **Negative:**
 - Not mechanically enforceable the way the suppression/test-integrity grep checks are — relies on Claude actually applying the audit line during the Security dimension review, which is a judgment call, not a script. If this proves insufficient in practice, a project-specific lint/static-check could be added per-project (see Rejected Alternatives), but that's deferred until a concrete false-negative recurrence justifies the cost.
-- Retrofitting existing test suites to default to a restricted identity (as lifting-logbook itself needs to do — tracked separately in [lifting-logbook#646](https://github.com/brownm09/lifting-logbook/issues/646)) is real, non-trivial work per project; this ADR only mandates the rule going forward, it does not retroactively fix every project's test defaults.
+- Retrofitting existing test suites to default to a restricted identity is real, non-trivial work per project; this ADR only mandates the rule going forward, it does not retroactively fix every project's test defaults. (lifting-logbook's own retrofit was tracked in [lifting-logbook#646](https://github.com/brownm09/lifting-logbook/issues/646) and has since merged via [PR #658](https://github.com/brownm09/lifting-logbook/pull/658) — cited here as a worked example, not outstanding work.)
 
 ---
 
