@@ -1019,7 +1019,7 @@ seeded with the tile's prompt; otherwise the user dismisses it. The current turn
 uninterrupted either way.
 
 **When to use it.** At the post-merge follow-up checkpoint of
-[ADR-046](adr/046-post-merge-followup-tiles.md) — right after `gh pr merge`, one tile per genuine,
+[ADR-046](adr/046-post-merge-followup-tiles.md) — when a PR reaches merged state (however it merged — a `gh pr merge` you ran, the two-step REST merge, or auto-merge), one tile per genuine,
 actionable, out-of-scope item (a fix spotted in adjacent code, deferred work, tech debt, an idea worth
 pursuing). The bar is the file-and-link bar ([ADR-028](adr/028-all-findings-merge-gate.md)): real
 follow-ups, not speculative musings, so the tile surface stays signal-rich. (`spawn_task`'s own guidance
