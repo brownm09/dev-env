@@ -31,3 +31,19 @@ Prune stale Claude session worktrees across all git repos under `C:/Users/brown/
 - With `--include-named`, a hand-named branch is held to the exact same merged/dirty/liveness bar as a `claude/*` branch — no looser check is applied (ADR-078)
 - Never remove a worktree with an active Claude session — transcript activity within 24h. This routine runs out-of-process and cannot see other sessions via cwd, so the script's transcript-mtime guard is what protects them (ADR-051)
 - Temp files (if needed) go to `C:/Users/brown/.claude/scratch/`
+
+---
+
+> **Dual-copy registration caveat (dev-env#344, [ADR-003 amendment](../../../docs/adr/003-config-in-version-control.md)).**
+> This file is the **canonical, version-controlled** definition
+> (`dev-env/claude/routines/prune-stale-worktrees/`, surfaced at
+> `~/.claude/routines/prune-stale-worktrees/` via the directory junction). The scheduler reads a
+> **separate** live copy at `~/.claude/scheduled-tasks/prune-stale-worktrees/SKILL.md`, materialized
+> by the `create_scheduled_task` MCP tool — the two do **not** auto-sync by default. This routine
+> already drifted once ([dev-env#597](https://github.com/brownm09/dev-env/issues/597)): the live
+> copy ran a stale pre-ADR-078 invocation missing `--include-named`, silently skipping 78 of 88
+> registered worktrees every day despite running successfully. Per the convention ADR-003's
+> amendment establishes, the live copy now reads this file at run time and defers to it when
+> present, falling back to an embedded copy only when it is missing or unreadable — so a future
+> edit here takes effect immediately without a separate re-registration step, though the embedded
+> fallback should still be refreshed when this file's *steps* change materially.

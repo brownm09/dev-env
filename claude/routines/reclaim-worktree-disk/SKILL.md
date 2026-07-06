@@ -29,3 +29,18 @@ Reclaim regenerable disk artifacts from idle Claude session worktrees across all
 - Dirty worktrees, the primary worktree, the current/protected worktree, worktrees with an active Claude session (transcript activity within 6h — shorter than prune's 24h since stripping is self-healing; ADR-051), and worktrees with unpushed commits ahead of `origin/main` (and not merged) are never touched.
 - Repos with no GitHub remote are silently skipped.
 - Temp files (if needed) go to `C:/Users/brown/.claude/scratch/`.
+
+---
+
+> **Dual-copy registration caveat (dev-env#344, [ADR-003 amendment](../../../docs/adr/003-config-in-version-control.md)).**
+> This file is the **canonical, version-controlled** definition
+> (`dev-env/claude/routines/reclaim-worktree-disk/`, surfaced at
+> `~/.claude/routines/reclaim-worktree-disk/` via the directory junction). The scheduler reads a
+> **separate** live copy at `~/.claude/scheduled-tasks/reclaim-worktree-disk/SKILL.md`, materialized
+> by the `create_scheduled_task` MCP tool — the two do **not** auto-sync by default. This routine was
+> authored with its intended `0 */6 * * *` schedule above but was never actually registered as a
+> live task at all ([dev-env#597](https://github.com/brownm09/dev-env/issues/597)) — its
+> self-healing disk reclamation had, as far as that investigation could tell, never run
+> automatically. Per the convention ADR-003's amendment establishes, the live copy now reads this
+> file at run time and defers to it when present, falling back to an embedded copy only when it is
+> missing or unreadable.
