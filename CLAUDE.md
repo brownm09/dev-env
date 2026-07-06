@@ -824,6 +824,26 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_pre_merge_branch_check.py
     ```
 
+46. **check-journal-compose-liveness test** — required when changing
+    `claude/scripts/check-journal-compose-liveness.py`. Exercises the pure
+    `has_uncommitted_target_date_changes()` and `format_abort_message()` helpers offline — no
+    subprocess, no git, no filesystem: pins that an untracked (`??`) or modified (` M`) stub/manifest
+    shard for the target date is dirty, that a different date or a non-date-named path (e.g. an
+    open-PR shard) is clean, that a renamed path (`OLD -> NEW`) checks the destination side, that
+    blank lines and multi-line mixed output are handled correctly, that a date-marker match without
+    the shard suffix is clean, that `main()` rejects a malformed date (including an unsubstituted
+    `YYYY-MM-DD` placeholder left in `journal-compose/SKILL.md`) with exit 2, and that the abort
+    message is ASCII (and therefore cp1252-safe), matching the encoding-safety convention pinned
+    elsewhere in this repo's advisory-emitting scripts (items 18, 40). The script itself stays pure
+    I/O (porcelain text via stdin, not a live `git status` call) so this test needs no subprocess
+    mocking — the two callers (`journal-compose-with-retry.sh`'s primary check and
+    `journal-compose/SKILL.md` Step 0.6's defense-in-depth check) both run `git status --porcelain`
+    themselves and pipe the output in ([ADR-086](docs/adr/086-journal-compose-liveness-guard.md)).
+
+    ```bash
+    py -3 claude/scripts/tests/test_check_journal_compose_liveness.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
