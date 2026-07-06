@@ -265,6 +265,7 @@ Fires when the Claude Code session ends (user exits or `/stop`).
 | `token-tracker.py` | Reads the session JSONL, aggregates token usage, and appends a record to `~/.claude/scratch/token-sessions.jsonl`. Supports Sonnet 4.6, Opus 4.6, and Haiku 4.5 pricing. |
 | `journal-stop-check.py` | Checks for the stub-push sentinel flag (emits a closing message reminding the user to archive if found), then checks for stale open journal stubs and unmerged draft branches, emitting a closing message if any are found. Exit 0 always. |
 | `posttooluse-inert-advisory.py` | Reliable-event safety net for the [ADR-053](adr/053-posttooluse-hooks-inert-in-background-sessions.md) inert-PostToolUse limitation. Scans the just-ended transcript; if a dev-env (project #3) `gh issue/pr create` or `gh pr merge` ran but **no** `attachment` record carries `hookEvent == "PostToolUse"` (the inert signature — no `gh` call, no `project` scope), prints a one-line advisory pointing to the dev-env `CLAUDE.md` → GitHub Project → Fallback. Detection is dev-env-scoped (created URL / merged PR must be `brownm09/dev-env`) and any PostToolUse attachment all session keeps it silent, so the legitimate different-repo/no-config silent paths ([ADR-049](adr/049-hook-payload-output-field.md)) never trip it. Non-blocking (stdout, exit 0), once per session via a scratch sentinel. [ADR-055](adr/055-reliable-event-inert-posttooluse-advisory.md) |
+| `stop-tile-enumeration-gate.py` | **State-keyed** post-merge tile-enumeration gate — the Stop-hook analog of `pre-merge-findings-gate` and the auto-merge-aware complement to the **command-keyed** `post-merge-tile-checkpoint.py` (ADR-060). Scans the just-ended transcript for a PR that reached MERGED state this session by **any** path (a `gh pr merge` success marker; a `gh api .../pulls/N/merge` with `"merged":true`; or a `gh pr view` MERGED state correlated with a PR the session created/enqueued — the auto-merge case the command-keyed hook is blind to). When such a merge is present but **no** tile-enumeration artifact was recorded — a `spawn_task` tool call, or the prescribed text (`Follow-ups considered … -> tiled (task_id / #N)` / `-> not tiled, because <reason>`); a bare "no follow-ups" does **not** satisfy it (the lifting-logbook#700 skip) — it **blocks the stop (exit 2)** with the reminder on stderr. Honors an explicit "skip tiles" user instruction and the `stop_hook_active` loop guard; fires at most once per session via a scratch sentinel. Pure transcript scan — no `gh`/network/subprocess (fail-open, exit 0 on any error); NOT inert in background/SDK sessions ([ADR-053](adr/053-posttooluse-hooks-inert-in-background-sessions.md)), unlike the command-keyed sibling. Global — no opt-in. Pure helpers unit-tested + a subprocess end-to-end layer: `py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py`. [ADR-046](adr/046-post-merge-followup-tiles.md), [ADR-088](adr/088-state-keyed-tile-enumeration-gate.md) |
 | `awake-blocker.py` (stop) | Removes the sleep-block sentinel; the detached watcher polls every second and exits within ~1s, releasing the system-sleep lock. Also registered on `Notification` for the same effect when Claude pauses for input/permission. [ADR-033](adr/033-prevent-system-sleep-while-processing.md) |
 
 ---
@@ -1034,6 +1035,16 @@ The tile and the issue are complementary, not redundant.
 
 **Fallback where `spawn_task` is unavailable.** The tool is not present in every session (e.g. some
 terminal CLI sessions). There, file a follow-up issue instead, so the capture still happens.
+
+**Enforcement.** Two hooks back this checkpoint. `post-merge-tile-checkpoint.py`
+([ADR-060](adr/060-post-merge-tile-checkpoint-hook.md)) is **command-keyed** — it fires the moment a
+`gh pr merge` you run succeeds, but is blind to auto-merge and pure `gh api` merges.
+`stop-tile-enumeration-gate.py` ([ADR-088](adr/088-state-keyed-tile-enumeration-gate.md)) is
+**state-keyed** — a Stop hook that scans the transcript and blocks the stop when a PR reached merged
+state this session by *any* path but no tile-enumeration was recorded (a bare "no follow-ups" does not
+satisfy it). The two are complementary: the command-keyed hook is the immediate nudge, the state-keyed
+hook is the Stop-time verification that also covers auto-merge and still fires in background/SDK
+sessions where every PostToolUse hook is inert ([ADR-053](adr/053-posttooluse-hooks-inert-in-background-sessions.md)).
 
 Rationale, alternatives, and consequences: [ADR-046](adr/046-post-merge-followup-tiles.md).
 
