@@ -1,22 +1,39 @@
 #!/usr/bin/env python3
-"""Claude Code UserPromptSubmit hook — free-space safety net for the C: drive.
+"""Claude Code UserPromptSubmit + PreToolUse(Bash) hook — free-space safety
+net for the C: drive.
 
 Background: Claude-managed worktrees each carry a full node_modules; dozens of
 stale worktrees can fill C: to saturation between the weekly prune runs
 (dev-env#306). reclaim-worktree-disk.py strips those regenerable artifacts, but
 a weekly/6-hourly cadence can still be outrun by a burst of worktree creation.
-This hook is the between-runs safety net: it watches free space on every prompt
-and, when space gets low, triggers reclamation before the disk saturates.
+This hook is the between-runs safety net: it watches free space and, when
+space gets low, triggers reclamation before the disk saturates.
 
-Behavior (advisory only — never blocks a prompt; exit 0 always per ADR-027):
+Registered under both `UserPromptSubmit` and `PreToolUse(Bash)` (dev-env#592,
+ADR-087): the original UserPromptSubmit-only wiring re-checks free space once
+per user prompt, so disk exhaustion occurring *within* a single long agentic
+turn (many Bash calls with no new prompt in between) could outrun it — a
+structural gap ADR-085's Context section named as a candidate fast-follow.
+`shutil.disk_usage()` is a cheap syscall (not a subprocess spawn), so running
+it before every Bash call is affordable. `main()` was already agnostic to
+which hook event invoked it — it only reads `session_id`/`cwd` from stdin and
+ignores `hook_event_name`/`tool_name`/`tool_input` — so the same script is
+reused unmodified as both hook entries rather than splitting into two files
+(mirrors the existing `awake-blocker.py` precedent of one script registered
+under multiple hook events).
+
+Behavior (advisory only — never blocks a prompt or tool call; exit 0 always
+per ADR-027):
   - free space < WARN_GB: emit a one-time systemMessage warning (no action).
   - free space < ACT_GB:  spawn reclaim-worktree-disk.py DETACHED (so the heavy
-                          delete never blocks the prompt) and emit a one-time
-                          systemMessage that reclamation has started.
+                          delete never blocks the prompt/tool call) and emit a
+                          one-time systemMessage that reclamation has started.
 
 Each band fires at most once per session, gated by a session_id-keyed marker file
 in scratch/ (ADR-027 per-session-state convention) so a sustained low-space
-condition does not re-warn or re-spawn on every prompt.
+condition does not re-warn or re-spawn on every prompt or Bash call — and the
+same gate is shared by both hook entries, so whichever fires first for a given
+session silently covers the other.
 
 The detached spawn uses sys.executable (pythonw.exe under the `pyw -3` hook
 invocation) rather than the `py` launcher — spawning via `py.exe` would allocate
@@ -24,8 +41,12 @@ a fresh console for the grandchild (dev-env#300; enforced by
 tests/test_pyw_stdio.py::test_no_hook_spawns_python_via_py_launcher).
 
 Stdin JSON shape (UserPromptSubmit): {"hook_event_name", "session_id", "cwd"}
+Stdin JSON shape (PreToolUse/Bash): {"hook_event_name", "tool_name",
+"tool_input", "session_id", "cwd"} — only "session_id" and "cwd" are read;
+the rest is ignored, which is what makes this script safe to reuse as-is.
 
-Exit 0 always — advisory; any exception is swallowed so a bug never blocks a prompt.
+Exit 0 always — advisory; any exception is swallowed so a bug never blocks a
+prompt or tool call.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
@@ -43,6 +64,22 @@ RECLAIM_SCRIPT = Path(__file__).resolve().parent / "reclaim-worktree-disk.py"
 # .claude/hook-config.json only if tuning-without-code-change becomes necessary.
 WARN_GB = 20.0   # below this: warn the user
 ACT_GB = 10.0    # below this: auto-reclaim regenerable worktree artifacts
+
+
+def classify_free_space(free_gb: float, warn_gb: float, act_gb: float) -> str:
+    """Return "act", "warn", or "ok" for a free-space reading.
+
+    Boundaries are inclusive on the healthier side, preserving the exact
+    behavior of the inline if/elif this was extracted from: a reading exactly
+    equal to a threshold has not yet crossed into that band — only strictly
+    below does. So `free_gb == warn_gb` is "ok" and `free_gb == act_gb` is
+    "warn", never "act".
+    """
+    if free_gb < act_gb:
+        return "act"
+    if free_gb < warn_gb:
+        return "warn"
+    return "ok"
 
 
 def _free_gb(path: str) -> float:
@@ -117,7 +154,9 @@ def main() -> None:
     except OSError:
         sys.exit(0)
 
-    if free < ACT_GB:
+    band = classify_free_space(free, WARN_GB, ACT_GB)
+
+    if band == "act":
         if not _already_fired(session_id, "act"):
             spawned = _spawn_reclaim(cwd)
             if spawned:
@@ -135,7 +174,7 @@ def main() -> None:
                     "--scan-dir C:/Users/brown/Git` manually."
                 )
             _mark_fired(session_id, "act")
-    elif free < WARN_GB:
+    elif band == "warn":
         if not _already_fired(session_id, "warn"):
             _emit(
                 f"[disk-space-check] {free:.1f} GB free on {TARGET_DRIVE} "
