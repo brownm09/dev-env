@@ -47,7 +47,12 @@ command-keyed ADR-060 hook, and the Stop-hook analog of `pre-merge-findings-gate
 - **Auto-merge / pure-`gh api`:** a `gh pr view`/`gh pr checks` output showing `"state":"MERGED"`,
   **correlated** with a PR the session actually acted on (created via `gh pr create`, or targeted by any
   `gh pr merge` including a queued `--auto`). The correlation is what distinguishes "this PR auto-merged
-  this session" from "I merely inspected an unrelated old merged PR" — the latter must never fire.
+  this session" from "I merely inspected an unrelated old merged PR" — the latter must never fire. The
+  observed PR number is read from the authoritative JSON `"number"` (not a positional arg, which could be
+  a flag value), and the correlation is by **`(repo, number)`** — an explicit `--repo`/URL repo on the
+  view that differs from every repo the session acted the number in does not match, so a same-numbered PR
+  in a *different* repo cannot false-fire; a `None` (cwd-inferred) repo on either side falls back to a
+  number match, preserving every same-repo true positive (both hardened in the PR #604 review).
 
 **An enumeration was recorded** (session-global) = an actual `spawn_task` tool call, **or** assistant
 text carrying the prescribed markers (`Follow-ups considered …`, `-> not tiled, because …`,
@@ -98,7 +103,9 @@ prompts the enumeration, without any risk of wedging the session.
 
 Fail-open: any error (unparseable transcript, missing file, unexpected shape) exits 0. A blocking Stop
 hook must never wedge a session on its own bug; the wording floor in `claude/CLAUDE.md` remains the
-backstop.
+backstop. Non-dict transcript records are dropped at parse time and the pure helpers carry `isinstance`
+guards, so a single malformed line yields a deliberate skip rather than silently disabling the gate via
+an uncaught helper exception (hardened in the PR #604 review).
 
 ## Consequences
 
@@ -122,6 +129,13 @@ backstop.
   with *zero* in-session `gh pr view`/merge evidence, there is nothing in the transcript to key on. In
   practice the post-merge bookkeeping (board move, journal) observes the merged state, which is what the
   correlation keys on.
+- **Per-turn scan cost.** The hook re-reads and re-scans the transcript on every Stop (Stop fires each
+  turn) — it cannot resolve early the way `posttooluse-inert-advisory.py` does, because a merge can land
+  on any later turn. A cheap `"merged"` substring pre-filter (every merge signal this hook detects
+  contains that substring) short-circuits the common no-merge session before any JSON parse, and
+  `split_top_level` is computed once per command, so the residual per-turn cost in a no-merge session is a
+  single file read plus a substring check (both added in the PR #604 review). A merge-bearing session pays
+  the full parse only once — the sentinel short-circuits subsequent Stops.
 
 ## Alternatives considered
 

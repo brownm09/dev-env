@@ -80,9 +80,11 @@ _GH_API_STMT_RE = re.compile(r"gh(?:\.exe)?\s+api\b", re.IGNORECASE)
 
 # Strip the `gh pr <verb>` prefix so the positional PR arg can be read.
 _STRIP_VERB_RE = re.compile(r"\s*gh(?:\.exe)?\s+pr\s+\w+\b(.*)", re.IGNORECASE | re.DOTALL)
-# A PR URL (`.../pull/N`) and a bare positional integer token.
-_PR_URL_RE = re.compile(r"github\.com/[^/\s]+/[^/\s]+/pull/(\d+)")
+# A PR URL (`.../pull/N`) capturing owner/repo and number; a bare positional
+# integer token; and an explicit `--repo`/`-R owner/name` flag value.
+_PR_URL_RE = re.compile(r"github\.com/(?P<repo>[^/\s]+/[^/\s]+)/pull/(?P<num>\d+)")
 _POS_NUM_RE = re.compile(r"(?<!\S)(\d+)(?=\s|$)")
+_REPO_FLAG_RE = re.compile(r"(?:--repo|-R)(?:=|\s+)(?P<repo>[^\s/]+/[^\s]+)")
 
 # --- merged-state signals in command output ------------------------------------
 _PULLS_MERGE_PATH_RE = re.compile(r"/pulls/(\d+)/merge\b")     # gh api PUT target
@@ -116,7 +118,11 @@ def _first_line(segment: str) -> str:
 
 
 def _content_items(rec: dict) -> list:
-    msg = rec.get("message") or {}
+    if not isinstance(rec, dict):
+        return []
+    msg = rec.get("message")
+    if not isinstance(msg, dict):
+        return []
     c = msg.get("content")
     return c if isinstance(c, list) else []
 
@@ -154,7 +160,7 @@ def iter_bash_calls(records: list) -> list:
     """
     commands: dict = {}
     for rec in records:
-        if rec.get("type") != "assistant":
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
             continue
         for item in _content_items(rec):
             if (
@@ -168,7 +174,7 @@ def iter_bash_calls(records: list) -> list:
 
     calls: list = []
     for rec in records:
-        if rec.get("type") != "user":
+        if not isinstance(rec, dict) or rec.get("type") != "user":
             continue
         for item in _content_items(rec):
             if isinstance(item, dict) and item.get("type") == "tool_result":
@@ -178,29 +184,36 @@ def iter_bash_calls(records: list) -> list:
     return calls
 
 
-def load_records(transcript_path: Path) -> list:
+def _parse_records(text: str) -> list:
+    """Parse a transcript's JSONL text into records, keeping only JSON objects.
+
+    A bare ``null`` / number / string / array line is dropped rather than kept as
+    a non-dict record — otherwise a single such line downstream would raise an
+    ``AttributeError`` in a helper and (caught only by the outer guard) silently
+    exit 0, disabling the gate for an otherwise-fireable session (review of
+    PR #604). The pure helpers additionally carry ``isinstance`` guards so they
+    stay safe when called directly in tests with hand-built record lists.
+    """
     records: list = []
-    with open(transcript_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict):
+            records.append(rec)
     return records
 
 
+def load_records(transcript_path: Path) -> list:
+    with open(transcript_path, encoding="utf-8") as f:
+        return _parse_records(f.read())
+
+
 # --- pure detection helpers (offline-testable) ---------------------------------
-
-def _segments_matching(command: str, stmt_re: re.Pattern) -> list:
-    """Top-level segments of *command* whose first line starts with *stmt_re*."""
-    return [
-        seg for seg in split_top_level(command)
-        if stmt_re.match(_first_line(seg).lstrip())
-    ]
-
 
 def _target_pr(segment_first_line: str) -> int | None:
     """PR number a ``gh pr merge|view|checks`` invocation targets (a ``/pull/N``
@@ -210,82 +223,105 @@ def _target_pr(segment_first_line: str) -> int | None:
     tail = m.group(1) if m else ""
     u = _PR_URL_RE.search(tail)
     if u:
-        return int(u.group(1))
+        return int(u.group("num"))
     n = _POS_NUM_RE.search(tail)
     return int(n.group(1)) if n else None
 
 
-def acted_on_prs(calls: list) -> set:
-    """PR numbers this session created or targeted with a merge (incl. a queued
-    ``--auto``). Used to correlate an observed MERGED state (below) with an
-    in-session action, so a mere lookup of an unrelated old merged PR can't be
-    mistaken for a merge that happened this session."""
-    prs: set = set()
-    for command, output in calls:
-        if _segments_matching(command, _PR_CREATE_STMT_RE):
-            for m in _PR_URL_RE.finditer(output or ""):
-                prs.add(int(m.group(1)))
-        for seg in _segments_matching(command, _MERGE_STMT_RE):
-            n = _target_pr(_first_line(seg))
-            if n is not None:
-                prs.add(n)
-    return prs
-
-
-def directly_merged_prs(calls: list) -> set:
-    """PRs with direct in-session merge evidence: a real ``gh pr merge`` success
-    marker (covers a manual merge and the two-step workaround's first command),
-    or a ``gh api .../pulls/N/merge`` whose result is ``"merged": true``.
-
-    ``gh pr merge --help`` and a queued ``gh pr merge --auto`` produce no success
-    marker, so neither counts here (dev-env#485 shape)."""
-    prs: set = set()
-    for command, output in calls:
-        output = output or ""
-        if _segments_matching(command, _MERGE_STMT_RE) and output_has_merge_marker(output):
-            n = merge_pr_number_from_output(output)
-            if n is None:
-                for seg in _segments_matching(command, _MERGE_STMT_RE):
-                    n = _target_pr(_first_line(seg))
-                    if n is not None:
-                        break
-            if n is not None:
-                prs.add(n)
-        if _segments_matching(command, _GH_API_STMT_RE) and _MERGED_TRUE_RE.search(output):
-            pm = _PULLS_MERGE_PATH_RE.search(command)
-            if pm:
-                prs.add(int(pm.group(1)))
-    return prs
-
-
-def observed_merged_prs(calls: list) -> set:
-    """PRs observed at MERGED state via a ``gh pr view|checks`` JSON output. This
-    is how auto-merge is caught: the session enqueued ``--auto`` (or created the
-    PR), came back, and confirmed the merged state with ``gh pr view``."""
-    prs: set = set()
-    for command, output in calls:
-        output = output or ""
-        if _segments_matching(command, _PR_VIEW_STMT_RE) and _MERGED_STATE_RE.search(output):
-            n = None
-            for seg in _segments_matching(command, _PR_VIEW_STMT_RE):
-                n = _target_pr(_first_line(seg))
-                if n is not None:
-                    break
-            if n is None:
-                nm = _OUTPUT_NUMBER_RE.search(output)
-                n = int(nm.group(1)) if nm else None
-            if n is not None:
-                prs.add(n)
-    return prs
+def _explicit_repo(segment_first_line: str) -> str | None:
+    """owner/repo explicitly named on a ``gh pr …`` invocation — a ``--repo``/``-R``
+    flag value or a ``/pull/N`` URL — else ``None`` (the command infers its repo
+    from cwd, which this hook cannot resolve). Makes the auto-merge correlation
+    repo-aware so a same-numbered PR in a *different* repo, merely inspected as
+    MERGED in-session, cannot be mistaken for this session's own PR (review of
+    PR #604)."""
+    rf = _REPO_FLAG_RE.search(segment_first_line)
+    if rf:
+        return rf.group("repo")
+    u = _PR_URL_RE.search(segment_first_line)
+    return u.group("repo") if u else None
 
 
 def session_merged_prs(calls: list) -> set:
     """PRs that reached merged state this session, by any path.
 
-    Direct merge evidence, UNION an observed MERGED state correlated with a PR
-    the session actually acted on (the auto-merge / pure-``gh api`` case).
+    One pass over the paired Bash calls — ``split_top_level`` is run once per
+    command, not once per merge-path helper (review of PR #604). The result is
+    direct merge evidence UNION an observed MERGED state correlated with a PR the
+    session actually acted on (the auto-merge / pure-``gh api`` case):
+
+    - **Direct evidence:** a real ``gh pr merge`` success marker (a manual merge
+      or the two-step workaround's first command; ``--help`` / a queued
+      ``--auto`` print no marker, dev-env#485), or a ``gh api .../pulls/N/merge``
+      whose result is ``"merged": true``.
+    - **Observed (auto-merge):** a ``gh pr view|checks`` output at ``"state":
+      "MERGED"`` for a PR the session created (``gh pr create`` URL) or targeted
+      (``gh pr merge`` incl. ``--auto``). The PR number is taken from the
+      authoritative JSON ``"number"`` first, falling back to the positional arg.
+      Correlation is by ``(repo, number)``: a ``None`` repo on either side (the
+      command named no explicit repo → cwd's) falls back to a number match,
+      preserving every same-repo true positive, while two *explicit* differing
+      repos never match — so an unrelated same-numbered PR in another repo,
+      inspected as MERGED, does not false-fire.
     """
-    return directly_merged_prs(calls) | (observed_merged_prs(calls) & acted_on_prs(calls))
+    acted: dict = {}      # number -> set of repos (or None) the session acted on it in
+    observed: list = []   # (repo_or_None, number) seen at MERGED state
+    directly: set = set()  # numbers with direct in-session merge evidence
+
+    for command, output in calls:
+        output = output or ""
+        firsts = [_first_line(seg).lstrip() for seg in split_top_level(command)]
+        merge_firsts = [f for f in firsts if _MERGE_STMT_RE.match(f)]
+        view_firsts = [f for f in firsts if _PR_VIEW_STMT_RE.match(f)]
+        has_create = any(_PR_CREATE_STMT_RE.match(f) for f in firsts)
+        has_api = any(_GH_API_STMT_RE.match(f) for f in firsts)
+
+        # --- acted-on: created PRs (repo from the URL) + merge targets ----------
+        if has_create:
+            for m in _PR_URL_RE.finditer(output):
+                acted.setdefault(int(m.group("num")), set()).add(m.group("repo"))
+        for f in merge_firsts:
+            n = _target_pr(f)
+            if n is not None:
+                acted.setdefault(n, set()).add(_explicit_repo(f))
+
+        # --- direct merge evidence ---------------------------------------------
+        if merge_firsts and output_has_merge_marker(output):
+            n = merge_pr_number_from_output(output)
+            if n is None:
+                for f in merge_firsts:
+                    n = _target_pr(f)
+                    if n is not None:
+                        break
+            if n is not None:
+                directly.add(n)
+        if has_api and _MERGED_TRUE_RE.search(output):
+            pm = _PULLS_MERGE_PATH_RE.search(command)
+            if pm:
+                directly.add(int(pm.group(1)))
+
+        # --- observed MERGED state (auto-merge) --------------------------------
+        if view_firsts and _MERGED_STATE_RE.search(output):
+            nm = _OUTPUT_NUMBER_RE.search(output)  # authoritative -> prefer it
+            n = int(nm.group(1)) if nm else None
+            repo = None
+            for f in view_firsts:
+                repo = _explicit_repo(f)
+                if n is None:
+                    n = _target_pr(f)
+                if repo is not None:
+                    break
+            if n is not None:
+                observed.append((repo, n))
+
+    auto: set = set()
+    for repo, n in observed:
+        acted_repos = acted.get(n)
+        if acted_repos is None:
+            continue
+        if repo is None or None in acted_repos or repo in acted_repos:
+            auto.add(n)
+    return directly | auto
 
 
 def enumeration_recorded(records: list) -> bool:
@@ -298,7 +334,7 @@ def enumeration_recorded(records: list) -> bool:
     follow-ups" matches none of the markers and so does NOT satisfy it.
     """
     for rec in records:
-        if rec.get("type") != "assistant":
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
             continue
         for item in _content_items(rec):
             if not isinstance(item, dict):
@@ -317,9 +353,18 @@ def skip_override(records: list) -> bool:
     ("skip tiles" / "don't spawn tiles" / "no tiles"). Only real user-typed text
     is considered — never tool_result output that merely contains the phrase."""
     for rec in records:
-        if rec.get("type") != "user":
+        if not isinstance(rec, dict) or rec.get("type") != "user":
             continue
-        msg = rec.get("message") or {}
+        # Synthetic user-type records — compact summaries and
+        # <local-command-*> caveat blocks — are not a fresh user instruction. A
+        # compact summary that merely restates an earlier "skip tiles" mention
+        # must not waive the gate, especially since the workflow prompts
+        # /compact right after PR-create (review of PR #604).
+        if rec.get("isMeta") or rec.get("isCompactSummary"):
+            continue
+        msg = rec.get("message")
+        if not isinstance(msg, dict):
+            continue
         c = msg.get("content")
         texts: list = []
         if isinstance(c, str):
@@ -411,11 +456,26 @@ def main() -> None:
         sys.exit(0)
 
     try:
-        records = load_records(tpath)
+        text = tpath.read_text(encoding="utf-8")
     except Exception:
         sys.exit(0)
+    # Cheap pre-filter: every merge signal this hook detects contains the
+    # substring "merged" case-insensitively — gh's "... merged pull request",
+    # `"state":"MERGED"`, `"merged":true`. A transcript with no "merged" anywhere
+    # cannot contain a merged-state PR, so skip the full JSON parse + scan. Stop
+    # fires every turn, so this bounds the common no-merge session to one read +
+    # substring check instead of re-parsing the whole transcript each turn
+    # (review of PR #604).
+    if "merged" not in text.lower():
+        sys.exit(0)
 
-    fire_pr, resolved = evaluate(records)
+    # Fail-open: a parse/scan failure is a deliberate exit-0 skip, not an
+    # accident of the outer __main__ guard (review of PR #604).
+    try:
+        records = _parse_records(text)
+        fire_pr, resolved = evaluate(records)
+    except Exception:
+        sys.exit(0)
     if fire_pr is not None:
         # Set the sentinel BEFORE emitting so a re-entrant Stop cannot double-block.
         _mark_fired(session_id)

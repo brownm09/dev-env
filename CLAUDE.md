@@ -866,7 +866,7 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     Pure-helper tests exercise the detection/decision core offline (no stdin, network, gh, or disk):
     `session_merged_prs` across all three merge paths — a `gh pr merge` success marker, a
     `gh api .../pulls/N/merge` with `"merged":true`, and the auto-merge case (a `--auto` enqueue or a
-    `gh pr create`, then a later `gh pr view` MERGED state, correlated via `acted_on_prs`) — plus the
+    `gh pr create`, then a later `gh pr view` MERGED state, correlated with a PR the session acted on) — plus the
     non-matches that must NOT count: a `gh pr view` MERGED for a PR the session never acted on (an
     unrelated old PR merely inspected), a queued `--auto` alone with no MERGED confirmation, a
     `gh pr merge --help` (no marker, no PR — dev-env#485 shape), and a `gh pr merge` mentioned only
@@ -877,7 +877,11 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     user "skip tiles" / "no tiles" / "don't spawn tiles", and that the phrase inside a `tool_result`
     does NOT waive); the `evaluate()` composition (fire / resolved / no-op, lowest-PR determinism);
     `iter_bash_calls` id-pairing (parallel calls don't cross); and the reminder's ASCII/cp1252
-    encodability. A behavioral layer drives the real hook end-to-end over stdin via subprocess against
+    encodability. It also pins the PR #604 review regressions: the observed PR number preferring the JSON
+    `"number"` (A1), that a compact-summary / `isMeta` record restating "skip tiles" does NOT waive the
+    gate (A2), that malformed / non-dict records neither raise nor silently disable it (A3), and that the
+    auto-merge correlation is `(repo, number)`-aware so a same-numbered PR in another repo does not
+    false-fire (A4). A behavioral layer drives the real hook end-to-end over stdin via subprocess against
     a synthetic transcript, with HOME/USERPROFILE pointed at a temp dir so the once-per-session
     sentinel is isolated: pins merged-no-enum -> exit 2 with the reason on stderr and empty stdout,
     merged+enum and no-merge -> exit 0, the `stop_hook_active` loop guard -> exit 0, and that the

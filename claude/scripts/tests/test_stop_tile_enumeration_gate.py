@@ -320,6 +320,89 @@ def test_reminder_is_cp1252_encodable():
 
 
 # ---------------------------------------------------------------------------
+# review-fix regressions (PR #604)
+# ---------------------------------------------------------------------------
+
+def test_a1_observed_prefers_json_number():
+    # A1: the observed-MERGED PR number comes from the authoritative JSON
+    # "number", so a `gh pr view` with no positional arg (infers from branch)
+    # still resolves the PR — no reliance on a positional that could be a flag.
+    calls = [
+        ("gh pr merge 700 --auto --squash",
+         "Pull request #700 will be automatically merged when all requirements are met"),
+        ("gh pr view --json state,number", '{"number":700,"state":"MERGED"}'),
+    ]
+    assert gate.session_merged_prs(calls) == {700}
+    return "observed MERGED with no positional arg -> number from JSON \"number\" (A1)"
+
+
+def test_a2_compact_summary_does_not_waive():
+    # A2: a compact summary is a synthetic user-type record, not a fresh
+    # instruction. It restating "skip tiles" must NOT waive the gate.
+    records = _MERGED_NO_ENUM + [
+        {"type": "user", "isCompactSummary": True,
+         "message": {"content": "Earlier the user mused we might skip tiles on some PRs."}}]
+    fire, resolved = gate.evaluate(records)
+    assert fire == 599 and resolved is False
+    return "compact-summary restating 'skip tiles' -> does NOT waive (A2)"
+
+
+def test_a2_ismeta_does_not_waive():
+    records = _MERGED_NO_ENUM + [
+        {"type": "user", "isMeta": True,
+         "message": {"content": "<local-command-stdout>no tiles</local-command-stdout>"}}]
+    fire, _ = gate.evaluate(records)
+    assert fire == 599
+    return "isMeta record mentioning 'no tiles' -> does NOT waive (A2)"
+
+
+def test_a2_genuine_user_skip_still_waives():
+    # Guard the other direction: a real user message still waives.
+    records = _MERGED_NO_ENUM + [_user_str("skip tiles for this one")]
+    fire, resolved = gate.evaluate(records)
+    assert fire is None and resolved is True
+    return "genuine user 'skip tiles' still waives (A2 preserves the real override)"
+
+
+def test_a3_malformed_records_do_not_disable_gate():
+    # A3: non-dict lines and non-dict message fields must neither raise nor
+    # silently disable a session that should fire.
+    junk = [None, 123, "a string", [], {"type": "user", "message": "not-a-dict"},
+            {"type": "assistant", "message": ["also-not-a-dict"]}, {"no_type": True}]
+    records = junk[:3] + _MERGED_NO_ENUM + junk[3:]
+    fire, resolved = gate.evaluate(records)
+    assert fire == 599 and resolved is False
+    # the individual helpers must also not raise on the junk
+    assert gate.session_merged_prs(gate.iter_bash_calls(records)) == {599}
+    assert gate.skip_override(records) is False
+    assert gate.enumeration_recorded(records) is False
+    return "malformed/non-dict records -> gate still evaluates, no crash (A3)"
+
+
+def test_a4_cross_repo_same_number_not_merged():
+    # A4: session creates its own PR #50 (never merges it), then inspects an
+    # unrelated already-merged PR #50 in a DIFFERENT repo -> must NOT fire.
+    calls = [
+        ("gh pr create --fill", "https://github.com/brownm09/dev-env/pull/50"),
+        ("gh pr view 50 --repo other/proj --json state,number",
+         '{"number":50,"state":"MERGED"}'),
+    ]
+    assert gate.session_merged_prs(calls) == set()
+    return "cross-repo same PR number (foreign inspected MERGED) -> not merged (A4)"
+
+
+def test_a4_same_repo_auto_merge_still_detected():
+    # A4 preserves the true positive: same number, explicit MATCHING repo.
+    calls = [
+        ("gh pr create --fill", "https://github.com/brownm09/dev-env/pull/50"),
+        ("gh pr view 50 --repo brownm09/dev-env --json state,number",
+         '{"number":50,"state":"MERGED"}'),
+    ]
+    assert gate.session_merged_prs(calls) == {50}
+    return "same PR number, matching explicit repo -> merged (A4 keeps true positive)"
+
+
+# ---------------------------------------------------------------------------
 # behavioral layer — real hook over stdin via subprocess (HOME-isolated sentinel)
 # ---------------------------------------------------------------------------
 
@@ -421,6 +504,13 @@ def main():
         ("evaluate picks lowest PR", test_evaluate_picks_lowest_pr_deterministically),
         ("iter_bash_calls pairs by id", test_iter_bash_calls_pairs_by_id),
         ("reminder cp1252-encodable", test_reminder_is_cp1252_encodable),
+        ("A1 observed prefers JSON number", test_a1_observed_prefers_json_number),
+        ("A2 compact-summary does not waive", test_a2_compact_summary_does_not_waive),
+        ("A2 isMeta does not waive", test_a2_ismeta_does_not_waive),
+        ("A2 genuine user skip still waives", test_a2_genuine_user_skip_still_waives),
+        ("A3 malformed records do not disable", test_a3_malformed_records_do_not_disable_gate),
+        ("A4 cross-repo same number not merged", test_a4_cross_repo_same_number_not_merged),
+        ("A4 same-repo auto-merge detected", test_a4_same_repo_auto_merge_still_detected),
         ("e2e merged+no-enum blocks on stderr", test_e2e_merged_no_enum_blocks_on_stderr),
         ("e2e merged+enum allows", test_e2e_merged_with_enum_allows),
         ("e2e no-merge allows", test_e2e_no_merge_allows),
