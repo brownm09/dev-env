@@ -120,7 +120,7 @@ The only valid override remains a direct verbal instruction that names the tile 
 
 1. **Discretionary trigger, no forcing function.** The rule fired "*if* the work surfaced any follow-ups." That `if` is a self-assessment made when the agent is most motivated to be done, and completion-bias reliably resolves it to "none" as a bare, unexamined assertion — nothing forced an enumeration of candidates before concluding zero.
 2. **No required artifact, no hook, so a skip is invisible.** Contrast the review-findings gate: the agent MUST write a "Review findings disposition" section and `pre-merge-findings-gate` blocks the merge without it. A skipped tile checkpoint left no trace — the only detector was the user noticing the absence.
-3. **Trigger keyed to the `gh pr merge` command.** Auto-merge and the two-step REST merge (`gh pr merge <N> --squash` + a REST ref delete) never run that literal command, so a command-keyed checkpoint is least salient precisely when the merge lands without the agent's hand on it.
+3. **Trigger keyed to the `gh pr merge` command.** When a PR lands via **auto-merge** (GitHub merges it server-side — the #700 case) or a pure `gh api` merge, the literal `gh pr merge` command never runs, so a command-keyed checkpoint is blind to the merge entirely. And even when `gh pr merge` *does* run — a manual merge, or the two-step workaround's `gh pr merge <N> --squash` first step — the post-merge sequence is pure bookkeeping that crowds the checkpoint out. Keying to the merged *state* fires uniformly, whichever path landed the PR.
 
 **Refinement.**
 
