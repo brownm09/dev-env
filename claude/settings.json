@@ -260,7 +260,8 @@
     ]
   },
   "effortLevel": "medium",
+  "tui": "fullscreen",
   "theme": "dark",
   "agentPushNotifEnabled": true,
-  "tui": "fullscreen"
+  "inputNeededNotifEnabled": true
 }
