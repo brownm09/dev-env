@@ -58,6 +58,12 @@ import re
 import sys
 from pathlib import Path
 
+# Shared transcript-record readers (ADR-090). `_result_text` is imported only so
+# it stays reachable as a module attribute for the existing test suite (the
+# module itself uses it solely via iter_bash_calls) — the same
+# module-attribute-indirection the tests rely on (ADR-073).
+from _hookutil import iter_bash_calls, load_records, _result_text  # noqa: F401
+
 SENTINEL_PREFIX = "posttooluse-inert-resolved-"
 
 # --- dev-env (project #3) scoping ----------------------------------------------
@@ -113,68 +119,6 @@ def posttooluse_attachment_present(records: list[dict]) -> bool:
         if isinstance(att, dict) and att.get("hookEvent") == "PostToolUse":
             return True
     return False
-
-
-def _result_text(item: dict, record: dict) -> str:
-    """Best-available text of a tool_result: the per-id content the model saw,
-    falling back to the record's structured `toolUseResult` (stdout+stderr)."""
-    c = item.get("content")
-    if isinstance(c, str) and c.strip():
-        return c
-    if isinstance(c, list):
-        joined = "\n".join(
-            x.get("text", "")
-            for x in c
-            if isinstance(x, dict) and x.get("type") == "text"
-        )
-        if joined.strip():
-            return joined
-    tur = record.get("toolUseResult")
-    if isinstance(tur, dict):
-        parts = [p for p in (tur.get("stdout"), tur.get("stderr")) if p]
-        if parts:
-            return "\n".join(parts)
-        out = tur.get("output")
-        if out:
-            return str(out)
-    return ""
-
-
-def iter_bash_calls(records: list[dict]) -> list[tuple[str, str, str]]:
-    """Pair each Bash tool_use with its tool_result by `tool_use_id`.
-
-    Returns (command, output, cwd) tuples. Pairing by id (not adjacency) keeps
-    parallel tool calls from mismatching. `cwd` is taken from the assistant
-    record that issued the command.
-    """
-    commands: dict[str, tuple[str, str]] = {}
-    for rec in records:
-        if rec.get("type") != "assistant":
-            continue
-        cwd = rec.get("cwd", "") or ""
-        msg = rec.get("message") or {}
-        for item in msg.get("content") or []:
-            if (
-                isinstance(item, dict)
-                and item.get("type") == "tool_use"
-                and item.get("name") == "Bash"
-            ):
-                tid = item.get("id")
-                if tid:
-                    commands[tid] = ((item.get("input") or {}).get("command", ""), cwd)
-
-    calls: list[tuple[str, str, str]] = []
-    for rec in records:
-        if rec.get("type") != "user":
-            continue
-        msg = rec.get("message") or {}
-        for item in msg.get("content") or []:
-            if isinstance(item, dict) and item.get("type") == "tool_result":
-                tid = item.get("tool_use_id")
-                if tid in commands:
-                    command, cwd = commands[tid]
-                    calls.append((command, _result_text(item, rec), cwd))
-    return calls
 
 
 def _is_devenv_cwd(cwd: str) -> bool:
@@ -278,20 +222,6 @@ def mark_resolved(session_id: str) -> None:
         _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).write_text("")
     except Exception:
         pass
-
-
-def load_records(transcript_path: Path) -> list[dict]:
-    records: list[dict] = []
-    with open(transcript_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return records
 
 
 def main() -> None:
