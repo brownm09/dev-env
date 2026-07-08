@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
 """
-Stop hook: remind Claude to archive after a stub push, and remind the user
-of stale journal work at session end.
+Stop hook: after a stub push, block the stop so Claude archives the session;
+and (non-blocking) remind the user of stale journal work at session end.
 
-Check 1 — stub-push sentinel:
+Check 1 — stub-push sentinel (CLAUDE-facing, BLOCKING via exit 2 + stderr):
   If stub-push-archive-reminder.py wrote a sentinel flag (meaning a stub was
-  pushed to engineering-journal this session), consume the flag and emit a
-  closing message reminding the user to call ccd_session_mgmt__archive_session.
+  pushed to engineering-journal this session), consume the flag and emit the
+  archive instruction on STDERR with exit 2. The reminder asks CLAUDE to call
+  the ccd_session_mgmt__archive_session MCP tool — an action only Claude can
+  take — so it must reach Claude's context. A Stop hook's exit-0 stdout does
+  NOT (only UserPromptSubmit / UserPromptExpansion / SessionStart get exit-0
+  stdout added to context), so the former stdout emission was invisible to
+  Claude and the intended session-archiving silently never happened. Exit 2 +
+  stderr is the channel that reaches Claude (ADR-091; same failure class
+  ADR-088's tile gate fixed). Fires at most once (the sentinel is consumed on
+  read) and honors the stop_hook_active loop guard.
 
-Checks 2–3:
+Checks 2–3 (user-facing, NON-blocking — exit 0, stdout):
 1. Stale *_draft.md / *.stub.md files from before today
 2. Unmerged remote draft/* branches
+  These point at work for a LATER, dedicated session (journal composition is
+  dedicated-session-only and must never be triggered proactively; stale-PR
+  merges are separate work), so they must not block the stop.
 
 Also cleans up orphaned draft files: physical files left on disk as untracked
 after git rm. This prevents new-day-journal-check.py false positives on the
@@ -31,21 +42,34 @@ SENTINEL = Path.home() / ".claude" / "scratch" / "stub-pushed.flag"
 TODAY = date.today().strftime("%Y-%m-%d")
 
 
-def consume_stub_pushed_sentinel() -> str | None:
-    """Return a reminder message if the stub-push sentinel exists, else None.
+def archive_reminder_message() -> str:
+    """The Claude-facing archive instruction, emitted on stderr with exit 2 so it
+    reaches Claude's context (a Stop hook's exit-0 stdout does not — ADR-091).
 
-    Deletes the sentinel before returning so the reminder fires only once.
-    Any I/O failure is swallowed — the sentinel check is best-effort.
+    ASCII-only: Claude Code pipes hook output as cp1252 on Windows, so a char
+    outside it (an arrow, an em-dash) would raise UnicodeEncodeError and the whole
+    reminder would vanish — mirrors stop-tile-enumeration-gate.py's constraint.
+    """
+    return (
+        "Stub committed and pushed to engineering-journal. "
+        "Archive this session now: call ccd_session_mgmt__archive_session "
+        "(use list_sessions to look up the current session_id if needed). "
+        "Then stop."
+    )
+
+
+def consume_stub_pushed_sentinel(sentinel: Path = SENTINEL) -> str | None:
+    """Return the archive reminder if the stub-push sentinel exists, else None.
+
+    Deletes the sentinel before returning so the reminder fires only once — this
+    consume-on-read is the primary one-shot guard for the exit-2 archive block.
+    Any I/O failure is swallowed — the sentinel check is best-effort. The
+    *sentinel* parameter is injected by the tests; production always uses SENTINEL.
     """
     try:
-        if SENTINEL.exists():
-            SENTINEL.unlink()
-            return (
-                "Stub committed and pushed to engineering-journal. "
-                "Archive this session now: call ccd_session_mgmt__archive_session "
-                "(use list_sessions to look up the current session_id if needed). "
-                "Then stop."
-            )
+        if sentinel.exists():
+            sentinel.unlink()
+            return archive_reminder_message()
     except Exception:
         pass
     return None
@@ -168,19 +192,53 @@ def remove_orphaned_drafts(stale: list[str]) -> list[str]:
     return removed
 
 
+def parse_stop_hook_active(raw: str) -> bool:
+    """True iff the Stop payload's stop_hook_active flag is set. Tolerates empty
+    or malformed stdin (returns False) so a parse hiccup never suppresses the
+    archive block on a genuine first Stop.
+    """
+    if not raw:
+        return False
+    try:
+        return bool(json.loads(raw).get("stop_hook_active"))
+    except Exception:
+        return False
+
+
 def main() -> None:
     try:
         raw = sys.stdin.read().strip()
     except Exception:
         raw = ""
-    # session_id / transcript_path available if needed in future
+    stop_hook_active = parse_stop_hook_active(raw)
 
-    # Sentinel check: stub was pushed this session — remind user to archive.
-    reminder = consume_stub_pushed_sentinel()
+    # Check 1 — stub-push sentinel (CLAUDE-facing archive instruction, BLOCKING).
+    # A stub was pushed this session, so Claude must archive it by calling the
+    # ccd_session_mgmt__archive_session MCP tool. Because this reminder asks
+    # CLAUDE to act, it must reach Claude's context — and for a Stop hook that
+    # means exit 2 + stderr: exit-0 stdout is NOT added to Claude's context for
+    # Stop (only UserPromptSubmit / UserPromptExpansion / SessionStart get that),
+    # so the former stdout emission was invisible to Claude (ADR-091; same failure
+    # class ADR-088's tile gate fixed). Gate the consume on stop_hook_active so a
+    # continuation from a prior block never consumes the flag without delivering
+    # it; the consume-on-read then makes the block one-shot (no Stop-loop risk).
+    if not stop_hook_active:
+        reminder = consume_stub_pushed_sentinel()
+        if reminder:
+            sys.stderr.write(f"[journal-stop-hook] {reminder}\n")
+            sys.exit(2)
 
+    # Checks 2–3 — genuinely user-facing advisories (NON-blocking: exit 0,
+    # stdout). These point at work for a LATER, dedicated session (composition is
+    # dedicated-session-only and must never be triggered proactively; stale PRs
+    # are separate work), so they must not block the stop.
+    #
+    # Note: only Check 1 (the block) is gated on stop_hook_active — unlike
+    # stop-tile-enumeration-gate.py, which exits 0 for the WHOLE hook when
+    # stop_hook_active is set. These advisories are an independent, non-blocking
+    # responsibility and must still surface on a continuation Stop, so do NOT add
+    # a top-level `if stop_hook_active: sys.exit(0)` early-return here.
     messages = []
-    if reminder:
-        messages.append(f"[journal-stop-hook] {reminder}")
 
     stale = stale_draft_artifacts()
 
