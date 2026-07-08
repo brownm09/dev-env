@@ -39,6 +39,7 @@ import sys
 from _hookio import (
     confirm_merge_via_gh,
     is_merge_help_only,
+    mask_quoted_spans,
     merge_pr_number_from_output,
     output_has_merge_marker,
     read_command_output,
@@ -64,10 +65,11 @@ _PR_URL_REPO_RE = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.
 # through to None, silently resolving to cwd's own config instead. The
 # (?<!\S) lookbehind requires -R/--repo to start a standalone token, so it
 # can't match mid-word (e.g. a PR title literally containing "add-R support")
-# — review finding on PR #623. It does NOT make this quote-aware: a
+# — review finding on PR #623. extract_repo_from_command runs this against a
+# mask_quoted_spans-masked string (dev-env#626, ADR-050 Amendment 15) so a
 # --subject/--body value containing a space-separated "-R other/repo"
-# substring can still false-match (dev-env#626, filed as a separate,
-# larger follow-up rather than expanded here).
+# substring can no longer false-match either — the value's whole quoted span
+# is blanked before this regex ever sees it.
 _REPO_FLAG_RE = re.compile(r"(?<!\S)(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
 # The argument list of the `gh pr merge` invocation only — up to the next shell
 # separator — so a /pull/N URL in a --subject/--body value or a chained sibling
@@ -154,12 +156,20 @@ def extract_repo_from_command(command: str) -> str | None:
     command's actual target repo, not necessarily the one named in cwd's
     config (dev-env#559: a `gh pr merge <cross-repo URL>` run from an unrelated
     cwd silently resolved to cwd's own repo and fetched the wrong PR's body).
+
+    The `--repo`/`-R` flag check runs against a `mask_quoted_spans`-masked copy
+    of `args` (dev-env#626, ADR-050 Amendment 15), so a `--subject`/`--body`
+    value containing a space-separated "-R other/repo" substring cannot be
+    mistaken for a real flag. The URL fallback deliberately stays on the
+    *unmasked* `args` — a quoted `/pull/N` URL (e.g. `gh pr merge
+    "https://github.com/o/r/pull/1"`) is a legitimate, already-supported shape
+    (see `test_repo_from_cross_repo_url`) that masking would otherwise blind.
     """
     m = _MERGE_ARGS_RE.search(command)
     if not m:
         return None
     args = m.group(1)
-    flag = _REPO_FLAG_RE.search(args)
+    flag = _REPO_FLAG_RE.search(mask_quoted_spans(args))
     if flag:
         return flag.group(1)
     url = _PR_URL_REPO_RE.search(args)

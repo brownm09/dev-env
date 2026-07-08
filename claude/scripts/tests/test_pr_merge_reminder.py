@@ -448,6 +448,30 @@ def test_merge_repo_dash_r_mid_word_not_matched() -> str:
     return "mid-word '-R' not matched -> falls back to effective_merge_dir (dev-env#626)"
 
 
+def test_merge_repo_dash_r_inside_quoted_subject_not_matched() -> str:
+    # dev-env#626, ADR-050 Amendment 15: mask_quoted_spans blinds a --subject
+    # value's quoted content before the repo-flag regex runs, so a
+    # legitimately space-separated "-R other/repo" substring inside it can no
+    # longer be mistaken for the flag -- falls back to effective_merge_dir.
+    out = _effective_merge_repo(
+        'gh pr merge 42 --subject "see -R other/repo for context"',
+        "/Git/lifting-logbook",
+    )
+    assert out == "/Git/lifting-logbook", f"got {out!r}"
+    return "quoted --subject decoy '-R other/repo' -> falls back to effective_merge_dir (dev-env#626)"
+
+
+def test_merge_repo_flag_survives_alongside_quoted_decoy() -> str:
+    # A real, unquoted --repo flag must still resolve correctly even when a
+    # quoted --subject value elsewhere in the same command contains a decoy.
+    out = _effective_merge_repo(
+        'gh pr merge 42 --repo brownm09/dev-env --subject "see -R other/repo for context"',
+        "/Git/lifting-logbook",
+    )
+    assert out == "brownm09/dev-env", f"got {out!r}"
+    return "real --repo flag resolves correctly alongside a quoted decoy (dev-env#626)"
+
+
 def test_merge_repo_no_flag_falls_back_to_effective_merge_dir() -> str:
     # No --repo flag -> delegate to effective_merge_dir unchanged (bare merge
     # returns cwd; a cd-chain prefix still redirects).
@@ -761,6 +785,8 @@ def main() -> int:
         ("merge repo: --repo flag overrides cd-chain", test_merge_repo_explicit_flag_overrides_cd_chain),
         ("merge repo: -R shorthand resolves same as --repo (dev-env#616)", test_merge_repo_short_flag_form),
         ("merge repo: mid-word '-R' not matched (dev-env#626)", test_merge_repo_dash_r_mid_word_not_matched),
+        ("merge repo: '-R' inside quoted --subject not matched (dev-env#626)", test_merge_repo_dash_r_inside_quoted_subject_not_matched),
+        ("merge repo: --repo flag survives alongside quoted decoy (dev-env#626)", test_merge_repo_flag_survives_alongside_quoted_decoy),
         ("merge repo: no flag -> falls back to effective_merge_dir", test_merge_repo_no_flag_falls_back_to_effective_merge_dir),
         ("build_messages: chained create + queued --auto -> create still fires (dev-env#494)", test_build_messages_chained_create_and_queued_auto_still_creates),
         ("build_messages: chained create + --help merge -> create still fires (dev-env#494)", test_build_messages_chained_create_and_help_shaped_merge_still_creates),

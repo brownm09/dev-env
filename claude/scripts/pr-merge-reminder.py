@@ -34,6 +34,7 @@ from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
     is_merge_help_only,
+    mask_quoted_spans,
     output_has_merge_marker,
     read_command_output,
     scan_top_level,
@@ -156,8 +157,10 @@ def _effective_push_dir(command: str, cwd: str) -> str:
 # extract_repo's resolution order in post-pr-merge-pull.py (ADR-067). Also
 # matches gh's `-R` shorthand for `--repo` (dev-env#616). The `(?<!\S)`
 # lookbehind requires the flag to start a standalone token, so it can't
-# match mid-word — but is not quote-aware (dev-env#626, review finding on
-# PR #623).
+# match mid-word. `_effective_merge_repo` runs this against a
+# mask_quoted_spans-masked copy of `command` (dev-env#626, ADR-050 Amendment
+# 15), so a `--subject`/`--body` value containing a space-separated
+# "-R other/repo" substring can no longer false-match either.
 _REPO_FLAG_RE = re.compile(r"(?<!\S)(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
 
 
@@ -170,8 +173,14 @@ def _effective_merge_repo(command: str, cwd: str) -> str:
     (dev-env#470; ``-R`` shorthand added in dev-env#616). Falls back to
     ``effective_merge_dir(command, cwd)`` (the cd-chain / cwd resolution,
     ADR-067) when no ``--repo``/``-R`` flag is present.
+
+    Unlike `post-pr-merge-project.py`'s `extract_repo_from_command`, this
+    function has no separate URL-fallback branch that needs to stay on the
+    unmasked text — the only regex here is the repo-flag check itself, so the
+    whole `command` is masked before it runs (dev-env#626, ADR-050 Amendment
+    15).
     """
-    m = _REPO_FLAG_RE.search(command)
+    m = _REPO_FLAG_RE.search(mask_quoted_spans(command))
     if m:
         return m.group(1)
     return effective_merge_dir(command, cwd)
