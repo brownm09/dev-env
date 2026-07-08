@@ -908,6 +908,26 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
     ```
 
+49. **setup-link-loop test** — required when changing `setup.sh`'s `CLAUDE_FILE_LINKS` /
+    `CLAUDE_DIR_LINKS` arrays or its `link_claude_windows()` / `link_claude_unix()` functions.
+    Sources `setup.sh` unmodified — a guard around the OS-dispatch block at the bottom makes this
+    safe, since sourcing only defines functions/arrays without executing anything — and exercises
+    the extracted link functions with `win_link`/`ln` stubbed to a call log, so the test needs no
+    Administrator/Developer Mode privilege and never touches a real `~/.claude` or global git
+    config: pins the shared `CLAUDE_FILE_LINKS` (`CLAUDE.md`, `settings.json`) and
+    `CLAUDE_DIR_LINKS` (`scripts`, `skills`, `hooks`, `templates`) enumeration against
+    [ADR-003](docs/adr/003-config-in-version-control.md)'s table, and that
+    `link_claude_windows()` / `link_claude_unix()` each call their link primitive for exactly the
+    expected 8 targets (the two arrays, plus the separately-linked `routines` junction and
+    `~/bin`) in order, against a real throwaway `$HOME` — so the unstubbed `mkdir -p` calls are
+    verified for real too. `setup_windows()`'s UAC elevation gate, the soft-prereq warnings,
+    `set_hooks_path()`'s global `git config` mutation, and `win_link`'s actual `cygpath`/`mklink`
+    invocation are out of scope by design ([dev-env#614](https://github.com/brownm09/dev-env/issues/614)).
+
+    ```bash
+    bash claude/scripts/tests/test-setup-link-loop.sh
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

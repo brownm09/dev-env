@@ -112,7 +112,7 @@ Autonomous scheduled agents. Their canonical source lives in `claude/routines/` 
 ## Adding new configs
 
 1. Add the file under a descriptive directory (e.g., `claude/scripts/`, `claude/skills/`)
-2. Add a `ln -sf` or `mklink` line for it in `setup.sh` (if it needs symlinking)
+2. If it needs symlinking, add its name to `CLAUDE_FILE_LINKS` or `CLAUDE_DIR_LINKS` near the top of `setup.sh` (both `setup_windows()` and `setup_unix()` iterate the same arrays)
 3. Update the relevant table above **and** the corresponding section in [`docs/REFERENCE.md`](docs/REFERENCE.md)
 4. Update `claude/CLAUDE.md` if the artifact changes session behavior
 
