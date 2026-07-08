@@ -38,12 +38,15 @@ predicates (it *is* a ``gh pr merge`` invocation), so a hook's marker-absent /
 non-zero-exit fallback pays a live ``gh pr view`` confirmation with no PR
 number — which resolves against cwd's checked-out branch and can misattribute
 an unrelated already-merged PR to the harmless ``--help`` call. Callers treat a
-True result exactly like "not a merge command at all".
+True result exactly like "not a merge command at all". Generalized (dev-env#636)
+into ``is_help_only(command, invocation_re)`` so ``post-tool-use.py``'s
+``gh issue create`` / ``gh pr create`` detectors — which had the identical
+``--help`` false-positive — reuse the same segment-scan instead of a copy of it.
 
 Usage:
     from _hookio import read_command_output, output_has_merge_marker
     from _hookio import effective_merge_dir, scan_top_level, split_top_level
-    from _hookio import is_merge_help_only
+    from _hookio import is_help_only, is_merge_help_only
 
 See ADR-049 (root cause + canonical read) and ADR-050 (shared helper + sibling
 hook fixes).  See ADR-067 for the merge-dir scoping.
@@ -567,7 +570,7 @@ def mask_quoted_spans(command: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# is_merge_help_only  (dev-env#557)
+# is_help_only / is_merge_help_only  (dev-env#557, generalized dev-env#636)
 #
 # `gh pr merge --help` textually satisfies every `is_pr_merge_command` /
 # `_check_merge_stmt` predicate in this hook family — it *is* a `gh pr merge`
@@ -577,8 +580,17 @@ def mask_quoted_spans(command: str) -> str:
 # which resolves against cwd's checked-out branch and can misattribute an
 # unrelated already-merged PR to the --help invocation (confirmed incident:
 # dev-env#557). --help/-h can *categorically never* attempt a real merge, so
-# a command consisting only of --help/-h `gh pr merge` invocations should
+# a command consisting only of --help/-h invocations of a given kind should
 # short-circuit before any of that marker/exit-code logic runs at all.
+#
+# `post-tool-use.py`'s `is_issue_create_command` / `is_pr_create_command` have
+# the identical shape of bug: `gh issue create --help` (run per this repo's own
+# CLI Scripting Checklist, which prescribes checking `--help` before writing gh
+# automation) textually matches, so the hook proceeds as if a real issue had
+# been created (dev-env#636). `is_help_only` extracts the reusable core so a
+# second/third caller doesn't need a near-verbatim copy of the same
+# segment-scan + all() logic; `is_merge_help_only` becomes a thin wrapper over
+# it with its pre-existing signature/behavior unchanged.
 # ---------------------------------------------------------------------------
 
 _GH_MERGE_INVOCATION_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+merge\b", re.IGNORECASE)
@@ -609,34 +621,43 @@ def _first_line(segment: str) -> str:
     return segment.split("\n", 1)[0].split("\r", 1)[0]
 
 
-def is_merge_help_only(command: str) -> bool:
-    """True iff every top-level `gh pr merge` segment in *command* is a
-    --help/-h invocation.
+def is_help_only(command: str, invocation_re: re.Pattern) -> bool:
+    """True iff every top-level segment of *command* matched by
+    *invocation_re* is a --help/-h invocation.
 
-    Callers already gate on their own `is_pr_merge_command` /
-    `_check_merge_stmt` check first, so the "no merge segments at all" case
-    returns False here too — this predicate only ever needs to answer "given
-    that at least one segment matched, were ALL of them --help-only?".
+    Callers already gate on their own "is this the command at all" check
+    first (e.g. `is_pr_merge_command`, `is_issue_create_command`), so the
+    "no matching segments at all" case returns False here too — this
+    predicate only ever needs to answer "given that at least one segment
+    matched, were ALL of them --help-only?".
 
-    A chained ``gh pr merge --help && gh pr merge 380 --squash`` therefore
-    correctly returns False: a real merge attempt elsewhere in the same
-    command must never be suppressed just because an earlier segment was a
-    harmless flag check.
+    A chained ``<cmd> --help && <cmd> 380 --squash`` therefore correctly
+    returns False: a real invocation elsewhere in the same command must
+    never be suppressed just because an earlier segment was a harmless flag
+    check.
 
     Each segment's --help/-h check is scoped to its own first physical line
     (`_first_line()`) so a heredoc/`$()` body that merely *mentions*
     "--help" as prose cannot be mistaken for a real flag on this segment's
-    own invocation. The merge-invocation match itself is anchored at the
-    (lstripped) start of that first line — mirroring every sibling
-    `_check_merge_stmt`'s ``.match(token.lstrip())`` convention — so a `gh pr
-    merge` phrase appearing mid-segment (e.g. inside an earlier quoted
-    argument on the same segment, such as `git commit -m "reminder: gh pr
-    merge later" && gh pr merge --help`) is never mistaken for a genuine
-    invocation on that segment.
+    own invocation. *invocation_re* itself is matched at the (lstripped)
+    start of that first line — mirroring every sibling `_check_*_stmt`'s
+    ``.match(token.lstrip())`` convention — so a phrase appearing mid-segment
+    (e.g. inside an earlier quoted argument on the same segment) is never
+    mistaken for a genuine invocation.
     """
-    merge_segments = [
-        seg for seg in split_top_level(command) if _GH_MERGE_INVOCATION_RE.match(_first_line(seg).lstrip())
+    matching_segments = [
+        seg for seg in split_top_level(command)
+        if invocation_re.match(_first_line(seg).lstrip())
     ]
-    if not merge_segments:
+    if not matching_segments:
         return False
-    return all(_HELP_FLAG_RE.search(_first_line(seg)) for seg in merge_segments)
+    return all(_HELP_FLAG_RE.search(_first_line(seg)) for seg in matching_segments)
+
+
+def is_merge_help_only(command: str) -> bool:
+    """True iff every top-level `gh pr merge` segment in *command* is a
+    --help/-h invocation. Thin wrapper over `is_help_only` (see its docstring
+    for the full rationale) preserving this function's pre-existing name and
+    signature; see dev-env#557 (this module's header docstring) for the
+    motivating incident."""
+    return is_help_only(command, _GH_MERGE_INVOCATION_RE)

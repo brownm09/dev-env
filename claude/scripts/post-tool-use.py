@@ -4,7 +4,9 @@ and automatically adds the item to the configured GitHub project.
 
 Detection matches only a top-level CLI invocation (via _hookio.scan_top_level),
 not the string appearing inside commit messages, heredocs, grep patterns, or
-other quoted arguments (dev-env#499).
+other quoted arguments (dev-env#499). A --help/-h-only invocation (e.g. `gh
+issue create --help`, run per this repo's own CLI Scripting Checklist) is
+excluded too (dev-env#636) -- see is_issue_create_help_only / is_pr_create_help_only.
 
 Project opt-in: add .claude/hook-config.json to the project root. That file is
 gitignored by dev-env's own convention (.gitignore ignores all of .claude/),
@@ -61,7 +63,7 @@ import subprocess
 import sys
 
 from _gh_project import add_to_project
-from _hookio import read_command_output, scan_top_level, split_top_level
+from _hookio import is_help_only, read_command_output, scan_top_level, split_top_level
 from _worktree_canon import canonical_root_from_worktree
 
 CONFIG_FILE = ".claude/hook-config.json"
@@ -94,6 +96,24 @@ def is_issue_create_command(command: str) -> bool:
 def is_pr_create_command(command: str) -> bool:
     """Return True only when *command* contains a top-level `gh pr create`."""
     return scan_top_level(command, _check_pr_create_stmt)
+
+
+def is_issue_create_help_only(command: str) -> bool:
+    """True iff every top-level `gh issue create` segment in *command* is a
+    --help/-h invocation (dev-env#636) -- e.g. `gh issue create --help`, run
+    per this repo's own CLI Scripting Checklist ("run <command> --help first
+    to confirm flag names"), textually matches `is_issue_create_command` but
+    creates nothing. Mirrors `_hookio.is_merge_help_only`'s fix for the
+    identical `gh pr merge --help` false-positive (dev-env#557); reuses
+    `_ISSUE_CREATE_RE` so this stays byte-for-byte consistent with
+    `is_issue_create_command`'s own matching."""
+    return is_help_only(command, _ISSUE_CREATE_RE)
+
+
+def is_pr_create_help_only(command: str) -> bool:
+    """True iff every top-level `gh pr create` segment in *command* is a
+    --help/-h invocation (dev-env#636). See `is_issue_create_help_only`."""
+    return is_help_only(command, _PR_CREATE_RE)
 
 
 _REPO_FLAG_RE = re.compile(r"(?:--repo|-R)[\s=]+(\"[^\"]+\"|'[^']+'|\S+)")
@@ -521,6 +541,15 @@ def main() -> None:
 
     is_issue_create = is_issue_create_command(command)
     is_pr_create = is_pr_create_command(command)
+
+    # A --help/-h invocation can never actually create anything (dev-env#636,
+    # mirrors _hookio.is_merge_help_only's dev-env#557 fix) -- downgrade each
+    # create-flag independently so a real create chained with an unrelated
+    # help-only invocation of the OTHER type is still processed correctly.
+    if is_issue_create and is_issue_create_help_only(command):
+        is_issue_create = False
+    if is_pr_create and is_pr_create_help_only(command):
+        is_pr_create = False
 
     if not (is_issue_create or is_pr_create):
         sys.exit(0)

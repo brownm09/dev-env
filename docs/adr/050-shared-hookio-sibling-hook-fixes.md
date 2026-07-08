@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08 (fifteen amendments — see Amendment sections below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking
+**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08 (sixteen amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking, gh-create-help
 
 ---
 
@@ -1138,3 +1138,75 @@ either an unsafe refactor or an unenforced comment. A second, narrower lesson: a
 (`_REPO_FLAG_RE`) for a fix inevitably surfaces adjacent, structurally different instances of a *related* bug
 class — the right response is the same "grep for the shape, note what's out of scope, file it" discipline this
 ADR has used since Amendment 9, not scope creep into a single oversized PR.
+
+## Amendment 16 (2026-07-08) — generalizing `is_merge_help_only` into `is_help_only`; fixing the identical `gh issue/pr create --help` false-positive in `post-tool-use.py` (dev-env#636)
+
+**The gap.** Amendment 13 fixed `gh pr merge --help`'s false-positive across eight files, but the
+identical shape of bug survived, unfixed, in the two functions Amendment 5 introduced for
+`post-tool-use.py`'s own create-side detection: `is_issue_create_command()` / `is_pr_create_command()`.
+Running `gh issue create --help` (or `gh pr create --help`) — exactly the step this repo's own CLI
+Scripting Checklist prescribes ("run `<command> --help` first to confirm flag names and syntax" before
+writing any `gh` automation script) — textually satisfies `is_issue_create_command`'s `_ISSUE_CREATE_RE`
+match, so `main()` proceeds as though a real issue had been created. Since `--help` output contains no
+GitHub URL, this reaches the de-silenced "successful create but no URL found" branch Amendment 5's own
+predecessor (dev-env#377/#499) intentionally surfaces rather than swallows, and the hook emits a
+blocking (exit 2) "Issue created but no GitHub URL found in output" message for a command that created
+nothing.
+
+**Live reproduction.** Confirmed firsthand during this fix's own research session: `gh issue create
+--help` (chained after an unrelated command, as a normal exploratory `gh ... --help` check per the CLI
+Scripting Checklist) produced exactly this message.
+
+**Why generalize rather than duplicate `is_merge_help_only`'s logic a second time.**
+`is_merge_help_only`'s existing implementation was already hardcoded to `_GH_MERGE_INVOCATION_RE` —
+copying its segment-scan-plus-`all()` body into `post-tool-use.py` for a second and third invocation
+regex (`_ISSUE_CREATE_RE`, `_PR_CREATE_RE`) would have been the exact kind of near-verbatim duplication
+this ADR exists to prevent (Amendment 6's "grep for the engine, not the call pattern" lesson, applied
+one level up: this time the engine is the *help-only* check itself, not the top-level-statement scanner
+it's built on). `is_help_only(command, invocation_re)` extracts the reusable core; `is_merge_help_only`
+becomes a thin wrapper (`is_help_only(command, _GH_MERGE_INVOCATION_RE)`) with its pre-existing name,
+signature, and behavior completely unchanged — every one of Amendment 13's 13 `is_merge_help_only` tests
+continues to pass unmodified against the refactored implementation.
+
+**Fix.** `post-tool-use.py` gains `is_issue_create_help_only(command)` / `is_pr_create_help_only(command)`,
+each a thin `is_help_only(command, <its own existing _ISSUE_CREATE_RE / _PR_CREATE_RE>)` wrapper —
+reusing the exact regex `is_issue_create_command` / `is_pr_create_command` already match against, so the
+help-only check can never diverge from the create-detection it's meant to override. `main()` downgrades
+each create-flag *independently*:
+
+```python
+if is_issue_create and is_issue_create_help_only(command):
+    is_issue_create = False
+if is_pr_create and is_pr_create_help_only(command):
+    is_pr_create = False
+```
+
+rather than a single combined bail-out — mirroring Amendment 4's "gate each side effect on its own
+confirming signal" lesson: a real `gh pr create` chained with an unrelated help-only `gh issue create`
+(or vice versa) must still be processed as the create it actually is, not suppressed because *some*
+create-shaped segment in the same command happened to be a harmless flag check.
+
+**Coverage.** `test_hookio.py` gains four new tests exercising `is_help_only` directly with a non-merge
+`invocation_re` (a `gh issue create` pattern), proving the extraction is genuinely generic rather than
+merge-specific, alongside the unmodified pre-existing `is_merge_help_only` suite (74 total, up from 70 —
+Amendment 15's `mask_quoted_spans` work landed first and already brought this file from 57 to 70; this
+amendment's four tests are the delta on top of that, not on top of Amendment 13's original 57).
+`test_post_tool_use.py` gains seven pure-helper tests (bare `--help`/`-h`, a real create, no invocation
+at all, and the chained-independent-downgrade case for both `is_issue_create_help_only` and
+`is_pr_create_help_only`) plus three `main()` end-to-end subprocess tests: `gh issue create --help` and
+`gh pr create --help` each now exit 0 silently (reproducing this fix's own live incident, inverted), and
+a help-only issue-create chained with a real pr-create still reaches the exit-2 "no GitHub URL found"
+path for the real create — proving the independent-downgrade fix, not just the single-command case
+(87 total, up from 77).
+
+**General lesson (continuing Amendments 1, 6, 9, 10, 12, and 14's).** The "a fix scoped to one hook is a
+standing invitation to check every sibling doing the same kind of thing" lesson, drawn several times
+already in this ADR for output-reading, `scan_top_level`-anchoring, and repo-flag-shorthand bugs,
+applies just as directly to a further kind of drifted duplication: a fix landed for one
+command-detection predicate (`is_pr_merge_command`) and never checked against the structurally
+identical predicates one file over (`is_issue_create_command` / `is_pr_create_command`) despite both
+living in `_hookio`-adjacent code and sharing the exact same `scan_top_level`-based detection shape
+Amendment 5 itself introduced. The mechanical proxy here is narrower and cheaper than a fresh grep: any
+new `is_*_command`-style top-level-statement predicate introduced into this hook family should be
+paired, at introduction, with the question "does a `--help`/`-h`-only invocation of this same CLI verb
+need the identical exclusion `is_merge_help_only` already established the pattern for?"

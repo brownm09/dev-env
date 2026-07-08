@@ -14,6 +14,7 @@ Usage:
 Exit 0 = all pass.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -24,6 +25,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from _hookio import (  # noqa: E402
     effective_merge_dir,
+    is_help_only,
     is_merge_help_only,
     mask_quoted_spans,
     merge_pr_number_from_output,
@@ -663,6 +665,42 @@ def test_is_merge_help_only_case_insensitive() -> str:
     return "GH.EXE PR MERGE --HELP -> True (case-insensitive)"
 
 
+# ---------------------------------------------------------------------------
+# is_help_only  (dev-env#636)
+#
+# is_merge_help_only is now a thin wrapper over this generalized core (the
+# tests above already pin its externally-visible behavior unchanged). These
+# tests exercise is_help_only directly with a NON-merge invocation_re, proving
+# the extraction is genuinely generic rather than merge-specific -- the real
+# motivating second caller is post-tool-use.py's is_issue_create_help_only /
+# is_pr_create_help_only (test_post_tool_use.py), which reuse this exact core.
+# ---------------------------------------------------------------------------
+
+_ISSUE_CREATE_INVOCATION_RE = re.compile(r"gh(?:\.exe)?\s+issue\s+create\b", re.IGNORECASE)
+
+
+def test_is_help_only_generic_help_invocation_is_true() -> str:
+    assert is_help_only("gh issue create --help", _ISSUE_CREATE_INVOCATION_RE)
+    return "is_help_only with a non-merge invocation_re: --help invocation -> True (dev-env#636)"
+
+
+def test_is_help_only_generic_real_invocation_is_false() -> str:
+    assert not is_help_only('gh issue create --title "x"', _ISSUE_CREATE_INVOCATION_RE)
+    return "is_help_only: a real (non-help) invocation of the custom invocation_re -> False"
+
+
+def test_is_help_only_generic_no_matching_segment_is_false() -> str:
+    assert not is_help_only("git status", _ISSUE_CREATE_INVOCATION_RE)
+    return "is_help_only: no segment matches invocation_re at all -> False"
+
+
+def test_is_help_only_generic_chained_help_then_real_is_false() -> str:
+    assert not is_help_only(
+        'gh issue create --help && gh issue create --title "x"', _ISSUE_CREATE_INVOCATION_RE
+    )
+    return "is_help_only: real invocation elsewhere in the chain is not suppressed -> False"
+
+
 def main() -> int:
     tests = [
         ("reads command output from stdout", test_reads_stdout),
@@ -735,6 +773,10 @@ def main() -> int:
         ("is_merge_help_only: --help not confused with similar flag", test_is_merge_help_only_help_flag_not_confused_with_similar_flag),
         ("is_merge_help_only: cd-prefixed --help -> True", test_is_merge_help_only_cd_prefixed_help_is_true),
         ("is_merge_help_only: case-insensitive match", test_is_merge_help_only_case_insensitive),
+        ("is_help_only: generic --help invocation -> True (dev-env#636)", test_is_help_only_generic_help_invocation_is_true),
+        ("is_help_only: generic real invocation -> False", test_is_help_only_generic_real_invocation_is_false),
+        ("is_help_only: generic no matching segment -> False", test_is_help_only_generic_no_matching_segment_is_false),
+        ("is_help_only: generic chained help-then-real -> False", test_is_help_only_generic_chained_help_then_real_is_false),
     ]
     failed = 0
     for name, fn in tests:
