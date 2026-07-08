@@ -32,6 +32,7 @@ from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
     is_merge_help_only,
+    mask_quoted_spans,
     output_has_merge_marker,
     read_command_output,
     scan_top_level,
@@ -66,16 +67,25 @@ def extract_repo(command: str, cwd: str) -> str | None:
     Resolution order (ADR-067):
     1. ``--repo``/``-R owner/repo`` flag — explicit, highest confidence
        (``-R`` shorthand added in dev-env#616; a standalone-token lookbehind
-       guards against a mid-word match, but is not quote-aware — dev-env#626,
-       review finding on PR #623).
+       guards against a mid-word match). Checked against a
+       `mask_quoted_spans`-masked copy of `command` (dev-env#626, ADR-050
+       Amendment 15 — this file's own unscoped whole-command search was the
+       most exposed of the four sibling checks to this class of false match),
+       so a `--subject`/`--body` value containing a space-separated
+       "-R other/repo" substring can no longer be mistaken for the flag.
     2. GitHub PR URL in the command string — e.g. ``gh pr merge
        https://github.com/owner/repo/pull/N``.  Pure parse, no subprocess.
+       Deliberately checked against the *unmasked* `command` — a quoted PR
+       URL is a legitimate, already-supported shape masking must not blind.
     3. ``cd <path> && gh pr merge`` chain: run git-remote on <path> so a
        cross-repo merge correctly identifies the other repo, not cwd's repo.
     4. Bare fallback: git-remote on cwd (pre-ADR-067 behaviour — still correct
        when the merge was run directly from the target repo's cwd).
     """
-    m = re.search(r"(?<!\S)(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", command)
+    m = re.search(
+        r"(?<!\S)(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+        mask_quoted_spans(command),
+    )
     if m:
         return m.group(1)
 

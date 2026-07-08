@@ -25,6 +25,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from _hookio import (  # noqa: E402
     effective_merge_dir,
     is_merge_help_only,
+    mask_quoted_spans,
     merge_pr_number_from_output,
     output_has_merge_marker,
     read_command_output,
@@ -398,6 +399,159 @@ def test_split_top_level_unterminated_quote_drops_trailing_segment() -> str:
 
 
 # ---------------------------------------------------------------------------
+# mask_quoted_spans  (dev-env#626, ADR-050 Amendment 15)
+#
+# The _REPO_FLAG_RE family's (?<!\S) lookbehind (Amendment 14) stops a
+# mid-word match but not a legitimately space-separated "-R other/repo"
+# substring sitting inside a quoted --subject/--body value. mask_quoted_spans
+# blinds single/double-quoted spans, $() subshells, and heredoc bodies before
+# such a regex ever runs.
+# ---------------------------------------------------------------------------
+
+def test_mask_quoted_spans_no_quotes_unchanged() -> str:
+    cmd = "gh pr merge 42 --repo brownm09/dev-env --squash"
+    assert mask_quoted_spans(cmd) == cmd
+    return "no quotes/subshells/heredocs anywhere -> unchanged"
+
+
+def test_mask_quoted_spans_double_quoted_span_masked() -> str:
+    # The exact dev-env#626 repro shape.
+    cmd = 'gh pr merge 42 --subject "see -R other/repo for context"'
+    masked = mask_quoted_spans(cmd)
+    assert masked == "gh pr merge 42 --subject " + "#" * len('"see -R other/repo for context"'), masked
+    assert "-R" not in masked
+    return "double-quoted --subject value (incl. the quote chars) fully masked (dev-env#626 repro)"
+
+
+def test_mask_quoted_spans_single_quoted_span_masked() -> str:
+    cmd = "gh pr merge 42 --subject 'see -R other/repo for context'"
+    masked = mask_quoted_spans(cmd)
+    assert "-R" not in masked
+    assert masked.count("#") == len("'see -R other/repo for context'")
+    return "single-quoted value fully masked"
+
+
+def test_mask_quoted_spans_escaped_quote_does_not_end_span_early() -> str:
+    cmd = 'echo "a \\"b\\" -R x/y" && echo done'
+    masked = mask_quoted_spans(cmd)
+    before, after = masked.split("&&")
+    assert "-R" not in before, masked
+    assert after == " echo done", masked
+    return "an escaped quote inside double quotes does not end the span early"
+
+
+def test_mask_quoted_spans_subshell_masked() -> str:
+    cmd = "echo $(echo -R x/y) && echo done"
+    masked = mask_quoted_spans(cmd)
+    before, after = masked.split("&&")
+    assert "-R" not in before, masked
+    assert after == " echo done", masked
+    return "$() subshell content masked"
+
+
+def test_mask_quoted_spans_nested_subshell_inside_double_quotes_is_one_span() -> str:
+    # A $() nested inside "..." must close as ONE contiguous opaque span --
+    # the inner subshell could itself contain a quote that would otherwise
+    # end the outer double-quote early (the reason split_top_level tracks
+    # nested state at all, per its own docstring).
+    cmd = 'echo "a $(echo -R x/y) c" && echo done'
+    masked = mask_quoted_spans(cmd)
+    assert masked == "echo " + "#" * len('"a $(echo -R x/y) c"') + " && echo done", masked
+    return "nested $() inside double quotes closes as one contiguous opaque span"
+
+
+def test_mask_quoted_spans_bare_heredoc_body_masked() -> str:
+    cmd = "git status <<EOF\nsome -R x/y body\nEOF\necho after"
+    masked = mask_quoted_spans(cmd)
+    assert "-R" not in masked
+    assert masked.endswith("\necho after"), masked
+    return "bare heredoc body masked; trailing real command after it survives"
+
+
+def test_mask_quoted_spans_command_sub_heredoc_masked() -> str:
+    cmd = "echo \"$(cat <<'EOF'\n-R x/y\nEOF\n)\" && echo done"
+    masked = mask_quoted_spans(cmd)
+    assert "-R" not in masked
+    assert masked.endswith(" && echo done"), masked
+    return "$(cat <<'EOF' ...) heredoc-in-subshell-in-quotes masked as one span"
+
+
+def test_mask_quoted_spans_preserves_newlines() -> str:
+    cmd = 'echo "line1\nline2 -R x/y\nline3"'
+    masked = mask_quoted_spans(cmd)
+    assert masked.count("\n") == cmd.count("\n"), masked
+    assert "-R" not in masked
+    return "newlines survive unmasked inside a masked multi-line double-quoted span"
+
+
+def test_mask_quoted_spans_unterminated_double_quote_masks_tail() -> str:
+    cmd = 'git commit -m "unterminated -R x/y'
+    masked = mask_quoted_spans(cmd)
+    assert "-R" not in masked
+    assert masked.startswith("git commit -m "), masked
+    return "unterminated double quote masks the rest of the string (fail-permissive, no crash)"
+
+
+def test_mask_quoted_spans_unterminated_subshell_masks_tail() -> str:
+    cmd = "echo $(echo -R x/y"
+    masked = mask_quoted_spans(cmd)
+    assert "-R" not in masked
+    assert masked.startswith("echo "), masked
+    return "unterminated $() subshell masks the rest of the string (fail-permissive, no crash)"
+
+
+def test_mask_quoted_spans_real_flag_survives_alongside_quoted_decoy() -> str:
+    cmd = 'gh pr merge 42 --repo brownm09/dev-env --subject "see -R other/repo for context"'
+    masked = mask_quoted_spans(cmd)
+    assert "--repo brownm09/dev-env" in masked, masked
+    assert "-R" not in masked
+    return "a real, unquoted --repo flag survives byte-for-byte alongside a masked quoted decoy"
+
+
+# ---------------------------------------------------------------------------
+# mask_quoted_spans / split_top_level cross-consistency  (dev-env#626, ADR-050
+# Amendment 15)
+#
+# mask_quoted_spans is an independent state machine, not a refactor of
+# split_top_level's internals (see _hookio.py's module comment for why), so
+# nothing statically guarantees the two never drift apart on what counts as
+# "inside a quote/subshell/heredoc." This is the enforced, not prose, guard
+# against that drift -- ADR-050 Amendment 11's own precedent: a written "keep
+# these in sync" reminder is exactly as missable as the bug it guards
+# against; the durable form is a running test.
+#
+# Each fixture places a decoy "&&" INSIDE an opaque span, followed by a real
+# top-level "&&" outside it. split_top_level must produce exactly 2 segments
+# (the decoy did not split); mask_quoted_spans must mask the decoy (so it no
+# longer reads as literal "&&") while leaving the later, real "&&" untouched
+# -- tying both functions' opacity judgments to the same fixture string.
+# ---------------------------------------------------------------------------
+
+_CONSISTENCY_FIXTURES = [
+    'git commit -m "a && b" && git push',
+    "git commit -m 'a && b' && git push",
+    'echo "$(echo a && b)" && git push',
+    "git status <<EOF\na && b\nEOF\ngit push && echo done",
+]
+
+
+def test_mask_quoted_spans_agrees_with_split_top_level() -> str:
+    for cmd in _CONSISTENCY_FIXTURES:
+        segments = split_top_level(cmd)
+        assert len(segments) == 2, (cmd, segments)
+        masked = mask_quoted_spans(cmd)
+        real_and_idx = cmd.rindex("&&")
+        assert "&&" not in masked[:real_and_idx], (cmd, masked)
+        assert masked[real_and_idx:real_and_idx + 2] == "&&", (cmd, masked)
+    return (
+        f"{len(_CONSISTENCY_FIXTURES)} fixtures: a decoy && inside an opaque span "
+        "agrees between split_top_level (does not split there) and "
+        "mask_quoted_spans (masks it), while the real && after it still "
+        "splits / stays unmasked in both"
+    )
+
+
+# ---------------------------------------------------------------------------
 # is_merge_help_only  (dev-env#557)
 #
 # `gh pr merge --help` textually satisfies every `is_pr_merge_command` /
@@ -555,6 +709,19 @@ def main() -> int:
         ("split_top_level: $(cat <<'MARKER'...) not its own segment", test_split_top_level_command_sub_heredoc_not_its_own_segment),
         ("split_top_level: real command after heredoc still split", test_split_top_level_real_command_after_heredoc_still_split),
         ("split_top_level: unterminated quote drops trailing segment", test_split_top_level_unterminated_quote_drops_trailing_segment),
+        ("mask_quoted_spans: no quotes -> unchanged", test_mask_quoted_spans_no_quotes_unchanged),
+        ("mask_quoted_spans: double-quoted span masked (dev-env#626)", test_mask_quoted_spans_double_quoted_span_masked),
+        ("mask_quoted_spans: single-quoted span masked", test_mask_quoted_spans_single_quoted_span_masked),
+        ("mask_quoted_spans: escaped quote does not end span early", test_mask_quoted_spans_escaped_quote_does_not_end_span_early),
+        ("mask_quoted_spans: $() subshell masked", test_mask_quoted_spans_subshell_masked),
+        ("mask_quoted_spans: nested $() inside quotes is one span", test_mask_quoted_spans_nested_subshell_inside_double_quotes_is_one_span),
+        ("mask_quoted_spans: bare heredoc body masked", test_mask_quoted_spans_bare_heredoc_body_masked),
+        ("mask_quoted_spans: $(cat <<'EOF'...) heredoc masked", test_mask_quoted_spans_command_sub_heredoc_masked),
+        ("mask_quoted_spans: newlines preserved", test_mask_quoted_spans_preserves_newlines),
+        ("mask_quoted_spans: unterminated double quote masks tail", test_mask_quoted_spans_unterminated_double_quote_masks_tail),
+        ("mask_quoted_spans: unterminated subshell masks tail", test_mask_quoted_spans_unterminated_subshell_masks_tail),
+        ("mask_quoted_spans: real flag survives alongside quoted decoy", test_mask_quoted_spans_real_flag_survives_alongside_quoted_decoy),
+        ("mask_quoted_spans: agrees with split_top_level (cross-consistency)", test_mask_quoted_spans_agrees_with_split_top_level),
         ("is_merge_help_only: --help long flag -> True", test_is_merge_help_only_bare_help_long_flag),
         ("is_merge_help_only: -h short flag -> True", test_is_merge_help_only_bare_help_short_flag),
         ("is_merge_help_only: real merge with number -> False", test_is_merge_help_only_real_merge_with_number_is_false),

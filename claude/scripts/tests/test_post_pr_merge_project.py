@@ -219,6 +219,29 @@ def test_repo_from_dash_r_mid_word_not_matched() -> str:
     return "mid-word '-R' (not a standalone token) -> None, not falsely matched (dev-env#626)"
 
 
+def test_repo_from_dash_r_inside_quoted_subject_not_matched() -> str:
+    # dev-env#626, ADR-050 Amendment 15: the (?<!\S) lookbehind alone can't
+    # distinguish "whitespace inside a quoted value" from "whitespace between
+    # top-level tokens" -- a --subject value containing a legitimately
+    # space-separated "-R other/repo" substring must not be mistaken for the
+    # flag. mask_quoted_spans blinds the whole quoted span before the regex
+    # runs, so this now falls through to None (no --repo flag, no PR URL).
+    cmd = 'gh pr merge 42 --subject "see -R other/repo for context"'
+    assert extract_repo_from_command(cmd) is None
+    return "quoted --subject decoy '-R other/repo' -> None, not falsely matched (dev-env#626)"
+
+
+def test_repo_from_repo_flag_survives_alongside_quoted_decoy() -> str:
+    # A real, unquoted --repo flag must still resolve correctly even when a
+    # quoted --subject value elsewhere in the same command contains a decoy.
+    cmd = (
+        'gh pr merge 42 --repo brownm09/dev-env --subject '
+        '"see -R other/repo for context"'
+    )
+    assert extract_repo_from_command(cmd) == "brownm09/dev-env"
+    return "real --repo flag resolves correctly alongside a quoted decoy (dev-env#626)"
+
+
 # --- extract_pr_number (output) ------------------------------------------
 
 def test_output_squash_marker() -> str:
@@ -323,6 +346,8 @@ def main() -> int:
         ("repo: --repo flag, no URL", test_repo_from_repo_flag_no_url),
         ("repo: -R shorthand resolves same as --repo (dev-env#616)", test_repo_from_repo_flag_short_form),
         ("repo: mid-word '-R' not matched (dev-env#626)", test_repo_from_dash_r_mid_word_not_matched),
+        ("repo: '-R' inside quoted --subject not matched (dev-env#626)", test_repo_from_dash_r_inside_quoted_subject_not_matched),
+        ("repo: --repo flag survives alongside quoted decoy (dev-env#626)", test_repo_from_repo_flag_survives_alongside_quoted_decoy),
         ("output: squash marker", test_output_squash_marker),
         ("output: merged marker", test_output_merged_marker),
         ("output: cross-repo marker", test_output_cross_repo_marker),

@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08 (fourteen amendments — see Amendment sections below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand
+**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08 (fifteen amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking
 
 ---
 
@@ -1008,3 +1008,133 @@ mechanical proxy analogous to Amendment 11's AST-based crude-substring-check gat
 `claude/scripts/*.py` for any `--repo`-matching regex lacking a `-R`/`(?:--repo|-R)` alternate on
 introduction) would have caught this class the same day dev-env#542 landed, rather than a month later
 via a live misattribution incident.
+
+## Amendment 15 (2026-07-08) — masking quoted spans before the repo-flag regex runs (dev-env#626)
+
+**The gap.** Amendment 14's `(?<!\S)` lookbehind requires `--repo`/`-R` to start a standalone token, which
+stops a mid-word match (`xx-R`) but does not make the check quote-aware: a `--subject`/`--body` value like
+`"see -R other/repo for context"` still contains a legitimately space-separated `-R other/repo` substring.
+The character before `-R` there is whitespace too — just whitespace *inside a quoted string*, not between
+top-level tokens — so the lookbehind cannot tell the two apart. This was flagged as a non-blocking `/review`
+finding on Amendment 14's own PR (#623) and filed as dev-env#626 rather than expanded in that PR, since a
+real fix needs quote-aware masking, not another regex tweak, and affects the same four call sites Amendment
+14 already touched.
+
+**Not newly introduced.** As dev-env#626 itself notes, this is a pre-existing limitation of the original
+`--repo`-only regex, not a regression from Amendment 14 — that amendment only marginally widened practical
+exposure by adding a second, shorter trigger literal (`-R`, 2 characters) alongside `--repo` (6 characters).
+
+**Fix — `mask_quoted_spans` in `_hookio.py`.** A new function, independent of `split_top_level`/`scan_top_level`
+(deliberately not a refactor of either — see the rationale below), that returns its input with every
+single-/double-quoted span, `$()` subshell, and heredoc body replaced by a same-length run of `#` (newlines
+preserved). Each of the four repo-flag call sites now runs its regex against a masked copy of the relevant
+string instead of the raw one:
+
+- `post-pr-merge-project.py::extract_repo_from_command` — masks the `_MERGE_ARGS_RE`-scoped `args` before
+  `_REPO_FLAG_RE.search()`.
+- `pr-merge-reminder.py::_effective_merge_repo` — masks the whole `command` (this function has no args-scoping
+  of its own — it searches the raw command directly).
+- `posttooluse-inert-advisory.py::_devenv_merge_pr` — masks `args` before `_REPO_FLAG_RE.search()`.
+- `post-pr-merge-pull.py::extract_repo` — masks the whole `command` before the first (repo-flag) `re.search()`
+  call. This file's check was the most exposed of the four (no args-scoping, no named regex constant at all —
+  Amendment 14's own account already called this out).
+
+**Masking is scoped to exactly the vulnerable regex, never a fallback that legitimately matches a quoted
+value.** Two of the four files have a second regex whose match is reused elsewhere and must stay on the
+*unmasked* string:
+
+- `extract_repo_from_command`'s PR-URL fallback (`_PR_URL_REPO_RE.search(args)`) stays unmasked — an existing
+  test (`test_repo_from_cross_repo_url`) passes a *quoted* PR URL (`gh pr merge
+  "https://github.com/brownm09/dev-env/pull/554"`) that must keep resolving; masking that string too would
+  have silently broken it.
+- `_devenv_merge_pr`'s `url_m = _DEVENV_PR_URL_RE.search(args)` stays unmasked — its match is reused for the
+  PR-number fallback later in the same function, and a quoted URL is a legitimate shape there too.
+
+`post-tool-use.py`'s `extract_repo_flag` was in scope for this fix, per dev-env#626's own "arguably five"
+framing. This amendment deliberately does not touch it: its regex —
+`(?:--repo|-R)[\s=]+(\"[^\"]+\"|'[^']+'|\S+)` — already supports a legitimately *quoted* flag value as part
+of its own capture group (`--repo "owner/repo"`), a shape none of the other four files ever supported.
+Blanket-masking before that regex would blind its own legitimate quoted-value case, not just the false-match
+one. Its docstring already discloses the narrower residual gap ("an unusual construction where a quoted
+--title/--body value itself contains literal '--repo' text before the real flag could match the wrong
+occurrence") as an accepted, conservative-by-design tradeoff, further bounded because its only caller
+(`_sibling_repo_config`) never acts on an extracted repo name unless a real local sibling checkout's own
+`hook-config.json` independently confirms it — a mitigating backstop none of the other four files have. Fixing
+it would need a differently-shaped algorithm (e.g. matching the flag's own quoted-or-bare value directly,
+rather than masking-then-searching), which is a distinct piece of work, not a copy of this fix.
+
+**Design — an independent walker, not a `split_top_level` refactor.** `mask_quoted_spans` mirrors
+`split_top_level`'s state transitions (the same four states: top/single/double/subshell) and reuses the
+already-shared `_find_heredoc_end`, but `split_top_level` itself is untouched — zero lines changed, zero risk
+to its ~30 existing tests and multiple callers (`pr-merge-reminder.py`, `post-tool-use.py`,
+`pre-tool-use-canonical-mutate-guard.py`). This was a deliberate call, not an oversight: `split_top_level` has
+been hardened across Amendments 5 and 7, and Amendment 7's own postmortem — "`/review`'s adversarial pass, not
+the hand-written test suite, is what caught this... because that was the bug being fixed, not the one this fix
+could introduce" — is a direct caution against generalizing a heavily-tested function's internals for an
+unrelated need without very deliberate scrutiny. This mirrors Amendment 5's own scope decision ("only the
+engine is shared, not the wrapper functions") one level up: the true shared atom (`_find_heredoc_end`) is
+reused; the two higher-level walks (segment-splitting vs. span-masking) stay independent, since forcing them
+through one shared reducer would have meant either generalizing `split_top_level`'s return shape (the exact
+kind of change Amendment 7 shows can hide a subtle regression) or building new plumbing neither of its two
+existing callers needs.
+
+**The tradeoff, and how it's covered.** Because the two walks are independent, nothing in the type system
+guarantees they never drift apart on what counts as "inside a quote/subshell/heredoc" for some future input
+shape. Rather than leave that as a prose "keep these in sync" comment, `test_hookio.py` gains
+`test_mask_quoted_spans_agrees_with_split_top_level`: across four fixtures (a decoy `&&` inside double quotes,
+single quotes, a `$()` subshell, and a heredoc body, each followed by a real top-level `&&`), it asserts
+`split_top_level` never splits on the decoy while `mask_quoted_spans` masks it, and that the real, later `&&`
+is untouched by both. This is Amendment 11's own lesson applied to a second case: "a written 'keep these in
+sync' reminder is exactly as missable as the bug it guards against... the durable form is a running test."
+
+**Coverage.** `test_hookio.py` gains 12 direct `mask_quoted_spans` tests (no-op passthrough; single- and
+double-quoted spans masked; an escaped quote inside double quotes does not end the span early; `$()` subshell
+content masked; a `$()` nested inside `"..."` closes as one contiguous span rather than letting the inner
+subshell's own characters end the outer quote early; a bare heredoc body masked; a `$(cat <<'EOF'...)`
+heredoc-in-subshell masked as one span; newlines preserved inside a masked multi-line span; an unterminated
+double quote and an unterminated `$()` subshell both mask their tail without crashing, mirroring
+`split_top_level`'s existing fail-permissive contract for the identical case; and a real, unquoted `--repo`
+flag survives byte-for-byte alongside a masked quoted decoy in the same command) plus the cross-consistency
+test above (13 new tests total; `test_hookio.py` is now at 70, up from 57 — Amendment 14 touched the other
+four files, not this one, so 57 was this file's count coming into this amendment). Each of the four fixed
+files' existing suite gains two new cases: the
+exact dev-env#626 repro (a quoted `--subject`/`--body` decoy resolves to `None`/falls back correctly, not the
+decoy's repo) and a real `--repo`/`-R` flag resolving correctly alongside an irrelevant quoted decoy in the
+same command — except `posttooluse-inert-advisory.py`, whose existing `test_devenv_merge_pr_direct` already
+bundles every resolution-shape case into one function (this file's own established convention, unlike the
+other three's one-test-per-case style); the two new dev-env#626 cases were added as additional assertions
+inside that same function rather than as new top-level functions, matching the file's precedent. All five
+existing suites were re-run in full and pass unchanged — the existing quoted-PR-URL and
+`--repo`-flag-precedence-over-quoted-URL tests in particular confirm the masking scope decision above is
+correct, not just intended.
+
+**Out of scope, filed as a follow-up (not fixed here).** Auditing the `_REPO_FLAG_RE` family surfaced three
+more sites with a related but structurally distinct gap, none named in dev-env#626 itself:
+
+- `pre-merge-findings-gate.py`'s `_parse_merge_target` tokenizes via naive `tail.split()` rather than a regex
+  at all — a `--subject "... -R other/repo ..."` value hijacks it the same way, just via whitespace
+  tokenization instead of an unanchored regex match.
+- `pre-auto-merge-checkpoint-gate.py` dynamically imports `_parse_merge_target` from
+  `pre-merge-findings-gate.py` (`importlib`/`exec_module`, same function object) — automatically covered by
+  whatever fix lands there; not a second site.
+- `stop-tile-enumeration-gate.py`'s own `_REPO_FLAG_RE` (`(?:--repo|-R)(?:=|\s+)(?P<repo>[^\s/]+/[^\s]+)`,
+  ADR-088) never received Amendment 14's `(?<!\S)` lookbehind at all (it already recognized `-R` before PR
+  #623, so that PR never touched it) — a strictly larger, pre-existing gap than dev-env#626 itself, on top of
+  the same quote-unawareness.
+- The PR-URL-regex analog in all four files fixed here (`_PR_URL_REPO_RE`/`_PR_URL_RE`/equivalents) has the
+  same quoted-value blind spot for a URL-shaped decoy instead of a flag-shaped one — dev-env#626's own scope is
+  specifically the "`_REPO_FLAG_RE` family."
+
+Filed as a single consolidated follow-up issue rather than expanded here, per this ADR's own established
+precedent (Amendment 11's "Follow-up, not fixed here" for the `engineering-journal` checks, later closed by
+Amendment 12) — each of the four bullets above is a distinct code shape needing its own fix design, not a copy
+of this amendment's masking approach.
+
+**General lesson (continuing Amendments 5, 7, and 11's).** Sharing "the engine" does not always mean sharing
+one function — Amendment 5 already drew the line at wrapper functions with genuinely divergent call shapes;
+this amendment draws it one level deeper, at a heavily-tested function's *internals*, and closes the resulting
+gap (two independent implementations of the same opacity rules) with an enforced consistency test rather than
+either an unsafe refactor or an unenforced comment. A second, narrower lesson: auditing a named bug class
+(`_REPO_FLAG_RE`) for a fix inevitably surfaces adjacent, structurally different instances of a *related* bug
+class — the right response is the same "grep for the shape, note what's out of scope, file it" discipline this
+ADR has used since Amendment 9, not scope creep into a single oversized PR.

@@ -64,6 +64,9 @@ from pathlib import Path
 # module-attribute-indirection the tests rely on (ADR-073).
 from _hookutil import iter_bash_calls, load_records, _result_text  # noqa: F401
 
+# mask_quoted_spans (dev-env#626, ADR-050 Amendment 15) -- see _devenv_merge_pr.
+from _hookio import mask_quoted_spans
+
 SENTINEL_PREFIX = "posttooluse-inert-resolved-"
 
 # --- dev-env (project #3) scoping ----------------------------------------------
@@ -92,8 +95,10 @@ _AUTO_FLAG_RE = re.compile(r"(?<!\S)--auto(?:=\S+)?(?=\s|$)")
 # An explicit `--repo owner/name` on the merge invocation overrides the cwd
 # scope. Also matches gh's `-R` shorthand for `--repo` (dev-env#616), same
 # `(?<!\S)` standalone-token discipline as `_AUTO_FLAG_RE` above so the flag
-# can't match mid-word — but is not quote-aware (dev-env#626, review finding
-# on PR #623).
+# can't match mid-word. `_devenv_merge_pr` runs this against a
+# mask_quoted_spans-masked copy of `args` (dev-env#626, ADR-050 Amendment 15),
+# so a `--subject`/`--body` value containing a space-separated "-R other/repo"
+# substring can no longer false-match either.
 _REPO_FLAG_RE = re.compile(r"(?<!\S)(?:--repo|-R)[=\s]+(\S+)")
 # A genuine merge *failure* (not the harmless issue-#275 worktree cleanup tail,
 # which means the PR merged but the local branch could not be deleted).
@@ -138,6 +143,13 @@ def _devenv_merge_pr(command: str, cwd: str) -> str | None:
     explicit non-dev-env `--repo`. Repo identity: an explicit `--repo` wins, else a
     dev-env `/pull/N` URL self-identifies, else a bare positional number is dev-env
     only from a dev-env cwd. PR number: positional token preferred, then the URL.
+
+    The `--repo`/`-R` flag check runs against a `mask_quoted_spans`-masked copy
+    of `args` (dev-env#626, ADR-050 Amendment 15), so a `--subject`/`--body`
+    value containing a space-separated "-R other/repo" substring cannot be
+    mistaken for a real flag. `url_m` deliberately stays computed from the
+    *unmasked* `args` — it is reused below for the PR-number fallback, and a
+    quoted `/pull/N` URL is a legitimate shape masking must not blind.
     """
     am = _MERGE_ARGS_RE.search(command)
     if not am:
@@ -146,7 +158,7 @@ def _devenv_merge_pr(command: str, cwd: str) -> str | None:
     if _AUTO_FLAG_RE.search(args):
         return None
 
-    repo_m = _REPO_FLAG_RE.search(args)
+    repo_m = _REPO_FLAG_RE.search(mask_quoted_spans(args))
     url_m = _DEVENV_PR_URL_RE.search(args)
     if repo_m:
         is_devenv = repo_m.group(1) == DEVENV_REPO

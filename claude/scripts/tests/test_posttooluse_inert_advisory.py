@@ -287,9 +287,26 @@ def test_devenv_merge_pr_direct() -> str:
     # back to cwd-based dev-env detection instead.
     assert _devenv_merge_pr("gh pr merge 42 xx-R brownm09/dev-env", DEVENV_CWD) == "42"
     assert _devenv_merge_pr("gh pr merge 42 xx-R brownm09/dev-env", "/other") is None
+    # dev-env#626, ADR-050 Amendment 15: the (?<!\S) lookbehind alone can't
+    # distinguish "whitespace inside a quoted value" from "whitespace between
+    # top-level tokens" -- a --subject value containing a legitimately
+    # space-separated "-R other/repo" substring must not be mistaken for the
+    # flag either. mask_quoted_spans blinds the whole quoted span first, so
+    # this also falls back to cwd-based dev-env detection.
+    assert _devenv_merge_pr(
+        'gh pr merge 42 --subject "see -R other/repo for context"', DEVENV_CWD,
+    ) == "42"
+    assert _devenv_merge_pr(
+        'gh pr merge 42 --subject "see -R other/repo for context"', "/other",
+    ) is None
+    # A real --repo flag must still resolve correctly alongside a quoted decoy.
+    assert _devenv_merge_pr(
+        'gh pr merge 42 --repo brownm09/dev-env --subject "see -R other/repo for context"',
+        "/other",
+    ) == "42"
     assert _devenv_merge_pr(f"gh pr merge --auto {DEVENV_PR_URL}", DEVENV_CWD) is None
     assert _devenv_merge_pr("gh pr merge 7 --squash", "/some/other/repo") is None
-    return "_devenv_merge_pr: URL/number/--repo/-R/mid-word-guard/--auto/cwd scoping all resolve correctly (dev-env#616, #626)"
+    return "_devenv_merge_pr: URL/number/--repo/-R/mid-word-guard/quoted-decoy/--auto/cwd scoping all resolve correctly (dev-env#616, #626)"
 
 
 def test_detect_unrelated_command_ignored() -> str:

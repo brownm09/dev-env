@@ -386,6 +386,164 @@ def scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# mask_quoted_spans  (dev-env#626, ADR-050 Amendment 15)
+#
+# The _REPO_FLAG_RE family (post-pr-merge-project.py, pr-merge-reminder.py,
+# posttooluse-inert-advisory.py, post-pr-merge-pull.py) searches for a
+# standalone --repo/-R token directly in raw command text. The (?<!\S)
+# lookbehind added in ADR-050 Amendment 14 stops a mid-word match but not a
+# legitimately space-separated "-R other/repo" substring sitting INSIDE a
+# quoted --subject/--body value (dev-env#626) -- the lookbehind only checks
+# that the preceding character is whitespace, which a quoted value's own
+# internal spacing satisfies just as well as a real top-level flag boundary.
+#
+# mask_quoted_spans blinds exactly the spans a repo-flag regex must never
+# match: single-/double-quoted text, $() subshell contents (tracked with the
+# same nested-state rules as split_top_level, since a subshell can itself
+# contain further quotes that would otherwise close an enclosing double quote
+# early), and heredoc bodies.
+#
+# Deliberately an INDEPENDENT walker, not a refactor of split_top_level's
+# internals -- it mirrors that function's state transitions (same four
+# states) and reuses the already-shared _find_heredoc_end, but split_top_level
+# itself is untouched. split_top_level has ~30 existing tests and several
+# callers across this hook family, hardened over Amendments 5 and 7; Amendment
+# 7's own postmortem ("/review's adversarial pass, not the hand-written test
+# suite, is what caught this") is a direct caution against generalizing its
+# internals for an unrelated need without very deliberate scrutiny. This
+# mirrors Amendment 5's own scope decision ("only the engine is shared, not
+# the wrapper functions") one level up: the true shared atom
+# (_find_heredoc_end) is reused; the two higher-level walks stay independent
+# so a future change to one's splitting/masking semantics can never silently
+# perturb the other's heavily-tested behavior. Because the two are
+# independent, nothing statically guarantees they never drift apart on what
+# counts as "inside a quote/subshell/heredoc" -- test_hookio.py's
+# test_mask_quoted_spans_agrees_with_split_top_level enforces that agreement
+# directly rather than leaving it as a prose reminder to keep in sync (ADR-050
+# Amendment 11's own lesson: a written "keep these in sync" note is exactly
+# as missable as the bug it guards against).
+# ---------------------------------------------------------------------------
+
+
+def mask_quoted_spans(command: str) -> str:
+    """Return *command* with every single-/double-quoted span, $() subshell,
+    and heredoc body replaced by a same-length run of '#' (newlines
+    preserved), so a regex search over the result can never match text that
+    only appears inside a quoted value, command substitution, or heredoc.
+
+    A repo-flag regex (or similar) run against this masked text instead of
+    the raw command can no longer mistake a --subject/--body value like
+    ``"see -R other/repo for context"`` for a genuine standalone --repo/-R
+    flag (dev-env#626) -- the value's entire quoted span is blanked before
+    the regex ever sees it. Text outside any opaque span is returned
+    byte-for-byte unchanged, so a match against the masked string captures
+    the identical substring/offsets a match against the original would have,
+    whenever the match is genuine (i.e. not itself inside a masked span,
+    which by construction can never match anything but '#'/newline runs).
+
+    '#' is used as the placeholder because it appears in none of this file's
+    repo-flag/PR-number/URL regexes' character classes ([A-Za-z0-9_.-] for a
+    repo slug, \\d for a PR number, literal gh/pr/merge/repo keywords) -- so
+    masking can never manufacture a new false match, only remove real ones.
+    Newlines are preserved unmasked so a heredoc body's line count survives
+    (matters only if a caller later applies a line-oriented helper to the
+    masked result; no current caller does, but it costs nothing and mirrors
+    _find_heredoc_end's own care with heredoc line structure).
+
+    Callers must mask ONLY the exact string fed to the vulnerable repo-flag
+    regex, never a string whose match is reused for something else (e.g. a
+    PR-URL or PR-number fallback) -- some of those legitimately match a
+    quoted value today (see each hook's own call site for the precise scope).
+
+    See split_top_level's docstring for the shared quote/subshell/heredoc
+    opacity rules this function's state machine mirrors (kept as an
+    independent walk rather than a shared implementation -- see the module
+    comment above this function).
+    """
+    n = len(command)
+    opaque: list[tuple[int, int]] = []
+    i = 0
+    stack = ["top"]
+    span_start = None  # index where 'top' was left, or None while in 'top'
+
+    while i < n:
+        c = command[i]
+        state = stack[-1]
+
+        if state == "top":
+            if c == "'":
+                stack.append("single")
+                span_start = i
+            elif c == '"':
+                stack.append("double")
+                span_start = i
+            elif c == "$" and i + 1 < n and command[i + 1] == "(":
+                stack.append("subshell")
+                span_start = i
+                i += 1
+            elif c == "<" and i + 1 < n and command[i + 1] == "<":
+                end = _find_heredoc_end(command, i)
+                opaque.append((i, end))
+                i = end
+                continue
+            # else: real top-level text -- leave unmasked
+
+        elif state == "single":
+            if c == "'":
+                stack.pop()
+                if stack[-1] == "top":
+                    opaque.append((span_start, i + 1))
+                    span_start = None
+
+        elif state == "double":
+            if c == "\\" and i + 1 < n:
+                i += 1
+            elif c == '"':
+                stack.pop()
+                if stack[-1] == "top":
+                    opaque.append((span_start, i + 1))
+                    span_start = None
+            elif c == "$" and i + 1 < n and command[i + 1] == "(":
+                stack.append("subshell")
+                i += 1
+
+        else:  # state == "subshell"
+            if c == ")":
+                stack.pop()
+                if stack[-1] == "top":
+                    opaque.append((span_start, i + 1))
+                    span_start = None
+            elif c == "'":
+                stack.append("single")
+            elif c == '"':
+                stack.append("double")
+            elif c == "$" and i + 1 < n and command[i + 1] == "(":
+                stack.append("subshell")
+                i += 1
+            elif c == "(":
+                stack.append("subshell")
+            elif c == "<" and i + 1 < n and command[i + 1] == "<":
+                i = _find_heredoc_end(command, i)
+                continue
+
+        i += 1
+
+    if stack != ["top"]:
+        # Unterminated quote/subshell -- mask the tail too. Mirrors
+        # split_top_level's fail-permissive contract for this same case
+        # (drops the trailing malformed segment): a caller's regex must see
+        # no match from this content either way.
+        opaque.append((span_start, n))
+
+    out = list(command)
+    for start, end in opaque:
+        for idx in range(start, end):
+            if out[idx] not in ("\n", "\r"):
+                out[idx] = "#"
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------------
 # is_merge_help_only  (dev-env#557)
 #
 # `gh pr merge --help` textually satisfies every `is_pr_merge_command` /
