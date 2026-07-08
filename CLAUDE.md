@@ -941,21 +941,32 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `session_resolved_issue_numbers` across GitHub's three documented auto-close keyword stems
     (Close/Fix/Resolve, present and past tense, case-insensitive —
     [GitHub's linking-a-pull-request-to-an-issue doc](https://docs.github.com/en/issues/tracking-your-work-with-issues/administering-issues/linking-a-pull-request-to-an-issue)),
-    scoped to each `gh pr create` segment's own text (including its heredoc body, this repo's own
-    `--body "$(cat <<'EOF' ...)"` idiom) so an unrelated Closes-style mention on a different chained
-    segment can't leak in; that a Closes-keyword mention in a PR that never merged does NOT resolve
-    the issue (no auto-close without a merge); and explicit `gh issue close N` resolution.
-    `session_unresolved_created_issues` (created minus resolved) and `evaluate_issues()`'s full
-    composition (fire / enum-resolved / skip-resolved / no-issue no-op / lowest-issue-number
-    determinism / the shared #700 bare-assertion rejection) mirror `evaluate()`'s exact shape as a
-    fully independent sibling — zero modification to `evaluate()` or any of its 38 pre-existing
-    tests, all of which pass unmodified against the extended file. Also covers `format_issue_reminder`
-    (cp1252-encodability) and the combined-trigger cases: a merged PR and a dangling issue in the same
-    session fire independently when unenumerated, and one recorded enumeration satisfies both. The
-    behavioral layer gains seven end-to-end subprocess cases mirroring the merged-PR e2e pattern
-    exactly: dangling blocks on stderr; enum, skip-override, explicit-close, and merge-resolution each
-    allow; a combined merged-PR-plus-dangling-issue session emits both reminders in one exit-2 write;
-    and the sentinel suppresses a second fire. 71 tests total, up from 39 pre-ADR-092.
+    scoped to each `gh pr create` / `gh pr edit` segment's own text (including its heredoc body, this
+    repo's own `--body "$(cat <<'EOF' ...)"` idiom) so an unrelated Closes-style mention on a different
+    chained segment can't leak in; that a Closes-keyword mention in a PR that never merged does NOT
+    resolve the issue (no auto-close without a merge); `gh pr edit <N>`'s Closes keyword resolving a
+    PR merged this session (the "attach the keyword after creation" flow, both bare-number and
+    PR-URL target forms); and explicit `gh issue close N` resolution, **including the URL form**
+    (`gh issue close <url>` — the bare-positional-only lookup originally missed this, since a URL's
+    issue number is preceded by `/`, never whitespace; review of PR #639, confirmed independently by
+    two reviewers). `session_unresolved_created_issues` (created minus resolved) and
+    `evaluate_issues()`'s full composition (fire / enum-resolved / skip-resolved / no-issue no-op /
+    **created-and-resolved-with-no-enum-needed also sets the sentinel** (review of PR #639 — distinct
+    from "nothing created," else a create-then-close session with no merge anywhere never sets the
+    sentinel and re-pays the full scan every subsequent turn) / lowest-issue-number determinism / the
+    shared #700 bare-assertion rejection) mirror `evaluate()`'s exact shape as a fully independent
+    sibling — zero modification to `evaluate()` or any of its 39 pre-existing tests, all of which pass
+    unmodified against the extended file. Also covers `format_issue_reminder` (cp1252-encodability)
+    and the combined-trigger cases: a merged PR and a dangling issue in the same session fire
+    independently when unenumerated, and one recorded enumeration satisfies both. The behavioral layer
+    gains seven end-to-end subprocess cases mirroring the merged-PR e2e pattern exactly: dangling
+    blocks on stderr; enum, skip-override, explicit-close, and merge-resolution each allow; a combined
+    merged-PR-plus-dangling-issue session emits both reminders in one exit-2 write; and the sentinel
+    suppresses a second fire. The pre-filter also reuses the real `_ISSUE_CREATE_STMT_RE` detection
+    regex (`.search()`) rather than a hand-written substring, so it can't drift from what the detector
+    actually matches (a literal single-space `"issue create"` check would miss a tab/multi-space
+    invocation — review of PR #639, confirmed independently by two reviewers). 76 tests total, up from
+    39 pre-ADR-092.
 
     ```bash
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py

@@ -504,6 +504,44 @@ def test_session_resolved_via_explicit_issue_close():
     return "gh issue close 630 -> resolved {630} (no merged PR needed)"
 
 
+def test_session_resolved_via_explicit_issue_close_url_form():
+    # Review of PR #639 (confirmed independently by both reviewers): the
+    # issue number in a URL is preceded by '/', never whitespace, so it
+    # previously never satisfied _POS_NUM_RE's (?<!\S) boundary -- a session
+    # that copy-pastes the URL gh issue create itself just printed (a very
+    # natural close-issue flow) was silently misread as still dangling.
+    calls = [("gh issue close https://github.com/brownm09/dev-env/issues/630",
+              "Closed issue #630 (Bug)")]
+    assert gate.session_resolved_issue_numbers(calls, set()) == {630}
+    return "gh issue close <url> -> resolved {630} (dev-env#639 review fix)"
+
+
+def test_session_resolved_via_gh_pr_edit_closes_keyword():
+    # The "create the PR, then attach the Closes keyword afterward" flow
+    # (review of PR #639) -- gh pr edit's target PR number is read via the
+    # same _target_pr helper session_merged_prs already uses for merge/view.
+    calls = [
+        ("gh pr create --title x --body y", "https://github.com/brownm09/dev-env/pull/640"),
+        ('gh pr edit 640 --body "Closes #630"', ""),
+    ]
+    assert gate.session_resolved_issue_numbers(calls, {640}) == {630}
+    return "gh pr edit 640 --body 'Closes #630' (640 merged) -> resolved {630}"
+
+
+def test_session_resolved_via_gh_pr_edit_pr_url_target():
+    calls = [
+        ('gh pr edit https://github.com/brownm09/dev-env/pull/640 --body "Fixes #630"', ""),
+    ]
+    assert gate.session_resolved_issue_numbers(calls, {640}) == {630}
+    return "gh pr edit <pull-URL> --body 'Fixes #630' (640 merged) -> resolved {630}"
+
+
+def test_session_resolved_via_gh_pr_edit_target_not_merged():
+    calls = [('gh pr edit 640 --body "Closes #630"', "")]
+    assert gate.session_resolved_issue_numbers(calls, set()) == set()
+    return "gh pr edit targeting an unmerged PR -> not resolved (no auto-close without merge)"
+
+
 def test_session_resolved_issue_close_in_heredoc_not_matched():
     command = "git commit -F - <<'EOF'\ngh issue close 630\nEOF"
     calls = [(command, "some output")]
@@ -583,6 +621,21 @@ def test_evaluate_issues_no_issue_noop():
     return "no issue created this session -> (None, resolved=False) [stay unresolved]"
 
 
+def test_evaluate_issues_created_and_resolved_sets_sentinel():
+    # Review of PR #639: distinct from "nothing created" -- everything
+    # created this session was resolved (explicit close, no merge anywhere)
+    # with no enumeration needed. Must return resolved=True (not False) so
+    # main() marks the sentinel and later Stops in this session skip the
+    # re-scan; before this fix both cases collapsed to (None, False) and a
+    # create-then-close session with no merge never set the sentinel, paying
+    # the full scan on every subsequent turn indefinitely.
+    records = _ISSUE_CREATED_NO_ENUM + [
+        _asst_bash("c1", "gh issue close 630"), _tool_result("c1", "Closed issue #630")]
+    fire, resolved = gate.evaluate_issues(records)
+    assert fire is None and resolved is True
+    return "issue created + explicitly closed, no merge anywhere -> (None, resolved=True) [sentinel set]"
+
+
 def test_evaluate_issues_picks_lowest_deterministically():
     records = [
         _asst_bash("i1", 'gh issue create --title "A"'),
@@ -619,11 +672,11 @@ def test_format_issue_reminder_is_cp1252_encodable():
 # ---------------------------------------------------------------------------
 
 def test_combined_merged_pr_and_dangling_issue_both_fire_independently():
-    # A session with a resolved merged-PR trigger (enumerated) but a SEPARATE,
-    # still-dangling issue -- the shared enumeration_recorded/skip_override
-    # machinery means one recorded enumeration satisfies BOTH; evaluate_issues
-    # must independently confirm the issue trigger still needs its own check
-    # when the PR trigger's OWN merged set is empty.
+    # A session that merges a PR AND creates a separate, still-dangling issue,
+    # with NO enumeration recorded for either -- both evaluate() and
+    # evaluate_issues() must independently detect and fire on their own
+    # trigger (review of PR #639: the original comment here incorrectly
+    # described the enumerated/resolved case, which is the NEXT test below).
     records = _MERGED_NO_ENUM + _ISSUE_CREATED_NO_ENUM
     fire_pr, resolved_pr = gate.evaluate(records)
     fire_issue, resolved_issue = gate.evaluate_issues(records)
@@ -844,6 +897,10 @@ def main():
         ("resolved: Closes keyword inside heredoc PR body", test_session_resolved_via_heredoc_body_in_pr_create),
         ("resolved: unrelated chained segment not leaked", test_session_resolved_unrelated_chained_segment_not_leaked),
         ("resolved: via explicit gh issue close", test_session_resolved_via_explicit_issue_close),
+        ("resolved: via explicit gh issue close (URL form)", test_session_resolved_via_explicit_issue_close_url_form),
+        ("resolved: via gh pr edit Closes keyword", test_session_resolved_via_gh_pr_edit_closes_keyword),
+        ("resolved: via gh pr edit PR-URL target", test_session_resolved_via_gh_pr_edit_pr_url_target),
+        ("resolved: gh pr edit target not merged", test_session_resolved_via_gh_pr_edit_target_not_merged),
         ("resolved: gh issue close in heredoc not matched", test_session_resolved_issue_close_in_heredoc_not_matched),
         ("unresolved: dangling issue", test_session_unresolved_created_issues_dangling),
         ("unresolved: resolved via merge", test_session_unresolved_created_issues_resolved_via_merge),
@@ -853,6 +910,7 @@ def main():
         ("evaluate_issues: with enum resolved", test_evaluate_issues_with_enum_resolved),
         ("evaluate_issues: with skip resolved", test_evaluate_issues_with_skip_resolved),
         ("evaluate_issues: no issue no-op", test_evaluate_issues_no_issue_noop),
+        ("evaluate_issues: created+resolved sets sentinel", test_evaluate_issues_created_and_resolved_sets_sentinel),
         ("evaluate_issues: picks lowest deterministically", test_evaluate_issues_picks_lowest_deterministically),
         ("evaluate_issues: bare 'no follow-ups' NOT enum", test_evaluate_issues_bare_no_followups_not_enumeration),
         ("format_issue_reminder: cp1252-encodable", test_format_issue_reminder_is_cp1252_encodable),

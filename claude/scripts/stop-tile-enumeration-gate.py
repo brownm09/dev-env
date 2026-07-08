@@ -117,6 +117,12 @@ _REPO_FLAG_RE = re.compile(r"(?:--repo|-R)(?:=|\s+)(?P<repo>[^\s/]+/[^\s]+)")
 # --- dangling-created-issue detection (ADR-092, dev-env#638) -------------------
 _ISSUE_CREATE_STMT_RE = re.compile(r"gh(?:\.exe)?\s+issue\s+create\b", re.IGNORECASE)
 _ISSUE_CLOSE_STMT_RE = re.compile(r"gh(?:\.exe)?\s+issue\s+close\b", re.IGNORECASE)
+# `gh pr edit` can attach a Closes-keyword body to an already-created PR
+# (review of PR #639) -- reuses _STRIP_VERB_RE / _target_pr below, which
+# already generically strip "gh pr <any-verb>" and were written for
+# merge/view/checks, since gh's syntax (`gh pr edit <number|url> ...`) is
+# identical in shape.
+_PR_EDIT_STMT_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+edit\b", re.IGNORECASE)
 # An issue URL (`.../issues/N`) capturing owner/repo and number.
 _ISSUE_URL_RE = re.compile(r"github\.com/(?P<repo>[^/\s]+/[^/\s]+)/issues/(?P<num>\d+)")
 # Strip the `gh issue close` prefix so the positional issue number can be read.
@@ -289,10 +295,20 @@ def session_merged_prs(calls: list) -> set:
 
 
 def _closed_issue_number(segment_first_line: str) -> int | None:
-    """Issue number a `gh issue close` invocation targets (the first bare
-    positional integer after the verb), else ``None``."""
+    """Issue number a `gh issue close` invocation targets: an `.../issues/N`
+    URL first, else the first bare positional integer after the verb, else
+    ``None``. `gh issue close` accepts `{<number> | <url>}` -- a session
+    commonly copy-pastes the URL `gh issue create` itself just printed, and
+    the bare-integer-only lookup previously missed that form entirely (the
+    issue number in a URL is preceded by `/`, never whitespace, so it never
+    satisfied `_POS_NUM_RE`'s `(?<!\\S)` boundary -- review of PR #639,
+    confirmed independently by both reviewers). Mirrors `_target_pr`'s
+    URL-first-then-positional precedence."""
     m = _STRIP_ISSUE_CLOSE_VERB_RE.match(segment_first_line)
     tail = m.group(1) if m else ""
+    u = _ISSUE_URL_RE.search(tail)
+    if u:
+        return int(u.group("num"))
     n = _POS_NUM_RE.search(tail)
     return int(n.group(1)) if n else None
 
@@ -300,8 +316,13 @@ def _closed_issue_number(segment_first_line: str) -> int | None:
 def session_created_issues(calls: list) -> dict:
     """``{issue_number: repo_or_None}`` for every `gh issue create` this
     session, keyed off the created issue's URL in the command output —
-    mirrors ``session_merged_prs``'s ``acted``-dict construction for
-    `gh pr create`."""
+    mirrors ``session_merged_prs``'s ``acted``-dict *construction* for
+    `gh pr create` (same URL-in-output extraction shape). Unlike ``acted``,
+    the captured repo is not yet consumed by any correlation logic —
+    ``session_resolved_issue_numbers`` matches purely on issue number (see
+    its own docstring and the ADR-092 Limitations section on cross-repo
+    scoping) — so treat this as a captured-but-currently-unused field, not
+    evidence that resolution is already repo-aware (review of PR #639)."""
     created: dict = {}
     for command, output in calls:
         firsts = [_first_line(seg).lstrip() for seg in split_top_level(command)]
@@ -317,46 +338,65 @@ def session_resolved_issue_numbers(calls: list, merged_prs: set) -> set:
 
     An issue counts as resolved iff EITHER:
 
-    - A top-level `gh pr create` segment's own text (including its heredoc
-      body, where a `--body "$(cat <<'EOF' ... EOF)"` value typically lives)
-      contains a GitHub auto-close keyword (Closes/Fixes/Resolves #N) for it,
-      AND that same command's output shows the created PR reaching merged
-      state this session (per ``session_merged_prs``) — GitHub only
-      auto-closes on merge, never on mere PR creation, so a Closes-style
-      reference in a PR that never merged does not resolve the issue.
+    - A top-level `gh pr create` OR `gh pr edit` segment's own text (including
+      its heredoc body, where a `--body "$(cat <<'EOF' ... EOF)"` value
+      typically lives) contains a GitHub auto-close keyword (Closes/Fixes/
+      Resolves #N) for it, AND that PR reaches merged state this session (per
+      ``session_merged_prs``) — GitHub only auto-closes on merge, never on
+      mere PR creation/editing, so a Closes-style reference in a PR that never
+      merged does not resolve the issue. `gh pr edit` covers the "create the
+      PR, then attach the Closes keyword afterward" flow (review of PR #639);
+      its target PR number is read the same way `session_merged_prs` already
+      reads a `gh pr merge|view|checks` target, via the shared `_target_pr`.
     - An explicit `gh issue close N` ran this session.
 
-    The keyword search is scoped to each `gh pr create` segment's own text
-    (not the whole raw command), so an unrelated Closes-style mention on a
-    different chained segment can never leak in — mirrors
-    ``session_merged_prs``'s per-segment scoping discipline (the A4 hardening
-    for cross-repo/cross-segment leakage). No cross-repo scoping is applied
-    to the resolution correlation itself (documented limitation — see the
-    ADR-092 Limitations section): a coincidentally same-numbered issue
-    resolved in an unrelated repo this session would be misread as resolving
-    this repo's own issue. Considered low-risk in practice (would require
-    working across repos AND colliding issue numbers in the same session).
+    The keyword search is scoped to each `gh pr create` / `gh pr edit`
+    segment's own text (not the whole raw command), so an unrelated
+    Closes-style mention on a different chained segment can never leak in —
+    mirrors ``session_merged_prs``'s per-segment scoping discipline (the A4
+    hardening for cross-repo/cross-segment leakage).
+
+    Two forms are NOT covered here, both documented as accepted limitations
+    (see the ADR-092 Limitations section): a Closes-keyword living only in a
+    commit message (never the `gh pr create`/`gh pr edit` command text itself)
+    is invisible to a pure command-transcript scan; and an explicit cross-repo
+    reference (`Closes owner/repo#N`) never matches `_CLOSES_KEYWORD_RE`
+    (which requires a bare `#N` immediately after the keyword) — this is a
+    false NEGATIVE (the issue is treated as still dangling, prompting an
+    enumeration that turns out to be unnecessary), the safe failure direction,
+    never a false match against the wrong issue. No cross-repo scoping is
+    applied to the resolution correlation itself either: a coincidentally
+    same-numbered issue resolved in an unrelated repo this session would be
+    misread as resolving this repo's own issue. Considered low-risk in
+    practice (would require working across repos AND colliding issue numbers
+    in the same session).
     """
     resolved: set = set()
     for command, output in calls:
-        segments = split_top_level(command)
+        pr_create_segments: list = []
+        pr_edit_segments: list = []  # (segment, its own first-line) pairs
 
-        for seg in segments:
-            if _ISSUE_CLOSE_STMT_RE.match(_first_line(seg).lstrip()):
-                n = _closed_issue_number(_first_line(seg).lstrip())
+        for seg in split_top_level(command):
+            first = _first_line(seg).lstrip()
+            if _ISSUE_CLOSE_STMT_RE.match(first):
+                n = _closed_issue_number(first)
                 if n is not None:
                     resolved.add(n)
+            elif _PR_CREATE_STMT_RE.match(first):
+                pr_create_segments.append(seg)
+            elif _PR_EDIT_STMT_RE.match(first):
+                pr_edit_segments.append((seg, first))
 
-        pr_create_segments = [
-            seg for seg in segments if _PR_CREATE_STMT_RE.match(_first_line(seg).lstrip())
-        ]
-        if not pr_create_segments:
-            continue
-        pr_numbers = {int(m.group("num")) for m in _PR_URL_RE.finditer(output or "")}
-        if not (pr_numbers & merged_prs):
-            continue
-        for seg in pr_create_segments:
-            resolved |= {int(n) for n in _CLOSES_KEYWORD_RE.findall(seg)}
+        if pr_create_segments:
+            pr_numbers = {int(m.group("num")) for m in _PR_URL_RE.finditer(output or "")}
+            if pr_numbers & merged_prs:
+                for seg in pr_create_segments:
+                    resolved |= {int(n) for n in _CLOSES_KEYWORD_RE.findall(seg)}
+
+        for seg, first in pr_edit_segments:
+            n = _target_pr(first)
+            if n is not None and n in merged_prs:
+                resolved |= {int(m) for m in _CLOSES_KEYWORD_RE.findall(seg)}
 
     return resolved
 
@@ -452,23 +492,33 @@ def evaluate_issues(records: list) -> tuple:
     ``fire_issue`` — the lowest unresolved created-issue number to block on
     (deterministic across multiple dangling issues, mirroring ``evaluate()``'s
     lowest-PR determinism), or ``None``.
-    ``resolved`` — True when an issue was created this session but the
-    checkpoint is satisfied (enumerated, or waived). A session that created
-    no issue returns ``(None, False)`` so an issue created later is still
-    caught.
+    ``resolved`` — True whenever there is nothing left dangling to fire on
+    *and* an issue was created this session — covers both "enumerated/waived"
+    (the direct ``evaluate()`` analog) and "every issue created this session
+    was already resolved outright" (e.g. created then explicitly closed, with
+    no merge anywhere — a state ``evaluate()`` has no equivalent of, since a
+    PR merge is binary and has no separate "resolved another way" case). Both
+    set the sentinel so later Stops skip the re-scan. Without this, a
+    create-then-close session with no merge would never set the sentinel and
+    would re-pay the full scan on every subsequent turn (review of PR #639).
+    A session that created no issue at all returns ``(None, False)`` (nothing
+    to resolve) so an issue created later is still caught.
 
     Recomputes ``iter_bash_calls``/``session_merged_prs`` independently rather
     than sharing ``evaluate()``'s — a deliberate simplicity-over-micro-
-    optimization choice (see the ADR-092 Performance note): keeping the two
-    evaluators fully independent means neither's contract depends on how the
-    other is invoked, at the cost of a second linear pass over an already-cheap
-    transcript scan.
+    optimization choice (see ADR-092's "Alternatives considered" section):
+    keeping the two evaluators fully independent means neither's contract
+    depends on how the other is invoked, at the cost of a second linear pass
+    over an already-cheap transcript scan.
     """
     calls = iter_bash_calls(records)
     merged = session_merged_prs(calls)
-    unresolved = session_unresolved_created_issues(calls, merged)
-    if not unresolved:
+    created = session_created_issues(calls)
+    if not created:
         return None, False
+    unresolved = set(created) - session_resolved_issue_numbers(calls, merged)
+    if not unresolved:
+        return None, True
     if skip_override(records) or enumeration_recorded(records):
         return None, True
     return min(unresolved), False
@@ -554,18 +604,24 @@ def main() -> None:
     # Cheap pre-filter: every merge signal this hook detects contains the
     # substring "merged" case-insensitively — gh's "... merged pull request",
     # `"state":"MERGED"`, `"merged":true`. Every dangling-issue signal requires
-    # a `gh issue create` to have run this session (ADR-092) — its own command
-    # text always contains "issue create" case-insensitively, so that substring
-    # is a sound (if looser) guard for the second trigger: the resolution side
-    # (Closes-keyword / `gh issue close`) only ever matters when there is a
-    # created issue to resolve in the first place. A transcript with NEITHER
-    # substring cannot contain a merged-state PR NOR a dangling created issue,
-    # so skip the full JSON parse + scan. Stop fires every turn, so this bounds
-    # the common no-op session to one read + substring check instead of
-    # re-parsing the whole transcript each turn (review of PR #604, extended
-    # ADR-092).
+    # a `gh issue create` to have run this session (ADR-092) — reuse the exact
+    # detection regex (`.search()`, not the per-segment `.match()` the real
+    # detector uses) rather than a hand-written substring, so the guard can
+    # never drift from what the detector actually matches (a literal
+    # single-space `"issue create"` substring check would silently miss a
+    # tab/multi-space invocation the real `\s+`-based regex still matches --
+    # review of PR #639, confirmed independently by both reviewers). The
+    # resolution side (Closes-keyword / `gh issue close`) only ever matters
+    # when there is a created issue to resolve in the first place, so gating
+    # on creation alone is still sufficient for both trigger halves. A
+    # transcript with NEITHER "merged" NOR a genuine `gh issue create`
+    # invocation cannot contain a merged-state PR NOR a dangling created
+    # issue, so skip the full JSON parse + scan. Stop fires every turn, so
+    # this bounds the common no-op session to one read + substring/regex
+    # check instead of re-parsing the whole transcript each turn (review of
+    # PR #604, extended ADR-092).
     lower = text.lower()
-    if "merged" not in lower and "issue create" not in lower:
+    if "merged" not in lower and not _ISSUE_CREATE_STMT_RE.search(text):
         sys.exit(0)
 
     # Fail-open: a parse/scan failure is a deliberate exit-0 skip, not an
