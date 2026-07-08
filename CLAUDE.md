@@ -908,6 +908,29 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
     ```
 
+49. **journal-stop-check test** — required when changing `claude/scripts/journal-stop-check.py`.
+    Two layers, mirroring this hook family's split ([ADR-091](docs/adr/091-journal-stop-check-archive-reminder-blocking.md);
+    dev-env#622). Pure/fixture-helper tests exercise the changed surface offline: `archive_reminder_message()`
+    is ASCII/cp1252-encodable (so the exit-2 stderr text cannot vanish under Claude Code's cp1252
+    hook-output pipe on Windows — mirroring items 18/40) and names the `ccd_session_mgmt__archive_session`
+    MCP tool + the `list_sessions` lookup; `parse_stop_hook_active()` returns True only when the payload
+    sets the flag and False on false / missing / empty / malformed / non-dict stdin (so a parse hiccup
+    never suppresses a genuine first Stop); and `consume_stub_pushed_sentinel(sentinel=tmp)` returns the
+    reminder and deletes a present flag (the consume-on-read one-shot guard for the exit-2 block), returns
+    None on a second read, and None on an absent flag. A behavioral layer drives the real hook end-to-end
+    over stdin via subprocess with HOME/USERPROFILE pointed at a temp dir (SENTINEL isolated from the real
+    `~/.claude/scratch`, mirroring item 48): a present flag + `stop_hook_active:false` blocks the stop
+    (exit 2, reminder on **stderr**, **empty stdout** — Claude Code shows a Stop hook's stderr on exit 2,
+    not stdout) and consumes the flag; no flag exits 0 (advisory path, fail-closed against the tmp journal
+    repo); a present flag + `stop_hook_active:true` exits 0 (loop guard, no re-block) and **preserves** the
+    flag (never consumed without delivery). `main()`'s advisory branches (stale-draft / unmerged-branch /
+    orphan cleanup) shell out to git and are not separately unit-tested (pure-helper convention) — the
+    end-to-end no-flag run exercises their fail-closed path.
+
+    ```bash
+    py -3 claude/scripts/tests/test_journal_stop_check.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

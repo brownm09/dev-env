@@ -14,8 +14,9 @@ Fires on every Bash tool call. Most calls are skipped quickly:
 
 When all four conditions are met, writes a sentinel file to the scratch
 directory. The Stop hook (journal-stop-check.py) reads and clears the
-sentinel and issues a closing reminder via stdout — the correct output
-channel for Stop hook messages.
+sentinel and issues the archive reminder on stderr with exit 2 — the channel
+that reaches Claude for a Stop hook (exit-0 stdout is NOT added to Claude's
+context for Stop, so the reminder must block the stop to be seen; ADR-091).
 
 Exit 0 on every code path — never blocks.
 

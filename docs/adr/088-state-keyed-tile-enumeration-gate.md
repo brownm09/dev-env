@@ -109,8 +109,11 @@ an uncaught helper exception (hardened in the PR #604 review).
 
 ### Stop-hook parallelism — exit 2 does not delay `awake-blocker`'s sleep-release
 
-This is the first (and, as of this writing, only) **blocking** Stop hook in the `claude/settings.json`
-Stop list, which also registers `awake-blocker.py` (stop) *after* it — the hook that releases the
+This was, when this ADR was written, the only **blocking** Stop hook in the `claude/settings.json`
+Stop list ([ADR-091](091-journal-stop-check-archive-reminder-blocking.md) later made
+`journal-stop-check.py`'s archive-reminder branch blocking too; the parallelism argument here holds for
+any number of blocking Stop hooks — each exits 2 independently and all sibling hooks still run). The
+list also registers `awake-blocker.py` (stop) *after* it — the hook that releases the
 Windows system-sleep lock ([ADR-033](033-prevent-system-sleep-while-processing.md)). The natural worry
 (raised in the PR #604 review) is that a blocking exit 2 here short-circuits the list and skips
 `awake-blocker`, holding the sleep-lock until the `stop_hook_active` continuation next turn. **It does
@@ -125,8 +128,11 @@ The only genuine interaction is the mirror image, and it is negligible: because 
 *always* runs at Stop, the sleep-lock is released even when this gate blocks the stop, so the machine
 could in principle sleep during the ~one-turn blocked-stop continuation. A system-sleep idle timeout is
 minutes long versus that single continuation turn, and the next real `UserPromptSubmit` re-arms the
-lock — not worth a code change. (For the record, `journal-stop-check.py`, the other Stop hook
-sometimes described as "blocking", is not: it always exits 0 and emits its reminders on stdout.) See
+lock — not worth a code change. (When this ADR was written, `journal-stop-check.py` was *not* blocking
+— it exited 0 and emitted its reminders on stdout;
+[ADR-091](091-journal-stop-check-archive-reminder-blocking.md) has since made its **archive-reminder**
+branch blocking (exit 2 + stderr) so that Claude-facing reminder actually reaches Claude, while its
+stale-draft / unmerged-branch advisories stay exit 0.) See
 [dev-env#612](https://github.com/brownm09/dev-env/issues/612).
 
 ## Consequences
