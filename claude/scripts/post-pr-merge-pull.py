@@ -64,7 +64,8 @@ def extract_repo(command: str, cwd: str) -> str | None:
     """Return 'owner/repo' for the merged PR, or None.
 
     Resolution order (ADR-067):
-    1. ``--repo owner/repo`` flag — explicit, highest confidence.
+    1. ``--repo``/``-R owner/repo`` flag — explicit, highest confidence
+       (``-R`` shorthand added in dev-env#616).
     2. GitHub PR URL in the command string — e.g. ``gh pr merge
        https://github.com/owner/repo/pull/N``.  Pure parse, no subprocess.
     3. ``cd <path> && gh pr merge`` chain: run git-remote on <path> so a
@@ -72,7 +73,7 @@ def extract_repo(command: str, cwd: str) -> str | None:
     4. Bare fallback: git-remote on cwd (pre-ADR-067 behaviour — still correct
        when the merge was run directly from the target repo's cwd).
     """
-    m = re.search(r"--repo\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", command)
+    m = re.search(r"(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", command)
     if m:
         return m.group(1)
 

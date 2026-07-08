@@ -182,6 +182,18 @@ def test_extract_repo_repo_flag_takes_precedence() -> str:
     return "--repo flag takes precedence over GitHub URL in command"
 
 
+def test_extract_repo_short_flag_form() -> str:
+    # dev-env#616: gh's -R shorthand for --repo was not recognized, so a
+    # `-R owner/repo` merge command fell through to the URL/cd-chain/cwd
+    # fallbacks instead of the flag's own explicit repo.
+    repo = extract_repo(
+        "gh pr merge 611 -R brownm09/dev-env --squash",
+        "/Git/lifting-logbook",
+    )
+    assert repo == "brownm09/dev-env", f"got {repo!r}"
+    return "-R flag (gh's --repo shorthand) resolves identically to --repo (dev-env#616)"
+
+
 def test_pull_command_on_main_uses_ff_only_pull() -> str:
     cmd = pull_command("C:/Users/brown/Git/dev-env", True)
     assert cmd == ["git", "-C", "C:/Users/brown/Git/dev-env", "pull", "--ff-only", "origin", "main"], cmd
@@ -229,6 +241,7 @@ def main() -> int:
         ("extract_repo: GitHub URL in command -> owner/repo", test_extract_repo_from_url_in_command),
         ("extract_repo: URL for different repo", test_extract_repo_from_url_other_repo),
         ("extract_repo: --repo flag beats URL", test_extract_repo_repo_flag_takes_precedence),
+        ("extract_repo: -R shorthand resolves same as --repo (dev-env#616)", test_extract_repo_short_flag_form),
         ("pull_command: canonical on main -> ff-only pull", test_pull_command_on_main_uses_ff_only_pull),
         ("pull_command: canonical off main -> fetch-into-ref", test_pull_command_off_main_uses_fetch_into_ref),
         ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_successful_merge_and_is_help_only),

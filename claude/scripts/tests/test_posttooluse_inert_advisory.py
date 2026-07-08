@@ -278,9 +278,13 @@ def test_devenv_merge_pr_direct() -> str:
     assert _devenv_merge_pr("gh pr merge 390 --squash", DEVENV_CWD) == "390"
     assert _devenv_merge_pr("gh pr merge 42 --repo brownm09/dev-env", "/other") == "42"
     assert _devenv_merge_pr("gh pr merge 42 --repo brownm09/lifting-logbook", DEVENV_CWD) is None
+    # dev-env#616: gh's -R shorthand for --repo must resolve identically to
+    # the long form -- both the dev-env-repo and other-repo cases.
+    assert _devenv_merge_pr("gh pr merge 42 -R brownm09/dev-env", "/other") == "42"
+    assert _devenv_merge_pr("gh pr merge 42 -R brownm09/lifting-logbook", DEVENV_CWD) is None
     assert _devenv_merge_pr(f"gh pr merge --auto {DEVENV_PR_URL}", DEVENV_CWD) is None
     assert _devenv_merge_pr("gh pr merge 7 --squash", "/some/other/repo") is None
-    return "_devenv_merge_pr: URL/number/--repo/--auto/cwd scoping all resolve correctly"
+    return "_devenv_merge_pr: URL/number/--repo/-R/--auto/cwd scoping all resolve correctly (dev-env#616)"
 
 
 def test_detect_unrelated_command_ignored() -> str:

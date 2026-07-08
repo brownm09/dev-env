@@ -89,8 +89,9 @@ _MERGE_POS_NUM_RE = re.compile(r"(?<!\S)(\d+)(?=\s|$)")
 # A queued `--auto` only *enables* auto-merge -- it is not a completed merge, and
 # even a healthy session would not Done-move it yet (cf. post-pr-merge-project.py).
 _AUTO_FLAG_RE = re.compile(r"(?<!\S)--auto(?:=\S+)?(?=\s|$)")
-# An explicit `--repo owner/name` on the merge invocation overrides the cwd scope.
-_REPO_FLAG_RE = re.compile(r"--repo[=\s]+(\S+)")
+# An explicit `--repo owner/name` on the merge invocation overrides the cwd
+# scope. Also matches gh's `-R` shorthand for `--repo` (dev-env#616).
+_REPO_FLAG_RE = re.compile(r"(?:--repo|-R)[=\s]+(\S+)")
 # A genuine merge *failure* (not the harmless issue-#275 worktree cleanup tail,
 # which means the PR merged but the local branch could not be deleted).
 _HARD_MERGE_FAIL_RE = re.compile(
