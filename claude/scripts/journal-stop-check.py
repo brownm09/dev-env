@@ -232,6 +232,12 @@ def main() -> None:
     # stdout). These point at work for a LATER, dedicated session (composition is
     # dedicated-session-only and must never be triggered proactively; stale PRs
     # are separate work), so they must not block the stop.
+    #
+    # Note: only Check 1 (the block) is gated on stop_hook_active — unlike
+    # stop-tile-enumeration-gate.py, which exits 0 for the WHOLE hook when
+    # stop_hook_active is set. These advisories are an independent, non-blocking
+    # responsibility and must still surface on a continuation Stop, so do NOT add
+    # a top-level `if stop_hook_active: sys.exit(0)` early-return here.
     messages = []
 
     stale = stale_draft_artifacts()

@@ -908,7 +908,7 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
     ```
 
-49. **journal-stop-check test** — required when changing `claude/scripts/journal-stop-check.py`.
+50. **journal-stop-check test** — required when changing `claude/scripts/journal-stop-check.py`.
     Two layers, mirroring this hook family's split ([ADR-091](docs/adr/091-journal-stop-check-archive-reminder-blocking.md);
     dev-env#622). Pure/fixture-helper tests exercise the changed surface offline: `archive_reminder_message()`
     is ASCII/cp1252-encodable (so the exit-2 stderr text cannot vanish under Claude Code's cp1252
