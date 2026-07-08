@@ -899,7 +899,10 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 
 48. **stop-tile-enumeration-gate test** — required when changing
     `claude/scripts/stop-tile-enumeration-gate.py`. Two layers, mirroring this hook family's
-    established split ([ADR-088](docs/adr/088-state-keyed-tile-enumeration-gate.md); dev-env#599).
+    established split ([ADR-088](docs/adr/088-state-keyed-tile-enumeration-gate.md); dev-env#599),
+    now covering **two independent triggers** that share the same enumeration/skip-override/sentinel
+    machinery: the merged-PR trigger (below) and the dangling-created-issue trigger
+    ([ADR-092](docs/adr/092-dangling-issue-tile-enumeration-gate.md); dev-env#638).
     Pure-helper tests exercise the detection/decision core offline (no stdin, network, gh, or disk):
     `session_merged_prs` across all three merge paths — a `gh pr merge` success marker, a
     `gh api .../pulls/N/merge` with `"merged":true`, and the auto-merge case (a `--auto` enqueue or a
@@ -929,6 +932,30 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     imports the three it uses (`_content_items`, `_parse_records`, and the shared `iter_bash_calls`,
     aliased) and wraps the last in a thin 2-tuple adapter (it never needs `cwd`), so
     `session_merged_prs` and these tests are unchanged by that extraction.
+
+    The dangling-created-issue trigger (ADR-092) adds its own pure-helper coverage, fully independent
+    of the merged-PR path above: `session_created_issues` (issue-number/repo extraction from a
+    `gh issue create`'s output URL; that `gh issue create --help` yields nothing, since `--help`
+    prints no issue URL — the same false-positive shape dev-env#636/ADR-050 Amendment 16 closes for
+    `post-tool-use.py`, naturally inert here rather than needing its own guard; heredoc-anchoring).
+    `session_resolved_issue_numbers` across GitHub's three documented auto-close keyword stems
+    (Close/Fix/Resolve, present and past tense, case-insensitive —
+    [GitHub's linking-a-pull-request-to-an-issue doc](https://docs.github.com/en/issues/tracking-your-work-with-issues/administering-issues/linking-a-pull-request-to-an-issue)),
+    scoped to each `gh pr create` segment's own text (including its heredoc body, this repo's own
+    `--body "$(cat <<'EOF' ...)"` idiom) so an unrelated Closes-style mention on a different chained
+    segment can't leak in; that a Closes-keyword mention in a PR that never merged does NOT resolve
+    the issue (no auto-close without a merge); and explicit `gh issue close N` resolution.
+    `session_unresolved_created_issues` (created minus resolved) and `evaluate_issues()`'s full
+    composition (fire / enum-resolved / skip-resolved / no-issue no-op / lowest-issue-number
+    determinism / the shared #700 bare-assertion rejection) mirror `evaluate()`'s exact shape as a
+    fully independent sibling — zero modification to `evaluate()` or any of its 38 pre-existing
+    tests, all of which pass unmodified against the extended file. Also covers `format_issue_reminder`
+    (cp1252-encodability) and the combined-trigger cases: a merged PR and a dangling issue in the same
+    session fire independently when unenumerated, and one recorded enumeration satisfies both. The
+    behavioral layer gains seven end-to-end subprocess cases mirroring the merged-PR e2e pattern
+    exactly: dangling blocks on stderr; enum, skip-override, explicit-close, and merge-resolution each
+    allow; a combined merged-PR-plus-dangling-issue session emits both reminders in one exit-2 write;
+    and the sentinel suppresses a second fire. 71 tests total, up from 39 pre-ADR-092.
 
     ```bash
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py

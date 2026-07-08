@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code Stop hook — state-keyed post-merge tile-enumeration gate (ADR-088).
+"""Claude Code Stop hook — state-keyed tile-enumeration gate (ADR-088, extended ADR-092).
 
 The command-keyed ``post-merge-tile-checkpoint.py`` (ADR-060) fires on a
 ``gh pr merge`` *you run*, but is BLIND to a PR that reaches merged state some
@@ -10,22 +10,36 @@ PR #700 incident that motivated the ADR-046 2026-07-05 forcing-function
 refinement (dev-env#595).
 
 This hook is STATE-keyed instead: at every Stop it scans the just-ended session
-transcript and, when a PR reached MERGED state this session (by any path) but
-the session recorded NO tile-enumeration artifact, it BLOCKS the stop (exit 2)
-with the reminder — the direct Stop-hook analog of ``pre-merge-findings-gate``
-(ADR-039). A recorded enumeration is either an actual ``spawn_task`` tile, or
-the prescribed text ("Follow-ups considered: ... -> tiled (task_id / #N) /
--> not tiled, because <reason>"). A bare "no follow-ups" assertion does NOT
-satisfy the gate: per the ADR-046 refinement, "No follow-ups" is valid only as
-the visible result of an enumeration, never as a bare assertion (the #700 skip).
+transcript for TWO independent triggers, each requiring the same recorded
+tile-enumeration artifact before the stop is allowed:
+
+1. **Merged PR** (ADR-088): a PR reached MERGED state this session (by any
+   path) but no enumeration was recorded.
+2. **Dangling created issue** (ADR-092, dev-env#638): a `gh issue create`
+   ran this session and the created issue was NOT resolved by session end
+   (resolved = closed via a same-session merged PR carrying a GitHub
+   auto-close keyword, or explicitly closed via `gh issue close`) but no
+   enumeration was recorded. Investigation sessions that file well-scoped
+   issues and implement nothing get no mechanical nudge otherwise — unlike a
+   merged PR, which this hook already covers.
+
+Both triggers are the direct Stop-hook analog of ``pre-merge-findings-gate``
+(ADR-039) and BLOCK the stop (exit 2) with a reminder on stderr. A recorded
+enumeration is either an actual ``spawn_task`` tile, or the prescribed text
+("Follow-ups considered: ... -> tiled (task_id / #N) / -> not tiled, because
+<reason>") — session-global and shared by both triggers (one enumeration
+satisfies either or both). A bare "no follow-ups" assertion does NOT satisfy
+the gate: per the ADR-046 refinement, "No follow-ups" is valid only as the
+visible result of an enumeration, never as a bare assertion (the #700 skip).
 
 Complements — does not replace — the command-keyed hook: that one is the
 immediate in-the-moment nudge when ``gh pr merge`` runs; this one is the
 Stop-time verification that the enumeration actually happened, covering every
-merge path. It is also NOT inert in background / SDK-launched sessions
-(ADR-053), where every PostToolUse hook — including the command-keyed sibling —
-silently never fires; the Stop event still dispatches, so this is the only tile
-enforcement that survives there.
+merge path (and, since ADR-092, the dangling-issue path too). It is also NOT
+inert in background / SDK-launched sessions (ADR-053), where every
+PostToolUse hook — including the command-keyed sibling — silently never
+fires; the Stop event still dispatches, so this is the only tile enforcement
+that survives there.
 
 Detection is a pure transcript scan — no ``gh`` calls, no network, no
 subprocess (so no ``_winsubp``). Fail-open: any error exits 0. Fires at most
@@ -41,7 +55,7 @@ from — so this hook and ``posttooluse-inert-advisory.py`` can no longer drift 
 how a transcript is parsed (ADR-090, reversing ADR-088's original replicate-them
 decision after both PR #604 reviewers flagged the duplication). This gate imports
 only the three it uses: ``_content_items`` and ``_parse_records`` (its ``main()``
-parses the transcript text directly, after the cheap ``"merged"`` pre-filter), and
+parses the transcript text directly, after the cheap pre-filter), and
 the shared ``iter_bash_calls`` (aliased) — wrapped in a thin 2-tuple adapter below,
 since ``_hookutil``'s ``iter_bash_calls`` returns ``(command, output, cwd)`` and
 this gate never needs ``cwd``. (``load_records`` and ``_result_text`` also live in
@@ -55,11 +69,12 @@ Stdin JSON shape (Stop):
   {"session_id": "...", "transcript_path": "/abs/path.jsonl",
    "stop_hook_active": false, ...}
 
-Exit 0 — no merged-state PR this session, enumeration already recorded, a
-         "skip tiles" override present, already fired (sentinel), stop_hook_active
-         set, or any error (fail-open).
-Exit 2 — a PR merged this session with no recorded tile-enumeration; blocking
-         reminder emitted on stderr.
+Exit 0 — no merged-state PR and no dangling created issue this session,
+         enumeration already recorded, a "skip tiles" override present,
+         already fired (sentinel), stop_hook_active set, or any error
+         (fail-open).
+Exit 2 — a PR merged and/or a created issue remains unresolved this session,
+         with no recorded tile-enumeration; blocking reminder(s) on stderr.
 """
 from __future__ import annotations
 
@@ -98,6 +113,20 @@ _STRIP_VERB_RE = re.compile(r"\s*gh(?:\.exe)?\s+pr\s+\w+\b(.*)", re.IGNORECASE |
 _PR_URL_RE = re.compile(r"github\.com/(?P<repo>[^/\s]+/[^/\s]+)/pull/(?P<num>\d+)")
 _POS_NUM_RE = re.compile(r"(?<!\S)(\d+)(?=\s|$)")
 _REPO_FLAG_RE = re.compile(r"(?:--repo|-R)(?:=|\s+)(?P<repo>[^\s/]+/[^\s]+)")
+
+# --- dangling-created-issue detection (ADR-092, dev-env#638) -------------------
+_ISSUE_CREATE_STMT_RE = re.compile(r"gh(?:\.exe)?\s+issue\s+create\b", re.IGNORECASE)
+_ISSUE_CLOSE_STMT_RE = re.compile(r"gh(?:\.exe)?\s+issue\s+close\b", re.IGNORECASE)
+# An issue URL (`.../issues/N`) capturing owner/repo and number.
+_ISSUE_URL_RE = re.compile(r"github\.com/(?P<repo>[^/\s]+/[^/\s]+)/issues/(?P<num>\d+)")
+# Strip the `gh issue close` prefix so the positional issue number can be read.
+_STRIP_ISSUE_CLOSE_VERB_RE = re.compile(r"\s*gh(?:\.exe)?\s+issue\s+close\b(.*)", re.IGNORECASE | re.DOTALL)
+# GitHub's documented auto-close keywords (close/closes/closed, fix/fixes/fixed,
+# resolve/resolves/resolved) immediately followed by an optional colon and a
+# same-repo issue reference -- https://docs.github.com/en/issues/tracking-your-work-with-issues/administering-issues/linking-a-pull-request-to-an-issue
+_CLOSES_KEYWORD_RE = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*#(\d+)", re.IGNORECASE,
+)
 
 # --- merged-state signals in command output ------------------------------------
 _PULLS_MERGE_PATH_RE = re.compile(r"/pulls/(\d+)/merge\b")     # gh api PUT target
@@ -259,6 +288,87 @@ def session_merged_prs(calls: list) -> set:
     return directly | auto
 
 
+def _closed_issue_number(segment_first_line: str) -> int | None:
+    """Issue number a `gh issue close` invocation targets (the first bare
+    positional integer after the verb), else ``None``."""
+    m = _STRIP_ISSUE_CLOSE_VERB_RE.match(segment_first_line)
+    tail = m.group(1) if m else ""
+    n = _POS_NUM_RE.search(tail)
+    return int(n.group(1)) if n else None
+
+
+def session_created_issues(calls: list) -> dict:
+    """``{issue_number: repo_or_None}`` for every `gh issue create` this
+    session, keyed off the created issue's URL in the command output —
+    mirrors ``session_merged_prs``'s ``acted``-dict construction for
+    `gh pr create`."""
+    created: dict = {}
+    for command, output in calls:
+        firsts = [_first_line(seg).lstrip() for seg in split_top_level(command)]
+        if not any(_ISSUE_CREATE_STMT_RE.match(f) for f in firsts):
+            continue
+        for m in _ISSUE_URL_RE.finditer(output or ""):
+            created[int(m.group("num"))] = m.group("repo")
+    return created
+
+
+def session_resolved_issue_numbers(calls: list, merged_prs: set) -> set:
+    """Issue numbers resolved this session.
+
+    An issue counts as resolved iff EITHER:
+
+    - A top-level `gh pr create` segment's own text (including its heredoc
+      body, where a `--body "$(cat <<'EOF' ... EOF)"` value typically lives)
+      contains a GitHub auto-close keyword (Closes/Fixes/Resolves #N) for it,
+      AND that same command's output shows the created PR reaching merged
+      state this session (per ``session_merged_prs``) — GitHub only
+      auto-closes on merge, never on mere PR creation, so a Closes-style
+      reference in a PR that never merged does not resolve the issue.
+    - An explicit `gh issue close N` ran this session.
+
+    The keyword search is scoped to each `gh pr create` segment's own text
+    (not the whole raw command), so an unrelated Closes-style mention on a
+    different chained segment can never leak in — mirrors
+    ``session_merged_prs``'s per-segment scoping discipline (the A4 hardening
+    for cross-repo/cross-segment leakage). No cross-repo scoping is applied
+    to the resolution correlation itself (documented limitation — see the
+    ADR-092 Limitations section): a coincidentally same-numbered issue
+    resolved in an unrelated repo this session would be misread as resolving
+    this repo's own issue. Considered low-risk in practice (would require
+    working across repos AND colliding issue numbers in the same session).
+    """
+    resolved: set = set()
+    for command, output in calls:
+        segments = split_top_level(command)
+
+        for seg in segments:
+            if _ISSUE_CLOSE_STMT_RE.match(_first_line(seg).lstrip()):
+                n = _closed_issue_number(_first_line(seg).lstrip())
+                if n is not None:
+                    resolved.add(n)
+
+        pr_create_segments = [
+            seg for seg in segments if _PR_CREATE_STMT_RE.match(_first_line(seg).lstrip())
+        ]
+        if not pr_create_segments:
+            continue
+        pr_numbers = {int(m.group("num")) for m in _PR_URL_RE.finditer(output or "")}
+        if not (pr_numbers & merged_prs):
+            continue
+        for seg in pr_create_segments:
+            resolved |= {int(n) for n in _CLOSES_KEYWORD_RE.findall(seg)}
+
+    return resolved
+
+
+def session_unresolved_created_issues(calls: list, merged_prs: set) -> set:
+    """Issues created this session that remain unresolved at Stop."""
+    created = session_created_issues(calls)
+    if not created:
+        return set()
+    return set(created) - session_resolved_issue_numbers(calls, merged_prs)
+
+
 def enumeration_recorded(records: list) -> bool:
     """True iff the session recorded a tile-enumeration artifact: a ``spawn_task``
     tool call, or an assistant message carrying the prescribed enumeration text.
@@ -333,6 +443,37 @@ def evaluate(records: list) -> tuple:
     return min(merged), False
 
 
+def evaluate_issues(records: list) -> tuple:
+    """Return ``(fire_issue, resolved)`` for the dangling-created-issue
+    trigger (ADR-092). Mirrors ``evaluate()``'s shape/semantics exactly, as a
+    fully independent sibling — zero impact on ``evaluate()`` or its existing
+    callers/tests.
+
+    ``fire_issue`` — the lowest unresolved created-issue number to block on
+    (deterministic across multiple dangling issues, mirroring ``evaluate()``'s
+    lowest-PR determinism), or ``None``.
+    ``resolved`` — True when an issue was created this session but the
+    checkpoint is satisfied (enumerated, or waived). A session that created
+    no issue returns ``(None, False)`` so an issue created later is still
+    caught.
+
+    Recomputes ``iter_bash_calls``/``session_merged_prs`` independently rather
+    than sharing ``evaluate()``'s — a deliberate simplicity-over-micro-
+    optimization choice (see the ADR-092 Performance note): keeping the two
+    evaluators fully independent means neither's contract depends on how the
+    other is invoked, at the cost of a second linear pass over an already-cheap
+    transcript scan.
+    """
+    calls = iter_bash_calls(records)
+    merged = session_merged_prs(calls)
+    unresolved = session_unresolved_created_issues(calls, merged)
+    if not unresolved:
+        return None, False
+    if skip_override(records) or enumeration_recorded(records):
+        return None, True
+    return min(unresolved), False
+
+
 def format_reminder(pr: int) -> str:
     """The exit-2 stderr message. ASCII-only: Claude Code pipes hook output as
     cp1252 on Windows, so a char outside it (an arrow, em-dash) would raise
@@ -347,6 +488,22 @@ def format_reminder(pr: int) -> str:
         "spawn_task tile for each genuine follow-up. \"No follow-ups\" is valid only as "
         "the visible result of that scan, never a bare assertion. Only an explicit "
         "\"skip tiles\" instruction anywhere in this session exempts this checkpoint."
+    )
+
+
+def format_issue_reminder(issue: int) -> str:
+    """The exit-2 stderr message for the dangling-created-issue trigger
+    (ADR-092). ASCII-only, same constraint as ``format_reminder`` (Claude Code
+    pipes hook output as cp1252 on Windows)."""
+    return (
+        f"[tile-enumeration-gate] Issue #{issue} was created this session and is still "
+        "open (no same-session merged PR closed it via a Closes/Fixes/Resolves keyword, "
+        "and it was not explicitly closed), but no tile enumeration was recorded. Per "
+        "ADR-046/ADR-092, before ending the turn write out the follow-ups you considered "
+        "-- spawn a spawn_task tile to pick up this issue, or record '-> not tiled, "
+        "because <reason>'. \"No follow-ups\" is valid only as the visible result of "
+        "that scan, never a bare assertion. Only an explicit \"skip tiles\" instruction "
+        "anywhere in this session exempts this checkpoint."
     )
 
 
@@ -396,29 +553,43 @@ def main() -> None:
         sys.exit(0)
     # Cheap pre-filter: every merge signal this hook detects contains the
     # substring "merged" case-insensitively — gh's "... merged pull request",
-    # `"state":"MERGED"`, `"merged":true`. A transcript with no "merged" anywhere
-    # cannot contain a merged-state PR, so skip the full JSON parse + scan. Stop
-    # fires every turn, so this bounds the common no-merge session to one read +
-    # substring check instead of re-parsing the whole transcript each turn
-    # (review of PR #604).
-    if "merged" not in text.lower():
+    # `"state":"MERGED"`, `"merged":true`. Every dangling-issue signal requires
+    # a `gh issue create` to have run this session (ADR-092) — its own command
+    # text always contains "issue create" case-insensitively, so that substring
+    # is a sound (if looser) guard for the second trigger: the resolution side
+    # (Closes-keyword / `gh issue close`) only ever matters when there is a
+    # created issue to resolve in the first place. A transcript with NEITHER
+    # substring cannot contain a merged-state PR NOR a dangling created issue,
+    # so skip the full JSON parse + scan. Stop fires every turn, so this bounds
+    # the common no-op session to one read + substring check instead of
+    # re-parsing the whole transcript each turn (review of PR #604, extended
+    # ADR-092).
+    lower = text.lower()
+    if "merged" not in lower and "issue create" not in lower:
         sys.exit(0)
 
     # Fail-open: a parse/scan failure is a deliberate exit-0 skip, not an
     # accident of the outer __main__ guard (review of PR #604).
     try:
         records = _parse_records(text)
-        fire_pr, resolved = evaluate(records)
+        fire_pr, resolved_pr = evaluate(records)
+        fire_issue, resolved_issue = evaluate_issues(records)
     except Exception:
         sys.exit(0)
-    if fire_pr is not None:
+    if fire_pr is not None or fire_issue is not None:
         # Set the sentinel BEFORE emitting so a re-entrant Stop cannot double-block.
         _mark_fired(session_id)
-        sys.stderr.write(format_reminder(fire_pr) + "\n")
+        messages = []
+        if fire_pr is not None:
+            messages.append(format_reminder(fire_pr))
+        if fire_issue is not None:
+            messages.append(format_issue_reminder(fire_issue))
+        sys.stderr.write("\n\n".join(messages) + "\n")
         sys.exit(2)
-    if resolved:
-        # Merge happened and the checkpoint is satisfied — resolve so later Stops
-        # skip the re-scan (mirrors posttooluse-inert-advisory.py).
+    if resolved_pr or resolved_issue:
+        # Merge and/or issue-creation happened and the checkpoint is satisfied
+        # for whatever fired — resolve so later Stops skip the re-scan
+        # (mirrors posttooluse-inert-advisory.py).
         _mark_fired(session_id)
     sys.exit(0)
 

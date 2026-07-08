@@ -403,6 +403,246 @@ def test_a4_same_repo_auto_merge_still_detected():
 
 
 # ---------------------------------------------------------------------------
+# dangling-created-issue detection (ADR-092, dev-env#638)
+# ---------------------------------------------------------------------------
+
+# A minimal "issue #630 created, nothing enumerated, never resolved" session.
+_ISSUE_CREATED_NO_ENUM = [
+    _asst_bash("i1", 'gh issue create --title "Bug" --body "desc"'),
+    _tool_result("i1", "https://github.com/brownm09/dev-env/issues/630"),
+    _asst_text("Filed issue #630 for the bug."),
+]
+
+
+def test_session_created_issues_detects_url_in_output():
+    calls = [('gh issue create --title "x"', "https://github.com/brownm09/dev-env/issues/630")]
+    assert gate.session_created_issues(calls) == {630: "brownm09/dev-env"}
+    return "gh issue create + issue URL in output -> created {630: repo}"
+
+
+def test_session_created_issues_help_only_yields_nothing():
+    # gh issue create --help prints no issue URL -- no explicit --help guard is
+    # needed here (unlike post-tool-use.py/dev-env#636) because the absence of
+    # a URL already means "nothing created," which is the correct outcome.
+    calls = [("gh issue create --help", "USAGE\n  gh issue create [flags]\n...")]
+    assert gate.session_created_issues(calls) == {}
+    return "gh issue create --help (no URL in output) -> created {} (dev-env#636 interaction)"
+
+
+def test_session_created_issues_empty_when_none_created():
+    calls = [("npm test", "All tests passed")]
+    assert gate.session_created_issues(calls) == {}
+    return "no gh issue create this session -> created {}"
+
+
+def test_session_created_issues_in_heredoc_not_matched():
+    # 'gh issue create' inside a heredoc body is not a top-level invocation.
+    command = "git commit -F - <<'EOF'\ngh issue create --title x\nEOF"
+    calls = [(command, "https://github.com/brownm09/dev-env/issues/630")]
+    assert gate.session_created_issues(calls) == {}
+    return "'gh issue create' in a heredoc body -> not created (anchored, dev-env#499 class)"
+
+
+def test_session_resolved_via_merged_pr_closes_keyword():
+    calls = [('gh pr create --title "x" --body "Closes #630"',
+              "https://github.com/brownm09/dev-env/pull/640")]
+    assert gate.session_resolved_issue_numbers(calls, {640}) == {630}
+    return "'Closes #630' in a merged PR's create command -> resolved {630}"
+
+
+def test_session_resolved_via_fixes_and_resolves_keywords():
+    calls_fixes = [('gh pr create --body "Fixes #10"', "https://github.com/x/y/pull/1")]
+    assert gate.session_resolved_issue_numbers(calls_fixes, {1}) == {10}
+    calls_resolves = [('gh pr create --body "Resolves #11"', "https://github.com/x/y/pull/2")]
+    assert gate.session_resolved_issue_numbers(calls_resolves, {2}) == {11}
+    return "'Fixes #N' / 'Resolves #N' keywords also resolve (GitHub's documented keyword set)"
+
+
+def test_session_resolved_case_insensitive_and_past_tense():
+    calls = [('gh pr create --body "closed #630, fixed #631, resolved #632"',
+              "https://github.com/x/y/pull/1")]
+    assert gate.session_resolved_issue_numbers(calls, {1}) == {630, 631, 632}
+    return "lowercase past-tense forms (closed/fixed/resolved) all match, case-insensitive"
+
+
+def test_session_not_resolved_if_pr_never_merged():
+    # The Closes-keyword text is present, but this PR number is NOT in
+    # merged_prs -- GitHub only auto-closes on merge, never on mere creation.
+    calls = [('gh pr create --title "x" --body "Closes #630"',
+              "https://github.com/brownm09/dev-env/pull/640")]
+    assert gate.session_resolved_issue_numbers(calls, set()) == set()
+    return "'Closes #630' in a PR that never merged -> not resolved (no auto-close without merge)"
+
+
+def test_session_resolved_via_heredoc_body_in_pr_create():
+    # This repo's own documented commit/PR-body idiom: the Closes keyword
+    # lives inside a $(cat <<'EOF' ...) heredoc body, which split_top_level
+    # keeps as part of the pr-create segment's own text (not split out).
+    command = (
+        'gh pr create --title "x" --body "$(cat <<\'EOF\'\n'
+        "## Summary\nCloses #630\nEOF\n"
+        ')"'
+    )
+    calls = [(command, "https://github.com/brownm09/dev-env/pull/640")]
+    assert gate.session_resolved_issue_numbers(calls, {640}) == {630}
+    return "Closes #N inside a heredoc PR body -> resolved (this repo's own PR-body idiom)"
+
+
+def test_session_resolved_unrelated_chained_segment_not_leaked():
+    # A Closes-style mention on a DIFFERENT, unrelated top-level segment must
+    # not leak into the pr-create segment's own resolution -- mirrors
+    # session_merged_prs's per-segment scoping discipline.
+    command = 'echo "reminder: closes #999 later" && gh pr create --title "x" --body "no keyword here"'
+    calls = [(command, "https://github.com/brownm09/dev-env/pull/640")]
+    assert gate.session_resolved_issue_numbers(calls, {640}) == set()
+    return "Closes-style text on an unrelated chained segment -> not leaked into resolution"
+
+
+def test_session_resolved_via_explicit_issue_close():
+    calls = [("gh issue close 630", "Closed issue #630 (Bug)")]
+    assert gate.session_resolved_issue_numbers(calls, set()) == {630}
+    return "gh issue close 630 -> resolved {630} (no merged PR needed)"
+
+
+def test_session_resolved_issue_close_in_heredoc_not_matched():
+    command = "git commit -F - <<'EOF'\ngh issue close 630\nEOF"
+    calls = [(command, "some output")]
+    assert gate.session_resolved_issue_numbers(calls, set()) == set()
+    return "'gh issue close' in a heredoc body -> not resolved (anchored, dev-env#499 class)"
+
+
+def test_session_unresolved_created_issues_dangling():
+    calls = gate.iter_bash_calls(_ISSUE_CREATED_NO_ENUM)
+    merged = gate.session_merged_prs(calls)
+    assert gate.session_unresolved_created_issues(calls, merged) == {630}
+    return "issue created, never resolved -> unresolved {630}"
+
+
+def test_session_unresolved_created_issues_resolved_via_merge():
+    records = [
+        _asst_bash("i1", 'gh issue create --title "Bug"'),
+        _tool_result("i1", "https://github.com/brownm09/dev-env/issues/630"),
+        _asst_bash("p1", 'gh pr create --title "Fix" --body "Closes #630"'),
+        _tool_result("p1", "https://github.com/brownm09/dev-env/pull/640"),
+        _asst_bash("m1", "gh pr merge 640 --squash"),
+        _tool_result("m1", "Squashed and merged pull request #640"),
+    ]
+    calls = gate.iter_bash_calls(records)
+    merged = gate.session_merged_prs(calls)
+    assert merged == {640}
+    assert gate.session_unresolved_created_issues(calls, merged) == set()
+    return "issue created, closed via a merged PR's Closes keyword -> unresolved {} (fully resolved)"
+
+
+def test_session_unresolved_created_issues_resolved_via_explicit_close():
+    records = _ISSUE_CREATED_NO_ENUM + [
+        _asst_bash("c1", "gh issue close 630 --comment done"),
+        _tool_result("c1", "Closed issue #630"),
+    ]
+    calls = gate.iter_bash_calls(records)
+    merged = gate.session_merged_prs(calls)
+    assert gate.session_unresolved_created_issues(calls, merged) == set()
+    return "issue created then explicitly closed -> unresolved {} (fully resolved)"
+
+
+def test_session_unresolved_created_issues_none_created():
+    calls = [("npm test", "All tests passed")]
+    assert gate.session_unresolved_created_issues(calls, set()) == set()
+    return "no issue created this session -> unresolved {} (nothing to check)"
+
+
+# ---------------------------------------------------------------------------
+# evaluate_issues() composition
+# ---------------------------------------------------------------------------
+
+def test_evaluate_issues_dangling_fires():
+    fire, resolved = gate.evaluate_issues(_ISSUE_CREATED_NO_ENUM)
+    assert fire == 630 and resolved is False
+    return "issue created + no enumeration + no skip -> (630, resolved=False) [FIRE]"
+
+
+def test_evaluate_issues_with_enum_resolved():
+    records = _ISSUE_CREATED_NO_ENUM + [
+        _asst_text("Follow-ups considered: issue #630 -> tiled (task_ab12).")]
+    fire, resolved = gate.evaluate_issues(records)
+    assert fire is None and resolved is True
+    return "issue created + enumeration -> (None, resolved=True)"
+
+
+def test_evaluate_issues_with_skip_resolved():
+    records = _ISSUE_CREATED_NO_ENUM + [_user_str("skip tiles")]
+    fire, resolved = gate.evaluate_issues(records)
+    assert fire is None and resolved is True
+    return "issue created + 'skip tiles' override -> (None, resolved=True)"
+
+
+def test_evaluate_issues_no_issue_noop():
+    records = [_asst_bash("t1", "npm test"), _tool_result("t1", "All tests passed")]
+    fire, resolved = gate.evaluate_issues(records)
+    assert fire is None and resolved is False
+    return "no issue created this session -> (None, resolved=False) [stay unresolved]"
+
+
+def test_evaluate_issues_picks_lowest_deterministically():
+    records = [
+        _asst_bash("i1", 'gh issue create --title "A"'),
+        _tool_result("i1", "https://github.com/brownm09/dev-env/issues/42"),
+        _asst_bash("i2", 'gh issue create --title "B"'),
+        _tool_result("i2", "https://github.com/brownm09/dev-env/issues/7"),
+        _asst_text("both filed."),
+    ]
+    fire, _ = gate.evaluate_issues(records)
+    assert fire == 7
+    return "two dangling issues, no enum -> fires on the lowest issue number deterministically"
+
+
+def test_evaluate_issues_bare_no_followups_not_enumeration():
+    # Mirrors the #700 skip for the merged-PR trigger: a bare assertion must
+    # not satisfy the issue trigger either (enumeration_recorded is shared).
+    records = _ISSUE_CREATED_NO_ENUM + [
+        _asst_text("The finalization work surfaced no new follow-ups.")]
+    fire, resolved = gate.evaluate_issues(records)
+    assert fire == 630 and resolved is False
+    return "bare 'no follow-ups' -> does NOT satisfy the issue trigger either (shared #700 guard)"
+
+
+def test_format_issue_reminder_is_cp1252_encodable():
+    msg = gate.format_issue_reminder(630)
+    assert msg.isascii(), "reminder must be ASCII (Claude Code pipes hook output as cp1252)"
+    msg.encode("cp1252")  # must not raise
+    assert "#630" in msg and "skip tiles" in msg
+    return "format_issue_reminder is ASCII/cp1252-encodable and names the issue"
+
+
+# ---------------------------------------------------------------------------
+# combined merged-PR + dangling-issue: both triggers share one enumeration
+# ---------------------------------------------------------------------------
+
+def test_combined_merged_pr_and_dangling_issue_both_fire_independently():
+    # A session with a resolved merged-PR trigger (enumerated) but a SEPARATE,
+    # still-dangling issue -- the shared enumeration_recorded/skip_override
+    # machinery means one recorded enumeration satisfies BOTH; evaluate_issues
+    # must independently confirm the issue trigger still needs its own check
+    # when the PR trigger's OWN merged set is empty.
+    records = _MERGED_NO_ENUM + _ISSUE_CREATED_NO_ENUM
+    fire_pr, resolved_pr = gate.evaluate(records)
+    fire_issue, resolved_issue = gate.evaluate_issues(records)
+    assert fire_pr == 599 and resolved_pr is False
+    assert fire_issue == 630 and resolved_issue is False
+    return "merged PR (no enum) + dangling issue (no enum), same session -> both fire independently"
+
+
+def test_combined_one_enumeration_satisfies_both():
+    records = _MERGED_NO_ENUM + _ISSUE_CREATED_NO_ENUM + [
+        _asst_text("Follow-ups considered: both items -> tiled.")]
+    fire_pr, resolved_pr = gate.evaluate(records)
+    fire_issue, resolved_issue = gate.evaluate_issues(records)
+    assert fire_pr is None and resolved_pr is True
+    assert fire_issue is None and resolved_issue is True
+    return "one enumeration covering both -> both evaluate() and evaluate_issues() resolved"
+
+
+# ---------------------------------------------------------------------------
 # behavioral layer — real hook over stdin via subprocess (HOME-isolated sentinel)
 # ---------------------------------------------------------------------------
 
@@ -475,6 +715,82 @@ def test_e2e_sentinel_suppresses_refire():
     return "e2e once-per-session sentinel: first fire exit 2, second exit 0"
 
 
+# ---------------------------------------------------------------------------
+# behavioral layer — dangling-created-issue trigger (ADR-092, dev-env#638)
+# ---------------------------------------------------------------------------
+
+def test_e2e_dangling_issue_no_enum_blocks_on_stderr():
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(_ISSUE_CREATED_NO_ENUM, home)
+    assert rc == 2, f"expected exit 2, got {rc} (stderr={err!r})"
+    assert "[tile-enumeration-gate]" in err and "#630" in err
+    assert out.strip() == "", f"stdout must be empty on exit 2, got {out!r}"
+    return "e2e dangling issue + no enum -> exit 2, reason on stderr, empty stdout"
+
+
+def test_e2e_dangling_issue_with_enum_allows():
+    records = _ISSUE_CREATED_NO_ENUM + [_asst_spawn()]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    return "e2e dangling issue + spawn_task tile -> exit 0 (allowed)"
+
+
+def test_e2e_issue_resolved_via_merge_allows():
+    records = [
+        _asst_bash("i1", 'gh issue create --title "Bug"'),
+        _tool_result("i1", "https://github.com/brownm09/dev-env/issues/630"),
+        _asst_bash("p1", 'gh pr create --title "Fix" --body "Closes #630"'),
+        _tool_result("p1", "https://github.com/brownm09/dev-env/pull/640"),
+        _asst_bash("m1", "gh pr merge 640 --squash"),
+        _tool_result("m1", "Squashed and merged pull request #640"),
+        _asst_text("Follow-ups considered: none -> not tiled, because fully resolved."),
+    ]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    return "e2e issue resolved via a same-session merged PR + enum -> exit 0 (allowed)"
+
+
+def test_e2e_issue_explicit_close_no_enum_still_allows():
+    # Explicit close alone resolves the issue -- no enumeration needed since
+    # there is nothing dangling once resolved (mirrors the merged-PR path's
+    # own "resolved without enumeration" case being a no-op, not a block).
+    records = _ISSUE_CREATED_NO_ENUM + [
+        _asst_bash("c1", "gh issue close 630"), _tool_result("c1", "Closed issue #630")]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    return "e2e issue explicitly closed (no enum needed, nothing dangling) -> exit 0"
+
+
+def test_e2e_no_issue_created_allows():
+    records = [_asst_bash("t1", "npm test"), _tool_result("t1", "ok")]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    return "e2e no issue created -> exit 0 (allowed, pre-filter and evaluators agree)"
+
+
+def test_e2e_combined_merged_pr_and_dangling_issue_both_messages():
+    records = _MERGED_NO_ENUM + _ISSUE_CREATED_NO_ENUM
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 2, f"expected exit 2, got {rc} (stderr={err!r})"
+    assert "#599" in err and "#630" in err, f"expected both PR and issue named, got {err!r}"
+    assert out.strip() == "", f"stdout must be empty on exit 2, got {out!r}"
+    return "e2e merged PR + dangling issue, no enum -> exit 2 with BOTH reminders combined"
+
+
+def test_e2e_dangling_issue_sentinel_suppresses_refire():
+    with tempfile.TemporaryDirectory() as home:
+        rc1, _, _ = _run_hook(_ISSUE_CREATED_NO_ENUM, home, session_id="sess-issue-refire")
+        rc2, out2, _ = _run_hook(_ISSUE_CREATED_NO_ENUM, home, session_id="sess-issue-refire")
+    assert rc1 == 2, f"first run expected exit 2, got {rc1}"
+    assert rc2 == 0, f"second run expected exit 0 (sentinel), got {rc2}"
+    return "e2e dangling-issue sentinel: first fire exit 2, second exit 0"
+
+
 def main():
     tests = [
         ("direct merge marker detected", test_direct_merge_marker_detected),
@@ -516,6 +832,39 @@ def main():
         ("e2e no-merge allows", test_e2e_no_merge_allows),
         ("e2e stop_hook_active allows", test_e2e_stop_hook_active_allows),
         ("e2e sentinel suppresses re-fire", test_e2e_sentinel_suppresses_refire),
+        # --- dangling-created-issue trigger (ADR-092, dev-env#638) ---
+        ("session_created_issues: detects URL in output", test_session_created_issues_detects_url_in_output),
+        ("session_created_issues: --help yields nothing", test_session_created_issues_help_only_yields_nothing),
+        ("session_created_issues: empty when none created", test_session_created_issues_empty_when_none_created),
+        ("session_created_issues: heredoc not matched", test_session_created_issues_in_heredoc_not_matched),
+        ("resolved: via merged PR 'Closes #N'", test_session_resolved_via_merged_pr_closes_keyword),
+        ("resolved: 'Fixes #N' / 'Resolves #N' keywords", test_session_resolved_via_fixes_and_resolves_keywords),
+        ("resolved: case-insensitive past-tense forms", test_session_resolved_case_insensitive_and_past_tense),
+        ("resolved: not resolved if PR never merged", test_session_not_resolved_if_pr_never_merged),
+        ("resolved: Closes keyword inside heredoc PR body", test_session_resolved_via_heredoc_body_in_pr_create),
+        ("resolved: unrelated chained segment not leaked", test_session_resolved_unrelated_chained_segment_not_leaked),
+        ("resolved: via explicit gh issue close", test_session_resolved_via_explicit_issue_close),
+        ("resolved: gh issue close in heredoc not matched", test_session_resolved_issue_close_in_heredoc_not_matched),
+        ("unresolved: dangling issue", test_session_unresolved_created_issues_dangling),
+        ("unresolved: resolved via merge", test_session_unresolved_created_issues_resolved_via_merge),
+        ("unresolved: resolved via explicit close", test_session_unresolved_created_issues_resolved_via_explicit_close),
+        ("unresolved: none created", test_session_unresolved_created_issues_none_created),
+        ("evaluate_issues: dangling fires", test_evaluate_issues_dangling_fires),
+        ("evaluate_issues: with enum resolved", test_evaluate_issues_with_enum_resolved),
+        ("evaluate_issues: with skip resolved", test_evaluate_issues_with_skip_resolved),
+        ("evaluate_issues: no issue no-op", test_evaluate_issues_no_issue_noop),
+        ("evaluate_issues: picks lowest deterministically", test_evaluate_issues_picks_lowest_deterministically),
+        ("evaluate_issues: bare 'no follow-ups' NOT enum", test_evaluate_issues_bare_no_followups_not_enumeration),
+        ("format_issue_reminder: cp1252-encodable", test_format_issue_reminder_is_cp1252_encodable),
+        ("combined: merged PR + dangling issue fire independently", test_combined_merged_pr_and_dangling_issue_both_fire_independently),
+        ("combined: one enumeration satisfies both", test_combined_one_enumeration_satisfies_both),
+        ("e2e dangling issue+no-enum blocks on stderr", test_e2e_dangling_issue_no_enum_blocks_on_stderr),
+        ("e2e dangling issue+enum allows", test_e2e_dangling_issue_with_enum_allows),
+        ("e2e issue resolved via merge allows", test_e2e_issue_resolved_via_merge_allows),
+        ("e2e issue explicit close (no enum) allows", test_e2e_issue_explicit_close_no_enum_still_allows),
+        ("e2e no issue created allows", test_e2e_no_issue_created_allows),
+        ("e2e combined merged PR + dangling issue: both messages", test_e2e_combined_merged_pr_and_dangling_issue_both_messages),
+        ("e2e dangling-issue sentinel suppresses re-fire", test_e2e_dangling_issue_sentinel_suppresses_refire),
     ]
     failed = 0
     for name, fn in tests:
