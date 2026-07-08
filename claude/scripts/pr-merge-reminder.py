@@ -154,8 +154,11 @@ def _effective_push_dir(command: str, cwd: str) -> str:
 # An explicit `--repo owner/repo` flag names the merge target directly — the
 # highest-confidence signal, ahead of any cd-chain or cwd resolution. Mirrors
 # extract_repo's resolution order in post-pr-merge-pull.py (ADR-067). Also
-# matches gh's `-R` shorthand for `--repo` (dev-env#616).
-_REPO_FLAG_RE = re.compile(r"(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
+# matches gh's `-R` shorthand for `--repo` (dev-env#616). The `(?<!\S)`
+# lookbehind requires the flag to start a standalone token, so it can't
+# match mid-word — but is not quote-aware (dev-env#626, review finding on
+# PR #623).
+_REPO_FLAG_RE = re.compile(r"(?<!\S)(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
 
 
 def _effective_merge_repo(command: str, cwd: str) -> str:

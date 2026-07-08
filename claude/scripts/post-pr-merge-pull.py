@@ -65,7 +65,9 @@ def extract_repo(command: str, cwd: str) -> str | None:
 
     Resolution order (ADR-067):
     1. ``--repo``/``-R owner/repo`` flag — explicit, highest confidence
-       (``-R`` shorthand added in dev-env#616).
+       (``-R`` shorthand added in dev-env#616; a standalone-token lookbehind
+       guards against a mid-word match, but is not quote-aware — dev-env#626,
+       review finding on PR #623).
     2. GitHub PR URL in the command string — e.g. ``gh pr merge
        https://github.com/owner/repo/pull/N``.  Pure parse, no subprocess.
     3. ``cd <path> && gh pr merge`` chain: run git-remote on <path> so a
@@ -73,7 +75,7 @@ def extract_repo(command: str, cwd: str) -> str | None:
     4. Bare fallback: git-remote on cwd (pre-ADR-067 behaviour — still correct
        when the merge was run directly from the target repo's cwd).
     """
-    m = re.search(r"(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", command)
+    m = re.search(r"(?<!\S)(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", command)
     if m:
         return m.group(1)
 

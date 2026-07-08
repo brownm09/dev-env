@@ -194,6 +194,22 @@ def test_extract_repo_short_flag_form() -> str:
     return "-R flag (gh's --repo shorthand) resolves identically to --repo (dev-env#616)"
 
 
+def test_extract_repo_dash_r_mid_word_not_matched() -> str:
+    # dev-env#626 / review finding on PR #623: mid-word "-R" (not a standalone
+    # token) must not be mistaken for the flag -- proven here by combining it
+    # with a real PR URL later in the command; the pre-fix unanchored regex
+    # would have wrongly matched the mid-word text first and returned the
+    # wrong repo (this file's extract_repo() checks the whole raw command,
+    # not just the merge invocation's own arg span, so it is the most exposed
+    # of the four fixed sites to this class of false match).
+    repo = extract_repo(
+        "gh pr merge 42 xx-R brownm09/other-repo https://github.com/brownm09/dev-env/pull/42 --squash",
+        "/Git/lifting-logbook",
+    )
+    assert repo == "brownm09/dev-env", f"got {repo!r}"
+    return "mid-word '-R' skipped, falls through to the real PR URL (dev-env#626)"
+
+
 def test_pull_command_on_main_uses_ff_only_pull() -> str:
     cmd = pull_command("C:/Users/brown/Git/dev-env", True)
     assert cmd == ["git", "-C", "C:/Users/brown/Git/dev-env", "pull", "--ff-only", "origin", "main"], cmd
@@ -242,6 +258,7 @@ def main() -> int:
         ("extract_repo: URL for different repo", test_extract_repo_from_url_other_repo),
         ("extract_repo: --repo flag beats URL", test_extract_repo_repo_flag_takes_precedence),
         ("extract_repo: -R shorthand resolves same as --repo (dev-env#616)", test_extract_repo_short_flag_form),
+        ("extract_repo: mid-word '-R' not matched (dev-env#626)", test_extract_repo_dash_r_mid_word_not_matched),
         ("pull_command: canonical on main -> ff-only pull", test_pull_command_on_main_uses_ff_only_pull),
         ("pull_command: canonical off main -> fetch-into-ref", test_pull_command_off_main_uses_fetch_into_ref),
         ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_successful_merge_and_is_help_only),

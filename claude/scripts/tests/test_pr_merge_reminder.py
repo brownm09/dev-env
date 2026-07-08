@@ -436,6 +436,18 @@ def test_merge_repo_short_flag_form() -> str:
     return "-R flag (gh's --repo shorthand) resolves identically to --repo (dev-env#616)"
 
 
+def test_merge_repo_dash_r_mid_word_not_matched() -> str:
+    # dev-env#626 / review finding on PR #623: the (?<!\S) lookbehind requires
+    # -R to start a standalone token; a coincidental mid-word "-R" must fall
+    # back to effective_merge_dir, not be mistaken for the flag.
+    out = _effective_merge_repo(
+        "gh pr merge 42 xx-R brownm09/dev-env --squash",
+        "/Git/lifting-logbook",
+    )
+    assert out == "/Git/lifting-logbook", f"got {out!r}"
+    return "mid-word '-R' not matched -> falls back to effective_merge_dir (dev-env#626)"
+
+
 def test_merge_repo_no_flag_falls_back_to_effective_merge_dir() -> str:
     # No --repo flag -> delegate to effective_merge_dir unchanged (bare merge
     # returns cwd; a cd-chain prefix still redirects).
@@ -748,6 +760,7 @@ def main() -> int:
         ("merge repo: --repo flag overrides cwd", test_merge_repo_explicit_flag_overrides_cwd),
         ("merge repo: --repo flag overrides cd-chain", test_merge_repo_explicit_flag_overrides_cd_chain),
         ("merge repo: -R shorthand resolves same as --repo (dev-env#616)", test_merge_repo_short_flag_form),
+        ("merge repo: mid-word '-R' not matched (dev-env#626)", test_merge_repo_dash_r_mid_word_not_matched),
         ("merge repo: no flag -> falls back to effective_merge_dir", test_merge_repo_no_flag_falls_back_to_effective_merge_dir),
         ("build_messages: chained create + queued --auto -> create still fires (dev-env#494)", test_build_messages_chained_create_and_queued_auto_still_creates),
         ("build_messages: chained create + --help merge -> create still fires (dev-env#494)", test_build_messages_chained_create_and_help_shaped_merge_still_creates),

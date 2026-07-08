@@ -282,9 +282,14 @@ def test_devenv_merge_pr_direct() -> str:
     # the long form -- both the dev-env-repo and other-repo cases.
     assert _devenv_merge_pr("gh pr merge 42 -R brownm09/dev-env", "/other") == "42"
     assert _devenv_merge_pr("gh pr merge 42 -R brownm09/lifting-logbook", DEVENV_CWD) is None
+    # dev-env#626 / review finding on PR #623: a coincidental mid-word "-R"
+    # (not a standalone token) must not be mistaken for the flag -- falls
+    # back to cwd-based dev-env detection instead.
+    assert _devenv_merge_pr("gh pr merge 42 xx-R brownm09/dev-env", DEVENV_CWD) == "42"
+    assert _devenv_merge_pr("gh pr merge 42 xx-R brownm09/dev-env", "/other") is None
     assert _devenv_merge_pr(f"gh pr merge --auto {DEVENV_PR_URL}", DEVENV_CWD) is None
     assert _devenv_merge_pr("gh pr merge 7 --squash", "/some/other/repo") is None
-    return "_devenv_merge_pr: URL/number/--repo/-R/--auto/cwd scoping all resolve correctly (dev-env#616)"
+    return "_devenv_merge_pr: URL/number/--repo/-R/mid-word-guard/--auto/cwd scoping all resolve correctly (dev-env#616, #626)"
 
 
 def test_detect_unrelated_command_ignored() -> str:
