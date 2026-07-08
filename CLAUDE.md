@@ -942,6 +942,7 @@ When a PR modifies any of the paths below, update the listed reference docs **in
 | `~/.claude/skills/` | `claude/skills/` (directory junction) |
 | `~/.claude/hooks/` | `claude/hooks/` (directory junction) |
 | `~/.claude/routines/` | `claude/routines/` (directory junction) |
+| `~/.claude/templates/` | `claude/templates/` (directory junction) |
 | `~/.claude/settings.json` | `claude/settings.json` |
 
 **Machine-local only — never commit:**

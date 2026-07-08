@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-13  
 **Status:** Accepted  
-**Amended:** 2026-07-01, 2026-07-06 (see Amendment sections below)
+**Amended:** 2026-07-01, 2026-07-06, 2026-07-08 (see Amendment sections below)
 
 ---
 
@@ -26,6 +26,7 @@ All version-controlled Claude Code artifacts are maintained in the `dev-env` rep
 | `skills/` | `claude/skills/` (directory junction) |
 | `hooks/` | `claude/hooks/` (directory junction) |
 | `routines/` | `claude/routines/` (directory junction) |
+| `templates/` | `claude/templates/` (directory junction) |
 
 `~/.claude/scheduled-tasks/` is deliberately **not** in this table — see Amendment below.
 
@@ -86,6 +87,38 @@ done as part of this amendment — flagged as follow-up work, not resolved here.
 
 ---
 
+## Amendment (2026-07-08)
+
+Investigating why `/propose`'s Step 3 and Step 11 reads of `~/.claude/templates/proposal.md` and
+`pr-body.md` were failing on a machine (a `lifting-logbook` session, 2026-07-06) found that
+`templates/` was never in the Decision table above, never in `setup.sh`'s link loop (`setup_windows()`
+and `setup_unix()` both enumerate `scripts skills hooks` plus a separately-linked `routines` —
+`templates` is in neither), and never in `claude/CLAUDE.md`'s copy of this table either — despite
+`claude/templates/` (`proposal.md`, `pr-body.md`, `contributing.md`, `project-claude.md`,
+`propose-config.json`) being fully committed since 2026-04-13 (#10), the same day this ADR was
+written.
+
+`setup.sh`'s cross-platform bootstrap was added 11 days later (2026-04-24) and simply never
+enumerated `templates` — a day-one gap, not a regression, that both amendments above carried
+forward unnoticed because neither touched this table's completeness against the actual `claude/`
+directory listing.
+
+**This is the third occurrence of this ADR's "documented map doesn't match reality" gap class**
+(scheduled-tasks topology, 2026-07-01; the routine self-reference convention gap, 2026-07-06).
+Fixed by:
+
+- Adding `templates` to `setup.sh`'s link loop in both `setup_windows()` and `setup_unix()`.
+- Adding the `templates/` row to the Decision table above and to `claude/CLAUDE.md`'s copy.
+- Creating the junction directly on the affected machine rather than waiting for a future
+  `setup.sh` re-run.
+
+Checked the remaining top-level `claude/` entries for the same gap: `usage-config.json` is read
+via an absolute repo path in `claude/scripts/usage-snapshot.py`, not through `~/.claude/`, and
+`setup-prompt.md` has no programmatic reference at all — neither is a missing-link candidate.
+`templates/` was the only actual gap.
+
+---
+
 ## References
 
 - Engineering journal: `sessions/meta/2026-04-13-post-tool-use-hook-and-settings-into-dev-env.md`
@@ -94,3 +127,4 @@ done as part of this amendment — flagged as follow-up work, not resolved here.
 - [dev-env#344](https://github.com/brownm09/dev-env/issues/344) — original diagnosis of the reversed topology
 - [dev-env#464](https://github.com/brownm09/dev-env/issues/464) — the drift incident that surfaced the undocumented consequence
 - [dev-env#597](https://github.com/brownm09/dev-env/issues/597) — second occurrence, in `prune-stale-worktrees` and `reclaim-worktree-disk`
+- [dev-env#606](https://github.com/brownm09/dev-env/issues/606) — third occurrence, `templates/` never linked
