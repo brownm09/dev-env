@@ -422,6 +422,21 @@ def scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
 # directly rather than leaving it as a prose reminder to keep in sync (ADR-050
 # Amendment 11's own lesson: a written "keep these in sync" note is exactly
 # as missable as the bug it guards against).
+#
+# Each caller must mask ONLY the exact string fed to its own vulnerable
+# repo-flag regex, never a fallback regex (a PR-URL or PR-number match) whose
+# result is reused elsewhere -- some of those legitimately match a quoted
+# value today (see mask_quoted_spans's own docstring). This invariant is
+# hand-applied at four call sites with two different masking scopes (a
+# _MERGE_ARGS_RE-derived `args` region vs. the whole `command`), rather than
+# a single shared "mask-then-search" helper -- considered and rejected for
+# this PR: the four sites' masking scope and which-regex-stays-unmasked
+# already differ per site, so a shared helper would need immediate
+# parameterization no current caller asks for, the same premature-convergence
+# risk Amendment 5's scope decision warns against. Each site's regression
+# test suite (the "*_survives_alongside_quoted_decoy" cases) is the durable,
+# enforced check that this hand-wiring is correct today, in place of a
+# structural guarantee.
 # ---------------------------------------------------------------------------
 
 
@@ -441,11 +456,19 @@ def mask_quoted_spans(command: str) -> str:
     whenever the match is genuine (i.e. not itself inside a masked span,
     which by construction can never match anything but '#'/newline runs).
 
-    '#' is used as the placeholder because it appears in none of this file's
-    repo-flag/PR-number/URL regexes' character classes ([A-Za-z0-9_.-] for a
-    repo slug, \\d for a PR number, literal gh/pr/merge/repo keywords) -- so
-    masking can never manufacture a new false match, only remove real ones.
-    Newlines are preserved unmasked so a heredoc body's line count survives
+    '#' is used as the placeholder. The four callers' own repo-flag regexes
+    (not defined in this file -- see each hook's own _REPO_FLAG_RE) mostly
+    capture a strict owner/repo shape ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+), which
+    '#' cannot satisfy; a masked span can therefore only remove a real match
+    there, never manufacture one. One caller's regex is looser
+    (posttooluse-inert-advisory.py's `(\\S+)` capture group, since it only
+    needs to compare the result against a known repo string, not validate
+    slug shape) and CAN capture a run of '#' from a masked span -- but the
+    anchor itself (a literal `--repo`/`-R` token) still can't be synthesized
+    from '#' characters, so masking still only flips a match from
+    present-but-wrong-value to a value that fails the caller's equality
+    check, never from absent to falsely present. Newlines are preserved
+    unmasked so a heredoc body's line count survives
     (matters only if a caller later applies a line-oriented helper to the
     masked result; no current caller does, but it costs nothing and mirrors
     _find_heredoc_end's own care with heredoc line structure).
