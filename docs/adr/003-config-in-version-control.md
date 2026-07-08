@@ -114,9 +114,22 @@ swept across pre-existing routines, not the junction table being incomplete or w
   `setup.sh` re-run.
 
 Checked the remaining top-level `claude/` entries for the same gap: `usage-config.json` is read
-via an absolute repo path in `claude/scripts/usage-snapshot.py`, not through `~/.claude/`, and
-`setup-prompt.md` has no programmatic reference at all — neither is a missing-link candidate.
-`templates/` was the only actual gap.
+via an absolute repo path in `claude/scripts/usage-snapshot.py`, not through `~/.claude/`. The
+claim originally made here — that `setup-prompt.md` has "no programmatic reference at all" — was
+itself wrong; see the addendum below. `templates/` (plus the `setup-prompt.md` checklist gap
+found afterward) were the only actual gaps.
+
+**Addendum (dev-env#614):** `claude/setup-prompt.md`'s Step 3 verification checklist
+independently enumerates the same linked set (one `ls -la` per path) and carried the identical
+`templates/` omission — a fourth occurrence of this gap class, missed by this amendment's own
+"checked the remaining entries" pass because that pass looked for a *programmatic* dependency and
+missed a *manual* checklist enumerating the same list. Fixed in the same PR that closes the
+underlying testability gap this class of incident kept exposing: `setup.sh`'s two enumerations
+(`setup_windows()` / `setup_unix()`) are now one shared `CLAUDE_FILE_LINKS` / `CLAUDE_DIR_LINKS`
+array pair, and `claude/scripts/tests/test-setup-link-loop.sh` (CLAUDE.md Testing item 49) pins
+that enumeration plus the extracted `link_claude_windows()` / `link_claude_unix()` functions'
+output — so the next occurrence of this gap class is caught mechanically rather than needing a
+fifth manual amendment.
 
 ---
 
@@ -129,3 +142,4 @@ via an absolute repo path in `claude/scripts/usage-snapshot.py`, not through `~/
 - [dev-env#464](https://github.com/brownm09/dev-env/issues/464) — the drift incident that surfaced the undocumented consequence
 - [dev-env#597](https://github.com/brownm09/dev-env/issues/597) — second occurrence, in `prune-stale-worktrees` and `reclaim-worktree-disk`
 - [dev-env#606](https://github.com/brownm09/dev-env/issues/606) — second occurrence of the junction-table gap class, `templates/` never linked
+- [dev-env#614](https://github.com/brownm09/dev-env/issues/614) — smoke test added for the link-loop enumeration; also caught the `setup-prompt.md` checklist's identical `templates/` omission

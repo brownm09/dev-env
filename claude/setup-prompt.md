@@ -48,11 +48,13 @@ ls -la "$HOME/.claude/settings.json"
 ls -la "$HOME/.claude/scripts/"
 ls -la "$HOME/.claude/skills/"
 ls -la "$HOME/.claude/hooks/"
+ls -la "$HOME/.claude/templates/"
+ls -la "$HOME/.claude/routines/"
 ls -la "$HOME/.claude/scratch/"
 ls -la "$HOME/bin/"
 git config --global core.hooksPath
 ```
 
 Report any missing file, broken link, or unexpected hooks path. Setup is
-complete when all seven paths resolve and `core.hooksPath` points to
+complete when all nine paths resolve and `core.hooksPath` points to
 `~/.claude/hooks`.
