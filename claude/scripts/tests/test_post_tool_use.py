@@ -812,6 +812,10 @@ def test_main_chained_help_only_issue_create_and_real_pr_create_still_processes(
             f"stderr={result.stderr!r}"
         )
         assert "no GitHub URL found" in result.stderr, f"got {result.stderr!r}"
+        # Not just "some create reached the advisory" -- specifically the PR
+        # create (is_pr_create), proving the downgrade logic didn't flip
+        # item_type to "Issue" for this chained command (review of PR #637).
+        assert "PR created" in result.stderr, f"got {result.stderr!r}"
     return "help-only issue-create chained with a real pr-create -> the real create still processed"
 
 

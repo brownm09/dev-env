@@ -157,10 +157,11 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     [ADR-050 Amendment 15](docs/adr/050-shared-hookio-sibling-hook-fixes.md); dev-env#636 — the identical
     `--help` false-positive `is_merge_help_only` closes for `gh pr merge`, reproduced here for
     `gh issue create` / `gh pr create`): bare `--help`/`-h`, a real create, no invocation at all, and —
-    via two `main()` end-to-end subprocess cases — that `gh issue/pr create --help` now exits 0 silently
-    and that a help-only issue-create chained with a REAL pr-create still reaches the exit-2 "no GitHub
-    URL found" path for the real create (proving `main()` downgrades each create-flag independently
-    rather than bailing out wholesale). Also exercises the dev-env#527 / [ADR-076](docs/adr/076-live-fetch-project-hook-single-select-options.md)
+    via three `main()` end-to-end subprocess cases — that `gh issue create --help` and `gh pr create
+    --help` each exit 0 silently, and that a help-only issue-create chained with a REAL pr-create still
+    reaches the exit-2 "no GitHub URL found" path **and names the PR specifically** (`"PR created"`, not
+    `"Issue created"`) — proving `main()` downgrades each create-flag independently rather than bailing
+    out wholesale. Also exercises the dev-env#527 / [ADR-076](docs/adr/076-live-fetch-project-hook-single-select-options.md)
     live-fetch of `single_select` field options: the pure `_parse_live_options()` response parser (valid, empty-options,
     null-node, and malformed-JSON shapes), the pure `_resolve_required_fields()` legacy-config normalization shared
     between rendering and live-fetch target discovery, `fetch_live_required_field_options()`'s field-selection logic
