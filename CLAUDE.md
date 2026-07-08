@@ -152,7 +152,15 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     argument, `--text` field value) for both PR- and issue-create, plus subshell/quote/cd-prefix/chained cases;
     and a `subprocess`-driven end-to-end pair (`_run_hook`, mirroring `test_worktree_path_check.py`'s pattern)
     pinning that the pre-existing `exit_code != 0` gate still short-circuits immediately after the detection
-    swap, without either branch invoking a live `gh` call. Also exercises the dev-env#527 / [ADR-076](docs/adr/076-live-fetch-project-hook-single-select-options.md)
+    swap, without either branch invoking a live `gh` call. Also exercises `is_issue_create_help_only()` /
+    `is_pr_create_help_only()` (thin wrappers over the shared `_hookio.is_help_only()`,
+    [ADR-050 Amendment 15](docs/adr/050-shared-hookio-sibling-hook-fixes.md); dev-env#636 — the identical
+    `--help` false-positive `is_merge_help_only` closes for `gh pr merge`, reproduced here for
+    `gh issue create` / `gh pr create`): bare `--help`/`-h`, a real create, no invocation at all, and —
+    via two `main()` end-to-end subprocess cases — that `gh issue/pr create --help` now exits 0 silently
+    and that a help-only issue-create chained with a REAL pr-create still reaches the exit-2 "no GitHub
+    URL found" path for the real create (proving `main()` downgrades each create-flag independently
+    rather than bailing out wholesale). Also exercises the dev-env#527 / [ADR-076](docs/adr/076-live-fetch-project-hook-single-select-options.md)
     live-fetch of `single_select` field options: the pure `_parse_live_options()` response parser (valid, empty-options,
     null-node, and malformed-JSON shapes), the pure `_resolve_required_fields()` legacy-config normalization shared
     between rendering and live-fetch target discovery, `fetch_live_required_field_options()`'s field-selection logic
@@ -179,8 +187,17 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `scan_top_level()` — the stack-based top-level-statement parser shared with `pr-merge-reminder.py` and
     `post-tool-use.py` ([ADR-050 Amendment 5](docs/adr/050-shared-hookio-sibling-hook-fixes.md)): anchored-match
     semantics, non-splitting inside single/double quotes, `$()` subshells, and heredoc bodies, and correct
-    splitting on `&&`, `;`, `||`, and newline. `_hookio` is imported by all five PostToolUse Bash hooks plus
-    `pr-merge-reminder.py` ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)). `confirm_merge_via_gh()`
+    splitting on `&&`, `;`, `||`, and newline. Also exercises `is_merge_help_only()` ([ADR-050 Amendment 13](docs/adr/050-shared-hookio-sibling-hook-fixes.md);
+    dev-env#557 — a `gh pr merge --help` invocation must never be mistaken for a real merge attempt): bare
+    `--help`/`-h`, a real merge, no merge invocation at all, chained help-then-real and two-chained-help
+    cases, heredoc/quoted-argument mentions that must not affect a real invocation elsewhere, and
+    case-insensitivity. Also exercises `is_help_only(command, invocation_re)` — the generalized core
+    `is_merge_help_only` now wraps ([ADR-050 Amendment 15](docs/adr/050-shared-hookio-sibling-hook-fixes.md);
+    dev-env#636) — directly, with a non-merge `invocation_re`, proving the extraction is genuinely generic
+    rather than merge-specific (the real second/third caller, `post-tool-use.py`'s
+    `is_issue_create_help_only()` / `is_pr_create_help_only()`, is covered in item 12 above). `_hookio` is
+    imported by all five PostToolUse Bash hooks plus `pr-merge-reminder.py`
+    ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)). `confirm_merge_via_gh()`
     itself is not covered (it shells out to `gh pr view`).
 
     ```bash

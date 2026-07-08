@@ -82,6 +82,8 @@ _canonical_root_from_common_dir = post_tool_use._canonical_root_from_common_dir
 load_config = post_tool_use.load_config
 is_issue_create_command = post_tool_use.is_issue_create_command
 is_pr_create_command = post_tool_use.is_pr_create_command
+is_issue_create_help_only = post_tool_use.is_issue_create_help_only
+is_pr_create_help_only = post_tool_use.is_pr_create_help_only
 extract_repo_flag = post_tool_use.extract_repo_flag
 _sibling_repo_config = post_tool_use._sibling_repo_config
 _read_config = post_tool_use._read_config
@@ -597,6 +599,54 @@ def test_pr_create_in_double_quotes_not_matched() -> str:
 
 
 # ---------------------------------------------------------------------------
+# is_issue_create_help_only / is_pr_create_help_only  (dev-env#636)
+#
+# `gh issue create --help` (run per this repo's own CLI Scripting Checklist,
+# which prescribes checking `--help` before writing gh automation) textually
+# matches is_issue_create_command -- the identical false-positive shape
+# is_merge_help_only was written to close for `gh pr merge --help`
+# (dev-env#557). These reuse the shared _hookio.is_help_only core.
+# ---------------------------------------------------------------------------
+
+def test_issue_create_help_only_bare_help_is_true() -> str:
+    assert is_issue_create_help_only("gh issue create --help")
+    return "gh issue create --help -> True (dev-env#636)"
+
+
+def test_issue_create_help_only_short_flag_is_true() -> str:
+    assert is_issue_create_help_only("gh issue create -h")
+    return "gh issue create -h -> True"
+
+
+def test_issue_create_help_only_real_create_is_false() -> str:
+    assert not is_issue_create_help_only('gh issue create --title "x" --body "y"')
+    return "real gh issue create (no --help) -> False"
+
+
+def test_issue_create_help_only_no_invocation_at_all_is_false() -> str:
+    assert not is_issue_create_help_only("git status")
+    return "no gh issue create invocation anywhere -> False"
+
+
+def test_issue_create_help_only_chained_with_real_pr_create_still_processes() -> str:
+    # The exact main()-level scenario this fix protects: a help-only issue-create
+    # chained with a REAL pr-create must not suppress the real one.
+    assert is_issue_create_help_only('gh issue create --help && gh pr create --title "x"')
+    assert not is_pr_create_help_only('gh issue create --help && gh pr create --title "x"')
+    return "chained help-only issue-create + real pr-create -> only the help-only one downgrades"
+
+
+def test_pr_create_help_only_bare_help_is_true() -> str:
+    assert is_pr_create_help_only("gh pr create --help")
+    return "gh pr create --help -> True (dev-env#636)"
+
+
+def test_pr_create_help_only_real_create_is_false() -> str:
+    assert not is_pr_create_help_only("gh pr create --fill")
+    return "real gh pr create (no --help) -> False"
+
+
+# ---------------------------------------------------------------------------
 # extract_repo_flag (dev-env#542) -- feeds load_config's cross-repo
 # resolution. Shares is_issue_create_command's top-level-statement scoping:
 # only the segment that itself matched the create predicate is searched.
@@ -706,6 +756,63 @@ def test_main_exit_code_zero_proceeds_past_gate_to_no_url_advisory() -> str:
         )
         assert "no GitHub URL found" in result.stderr, f"got {result.stderr!r}"
     return "genuine top-level create + exitCode==0, no URL in output -> exit 2 advisory (detection fired)"
+
+
+def test_main_help_only_issue_create_is_silent() -> str:
+    # The dev-env#636 regression, end-to-end: before the fix, this exact
+    # payload reached the "no GitHub URL found" exit-2 advisory (reproduced
+    # live via `gh issue create --help` during this fix's own development).
+    with tempfile.TemporaryDirectory() as tmp_root:
+        cwd = _hook_config_cwd(tmp_root)
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh issue create --help"},
+            "tool_response": {"stdout": "USAGE\n  gh issue create [flags]\n...", "stderr": "", "exitCode": 0},
+            "cwd": cwd,
+        }
+        result = _run_hook(payload)
+        assert result.returncode == 0, (
+            f"expected exit 0 (help-only, not a real create), got {result.returncode}: "
+            f"stderr={result.stderr!r}"
+        )
+        assert result.stderr == "", f"expected no stderr output, got {result.stderr!r}"
+    return "gh issue create --help -> exit 0, silent (dev-env#636 fix)"
+
+
+def test_main_help_only_pr_create_is_silent() -> str:
+    with tempfile.TemporaryDirectory() as tmp_root:
+        cwd = _hook_config_cwd(tmp_root)
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh pr create --help"},
+            "tool_response": {"stdout": "USAGE\n  gh pr create [flags]\n...", "stderr": "", "exitCode": 0},
+            "cwd": cwd,
+        }
+        result = _run_hook(payload)
+        assert result.returncode == 0, f"expected exit 0, got {result.returncode}: stderr={result.stderr!r}"
+        assert result.stderr == "", f"expected no stderr output, got {result.stderr!r}"
+    return "gh pr create --help -> exit 0, silent (dev-env#636 fix)"
+
+
+def test_main_chained_help_only_issue_create_and_real_pr_create_still_processes() -> str:
+    # A real gh pr create chained with an unrelated help-only gh issue create
+    # must still be processed as a PR create (the reason main() downgrades
+    # each create-flag independently rather than bailing out wholesale).
+    with tempfile.TemporaryDirectory() as tmp_root:
+        cwd = _hook_config_cwd(tmp_root)
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'gh issue create --help && gh pr create --fill'},
+            "tool_response": {"stdout": "done", "stderr": "", "exitCode": 0},
+            "cwd": cwd,
+        }
+        result = _run_hook(payload)
+        assert result.returncode == 2, (
+            f"expected exit 2 (real pr-create still detected), got {result.returncode}: "
+            f"stderr={result.stderr!r}"
+        )
+        assert "no GitHub URL found" in result.stderr, f"got {result.stderr!r}"
+    return "help-only issue-create chained with a real pr-create -> the real create still processed"
 
 
 # ---------------------------------------------------------------------------
@@ -930,6 +1037,13 @@ def main() -> int:
         ("pr-create in $() subshell -> no match", test_pr_create_in_subshell_not_matched),
         ("issue-create in $() subshell -> no match", test_issue_create_in_subshell_not_matched),
         ("pr-create in double quotes -> no match", test_pr_create_in_double_quotes_not_matched),
+        ("issue-create-help-only: bare --help -> True (dev-env#636)", test_issue_create_help_only_bare_help_is_true),
+        ("issue-create-help-only: -h short flag -> True", test_issue_create_help_only_short_flag_is_true),
+        ("issue-create-help-only: real create -> False", test_issue_create_help_only_real_create_is_false),
+        ("issue-create-help-only: no invocation at all -> False", test_issue_create_help_only_no_invocation_at_all_is_false),
+        ("issue-create-help-only: chained with real pr-create still processes", test_issue_create_help_only_chained_with_real_pr_create_still_processes),
+        ("pr-create-help-only: bare --help -> True (dev-env#636)", test_pr_create_help_only_bare_help_is_true),
+        ("pr-create-help-only: real create -> False", test_pr_create_help_only_real_create_is_false),
         ("extract_repo_flag: --repo extracted from top-level create (#542)", test_extract_repo_flag_simple),
         ("extract_repo_flag: -R short flag extracted (#542)", test_extract_repo_flag_short_flag),
         ("extract_repo_flag: --repo=value equals-form extracted (#542)", test_extract_repo_flag_equals_form),
@@ -938,6 +1052,9 @@ def main() -> int:
         ("extract_repo_flag: unrelated earlier segment not leaked (#542)", test_extract_repo_flag_other_segment_not_leaked),
         ("main(): exitCode!=0 short-circuits even when create detected", test_main_exit_code_nonzero_short_circuits_even_when_create_detected),
         ("main(): exitCode==0 proceeds to no-URL advisory", test_main_exit_code_zero_proceeds_past_gate_to_no_url_advisory),
+        ("main(): gh issue create --help -> silent (dev-env#636)", test_main_help_only_issue_create_is_silent),
+        ("main(): gh pr create --help -> silent (dev-env#636)", test_main_help_only_pr_create_is_silent),
+        ("main(): help-only issue-create chained with real pr-create still processes", test_main_chained_help_only_issue_create_and_real_pr_create_still_processes),
         ("parse live options: valid response", test_parse_live_options_valid),
         ("parse live options: empty options -> {} not None", test_parse_live_options_empty_options_is_empty_dict_not_none),
         ("parse live options: node null -> None", test_parse_live_options_wrong_node_type_is_none),
