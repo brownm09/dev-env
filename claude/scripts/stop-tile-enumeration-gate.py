@@ -34,14 +34,22 @@ and honors the ``stop_hook_active`` loop-guard flag (Claude Code hooks
 reference: a Stop hook must check it and exit 0 early once continuing, or it can
 block forever).
 
-The three transcript readers (``load_records`` / ``iter_bash_calls`` /
-``_result_text``) are deliberately replicated here rather than shared: the same
-functions live in ``posttooluse-inert-advisory.py``. This mirrors the repo's
-established tolerance for small-helper replication when sharing would over-couple
-two otherwise-independent hooks (cf. ``_first_line`` intentionally duplicated
-across ``_hookio.py`` and ``pre-tool-use-canonical-mutate-guard.py``); the truly
-shared bits (sentinels / transcript-locate, the merge-marker / segment parser)
-are imported from ``_hookutil`` and ``_hookio``.
+The transcript-record readers (``load_records`` / ``_parse_records`` /
+``iter_bash_calls`` / ``_result_text`` / ``_content_items``) now live in
+``_hookutil`` — the same shared module the sentinels / transcript-locate come
+from — so this hook and ``posttooluse-inert-advisory.py`` can no longer drift on
+how a transcript is parsed (ADR-090, reversing ADR-088's original replicate-them
+decision after both PR #604 reviewers flagged the duplication). This gate imports
+only the three it uses: ``_content_items`` and ``_parse_records`` (its ``main()``
+parses the transcript text directly, after the cheap ``"merged"`` pre-filter), and
+the shared ``iter_bash_calls`` (aliased) — wrapped in a thin 2-tuple adapter below,
+since ``_hookutil``'s ``iter_bash_calls`` returns ``(command, output, cwd)`` and
+this gate never needs ``cwd``. (``load_records`` and ``_result_text`` also live in
+``_hookutil`` but the gate needs neither directly — ``_result_text`` is used only
+inside the shared ``iter_bash_calls``.) The merge-marker / segment parser is
+imported from ``_hookio``; ``_first_line`` stays local — a command-segment helper
+(not a transcript reader), intentionally duplicated with ``_hookio._first_line``
+as a separate decision (ADR-088).
 
 Stdin JSON shape (Stop):
   {"session_id": "...", "transcript_path": "/abs/path.jsonl",
@@ -65,6 +73,11 @@ from _hookio import (
     merge_pr_number_from_output,
     output_has_merge_marker,
     split_top_level,
+)
+from _hookutil import (
+    _content_items,
+    _parse_records,
+    iter_bash_calls as _iter_bash_calls,
 )
 
 SENTINEL_PREFIX = "tile-enumeration-gate-"
@@ -109,7 +122,13 @@ _SKIP_RE = re.compile(r"\b(?:skip\s+tiles?|don'?t\s+(?:spawn\s+)?tiles?|no\s+til
                       re.IGNORECASE)
 
 
-# --- transcript readers (deliberately replicated — see module docstring) -------
+# --- transcript readers -------------------------------------------------------
+# The record readers (``load_records`` / ``_parse_records`` / ``iter_bash_calls`` /
+# ``_result_text`` / ``_content_items``) now live in ``_hookutil`` (ADR-090); this
+# gate imports the three it uses (``_content_items``, ``_parse_records``, and the
+# shared ``iter_bash_calls`` aliased as ``_iter_bash_calls``). Only ``_first_line``
+# (a command-segment helper, not a transcript reader) and the 2-tuple
+# ``iter_bash_calls`` adapter below stay local.
 
 def _first_line(segment: str) -> str:
     """A segment's own first physical line — its invocation/flags only ever live
@@ -117,100 +136,16 @@ def _first_line(segment: str) -> str:
     return segment.split("\n", 1)[0].split("\r", 1)[0]
 
 
-def _content_items(rec: dict) -> list:
-    if not isinstance(rec, dict):
-        return []
-    msg = rec.get("message")
-    if not isinstance(msg, dict):
-        return []
-    c = msg.get("content")
-    return c if isinstance(c, list) else []
-
-
-def _result_text(item: dict, record: dict) -> str:
-    """Best-available text of a tool_result: the per-id content the model saw,
-    falling back to the record's structured ``toolUseResult`` (stdout+stderr)."""
-    c = item.get("content")
-    if isinstance(c, str) and c.strip():
-        return c
-    if isinstance(c, list):
-        joined = "\n".join(
-            x.get("text", "")
-            for x in c
-            if isinstance(x, dict) and x.get("type") == "text"
-        )
-        if joined.strip():
-            return joined
-    tur = record.get("toolUseResult")
-    if isinstance(tur, dict):
-        parts = [p for p in (tur.get("stdout"), tur.get("stderr")) if p]
-        if parts:
-            return "\n".join(parts)
-        out = tur.get("output")
-        if out:
-            return str(out)
-    return ""
-
-
 def iter_bash_calls(records: list) -> list:
-    """Pair each Bash tool_use with its tool_result by ``tool_use_id``.
+    """The gate's ``(command, output)`` view of ``_hookutil.iter_bash_calls``.
 
-    Returns (command, output) tuples. Pairing by id (not adjacency) keeps
-    parallel tool calls from mismatching.
+    The shared reader yields ``(command, output, cwd)``; this gate never uses
+    ``cwd`` (only posttooluse-inert-advisory.py's dev-env-cwd scoping does), so
+    this thin adapter drops it — keeping ``session_merged_prs`` and the existing
+    tests on the historical 2-tuple contract while the transcript-pairing logic
+    lives in one shared place (ADR-090).
     """
-    commands: dict = {}
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        for item in _content_items(rec):
-            if (
-                isinstance(item, dict)
-                and item.get("type") == "tool_use"
-                and item.get("name") == "Bash"
-            ):
-                tid = item.get("id")
-                if tid:
-                    commands[tid] = (item.get("input") or {}).get("command", "")
-
-    calls: list = []
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "user":
-            continue
-        for item in _content_items(rec):
-            if isinstance(item, dict) and item.get("type") == "tool_result":
-                tid = item.get("tool_use_id")
-                if tid in commands:
-                    calls.append((commands[tid], _result_text(item, rec)))
-    return calls
-
-
-def _parse_records(text: str) -> list:
-    """Parse a transcript's JSONL text into records, keeping only JSON objects.
-
-    A bare ``null`` / number / string / array line is dropped rather than kept as
-    a non-dict record — otherwise a single such line downstream would raise an
-    ``AttributeError`` in a helper and (caught only by the outer guard) silently
-    exit 0, disabling the gate for an otherwise-fireable session (review of
-    PR #604). The pure helpers additionally carry ``isinstance`` guards so they
-    stay safe when called directly in tests with hand-built record lists.
-    """
-    records: list = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(rec, dict):
-            records.append(rec)
-    return records
-
-
-def load_records(transcript_path: Path) -> list:
-    with open(transcript_path, encoding="utf-8") as f:
-        return _parse_records(f.read())
+    return [(command, output) for command, output, _cwd in _iter_bash_calls(records)]
 
 
 # --- pure detection helpers (offline-testable) ---------------------------------

@@ -176,6 +176,11 @@ sometimes described as "blocking", is not: it always exits 0 and emits its remin
   `pre-tool-use-canonical-mutate-guard.py`). The genuinely shared bits — sentinels/transcript-locate
   (`_hookutil`, [ADR-064](064-shared-hookutil-sentinel-transcript-locate.md)) and the merge-marker /
   segment parser (`_hookio`, [ADR-050](050-shared-hookio-sibling-hook-fixes.md)) — are imported.
+  **Superseded (2026-07-08, [ADR-090](090-shared-transcript-readers-hookutil.md), dev-env#605):** this
+  alternative was subsequently adopted — the readers now live in `_hookutil` (both PR #604 reviewers
+  flagged the duplication; the repo's shared-module precedent for this class won out over the
+  over-coupling concern). `_first_line` stays duplicated (a command-segment helper with per-hook
+  intent, not a transcript reader).
 
 ## References
 

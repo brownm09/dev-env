@@ -77,6 +77,9 @@ output read, and the worktree-maintenance scripts' `_worktree_liveness`
 - Three scripts each lose ~15–20 LOC of duplicated helper code.
 - `_hookutil` is the single source of truth for per-session sentinel + transcript-locate in this
   repo; new Stop / UserPromptSubmit hooks import it rather than re-deriving the patterns.
+  ([ADR-090](090-shared-transcript-readers-hookutil.md) later extended it to also own the
+  transcript-record readers `load_records` / `_parse_records` / `iter_bash_calls` / `_result_text` /
+  `_content_items`, shared by `posttooluse-inert-advisory.py` and `stop-tile-enumeration-gate.py`.)
 - **No behaviour change.** The extraction is a pure refactor — sentinel semantics, flag-file
   location, and transcript-glob expression are identical to each script's own copy.
 - Continues the shared-helper line: `_winsubp`

@@ -275,8 +275,11 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     non-dev-env cwd, that `should_emit` stays silent whenever any PostToolUse attachment is present (the
     healthy session), and that the advisory is ASCII/cp1252-encodable so it can't vanish under Claude Code's
     cp1252-piped hook stdout ([ADR-053](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md),
-    [ADR-055](docs/adr/055-reliable-event-inert-posttooluse-advisory.md)). The `main()` I/O (stdin, transcript
-    locate, sentinel) is not covered (pure-helper convention).
+    [ADR-055](docs/adr/055-reliable-event-inert-posttooluse-advisory.md)). `iter_bash_calls`,
+    `load_records`, and `_result_text` are imported from `_hookutil`
+    ([ADR-090](docs/adr/090-shared-transcript-readers-hookutil.md)) and reached via module-attribute
+    indirection, so this suite pins the advisory-specific behavior unchanged. The `main()` I/O (stdin,
+    transcript locate, sentinel) is not covered (pure-helper convention).
 
     ```bash
     py -3 claude/scripts/tests/test_posttooluse_inert_advisory.py
@@ -429,9 +432,17 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `cleanup_stale_sentinels` removes flags older than `MAX_AGE_DAYS` matching the given prefix
     while leaving fresh ones and files with other prefixes intact, that it does not raise when the
     scratch directory is absent, and that `find_transcript` returns the matching path (or `None`)
-    including when the JSONL is nested under a project subdirectory. Imported by
-    `posttooluse-inert-advisory.py`, `reconcile-open-prs.py`, and `token-tracker.py`
-    ([ADR-064](docs/adr/064-shared-hookutil-sentinel-transcript-locate.md)).
+    including when the JSONL is nested under a project subdirectory. Also exercises the
+    transcript-record readers ([ADR-090](docs/adr/090-shared-transcript-readers-hookutil.md)):
+    `_content_items` (list content vs the non-dict-rec / non-dict-message / non-list-content guard
+    cases -> `[]`), `_result_text` (string / list-joined / `toolUseResult` stdout+stderr fallback /
+    empty -> `''`), `iter_bash_calls` (id-pairing returning `(command, output, cwd)`, out-of-order
+    parallel results not crossing, default `cwd=''`, and non-dict/non-Bash/orphan records -> `[]`
+    without raising), `_parse_records` (keeps only JSON objects, dropping blank/malformed/non-object
+    lines), and `load_records` (reads a JSONL file to its object records). Imported by
+    `posttooluse-inert-advisory.py`, `stop-tile-enumeration-gate.py`, `reconcile-open-prs.py`, and
+    `token-tracker.py` ([ADR-064](docs/adr/064-shared-hookutil-sentinel-transcript-locate.md),
+    [ADR-090](docs/adr/090-shared-transcript-readers-hookutil.md)).
 
     ```bash
     py -3 claude/scripts/tests/test_hookutil.py
@@ -886,7 +897,12 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     sentinel is isolated: pins merged-no-enum -> exit 2 with the reason on stderr and empty stdout,
     merged+enum and no-merge -> exit 0, the `stop_hook_active` loop guard -> exit 0, and that the
     sentinel suppresses a second fire. `main()`'s stdin/sentinel plumbing beyond the end-to-end runs
-    is not separately unit-tested (pure-helper convention).
+    is not separately unit-tested (pure-helper convention). The transcript-record readers
+    (`load_records` / `_parse_records` / `iter_bash_calls` / `_result_text` / `_content_items`) now
+    live in `_hookutil` ([ADR-090](docs/adr/090-shared-transcript-readers-hookutil.md)) — the gate
+    imports the three it uses (`_content_items`, `_parse_records`, and the shared `iter_bash_calls`,
+    aliased) and wraps the last in a thin 2-tuple adapter (it never needs `cwd`), so
+    `session_merged_prs` and these tests are unchanged by that extraction.
 
     ```bash
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
