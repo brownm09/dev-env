@@ -103,9 +103,10 @@ enumerated `templates` — a day-one gap, not a regression, that both amendments
 forward unnoticed because neither touched this table's completeness against the actual `claude/`
 directory listing.
 
-**This is the third occurrence of this ADR's "documented map doesn't match reality" gap class**
-(scheduled-tasks topology, 2026-07-01; the routine self-reference convention gap, 2026-07-06).
-Fixed by:
+**This is the second occurrence of this ADR's junction-table-itself-is-wrong gap class** — the
+2026-07-01 amendment's scheduled-tasks topology correction is the first. (The 2026-07-06
+amendment is a related but distinct gap: the routine self-reference *convention* not being
+swept across pre-existing routines, not the junction table being incomplete or wrong.) Fixed by:
 
 - Adding `templates` to `setup.sh`'s link loop in both `setup_windows()` and `setup_unix()`.
 - Adding the `templates/` row to the Decision table above and to `claude/CLAUDE.md`'s copy.
@@ -127,4 +128,4 @@ via an absolute repo path in `claude/scripts/usage-snapshot.py`, not through `~/
 - [dev-env#344](https://github.com/brownm09/dev-env/issues/344) — original diagnosis of the reversed topology
 - [dev-env#464](https://github.com/brownm09/dev-env/issues/464) — the drift incident that surfaced the undocumented consequence
 - [dev-env#597](https://github.com/brownm09/dev-env/issues/597) — second occurrence, in `prune-stale-worktrees` and `reclaim-worktree-disk`
-- [dev-env#606](https://github.com/brownm09/dev-env/issues/606) — third occurrence, `templates/` never linked
+- [dev-env#606](https://github.com/brownm09/dev-env/issues/606) — second occurrence of the junction-table gap class, `templates/` never linked
