@@ -564,3 +564,28 @@ lifting-logbook — ahead of its own recommended safety pairing; still `false`/u
 other repo checked. Track lifting-logbook's remaining piece (making Review Gate required) via
 [lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718)/[#720](https://github.com/brownm09/lifting-logbook/issues/720)/[#722](https://github.com/brownm09/lifting-logbook/pull/722),
 not a new dev-env-side issue.
+
+---
+
+## Addendum (2026-07-08) — lifting-logbook#722 merged; the paired check ships and reports, but is not yet required
+
+The 2026-07-07 addendum above described lifting-logbook#722 as "an open, unmerged PR... not on
+`main`." That is no longer accurate as of this addendum: PR
+[lifting-logbook#722](https://github.com/brownm09/lifting-logbook/pull/722) merged 2026-07-08
+(`0d9dce4cbfbc2147276b68f58c4d8ae866632f10`). `.github/workflows/review-gate.yml` is now live on
+lifting-logbook's `main`, reporting a real `Review Gate` pass/fail commit status on every PR —
+confirmed live during the merge itself. Sub-issue
+[lifting-logbook#720](https://github.com/brownm09/lifting-logbook/issues/720) is closed.
+
+**This closes the *informational* half of the gap, not the *enforcement* half.** The check is not
+yet wired into branch protection as a required status check — nothing blocks a merge today when it
+fails; it is reporting-only. `allow_auto_merge` also remains `true`. Top-level
+[lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718) stays **open** for
+exactly this reason: its second sub-issue (the branch-protection mutation that makes Review Gate
+required) has not yet been filed. Until that lands, a human merging via lifting-logbook's web UI, or
+GitHub's own auto-merge firing on green CI, still bypasses all review-findings enforcement on that
+repo — same live gap the 2026-07-07 addendum flagged, now partially, not fully, closed.
+
+No toggle was changed by this addendum. Disposition of the remaining piece is unchanged from above:
+a judgment call for whoever owns lifting-logbook's rollout timeline, tracked via
+[lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718).
