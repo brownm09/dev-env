@@ -55,6 +55,7 @@ Before writing a `gh` or other CLI automation script:
 2. Confirm which JSON tools are available (`jq` is NOT available — use `node -e`)
 3. Write temp files to `C:/Users/brown/.claude/scratch/`, not `/tmp/` or a project repo directory
 4. Check whether any additional `gh` auth scopes are needed
+5. `Glob` and plain `git status` silently skip gitignored files, and `git ls-tree` only shows committed content (never untracked files, ignored or not) — before declaring a directory empty or fully processed, verify with `ls -la` / `Get-ChildItem -Force` or `git status --ignored` instead.
 
 ---
 
