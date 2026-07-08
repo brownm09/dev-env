@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-06
 **Status:** Accepted
-**Tags:** hooks, stop, tiles, spawn-task, post-merge, enforcement, merged-state, transcript-scan, auto-merge, background-session, ADR-046, ADR-060
+**Tags:** hooks, stop, tiles, spawn-task, post-merge, enforcement, merged-state, transcript-scan, auto-merge, background-session, parallel-execution, sleep-lock, ADR-033, ADR-046, ADR-060
 
 ---
 
@@ -107,6 +107,28 @@ backstop. Non-dict transcript records are dropped at parse time and the pure hel
 guards, so a single malformed line yields a deliberate skip rather than silently disabling the gate via
 an uncaught helper exception (hardened in the PR #604 review).
 
+### Stop-hook parallelism — exit 2 does not delay `awake-blocker`'s sleep-release
+
+This is the first (and, as of this writing, only) **blocking** Stop hook in the `claude/settings.json`
+Stop list, which also registers `awake-blocker.py` (stop) *after* it — the hook that releases the
+Windows system-sleep lock ([ADR-033](033-prevent-system-sleep-while-processing.md)). The natural worry
+(raised in the PR #604 review) is that a blocking exit 2 here short-circuits the list and skips
+`awake-blocker`, holding the sleep-lock until the `stop_hook_active` continuation next turn. **It does
+not.** Per the Claude Code hooks documentation, *"all matching hooks run in parallel … every hook's
+command runs to completion before Claude Code merges the results. One hook returning `deny` doesn't
+stop sibling hooks from executing"* ([hooks-guide](https://code.claude.com/docs/en/hooks-guide)). The
+settings.json Stop order is therefore **not an execution order** — it is non-deterministic parallel
+dispatch — so `awake-blocker`'s `stop()` fires at every Stop regardless of this gate's exit 2, and
+reordering it earlier would be a no-op.
+
+The only genuine interaction is the mirror image, and it is negligible: because `awake-blocker`
+*always* runs at Stop, the sleep-lock is released even when this gate blocks the stop, so the machine
+could in principle sleep during the ~one-turn blocked-stop continuation. A system-sleep idle timeout is
+minutes long versus that single continuation turn, and the next real `UserPromptSubmit` re-arms the
+lock — not worth a code change. (For the record, `journal-stop-check.py`, the other Stop hook
+sometimes described as "blocking", is not: it always exits 0 and emits its reminders on stdout.) See
+[dev-env#612](https://github.com/brownm09/dev-env/issues/612).
+
 ## Consequences
 
 - A manual `gh pr merge` now produces two reminders: the command-keyed immediate nudge (ADR-060) and, if
@@ -173,5 +195,8 @@ an uncaught helper exception (hardened in the PR #604 review).
   hook as separate follow-up.
 - [dev-env#598](https://github.com/brownm09/dev-env/pull/598) — the wording floor this enforces.
 - [dev-env#599](https://github.com/brownm09/dev-env/issues/599) — issue this ADR closes.
+- [dev-env#612](https://github.com/brownm09/dev-env/issues/612) — documents that Stop hooks run in
+  parallel, so this gate's exit 2 does not delay `awake-blocker`'s sleep-release (the PR #604 review
+  question this addendum answers).
 - [lifting-logbook#700](https://github.com/brownm09/lifting-logbook/pull/700) — the auto-merge incident
   that motivated state-keying.
