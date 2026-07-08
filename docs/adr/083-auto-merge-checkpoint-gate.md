@@ -2,7 +2,10 @@
 
 **Date:** 2026-07-05
 **Status:** Accepted — implemented in the PR that closes [dev-env#574](https://github.com/brownm09/dev-env/issues/574).
-See "Implementation" below for what shipped and where it diverged from this design.
+See "Implementation" below for what shipped and where it diverged from this design. **The Context
+and Implementation sections below describe `allow_auto_merge` state as of their respective dates —
+for current per-repo status, see the dated addenda at the end of this file (2026-07-06, 2026-07-07)
+before citing either section as present-tense fact.**
 **Tags:** git, pr, merge, auto-merge, workflow, hooks, pre-tool-use, review, adr-warrant,
 doc-reconciliation
 **Related:** [ADR-031](031-auto-merge-disabled.md), [ADR-039](039-merge-gate-findings-enforcement.md),
@@ -500,3 +503,89 @@ this addendum makes generally.
 **Not a decision.** This addendum does not change the Decision or Consequences above, and does not
 itself flip any toggle. It records a design refinement for whoever makes a specific repo's item-7
 call next, so the web-UI gap is weighed explicitly rather than rediscovered.
+
+---
+
+## Addendum (2026-07-07) — Follow-up item 7 has been exercised for lifting-logbook, ahead of the recommended pairing
+
+A live per-repo check (`gh api repos/brownm09/<repo> --jq .allow_auto_merge`), run 2026-07-06/07
+against every `brownm09/*` repo referenced in dev-env or in `claude/CLAUDE.md`, found:
+
+| Repo | `allow_auto_merge` |
+|---|---|
+| lifting-logbook | **`true`** |
+| dev-env | `false` |
+| career-playbook | `false` |
+| engineering-journal | `false` |
+| win11-init-tools | `false` |
+
+So the blanket claim elsewhere in this ADR ("`allow_auto_merge` stays `false` across every
+`brownm09/*` repo") and in the global CLAUDE.md ("not yet made for any repo") is now **stale for
+lifting-logbook specifically**. This addendum replaces that blanket framing with the corrected one:
+**check live state per repo** — a repo-settings toggle leaves no git history, so a snapshot claim
+in a doc will drift out from under it exactly as this one did. The global CLAUDE.md's Auto-merge
+bullet has been updated accordingly in the same change that added this addendum.
+
+**What's known about how this happened.** GitHub repo-setting toggles (web UI or `gh repo
+edit`/`gh api PATCH`) leave no git history trail, and personal (non-org) accounts have no
+settings-change audit-log API, so the exact moment and actor can't be reconstructed after the fact.
+lifting-logbook has no `.github/settings.yml` (repo settings aren't declarative there), ruling out
+a config-as-code explanation. Circumstantial evidence ties the flip to the same work stream as
+[lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718) ("Add mandatory
+Review Gate required status check," opened 2026-07-06T03:59 — exactly the item-7 decision this
+ADR's 2026-07-06 addendum above was written to anticipate): sub-issue
+[#720](https://github.com/brownm09/lifting-logbook/issues/720) and the workflow it ships
+([lifting-logbook PR #722](https://github.com/brownm09/lifting-logbook/pull/722)) were opened the
+same day, and a `gh pr merge --squash --auto` was run successfully in a lifting-logbook session
+that same day too — which requires `allow_auto_merge: true` at the GitHub API level regardless of
+the local hook's own checkpoint gate. This reads as **intentional-in-direction, not unnoticed
+drift**.
+
+**But it's premature relative to this ADR's own recommended sequencing.** The 2026-07-06 addendum's
+Recommendation above was explicit: pair the toggle with a required "Review Gate" GitHub Actions
+check, specifically because the toggle alone reopens the web-UI/GitHub-triggered-merge gap this
+whole ADR exists to close only for the Claude-Code-mediated path. As of this writing, lifting-logbook
+has the toggle **on** but the paired check is **not yet in place**: `review-gate.yml` exists only
+on an open, unmerged PR ([lifting-logbook#722](https://github.com/brownm09/lifting-logbook/pull/722)) —
+not on `main` — and even once merged it still needs sub-issue 2 of #718 (the branch-protection
+mutation) before it's *required*. Until both land, a human merging via lifting-logbook's web UI, or
+GitHub's own auto-merge firing once CI goes green, bypasses all review-findings enforcement on that
+repo. This is not hypothetical — it is lifting-logbook's live state at the time of this addendum.
+
+**Disposition.** No toggle was changed by this addendum or its companion CLAUDE.md edit — this is
+a documentation correction only, consistent with the "Not a decision" framing of the 2026-07-06
+addendum above. Whether to leave lifting-logbook's toggle on while #722 is in flight, or revert it
+to `false` until the required-check pairing completes, is a judgment call for whoever owns that
+repo's rollout timeline — flagged here, not resolved here. Tracked via
+[dev-env#607](https://github.com/brownm09/dev-env/issues/607).
+
+**Follow-up item 7 status, updated:** no longer "not yet made for any repo." Made, in effect, for
+lifting-logbook — ahead of its own recommended safety pairing; still `false`/undecided for every
+other repo checked. Track lifting-logbook's remaining piece (making Review Gate required) via
+[lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718)/[#720](https://github.com/brownm09/lifting-logbook/issues/720)/[#722](https://github.com/brownm09/lifting-logbook/pull/722),
+not a new dev-env-side issue.
+
+---
+
+## Addendum (2026-07-08) — lifting-logbook#722 merged; the paired check ships and reports, but is not yet required
+
+The 2026-07-07 addendum above described lifting-logbook#722 as "an open, unmerged PR... not on
+`main`." That is no longer accurate as of this addendum: PR
+[lifting-logbook#722](https://github.com/brownm09/lifting-logbook/pull/722) merged 2026-07-08
+(`0d9dce4cbfbc2147276b68f58c4d8ae866632f10`). `.github/workflows/review-gate.yml` is now live on
+lifting-logbook's `main`, reporting a real `Review Gate` pass/fail commit status on every PR —
+confirmed live during the merge itself. Sub-issue
+[lifting-logbook#720](https://github.com/brownm09/lifting-logbook/issues/720) is closed.
+
+**This closes the *informational* half of the gap, not the *enforcement* half.** The check is not
+yet wired into branch protection as a required status check — nothing blocks a merge today when it
+fails; it is reporting-only. `allow_auto_merge` also remains `true`. Top-level
+[lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718) stays **open** for
+exactly this reason: its second sub-issue (the branch-protection mutation that makes Review Gate
+required) has not yet been filed. Until that lands, a human merging via lifting-logbook's web UI, or
+GitHub's own auto-merge firing on green CI, still bypasses all review-findings enforcement on that
+repo — same live gap the 2026-07-07 addendum flagged, now partially, not fully, closed.
+
+No toggle was changed by this addendum. Disposition of the remaining piece is unchanged from above:
+a judgment call for whoever owns lifting-logbook's rollout timeline, tracked via
+[lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718).
