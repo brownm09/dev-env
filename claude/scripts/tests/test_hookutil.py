@@ -156,6 +156,14 @@ def test_result_text_empty() -> str:
     return "_result_text returns '' when there is no content and no toolUseResult"
 
 
+def test_result_text_output_fallback_coerced() -> str:
+    # No stdout/stderr -> fall back to toolUseResult.output, str()-coercing a non-str value.
+    item = {"content": ""}
+    rec = {"toolUseResult": {"output": 123}}
+    assert _hookutil._result_text(item, rec) == "123"
+    return "_result_text falls back to toolUseResult.output, coercing a non-str via str()"
+
+
 def test_iter_bash_calls_pairs_by_id_with_cwd() -> str:
     records = [
         {"type": "assistant", "cwd": "/repo", "message": {"content": [
@@ -240,6 +248,7 @@ def main() -> int:
         ("_result_text: list content", test_result_text_list_content),
         ("_result_text: toolUseResult fallback", test_result_text_tooluseresult_fallback),
         ("_result_text: empty -> ''", test_result_text_empty),
+        ("_result_text: output fallback coerced", test_result_text_output_fallback_coerced),
         ("iter_bash_calls: pairs by id (+cwd)", test_iter_bash_calls_pairs_by_id_with_cwd),
         ("iter_bash_calls: parallel not mismatched", test_iter_bash_calls_parallel_not_mismatched),
         ("iter_bash_calls: default cwd ''", test_iter_bash_calls_default_cwd_empty),

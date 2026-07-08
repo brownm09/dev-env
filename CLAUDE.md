@@ -898,10 +898,11 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     merged+enum and no-merge -> exit 0, the `stop_hook_active` loop guard -> exit 0, and that the
     sentinel suppresses a second fire. `main()`'s stdin/sentinel plumbing beyond the end-to-end runs
     is not separately unit-tested (pure-helper convention). The transcript-record readers
-    (`load_records` / `_parse_records` / `iter_bash_calls` / `_result_text` / `_content_items`) are
-    imported from `_hookutil` ([ADR-090](docs/adr/090-shared-transcript-readers-hookutil.md)); the gate
-    wraps `iter_bash_calls` in a thin 2-tuple adapter (it never needs `cwd`), so `session_merged_prs`
-    and these tests are unchanged by that extraction.
+    (`load_records` / `_parse_records` / `iter_bash_calls` / `_result_text` / `_content_items`) now
+    live in `_hookutil` ([ADR-090](docs/adr/090-shared-transcript-readers-hookutil.md)) — the gate
+    imports the three it uses (`_content_items`, `_parse_records`, and the shared `iter_bash_calls`,
+    aliased) and wraps the last in a thin 2-tuple adapter (it never needs `cwd`), so
+    `session_merged_prs` and these tests are unchanged by that extraction.
 
     ```bash
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py

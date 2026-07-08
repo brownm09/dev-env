@@ -35,16 +35,21 @@ reference: a Stop hook must check it and exit 0 early once continuing, or it can
 block forever).
 
 The transcript-record readers (``load_records`` / ``_parse_records`` /
-``iter_bash_calls`` / ``_result_text`` / ``_content_items``) are imported from
+``iter_bash_calls`` / ``_result_text`` / ``_content_items``) now live in
 ``_hookutil`` — the same shared module the sentinels / transcript-locate come
 from — so this hook and ``posttooluse-inert-advisory.py`` can no longer drift on
 how a transcript is parsed (ADR-090, reversing ADR-088's original replicate-them
-decision after both PR #604 reviewers flagged the duplication). ``_hookutil``'s
-``iter_bash_calls`` returns ``(command, output, cwd)``; this gate never needs
-``cwd``, so the local ``iter_bash_calls`` below is a thin 2-tuple adapter over it.
-The merge-marker / segment parser is imported from ``_hookio``; ``_first_line``
-stays local — a command-segment helper (not a transcript reader), intentionally
-duplicated with ``_hookio._first_line`` as a separate decision (ADR-088).
+decision after both PR #604 reviewers flagged the duplication). This gate imports
+only the three it uses: ``_content_items`` and ``_parse_records`` (its ``main()``
+parses the transcript text directly, after the cheap ``"merged"`` pre-filter), and
+the shared ``iter_bash_calls`` (aliased) — wrapped in a thin 2-tuple adapter below,
+since ``_hookutil``'s ``iter_bash_calls`` returns ``(command, output, cwd)`` and
+this gate never needs ``cwd``. (``load_records`` and ``_result_text`` also live in
+``_hookutil`` but the gate needs neither directly — ``_result_text`` is used only
+inside the shared ``iter_bash_calls``.) The merge-marker / segment parser is
+imported from ``_hookio``; ``_first_line`` stays local — a command-segment helper
+(not a transcript reader), intentionally duplicated with ``_hookio._first_line``
+as a separate decision (ADR-088).
 
 Stdin JSON shape (Stop):
   {"session_id": "...", "transcript_path": "/abs/path.jsonl",
@@ -119,9 +124,11 @@ _SKIP_RE = re.compile(r"\b(?:skip\s+tiles?|don'?t\s+(?:spawn\s+)?tiles?|no\s+til
 
 # --- transcript readers -------------------------------------------------------
 # The record readers (``load_records`` / ``_parse_records`` / ``iter_bash_calls`` /
-# ``_result_text`` / ``_content_items``) are imported from ``_hookutil`` (ADR-090);
-# only ``_first_line`` (a command-segment helper, not a transcript reader) and the
-# 2-tuple ``iter_bash_calls`` adapter below stay local.
+# ``_result_text`` / ``_content_items``) now live in ``_hookutil`` (ADR-090); this
+# gate imports the three it uses (``_content_items``, ``_parse_records``, and the
+# shared ``iter_bash_calls`` aliased as ``_iter_bash_calls``). Only ``_first_line``
+# (a command-segment helper, not a transcript reader) and the 2-tuple
+# ``iter_bash_calls`` adapter below stay local.
 
 def _first_line(segment: str) -> str:
     """A segment's own first physical line — its invocation/flags only ever live
