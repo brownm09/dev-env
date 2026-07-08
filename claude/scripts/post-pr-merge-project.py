@@ -59,8 +59,16 @@ _PR_URL_REPO_RE = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.
 # mirrors _effective_merge_repo's resolution order in pr-merge-reminder.py
 # (dev-env#470). Checked first so a --subject/--body value that happens to
 # mention an unrelated PR URL cannot override an explicitly-named --repo
-# (review finding on dev-env#559 / PR #572).
-_REPO_FLAG_RE = re.compile(r"--repo\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
+# (review finding on dev-env#559 / PR #572). Also matches gh's -R shorthand
+# for --repo (dev-env#616) — a bare `-R` merge command previously fell
+# through to None, silently resolving to cwd's own config instead. The
+# (?<!\S) lookbehind requires -R/--repo to start a standalone token, so it
+# can't match mid-word (e.g. a PR title literally containing "add-R support")
+# — review finding on PR #623. It does NOT make this quote-aware: a
+# --subject/--body value containing a space-separated "-R other/repo"
+# substring can still false-match (dev-env#626, filed as a separate,
+# larger follow-up rather than expanded here).
+_REPO_FLAG_RE = re.compile(r"(?<!\S)(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
 # The argument list of the `gh pr merge` invocation only — up to the next shell
 # separator — so a /pull/N URL in a --subject/--body value or a chained sibling
 # command cannot hijack the PR-number extraction (the whole-command search did;

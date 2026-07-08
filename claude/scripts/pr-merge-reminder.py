@@ -153,18 +153,23 @@ def _effective_push_dir(command: str, cwd: str) -> str:
 
 # An explicit `--repo owner/repo` flag names the merge target directly — the
 # highest-confidence signal, ahead of any cd-chain or cwd resolution. Mirrors
-# extract_repo's resolution order in post-pr-merge-pull.py (ADR-067).
-_REPO_FLAG_RE = re.compile(r"--repo\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
+# extract_repo's resolution order in post-pr-merge-pull.py (ADR-067). Also
+# matches gh's `-R` shorthand for `--repo` (dev-env#616). The `(?<!\S)`
+# lookbehind requires the flag to start a standalone token, so it can't
+# match mid-word — but is not quote-aware (dev-env#626, review finding on
+# PR #623).
+_REPO_FLAG_RE = re.compile(r"(?<!\S)(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
 
 
 def _effective_merge_repo(command: str, cwd: str) -> str:
     """Best-effort repo label for a top-level ``gh pr merge`` in *command*.
 
-    An explicit ``--repo owner/repo`` flag takes precedence over cwd and any
-    ``cd``-chain prefix — e.g. ``gh pr merge 110 --repo other/repo`` run from an
-    unrelated cwd reports ``other/repo``, not the session directory (dev-env#470).
-    Falls back to ``effective_merge_dir(command, cwd)`` (the cd-chain / cwd
-    resolution, ADR-067) when no ``--repo`` flag is present.
+    An explicit ``--repo``/``-R owner/repo`` flag takes precedence over cwd and
+    any ``cd``-chain prefix — e.g. ``gh pr merge 110 --repo other/repo`` run
+    from an unrelated cwd reports ``other/repo``, not the session directory
+    (dev-env#470; ``-R`` shorthand added in dev-env#616). Falls back to
+    ``effective_merge_dir(command, cwd)`` (the cd-chain / cwd resolution,
+    ADR-067) when no ``--repo``/``-R`` flag is present.
     """
     m = _REPO_FLAG_RE.search(command)
     if m:
