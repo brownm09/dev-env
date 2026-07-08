@@ -11,7 +11,7 @@ Development environment configuration for cross-device use.
 | `claude/scripts/` | `~/.claude/scripts/` (junction) | Hook scripts and utilities |
 | `claude/skills/` | `~/.claude/skills/` (junction) | Custom slash command skills |
 | `claude/routines/` | `~/.claude/routines/` (junction) | Scheduled-task source definitions — registering a live task is a separate step, see [Routines](#routines) |
-| `claude/templates/` | read at runtime by skills | Document templates |
+| `claude/templates/` | `~/.claude/templates/` (junction) | Document templates, read at runtime by skills |
 
 ## Setup
 

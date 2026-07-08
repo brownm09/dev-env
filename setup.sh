@@ -71,7 +71,7 @@ setup_windows() {
   win_link "$REPO_DIR/claude/settings.json" "$HOME/.claude/settings.json" file
   echo "  Linked settings.json"
 
-  for subdir in scripts skills hooks; do
+  for subdir in scripts skills hooks templates; do
     win_link "$REPO_DIR/claude/$subdir" "$HOME/.claude/$subdir" dir
     echo "  Linked $subdir/"
   done
@@ -136,7 +136,7 @@ setup_unix() {
     echo "  Linked $item"
   done
 
-  for subdir in scripts skills hooks; do
+  for subdir in scripts skills hooks templates; do
     ln -sf "$REPO_DIR/claude/$subdir" "$HOME/.claude/$subdir"
     echo "  Linked $subdir/"
   done
