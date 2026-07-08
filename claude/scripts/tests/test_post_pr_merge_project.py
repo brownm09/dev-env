@@ -198,6 +198,27 @@ def test_repo_from_repo_flag_no_url() -> str:
     return "--repo flag, no PR URL -> flag's repo"
 
 
+def test_repo_from_repo_flag_short_form() -> str:
+    # dev-env#616: gh's -R shorthand for --repo was not recognized, so a
+    # `-R owner/repo` merge command fell through to None and silently
+    # resolved against cwd's own config instead of the command's actual
+    # target repo (the filed incident: a dev-env merge run with `-R
+    # brownm09/dev-env` from a lifting-logbook cwd moved a lifting-logbook
+    # issue's board item instead of dev-env's).
+    cmd = "gh pr merge 611 -R brownm09/dev-env --squash"
+    assert extract_repo_from_command(cmd) == "brownm09/dev-env"
+    return "-R flag (gh's --repo shorthand) resolves identically to --repo (dev-env#616)"
+
+
+def test_repo_from_dash_r_mid_word_not_matched() -> str:
+    # dev-env#626 / review finding on PR #623: the (?<!\S) lookbehind requires
+    # -R to start a standalone token, so a coincidental "-R" mid-word (e.g. a
+    # PR title fragment like "xx-R") must not be mistaken for the flag.
+    cmd = "gh pr merge 42 xx-R brownm09/dev-env --squash"
+    assert extract_repo_from_command(cmd) is None
+    return "mid-word '-R' (not a standalone token) -> None, not falsely matched (dev-env#626)"
+
+
 # --- extract_pr_number (output) ------------------------------------------
 
 def test_output_squash_marker() -> str:
@@ -300,6 +321,8 @@ def main() -> int:
         ("repo: mixed-case URL preserved", test_repo_from_url_case_preserved),
         ("repo: --repo flag wins over subject URL", test_repo_from_repo_flag_wins_over_subject_url),
         ("repo: --repo flag, no URL", test_repo_from_repo_flag_no_url),
+        ("repo: -R shorthand resolves same as --repo (dev-env#616)", test_repo_from_repo_flag_short_form),
+        ("repo: mid-word '-R' not matched (dev-env#626)", test_repo_from_dash_r_mid_word_not_matched),
         ("output: squash marker", test_output_squash_marker),
         ("output: merged marker", test_output_merged_marker),
         ("output: cross-repo marker", test_output_cross_repo_marker),

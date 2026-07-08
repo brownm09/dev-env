@@ -11,6 +11,13 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Files and directories linked from claude/ into ~/.claude/ on every platform
+# (docs/adr/003-config-in-version-control.md). Shared by setup_windows() and
+# setup_unix() so the two platforms' loops can't silently diverge the way
+# `templates` did (dev-env#606) -- one list, iterated twice.
+CLAUDE_FILE_LINKS=(CLAUDE.md settings.json)
+CLAUDE_DIR_LINKS=(scripts skills hooks templates)
+
 # ---------------------------------------------------------------------------
 # Windows setup
 # ---------------------------------------------------------------------------
@@ -61,32 +68,7 @@ setup_windows() {
     echo ""
   fi
 
-  # -- ~/.claude layout ----------------------------------------------------
-  mkdir -p "$HOME/.claude"
-  echo "Creating ~/.claude layout..."
-
-  win_link "$REPO_DIR/claude/CLAUDE.md"    "$HOME/.claude/CLAUDE.md"    file
-  echo "  Linked CLAUDE.md"
-
-  win_link "$REPO_DIR/claude/settings.json" "$HOME/.claude/settings.json" file
-  echo "  Linked settings.json"
-
-  for subdir in scripts skills hooks templates; do
-    win_link "$REPO_DIR/claude/$subdir" "$HOME/.claude/$subdir" dir
-    echo "  Linked $subdir/"
-  done
-
-  # Read-only mirror so a routine can self-reference its own canonical source at
-  # run time. Does NOT register scheduled tasks — the scheduled-tasks MCP tool owns
-  # a separate, non-linked ~/.claude/scheduled-tasks/ directory. See ADR-003 amendment.
-  win_link "$REPO_DIR/claude/routines" "$HOME/.claude/routines" junction
-  echo "  Linked routines/ (junction)"
-
-  mkdir -p "$HOME/.claude/scratch"
-  echo "  Created scratch/"
-
-  win_link "$REPO_DIR/bin" "$HOME/bin" junction
-  echo "  Linked ~/bin/"
+  link_claude_windows
 
   set_hooks_path
 
@@ -116,6 +98,37 @@ win_link() {
   cmd.exe /c "mklink $flag \"$dst_win\" \"$src_win\""
 }
 
+# link_claude_windows -- create/refresh the ~/.claude junction/symlink layout
+# and ~/bin from the shared CLAUDE_FILE_LINKS/CLAUDE_DIR_LINKS enumeration.
+# Split out from setup_windows() so the enumeration is testable without the
+# UAC elevation gate above -- see claude/scripts/tests/test-setup-link-loop.sh.
+link_claude_windows() {
+  mkdir -p "$HOME/.claude"
+  echo "Creating ~/.claude layout..."
+
+  for item in "${CLAUDE_FILE_LINKS[@]}"; do
+    win_link "$REPO_DIR/claude/$item" "$HOME/.claude/$item" file
+    echo "  Linked $item"
+  done
+
+  for subdir in "${CLAUDE_DIR_LINKS[@]}"; do
+    win_link "$REPO_DIR/claude/$subdir" "$HOME/.claude/$subdir" dir
+    echo "  Linked $subdir/"
+  done
+
+  # Read-only mirror so a routine can self-reference its own canonical source at
+  # run time. Does NOT register scheduled tasks — the scheduled-tasks MCP tool owns
+  # a separate, non-linked ~/.claude/scheduled-tasks/ directory. See ADR-003 amendment.
+  win_link "$REPO_DIR/claude/routines" "$HOME/.claude/routines" junction
+  echo "  Linked routines/ (junction)"
+
+  mkdir -p "$HOME/.claude/scratch"
+  echo "  Created scratch/"
+
+  win_link "$REPO_DIR/bin" "$HOME/bin" junction
+  echo "  Linked ~/bin/"
+}
+
 # ---------------------------------------------------------------------------
 # Linux / macOS setup
 # ---------------------------------------------------------------------------
@@ -128,15 +141,27 @@ setup_unix() {
   echo "  Hooks will not fire correctly until those paths are updated for this OS."
   echo ""
 
+  link_claude_unix
+
+  set_hooks_path
+
+  echo ""
+  echo "Done. Reload your shell so ~/bin is on PATH (or open a new terminal)."
+}
+
+# link_claude_unix -- create/refresh the ~/.claude symlink layout and ~/bin
+# from the shared CLAUDE_FILE_LINKS/CLAUDE_DIR_LINKS enumeration -- see
+# claude/scripts/tests/test-setup-link-loop.sh.
+link_claude_unix() {
   mkdir -p "$HOME/.claude"
   echo "Creating ~/.claude layout..."
 
-  for item in CLAUDE.md settings.json; do
+  for item in "${CLAUDE_FILE_LINKS[@]}"; do
     ln -sf "$REPO_DIR/claude/$item" "$HOME/.claude/$item"
     echo "  Linked $item"
   done
 
-  for subdir in scripts skills hooks templates; do
+  for subdir in "${CLAUDE_DIR_LINKS[@]}"; do
     ln -sf "$REPO_DIR/claude/$subdir" "$HOME/.claude/$subdir"
     echo "  Linked $subdir/"
   done
@@ -152,11 +177,6 @@ setup_unix() {
 
   ln -sf "$REPO_DIR/bin" "$HOME/bin"
   echo "  Linked ~/bin/"
-
-  set_hooks_path
-
-  echo ""
-  echo "Done. Reload your shell so ~/bin is on PATH (or open a new terminal)."
 }
 
 # ---------------------------------------------------------------------------
@@ -181,11 +201,17 @@ set_hooks_path() {
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
-OS="$(uname -s)"
-case "$OS" in
-  MINGW*|CYGWIN*|MSYS*) setup_windows ;;
-  Linux|Darwin)          setup_unix ;;
-  *)
-    echo "Unsupported OS: $OS" >&2
-    exit 1 ;;
-esac
+# Guarded so this file can be sourced by a test harness (which stubs win_link/
+# ln and calls link_claude_windows/link_claude_unix directly) without
+# executing OS detection or the elevation gate -- see
+# claude/scripts/tests/test-setup-link-loop.sh.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  OS="$(uname -s)"
+  case "$OS" in
+    MINGW*|CYGWIN*|MSYS*) setup_windows ;;
+    Linux|Darwin)          setup_unix ;;
+    *)
+      echo "Unsupported OS: $OS" >&2
+      exit 1 ;;
+  esac
+fi

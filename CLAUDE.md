@@ -197,7 +197,9 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     the same merge-args region as the PR-number extraction so a chained sibling command can't hijack it;
     a bare number or bare form both yield `None`, falling back to cwd's config; an explicit `--repo` flag
     is checked first and wins over a URL mentioned in a `--subject`/`--body` value — review finding on
-    PR #572 — mirroring `_effective_merge_repo`'s flag-first precedence in `pr-merge-reminder.py`).
+    PR #572 — mirroring `_effective_merge_repo`'s flag-first precedence in `pr-merge-reminder.py`), and
+    also recognizes gh's `-R` shorthand for `--repo` (dev-env#616 — the shorthand previously fell through
+    to `None` and silently resolved against cwd's own config instead of the command's actual target repo).
     `main()` skips the whole operation when the parsed repo doesn't match cwd's config — cwd's
     project-board fields don't apply to a different repo regardless of which PR's body gets fetched —
     but that gate itself is not separately unit-tested, consistent with this file's pure-helper-only
@@ -220,8 +222,10 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     predicate: a canonical checked out on `main` gets a plain `pull --ff-only` (the fetch-into-ref trick
     fails with 'refusing to fetch into branch ... checked out' there — dev-env#488,
     [ADR-058 amendment](docs/adr/058-worktree-squatting-main-detection-correction.md)); a feature branch
-    (or squatting worktree) checked out gets the original fetch-into-ref, unchanged. The `pull_main` /
-    `extract_repo` / `list_worktrees` git calls are not covered
+    (or squatting worktree) checked out gets the original fetch-into-ref, unchanged. Also exercises the
+    pure-string resolution paths of `extract_repo()`'s `--repo`/`-R` flag check (`-R` shorthand added in
+    dev-env#616) and its GitHub-URL parse. The `pull_main` / `list_worktrees` git calls and `extract_repo`'s
+    git-remote subprocess fallback are not covered
     ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md), incl. Amendment 9 for the command-shape
     anchoring).
 
@@ -272,8 +276,10 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     proves PostToolUse fired, that `iter_bash_calls` pairs each Bash command with its result by `tool_use_id`
     (so parallel calls don't cross), that `detect_board_actions` triggers only on dev-env (project #3)
     creates/merges and ignores other-repo URLs, URL-less creates, hard-merge-failures, and bare merges from a
-    non-dev-env cwd, that `should_emit` stays silent whenever any PostToolUse attachment is present (the
-    healthy session), and that the advisory is ASCII/cp1252-encodable so it can't vanish under Claude Code's
+    non-dev-env cwd, that `_devenv_merge_pr`'s `--repo`/`-R` flag check resolves both forms identically
+    (`-R` shorthand added in dev-env#616), that `should_emit` stays silent whenever any PostToolUse
+    attachment is present (the healthy session), and that the advisory is ASCII/cp1252-encodable so it
+    can't vanish under Claude Code's
     cp1252-piped hook stdout ([ADR-053](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md),
     [ADR-055](docs/adr/055-reliable-event-inert-posttooluse-advisory.md)). `iter_bash_calls`,
     `load_records`, and `_result_text` are imported from `_hookutil`
@@ -463,7 +469,9 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     marker itself is lost, dev-env#489): `True` overrides a marker-less `merge_ok` to fire the merge
     reminder, `False` leaves it unfired, and the default `None` (every pre-existing call in this suite)
     reproduces the exact pre-#504 marker-only behavior — `main()`, not `_build_messages`, decides
-    whether to attempt the live call, so this suite never shells out. The live `_open_pr_for_cwd` and
+    whether to attempt the live call, so this suite never shells out. Also exercises `_effective_merge_repo`'s
+    `--repo`/`-R` flag check (`-R` shorthand added in dev-env#616) overriding cwd and any cd-chain, falling
+    back to `effective_merge_dir` when absent. The live `_open_pr_for_cwd` and
     `confirm_merge_via_gh` subprocess boundaries are not covered (the repo avoids subprocess mocks).
 
     ```bash
@@ -906,6 +914,26 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 
     ```bash
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
+    ```
+
+49. **setup-link-loop test** — required when changing `setup.sh`'s `CLAUDE_FILE_LINKS` /
+    `CLAUDE_DIR_LINKS` arrays or its `link_claude_windows()` / `link_claude_unix()` functions.
+    Sources `setup.sh` unmodified — a guard around the OS-dispatch block at the bottom makes this
+    safe, since sourcing only defines functions/arrays without executing anything — and exercises
+    the extracted link functions with `win_link`/`ln` stubbed to a call log, so the test needs no
+    Administrator/Developer Mode privilege and never touches a real `~/.claude` or global git
+    config: pins the shared `CLAUDE_FILE_LINKS` (`CLAUDE.md`, `settings.json`) and
+    `CLAUDE_DIR_LINKS` (`scripts`, `skills`, `hooks`, `templates`) enumeration against
+    [ADR-003](docs/adr/003-config-in-version-control.md)'s table, and that
+    `link_claude_windows()` / `link_claude_unix()` each call their link primitive for exactly the
+    expected 8 targets (the two arrays, plus the separately-linked `routines` junction and
+    `~/bin`) in order, against a real throwaway `$HOME` — so the unstubbed `mkdir -p` calls are
+    verified for real too. `setup_windows()`'s UAC elevation gate, the soft-prereq warnings,
+    `set_hooks_path()`'s global `git config` mutation, and `win_link`'s actual `cygpath`/`mklink`
+    invocation are out of scope by design ([dev-env#614](https://github.com/brownm09/dev-env/issues/614)).
+
+    ```bash
+    bash claude/scripts/tests/test-setup-link-loop.sh
     ```
 
 50. **journal-stop-check test** — required when changing `claude/scripts/journal-stop-check.py`.

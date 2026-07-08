@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02 (eleven amendments — see Amendment sections below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist
+**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08 (fourteen amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand
 
 ---
 
@@ -928,3 +928,83 @@ provides no guarantee about the second, and conflating them would have either re
 `--help` false positive (if the second question were skipped) or risked suppressing a real merge (if
 the two were merged into one over-eager check instead of two independently composed, narrowly-scoped
 predicates).
+
+## Amendment 14 (2026-07-08) — recognizing gh's `-R` shorthand for `--repo` across the repo-flag-checking hooks (dev-env#616)
+
+**The gap.** Every repo-flag check this ADR's hooks rely on — `extract_repo_from_command()`
+(`post-pr-merge-project.py`), `_effective_merge_repo()` (`pr-merge-reminder.py`, dev-env#470),
+`_devenv_merge_pr()` (`posttooluse-inert-advisory.py`), and `extract_repo()` (`post-pr-merge-pull.py`,
+ADR-067) — matched only the long `--repo owner/repo` flag. None recognized `gh`'s documented `-R`
+shorthand for the same flag, so a `-R owner/repo` merge command fell through exactly as if no repo
+flag were present at all, silently resolving against the fallback (cwd's own
+`.claude/hook-config.json`, or — for `pr-merge-reminder.py`/`post-pr-merge-pull.py` — cwd/cd-chain
+resolution) instead of the command's actual target repo.
+
+**Symptom.** Running `gh pr merge 611 -R brownm09/dev-env --squash` from a session whose cwd was
+`lifting-logbook` (merging dev-env PR #611, closing dev-env#606) made `post-pr-merge-project.py`
+report `Issue #608 moved to Done` — lifting-logbook#608, not any dev-env issue.
+`extract_repo_from_command` returned `None` for the `-R`-flagged command, so `main()` fell through to
+`repo = config.get("repo", "")`, resolving cwd's own (lifting-logbook's) project-board config; from
+there `get_pr_body(611, repo="brownm09/lifting-logbook")` fetched a real, unrelated, already-merged
+lifting-logbook PR that coincidentally shared the number 611, and its `Closes #608` moved that repo's
+issue. Harmless this time only because lifting-logbook#608's board item was already Done — a different
+pairing of coincidental PR numbers and issue states could have silently reverted real in-progress work
+on an unrelated repo's board.
+
+**Scope — four hooks needed the fix, two already had it.** The issue's own text named
+`post-pr-merge-project.py` (the incident) and flagged `_effective_merge_repo` in
+`pr-merge-reminder.py` as a likely identical-shape sibling, per `extract_repo_from_command`'s own
+docstring claim to mirror its resolution order. Auditing every `--repo`-flag check in
+`claude/scripts/*.py` — not just hooks with a `_REPO_FLAG_RE`-named constant, since one of the four
+turned out to be an unnamed inline `re.search()` call that a name-scoped grep would have missed —
+found two more instances of the identical gap:
+
+- `posttooluse-inert-advisory.py`'s `_REPO_FLAG_RE = re.compile(r"--repo[=\s]+(\S+)")`, feeding
+  `_devenv_merge_pr()`'s repo-identity check (ADR-053/ADR-055's Stop-hook safety net — the same
+  misattribution risk as the incident, just surfaced as an advisory rather than a live board mutation).
+- `post-pr-merge-pull.py`'s `extract_repo()`, whose `--repo` check is an inline
+  `re.search(r"--repo\s+(...)", command)` with no named constant at all (ADR-067) — feeding which
+  local clone gets fast-forwarded, so the same gap here silently redirects a local `git fetch`/`pull`
+  to the wrong repo's clone instead of a project-board mutation.
+
+Two siblings already handled `-R` correctly and needed no change: `post-tool-use.py`'s
+`extract_repo_flag()` (dev-env#542 — a prior, narrower fix for the `gh issue/pr create`-side project-add
+hook that was never swept to this merge-side family, the same "a fix scoped to one hook is a standing
+invitation to check every sibling" lesson Amendments 1, 6, 9, 10, and 12 already drew) and
+`stop-tile-enumeration-gate.py`'s own `_REPO_FLAG_RE` (ADR-088).
+
+**Fix.** Extended each of the four gap sites' regex to accept `-R` as an alternate flag spelling,
+minimally and in the same shape the existing regex already used per file — `(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)`
+for the three that anchored on a strict `owner/repo` character class, `(?:--repo|-R)[=\s]+(\S+)` for
+`posttooluse-inert-advisory.py`'s looser form. Deliberately did **not** port `post-tool-use.py`'s more
+sophisticated `extract_repo_flag()` (which also normalizes a full URL form and an `=`-joined form,
+dev-env#542/#544) into the other four files — that hook's richer parsing exists to feed `gh issue/pr
+create`'s cross-repo config resolution, a different call site with different inputs than these four
+merge-side hooks; broadening scope to match its full behavior is unrelated to the `-R`-recognition gap
+this issue reported and would be scope creep, not a fix.
+
+**Coverage.** Each fixed file's existing pure-helper suite gained one `-R`-shorthand case, pinned
+against the exact incident shape (`gh pr merge 611 -R brownm09/dev-env --squash`) resolving identically
+to the equivalent `--repo` form already covered: `test_post_pr_merge_project.py`
+(`test_repo_from_repo_flag_short_form`, 27 tests total, up from 26), `test_pr_merge_reminder.py`
+(`test_merge_repo_short_flag_form`, 49 total, up from 48), `test_posttooluse_inert_advisory.py` (two
+new assertions inside the existing `test_devenv_merge_pr_direct`, one resolving to dev-env and one to a
+different repo — mirroring the pre-existing `--repo` pair exactly, 31 total unchanged in count),
+and `test_post_pr_merge_pull.py` (`test_extract_repo_short_flag_form`, 15 total, up from 14). The live
+`gh`/`git` calls each file's `main()` eventually feeds remain untested per this ADR's established
+no-subprocess-mock convention, unchanged by this amendment.
+
+**General lesson (continuing Amendments 1, 6, 9, 10, and 12's).** A sweep scoped to a *named* pattern
+(`_REPO_FLAG_RE`) is still narrower than a sweep scoped to the pattern's *shape* — `post-pr-merge-pull.py`'s
+inline, unnamed `re.search(r"--repo\s+...", command)` carried the identical bug but would have survived
+a grep for the constant name alone. This is the same lesson Amendment 11 already drew for crude
+substring checks ("grep for the shape of the bug rather than its previously-observed instances") and
+Amendment 6 drew for the `scan_top_level` engine ("grep for the engine, not the call pattern") — applied
+here a third time to a third kind of drifted duplication. A second, narrower lesson specific to this
+amendment: dev-env#542's fix for `post-tool-use.py` predates this issue by roughly a month and
+already solved the identical `-R`-recognition problem in one file, but nothing connected that fix to
+the sibling hooks sharing the same *narrower* `--repo`-only regex shape at the time — a durable
+mechanical proxy analogous to Amendment 11's AST-based crude-substring-check gate (grep
+`claude/scripts/*.py` for any `--repo`-matching regex lacking a `-R`/`(?:--repo|-R)` alternate on
+introduction) would have caught this class the same day dev-env#542 landed, rather than a month later
+via a live misattribution incident.
