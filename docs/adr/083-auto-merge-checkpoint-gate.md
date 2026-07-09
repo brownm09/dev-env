@@ -644,3 +644,44 @@ independently re-checked here since this addendum's scope is lifting-logbook onl
 dev-env-side tracking issue is needed for lifting-logbook's rollout — this closes the thread
 [dev-env#607](https://github.com/brownm09/dev-env/issues/607) and the 2026-07-06/07/08 addenda
 opened.
+
+---
+
+## Addendum (2026-07-09) — Clarifying what counts as a qualifying citation for `adr_warrant=written`
+
+[dev-env#688](https://github.com/brownm09/dev-env/issues/688) surfaced an ambiguity in Decision
+point 1's `written` bullet above ("a new or amended ADR is included in this PR (or a prior PR
+already covers it, cited by number)"): the text never said whether the cited PR must cover the
+*literal same* decision, or whether citing a prior PR that established precedent for a *class* of
+decisions is sufficient.
+
+**Concrete incident.** Reviewing [dev-env#676](https://github.com/brownm09/dev-env/pull/676)
+(folding three cross-repo worktree-scoping gaps into `claude/CLAUDE.md`), criterion 1 applied (the
+diff touches `claude/CLAUDE.md` directly). The PR body cited PR #608 — but #608 covered a
+*different*, earlier gap in the same overall issue family, not #676's actual new content. The
+literal decision #608 made is not the same decision as the one #676 made; #608 is precedent for a
+*class* of decision ("cross-repo worktree-scoping gotchas get a plain CLAUDE.md bullet + issue
+link, not an ADR"), not the identical decision restated. The reviewing session resolved this via
+judgment — treating "precedent for the same class of change, in the same section, explicitly
+reasoned about in the PR body" as sufficient for `written` — but nothing in this ADR (or in Step
+2f as shipped) said so explicitly, leaving every future occurrence to re-derive the same call from
+scratch.
+
+**Clarification.** A cited prior PR satisfies `written` if it establishes precedent for the same
+*class* of change — same file/section, same category of rule — **and** the citing PR body
+explicitly states why that precedent applies here. It does not need to cover the literal identical
+decision. A citation that shares only surface similarity (e.g., the same file touched, but a
+different category of rule, or no stated reasoning connecting the two) does not qualify; Step 2f
+should record `missing` in that case, not `written`. This keeps `written`-via-citation a
+deliberate, documented judgment call rather than a rubber stamp — the same bar the shipped Step 2f
+already applies to the "hard to recover from `git log` alone" criterion (point 4), just made
+explicit for the citation path too.
+
+`claude/skills/review/SKILL.md` Step 2f has been updated with this clarification in the same PR
+that adds this addendum. No change to the Decision, Consequences, or the hook's mechanical
+behavior — the marker text and pass/fail logic are unchanged; this addendum only sharpens the
+judgment criterion a session applies *before* writing `written` into the marker.
+
+**Disposition.** Not a decision reversal — a clarification of an existing one, per the same "Not a
+decision" framing the 2026-07-06 addendum above uses. Closes
+[dev-env#688](https://github.com/brownm09/dev-env/issues/688).
