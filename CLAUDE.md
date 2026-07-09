@@ -1118,6 +1118,28 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_journal_stop_check.py
     ```
 
+51. **idle-refresher test** — required when changing `claude/scripts/idle-refresher.py`. Exercises the
+    pure helpers offline (no stdin, network, gh, or disk — fixture-only, matching item 47's precedent):
+    `parse_iso_to_epoch` (the transcript `Z` / `+00:00` / naive / microsecond timestamp forms agree, and
+    bad/`None`/non-str input yields `None`); `last_activity_epoch` (anchors on the **last** assistant
+    record's timestamp — deliberately not "the last record of any type," which would be the just-submitted
+    user prompt appended around submit time and always read as gap ~0 — and returns `None` when no assistant
+    turn exists, which doubles as the first-prompt-of-session skip); `has_prior_assistant_turn`;
+    `compute_gap_seconds`; `should_refresh` (the strict-`>` threshold boundary: `== thresh` does not fire,
+    `> thresh` does, `None` never does); `load_threshold_minutes` via `tempfile.TemporaryDirectory` (the
+    `idle_refresher_minutes` override honored, and the missing-config / absent-key / malformed-JSON
+    fallbacks to the 60-min default); `is_automated_prompt` (the XML-prefixed skip, incl. leading
+    whitespace and the lowercase-initial-only match); `humanize_gap`; and the ASCII/cp1252-encodability of
+    the injected `additionalContext` cue (per `test_posttooluse_inert_advisory.py`'s precedent, so it can't
+    vanish under Claude Code's cp1252-piped hook stdout). `main()`'s stdin plumbing and the live transcript
+    read (through the already-tested `_hookutil.load_records` / `find_transcript`) are not covered
+    (pure-helper convention) — exercised instead by the manual end-to-end smoke run in the PR
+    ([ADR-095](docs/adr/095-session-boundary-summaries-and-idle-refresher.md); dev-env#655).
+
+    ```bash
+    py -3 claude/scripts/tests/test_idle_refresher.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
