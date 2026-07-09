@@ -498,8 +498,11 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     reproduces the exact pre-#504 marker-only behavior — `main()`, not `_build_messages`, decides
     whether to attempt the live call, so this suite never shells out. Also exercises `_effective_merge_repo`'s
     `--repo`/`-R` flag check (`-R` shorthand added in dev-env#616) overriding cwd and any cd-chain, falling
-    back to `effective_merge_dir` when absent. The live `_open_pr_for_cwd` and
-    `confirm_merge_via_gh` subprocess boundaries are not covered (the repo avoids subprocess mocks).
+    back to `effective_merge_dir` when absent. Also exercises `_effective_create_repo` (dev-env#646, ADR-050
+    Amendment 18) — the `is_create` branch's own counterpart, gaining the identical `--repo`/`-R` flag-first
+    precedence, but falling back to plain cwd (no cd-chain dir) when absent, since that branch never had one.
+    The live `_open_pr_for_cwd` and `confirm_merge_via_gh` subprocess boundaries are not covered (the repo
+    avoids subprocess mocks).
 
     ```bash
     py -3 claude/scripts/tests/test_pr_merge_reminder.py

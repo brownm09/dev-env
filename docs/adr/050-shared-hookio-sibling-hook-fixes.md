@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08, 2026-07-09 (seventeen amendments — see Amendment sections below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking, gh-create-help, prose-flag-masking
+**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08, 2026-07-09 (eighteen amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking, gh-create-help, prose-flag-masking, pr-create
 
 ---
 
@@ -1386,3 +1386,78 @@ itself was always a better candidate for extraction than either of the two polic
 second policy (`mask_prose_flag_values`) needed the identical opacity rules. Distinguishing "the engine" from
 "the policy built on it" — Amendment 5's own original framing — is a decision worth revisiting each time a
 function gains a second caller with different needs, not just settling it once and treating that as final.
+
+## Amendment 18 (2026-07-09) — `_effective_create_repo`: extending the `--repo`/`-R` flag-first resolution to `pr-merge-reminder.py`'s `is_create` branch (dev-env#646)
+
+**The gap.** Amendment 14 swept every `--repo`-flag check in `claude/scripts/*.py` for `-R`-shorthand
+recognition, but that sweep — like dev-env#616's own issue text — was scoped to checks that *already existed*:
+`_effective_merge_repo` (`pr-merge-reminder.py`'s `merge_ok` branch), `extract_repo_from_command`
+(`post-pr-merge-project.py`), `_devenv_merge_pr` (`posttooluse-inert-advisory.py`), and `extract_repo`
+(`post-pr-merge-pull.py`). `pr-merge-reminder.py`'s **other** branch — `is_create`, which fires on a successful
+`gh pr create` — was never in scope for any of that, because it had no repo-flag resolution to fix in the first
+place: it has always unconditionally reported `cwd` and told the reminded session to "Identify the project
+journal path from cwd," full stop. A `-R`/`--repo`-sweep grep (Amendment 14's own "grep for the shape, not the
+constant name" lesson) would not have found this gap either — there was no `_REPO_FLAG_RE`-shaped regex, or any
+regex at all, backing this branch's `cwd` report to grep for.
+
+**Live reproduction (2026-07-08, dev-env#646's own filing).** `gh pr create --repo brownm09/dev-env --title
+"..." --head docs/issue-642-tile-dont-ask-anywhere ...` run from a lifting-logbook-cwd session created
+dev-env#644. The hook fired immediately with `cwd: C:\Users\brown\Git\lifting-logbook` and "1. Identify the
+project journal path from cwd" — blindly following it would have written PR #644's stub and open-PR shard
+under `sessions/lifting-logbook/`, misattributing a dev-env PR to the wrong project's journal. Caught only
+because the session independently knew better; a less careful session would not have.
+
+**Fix.** `pr-merge-reminder.py` gains `_effective_create_repo(command, cwd)`, structurally identical to
+`_effective_merge_repo`: a `--repo`/`-R` flag (via the same `_REPO_FLAG_RE`, run against a
+`mask_quoted_spans`-masked copy of `command` — the dev-env#626/Amendment 15 protection applies from this
+function's introduction, not as a later follow-up) takes precedence, falling back to `cwd` otherwise. The one
+deliberate divergence from `_effective_merge_repo`: no delegation to a cd-chain-aware helper (there is no
+`effective_create_dir` counterpart to `effective_merge_dir`) — the `is_create` branch has only ever reported
+plain `cwd`, so an unflagged create command's reminder is byte-for-byte unchanged by this fix; only the
+explicit-flag case is new behavior. `_build_messages`'s `is_create` branch now computes `create_repo =
+_effective_create_repo(command, cwd)` and prints both `cwd:` and `repo:` lines, with "Identify the project
+journal path from the repo above" replacing "from cwd" — mirroring the `merge_ok` branch's own existing
+`cwd:`/`repo:` display and phrasing exactly (a plain textual diff between the two branches' message bodies now
+shows only the label and instruction-line changes, not a structurally different message shape).
+
+**`_REPO_FLAG_RE`'s comment updated for its second consumer**, and `_hookio.py`'s `mask_quoted_spans` module
+comment gains a fourth incremental paragraph (following the same pattern Amendment 17 used for its own two new
+sites) naming `_effective_create_repo` as a seventh `mask_quoted_spans` call site — deliberately additive
+rather than rewriting the original "four call sites" sentence, matching Amendment 17's own precedent for
+exactly this situation.
+
+**Coverage.** `test_pr_merge_reminder.py` gains a new `_effective_create_repo` section mirroring
+`_effective_merge_repo`'s own: the dev-env#646 repro itself (`--repo` flag from an unrelated cwd), the `-R`
+shorthand, the no-flag-falls-back-to-cwd baseline, and a real flag surviving alongside a quoted
+`--body`-value decoy (the `mask_quoted_spans` protection, now proven at this seventh call site too) — 56 total,
+up from 52. The pre-existing `test_build_messages_single_create_success_fires` and its chained-command siblings
+were left unmodified (they assert only `"gh pr create detected" in messages[0]`, not the message's literal
+body) and continue to pass unchanged, confirming the new `repo:` line is additive, not a breaking format
+change. `test_hookio.py` needed no new tests (the comment-only addition there does not change
+`mask_quoted_spans`'s behavior) and was re-run in full to confirm — 86 total, unchanged from Amendment 17.
+
+**Out of scope, filed as a follow-up (not fixed here).** `/review` on this amendment's own PR (#662), via
+direct execution rather than just reading, found that both `_effective_merge_repo` and the new
+`_effective_create_repo` resolve `--repo`/`-R` via a search over the **entire** `command` string, not scoped
+to their own statement — confirmed live: `gh pr create --repo a/x --fill && gh pr merge 5 --repo b/y --squash`
+resolves `_effective_merge_repo` to `a/x` (the create's own flag), not `b/y`. Whichever `--repo` flag appears
+textually first in the command wins for **both** functions, regardless of which statement it actually belongs
+to. Pre-existing in `_effective_merge_repo` since dev-env#470 (not introduced by this amendment) and only
+manifests when a single command chains create and merge with two **different** explicit repos — the common
+single-repo chained pattern already tested extensively elsewhere in this file is unaffected either way. Filed
+as [dev-env#667](https://github.com/brownm09/dev-env/issues/667) rather than expanded here: a proper fix needs
+to scope each function's search to its own statement's region (e.g. via `split_top_level`), a shared design
+change touching both functions that is a larger, distinct unit of work than this amendment's create-path-only
+scope — the same "grep for the shape, note what's out of scope, file it" discipline Amendments 15 and 17 both
+already established for this exact ADR.
+
+**General lesson (continuing Amendments 1, 6, 9, 10, 12, and 14's).** The "a fix scoped to one hook/branch is a
+standing invitation to check every sibling doing the same kind of thing" lesson, drawn repeatedly in this ADR,
+has a sharper edge here than usual: `is_create` and `merge_ok` are not two separate files or two separate
+functions maintained by different authors — they are two branches of the *same* `_build_messages` function in
+the *same* file, and the asymmetry survived four separate repo-flag-focused amendments (14, 15, and the
+`is_create`-adjacent Amendment 16, none of which touched this gap) before a live misattribution surfaced it.
+The mechanical proxy this suggests, sharper than "grep for `_REPO_FLAG_RE`": whenever one branch of a shared
+message-building function gains a new resolution helper, ask whether every *other* branch of that same
+function reports its target the same way — a within-function asymmetry is easy to miss precisely because both
+branches read as "already covered" from a file-level or grep-level audit.
