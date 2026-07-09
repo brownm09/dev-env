@@ -606,13 +606,33 @@ def test_mask_prose_flag_values_equals_form_masked() -> str:
     return "--subject=<quoted value> (equals form) masked"
 
 
-def test_mask_prose_flag_values_unquoted_value_not_masked() -> str:
-    # An unquoted single-token value has no internal whitespace, so it can't
-    # hide a "decoy surrounded by prose" -- nothing to mask, and the (only)
-    # opaque-span check finds none starting right after the flag.
+def test_mask_prose_flag_values_unquoted_value_also_masked() -> str:
+    # Review finding: an unquoted single-token value can ITSELF be the decoy
+    # -- no surrounding prose needed to hide in (e.g. --body <bare-decoy-url>
+    # with no quotes at all). Masked the same way a quoted value is.
     cmd = "gh pr merge 42 --subject urgent-fix --squash"
-    assert mask_prose_flag_values(cmd) == cmd
-    return "unquoted single-token --subject value left unchanged (nothing to mask)"
+    masked = mask_prose_flag_values(cmd)
+    assert masked == "gh pr merge 42 --subject " + "#" * len("urgent-fix") + " --squash", masked
+    return "unquoted single-token --subject value masked too (not just quoted-with-prose decoys)"
+
+
+def test_mask_prose_flag_values_unquoted_url_decoy_masked() -> str:
+    # The concrete repro this fix closes: an unquoted --body value that IS a
+    # decoy URL, with no quotes and no surrounding prose at all.
+    cmd = "gh pr merge 380 --body https://github.com/other/repo/pull/1 --squash"
+    masked = mask_prose_flag_values(cmd)
+    assert "other/repo" not in masked, masked
+    assert masked.startswith("gh pr merge 380 --body ") and masked.endswith(" --squash"), masked
+    return "unquoted --body value that is itself a URL-shaped decoy is masked"
+
+
+def test_mask_prose_flag_values_unquoted_value_at_end_of_string_masked() -> str:
+    # No trailing whitespace after the unquoted value -- masking must stop at
+    # the string's end without running past it or raising.
+    cmd = "gh pr merge 380 --body urgent-fix"
+    masked = mask_prose_flag_values(cmd)
+    assert masked == "gh pr merge 380 --body " + "#" * len("urgent-fix"), masked
+    return "unquoted value at end of string masked cleanly to end of string"
 
 
 def test_mask_prose_flag_values_bare_quoted_url_argument_not_masked() -> str:
@@ -869,7 +889,9 @@ def main() -> int:
         ("mask_prose_flag_values: single-quoted --body decoy masked", test_mask_prose_flag_values_single_quoted_body_masked),
         ("mask_prose_flag_values: -t/-b short forms masked", test_mask_prose_flag_values_short_flag_forms_masked),
         ("mask_prose_flag_values: --subject=<value> equals form masked", test_mask_prose_flag_values_equals_form_masked),
-        ("mask_prose_flag_values: unquoted value not masked", test_mask_prose_flag_values_unquoted_value_not_masked),
+        ("mask_prose_flag_values: unquoted value also masked", test_mask_prose_flag_values_unquoted_value_also_masked),
+        ("mask_prose_flag_values: unquoted URL decoy masked", test_mask_prose_flag_values_unquoted_url_decoy_masked),
+        ("mask_prose_flag_values: unquoted value at end of string masked", test_mask_prose_flag_values_unquoted_value_at_end_of_string_masked),
         ("mask_prose_flag_values: bare quoted PR-URL argument NOT masked", test_mask_prose_flag_values_bare_quoted_url_argument_not_masked),
         ("mask_prose_flag_values: real URL survives alongside masked decoy", test_mask_prose_flag_values_real_url_survives_alongside_masked_decoy),
         ("mask_prose_flag_values: $(cat <<'EOF'...) --body masked", test_mask_prose_flag_values_subshell_body_masked),

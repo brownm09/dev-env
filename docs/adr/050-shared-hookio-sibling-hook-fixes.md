@@ -1274,10 +1274,13 @@ bare quoted positional URL argument (`gh pr merge "https://github.com/o/r/pull/N
 dev-env#634 itself flagged without prescribing an exact mechanism.
 
 `mask_prose_flag_values` instead masks ONLY the value immediately following a `--subject`/`-t`/`--body`/`-b`
-flag — the actual shape of the risk (every reported repro, in this issue and in dev-env#626, is "URL/flag text
-as a substring inside prose," never a bare positional argument) — leaving every other opaque span, including a
-bare quoted positional URL argument, untouched. An unquoted single-token flag value is never masked either:
-with no internal whitespace, it structurally cannot contain a "decoy surrounded by prose."
+flag — quoted, `$()` subshell, heredoc, AND unquoted single-token values alike (the last of these was a gap in
+this amendment's own first draft, caught during `/review`: an unquoted `--body https://github.com/other/repo
+/pull/1` is just as much a decoy as the same URL sitting inside quoted prose, since the decoy doesn't need
+surrounding words to hide in when the flag's entire value IS the decoy — confirmed live:
+`extract_repo_from_command('gh pr merge 380 --body https://github.com/other/repo/pull/1 --squash')` returned
+`'other/repo'` before the fix). Every other opaque span, in particular a bare quoted *positional* URL argument
+never preceded by one of these flags, is left untouched.
 
 Applied at three of the four Amendment 15 call sites (their PR-URL fallback, run after the already-fixed
 repo-flag check finds no match):
@@ -1345,13 +1348,23 @@ computes for it — `mask_prose_flag_values` needs no extra heredoc/subshell-spe
   amendment — flagged as a follow-up worth its own investigation rather than folded into this fix, per this
   ADR's own established "grep for the shape, note what's out of scope, file it" discipline (Amendments 9, 11,
   15).
+- A **third decoy class**, found by `/review` on this amendment's own PR (#647) via a subagent that executed
+  the code directly: a **bare positional PR-number** inside `--subject`/`--body` prose (e.g. `--subject
+  "resolves 42 items"`) is read as a real PR number by three sites' `(?<!\S)(\d+)(?=\s|$)`-shaped regexes,
+  none of which are protected by either `mask_quoted_spans` or `mask_prose_flag_values` — those two helpers were
+  built for flag/URL extraction, not bare-number extraction. Confirmed live in
+  `posttooluse-inert-advisory.py::_devenv_merge_pr`, `post-pr-merge-project.py::extract_pr_number_from_command`,
+  and `stop-tile-enumeration-gate.py::_target_pr`. Genuinely a third, distinct decoy shape (neither a
+  `_REPO_FLAG_RE` variant nor a PR-URL regex), affecting a comparable number of sites to this amendment's own
+  fix — filed as [dev-env#650](https://github.com/brownm09/dev-env/issues/650) rather than folded in here.
 
-**Coverage.** `_hookio.py`'s `test_hookio.py` gains 10 new `mask_prose_flag_values` tests (no-op passthrough;
+**Coverage.** `_hookio.py`'s `test_hookio.py` gains 12 new `mask_prose_flag_values` tests (no-op passthrough;
 double- and single-quoted decoys masked; `-t`/`-b` short forms; the `--subject=<value>` equals form; an
-unquoted value left unmasked; the critical negative case — a bare quoted positional PR-URL argument NOT
-masked; a real URL surviving alongside a masked decoy; a `$(cat <<'EOF' ...)` heredoc-in-subshell `--body`
-value masked as one span; a mid-word `-b` not matched) — 84 total, up from 74 (Amendment 16 already brought
-this file to 74). `test-merge-findings-gate.sh` gains step 8 (site 1's two cases). `test_stop_tile_
+unquoted value masked too, plus the concrete unquoted-URL-decoy repro and an unquoted value at end-of-string
+with no crash; the critical negative case — a bare quoted positional PR-URL argument NOT masked; a real URL
+surviving alongside a masked decoy; a `$(cat <<'EOF' ...)` heredoc-in-subshell `--body` value masked as one
+span; a mid-word `-b` not matched) — 86 total, up from 74 (Amendment 16 already brought this file to 74).
+`test-merge-findings-gate.sh` gains step 8 (site 1's two cases). `test_stop_tile_
 enumeration_gate.py` gains 5 new direct `_explicit_repo` tests — 81 total, up from 76 (site 3). Each of the
 three site-4 files' existing suite gains two new cases (the exact dev-env#634 URL-decoy repro, and a real
 signal surviving alongside it) — `test_post_pr_merge_project.py` to 32 (up from 30),

@@ -587,9 +587,9 @@ def mask_quoted_spans(command: str) -> str:
     quoted value today (see each hook's own call site for the precise scope).
 
     See split_top_level's docstring for the shared quote/subshell/heredoc
-    opacity rules this function's state machine mirrors (kept as an
-    independent walk rather than a shared implementation -- see the module
-    comment above this function). The state machine itself now lives in
+    opacity rules `_opaque_spans`'s walk mirrors (kept as an independent walk
+    from split_top_level rather than a shared implementation -- see the
+    module comment above this function). That walk now lives in
     `_opaque_spans` (ADR-050 Amendment 17), shared with `mask_prose_flag_values`;
     this function's own behavior is unchanged by that extraction.
     """
@@ -630,39 +630,53 @@ def mask_quoted_spans(command: str) -> str:
 # stop-tile-enumeration-gate.py's own session_resolved_issue_numbers
 # docstring) is masked as the single opaque span it already is, with zero
 # extra logic here.
+#
+# Masks an UNQUOTED single-token value too (dev-env#634 review finding), not
+# only a quoted/subshell/heredoc one: `--body https://github.com/other/repo
+# /pull/1` (no quotes at all) is just as much a decoy as the same URL sitting
+# inside quoted prose -- the decoy doesn't need surrounding words to hide in
+# when the flag's ENTIRE value IS the decoy. A bare *positional* URL argument
+# is unaffected either way, since it is never preceded by one of these flags
+# in the first place.
 # ---------------------------------------------------------------------------
 
 _PROSE_FLAG_RE = re.compile(r"(?<!\S)(?:--subject|--body|-t|-b)(?:=|\s+)")
 
 
 def mask_prose_flag_values(command: str) -> str:
-    """Return *command* with the quoted/subshell/heredoc VALUE of every
-    --subject/-t/--body/-b flag replaced by a same-length run of '#' — every
-    other opaque span (in particular a bare quoted positional PR-URL
-    argument) is left byte-for-byte unchanged.
+    """Return *command* with the VALUE of every --subject/-t/--body/-b flag
+    replaced by a same-length run of '#' — quoted, `$()` subshell, heredoc,
+    and unquoted single-token values alike — while every other opaque span
+    (in particular a bare quoted positional PR-URL argument) is left
+    byte-for-byte unchanged.
 
     A PR-URL (or similar) regex run against this masked text instead of the
-    raw command can no longer mistake a --subject/--body value like ``"see
-    https://github.com/other/repo/pull/1 for context"`` for a genuine PR-URL
-    argument (dev-env#634) — the value's quoted span is blanked before the
-    regex ever sees it — while a legitimate bare quoted URL argument (``gh pr
-    merge "https://github.com/o/r/pull/1"``) is untouched, since it is never
-    preceded by one of these flags.
+    raw command can no longer mistake a --subject/--body value for a genuine
+    PR-URL argument (dev-env#634) — whether the decoy is a URL-shaped
+    substring buried in quoted prose (``"see https://.../pull/1 for
+    context"``) or the flag's entire UNQUOTED value (``--body
+    https://.../pull/1``, no surrounding prose needed) — while a legitimate
+    bare quoted URL argument (``gh pr merge "https://github.com/o/r/pull/1"``)
+    is untouched, since it is never preceded by one of these flags.
 
-    Only a flag value that itself begins with a quote/``$(``/heredoc-opener is
-    masked (the `_opaque_spans` entry whose start coincides exactly with the
-    position right after the flag+separator); an unquoted single-token value
-    is left alone. See `mask_quoted_spans`'s own docstring for the shared
-    opacity rules (quotes, `$()` subshells, heredocs) this function masks the
-    same way.
+    A value that itself begins with a quote/``$(``/heredoc-opener is masked
+    via the matching `_opaque_spans` entry (whose start coincides exactly
+    with the position right after the flag+separator). Otherwise the value is
+    unquoted: masked by walking forward to the next whitespace character or
+    the end of the string. See `mask_quoted_spans`'s own docstring for the
+    shared opacity rules (quotes, `$()` subshells, heredocs) the quoted branch
+    masks the same way.
     """
+    n = len(command)
     spans = dict(_opaque_spans(command))
     out = list(command)
     for m in _PROSE_FLAG_RE.finditer(command):
         start = m.end()
         end = spans.get(start)
         if end is None:
-            continue
+            end = start
+            while end < n and not command[end].isspace():
+                end += 1
         for idx in range(start, end):
             if out[idx] not in ("\n", "\r"):
                 out[idx] = "#"
