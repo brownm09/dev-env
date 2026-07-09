@@ -16,6 +16,9 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 TOKEN_LOG = Path.home() / ".claude" / "scratch" / "token-sessions.jsonl"
 CLAUDE_DIR = Path.home() / ".claude"
 
