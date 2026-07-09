@@ -122,6 +122,14 @@ _STRIP_VERB_RE = re.compile(r"\s*gh(?:\.exe)?\s+pr\s+\w+\b(.*)", re.IGNORECASE |
 # only checks that the preceding character is whitespace, which a quoted
 # value's own internal spacing satisfies just as well as a real token boundary.
 _PR_URL_RE = re.compile(r"github\.com/(?P<repo>[^/\s]+/[^/\s]+)/pull/(?P<num>\d+)")
+# `_target_pr` and `_closed_issue_number` both run this against a
+# `mask_quoted_spans`-masked copy of their own `tail` (dev-env#650, ADR-050
+# Amendment 18), so a --subject/--body value containing a space-separated
+# bare number ("resolves 42 items") can't be mistaken for the real target PR
+# or issue number -- the same quoted-value blind spot Amendment 15 closed for
+# _REPO_FLAG_RE below, just for a bare-digit token instead of a --repo/-R
+# flag. mask_quoted_spans (not mask_prose_flag_values) is used because this
+# decoy shape isn't scoped to a --subject/--body/-t/-b flag specifically.
 _POS_NUM_RE = re.compile(r"(?<!\S)(\d+)(?=\s|$)")
 _REPO_FLAG_RE = re.compile(r"(?<!\S)(?:--repo|-R)(?:=|\s+)(?P<repo>[^\s/]+/[^\s]+)")
 
@@ -199,13 +207,23 @@ def iter_bash_calls(records: list) -> list:
 def _target_pr(segment_first_line: str) -> int | None:
     """PR number a ``gh pr merge|view|checks`` invocation targets (a ``/pull/N``
     URL or the first bare positional integer), else ``None`` (bare form — infers
-    from the current branch, no number in the command)."""
+    from the current branch, no number in the command).
+
+    The positional-integer fallback runs against a `mask_quoted_spans`-masked
+    copy of `tail` (dev-env#650, ADR-050 Amendment 18), so a --subject/--body
+    value containing a space-separated bare number ("resolves 42 items")
+    can't be mistaken for the real target PR number. The `_PR_URL_RE` check
+    deliberately stays on the *unmasked* text, mirroring `_explicit_repo`'s
+    own masking-scope decision immediately below (a quoted `/pull/N` URL is a
+    legitimate shape masking would otherwise blind; this hook's own PR-URL
+    regex remains out of scope for both dev-env#634 and dev-env#650).
+    """
     m = _STRIP_VERB_RE.match(segment_first_line)
     tail = m.group(1) if m else ""
     u = _PR_URL_RE.search(tail)
     if u:
         return int(u.group("num"))
-    n = _POS_NUM_RE.search(tail)
+    n = _POS_NUM_RE.search(mask_quoted_spans(tail))
     return int(n.group(1)) if n else None
 
 
@@ -326,13 +344,18 @@ def _closed_issue_number(segment_first_line: str) -> int | None:
     issue number in a URL is preceded by `/`, never whitespace, so it never
     satisfied `_POS_NUM_RE`'s `(?<!\\S)` boundary -- review of PR #639,
     confirmed independently by both reviewers). Mirrors `_target_pr`'s
-    URL-first-then-positional precedence."""
+    URL-first-then-positional precedence, including its dev-env#650 fix: the
+    positional-integer fallback runs against a `mask_quoted_spans`-masked
+    copy of `tail`, so a decoy bare number inside a quoted value elsewhere on
+    the same `gh issue close` invocation can't be mistaken for the real
+    target issue number. `_ISSUE_URL_RE` stays on the unmasked text, mirroring
+    `_target_pr`'s own `_PR_URL_RE` scope decision."""
     m = _STRIP_ISSUE_CLOSE_VERB_RE.match(segment_first_line)
     tail = m.group(1) if m else ""
     u = _ISSUE_URL_RE.search(tail)
     if u:
         return int(u.group("num"))
-    n = _POS_NUM_RE.search(tail)
+    n = _POS_NUM_RE.search(mask_quoted_spans(tail))
     return int(n.group(1)) if n else None
 
 

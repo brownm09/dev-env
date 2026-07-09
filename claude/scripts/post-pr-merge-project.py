@@ -126,6 +126,16 @@ def extract_pr_number_from_command(command: str) -> int | None:
         gh pr merge <url>/pull/380 --squash  -> 380
     A bare `gh pr merge --squash --delete-branch` (the current branch's PR) names
     no number; the caller then falls back to the output success marker. (#380)
+
+    The positional-number match runs against a `mask_quoted_spans`-masked copy
+    of `args` (dev-env#650, ADR-050 Amendment 18), so a `--subject`/`--body`
+    value containing a space-separated bare number ("resolves 42 items")
+    cannot be mistaken for the real merged PR number — the same
+    quoted-value blind spot Amendment 15 closed for the repo-flag regex family,
+    just for a bare-digit token instead of a `--repo`/`-R` flag. The `_PR_URL_RE`
+    fallback below is unaffected by that masking (it runs on the original,
+    unmasked `args`) — a still-open, structurally distinct gap for a
+    URL-shaped decoy tracked separately, not part of dev-env#650's scope.
     """
     m = _MERGE_ARGS_RE.search(command)
     if not m:
@@ -134,7 +144,7 @@ def extract_pr_number_from_command(command: str) -> int | None:
     # Positional number token (`380`), tolerant of flags before it; a digit run
     # inside a flag value (`--foo=12`) or a branch name (`my-branch-2`) is not a
     # standalone token and is correctly ignored.
-    num = re.search(r"(?<!\S)(\d+)(?=\s|$)", args)
+    num = re.search(r"(?<!\S)(\d+)(?=\s|$)", mask_quoted_spans(args))
     if num:
         return int(num.group(1))
     url = _PR_URL_RE.search(args)

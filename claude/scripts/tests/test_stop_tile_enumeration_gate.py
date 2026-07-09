@@ -458,6 +458,58 @@ def test_explicit_repo_url_fallback_stays_unmasked():
 
 
 # ---------------------------------------------------------------------------
+# _target_pr direct coverage (dev-env#650, ADR-050 Amendment 18)
+#
+# _target_pr's own _POS_NUM_RE positional-integer fallback was never made
+# quote-aware -- a --subject/--body value containing a legitimately
+# space-separated bare number ("resolves 42 items") was indistinguishable
+# from a real positional PR-number argument, the same quoted-value blind spot
+# Amendment 15 closed for _REPO_FLAG_RE. Previously exercised only indirectly
+# via session_merged_prs (test_pr_url_positional_merge_detected etc, all with
+# no decoy); these are the function's first direct tests, mirroring the
+# _explicit_repo direct-coverage section above.
+# ---------------------------------------------------------------------------
+
+def test_target_pr_bare_number_decoy_in_subject_not_matched():
+    segment = 'gh pr view --subject "resolves 42 items"'
+    assert gate._target_pr(segment) is None
+    return "bare number decoy inside quoted --subject -> None, not falsely matched (dev-env#650)"
+
+
+def test_target_pr_real_number_survives_alongside_bare_number_decoy():
+    segment = 'gh pr merge 380 --subject "resolves 42 items"'
+    assert gate._target_pr(segment) == 380
+    return "real positional number resolves correctly alongside a quoted bare-number decoy (dev-env#650)"
+
+
+def test_target_pr_url_fallback_stays_unmasked():
+    # Mirrors test_explicit_repo_url_fallback_stays_unmasked: the _PR_URL_RE
+    # check is deliberately out of both dev-env#634's and dev-env#650's scope.
+    segment = 'gh pr merge "https://github.com/brownm09/dev-env/pull/42" --squash'
+    assert gate._target_pr(segment) == 42
+    return "quoted PR URL fallback still resolves (out of dev-env#634/#650's URL-regex scope)"
+
+
+def test_target_pr_via_session_merged_prs_with_decoy():
+    # Integration-level proof the fix reaches session_merged_prs, via the
+    # auto-merge acted-on/observed correlation path (the one path that
+    # actually calls _target_pr on the command -- a direct-marker merge
+    # resolves its number from the OUTPUT text via merge_pr_number_from_output
+    # first, never reaching _target_pr at all). The decoy is placed BEFORE
+    # the real positional number: re.search finds the leftmost match, so a
+    # decoy placed after the real number would pass even pre-fix (verified
+    # while writing this test) -- ordering the decoy first is what actually
+    # exercises the masking fix.
+    calls = [
+        ('gh pr merge --auto --subject "resolves 42 items" 380 --squash',
+         "! Pull request #380 will be automatically merged when all requirements are met"),
+        ("gh pr view 380 --json state,number", '{"number":380,"state":"MERGED"}'),
+    ]
+    assert gate.session_merged_prs(calls) == {380}
+    return "session_merged_prs: auto-merge correlation resolves the real PR despite a leading --subject bare-number decoy (dev-env#650)"
+
+
+# ---------------------------------------------------------------------------
 # dangling-created-issue detection (ADR-092, dev-env#638)
 # ---------------------------------------------------------------------------
 
@@ -569,6 +621,42 @@ def test_session_resolved_via_explicit_issue_close_url_form():
               "Closed issue #630 (Bug)")]
     assert gate.session_resolved_issue_numbers(calls, set()) == {630}
     return "gh issue close <url> -> resolved {630} (dev-env#639 review fix)"
+
+
+# ---------------------------------------------------------------------------
+# _closed_issue_number direct coverage (dev-env#650, ADR-050 Amendment 18)
+#
+# _closed_issue_number shares _target_pr's exact _POS_NUM_RE positional-
+# integer fallback (the literal same compiled regex object) but was not named
+# in dev-env#650's own three-site audit -- found by grepping this file for
+# _POS_NUM_RE usages while fixing the two sites the issue did name, per the
+# issue's own closing suggestion ("worth grepping the rest of
+# claude/scripts/*.py... before assuming these three are exhaustive").
+# Previously exercised only indirectly via session_resolved_issue_numbers
+# (test_session_resolved_via_explicit_issue_close et al, all with no decoy);
+# these are the function's first direct tests, mirroring _target_pr's own
+# direct-coverage section above.
+# ---------------------------------------------------------------------------
+
+def test_closed_issue_number_bare_number_decoy_not_matched():
+    segment = 'gh issue close --comment "resolves 42 items"'
+    assert gate._closed_issue_number(segment) is None
+    return "bare number decoy inside quoted --comment -> None, not falsely matched (dev-env#650)"
+
+
+def test_closed_issue_number_real_number_survives_alongside_decoy():
+    # Flag-before-positional-arg (like _target_pr's test_cmd_flag_before_arg
+    # analog): the decoy comes first, the real target issue number last.
+    segment = 'gh issue close --comment "resolves 42 items" 630'
+    assert gate._closed_issue_number(segment) == 630
+    return "real target issue number resolves correctly alongside a leading bare-number decoy (dev-env#650)"
+
+
+def test_closed_issue_number_via_session_resolved_with_decoy():
+    # Integration-level proof the fix reaches session_resolved_issue_numbers.
+    calls = [('gh issue close --comment "resolves 42 items" 630', "Closed issue #630 (Bug)")]
+    assert gate.session_resolved_issue_numbers(calls, set()) == {630}
+    return "session_resolved_issue_numbers: real issue resolves correctly despite a leading bare-number decoy (dev-env#650)"
 
 
 def test_session_resolved_via_gh_pr_edit_closes_keyword():
@@ -940,6 +1028,10 @@ def main():
         ("_explicit_repo: --repo flag survives alongside quoted decoy (dev-env#634)", test_explicit_repo_flag_survives_alongside_quoted_decoy),
         ("_explicit_repo: -R shorthand still resolves", test_explicit_repo_dash_r_shorthand_still_resolves),
         ("_explicit_repo: quoted PR URL fallback stays unmasked", test_explicit_repo_url_fallback_stays_unmasked),
+        ("_target_pr: bare number decoy inside quoted --subject not matched (dev-env#650)", test_target_pr_bare_number_decoy_in_subject_not_matched),
+        ("_target_pr: real number survives alongside bare-number decoy (dev-env#650)", test_target_pr_real_number_survives_alongside_bare_number_decoy),
+        ("_target_pr: quoted PR URL fallback stays unmasked (dev-env#650)", test_target_pr_url_fallback_stays_unmasked),
+        ("_target_pr: session_merged_prs resolves real PR despite leading decoy (dev-env#650)", test_target_pr_via_session_merged_prs_with_decoy),
         ("e2e merged+no-enum blocks on stderr", test_e2e_merged_no_enum_blocks_on_stderr),
         ("e2e merged+enum allows", test_e2e_merged_with_enum_allows),
         ("e2e no-merge allows", test_e2e_no_merge_allows),
@@ -958,6 +1050,9 @@ def main():
         ("resolved: unrelated chained segment not leaked", test_session_resolved_unrelated_chained_segment_not_leaked),
         ("resolved: via explicit gh issue close", test_session_resolved_via_explicit_issue_close),
         ("resolved: via explicit gh issue close (URL form)", test_session_resolved_via_explicit_issue_close_url_form),
+        ("_closed_issue_number: bare number decoy not matched (dev-env#650)", test_closed_issue_number_bare_number_decoy_not_matched),
+        ("_closed_issue_number: real number survives alongside decoy (dev-env#650)", test_closed_issue_number_real_number_survives_alongside_decoy),
+        ("_closed_issue_number: session_resolved_issue_numbers resolves despite leading decoy (dev-env#650)", test_closed_issue_number_via_session_resolved_with_decoy),
         ("resolved: via gh pr edit Closes keyword", test_session_resolved_via_gh_pr_edit_closes_keyword),
         ("resolved: via gh pr edit PR-URL target", test_session_resolved_via_gh_pr_edit_pr_url_target),
         ("resolved: gh pr edit target not merged", test_session_resolved_via_gh_pr_edit_target_not_merged),
