@@ -1090,7 +1090,7 @@ When a PR modifies any of the paths below, update the listed reference docs **in
 
 ## GitHub Project
 
-All new dev-env issues must be added to the **Dev Env** project and given an Impact rating and Why description before work begins. The general single-select option-mutation hazard that applies to **every** project is documented in the global `claude/CLAUDE.md` → Dev-Env & Project Boards section; the dev-env-specific IDs and procedures are below.
+All new dev-env issues and PRs must be added to the **Dev Env** project and given an Impact rating and Why description before work begins. The general single-select option-mutation hazard that applies to **every** project is documented in the global `claude/CLAUDE.md` → Dev-Env & Project Boards section; the dev-env-specific IDs and procedures are below.
 
 **Project IDs:**
 - Project number: `3`, owner: `brownm09`
@@ -1112,14 +1112,14 @@ All new dev-env issues must be added to the **Dev Env** project and given an Imp
 | Medium | Recurs periodically or silently degrades correctness over time |
 | Low | Nice-to-have; low frequency or easily worked around |
 
-**Workflow — automated via PostToolUse hook:** After `gh issue create` succeeds, `post-tool-use.py` adds the issue to project #3 and exits code 2, printing the exact `gh project item-edit` commands to set Impact and Why. **Run those commands immediately — before any file edits.**
+**Workflow — automated via PostToolUse hook:** After `gh issue create` or `gh pr create` succeeds, `post-tool-use.py` adds the issue or PR to project #3 and exits code 2, printing the exact `gh project item-edit` commands to set Impact and Why. **Run those commands immediately — before any file edits.** The hook treats both identically ([ADR-023](docs/adr/023-generic-required-fields-issue-hook.md)).
 
-**Fallback (if the hook did not fire or the item-add failed):** run the three steps manually. Requires project scope — add once if needed: `gh auth refresh -s project`. A *wholesale* non-fire — no `[project-hook]` output at all after `gh issue create`, and `spawn_task` chips also not rendering — most often means the session was launched as a background task / via `spawn_task`, where **every** PostToolUse hook is silently inert ([ADR-053](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md)); these manual steps are the recovery.
+**Fallback (if the hook did not fire or the item-add failed):** run the three steps manually (substitute the PR URL for the issue URL when the item is a PR). Requires project scope — add once if needed: `gh auth refresh -s project`. A *wholesale* non-fire — no `[project-hook]` output at all after `gh issue create` or `gh pr create`, and `spawn_task` chips also not rendering — most often means the session was launched as a background task / via `spawn_task`, where **every** PostToolUse hook is silently inert ([ADR-053](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md)); these manual steps are the recovery.
 
 ```bash
-# 1. Add issue to project, capture item ID
+# 1. Add issue/PR to project, capture item ID
 TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
-gh project item-add 3 --owner brownm09 --url <issue-url> --format json > "$TMPFILE"
+gh project item-add 3 --owner brownm09 --url <issue-or-pr-url> --format json > "$TMPFILE"
 ITEM_ID=$(node -e "const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8')); console.log(d.id);")
 rm -f "$TMPFILE"
 
@@ -1132,7 +1132,7 @@ gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
   --field-id PVTF_lAHOAjEKvM4BWKFezhRgkN0 --text "<why this matters>"
 ```
 
-To look up an item ID by issue number `<N>` (e.g., to move status in a later session):
+To look up an item ID by issue or PR number `<N>` (e.g., to move status in a later session):
 
 ```bash
 TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
