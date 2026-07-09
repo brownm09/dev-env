@@ -1090,7 +1090,7 @@ When a PR modifies any of the paths below, update the listed reference docs **in
 
 ## GitHub Project
 
-All new dev-env issues must be added to the **Dev Env** project and given an Impact rating and Why description before work begins. The general single-select option-mutation hazard that applies to **every** project is documented in the global `claude/CLAUDE.md` → Dev-Env & Project Boards section; the dev-env-specific IDs and procedures are below.
+All new dev-env issues and PRs must be added to the **Dev Env** project and given an Impact rating and Why description before work begins. The general single-select option-mutation hazard that applies to **every** project is documented in the global `claude/CLAUDE.md` → Dev-Env & Project Boards section; the dev-env-specific IDs and procedures are below.
 
 **Project IDs:**
 - Project number: `3`, owner: `brownm09`
@@ -1132,7 +1132,7 @@ gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
   --field-id PVTF_lAHOAjEKvM4BWKFezhRgkN0 --text "<why this matters>"
 ```
 
-To look up an item ID by issue number `<N>` (e.g., to move status in a later session):
+To look up an item ID by issue or PR number `<N>` (e.g., to move status in a later session):
 
 ```bash
 TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
