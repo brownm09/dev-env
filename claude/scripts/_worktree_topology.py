@@ -12,6 +12,18 @@ post-merge checkout for every *other* worktree's merge, and the canonical can't 
 `main`, so newly-merged hooks/scripts stay silently inert in the live `~/.claude/`. The
 2026-06-22 PR #391 recovery is the motivating incident — see ADR-058 and dev-env#396.
 
+This module hosts **two distinct invariants** now. The dev-env-specific one above (a
+canonical that must *always* be ``main``) drives ``main_squatter``/``canonical_sync_action``'s
+"healthy = on main" framing. A second, repo-agnostic one — a canonical must never be
+*detached* or checked out onto a Claude-managed worktree's own ``claude/<slug>`` branch,
+regardless of what *other* branch is otherwise legitimate for that repo — drives
+``resolve_current_branch``/``is_hijacked_branch`` below (dev-env#619, dev-env#630, ADR-093).
+The two compose: a caller with a narrower "must always be main" invariant (``dev-env-sync.py``)
+uses the first directly; a caller with a broader "may legitimately be on many branches, just
+never a hijacked one" invariant (``journal-canonical-guard.py``) uses the second to *gate*
+before reusing ``diagnose_main_topology``/``canonical_sync_action`` for the "is it safe to
+auto-correct" sub-decision only.
+
 This module is **policy-free and pure** (no ``_winsubp``, no subprocess, no ``main()``) so
 its helpers unit-test offline. It parses ``git worktree list --porcelain``, diagnoses the
 topology, and returns a *decision*; each caller performs the git mutation itself:
@@ -21,6 +33,10 @@ topology, and returns a *decision*; each caller performs the git mutation itself
   - ``post-pr-merge-pull.py`` parks the just-merged worktree when ``gh`` left it on ``main``.
   - ``dev-env-sync.py`` auto-returns a *clean* canonical to ``main``, else warns — naming the
     squatter and its park command, or preserving uncommitted drift.
+  - ``journal-canonical-guard.py`` auto-returns a *hijacked* engineering-journal canonical
+    (detached, or on a stray ``claude/*`` branch) to ``main``, else warns — the same
+    return-canonical/warn-squatter/warn-dirty decision, gated by a narrower predicate since
+    that repo's canonical is legitimately on many other branches (e.g. ``draft/YYYY-MM-DD``).
 
 The non-destructive **park** (recreate ``claude/<slug>`` at the worktree's current commit)
 is the correction precedent: ``git checkout -b`` changes no working-tree files, so it frees
@@ -194,3 +210,36 @@ def merge_park_target(cwd: str, worktrees: "list[dict]") -> "str | None":
             # cwd is a worktree of the merged repo — park it only if it grabbed main.
             return park_branch_for(cwd) if wt["branch"] == "main" else None
     return None  # cwd is not a worktree of the merged repo
+
+
+def resolve_current_branch(symbolic_ref_returncode: int, symbolic_ref_stdout: str) -> str:
+    """Resolve the working branch name from ``git symbolic-ref --short HEAD``'s result.
+
+    A non-zero return code means detached HEAD (no symbolic ref to resolve) — routed to the
+    sentinel ``"<detached>"`` so callers feed it into the same diagnostic path as a
+    wrong-branch canonical, rather than silently exiting (dev-env#619). ``dev-env-sync.py``
+    used to call ``sys.exit(0)`` directly on a non-zero return code, so a detached canonical
+    never reached ``diagnose_main_topology``/``canonical_sync_action`` at all — even though
+    both already handle ``"<detached>"`` correctly (see ``main_squatter``'s bare/detached
+    guard above), since nothing routed a detached HEAD into them.
+    """
+    if symbolic_ref_returncode != 0:
+        return "<detached>"
+    return symbolic_ref_stdout.strip()
+
+
+def is_hijacked_branch(branch: "str | None") -> bool:
+    """True when ``branch`` matches the dev-env#630 hijack signature.
+
+    Unlike dev-env's canonical (always ``main``), other repos' canonicals may legitimately
+    sit on other named branches (e.g. engineering-journal's ``draft/YYYY-MM-DD``). This only
+    flags states never legitimate for ANY canonical: detached, or checked out onto a
+    Claude-managed worktree's own ``claude/<slug>`` branch — reserved for actual worktrees
+    living at a different filesystem path, never the canonical itself (git allows a branch
+    checked out in at most one worktree, so the canonical and a live worktree can never both
+    hold the same ``claude/<slug>`` branch at once).
+
+    Accepts ``None`` (e.g. ``diagnose_main_topology([])``'s ``canonical_branch`` field) without
+    raising — mirrors ``main_squatter``'s own falsy-branch guard.
+    """
+    return bool(branch) and (branch == "<detached>" or branch.startswith("claude/"))
