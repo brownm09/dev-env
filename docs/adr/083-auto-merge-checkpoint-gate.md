@@ -4,8 +4,8 @@
 **Status:** Accepted — implemented in the PR that closes [dev-env#574](https://github.com/brownm09/dev-env/issues/574).
 See "Implementation" below for what shipped and where it diverged from this design. **The Context
 and Implementation sections below describe `allow_auto_merge` state as of their respective dates —
-for current per-repo status, see the dated addenda at the end of this file (2026-07-06, 2026-07-07)
-before citing either section as present-tense fact.**
+for current per-repo status, see the dated addenda at the end of this file (2026-07-06, 2026-07-07,
+2026-07-08 ×2) before citing either section as present-tense fact.**
 **Tags:** git, pr, merge, auto-merge, workflow, hooks, pre-tool-use, review, adr-warrant,
 doc-reconciliation
 **Related:** [ADR-031](031-auto-merge-disabled.md), [ADR-039](039-merge-gate-findings-enforcement.md),
@@ -589,3 +589,58 @@ repo — same live gap the 2026-07-07 addendum flagged, now partially, not fully
 No toggle was changed by this addendum. Disposition of the remaining piece is unchanged from above:
 a judgment call for whoever owns lifting-logbook's rollout timeline, tracked via
 [lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718).
+
+---
+
+## Addendum (2026-07-08, cont'd) — lifting-logbook#718 fully closed; Review Gate is now a required check
+
+The gap the 2026-07-08 addendum above left open — "not yet wired into branch protection as a
+required status check" — is now closed. lifting-logbook
+[#757](https://github.com/brownm09/lifting-logbook/issues/757)/[#759](https://github.com/brownm09/lifting-logbook/pull/759)
+(merged 2026-07-08) added `Review Gate` to `main`'s branch-protection `required_status_checks.contexts`,
+alongside the five pre-existing contexts, via a full-replacement `PATCH` preceded by a
+snapshot-before-mutate backup. Live state was independently verified by read-back immediately after
+the mutation and again after the PR merged:
+
+```
+$ gh api repos/brownm09/lifting-logbook/branches/main/protection/required_status_checks --jq '.contexts | sort'
+["DB Integration Tests","Lint & Test","Observability Stack Smoke Test","Playwright E2E","Review Gate","Staging Integration Tests"]
+```
+
+Top-level [lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718) is now
+**closed** — both sub-issues (#720/#722 shipping the workflow, #757/#759 making it required) are
+complete.
+
+**This closes the enforcement half of the gap, completing the pairing the 2026-07-06 addendum
+recommended.** A human merging via lifting-logbook's web UI, or GitHub's own auto-merge firing once
+CI is green, can no longer bypass review-findings enforcement on that repo: `Review Gate` now
+mechanically blocks any PR without a fresh, clean (or disposed-findings) `/review` marker,
+regardless of who or what triggers the merge. This was validated live, not just inferred: PR #759
+itself required a passing `Review Gate` to merge (it briefly failed with "Review marker is stale"
+after a merge-commit from `main` postdated the first `/review` pass, correcting itself once a fresh
+`/review` ran) — the first real PR to be gated by its own change.
+
+**One real, incidental discovery from landing this: a live rehearsal of the failure mode ADR-031's
+own Rationale accepted as a tradeoff, not a new gap.** Because the branch-protection mutation and
+the `.github/expected-required-checks.json`/docs sync landed in the same PR but necessarily at
+different points in GitHub's evaluation (`workflow_dispatch`/`push`/`schedule` triggers always
+evaluate live `main`, which lagged the PR's own branch until merge), lifting-logbook's
+`required-checks-drift.yml` correctly fired on a manual dispatch mid-PR, filing
+[lifting-logbook#764](https://github.com/brownm09/lifting-logbook/issues/764). That's the
+drift-detection workflow doing exactly its documented job against a real, if self-inflicted and
+temporary, mismatch — not a bug in this ADR's design. It resolved automatically on the next
+push-triggered run once #759 merged; #764 is closed.
+
+**`allow_auto_merge` remains `true` on lifting-logbook**, unchanged by this addendum — confirmed
+still live via `gh api repos/brownm09/lifting-logbook --jq .allow_auto_merge` during this same
+verification pass. That toggle was never re-litigated here; it was already the accepted, if
+premature-at-the-time, state the 2026-07-07 addendum recorded, and the required-check pairing this
+addendum documents is precisely what makes it no longer premature.
+
+**Follow-up item 7 status, updated again:** lifting-logbook is now fully rolled out per this ADR's
+own recommended sequencing — toggle on, required check paired. No other `brownm09/*` repo has
+flipped `allow_auto_merge` as of this writing (per the 2026-07-07 addendum's survey; not
+independently re-checked here since this addendum's scope is lifting-logbook only). No further
+dev-env-side tracking issue is needed for lifting-logbook's rollout — this closes the thread
+[dev-env#607](https://github.com/brownm09/dev-env/issues/607) and the 2026-07-06/07/08 addenda
+opened.
