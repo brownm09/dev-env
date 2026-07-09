@@ -10,6 +10,10 @@ convention: shared logic lives in an underscore module that both the original sc
 and a new hook import directly (see ``_journal_shards.py`` / ADR-057, ``_worktree_canon.py``
 / ADR-073). No production script ever ``importlib``s a hyphenated sibling.
 
+A third consumer, ``stub-push-archive-reminder.py``, reads ``prs_opened``/``prs_closed`` via
+``has_unresolved_open_pr()`` to gate the post-stub-push archive reminder on a same-session PR
+still being open (dev-env#651, ADR-091 Amendment 1).
+
 Two schemas are covered:
 
   - Manifest shards (``sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl``):
@@ -57,6 +61,31 @@ def missing_required_fields(entry: object, fields: tuple[str, ...] = REQUIRED_FI
 def missing_open_pr_fields(entry: object) -> list[str]:
     """``missing_required_fields`` specialized to the open-PR shard schema."""
     return missing_required_fields(entry, OPEN_PR_REQUIRED_FIELDS)
+
+
+def has_unresolved_open_pr(entry: object) -> bool:
+    """True if entry's ``prs_opened`` includes a PR number not also in ``prs_closed``.
+
+    Compared as strings so an int- or str-typed PR number in either list still matches.
+    A non-dict entry returns False (nothing to flag — a caller needing "can't confirm
+    resolved" semantics on unreadable/unparseable input applies that at the file-read
+    layer, e.g. ``stub-push-archive-reminder.py``'s ``head_commit_has_unresolved_pr``). A
+    present ``prs_opened``/``prs_closed`` value that isn't a list (valid JSON, wrong field
+    shape — e.g. a bare string PR number instead of a one-element list) returns True
+    rather than silently misparsing (iterating a string's characters) or raising:
+    malformed, so it cannot be confirmed resolved.
+    """
+    if not isinstance(entry, dict):
+        return False
+    opened = entry.get("prs_opened")
+    closed = entry.get("prs_closed")
+    if opened is not None and not isinstance(opened, list):
+        return True
+    if closed is not None and not isinstance(closed, list):
+        return True
+    opened_set = {str(n) for n in (opened or [])}
+    closed_set = {str(n) for n in (closed or [])}
+    return bool(opened_set - closed_set)
 
 
 def find_entries_missing_fields(entries):

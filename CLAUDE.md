@@ -267,7 +267,16 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `is_git_push_command()`, but keyed on the `cd`/`-C` directory-argument prefix rather than a CLI verb,
     since the target text is itself an argument *value*, never the start of its own statement
     ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md), incl. Amendment 12 for the command-shape
-    anchoring).
+    anchoring). Also exercises the now-pure `most_recent_commit_has_stub(files)` (previously a git call,
+    intentionally untested; the git call now lives only in the new `head_commit_files()` wrapper),
+    `manifest_path_for_stub()`'s stub-to-manifest path derivation, and `head_commit_has_unresolved_pr(repo,
+    files)` (dev-env#651, [ADR-091](docs/adr/091-journal-stop-check-archive-reminder-blocking.md) Amendment 1)
+    against tmp-dir manifest fixtures: a `prs_opened` PR absent from `prs_closed` blocks the reminder; the
+    dev-env PR #633 shape (an unresolved PR recorded by an earlier commit, not the triggering commit's own
+    diff) is pinned directly; a still-live stub with no manifest yet, an unreadable manifest, or an
+    unparseable line all conservatively block; and a `.stub.md` path this commit deleted (no longer on disk)
+    is skipped rather than treated as missing. Reuses `_journal_schema.parse_manifest_text` / the new
+    `has_unresolved_open_pr()` (item 41) rather than re-parsing manifests locally.
 
     ```bash
     py -3 claude/scripts/tests/test_stub_push_archive_reminder.py
@@ -778,6 +787,13 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     is the shared schema/validation core for both `validate-manifest.py` (item 25) and
     `journal-shard-write-advisory.py` (item 40), so a schema change here is validated by both gates
     without duplicating the rule ([ADR-081](docs/adr/081-write-time-journal-shard-validation-hook.md)).
+    Also exercises the new `has_unresolved_open_pr()` (dev-env#651,
+    [ADR-091](docs/adr/091-journal-stop-check-archive-reminder-blocking.md) Amendment 1): a `prs_opened`
+    PR number absent from `prs_closed` is unresolved (True); a matching PR compared across int/str type
+    mismatch, an already-resolved or never-opened entry, and a non-dict or non-list-valued entry all
+    return the documented conservative result. This is now a third consumer of this module, alongside
+    `validate-manifest.py` (item 25) and `journal-shard-write-advisory.py` (item 40) —
+    `stub-push-archive-reminder.py` (item 16).
 
     ```bash
     py -3 claude/scripts/tests/test_journal_schema.py

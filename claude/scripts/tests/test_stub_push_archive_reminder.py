@@ -28,7 +28,13 @@ a CLI-invocation verb. The `test_ej_ref_*` tests below pin the same
 dev-env#499 false-positive shapes applied to a repo-name literal instead of a
 command literal.
 
-`most_recent_commit_has_stub` (a git call) is intentionally not tested.
+dev-env#651 (ADR-091 Amendment 1) converts `most_recent_commit_has_stub` from
+a git call into a pure function over a pre-fetched file list -- the git call
+now lives only in the new `head_commit_files()`, which (like the old
+`most_recent_commit_has_stub`) is intentionally not tested. The now-pure
+`most_recent_commit_has_stub`, `manifest_path_for_stub`, and
+`head_commit_has_unresolved_pr` (the new gate that stops the sentinel from
+arming while a same-session PR is still open) are tested below.
 
 Usage:
     py -3 claude/scripts/tests/test_stub_push_archive_reminder.py
@@ -37,7 +43,9 @@ Exit 0 = all pass.
 """
 
 import importlib.util
+import json
 import sys
+import tempfile
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -55,6 +63,9 @@ _spec.loader.exec_module(spar)  # safe: main() is guarded by __main__
 has_push_error = spar.has_push_error
 is_git_push_command = spar.is_git_push_command
 references_engineering_journal = spar.references_engineering_journal
+most_recent_commit_has_stub = spar.most_recent_commit_has_stub
+manifest_path_for_stub = spar.manifest_path_for_stub
+head_commit_has_unresolved_pr = spar.head_commit_has_unresolved_pr
 
 
 def test_clean_push_no_error() -> str:
@@ -183,6 +194,154 @@ def test_ej_ref_text_inside_subshell_not_matched() -> str:
     return "'engineering-journal' text inside a $() subshell -> no match (dev-env#539)"
 
 
+# ---------------------------------------------------------------------------
+# most_recent_commit_has_stub(files) / manifest_path_for_stub -- now-pure
+# helpers (dev-env#651, ADR-091 Amendment 1)
+# ---------------------------------------------------------------------------
+
+def test_stub_touched_matched() -> str:
+    assert most_recent_commit_has_stub(["sessions/dev-env/2026-07-08_185057.stub.md"])
+    return "a touched .stub.md path -> matched"
+
+
+def test_no_stub_touched_not_matched() -> str:
+    assert not most_recent_commit_has_stub(["sessions/dev-env/2026-07-08_185057.manifest.jsonl"])
+    return "no .stub.md path among touched files -> not matched"
+
+
+def test_empty_files_not_matched() -> str:
+    assert not most_recent_commit_has_stub([])
+    return "empty touched-file list -> not matched"
+
+
+def test_stub_substring_not_suffix_not_matched() -> str:
+    assert not most_recent_commit_has_stub(["sessions/dev-env/notes-about-stub.md.txt"])
+    return "'.stub.md' as a mid-path substring, not the path's own suffix -> not matched"
+
+
+def test_manifest_path_for_stub_basic() -> str:
+    result = manifest_path_for_stub("sessions/dev-env/2026-07-08_185057.stub.md")
+    assert result == "sessions/dev-env/2026-07-08_185057.manifest.jsonl", result
+    return "stub path maps to its 1:1-paired manifest path"
+
+
+def test_manifest_path_for_stub_non_stub_input_unchanged() -> str:
+    assert manifest_path_for_stub("sessions/dev-env/README.md") == "sessions/dev-env/README.md"
+    return "non-.stub.md input returned unchanged (defensive; caller pre-filters)"
+
+
+# ---------------------------------------------------------------------------
+# head_commit_has_unresolved_pr -- disk-fixture tests (dev-env#651, ADR-091
+# Amendment 1)
+# ---------------------------------------------------------------------------
+
+def _write_manifest(repo, rel_path, entry):
+    p = repo / rel_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(entry), encoding="utf-8")
+
+
+def _write_stub(repo, rel_path):
+    p = repo / rel_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("# stub\n", encoding="utf-8")
+
+
+def test_unresolved_pr_blocks_when_manifest_shows_open_pr() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        repo = Path(root)
+        _write_stub(repo, "sessions/dev-env/2026-07-08_185057.stub.md")
+        _write_manifest(
+            repo,
+            "sessions/dev-env/2026-07-08_185057.manifest.jsonl",
+            {"stub": "x", "topic": "t", "tokens": {}, "prs_opened": [635], "prs_closed": []},
+        )
+        assert head_commit_has_unresolved_pr(repo, ["sessions/dev-env/2026-07-08_185057.stub.md"])
+    return "manifest shows prs_opened not in prs_closed -> unresolved (do not archive)"
+
+
+def test_no_unresolved_pr_when_manifest_shows_resolved() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        repo = Path(root)
+        _write_stub(repo, "sessions/dev-env/2026-07-08_185057.stub.md")
+        _write_manifest(
+            repo,
+            "sessions/dev-env/2026-07-08_185057.manifest.jsonl",
+            {"stub": "x", "topic": "t", "tokens": {}, "prs_opened": [635], "prs_closed": [635]},
+        )
+        assert not head_commit_has_unresolved_pr(repo, ["sessions/dev-env/2026-07-08_185057.stub.md"])
+    return "manifest shows every opened PR also closed -> resolved (safe to archive)"
+
+
+def test_unresolved_pr_reads_manifest_not_touched_by_this_commit() -> str:
+    # Pins the real dev-env PR #633 shape (2026-07-08_183908 session): manifest written
+    # once at PR-open time; a LATER "review finding fixed" push touches only the stub.
+    with tempfile.TemporaryDirectory() as root:
+        repo = Path(root)
+        _write_stub(repo, "sessions/dev-env/2026-07-08_183908.stub.md")
+        _write_manifest(
+            repo,
+            "sessions/dev-env/2026-07-08_183908.manifest.jsonl",
+            {"stub": "x", "topic": "t", "tokens": {}, "prs_opened": [633], "prs_closed": []},
+        )
+        files = ["sessions/dev-env/2026-07-08_183908.stub.md"]  # this commit touches only the stub
+        assert head_commit_has_unresolved_pr(repo, files)
+    return "unresolved PR recorded by an earlier commit is still found via the stub's paired manifest (dev-env PR #633 shape)"
+
+
+def test_unresolved_pr_conservative_when_manifest_missing() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        repo = Path(root)
+        _write_stub(repo, "sessions/dev-env/2026-07-08_999999.stub.md")
+        assert head_commit_has_unresolved_pr(repo, ["sessions/dev-env/2026-07-08_999999.stub.md"])
+    return "a still-live stub with no manifest yet -> conservative True (fail toward not archiving)"
+
+
+def test_unresolved_pr_conservative_when_manifest_unparseable() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        repo = Path(root)
+        _write_stub(repo, "sessions/dev-env/2026-07-08_185057.stub.md")
+        manifest = repo / "sessions/dev-env/2026-07-08_185057.manifest.jsonl"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("{not json", encoding="utf-8")
+        assert head_commit_has_unresolved_pr(repo, ["sessions/dev-env/2026-07-08_185057.stub.md"])
+    return "unparseable manifest line -> conservative True (fail toward not archiving)"
+
+
+def test_unresolved_pr_skips_deleted_stub_path() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        repo = Path(root)  # stub deliberately not created -- simulates a deletion
+        assert not head_commit_has_unresolved_pr(repo, ["sessions/dev-env/2026-07-01_000000.stub.md"])
+    return "a .stub.md path deleted by this commit (no longer on disk) is skipped, not flagged"
+
+
+def test_unresolved_pr_conservative_when_manifest_empty() -> str:
+    # /review (dev-env#651) finding: an empty/whitespace-only manifest parses to zero entries,
+    # which must not silently fall through to "nothing opened" (False).
+    with tempfile.TemporaryDirectory() as root:
+        repo = Path(root)
+        _write_stub(repo, "sessions/dev-env/2026-07-08_185057.stub.md")
+        manifest = repo / "sessions/dev-env/2026-07-08_185057.manifest.jsonl"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("   \n", encoding="utf-8")
+        assert head_commit_has_unresolved_pr(repo, ["sessions/dev-env/2026-07-08_185057.stub.md"])
+    return "empty/whitespace-only manifest (zero parsed entries) -> conservative True (fail toward not archiving)"
+
+
+def test_no_unresolved_pr_when_manifest_has_utf8_bom() -> str:
+    # /review (dev-env#651) finding: must decode via _journal_schema.decode_shard_bytes (BOM
+    # handling), like this module's other two consumers, not a bare read_text(encoding="utf-8").
+    with tempfile.TemporaryDirectory() as root:
+        repo = Path(root)
+        _write_stub(repo, "sessions/dev-env/2026-07-08_185057.stub.md")
+        entry = {"stub": "x", "topic": "t", "tokens": {}, "prs_opened": [635], "prs_closed": [635]}
+        manifest = repo / "sessions/dev-env/2026-07-08_185057.manifest.jsonl"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_bytes(b"\xef\xbb\xbf" + json.dumps(entry).encode("utf-8"))
+        assert not head_commit_has_unresolved_pr(repo, ["sessions/dev-env/2026-07-08_185057.stub.md"])
+    return "a UTF-8-BOM-prefixed but resolved manifest decodes past the BOM and reads correctly -> not unresolved"
+
+
 def main() -> int:
     tests = [
         ("clean push has no error", test_clean_push_no_error),
@@ -202,6 +361,20 @@ def main() -> int:
         ("'engineering-journal' text in heredoc body ignored (dev-env#539)", test_ej_ref_text_in_heredoc_body_not_matched),
         ("'engineering-journal' text in double quotes ignored (dev-env#539)", test_ej_ref_text_inside_double_quotes_not_matched),
         ("'engineering-journal' text in $() subshell ignored (dev-env#539)", test_ej_ref_text_inside_subshell_not_matched),
+        ("touched .stub.md path matched", test_stub_touched_matched),
+        ("no .stub.md path among touched files not matched", test_no_stub_touched_not_matched),
+        ("empty touched-file list not matched", test_empty_files_not_matched),
+        ("'.stub.md' mid-path substring not matched", test_stub_substring_not_suffix_not_matched),
+        ("manifest_path_for_stub basic mapping", test_manifest_path_for_stub_basic),
+        ("manifest_path_for_stub non-stub input unchanged", test_manifest_path_for_stub_non_stub_input_unchanged),
+        ("unresolved PR blocks when manifest shows open PR (dev-env#651)", test_unresolved_pr_blocks_when_manifest_shows_open_pr),
+        ("no unresolved PR when manifest shows resolved (dev-env#651)", test_no_unresolved_pr_when_manifest_shows_resolved),
+        ("unresolved PR found via paired manifest not touched by this commit (dev-env#651, PR #633 shape)", test_unresolved_pr_reads_manifest_not_touched_by_this_commit),
+        ("conservative when manifest missing (dev-env#651)", test_unresolved_pr_conservative_when_manifest_missing),
+        ("conservative when manifest unparseable (dev-env#651)", test_unresolved_pr_conservative_when_manifest_unparseable),
+        ("deleted stub path skipped, not flagged (dev-env#651)", test_unresolved_pr_skips_deleted_stub_path),
+        ("conservative when manifest empty (dev-env#651 /review)", test_unresolved_pr_conservative_when_manifest_empty),
+        ("UTF-8 BOM manifest still reads correctly (dev-env#651 /review)", test_no_unresolved_pr_when_manifest_has_utf8_bom),
     ]
     failed = 0
     for name, fn in tests:

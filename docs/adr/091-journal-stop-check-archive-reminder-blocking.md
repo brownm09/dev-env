@@ -2,7 +2,8 @@
 
 **Date:** 2026-07-08
 **Status:** Accepted
-**Tags:** hooks, stop, journal, archive, session-archiving, exit-code, stderr, claude-facing, adr-021, adr-088
+**Amended:** 2026-07-09 (one amendment — see Amendment section below)
+**Tags:** hooks, stop, journal, archive, session-archiving, exit-code, stderr, claude-facing, adr-021, adr-088, false-positive, manifest, open-prs
 
 ---
 
@@ -135,3 +136,92 @@ Stop with both stderr reasons merged and fed to Claude.
   [PR #613](https://github.com/brownm09/dev-env/pull/613) — the investigation that surfaced
   this.
 - [dev-env#622](https://github.com/brownm09/dev-env/issues/622) — the issue this ADR closes.
+
+## Amendment 1 (2026-07-09) — gate the sentinel on a confirmed-resolved PR, not any stub push (dev-env#651)
+
+This ADR fixed the archive reminder's *delivery* (exit 2 + stderr instead of inert exit-0
+stdout). It did not touch — and its own Context section describes without questioning — the
+reminder's *trigger condition*: `stub-push-archive-reminder.py` arms the sentinel whenever
+HEAD's commit touches a `.stub.md` file, with no check on whether an associated PR is still
+open. Before this ADR shipped, that gap was latent: the reminder never reached Claude
+regardless, so an over-eager trigger caused no observable harm. Fixing delivery made the
+pre-existing gap newly harmful the same day it shipped.
+
+**Root cause.** dev-env#121 (the issue proposing this hook, "Auto-archive session after
+post-merge stub push to engineering-journal") scoped the feature to the post-merge case in
+its title, but its own three implementation steps — detect the push, confirm the
+most-recent commit has a `.stub.md` file, exit 2 — never actually specified a
+merge-confirmation check. The shipped hook faithfully implements those exact three steps;
+the "post-merge" scoping lived only in the issue's title, not its acceptance criteria.
+
+**Symptom.** Per `claude/CLAUDE.md`'s own documented workflow ("Write the journal stub
+immediately after `gh pr create`"; "PR opened — follow the Stub file workflow immediately
+after `gh pr create`. If no further work is planned … stop after writing the stub."; "PR
+updated … update it in place"), a stub is routinely pushed mid-session — right after `gh pr
+create`, and again after each subsequent push to that PR's branch — well before `/review`
+and `gh pr merge`. Confirmed against this repo's own history for two independent same-day
+sessions:
+
+- **PR #635** (`sessions/dev-env/2026-07-08_185057.*`): commit `67565a9` (18:52) added the
+  stub, manifest (`"prs_opened":[635],"prs_closed":[]`), and `open-prs/635.json` together,
+  right after `gh pr create`. The PR did not merge until commit `c711c43` (19:10).
+- **PR #633** (`sessions/dev-env/2026-07-08_183908.*`): commit `5eea9d3` (18:40) created the
+  manifest with `"prs_opened":[633],"prs_closed":[]`. Commit `b8a0652` (18:44, "review
+  finding fixed") pushed a stub-only update — no manifest file in that commit's own diff —
+  while the manifest on disk still read unresolved. The PR merged two minutes later in
+  commit `3dcc057` (18:46).
+
+A Stop between either pair of commits would have blocked and instructed archiving a
+worktree with an open, unreviewed PR. The second case is why the fix reads each touched
+stub's paired manifest from its *current* on-disk content rather than from the triggering
+commit's own diff-tree: the manifest is written once, alongside the stub, right after `gh pr
+create`, and an ordinary mid-session stub update does not re-touch it even though the PR it
+names is still open.
+
+**Fix.** `stub-push-archive-reminder.py`'s `main()` gains a second gate, checked after the
+existing stub-touch check and before the sentinel write: `head_commit_has_unresolved_pr`.
+For every `.stub.md` path HEAD's commit touched that still exists on disk (a path this
+commit *deleted* — e.g. journal-compose consuming an old stub — has no in-progress session
+to protect and is skipped), it derives that stub's 1:1-paired manifest path
+(docs/REFERENCE.md → "Manifest shard format": "named to pair 1:1 with the session's stub"),
+reads that manifest's live content, and checks each entry via a new
+`_journal_schema.has_unresolved_open_pr()` — true when `prs_opened` names a PR number not
+also present in `prs_closed` (compared as strings, so an int- or str-typed number in either
+list still matches; a non-list field value is treated as unresolved rather than silently
+misparsed). A still-live stub with no manifest yet, an unreadable manifest, or an
+unparseable line all conservatively return true (fail toward **not** arming the reminder) —
+the cost of silently skipping one archive reminder is far lower than the cost of this bug:
+`ccd_session_mgmt__archive_session` destroys the session's worktree, and a false trigger
+fires before the review/merge work that worktree is still needed for. `_journal_shards.py`'s
+per-PR shard reader was considered and rejected as the data source: it reads
+`open-prs/<N>.json`, a different, repo-wide-per-PR schema, not scoped to which PR *this
+session* opened — the manifest's `prs_opened`/`prs_closed` is already correctly scoped
+(ADR-056's per-session sharding), and is updated in the same commit as the corresponding
+`open-prs/<N>.json` deletion at merge time (confirmed against PR #635's own `c711c43`), so
+it is a reliable proxy without a second read.
+
+**Coverage:** `test_journal_schema.py` gains direct tests for `has_unresolved_open_pr()`
+(opened-not-closed, resolved, never-opened, int/str type-mismatch match, missing keys,
+non-dict entry, partial multi-PR overlap, and a non-list field value treated as
+conservative-unresolved rather than silently misparsed). `test_stub_push_archive_reminder.py`
+gains tests for the now-pure `most_recent_commit_has_stub(files)` (previously a git call,
+intentionally untested; the git call now lives only in the new, still-untested
+`head_commit_files()`), `manifest_path_for_stub()`, and `head_commit_has_unresolved_pr()`
+against tmp-dir manifest fixtures — including a direct pin of the dev-env PR #633 shape
+above (an unresolved PR recorded by an earlier commit, not the triggering commit's own
+diff) and the conservative-on-ambiguity branches (missing manifest, unparseable line,
+deleted stub path skipped).
+
+**General lesson (continuing this ADR's own separation of delivery from trigger):** a fix
+that makes a previously-inert message suddenly reach its recipient also suddenly exercises
+every pre-existing condition that arms it — the trigger condition's own correctness had
+never been load-bearing until delivery started working, so nothing forced it to be
+re-examined when delivery was fixed. The specific shape here — checking "does this commit's
+own diff show it" as a stand-in for "what is the current state of the thing this commit is
+one snapshot of" — is the same proxy-instead-of-signal failure ADR-050's amendments kept
+re-finding in a different guise.
+
+**References:** [dev-env#651](https://github.com/brownm09/dev-env/issues/651) — the issue
+this amendment closes. [dev-env#601](https://github.com/brownm09/dev-env/issues/601) — a
+distinct, unrelated investigation into an automated commit/push/PR-open mechanism,
+cross-referenced only (not the same bug).
