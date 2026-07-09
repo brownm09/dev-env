@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08, 2026-07-09 (twenty amendments — see Amendment sections below)
+**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08, 2026-07-09 (twenty-one amendments — see Amendment sections below)
 **Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking, gh-create-help, prose-flag-masking, pr-create, bare-number-masking, args-boundary, truncation
 
 ---
@@ -1702,3 +1702,71 @@ independently in the same function — fixing the first (Amendment 17, for sites
 URL searches) does not imply the second is also fixed, even though both defects are patched with the literal
 same primitive (`mask_quoted_spans`) applied at a different pipeline stage. A fix landing for one doesn't
 retroactively prove the other was ever audited.
+
+## Amendment 21 (2026-07-09) — masking the PR-number extraction's own URL fallback (dev-env#664)
+
+**The gap.** Amendment 19's own "Out of scope, not fixed here" section named this gap in advance: masking
+`extract_pr_number_from_command`'s positional-number search (dev-env#650) left its own `_PR_URL_RE` fallback —
+checked only when the positional-number match finds nothing — running on the raw, unmasked `args`. A
+`--subject`/`--body` value containing a URL-shaped decoy could hijack the extracted PR number when the command
+named no real positional number. Confirmed live (post dev-env#650/dev-env#660 fixes, reproduced again
+independently before this fix):
+
+```python
+>>> extract_pr_number_from_command('gh pr merge --squash --subject "see https://github.com/other/repo/pull/99 for context"')
+99   # should be None -- no real PR number in this command at all
+```
+
+This is `_PR_URL_RE` (declared at this file's line 55, used both by `extract_pr_number`'s output scan and by this
+fallback), a **different regex object** from `_PR_URL_REPO_RE` (line 67, used inside `extract_repo_from_command`)
+— the latter was already fixed by Amendment 17's `mask_prose_flag_values`. `extract_pr_number_from_command`'s
+return value is the primary PR-number source `main()` uses to resolve the merged PR before fetching its body and
+moving the linked issue to Done — a false number from this decoy could fetch and act on the wrong PR's body,
+potentially moving an unrelated issue to Done on this repo's board.
+
+**Fix.** One line: `url = _PR_URL_RE.search(args)` → `url = _PR_URL_RE.search(mask_prose_flag_values(args))` in
+`extract_pr_number_from_command`, mirroring `extract_repo_from_command`'s own `_PR_URL_REPO_RE` fix immediately
+below it in the same file (Amendment 17) — `mask_prose_flag_values`, not blanket `mask_quoted_spans`, is the
+correct helper for the identical reason Amendment 17 established: a bare quoted positional PR-URL argument
+(`gh pr merge "https://github.com/o/r/pull/380"`, never preceded by `--subject`/`--body`, `test_cmd_url`) is a
+legitimate, already-tested shape that `mask_prose_flag_values` leaves untouched, unlike blanket `mask_quoted_spans`,
+which would blind it too. `mask_prose_flag_values` was already imported in this file (Amendment 17's own
+`extract_repo_from_command` fix) — no new import needed. Both the `_PR_URL_RE` module-scope comment and
+`extract_pr_number_from_command`'s own docstring are updated to document the new masking scope, matching this
+file's established per-regex documentation convention.
+
+**Coverage.** `test_post_pr_merge_project.py` gains 3 new `test_cmd_*`-pattern cases — 43 total, up from 40: the
+exact dev-env#664 repro (decoy alone -> `None`), a real positional number surviving alongside the same decoy (the
+existing masked positional-number search already handled this case, unaffected by this fix), and — the case that
+actually exercises the fixed `_PR_URL_RE` fallback branch itself, since the previous two both short-circuit on the
+earlier positional-number match — a real *bare URL* (no positional number at all) surviving alongside the same
+quoted decoy. Each new "decoy alone" assertion was verified against the pre-fix code first (reproducing `99`
+instead of `None`) before landing, per this ADR's established regression-test discipline (Amendments 15, 17, 19).
+All previously-passing suites were re-run in full and pass unchanged: `test_hookio.py` (86, `mask_prose_flag_values`'s
+own source is untouched by this amendment), the repo-wide AST-based crude-substring-check gate (13), and — as an
+extra sanity check, since neither file was touched — `test_posttooluse_inert_advisory.py` (32) and
+`test_stop_tile_enumeration_gate.py` (112).
+
+**Out of scope, filed as a follow-up.** Auditing the wider hook family for the same shape surfaced a separate,
+previously undiscovered-as-its-own-issue gap: `stop-tile-enumeration-gate.py` has its own independent `_PR_URL_RE`
+and `_ISSUE_URL_RE` regex objects, used unmasked in `_target_pr`, `_explicit_repo`, and `_closed_issue_number` —
+explicitly named and deliberately deferred twice already (Amendment 17's and this amendment's own predecessor,
+Amendment 19) without ever getting a dedicated tracking issue. Confirmed live to be a **more severe** variant than
+this amendment's own fix: because `_target_pr` and `_closed_issue_number` check their URL regex *before* their
+masked positional-number fallback (the reverse order from `extract_pr_number_from_command`), a decoy wins even
+when a real positional number is also present in the same command, not only when no real number exists at all.
+Filed as [dev-env#685](https://github.com/brownm09/dev-env/issues/685) rather than folded in here — a third,
+independent file with its own regex objects and its own test suite is a materially larger scope than this
+amendment's single-line fix, the same proportionality judgment Amendment 17 made when it deferred dev-env#650 and
+this very gap in the first place.
+
+**General lesson (continuing Amendments 9, 11, 15, 17, and 19's).** Amendment 19 predicted this exact fix down to
+the code shape, in its own "Out of scope, not fixed here" section, before any reproduction was attempted here —
+the same discipline that made Amendment 20's investigation fast applied again. What's new this time: the
+"Out of scope" audit this amendment's own fix triggered surfaced a gap that TWO prior amendments had each already
+individually noticed and deferred (Amendments 17 and 19), yet neither converted into a standalone tracking issue
+— a documented deferral in an ADR's prose is not the same as a filed issue a future session's search will actually
+find. `gh issue list --search` against this exact gap's shape returned nothing before this amendment filed
+dev-env#685, despite two separate amendments describing it in detail. The practical takeaway: "note it, file it"
+means an actual issue number, not just a prose paragraph in an ADR amendment that happens to be the third
+occurrence of the same accepted gap.
