@@ -42,7 +42,7 @@ import sys
 from pathlib import Path
 
 from _hookio import read_command_output, scan_top_level
-from _journal_schema import has_unresolved_open_pr, parse_manifest_text
+from _journal_schema import decode_shard_bytes, has_unresolved_open_pr, parse_manifest_text
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SENTINEL = Path.home() / ".claude" / "scratch" / "stub-pushed.flag"
@@ -152,9 +152,30 @@ def head_commit_has_unresolved_pr(repo: Path, files: list[str]) -> bool:
     protect and is skipped.
 
     Conservative on every ambiguity: a still-live stub with no manifest yet, an unreadable
-    manifest, or an unparseable line all return True (fail toward NOT archiving) -- the
-    cost of wrongly skipping one archive reminder is far lower than wrongly destroying a
-    worktree mid-review (the bug this fixes).
+    or non-UTF-8/BOM-prefixed manifest, an unparseable line, or an empty/whitespace-only
+    manifest (parses to zero entries -- a truncated or not-yet-fully-written shard, not
+    "nothing was ever opened") all return True (fail toward NOT archiving) -- the cost of
+    wrongly skipping one archive reminder is far lower than wrongly destroying a worktree
+    mid-review (the bug this fixes). Decodes via the shared `_journal_schema.decode_shard_bytes`
+    (BOM handling) rather than a raw `read_text`, matching how this module's other two
+    consumers (`validate-manifest.py`, `journal-shard-write-advisory.py`) decode shard bytes --
+    a bare `read_text(encoding="utf-8")` would raise `UnicodeDecodeError` (not `OSError`) on a
+    non-UTF-8 file, bypassing the intended per-manifest conservative-True branch below and
+    relying only on the outer `try/except Exception: sys.exit(0)` in `__main__` for safety.
+
+    Known accepted limitation (dev-env#651): a cross-session merge that updates the
+    *original* opening session's stub in place (rather than writing a new stub) leaves that
+    session's own manifest permanently showing the PR unresolved, since `prs_closed` is set
+    in the *merging* session's manifest instead (per claude/CLAUDE.md's "New session: update
+    the opening stub in place ... set prs_closed:[N] in this session's manifest shard").
+    Because this function derives a manifest from each touched stub's own path, the merge
+    commit's touch of the original stub still reads the original session's stale manifest and
+    reports unresolved -- suppressing the archive reminder for a merge that just genuinely
+    completed. This is the same fail-safe direction as every other ambiguity here (a missed
+    nudge, not a false archive), and is deliberately not fixed in this pass -- see the tracked
+    follow-up issue for the design tradeoff (bringing back an `open-prs/<N>.json`-deletion
+    signal would resolve it but reintroduces the per-PR-shard data source this fix's ADR
+    amendment already considered and rejected as the primary source).
     """
     manifest_paths: set[str] = set()
     for f in files:
@@ -169,10 +190,16 @@ def head_commit_has_unresolved_pr(repo: Path, files: list[str]) -> bool:
         if not manifest_file.exists():
             return True
         try:
-            text = manifest_file.read_text(encoding="utf-8")
+            raw = manifest_file.read_bytes()
         except OSError:
             return True
-        for _lineno, entry in parse_manifest_text(text):
+        text, _problem = decode_shard_bytes(raw)
+        if text is None:
+            return True  # not valid UTF-8 even past a BOM check
+        entries = parse_manifest_text(text)
+        if not entries:
+            return True  # empty/whitespace-only manifest -- can't confirm resolved
+        for _lineno, entry in entries:
             if entry is None:
                 return True
             if has_unresolved_open_pr(entry):

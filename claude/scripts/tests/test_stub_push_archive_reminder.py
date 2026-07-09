@@ -315,6 +315,33 @@ def test_unresolved_pr_skips_deleted_stub_path() -> str:
     return "a .stub.md path deleted by this commit (no longer on disk) is skipped, not flagged"
 
 
+def test_unresolved_pr_conservative_when_manifest_empty() -> str:
+    # /review (dev-env#651) finding: an empty/whitespace-only manifest parses to zero entries,
+    # which must not silently fall through to "nothing opened" (False).
+    with tempfile.TemporaryDirectory() as root:
+        repo = Path(root)
+        _write_stub(repo, "sessions/dev-env/2026-07-08_185057.stub.md")
+        manifest = repo / "sessions/dev-env/2026-07-08_185057.manifest.jsonl"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("   \n", encoding="utf-8")
+        assert head_commit_has_unresolved_pr(repo, ["sessions/dev-env/2026-07-08_185057.stub.md"])
+    return "empty/whitespace-only manifest (zero parsed entries) -> conservative True (fail toward not archiving)"
+
+
+def test_no_unresolved_pr_when_manifest_has_utf8_bom() -> str:
+    # /review (dev-env#651) finding: must decode via _journal_schema.decode_shard_bytes (BOM
+    # handling), like this module's other two consumers, not a bare read_text(encoding="utf-8").
+    with tempfile.TemporaryDirectory() as root:
+        repo = Path(root)
+        _write_stub(repo, "sessions/dev-env/2026-07-08_185057.stub.md")
+        entry = {"stub": "x", "topic": "t", "tokens": {}, "prs_opened": [635], "prs_closed": [635]}
+        manifest = repo / "sessions/dev-env/2026-07-08_185057.manifest.jsonl"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_bytes(b"\xef\xbb\xbf" + json.dumps(entry).encode("utf-8"))
+        assert not head_commit_has_unresolved_pr(repo, ["sessions/dev-env/2026-07-08_185057.stub.md"])
+    return "a UTF-8-BOM-prefixed but resolved manifest decodes past the BOM and reads correctly -> not unresolved"
+
+
 def main() -> int:
     tests = [
         ("clean push has no error", test_clean_push_no_error),
@@ -346,6 +373,8 @@ def main() -> int:
         ("conservative when manifest missing (dev-env#651)", test_unresolved_pr_conservative_when_manifest_missing),
         ("conservative when manifest unparseable (dev-env#651)", test_unresolved_pr_conservative_when_manifest_unparseable),
         ("deleted stub path skipped, not flagged (dev-env#651)", test_unresolved_pr_skips_deleted_stub_path),
+        ("conservative when manifest empty (dev-env#651 /review)", test_unresolved_pr_conservative_when_manifest_empty),
+        ("UTF-8 BOM manifest still reads correctly (dev-env#651 /review)", test_no_unresolved_pr_when_manifest_has_utf8_bom),
     ]
     failed = 0
     for name, fn in tests:
