@@ -35,6 +35,7 @@ import sys
 from pathlib import Path
 
 from _worktree_topology import (
+    DETACHED,
     canonical_sync_action,
     diagnose_main_topology,
     is_hijacked_branch,
@@ -127,6 +128,16 @@ def main() -> None:
             file=sys.stderr,
         )
     elif action.kind == "return-canonical":
+        # Final, cheap re-check immediately before the mutation itself - narrows the residual
+        # TOCTOU window to a single subprocess spawn (the same order of magnitude as
+        # dev-env-sync.py's own residual). This canonical is moved between main and
+        # draft/YYYY-MM-DD by many concurrent sessions routinely, unlike dev-env's own
+        # canonical (which is never legitimately off main at all), so the window between the
+        # git-status read above and this checkout is meaningfully more likely to be hit here
+        # than the equivalent window in dev-env-sync.py (review finding, PR #661).
+        final = run(["git", "symbolic-ref", "--short", "HEAD"])
+        if not is_hijacked_branch(resolve_current_branch(final.returncode, final.stdout)):
+            sys.exit(0)  # a concurrent session already fixed it since our last read
         checkout = run(["git", "checkout", "main"])
         if checkout.returncode != 0:
             print(
@@ -137,8 +148,8 @@ def main() -> None:
                 file=sys.stderr,
             )
         else:
-            recoverable = topo.canonical_branch != "<detached>"  # "<detached>" is a
-            # sentinel, not a real ref -- nothing nameable to offer as a checkout target.
+            recoverable = topo.canonical_branch != DETACHED  # DETACHED is a sentinel,
+            # not a real ref -- nothing nameable to offer as a checkout target.
             recovery = (
                 f" Non-destructive - '{topo.canonical_branch}' still exists if needed: "
                 f"git -C {JOURNAL_REPO} checkout {topo.canonical_branch}"
@@ -156,4 +167,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # Honor the "Exit 0 always" docstring contract even against an unexpected subprocess
+        # failure (timeout, git missing from PATH, etc.) - matches the established fail-open
+        # convention for engineering-journal-guarding UserPromptSubmit hooks in this repo
+        # (new-day-journal-check.py wraps every subprocess.run call the same way; review
+        # finding, PR #661).
+        sys.exit(0)

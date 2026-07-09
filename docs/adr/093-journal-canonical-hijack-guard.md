@@ -118,19 +118,34 @@ fixing dev-env#619 in the same PR) maps a `symbolic-ref` failure to the same `"<
 this new hook feed detached HEAD into the same already-tested topology pipeline instead of exiting
 early on it.
 
-### TOCTOU: re-check against the fresh worktree-list read before acting
+### TOCTOU: re-check immediately before every mutating point, not just once
 
-The gate above reads the branch **twice** — once cheaply via `symbolic-ref` (keeping the common
-healthy path cheap, matching ADR-058's cost model), once via the more expensive `worktree list
---porcelain` needed to build `topo` for `canonical_sync_action`. Between those two reads, a
-concurrent stub-writing session — and this canonical sees many, routinely, within seconds of each
-other — could complete its own `checkout main && checkout -b draft/YYYY-MM-DD` sequence. Acting on
-the stale first read alone would still issue `git checkout main`, yanking that session's
-just-established legitimate branch back to `main` — the same class of harm this whole guard exists
-to prevent, just introduced by the guard itself. The second `is_hijacked_branch` check, against the
-topology read fresh moments before the correcting `git checkout main`, closes this — narrowing the
-residual race to the much smaller window between that second read and the checkout itself, the same
-residual `dev-env-sync.py` already accepts for dev-env's own canonical.
+The gate reads the branch **three times**, not two, after a first design-review pass found the
+two-read version still left a materially-reachable window. Once cheaply via `symbolic-ref`
+(keeping the common healthy path cheap, matching ADR-058's cost model); a second time via the
+more expensive `worktree list --porcelain` needed to build `topo` for `canonical_sync_action`;
+and a **third, final, cheap `symbolic-ref` re-check immediately before the mutating `git checkout
+main` call itself** — after the `git status --porcelain` read that decides clean-vs-dirty, which
+is itself a subprocess call with its own (small) duration.
+
+Between any of these reads, a concurrent stub-writing session — and this canonical sees many,
+routinely, within seconds of each other — could complete its own `checkout main && checkout -b
+draft/YYYY-MM-DD` sequence. Acting on a stale read would still issue `git checkout main`, yanking
+that session's just-established legitimate branch back to `main` — the same class of harm this
+whole guard exists to prevent, just introduced by the guard itself.
+
+A second round of review (post-implementation, on the opened PR) correctly pointed out that the
+*first* fix here — a single re-check right after the `worktree list` read — left the `git status`
+call itself, plus everything after it, still inside the exposed window, and that this residual is
+**not** symmetric with `dev-env-sync.py`'s own equivalent gap: dev-env's canonical is never
+*legitimately* moved off `main` at all, so that hook's identical-shaped residual window is rarely
+if ever actually raced against in practice, whereas engineering-journal's canonical is moved
+between `main` and `draft/YYYY-MM-DD` constantly by design. The third re-check — placed after the
+`status` read and immediately before the `checkout` call — removes the `status` call from the
+exposed window entirely, narrowing the residual to the same single-subprocess-call order of
+magnitude `dev-env-sync.py`'s own gap actually is, making the ADR's parity claim accurate rather
+than aspirational. The window cannot be closed to zero without a lock this repo has no
+infrastructure for; three checks, one right before the mutation, is the accepted stopping point.
 
 ### Non-destructive correction
 
@@ -182,7 +197,9 @@ before extraction).
   override — four scenarios confirmed live: `claude/*` hijack + clean → restored; detached + clean →
   restored (with the sentinel-aware message); a legitimate `draft/YYYY-MM-DD` branch → left untouched
   (the specific false-positive this predicate exists to avoid); `claude/*` hijack + dirty → warned,
-  not switched. This matches this repo's established convention for topology-diagnosing orchestration
+  not switched. Re-verified against the same fixture pattern after the review-driven TOCTOU
+  (third re-check) and exception-handling fixes landed, confirming no regression. This matches this
+  repo's established convention for topology-diagnosing orchestration
   scripts (`## Testing` items 22, 26, 30, and others: "exercised end-to-end by `--dry-run` / a
   throwaway-repo run in the PR, not here").
 - **Observability.** Success and warning messages mirror `dev-env-sync.py`'s existing stdout/stderr
@@ -194,13 +211,38 @@ before extraction).
   machine.
 - **Resilience / failure modes.** Fails open throughout: a missing repo directory, a failed
   `worktree list` read, or a failed `checkout` all degrade to a warning or a silent no-op, never a
-  crash or a blocked prompt (`sys.exit(0)` on every path). The TOCTOU re-check above is itself a
-  resilience fix against the dominant failure mode this specific canonical actually sees — concurrent
-  legitimate sessions, not adversarial or malformed state.
-- **Performance.** One extra `git symbolic-ref` call added to every prompt in every session (cheap);
-  the more expensive `worktree list` / `status` / `checkout` calls run only on the rare hijacked path,
-  mirroring ADR-058's "healthy path stays cheap" design exactly.
+  crash or a blocked prompt on the *expected*-failure paths. Review additionally found the script's
+  own `sys.exit(0)` calls did not protect against an *unexpected* one — an uncaught subprocess
+  exception (`TimeoutExpired`, `FileNotFoundError` if `git` were ever off `PATH`, or another `OSError`)
+  would have propagated out of `main()` as a traceback with a non-zero exit, contradicting the
+  docstring's own "Exit 0 always" promise and deviating from the established fail-open convention the
+  closest sibling hook (`new-day-journal-check.py`, which guards this same repo on this same event)
+  already follows by wrapping every `subprocess.run` call. Fixed: the `if __name__ == "__main__":`
+  entry point now wraps `main()` in a `try/except Exception: sys.exit(0)`, matching that convention.
+  The three-read TOCTOU re-check (above) is itself a resilience fix against the dominant failure mode
+  this specific canonical actually sees — concurrent legitimate sessions, not adversarial or malformed
+  state.
+- **Performance.** Two extra `git symbolic-ref` calls added to every prompt in every session that
+  reaches the hijacked branch (cheap; only one on the common healthy path); the more expensive
+  `worktree list` / `status` / `checkout` calls run only on the rare hijacked path, mirroring ADR-058's
+  "healthy path stays cheap" design. Registering a 12th unconditional `UserPromptSubmit` hook adds one
+  more per-prompt process spawn machine-wide, including in sessions that never touch the journal —
+  reviewed and accepted as the same always-on cost `dev-env-sync.py` already pays; no cheaper
+  correct shape exists without merging the two canonical-guard hooks, which isn't warranted (different
+  repos, different invariants).
 - **Data integrity.** N/A schema-wise; the correction is non-destructive by construction (see above).
+- **Maintainability.** The `"<detached>"` sentinel is now a single `DETACHED` constant in
+  `_worktree_topology.py`, referenced by every producer (`parse_worktree_porcelain`) and consumer
+  (`main_squatter`, `resolve_current_branch`, `is_hijacked_branch`, and this hook's own recovery-message
+  check) — previously a bare string literal repeated at each site, which review flagged as a silent-drift
+  risk if the spelling ever changed at one site and not another. The correction *flow* itself (the
+  git-call sequence and the three-way `warn-squatter`/`warn-dirty`/`return-canonical` dispatch) remains
+  duplicated between `journal-canonical-guard.py` and `dev-env-sync.py` — only the *decision* logic is
+  shared via `_worktree_topology.py`. This is the same single-consumer-duplication trade-off the Scope
+  section above already accepts for not generalizing to other repos, just visible one level lower (two
+  scripts, not yet a third): acceptable for two consumers; extract a shared
+  `correct_canonical(repo, gate_predicate, message_set)` orchestrator when a third
+  canonical-guarding hook appears, rather than copying the flow a third time.
 - `_worktree_topology.py`'s module docstring now documents **two distinct invariants** it hosts —
   dev-env's "canonical always `main`" (the module's original framing) and this ADR's repo-agnostic
   "canonical never detached or on a stray `claude/*` branch" — so a future reader isn't misled into

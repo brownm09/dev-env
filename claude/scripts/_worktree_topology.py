@@ -47,11 +47,16 @@ parking the caller's own just-merged session worktree (post-merge) is inherently
 from collections import namedtuple
 from pathlib import Path
 
+# The sentinel for a detached-HEAD worktree/canonical, shared by every producer and consumer
+# in this module (and by journal-canonical-guard.py) so the spelling can't drift between them
+# (review finding, PR #661: previously a bare "<detached>" string literal repeated at each site).
+DETACHED = "<detached>"
+
 
 def parse_worktree_porcelain(text: str) -> "list[dict]":
     """Parse ``git worktree list --porcelain`` into ``[{path, branch}, ...]``.
 
-    ``branch`` is the short name, ``"<detached>"`` for a detached HEAD, or ``""`` when
+    ``branch`` is the short name, ``DETACHED`` for a detached HEAD, or ``""`` when
     unspecified. Used by ``dev-env-sync.py``, ``prune-merged-worktrees.py``, and
     ``reclaim-worktree-disk.py``.
     """
@@ -66,7 +71,7 @@ def parse_worktree_porcelain(text: str) -> "list[dict]":
             ref = line[len("branch "):].strip()
             current["branch"] = ref.removeprefix("refs/heads/")
         elif line == "detached" and current is not None:
-            current["branch"] = "<detached>"
+            current["branch"] = DETACHED
     if current is not None:
         worktrees.append(current)
     return worktrees
@@ -116,7 +121,7 @@ def main_squatter(worktrees: "list[dict]") -> "dict | None":
     if canonical is None:
         return None
     cbranch = canonical["branch"]
-    if not cbranch or cbranch == "main" or cbranch == "<detached>":
+    if not cbranch or cbranch == "main" or cbranch == DETACHED:
         return None
     canonical_path = _norm(canonical["path"])
     for wt in worktrees[1:]:
@@ -216,15 +221,15 @@ def resolve_current_branch(symbolic_ref_returncode: int, symbolic_ref_stdout: st
     """Resolve the working branch name from ``git symbolic-ref --short HEAD``'s result.
 
     A non-zero return code means detached HEAD (no symbolic ref to resolve) — routed to the
-    sentinel ``"<detached>"`` so callers feed it into the same diagnostic path as a
-    wrong-branch canonical, rather than silently exiting (dev-env#619). ``dev-env-sync.py``
-    used to call ``sys.exit(0)`` directly on a non-zero return code, so a detached canonical
-    never reached ``diagnose_main_topology``/``canonical_sync_action`` at all — even though
-    both already handle ``"<detached>"`` correctly (see ``main_squatter``'s bare/detached
-    guard above), since nothing routed a detached HEAD into them.
+    ``DETACHED`` sentinel so callers feed it into the same diagnostic path as a wrong-branch
+    canonical, rather than silently exiting (dev-env#619). ``dev-env-sync.py`` used to call
+    ``sys.exit(0)`` directly on a non-zero return code, so a detached canonical never reached
+    ``diagnose_main_topology``/``canonical_sync_action`` at all — even though both already
+    handle ``DETACHED`` correctly (see ``main_squatter``'s bare/detached guard above), since
+    nothing routed a detached HEAD into them.
     """
     if symbolic_ref_returncode != 0:
-        return "<detached>"
+        return DETACHED
     return symbolic_ref_stdout.strip()
 
 
@@ -242,4 +247,4 @@ def is_hijacked_branch(branch: "str | None") -> bool:
     Accepts ``None`` (e.g. ``diagnose_main_topology([])``'s ``canonical_branch`` field) without
     raising — mirrors ``main_squatter``'s own falsy-branch guard.
     """
-    return bool(branch) and (branch == "<detached>" or branch.startswith("claude/"))
+    return bool(branch) and (branch == DETACHED or branch.startswith("claude/"))
