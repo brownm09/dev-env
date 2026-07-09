@@ -91,6 +91,32 @@ def _check_merge_stmt(token: str) -> bool:
     return bool(_MERGE_RE.match(token.lstrip()))
 
 
+def _merge_args(command: str) -> str | None:
+    """Return the `gh pr merge` invocation's own argument text, or None.
+
+    Bounded via `_MERGE_ARGS_RE` against a `mask_quoted_spans`-masked copy of
+    *command* (dev-env#660, ADR-050 Amendment 20), not the raw command --
+    `_MERGE_ARGS_RE`'s negated character class `[^\n;|&]*` stops at ANY single
+    `&`/`|` (not just doubled `&&`/`||`) with no quote-awareness of its own, so
+    a --subject/--body value containing a bare separator character (e.g.
+    `--subject "R&D tracking"` -- a perfectly ordinary commit subject, not a
+    deliberately crafted string) truncated the args region before a later real
+    flag or URL was ever seen. Confirmed live: `extract_repo_from_command('gh pr
+    merge 42 --subject "part1 && part2" --repo o/r')` returned `None`, silently
+    dropping a real `--repo`. mask_quoted_spans is length-preserving, so the
+    match's span offsets against the masked text apply unchanged to the
+    original -- the returned text is the REAL (unmasked) args, not the masked
+    stand-in, so downstream parsing (the existing `mask_quoted_spans(args)` /
+    `mask_prose_flag_values(args)` calls in `extract_repo_from_command`) still
+    sees genuine quote/flag-value content to mask in its own turn.
+    """
+    m = _MERGE_ARGS_RE.search(mask_quoted_spans(command))
+    if not m:
+        return None
+    start, end = m.span(1)
+    return command[start:end]
+
+
 def load_config(cwd: str) -> dict | None:
     path = os.path.join(cwd, CONFIG_FILE)
     try:
@@ -127,20 +153,28 @@ def extract_pr_number_from_command(command: str) -> int | None:
     A bare `gh pr merge --squash --delete-branch` (the current branch's PR) names
     no number; the caller then falls back to the output success marker. (#380)
 
-    The positional-number match runs against a `mask_quoted_spans`-masked copy
-    of `args` (dev-env#650, ADR-050 Amendment 19), so a `--subject`/`--body`
-    value containing a space-separated bare number ("resolves 42 items")
-    cannot be mistaken for the real merged PR number — the same
-    quoted-value blind spot Amendment 15 closed for the repo-flag regex family,
-    just for a bare-digit token instead of a `--repo`/`-R` flag. The `_PR_URL_RE`
-    fallback below is unaffected by that masking (it runs on the original,
-    unmasked `args`) — a still-open, structurally distinct gap for a
-    URL-shaped decoy tracked separately, not part of dev-env#650's scope.
+    Args-region bounding is quote-aware (`_merge_args`, dev-env#660, ADR-050
+    Amendment 20): a positional number placed AFTER a --subject/--body value
+    containing a bare separator character (e.g. `--subject "part1 && part2"
+    42 --repo o/r`) is no longer silently missed.
+
+    The positional-number match itself also runs against a `mask_quoted_spans`-
+    masked copy of `args` (dev-env#650, ADR-050 Amendment 19), so a
+    `--subject`/`--body` value containing a space-separated bare number
+    ("resolves 42 items") cannot be mistaken for the real merged PR number —
+    the same quoted-value blind spot Amendment 15 closed for the repo-flag
+    regex family, just for a bare-digit token instead of a `--repo`/`-R` flag.
+    These two fixes are complementary, not overlapping: Amendment 20 ensures
+    `args` itself is not prematurely truncated before this search ever runs;
+    Amendment 19 ensures the search WITHIN `args` isn't hijacked by a decoy.
+    The `_PR_URL_RE` fallback below is unaffected by the Amendment 19 masking
+    (it runs on the original, unmasked `args`) — a still-open, structurally
+    distinct gap for a URL-shaped decoy tracked separately, not part of
+    dev-env#650's scope.
     """
-    m = _MERGE_ARGS_RE.search(command)
-    if not m:
+    args = _merge_args(command)
+    if args is None:
         return None
-    args = m.group(1)
     # Positional number token (`380`), tolerant of flags before it; a digit run
     # inside a flag value (`--foo=12`) or a branch name (`my-branch-2`) is not a
     # standalone token and is correctly ignored.
@@ -187,11 +221,16 @@ def extract_repo_from_command(command: str) -> str | None:
     never preceded by `--subject`/`--body`) is a legitimate, already-supported
     shape (see `test_repo_from_cross_repo_url`) that `mask_prose_flag_values`
     leaves untouched, unlike blanket `mask_quoted_spans`.
+
+    Args-region bounding is quote-aware (`_merge_args`, dev-env#660, ADR-050
+    Amendment 20): a `--repo` flag placed AFTER a --subject/--body value
+    containing a bare separator character (e.g. `--subject "part1 && part2"
+    --repo o/r`, or even an ordinary subject like `--subject "R&D tracking"`)
+    is no longer silently dropped.
     """
-    m = _MERGE_ARGS_RE.search(command)
-    if not m:
+    args = _merge_args(command)
+    if args is None:
         return None
-    args = m.group(1)
     flag = _REPO_FLAG_RE.search(mask_quoted_spans(args))
     if flag:
         return flag.group(1)

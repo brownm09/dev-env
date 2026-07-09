@@ -226,8 +226,14 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `main()` skips the whole operation when the parsed repo doesn't match cwd's config — cwd's
     project-board fields don't apply to a different repo regardless of which PR's body gets fetched —
     but that gate itself is not separately unit-tested, consistent with this file's pure-helper-only
-    convention. The live `gh` calls
-    (`get_pr_body` / `find_project_item` / `move_to_done` / `confirm_merge_via_gh`) are not covered
+    convention. Also exercises the new `_merge_args()` helper's quote-aware args-region BOUNDARY
+    (dev-env#660, ADR-050 Amendment 20 — distinct from, and layered underneath, Amendments 15/17's
+    already-existing quote-aware SEARCH within that region): a `--repo` flag or positional PR number
+    placed after a `--subject`/`--body` value containing a bare `&`/`|` or a doubled `&&` (confirmed
+    live before the fix: an ordinary subject like `"R&D tracking"` already silently dropped a later
+    `--repo`, no deliberately-crafted string needed) is no longer truncated away, while a genuine
+    top-level `&&` chaining a real sibling command still correctly bounds the region. The live `gh`
+    calls (`get_pr_body` / `find_project_item` / `move_to_done` / `confirm_merge_via_gh`) are not covered
     ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md),
     [ADR-067](docs/adr/067-scope-merge-keyed-hooks-to-target-repo.md)).
 
@@ -315,7 +321,12 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     attachment is present (the healthy session), and that the advisory is ASCII/cp1252-encodable so it
     can't vanish under Claude Code's
     cp1252-piped hook stdout ([ADR-053](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md),
-    [ADR-055](docs/adr/055-reliable-event-inert-posttooluse-advisory.md)). `iter_bash_calls`,
+    [ADR-055](docs/adr/055-reliable-event-inert-posttooluse-advisory.md)). Also exercises `_devenv_merge_pr`'s
+    quote-aware args-region BOUNDARY (dev-env#660, ADR-050 Amendment 20): a `--repo` flag or PR number placed
+    after a `--subject`/`--body` value containing a bare `&`/doubled `&&` is no longer silently dropped (the
+    args region's own end-boundary search, distinct from Amendments 15/17's already-fixed search WITHIN that
+    region, previously had no quote-awareness of its own), while a genuine chained `&&` command still
+    correctly bounds it. `iter_bash_calls`,
     `load_records`, and `_result_text` are imported from `_hookutil`
     ([ADR-090](docs/adr/090-shared-transcript-readers-hookutil.md)) and reached via module-attribute
     indirection, so this suite pins the advisory-specific behavior unchanged. The `main()` I/O (stdin,
@@ -737,7 +748,13 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     behavioral shell test drives the real hook end-to-end via the `MERGE_GATE_TEST_JSON` seam (no
     live `gh`, no network): pins the clean-review / open-findings-blocked / disposition-recorded /
     no-review-marker / gh-failure-fail-open / non-merge-command decision paths, and that `--repo` and
-    `--repo=` both parse to the right repo in `_parse_merge_target`. The shell test file pre-dates
+    `--repo=` both parse to the right repo in `_parse_merge_target`. Also pins `_parse_merge_target`'s
+    quote-aware args-region BOUNDARY (dev-env#660, ADR-050 Amendment 20): a real `--repo` flag placed
+    after a `--subject` value containing a doubled `&&` or an ordinary bare `&` (e.g. `"R&D tracking"`)
+    is no longer silently dropped by the tail's own end-boundary search — previously unprotected by
+    Amendment 17's `mask_quoted_spans(tail).split()` fix, which only made the search WITHIN an
+    already-bounded tail quote-aware, not the boundary-finding step itself — while a genuine chained
+    `&&` command still correctly bounds it. The shell test file pre-dates
     this list — added here (alongside the new pure-helper file) to close the gap where it existed but
     was never cross-referenced ([ADR-028](docs/adr/028-all-findings-merge-gate.md), [ADR-039](docs/adr/039-merge-gate-findings-enforcement.md)).
 

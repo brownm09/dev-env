@@ -50,7 +50,7 @@ import re
 import shlex
 import sys
 
-from _hookio import is_merge_help_only
+from _hookio import is_merge_help_only, mask_quoted_spans
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PMFG_PATH = os.path.join(_SCRIPT_DIR, "pre-merge-findings-gate.py")
@@ -93,11 +93,24 @@ def _merge_tail(command):
     Mirrors _parse_merge_target's own tail-extraction so --auto detection is scoped to the same
     statement pre-merge-findings-gate.py resolves its ref/repo from, not the whole (possibly
     chained) command string.
+
+    Bounded against a mask_quoted_spans-masked copy first (dev-env#660, ADR-050 Amendment 20),
+    mirroring the identical fix now applied to _parse_merge_target itself: a &&/||/;/\n that only
+    appears inside a quoted --subject/--body value (e.g. `--subject "part1 && part2" --auto`) was
+    mistaken for the real end of the invocation, truncating away a real --auto that comes after
+    it. Confirmed NOT a live gate bypass -- truncating inside an open quote always leaves the
+    naive slice with an unbalanced quote count, which wants_auto_merge's own shlex.split() already
+    rejects via its `except ValueError: return True` fail-closed fallback (dev-env PR #588) -- so
+    this was reached (correctly, if accidentally) via that fallback rather than via a correct
+    parse. Fixed here for consistency with the fix now applied to the other three sibling sites in
+    the same amendment.
     """
     m = re.search(r"gh\s+pr\s+merge\b(.*)", command, re.DOTALL)
     if not m:
         return ""
-    return re.split(r"&&|\|\||;|\n", m.group(1))[0]
+    tail = m.group(1)
+    boundary = len(re.split(r"&&|\|\||;|\n", mask_quoted_spans(tail))[0])
+    return tail[:boundary]
 
 
 def wants_auto_merge(command):
