@@ -1140,6 +1140,71 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_idle_refresher.py
     ```
 
+52. **pre-auto-merge-checkpoint-gate test** — required when changing
+    `claude/scripts/pre-auto-merge-checkpoint-gate.py`. Two layers, mirroring this hook family's
+    established split ([ADR-083](docs/adr/083-auto-merge-checkpoint-gate.md); dev-env#574). A
+    pure-helper Python test exercises the flag-parsing, marker-parsing, freshness-comparison, and
+    qualifying-comment-selection logic offline (no disk, no network, no gh): `wants_auto_merge`'s
+    shlex-based tokenization of the merge tail — bare `--auto`, `--auto=true`, the falsy
+    `--auto=false`/`0`/`no` set (plain and quoted), no `--auto` at all, `--disable-auto` (turns OFF
+    a pending auto-merge, never in scope), survival across a `cd`-chain, `--auto` in an earlier
+    unrelated chain segment or inside an unrelated flag's value (e.g. `--body`) correctly NOT
+    detected, a shell-quoted `--auto` (quotes stripped before `gh` sees argv) still detected — a
+    real pre-fix bypass a plain whitespace regex missed — and an unparseable tail (`shlex.split`
+    raising on an unterminated quote) defaulting to *wanting* `--auto`, failing toward the stricter
+    gate rather than letting an unparseable command through ungated. `_merge_tail` itself (the
+    shared tail-extraction `wants_auto_merge` tokenizes) is separately pinned for its dev-env#660 /
+    [ADR-050 Amendment 20](docs/adr/050-shared-hookio-sibling-hook-fixes.md) boundary-masking fix:
+    the end-boundary search now runs against a `mask_quoted_spans`-masked copy first, so a quoted
+    `&&`/`||`/`;`/newline inside a `--subject`/`--body` value (e.g. `--subject "part1 && part2"
+    --auto`) no longer truncates the tail before a real trailing `--auto` is seen — one test pins
+    the full, untruncated tail and that the trailing `--auto` is now found by direct parse rather
+    than the `shlex.split`-`ValueError` fallback it accidentally reached pre-fix; one confirms a
+    genuinely real trailing `&&`-chained command still correctly bounds the tail (the fix must not
+    simply widen the boundary unconditionally); and one — a review finding on PR #668 — combines a
+    quoted decoy separator with a real trailing chain in the same command, pinning that the
+    boundary-finder picks the FIRST unmasked separator rather than being shadowed by the earlier
+    masked decoy. The `gh pr merge --auto --help` composition with the reused
+    `_hookio.is_merge_help_only` confirms the hook's check order (`is_pr_merge_command` →
+    `wants_auto_merge` → `is_merge_help_only`) exits 0 before any live lookup even though
+    `wants_auto_merge` itself reports `True`. The `premerge-checkpoints` marker regex is pinned
+    against valid values, the deliberate third `missing` literal (in neither `_VALID_ADR_WARRANT`
+    nor `_VALID_DOC_RECONCILIATION`, so an unresolved gap is visibly recorded rather than blank
+    while still failing validity), an absent marker, and a marker alongside the sibling gate's
+    `review-findings` marker in the same comment body; `_is_stale`'s ISO-8601 string comparison
+    (fresh, stale, and the equal-timestamps-counts-as-fresh boundary); and `_qualifying_comment`'s
+    single-comment-carries-both-markers requirement — two comments each carrying only one marker
+    must not combine, the one comment carrying both is found, most-recent-qualifying-comment wins,
+    marker order within a comment doesn't matter, an empty comment list, and `_last_match` binding
+    to the LAST marker occurrence within one comment's body rather than the first, so a comment
+    quoting an earlier stale marker for context ahead of its own current one resolves correctly (a
+    gap inherited from the sibling gate's identical `.search()`-per-comment pattern, fixed here
+    specifically because this hook's fail-closed, no-override design raises the stakes). Also
+    sanity-checks the reused `is_pr_merge_command` import. `main()`'s stdin/exit-2 plumbing and the
+    live `gh pr view` call (`_fetch_pr_json`, reused from `pre-merge-findings-gate.py` and already
+    covered by that file's own suite — item 38 above) are not covered (pure-helper convention,
+    matching `test_pre_merge_findings_gate.py`'s own scope note). A behavioral shell test drives
+    the real hook end-to-end over stdin via the `MERGE_GATE_TEST_JSON` seam (no live `gh`, no
+    network): the no-`--auto`/explicit-`--auto=false` paths never touch `gh` at all; allow on
+    clean-review-plus-complete-checkpoints-plus-fresh and on open-findings-with-recorded-
+    disposition; BLOCK on open findings with no disposition, no comment carrying the
+    `review-findings` marker, no comment carrying the `premerge-checkpoints` marker, an incomplete
+    checkpoints marker, a stale marker, and a `gh` failure — the last confirming this hook's
+    deliberately **flipped, fail-closed** default versus the sibling gate's fail-open one (ADR-083
+    Decision point 3); a `commits` array at or above the 100-entry suspect-truncation threshold
+    also BLOCKs (`gh pr view`'s `commits` field is a paginated connection with no documented page
+    size, so `commits[-1]` can't be trusted as the true head commit past that size); and a
+    shell-quoted `--auto` is still gated and passed while `--auto` appearing only as prose inside a
+    `--body` value is correctly NOT gated at all (plain merge, never touches `gh`), alongside the
+    `--auto --help` and non-merge-command allow paths. This shell layer pre-dates the dev-env#660
+    boundary-masking fix and is unchanged by it — no case combines a quoted separator with the
+    merge tail. 33 pure-helper tests and 15 behavioral cases, both suites green as of 2026-07-09.
+
+    ```bash
+    py -3 claude/scripts/tests/test_pre_auto_merge_checkpoint_gate.py
+    bash claude/scripts/tests/test-auto-merge-checkpoint-gate.sh
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
