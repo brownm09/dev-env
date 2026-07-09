@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code Stop hook — state-keyed tile-enumeration gate (ADR-088, extended ADR-092).
+"""Claude Code Stop hook — state-keyed tile-enumeration gate (ADR-088, extended ADR-092, ADR-094 addendum).
 
 The command-keyed ``post-merge-tile-checkpoint.py`` (ADR-060) fires on a
 ``gh pr merge`` *you run*, but is BLIND to a PR that reaches merged state some
@@ -10,7 +10,7 @@ PR #700 incident that motivated the ADR-046 2026-07-05 forcing-function
 refinement (dev-env#595).
 
 This hook is STATE-keyed instead: at every Stop it scans the just-ended session
-transcript for TWO independent triggers, each requiring the same recorded
+transcript for THREE independent triggers, each requiring the same recorded
 tile-enumeration artifact before the stop is allowed:
 
 1. **Merged PR** (ADR-088): a PR reached MERGED state this session (by any
@@ -22,15 +22,25 @@ tile-enumeration artifact before the stop is allowed:
    enumeration was recorded. Investigation sessions that file well-scoped
    issues and implement nothing get no mechanical nudge otherwise — unlike a
    merged PR, which this hook already covers.
+3. **Tiles spawned without a table** (ADR-094 addendum, dev-env#656): a
+   `spawn_task` tile was spawned this session but no assistant message
+   carries the stable heading marker ``### Tiles spawned this session`` (the
+   end-of-session tile table PR1/#663 introduced in `claude/CLAUDE.md` ->
+   Session Summaries & Tile Tracking). Reuses the SAME spawn-detection this
+   hook already performs for enumeration (a spawned tile always satisfies
+   ``enumeration_recorded`` for triggers 1/2), so a merge/issue trigger can
+   be *resolved* by the very spawn that leaves trigger 3 still *unsatisfied*
+   — the table is a stricter, independent bar than "an enumeration happened".
 
-Both triggers are the direct Stop-hook analog of ``pre-merge-findings-gate``
+All three triggers are the direct Stop-hook analog of ``pre-merge-findings-gate``
 (ADR-039) and BLOCK the stop (exit 2) with a reminder on stderr. A recorded
-enumeration is either an actual ``spawn_task`` tile, or the prescribed text
-("Follow-ups considered: ... -> tiled (task_id / #N) / -> not tiled, because
-<reason>") — session-global and shared by both triggers (one enumeration
-satisfies either or both). A bare "no follow-ups" assertion does NOT satisfy
-the gate: per the ADR-046 refinement, "No follow-ups" is valid only as the
-visible result of an enumeration, never as a bare assertion (the #700 skip).
+enumeration (triggers 1/2) is either an actual ``spawn_task`` tile, or the
+prescribed text ("Follow-ups considered: ... -> tiled (task_id / #N) / ->
+not tiled, because <reason>") — session-global and shared across triggers 1
+and 2 (one enumeration satisfies either or both). A bare "no follow-ups"
+assertion does NOT satisfy the gate: per the ADR-046 refinement, "No
+follow-ups" is valid only as the visible result of an enumeration, never as
+a bare assertion (the #700 skip).
 
 Complements — does not replace — the command-keyed hook: that one is the
 immediate in-the-moment nudge when ``gh pr merge`` runs; this one is the
@@ -69,12 +79,13 @@ Stdin JSON shape (Stop):
   {"session_id": "...", "transcript_path": "/abs/path.jsonl",
    "stop_hook_active": false, ...}
 
-Exit 0 — no merged-state PR and no dangling created issue this session,
-         enumeration already recorded, a "skip tiles" override present,
-         already fired (sentinel), stop_hook_active set, or any error
-         (fail-open).
-Exit 2 — a PR merged and/or a created issue remains unresolved this session,
-         with no recorded tile-enumeration; blocking reminder(s) on stderr.
+Exit 0 — no merged-state PR, no dangling created issue, and no un-tabled
+         spawned tile this session; enumeration/table already recorded, a
+         "skip tiles" override present, already fired (sentinel),
+         stop_hook_active set, or any error (fail-open).
+Exit 2 — a PR merged and/or a created issue remains unresolved and/or a tile
+         was spawned with no table this session; blocking reminder(s) on
+         stderr.
 """
 from __future__ import annotations
 
@@ -174,6 +185,30 @@ _ENUM_MARKERS = (
 # The only valid waiver — an explicit user instruction naming the tile step.
 _SKIP_RE = re.compile(r"\b(?:skip\s+tiles?|don'?t\s+(?:spawn\s+)?tiles?|no\s+tiles?)\b",
                       re.IGNORECASE)
+
+# --- tile-table detection (ADR-094 addendum, dev-env#656) -----------------------
+# The bare substring "spawn_task", matching _SPAWN_TASK_RE's own "any
+# namespacing hits" bare-verb philosophy (review of PR #674) -- an earlier
+# version of this pre-filter checked the exact fully-qualified tool name
+# (mcp__ccd_session__spawn_task) instead, which is a STRICT SUBSET of what
+# _SPAWN_TASK_RE (used inside session_spawned_tiles, below) can match: a
+# spawn_task call recorded under any other MCP namespace would satisfy the
+# real detector but be silently skipped by that narrower pre-filter, defeating
+# the detector's own documented namespace-robustness. The bare substring costs
+# a few extra full-transcript reparses in sessions that merely MENTION
+# "spawn_task" in prose (empirically ~8x in one real no-tile-spawned
+# transcript) -- a bounded, accepted perf cost, the same tradeoff the
+# pre-existing "merged" pre-filter branch below already makes.
+_SPAWN_TASK_SUBSTRING = "spawn_task"
+# The stable heading marker PR1 (#663) defined in claude/CLAUDE.md -- Session
+# Summaries & Tile Tracking: "### Tiles spawned this session". Requires a `#`
+# heading prefix (1-6 levels) anchored to the START of a line (re.MULTILINE)
+# so a bare prose mention of the phrase mid-sentence (e.g. this hook's own
+# reminder text quoted back, or CLAUDE.md's rule text) is never mistaken for
+# an actual emitted heading -- a real markdown heading always starts its own
+# line, which this mirrors.
+_TABLE_MARKER_RE = re.compile(r"^#{1,6}\s*tiles\s+spawned\s+this\s+session",
+                              re.IGNORECASE | re.MULTILINE)
 
 
 # --- transcript readers -------------------------------------------------------
@@ -455,15 +490,16 @@ def session_unresolved_created_issues(calls: list, merged_prs: set) -> set:
     return set(created) - session_resolved_issue_numbers(calls, merged_prs)
 
 
-def enumeration_recorded(records: list) -> bool:
-    """True iff the session recorded a tile-enumeration artifact: a ``spawn_task``
-    tool call, or an assistant message carrying the prescribed enumeration text.
-
-    Session-global by design (documented ADR-088 limitation): one enumeration
-    satisfies the gate for the session — the gate targets the *total skip*
-    (merged, nothing recorded), not per-merge enumeration quality. A bare "no
-    follow-ups" matches none of the markers and so does NOT satisfy it.
-    """
+def session_spawned_tiles(records: list) -> bool:
+    """True iff a real ``spawn_task`` tool call happened this session, checked
+    via ``_SPAWN_TASK_RE`` against a ``tool_use`` item's ``name``. The single
+    source of truth for "was a tile spawned" — ``enumeration_recorded``
+    delegates to this for its own tool_use check (triggers 1/2), and
+    ``evaluate_tile_table`` uses it directly (trigger 3) to require a spawn
+    independently of enumeration TEXT (which must NOT, by itself, require a
+    table — only an actual spawn does). Extracting this out of
+    ``enumeration_recorded`` (review of PR #674) means the two callers can
+    never drift on what counts as "a tile was spawned."""
     for rec in records:
         if not isinstance(rec, dict) or rec.get("type") != "assistant":
             continue
@@ -472,10 +508,51 @@ def enumeration_recorded(records: list) -> bool:
                 continue
             if item.get("type") == "tool_use" and _SPAWN_TASK_RE.search(item.get("name", "") or ""):
                 return True
-            if item.get("type") == "text":
-                text = item.get("text", "") or ""
-                if any(rx.search(text) for rx in _ENUM_MARKERS):
-                    return True
+    return False
+
+
+def table_marker_present(records: list) -> bool:
+    """True iff an assistant message this session carries the stable tile-
+    table heading (``### Tiles spawned this session``, PR1/#663). Only
+    ``assistant`` ``text`` items are scanned — a user message, a tool_result,
+    or CLAUDE.md's own rule text merely mentioning the heading must never
+    satisfy the gate (mirrors ``skip_override``'s user-text-only scoping,
+    inverted to assistant-text-only here)."""
+    for rec in records:
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        for item in _content_items(rec):
+            if not isinstance(item, dict) or item.get("type") != "text":
+                continue
+            if _TABLE_MARKER_RE.search(item.get("text", "") or ""):
+                return True
+    return False
+
+
+def enumeration_recorded(records: list) -> bool:
+    """True iff the session recorded a tile-enumeration artifact: a ``spawn_task``
+    tool call, or an assistant message carrying the prescribed enumeration text.
+
+    Session-global by design (documented ADR-088 limitation): one enumeration
+    satisfies the gate for the session — the gate targets the *total skip*
+    (merged, nothing recorded), not per-merge enumeration quality. A bare "no
+    follow-ups" matches none of the markers and so does NOT satisfy it.
+
+    The tool_use check delegates to ``session_spawned_tiles`` (review of PR
+    #674) rather than re-implementing it, so this and the tile-table trigger
+    (``evaluate_tile_table``) can never disagree on what counts as a spawn.
+    """
+    if session_spawned_tiles(records):
+        return True
+    for rec in records:
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        for item in _content_items(rec):
+            if not isinstance(item, dict) or item.get("type") != "text":
+                continue
+            text = item.get("text", "") or ""
+            if any(rx.search(text) for rx in _ENUM_MARKERS):
+                return True
     return False
 
 
@@ -570,6 +647,33 @@ def evaluate_issues(records: list) -> tuple:
     return min(unresolved), False
 
 
+def evaluate_tile_table(records: list) -> tuple:
+    """Return ``(fire, resolved)`` for the tiles-spawned-without-a-table
+    trigger (ADR-094 addendum, dev-env#656) — a THIRD fully independent
+    sibling to ``evaluate()``/``evaluate_issues()``, zero impact on either.
+
+    ``fire`` — True iff a tile was spawned this session and neither the table
+    marker nor a skip override is present.
+    ``resolved`` — True whenever a tile was spawned and the table (or skip
+    override) is present, so the caller marks the sentinel and later Stops
+    skip the re-scan. A session that spawned no tile at all returns
+    ``(False, False)`` (nothing to resolve) so a tile spawned later in the
+    session is still caught.
+
+    NOTE the asymmetry with triggers 1/2: a spawned tile satisfies
+    ``enumeration_recorded`` (so ``evaluate()``/``evaluate_issues()`` can
+    resolve on it), but does NOT by itself satisfy THIS trigger — the table
+    marker is a stricter, separate bar. A session that merges a PR, spawns a
+    tile, and never emits the table therefore sees trigger 1 resolve
+    silently while trigger 3 still fires.
+    """
+    if not session_spawned_tiles(records):
+        return False, False
+    if skip_override(records) or table_marker_present(records):
+        return False, True
+    return True, False
+
+
 def format_reminder(pr: int) -> str:
     """The exit-2 stderr message. ASCII-only: Claude Code pipes hook output as
     cp1252 on Windows, so a char outside it (an arrow, em-dash) would raise
@@ -600,6 +704,22 @@ def format_issue_reminder(issue: int) -> str:
         "because <reason>'. \"No follow-ups\" is valid only as the visible result of "
         "that scan, never a bare assertion. Only an explicit \"skip tiles\" instruction "
         "anywhere in this session exempts this checkpoint."
+    )
+
+
+def format_table_reminder() -> str:
+    """The exit-2 stderr message for the tiles-spawned-without-a-table
+    trigger (ADR-094 addendum). ASCII-only, same constraint as the other
+    ``format_*_reminder`` functions (Claude Code pipes hook output as
+    cp1252 on Windows)."""
+    return (
+        "[tile-enumeration-gate] One or more spawn_task tiles were spawned this "
+        "session, but no end-of-session tile table was found. Per the Session "
+        "Summaries & Tile Tracking section of claude/CLAUDE.md (ADR-094), close "
+        "with a table under the exact heading '### Tiles spawned this session' "
+        "(columns: Tile | Issue | Status | Next) before ending the turn. Only an "
+        "explicit \"skip tiles\" instruction anywhere in this session exempts "
+        "this checkpoint."
     )
 
 
@@ -666,8 +786,16 @@ def main() -> None:
     # this bounds the common no-op session to one read + substring/regex
     # check instead of re-parsing the whole transcript each turn (review of
     # PR #604, extended ADR-092).
+    #
+    # Trigger 3 (tiles-spawned-without-a-table, ADR-094 addendum) requires a
+    # spawn_task tool call, which is JSON-recorded with a tool name containing
+    # "spawn_task" -- a bare substring check (matching what the real detector,
+    # _SPAWN_TASK_RE, itself matches) is a third standalone OR-branch rather
+    # than folded into either regex above.
     lower = text.lower()
-    if "merged" not in lower and not _ISSUE_CREATE_STMT_RE.search(text):
+    if ("merged" not in lower
+            and not _ISSUE_CREATE_STMT_RE.search(text)
+            and _SPAWN_TASK_SUBSTRING not in lower):
         sys.exit(0)
 
     # Fail-open: a parse/scan failure is a deliberate exit-0 skip, not an
@@ -676,9 +804,10 @@ def main() -> None:
         records = _parse_records(text)
         fire_pr, resolved_pr = evaluate(records)
         fire_issue, resolved_issue = evaluate_issues(records)
+        fire_table, resolved_table = evaluate_tile_table(records)
     except Exception:
         sys.exit(0)
-    if fire_pr is not None or fire_issue is not None:
+    if fire_pr is not None or fire_issue is not None or fire_table:
         # Set the sentinel BEFORE emitting so a re-entrant Stop cannot double-block.
         _mark_fired(session_id)
         messages = []
@@ -686,12 +815,14 @@ def main() -> None:
             messages.append(format_reminder(fire_pr))
         if fire_issue is not None:
             messages.append(format_issue_reminder(fire_issue))
+        if fire_table:
+            messages.append(format_table_reminder())
         sys.stderr.write("\n\n".join(messages) + "\n")
         sys.exit(2)
-    if resolved_pr or resolved_issue:
-        # Merge and/or issue-creation happened and the checkpoint is satisfied
-        # for whatever fired — resolve so later Stops skip the re-scan
-        # (mirrors posttooluse-inert-advisory.py).
+    if resolved_pr or resolved_issue or resolved_table:
+        # Merge and/or issue-creation and/or a tile-spawn happened and the
+        # checkpoint is satisfied for whatever fired — resolve so later
+        # Stops skip the re-scan (mirrors posttooluse-inert-advisory.py).
         _mark_fired(session_id)
     sys.exit(0)
 
