@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08, 2026-07-09 (nineteen amendments — see Amendment sections below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking, gh-create-help, prose-flag-masking, pr-create, bare-number-masking
+**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08, 2026-07-09 (twenty amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking, gh-create-help, prose-flag-masking, pr-create, bare-number-masking, args-boundary, truncation
 
 ---
 
@@ -1576,3 +1576,129 @@ surface the *next* one during its own implementation (here, the `_PR_URL_RE` gap
 dev-env#634. Treating this as a steady-state property of the hook family — each fix's audit is expected to
 surface exactly one more adjacent, structurally distinct gap — rather than a surprise each time, is the
 practical takeaway: budget for "note it, file it" as part of the fix, not as evidence the sweep failed.
+
+## Amendment 20 (2026-07-09) — quote-aware args-region BOUNDARY, not just the search within it (dev-env#660)
+
+**The gap.** Amendment 17's own "Out of scope, not fixed here" section predicted this almost exactly: several
+sites in this hook family scope a `gh pr merge` invocation's "args" region via a raw split or
+negated-character-class regex with **no quote-awareness of its own**, run *before* any masking happens:
+
+1. `pre-merge-findings-gate.py::_parse_merge_target` — `tail = re.split(r"&&|\|\||;|\n", tail)[0]`, used to
+   bound the tail **before** Amendment 17's `mask_quoted_spans(tail).split()` tokenization ever runs.
+2. `_MERGE_ARGS_RE = re.compile(r"\bgh\s+pr\s+merge\b([^\n;|&]*)")`, independently defined in
+   `post-pr-merge-project.py` (`extract_pr_number_from_command`, `extract_repo_from_command`) and
+   `posttooluse-inert-advisory.py` (`_devenv_merge_pr`) — its negated character class stops at **any single**
+   `&`/`|` (not just doubled `&&`/`||`), which is *easier* to trigger than site 1's pattern.
+3. `pre-auto-merge-checkpoint-gate.py::_merge_tail` — a hand-copy of site 1's PRE-Amendment-17 logic, explicitly
+   documented as "mirrors `_parse_merge_target`'s own tail-extraction," carrying the identical gap.
+
+This is the **opposite failure direction** from Amendments 15/17's own decoy-hijack shape: instead of a FAKE
+flag/URL inside quoted prose being mistaken for real, a **REAL** trailing flag, PR number, or URL that comes
+*after* a quoted value containing a literal `&`, `;`, `|`, or `\n` is silently **dropped** from the scoped
+region and never seen at all — false negative / silent data loss, not false positive.
+
+**Confirmed live, not speculative** (Amendment 17 explicitly left this "[n]ot demonstrated as live-exploitable
+here" — this amendment closes that gap):
+
+```
+>>> _parse_merge_target('gh pr merge 42 --subject "part1 && part2" --repo brownm09/dev-env')
+('42', None)   # --repo silently dropped; expected ('42', 'brownm09/dev-env')
+>>> extract_repo_from_command('gh pr merge 42 --subject "R&D tracking" --repo brownm09/dev-env')
+None   # a bare '&' in an ORDINARY commit subject already triggers it -- no deliberate crafting needed
+```
+
+**Impact per site.**
+
+- **`pre-merge-findings-gate.py`** (ADR-028/ADR-039 merge gate): a dropped `repo` means `gh pr view` runs
+  without `--repo`, resolving against cwd's git remote instead of the command's actual explicit target — the
+  findings gate can silently evaluate against the wrong PR.
+- **`post-pr-merge-project.py`**: `extract_repo_from_command` returning `None` falls through to cwd's own
+  `.claude/hook-config.json` repo instead of the command's explicit `--repo` — the exact dev-env#559 failure
+  shape, reintroduced through a different vector. A same-numbered issue on the **wrong repo's board** could be
+  moved to Done.
+- **`posttooluse-inert-advisory.py`**: `_devenv_merge_pr` falls back to `_is_devenv_cwd(cwd)` when the `--repo`
+  flag is invisible — producing either a missed advisory or a false one depending on cwd.
+- **`pre-auto-merge-checkpoint-gate.py`**: confirmed **NOT** a live gate bypass. Truncating inside an open quote
+  always leaves the naive slice with an unbalanced quote count, which `wants_auto_merge`'s own `shlex.split()`
+  already rejects via its `except ValueError: return True` fail-closed fallback (dev-env PR #588) — the correct
+  answer was reached, but only by accident, through a fallback built for an unrelated reason. Fixed here for
+  consistency with the other three sites, not because a live gap was confirmed.
+
+**Fix.** The same technique at all four sites, mirroring Amendment 15's own — applied one step earlier in the
+pipeline, at *boundary-detection* instead of *post-boundary flag-search*: mask the **whole** relevant text with
+the existing `mask_quoted_spans` **before** the boundary-finding split/regex runs, then use the match's **span
+offsets** (not its matched text) against the masked string to slice the **original**, unmasked text.
+`mask_quoted_spans` is length-preserving — every masked character is replaced 1:1 with `#` — so an offset that's
+correct in the masked string is correct at the identical position in the original.
+
+- **Site 1** (`pre-merge-findings-gate.py`): `boundary = len(re.split(r"&&|\|\||;|\n",
+  mask_quoted_spans(tail))[0]); tail = tail[:boundary]`, inserted immediately before Amendment 17's existing
+  `tokens = mask_quoted_spans(tail).split()` line, which is otherwise unchanged.
+- **Sites 2** (`post-pr-merge-project.py`): a new private `_merge_args(command)` helper —
+  `_MERGE_ARGS_RE.search(mask_quoted_spans(command))`, then `command[start:end]` from the match's `.span(1)` —
+  replaces the direct `_MERGE_ARGS_RE.search(command)` call in both `extract_pr_number_from_command` and
+  `extract_repo_from_command` (previously byte-identical lead-ins in both functions; factoring the now-more-
+  complex boundary logic once avoids duplicating it a second time in the same file).
+- **`posttooluse-inert-advisory.py`**: the identical mask-then-reslice pattern inlined directly in
+  `_devenv_merge_pr` (its only call site, so no separate helper).
+- **`pre-auto-merge-checkpoint-gate.py`**: the identical pattern in `_merge_tail`, requiring one new import
+  (`mask_quoted_spans` from `_hookio`).
+
+Everything downstream of each site's boundary fix is **completely unchanged** — the already-fixed within-
+boundary searches (Amendments 15/17's `mask_quoted_spans(args)` / `mask_prose_flag_values(args)` calls) now
+simply receive the correct, untruncated `args`/`tail` text instead of a prematurely truncated one. Each
+existing stop-character-set is preserved exactly (`&&`/`||`/`;`/`\n` for site 1's split; single-char
+`&`/`|`/`;`/`\n` for `_MERGE_ARGS_RE`) — this is a pure quote-awareness fix, not a behavior change to *which*
+characters bound the region, so no currently-tested case regresses.
+
+**Confirmed NOT affected: `pr-merge-reminder.py` and `post-pr-merge-pull.py`.** Both mask the **whole** command
+directly via `mask_quoted_spans` before searching for the repo flag (`_effective_merge_repo` /
+`extract_repo`), with no separate quote-unaware pre-truncation step of their own — the vulnerability is
+specific to code that computes a bounded `args` substring via a raw split/regex *before* any masking happens,
+which these two never do.
+
+**Known residual limitation, left unfixed.** `mask_quoted_spans` deliberately preserves literal newlines even
+inside a masked span (`test_mask_quoted_spans_preserves_newlines`) — needed by its own documented contract for
+a different reason (heredoc body line-count preservation for a hypothetical future line-oriented consumer). A
+`--subject`/`--body` value containing a **literal embedded newline** (a multi-line double-quoted argument, or
+a heredoc body — the latter a real, precedented shape in this hook family per Amendment 17's own citation of
+`stop-tile-enumeration-gate.py`'s `--body "$(cat <<'EOF' ...)"` idiom) immediately followed by more real args
+would still truncate early even after this fix, since the boundary regex still stops at that preserved
+(unmasked) `\n`. Deliberately left as a documented gap rather than folded into this fix: closing it would mean
+deviating from `mask_quoted_spans`'s established, tested newline contract that other callers rely on, for a
+narrower shape (needs an embedded newline specifically, inside a still-open span, with more real content after
+it) than the confirmed live bug this amendment fixes.
+
+**Coverage.** `test-merge-findings-gate.sh` gains step 9 (site 1: the confirmed `&&` repro resolving correctly,
+the easier-to-trigger bare-`&` case, a real chained `&&` command still correctly excluded, and — added during
+`/review` on this amendment's own PR #668 — a quoted `&&` decoy combined with a real trailing `&&` chain in the
+SAME command, proving the boundary-finder picks the first UNMASKED separator rather than being shadowed by the
+earlier masked one) — 13 total, up from 11 (four `print()` cases now behind the same two assertions). `test_
+post_pr_merge_project.py` gains 6 new tests (site 2: `--repo`/PR-number after a quoted `&&`, bare `&`, and `|`
+value; a real chained `&&` command still excluded; the same combined decoy+chain case) — 38 total, up from 32.
+`test_posttooluse_inert_advisory.py` gains one new function bundling four assertions (three original plus the
+combined decoy+chain case), following this file's own established convention of bundling every
+`_devenv_merge_pr` resolution-shape case into one function (Amendment 17's own precedent) — 32 total, up from
+31. `test_pre_auto_merge_checkpoint_gate.py` gains 3 new tests (site 4: `_merge_tail` now returns the full
+untruncated tail and `wants_auto_merge` reaches the correct answer directly rather than via the `ValueError`
+fallback; a real chained `&&` command still excluded; the combined decoy+chain case) — 33 total, up from 30.
+`_hookio.py`'s own `mask_quoted_spans` docstring gains a documentation-only paragraph (no behavior change)
+naming the newline-preservation caveat for these four new boundary-finding callers — `test_hookio.py` stays
+unchanged at 86 (no `_hookio.py` behavior was modified, only its documentation and additional call sites of
+its existing, unmodified `mask_quoted_spans`). All previously-passing suites across all four files and the
+repo-wide AST-based crude-substring-check gate were re-run in full and pass unchanged.
+
+**General lesson (continuing Amendments 9, 11, 15, and 17's).** This is the cleanest instance yet of this ADR's
+recurring "a fix scoped to one part of a bug class is a standing invitation to check the rest of it" lesson —
+Amendment 17 didn't just predict that a related gap existed somewhere, it named the exact two code shapes
+(`_parse_merge_target`'s split, `_MERGE_ARGS_RE`'s negated class) that turned out to be vulnerable, in its own
+"Out of scope, not fixed here" section, before any reproduction was attempted. The discipline of writing that
+prediction down at the moment a related-but-different gap is *noticed but not chased* — rather than either
+silently forgetting it or reflexively expanding the current PR's scope to chase it immediately — is what made
+this amendment's investigation fast: the "is this real?" question had a documented, precise starting point
+instead of a fresh audit from scratch. A second, narrower lesson: "quote-aware search within an already-bounded
+region" and "quote-aware detection of the region's own boundary" are two *different* defects that can exist
+independently in the same function — fixing the first (Amendment 17, for sites 1 and 2's within-`args` repo-flag/
+URL searches) does not imply the second is also fixed, even though both defects are patched with the literal
+same primitive (`mask_quoted_spans`) applied at a different pipeline stage. A fix landing for one doesn't
+retroactively prove the other was ever audited.

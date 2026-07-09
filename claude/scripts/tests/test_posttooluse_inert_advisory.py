@@ -343,6 +343,41 @@ def test_devenv_merge_pr_direct() -> str:
     return "_devenv_merge_pr: URL/number/--repo/-R/mid-word-guard/quoted-decoy/quoted-url-decoy/bare-number-decoy/--auto/cwd scoping all resolve correctly (dev-env#616, #626, #634, #650)"
 
 
+def test_devenv_merge_pr_repo_after_quoted_separator_not_dropped() -> str:
+    # dev-env#660, ADR-050 Amendment 20: _MERGE_ARGS_RE's own args-region
+    # boundary (not the searches WITHIN it, already fixed by #626/#634) ran
+    # against the RAW command with no quote-awareness -- its negated class
+    # `[^\n;|&]*` stops at ANY single '&'/'|', so a --subject value containing
+    # one (even an ordinary commit subject, not a deliberately crafted string)
+    # truncated `args` before a later real --repo/PR-number was ever reached.
+    # Confirmed live before the fix: _devenv_merge_pr('gh pr merge 42 --subject
+    # "part1 && part2" --repo brownm09/dev-env', "/other") returned None
+    # instead of "42" -- the explicit --repo naming dev-env was silently lost,
+    # and a non-dev-env cwd then correctly (but for the wrong reason) fell
+    # through to "not dev-env".
+    assert _devenv_merge_pr(
+        'gh pr merge 42 --subject "part1 && part2" --repo brownm09/dev-env', "/other",
+    ) == "42"
+    # An ordinary bare '&' (no doubling needed) triggers the same truncation
+    # in _MERGE_ARGS_RE specifically (unlike pre-merge-findings-gate.py's own
+    # &&-only split pattern).
+    assert _devenv_merge_pr(
+        'gh pr merge 42 --subject "R&D tracking" --repo brownm09/dev-env', "/other",
+    ) == "42"
+    # A REAL top-level && chaining a sibling command must still bound the args
+    # region -- the fix must not simply widen the boundary unconditionally.
+    assert _devenv_merge_pr(
+        "gh pr merge 42 --repo brownm09/dev-env && rm -rf /", "/other",
+    ) == "42"
+    # Review finding on PR #668: a quoted && decoy AND a real trailing &&
+    # chain combined in the SAME command -- the boundary-finder must pick the
+    # FIRST unmasked separator, not be shadowed by the earlier masked decoy.
+    assert _devenv_merge_pr(
+        'gh pr merge 42 --subject "a && b" --repo brownm09/dev-env && rm -rf /', "/other",
+    ) == "42"
+    return "_devenv_merge_pr: --repo/PR-number after a quoted &&/bare-& value no longer silently dropped (dev-env#660)"
+
+
 def test_detect_unrelated_command_ignored() -> str:
     calls = [("git status", "clean", DEVENV_CWD), ("npm test", "ok", DEVENV_CWD)]
     assert detect_board_actions(calls) == []
@@ -448,6 +483,7 @@ def main() -> int:
         ("detect: merge --repo other ignored (no URL hijack)", test_detect_merge_explicit_other_repo_ignored),
         ("detect: merge chained URL not hijacked", test_detect_merge_chained_url_not_hijacked),
         ("_devenv_merge_pr direct cases", test_devenv_merge_pr_direct),
+        ("_devenv_merge_pr: repo/number after quoted separator not dropped (dev-env#660)", test_devenv_merge_pr_repo_after_quoted_separator_not_dropped),
         ("detect: unrelated command ignored", test_detect_unrelated_command_ignored),
         ("_is_devenv_cwd", test_is_devenv_cwd),
         ("should_emit: inert create -> advise", test_should_emit_inert_create),

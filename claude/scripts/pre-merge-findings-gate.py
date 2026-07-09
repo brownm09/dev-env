@@ -97,13 +97,29 @@ def _parse_merge_target(command):
     split on), so it becomes exactly one token -- consumed whole as `--subject`'s
     own value by the `_VALUE_FLAGS` handling below, never mistaken for a
     fresh flag.
+
+    The tail's own END boundary (the "stop at a shell separator" split below)
+    is ALSO bounded against a `mask_quoted_spans`-masked copy first (dev-env#660,
+    ADR-050 Amendment 20) -- Amendment 17 fixed the WITHIN-boundary tokenization
+    hijack above but left this boundary-finding step itself searching raw,
+    unmasked text. A `&&`/`||`/`;`/`\n` that only appears inside a quoted
+    --subject/--body value (e.g. `--subject "part1 && part2" --repo o/r`) was
+    mistaken for the real end of the invocation, silently dropping a REAL
+    trailing flag like `--repo` that comes after it -- confirmed live, not
+    speculative: `_parse_merge_target('gh pr merge 42 --subject "a && b" --repo
+    o/r')` returned `('42', None)`, losing the repo entirely. Opposite failure
+    direction from Amendment 17's decoy-hijack (a fake flag being matched) --
+    here a REAL flag is silently lost. mask_quoted_spans is length-preserving,
+    so the masked split's length slices the correct, UNMASKED prefix back out
+    of the real tail before the (unchanged) tokenization step above runs.
     """
     m = re.search(r"gh\s+pr\s+merge\b(.*)", command, re.DOTALL)
     if not m:
         return None, None
     tail = m.group(1)
     # Stop at a shell separator so we don't swallow a chained command.
-    tail = re.split(r"&&|\|\||;|\n", tail)[0]
+    boundary = len(re.split(r"&&|\|\||;|\n", mask_quoted_spans(tail))[0])
+    tail = tail[:boundary]
     tokens = mask_quoted_spans(tail).split()
     ref, repo = None, None
     i = 0

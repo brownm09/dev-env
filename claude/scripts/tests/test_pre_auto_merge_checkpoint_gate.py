@@ -26,6 +26,7 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
 wants_auto_merge = mod.wants_auto_merge
+_merge_tail = mod._merge_tail
 _is_stale = mod._is_stale
 _qualifying_comment = mod._qualifying_comment
 _CHECKPOINTS_RE = mod._CHECKPOINTS_RE
@@ -97,6 +98,37 @@ def test_unparseable_tail_defaults_to_wanting_auto():
     # An unterminated quote makes shlex.split raise ValueError -- fail toward the stricter gate
     # (assume --auto) rather than silently letting an unparseable command through ungated.
     assert wants_auto_merge('gh pr merge 123 --body "unterminated')
+
+def test_merge_tail_boundary_not_truncated_by_quoted_separator():
+    # dev-env#660, ADR-050 Amendment 20: _merge_tail's own end-boundary search
+    # ("Stop at a shell separator") mirrored _parse_merge_target's PRE-fix
+    # logic and ran against RAW (unmasked) text -- a && inside a quoted
+    # --subject/--body value was mistaken for the real end of the invocation,
+    # truncating away a real --auto that comes after it. Before this fix, this
+    # specific shape happened to still resolve correctly (True) only because
+    # the truncated, now-unterminated-quote tail made shlex.split raise
+    # ValueError, landing on the fail-closed fallback above -- not because it
+    # was actually parsed. This test pins the CORRECT parse, not the
+    # accidental fallback: a real --auto after the quoted value is now found
+    # directly, and _merge_tail itself returns the full, untruncated tail.
+    command = 'gh pr merge 42 --subject "part1 && part2" --auto'
+    assert _merge_tail(command) == ' 42 --subject "part1 && part2" --auto', _merge_tail(command)
+    assert wants_auto_merge(command)
+
+def test_merge_tail_boundary_still_excludes_real_chained_command():
+    # A REAL top-level && chaining a sibling command must still bound the
+    # tail -- the fix must not simply widen the boundary unconditionally.
+    command = "gh pr merge 42 --auto && rm -rf /"
+    assert _merge_tail(command) == " 42 --auto ", _merge_tail(command)
+    assert wants_auto_merge(command)
+
+def test_merge_tail_boundary_quoted_decoy_and_real_chain_combined():
+    # Review finding on PR #668: a quoted && decoy AND a real trailing &&
+    # chain combined in the SAME command -- the boundary-finder must pick the
+    # FIRST unmasked separator, not be shadowed by the earlier masked decoy.
+    command = 'gh pr merge 42 --subject "a && b" --auto && rm -rf /'
+    assert _merge_tail(command) == ' 42 --subject "a && b" --auto ', _merge_tail(command)
+    assert wants_auto_merge(command)
 
 
 # ---------------------------------------------------------------------------

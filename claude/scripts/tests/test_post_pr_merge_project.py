@@ -280,6 +280,72 @@ def test_repo_from_real_url_survives_alongside_quoted_url_decoy() -> str:
     return "real PR URL resolves correctly alongside a quoted URL-shaped decoy (dev-env#634)"
 
 
+# ---------------------------------------------------------------------------
+# _merge_args boundary quote-awareness (dev-env#660, ADR-050 Amendment 20)
+#
+# Amendments 15/17 made the SEARCH within the args region quote-aware, but the
+# args region's own END BOUNDARY (_MERGE_ARGS_RE's negated character class
+# `[^\n;|&]*`) still stopped at ANY single `&`/`|` (not just doubled `&&`/`||`)
+# found anywhere in the RAW command, including inside a quoted --subject/--body
+# value -- with no quote-awareness of its own. This is the opposite failure
+# direction from #626/#634's decoy-hijack: instead of a FAKE flag being
+# mistaken for real, a REAL trailing flag or PR number gets silently DROPPED
+# because the args region never reaches it. Confirmed live before the fix:
+# extract_repo_from_command('gh pr merge 42 --subject "part1 && part2" --repo
+# brownm09/dev-env') returned None, not 'brownm09/dev-env'.
+# ---------------------------------------------------------------------------
+
+def test_repo_from_repo_flag_after_quoted_double_ampersand_not_dropped() -> str:
+    cmd = 'gh pr merge 42 --subject "part1 && part2" --repo brownm09/dev-env'
+    assert extract_repo_from_command(cmd) == "brownm09/dev-env"
+    return "--repo after a quoted && value resolves correctly, not silently dropped (dev-env#660)"
+
+
+def test_repo_from_repo_flag_after_quoted_bare_ampersand_not_dropped() -> str:
+    # _MERGE_ARGS_RE's negated class excludes a SINGLE '&' too, not just '&&' --
+    # an entirely ordinary commit subject like "R&D tracking" already triggers
+    # the truncation, no deliberately-crafted && required.
+    cmd = 'gh pr merge 42 --subject "R&D tracking" --repo brownm09/dev-env'
+    assert extract_repo_from_command(cmd) == "brownm09/dev-env"
+    return "--repo after a quoted bare '&' value resolves correctly (dev-env#660)"
+
+
+def test_repo_from_repo_flag_after_quoted_pipe_not_dropped() -> str:
+    cmd = 'gh pr merge 42 --subject "read | write path" --repo brownm09/dev-env'
+    assert extract_repo_from_command(cmd) == "brownm09/dev-env"
+    return "--repo after a quoted '|' value resolves correctly (dev-env#660)"
+
+
+def test_number_after_quoted_ampersand_value_not_dropped() -> str:
+    # The positional PR number extraction has the identical boundary bug when
+    # the number is placed AFTER the quoted value instead of before it.
+    cmd = 'gh pr merge --subject "part1 && part2" 42 --repo brownm09/dev-env'
+    assert extract_pr_number_from_command(cmd) == 42
+    return "positional number after a quoted && value resolves correctly (dev-env#660)"
+
+
+def test_merge_args_chained_command_still_excluded_after_fix() -> str:
+    # The fix must not simply widen the boundary unconditionally -- a REAL
+    # top-level && chaining a sibling command must still bound the args region.
+    cmd = "gh pr merge 42 --repo brownm09/dev-env && rm -rf /"
+    assert extract_repo_from_command(cmd) == "brownm09/dev-env"
+    assert extract_pr_number_from_command(cmd) == 42
+    return "real top-level && after the merge still bounds the args region (no over-widening)"
+
+
+def test_merge_args_quoted_decoy_and_real_chain_combined() -> str:
+    # Review finding on PR #668: neither existing case combines a quoted
+    # separator-decoy WITH a real trailing chain in the SAME command. The
+    # fix's correctness depends on the boundary-finder picking the FIRST
+    # unmasked separator when both are present -- the masked decoy && must
+    # not shadow the real one, and the real one must still correctly exclude
+    # the chained sibling command.
+    cmd = 'gh pr merge 42 --subject "a && b" --repo brownm09/dev-env && rm -rf /'
+    assert extract_repo_from_command(cmd) == "brownm09/dev-env"
+    assert extract_pr_number_from_command(cmd) == 42
+    return "quoted && decoy alongside a real trailing && chain both resolve correctly (dev-env#660)"
+
+
 # --- extract_pr_number (output) ------------------------------------------
 
 def test_output_squash_marker() -> str:
@@ -390,6 +456,12 @@ def main() -> int:
         ("repo: --repo flag survives alongside quoted decoy (dev-env#626)", test_repo_from_repo_flag_survives_alongside_quoted_decoy),
         ("repo: URL-shaped decoy inside quoted --subject not matched (dev-env#634)", test_repo_from_url_shaped_decoy_inside_subject_not_matched),
         ("repo: real URL survives alongside quoted URL-shaped decoy (dev-env#634)", test_repo_from_real_url_survives_alongside_quoted_url_decoy),
+        ("repo: --repo after quoted && value not dropped (dev-env#660)", test_repo_from_repo_flag_after_quoted_double_ampersand_not_dropped),
+        ("repo: --repo after quoted bare '&' value not dropped (dev-env#660)", test_repo_from_repo_flag_after_quoted_bare_ampersand_not_dropped),
+        ("repo: --repo after quoted '|' value not dropped (dev-env#660)", test_repo_from_repo_flag_after_quoted_pipe_not_dropped),
+        ("command: number after quoted && value not dropped (dev-env#660)", test_number_after_quoted_ampersand_value_not_dropped),
+        ("args: real chained && command still excluded after fix (dev-env#660)", test_merge_args_chained_command_still_excluded_after_fix),
+        ("args: quoted decoy && real chain combined (dev-env#660)", test_merge_args_quoted_decoy_and_real_chain_combined),
         ("output: squash marker", test_output_squash_marker),
         ("output: merged marker", test_output_merged_marker),
         ("output: cross-repo marker", test_output_cross_repo_marker),

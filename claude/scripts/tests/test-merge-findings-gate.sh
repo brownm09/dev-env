@@ -113,6 +113,34 @@ PYEOF
 echo "$OUT" | grep -q "('42', None)" && ok "quoted -R decoy in --subject does not hijack repo (dev-env#634)" || bad "quoted decoy: $OUT"
 echo "$OUT" | grep -q "('42', 'brownm09/dev-env')" && ok "real --repo flag survives alongside quoted decoy" || bad "real flag survives: $OUT"
 
+echo "[9] a real --repo AFTER a quoted value containing &&/;/bare-& is no longer dropped (dev-env#660)"
+OUT=$($PY - "$HOOK" <<'PYEOF'
+import importlib.util, os, sys
+p = sys.argv[1]
+sys.path.insert(0, os.path.dirname(p))
+spec = importlib.util.spec_from_file_location("mg", p)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+# Confirmed live bug before the fix: the tail's own end-boundary search ran
+# against RAW (unmasked) text, so a && inside a quoted --subject value was
+# mistaken for the real end of the invocation, truncating away --repo
+# entirely -- returned ('42', None) instead of ('42', 'brownm09/dev-env').
+print(m._parse_merge_target('gh pr merge 42 --subject "part1 && part2" --repo brownm09/dev-env'))
+# A bare (undoubled) & is just as real a trigger for a naive split -- an
+# ordinary commit subject like "R&D tracking" needs no deliberate crafting.
+print(m._parse_merge_target('gh pr merge 42 --subject "R&D tracking" --repo brownm09/dev-env'))
+# A chained sibling command after the merge must still be excluded --
+# confirms the fix didn't just delete the boundary check.
+print(m._parse_merge_target('gh pr merge 42 --repo brownm09/dev-env && rm -rf /'))
+# Review finding on PR #668: a quoted && decoy AND a real trailing && chain
+# combined in the SAME command -- the boundary-finder must pick the FIRST
+# unmasked separator, not be shadowed by the earlier masked decoy.
+print(m._parse_merge_target('gh pr merge 42 --subject "a && b" --repo brownm09/dev-env && rm -rf /'))
+PYEOF
+)
+echo "$OUT" | grep -qF "('42', 'brownm09/dev-env')" && ok "real --repo after a quoted && value resolves correctly (dev-env#660)" || bad "&& truncation: $OUT"
+echo "$OUT" | grep -c "('42', 'brownm09/dev-env')" | grep -q "^4$" && ok "bare-&, chained-command, and combined decoy+chain cases all still correct" || bad "expected 4 matching lines: $OUT"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

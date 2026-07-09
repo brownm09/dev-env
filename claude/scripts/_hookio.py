@@ -583,10 +583,23 @@ def mask_quoted_spans(command: str) -> str:
     from '#' characters, so masking still only flips a match from
     present-but-wrong-value to a value that fails the caller's equality
     check, never from absent to falsely present. Newlines are preserved
-    unmasked so a heredoc body's line count survives
-    (matters only if a caller later applies a line-oriented helper to the
-    masked result; no current caller does, but it costs nothing and mirrors
-    _find_heredoc_end's own care with heredoc line structure).
+    unmasked so a heredoc body's line count survives, and this now DOES
+    matter for a caller applying a line/separator-oriented helper to the
+    masked result: the four dev-env#660 (ADR-050 Amendment 20) boundary-finding
+    call sites (`_parse_merge_target`, `_merge_args`, `_devenv_merge_pr`,
+    `_merge_tail`) run a `re.split` on `\n` (among other separators) against
+    masked text to find where a `gh pr merge` invocation's own argument region
+    ends. Because a newline INSIDE a still-open quoted span or heredoc body
+    stays unmasked, such an embedded newline is (correctly, by this function's
+    own newline contract) still treated as a real separator by those callers
+    -- a `--subject`/`--body` value containing a literal embedded newline
+    (a multi-line double-quoted argument, or a heredoc body) immediately
+    followed by more real args would truncate early even with the Amendment 20
+    fix applied. A documented, deliberate residual gap (narrower than the bug
+    Amendment 20 fixes: needs an embedded newline specifically, inside a
+    still-open span, with more real content after it) rather than a defect --
+    closing it would mean breaking this function's own newline contract that
+    the heredoc-line-count case above still relies on.
 
     Callers must mask ONLY the exact string fed to the vulnerable repo-flag
     regex, never a string whose match is reused for something else (e.g. a

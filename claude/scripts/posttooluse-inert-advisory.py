@@ -161,24 +161,42 @@ def _devenv_merge_pr(command: str, cwd: str) -> str | None:
     dev-env `/pull/N` URL self-identifies, else a bare positional number is dev-env
     only from a dev-env cwd. PR number: positional token preferred, then the URL.
 
+    The args-region boundary itself (`_MERGE_ARGS_RE.search`) is run against a
+    `mask_quoted_spans`-masked copy of `command` first (dev-env#660, ADR-050
+    Amendment 20), not the raw command -- `_MERGE_ARGS_RE`'s negated character
+    class stops at any single `&`/`|`/`;`/`\n` with no quote-awareness of its
+    own, so a --subject/--body value containing a bare separator character
+    (even an ordinary one like `--subject "R&D tracking"`, not just a
+    deliberately crafted `&&`) truncated `args` before a later real `--repo` or
+    dev-env PR-number was ever seen, silently producing a missed (or, from a
+    dev-env-shaped cwd, falsely attributed) board advisory. mask_quoted_spans is
+    length-preserving, so the match's span offsets against the masked command
+    apply unchanged to the original -- `args` below is the REAL (unmasked) text.
+
     The `--repo`/`-R` flag check and the bare positional PR-number match both
-    run against the same `mask_quoted_spans`-masked copy of `args`
-    (dev-env#626, ADR-050 Amendment 15; the positional-number match added in
-    dev-env#650, Amendment 19), so a `--subject`/`--body` value containing a
-    space-separated "-R other/repo" substring or a bare decoy number
-    ("resolves 42 items") cannot be mistaken for a real flag or the real PR
-    number. `url_m` runs against a `mask_prose_flag_values`-masked copy of
-    `args` instead (dev-env#634, ADR-050 Amendment 17), so a --subject/--body
+    run against the same `mask_quoted_spans`-masked copy of that (now correctly
+    bounded) `args` (dev-env#626, ADR-050 Amendment 15; the positional-number
+    match added in dev-env#650, Amendment 19), so a `--subject`/`--body` value
+    containing a space-separated "-R other/repo" substring or a bare decoy
+    number ("resolves 42 items") cannot be mistaken for a real flag or the
+    real PR number. `url_m` runs against a `mask_prose_flag_values`-masked copy
+    of `args` instead (dev-env#634, ADR-050 Amendment 17), so a --subject/--body
     value containing a decoy dev-env PR URL can't be mistaken for a genuine
     self-identifying signal either — while a bare (not inside a prose-flag
     value) dev-env PR URL, quoted or not, is untouched by that masking and
     still self-identifies exactly as before. `url_m` is reused below for the
     PR-number fallback.
+
+    These three amendments are complementary, not overlapping: Amendment 20
+    ensures `args` itself is not prematurely truncated before any WITHIN-region
+    search runs; Amendments 15/17/19 ensure those searches aren't hijacked by
+    a decoy once `args` is correctly bounded.
     """
-    am = _MERGE_ARGS_RE.search(command)
+    am = _MERGE_ARGS_RE.search(mask_quoted_spans(command))
     if not am:
         return None
-    args = am.group(1)
+    start, end = am.span(1)
+    args = command[start:end]
     if _AUTO_FLAG_RE.search(args):
         return None
 
