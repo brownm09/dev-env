@@ -331,10 +331,20 @@ criteria met." and record `not-warranted` for the Step 8 marker.
 
 If any criterion applies, check whether the diff already includes a new or amended file under
 `docs/adr/` (or, for a project without its own `docs/adr/`, the project's established ADR
-location per its CLAUDE.md) plus a corresponding `docs/adr/INDEX.md` entry. If a qualifying ADR is
-present in this diff, or the PR body cites a prior PR number that already covers the decision,
-note "ADR-warrant check: written — see `docs/adr/<NNN>-<slug>.md`" (or the cited PR number) and
-record `written` for the Step 8 marker.
+location per its CLAUDE.md) plus a corresponding `docs/adr/INDEX.md` entry for a new file (an
+amendment to an existing ADR — e.g. a dated addendum — does not need a new INDEX.md row, since the
+ADR's title, number, and date don't change). If a qualifying ADR is present in this diff, or the PR
+body cites a prior PR number that already covers the decision, note "ADR-warrant check: written —
+see `docs/adr/<NNN>-<slug>.md`" (or the cited PR number) and record `written` for the Step 8
+marker.
+
+**What counts as a qualifying citation.** A cited prior PR does not need to cover the literal
+identical decision — it satisfies `written` if it establishes precedent for the same *class* of
+change (same file/section, same category of rule) **and** the current PR body explicitly states
+why that precedent applies here. A citation that shares only surface similarity (e.g., the same
+file touched, but a different category of rule, or no stated reasoning connecting the two) does
+not qualify — treat the criterion as unmet and record `missing` instead. See ADR-083's 2026-07-09
+addendum for the motivating incident and full rationale.
 
 If a criterion applies and no qualifying ADR is present in the diff and no prior-PR citation
 appears in the PR body, record a blocking `[documentation]` finding to include in the Step 6
