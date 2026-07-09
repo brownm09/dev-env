@@ -298,6 +298,12 @@ def render_summary(sessions: list[dict]) -> str:
 
 
 def main() -> None:
+    # Windows falls back to the console codepage on redirected (non-tty) stdout,
+    # silently mangling non-ASCII output (e.g. the ellipsis/em-dash below) instead
+    # of writing valid UTF-8.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(description="Claude Code token usage report")
     parser.add_argument("--date", help="Filter by YYYY-MM-DD (UTC session start)")
     parser.add_argument("--days", type=int, help="Last N calendar days")
