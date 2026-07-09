@@ -58,6 +58,14 @@ would otherwise satisfy every other clause — is excluded once
 still satisfies the full condition (the live check is still attempted for
 that case, matching dev-env#504's existing behavior unchanged).
 
+dev-env#646 (ADR-050 Amendment 18) added `_effective_create_repo`, the
+`is_create` branch's own counterpart to `_effective_merge_repo`: an explicit
+`--repo`/`-R` flag now overrides cwd for the `gh pr create` reminder too, the
+same flag-first precedence Amendment 14/15 already established for `gh pr
+merge`. Unlike the merge path, an unflagged create command still falls back
+to plain cwd (no cd-chain-aware dir), matching this branch's pre-existing
+behavior exactly.
+
 Usage:
     py -3 claude/scripts/tests/test_pr_merge_reminder.py
 
@@ -86,6 +94,7 @@ _create_shard_step = pmr._create_shard_step
 _is_successful_merge_call = pmr._is_successful_merge_call
 _effective_push_dir = pmr._effective_push_dir
 _effective_merge_repo = pmr._effective_merge_repo
+_effective_create_repo = pmr._effective_create_repo
 _build_messages = pmr._build_messages
 
 # read_command_output, effective_merge_dir, should_confirm_via_gh, and
@@ -485,6 +494,56 @@ def test_merge_repo_no_flag_falls_back_to_effective_merge_dir() -> str:
 
 
 # ---------------------------------------------------------------------------
+# _effective_create_repo  (dev-env#646, ADR-050 Amendment 18)
+# ---------------------------------------------------------------------------
+
+def test_create_repo_explicit_flag_overrides_cwd() -> str:
+    # The dev-env#646 repro: `gh pr create --repo other/repo` run from an
+    # unrelated cwd (e.g. a lifting-logbook session opening a dev-env PR) must
+    # report the flag's repo, not cwd -- the is_create branch previously had
+    # no repo-flag resolution at all and unconditionally reported cwd.
+    out = _effective_create_repo(
+        "gh pr create --repo brownm09/dev-env --title 'x' --head docs/foo",
+        "C:\\Users\\brown\\Git\\lifting-logbook",
+    )
+    assert out == "brownm09/dev-env", f"got {out!r}"
+    return "gh pr create --repo other/repo from unrelated cwd -> that repo, not cwd (dev-env#646)"
+
+
+def test_create_repo_short_flag_form() -> str:
+    # gh's -R shorthand for --repo must resolve identically for create, same
+    # as it already does for merge (dev-env#616).
+    out = _effective_create_repo(
+        "gh pr create -R brownm09/dev-env --fill",
+        "/Git/lifting-logbook",
+    )
+    assert out == "brownm09/dev-env", f"got {out!r}"
+    return "-R flag (gh's --repo shorthand) resolves identically to --repo for create"
+
+
+def test_create_repo_no_flag_falls_back_to_cwd() -> str:
+    # No --repo flag -> cwd, unchanged from this branch's pre-existing
+    # behavior (unlike the merge path, there is no cd-chain-aware dir to fall
+    # back to here -- see _effective_create_repo's own docstring).
+    out = _effective_create_repo("gh pr create --fill", "/session/cwd")
+    assert out == "/session/cwd", f"got {out!r}"
+    return "no --repo flag -> falls back to cwd (unchanged)"
+
+
+def test_create_repo_flag_survives_alongside_quoted_decoy() -> str:
+    # A real, unquoted --repo flag must still resolve correctly even when a
+    # quoted --body value elsewhere in the same command contains a decoy --
+    # mirrors the merge-side dev-env#626 regression coverage for this same
+    # mask_quoted_spans-protected regex.
+    out = _effective_create_repo(
+        'gh pr create --repo brownm09/dev-env --body "see -R other/repo for context"',
+        "/Git/lifting-logbook",
+    )
+    assert out == "brownm09/dev-env", f"got {out!r}"
+    return "real --repo flag resolves correctly alongside a quoted decoy (dev-env#646)"
+
+
+# ---------------------------------------------------------------------------
 # _build_messages  (dev-env#494 — chained create+merge must not suppress an
 # independently-successful create when the merge sub-check is incomplete)
 # ---------------------------------------------------------------------------
@@ -788,6 +847,10 @@ def main() -> int:
         ("merge repo: '-R' inside quoted --subject not matched (dev-env#626)", test_merge_repo_dash_r_inside_quoted_subject_not_matched),
         ("merge repo: --repo flag survives alongside quoted decoy (dev-env#626)", test_merge_repo_flag_survives_alongside_quoted_decoy),
         ("merge repo: no flag -> falls back to effective_merge_dir", test_merge_repo_no_flag_falls_back_to_effective_merge_dir),
+        ("create repo: --repo flag overrides cwd (dev-env#646)", test_create_repo_explicit_flag_overrides_cwd),
+        ("create repo: -R shorthand resolves same as --repo", test_create_repo_short_flag_form),
+        ("create repo: no flag -> falls back to cwd", test_create_repo_no_flag_falls_back_to_cwd),
+        ("create repo: --repo flag survives alongside quoted decoy", test_create_repo_flag_survives_alongside_quoted_decoy),
         ("build_messages: chained create + queued --auto -> create still fires (dev-env#494)", test_build_messages_chained_create_and_queued_auto_still_creates),
         ("build_messages: chained create + --help merge -> create still fires (dev-env#494)", test_build_messages_chained_create_and_help_shaped_merge_still_creates),
         ("build_messages: chained create + successful merge -> both fire", test_build_messages_chained_create_and_successful_merge_both_fire),

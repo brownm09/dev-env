@@ -152,15 +152,17 @@ def _effective_push_dir(command: str, cwd: str) -> str:
     return path
 
 
-# An explicit `--repo owner/repo` flag names the merge target directly — the
-# highest-confidence signal, ahead of any cd-chain or cwd resolution. Mirrors
-# extract_repo's resolution order in post-pr-merge-pull.py (ADR-067). Also
-# matches gh's `-R` shorthand for `--repo` (dev-env#616). The `(?<!\S)`
-# lookbehind requires the flag to start a standalone token, so it can't
-# match mid-word. `_effective_merge_repo` runs this against a
-# mask_quoted_spans-masked copy of `command` (dev-env#626, ADR-050 Amendment
-# 15), so a `--subject`/`--body` value containing a space-separated
-# "-R other/repo" substring can no longer false-match either.
+# An explicit `--repo owner/repo` flag names the merge or create target
+# directly — the highest-confidence signal, ahead of any cd-chain or cwd
+# resolution. Mirrors extract_repo's resolution order in
+# post-pr-merge-pull.py (ADR-067). Also matches gh's `-R` shorthand for
+# `--repo` (dev-env#616). The `(?<!\S)` lookbehind requires the flag to
+# start a standalone token, so it can't match mid-word. Both
+# `_effective_merge_repo` and `_effective_create_repo` (dev-env#646, ADR-050
+# Amendment 18) run this against a mask_quoted_spans-masked copy of
+# `command` (dev-env#626, ADR-050 Amendment 15), so a `--subject`/`--body`
+# value containing a space-separated "-R other/repo" substring can no
+# longer false-match either.
 _REPO_FLAG_RE = re.compile(r"(?<!\S)(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
 
 
@@ -184,6 +186,24 @@ def _effective_merge_repo(command: str, cwd: str) -> str:
     if m:
         return m.group(1)
     return effective_merge_dir(command, cwd)
+
+
+def _effective_create_repo(command: str, cwd: str) -> str:
+    """Best-effort repo label for a top-level ``gh pr create`` in *command*.
+
+    An explicit ``--repo``/``-R owner/repo`` flag takes precedence over cwd —
+    e.g. ``gh pr create --repo other/repo`` run from an unrelated cwd reports
+    ``other/repo``, not the session directory (dev-env#646). Falls back to
+    *cwd* when no ``--repo``/``-R`` flag is present — mirroring
+    ``_effective_merge_repo``'s flag-first precedence (dev-env#470/#616), but
+    unlike that function there is no cd-chain-aware dir to fall back to here:
+    the ``is_create`` message branch has only ever reported cwd, so an
+    unflagged create command's reminder is unchanged by this addition.
+    """
+    m = _REPO_FLAG_RE.search(mask_quoted_spans(command))
+    if m:
+        return m.group(1)
+    return cwd
 
 
 def _create_shard_step(output: str) -> str:
@@ -281,13 +301,15 @@ def _build_messages(
 
     if is_create and create_push_ok:
         shard_step = _create_shard_step(output)
+        create_repo = _effective_create_repo(command, cwd)
         messages.append(
             "[journal-reminder] gh pr create detected — write the journal stub AND"
             " open-PR shard NOW:\n"
             f"  cwd: {cwd}\n"
+            f"  repo: {create_repo}\n"
             "  Rationale: the stub captures session context while it's intact;\n"
             "  compaction or session corruption after this point loses it permanently.\n"
-            "  1. Identify the project journal path from cwd.\n"
+            "  1. Identify the project journal path from the repo above.\n"
             "  2. Check out or create the draft branch in engineering-journal.\n"
             "  3. Write a <!-- session: <slug> --> block for this session."
             + shard_step + "\n"

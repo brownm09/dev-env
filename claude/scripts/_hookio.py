@@ -448,6 +448,13 @@ def scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
 # never received this file's masking, or PR #623's (?<!\S) lookbehind, at
 # all -- a strictly larger, pre-existing gap than dev-env#626 itself). Same
 # per-caller hand-wiring discipline, same regression-test pattern.
+#
+# One more call site (dev-env#646, ADR-050 Amendment 18): pr-merge-reminder.py's
+# _effective_create_repo, the is_create branch's own counterpart to
+# _effective_merge_repo -- the gh pr create detection path had no repo-flag
+# resolution at all before this addition, so it gains the masking protection
+# from day one rather than needing a follow-up fix the way the merge path did.
+# Same per-caller hand-wiring discipline, same regression-test pattern.
 # ---------------------------------------------------------------------------
 
 
