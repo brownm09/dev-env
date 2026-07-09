@@ -11,8 +11,14 @@ Fires on every Bash tool call. Most calls are skipped quickly:
      inside a heredoc body, a quoted argument, or a $() subshell)
   3. Push must have succeeded (no error output)
   4. Most-recent commit in engineering-journal must touch a .stub.md file
+  5. None of the touched stub(s)' paired manifest shard(s) may show an
+     unresolved open PR (dev-env#651, ADR-091 Amendment 1) — a stub is pushed
+     immediately after `gh pr create` and again after each subsequent push in
+     the same session, well before `/review` and `gh pr merge`; arming the
+     reminder then would instruct archiving (destroying) a worktree the
+     review/merge still needs.
 
-When all four conditions are met, writes a sentinel file to the scratch
+When all five conditions are met, writes a sentinel file to the scratch
 directory. The Stop hook (journal-stop-check.py) reads and clears the
 sentinel and issues the archive reminder on stderr with exit 2 — the channel
 that reaches Claude for a Stop hook (exit-0 stdout is NOT added to Claude's
@@ -36,6 +42,7 @@ import sys
 from pathlib import Path
 
 from _hookio import read_command_output, scan_top_level
+from _journal_schema import has_unresolved_open_pr, parse_manifest_text
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SENTINEL = Path.home() / ".claude" / "scratch" / "stub-pushed.flag"
@@ -90,8 +97,8 @@ def references_engineering_journal(command: str) -> bool:
     return scan_top_level(command, _check_engineering_journal_ref)
 
 
-def most_recent_commit_has_stub(repo: Path) -> bool:
-    """Return True if HEAD commit in the repo touches at least one .stub.md file."""
+def head_commit_files(repo: Path) -> list[str]:
+    """Return the list of file paths touched by HEAD in *repo*, or [] on any failure."""
     try:
         result = subprocess.run(
             ["git", "diff-tree", "--no-commit-id", "-r", "--name-only", "HEAD"],
@@ -100,11 +107,77 @@ def most_recent_commit_has_stub(repo: Path) -> bool:
             text=True,
             timeout=10,
         )
-        return result.returncode == 0 and any(
-            line.endswith(".stub.md") for line in result.stdout.splitlines()
-        )
+        if result.returncode != 0:
+            return []
+        return result.stdout.splitlines()
     except Exception:
-        return False
+        return []
+
+
+def most_recent_commit_has_stub(files: list[str]) -> bool:
+    """Return True if *files* (HEAD's touched-file list) includes a .stub.md file."""
+    return any(f.endswith(".stub.md") for f in files)
+
+
+def manifest_path_for_stub(stub_path: str) -> str:
+    """Map a session's stub path to its 1:1-paired manifest path.
+
+    ``sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md`` pairs with the same directory's
+    ``YYYY-MM-DD_HHMMSS.manifest.jsonl`` (docs/REFERENCE.md -> "Manifest shard format":
+    named to pair 1:1 with the session's stub). Non-``.stub.md`` input is returned
+    unchanged (defensive; the sole caller already filters to ``.stub.md`` paths).
+    """
+    if not stub_path.endswith(".stub.md"):
+        return stub_path
+    return stub_path[: -len(".stub.md")] + ".manifest.jsonl"
+
+
+def head_commit_has_unresolved_pr(repo: Path, files: list[str]) -> bool:
+    """True if any session whose .stub.md HEAD touched has an unresolved open PR.
+
+    Reads each touched stub's *paired* manifest shard's CURRENT on-disk content --
+    deliberately NOT restricted to manifest files this specific commit's own diff-tree
+    touched. A session's manifest is written once, alongside its stub, right after
+    `gh pr create`; a later stub-only push in the same session (e.g. a review-finding-fixed
+    update, or the "PR updated" case in claude/CLAUDE.md's Update triggers) does not
+    re-touch it even though the PR it names may still be open. Confirmed against this
+    repo's own history (dev-env#651, ADR-091 Amendment 1): dev-env PR #633's
+    2026-07-08_183908 session wrote its manifest once with prs_opened:[633] at 18:40, then
+    pushed a stub-only "review finding fixed" commit at 18:44 (no manifest in that commit's
+    own diff) two minutes before merging. Checking only the triggering commit's own diff
+    would silently miss that window.
+
+    Only stub paths that still exist on disk are considered -- a .stub.md path this
+    commit *deleted* (e.g. journal-compose consuming it) has no in-progress session to
+    protect and is skipped.
+
+    Conservative on every ambiguity: a still-live stub with no manifest yet, an unreadable
+    manifest, or an unparseable line all return True (fail toward NOT archiving) -- the
+    cost of wrongly skipping one archive reminder is far lower than wrongly destroying a
+    worktree mid-review (the bug this fixes).
+    """
+    manifest_paths: set[str] = set()
+    for f in files:
+        if not f.endswith(".stub.md"):
+            continue
+        if not (repo / f).exists():
+            continue  # deleted by this commit (e.g. journal-compose) -- not an active session
+        manifest_paths.add(manifest_path_for_stub(f))
+
+    for manifest_rel in manifest_paths:
+        manifest_file = repo / manifest_rel
+        if not manifest_file.exists():
+            return True
+        try:
+            text = manifest_file.read_text(encoding="utf-8")
+        except OSError:
+            return True
+        for _lineno, entry in parse_manifest_text(text):
+            if entry is None:
+                return True
+            if has_unresolved_open_pr(entry):
+                return True
+    return False
 
 
 def has_push_error(output: str) -> bool:
@@ -146,7 +219,15 @@ def main() -> None:
         sys.exit(0)
 
     # Confirm the pushed commit contains a stub file
-    if not most_recent_commit_has_stub(JOURNAL_REPO):
+    files = head_commit_files(JOURNAL_REPO)
+    if not most_recent_commit_has_stub(files):
+        sys.exit(0)
+
+    # Must not have an unresolved open PR from this session -- a stub is pushed right
+    # after `gh pr create` and again after each subsequent push, well before /review and
+    # `gh pr merge` (dev-env#651, ADR-091 Amendment 1); archiving then destroys the
+    # worktree that same-session work still needs.
+    if head_commit_has_unresolved_pr(JOURNAL_REPO, files):
         sys.exit(0)
 
     # Write sentinel — the Stop hook will consume it and issue the reminder

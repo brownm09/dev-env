@@ -16,6 +16,11 @@ Cases pinned:
   incident, and a non-dict entry.
 - ``decode_shard_bytes``: plain UTF-8, a UTF-8 BOM (text returned past the BOM, named
   problem), UTF-16 LE/BE BOMs, invalid UTF-8, and empty bytes.
+- ``has_unresolved_open_pr`` (dev-env#651, ADR-091 Amendment 1): a `prs_opened` PR number
+  absent from `prs_closed` is unresolved; a matching PR compared across int/str type
+  mismatch, an already-resolved or never-opened entry, a partial multi-PR overlap, missing
+  keys, a non-dict entry, and a non-list `prs_opened`/`prs_closed` value all return the
+  documented conservative result.
 """
 import os
 import sys
@@ -28,6 +33,7 @@ REQUIRED_FIELDS = mod.REQUIRED_FIELDS
 OPEN_PR_REQUIRED_FIELDS = mod.OPEN_PR_REQUIRED_FIELDS
 missing_required_fields = mod.missing_required_fields
 missing_open_pr_fields = mod.missing_open_pr_fields
+has_unresolved_open_pr = mod.has_unresolved_open_pr
 find_entries_missing_fields = mod.find_entries_missing_fields
 parse_manifest_text = mod.parse_manifest_text
 decode_shard_bytes = mod.decode_shard_bytes
@@ -109,6 +115,57 @@ def test_open_pr_non_dict_treated_as_missing_all():
 
 def test_open_pr_empty_dict_missing_all():
     assert missing_open_pr_fields({}) == list(OPEN_PR_REQUIRED_FIELDS)
+
+
+# ---------------------------------------------------------------------------
+# has_unresolved_open_pr (dev-env#651, ADR-091 Amendment 1)
+# ---------------------------------------------------------------------------
+
+def test_unresolved_pr_when_opened_not_closed():
+    entry = _valid_manifest_entry(prs_opened=[635], prs_closed=[])
+    assert has_unresolved_open_pr(entry) is True
+
+def test_no_unresolved_pr_when_opened_and_closed_match():
+    entry = _valid_manifest_entry(prs_opened=[633], prs_closed=[633])
+    assert has_unresolved_open_pr(entry) is False
+
+def test_no_unresolved_pr_when_opened_in_earlier_session_closed_here():
+    entry = _valid_manifest_entry(prs_opened=[], prs_closed=[608])
+    assert has_unresolved_open_pr(entry) is False
+
+def test_no_unresolved_pr_when_nothing_opened():
+    entry = _valid_manifest_entry(prs_opened=[], prs_closed=[])
+    assert has_unresolved_open_pr(entry) is False
+
+def test_unresolved_pr_string_int_type_mismatch_still_matches():
+    entry = _valid_manifest_entry(prs_opened=[635], prs_closed=["635"])
+    assert has_unresolved_open_pr(entry) is False
+
+def test_unresolved_pr_missing_prs_closed_key():
+    entry = _valid_manifest_entry(prs_opened=[635])
+    del entry["prs_closed"]
+    assert has_unresolved_open_pr(entry) is True
+
+def test_unresolved_pr_missing_prs_opened_key():
+    entry = _valid_manifest_entry(prs_closed=[608])
+    del entry["prs_opened"]
+    assert has_unresolved_open_pr(entry) is False
+
+def test_unresolved_pr_non_dict_entry_returns_false():
+    assert has_unresolved_open_pr(["not", "a", "dict"]) is False
+    assert has_unresolved_open_pr(None) is False
+
+def test_unresolved_pr_partial_overlap():
+    entry = _valid_manifest_entry(prs_opened=[54, 55], prs_closed=[54])
+    assert has_unresolved_open_pr(entry) is True
+
+def test_unresolved_pr_non_list_prs_opened_conservative():
+    entry = _valid_manifest_entry(prs_opened="635", prs_closed=[])
+    assert has_unresolved_open_pr(entry) is True
+
+def test_unresolved_pr_non_list_prs_closed_conservative():
+    entry = _valid_manifest_entry(prs_opened=[635], prs_closed="635")
+    assert has_unresolved_open_pr(entry) is True
 
 
 # ---------------------------------------------------------------------------
