@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""idle-refresher.py
+
+UserPromptSubmit hook: when the user returns to a session after a long idle
+gap, inject a cue telling Claude to open its reply with a brief refresher
+(what we were working on, current state, pending to-dos/tiles) before
+addressing the new prompt. This is the code half of the "Open with a refresher
+after a long idle gap" rule in the global CLAUDE.md "Session Summaries & Tile
+Tracking" section — Claude cannot observe elapsed idle time on its own, so a
+hook has to measure the wall-clock gap and inject the cue. See
+docs/adr/095-session-boundary-summaries-and-idle-refresher.md and dev-env#655.
+
+Output contract: stdout JSON `{"hookSpecificOutput": {"hookEventName":
+"UserPromptSubmit", "additionalContext": "..."}}` + exit 0 — the same
+additionalContext injection session-mode-prompt.py uses (ADR-027). The prompt
+is NOT erased and the user does not need to re-submit; the cue is added context
+Claude sees before it answers.
+
+Measuring the gap — anchor on the last ASSISTANT record's timestamp, not the
+last record of any type. The user's just-submitted prompt (and a preceding
+queue-operation record) are appended to the transcript around submit time, so
+"the last record" would be ~now and the gap would always be ~0. The last
+assistant record is the end of Claude's previous turn — the true idle anchor —
+and its absence cleanly means "first prompt / no prior turn", which is exactly
+when the refresher should be skipped. A *resumed* session (--continue/--resume)
+after a long break DOES have prior assistant records, so it fires correctly,
+which is a primary intended case.
+
+Skips (all exit 0, silent):
+  - automated/XML-prefixed prompts (scheduled tasks, CI monitors) — no human
+    returning to orient;
+  - the first prompt of a session (no prior assistant turn);
+  - gap at or below the threshold (default 60 min; per-project override
+    `idle_refresher_minutes` in `.claude/hook-config.json`).
+
+Fail-open: any error exits 0 and emits nothing — a refresher cue is a nicety
+and must never block or disrupt the user's prompt. The injected text is kept
+ASCII-only so it survives Claude Code's cp1252-encoded hook-stdout pipe on
+Windows (the vanishing-output failure class posttooluse-inert-advisory.py
+guards against). Stateless by design: the gap is self-limiting (once the user
+is active, inter-prompt gaps fall below the threshold), so no per-session
+marker is needed to avoid re-firing.
+"""
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import re
+import sys
+import time
+
+import _hookutil
+
+DEFAULT_MINUTES = 60
+CONFIG_FILE = ".claude/hook-config.json"
+
+# Automated triggers use XML-tagged prompts; human prompts never start with <tag>.
+# Mirrors session-mode-prompt.py's _AUTOMATED_PREFIX (lowercase-initial tags only).
+_AUTOMATED_PREFIX = re.compile(r"^\s*<[a-z]")
+
+
+def parse_iso_to_epoch(ts):
+    """Parse a transcript record's ISO-8601 timestamp into epoch seconds (UTC).
+
+    Transcript timestamps look like "2026-07-09T17:53:30.670Z". `fromisoformat`
+    does not accept a bare trailing "Z" before Python 3.11, so normalise it to
+    "+00:00" first; a timestamp with no zone is assumed UTC (all real records
+    carry the Z). Returns None on missing/blank/unparseable input.
+    """
+    if not isinstance(ts, str) or not ts.strip():
+        return None
+    s = ts.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.timestamp()
+
+
+def last_activity_epoch(records):
+    """Epoch of the last assistant record with a parseable timestamp, or None.
+
+    Transcripts are append-only chronological, so the last assistant record in
+    file order is the end of Claude's most recent turn. None means no assistant
+    record carried a parseable timestamp (typically: the first prompt of a fresh
+    session, where no assistant turn exists yet).
+    """
+    last = None
+    for rec in records:
+        if isinstance(rec, dict) and rec.get("type") == "assistant":
+            ep = parse_iso_to_epoch(rec.get("timestamp"))
+            if ep is not None:
+                last = ep
+    return last
+
+
+def has_prior_assistant_turn(records):
+    """True if any assistant record is present — i.e. this is not the first
+    prompt of a session. Used to decide whether the mtime fallback is even
+    applicable (a fresh session with no assistant turn is skipped outright)."""
+    return any(isinstance(r, dict) and r.get("type") == "assistant" for r in records)
+
+
+def compute_gap_seconds(now, last_activity):
+    """Seconds elapsed since the last activity, or None when unknown."""
+    if last_activity is None:
+        return None
+    return now - last_activity
+
+
+def load_threshold_minutes(cwd):
+    """Idle threshold in minutes from the project's hook-config.json, else the
+    default. Mirrors turn-count-hook.py's load_prompt_threshold: any read/parse
+    problem falls back to DEFAULT_MINUTES rather than raising."""
+    path = os.path.join(cwd or "", CONFIG_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            config = json.load(f)
+        return int(config.get("idle_refresher_minutes", DEFAULT_MINUTES))
+    except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError, TypeError):
+        return DEFAULT_MINUTES
+
+
+def is_automated_prompt(prompt):
+    """True for machine-generated (XML-tagged) prompts — no human returning."""
+    return bool(_AUTOMATED_PREFIX.match(prompt or ""))
+
+
+def should_refresh(gap_seconds, threshold_seconds):
+    """Fire only when the gap strictly exceeds the threshold ("extended idle")."""
+    return gap_seconds is not None and gap_seconds > threshold_seconds
+
+
+def humanize_gap(gap_seconds):
+    """Coarse ASCII duration for the cue ("72 minutes" / "3 hours")."""
+    minutes = int(gap_seconds // 60)
+    if minutes < 120:
+        return f"{minutes} minutes"
+    return f"{minutes // 60} hours"
+
+
+def build_refresher_context(gap_seconds):
+    """The additionalContext cue. ASCII-only (hyphens, "about" — never an
+    em-dash or a math sign) so it survives the cp1252 hook-stdout pipe."""
+    span = humanize_gap(gap_seconds)
+    return (
+        f"[idle-refresher] The user is returning to this session after about "
+        f"{span} away. Before addressing their new message, open your reply with "
+        "a short refresher so they can re-orient: what we were working on, the "
+        "current state (what is done and what is still in flight), and any "
+        "pending to-dos or spawned tiles. Keep it to a few sentences - an "
+        "orientation, not a full report - then address their request. (Session "
+        "Summaries & Tile Tracking rule; ADR-095.)"
+    )
+
+
+def _read_records(path):
+    """Load transcript records, or [] on any failure (fail-open)."""
+    if not path:
+        return []
+    try:
+        return _hookutil.load_records(path)
+    except Exception:
+        return []
+
+
+def main():
+    try:
+        data = json.loads(sys.stdin.read() or "{}")
+        if not isinstance(data, dict):
+            sys.exit(0)
+    except Exception:
+        sys.exit(0)
+
+    try:
+        prompt = data.get("prompt", "") or ""
+        # Automated sessions (scheduled tasks, CI monitors, etc.) — no human to orient.
+        if is_automated_prompt(prompt):
+            sys.exit(0)
+
+        path = data.get("transcript_path", "") or ""
+        if not path:
+            found = _hookutil.find_transcript(data.get("session_id", "") or "")
+            path = str(found) if found else ""
+
+        records = _read_records(path)
+        last = last_activity_epoch(records)
+        if last is None:
+            # No parseable assistant timestamp. If a prior assistant turn exists
+            # (an unparseable-timestamp corruption edge), the file's mtime is a
+            # last-resort proxy; otherwise this is the first prompt of the
+            # session and there is nothing to refresh from -> skip.
+            if has_prior_assistant_turn(records) and path:
+                try:
+                    last = os.path.getmtime(path)
+                except OSError:
+                    last = None
+        if last is None:
+            sys.exit(0)
+
+        gap = compute_gap_seconds(time.time(), last)
+        threshold_seconds = load_threshold_minutes(data.get("cwd", "") or os.getcwd()) * 60
+        if not should_refresh(gap, threshold_seconds):
+            sys.exit(0)
+
+        payload = {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": build_refresher_context(gap),
+            }
+        }
+        sys.stdout.write(json.dumps(payload))
+        sys.stdout.flush()
+    except Exception:
+        # Fail open: a refresher cue is a nicety; never block or disrupt the prompt.
+        pass
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
