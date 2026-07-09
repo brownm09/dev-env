@@ -46,10 +46,31 @@ A targeted `Stop` hook (filed as [#656](https://github.com/brownm09/dev-env/issu
 - Softens ADR-046's deliberate tile≠issue separation — accepted as an explicit, user-chosen override, recorded here.
 - "Started" status is best-effort (no per-chip API); the table is honest about this rather than implying live tracking.
 
+## Addendum (2026-07-09): the enforcement hook lands ([#656](https://github.com/brownm09/dev-env/issues/656))
+
+The Decision section forward-referenced #656 as filed-but-not-yet-built ("landing in #656, dormant until it merges" — `claude/CLAUDE.md`). This addendum records what actually landed: a **third**, fully independent trigger in `claude/scripts/stop-tile-enumeration-gate.py`, alongside the existing merged-PR ([ADR-088](088-state-keyed-tile-enumeration-gate.md)) and dangling-created-issue ([ADR-092](092-dangling-issue-tile-enumeration-gate.md)) triggers.
+
+**Detection.** Two new pure helpers mirror the gate's existing shape:
+
+- `session_spawned_tiles(records)` — True iff a real `spawn_task` tool call happened this session (the same per-item signal `enumeration_recorded` already checks against a `tool_use` item's `name`, isolated into its own predicate).
+- `table_marker_present(records)` — True iff an **assistant** `text` item carries the stable heading, matched via `^#{1,6}\s*tiles\s+spawned\s+this\s+session` (case-insensitive, lenient on heading level 1–6, but **line-anchored** via `re.MULTILINE` so a mid-sentence mention of the phrase — this hook's own reminder text quoted back, or CLAUDE.md's rule text — is never mistaken for an actual emitted heading; a real markdown heading always starts its own line). Only `assistant` records are scanned, so a user message or a tool_result echoing the heading text can never satisfy it.
+
+`evaluate_tile_table(records)` composes these exactly like `evaluate()`/`evaluate_issues()`: no spawn this session → `(False, False)` (nothing to resolve, so a tile spawned later is still caught); a spawn with the marker or a skip override present → `(False, True)` (resolved, sentinel set); a spawn with neither → `(True, False)` (fire).
+
+**The key asymmetry with triggers (1)/(2).** A spawned tile satisfies `enumeration_recorded` — the same signal `evaluate()`/`evaluate_issues()` check — so it silently *resolves* the merged-PR and dangling-issue triggers. But it does **not**, by itself, satisfy trigger (3): the table marker is a stricter, independent bar. A session that merges a PR, spawns a tile, and never emits the table therefore sees trigger (1) resolve quietly while trigger (3) still fires and blocks the stop — this is intentional, not a bug: the whole point of ADR-094 is that a tile now needs the table, not just an enumeration. The reverse also holds: a merged PR with no tile spawned at all leaves trigger (3) a no-op (there is nothing to table).
+
+**Pre-filter.** `main()`'s cheap pre-filter (a `"merged"` substring check, extended by ADR-092 with a `gh issue create` regex search) gains a third OR-branch: a literal substring check for the fully-qualified MCP tool name `mcp__ccd_session__spawn_task`, not the bare word `spawn_task`. Verified empirically against a real transcript with zero tiles spawned: the bare word appeared 8× (prose and tool-result noise) while the fully-qualified name appeared 0× — so the FQ name is the precise, false-positive-free substring for a fast pre-parse reject.
+
+**Combined-message behavior.** All three triggers share one `format_*_reminder` composition in `main()`: if multiple fire in the same session, their reminders are concatenated into a single exit-2 stderr write (unchanged from the two-trigger shape ADR-092 established) — a session that merges a PR, leaves an issue dangling, and spawns an un-tabled tile blocks once, naming all three.
+
+**Test impact on two pre-existing e2e tests.** `test_e2e_merged_with_enum_allows` and `test_e2e_dangling_issue_with_enum_allows` previously used a bare `spawn_task` tile as their stand-in for "enumeration happened, so allow" and asserted exit 0. Once trigger (3) exists, that assumption no longer holds — a bare spawn alone now leaves trigger (3) unsatisfied. Both were extended to also emit the table heading, so the session they exercise is genuinely fully compliant; their original intent (proving triggers (1)/(2) resolve on enumeration) is preserved without weakening the new trigger's assertion.
+
+Full detection/decision detail and the isolated interaction tests: `claude/scripts/tests/test_stop_tile_enumeration_gate.py` (dev-env `CLAUDE.md` → `## Testing` item 48) and `docs/REFERENCE.md`'s hook entry.
+
 ## References
 
-- [dev-env#652](https://github.com/brownm09/dev-env/issues/652) — top-level issue; [#653](https://github.com/brownm09/dev-env/issues/653) — this PR; [#656](https://github.com/brownm09/dev-env/issues/656) — the enforcement hook.
+- [dev-env#652](https://github.com/brownm09/dev-env/issues/652) — top-level issue; [#653](https://github.com/brownm09/dev-env/issues/653) — this PR; [#656](https://github.com/brownm09/dev-env/issues/656) — the enforcement hook (this addendum).
 - [ADR-046](046-post-merge-followup-tiles.md) — the tiles-are-capture default this overrides.
-- [ADR-088](088-state-keyed-tile-enumeration-gate.md), [ADR-092](092-dangling-issue-tile-enumeration-gate.md) — the tile-enumeration gate this table complements and whose `spawn_task` detection the [#656](https://github.com/brownm09/dev-env/issues/656) hook reuses.
+- [ADR-088](088-state-keyed-tile-enumeration-gate.md), [ADR-092](092-dangling-issue-tile-enumeration-gate.md) — the tile-enumeration gate this table complements and whose `spawn_task` detection and `evaluate()`/`evaluate_issues()` shape the [#656](https://github.com/brownm09/dev-env/issues/656) trigger mirrors.
 - [ADR-095](095-session-boundary-summaries-and-idle-refresher.md) — the sibling session-boundary decision.
 - `spawn_task` / `dismiss_task` / `list_sessions` — the harness tile and session-management tools.

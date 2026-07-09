@@ -839,6 +839,143 @@ def test_combined_one_enumeration_satisfies_both():
 
 
 # ---------------------------------------------------------------------------
+# tiles-spawned-without-a-table trigger (ADR-094 addendum, dev-env#656)
+# ---------------------------------------------------------------------------
+
+_TABLE_HEADING = "### Tiles spawned this session"
+
+# A minimal "one tile spawned, no table" session.
+_SPAWNED_NO_TABLE = [
+    _asst_spawn("s1"),
+    _asst_text("Filed a follow-up tile for the flaky test."),
+]
+
+
+def test_session_spawned_tiles_true_on_real_spawn():
+    assert gate.session_spawned_tiles([_asst_spawn()])
+    return "a spawn_task tool_use -> session_spawned_tiles True"
+
+
+def test_session_spawned_tiles_false_without_spawn():
+    assert not gate.session_spawned_tiles([_asst_text("no tiles here")])
+    return "no spawn_task tool_use -> session_spawned_tiles False"
+
+
+def test_table_marker_present_true_on_heading():
+    assert gate.table_marker_present([_asst_text(_TABLE_HEADING + "\n\n| Tile | Issue |\n")])
+    return "assistant text with the '### Tiles spawned this session' heading -> present"
+
+
+def test_table_marker_present_case_and_heading_level_insensitive():
+    assert gate.table_marker_present([_asst_text("###### tiles SPAWNED this SESSION")])
+    return "different heading level + case -> still matches (lenient on level/case)"
+
+
+def test_table_marker_present_false_without_heading():
+    assert not gate.table_marker_present([_asst_text("Spawned a tile for the flaky test.")])
+    return "assistant text mentioning tiles but no heading -> not present"
+
+
+def test_table_marker_present_prose_mention_not_anchored_does_not_match():
+    # The heading phrase mentioned mid-sentence (not at the start of a line)
+    # must NOT satisfy the marker -- only a real heading (its own line) does.
+    assert not gate.table_marker_present(
+        [_asst_text("The hook wants a ### Tiles spawned this session heading here.")])
+    return "heading phrase mid-sentence (not line-anchored) -> NOT a match"
+
+
+def test_table_marker_present_ignores_user_record():
+    # A user message (or a tool_result echoing CLAUDE.md text) containing the
+    # heading must never satisfy the gate -- only assistant text counts.
+    assert not gate.table_marker_present([_user_str(_TABLE_HEADING)])
+    return "heading text in a USER record -> NOT present (assistant-only scope)"
+
+
+def test_evaluate_tile_table_fires_without_marker():
+    fire, resolved = gate.evaluate_tile_table(_SPAWNED_NO_TABLE)
+    assert fire is True and resolved is False
+    return "tile spawned + no table + no skip -> (True, resolved=False) [FIRE]"
+
+
+def test_evaluate_tile_table_resolved_with_marker():
+    records = _SPAWNED_NO_TABLE + [
+        _asst_text(_TABLE_HEADING + "\n| Tile | Issue | Status | Next |\n")]
+    fire, resolved = gate.evaluate_tile_table(records)
+    assert fire is False and resolved is True
+    return "tile spawned + table heading present -> (False, resolved=True)"
+
+
+def test_evaluate_tile_table_resolved_with_skip():
+    records = _SPAWNED_NO_TABLE + [_user_str("skip tiles")]
+    fire, resolved = gate.evaluate_tile_table(records)
+    assert fire is False and resolved is True
+    return "tile spawned + 'skip tiles' override -> (False, resolved=True)"
+
+
+def test_evaluate_tile_table_noop_without_spawn():
+    records = [_asst_bash("t1", "npm test"), _tool_result("t1", "ok")]
+    fire, resolved = gate.evaluate_tile_table(records)
+    assert fire is False and resolved is False
+    return "no tile spawned this session -> (False, resolved=False) [stay unresolved]"
+
+
+def test_format_table_reminder_is_cp1252_encodable():
+    msg = gate.format_table_reminder()
+    assert msg.isascii(), "reminder must be ASCII (Claude Code pipes hook output as cp1252)"
+    msg.encode("cp1252")  # must not raise
+    assert "Tiles spawned this session" in msg and "skip tiles" in msg
+    return "format_table_reminder is ASCII/cp1252-encodable and names the exact heading"
+
+
+# --- trigger interactions: a spawn satisfies enumeration (1/2) but not (3) -----
+
+def test_spawn_resolves_merge_trigger_but_table_trigger_still_fires():
+    # A spawned tile satisfies enumeration_recorded, so the merge trigger
+    # resolves silently -- but the table trigger is a STRICTER, separate bar
+    # and still fires because no table heading was ever emitted.
+    records = _MERGED_NO_ENUM + [_asst_spawn()]
+    fire_pr, resolved_pr = gate.evaluate(records)
+    fire_table, resolved_table = gate.evaluate_tile_table(records)
+    assert fire_pr is None and resolved_pr is True
+    assert fire_table is True and resolved_table is False
+    return "spawn resolves the merge trigger (1) but the table trigger (3) still fires"
+
+
+def test_spawn_only_no_merge_no_issue_table_trigger_fires():
+    # The genuinely new enforcement surface: no merge, no issue, just a
+    # spawned tile with no table -- only trigger 3 can catch this.
+    fire_pr, resolved_pr = gate.evaluate(_SPAWNED_NO_TABLE)
+    fire_issue, resolved_issue = gate.evaluate_issues(_SPAWNED_NO_TABLE)
+    fire_table, resolved_table = gate.evaluate_tile_table(_SPAWNED_NO_TABLE)
+    assert fire_pr is None and resolved_pr is False
+    assert fire_issue is None and resolved_issue is False
+    assert fire_table is True and resolved_table is False
+    return "spawn-only session (no merge/issue) -> only the table trigger fires"
+
+
+def test_merge_no_spawn_table_trigger_is_noop():
+    fire_pr, _ = gate.evaluate(_MERGED_NO_ENUM)
+    fire_table, resolved_table = gate.evaluate_tile_table(_MERGED_NO_ENUM)
+    assert fire_pr == 599
+    assert fire_table is False and resolved_table is False
+    return "merged PR, no tile spawned -> table trigger is a no-op (nothing to table)"
+
+
+def test_combined_all_three_triggers_fire_independently():
+    records = _MERGED_NO_ENUM + _ISSUE_CREATED_NO_ENUM + [_asst_spawn()]
+    fire_pr, resolved_pr = gate.evaluate(records)
+    fire_issue, resolved_issue = gate.evaluate_issues(records)
+    fire_table, resolved_table = gate.evaluate_tile_table(records)
+    # the spawn satisfies enumeration_recorded, resolving triggers 1 and 2...
+    assert fire_pr is None and resolved_pr is True
+    assert fire_issue is None and resolved_issue is True
+    # ...but the table trigger is independent and still fires.
+    assert fire_table is True and resolved_table is False
+    return ("merged PR + dangling issue + spawned tile, no table -> triggers 1/2 "
+            "resolved by the spawn, trigger 3 still fires")
+
+
+# ---------------------------------------------------------------------------
 # behavioral layer — real hook over stdin via subprocess (HOME-isolated sentinel)
 # ---------------------------------------------------------------------------
 
@@ -878,11 +1015,20 @@ def test_e2e_merged_no_enum_blocks_on_stderr():
 
 
 def test_e2e_merged_with_enum_allows():
-    records = _MERGED_NO_ENUM + [_asst_spawn()]
+    # A spawn_task tile satisfies enumeration_recorded (resolving trigger 1),
+    # but is no longer sufficient alone once trigger 3 (ADR-094 addendum,
+    # dev-env#656) exists -- the tile-table heading is also required for a
+    # genuinely fully-compliant session, since the bare spawn still leaves
+    # trigger 3 unsatisfied (see test_spawn_resolves_merge_trigger_but_
+    # table_trigger_still_fires for the isolated interaction this covers).
+    records = _MERGED_NO_ENUM + [
+        _asst_spawn(),
+        _asst_text("### Tiles spawned this session\n| Tile | Issue | Status | Next |\n"),
+    ]
     with tempfile.TemporaryDirectory() as home:
         rc, out, err = _run_hook(records, home)
     assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
-    return "e2e merged + spawn_task tile -> exit 0 (allowed)"
+    return "e2e merged + spawn_task tile + table -> exit 0 (allowed)"
 
 
 def test_e2e_no_merge_allows():
@@ -925,11 +1071,18 @@ def test_e2e_dangling_issue_no_enum_blocks_on_stderr():
 
 
 def test_e2e_dangling_issue_with_enum_allows():
-    records = _ISSUE_CREATED_NO_ENUM + [_asst_spawn()]
+    # Same rationale as test_e2e_merged_with_enum_allows: a bare spawn_task
+    # tile resolves trigger 2 (enumeration_recorded) but, since trigger 3
+    # (ADR-094 addendum, dev-env#656) exists, a genuinely fully-compliant
+    # session also needs the tile-table heading.
+    records = _ISSUE_CREATED_NO_ENUM + [
+        _asst_spawn(),
+        _asst_text("### Tiles spawned this session\n| Tile | Issue | Status | Next |\n"),
+    ]
     with tempfile.TemporaryDirectory() as home:
         rc, out, err = _run_hook(records, home)
     assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
-    return "e2e dangling issue + spawn_task tile -> exit 0 (allowed)"
+    return "e2e dangling issue + spawn_task tile + table -> exit 0 (allowed)"
 
 
 def test_e2e_issue_resolved_via_merge_allows():
@@ -985,6 +1138,60 @@ def test_e2e_dangling_issue_sentinel_suppresses_refire():
     assert rc1 == 2, f"first run expected exit 2, got {rc1}"
     assert rc2 == 0, f"second run expected exit 0 (sentinel), got {rc2}"
     return "e2e dangling-issue sentinel: first fire exit 2, second exit 0"
+
+
+# ---------------------------------------------------------------------------
+# behavioral layer — tiles-spawned-without-a-table trigger (ADR-094 addendum)
+# ---------------------------------------------------------------------------
+
+def test_e2e_spawn_no_table_blocks_on_stderr():
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(_SPAWNED_NO_TABLE, home)
+    assert rc == 2, f"expected exit 2, got {rc} (stderr={err!r})"
+    assert "[tile-enumeration-gate]" in err and "Tiles spawned this session" in err
+    assert out.strip() == "", f"stdout must be empty on exit 2, got {out!r}"
+    return "e2e tile spawned + no table -> exit 2, reason on stderr, empty stdout"
+
+
+def test_e2e_spawn_with_table_allows():
+    records = _SPAWNED_NO_TABLE + [
+        _asst_text(_TABLE_HEADING + "\n| Tile | Issue | Status | Next |\n")]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    return "e2e tile spawned + table heading -> exit 0 (allowed)"
+
+
+def test_e2e_spawn_with_skip_allows():
+    records = _SPAWNED_NO_TABLE + [_user_str("skip tiles")]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    return "e2e tile spawned + 'skip tiles' override -> exit 0 (allowed)"
+
+
+def test_e2e_combined_all_three_no_table_blocks_naming_table_only():
+    # Merge + dangling issue are both resolved by the spawn (enumeration),
+    # but the table trigger still fires -- only the table reminder appears.
+    records = _MERGED_NO_ENUM + _ISSUE_CREATED_NO_ENUM + [_asst_spawn()]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 2, f"expected exit 2, got {rc} (stderr={err!r})"
+    assert "Tiles spawned this session" in err
+    assert "#599" not in err and "#630" not in err, (
+        f"merge/issue triggers should be silently resolved by the spawn, got {err!r}")
+    assert out.strip() == "", f"stdout must be empty on exit 2, got {out!r}"
+    return ("e2e merged PR + dangling issue + spawn (no table) -> exit 2 naming "
+            "ONLY the table trigger")
+
+
+def test_e2e_spawn_table_sentinel_suppresses_refire():
+    with tempfile.TemporaryDirectory() as home:
+        rc1, _, _ = _run_hook(_SPAWNED_NO_TABLE, home, session_id="sess-table-refire")
+        rc2, out2, _ = _run_hook(_SPAWNED_NO_TABLE, home, session_id="sess-table-refire")
+    assert rc1 == 2, f"first run expected exit 2, got {rc1}"
+    assert rc2 == 0, f"second run expected exit 0 (sentinel), got {rc2}"
+    return "e2e tile-table sentinel: first fire exit 2, second exit 0"
 
 
 def main():
@@ -1078,6 +1285,28 @@ def main():
         ("e2e no issue created allows", test_e2e_no_issue_created_allows),
         ("e2e combined merged PR + dangling issue: both messages", test_e2e_combined_merged_pr_and_dangling_issue_both_messages),
         ("e2e dangling-issue sentinel suppresses re-fire", test_e2e_dangling_issue_sentinel_suppresses_refire),
+        # --- tiles-spawned-without-a-table trigger (ADR-094 addendum, dev-env#656) ---
+        ("session_spawned_tiles: true on real spawn", test_session_spawned_tiles_true_on_real_spawn),
+        ("session_spawned_tiles: false without spawn", test_session_spawned_tiles_false_without_spawn),
+        ("table_marker_present: true on heading", test_table_marker_present_true_on_heading),
+        ("table_marker_present: case/level insensitive", test_table_marker_present_case_and_heading_level_insensitive),
+        ("table_marker_present: false without heading", test_table_marker_present_false_without_heading),
+        ("table_marker_present: prose mention not anchored", test_table_marker_present_prose_mention_not_anchored_does_not_match),
+        ("table_marker_present: ignores user record", test_table_marker_present_ignores_user_record),
+        ("evaluate_tile_table: fires without marker", test_evaluate_tile_table_fires_without_marker),
+        ("evaluate_tile_table: resolved with marker", test_evaluate_tile_table_resolved_with_marker),
+        ("evaluate_tile_table: resolved with skip", test_evaluate_tile_table_resolved_with_skip),
+        ("evaluate_tile_table: no-op without spawn", test_evaluate_tile_table_noop_without_spawn),
+        ("format_table_reminder: cp1252-encodable", test_format_table_reminder_is_cp1252_encodable),
+        ("interaction: spawn resolves merge trigger, table trigger still fires", test_spawn_resolves_merge_trigger_but_table_trigger_still_fires),
+        ("interaction: spawn-only, no merge/issue -> table trigger fires", test_spawn_only_no_merge_no_issue_table_trigger_fires),
+        ("interaction: merge, no spawn -> table trigger no-op", test_merge_no_spawn_table_trigger_is_noop),
+        ("interaction: all three triggers fire independently", test_combined_all_three_triggers_fire_independently),
+        ("e2e spawn+no-table blocks on stderr", test_e2e_spawn_no_table_blocks_on_stderr),
+        ("e2e spawn+table allows", test_e2e_spawn_with_table_allows),
+        ("e2e spawn+skip allows", test_e2e_spawn_with_skip_allows),
+        ("e2e combined all three, no table: names only the table trigger", test_e2e_combined_all_three_no_table_blocks_naming_table_only),
+        ("e2e spawn-table sentinel suppresses re-fire", test_e2e_spawn_table_sentinel_suppresses_refire),
     ]
     failed = 0
     for name, fn in tests:

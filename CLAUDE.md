@@ -1033,6 +1033,33 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     invocation — review of PR #639, confirmed independently by two reviewers). 76 tests total, up from
     39 pre-ADR-092.
 
+    The tiles-spawned-without-a-table trigger (ADR-094 addendum, dev-env#656) adds a third fully
+    independent pure-helper suite, mirroring the shape of the two above: `session_spawned_tiles`
+    (a real `spawn_task` tool_use vs. none) and `table_marker_present` (the line-anchored
+    `^#{1,6}\s*tiles\s+spawned\s+this\s+session` heading regex — case- and heading-level-insensitive,
+    but requires the marker to start its own line so a mid-sentence mention of the phrase, or the
+    same text merely echoed inside a user/tool_result record, does not false-satisfy it — only
+    `assistant` `text` items are scanned). `evaluate_tile_table`'s composition (fire / resolved-by-marker /
+    resolved-by-skip / no-op-without-a-spawn) and `format_table_reminder` (cp1252-encodability) mirror
+    `evaluate`/`evaluate_issues`'s existing shape as a third sibling. Also pins the key interaction this
+    trigger introduces: a spawned tile satisfies `enumeration_recorded` and so silently resolves
+    triggers (1)/(2), but does **not** by itself satisfy trigger (3) — a session that merges a PR,
+    spawns a tile, and never emits the table sees (1) resolve while (3) still fires; the reverse (a
+    merged PR with no spawn at all) leaves trigger (3) a no-op, since there is nothing to table. The
+    pre-filter gains a third OR-branch: a literal substring check for the fully-qualified tool name
+    `mcp__ccd_session__spawn_task` (deliberately not `scan_top_level`-anchored, since it is a pre-filter
+    substring check on JSON-recorded tool-call data, not a command-shape check — empirically precise:
+    a real no-tile transcript contains the bare word "spawn_task" 8x from prose/tool_result noise but
+    the FQ name 0x). The behavioral layer gains five end-to-end subprocess cases mirroring the existing
+    pattern: spawn-with-no-table blocks on stderr naming the exact heading; spawn-with-table and
+    spawn-with-skip each allow; a combined merged-PR + dangling-issue + spawn session (no table) blocks
+    naming **only** the table trigger (the spawn silently resolves the other two); and the sentinel
+    suppresses a second fire. Two **pre-existing** e2e tests (`test_e2e_merged_with_enum_allows`,
+    `test_e2e_dangling_issue_with_enum_allows`) were extended to also emit the table heading alongside
+    their bare `spawn_task` tile, since a bare spawn alone no longer reaches exit 0 once trigger (3)
+    exists — their original intent (proving triggers (1)/(2) resolve on enumeration) is preserved by
+    making the session genuinely fully compliant rather than by weakening the new trigger.
+
     ```bash
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
     ```
