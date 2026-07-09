@@ -323,7 +323,24 @@ def test_devenv_merge_pr_direct() -> str:
     ) == "42"
     assert _devenv_merge_pr(f"gh pr merge --auto {DEVENV_PR_URL}", DEVENV_CWD) is None
     assert _devenv_merge_pr("gh pr merge 7 --squash", "/some/other/repo") is None
-    return "_devenv_merge_pr: URL/number/--repo/-R/mid-word-guard/quoted-decoy/quoted-url-decoy/--auto/cwd scoping all resolve correctly (dev-env#616, #626, #634)"
+    # dev-env#650, ADR-050 Amendment 19: a --subject/--body value containing a
+    # bare decoy number ("resolves 42 items") must not be mistaken for the
+    # real positional PR number either. mask_quoted_spans blinds the whole
+    # quoted span before num_m is computed, so with no real number and no
+    # other self-identifying signal this falls through to None (is_devenv is
+    # True from cwd, but neither num_m nor url_m resolves).
+    assert _devenv_merge_pr(
+        'gh pr merge --subject "resolves 42 items"', DEVENV_CWD,
+    ) is None
+    assert _devenv_merge_pr(
+        'gh pr merge --body "fixes 99 bugs now"', DEVENV_CWD,
+    ) is None
+    # A real positional number must still resolve correctly alongside a
+    # quoted bare-number decoy elsewhere in the same args.
+    assert _devenv_merge_pr(
+        'gh pr merge 390 --subject "resolves 42 items"', DEVENV_CWD,
+    ) == "390"
+    return "_devenv_merge_pr: URL/number/--repo/-R/mid-word-guard/quoted-decoy/quoted-url-decoy/bare-number-decoy/--auto/cwd scoping all resolve correctly (dev-env#616, #626, #634, #650)"
 
 
 def test_detect_unrelated_command_ignored() -> str:

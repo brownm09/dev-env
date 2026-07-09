@@ -139,6 +139,21 @@ def test_cmd_branch_name_no_number() -> str:
     return "merge by branch name -> None (digit inside name is not a token)"
 
 
+def test_cmd_bare_number_decoy_in_subject_not_hijacked() -> str:
+    # dev-env#650, ADR-050 Amendment 19: a --subject/--body value containing a
+    # bare decoy number ("resolves 42 items") must not be mistaken for the
+    # real merged PR number when no real number is present.
+    cmd = 'gh pr merge --subject "resolves 42 items" --squash'
+    assert extract_pr_number_from_command(cmd) is None
+    return "bare number decoy inside quoted --subject -> None, not falsely matched (dev-env#650)"
+
+
+def test_cmd_real_number_survives_alongside_bare_number_decoy() -> str:
+    cmd = 'gh pr merge 380 --subject "resolves 42 items" --squash'
+    assert extract_pr_number_from_command(cmd) == 380
+    return "real positional number resolves correctly alongside a quoted bare-number decoy (dev-env#650)"
+
+
 # --- extract_repo_from_command (dev-env#559) ------------------------------
 
 def test_repo_from_cross_repo_url() -> str:
@@ -359,6 +374,8 @@ def main() -> int:
         ("command: URL in flag value not hijacked", test_cmd_url_in_flag_value_not_hijacked),
         ("command: chained URL ignored", test_cmd_chained_url_ignored),
         ("command: branch name -> None", test_cmd_branch_name_no_number),
+        ("command: bare number decoy inside quoted --subject not hijacked (dev-env#650)", test_cmd_bare_number_decoy_in_subject_not_hijacked),
+        ("command: real number survives alongside bare-number decoy (dev-env#650)", test_cmd_real_number_survives_alongside_bare_number_decoy),
         ("repo: cross-repo URL parsed (dev-env#559)", test_repo_from_cross_repo_url),
         ("repo: bare number -> None", test_repo_from_bare_number_is_none),
         ("repo: bare form -> None", test_repo_from_bare_form_is_none),

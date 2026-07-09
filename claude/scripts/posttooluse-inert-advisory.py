@@ -64,8 +64,9 @@ from pathlib import Path
 # module-attribute-indirection the tests rely on (ADR-073).
 from _hookutil import iter_bash_calls, load_records, _result_text  # noqa: F401
 
-# mask_quoted_spans (dev-env#626, ADR-050 Amendment 15) and
-# mask_prose_flag_values (dev-env#634, ADR-050 Amendment 17) -- see _devenv_merge_pr.
+# mask_quoted_spans (dev-env#626, ADR-050 Amendment 15; also dev-env#650,
+# Amendment 19) and mask_prose_flag_values (dev-env#634, ADR-050 Amendment 17)
+# -- see _devenv_merge_pr.
 from _hookio import mask_prose_flag_values, mask_quoted_spans
 
 SENTINEL_PREFIX = "posttooluse-inert-resolved-"
@@ -94,6 +95,16 @@ DEVENV_REPO = "brownm09/dev-env"
 _MERGE_ARGS_RE = re.compile(r"\bgh\s+pr\s+merge\b([^\n;|&]*)")
 # A bare positional PR-number token (`42`) within those args; a digit run inside a
 # URL (`/pull/42`) or a flag value (`--foo=12`) is not a standalone token.
+# `_devenv_merge_pr` runs this against a mask_quoted_spans-masked copy of
+# `args` (dev-env#650, ADR-050 Amendment 19), so a --subject/--body value
+# containing a space-separated bare number ("resolves 42 items") can no
+# longer be mistaken for the real positional PR number either -- the
+# (?<!\S)/(?=\s|$) boundary alone can't tell "whitespace inside a quoted
+# value" from "whitespace between top-level tokens," the same gap Amendment
+# 15 already closed for _REPO_FLAG_RE. mask_quoted_spans (not
+# mask_prose_flag_values) is used because this decoy shape is not scoped to
+# a --subject/--body/-t/-b flag specifically -- it could appear inside any
+# quoted value.
 _MERGE_POS_NUM_RE = re.compile(r"(?<!\S)(\d+)(?=\s|$)")
 # A queued `--auto` only *enables* auto-merge -- it is not a completed merge, and
 # even a healthy session would not Done-move it yet (cf. post-pr-merge-project.py).
@@ -150,16 +161,19 @@ def _devenv_merge_pr(command: str, cwd: str) -> str | None:
     dev-env `/pull/N` URL self-identifies, else a bare positional number is dev-env
     only from a dev-env cwd. PR number: positional token preferred, then the URL.
 
-    The `--repo`/`-R` flag check runs against a `mask_quoted_spans`-masked copy
-    of `args` (dev-env#626, ADR-050 Amendment 15), so a `--subject`/`--body`
-    value containing a space-separated "-R other/repo" substring cannot be
-    mistaken for a real flag. `url_m` runs against a `mask_prose_flag_values`-
-    masked copy of `args` instead (dev-env#634, ADR-050 Amendment 17), so a
-    --subject/--body value containing a decoy dev-env PR URL can't be mistaken
-    for a genuine self-identifying signal either — while a bare (not inside a
-    prose-flag value) dev-env PR URL, quoted or not, is untouched by that
-    masking and still self-identifies exactly as before. `url_m` is reused
-    below for the PR-number fallback.
+    The `--repo`/`-R` flag check and the bare positional PR-number match both
+    run against the same `mask_quoted_spans`-masked copy of `args`
+    (dev-env#626, ADR-050 Amendment 15; the positional-number match added in
+    dev-env#650, Amendment 19), so a `--subject`/`--body` value containing a
+    space-separated "-R other/repo" substring or a bare decoy number
+    ("resolves 42 items") cannot be mistaken for a real flag or the real PR
+    number. `url_m` runs against a `mask_prose_flag_values`-masked copy of
+    `args` instead (dev-env#634, ADR-050 Amendment 17), so a --subject/--body
+    value containing a decoy dev-env PR URL can't be mistaken for a genuine
+    self-identifying signal either — while a bare (not inside a prose-flag
+    value) dev-env PR URL, quoted or not, is untouched by that masking and
+    still self-identifies exactly as before. `url_m` is reused below for the
+    PR-number fallback.
     """
     am = _MERGE_ARGS_RE.search(command)
     if not am:
@@ -168,7 +182,8 @@ def _devenv_merge_pr(command: str, cwd: str) -> str | None:
     if _AUTO_FLAG_RE.search(args):
         return None
 
-    repo_m = _REPO_FLAG_RE.search(mask_quoted_spans(args))
+    masked_quoted_args = mask_quoted_spans(args)
+    repo_m = _REPO_FLAG_RE.search(masked_quoted_args)
     url_m = _DEVENV_PR_URL_RE.search(mask_prose_flag_values(args))
     if repo_m:
         is_devenv = repo_m.group(1) == DEVENV_REPO
@@ -179,7 +194,7 @@ def _devenv_merge_pr(command: str, cwd: str) -> str | None:
     if not is_devenv:
         return None
 
-    num_m = _MERGE_POS_NUM_RE.search(args)
+    num_m = _MERGE_POS_NUM_RE.search(masked_quoted_args)
     if num_m:
         return num_m.group(1)
     return url_m.group(1) if url_m else None

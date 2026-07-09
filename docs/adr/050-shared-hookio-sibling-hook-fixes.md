@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08, 2026-07-09 (eighteen amendments — see Amendment sections below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking, gh-create-help, prose-flag-masking, pr-create
+**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08, 2026-07-09 (nineteen amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking, gh-create-help, prose-flag-masking, pr-create, bare-number-masking
 
 ---
 
@@ -1461,3 +1461,118 @@ The mechanical proxy this suggests, sharper than "grep for `_REPO_FLAG_RE`": whe
 message-building function gains a new resolution helper, ask whether every *other* branch of that same
 function reports its target the same way — a within-function asymmetry is easy to miss precisely because both
 branches read as "already covered" from a file-level or grep-level audit.
+
+## Amendment 19 (2026-07-09) — masking the bare positional PR-number regex family (dev-env#650)
+
+**The gap.** Amendment 17's own "Out of scope, not fixed here" section named a third decoy class, found by
+`/review` on that amendment's own PR (#647) via a subagent that executed the code directly: a **bare
+positional PR-number** inside `--subject`/`--body` prose (e.g. `--subject "resolves 42 items"`) is read as a
+real PR number by three sites' `(?<!\S)(\d+)(?=\s|$)`-shaped regexes, none of which are protected by either
+`mask_quoted_spans` or `mask_prose_flag_values` — both of those helpers were built for flag/URL extraction, not
+bare-number extraction. Confirmed live (reproduced again independently before this fix, matching dev-env#650's
+own repro):
+
+```python
+>>> _devenv_merge_pr('gh pr merge --subject "resolves 42 items"', DEVENV_CWD)
+'42'   # should be None -- no real PR number in this command at all
+>>> extract_pr_number_from_command('gh pr merge --subject "resolves 42 items" --squash')
+42     # should be None
+>>> _target_pr('gh pr view --subject "resolves 42 items"')
+42     # should be None
+```
+
+Grepping `claude/scripts/*.py` for the exact `(?<!\S)(\d+)(?=\s|$)` pattern (dev-env#650's own closing
+suggestion — "worth grepping the rest of `claude/scripts/*.py`... before assuming these three are exhaustive")
+turned up a **fourth** site the issue itself didn't name: `stop-tile-enumeration-gate.py`'s
+`_closed_issue_number` uses the exact same compiled `_POS_NUM_RE` object as `_target_pr` (same file, same
+regex, same vulnerability shape) to resolve `gh issue close`'s target issue number. Confirmed live against the
+pre-fix code:
+
+```python
+>>> _closed_issue_number('gh issue close --comment "see 42 for related issue" 630')
+42   # should be 630 -- the decoy precedes the real positional issue number
+```
+
+No other `claude/scripts/*.py` file matches the pattern — the sweep is exhaustive as of this amendment.
+
+**Fix.** Each of the four sites' bare-number regex now runs against a `mask_quoted_spans`-masked copy of its
+own input, mirroring Amendment 15's fix for `_REPO_FLAG_RE` — `mask_quoted_spans` (not `mask_prose_flag_values`)
+is the correct helper here because this decoy shape is not scoped to a `--subject`/`--body`/`-t`/`-b` flag
+specifically; a bare number could just as easily hide inside a quoted `--author-email` value or a quoted
+branch-name argument.
+
+- `posttooluse-inert-advisory.py::_devenv_merge_pr` — `num_m = _MERGE_POS_NUM_RE.search(args)` →
+  `_MERGE_POS_NUM_RE.search(masked_quoted_args)`, where `masked_quoted_args = mask_quoted_spans(args)` is now
+  computed once and shared with the pre-existing `repo_m` check (previously two separate
+  `mask_quoted_spans(args)` calls; behavior-unchanged, one fewer redundant walk over the same string — the same
+  kind of micro-optimization Amendment 7 made when `main()` was calling `split_top_level` twice per command).
+- `post-pr-merge-project.py::extract_pr_number_from_command` — `num = re.search(r"(?<!\S)(\d+)(?=\s|$)", args)`
+  → `re.search(r"(?<!\S)(\d+)(?=\s|$)", mask_quoted_spans(args))`. The function's own `_PR_URL_RE` fallback
+  (a *different*, structurally distinct decoy shape — see "Out of scope" below) is untouched.
+- `stop-tile-enumeration-gate.py::_target_pr` and `::_closed_issue_number` — both `n = _POS_NUM_RE.search(tail)`
+  calls become `_POS_NUM_RE.search(mask_quoted_spans(tail))`. Each function's own `_PR_URL_RE` /
+  `_ISSUE_URL_RE` check stays on the unmasked text, mirroring `_explicit_repo`'s own established scope decision
+  immediately above it in the same file (Amendment 17) — this hook's PR-URL/issue-URL regexes remain an
+  accepted, already-documented gap, out of scope for both dev-env#634 and this amendment.
+
+Each site's masking-scope decision needed its own read of what else runs against the same input and must stay
+unmasked, per dev-env#650's own framing ("Each site needs its own care about which OTHER regex on the same
+input must stay unmasked") — genuinely four small, independent fixes sharing one mechanical shape, not a single
+find-replace.
+
+**Out of scope, not fixed here.** Auditing `post-pr-merge-project.py::extract_pr_number_from_command` for this
+fix surfaced a structurally distinct, previously-undocumented gap in the *same function*: its `_PR_URL_RE`
+fallback (`url = _PR_URL_RE.search(args)`, checked when the — now masked — positional-number match finds
+nothing) still runs on the raw, unmasked `args`. A `--subject`/`--body` value containing a decoy PR URL (not a
+bare number) can still hijack the extracted PR number when no real positional number is present. Confirmed
+live:
+
+```python
+>>> extract_pr_number_from_command('gh pr merge --squash --subject "see https://github.com/other/repo/pull/99 for context"')
+99   # should be None -- no real PR number in this command at all
+```
+
+This is `_PR_URL_RE` (declared at this file's line 55, used only inside `extract_pr_number_from_command`), a
+**different regex object** from `_PR_URL_REPO_RE` (line 67, used inside `extract_repo_from_command`) — the
+latter was already fixed by Amendment 17's `mask_prose_flag_values`. It is a URL-shaped decoy, not a
+bare-number one, so it is not part of dev-env#650's own scope either — the identical "grep for the shape, note
+what's out of scope, file it" situation Amendment 17 itself was in when it found and deferred this very
+amendment's fix. Filed as a follow-up issue rather than folded in here, for the same reason Amendment 17 gave
+for deferring dev-env#650 in the first place: a masking-scope decision this specific deserves its own
+verification against this file's existing quoted-URL-argument tests, not a rushed addition to an
+already-in-flight PR.
+
+**Coverage.** `posttooluse-inert-advisory.py`'s `test_devenv_merge_pr_direct` gains three new bundled
+assertions (the exact dev-env#650 repro for both `--subject` and `--body`, plus a real number surviving
+alongside a decoy) — matching this file's established bundled-assertions convention (Amendment 15/17's own
+precedent for this function) — count stays at 31. `test_post_pr_merge_project.py` gains two new
+`test_cmd_*`-pattern cases (34 total, up from 32). `test_stop_tile_enumeration_gate.py` gains seven new direct
+tests — four for `_target_pr` (the bare-number-decoy repro, a real number surviving alongside a leading decoy,
+the already-established unmasked-URL-fallback case, and an integration-level case proving the fix reaches
+`session_merged_prs` via the auto-merge acted-on/observed correlation path — the one path that actually calls
+`_target_pr` on the raw command, since a direct-marker merge resolves its number from the *output* text via
+`merge_pr_number_from_output` first and never reaches `_target_pr` at all) and three for the newly-covered
+`_closed_issue_number` (bare-number-decoy repro, real number surviving alongside a leading decoy, and an
+integration-level `session_resolved_issue_numbers` case) — 88 total, up from 81. Every new "decoy alone, no
+real number" assertion was verified against the pre-fix code first and confirmed to reproduce the bug (not a
+vacuously-true assertion) — including one case caught during that verification itself: an initial "real number
+survives alongside a decoy" test placed the decoy *after* the real number, which passed identically on both
+pre-fix and fixed code (`re.search` returns the leftmost match, so a trailing decoy never reaches the
+vulnerable code path regardless of masking) — the decoy was moved before the real number in both the direct
+`_target_pr`/`_closed_issue_number` integration tests to make them genuine regression tests. All previously-
+passing suites (`test_hookio.py`, `test_no_crude_command_substring_checks.py`, `test_pre_merge_findings_gate.py`
++ `test-merge-findings-gate.sh`, `test_pre_auto_merge_checkpoint_gate.py` + `test-auto-merge-checkpoint-gate.sh`,
+`test_pr_merge_reminder.py`) were re-run in full and pass unchanged — `_hookio.py` itself is untouched by this
+amendment (all four fixes reuse the existing `mask_quoted_spans`, no new helper needed).
+
+**General lesson (continuing Amendments 1, 6, 9, 15, and 17's).** The fourth site (`_closed_issue_number`) is
+this ADR's *fourth* instance of the specific "same regex object, same file, only one of its call sites got
+fixed" gap — Amendment 6 found it for `scan_top_level`-shaped duplication, Amendment 9/10 for
+`"X" not in command` substring checks, and now for a bare positional-number regex. dev-env#650's own issue text
+anticipated this exact outcome by prescribing the grep before filing was even complete; the discipline held. A
+second, narrower lesson, continuing Amendment 17's own closing point: a fix that resolves one filed issue can
+surface the *next* one during its own implementation (here, the `_PR_URL_RE` gap in
+`extract_pr_number_from_command`), the same way Amendment 17's own review surfaced dev-env#650 while fixing
+dev-env#634. Treating this as a steady-state property of the hook family — each fix's audit is expected to
+surface exactly one more adjacent, structurally distinct gap — rather than a surprise each time, is the
+practical takeaway: budget for "note it, file it" as part of the fix, not as evidence the sweep failed.

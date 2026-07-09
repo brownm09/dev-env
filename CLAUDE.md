@@ -218,6 +218,11 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     PR #572 — mirroring `_effective_merge_repo`'s flag-first precedence in `pr-merge-reminder.py`), and
     also recognizes gh's `-R` shorthand for `--repo` (dev-env#616 — the shorthand previously fell through
     to `None` and silently resolved against cwd's own config instead of the command's actual target repo).
+    `extract_pr_number_from_command`'s own positional-number match now runs against a
+    `mask_quoted_spans`-masked copy of `args` (dev-env#650, ADR-050 Amendment 19), so a `--subject`/`--body`
+    value containing a bare decoy number ("resolves 42 items") can't be mistaken for the real merged PR
+    number when the command names no real positional number; its `_PR_URL_RE` fallback is a separate,
+    still-unmasked gap tracked in dev-env#664, deliberately out of dev-env#650's own bare-number scope.
     `main()` skips the whole operation when the parsed repo doesn't match cwd's config — cwd's
     project-board fields don't apply to a different repo regardless of which PR's body gets fetched —
     but that gate itself is not separately unit-tested, consistent with this file's pure-helper-only
@@ -304,7 +309,9 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     (so parallel calls don't cross), that `detect_board_actions` triggers only on dev-env (project #3)
     creates/merges and ignores other-repo URLs, URL-less creates, hard-merge-failures, and bare merges from a
     non-dev-env cwd, that `_devenv_merge_pr`'s `--repo`/`-R` flag check resolves both forms identically
-    (`-R` shorthand added in dev-env#616), that `should_emit` stays silent whenever any PostToolUse
+    (`-R` shorthand added in dev-env#616), that its bare positional-number match ignores a decoy number
+    inside a `--subject`/`--body` value while a real number still resolves alongside one (dev-env#650,
+    ADR-050 Amendment 19), that `should_emit` stays silent whenever any PostToolUse
     attachment is present (the healthy session), and that the advisory is ASCII/cp1252-encodable so it
     can't vanish under Claude Code's
     cp1252-piped hook stdout ([ADR-053](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md),
@@ -953,7 +960,12 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `"number"` (A1), that a compact-summary / `isMeta` record restating "skip tiles" does NOT waive the
     gate (A2), that malformed / non-dict records neither raise nor silently disable it (A3), and that the
     auto-merge correlation is `(repo, number)`-aware so a same-numbered PR in another repo does not
-    false-fire (A4). A behavioral layer drives the real hook end-to-end over stdin via subprocess against
+    false-fire (A4). `_target_pr`'s own bare positional-number fallback now runs against a
+    `mask_quoted_spans`-masked copy of its input (dev-env#650, ADR-050 Amendment 19), so a
+    `--subject`/`--body` value containing a decoy number can't be mistaken for the real target PR
+    number — covered by direct tests (its own `_PR_URL_RE` check deliberately stays unmasked, an
+    already-documented out-of-scope gap) plus an integration-level `session_merged_prs` case via the
+    auto-merge acted-on/observed correlation path. A behavioral layer drives the real hook end-to-end over stdin via subprocess against
     a synthetic transcript, with HOME/USERPROFILE pointed at a temp dir so the once-per-session
     sentinel is isolated: pins merged-no-enum -> exit 2 with the reason on stderr and empty stdout,
     merged+enum and no-merge -> exit 0, the `stop_hook_active` loop guard -> exit 0, and that the
@@ -981,7 +993,11 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     PR-URL target forms); and explicit `gh issue close N` resolution, **including the URL form**
     (`gh issue close <url>` — the bare-positional-only lookup originally missed this, since a URL's
     issue number is preceded by `/`, never whitespace; review of PR #639, confirmed independently by
-    two reviewers). `session_unresolved_created_issues` (created minus resolved) and
+    two reviewers). `_closed_issue_number`'s own bare positional-number fallback (the same compiled
+    `_POS_NUM_RE` object `_target_pr` uses) now runs against a `mask_quoted_spans`-masked copy of its
+    input too (dev-env#650, ADR-050 Amendment 19 — found by grepping this file for the pattern, not
+    named in the issue itself), covered by direct tests plus an integration-level
+    `session_resolved_issue_numbers` case. `session_unresolved_created_issues` (created minus resolved) and
     `evaluate_issues()`'s full composition (fire / enum-resolved / skip-resolved / no-issue no-op /
     **created-and-resolved-with-no-enum-needed also sets the sentinel** (review of PR #639 — distinct
     from "nothing created," else a create-then-close session with no merge anywhere never sets the
