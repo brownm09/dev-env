@@ -75,6 +75,6 @@ across projects internally), then report the resulting PR URL(s).
   computation, a config-sync race) is wrong, and the fix is to diagnose that — never to add
   `--force`. A prior run of this exact routine reasoned its way past this guard on a task-framing
   inference alone, without the guard ever actually refusing; the guard is now also mechanically
-  enforced ([ADR-094](https://github.com/brownm09/dev-env/blob/main/docs/adr/094-journal-compose-mechanical-force-guard.md))
+  enforced ([ADR-096](https://github.com/brownm09/dev-env/blob/main/docs/adr/096-journal-compose-mechanical-force-guard.md))
   so it can no longer be talked past, but this instruction is the cheap first line of defense. See
   [dev-env#631](https://github.com/brownm09/dev-env/issues/631).

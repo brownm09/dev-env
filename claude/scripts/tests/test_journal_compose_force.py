@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for _journal_compose_force.py pure helpers (dev-env#631, ADR-094).
+"""Tests for _journal_compose_force.py pure helpers (dev-env#631, ADR-096).
 
 Exercises resolve_force, marker_path_for/marker_dir, build_marker,
 write_marker/read_marker (a real tmp-file round trip -- the only impure

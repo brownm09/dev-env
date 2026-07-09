@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """End-to-end subprocess tests for journal-compose-force-resolve.py
-(dev-env#631, ADR-094).
+(dev-env#631, ADR-096).
 
 Drives the real script as a subprocess (mirroring test_canonical_mutate_guard.py's
 `_run_hook` pattern) with `JOURNAL_COMPOSE_FORCE_MARKER_DIR` redirected at a

@@ -2,7 +2,7 @@
 """Claude Code skill-invoked script (NOT a hook) -- mechanically resolves
 FORCE for /journal-compose's today-guard from the literal, unparsed
 `$ARGUMENTS` text of the invocation, and records the result to a same-day
-marker file (dev-env#631, ADR-094).
+marker file (dev-env#631, ADR-096).
 
 This is the very first Bash action of Step 0.6 in
 claude/skills/journal-compose/SKILL.md -- run BEFORE any of the skill's own

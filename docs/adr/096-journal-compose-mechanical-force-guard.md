@@ -1,4 +1,4 @@
-# ADR-094: Mechanical Enforcement of the Journal-Compose Today-Guard
+# ADR-096: Mechanical Enforcement of the Journal-Compose Today-Guard
 
 **Date:** 2026-07-09
 **Status:** Accepted

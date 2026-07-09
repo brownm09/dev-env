@@ -73,7 +73,7 @@ this step; do not re-derive `FORCE` from `$ARGUMENTS` by hand anywhere below. On
 `pre-tool-use-journal-compose-force-guard.py` hook requires before it will allow the
 worktree-add / commit / push commands later in this skill to touch a `draft/<today>` or
 `compose-<today>` target
-([ADR-094](https://github.com/brownm09/dev-env/blob/main/docs/adr/094-journal-compose-mechanical-force-guard.md)).
+([ADR-096](https://github.com/brownm09/dev-env/blob/main/docs/adr/096-journal-compose-mechanical-force-guard.md)).
 
 **Never hand-type `--force` into that command.** The one exception: the user has explicitly told
 you, in this conversation, to force-compose today's journal. Inferring that intent from the task's
@@ -111,7 +111,7 @@ merged or deleted mid-day. Resolve `SOURCE_BRANCH` (and the date), in order:
 here; use the printed `FORCE=` value as-is.
 
 **Today-guard** ([ADR-017](https://github.com/brownm09/dev-env/blob/main/docs/adr/017-journal-compose-today-guard.md) —
-mechanically backed by [ADR-094](https://github.com/brownm09/dev-env/blob/main/docs/adr/094-journal-compose-mechanical-force-guard.md);
+mechanically backed by [ADR-096](https://github.com/brownm09/dev-env/blob/main/docs/adr/096-journal-compose-mechanical-force-guard.md);
 the check below is a fast, cheap first line of defense, not the enforcement mechanism):
 
 ```bash

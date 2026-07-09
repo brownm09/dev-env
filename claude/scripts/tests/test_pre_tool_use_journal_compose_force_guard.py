@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for pre-tool-use-journal-compose-force-guard.py (dev-env#631, ADR-094).
+"""Tests for pre-tool-use-journal-compose-force-guard.py (dev-env#631, ADR-096).
 
 Two layers, mirroring this hook family's established split
 (test_canonical_mutate_guard.py, test_pre_merge_findings_gate.py):

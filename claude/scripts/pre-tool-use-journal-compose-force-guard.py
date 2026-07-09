@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Claude Code PreToolUse hook -- mechanical enforcement of journal-compose's
-today-guard (dev-env#631, ADR-094).
+today-guard (dev-env#631, ADR-096).
 
 Problem: /journal-compose's today-guard (ADR-017) existed only as prose in
 SKILL.md ("if the resolved date equals today and FORCE is false, stop") --

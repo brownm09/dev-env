@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Shared pure helpers for the journal-compose mechanical force-guard pair
-(dev-env#631, ADR-094): `journal-compose-force-resolve.py` (writes the
+(dev-env#631, ADR-096): `journal-compose-force-resolve.py` (writes the
 marker) and `pre-tool-use-journal-compose-force-guard.py` (reads it to gate
 same-day worktree-add / commit / push commands). A single module keeps the
 marker path template and JSON schema from drifting between writer and
