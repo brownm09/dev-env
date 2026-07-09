@@ -15,10 +15,17 @@ knocked off `main`) and decides the non-destructive correction (dev-env#396, ADR
   7. canonical_sync_action()     — warn-squatter / return-canonical / warn-dirty / on-main.
   8. merge_park_target()         — park a repo's own worktree left on main; else None
                                    (empty / cwd==canonical / not-on-main / cross-repo / spelling).
+  9. resolve_current_branch()    — `git symbolic-ref` returncode!=0 -> "<detached>" sentinel,
+                                   else stripped stdout (dev-env#619).
+ 10. canonical_sync_action() again, fed "<detached>" through the FULL pipeline (not just the
+                                   isolated helper) — the exact dev-env#619 regression scenario.
+ 11. is_hijacked_branch()        — the dev-env#630 hijack signature: "<detached>" or a
+                                   "claude/*" branch on the canonical; not main / draft/* /
+                                   any other named branch; None/"" safe (no raise).
 
 Fully offline — no git, no network, no filesystem writes (paths need not exist; the
-module resolves them for comparison only). The git-driven prune/post-merge/dev-env-sync
-loops are exercised by --dry-run / live behavior in the PR, not here.
+module resolves them for comparison only). The git-driven prune/post-merge/dev-env-sync/
+journal-canonical-guard loops are exercised by --dry-run / live behavior in the PR, not here.
 
 Usage:
     py -3 claude/scripts/tests/test_worktree_topology.py
@@ -231,6 +238,56 @@ def test_merge_park_target() -> str:
     return "parks a repo's own worktree on main; None for canonical / not-main / cross-repo / empty / spelling"
 
 
+def test_resolve_current_branch() -> str:
+    if wt.resolve_current_branch(1, "") != "<detached>":
+        raise AssertionError("non-zero returncode -> '<detached>' sentinel")
+    if wt.resolve_current_branch(128, "fatal: not a valid ref\n") != "<detached>":
+        raise AssertionError("non-zero returncode with stderr-like stdout -> '<detached>' sentinel")
+    if wt.resolve_current_branch(0, "main\n") != "main":
+        raise AssertionError("returncode 0 -> stripped stdout")
+    if wt.resolve_current_branch(0, "  draft/2026-07-09  \n") != "draft/2026-07-09":
+        raise AssertionError("returncode 0 -> stdout stripped of surrounding whitespace")
+    return "returncode!=0 -> '<detached>' sentinel; returncode==0 -> stripped stdout (dev-env#619)"
+
+
+def test_canonical_sync_action_detached_head() -> str:
+    # dev-env#619 regression: a detached canonical must flow through the FULL pipeline (not
+    # just resolve_current_branch or main_squatter in isolation) to the same
+    # return-canonical/warn-dirty decision a wrong-branch canonical already gets.
+    detached = MainTopology(CANON, "<detached>", None, None, False)
+    if wt.canonical_sync_action(detached, canonical_clean=True).kind != "return-canonical":
+        raise AssertionError("detached + clean -> return-canonical (safe auto-return)")
+    if wt.canonical_sync_action(detached, canonical_clean=False).kind != "warn-dirty":
+        raise AssertionError("detached + dirty -> warn-dirty (preserve drift, don't auto-switch)")
+    # Same scenario via a REAL detached-canonical worktree list (not a hand-built MainTopology),
+    # proving diagnose_main_topology and canonical_sync_action compose correctly together.
+    worktrees = wt.parse_worktree_porcelain(_porcelain([(CANON, None), (WT_FOO, "claude/x")]))
+    topo = wt.diagnose_main_topology(worktrees)
+    if topo.canonical_branch != "<detached>":
+        raise AssertionError(f"expected diagnose_main_topology to report '<detached>', got {topo}")
+    if wt.canonical_sync_action(topo, canonical_clean=True).kind != "return-canonical":
+        raise AssertionError("real detached-canonical topology + clean -> return-canonical")
+    return "detached canonical (hand-built + real topology) -> return-canonical/warn-dirty, never on-main/warn-squatter"
+
+
+def test_is_hijacked_branch() -> str:
+    if not wt.is_hijacked_branch("<detached>"):
+        raise AssertionError("detached sentinel -> hijacked")
+    if not wt.is_hijacked_branch("claude/priceless-kalam-4255c1"):
+        raise AssertionError("claude/* branch -> hijacked (dev-env#630 signature)")
+    if wt.is_hijacked_branch("main"):
+        raise AssertionError("main -> never hijacked")
+    if wt.is_hijacked_branch("draft/2026-07-09"):
+        raise AssertionError("draft/YYYY-MM-DD -> legitimate for engineering-journal, not hijacked")
+    if wt.is_hijacked_branch("pr-385"):
+        raise AssertionError("an arbitrary named branch -> not the hijack signature")
+    if wt.is_hijacked_branch(""):
+        raise AssertionError("empty string -> not hijacked (falsy guard)")
+    if wt.is_hijacked_branch(None):
+        raise AssertionError("None -> not hijacked, must not raise (falsy guard)")
+    return "claude/* and <detached> -> hijacked; main/draft/named/empty/None -> not hijacked, no raise"
+
+
 def main() -> int:
     tests = [
         ("parse_worktree_porcelain", test_parse_worktree_porcelain),
@@ -247,6 +304,9 @@ def main() -> int:
         ("diagnose canonical off main, no squatter", test_diagnose_canonical_off_main_no_squatter),
         ("canonical_sync_action decision table", test_canonical_sync_action),
         ("merge_park_target decision table", test_merge_park_target),
+        ("resolve_current_branch (dev-env#619)", test_resolve_current_branch),
+        ("canonical_sync_action with detached HEAD (dev-env#619)", test_canonical_sync_action_detached_head),
+        ("is_hijacked_branch (dev-env#630)", test_is_hijacked_branch),
     ]
     failed = 0
     for name, fn in tests:

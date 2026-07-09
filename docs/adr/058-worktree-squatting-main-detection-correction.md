@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-22
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-03 (see Amendment sections below)
-**Tags:** worktrees, main, squat, canonical, prune, dev-env-sync, post-merge, park, safety, hooks, symlinks
+**Amended:** 2026-07-01, 2026-07-03, 2026-07-09 (see Amendment sections below)
+**Tags:** worktrees, main, squat, canonical, prune, dev-env-sync, post-merge, park, safety, hooks, symlinks, detached-head, adr-093
 
 ---
 
@@ -204,3 +204,49 @@ original wirings left (they correct the squat; they didn't document how to work 
 already blocking a merge). Full runbook entry:
 [docs/REFERENCE.md → Git Workflow Runbooks](../REFERENCE.md#git-workflow-runbooks). Incident:
 lifting-logbook [PR #664](https://github.com/brownm09/lifting-logbook/pull/664); dev-env#553.
+
+## Amendment (2026-07-09) — `dev-env-sync.py` never detected a detached canonical HEAD (dev-env#619)
+
+This ADR's `dev-env-sync.py` wiring determines the canonical's current branch via `git symbolic-ref
+--short HEAD`. That command **fails** (non-zero exit) on a detached HEAD — there is no symbolic ref
+to resolve — and the script responded with an immediate `sys.exit(0)`, **before** ever reaching the
+diagnose/auto-correct/warn block this ADR documents above. So a detached canonical produced *zero*
+warnings, on every single prompt, for as long as it stayed detached — confirmed via incident dev-env#617,
+where the canonical sat detached for ~13 hours, undetected, found only by chance during unrelated
+post-merge cleanup.
+
+The topology helpers this ADR introduced already handled a detached canonical correctly *internally*:
+`parse_worktree_porcelain` captures a detached worktree as `"<detached>"` (used by `main_squatter`'s
+own bare/detached guard, above — "a bare or detached canonical cannot hold a working-tree checkout of
+main at all, so a secondary worktree on main there is legitimate"). The gap was purely that nothing
+routed a detached canonical *into* `diagnose_main_topology`/`canonical_sync_action` in the first
+place — `dev-env-sync.py` exited before the topology was ever read.
+
+**Fix.** A new pure helper, `resolve_current_branch(symbolic_ref_returncode, symbolic_ref_stdout)` in
+`_worktree_topology.py`, maps a non-zero `symbolic-ref` return code to the same `"<detached>"` sentinel
+`parse_worktree_porcelain` already produces, instead of signaling failure. `dev-env-sync.py` now calls
+it unconditionally and falls into the *existing* off-main diagnostic block for `"<detached>"` exactly as
+it already does for any other non-`main` branch — no other line in that block changed. Traced by hand
+and confirmed by a new regression test (`test_canonical_sync_action_detached_head`,
+`claude/scripts/tests/test_worktree_topology.py`) that threads `"<detached>"` through the *full*
+`diagnose_main_topology` → `canonical_sync_action` pipeline, not just the isolated helper: a clean
+detached canonical (zero unique commits, matching `main`'s own tip — exactly incident dev-env#617's
+shape) now yields `"return-canonical"` (safe auto-return, matching this ADR's existing precedent for a
+clean off-main canonical); a dirty detached canonical yields `"warn-dirty"` (preserve drift, matching
+existing precedent); a detached canonical is never misdiagnosed as `"warn-squatter"`, since
+`main_squatter`'s existing bare/detached guard already ensures `topo.squatter_path` is `None` in that
+case.
+
+**Consequences.** The dev-env#617-shaped incident (canonical silently detached for hours, zero warning)
+is now caught and, in the common clean case, auto-corrected on the very next prompt of any session,
+the same way a wrong-branch canonical already is. No behavior changes for the non-detached paths this
+ADR already documents. One extra pure-helper call on the hot path (`resolve_current_branch` itself does
+no I/O); the existing "extra git calls only on the rare/broken path" cost model is unchanged, since the
+detached case was already the rare/broken path this ADR's off-main block exists for — it just wasn't
+reachable before.
+
+This module's `resolve_current_branch`, plus a second new predicate `is_hijacked_branch`, are also the
+foundation for [ADR-093](093-journal-canonical-hijack-guard.md) — a standalone ADR (not a further
+amendment here, since it targets a different repo under a materially different "healthy" invariant) for
+a sibling corrective hook that defends the engineering-journal canonical against a related hijack
+pattern (dev-env#630).

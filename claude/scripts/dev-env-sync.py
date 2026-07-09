@@ -7,7 +7,8 @@ symlinked tooling always reflect the latest merged changes. Silent on
 success; emits a warning if the repo has diverged and needs manual attention.
 
 When the canonical worktree is off `main` (so `~/.claude/` symlinks would serve
-that branch's stale files), diagnoses the worktree-on-main topology and either:
+that branch's stale files) — including a *detached* HEAD, routed into the same path via
+`resolve_current_branch` (dev-env#619) — diagnoses the worktree-on-main topology and either:
   - auto-returns a *clean* canonical to `main`, then continues the fast-forward pull;
   - warns, naming a non-canonical worktree squatting `main` plus its park command,
     when one is blocking the canonical's return (dev-env#396, ADR-058); or
@@ -25,6 +26,7 @@ from _worktree_topology import (
     canonical_sync_action,
     diagnose_main_topology,
     parse_worktree_porcelain,
+    resolve_current_branch,
 )
 
 DEV_ENV_REPO = Path.home() / "Git" / "dev-env"
@@ -55,10 +57,14 @@ def main() -> None:
     # feature branch there hides newly-merged hooks/scripts. When it's off main we diagnose
     # the worktree topology below and auto-correct (clean canonical -> back to main) or warn
     # precisely (squatter holding main, or dirty drift to preserve); see ADR-058.
+    #
+    # A non-zero returncode means detached HEAD, not "command failed" — resolve_current_branch
+    # routes it to the "<detached>" sentinel so it falls into the SAME diagnostic block below
+    # instead of exiting silently here. diagnose_main_topology/canonical_sync_action already
+    # handle "<detached>" correctly (main_squatter's bare/detached guard); the gap was purely
+    # that nothing used to route a detached canonical into them (dev-env#619).
     branch = run(["git", "symbolic-ref", "--short", "HEAD"])
-    if branch.returncode != 0:
-        sys.exit(0)
-    current_branch = branch.stdout.strip()
+    current_branch = resolve_current_branch(branch.returncode, branch.stdout)
     if current_branch != "main":
         # The canonical is off main — diagnose the worktree topology so we can either
         # auto-return a clean canonical to main (restoring the ~/.claude symlinks) or warn

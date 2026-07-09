@@ -367,7 +367,8 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     ```
 
 22. **worktree-topology test** — required when changing `claude/scripts/_worktree_topology.py` or the
-    squat-detection paths in `prune-merged-worktrees.py` / `post-pr-merge-pull.py` / `dev-env-sync.py`.
+    squat-detection paths in `prune-merged-worktrees.py` / `post-pr-merge-pull.py` / `dev-env-sync.py` /
+    `journal-canonical-guard.py`.
     Exercises the pure topology + decision helpers offline (no git, no network, no disk; paths need not
     exist): pins `parse_worktree_porcelain` (path/branch/detached/`refs/heads/` stripping), `canonical_worktree`
     (first entry), `park_branch_for` (`claude/<basename>`, Windows + POSIX spellings), `main_squatter`
@@ -376,9 +377,21 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     (`warn-squatter` / `return-canonical` / `warn-dirty` / `on-main` — what `dev-env-sync` does), and
     `merge_park_target` (parks a repo's own worktree left on `main`; `None` for the canonical / not-on-main /
     empty / **cross-repo** cwd-not-a-worktree-of-the-merged-repo / Windows-vs-POSIX spelling — what
-    `post-pr-merge-pull` does). `prune`'s park is exercised
-    end-to-end by `--dry-run` / a throwaway-repo run in the PR, not here (it shells out to git)
-    ([ADR-058](docs/adr/058-worktree-squatting-main-detection-correction.md)).
+    `post-pr-merge-pull` does). Also exercises two dev-env#619/dev-env#630 additions: `resolve_current_branch`
+    (a non-zero `git symbolic-ref` returncode -> the `"<detached>"` sentinel instead of the silent early exit
+    `dev-env-sync.py` used to take; returncode 0 -> stripped stdout) — including a dedicated regression test
+    that threads `"<detached>"` through the **full** `diagnose_main_topology` -> `canonical_sync_action`
+    pipeline (both a hand-built topology and one parsed from a real detached-canonical worktree list), not
+    just the isolated helper, confirming it lands on `return-canonical`/`warn-dirty` and never
+    `warn-squatter`/`on-main` — and `is_hijacked_branch` (the dev-env#630 hijack signature: `"<detached>"` or
+    a `claude/*`-prefixed branch; `main`/`draft/YYYY-MM-DD`/any other named branch/empty/`None` all read as
+    NOT hijacked, the last two without raising — what lets `journal-canonical-guard.py` leave
+    engineering-journal's legitimately-many-branched canonical alone except for the actual hijack signature).
+    `prune`'s park, and `journal-canonical-guard.py`'s own orchestration (subprocess calls, the TOCTOU
+    re-check against a fresh worktree-list read, the actual git mutation), are exercised end-to-end by
+    `--dry-run` / a throwaway-repo run in the PR, not here (they shell out to git)
+    ([ADR-058](docs/adr/058-worktree-squatting-main-detection-correction.md) incl. 2026-07-09 amendment,
+    [ADR-093](docs/adr/093-journal-canonical-hijack-guard.md)).
 
     ```bash
     py -3 claude/scripts/tests/test_worktree_topology.py
