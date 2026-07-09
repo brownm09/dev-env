@@ -1436,6 +1436,21 @@ body) and continue to pass unchanged, confirming the new `repo:` line is additiv
 change. `test_hookio.py` needed no new tests (the comment-only addition there does not change
 `mask_quoted_spans`'s behavior) and was re-run in full to confirm — 86 total, unchanged from Amendment 17.
 
+**Out of scope, filed as a follow-up (not fixed here).** `/review` on this amendment's own PR (#662), via
+direct execution rather than just reading, found that both `_effective_merge_repo` and the new
+`_effective_create_repo` resolve `--repo`/`-R` via a search over the **entire** `command` string, not scoped
+to their own statement — confirmed live: `gh pr create --repo a/x --fill && gh pr merge 5 --repo b/y --squash`
+resolves `_effective_merge_repo` to `a/x` (the create's own flag), not `b/y`. Whichever `--repo` flag appears
+textually first in the command wins for **both** functions, regardless of which statement it actually belongs
+to. Pre-existing in `_effective_merge_repo` since dev-env#470 (not introduced by this amendment) and only
+manifests when a single command chains create and merge with two **different** explicit repos — the common
+single-repo chained pattern already tested extensively elsewhere in this file is unaffected either way. Filed
+as [dev-env#667](https://github.com/brownm09/dev-env/issues/667) rather than expanded here: a proper fix needs
+to scope each function's search to its own statement's region (e.g. via `split_top_level`), a shared design
+change touching both functions that is a larger, distinct unit of work than this amendment's create-path-only
+scope — the same "grep for the shape, note what's out of scope, file it" discipline Amendments 15 and 17 both
+already established for this exact ADR.
+
 **General lesson (continuing Amendments 1, 6, 9, 10, 12, and 14's).** The "a fix scoped to one hook/branch is a
 standing invitation to check every sibling doing the same kind of thing" lesson, drawn repeatedly in this ADR,
 has a sharper edge here than usual: `is_create` and `merge_ok` are not two separate files or two separate
