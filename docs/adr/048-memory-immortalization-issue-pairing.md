@@ -73,3 +73,28 @@ A report-first skill that reconciles the active project's memory against the rep
 - [dev-env#373](https://github.com/brownm09/dev-env/issues/373) — issue tracking this change; [dev-env#363](https://github.com/brownm09/dev-env/issues/363) — the audit-time reconciliation direction the `/memory-audit` skill realizes.
 - [Anthropic — Claude Code hooks reference](https://docs.anthropic.com/en/docs/claude-code/hooks) — primary source for the `PostToolUse` event payload and exit-code semantics the hook relies on.
 - [Anthropic — Claude Code memory](https://docs.anthropic.com/en/docs/claude-code/memory) — primary source for why `CLAUDE.md` is loaded every session, which is why it is the right home for durable rules.
+
+## Amendment (2026-07-09) — Search existing issues before filing the immortalization issue (dev-env#687)
+
+The original decision paired a durable memory write with a GitHub issue that immortalizes it, but
+said nothing about checking whether that content was already tracked. In practice this let the
+identical gap get documented twice: [dev-env#610](https://github.com/brownm09/dev-env/issues/610)
+and [dev-env#627](https://github.com/brownm09/dev-env/issues/627) both independently described the
+same `EnterWorktree` cross-repo-targeting bug, filed the same day from two different incidents,
+neither referencing the other. The overlap surfaced only when the session implementing #627 went to
+add a `claude/CLAUDE.md` bullet for the gap and found #610's bullet already there — recovered by
+extending it in place, but only after burning investigation time a one-line search would have saved.
+
+**Fix:** § "Durable Preferences & Memory" now requires a search of **both open and closed** issues
+(`gh issue list --search "<keywords>" --state all`) before filing the immortalization issue. A match
+means the rule is already tracked: reference that issue from the memory body instead of filing a
+fresh one, extending it with a comment if it's still open and missing detail this occurrence adds.
+Filing a new issue is now the fallback for a confirmed miss, not the default first move.
+
+**Why this doesn't need its own hook.** The link-absence heuristic behind `memory-write-advisory.py`
+(Decision § 2) already tolerates false positives by design — it fires on *any* durable memory write
+lacking a link, regardless of whether a duplicate exists upstream, and a network/`gh` round-trip on
+every `Write` was already rejected in Alternatives considered above for cost and reliability reasons.
+Detecting a duplicate *before* filing is a one-time judgment call (matching search results against
+the memory's actual content) at the moment the agent is about to file — not a mechanical property of
+the write itself — so it stays a documented step the agent follows rather than a new gate.
