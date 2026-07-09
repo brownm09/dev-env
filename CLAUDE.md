@@ -1205,6 +1205,90 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     bash claude/scripts/tests/test-auto-merge-checkpoint-gate.sh
     ```
 
+53. **`_journal_compose_force` shared-module test** — required when changing
+    `claude/scripts/_journal_compose_force.py`. Exercises every pure helper offline: `resolve_force()`
+    (a bare `--force`, with a date before/after, absent, `--forceful`/`--force-push` correctly NOT
+    matched, empty string, `None`-safe); `marker_dir()`/`marker_path_for()` (default path, the
+    `JOURNAL_COMPOSE_FORCE_MARKER_DIR` env override, filename shape); `build_marker()` (shape,
+    bool-coercion, `None` raw-args handling); `write_marker()`/`read_marker()` (a real tmp-file round
+    trip — the only impure surface, matching `test_hookutil.py`'s convention — overwrite-on-rerun,
+    missing file, malformed JSON, non-dict JSON all returning `None`); and `is_marker_fresh()` (a
+    recent marker, the exact `MAX_MARKER_AGE_SECONDS` boundary inclusive, one second past it, a
+    future-timestamped marker treated as not fresh rather than trusted, malformed/missing
+    `resolved_at`, a non-dict marker, and a custom `max_age_seconds` override). `now`/`resolved_at`
+    are always explicit `datetime` values passed by the test, never the real clock. Extended during
+    `/review` on PR #671 with a timezone-aware `resolved_at` (an ordinary `.isoformat()` shape that
+    previously raised an uncaught `TypeError` on naive-minus-aware subtraction — outside the
+    `except ValueError` — propagating out of the guard hook's `main()` and failing OPEN instead of
+    closed; must now resolve to "not fresh") and a simulated-concurrent-writer case for
+    `write_marker()` (a monkeypatched `os.getpid()` proving one writer's in-progress, not-yet-renamed
+    temp file survives an independent writer's own write-and-rename, now that the temp filename is
+    per-PID rather than a single fixed `path + ".tmp"`)
+    ([ADR-096](docs/adr/096-journal-compose-mechanical-force-guard.md); dev-env#631).
+
+    ```bash
+    py -3 claude/scripts/tests/test_journal_compose_force.py
+    ```
+
+54. **journal-compose-force-resolve end-to-end test** — required when changing
+    `claude/scripts/journal-compose-force-resolve.py`. Drives the real script as a subprocess
+    (mirroring `test_canonical_mutate_guard.py`'s `_run_hook` pattern) with
+    `JOURNAL_COMPOSE_FORCE_MARKER_DIR` redirected at a disposable temp dir: pins the printed
+    `FORCE=true`/`FORCE=false` line for a `--force`-bearing argument, a force-less argument, a bare
+    `--force`, and no argument at all; that the marker written to disk carries the expected schema
+    (`force`, `raw_arguments`); that a second invocation overwrites the first day's marker rather than
+    merging with it; and that a nonexistent marker directory is created rather than erroring. The
+    script's own logic (`resolve_force`, `build_marker`, `write_marker`) is unit-tested directly in
+    item 53 above — this file exercises only the CLI-glue layer (argv handling, stdout format,
+    on-disk effect). ([ADR-096](docs/adr/096-journal-compose-mechanical-force-guard.md); dev-env#631)
+
+    ```bash
+    py -3 claude/scripts/tests/test_journal_compose_force_resolve.py
+    ```
+
+55. **journal-compose-force-guard test** — required when changing
+    `claude/scripts/pre-tool-use-journal-compose-force-guard.py`. Two layers, mirroring this hook
+    family's established split. Pure command-classification tests exercise
+    `segment_targets_today_compose()`/`command_targets_today_compose()` offline against every real
+    `journal-compose` `SKILL.md` command shape: `worktree add` matching via a today-dated `-C` value
+    and via the positional ref, a non-today date correctly not matching, a `-C`-scoped commit/push
+    matching, **the key regression this hook exists to avoid** — a commit message merely *mentioning*
+    "draft/2026-07-09" or "compose-2026-07-09" as prose (this repo's own commits legitimately discuss
+    this pattern) never matching, whether via `-m`, `--message`, or `--message=` — a bare push with no
+    date reference not matching, read-only `status`/`diff` never gated, `branch -D` cleanup
+    (out of scope by design) never gated, `worktree remove` matching loosely (harmless — the marker
+    already exists by the time cleanup runs), a heredoc-body-only mention not matching, the
+    `draft/<date>-recovery` suffix still extracting the base date, an env-prefixed git invocation
+    still classified correctly, and the `--git-dir=`/chained-segment forms. A behavioral layer drives
+    the real hook end-to-end over stdin via subprocess (today-dated fixtures built from
+    `datetime.date.today()` at test-run time, never hardcoded, so the suite is deterministic
+    regardless of which day it runs), with `JOURNAL_COMPOSE_FORCE_MARKER_DIR` redirected at a
+    disposable temp dir: no marker blocks (reason on stderr, empty stdout); a fresh `force=true`
+    marker allows; `force=false` blocks; a **stale** `force=true` marker (past
+    `MAX_MARKER_AGE_SECONDS`) blocks; a **corrupt** marker file **fails closed** (the deliberate
+    reversal of this hook family's usual fail-open convention); a non-today date allows regardless of
+    marker state (this hook's trigger condition never reaches it); and malformed JSON / empty stdin /
+    a non-Bash tool / a missing `command` / non-dict JSON all fail open. Extended during `/review` on
+    PR #671 with four fixes and their regression coverage: a `-c <name>=<value>` git-level flag (e.g.
+    `-c core.hooksPath=x`) no longer lets its config value get mistaken for the verb, silently
+    escaping the gate entirely (pure-classification cases plus an end-to-end no-marker-still-blocks
+    case); the `git commit -am "..."` combined-short-flag idiom and the glued `-m<value>`/`-F<value>`
+    (no space) forms are now excluded from the date scan exactly like the separate-token
+    `-m`/`--message` forms (plus a `-ma` glued-value edge case pinning it resolves to a message value,
+    per real git/getopt semantics, rather than misparsing); a cheap `today not in command`
+    substring pre-filter now short-circuits the interpreted `split_top_level` parse for the
+    overwhelming majority of Bash calls, since this hook is globally registered and runs on every one
+    (pinned via a dateless-command case, deliberately placed in `command_targets_today_compose` rather
+    than `segment_targets_today_compose` so the prose-exclusion tests still exercise the real parse
+    path); and an end-to-end case pinning that a timezone-aware marker blocks cleanly (exit 2, no
+    traceback on stderr) rather than crashing open (see item 53's `_journal_compose_force` entry for
+    the underlying `is_marker_fresh()` fix).
+    ([ADR-096](docs/adr/096-journal-compose-mechanical-force-guard.md); dev-env#631)
+
+    ```bash
+    py -3 claude/scripts/tests/test_pre_tool_use_journal_compose_force_guard.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

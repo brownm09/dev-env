@@ -67,3 +67,14 @@ across projects internally), then report the resulting PR URL(s).
 - Never prompt the user. If stubs span multiple projects, the single `/journal-compose` call's
   own multi-project mode handles them in parallel — do not ask, and do not invoke the skill more
   than once per run.
+- **Never pass `--force` from this routine, under any circumstance, and never reason that `--force`
+  semantics are implied.** If `/journal-compose` refuses because of the today-guard, that is
+  **success** — it means there is nothing yet composable for that date, not a problem to work
+  around. This routine's own date math (step 1 above) already guarantees the target is always
+  yesterday, so the guard should never fire here at all; if it does, something upstream (the date
+  computation, a config-sync race) is wrong, and the fix is to diagnose that — never to add
+  `--force`. A prior run of this exact routine reasoned its way past this guard on a task-framing
+  inference alone, without the guard ever actually refusing; the guard is now also mechanically
+  enforced ([ADR-096](https://github.com/brownm09/dev-env/blob/main/docs/adr/096-journal-compose-mechanical-force-guard.md))
+  so it can no longer be talked past, but this instruction is the cheap first line of defense. See
+  [dev-env#631](https://github.com/brownm09/dev-env/issues/631).

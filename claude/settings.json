@@ -65,6 +65,10 @@
           },
           {
             "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-journal-compose-force-guard.py"
+          },
+          {
+            "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/scripts/disk-space-check.py"
           }
         ]

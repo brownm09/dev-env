@@ -56,6 +56,30 @@ context, and substitute it verbatim into every command you construct in later st
 a bare `$WT`/`$EJ`/`$SOURCE_BRANCH` reference in a fresh Bash call will resolve to anything —
 substitute the actual value every time.
 
+**Resolve `FORCE` mechanically — this is the very first tool call of Step 0.6, before anything
+else.** It must use the literal `$ARGUMENTS` substitution verbatim (do not paraphrase, retype, or
+hand-construct this argument) — the whole point is that a script decides `FORCE` from the
+harness-substituted text, not from your own inference about what the invocation "must have meant"
+([dev-env#631](https://github.com/brownm09/dev-env/issues/631) — a prior run of this skill reasoned
+its way past the today-guard below without ever running or reading it):
+
+```bash
+py -3 C:/Users/brown/.claude/scripts/journal-compose-force-resolve.py "$ARGUMENTS"
+```
+
+The script prints exactly one line, `FORCE=true` or `FORCE=false` — use that value for the rest of
+this step; do not re-derive `FORCE` from `$ARGUMENTS` by hand anywhere below. Only when
+`FORCE=true` does it also write a same-day marker file that the
+`pre-tool-use-journal-compose-force-guard.py` hook requires before it will allow the
+worktree-add / commit / push commands later in this skill to touch a `draft/<today>` or
+`compose-<today>` target
+([ADR-096](https://github.com/brownm09/dev-env/blob/main/docs/adr/096-journal-compose-mechanical-force-guard.md)).
+
+**Never hand-type `--force` into that command.** The one exception: the user has explicitly told
+you, in this conversation, to force-compose today's journal. Inferring that intent from the task's
+framing (e.g. "this looks like the nightly automation, so it must want `--force`") is exactly the
+failure this mechanism exists to close.
+
 **Resolve the compose date and source branch.** Normally the source branch is exactly
 `draft/YYYY-MM-DD`; the one documented exception is the
 [draft-branch recovery runbook](https://github.com/brownm09/dev-env/blob/main/docs/REFERENCE.md#engineering-journal-internals),
@@ -83,10 +107,12 @@ merged or deleted mid-day. Resolve `SOURCE_BRANCH` (and the date), in order:
    recent first) and ask the user which to compose, noting that a long list likely means stale
    drafts need a separate cleanup pass. Zero matches → nothing to compose; stop.
 
-**Parse `$ARGUMENTS` for `--force`:** if present, set `FORCE=true` and strip it before the date
-match above; otherwise `FORCE=false`.
+`FORCE` was already resolved mechanically above — do not re-derive it from `$ARGUMENTS` by hand
+here; use the printed `FORCE=` value as-is.
 
-**Today-guard** (unchanged — [ADR-017](https://github.com/brownm09/dev-env/blob/main/docs/adr/017-journal-compose-today-guard.md)):
+**Today-guard** ([ADR-017](https://github.com/brownm09/dev-env/blob/main/docs/adr/017-journal-compose-today-guard.md) —
+mechanically backed by [ADR-096](https://github.com/brownm09/dev-env/blob/main/docs/adr/096-journal-compose-mechanical-force-guard.md);
+the check below is a fast, cheap first line of defense, not the enforcement mechanism):
 
 ```bash
 TODAY=$(date +%Y-%m-%d)
@@ -100,7 +126,14 @@ If the resolved date equals `$TODAY` **and** `FORCE` is false, stop immediately 
 > `/journal-compose --force`"
 
 Do **not** proceed to worktree creation or any further step. If the date equals `$TODAY` and
-`FORCE` is true, or the date is not today, proceed.
+`FORCE` is true, or the date is not today, proceed. Even if this prose check is somehow skipped,
+`pre-tool-use-journal-compose-force-guard.py` still hard-blocks (exit 2) the worktree-add / commit /
+push commands below for a same-day `draft/`/`compose-` target unless the marker written above is
+present and fresh — that hook cannot be reasoned past via the documented `$ARGUMENTS`-to-marker
+invocation path. (It does not defend against directly authoring a forged marker file outside that
+path — an act with no documented legitimate use, categorically different from reasoning past a
+prose check, and one this mechanism does not claim to close; see ADR-094's Limitations section.)
+([dev-env#631](https://github.com/brownm09/dev-env/issues/631))
 
 **Create the isolated compose worktree:**
 
