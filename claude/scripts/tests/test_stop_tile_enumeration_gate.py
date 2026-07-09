@@ -84,6 +84,16 @@ def _asst_spawn(tid="s1"):
          "input": {"title": "Follow-up"}}]}}
 
 
+def _asst_spawn_other_namespace(tid="s1"):
+    # A differently-namespaced spawn_task tool_use (review of PR #674): the
+    # real detector, _SPAWN_TASK_RE, is a deliberately bare/namespace-agnostic
+    # "spawn_task" match ("Bare verb so any namespacing hits"), so a session
+    # under a hypothetical renamed/rehosted MCP server must still be caught.
+    return {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "mcp__other_namespace__spawn_task", "id": tid,
+         "input": {"title": "Follow-up"}}]}}
+
+
 def _user_str(text):
     return {"type": "user", "message": {"content": text}}
 
@@ -861,6 +871,24 @@ def test_session_spawned_tiles_false_without_spawn():
     return "no spawn_task tool_use -> session_spawned_tiles False"
 
 
+def test_session_spawned_tiles_detects_other_namespace():
+    # Review of PR #674: _SPAWN_TASK_RE is deliberately namespace-agnostic
+    # ("Bare verb so any namespacing hits"); pin that session_spawned_tiles
+    # (and therefore both enumeration_recorded and evaluate_tile_table, which
+    # now share this single source of truth) honors that, not just the
+    # standard mcp__ccd_session__ prefix.
+    assert gate.session_spawned_tiles([_asst_spawn_other_namespace()])
+    return "differently-namespaced spawn_task tool_use -> session_spawned_tiles True"
+
+
+def test_enumeration_recorded_delegates_to_session_spawned_tiles():
+    # enumeration_recorded's tool_use check now delegates to
+    # session_spawned_tiles (review of PR #674) -- pin they can't drift by
+    # exercising the SAME differently-namespaced spawn through both.
+    assert gate.enumeration_recorded([_asst_spawn_other_namespace()])
+    return "differently-namespaced spawn -> enumeration_recorded also True (delegation)"
+
+
 def test_table_marker_present_true_on_heading():
     assert gate.table_marker_present([_asst_text(_TABLE_HEADING + "\n\n| Tile | Issue |\n")])
     return "assistant text with the '### Tiles spawned this session' heading -> present"
@@ -1194,6 +1222,20 @@ def test_e2e_spawn_table_sentinel_suppresses_refire():
     return "e2e tile-table sentinel: first fire exit 2, second exit 0"
 
 
+def test_e2e_spawn_other_namespace_no_table_still_blocks():
+    # Review of PR #674: the pre-filter's bare "spawn_task" substring must
+    # not exclude a spawn recorded under a namespace other than
+    # mcp__ccd_session__ -- proves the pre-filter is a true superset of what
+    # session_spawned_tiles (the real detector) can match, end-to-end through
+    # main()'s pre-filter + full evaluation, not just the pure helper.
+    records = [_asst_spawn_other_namespace(), _asst_text("Filed a follow-up.")]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 2, f"expected exit 2, got {rc} (stderr={err!r})"
+    assert "Tiles spawned this session" in err
+    return "e2e differently-namespaced spawn + no table -> exit 2 (pre-filter doesn't exclude it)"
+
+
 def main():
     tests = [
         ("direct merge marker detected", test_direct_merge_marker_detected),
@@ -1288,6 +1330,8 @@ def main():
         # --- tiles-spawned-without-a-table trigger (ADR-094 addendum, dev-env#656) ---
         ("session_spawned_tiles: true on real spawn", test_session_spawned_tiles_true_on_real_spawn),
         ("session_spawned_tiles: false without spawn", test_session_spawned_tiles_false_without_spawn),
+        ("session_spawned_tiles: detects other namespace", test_session_spawned_tiles_detects_other_namespace),
+        ("enumeration_recorded: delegates to session_spawned_tiles", test_enumeration_recorded_delegates_to_session_spawned_tiles),
         ("table_marker_present: true on heading", test_table_marker_present_true_on_heading),
         ("table_marker_present: case/level insensitive", test_table_marker_present_case_and_heading_level_insensitive),
         ("table_marker_present: false without heading", test_table_marker_present_false_without_heading),
@@ -1307,6 +1351,7 @@ def main():
         ("e2e spawn+skip allows", test_e2e_spawn_with_skip_allows),
         ("e2e combined all three, no table: names only the table trigger", test_e2e_combined_all_three_no_table_blocks_naming_table_only),
         ("e2e spawn-table sentinel suppresses re-fire", test_e2e_spawn_table_sentinel_suppresses_refire),
+        ("e2e other-namespace spawn + no table still blocks", test_e2e_spawn_other_namespace_no_table_still_blocks),
     ]
     failed = 0
     for name, fn in tests:

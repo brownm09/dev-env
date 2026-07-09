@@ -187,13 +187,19 @@ _SKIP_RE = re.compile(r"\b(?:skip\s+tiles?|don'?t\s+(?:spawn\s+)?tiles?|no\s+til
                       re.IGNORECASE)
 
 # --- tile-table detection (ADR-094 addendum, dev-env#656) -----------------------
-# The fully-qualified MCP tool name, not the bare "spawn_task" substring: an
-# empirical check against a real transcript with zero tiles spawned found the
-# bare word 8x (prose / tool_result noise) but the FQ name 0x -- so this is
-# the precise pre-filter substring below, while _SPAWN_TASK_RE above (matched
-# against just a tool_use item's own `name` field) stays the narrower,
-# already-anchored per-item check `session_spawned_tiles` reuses.
-_SPAWN_TASK_TOOL_NAME = "mcp__ccd_session__spawn_task"
+# The bare substring "spawn_task", matching _SPAWN_TASK_RE's own "any
+# namespacing hits" bare-verb philosophy (review of PR #674) -- an earlier
+# version of this pre-filter checked the exact fully-qualified tool name
+# (mcp__ccd_session__spawn_task) instead, which is a STRICT SUBSET of what
+# _SPAWN_TASK_RE (used inside session_spawned_tiles, below) can match: a
+# spawn_task call recorded under any other MCP namespace would satisfy the
+# real detector but be silently skipped by that narrower pre-filter, defeating
+# the detector's own documented namespace-robustness. The bare substring costs
+# a few extra full-transcript reparses in sessions that merely MENTION
+# "spawn_task" in prose (empirically ~8x in one real no-tile-spawned
+# transcript) -- a bounded, accepted perf cost, the same tradeoff the
+# pre-existing "merged" pre-filter branch below already makes.
+_SPAWN_TASK_SUBSTRING = "spawn_task"
 # The stable heading marker PR1 (#663) defined in claude/CLAUDE.md -- Session
 # Summaries & Tile Tracking: "### Tiles spawned this session". Requires a `#`
 # heading prefix (1-6 levels) anchored to the START of a line (re.MULTILINE)
@@ -484,37 +490,16 @@ def session_unresolved_created_issues(calls: list, merged_prs: set) -> set:
     return set(created) - session_resolved_issue_numbers(calls, merged_prs)
 
 
-def enumeration_recorded(records: list) -> bool:
-    """True iff the session recorded a tile-enumeration artifact: a ``spawn_task``
-    tool call, or an assistant message carrying the prescribed enumeration text.
-
-    Session-global by design (documented ADR-088 limitation): one enumeration
-    satisfies the gate for the session — the gate targets the *total skip*
-    (merged, nothing recorded), not per-merge enumeration quality. A bare "no
-    follow-ups" matches none of the markers and so does NOT satisfy it.
-    """
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        for item in _content_items(rec):
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "tool_use" and _SPAWN_TASK_RE.search(item.get("name", "") or ""):
-                return True
-            if item.get("type") == "text":
-                text = item.get("text", "") or ""
-                if any(rx.search(text) for rx in _ENUM_MARKERS):
-                    return True
-    return False
-
-
 def session_spawned_tiles(records: list) -> bool:
-    """True iff a real ``spawn_task`` tool call happened this session — the
-    same per-item signal ``enumeration_recorded`` already checks via
-    ``_SPAWN_TASK_RE`` against a ``tool_use`` item's ``name``, isolated here
-    into its own predicate so the tile-table trigger (3) can require it
+    """True iff a real ``spawn_task`` tool call happened this session, checked
+    via ``_SPAWN_TASK_RE`` against a ``tool_use`` item's ``name``. The single
+    source of truth for "was a tile spawned" — ``enumeration_recorded``
+    delegates to this for its own tool_use check (triggers 1/2), and
+    ``evaluate_tile_table`` uses it directly (trigger 3) to require a spawn
     independently of enumeration TEXT (which must NOT, by itself, require a
-    table — only an actual spawn does)."""
+    table — only an actual spawn does). Extracting this out of
+    ``enumeration_recorded`` (review of PR #674) means the two callers can
+    never drift on what counts as "a tile was spawned."""
     for rec in records:
         if not isinstance(rec, dict) or rec.get("type") != "assistant":
             continue
@@ -540,6 +525,33 @@ def table_marker_present(records: list) -> bool:
             if not isinstance(item, dict) or item.get("type") != "text":
                 continue
             if _TABLE_MARKER_RE.search(item.get("text", "") or ""):
+                return True
+    return False
+
+
+def enumeration_recorded(records: list) -> bool:
+    """True iff the session recorded a tile-enumeration artifact: a ``spawn_task``
+    tool call, or an assistant message carrying the prescribed enumeration text.
+
+    Session-global by design (documented ADR-088 limitation): one enumeration
+    satisfies the gate for the session — the gate targets the *total skip*
+    (merged, nothing recorded), not per-merge enumeration quality. A bare "no
+    follow-ups" matches none of the markers and so does NOT satisfy it.
+
+    The tool_use check delegates to ``session_spawned_tiles`` (review of PR
+    #674) rather than re-implementing it, so this and the tile-table trigger
+    (``evaluate_tile_table``) can never disagree on what counts as a spawn.
+    """
+    if session_spawned_tiles(records):
+        return True
+    for rec in records:
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        for item in _content_items(rec):
+            if not isinstance(item, dict) or item.get("type") != "text":
+                continue
+            text = item.get("text", "") or ""
+            if any(rx.search(text) for rx in _ENUM_MARKERS):
                 return True
     return False
 
@@ -776,16 +788,14 @@ def main() -> None:
     # PR #604, extended ADR-092).
     #
     # Trigger 3 (tiles-spawned-without-a-table, ADR-094 addendum) requires a
-    # spawn_task tool call, which is JSON-recorded as the literal
-    # fully-qualified tool name `mcp__ccd_session__spawn_task` in the
-    # transcript -- a substring check on that exact string is precise
-    # (empirically: a real no-tile transcript contains the bare word
-    # "spawn_task" 8x from prose/tool_result noise but the FQ name 0x), so it
-    # is a third standalone OR-branch rather than folded into either regex.
+    # spawn_task tool call, which is JSON-recorded with a tool name containing
+    # "spawn_task" -- a bare substring check (matching what the real detector,
+    # _SPAWN_TASK_RE, itself matches) is a third standalone OR-branch rather
+    # than folded into either regex above.
     lower = text.lower()
     if ("merged" not in lower
             and not _ISSUE_CREATE_STMT_RE.search(text)
-            and _SPAWN_TASK_TOOL_NAME not in lower):
+            and _SPAWN_TASK_SUBSTRING not in lower):
         sys.exit(0)
 
     # Fail-open: a parse/scan failure is a deliberate exit-0 skip, not an

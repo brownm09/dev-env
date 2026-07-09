@@ -1046,19 +1046,30 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     triggers (1)/(2), but does **not** by itself satisfy trigger (3) — a session that merges a PR,
     spawns a tile, and never emits the table sees (1) resolve while (3) still fires; the reverse (a
     merged PR with no spawn at all) leaves trigger (3) a no-op, since there is nothing to table. The
-    pre-filter gains a third OR-branch: a literal substring check for the fully-qualified tool name
-    `mcp__ccd_session__spawn_task` (deliberately not `scan_top_level`-anchored, since it is a pre-filter
-    substring check on JSON-recorded tool-call data, not a command-shape check — empirically precise:
-    a real no-tile transcript contains the bare word "spawn_task" 8x from prose/tool_result noise but
-    the FQ name 0x). The behavioral layer gains five end-to-end subprocess cases mirroring the existing
-    pattern: spawn-with-no-table blocks on stderr naming the exact heading; spawn-with-table and
-    spawn-with-skip each allow; a combined merged-PR + dangling-issue + spawn session (no table) blocks
-    naming **only** the table trigger (the spawn silently resolves the other two); and the sentinel
-    suppresses a second fire. Two **pre-existing** e2e tests (`test_e2e_merged_with_enum_allows`,
-    `test_e2e_dangling_issue_with_enum_allows`) were extended to also emit the table heading alongside
-    their bare `spawn_task` tile, since a bare spawn alone no longer reaches exit 0 once trigger (3)
-    exists — their original intent (proving triggers (1)/(2) resolve on enumeration) is preserved by
-    making the session genuinely fully compliant rather than by weakening the new trigger.
+    pre-filter gains a third OR-branch: a bare substring check for `"spawn_task"` (deliberately not
+    `scan_top_level`-anchored, since it is a pre-filter substring check on JSON-recorded tool-call
+    data, not a command-shape check). Matches `_SPAWN_TASK_RE`'s own deliberately namespace-agnostic
+    "any namespacing hits" philosophy rather than the exact fully-qualified tool name
+    `mcp__ccd_session__spawn_task` an earlier version hardcoded — that narrower check was a STRICT
+    SUBSET of what the real detector (`session_spawned_tiles`, which `enumeration_recorded` now also
+    delegates to — dev-env#674 review) can match, so a spawn recorded under any other MCP namespace
+    would satisfy the detector but be silently skipped by the pre-filter, defeating the detector's own
+    namespace-robustness (empirically not currently triggerable — all recorded spawns use the standard
+    prefix — but a real, fixable soundness gap independently flagged by two review passes). The bare
+    substring costs a few extra full-transcript reparses in sessions that merely mention "spawn_task"
+    in prose (empirically ~8x in one real no-tile transcript) — a bounded, accepted perf cost matching
+    the pre-existing "merged" pre-filter branch's own tradeoff. A dedicated regression test spawns a
+    tile under a fabricated non-standard namespace and confirms both the pure detector and the full
+    end-to-end hook still catch it. The behavioral layer gains six end-to-end subprocess cases mirroring
+    the existing pattern: spawn-with-no-table blocks on stderr naming the exact heading; spawn-with-table
+    and spawn-with-skip each allow; a combined merged-PR + dangling-issue + spawn session (no table)
+    blocks naming **only** the table trigger (the spawn silently resolves the other two); the sentinel
+    suppresses a second fire; and the other-namespace spawn still blocks. Two **pre-existing** e2e tests
+    (`test_e2e_merged_with_enum_allows`, `test_e2e_dangling_issue_with_enum_allows`) were extended to
+    also emit the table heading alongside their bare `spawn_task` tile, since a bare spawn alone no
+    longer reaches exit 0 once trigger (3) exists — their original intent (proving triggers (1)/(2)
+    resolve on enumeration) is preserved by making the session genuinely fully compliant rather than by
+    weakening the new trigger.
 
     ```bash
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
