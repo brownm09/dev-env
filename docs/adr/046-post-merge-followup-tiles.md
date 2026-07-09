@@ -132,6 +132,32 @@ The only valid override remains a direct verbal instruction that names the tile 
 
 **CLAUDE.md update.** The "Capture post-merge follow-ups as tiles" bullet's opening sentence was rewritten per mechanisms 1 + 2 and the tile-don't-ask facet; the `docs/REFERENCE.md` "Post-merge follow-up tiles (chips)" runbook was re-keyed to merged state to match. Closes [dev-env#595](https://github.com/brownm09/dev-env/issues/595). Related: [dev-env#413](https://github.com/brownm09/dev-env/issues/413).
 
+## Addendum — 2026-07-08: the two checkpoints are a floor, not a ceiling
+
+**Incident.** A lifting-logbook-cwd session investigating a dangling engineering-journal
+shard-deletion anomaly (root-caused to dev-env#615) identified a genuine, well-scoped follow-up
+mid-investigation — recovering the orphaned `draft/2026-07-07` branch via a dedicated
+`/journal-compose` session. Neither checkpoint had fired: no PR was merged, and the only GitHub
+interaction was a comment on an already-open issue (dev-env#615), not a new issue creation. The
+agent treated the tile as optional and asked "Want me to spawn a tile for that now?" instead of
+spawning it. The user said yes, then asked for the instructions to be updated so this happens
+without asking, full stop.
+
+**Clarification.** The two checkpoints exist to force an enumeration pass at moments a follow-up
+could otherwise be silently dropped by omission — they were never meant to be the *only* moments
+tiling happens. They are a floor under an otherwise-discretionary judgment call, not a fence around
+it. The "tile, don't ask" principle from the 2026-07-05 addendum applies with equal force outside
+both checkpoints: any time, in any session, a genuine follow-up is identified — mid-investigation,
+while answering a question, in passing during unrelated work — spawn the tile immediately. Offering
+to spawn one ("want me to tile this?") is the same anti-pattern the 2026-07-05 addendum named
+("deflecting the triage into a user-facing question") wearing a different hat: the tile mechanism
+exists specifically to *be* the low-friction ask, so a chat question in front of it defeats the
+point.
+
+**CLAUDE.md update.** Added a clause after the two-checkpoint definition stating they are a floor,
+not a ceiling, and reworded the "tile, don't ask" sentence to apply unconditionally rather than
+"at either checkpoint." Closes [dev-env#642](https://github.com/brownm09/dev-env/issues/642).
+
 ---
 
 ## References
@@ -139,6 +165,8 @@ The only valid override remains a direct verbal instruction that names the tile 
 - [dev-env#369](https://github.com/brownm09/dev-env/issues/369) — issue this ADR closes.
 - [dev-env#413](https://github.com/brownm09/dev-env/issues/413) — issue clarifying the plan-approval edge case; closed by the 2026-06-27 addendum.
 - [dev-env#595](https://github.com/brownm09/dev-env/issues/595) — issue driving the 2026-07-05 forcing-function refinement (enumeration + merged-state re-key); closed by the addendum above.
+- [dev-env#615](https://github.com/brownm09/dev-env/issues/615) — the investigation whose mid-session follow-up motivated the 2026-07-08 addendum.
+- [dev-env#642](https://github.com/brownm09/dev-env/issues/642) — issue driving the 2026-07-08 addendum (checkpoints are a floor, not a ceiling); closed by the addendum above.
 - [lifting-logbook#700](https://github.com/brownm09/lifting-logbook/pull/700) — motivating incident for the 2026-07-05 addendum: auto-merge landed the PR and "no follow-ups" was asserted with no enumeration.
 - [ADR-012](012-post-merge-checklist-board-done-roadmap-update.md) — the post-merge checklist this extends.
 - [ADR-028](028-all-findings-merge-gate.md) — the file-and-link guidance the "genuine follow-ups" bar mirrors.
