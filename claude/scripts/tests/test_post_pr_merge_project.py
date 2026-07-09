@@ -242,6 +242,29 @@ def test_repo_from_repo_flag_survives_alongside_quoted_decoy() -> str:
     return "real --repo flag resolves correctly alongside a quoted decoy (dev-env#626)"
 
 
+def test_repo_from_url_shaped_decoy_inside_subject_not_matched() -> str:
+    # dev-env#634, ADR-050 Amendment 17: the PR-URL fallback (_PR_URL_REPO_RE)
+    # has the identical quoted-value blind spot the repo-flag regex had before
+    # dev-env#626 -- a --subject value containing a URL-shaped decoy must not
+    # be mistaken for the merge's actual target repo. No --repo flag and no
+    # bare URL elsewhere, so this falls through to None.
+    cmd = 'gh pr merge 42 --subject "see https://github.com/other/repo/pull/1 for context"'
+    assert extract_repo_from_command(cmd) is None
+    return "quoted --subject decoy URL -> None, not falsely matched (dev-env#634)"
+
+
+def test_repo_from_real_url_survives_alongside_quoted_url_decoy() -> str:
+    # A real, bare positional PR URL must still resolve correctly even when a
+    # quoted --subject value elsewhere in the same command contains a
+    # URL-shaped decoy for a different repo.
+    cmd = (
+        'gh pr merge 42 --subject "see https://github.com/other/repo/pull/1 for context" '
+        "https://github.com/brownm09/dev-env/pull/42 --squash"
+    )
+    assert extract_repo_from_command(cmd) == "brownm09/dev-env"
+    return "real PR URL resolves correctly alongside a quoted URL-shaped decoy (dev-env#634)"
+
+
 # --- extract_pr_number (output) ------------------------------------------
 
 def test_output_squash_marker() -> str:
@@ -348,6 +371,8 @@ def main() -> int:
         ("repo: mid-word '-R' not matched (dev-env#626)", test_repo_from_dash_r_mid_word_not_matched),
         ("repo: '-R' inside quoted --subject not matched (dev-env#626)", test_repo_from_dash_r_inside_quoted_subject_not_matched),
         ("repo: --repo flag survives alongside quoted decoy (dev-env#626)", test_repo_from_repo_flag_survives_alongside_quoted_decoy),
+        ("repo: URL-shaped decoy inside quoted --subject not matched (dev-env#634)", test_repo_from_url_shaped_decoy_inside_subject_not_matched),
+        ("repo: real URL survives alongside quoted URL-shaped decoy (dev-env#634)", test_repo_from_real_url_survives_alongside_quoted_url_decoy),
         ("output: squash marker", test_output_squash_marker),
         ("output: merged marker", test_output_merged_marker),
         ("output: cross-repo marker", test_output_cross_repo_marker),

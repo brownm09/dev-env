@@ -39,6 +39,7 @@ import sys
 from _hookio import (
     confirm_merge_via_gh,
     is_merge_help_only,
+    mask_prose_flag_values,
     mask_quoted_spans,
     merge_pr_number_from_output,
     output_has_merge_marker,
@@ -54,7 +55,15 @@ _CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
 _PR_URL_RE = re.compile(r"https://github\.com/\S+/pull/(\d+)")
 # Same PR-URL shape as _PR_URL_RE but capturing the owner/repo segment instead
 # of discarding it — used to detect when a merge command names a DIFFERENT
-# repo than cwd's own config (dev-env#559).
+# repo than cwd's own config (dev-env#559). extract_repo_from_command runs
+# this against a mask_prose_flag_values-masked copy of `args` (dev-env#634,
+# ADR-050 Amendment 17), so a --subject/--body value containing a URL-shaped
+# decoy (e.g. "see https://github.com/other/repo/pull/1 for context") can't
+# false-match either — mirrors _REPO_FLAG_RE's own mask_quoted_spans fix
+# below, but scoped to prose-flag values only: a BARE quoted PR-URL argument
+# (test_repo_from_cross_repo_url) is never preceded by --subject/--body, so
+# mask_prose_flag_values leaves it untouched while mask_quoted_spans would
+# have blinded it too.
 _PR_URL_REPO_RE = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/\d+")
 # An explicit --repo flag is the highest-confidence signal, ahead of a URL —
 # mirrors _effective_merge_repo's resolution order in pr-merge-reminder.py
@@ -160,10 +169,14 @@ def extract_repo_from_command(command: str) -> str | None:
     The `--repo`/`-R` flag check runs against a `mask_quoted_spans`-masked copy
     of `args` (dev-env#626, ADR-050 Amendment 15), so a `--subject`/`--body`
     value containing a space-separated "-R other/repo" substring cannot be
-    mistaken for a real flag. The URL fallback deliberately stays on the
-    *unmasked* `args` — a quoted `/pull/N` URL (e.g. `gh pr merge
-    "https://github.com/o/r/pull/1"`) is a legitimate, already-supported shape
-    (see `test_repo_from_cross_repo_url`) that masking would otherwise blind.
+    mistaken for a real flag. The URL fallback runs against a
+    `mask_prose_flag_values`-masked copy of `args` instead (dev-env#634, ADR-050
+    Amendment 17), so a `--subject`/`--body` value containing a URL-shaped
+    decoy can't false-match either — while a *bare* quoted `/pull/N` URL
+    positional argument (e.g. `gh pr merge "https://github.com/o/r/pull/1"`,
+    never preceded by `--subject`/`--body`) is a legitimate, already-supported
+    shape (see `test_repo_from_cross_repo_url`) that `mask_prose_flag_values`
+    leaves untouched, unlike blanket `mask_quoted_spans`.
     """
     m = _MERGE_ARGS_RE.search(command)
     if not m:
@@ -172,7 +185,7 @@ def extract_repo_from_command(command: str) -> str | None:
     flag = _REPO_FLAG_RE.search(mask_quoted_spans(args))
     if flag:
         return flag.group(1)
-    url = _PR_URL_REPO_RE.search(args)
+    url = _PR_URL_REPO_RE.search(mask_prose_flag_values(args))
     return url.group(1) if url else None
 
 

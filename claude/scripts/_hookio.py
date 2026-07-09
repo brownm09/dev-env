@@ -440,51 +440,35 @@ def scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
 # test suite (the "*_survives_alongside_quoted_decoy" cases) is the durable,
 # enforced check that this hand-wiring is correct today, in place of a
 # structural guarantee.
+#
+# Two more call sites (dev-env#634, ADR-050 Amendment 17): pre-merge-findings-gate.py's
+# _parse_merge_target (mask-then-`.split()`, not mask-then-regex -- a naive
+# whitespace tokenizer has the identical hijack) and
+# stop-tile-enumeration-gate.py's own _REPO_FLAG_RE / _explicit_repo (which
+# never received this file's masking, or PR #623's (?<!\S) lookbehind, at
+# all -- a strictly larger, pre-existing gap than dev-env#626 itself). Same
+# per-caller hand-wiring discipline, same regression-test pattern.
 # ---------------------------------------------------------------------------
 
 
-def mask_quoted_spans(command: str) -> str:
-    """Return *command* with every single-/double-quoted span, $() subshell,
-    and heredoc body replaced by a same-length run of '#' (newlines
-    preserved), so a regex search over the result can never match text that
-    only appears inside a quoted value, command substitution, or heredoc.
+def _opaque_spans(command: str) -> list[tuple[int, int]]:
+    """Return the ``[start, end)`` offsets of every single-/double-quoted span,
+    ``$()`` subshell, and heredoc body in *command*.
 
-    A repo-flag regex (or similar) run against this masked text instead of
-    the raw command can no longer mistake a --subject/--body value like
-    ``"see -R other/repo for context"`` for a genuine standalone --repo/-R
-    flag (dev-env#626) -- the value's entire quoted span is blanked before
-    the regex ever sees it. Text outside any opaque span is returned
-    byte-for-byte unchanged, so a match against the masked string captures
-    the identical substring/offsets a match against the original would have,
-    whenever the match is genuine (i.e. not itself inside a masked span,
-    which by construction can never match anything but '#'/newline runs).
+    The shared span-finding walk both ``mask_quoted_spans`` and
+    ``mask_prose_flag_values`` (dev-env#634, ADR-050 Amendment 17) mask from,
+    so the two functions can never disagree on what counts as "inside a
+    quote/subshell/heredoc" -- they'd otherwise be two hand-copies of the same
+    state machine, exactly the drift risk this module's comment above already
+    warns about for a parameterized "mask-then-search" helper. Extracting the
+    pure span-*finder* (not the masking-and-searching *policy* on top of it)
+    sidesteps that without reopening Amendment 15's own "no premature
+    parameterization" call: each caller still independently decides which of
+    these spans to mask and what regex to run against the result.
 
-    '#' is used as the placeholder. The four callers' own repo-flag regexes
-    (not defined in this file -- see each hook's own _REPO_FLAG_RE) mostly
-    capture a strict owner/repo shape ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+), which
-    '#' cannot satisfy; a masked span can therefore only remove a real match
-    there, never manufacture one. One caller's regex is looser
-    (posttooluse-inert-advisory.py's `(\\S+)` capture group, since it only
-    needs to compare the result against a known repo string, not validate
-    slug shape) and CAN capture a run of '#' from a masked span -- but the
-    anchor itself (a literal `--repo`/`-R` token) still can't be synthesized
-    from '#' characters, so masking still only flips a match from
-    present-but-wrong-value to a value that fails the caller's equality
-    check, never from absent to falsely present. Newlines are preserved
-    unmasked so a heredoc body's line count survives
-    (matters only if a caller later applies a line-oriented helper to the
-    masked result; no current caller does, but it costs nothing and mirrors
-    _find_heredoc_end's own care with heredoc line structure).
-
-    Callers must mask ONLY the exact string fed to the vulnerable repo-flag
-    regex, never a string whose match is reused for something else (e.g. a
-    PR-URL or PR-number fallback) -- some of those legitimately match a
-    quoted value today (see each hook's own call site for the precise scope).
-
-    See split_top_level's docstring for the shared quote/subshell/heredoc
-    opacity rules this function's state machine mirrors (kept as an
-    independent walk rather than a shared implementation -- see the module
-    comment above this function).
+    Purely additive: ``mask_quoted_spans`` now masks every span this function
+    returns, with byte-identical output to before this extraction -- see its
+    own docstring for the opacity rules this walk implements.
     """
     n = len(command)
     opaque: list[tuple[int, int]] = []
@@ -561,8 +545,138 @@ def mask_quoted_spans(command: str) -> str:
         # no match from this content either way.
         opaque.append((span_start, n))
 
+    return opaque
+
+
+def mask_quoted_spans(command: str) -> str:
+    """Return *command* with every single-/double-quoted span, $() subshell,
+    and heredoc body replaced by a same-length run of '#' (newlines
+    preserved), so a regex search over the result can never match text that
+    only appears inside a quoted value, command substitution, or heredoc.
+
+    A repo-flag regex (or similar) run against this masked text instead of
+    the raw command can no longer mistake a --subject/--body value like
+    ``"see -R other/repo for context"`` for a genuine standalone --repo/-R
+    flag (dev-env#626) -- the value's entire quoted span is blanked before
+    the regex ever sees it. Text outside any opaque span is returned
+    byte-for-byte unchanged, so a match against the masked string captures
+    the identical substring/offsets a match against the original would have,
+    whenever the match is genuine (i.e. not itself inside a masked span,
+    which by construction can never match anything but '#'/newline runs).
+
+    '#' is used as the placeholder. The four callers' own repo-flag regexes
+    (not defined in this file -- see each hook's own _REPO_FLAG_RE) mostly
+    capture a strict owner/repo shape ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+), which
+    '#' cannot satisfy; a masked span can therefore only remove a real match
+    there, never manufacture one. One caller's regex is looser
+    (posttooluse-inert-advisory.py's `(\\S+)` capture group, since it only
+    needs to compare the result against a known repo string, not validate
+    slug shape) and CAN capture a run of '#' from a masked span -- but the
+    anchor itself (a literal `--repo`/`-R` token) still can't be synthesized
+    from '#' characters, so masking still only flips a match from
+    present-but-wrong-value to a value that fails the caller's equality
+    check, never from absent to falsely present. Newlines are preserved
+    unmasked so a heredoc body's line count survives
+    (matters only if a caller later applies a line-oriented helper to the
+    masked result; no current caller does, but it costs nothing and mirrors
+    _find_heredoc_end's own care with heredoc line structure).
+
+    Callers must mask ONLY the exact string fed to the vulnerable repo-flag
+    regex, never a string whose match is reused for something else (e.g. a
+    PR-URL or PR-number fallback) -- some of those legitimately match a
+    quoted value today (see each hook's own call site for the precise scope).
+
+    See split_top_level's docstring for the shared quote/subshell/heredoc
+    opacity rules `_opaque_spans`'s walk mirrors (kept as an independent walk
+    from split_top_level rather than a shared implementation -- see the
+    module comment above this function). That walk now lives in
+    `_opaque_spans` (ADR-050 Amendment 17), shared with `mask_prose_flag_values`;
+    this function's own behavior is unchanged by that extraction.
+    """
     out = list(command)
-    for start, end in opaque:
+    for start, end in _opaque_spans(command):
+        for idx in range(start, end):
+            if out[idx] not in ("\n", "\r"):
+                out[idx] = "#"
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------------
+# mask_prose_flag_values  (dev-env#634, ADR-050 Amendment 17)
+#
+# The PR-URL-regex analog of mask_quoted_spans's own fix: a --subject/--body
+# (or -t/-b) value like "see https://github.com/other/repo/pull/1 for
+# context" contains a URL-shaped decoy the same way a --subject value could
+# contain a decoy --repo/-R flag (dev-env#626). mask_quoted_spans itself
+# cannot be reused unmodified for this: at least one existing, legitimate
+# case depends on a URL living INSIDE a quoted span resolving correctly -- a
+# bare quoted positional URL argument (`gh pr merge "https://.../pull/N"`,
+# post-pr-merge-project.py's own test_repo_from_cross_repo_url).
+# Blanket-masking every quoted span the way mask_quoted_spans does would
+# blind that legitimate case along with the decoy.
+#
+# mask_prose_flag_values instead masks ONLY the value immediately following a
+# --subject/-t/--body/-b flag -- the actual shape of the risk (every reported
+# repro is "URL/flag-as-substring inside prose", never a bare positional URL)
+# -- leaving every other opaque span, including a bare quoted positional URL
+# argument, untouched. An unquoted flag value (a single whitespace-free
+# token) is never masked either: with no internal whitespace, it cannot
+# contain a "decoy surrounded by prose" in the first place.
+#
+# Shares _opaque_spans with mask_quoted_spans (see that function's own
+# comment) rather than re-implementing the quote/subshell/heredoc walk a
+# second time -- so a --body value built as `"$(cat <<'EOF' ... EOF)"` (a
+# real, precedented shape in this hook family -- see
+# stop-tile-enumeration-gate.py's own session_resolved_issue_numbers
+# docstring) is masked as the single opaque span it already is, with zero
+# extra logic here.
+#
+# Masks an UNQUOTED single-token value too (dev-env#634 review finding), not
+# only a quoted/subshell/heredoc one: `--body https://github.com/other/repo
+# /pull/1` (no quotes at all) is just as much a decoy as the same URL sitting
+# inside quoted prose -- the decoy doesn't need surrounding words to hide in
+# when the flag's ENTIRE value IS the decoy. A bare *positional* URL argument
+# is unaffected either way, since it is never preceded by one of these flags
+# in the first place.
+# ---------------------------------------------------------------------------
+
+_PROSE_FLAG_RE = re.compile(r"(?<!\S)(?:--subject|--body|-t|-b)(?:=|\s+)")
+
+
+def mask_prose_flag_values(command: str) -> str:
+    """Return *command* with the VALUE of every --subject/-t/--body/-b flag
+    replaced by a same-length run of '#' — quoted, `$()` subshell, heredoc,
+    and unquoted single-token values alike — while every other opaque span
+    (in particular a bare quoted positional PR-URL argument) is left
+    byte-for-byte unchanged.
+
+    A PR-URL (or similar) regex run against this masked text instead of the
+    raw command can no longer mistake a --subject/--body value for a genuine
+    PR-URL argument (dev-env#634) — whether the decoy is a URL-shaped
+    substring buried in quoted prose (``"see https://.../pull/1 for
+    context"``) or the flag's entire UNQUOTED value (``--body
+    https://.../pull/1``, no surrounding prose needed) — while a legitimate
+    bare quoted URL argument (``gh pr merge "https://github.com/o/r/pull/1"``)
+    is untouched, since it is never preceded by one of these flags.
+
+    A value that itself begins with a quote/``$(``/heredoc-opener is masked
+    via the matching `_opaque_spans` entry (whose start coincides exactly
+    with the position right after the flag+separator). Otherwise the value is
+    unquoted: masked by walking forward to the next whitespace character or
+    the end of the string. See `mask_quoted_spans`'s own docstring for the
+    shared opacity rules (quotes, `$()` subshells, heredocs) the quoted branch
+    masks the same way.
+    """
+    n = len(command)
+    spans = dict(_opaque_spans(command))
+    out = list(command)
+    for m in _PROSE_FLAG_RE.finditer(command):
+        start = m.end()
+        end = spans.get(start)
+        if end is None:
+            end = start
+            while end < n and not command[end].isspace():
+                end += 1
         for idx in range(start, end):
             if out[idx] not in ("\n", "\r"):
                 out[idx] = "#"

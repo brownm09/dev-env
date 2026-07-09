@@ -85,6 +85,7 @@ import sys
 from pathlib import Path
 
 from _hookio import (
+    mask_quoted_spans,
     merge_pr_number_from_output,
     output_has_merge_marker,
     split_top_level,
@@ -109,10 +110,20 @@ _GH_API_STMT_RE = re.compile(r"gh(?:\.exe)?\s+api\b", re.IGNORECASE)
 # Strip the `gh pr <verb>` prefix so the positional PR arg can be read.
 _STRIP_VERB_RE = re.compile(r"\s*gh(?:\.exe)?\s+pr\s+\w+\b(.*)", re.IGNORECASE | re.DOTALL)
 # A PR URL (`.../pull/N`) capturing owner/repo and number; a bare positional
-# integer token; and an explicit `--repo`/`-R owner/name` flag value.
+# integer token; and an explicit `--repo`/`-R owner/name` flag value. The
+# (?<!\S) lookbehind (dev-env#634, ADR-050 Amendment 17 -- ADR-088's original
+# regex never received PR #623's Amendment 14 lookbehind, since it already
+# recognized `-R` before that PR and so fell outside its audit) requires
+# --repo/-R to start a standalone token, so it can't match mid-word (e.g. a PR
+# title literally containing "add-R support"). `_explicit_repo` additionally
+# runs this against a `mask_quoted_spans`-masked copy of its input (same
+# amendment), so a --subject/--body value containing a space-separated
+# "-R other/repo" substring can't false-match either -- the lookbehind alone
+# only checks that the preceding character is whitespace, which a quoted
+# value's own internal spacing satisfies just as well as a real token boundary.
 _PR_URL_RE = re.compile(r"github\.com/(?P<repo>[^/\s]+/[^/\s]+)/pull/(?P<num>\d+)")
 _POS_NUM_RE = re.compile(r"(?<!\S)(\d+)(?=\s|$)")
-_REPO_FLAG_RE = re.compile(r"(?:--repo|-R)(?:=|\s+)(?P<repo>[^\s/]+/[^\s]+)")
+_REPO_FLAG_RE = re.compile(r"(?<!\S)(?:--repo|-R)(?:=|\s+)(?P<repo>[^\s/]+/[^\s]+)")
 
 # --- dangling-created-issue detection (ADR-092, dev-env#638) -------------------
 _ISSUE_CREATE_STMT_RE = re.compile(r"gh(?:\.exe)?\s+issue\s+create\b", re.IGNORECASE)
@@ -204,8 +215,20 @@ def _explicit_repo(segment_first_line: str) -> str | None:
     from cwd, which this hook cannot resolve). Makes the auto-merge correlation
     repo-aware so a same-numbered PR in a *different* repo, merely inspected as
     MERGED in-session, cannot be mistaken for this session's own PR (review of
-    PR #604)."""
-    rf = _REPO_FLAG_RE.search(segment_first_line)
+    PR #604).
+
+    The `--repo`/`-R` flag check runs against a `mask_quoted_spans`-masked copy
+    of `segment_first_line` (dev-env#634, ADR-050 Amendment 17), so a
+    --subject/--body value containing a space-separated "-R other/repo"
+    substring cannot be mistaken for a real flag. The `_PR_URL_RE` fallback
+    deliberately stays on the *unmasked* text — a quoted `/pull/N` URL is a
+    legitimate shape (mirrors the four sibling hooks' own masking-scope
+    decision in ADR-050 Amendment 15) that masking would otherwise blind; this
+    hook's own PR-URL regex is also out of the dev-env#634 fix's scope (see
+    that issue's point 4, which scopes the URL-regex analog fix to the four
+    files ADR-050 Amendment 15 already touched, not this one).
+    """
+    rf = _REPO_FLAG_RE.search(mask_quoted_spans(segment_first_line))
     if rf:
         return rf.group("repo")
     u = _PR_URL_RE.search(segment_first_line)

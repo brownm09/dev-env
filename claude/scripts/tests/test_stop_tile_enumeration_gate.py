@@ -403,6 +403,61 @@ def test_a4_same_repo_auto_merge_still_detected():
 
 
 # ---------------------------------------------------------------------------
+# _explicit_repo direct coverage (dev-env#634, ADR-050 Amendment 17)
+#
+# _explicit_repo's own _REPO_FLAG_RE never received PR #623's (?<!\S)
+# lookbehind (it already recognized -R before that PR, so #623's audit
+# classified it as out of scope) and was never made quote-aware the way
+# ADR-050 Amendment 15 made the four sibling _REPO_FLAG_RE sites -- a
+# strictly larger, pre-existing gap than dev-env#626 itself, on top of the
+# same quote-unawareness. Previously exercised only indirectly via
+# session_merged_prs's A4 cases above (both bare, unquoted --repo values);
+# these are the function's first direct tests.
+# ---------------------------------------------------------------------------
+
+def test_explicit_repo_dash_r_mid_word_not_matched():
+    assert gate._explicit_repo("gh pr merge 42 xx-R brownm09/other-repo") is None
+    return "mid-word '-R' (not a standalone token) -> None, not falsely matched (dev-env#634)"
+
+
+def test_explicit_repo_dash_r_inside_quoted_subject_not_matched():
+    # A --subject value containing a legitimately space-separated
+    # "-R other/repo" substring must not be mistaken for the flag either --
+    # mask_quoted_spans blinds the whole quoted span before the regex runs.
+    segment = 'gh pr merge 42 --subject "see -R other/repo for context"'
+    assert gate._explicit_repo(segment) is None
+    return "quoted --subject decoy '-R other/repo' -> None, not falsely matched (dev-env#634)"
+
+
+def test_explicit_repo_flag_survives_alongside_quoted_decoy():
+    # A real, unquoted --repo flag must still resolve correctly even when a
+    # quoted --subject value elsewhere in the same segment contains a decoy.
+    segment = (
+        'gh pr merge 42 --repo brownm09/dev-env --subject '
+        '"see -R other/repo for context"'
+    )
+    assert gate._explicit_repo(segment) == "brownm09/dev-env"
+    return "real --repo flag resolves correctly alongside a quoted decoy (dev-env#634)"
+
+
+def test_explicit_repo_dash_r_shorthand_still_resolves():
+    # Regression guard: the new (?<!\S) lookbehind + masking must not break
+    # the real -R shorthand this function already supported (dev-env#616).
+    assert gate._explicit_repo("gh pr merge 42 -R brownm09/dev-env") == "brownm09/dev-env"
+    return "-R shorthand still resolves after the lookbehind + masking fix"
+
+
+def test_explicit_repo_url_fallback_stays_unmasked():
+    # The PR-URL fallback is deliberately out of dev-env#634's scope (point 4
+    # scopes the URL-regex analog fix to the four files ADR-050 Amendment 15
+    # already touched, not this hook's own _PR_URL_RE) -- a quoted PR URL
+    # used AS the repo signal must keep resolving exactly as before.
+    segment = 'gh pr merge "https://github.com/brownm09/dev-env/pull/42" --squash'
+    assert gate._explicit_repo(segment) == "brownm09/dev-env"
+    return "quoted PR URL fallback still resolves (out of dev-env#634's URL-regex scope)"
+
+
+# ---------------------------------------------------------------------------
 # dangling-created-issue detection (ADR-092, dev-env#638)
 # ---------------------------------------------------------------------------
 
@@ -880,6 +935,11 @@ def main():
         ("A3 malformed records do not disable", test_a3_malformed_records_do_not_disable_gate),
         ("A4 cross-repo same number not merged", test_a4_cross_repo_same_number_not_merged),
         ("A4 same-repo auto-merge detected", test_a4_same_repo_auto_merge_still_detected),
+        ("_explicit_repo: mid-word '-R' not matched (dev-env#634)", test_explicit_repo_dash_r_mid_word_not_matched),
+        ("_explicit_repo: '-R' inside quoted --subject not matched (dev-env#634)", test_explicit_repo_dash_r_inside_quoted_subject_not_matched),
+        ("_explicit_repo: --repo flag survives alongside quoted decoy (dev-env#634)", test_explicit_repo_flag_survives_alongside_quoted_decoy),
+        ("_explicit_repo: -R shorthand still resolves", test_explicit_repo_dash_r_shorthand_still_resolves),
+        ("_explicit_repo: quoted PR URL fallback stays unmasked", test_explicit_repo_url_fallback_stays_unmasked),
         ("e2e merged+no-enum blocks on stderr", test_e2e_merged_no_enum_blocks_on_stderr),
         ("e2e merged+enum allows", test_e2e_merged_with_enum_allows),
         ("e2e no-merge allows", test_e2e_no_merge_allows),

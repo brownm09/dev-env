@@ -27,6 +27,7 @@ from _hookio import (  # noqa: E402
     effective_merge_dir,
     is_help_only,
     is_merge_help_only,
+    mask_prose_flag_values,
     mask_quoted_spans,
     merge_pr_number_from_output,
     output_has_merge_marker,
@@ -554,6 +555,129 @@ def test_mask_quoted_spans_agrees_with_split_top_level() -> str:
 
 
 # ---------------------------------------------------------------------------
+# mask_prose_flag_values  (dev-env#634, ADR-050 Amendment 17)
+#
+# The PR-URL-regex analog of mask_quoted_spans's own fix: a --subject/--body
+# value can hide a URL-shaped decoy the same way it could hide a --repo/-R
+# decoy (dev-env#626) -- but mask_quoted_spans itself can't be reused
+# unmodified, since a bare quoted positional URL argument is a legitimate,
+# already-tested shape (post-pr-merge-project.py's test_repo_from_cross_repo_url)
+# that blanket-masking every quoted span would blind along with the decoy.
+# mask_prose_flag_values instead masks only the value immediately following a
+# --subject/-t/--body/-b flag.
+# ---------------------------------------------------------------------------
+
+def test_mask_prose_flag_values_no_prose_flags_unchanged() -> str:
+    cmd = 'gh pr merge "https://github.com/brownm09/dev-env/pull/554" --squash'
+    assert mask_prose_flag_values(cmd) == cmd
+    return "no --subject/--body/-t/-b anywhere -> unchanged"
+
+
+def test_mask_prose_flag_values_double_quoted_subject_masked() -> str:
+    # The dev-env#634 repro shape: a URL-shaped decoy inside --subject prose.
+    cmd = 'gh pr merge 42 --subject "see https://github.com/other/repo/pull/1 for context"'
+    masked = mask_prose_flag_values(cmd)
+    assert masked == "gh pr merge 42 --subject " + "#" * len(
+        '"see https://github.com/other/repo/pull/1 for context"'
+    ), masked
+    assert "github.com" not in masked
+    return "URL-shaped decoy inside a double-quoted --subject value fully masked (dev-env#634)"
+
+
+def test_mask_prose_flag_values_single_quoted_body_masked() -> str:
+    cmd = "gh pr merge 42 --body 'see https://github.com/other/repo/pull/1 for context'"
+    masked = mask_prose_flag_values(cmd)
+    assert "github.com" not in masked
+    assert masked.count("#") == len("'see https://github.com/other/repo/pull/1 for context'")
+    return "single-quoted --body value fully masked"
+
+
+def test_mask_prose_flag_values_short_flag_forms_masked() -> str:
+    cmd_t = 'gh pr merge 42 -t "see https://github.com/other/repo/pull/1 for context"'
+    cmd_b = 'gh pr merge 42 -b "see https://github.com/other/repo/pull/1 for context"'
+    assert "github.com" not in mask_prose_flag_values(cmd_t)
+    assert "github.com" not in mask_prose_flag_values(cmd_b)
+    return "short flag forms -t/-b masked identically to --subject/--body"
+
+
+def test_mask_prose_flag_values_equals_form_masked() -> str:
+    cmd = 'gh pr merge 42 --subject="see https://github.com/other/repo/pull/1 for context"'
+    assert "github.com" not in mask_prose_flag_values(cmd)
+    return "--subject=<quoted value> (equals form) masked"
+
+
+def test_mask_prose_flag_values_unquoted_value_also_masked() -> str:
+    # Review finding: an unquoted single-token value can ITSELF be the decoy
+    # -- no surrounding prose needed to hide in (e.g. --body <bare-decoy-url>
+    # with no quotes at all). Masked the same way a quoted value is.
+    cmd = "gh pr merge 42 --subject urgent-fix --squash"
+    masked = mask_prose_flag_values(cmd)
+    assert masked == "gh pr merge 42 --subject " + "#" * len("urgent-fix") + " --squash", masked
+    return "unquoted single-token --subject value masked too (not just quoted-with-prose decoys)"
+
+
+def test_mask_prose_flag_values_unquoted_url_decoy_masked() -> str:
+    # The concrete repro this fix closes: an unquoted --body value that IS a
+    # decoy URL, with no quotes and no surrounding prose at all.
+    cmd = "gh pr merge 380 --body https://github.com/other/repo/pull/1 --squash"
+    masked = mask_prose_flag_values(cmd)
+    assert "other/repo" not in masked, masked
+    assert masked.startswith("gh pr merge 380 --body ") and masked.endswith(" --squash"), masked
+    return "unquoted --body value that is itself a URL-shaped decoy is masked"
+
+
+def test_mask_prose_flag_values_unquoted_value_at_end_of_string_masked() -> str:
+    # No trailing whitespace after the unquoted value -- masking must stop at
+    # the string's end without running past it or raising.
+    cmd = "gh pr merge 380 --body urgent-fix"
+    masked = mask_prose_flag_values(cmd)
+    assert masked == "gh pr merge 380 --body " + "#" * len("urgent-fix"), masked
+    return "unquoted value at end of string masked cleanly to end of string"
+
+
+def test_mask_prose_flag_values_bare_quoted_url_argument_not_masked() -> str:
+    # The critical negative case: a bare quoted PR-URL positional argument
+    # (never preceded by --subject/--body/-t/-b) is NOT a prose-flag value,
+    # so it must survive byte-for-byte -- this is what keeps
+    # test_repo_from_cross_repo_url passing after this fix.
+    cmd = 'gh pr merge "https://github.com/brownm09/dev-env/pull/554" --squash --delete-branch'
+    assert mask_prose_flag_values(cmd) == cmd
+    return "bare quoted positional PR-URL argument untouched (not a prose-flag value)"
+
+
+def test_mask_prose_flag_values_real_url_survives_alongside_masked_decoy() -> str:
+    cmd = (
+        'gh pr merge 42 --subject "see https://github.com/other/repo/pull/1 for context" '
+        "https://github.com/brownm09/dev-env/pull/42 --squash"
+    )
+    masked = mask_prose_flag_values(cmd)
+    assert "other/repo/pull/1" not in masked, masked
+    assert "https://github.com/brownm09/dev-env/pull/42" in masked, masked
+    return "decoy URL inside --subject masked while the real, later URL survives byte-for-byte"
+
+
+def test_mask_prose_flag_values_subshell_body_masked() -> str:
+    # A --body value built via $(cat <<'EOF' ... EOF) is a real, precedented
+    # shape in this hook family (stop-tile-enumeration-gate.py's own
+    # session_resolved_issue_numbers docstring) -- reusing _opaque_spans means
+    # this is masked as the single opaque span it already is, with no extra
+    # logic in mask_prose_flag_values itself.
+    cmd = "gh pr merge 42 --body \"$(cat <<'EOF'\nsee https://github.com/other/repo/pull/1\nEOF\n)\" --squash"
+    masked = mask_prose_flag_values(cmd)
+    assert "other/repo/pull/1" not in masked, masked
+    assert masked.endswith(' --squash'), masked
+    return "$(cat <<'EOF' ...) --body value masked as one opaque span"
+
+
+def test_mask_prose_flag_values_mid_word_flag_not_matched() -> str:
+    # The (?<!\S) lookbehind requires -t/-b to start a standalone token, so a
+    # flag-like substring mid-word is never mistaken for a real prose flag.
+    cmd = 'gh pr merge 42 xx-b "see https://github.com/other/repo/pull/1 for context"'
+    assert mask_prose_flag_values(cmd) == cmd
+    return "mid-word '-b' (not a standalone token) -> unchanged, not falsely matched"
+
+
+# ---------------------------------------------------------------------------
 # is_merge_help_only  (dev-env#557)
 #
 # `gh pr merge --help` textually satisfies every `is_pr_merge_command` /
@@ -760,6 +884,18 @@ def main() -> int:
         ("mask_quoted_spans: unterminated subshell masks tail", test_mask_quoted_spans_unterminated_subshell_masks_tail),
         ("mask_quoted_spans: real flag survives alongside quoted decoy", test_mask_quoted_spans_real_flag_survives_alongside_quoted_decoy),
         ("mask_quoted_spans: agrees with split_top_level (cross-consistency)", test_mask_quoted_spans_agrees_with_split_top_level),
+        ("mask_prose_flag_values: no prose flags -> unchanged", test_mask_prose_flag_values_no_prose_flags_unchanged),
+        ("mask_prose_flag_values: double-quoted --subject decoy masked (dev-env#634)", test_mask_prose_flag_values_double_quoted_subject_masked),
+        ("mask_prose_flag_values: single-quoted --body decoy masked", test_mask_prose_flag_values_single_quoted_body_masked),
+        ("mask_prose_flag_values: -t/-b short forms masked", test_mask_prose_flag_values_short_flag_forms_masked),
+        ("mask_prose_flag_values: --subject=<value> equals form masked", test_mask_prose_flag_values_equals_form_masked),
+        ("mask_prose_flag_values: unquoted value also masked", test_mask_prose_flag_values_unquoted_value_also_masked),
+        ("mask_prose_flag_values: unquoted URL decoy masked", test_mask_prose_flag_values_unquoted_url_decoy_masked),
+        ("mask_prose_flag_values: unquoted value at end of string masked", test_mask_prose_flag_values_unquoted_value_at_end_of_string_masked),
+        ("mask_prose_flag_values: bare quoted PR-URL argument NOT masked", test_mask_prose_flag_values_bare_quoted_url_argument_not_masked),
+        ("mask_prose_flag_values: real URL survives alongside masked decoy", test_mask_prose_flag_values_real_url_survives_alongside_masked_decoy),
+        ("mask_prose_flag_values: $(cat <<'EOF'...) --body masked", test_mask_prose_flag_values_subshell_body_masked),
+        ("mask_prose_flag_values: mid-word '-b' not matched", test_mask_prose_flag_values_mid_word_flag_not_matched),
         ("is_merge_help_only: --help long flag -> True", test_is_merge_help_only_bare_help_long_flag),
         ("is_merge_help_only: -h short flag -> True", test_is_merge_help_only_bare_help_short_flag),
         ("is_merge_help_only: real merge with number -> False", test_is_merge_help_only_real_merge_with_number_is_false),
