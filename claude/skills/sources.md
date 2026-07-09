@@ -195,3 +195,27 @@ posts on company engineering blogs, and books with canonical URLs.
 
 - **Prompt caching (beta)** | Anthropic | https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching |
   Official documentation on how prompt caching works, what qualifies as a cache hit, and the 5-minute TTL; cite for any token optimization or cache strategy decision.
+
+---
+
+## Frontend Frameworks & Rendering (React / Next.js)
+
+**tags: nextjs-cache, react-cache, server-components, request-memoization, app-router, component-purity**
+
+- **cache – React** | React (Meta) | https://react.dev/reference/react/cache |
+  Official React reference for `cache()`; defines that it memoizes a function's return value within a single render pass keyed by function reference + arguments, so multiple callers invoking the same wrapped fetch during one request share one underlying call; cite for any Server Component data-fetching deduplication decision.
+
+- **Getting Started: Fetching Data** | Next.js (Vercel) | https://nextjs.org/docs/app/getting-started/fetching-data |
+  Official Next.js App Router docs showing `React.cache()` wrapping a non-`fetch` data-access function (ORM/DB call) so it dedupes across multiple Server Components in one render pass, and noting `fetch` itself is memoized automatically; cite for the App Router-specific request-memoization pattern.
+
+- **Keeping Components Pure** | React (Meta) | https://react.dev/learn/keeping-components-pure |
+  Official React guidance that components (and, by extension, the logic they call during render) must behave as pure functions — same inputs produce the same output, with no side effects during rendering; cite when justifying extracting derived-value resolution logic out of a component into a pure helper.
+
+---
+
+## Code Quality & Refactoring
+
+**tags: pure-function, separation-of-concerns, refactoring, extract-function, testability, clean-code**
+
+- **Extract Function** | Martin Fowler | https://refactoring.com/catalog/extractFunction.html |
+  Catalog entry from Fowler's *Refactoring* (2nd ed.); the canonical case for pulling a fragment of logic into its own well-named function to improve readability, enable reuse, and make the extracted logic independently testable; cite when centralizing inline resolution/config logic into a standalone helper.
