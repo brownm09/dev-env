@@ -1717,9 +1717,9 @@ independently before this fix):
 99   # should be None -- no real PR number in this command at all
 ```
 
-This is `_PR_URL_RE` (declared at this file's line 55, used both by `extract_pr_number`'s output scan and by this
-fallback), a **different regex object** from `_PR_URL_REPO_RE` (line 67, used inside `extract_repo_from_command`)
-— the latter was already fixed by Amendment 17's `mask_prose_flag_values`. `extract_pr_number_from_command`'s
+This is `_PR_URL_RE` (declared at this file's module scope, used both by `extract_pr_number`'s output scan and by
+this fallback), a **different regex object** from `_PR_URL_REPO_RE` (used inside `extract_repo_from_command`) —
+the latter was already fixed by Amendment 17's `mask_prose_flag_values`. `extract_pr_number_from_command`'s
 return value is the primary PR-number source `main()` uses to resolve the merged PR before fetching its body and
 moving the linked issue to Done — a false number from this decoy could fetch and act on the wrong PR's body,
 potentially moving an unrelated issue to Done on this repo's board.

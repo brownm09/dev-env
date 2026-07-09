@@ -52,7 +52,6 @@ CONFIG_FILE = ".claude/hook-config.json"
 
 _MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
 _CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
-_PR_URL_RE = re.compile(r"https://github\.com/\S+/pull/(\d+)")
 # Used two ways: (1) extract_pr_number's scan of `gh pr merge` OUTPUT text,
 # which needs no masking (gh's own output, not attacker-shaped command
 # prose); and (2) extract_pr_number_from_command's own URL fallback, which
@@ -65,6 +64,7 @@ _PR_URL_RE = re.compile(r"https://github\.com/\S+/pull/(\d+)")
 # repo-name one. A BARE quoted PR-URL positional argument (test_cmd_url) is
 # never preceded by --subject/--body, so mask_prose_flag_values leaves it
 # untouched while blanket mask_quoted_spans would have blinded it too.
+_PR_URL_RE = re.compile(r"https://github\.com/\S+/pull/(\d+)")
 # Same PR-URL shape as _PR_URL_RE but capturing the owner/repo segment instead
 # of discarding it — used to detect when a merge command names a DIFFERENT
 # repo than cwd's own config (dev-env#559). extract_repo_from_command runs
