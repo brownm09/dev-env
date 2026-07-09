@@ -52,7 +52,7 @@ import re
 import subprocess
 import sys
 
-from _hookio import is_merge_help_only, scan_top_level
+from _hookio import is_merge_help_only, mask_quoted_spans, scan_top_level
 
 _MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
 _MARKER_RE = re.compile(
@@ -85,6 +85,18 @@ def _parse_merge_target(command):
 
     ref is the positional PR number/URL/branch, or None (→ current branch).
     repo is the --repo/-R value, or None.
+
+    Tokenizes a `mask_quoted_spans`-masked copy of the tail (dev-env#634, ADR-050
+    Amendment 17), not the raw text: a naive `.split()` over unmasked text treats
+    a --subject/--body value like `"see -R other/repo for context"` as several
+    separate whitespace tokens, so the decoy `-R` and `other/repo` inside it are
+    indistinguishable from a real `--repo`/`-R` flag followed by its value
+    (dev-env#626's own hijack, reached here via whitespace tokenization instead
+    of an unanchored regex match). Masking first collapses the entire quoted
+    span into a single contiguous run of `#` (no internal whitespace survives to
+    split on), so it becomes exactly one token -- consumed whole as `--subject`'s
+    own value by the `_VALUE_FLAGS` handling below, never mistaken for a
+    fresh flag.
     """
     m = re.search(r"gh\s+pr\s+merge\b(.*)", command, re.DOTALL)
     if not m:
@@ -92,7 +104,7 @@ def _parse_merge_target(command):
     tail = m.group(1)
     # Stop at a shell separator so we don't swallow a chained command.
     tail = re.split(r"&&|\|\||;|\n", tail)[0]
-    tokens = tail.split()
+    tokens = mask_quoted_spans(tail).split()
     ref, repo = None, None
     i = 0
     while i < len(tokens):

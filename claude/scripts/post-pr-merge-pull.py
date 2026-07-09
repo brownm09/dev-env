@@ -32,6 +32,7 @@ from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
     is_merge_help_only,
+    mask_prose_flag_values,
     mask_quoted_spans,
     output_has_merge_marker,
     read_command_output,
@@ -75,8 +76,12 @@ def extract_repo(command: str, cwd: str) -> str | None:
        "-R other/repo" substring can no longer be mistaken for the flag.
     2. GitHub PR URL in the command string — e.g. ``gh pr merge
        https://github.com/owner/repo/pull/N``.  Pure parse, no subprocess.
-       Deliberately checked against the *unmasked* `command` — a quoted PR
-       URL is a legitimate, already-supported shape masking must not blind.
+       Checked against a `mask_prose_flag_values`-masked copy of `command`
+       (dev-env#634, ADR-050 Amendment 17), so a `--subject`/`--body` value
+       containing a URL-shaped decoy can no longer be mistaken for the merge's
+       actual target repo — while a *bare* quoted PR URL (never preceded by
+       `--subject`/`--body`) is a legitimate, already-supported shape that
+       masking must not blind, and is left untouched.
     3. ``cd <path> && gh pr merge`` chain: run git-remote on <path> so a
        cross-repo merge correctly identifies the other repo, not cwd's repo.
     4. Bare fallback: git-remote on cwd (pre-ADR-067 behaviour — still correct
@@ -92,7 +97,7 @@ def extract_repo(command: str, cwd: str) -> str | None:
     # GitHub PR URL in the command (e.g. `gh pr merge https://…/pull/N`)
     m2 = re.search(
         r"github\.com[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)/pull/\d+",
-        command,
+        mask_prose_flag_values(command),
     )
     if m2:
         return m2.group(1)

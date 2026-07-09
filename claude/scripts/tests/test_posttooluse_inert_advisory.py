@@ -304,9 +304,26 @@ def test_devenv_merge_pr_direct() -> str:
         'gh pr merge 42 --repo brownm09/dev-env --subject "see -R other/repo for context"',
         "/other",
     ) == "42"
+    # dev-env#634, ADR-050 Amendment 17: a --subject value containing a decoy
+    # dev-env PR URL must not be mistaken for a genuine self-identifying
+    # signal either. mask_prose_flag_values blinds the whole quoted span
+    # before url_m is computed, so this also falls back to cwd-based dev-env
+    # detection.
+    assert _devenv_merge_pr(
+        f'gh pr merge 42 --subject "see {DEVENV_PR_URL} for context"', DEVENV_CWD,
+    ) == "42"
+    assert _devenv_merge_pr(
+        f'gh pr merge 42 --subject "see {DEVENV_PR_URL} for context"', "/other",
+    ) is None
+    # A real --repo flag must still resolve correctly alongside a quoted
+    # URL-shaped decoy.
+    assert _devenv_merge_pr(
+        f'gh pr merge 42 --repo brownm09/dev-env --subject "see {DEVENV_PR_URL} for context"',
+        "/other",
+    ) == "42"
     assert _devenv_merge_pr(f"gh pr merge --auto {DEVENV_PR_URL}", DEVENV_CWD) is None
     assert _devenv_merge_pr("gh pr merge 7 --squash", "/some/other/repo") is None
-    return "_devenv_merge_pr: URL/number/--repo/-R/mid-word-guard/quoted-decoy/--auto/cwd scoping all resolve correctly (dev-env#616, #626)"
+    return "_devenv_merge_pr: URL/number/--repo/-R/mid-word-guard/quoted-decoy/quoted-url-decoy/--auto/cwd scoping all resolve correctly (dev-env#616, #626, #634)"
 
 
 def test_detect_unrelated_command_ignored() -> str:

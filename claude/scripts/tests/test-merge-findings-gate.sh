@@ -98,6 +98,21 @@ PYEOF
 echo "$OUT" | grep -q "('5', 'o/r')" && ok "space form --repo parsed" || bad "space form: $OUT"
 echo "$OUT" | grep -q "('7', 'a/b')" && ok "equals form --repo= parsed" || bad "equals form: $OUT"
 
+echo "[8] --subject value with a quoted -R decoy does not hijack the repo (dev-env#634)"
+OUT=$($PY - "$HOOK" <<'PYEOF'
+import importlib.util, os, sys
+p = sys.argv[1]
+sys.path.insert(0, os.path.dirname(p))
+spec = importlib.util.spec_from_file_location("mg", p)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print(m._parse_merge_target('gh pr merge 42 --subject "see -R other/repo for context"'))
+print(m._parse_merge_target('gh pr merge 42 --repo brownm09/dev-env --subject "see -R other/repo for context"'))
+PYEOF
+)
+echo "$OUT" | grep -q "('42', None)" && ok "quoted -R decoy in --subject does not hijack repo (dev-env#634)" || bad "quoted decoy: $OUT"
+echo "$OUT" | grep -q "('42', 'brownm09/dev-env')" && ok "real --repo flag survives alongside quoted decoy" || bad "real flag survives: $OUT"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

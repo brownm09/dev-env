@@ -64,8 +64,9 @@ from pathlib import Path
 # module-attribute-indirection the tests rely on (ADR-073).
 from _hookutil import iter_bash_calls, load_records, _result_text  # noqa: F401
 
-# mask_quoted_spans (dev-env#626, ADR-050 Amendment 15) -- see _devenv_merge_pr.
-from _hookio import mask_quoted_spans
+# mask_quoted_spans (dev-env#626, ADR-050 Amendment 15) and
+# mask_prose_flag_values (dev-env#634, ADR-050 Amendment 17) -- see _devenv_merge_pr.
+from _hookio import mask_prose_flag_values, mask_quoted_spans
 
 SENTINEL_PREFIX = "posttooluse-inert-resolved-"
 
@@ -79,6 +80,11 @@ _MERGE_RE = re.compile(r"\bgh\s+pr\s+merge\b")
 _DEVENV_CREATE_URL_RE = re.compile(
     r"https://github\.com/brownm09/dev-env/(issues|pull)/(\d+)"
 )
+# `_devenv_merge_pr` searches this against a `mask_prose_flag_values`-masked
+# copy of `args` (dev-env#634, ADR-050 Amendment 17), so a --subject/--body
+# value containing a decoy dev-env PR URL can't be mistaken for a genuine
+# self-identifying signal -- a bare (unquoted, or quoted-but-not-inside-a-
+# prose-flag) dev-env PR URL is untouched by that masking.
 _DEVENV_PR_URL_RE = re.compile(r"https://github\.com/brownm09/dev-env/pull/(\d+)")
 DEVENV_REPO = "brownm09/dev-env"
 # The argument span of the `gh pr merge` invocation only (up to the next shell
@@ -147,9 +153,13 @@ def _devenv_merge_pr(command: str, cwd: str) -> str | None:
     The `--repo`/`-R` flag check runs against a `mask_quoted_spans`-masked copy
     of `args` (dev-env#626, ADR-050 Amendment 15), so a `--subject`/`--body`
     value containing a space-separated "-R other/repo" substring cannot be
-    mistaken for a real flag. `url_m` deliberately stays computed from the
-    *unmasked* `args` — it is reused below for the PR-number fallback, and a
-    quoted `/pull/N` URL is a legitimate shape masking must not blind.
+    mistaken for a real flag. `url_m` runs against a `mask_prose_flag_values`-
+    masked copy of `args` instead (dev-env#634, ADR-050 Amendment 17), so a
+    --subject/--body value containing a decoy dev-env PR URL can't be mistaken
+    for a genuine self-identifying signal either — while a bare (not inside a
+    prose-flag value) dev-env PR URL, quoted or not, is untouched by that
+    masking and still self-identifies exactly as before. `url_m` is reused
+    below for the PR-number fallback.
     """
     am = _MERGE_ARGS_RE.search(command)
     if not am:
@@ -159,7 +169,7 @@ def _devenv_merge_pr(command: str, cwd: str) -> str | None:
         return None
 
     repo_m = _REPO_FLAG_RE.search(mask_quoted_spans(args))
-    url_m = _DEVENV_PR_URL_RE.search(args)
+    url_m = _DEVENV_PR_URL_RE.search(mask_prose_flag_values(args))
     if repo_m:
         is_devenv = repo_m.group(1) == DEVENV_REPO
     elif url_m:

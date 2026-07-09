@@ -236,6 +236,36 @@ def test_extract_repo_flag_survives_alongside_quoted_decoy() -> str:
     return "real --repo flag resolves correctly alongside a quoted decoy (dev-env#626)"
 
 
+def test_extract_repo_url_shaped_decoy_inside_subject_not_matched() -> str:
+    # dev-env#634, ADR-050 Amendment 17: this file's own PR-URL fallback
+    # (step 2) has the identical quoted-value blind spot the --repo/-R flag
+    # regex had before dev-env#626 -- a --subject value containing a
+    # URL-shaped decoy must not be mistaken for the merge's actual target
+    # repo. Paired with a real trailing URL (mirrors the -R decoy tests
+    # above) so resolution happens at step 2 and never falls through to the
+    # live git-remote subprocess call.
+    repo = extract_repo(
+        'gh pr merge 42 --subject "see https://github.com/other/repo/pull/1 for context" '
+        "https://github.com/brownm09/dev-env/pull/42 --squash",
+        "/Git/lifting-logbook",
+    )
+    assert repo == "brownm09/dev-env", f"got {repo!r}"
+    return "quoted --subject URL-shaped decoy skipped, falls through to the real PR URL (dev-env#634)"
+
+
+def test_extract_repo_flag_survives_alongside_quoted_url_decoy() -> str:
+    # A real, unquoted --repo flag must still resolve correctly even when a
+    # quoted --subject value elsewhere in the same command contains a
+    # URL-shaped decoy for a different repo.
+    repo = extract_repo(
+        'gh pr merge 42 --repo brownm09/dev-env --subject '
+        '"see https://github.com/other/repo/pull/1 for context"',
+        "/Git/lifting-logbook",
+    )
+    assert repo == "brownm09/dev-env", f"got {repo!r}"
+    return "real --repo flag resolves correctly alongside a quoted URL-shaped decoy (dev-env#634)"
+
+
 def test_pull_command_on_main_uses_ff_only_pull() -> str:
     cmd = pull_command("C:/Users/brown/Git/dev-env", True)
     assert cmd == ["git", "-C", "C:/Users/brown/Git/dev-env", "pull", "--ff-only", "origin", "main"], cmd
@@ -287,6 +317,8 @@ def main() -> int:
         ("extract_repo: mid-word '-R' not matched (dev-env#626)", test_extract_repo_dash_r_mid_word_not_matched),
         ("extract_repo: '-R' inside quoted --subject not matched (dev-env#626)", test_extract_repo_dash_r_inside_quoted_subject_not_matched),
         ("extract_repo: --repo flag survives alongside quoted decoy (dev-env#626)", test_extract_repo_flag_survives_alongside_quoted_decoy),
+        ("extract_repo: URL-shaped decoy inside quoted --subject not matched (dev-env#634)", test_extract_repo_url_shaped_decoy_inside_subject_not_matched),
+        ("extract_repo: --repo flag survives alongside quoted URL-shaped decoy (dev-env#634)", test_extract_repo_flag_survives_alongside_quoted_url_decoy),
         ("pull_command: canonical on main -> ff-only pull", test_pull_command_on_main_uses_ff_only_pull),
         ("pull_command: canonical off main -> fetch-into-ref", test_pull_command_off_main_uses_fetch_into_ref),
         ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_successful_merge_and_is_help_only),
