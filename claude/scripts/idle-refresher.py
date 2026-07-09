@@ -85,25 +85,19 @@ def parse_iso_to_epoch(ts):
 def last_activity_epoch(records):
     """Epoch of the last assistant record with a parseable timestamp, or None.
 
-    Transcripts are append-only chronological, so the last assistant record in
-    file order is the end of Claude's most recent turn. None means no assistant
-    record carried a parseable timestamp (typically: the first prompt of a fresh
-    session, where no assistant turn exists yet).
+    Transcripts are append-only chronological, so scanning from the end finds
+    the answer without visiting the whole list in the common case (the reply
+    that just finished is at the tail); a record with an unparseable/missing
+    timestamp is skipped in favor of an earlier one. None means no assistant
+    record carried a parseable timestamp (typically: the first prompt of a
+    fresh session, where no assistant turn exists yet).
     """
-    last = None
-    for rec in records:
+    for rec in reversed(records):
         if isinstance(rec, dict) and rec.get("type") == "assistant":
             ep = parse_iso_to_epoch(rec.get("timestamp"))
             if ep is not None:
-                last = ep
-    return last
-
-
-def has_prior_assistant_turn(records):
-    """True if any assistant record is present — i.e. this is not the first
-    prompt of a session. Used to decide whether the mtime fallback is even
-    applicable (a fresh session with no assistant turn is skipped outright)."""
-    return any(isinstance(r, dict) and r.get("type") == "assistant" for r in records)
+                return ep
+    return None
 
 
 def compute_gap_seconds(now, last_activity):
@@ -116,14 +110,18 @@ def compute_gap_seconds(now, last_activity):
 def load_threshold_minutes(cwd):
     """Idle threshold in minutes from the project's hook-config.json, else the
     default. Mirrors turn-count-hook.py's load_prompt_threshold: any read/parse
-    problem falls back to DEFAULT_MINUTES rather than raising."""
+    problem falls back to DEFAULT_MINUTES rather than raising. A configured
+    non-positive value also falls back to the default -- otherwise
+    should_refresh's strict gap > threshold check would fire on nearly every
+    prompt, turning an occasional orientation cue into per-turn noise."""
     path = os.path.join(cwd or "", CONFIG_FILE)
     try:
         with open(path, encoding="utf-8") as f:
             config = json.load(f)
-        return int(config.get("idle_refresher_minutes", DEFAULT_MINUTES))
+        minutes = int(config.get("idle_refresher_minutes", DEFAULT_MINUTES))
     except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError, TypeError):
         return DEFAULT_MINUTES
+    return minutes if minutes > 0 else DEFAULT_MINUTES
 
 
 def is_automated_prompt(prompt):
@@ -191,16 +189,15 @@ def main():
         records = _read_records(path)
         last = last_activity_epoch(records)
         if last is None:
-            # No parseable assistant timestamp. If a prior assistant turn exists
-            # (an unparseable-timestamp corruption edge), the file's mtime is a
-            # last-resort proxy; otherwise this is the first prompt of the
-            # session and there is nothing to refresh from -> skip.
-            if has_prior_assistant_turn(records) and path:
-                try:
-                    last = os.path.getmtime(path)
-                except OSError:
-                    last = None
-        if last is None:
+            # No assistant record with a parseable timestamp: either the first
+            # prompt of a fresh session (no assistant turn yet) or a corrupted
+            # transcript. Either way there is nothing reliable to compare
+            # against -> skip. (The transcript file's mtime is NOT a usable
+            # substitute here: the user's just-submitted prompt is written to
+            # the transcript around submit time -- confirmed against a real
+            # transcript -- so by hook-fire time mtime is already ~now,
+            # collapsing the gap to ~0 in exactly the case this branch exists
+            # to handle.)
             sys.exit(0)
 
         gap = compute_gap_seconds(time.time(), last)

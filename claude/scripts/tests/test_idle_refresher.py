@@ -4,13 +4,20 @@
 `idle-refresher.py` is a UserPromptSubmit hook that injects a "give the user a
 refresher" cue when the user returns after a long idle gap (dev-env#655,
 ADR-095). This suite exercises the pure, offline helpers extracted for exactly
-this purpose — ISO-timestamp parsing, the last-assistant idle anchor, gap
-calculation, the threshold decision, config load + default, the automated-prompt
-skip, and the ASCII/cp1252-safety of the injected text — matching the repo's
-fixture-only test convention (test_disk_space_check.py). main()'s stdin plumbing
-and the live transcript read are intentionally not covered (they touch real
-stdin/disk and the repo avoids mocking those boundaries; the reads go through
-the already-tested _hookutil.load_records / find_transcript).
+this purpose — ISO-timestamp parsing, the last-assistant idle anchor (including
+the reverse-scan falling back to the nearest earlier valid timestamp when the
+trailing assistant record's own timestamp is corrupted -- a `/review` finding
+that also motivated removing the file-mtime fallback entirely, since the same
+premise that anchors the design on assistant records over "the last record"
+means mtime is ~now at hook-fire time too and can never usefully fire), gap
+calculation, the threshold decision (including the non-positive-value ->
+default fallback, another `/review` finding), config load + default, the
+automated-prompt skip, and the ASCII/cp1252-safety of the injected text —
+matching the repo's fixture-only test convention (test_disk_space_check.py).
+main()'s stdin plumbing and the live transcript read are intentionally not
+covered (they touch real stdin/disk and the repo avoids mocking those
+boundaries; the reads go through the already-tested _hookutil.load_records /
+find_transcript).
 
 Usage:
     py -3 claude/scripts/tests/test_idle_refresher.py
@@ -90,9 +97,21 @@ def test_last_activity_none_without_assistant() -> str:
     ]
     assert ir.last_activity_epoch(records) is None, "no assistant record -> None"
     assert ir.last_activity_epoch([]) is None, "empty transcript -> None"
-    assert not ir.has_prior_assistant_turn(records), "no prior assistant turn"
-    assert ir.has_prior_assistant_turn([{"type": "assistant", "timestamp": "x"}]), "assistant present"
-    return "no assistant record -> None / has_prior_assistant_turn False"
+    return "no assistant record -> None (first-prompt / empty-transcript skip)"
+
+
+def test_last_activity_skips_corrupted_trailing_timestamp() -> str:
+    # The truly-last assistant record has an unparseable timestamp; scanning
+    # backward must not stop there -- it should fall back to the nearest
+    # EARLIER assistant record that does have a valid one, not return None.
+    records = [
+        {"type": "assistant", "timestamp": "2026-07-09T10:01:00Z"},
+        {"type": "assistant", "timestamp": "not-a-timestamp"},
+    ]
+    got = ir.last_activity_epoch(records)
+    expected = ir.parse_iso_to_epoch("2026-07-09T10:01:00Z")
+    assert got == expected, f"must fall back to the nearest valid earlier timestamp ({got} != {expected})"
+    return "corrupted trailing timestamp -> falls back to nearest valid earlier one"
 
 
 def test_compute_gap_seconds() -> str:
@@ -138,6 +157,18 @@ def test_load_threshold_defaults() -> str:
     return "missing / absent-key / malformed all -> default 60"
 
 
+def test_load_threshold_nonpositive_falls_back_to_default() -> str:
+    # A configured 0 or negative value must not slip through: should_refresh's
+    # strict gap > threshold check would otherwise fire on nearly every prompt.
+    for bad_value in (0, -5):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".claude"))
+            with open(os.path.join(d, ".claude", "hook-config.json"), "w", encoding="utf-8") as f:
+                json.dump({"idle_refresher_minutes": bad_value}, f)
+            assert ir.load_threshold_minutes(d) == DEFAULT_MINUTES, f"{bad_value} must fall back to default"
+    return "configured 0 / negative idle_refresher_minutes -> falls back to default 60"
+
+
 def test_is_automated_prompt() -> str:
     assert ir.is_automated_prompt("<scheduled-task>run</scheduled-task>") is True, "XML tag -> automated"
     assert ir.is_automated_prompt("   <ci-monitor-event>") is True, "leading whitespace still matches"
@@ -174,10 +205,12 @@ def main() -> int:
         ("parse ISO: bad input -> None", test_parse_iso_bad_input_is_none),
         ("last_activity picks last assistant", test_last_activity_picks_last_assistant),
         ("last_activity None without assistant", test_last_activity_none_without_assistant),
+        ("last_activity skips corrupted trailing timestamp", test_last_activity_skips_corrupted_trailing_timestamp),
         ("compute_gap_seconds", test_compute_gap_seconds),
         ("should_refresh boundary (strict >)", test_should_refresh_boundary),
         ("load_threshold configured override", test_load_threshold_configured),
         ("load_threshold defaults to 60", test_load_threshold_defaults),
+        ("load_threshold nonpositive -> default", test_load_threshold_nonpositive_falls_back_to_default),
         ("is_automated_prompt", test_is_automated_prompt),
         ("humanize_gap minutes/hours", test_humanize_gap),
         ("refresher cue is cp1252-safe", test_refresher_context_is_cp1252_safe),
