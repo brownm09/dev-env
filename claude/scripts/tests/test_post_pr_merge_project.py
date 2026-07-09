@@ -52,6 +52,15 @@ operation when that parsed repo does not match cwd's config, since
 (`project_number`/`project_node_id`/etc.), which do not apply to a different
 repo regardless of which PR's body was fetched.
 
+dev-env#664: `extract_pr_number_from_command`'s own `_PR_URL_RE` fallback (checked
+when no positional number matches) ran on the raw, unmasked args even after
+dev-env#650/ADR-050 Amendment 19 masked the positional-number search above it — a
+`--subject`/`--body` value containing a URL-shaped decoy (e.g. "see
+https://github.com/other/repo/pull/99 for context") could hijack the extracted PR
+number when the command named no real PR. Fixed by running the fallback against a
+`mask_prose_flag_values`-masked copy of `args` (ADR-050 Amendment 21), mirroring
+`extract_repo_from_command`'s own `_PR_URL_REPO_RE` fix (dev-env#634, Amendment 17).
+
 These tests exercise the pure helpers offline (no network, no gh). The live gh
 calls (`get_pr_body`, `find_project_item`, `move_to_done`, `confirm_merge_via_gh`)
 are intentionally not tested.
@@ -152,6 +161,39 @@ def test_cmd_real_number_survives_alongside_bare_number_decoy() -> str:
     cmd = 'gh pr merge 380 --subject "resolves 42 items" --squash'
     assert extract_pr_number_from_command(cmd) == 380
     return "real positional number resolves correctly alongside a quoted bare-number decoy (dev-env#650)"
+
+
+def test_cmd_url_decoy_in_subject_not_hijacked() -> str:
+    # dev-env#664, ADR-050 Amendment 21: the _PR_URL_RE fallback (checked when
+    # no positional number matches) previously ran on the raw, unmasked args --
+    # a --subject/--body value containing a URL-shaped decoy ("see
+    # https://github.com/other/repo/pull/99 for context") must not be mistaken
+    # for the real merged PR number when no real number or URL is present. This
+    # is the fallback's own analog of dev-env#650's bare-number-decoy fix above,
+    # for a URL shape instead of a bare digit.
+    cmd = 'gh pr merge --squash --subject "see https://github.com/other/repo/pull/99 for context"'
+    assert extract_pr_number_from_command(cmd) is None
+    return "URL-shaped decoy inside quoted --subject -> None, not falsely matched (dev-env#664)"
+
+
+def test_cmd_real_number_survives_alongside_url_decoy() -> str:
+    cmd = 'gh pr merge 380 --squash --subject "see https://github.com/other/repo/pull/99 for context"'
+    assert extract_pr_number_from_command(cmd) == 380
+    return "real positional number resolves correctly alongside a quoted URL-shaped decoy (dev-env#664)"
+
+
+def test_cmd_real_url_survives_alongside_url_decoy() -> str:
+    # No positional number here, so this is the only case that actually drives
+    # execution into the _PR_URL_RE fallback branch itself (the two tests above
+    # both short-circuit on the earlier positional-number match) -- proving the
+    # fix's mask_prose_flag_values doesn't blind the legitimate bare-URL case
+    # even when a decoy is also present elsewhere in the same command.
+    cmd = (
+        'gh pr merge https://github.com/brownm09/dev-env/pull/380 --subject '
+        '"see https://github.com/other/repo/pull/99 for context" --squash'
+    )
+    assert extract_pr_number_from_command(cmd) == 380
+    return "real bare PR URL resolves correctly alongside a quoted URL-shaped decoy (dev-env#664)"
 
 
 # --- extract_repo_from_command (dev-env#559) ------------------------------
@@ -442,6 +484,9 @@ def main() -> int:
         ("command: branch name -> None", test_cmd_branch_name_no_number),
         ("command: bare number decoy inside quoted --subject not hijacked (dev-env#650)", test_cmd_bare_number_decoy_in_subject_not_hijacked),
         ("command: real number survives alongside bare-number decoy (dev-env#650)", test_cmd_real_number_survives_alongside_bare_number_decoy),
+        ("command: URL-shaped decoy inside quoted --subject not hijacked (dev-env#664)", test_cmd_url_decoy_in_subject_not_hijacked),
+        ("command: real number survives alongside URL-shaped decoy (dev-env#664)", test_cmd_real_number_survives_alongside_url_decoy),
+        ("command: real bare URL survives alongside URL-shaped decoy (dev-env#664)", test_cmd_real_url_survives_alongside_url_decoy),
         ("repo: cross-repo URL parsed (dev-env#559)", test_repo_from_cross_repo_url),
         ("repo: bare number -> None", test_repo_from_bare_number_is_none),
         ("repo: bare form -> None", test_repo_from_bare_form_is_none),

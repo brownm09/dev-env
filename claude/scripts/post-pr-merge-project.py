@@ -52,6 +52,18 @@ CONFIG_FILE = ".claude/hook-config.json"
 
 _MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
 _CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
+# Used two ways: (1) extract_pr_number's scan of `gh pr merge` OUTPUT text,
+# which needs no masking (gh's own output, not attacker-shaped command
+# prose); and (2) extract_pr_number_from_command's own URL fallback, which
+# runs this against a mask_prose_flag_values-masked copy of `args`
+# (dev-env#664, ADR-050 Amendment 21), so a --subject/--body value
+# containing a URL-shaped decoy (e.g. "see https://github.com/other/repo
+# /pull/99 for context") can't false-match either — mirrors
+# _PR_URL_REPO_RE's own mask_prose_flag_values fix below (dev-env#634,
+# Amendment 17), just for the PR-NUMBER extraction path instead of the
+# repo-name one. A BARE quoted PR-URL positional argument (test_cmd_url) is
+# never preceded by --subject/--body, so mask_prose_flag_values leaves it
+# untouched while blanket mask_quoted_spans would have blinded it too.
 _PR_URL_RE = re.compile(r"https://github\.com/\S+/pull/(\d+)")
 # Same PR-URL shape as _PR_URL_RE but capturing the owner/repo segment instead
 # of discarding it — used to detect when a merge command names a DIFFERENT
@@ -167,10 +179,18 @@ def extract_pr_number_from_command(command: str) -> int | None:
     These two fixes are complementary, not overlapping: Amendment 20 ensures
     `args` itself is not prematurely truncated before this search ever runs;
     Amendment 19 ensures the search WITHIN `args` isn't hijacked by a decoy.
-    The `_PR_URL_RE` fallback below is unaffected by the Amendment 19 masking
-    (it runs on the original, unmasked `args`) — a still-open, structurally
-    distinct gap for a URL-shaped decoy tracked separately, not part of
-    dev-env#650's scope.
+
+    The `_PR_URL_RE` fallback below runs against a `mask_prose_flag_values`-
+    masked copy of `args` instead (dev-env#664, ADR-050 Amendment 21), so a
+    `--subject`/`--body` value containing a URL-shaped decoy (e.g. "see
+    https://github.com/other/repo/pull/99 for context") can't false-match
+    either — mirrors `extract_repo_from_command`'s own `_PR_URL_REPO_RE` fix
+    (dev-env#634, Amendment 17), just for the PR-number extraction path
+    instead of the repo-name one. A bare quoted PR-URL positional argument
+    (`gh pr merge "https://github.com/o/r/pull/380"`, never preceded by
+    `--subject`/`--body`, see `test_cmd_url`) is a legitimate, already-
+    supported shape that `mask_prose_flag_values` leaves untouched, unlike
+    blanket `mask_quoted_spans`.
     """
     args = _merge_args(command)
     if args is None:
@@ -181,7 +201,7 @@ def extract_pr_number_from_command(command: str) -> int | None:
     num = re.search(r"(?<!\S)(\d+)(?=\s|$)", mask_quoted_spans(args))
     if num:
         return int(num.group(1))
-    url = _PR_URL_RE.search(args)
+    url = _PR_URL_RE.search(mask_prose_flag_values(args))
     if url:
         return int(url.group(1))
     return None

@@ -218,11 +218,13 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     PR #572 — mirroring `_effective_merge_repo`'s flag-first precedence in `pr-merge-reminder.py`), and
     also recognizes gh's `-R` shorthand for `--repo` (dev-env#616 — the shorthand previously fell through
     to `None` and silently resolved against cwd's own config instead of the command's actual target repo).
-    `extract_pr_number_from_command`'s own positional-number match now runs against a
+    `extract_pr_number_from_command`'s own positional-number match runs against a
     `mask_quoted_spans`-masked copy of `args` (dev-env#650, ADR-050 Amendment 19), so a `--subject`/`--body`
     value containing a bare decoy number ("resolves 42 items") can't be mistaken for the real merged PR
-    number when the command names no real positional number; its `_PR_URL_RE` fallback is a separate,
-    still-unmasked gap tracked in dev-env#664, deliberately out of dev-env#650's own bare-number scope.
+    number when the command names no real positional number; its `_PR_URL_RE` fallback runs against a
+    `mask_prose_flag_values`-masked copy of `args` instead (dev-env#664, ADR-050 Amendment 21), so a
+    `--subject`/`--body` value containing a URL-shaped decoy can't false-match either — mirroring
+    `extract_repo_from_command`'s own `_PR_URL_REPO_RE` fix immediately below (dev-env#634, Amendment 17).
     `main()` skips the whole operation when the parsed repo doesn't match cwd's config — cwd's
     project-board fields don't apply to a different repo regardless of which PR's body gets fetched —
     but that gate itself is not separately unit-tested, consistent with this file's pure-helper-only
