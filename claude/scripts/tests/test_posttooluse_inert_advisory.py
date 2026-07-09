@@ -323,7 +323,7 @@ def test_devenv_merge_pr_direct() -> str:
     ) == "42"
     assert _devenv_merge_pr(f"gh pr merge --auto {DEVENV_PR_URL}", DEVENV_CWD) is None
     assert _devenv_merge_pr("gh pr merge 7 --squash", "/some/other/repo") is None
-    # dev-env#650, ADR-050 Amendment 18: a --subject/--body value containing a
+    # dev-env#650, ADR-050 Amendment 19: a --subject/--body value containing a
     # bare decoy number ("resolves 42 items") must not be mistaken for the
     # real positional PR number either. mask_quoted_spans blinds the whole
     # quoted span before num_m is computed, so with no real number and no

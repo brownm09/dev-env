@@ -128,7 +128,7 @@ def extract_pr_number_from_command(command: str) -> int | None:
     no number; the caller then falls back to the output success marker. (#380)
 
     The positional-number match runs against a `mask_quoted_spans`-masked copy
-    of `args` (dev-env#650, ADR-050 Amendment 18), so a `--subject`/`--body`
+    of `args` (dev-env#650, ADR-050 Amendment 19), so a `--subject`/`--body`
     value containing a space-separated bare number ("resolves 42 items")
     cannot be mistaken for the real merged PR number — the same
     quoted-value blind spot Amendment 15 closed for the repo-flag regex family,

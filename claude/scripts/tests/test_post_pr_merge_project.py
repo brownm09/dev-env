@@ -140,7 +140,7 @@ def test_cmd_branch_name_no_number() -> str:
 
 
 def test_cmd_bare_number_decoy_in_subject_not_hijacked() -> str:
-    # dev-env#650, ADR-050 Amendment 18: a --subject/--body value containing a
+    # dev-env#650, ADR-050 Amendment 19: a --subject/--body value containing a
     # bare decoy number ("resolves 42 items") must not be mistaken for the
     # real merged PR number when no real number is present.
     cmd = 'gh pr merge --subject "resolves 42 items" --squash'

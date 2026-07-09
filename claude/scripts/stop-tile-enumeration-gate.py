@@ -124,7 +124,7 @@ _STRIP_VERB_RE = re.compile(r"\s*gh(?:\.exe)?\s+pr\s+\w+\b(.*)", re.IGNORECASE |
 _PR_URL_RE = re.compile(r"github\.com/(?P<repo>[^/\s]+/[^/\s]+)/pull/(?P<num>\d+)")
 # `_target_pr` and `_closed_issue_number` both run this against a
 # `mask_quoted_spans`-masked copy of their own `tail` (dev-env#650, ADR-050
-# Amendment 18), so a --subject/--body value containing a space-separated
+# Amendment 19), so a --subject/--body value containing a space-separated
 # bare number ("resolves 42 items") can't be mistaken for the real target PR
 # or issue number -- the same quoted-value blind spot Amendment 15 closed for
 # _REPO_FLAG_RE below, just for a bare-digit token instead of a --repo/-R
@@ -210,7 +210,7 @@ def _target_pr(segment_first_line: str) -> int | None:
     from the current branch, no number in the command).
 
     The positional-integer fallback runs against a `mask_quoted_spans`-masked
-    copy of `tail` (dev-env#650, ADR-050 Amendment 18), so a --subject/--body
+    copy of `tail` (dev-env#650, ADR-050 Amendment 19), so a --subject/--body
     value containing a space-separated bare number ("resolves 42 items")
     can't be mistaken for the real target PR number. The `_PR_URL_RE` check
     deliberately stays on the *unmasked* text, mirroring `_explicit_repo`'s

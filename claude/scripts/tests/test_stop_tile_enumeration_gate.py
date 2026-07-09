@@ -458,7 +458,7 @@ def test_explicit_repo_url_fallback_stays_unmasked():
 
 
 # ---------------------------------------------------------------------------
-# _target_pr direct coverage (dev-env#650, ADR-050 Amendment 18)
+# _target_pr direct coverage (dev-env#650, ADR-050 Amendment 19)
 #
 # _target_pr's own _POS_NUM_RE positional-integer fallback was never made
 # quote-aware -- a --subject/--body value containing a legitimately
@@ -624,7 +624,7 @@ def test_session_resolved_via_explicit_issue_close_url_form():
 
 
 # ---------------------------------------------------------------------------
-# _closed_issue_number direct coverage (dev-env#650, ADR-050 Amendment 18)
+# _closed_issue_number direct coverage (dev-env#650, ADR-050 Amendment 19)
 #
 # _closed_issue_number shares _target_pr's exact _POS_NUM_RE positional-
 # integer fallback (the literal same compiled regex object) but was not named

@@ -65,7 +65,7 @@ from pathlib import Path
 from _hookutil import iter_bash_calls, load_records, _result_text  # noqa: F401
 
 # mask_quoted_spans (dev-env#626, ADR-050 Amendment 15; also dev-env#650,
-# Amendment 18) and mask_prose_flag_values (dev-env#634, ADR-050 Amendment 17)
+# Amendment 19) and mask_prose_flag_values (dev-env#634, ADR-050 Amendment 17)
 # -- see _devenv_merge_pr.
 from _hookio import mask_prose_flag_values, mask_quoted_spans
 
@@ -96,7 +96,7 @@ _MERGE_ARGS_RE = re.compile(r"\bgh\s+pr\s+merge\b([^\n;|&]*)")
 # A bare positional PR-number token (`42`) within those args; a digit run inside a
 # URL (`/pull/42`) or a flag value (`--foo=12`) is not a standalone token.
 # `_devenv_merge_pr` runs this against a mask_quoted_spans-masked copy of
-# `args` (dev-env#650, ADR-050 Amendment 18), so a --subject/--body value
+# `args` (dev-env#650, ADR-050 Amendment 19), so a --subject/--body value
 # containing a space-separated bare number ("resolves 42 items") can no
 # longer be mistaken for the real positional PR number either -- the
 # (?<!\S)/(?=\s|$) boundary alone can't tell "whitespace inside a quoted
@@ -164,7 +164,7 @@ def _devenv_merge_pr(command: str, cwd: str) -> str | None:
     The `--repo`/`-R` flag check and the bare positional PR-number match both
     run against the same `mask_quoted_spans`-masked copy of `args`
     (dev-env#626, ADR-050 Amendment 15; the positional-number match added in
-    dev-env#650, Amendment 18), so a `--subject`/`--body` value containing a
+    dev-env#650, Amendment 19), so a `--subject`/`--body` value containing a
     space-separated "-R other/repo" substring or a bare decoy number
     ("resolves 42 items") cannot be mistaken for a real flag or the real PR
     number. `url_m` runs against a `mask_prose_flag_values`-masked copy of
