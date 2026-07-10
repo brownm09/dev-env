@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-13  
 **Status:** Accepted  
-**Amended:** 2026-07-01, 2026-07-06, 2026-07-08 (see Amendment sections below)
+**Amended:** 2026-07-01, 2026-07-06, 2026-07-08, 2026-07-10 (see Amendment sections below)
 
 ---
 
@@ -133,6 +133,47 @@ fifth manual amendment.
 
 ---
 
+## Amendment (2026-07-10) — scheduled tasks run under the app's global model, not `settings.json`
+
+Investigating why the `prune-stale-worktrees` daily run on 2026-07-10 04:03 *greeted instead of
+executing* ([dev-env#698](https://github.com/brownm09/dev-env/issues/698), fixed in
+[#700](https://github.com/brownm09/dev-env/pull/700)) surfaced a scheduler-**runtime** behavior
+distinct from — and compounding — the dual-copy convention gaps documented in the amendments above.
+
+**Finding.** The `scheduled-tasks` scheduler runs each task under the **app's global model
+default**, and **ignores the model declared in any project `settings.json`**. That global default
+can change out from under a registered task with no config edit of the user's, so a task's effective
+model can **silently drift**: here, six correct daily runs on `claude-opus-4-8` (07-04 → 07-09)
+followed by a 07-10 run that came up on `claude-sonnet-5` and replied *"I'm ready to help. What
+would you like to work on?"* (0 tool calls). The lower-capability model is not deterministically
+broken (Sonnet 5 ran a *different* scheduled task correctly the same day) — it is an **intermittent
+instruction-following lapse** on the XML-wrapped autonomous prompt, and a greet-instead-of-execute
+run produces **no error and no notification**.
+
+**Cross-cutting, not prune-specific.** This affects **every** scheduled task identically
+(`reconcile-project-board`, `biweekly-retro`, `weekly-memory-audit`, `daily-journal-compose`, …), so
+it is recorded centrally here and summarized in
+[`docs/REFERENCE.md` → Routines](../REFERENCE.md#routines) — a maintainer debugging a *different*
+task's model switch would not think to look in one routine's caveat. (The tactical #700 fix also
+left a per-routine copy in `claude/routines/prune-stale-worktrees/SKILL.md`.)
+
+**Mitigation pattern (for any routine).**
+
+1. **Frontmatter `model:` pin** (e.g. `model: claude-opus-4-8`) in both the canonical and live
+   copies — but its **efficacy is unverified**: the `create_scheduled_task` / `update_scheduled_task`
+   MCP tools expose no model parameter and `list_scheduled_tasks` no model field, so whether the
+   scheduler reads a routine's frontmatter `model:` at all is unknown pending a run observation
+   ([dev-env#703](https://github.com/brownm09/dev-env/issues/703) item 2). If it proves inert, the
+   pin is annotated/removed and the imperative below becomes the sole mitigation.
+2. **Execute-now / do-not-greet imperative** at the very **top and bottom** of the *live* prompt —
+   the model-agnostic backstop. It must live in the live copy, not only the canonical one, because
+   the greeting happens *before* any Step-0 canonical read-through is reached. Because the live copy
+   is machine-local and not version-controlled, its exact strings are captured verbatim in the
+   canonical routine's caveat for deterministic restore
+   ([dev-env#703](https://github.com/brownm09/dev-env/issues/703) item 3).
+
+---
+
 ## References
 
 - Engineering journal: `sessions/meta/2026-04-13-post-tool-use-hook-and-settings-into-dev-env.md`
@@ -143,3 +184,6 @@ fifth manual amendment.
 - [dev-env#597](https://github.com/brownm09/dev-env/issues/597) — second occurrence, in `prune-stale-worktrees` and `reclaim-worktree-disk`
 - [dev-env#606](https://github.com/brownm09/dev-env/issues/606) — second occurrence of the junction-table gap class, `templates/` never linked
 - [dev-env#614](https://github.com/brownm09/dev-env/issues/614) — smoke test added for the link-loop enumeration; also caught the `setup-prompt.md` checklist's identical `templates/` omission
+- [dev-env#698](https://github.com/brownm09/dev-env/issues/698) — `prune-stale-worktrees` greet-instead-of-execute run that surfaced the scheduler-model-selection finding (2026-07-10 amendment)
+- [dev-env#700](https://github.com/brownm09/dev-env/pull/700) — tactical greet-guard fix (execute-now imperative + `model:` pin)
+- [dev-env#703](https://github.com/brownm09/dev-env/issues/703) — central documentation of the model-selection finding, `model:`-pin efficacy verification, and live-imperative restorability
