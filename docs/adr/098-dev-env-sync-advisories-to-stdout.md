@@ -33,6 +33,17 @@ the exact mechanism:
 - The hook's existing code already detected this failure correctly (`pull.returncode != 0`)
   and printed a `WARNING` — to stderr.
 
+A separate session earlier the same day independently discovered this identical dirty-file
+condition from a different angle (an engineering-journal canonical-hijack investigation that
+traced back to `journal-canonical-guard.py` never having actually deployed on this machine,
+because the same 21-commit-behind dev-env canonical never received it) and filed
+[dev-env#697](https://github.com/brownm09/dev-env/issues/697) with the direct remediation —
+committing the pending `sources.md` content, mirroring PR #649's exact precedent — plus a
+spawned tile to carry it out. That issue and this ADR are complementary, not duplicative:
+#697 fixes *this specific occurrence* of the drift; this ADR fixes the hook's *general*
+inability to ever surface such an occurrence to begin with, so the next one (whatever future
+file conflicts) doesn't again require an hours-long investigation to notice.
+
 That warning never reached anyone. Direct proof from this same investigation session: the hook
 fired (confirmed — the dirty-file-blocked state matched exactly what a fresh invocation would
 produce) immediately before this conversation's first turn was processed, yet **no
@@ -178,5 +189,8 @@ rather than a rediscovery.
 - [ADR-093](093-journal-canonical-hijack-guard.md) — `journal-canonical-guard.py`, the sibling
   file sharing this same pre-fix defect (see Scope).
 - [dev-env#694](https://github.com/brownm09/dev-env/issues/694) — the issue this ADR closes.
+- [dev-env#697](https://github.com/brownm09/dev-env/issues/697) — the complementary,
+  independently-filed issue for the direct remediation (commit the pending dirty `sources.md`
+  content) of this ADR's motivating live incident; see Context.
 - [dev-env#699](https://github.com/brownm09/dev-env/issues/699) — the follow-up issue for
   `journal-canonical-guard.py`'s parallel defect.
