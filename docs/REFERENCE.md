@@ -376,7 +376,7 @@ Assembles all `YYYY-MM-DD_*.stub.md` files across all configured projects into t
 
 ### prune-stale-worktrees
 
-**Schedule:** `0 8 * * *` (8am local, daily)
+**Schedule:** `0 4 * * *` (4am local, daily)
 
 Scans all primary git repos directly under `C:/Users/brown/Git` and removes worktrees whose branches are fully merged into `origin/main` — both `claude/*` branches and, via `--include-named`, hand-named branches (`feat/`, `fix/`, `docs/`, etc.) held to the identical merged/dirty/liveness bar ([ADR-078](adr/078-opt-in-named-branch-worktree-pruning.md)) — and **parks any non-primary worktree squatting `main`** back onto its own `claude/<slug>` branch (recreated at HEAD via `git checkout -b` — non-destructive, frees the ref even for a dirty worktree the old `git worktree remove` refused; [ADR-058](adr/058-worktree-squatting-main-detection-correction.md)). Repos with no GitHub remote are skipped. Uses `git branch -d`, `git worktree remove` (no `--force`), and `git checkout -b` (parking). Skips the current worktree and dirty worktrees (for removal), and — since this routine runs out-of-process and cannot see other sessions via cwd — **any worktree with an active Claude session** (transcript activity within 24h; override with `--liveness-window-min`); the liveness guard runs before the park, so only an *idle* squatter is moved. A branch not otherwise detected as merged is still treated as merged if a repo opts in via `.claude/hook-config.json`'s `prune_ephemeral_patterns` and every file in the branch's diff vs. `origin/main` matches one of those regexes — off by default, additive only ([ADR-075](adr/075-ephemeral-diff-worktree-pruning.md)). Sends a push notification listing any unmerged branches that were skipped. [ADR-051](adr/051-worktree-liveness-guard.md), [ADR-058](adr/058-worktree-squatting-main-detection-correction.md), [ADR-075](adr/075-ephemeral-diff-worktree-pruning.md), [ADR-078](adr/078-opt-in-named-branch-worktree-pruning.md)
 
@@ -767,7 +767,7 @@ failed-command output at all, and works identically regardless of which worktree
 by the daily `prune-stale-worktrees` routine (or by `post-pr-merge-pull.py` at the moment it is
 created) in **any** repo, not just dev-env — [ADR-058](adr/058-worktree-squatting-main-detection-correction.md)'s
 parking fix is repo-general. If a squat is actively blocking work, run the same script on demand
-instead of waiting for the 8am run:
+instead of waiting for the 4am run:
 
 ```bash
 py -3 ~/.claude/scripts/prune-merged-worktrees.py --repo-path C:/Users/brown/Git/lifting-logbook

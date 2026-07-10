@@ -1,7 +1,7 @@
 ---
 name: prune-stale-worktrees
 description: Remove Claude session worktrees whose branches have been merged into main, across all repos under C:/Users/brown/Git.
-schedule: "0 8 * * *"
+schedule: "0 4 * * *"
 model: claude-opus-4-8
 ---
 
