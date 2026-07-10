@@ -69,3 +69,29 @@ Prune stale Claude session worktrees across all git repos under `C:/Users/brown/
 > `update_scheduled_task` / `create_scheduled_task` tools expose no model parameter, so the
 > frontmatter pin is the only per-task model lever available — confirm on the next run whether the
 > scheduler actually honors it; if not, the imperative alone is the model-agnostic backstop.
+> The scheduler-ignores-`settings.json`-model finding is cross-cutting (it affects every scheduled
+> task) and is recorded centrally in the [ADR-003 amendment (2026-07-10)](../../../docs/adr/003-config-in-version-control.md)
+> and [`docs/REFERENCE.md` → Routines](../../../docs/REFERENCE.md#routines).
+
+---
+
+**Restorable live-copy imperative (dev-env#703 item 3).** The execute-now / do-not-greet mitigation
+lives verbatim only in the machine-local live copy
+(`~/.claude/scheduled-tasks/prune-stale-worktrees/SKILL.md`, which is **not** version-controlled).
+The exact deployed strings are captured here so a machine rebuild — or a live-copy regeneration from
+this canonical file — restores the hardened guard **deterministically** rather than reconstructing
+it from memory. When (re)creating the live copy, paste the **top** block as its first line
+(immediately after the YAML frontmatter) and the **bottom** block as its last line; keep both
+verbatim, including the ASCII `--` in the top block and the em dash in the bottom block.
+
+_Top — first line of the live prompt:_
+
+```text
+EXECUTE NOW -- DO NOT GREET. This is an autonomous scheduled run; no human is present. Do NOT reply with a greeting, a question, or any variant of "how can I help" / "what would you like to work on" -- a concrete task is defined below and your FIRST output MUST be a tool call (begin with STEP 0). If you catch yourself about to acknowledge, greet, or ask what to do, stop and run the first Bash command instead.
+```
+
+_Bottom — last line of the live prompt:_
+
+```text
+REMINDER: Begin immediately. Your first action is a tool call for STEP 0 — not a text reply. Do not greet or ask what to work on.
+```

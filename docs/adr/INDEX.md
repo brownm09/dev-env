@@ -7,7 +7,7 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 |---|-------|------|--------|------|
 | [001](001-per-session-stub-files.md) | Per-Session Stub Files for Journal Composition | 2026-03-27 | Accepted | journal, stubs, composition, concurrency |
 | [002](002-journal-compose-session-isolation.md) | Journal-Compose Session Isolation | 2026-04-04 | Accepted | journal, composition, session-isolation, skill |
-| [003](003-config-in-version-control.md) | Config Artifacts in Version Control via Symlinks | 2026-04-13 (amended 2026-07-01, 2026-07-06, 2026-07-08) | Accepted | config, symlinks, version-control, dev-env, settings, scheduled-tasks, routines, templates, testing |
+| [003](003-config-in-version-control.md) | Config Artifacts in Version Control via Symlinks | 2026-04-13 (amended 2026-07-01, 2026-07-06, 2026-07-08, 2026-07-10) | Accepted | config, symlinks, version-control, dev-env, settings, scheduled-tasks, routines, templates, testing, model-selection |
 | [004](004-pr-review-reads-from-remote.md) | PR Review Reads from Remote, Not Local Worktree | 2026-04-17 | Accepted | git, pr-review, worktree, remote, correctness |
 | [005](005-global-core-hooks-path.md) | Global `core.hooksPath` for Cross-Repo Invariants | 2026-04-19 | Accepted | git, hooks, core.hooksPath, cross-repo |
 | [006](006-dev-env-sync-on-every-prompt.md) | UserPromptSubmit Dev-Env Sync on Every Prompt | 2026-04-19 | Accepted | hooks, dev-env-sync, UserPromptSubmit, prompts |
