@@ -1075,7 +1075,7 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     also emit the table heading alongside their bare `spawn_task` tile, since a bare spawn alone no
     longer reaches exit 0 once trigger (3) exists — their original intent (proving triggers (1)/(2)
     resolve on enumeration) is preserved by making the session genuinely fully compliant rather than by
-    weakening the new trigger. 112 tests total, up from 76 pre-ADR-094-addendum.
+    weakening the new trigger.
 
     **Per-trigger sentinels** ([ADR-097](docs/adr/097-per-trigger-tile-gate-sentinels.md); dev-env#677)
     replace the single sentinel all three triggers previously shared: before this fix, whichever
@@ -1091,7 +1091,7 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     a tile spawned with no table in turn 2 must still fire trigger 3 — it would wrongly stay silent
     under the pre-fix code); that a partial (merge-only) session sets ONLY the `pr-` sentinel file on
     disk, not `issue-`/`table-`; and that a fully-compliant session sets all three sentinel files and a
-    second Stop with the same transcript stays allowed. 115 tests total, up from 112.
+    second Stop with the same transcript stays allowed.
 
     ```bash
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
