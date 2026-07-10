@@ -25,11 +25,15 @@ Two layers, mirroring this repo's hook-test convention:
 
   * A behavioral layer drives the real hook end-to-end over stdin via subprocess
     against a synthetic transcript, with HOME/USERPROFILE pointed at a temp dir
-    so the once-per-session sentinel is isolated from the real ~/.claude/scratch.
+    so the per-trigger sentinels are isolated from the real ~/.claude/scratch.
     It pins: merged-no-enum -> exit 2 with the reason on stderr and empty stdout
     (Claude Code shows a Stop hook's stderr on exit 2, not stdout); merged+enum
-    and no-merge -> exit 0; the stop_hook_active loop-guard -> exit 0; and that
-    the sentinel suppresses a second fire in the same session.
+    and no-merge -> exit 0; the stop_hook_active loop-guard -> exit 0; that a
+    trigger's own sentinel suppresses a second fire of THAT trigger in the same
+    session; and (ADR-097, dev-env#677) that one trigger's sentinel does NOT
+    suppress a sibling trigger whose condition arises later in the same
+    session, verified both behaviorally and by directly inspecting the
+    per-trigger sentinel files on disk.
 
 main()'s own stdin read / sentinel-path plumbing beyond the end-to-end runs is
 not separately unit-tested (pure-helper convention).
@@ -1236,6 +1240,118 @@ def test_e2e_spawn_other_namespace_no_table_still_blocks():
     return "e2e differently-namespaced spawn + no table -> exit 2 (pre-filter doesn't exclude it)"
 
 
+# ---------------------------------------------------------------------------
+# per-trigger sentinel independence (ADR-097, dev-env#677)
+#
+# Before this fix, all three triggers shared ONE sentinel file: whichever
+# trigger fired or resolved FIRST set it, and every later Stop in the session
+# skipped evaluating ALL THREE triggers -- including one whose own condition
+# had not even occurred yet. These tests drive the hook across TWO separate
+# Stop calls with the same session_id and HOME (so sentinel state persists
+# between them, exactly like two Stops within one real session), and also
+# inspect the per-trigger sentinel files directly on disk.
+# ---------------------------------------------------------------------------
+
+def _sentinel_file(home, trigger, session_id):
+    return Path(home) / ".claude" / "scratch" / f"tile-enumeration-gate-{trigger}{session_id}.flag"
+
+
+def test_e2e_later_trigger_still_fires_after_sibling_sentinel_set():
+    # THE dev-env#677 bug, reproduced: turn 1 merges a PR with no enumeration
+    # (fires + resolves trigger 1 only). Turn 2 -- a genuinely later, separate
+    # Stop -- spawns a tile with no table. Under the old shared sentinel, turn
+    # 1 having already fired would suppress evaluating trigger 3 entirely in
+    # turn 2, silently missing it. Per-trigger sentinels fix this: trigger 1's
+    # sentinel must not suppress trigger 3's own, independent evaluation.
+    records_turn1 = _MERGED_NO_ENUM
+    records_turn2 = _MERGED_NO_ENUM + [
+        _asst_spawn(), _asst_text("Filed a follow-up tile for the flaky test.")]
+    with tempfile.TemporaryDirectory() as home:
+        rc1, _, err1 = _run_hook(records_turn1, home, session_id="sess-677")
+        rc2, out2, err2 = _run_hook(records_turn2, home, session_id="sess-677")
+    assert rc1 == 2, f"turn 1 (merge, no enum) expected exit 2, got {rc1} (stderr={err1!r})"
+    assert "#599" in err1
+    assert rc2 == 2, (
+        "turn 2 (tile spawned later, no table) expected exit 2 -- the "
+        f"dev-env#677 bug would wrongly return 0 here, got {rc2} (stderr={err2!r})")
+    assert "Tiles spawned this session" in err2
+    assert "#599" not in err2, "trigger 1 already resolved this session -- must not re-fire"
+    assert out2.strip() == "", f"stdout must be empty on exit 2, got {out2!r}"
+    return ("e2e dev-env#677 regression: trigger 1 firing in turn 1 does NOT "
+            "suppress trigger 3 firing later in turn 2 (per-trigger sentinels)")
+
+
+def test_e2e_partial_session_only_sets_the_fired_triggers_sentinel():
+    # A merge-only session (no issue, no tile) fires and resolves ONLY
+    # trigger 1 -- its sentinel file must exist, but triggers 2/3's must NOT,
+    # since neither has a condition to resolve yet and must stay open for one
+    # that could still arise later this session.
+    with tempfile.TemporaryDirectory() as home:
+        rc, _, _ = _run_hook(_MERGED_NO_ENUM, home, session_id="sess-partial")
+        pr_set = _sentinel_file(home, gate._TRIGGER_PR, "sess-partial").exists()
+        issue_set = _sentinel_file(home, gate._TRIGGER_ISSUE, "sess-partial").exists()
+        table_set = _sentinel_file(home, gate._TRIGGER_TABLE, "sess-partial").exists()
+    assert rc == 2
+    assert pr_set, "trigger 1 fired -- its own sentinel must be set"
+    assert not issue_set, "trigger 2 never had a condition this session -- must stay unset"
+    assert not table_set, "trigger 3 never had a condition this session -- must stay unset"
+    return "merge-only session -> ONLY the pr- sentinel is set; issue-/table- stay open"
+
+
+def test_e2e_fully_compliant_session_sets_all_three_sentinels_and_stays_allowed():
+    # A session where all three conditions are resolved in one turn (the spawn
+    # resolves triggers 1/2 via enumeration_recorded; the table heading
+    # resolves trigger 3) sets ALL THREE sentinels, and a second Stop with the
+    # same transcript stays allowed (stable, no spurious re-fire).
+    records = _MERGED_NO_ENUM + _ISSUE_CREATED_NO_ENUM + [
+        _asst_spawn(),
+        _asst_text(_TABLE_HEADING + "\n| Tile | Issue | Status | Next |\n"),
+    ]
+    with tempfile.TemporaryDirectory() as home:
+        rc1, _, err1 = _run_hook(records, home, session_id="sess-full")
+        pr_set = _sentinel_file(home, gate._TRIGGER_PR, "sess-full").exists()
+        issue_set = _sentinel_file(home, gate._TRIGGER_ISSUE, "sess-full").exists()
+        table_set = _sentinel_file(home, gate._TRIGGER_TABLE, "sess-full").exists()
+        rc2, out2, err2 = _run_hook(records, home, session_id="sess-full")
+    assert rc1 == 0, f"expected exit 0 (fully resolved), got {rc1} (stderr={err1!r})"
+    assert pr_set and issue_set and table_set, "all three sentinels must be set once fully resolved"
+    assert rc2 == 0, f"second Stop expected exit 0 (stable), got {rc2} (stderr={err2!r})"
+    return ("fully-compliant session -> all three per-trigger sentinels set; "
+            "a later Stop with the same transcript stays allowed")
+
+
+def test_e2e_stale_merged_text_does_not_block_a_later_distinct_trigger():
+    # Review of PR #693: the pre-filter's "merged"/"issue create"/"spawn_task"
+    # substring checks are gated on each trigger's OWN already_done state, since
+    # a transcript signal never disappears once written -- without the gate, a
+    # session with an early merge would carry "merged" in its transcript for the
+    # rest of the session, defeating the pre-filter's short-circuit for every
+    # later Stop even after the merge trigger resolves. Three turns: turn 1
+    # merges (fires+resolves trigger 1); turn 2 is a pure continuation with no
+    # new signal at all (must stay allowed); turn 3 -- much later, with trigger
+    # 1's stale "merged" text still present throughout -- spawns a tile with no
+    # table (trigger 3 must still fire, proving the stale signal never poisons
+    # detection of a later, genuinely new, different trigger).
+    records_turn1 = _MERGED_NO_ENUM
+    records_turn2 = _MERGED_NO_ENUM + [
+        _asst_bash("t2", "npm test"), _tool_result("t2", "All tests passed")]
+    records_turn3 = records_turn2 + [
+        _asst_spawn(), _asst_text("Filed a follow-up tile for the flaky test.")]
+    with tempfile.TemporaryDirectory() as home:
+        rc1, _, err1 = _run_hook(records_turn1, home, session_id="sess-stale-merged")
+        rc2, out2, err2 = _run_hook(records_turn2, home, session_id="sess-stale-merged")
+        rc3, out3, err3 = _run_hook(records_turn3, home, session_id="sess-stale-merged")
+    assert rc1 == 2, f"turn 1 (merge, no enum) expected exit 2, got {rc1} (stderr={err1!r})"
+    assert rc2 == 0, f"turn 2 (no new signal) expected exit 0, got {rc2} (stderr={err2!r})"
+    assert rc3 == 2, (
+        "turn 3 (tile spawned, no table) expected exit 2 despite turn 1's stale "
+        f"'merged' text still being present, got {rc3} (stderr={err3!r})")
+    assert "Tiles spawned this session" in err3
+    assert "#599" not in err3, "trigger 1 already resolved -- must not re-fire"
+    return ("e2e stale 'merged' text from an already-resolved trigger 1 does not "
+            "block detection of trigger 3 arising three turns later")
+
+
 def main():
     tests = [
         ("direct merge marker detected", test_direct_merge_marker_detected),
@@ -1352,6 +1468,11 @@ def main():
         ("e2e combined all three, no table: names only the table trigger", test_e2e_combined_all_three_no_table_blocks_naming_table_only),
         ("e2e spawn-table sentinel suppresses re-fire", test_e2e_spawn_table_sentinel_suppresses_refire),
         ("e2e other-namespace spawn + no table still blocks", test_e2e_spawn_other_namespace_no_table_still_blocks),
+        # --- per-trigger sentinel independence (ADR-097, dev-env#677) ---
+        ("e2e dev-env#677: later trigger still fires after sibling sentinel set", test_e2e_later_trigger_still_fires_after_sibling_sentinel_set),
+        ("e2e partial session only sets the fired trigger's sentinel", test_e2e_partial_session_only_sets_the_fired_triggers_sentinel),
+        ("e2e fully-compliant session sets all three sentinels, stays allowed", test_e2e_fully_compliant_session_sets_all_three_sentinels_and_stays_allowed),
+        ("e2e stale 'merged' text does not block a later distinct trigger", test_e2e_stale_merged_text_does_not_block_a_later_distinct_trigger),
     ]
     failed = 0
     for name, fn in tests:

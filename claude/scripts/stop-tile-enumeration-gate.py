@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code Stop hook — state-keyed tile-enumeration gate (ADR-088, extended ADR-092, ADR-094 addendum).
+"""Claude Code Stop hook — state-keyed tile-enumeration gate (ADR-088, extended ADR-092, ADR-094 addendum, ADR-097 per-trigger sentinels).
 
 The command-keyed ``post-merge-tile-checkpoint.py`` (ADR-060) fires on a
 ``gh pr merge`` *you run*, but is BLIND to a PR that reaches merged state some
@@ -52,11 +52,22 @@ fires; the Stop event still dispatches, so this is the only tile enforcement
 that survives there.
 
 Detection is a pure transcript scan — no ``gh`` calls, no network, no
-subprocess (so no ``_winsubp``). Fail-open: any error exits 0. Fires at most
-once per session via a scratch sentinel (mirrors ``posttooluse-inert-advisory.py``),
-and honors the ``stop_hook_active`` loop-guard flag (Claude Code hooks
-reference: a Stop hook must check it and exit 0 early once continuing, or it can
-block forever).
+subprocess (so no ``_winsubp``). Fail-open: any error exits 0. Each trigger
+fires at most once per session via its OWN independent scratch sentinel
+(ADR-097, dev-env#677), and honors the ``stop_hook_active`` loop-guard flag
+(Claude Code hooks reference: a Stop hook must check it and exit 0 early once
+continuing, or it can block forever).
+
+Per-trigger sentinels (ADR-097) replace the single sentinel ADR-088 originally
+introduced and ADR-092/ADR-094 extended unchanged. Under one shared sentinel,
+whichever trigger fired or resolved FIRST set the one flag file, and every
+later Stop in the session skipped evaluating ALL THREE triggers — including
+one whose own condition (e.g. a tile spawned in a later, separate turn) had
+not even happened yet when the sentinel was set (dev-env#677, found during the
+PR #674 review that landed trigger 3). Splitting the sentinel per trigger
+means a later-arising trigger is still caught, while a session where every
+trigger has already fired or resolved still skips reading the transcript at
+all — the pre-#677 fully-resolved-session fast path, preserved.
 
 The transcript-record readers (``load_records`` / ``_parse_records`` /
 ``iter_bash_calls`` / ``_result_text`` / ``_content_items``) now live in
@@ -81,8 +92,8 @@ Stdin JSON shape (Stop):
 
 Exit 0 — no merged-state PR, no dangling created issue, and no un-tabled
          spawned tile this session; enumeration/table already recorded, a
-         "skip tiles" override present, already fired (sentinel),
-         stop_hook_active set, or any error (fail-open).
+         "skip tiles" override present, that trigger already fired (its own
+         per-trigger sentinel), stop_hook_active set, or any error (fail-open).
 Exit 2 — a PR merged and/or a created issue remains unresolved and/or a tile
          was spawned with no table this session; blocking reminder(s) on
          stderr.
@@ -108,6 +119,16 @@ from _hookutil import (
 )
 
 SENTINEL_PREFIX = "tile-enumeration-gate-"
+# Per-trigger sentinel suffixes (ADR-097, dev-env#677): each trigger fires and
+# resolves via its OWN "{SENTINEL_PREFIX}{suffix}{session_id}.flag" file rather
+# than the one file all three triggers used to share. cleanup_stale_sentinels
+# (called with the bare SENTINEL_PREFIX) still sweeps all three unchanged --
+# its glob (f"{prefix}*.flag") matches every suffixed filename, since each one
+# still starts with SENTINEL_PREFIX.
+_TRIGGER_PR = "pr-"
+_TRIGGER_ISSUE = "issue-"
+_TRIGGER_TABLE = "table-"
+_TRIGGERS = (_TRIGGER_PR, _TRIGGER_ISSUE, _TRIGGER_TABLE)
 
 # --- command-shape detection (anchored via split_top_level, not raw substring) --
 # Each of these is matched against the lstripped FIRST LINE of a top-level
@@ -725,12 +746,18 @@ def format_table_reminder() -> str:
 
 # --- I/O (thin, untested per the pure-helper convention) -----------------------
 
-def _mark_fired(session_id: str) -> None:
+def _trigger_sentinel_path(trigger: str, session_id: str) -> Path:
+    """The per-trigger sentinel path for *trigger* (one of ``_TRIGGERS``) and
+    *session_id* (ADR-097, dev-env#677)."""
+    return _hookutil.sentinel_path(f"{SENTINEL_PREFIX}{trigger}", session_id)
+
+
+def _mark_trigger_fired(trigger: str, session_id: str) -> None:
     if not session_id:
         return
     try:
         _hookutil.SCRATCH.mkdir(exist_ok=True)
-        _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).write_text("")
+        _trigger_sentinel_path(trigger, session_id).write_text("")
     except Exception:
         pass
 
@@ -752,8 +779,18 @@ def main() -> None:
         sys.exit(0)
 
     session_id = data.get("session_id") or ""
-    # Fire at most once per session — the sentinel short-circuits later Stops.
-    if session_id and _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).exists():
+    # Per-trigger sentinels (ADR-097, dev-env#677): each trigger's "already
+    # fired or resolved" state is tracked independently, so a trigger whose
+    # condition arises later in the session -- after a SIBLING trigger already
+    # set its own sentinel -- is still evaluated. Only when ALL THREE are
+    # already set is there genuinely nothing left to check this session; skip
+    # even reading the transcript (the fully-resolved-session fast path the
+    # original single shared sentinel also had).
+    already_done = {
+        t: bool(session_id and _trigger_sentinel_path(t, session_id).exists())
+        for t in _TRIGGERS
+    }
+    if session_id and all(already_done.values()):
         sys.exit(0)
 
     tpath_str = data.get("transcript_path") or ""
@@ -779,51 +816,73 @@ def main() -> None:
     # review of PR #639, confirmed independently by both reviewers). The
     # resolution side (Closes-keyword / `gh issue close`) only ever matters
     # when there is a created issue to resolve in the first place, so gating
-    # on creation alone is still sufficient for both trigger halves. A
-    # transcript with NEITHER "merged" NOR a genuine `gh issue create`
-    # invocation cannot contain a merged-state PR NOR a dangling created
-    # issue, so skip the full JSON parse + scan. Stop fires every turn, so
-    # this bounds the common no-op session to one read + substring/regex
-    # check instead of re-parsing the whole transcript each turn (review of
-    # PR #604, extended ADR-092).
+    # on creation alone is still sufficient for both trigger halves.
     #
     # Trigger 3 (tiles-spawned-without-a-table, ADR-094 addendum) requires a
     # spawn_task tool call, which is JSON-recorded with a tool name containing
     # "spawn_task" -- a bare substring check (matching what the real detector,
     # _SPAWN_TASK_RE, itself matches) is a third standalone OR-branch rather
     # than folded into either regex above.
+    #
+    # Each clause is gated on that trigger's OWN already_done state (ADR-097
+    # review, dev-env#677 follow-up): a transcript signal never disappears once
+    # written (e.g. "merged" stays present for the rest of the session after the
+    # PR trigger fires), so without this gate a session with an early merge and
+    # no further issue/tile activity would re-parse the whole, ever-growing
+    # transcript on every remaining Stop for the rest of the session -- the
+    # common case, not a narrow edge case. Gating on already_done restores the
+    # skip-the-parse fast path the moment every trigger with a live signal in
+    # the transcript is either resolved or genuinely absent, while a
+    # not-yet-resolved trigger's own clause is unaffected (reduces to the
+    # original unconditional check).
     lower = text.lower()
-    if ("merged" not in lower
-            and not _ISSUE_CREATE_STMT_RE.search(text)
-            and _SPAWN_TASK_SUBSTRING not in lower):
+    if ((already_done[_TRIGGER_PR] or "merged" not in lower)
+            and (already_done[_TRIGGER_ISSUE] or not _ISSUE_CREATE_STMT_RE.search(text))
+            and (already_done[_TRIGGER_TABLE] or _SPAWN_TASK_SUBSTRING not in lower)):
         sys.exit(0)
 
     # Fail-open: a parse/scan failure is a deliberate exit-0 skip, not an
-    # accident of the outer __main__ guard (review of PR #604).
+    # accident of the outer __main__ guard (review of PR #604). A trigger
+    # whose sentinel is already set is skipped entirely here -- not
+    # re-evaluated, never re-fired -- which preserves ADR-088's accepted
+    # "session-global enumeration" limitation on a PER-TRIGGER basis (e.g. a
+    # session merging two PRs and enumerating only once still isn't
+    # re-flagged for the second, exactly as before ADR-097).
     try:
         records = _parse_records(text)
-        fire_pr, resolved_pr = evaluate(records)
-        fire_issue, resolved_issue = evaluate_issues(records)
-        fire_table, resolved_table = evaluate_tile_table(records)
+        fire_pr, resolved_pr = (
+            (None, False) if already_done[_TRIGGER_PR] else evaluate(records)
+        )
+        fire_issue, resolved_issue = (
+            (None, False) if already_done[_TRIGGER_ISSUE] else evaluate_issues(records)
+        )
+        fire_table, resolved_table = (
+            (False, False) if already_done[_TRIGGER_TABLE] else evaluate_tile_table(records)
+        )
     except Exception:
         sys.exit(0)
-    if fire_pr is not None or fire_issue is not None or fire_table:
-        # Set the sentinel BEFORE emitting so a re-entrant Stop cannot double-block.
-        _mark_fired(session_id)
-        messages = []
-        if fire_pr is not None:
-            messages.append(format_reminder(fire_pr))
-        if fire_issue is not None:
-            messages.append(format_issue_reminder(fire_issue))
-        if fire_table:
-            messages.append(format_table_reminder())
+
+    # Mark each trigger's own sentinel BEFORE emitting, so a re-entrant Stop
+    # cannot double-block (mirrors the original single-sentinel ordering).
+    for trigger, fired, resolved in (
+        (_TRIGGER_PR, fire_pr is not None, resolved_pr),
+        (_TRIGGER_ISSUE, fire_issue is not None, resolved_issue),
+        (_TRIGGER_TABLE, fire_table, resolved_table),
+    ):
+        if fired or resolved:
+            _mark_trigger_fired(trigger, session_id)
+
+    messages = []
+    if fire_pr is not None:
+        messages.append(format_reminder(fire_pr))
+    if fire_issue is not None:
+        messages.append(format_issue_reminder(fire_issue))
+    if fire_table:
+        messages.append(format_table_reminder())
+
+    if messages:
         sys.stderr.write("\n\n".join(messages) + "\n")
         sys.exit(2)
-    if resolved_pr or resolved_issue or resolved_table:
-        # Merge and/or issue-creation and/or a tile-spawn happened and the
-        # checkpoint is satisfied for whatever fired — resolve so later
-        # Stops skip the re-scan (mirrors posttooluse-inert-advisory.py).
-        _mark_fired(session_id)
     sys.exit(0)
 
 

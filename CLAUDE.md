@@ -958,9 +958,13 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 48. **stop-tile-enumeration-gate test** — required when changing
     `claude/scripts/stop-tile-enumeration-gate.py`. Two layers, mirroring this hook family's
     established split ([ADR-088](docs/adr/088-state-keyed-tile-enumeration-gate.md); dev-env#599),
-    now covering **two independent triggers** that share the same enumeration/skip-override/sentinel
-    machinery: the merged-PR trigger (below) and the dangling-created-issue trigger
-    ([ADR-092](docs/adr/092-dangling-issue-tile-enumeration-gate.md); dev-env#638).
+    now covering **three independent triggers** that share the same enumeration/skip-override
+    machinery (each with its OWN per-trigger sentinel as of
+    [ADR-097](docs/adr/097-per-trigger-tile-gate-sentinels.md); dev-env#677 — see that paragraph at
+    the end of this item): the merged-PR trigger (below), the dangling-created-issue trigger
+    ([ADR-092](docs/adr/092-dangling-issue-tile-enumeration-gate.md); dev-env#638), and the
+    tiles-spawned-without-a-table trigger ([ADR-094](docs/adr/094-tile-tables-and-issue-per-tile.md)
+    addendum; dev-env#656).
     Pure-helper tests exercise the detection/decision core offline (no stdin, network, gh, or disk):
     `session_merged_prs` across all three merge paths — a `gh pr merge` success marker, a
     `gh api .../pulls/N/merge` with `"merged":true`, and the auto-merge case (a `--auto` enqueue or a
@@ -985,11 +989,12 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     number — covered by direct tests (its own `_PR_URL_RE` check deliberately stays unmasked, an
     already-documented out-of-scope gap) plus an integration-level `session_merged_prs` case via the
     auto-merge acted-on/observed correlation path. A behavioral layer drives the real hook end-to-end over stdin via subprocess against
-    a synthetic transcript, with HOME/USERPROFILE pointed at a temp dir so the once-per-session
-    sentinel is isolated: pins merged-no-enum -> exit 2 with the reason on stderr and empty stdout,
+    a synthetic transcript, with HOME/USERPROFILE pointed at a temp dir so the per-trigger sentinels
+    (ADR-097) are isolated: pins merged-no-enum -> exit 2 with the reason on stderr and empty stdout,
     merged+enum and no-merge -> exit 0, the `stop_hook_active` loop guard -> exit 0, and that the
-    sentinel suppresses a second fire. `main()`'s stdin/sentinel plumbing beyond the end-to-end runs
-    is not separately unit-tested (pure-helper convention). The transcript-record readers
+    merged-PR trigger's own sentinel suppresses a second fire of THAT trigger. `main()`'s
+    stdin/sentinel plumbing beyond the end-to-end runs is not separately unit-tested (pure-helper
+    convention). The transcript-record readers
     (`load_records` / `_parse_records` / `iter_bash_calls` / `_result_text` / `_content_items`) now
     live in `_hookutil` ([ADR-090](docs/adr/090-shared-transcript-readers-hookutil.md)) — the gate
     imports the three it uses (`_content_items`, `_parse_records`, and the shared `iter_bash_calls`,
@@ -1071,6 +1076,30 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     longer reaches exit 0 once trigger (3) exists — their original intent (proving triggers (1)/(2)
     resolve on enumeration) is preserved by making the session genuinely fully compliant rather than by
     weakening the new trigger.
+
+    **Per-trigger sentinels** ([ADR-097](docs/adr/097-per-trigger-tile-gate-sentinels.md); dev-env#677)
+    replace the single sentinel all three triggers previously shared: before this fix, whichever
+    trigger fired or resolved FIRST suppressed evaluating the other two for the rest of the session,
+    including one whose own condition (e.g. a tile spawned in a later, separate turn) hadn't even
+    happened yet when the sentinel was set — found during the PR #674 review that landed trigger (3).
+    `main()` now checks three independent sentinel files (`-pr-`/`-issue-`/`-table-` suffixes on the
+    same `SENTINEL_PREFIX`) and only skips reading the transcript at all when **all three** are
+    already set; otherwise it evaluates only the still-open triggers, marking each independently. The
+    cheap pre-filter (the `"merged"` / `gh issue create` / `spawn_task` substring/regex check, run
+    after the transcript is read but before the full JSON parse) is likewise gated per trigger — a
+    review pass on this PR found that an unqualified combined check would force a full reparse on
+    every remaining Stop of the session once trigger 1 had ever fired, since `"merged"` never
+    disappears from a transcript once written; each clause is now `already_done[trigger] or <original
+    check>`, restoring the parse-skipping fast path the instant every trigger with a live signal in the
+    transcript is either resolved or genuinely absent. No pure evaluator changed, so all 112
+    pre-existing tests (including the three "sentinel suppresses a second fire" e2e tests, traced by
+    hand) pass **unmodified**. Four new tests cover the fix directly: a two-turn simulation reproducing
+    the dev-env#677 bug itself (trigger 1 fires in turn 1; a tile spawned with no table in turn 2 must
+    still fire trigger 3 — it would wrongly stay silent under the pre-fix code); that a partial
+    (merge-only) session sets ONLY the `pr-` sentinel file on disk, not `issue-`/`table-`; that a
+    fully-compliant session sets all three sentinel files and a second Stop with the same transcript
+    stays allowed; and a three-turn sequence proving trigger 1's stale `"merged"` text does not block
+    detection of trigger 3 arising two turns later.
 
     ```bash
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
