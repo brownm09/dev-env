@@ -1045,10 +1045,14 @@ follow-ups, not speculative musings, so the tile surface stays signal-rich. (`sp
 names other good moments too — right after verification passes, right before summarizing completed
 work; ADR-046 formalizes the merge boundary specifically.)
 
-**Tiles capture; they do not track.** A tile is *ephemeral* — chip IDs are not persisted across app
-restarts, and a tile becomes real work only when the user clicks it. For a follow-up that must be
-durably tracked, still file a GitHub issue; the tile's spawned session is a natural place to do that.
-The tile and the issue are complementary, not redundant.
+**Every genuine tile also gets a tracking issue.** A tile is still *ephemeral* — chip IDs are not
+persisted across app restarts, and a tile becomes real work only when the user clicks it. Under
+[ADR-046](adr/046-post-merge-followup-tiles.md)'s original default, a GitHub issue was filed only for
+a follow-up that "must" be tracked; [ADR-094](adr/094-tile-tables-and-issue-per-tile.md) overrides
+that — every genuine tile now gets a tracking issue filed alongside it, in the same repo, referenced
+in the tile prompt, giving the ephemeral chip a durable, linkable, status-trackable anchor. The
+session also closes with an end-of-session table of the tiles spawned (the third checkpoint below);
+the tile, the issue, and the table are complementary, not redundant.
 
 **Fallback where `spawn_task` is unavailable.** The tool is not present in every session (e.g. some
 terminal CLI sessions). There, file a follow-up issue instead, so the capture still happens.
