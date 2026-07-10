@@ -1032,8 +1032,7 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     suppresses a second fire. The pre-filter also reuses the real `_ISSUE_CREATE_STMT_RE` detection
     regex (`.search()`) rather than a hand-written substring, so it can't drift from what the detector
     actually matches (a literal single-space `"issue create"` check would miss a tab/multi-space
-    invocation — review of PR #639, confirmed independently by two reviewers). 76 tests total, up from
-    39 pre-ADR-092.
+    invocation — review of PR #639, confirmed independently by two reviewers).
 
     The tiles-spawned-without-a-table trigger (ADR-094 addendum, dev-env#656) adds a third fully
     independent pure-helper suite, mirroring the shape of the two above: `session_spawned_tiles`
