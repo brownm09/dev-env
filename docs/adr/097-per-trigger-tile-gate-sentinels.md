@@ -89,19 +89,27 @@ sentinel is written — and not a new class of risk: this repo has no precedent 
 sentinel-file formats when ADR-092 or ADR-094 changed what the shared sentinel meant, and a hook
 redeploy racing a live session is an accepted, unaddressed edge case throughout this file's history.
 
-### Why not make the pre-filter per-trigger-aware too
+### The pre-filter is also gated per trigger (review finding)
 
-The cheap pre-filter substring/regex check (`"merged"` / `gh issue create` / `spawn_task`) still runs
-as one combined OR-check regardless of which individual triggers are already resolved. Scoping it
-tighter (e.g., skip the `"merged"` branch once trigger 1 alone is resolved) would save a marginal
-number of reparses in a narrow window — a session where exactly one or two triggers are resolved and
-the transcript happens to contain a stale, irrelevant `"merged"` mention — at the cost of real
-complexity in a hot, already-subtle bit of code. The combined check remains **correct** (it never
-under-fires: any signal any open trigger needs still passes the gate); it is simply not maximally
-tight. Left as-is, consistent with dev-env#677's own framing of the fix as "avoid a full transcript
-re-parse ... for a session that has already fully resolved everything" — a fully-resolved session (all
-three sentinels set) already gets the fast, first-line short-circuit; a partially-resolved session
-re-parsing on a subsequent Stop is the accepted, bounded cost this ADR takes on.
+An initial version of this ADR left the cheap pre-filter substring/regex check (`"merged"` / `gh
+issue create` / `spawn_task`) as one combined OR-check regardless of which individual triggers were
+already resolved, reasoning that the extra reparses this caused were confined to "a narrow window."
+Independent review of the PR implementing this ADR found that framing understated the cost: a
+transcript signal never disappears once written — `"merged"` remains in the text for the rest of the
+session after the very first merge, which is also the single most common trigger — so an *unqualified*
+combined check would in practice force a full reparse on **every remaining Stop of the session**
+whenever trigger 1 had ever fired, not merely in some narrow window. That is the common case (a
+session that merges, then keeps working), not an edge case.
+
+The pre-filter is therefore gated per trigger: each clause becomes
+`already_done[trigger] or <original per-trigger check>`, so a trigger's clause is satisfied
+unconditionally the moment that trigger is resolved, regardless of what stale signal text remains in
+the transcript, while an unresolved trigger's clause is unaffected (reduces to the original
+unconditional check). This restores the parse-skipping fast path the instant every trigger with a
+live signal in the transcript is either resolved or genuinely absent — a materially stronger guarantee
+than "only when all three are resolved," and the one dev-env#677 itself asked for ("avoid a full
+transcript re-parse ... for a session that has already fully resolved everything"). The added
+complexity is three `already_done[...] or` guards, not a new mechanism.
 
 ## Consequences
 
@@ -109,20 +117,20 @@ re-parsing on a subsequent Stop is the accepted, bounded cost this ADR takes on.
   fired or resolved is still independently evaluated and can still fire.
 - A session where every trigger has already fired or resolved still short-circuits before reading the
   transcript at all — unchanged from the pre-fix behavior.
-- A session where only some triggers are resolved now re-parses the transcript on each subsequent
-  Stop (rather than short-circuiting immediately) until every trigger is resolved — a deliberate,
-  bounded performance trade-off; see "Why not make the pre-filter per-trigger-aware" above.
+- A session where only some triggers are resolved skips re-parsing the transcript on a subsequent Stop
+  as soon as every trigger with a live signal in the transcript is either resolved or genuinely absent
+  — not only once all three are fully resolved (see "The pre-filter is also gated per trigger" above).
 - Each trigger's own "fires/resolves at most once per session" semantics (ADR-088's accepted
   session-global-enumeration limitation) is now scoped precisely to that trigger, rather than
   incidentally suppressing its siblings.
 
 ### Testing
 
-`test_stop_tile_enumeration_gate.py` grows from 112 to 115 tests, 0 failures. All 112 pre-existing
+`test_stop_tile_enumeration_gate.py` grows from 112 to 116 tests, 0 failures. All 112 pre-existing
 tests pass **unmodified**, including the three existing "sentinel suppresses a second fire" e2e tests
 — traced by hand and confirmed: each of those fixtures only ever satisfies ONE trigger's precondition,
 so the other two triggers evaluate to their own "nothing to resolve yet" no-op on every call
-regardless of sentinel state, and the assertions hold unchanged under the new per-trigger design. Three
+regardless of sentinel state, and the assertions hold unchanged under the new per-trigger design. Four
 new tests cover the fix directly:
 
 - **The dev-env#677 regression itself**: a two-turn simulation (same session_id, same isolated HOME,
@@ -140,6 +148,11 @@ new tests cover the fix directly:
   through the hook's black-box exit-code/stdout/stderr contract, since a fully-resolved session
   produces exit 0 whether or not the short-circuit fires first; this test instead pins the *outcome*
   the short-circuit exists to guarantee stays correct).
+- **Stale resolved-trigger signal text does not block a later, distinct trigger**: a three-turn
+  sequence — turn 1 merges (fires and resolves trigger 1); turn 2 is a pure continuation with no new
+  signal (stays exit 0); turn 3, with trigger 1's stale `"merged"` text still present throughout, spawns
+  a tile with no table — proves the per-trigger pre-filter gating does not let an already-resolved
+  trigger's leftover transcript text suppress detection of a later, genuinely new, different trigger.
 
 ## Limitations (documented, accepted)
 
@@ -147,10 +160,21 @@ new tests cover the fix directly:
   and enumerating only once still isn't independently re-flagged for the second merge — this was
   already ADR-088's accepted limitation and is unchanged by this ADR; only the *cross-trigger*
   suppression is fixed, not the *within-trigger* one.
-- **Partially-resolved sessions re-parse on every subsequent Stop** until every trigger resolves (see
-  Consequences above) — an accepted, bounded performance trade-off, not a correctness gap.
+- **A genuinely still-open trigger's own signal keeps forcing a re-parse.** The per-trigger pre-filter
+  gate (see above) eliminates the reparse cost for *resolved* triggers, but a trigger that stays
+  unresolved for many turns (e.g. a dangling created issue never closed) has a signal (`gh issue
+  create`) that, once written, is also permanent — every subsequent Stop still re-parses until that
+  trigger resolves. This is the same cost the pre-fix design always had for the still-unresolved case;
+  it is now scoped to only the genuinely open trigger(s) rather than the whole session.
 - **No migration for pre-existing single-sentinel files** — see "Why not migrate" above; a live
   deploy racing an in-flight session may re-evaluate once extra, self-correcting immediately.
+- **Four parallel per-trigger structures in `main()`.** Each trigger's identity is now spread across
+  the `_TRIGGERS` tuple, the evaluate block's hardcoded skip-default tuples, the sentinel-marking
+  loop's `fired` test, and the message-building block's per-trigger formatter call — with a silent
+  None-vs-bool asymmetry between the PR/issue and table triggers. A fully generic loop was considered
+  and deferred (see Alternatives) as a net complexity wash given the triggers' heterogeneous shapes;
+  tracked as [dev-env#696](https://github.com/brownm09/dev-env/issues/696) for reconsideration if a
+  4th trigger is ever proposed.
 
 ## Alternatives considered
 
@@ -162,6 +186,14 @@ new tests cover the fix directly:
   this would silently regress the fully-resolved-session fast path the original design (and
   dev-env#677 itself) explicitly wanted preserved — every Stop in every session would re-pay the full
   parse cost forever, including sessions that resolved everything in turn one.
+- **A fully generic loop over trigger descriptors** (`(trigger, evaluator, skip_default, fire_test,
+  formatter)` tuples iterated once) to collapse the four parallel structures noted in Limitations.
+  Deferred: the three evaluators don't share a return-shape convention (PR/issue are Optional-first,
+  table is bool-first) or a formatter signature (two take a numeric argument, one takes none), so a
+  fully generic version needs a 5th parallel element and heterogeneous lambda-based dispatch — trading
+  four simple, explicit parallel lists for one denser, more abstract shape, which is not clearly a net
+  maintainability gain. Tracked as [dev-env#696](https://github.com/brownm09/dev-env/issues/696) for
+  reconsideration if a 4th trigger is ever proposed.
 - **Fold the fix into ADR-094's addendum instead of a new ADR.** Rejected: ADR-094's addendum already
   documents the pre-fix limitation and explicitly forward-references dev-env#677 as separate follow-up
   work; recording the fix as its own ADR keeps the paper trail matching the actual PR history (a

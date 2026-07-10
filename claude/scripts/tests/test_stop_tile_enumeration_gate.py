@@ -1320,6 +1320,38 @@ def test_e2e_fully_compliant_session_sets_all_three_sentinels_and_stays_allowed(
             "a later Stop with the same transcript stays allowed")
 
 
+def test_e2e_stale_merged_text_does_not_block_a_later_distinct_trigger():
+    # Review of PR #693: the pre-filter's "merged"/"issue create"/"spawn_task"
+    # substring checks are gated on each trigger's OWN already_done state, since
+    # a transcript signal never disappears once written -- without the gate, a
+    # session with an early merge would carry "merged" in its transcript for the
+    # rest of the session, defeating the pre-filter's short-circuit for every
+    # later Stop even after the merge trigger resolves. Three turns: turn 1
+    # merges (fires+resolves trigger 1); turn 2 is a pure continuation with no
+    # new signal at all (must stay allowed); turn 3 -- much later, with trigger
+    # 1's stale "merged" text still present throughout -- spawns a tile with no
+    # table (trigger 3 must still fire, proving the stale signal never poisons
+    # detection of a later, genuinely new, different trigger).
+    records_turn1 = _MERGED_NO_ENUM
+    records_turn2 = _MERGED_NO_ENUM + [
+        _asst_bash("t2", "npm test"), _tool_result("t2", "All tests passed")]
+    records_turn3 = records_turn2 + [
+        _asst_spawn(), _asst_text("Filed a follow-up tile for the flaky test.")]
+    with tempfile.TemporaryDirectory() as home:
+        rc1, _, err1 = _run_hook(records_turn1, home, session_id="sess-stale-merged")
+        rc2, out2, err2 = _run_hook(records_turn2, home, session_id="sess-stale-merged")
+        rc3, out3, err3 = _run_hook(records_turn3, home, session_id="sess-stale-merged")
+    assert rc1 == 2, f"turn 1 (merge, no enum) expected exit 2, got {rc1} (stderr={err1!r})"
+    assert rc2 == 0, f"turn 2 (no new signal) expected exit 0, got {rc2} (stderr={err2!r})"
+    assert rc3 == 2, (
+        "turn 3 (tile spawned, no table) expected exit 2 despite turn 1's stale "
+        f"'merged' text still being present, got {rc3} (stderr={err3!r})")
+    assert "Tiles spawned this session" in err3
+    assert "#599" not in err3, "trigger 1 already resolved -- must not re-fire"
+    return ("e2e stale 'merged' text from an already-resolved trigger 1 does not "
+            "block detection of trigger 3 arising three turns later")
+
+
 def main():
     tests = [
         ("direct merge marker detected", test_direct_merge_marker_detected),
@@ -1440,6 +1472,7 @@ def main():
         ("e2e dev-env#677: later trigger still fires after sibling sentinel set", test_e2e_later_trigger_still_fires_after_sibling_sentinel_set),
         ("e2e partial session only sets the fired trigger's sentinel", test_e2e_partial_session_only_sets_the_fired_triggers_sentinel),
         ("e2e fully-compliant session sets all three sentinels, stays allowed", test_e2e_fully_compliant_session_sets_all_three_sentinels_and_stays_allowed),
+        ("e2e stale 'merged' text does not block a later distinct trigger", test_e2e_stale_merged_text_does_not_block_a_later_distinct_trigger),
     ]
     failed = 0
     for name, fn in tests:

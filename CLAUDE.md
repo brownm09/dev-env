@@ -1084,14 +1084,22 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     happened yet when the sentinel was set — found during the PR #674 review that landed trigger (3).
     `main()` now checks three independent sentinel files (`-pr-`/`-issue-`/`-table-` suffixes on the
     same `SENTINEL_PREFIX`) and only skips reading the transcript at all when **all three** are
-    already set; otherwise it evaluates only the still-open triggers, marking each independently. No
-    pure evaluator changed, so all 112 pre-existing tests (including the three "sentinel suppresses a
-    second fire" e2e tests, traced by hand) pass **unmodified**. Three new tests cover the fix
-    directly: a two-turn simulation reproducing the dev-env#677 bug itself (trigger 1 fires in turn 1;
-    a tile spawned with no table in turn 2 must still fire trigger 3 — it would wrongly stay silent
-    under the pre-fix code); that a partial (merge-only) session sets ONLY the `pr-` sentinel file on
-    disk, not `issue-`/`table-`; and that a fully-compliant session sets all three sentinel files and a
-    second Stop with the same transcript stays allowed.
+    already set; otherwise it evaluates only the still-open triggers, marking each independently. The
+    cheap pre-filter (the `"merged"` / `gh issue create` / `spawn_task` substring/regex check, run
+    after the transcript is read but before the full JSON parse) is likewise gated per trigger — a
+    review pass on this PR found that an unqualified combined check would force a full reparse on
+    every remaining Stop of the session once trigger 1 had ever fired, since `"merged"` never
+    disappears from a transcript once written; each clause is now `already_done[trigger] or <original
+    check>`, restoring the parse-skipping fast path the instant every trigger with a live signal in the
+    transcript is either resolved or genuinely absent. No pure evaluator changed, so all 112
+    pre-existing tests (including the three "sentinel suppresses a second fire" e2e tests, traced by
+    hand) pass **unmodified**. Four new tests cover the fix directly: a two-turn simulation reproducing
+    the dev-env#677 bug itself (trigger 1 fires in turn 1; a tile spawned with no table in turn 2 must
+    still fire trigger 3 — it would wrongly stay silent under the pre-fix code); that a partial
+    (merge-only) session sets ONLY the `pr-` sentinel file on disk, not `issue-`/`table-`; that a
+    fully-compliant session sets all three sentinel files and a second Stop with the same transcript
+    stays allowed; and a three-turn sequence proving trigger 1's stale `"merged"` text does not block
+    detection of trigger 3 arising two turns later.
 
     ```bash
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py

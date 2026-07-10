@@ -1092,7 +1092,10 @@ file (`ADR-097`, dev-env#677), not one shared sentinel. Under the original share
 trigger fired or resolved first silently suppressed evaluating the other two for the rest of the
 session — including one whose own condition (e.g. a tile spawned in a later, separate turn) had not
 even occurred yet. Splitting the sentinel per trigger fixes this while preserving the fast path where
-a session with every trigger already resolved skips reading the transcript at all.
+a session with every trigger already resolved skips reading the transcript at all; the cheap
+pre-filter that gates the full parse is likewise gated per trigger, so a resolved trigger's stale
+transcript signal (e.g. `"merged"`, permanent once written) no longer forces a reparse on every
+remaining Stop of the session.
 
 Rationale, alternatives, and consequences: [ADR-046](adr/046-post-merge-followup-tiles.md) (the
 merge checkpoint), [ADR-092](adr/092-dangling-issue-tile-enumeration-gate.md) (the dangling-issue

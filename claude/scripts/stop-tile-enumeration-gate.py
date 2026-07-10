@@ -816,23 +816,29 @@ def main() -> None:
     # review of PR #639, confirmed independently by both reviewers). The
     # resolution side (Closes-keyword / `gh issue close`) only ever matters
     # when there is a created issue to resolve in the first place, so gating
-    # on creation alone is still sufficient for both trigger halves. A
-    # transcript with NEITHER "merged" NOR a genuine `gh issue create`
-    # invocation cannot contain a merged-state PR NOR a dangling created
-    # issue, so skip the full JSON parse + scan. Stop fires every turn, so
-    # this bounds the common no-op session to one read + substring/regex
-    # check instead of re-parsing the whole transcript each turn (review of
-    # PR #604, extended ADR-092).
+    # on creation alone is still sufficient for both trigger halves.
     #
     # Trigger 3 (tiles-spawned-without-a-table, ADR-094 addendum) requires a
     # spawn_task tool call, which is JSON-recorded with a tool name containing
     # "spawn_task" -- a bare substring check (matching what the real detector,
     # _SPAWN_TASK_RE, itself matches) is a third standalone OR-branch rather
     # than folded into either regex above.
+    #
+    # Each clause is gated on that trigger's OWN already_done state (ADR-097
+    # review, dev-env#677 follow-up): a transcript signal never disappears once
+    # written (e.g. "merged" stays present for the rest of the session after the
+    # PR trigger fires), so without this gate a session with an early merge and
+    # no further issue/tile activity would re-parse the whole, ever-growing
+    # transcript on every remaining Stop for the rest of the session -- the
+    # common case, not a narrow edge case. Gating on already_done restores the
+    # skip-the-parse fast path the moment every trigger with a live signal in
+    # the transcript is either resolved or genuinely absent, while a
+    # not-yet-resolved trigger's own clause is unaffected (reduces to the
+    # original unconditional check).
     lower = text.lower()
-    if ("merged" not in lower
-            and not _ISSUE_CREATE_STMT_RE.search(text)
-            and _SPAWN_TASK_SUBSTRING not in lower):
+    if ((already_done[_TRIGGER_PR] or "merged" not in lower)
+            and (already_done[_TRIGGER_ISSUE] or not _ISSUE_CREATE_STMT_RE.search(text))
+            and (already_done[_TRIGGER_TABLE] or _SPAWN_TASK_SUBSTRING not in lower)):
         sys.exit(0)
 
     # Fail-open: a parse/scan failure is a deliberate exit-0 skip, not an
