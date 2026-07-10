@@ -2,9 +2,12 @@
 name: prune-stale-worktrees
 description: Remove Claude session worktrees whose branches have been merged into main, across all repos under C:/Users/brown/Git.
 schedule: "0 8 * * *"
+model: claude-opus-4-8
 ---
 
 Prune stale Claude session worktrees across all git repos under `C:/Users/brown/Git`. Run fully autonomously — do not ask the user anything.
+
+> **Autonomous-run guard (do not strip when regenerating the live copy).** This is an unattended scheduled run with no human present. Do **not** open with a greeting, a question, or any "how can I help" / "what would you like to work on" reply — your **first output must be a tool call** (Step 0). The live scheduled-task copy carries this same imperative at the very top *and* bottom of its prompt, because the failure it guards against (see the Autonomous-run reliability caveat below) happens *before* Step 0.5's canonical read-through is ever reached.
 
 **Objective:** For every git repo directly under `C:/Users/brown/Git`, remove all worktrees (both `claude/*` and hand-named branches, e.g. `feat/`/`fix/`/`docs/` — via `--include-named`) whose branches are fully merged into `origin/main` and have no uncommitted changes. Also remove any non-primary worktrees accidentally checked out on `main`. Report the pruned/skipped summary per repo and a combined total.
 
@@ -47,3 +50,22 @@ Prune stale Claude session worktrees across all git repos under `C:/Users/brown/
 > present, falling back to an embedded copy only when it is missing or unreadable — so a future
 > edit here takes effect immediately without a separate re-registration step, though the embedded
 > fallback should still be refreshed when this file's *steps* change materially.
+
+---
+
+> **Autonomous-run reliability caveat (dev-env#698).** On 2026-07-10 the 04:03 run silently
+> no-opped: the model replied *"I'm ready to help. What would you like to work on?"* (0 tool calls)
+> despite receiving the full, well-formed prompt. Root cause was a **silent model switch** — the six
+> prior daily runs (07-04 → 07-09) all ran on `claude-opus-4-8` and executed correctly (9–13 tool
+> calls each); the 07-10 run came up on `claude-sonnet-5` and greeted instead. The scheduler
+> **ignores the project `settings.json` model** and uses the app's global default, which began
+> resolving to Sonnet 5 that day. Sonnet 5 is not deterministically broken (it ran a *different*
+> scheduled task fine the same day) — this is an **intermittent instruction-following lapse** on the
+> XML-wrapped autonomous prompt, and a greeting-instead-of-execute run produces **no error and no
+> notification**. Two mitigations, both applied: (1) an **execute-now / do-not-greet imperative** at
+> the very top and bottom of the *live* scheduled-task prompt — it must live there, not only here,
+> because the greeting happens before Step 0.5 reads this canonical file; and (2) a
+> `model: claude-opus-4-8` **frontmatter pin** (added to both copies). The MCP
+> `update_scheduled_task` / `create_scheduled_task` tools expose no model parameter, so the
+> frontmatter pin is the only per-task model lever available — confirm on the next run whether the
+> scheduler actually honors it; if not, the imperative alone is the model-agnostic backstop.
