@@ -1319,6 +1319,31 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_pre_tool_use_journal_compose_force_guard.py
     ```
 
+57. **journal-canonical-guard stdout-routing test** — required when changing
+    `claude/scripts/journal-canonical-guard.py`. End-to-end only (no pure-function layer — this
+    fix adds no new logic, only a stream-routing change); drives the real hook via subprocess
+    against a disposable throwaway git repo, using the `JOURNAL_CANONICAL_GUARD_REPO_PATH` test
+    seam PR #661 already built in. Pins: a missing repo path and a canonical already on `main`
+    are both silent no-ops (no output at all); a canonical on a legitimate non-hijacked branch
+    (e.g. `draft/2026-07-10`, the common case per the documented Stub file workflow) is left
+    untouched; **the core regression proof** — a hijacked-and-dirty canonical's warning, and a
+    hijacked-canonical-blocked-by-a-squatter warning, both land on **stdout with stderr
+    empty** (dev-env#699 — previously both were on stderr, invisible to Claude on this
+    always-exit-0 `UserPromptSubmit` hook); and the already-working auto-return success message
+    stays on stdout (regression pin). Two warning paths (worktree-list-unreadable,
+    auto-return-checkout-failed) are deliberately not exercised — see the test file's own
+    docstring for why each is fragile to construct reliably, matching this repo's established
+    convention for hard-to-construct git-failure-injection paths (items 22/26/30). This is a
+    deliberate, narrow departure from ADR-093's "no dedicated test file" precedent for this
+    file — that decision was reasoned about topology-*decision* correctness (unaffected, still
+    covered by item 22's `test_worktree_topology.py`), not the orthogonal stream-*routing* axis
+    this test suite covers. ([ADR-099](docs/adr/099-journal-canonical-guard-advisories-to-stdout.md);
+    dev-env#699)
+
+    ```bash
+    py -3 claude/scripts/tests/test_journal_canonical_guard.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

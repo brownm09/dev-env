@@ -25,6 +25,11 @@ its commits — they remain reachable by name if ever needed (ADR-058's "park, d
 philosophy; no "park" step is even needed here since the hijacked branch already has a name
 distinct from `main`).
 
+All advisories print to STDOUT, never stderr (dev-env#699, ADR-099). This hook always exits 0,
+and per the Claude Code hooks reference, a `UserPromptSubmit` hook's exit-0 stdout is added to
+Claude's context — stderr is not. A prior version routed every warning to stderr, the identical
+defect ADR-098 fixed in the sibling `dev-env-sync.py`.
+
 Exit 0 always — never block the user's prompt.
 """
 
@@ -85,8 +90,7 @@ def main() -> None:
         print(
             f"[journal-canonical-guard] WARNING: engineering-journal canonical is on "
             f"'{current_branch}' (looks hijacked, dev-env#630) and its worktree list could "
-            f"not be read. Switch it back manually: git -C {JOURNAL_REPO} checkout main",
-            file=sys.stderr,
+            f"not be read. Switch it back manually: git -C {JOURNAL_REPO} checkout main"
         )
         sys.exit(0)
 
@@ -115,8 +119,7 @@ def main() -> None:
             f"  git -C {action.squatter_path} checkout -b {action.park_branch}\n"
             "then the next prompt restores the canonical automatically (or run\n"
             f"  git -C {JOURNAL_REPO} checkout main\n"
-            ").",
-            file=sys.stderr,
+            ")."
         )
     elif action.kind == "warn-dirty":
         print(
@@ -124,8 +127,7 @@ def main() -> None:
             f"'{topo.canonical_branch}' (looks hijacked, dev-env#630) with uncommitted "
             "changes - not auto-switching to preserve them. Investigate, then:\n"
             f"  git -C {JOURNAL_REPO} status\n"
-            f"  git -C {JOURNAL_REPO} checkout main   # after committing/stashing",
-            file=sys.stderr,
+            f"  git -C {JOURNAL_REPO} checkout main   # after committing/stashing"
         )
     elif action.kind == "return-canonical":
         # Final, cheap re-check immediately before the mutation itself - narrows the residual
@@ -144,8 +146,7 @@ def main() -> None:
                 f"[journal-canonical-guard] WARNING: engineering-journal canonical is on "
                 f"'{topo.canonical_branch}' (looks hijacked, dev-env#630); auto-restore to "
                 f"main failed:\n{checkout.stderr.strip()}\n"
-                f"Switch it back manually: git -C {JOURNAL_REPO} checkout main",
-                file=sys.stderr,
+                f"Switch it back manually: git -C {JOURNAL_REPO} checkout main"
             )
         else:
             recoverable = topo.canonical_branch != DETACHED  # DETACHED is a sentinel,
