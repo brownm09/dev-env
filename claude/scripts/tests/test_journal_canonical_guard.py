@@ -144,6 +144,16 @@ def test_warn_dirty_lands_on_stdout_not_stderr() -> str:
             check=True, capture_output=True,
         )
         (canonical / "dirty.txt").write_text("uncommitted content", encoding="utf-8")
+        # Staged, not left untracked: an untracked file's visibility in `git status --porcelain`
+        # depends on the ambient `status.showUntrackedFiles` config (real, if uncommon, e.g. set
+        # to `no` on some large-repo machines), which would silently take the wrong branch
+        # (return-canonical instead of warn-dirty) and fail this test with a confusing mismatch
+        # instead of testing what it says it tests. Staged changes always appear in `--porcelain`
+        # output regardless of that setting (review finding, PR #705).
+        subprocess.run(
+            ["git", "-C", str(canonical), "add", "dirty.txt"],
+            check=True, capture_output=True,
+        )
         proc = _run_hook({"JOURNAL_CANONICAL_GUARD_REPO_PATH": str(canonical)})
         if proc.returncode != 0:
             raise AssertionError(f"expected exit 0 (never block), got {proc.returncode}. stderr={proc.stderr!r}")
