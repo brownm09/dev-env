@@ -1380,6 +1380,47 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_journal_canonical_guard.py
     ```
 
+58. **stop-journal-stub-checkpoint test** — required when changing
+    `claude/scripts/stop-journal-stub-checkpoint.py`. Two layers, mirroring this hook family's
+    established split. Pure-helper tests exercise the detection/decision core offline (no stdin,
+    network, gh, or disk): `report_intent` (report-group and verify/deploy-group keywords in a
+    genuine user prompt; the text-item content form; and the false-positive guards — a keyword in
+    assistant text, a tool_result, an `isMeta`/`isCompactSummary` record, or a `<command-name>`
+    slash-command wrapper never counts); `substantive_tool_count` (counts each of the nine
+    substantive tools, ignores `TodoWrite`/`spawn_task`/text, counts parallel tool_use in one
+    record, and the 4-vs-5 threshold boundary); `opened_or_merged_pr` (anchored `gh pr create`/
+    `merge` via the shared `_hookio.scan_top_level`, with heredoc-body / `$()`-subshell mentions, a
+    `--help`-only invocation, and `gh pr checks`/`view` all excluded); `wrote_stub` (a Write/Edit
+    `*.stub.md` file_path, a backslash path, a non-stub `.md` non-match, and a Bash `git add
+    ...stub.md` reference — the Bash side uses a `re.search`, not a `"..." in command` check, so this
+    file stays clear of item 39's AST gate); `is_review_only_session` (the `<command-name>/review`
+    wrapper, not prose mentioning `/review`); `skip_override` (a genuine user "skip journal"/"no
+    stub", and that a tool_result or `isCompactSummary` mention does NOT waive); `evaluate` (the
+    FIRE case `(True, False)`; each terminal exemption — stub written / PR opened / skip / `/review`
+    — resolving to `(False, True)`; and the two non-terminal no-ops — no intent, or intent but
+    count < 5 — as `(False, False)`); `format_reminder` (`.isascii()` + `.encode("cp1252")` so the
+    exit-2 stderr text can't vanish under Claude Code's cp1252 hook-output pipe on Windows, plus the
+    `[journal-stub-checkpoint]` prefix and the dismissal text); and that malformed/non-dict records
+    spliced around the FIRE fixture still yield `(True, False)` without raising. A behavioral layer
+    drives the real hook end-to-end over stdin via subprocess with HOME/USERPROFILE pointed at a
+    temp dir (sentinel isolated from the real `~/.claude/scratch`, mirroring items 48/50): the FIRE
+    case blocks (exit 2, reminder on **stderr**, **empty stdout** — a Stop hook's exit-0 stdout is
+    not added to Claude's context, [ADR-091](docs/adr/091-journal-stop-check-archive-reminder-blocking.md));
+    wrote-stub / opened-PR / `/review` / skip / no-intent (pre-filter fast-exit) /
+    intent-below-threshold all exit 0; `stop_hook_active=true` exits 0 (loop guard); and running the
+    FIRE fixture twice under one `session_id` fires once then is suppressed by the sentinel.
+    `main()`'s stdin/sentinel plumbing beyond the end-to-end runs is not separately unit-tested
+    (pure-helper convention). Extended during `/review` on PR #706 with the narrowed-keyword
+    non-fires (`analytics`, bare `deploy`) and the `check the deploy` still-fires case, the
+    write-scoped stub-Bash detection (an `ls`/`cat` read of a `*.stub.md` does not count; a
+    `git add`/redirect write does), the `/review-*` hyphen boundary, the non-ASCII-cwd cp1252
+    sanitization, and the empty-stdin / non-dict-payload fail-open e2e paths (64 tests total).
+    ([ADR-100](docs/adr/100-stop-journal-stub-checkpoint-hook.md); dev-env#702)
+
+    ```bash
+    py -3 claude/scripts/tests/test_stop_journal_stub_checkpoint.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
