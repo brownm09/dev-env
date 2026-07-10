@@ -1319,6 +1319,42 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_pre_tool_use_journal_compose_force_guard.py
     ```
 
+56. **dev-env-sync test** — required when changing `claude/scripts/dev-env-sync.py`. Exercises
+    the pure message-formatting helpers offline (no subprocess, no network, no git): `_plural()`
+    singular/plural; `_count_from()` parsing a clean `git rev-list --count` result and failing
+    open to `0` on a non-zero returncode or non-digit stdout (this diagnostic is advisory only,
+    never load-bearing); `format_sync_note()` short-SHA truncation and pluralization;
+    `format_pull_failure_message()` preserving git's own named-conflicting-file text alongside
+    the new behind-count clause; `format_diverged_message()` showing both the ahead and behind
+    counts for a true fork, and — a review finding on this same PR — using distinct,
+    non-contradictory wording ("is ahead of origin/main", not "has diverged") when `behind == 0`
+    (local merely has commits origin/main doesn't, e.g. a commit landed directly on the
+    canonical) rather than always claiming divergence; and `format_pulled_message()` — matching
+    pre/post commit counts print no extra note, a genuine mismatch (the pre-pull `behind_count`
+    disagreeing with the actual post-pull `git log` range — the central ambiguity in
+    dev-env#694's unreproduced "Pulled 0 commits" report) prints an explicit "a concurrent
+    process likely moved origin/main mid-pull" note, a `behind_count == 0` case is instead
+    labeled "could not be measured" rather than misattributed to a concurrent process (another
+    review finding — `base == local` and `local != remote` are already established at the call
+    site, so a real measurement is always >= 1, meaning 0 can only be `_count_from`'s fail-open
+    sentinel), the local/remote short SHAs now actually appear in the success message (a third
+    review finding — the parameters were previously accepted but never used, contradicting this
+    PR's own stated behavior), and the existing >5-lines-pulled truncation trailer is unchanged.
+    Also pins that every formatter's output is `.encode("cp1252")`-safe (not the stricter
+    `.isascii()`, since the pre-existing em dash is non-ASCII but cp1252-safe) — a fourth review
+    finding, since this PR's entire premise is fixing a cp1252 failure and the original test
+    suite had no assertion that would catch a regression. The git/subprocess orchestration
+    (fetch, rev-parse, merge-base, the actual pull, and the off-main worktree-topology diagnosis
+    reused from `_worktree_topology.py`) is not covered here — it has no local pure logic beyond
+    the formatters above, matching this repo's established convention for topology-diagnosing
+    orchestration scripts (items 22/26/30; PR #661's own note that this file previously had
+    "zero local pure logic"). ([ADR-098](docs/adr/098-dev-env-sync-advisories-to-stdout.md);
+    dev-env#694)
+
+    ```bash
+    py -3 claude/scripts/tests/test_dev_env_sync.py
+    ```
+
 57. **journal-canonical-guard stdout-routing test** — required when changing
     `claude/scripts/journal-canonical-guard.py`. End-to-end only (no pure-function layer — this
     fix adds no new logic, only a stream-routing change); drives the real hook via subprocess
@@ -1354,18 +1390,30 @@ Observability dimension what to verify here instead.
 
 Hooks and scripts observe the Claude Code hook contract rather than a logging stack:
 
-- **Diagnostics go to stderr; exit codes carry meaning.** Blocking hooks emit to stderr and
-  use per-session marker files; non-blocking advisories exit 0. See
-  [ADR-027](docs/adr/027-userpromptsubmit-blocking-hook-conventions.md) and
-  [ADR-007](docs/adr/007-hook-command-invocation.md) for the invocation and output model.
+- **Stream choice is event-type- and intent-dependent — not a blanket "diagnostics go to
+  stderr" rule.** A **blocking** hook uses stderr + exit 2 (the one channel every hook event
+  forwards to Claude on a non-zero exit). A **non-blocking advisory** (always exits 0) must use
+  whichever stream that *specific* event type forwards on exit 0 — for `UserPromptSubmit`/
+  `UserPromptExpansion`/`SessionStart` that's **stdout** (stderr is not surfaced there); other
+  event types (e.g. `Stop`) forward neither stream on exit 0, so an always-exit-0 advisory is
+  invisible regardless of stream and must block (exit 2 + stderr) to be seen at all. Getting
+  this backwards is silent by construction: `dev-env-sync.py`'s exit-0 warnings sat on stderr
+  for months, hiding a fast-forward-pull failure for 36+ hours and 21+ commits of drift before
+  anyone noticed (dev-env#694, [ADR-098](docs/adr/098-dev-env-sync-advisories-to-stdout.md));
+  `journal-stop-check.py`'s archive reminder had the mirror-image `Stop`-hook bug
+  ([ADR-091](docs/adr/091-journal-stop-check-archive-reminder-blocking.md)). Base contract:
+  [ADR-027](docs/adr/027-userpromptsubmit-blocking-hook-conventions.md); invocation model:
+  [ADR-007](docs/adr/007-hook-command-invocation.md).
 - **The equivalent of "is it observable / correct at its boundaries" is the verification
   suite in `## Testing` above** — the hook-script syntax check, the `pyw -3` stdio test, and
   the pre-push self-test. A change to a hook or script must keep those green.
 
 What the Pass 3 Observability dimension should verify for a dev-env change: any new or changed
-hook/script routes diagnostics to stderr (not stdout, which Claude Code consumes), chooses its
-exit code deliberately (0 = advisory, non-zero = blocking), and is covered by the relevant
-`## Testing` self-test. Pure docs/config changes (like this one) answer "N/A — no runtime."
+hook/script routes its output to the stream its event type and blocking-intent actually deliver
+to Claude on the exit code it uses (see the stream-choice bullet above — never assume stderr is
+always the safe/diagnostic channel), chooses its exit code deliberately (0 = advisory, non-zero
+= blocking), and is covered by the relevant `## Testing` self-test. Pure docs/config changes
+(like this one) answer "N/A — no runtime."
 
 ## Documentation Maintenance
 
