@@ -176,6 +176,10 @@
           },
           {
             "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/stop-journal-stub-checkpoint.py"
+          },
+          {
+            "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/scripts/awake-blocker.py"
           }
         ]
