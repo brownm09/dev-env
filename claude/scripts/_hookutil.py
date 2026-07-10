@@ -15,6 +15,12 @@ in the consuming scripts before this module:
   stop-tile-enumeration-gate.py to parse a transcript into records and pair Bash
   tool_use/tool_result calls. `iter_bash_calls` returns (command, output, cwd)
   3-tuples (the advisory scopes by cwd; the gate ignores it) (ADR-090).
+- **Bounded tail reader** (`iter_records_reverse`) — used by idle-refresher.py,
+  which only needs the last assistant record's timestamp and would otherwise pay
+  a full parse of a potentially multi-MB transcript on every prompt submit. Reads
+  the file from the end in bounded chunks instead of the whole thing; a caller
+  that stops consuming the generator early never touches the unread remainder
+  (dev-env#679, ADR-090 Amendment 1).
 
 Mirrors how _hookio.py was extracted for PostToolUse Bash hooks (ADR-050).
 See ADR-064 and ADR-090 for rationale.
@@ -32,6 +38,12 @@ Usage:
     records = _hookutil.load_records(tpath)
     for command, output, cwd in _hookutil.iter_bash_calls(records):
         ...
+
+    # Only need a small piece of tail state? Avoid the full parse:
+    for rec in _hookutil.iter_records_reverse(tpath):
+        if rec.get("type") == "assistant":
+            ...  # first match is the most recent -- stop here if that's all you need
+            break
 """
 from __future__ import annotations
 
@@ -42,6 +54,7 @@ from pathlib import Path
 SCRATCH = Path.home() / ".claude" / "scratch"
 PROJECTS = Path.home() / ".claude" / "projects"
 MAX_AGE_DAYS = 30
+DEFAULT_REVERSE_CHUNK_SIZE = 65536  # 64 KiB
 
 
 def cleanup_stale_sentinels(prefix: str, scratch: Path | None = None) -> None:
@@ -199,3 +212,70 @@ def load_records(transcript_path: Path) -> list:
     (via ``_parse_records`` — non-object lines are dropped)."""
     with open(transcript_path, encoding="utf-8") as f:
         return _parse_records(f.read())
+
+
+def _record_from_line(raw: bytes):
+    """Decode+parse one raw JSONL line (bytes, no trailing newline) into a
+    dict record, or ``None`` for a blank/malformed/non-object line. Shared by
+    ``iter_records_reverse``'s chunk loop; ``errors="replace"`` on decode
+    means a corrupted byte sequence degrades to a JSON parse failure (caught
+    below) rather than raising, matching ``_parse_records``'s skip-and-continue
+    contract."""
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    try:
+        rec = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def iter_records_reverse(transcript_path: Path, chunk_size: int = DEFAULT_REVERSE_CHUNK_SIZE):
+    """Yield JSON-object records from *transcript_path* most-recent-first,
+    reading the file from the end in bounded ``chunk_size`` chunks instead of
+    parsing it whole (contrast ``load_records``, which always reads and parses
+    every line -- dev-env#679).
+
+    A caller that only needs a small piece of tail state -- e.g.
+    idle-refresher.py's last-assistant-record timestamp -- can stop consuming
+    the generator (``break``, or a bare ``next()``) as soon as it finds a
+    match; the unread, earlier portion of the file is never touched. Chunk
+    boundaries are found on raw bytes before any UTF-8 decoding, so a
+    multi-byte character split across two chunk reads is never corrupted (the
+    ASCII ``\\n`` byte cannot appear inside a UTF-8 continuation or lead byte).
+    Blank and malformed lines are skipped and a non-object JSON value (``42``,
+    ``"s"``, ``null``, ``[1]``) is dropped, mirroring ``_parse_records``'s
+    contract -- see ``_record_from_line``.
+
+    Raises the same exceptions ``open()`` would (``FileNotFoundError`` /
+    ``OSError``) on a missing/unreadable path, and ``ValueError`` for a
+    non-positive ``chunk_size`` (which would never advance the read
+    position). Callers that want fail-open behavior should catch around
+    consumption, same as ``load_records``'s contract.
+    """
+    if chunk_size <= 0:
+        raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+
+    with open(transcript_path, "rb") as f:
+        f.seek(0, 2)  # SEEK_END
+        pos = f.tell()
+        tail = b""  # a leading line fragment that continues into bytes not yet read
+        while pos > 0:
+            read_size = min(chunk_size, pos)
+            pos -= read_size
+            f.seek(pos)
+            buf = f.read(read_size) + tail
+            lines = buf.split(b"\n")
+            if pos > 0:
+                # lines[0] continues before this chunk -- hold it, don't yield yet.
+                tail = lines[0]
+                complete = lines[1:]
+            else:
+                # Start of file: lines[0] is now bounded on both ends.
+                tail = b""
+                complete = lines
+            for raw in reversed(complete):
+                rec = _record_from_line(raw)
+                if rec is not None:
+                    yield rec

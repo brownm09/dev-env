@@ -14,10 +14,18 @@ calculation, the threshold decision (including the non-positive-value ->
 default fallback, another `/review` finding), config load + default, the
 automated-prompt skip, and the ASCII/cp1252-safety of the injected text —
 matching the repo's fixture-only test convention (test_disk_space_check.py).
-main()'s stdin plumbing and the live transcript read are intentionally not
-covered (they touch real stdin/disk and the repo avoids mocking those
-boundaries; the reads go through the already-tested _hookutil.load_records /
-find_transcript).
+
+last_activity_epoch's contract changed under dev-env#679 (ADR-090 Amendment 1):
+it now takes an already most-recent-first iterable (a plain `for` loop, no
+internal `reversed()`) instead of a forward-chronological list, so a live
+caller can feed it a lazy, bounded generator (_hookutil.iter_records_reverse)
+without first materializing the whole transcript. The three
+last_activity_epoch fixtures below are written newest-first accordingly, and
+test_last_activity_epoch_consumes_lazily proves the generator contract itself
+(a hand-rolled generator that raises if pulled past the match). main()'s stdin
+plumbing and the live transcript read are intentionally not covered (they
+touch real stdin/disk and the repo avoids mocking those boundaries; the reads
+go through the already-tested _hookutil.iter_records_reverse).
 
 Usage:
     py -3 claude/scripts/tests/test_idle_refresher.py
@@ -77,41 +85,60 @@ def test_parse_iso_bad_input_is_none() -> str:
 
 
 def test_last_activity_picks_last_assistant() -> str:
-    records = [
-        {"type": "user", "timestamp": "2026-07-09T10:00:00Z"},
-        {"type": "assistant", "timestamp": "2026-07-09T10:01:00Z"},
-        {"type": "user", "timestamp": "2026-07-09T10:02:00Z"},  # tool_result — must be ignored
+    # records_reverse is most-recent-first (the newest record comes first).
+    records_reverse = [
         {"type": "assistant", "timestamp": "2026-07-09T10:03:00Z"},  # end of last turn
+        {"type": "user", "timestamp": "2026-07-09T10:02:00Z"},  # tool_result — must be ignored
+        {"type": "assistant", "timestamp": "2026-07-09T10:01:00Z"},
+        {"type": "user", "timestamp": "2026-07-09T10:00:00Z"},
     ]
-    got = ir.last_activity_epoch(records)
+    got = ir.last_activity_epoch(records_reverse)
     expected = ir.parse_iso_to_epoch("2026-07-09T10:03:00Z")
-    assert got == expected, f"must anchor on the LAST assistant record ({got} != {expected})"
-    return "last assistant record's timestamp is the anchor (user records ignored)"
+    assert got == expected, f"must anchor on the LAST (first-in-reverse) assistant record ({got} != {expected})"
+    return "the most-recent assistant record's timestamp is the anchor (user records ignored)"
 
 
 def test_last_activity_none_without_assistant() -> str:
     # First prompt of a session: only the user's prompt (and meta) exist, no assistant turn.
-    records = [
-        {"type": "user", "timestamp": "2026-07-09T10:00:00Z"},
+    records_reverse = [
         {"type": "queue-operation", "timestamp": "2026-07-09T10:00:01Z"},
+        {"type": "user", "timestamp": "2026-07-09T10:00:00Z"},
     ]
-    assert ir.last_activity_epoch(records) is None, "no assistant record -> None"
+    assert ir.last_activity_epoch(records_reverse) is None, "no assistant record -> None"
     assert ir.last_activity_epoch([]) is None, "empty transcript -> None"
     return "no assistant record -> None (first-prompt / empty-transcript skip)"
 
 
 def test_last_activity_skips_corrupted_trailing_timestamp() -> str:
-    # The truly-last assistant record has an unparseable timestamp; scanning
-    # backward must not stop there -- it should fall back to the nearest
-    # EARLIER assistant record that does have a valid one, not return None.
-    records = [
-        {"type": "assistant", "timestamp": "2026-07-09T10:01:00Z"},
+    # The most-recent assistant record (first in reverse order) has an
+    # unparseable timestamp; scanning must not stop there -- it should fall
+    # back to the next EARLIER assistant record that does have a valid one,
+    # not return None.
+    records_reverse = [
         {"type": "assistant", "timestamp": "not-a-timestamp"},
+        {"type": "assistant", "timestamp": "2026-07-09T10:01:00Z"},
     ]
-    got = ir.last_activity_epoch(records)
+    got = ir.last_activity_epoch(records_reverse)
     expected = ir.parse_iso_to_epoch("2026-07-09T10:01:00Z")
     assert got == expected, f"must fall back to the nearest valid earlier timestamp ({got} != {expected})"
-    return "corrupted trailing timestamp -> falls back to nearest valid earlier one"
+    return "corrupted trailing (most-recent) timestamp -> falls back to nearest valid earlier one"
+
+
+def test_last_activity_epoch_consumes_lazily() -> str:
+    # The whole point of dev-env#679 is that last_activity_epoch must stop
+    # pulling from its generator argument as soon as it finds a match, rather
+    # than requiring the caller to first materialize a full list. Prove it
+    # with a hand-rolled generator that raises if pulled past the match.
+    match_ts = "2026-07-09T10:03:00Z"
+
+    def records_reverse():
+        yield {"type": "assistant", "timestamp": match_ts}
+        raise AssertionError("last_activity_epoch pulled past its first match -- not lazy")
+
+    got = ir.last_activity_epoch(records_reverse())
+    expected = ir.parse_iso_to_epoch(match_ts)
+    assert got == expected, f"got {got}, expected {expected}"
+    return "last_activity_epoch stops consuming its generator argument at the first match"
 
 
 def test_compute_gap_seconds() -> str:
@@ -206,6 +233,7 @@ def main() -> int:
         ("last_activity picks last assistant", test_last_activity_picks_last_assistant),
         ("last_activity None without assistant", test_last_activity_none_without_assistant),
         ("last_activity skips corrupted trailing timestamp", test_last_activity_skips_corrupted_trailing_timestamp),
+        ("last_activity_epoch consumes its generator lazily", test_last_activity_epoch_consumes_lazily),
         ("compute_gap_seconds", test_compute_gap_seconds),
         ("should_refresh boundary (strict >)", test_should_refresh_boundary),
         ("load_threshold configured override", test_load_threshold_configured),
