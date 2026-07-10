@@ -105,6 +105,19 @@ def test_format_pull_failure_message_includes_conflict_and_note() -> str:
 def test_format_diverged_message_shows_both_directions() -> str:
     msg = format_diverged_message(LOCAL, REMOTE, behind=3, ahead=2)
     assert "2 commits ahead" in msg and "3 commits behind" in msg, "must show both ahead and behind counts"
+    assert "has diverged" in msg, "a true fork (both ahead and behind > 0) must say 'diverged'"
+    assert LOCAL[:8] in msg and REMOTE[:8] in msg, "both short SHAs must appear"
+    return msg.splitlines()[0]
+
+
+def test_format_diverged_message_ahead_only_is_not_labeled_diverged() -> str:
+    # Review finding, PR #701: behind == 0 means local is merely ahead (e.g. a commit landed
+    # directly on the canonical) -- not a true fork. Calling it "diverged" would be internally
+    # contradictory ("0 commits behind ... has diverged").
+    msg = format_diverged_message(LOCAL, REMOTE, behind=0, ahead=4)
+    assert "is ahead of origin/main" in msg, "ahead-only state must use non-contradictory wording"
+    assert "has diverged" not in msg, "must not claim divergence when behind == 0"
+    assert "4 commits" in msg, "ahead count must still be shown"
     assert LOCAL[:8] in msg and REMOTE[:8] in msg, "both short SHAs must appear"
     return msg.splitlines()[0]
 
@@ -113,6 +126,7 @@ def test_format_pulled_message_matching_counts_has_no_mismatch_note() -> str:
     lines = ["abc1234 fix: something", "def5678 feat: something else"]
     msg = format_pulled_message(LOCAL, REMOTE, behind_count=2, pulled_lines=lines)
     assert "Pulled 2 commits" in msg, "count must reflect the pulled lines"
+    assert LOCAL[:8] in msg and REMOTE[:8] in msg, "both short SHAs must appear (review finding, PR #701)"
     assert "concurrent process" not in msg, "matching counts must not print the race-note"
     for line in lines:
         assert line in msg, f"each pulled commit line must be shown: {line}"
@@ -123,6 +137,7 @@ def test_format_pulled_message_singular_commit() -> str:
     msg = format_pulled_message(LOCAL, REMOTE, behind_count=1, pulled_lines=["abc1234 fix: x"])
     assert "Pulled 1 commit " in msg or msg.count("Pulled 1 commit\n") or "Pulled 1 commit -" in msg, msg
     assert "Pulled 1 commits" not in msg, "1 must be singular"
+    assert LOCAL[:8] in msg and REMOTE[:8] in msg, "both short SHAs must appear"
     return msg.splitlines()[0]
 
 
@@ -139,11 +154,46 @@ def test_format_pulled_message_mismatch_surfaces_race_note() -> str:
     # dev-env#694's central ambiguity: behind_count (measured pre-pull) disagreeing with the
     # actual post-pull log range means a concurrent process moved the ref mid-pull. A future
     # occurrence of the original "Pulled 0 commits" mystery must now explain itself here.
+    # behind_count=5 (nonzero) is a REAL measurement, distinct from the fail-open-to-0 sentinel
+    # covered by test_format_pulled_message_zero_behind_count_reports_unmeasured below.
     msg = format_pulled_message(LOCAL, REMOTE, behind_count=5, pulled_lines=[])
     assert "Pulled 0 commits" in msg, "an empty post-pull range still reports the pulled count honestly"
     assert "measured 5 commits behind before pulling" in msg, "the pre-pull measurement must be surfaced"
     assert "concurrent process likely moved origin/main" in msg, "must name the likely cause"
     return msg
+
+
+def test_format_pulled_message_zero_behind_count_reports_unmeasured() -> str:
+    # Review finding, PR #701: at the call site, base == local and local != remote are already
+    # established, so a REAL behind_count is always >= 1 -- behind_count == 0 can only mean the
+    # pre-pull rev-list measurement itself failed (_count_from's fail-open sentinel). Even though
+    # commits were genuinely pulled, this must NOT be misattributed to a concurrent process.
+    msg = format_pulled_message(LOCAL, REMOTE, behind_count=0, pulled_lines=["abc1234 fix: x"])
+    assert "Pulled 1 commit" in msg, "the pulled count must still be reported honestly"
+    assert "could not be measured" in msg, "a zero behind_count must be labeled as unmeasured"
+    assert "concurrent process" not in msg, "a measurement failure must not be misattributed as a race"
+    return msg
+
+
+def test_all_formatters_are_cp1252_encodable() -> str:
+    # This PR's entire premise is fixing a cp1252 failure (the previous "warning sign" emoji,
+    # silently discarded on stderr regardless of encoding). Pin that every formatter's output
+    # survives Claude Code's cp1252 hook-output pipe on Windows, so a future non-cp1252 character
+    # (emoji, smart quote, arrow) can't silently reintroduce this exact bug class -- review
+    # finding, PR #701. The em dash (u2014) is non-ASCII but IS cp1252-safe (0x97), so this
+    # asserts .encode("cp1252") succeeds rather than the stricter .isascii() some sibling tests
+    # use (which would incorrectly fail on the em dash).
+    messages = [
+        format_sync_note(LOCAL, REMOTE, 21),
+        format_pull_failure_message(LOCAL, REMOTE, 21, "error: conflict\nAborting"),
+        format_diverged_message(LOCAL, REMOTE, behind=3, ahead=2),
+        format_diverged_message(LOCAL, REMOTE, behind=0, ahead=4),
+        format_pulled_message(LOCAL, REMOTE, behind_count=2, pulled_lines=["abc1234 fix: x"]),
+        format_pulled_message(LOCAL, REMOTE, behind_count=0, pulled_lines=["abc1234 fix: x"]),
+    ]
+    for msg in messages:
+        msg.encode("cp1252")  # raises UnicodeEncodeError if not cp1252-safe
+    return f"{len(messages)} formatter outputs all cp1252-encodable"
 
 
 def main() -> int:
@@ -155,10 +205,13 @@ def main() -> int:
         ("format_sync_note shortens SHAs and pluralizes", test_format_sync_note_shortens_shas_and_pluralizes),
         ("format_pull_failure_message includes conflict + note", test_format_pull_failure_message_includes_conflict_and_note),
         ("format_diverged_message shows both directions", test_format_diverged_message_shows_both_directions),
+        ("format_diverged_message: ahead-only is not labeled diverged", test_format_diverged_message_ahead_only_is_not_labeled_diverged),
         ("format_pulled_message: matching counts, no mismatch note", test_format_pulled_message_matching_counts_has_no_mismatch_note),
         ("format_pulled_message: singular commit", test_format_pulled_message_singular_commit),
         ("format_pulled_message: truncates with trailer", test_format_pulled_message_truncates_with_trailer),
         ("format_pulled_message: mismatch surfaces race note", test_format_pulled_message_mismatch_surfaces_race_note),
+        ("format_pulled_message: zero behind_count reports unmeasured", test_format_pulled_message_zero_behind_count_reports_unmeasured),
+        ("all formatters are cp1252-encodable", test_all_formatters_are_cp1252_encodable),
     ]
     failed = 0
     for name, fn in tests:

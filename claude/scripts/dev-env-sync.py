@@ -82,6 +82,22 @@ def format_pull_failure_message(local: str, remote: str, behind: int, git_stderr
 
 
 def format_diverged_message(local: str, remote: str, behind: int, ahead: int) -> str:
+    """Warning for local `main` not being a fast-forward ancestor of `origin/main`.
+
+    Covers two distinct states the caller does not distinguish: a true fork (``behind`` and
+    ``ahead`` both > 0) versus local merely being ahead with nothing new on origin (``behind
+    == 0``, e.g. a commit landed directly on the canonical). Calling the latter "diverged"
+    would be internally contradictory ("0 commits behind ... has diverged") — review finding,
+    PR #701.
+    """
+    if behind == 0:
+        return (
+            "[dev-env-sync] WARNING: local dev-env repo is ahead of origin/main "
+            f"(local {local[:8]} has {ahead} commit{_plural(ahead)} not on origin/main "
+            f"{remote[:8]} — did something commit directly to the canonical?).\n"
+            "CLAUDE.md and symlinked tooling may be stale. Run `git -C ~/Git/dev-env "
+            "status` to investigate before proceeding."
+        )
     return (
         "[dev-env-sync] WARNING: local dev-env repo has diverged from origin/main "
         f"(local {local[:8]} is {ahead} commit{_plural(ahead)} ahead and {behind} "
@@ -99,19 +115,30 @@ def format_pulled_message(local: str, remote: str, behind_count: int, pulled_lin
     measurements (most likely a concurrent session's own sync hook racing this one against the
     same shared canonical checkout), which is exactly the ambiguity that made dev-env#694 hard
     to root-cause after the fact. Surfacing it here means a future recurrence explains itself.
+
+    A mismatch note is only printed when ``behind_count`` reflects a real measurement. At the
+    call site, ``base == local`` and ``local != remote`` are already established, so a
+    successful ``rev-list --count`` is always >= 1 here — ``behind_count == 0`` can only mean
+    the measurement itself failed (``_count_from``'s fail-open sentinel), not a genuine "0
+    commits behind". Blaming that on a concurrent process would misattribute a measurement
+    failure as a race — review finding, PR #701.
     """
     count = len(pulled_lines)
     shown = pulled_lines[:5]
     trailer = f"  ... and {count - 5} more" if count > 5 else ""
-    note = ""
-    if count != behind_count:
+    if behind_count == 0:
+        note = "\n  (pre-pull commit-behind count could not be measured)"
+    elif count != behind_count:
         note = (
             f"\n  (measured {behind_count} commit{_plural(behind_count)} behind before "
             "pulling — a concurrent process likely moved origin/main mid-pull)"
         )
+    else:
+        note = ""
     return (
-        f"[dev-env-sync] Pulled {count} commit{_plural(count)} from origin/main — "
-        "CLAUDE.md and tooling are now current.\n"
+        f"[dev-env-sync] Pulled {count} commit{_plural(count)} from origin/main "
+        f"(local {local[:8]} -> origin/main {remote[:8]}) — CLAUDE.md and tooling are now "
+        "current.\n"
         + "\n".join(f"  {line}" for line in shown)
         + (f"\n{trailer}" if trailer else "")
         + note
@@ -260,4 +287,11 @@ if __name__ == "__main__":
         # failure (timeout, git missing from PATH, etc.) — matches the established fail-open
         # convention for UserPromptSubmit hooks touching this canonical
         # (journal-canonical-guard.py, new-day-journal-check.py; review finding, PR #661).
+        # Unlike those two, this hook's whole purpose is eliminating invisible failures, so
+        # print a minimal pure-ASCII notice (never a formatted/dynamic value that could itself
+        # raise) rather than fail open in total silence — review finding, PR #701.
+        try:
+            print("[dev-env-sync] WARNING: sync check failed unexpectedly and was skipped this prompt.")
+        except Exception:
+            pass
         sys.exit(0)

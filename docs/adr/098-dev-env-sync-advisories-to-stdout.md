@@ -102,20 +102,41 @@ erasing the user's prompt):
   fires, without repeating the call). This directly implements dev-env#694's own suggested
   follow-up ("print the local and remote SHAs … alongside 'Pulled N commits'").
 - The success message additionally compares its pre-pull `behind_count` against the actual
-  post-pull `git log --oneline` range and, on a mismatch, prints an explicit note naming a
-  concurrent process as the likely cause. This targets dev-env#694's central unresolved
+  post-pull `git log --oneline` range and, on a genuine mismatch, prints an explicit note naming
+  a concurrent process as the likely cause. This targets dev-env#694's central unresolved
   ambiguity directly: the reported "Pulled 0 commits" text could not be reproduced from the code
   as a single deterministic path (that branch only executes after the code has already confirmed
   `local != remote`), and is most plausibly explained by a TOCTOU race between two sessions'
   `dev-env-sync.py` invocations against the same shared, unlocked canonical checkout — a
   scenario the code does not prevent (no lock file is introduced by this change; see
-  Alternatives) but must now at least explain when it recurs.
+  Alternatives) but must now at least explain when it recurs. **Refined during `/review`:**
+  `base == local` and `local != remote` are already established at the call site, so a
+  correctly-measured `behind_count` is always ≥ 1 there — `behind_count == 0` can only mean the
+  `rev-list` measurement itself failed (`_count_from`'s documented fail-open sentinel), not a
+  genuine zero. The initial implementation didn't distinguish this from a real mismatch and
+  would have blamed a measurement failure on a concurrent process; it now reports that specific
+  case as "could not be measured" instead. The same review pass also caught that the success
+  message accepted `local`/`remote` parameters but never actually used them — contradicting this
+  bullet's own claim above — and that `format_diverged_message` labeled a local-ahead-only state
+  (`behind == 0`, e.g. a commit landed directly on the canonical) as "diverged" alongside "0
+  commits behind," an internally contradictory pairing; both are fixed in the code as shipped.
+- The test suite (`test_dev_env_sync.py`) additionally pins that every formatter's output is
+  `.encode("cp1252")`-safe — added during `/review` after noting the original suite had no such
+  assertion despite this ADR's entire premise being a cp1252 failure (the retired `⚠️` emoji);
+  without it, a future non-cp1252 character in any of these messages would regress silently.
 - `main()`'s call site is wrapped in `try`/`except Exception: sys.exit(0)`, matching the
-  established fail-open convention this same review cycle added to the sibling
-  `journal-canonical-guard.py` (PR #661) and to `new-day-journal-check.py` — honoring the "Exit 0
+  established fail-open convention already present, unmodified, in the sibling
+  `journal-canonical-guard.py` and `new-day-journal-check.py` — honoring the "Exit 0
   always" docstring contract even against an unexpected subprocess timeout or `git` binary
   absence, which is now marginally more likely with the two additional `rev-list` calls this
-  change adds.
+  change adds. **Refined during `/review`:** unlike those two siblings, this file's entire
+  purpose is eliminating invisible failures, so — rather than fail open in the same total
+  silence being fixed everywhere else in this ADR — the handler now prints one pure-ASCII
+  fail-open notice to stdout first. This closes the one remaining path (an unexpected exception,
+  e.g. a future `UnicodeEncodeError` from a non-cp1252 character elsewhere in the file) that
+  would otherwise still reconstruct dev-env#694's exact symptom: a real failure, silently
+  discarded. The sibling files' identical silent handlers are intentionally left alone here —
+  see Scope — but the same gap applies to them and is worth a mention in dev-env#699.
 
 ### Scope
 
