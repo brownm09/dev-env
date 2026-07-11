@@ -41,6 +41,7 @@ spec.loader.exec_module(mod)
 
 segment_targets_today_compose = mod.segment_targets_today_compose
 command_targets_today_compose = mod.command_targets_today_compose
+_is_compose_op = mod._is_compose_op
 
 import _journal_compose_force as jcf  # noqa: E402
 
@@ -236,6 +237,57 @@ def test_command_targets_today_compose_short_circuits_when_date_absent():
 
 
 # ---------------------------------------------------------------------------
+# Layer 1: _is_compose_op classification tests (dev-env#728)
+#
+# Ensures stub-write operations (git push -u origin draft/<today>) are
+# allowed while genuine compose ops (same command from a compose worktree, or
+# with -C compose-<today> path) are still gated.
+# ---------------------------------------------------------------------------
+
+def test_is_compose_op_compose_cwd_returns_true():
+    cmd = f'git push origin draft/{TODAY}'
+    cwd = f'C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-{TODAY}'
+    assert _is_compose_op(cmd, cwd, TODAY) is True
+
+def test_is_compose_op_slash_form_compose_cwd_returns_true():
+    cmd = f'git push origin draft/{TODAY}'
+    cwd = f'/path/to/compose/{TODAY}'
+    assert _is_compose_op(cmd, cwd, TODAY) is True
+
+def test_is_compose_op_C_flag_compose_path_returns_true():
+    cmd = f'git -C /path/to/compose-{TODAY} push origin draft/{TODAY}'
+    assert _is_compose_op(cmd, "C:/x", TODAY) is True
+
+def test_is_compose_op_stub_write_push_simple_returns_false():
+    # The exact command blocked by dev-env#728: first-session stub push.
+    cmd = f'git push -u origin draft/{TODAY}'
+    assert _is_compose_op(cmd, "C:/Users/brown/Git/engineering-journal", TODAY) is False
+
+def test_is_compose_op_stub_write_push_refs_heads_returns_false():
+    # git push origin HEAD:refs/heads/draft/<today> from a non-compose cwd.
+    cmd = f'git push origin HEAD:refs/heads/draft/{TODAY}'
+    assert _is_compose_op(cmd, "C:/Users/brown/Git/engineering-journal", TODAY) is False
+
+def test_is_compose_op_compose_token_in_message_not_compose():
+    # compose-<today> in a commit message (prose) must not trigger the compose path.
+    cmd = f'git commit -m "mentions compose-{TODAY} as prose" -- some/file.md'
+    assert _is_compose_op(cmd, "C:/x", TODAY) is False
+
+def test_is_compose_op_empty_cwd_stub_write_returns_false():
+    cmd = f'git push -u origin draft/{TODAY}'
+    assert _is_compose_op(cmd, "", TODAY) is False
+
+def test_is_compose_op_worktree_add_with_compose_dest_returns_true():
+    # Normal compose worktree add: destination path carries compose-<today>.
+    cmd = (
+        f'git -C C:/Users/brown/Git/engineering-journal worktree add --detach '
+        f'C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-{TODAY} '
+        f'refs/remotes/origin/draft/{TODAY}'
+    )
+    assert _is_compose_op(cmd, "C:/x", TODAY) is True
+
+
+# ---------------------------------------------------------------------------
 # Layer 2: end-to-end subprocess tests
 # ---------------------------------------------------------------------------
 
@@ -409,6 +461,64 @@ def test_e2e_crash_after_trigger_fails_closed():
         reason = json.loads(proc.stderr)["reason"]
         assert "BLOCKED" in reason
         assert "crashed" in reason
+
+
+def test_e2e_stub_write_push_allows_without_marker():
+    # Regression for dev-env#728: git push -u origin draft/<today> from the
+    # engineering-journal canonical checkout (not a compose worktree) must be
+    # allowed even when no force marker exists.
+    with tempfile.TemporaryDirectory() as tmp:
+        today = datetime.date.today().isoformat()
+        cmd = f'git push -u origin draft/{today}'
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+            "cwd": "C:/Users/brown/Git/engineering-journal",
+        }
+        proc = _run_hook(payload, marker_dir=tmp)
+        assert proc.returncode == 0
+        assert proc.stderr == ""
+
+def test_e2e_stub_write_refs_heads_push_allows_without_marker():
+    # Regression for dev-env#728: full refspec push from non-compose cwd.
+    with tempfile.TemporaryDirectory() as tmp:
+        today = datetime.date.today().isoformat()
+        cmd = f'git push origin HEAD:refs/heads/draft/{today}'
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+            "cwd": "C:/Users/brown/Git/engineering-journal",
+        }
+        proc = _run_hook(payload, marker_dir=tmp)
+        assert proc.returncode == 0
+        assert proc.stderr == ""
+
+def test_e2e_stub_write_from_compose_cwd_still_blocked():
+    # A push to draft/<today> FROM a compose worktree cwd is a compose op
+    # and must still be blocked without a marker.
+    with tempfile.TemporaryDirectory() as tmp:
+        today = datetime.date.today().isoformat()
+        cmd = f'git push origin draft/{today}'
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+            "cwd": f'C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-{today}',
+        }
+        proc = _run_hook(payload, marker_dir=tmp)
+        assert proc.returncode == 2
+
+def test_e2e_stub_write_with_C_compose_path_still_blocked():
+    # git -C compose-<today> push ... is a compose op even from a plain cwd.
+    with tempfile.TemporaryDirectory() as tmp:
+        today = datetime.date.today().isoformat()
+        cmd = f'git -C C:/path/compose-{today} push origin draft/{today}'
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+            "cwd": "C:/x",
+        }
+        proc = _run_hook(payload, marker_dir=tmp)
+        assert proc.returncode == 2
 
 
 if __name__ == "__main__":

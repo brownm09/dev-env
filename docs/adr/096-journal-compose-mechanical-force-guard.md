@@ -299,3 +299,45 @@ fault-injection seam placed just after the compose-target match, letting the new
 **Generalized.** Contributes to authoring invariant #5 ("declared fail direction") in
 [`docs/REFERENCE.md` → Hooks → Authoring rules](../REFERENCE.md#authoring-rules). Closes (with the
 ADR-083 addendum) [dev-env#718](https://github.com/brownm09/dev-env/issues/718).
+
+---
+
+## Addendum (2026-07-11) — Stub-write false-positive: `_is_compose_op` secondary check
+
+The Decision section's `_DATE_TOKEN_RE` matches **both** `draft/<today>` and `compose[-/]<today>`
+tokens, so any legitimate stub-write push (`git push -u origin draft/<today>`) issued from the
+engineering-journal canonical checkout was also caught by `segment_targets_today_compose` and
+blocked ([dev-env#728](https://github.com/brownm09/dev-env/issues/728)).
+
+**Root cause.** The hook correctly unified both patterns into one token regex to catch compose ops
+that carry only a `draft/<today>` refspec (e.g. `git -C compose-worktree push origin draft/<today>`
+— the compose worktree path appears in the `-C` scan token, not in the refspec). But stub-writes
+share the same refspec shape: `git push -u origin draft/<today>` from a plain checkout has
+`draft/<today>` in its scan tokens and nothing else. The two operations are indistinguishable at the
+segment level; the distinction is only visible at the command+cwd level.
+
+**Fix.** A new `_is_compose_op(command, cwd, today, segments)` secondary check returns True only
+when a compose-dated worktree is actually involved:
+
+1. **cwd fast path** — if `compose-<today>` or `compose/<today>` appears in the cwd path string,
+   the session is running inside a compose worktree; return True immediately.
+2. **command scan path** — if the raw command string contains `compose-<today>` or
+   `compose/<today>` anywhere, re-use the already-split segments to look for that substring in a
+   non-message scan token (via `_command_has_compose_token`); return True if found.
+3. **Neither** — neither the cwd nor any scan token carries a compose reference; this is a stub-write
+   referencing only `draft/<today>`; return False (allow).
+
+`main()` calls `_is_compose_op` after `command_targets_today_compose` returns True; a False result
+exits 0 (allow) before the marker check. The crash-guard seam (dev-env#718) is moved to after both
+checks so it still fires only when a genuine compose op is being evaluated.
+
+**Performance.** The common stub-write path short-circuits at step 3 via two substring checks on the
+raw command and cwd strings — no re-parse of segments. The compose path re-uses the already-split
+segments from the outer `command_targets_today_compose` call; no double-split.
+
+**Testing.** Eight new tests in `test_pre_tool_use_journal_compose_force_guard.py`:
+- Six Layer 1 unit tests for `_is_compose_op` covering: compose cwd (hyphen and slash forms), `-C`
+  compose path, stub-write simple push, stub-write refspec push, compose token in message prose
+  (must not trigger), empty cwd, and the normal worktree-add command.
+- Four Layer 2 e2e tests: stub push allowed without marker; full refspec push allowed without marker;
+  push from compose cwd still blocked; push with `-C compose-<today>` still blocked.
