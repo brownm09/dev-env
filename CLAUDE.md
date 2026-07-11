@@ -1498,6 +1498,37 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_pre_bash_drift_check.py
     ```
 
+60. **_hookout emitter test** — required when changing `claude/scripts/_hookout.py`. Exercises the
+    pure surface offline (no stdin, network, gh, or disk): the `plan_emission` channel-routing
+    matrix across every (audience x event-class x blocking) cell, `ascii_sanitize`, the exit-0 JSON
+    shape, and the `.isascii()` wire-safety guarantee. Pins that a `model` advisory on a context
+    event (UserPromptSubmit / SessionStart / UserPromptExpansion) routes to
+    `hookSpecificOutput.additionalContext` (exit 0), a `model` advisory with `blocking=True` (on a
+    context event AND on a non-context event) routes to exit-2 stderr, a `user` advisory routes to
+    `systemMessage` (exit 0) on any event, and `both` on a context event carries both keys in one
+    JSON object; that the undeliverable classes raise `ValueError` — a non-blocking `model` advisory
+    on a non-context event (there is no non-blocking model channel there), `user`+`blocking`, `both`
+    wherever its model half isn't deliverable, an invalid audience, and `event=None` non-blocking.
+    Pins `ascii_sanitize`'s punctuation/operator map (dashes, curly quotes, ellipsis, arrows,
+    comparison ops, bullet, middle dot, and the no-break space spelled `chr(0xA0)` so the source is
+    unambiguous), the emoji/unmapped `?` backstop, C0-control/DEL neutralization (except
+    newline/tab, so an ANSI/ESC or carriage-return sequence can't reach the raw stderr stream),
+    None/non-str coercion, and that the result is ALWAYS `.isascii()`; that exit-0 stdout is valid
+    JSON and stays `.isascii()` even when the
+    advisory text carries Unicode (ensure_ascii escaping) while `json.loads` restores the original
+    content; and that exit-2 stderr is `.isascii()` (ascii_sanitize applied). The `emit_advisory` /
+    `emit_block` deliverers are exercised in-process (redirecting stdout/stderr to `io.StringIO` and
+    catching the `SystemExit` they raise — still offline, no subprocess): each writes the planned
+    stream and exits with the planned code, an undeliverable `emit_advisory` propagates the
+    `ValueError` rather than reaching a stream write, and `_deliver` still delivers the exit code
+    even when the stream write raises `OSError` (closed-pipe resilience — a block's exit code is
+    load-bearing and must survive a broken pipe).
+    ([ADR-103](docs/adr/103-shared-hookout-emitter.md); dev-env#719)
+
+    ```bash
+    py -3 claude/scripts/tests/test_hookout.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
