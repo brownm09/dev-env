@@ -70,9 +70,11 @@ end. The first literal `sys.exit(N)` / `raise SystemExit(N)` reached wins; a `re
 <int literal>` -> that code (a `sys.exit(main())` entrypoint propagates main's
 return value as the exit code), and a bare `return` / non-literal return / falling
 off the scope end -> exit 0. Compound statements passed *over* (an `if` after the
-emission) are treated as pass-through, and cross-function pairing (a helper that
-emits then returns to a caller which exits 2) is NOT traced -- both are documented
-approximations.
+emission) are treated as pass-through -- a documented approximation. This
+governing-exit computation does not *itself* trace across functions (a helper that
+emits then returns to a caller which exits 2 is gov 0 here); that cross-function
+drop is instead flagged by a separate one-level pass (`analyze_dropped_by_caller`,
+feeding Check C -- see below), with two hops deep still untraced.
 
 For **Check A (stderr)** this can only *over*-flag (-> an allowlist entry), never
 miss: the dominant real shape (block reason then `sys.exit(2)`) and the
