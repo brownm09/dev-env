@@ -75,6 +75,7 @@ Exit 0 -- allow (not a same-day compose mutation, or a valid marker exists).
 """
 import datetime
 import json
+import os
 import re
 import shlex
 import sys
@@ -297,6 +298,19 @@ def main() -> None:
     if not command_targets_today_compose(command, today):
         sys.exit(0)
 
+    # Test-only fault-injection seam (inert in production -- the env var is never
+    # set outside test_pre_tool_use_journal_compose_force_guard.py's crash-path
+    # e2e). It exists because this gate is otherwise fully defensive -- read_marker
+    # swallows (OSError, ValueError) and is_marker_fresh swallows (ValueError,
+    # TypeError) -- so there is NO natural runtime-crash vector to drive the
+    # __main__ crash guard from an e2e subprocess. Placed here, after the same-day
+    # compose target is confirmed, so the test proves a crash while evaluating a
+    # genuine gated command becomes a fail-CLOSED exit 2, not the fail-OPEN exit 1
+    # it was before dev-env#718. (Unlike file 1, whose gh-response handling has a
+    # natural crash vector, so its e2e needs no such seam.)
+    if os.environ.get("JOURNAL_COMPOSE_FORCE_GUARD_TEST_CRASH"):
+        raise RuntimeError("injected crash for __main__ guard e2e test (dev-env#718)")
+
     marker = read_marker(marker_path_for(today))
     now = datetime.datetime.now()
     if marker and marker.get("force") is True and is_marker_fresh(marker, now):
@@ -306,4 +320,26 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise  # preserve main()'s own exit 0 (allow) / exit 2 (block) verdicts -- never reclassify
+    except Exception as exc:  # noqa: BLE001 -- fail CLOSED on ANY unexpected crash (#717/#718)
+        # Mirror _emit_block's channel: JSON reason on stderr + exit 2. json.dumps
+        # (ensure_ascii=True) escapes any non-ASCII in the exception text to \uXXXX,
+        # so the bytes written survive Claude Code's cp1252 stderr pipe on Windows.
+        # NB: this gate's *top-level imports* stay fail-OPEN by design -- it runs on
+        # every Bash call, so a broken _hookio must NOT exit 2 and block ALL Bash;
+        # only a crash *inside* main() (reached solely for a command that already
+        # matched a same-day compose target) fails closed here.
+        reason = (
+            f"[journal-compose-force-guard] BLOCKED: this guard crashed while "
+            f"evaluating the command ({type(exc).__name__}: {exc}) and failed closed "
+            f"per ADR-096. It only evaluates deeply on commands containing today's "
+            f"date, so this most likely targets a same-day journal-compose; if it does "
+            f"not, that is a hook bug -- report it. To proceed: fix the guard, or (only "
+            f"if the user has authorized force-composing today's journal in this "
+            f"conversation) re-run journal-compose-force-resolve.py \"--force\" and retry.\n"
+        )
+        sys.stderr.write(json.dumps({"reason": reason}) + "\n")
+        sys.exit(2)

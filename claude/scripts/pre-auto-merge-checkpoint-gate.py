@@ -50,19 +50,55 @@ import re
 import shlex
 import sys
 
-from _hookio import is_merge_help_only, mask_quoted_spans
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PMFG_PATH = os.path.join(_SCRIPT_DIR, "pre-merge-findings-gate.py")
-_pmfg_spec = importlib.util.spec_from_file_location("pre_merge_findings_gate", _PMFG_PATH)
-_pmfg = importlib.util.module_from_spec(_pmfg_spec)
-_pmfg_spec.loader.exec_module(_pmfg)
+def _fail_closed(msg: str) -> None:
+    """Block the merge (exit 2) with an ASCII-sanitized reason on stderr.
 
-is_pr_merge_command = _pmfg.is_pr_merge_command
-_parse_merge_target = _pmfg._parse_merge_target
-_MARKER_RE = _pmfg._MARKER_RE
-_DISPOSED_RE = _pmfg._DISPOSED_RE
-_fetch_pr_json = _pmfg._fetch_pr_json  # carries the MERGE_GATE_TEST_JSON test seam
+    Used by the crash/import guards below, which can carry arbitrary exception
+    text (a path, a third-party error message) that may not be cp1252-encodable;
+    Claude Code pipes hook stderr through cp1252 on Windows, so a raw non-ASCII
+    byte can make the whole reason vanish. Sanitizing to ASCII keeps it visible.
+    Distinct from `_advisory` (defined below): that handles main()'s statically-
+    ASCII block messages and is defined *after* the sibling-dependency load this
+    helper must be callable *before*. Both fail CLOSED per ADR-083 -- see that
+    ADR / Decision point 3 for why --auto inverts the usual fail-open calculus
+    (dev-env#717/#718).
+    """
+    sys.stderr.write(msg.encode("ascii", "replace").decode("ascii"))
+    sys.exit(2)
+
+
+# Load this gate's dependencies inside a fail-CLOSED guard. Previously the
+# module-level `from _hookio import ...` and the dynamic exec_module of
+# pre-merge-findings-gate.py were UNGUARDED: any import-time failure (a broken
+# sibling, a missing attribute) raised before main(), the process exited 1, and
+# Claude Code reads any non-2 exit as "hook allowed the tool" -- so a broken
+# gate silently waved `gh pr merge --auto` through ungated, the exact fail-open
+# dev-env#717/#718 close. This runs at import time on every Bash call, so a
+# broken sibling now blocks all Bash *loudly* (a dev-time state CI catches
+# first) rather than disabling the gate *silently*.
+try:
+    from _hookio import is_merge_help_only, mask_quoted_spans
+
+    _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    _PMFG_PATH = os.path.join(_SCRIPT_DIR, "pre-merge-findings-gate.py")
+    _pmfg_spec = importlib.util.spec_from_file_location("pre_merge_findings_gate", _PMFG_PATH)
+    _pmfg = importlib.util.module_from_spec(_pmfg_spec)
+    _pmfg_spec.loader.exec_module(_pmfg)
+
+    is_pr_merge_command = _pmfg.is_pr_merge_command
+    _parse_merge_target = _pmfg._parse_merge_target
+    _MARKER_RE = _pmfg._MARKER_RE
+    _DISPOSED_RE = _pmfg._DISPOSED_RE
+    _fetch_pr_json = _pmfg._fetch_pr_json  # carries the MERGE_GATE_TEST_JSON test seam
+except Exception as exc:  # noqa: BLE001 -- fail CLOSED on ANY dependency-load failure (#717/#718)
+    _fail_closed(
+        f"[auto-merge-gate] BLOCKED: the --auto checkpoint gate could not load its "
+        f"dependencies ({type(exc).__name__}: {exc}). Failing closed per ADR-083: --auto "
+        f"removes every other in-session backstop, so a gate that cannot load must block "
+        f"rather than wave the merge through. To proceed: drop --auto and run a plain "
+        f"`gh pr merge` after CI is green (this gate does not touch plain merges).\n"
+    )
 
 # Falsy values for --auto=<value>, mirroring is_mutating_gh_segment's --delete-branch=false
 # handling in pre-tool-use-canonical-mutate-guard.py.
@@ -311,4 +347,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise  # preserve main()'s own exit 0 (allow) / exit 2 (block) verdicts -- never reclassify
+    except Exception as exc:  # noqa: BLE001 -- fail CLOSED on ANY unexpected crash (#717/#718)
+        _fail_closed(
+            f"[auto-merge-gate] BLOCKED: the --auto checkpoint gate crashed while "
+            f"evaluating this merge ({type(exc).__name__}: {exc}). Failing closed per "
+            f"ADR-083. To proceed: drop --auto and run a plain `gh pr merge` after CI is "
+            f"green, or re-run once the gate is fixed.\n"
+        )

@@ -343,7 +343,7 @@ A direct *or transitive* caret dependency can publish a new in-range version whi
 
 ## Hook Safety
 
-See [docs/REFERENCE.md — Hooks → Authoring rules](../docs/REFERENCE.md#authoring-rules) for the three hook invariants (atomic commits, safe-exit guard, no `bash -c` wrappers).
+See [docs/REFERENCE.md — Hooks → Authoring rules](../docs/REFERENCE.md#authoring-rules) for the hook authoring invariants (atomic commits, safe-exit guard, `pyw -3` invocation / no `bash -c`, `import _winsubp` for subprocess-spawning hooks, and declared fail direction — advisory hooks fail open, blocking gates fail closed).
 
 ---
 

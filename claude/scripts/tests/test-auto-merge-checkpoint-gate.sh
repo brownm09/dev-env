@@ -17,6 +17,13 @@
 #                                                                 sibling gate's fail-open)
 #   - gh pr merge --auto --help                               -> allow  (exit 0, never reaches gh)
 #   - non-merge command                                       -> allow  (exit 0)
+#   - --auto, main() crashes after the trigger (malformed gh JSON: commits[-1] is not a dict)
+#                                                             -> BLOCK  (exit 2 via the __main__
+#                                                                crash guard; was exit 1 = fail-OPEN
+#                                                                before dev-env#718)
+#   - broken sibling dependency (corrupt pre-merge-findings-gate.py loaded via exec_module)
+#                                                             -> BLOCK  (exit 2 via the module-level
+#                                                                import guard; was exit 1 before #718)
 #
 # Run: bash claude/scripts/tests/test-auto-merge-checkpoint-gate.sh
 set -u
@@ -139,6 +146,36 @@ RC=$(run_gate 'gh pr merge 999 --repo o/r --squash "--auto"' "$J"); [ "$RC" = "0
 
 echo "[15] --auto mentioned only as prose inside --body value -> NOT gated (plain merge)"
 RC=$(run_gate 'gh pr merge 999 --repo o/r --squash --body "please --auto this"' "UNSET"); [ "$RC" = "0" ] && ok "exit 0 (never touches gh -- correctly not treated as --auto)" || bad "expected 0, got $RC"
+
+echo "[16] --auto, main() crashes after the trigger (commits[-1] not a dict) -> BLOCK via __main__ crash guard"
+# canned() always emits a dict-shaped commit; build a malformed one inline so main()'s
+# commits[-1].get(...) raises AttributeError -- proving the __main__ guard converts a runtime crash
+# into a fail-CLOSED exit 2 (it exited 1 = fail-OPEN before dev-env#718). Clean markers so the
+# earlier disposition/checkpoint checks pass and execution actually reaches the commits access.
+J=$($PY -c 'import json,sys,tempfile
+data = {
+    "number": 999,
+    "body": "some body",
+    "comments": [{"body": sys.argv[1], "createdAt": sys.argv[2]}],
+    "commits": ["not-a-dict"],
+}
+f = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json")
+json.dump(data, f); f.close(); print(f.name)' "$MARK_CLEAN $CHECKPOINTS_OK" "$FRESH_CREATED")
+RC=$(run_gate "$AUTO_CMD" "$J"); [ "$RC" = "2" ] && ok "exit 2 (crash -> fail closed)" || bad "expected 2, got $RC"; rm -f "$J"
+
+echo "[17] broken sibling dependency (corrupt pre-merge-findings-gate.py) -> BLOCK via module-level import guard"
+# Run a copy of the hook in a temp dir whose pre-merge-findings-gate.py raises on import, so the
+# module-level exec_module fails. Before #718 this raised uncaught -> exit 1 = fail-OPEN; the import
+# guard now fails CLOSED (exit 2). The crash fires at import, before stdin is even read, so the
+# command content is irrelevant -- a real --auto merge is used only for realism.
+TMPD=$(mktemp -d)
+cp "$HOOK" "$TMPD/"
+cp "$SCRIPT_DIR"/../_*.py "$TMPD/"   # all shared _*.py siblings the hook loads at import
+printf 'raise RuntimeError("boom from broken sibling")\n' > "$TMPD/pre-merge-findings-gate.py"
+printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 999 --auto"},"cwd":"."}' \
+  | $PY "$TMPD/pre-auto-merge-checkpoint-gate.py" >/dev/null 2>&1
+RC=$?; [ "$RC" = "2" ] && ok "exit 2 (import crash -> fail closed)" || bad "expected 2, got $RC"
+rm -rf "$TMPD"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

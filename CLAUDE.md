@@ -1271,7 +1271,14 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `--body` value is correctly NOT gated at all (plain merge, never touches `gh`), alongside the
     `--auto --help` and non-merge-command allow paths. This shell layer pre-dates the dev-env#660
     boundary-masking fix and is unchanged by it — no case combines a quoted separator with the
-    merge tail. 33 pure-helper tests and 15 behavioral cases, both suites green as of 2026-07-09.
+    merge tail. Two crash-path cases added for dev-env#718 (Phase A of the hook-reliability
+    initiative dev-env#717) pin the new fail-CLOSED crash guards: `[16]` a `main()` crash after the
+    `--auto` trigger (a malformed `gh` response whose `commits[-1]` is not a dict raises
+    `AttributeError`, caught by the new `__main__` guard) and `[17]` a corrupted sibling import (a
+    temp-dir copy of the hook whose `pre-merge-findings-gate.py` raises on `exec_module`, caught by
+    the new module-level dependency-load guard), both asserting exit 2 where the pre-#718 unguarded
+    `exec_module` / un-`try`-wrapped `main()` exited 1 = fail-OPEN = silently ungated `--auto`. 33
+    pure-helper tests and 17 behavioral cases, both suites green as of 2026-07-10.
 
     ```bash
     py -3 claude/scripts/tests/test_pre_auto_merge_checkpoint_gate.py
@@ -1355,8 +1362,17 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     than `segment_targets_today_compose` so the prose-exclusion tests still exercise the real parse
     path); and an end-to-end case pinning that a timezone-aware marker blocks cleanly (exit 2, no
     traceback on stderr) rather than crashing open (see item 53's `_journal_compose_force` entry for
-    the underlying `is_marker_fresh()` fix).
-    ([ADR-096](docs/adr/096-journal-compose-mechanical-force-guard.md); dev-env#631)
+    the underlying `is_marker_fresh()` fix). Extended for dev-env#718 (Phase A of the
+    hook-reliability initiative dev-env#717) with a crash-path e2e case
+    (`test_e2e_crash_after_trigger_fails_closed`): the new `__main__` crash guard converts an
+    unexpected `main()` crash on a matched same-day compose target into a fail-CLOSED exit 2 (it was
+    exit 1 = fail-OPEN before). Because the gate is otherwise fully defensive (`read_marker` /
+    `is_marker_fresh` swallow their own exceptions), this is driven by a small env-gated
+    (`JOURNAL_COMPOSE_FORCE_GUARD_TEST_CRASH`), production-inert fault-injection seam in `main()`;
+    `_run_hook` now pops that var from the inherited env so only the opt-in test trips it. The gate's
+    *top-level imports* deliberately stay fail-OPEN (it runs on every Bash call, so a broken
+    `_hookio` must not exit 2 and block all Bash).
+    ([ADR-096](docs/adr/096-journal-compose-mechanical-force-guard.md); dev-env#631, dev-env#718)
 
     ```bash
     py -3 claude/scripts/tests/test_pre_tool_use_journal_compose_force_guard.py
