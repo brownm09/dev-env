@@ -102,6 +102,7 @@ _build_messages = pmr._build_messages
 # sys.path, so import them directly.
 from _hookio import (  # noqa: E402
     effective_merge_dir,
+    is_absolute_path,
     is_merge_help_only,
     read_command_output,
     should_confirm_via_gh,
@@ -363,7 +364,10 @@ def test_push_dir_quoted_path() -> str:
 
 def test_push_dir_relative_resolved_against_cwd() -> str:
     out = _effective_push_dir("cd sub/repo && git push", "/base")
-    assert os.path.isabs(out), f"relative target not resolved: {out!r}"
+    # is_absolute_path (not os.path.isabs) so this "was it resolved?" check is
+    # itself version-agnostic — os.path.isabs("\\base\\sub\\repo") is False on
+    # 3.13, which broke this line independently of the fix (dev-env#732).
+    assert is_absolute_path(out), f"relative target not resolved: {out!r}"
     assert os.path.basename(out) == "repo"
     assert out == os.path.normpath(os.path.join("/base", "sub/repo"))
     return "relative cd path -> normalized join under cwd"
