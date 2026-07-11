@@ -60,7 +60,7 @@ stamp + top 3–5 cross-project priorities aggregated from manifest `priorities`
 
 **Constraint:** must run in a dedicated session with no prior task work. If other tasks were handled before invocation, the skill refuses with an error message.
 
-**Source library:** greps `~/.claude/skills/sources.md` before spawning any research subagent (zero-cost cache hit path).
+**Source library:** greps `~/.claude/skills/sources.md` before spawning any research subagent (zero-cost cache hit path). A new source found on a cache miss is queued via `queue-source-library-entry` into a dedicated dev-env worktree (`chore/research-sources-queue`), not written to `~/.claude/skills/sources.md` directly — that path is a junction onto the canonical dev-env checkout, unaffected by this skill's own engineering-journal worktree isolation, and writing through it from Section 11's nightly, unattended runs left the canonical dirty and blocked every session's sync hook on this machine ([ADR-102](adr/102-source-library-writes-through-worktree.md)).
 
 **Date argument:** defaults to today. Pass `YYYY-MM-DD` to compose a specific day's stubs, or the
 full branch name `draft/YYYY-MM-DD-recovery` to source from a
@@ -89,6 +89,14 @@ Finds 1–3 primary sources for an engineering decision or topic. Emits footnote
 **Arguments:**
 - `tag:` — optional topic prefix (e.g., `architecture:`, `security:`) used to filter the source library
 - `--compare <alternative>` — also finds sources for the rejected alternative
+
+**Source-library writes:** a new source found on a cache miss is never written to
+`~/.claude/skills/sources.md` directly — that path is a junction onto the canonical dev-env
+checkout, and writing through it left the canonical dirty and blocked every session's sync hook,
+twice ([PR #649](https://github.com/brownm09/dev-env/pull/649),
+[dev-env#697](https://github.com/brownm09/dev-env/issues/697)). Instead it's queued via
+`queue-source-library-entry` into a dedicated worktree (`chore/research-sources-queue`, not
+auto-PR'd) — see [ADR-102](adr/102-source-library-writes-through-worktree.md).
 
 ---
 

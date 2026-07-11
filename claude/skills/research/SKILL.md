@@ -2,7 +2,7 @@
 name: research
 description: Find 1–3 primary sources for a decision or topic. Greps the shared source library first (zero cost), spawns a subagent only on a cache miss. Emits footnote-ready markdown. Invoke as /research [tag:] <decision> [--compare <alternative>].
 argument-hint: "[<tag>:] <decision> [--compare <alternative>]"
-allowed-tools: Grep Read Agent Write Edit AskUserQuestion
+allowed-tools: Grep Read Agent Write Edit AskUserQuestion Bash
 ---
 
 You are finding primary sources for an engineering decision or topic.
@@ -103,15 +103,25 @@ If the user approves, spawn a **general-purpose** subagent (`model: "opus"`) wit
 > Do not fabricate URLs — only return sources you can confirm exist via web search.
 
 **Library feedback loop (Steps 3a and 3b):** If either subagent returns a high-quality
-source not already in `~/.claude/skills/sources.md`, append it under the appropriate
-`##` section. If no section fits, add a new one. Format:
+source not already in `~/.claude/skills/sources.md`, queue it for the source library.
+**Do not write to `~/.claude/skills/sources.md` directly** — that path is a directory
+junction onto the canonical dev-env checkout; writing through it from here left the
+canonical checkout dirty and blocked every session's sync hook on this machine, twice
+([dev-env#649](https://github.com/brownm09/dev-env/pull/649),
+[dev-env#697](https://github.com/brownm09/dev-env/issues/697)).
+
+Format the entry exactly as it already appears elsewhere in the file:
 
 ```
 - **<Title>** | <Author/Org> | <URL> |
   <One-sentence relevance note.>
 ```
 
-Tell the user: "Added `<Title>` to source library under `<Section>`."
+Then read `~/.claude/skills/queue-source-library-entry/SKILL.md` and execute its
+**Behavior** section with `SECTION` = the appropriate `##` section (an existing one, or
+a new one if none fits), `ENTRY_MARKDOWN` = the formatted entry above, and `CALLER` =
+`research`. Tell the user the one-line summary that skill returns (queued under
+`<Section>`, not yet merged to `main`).
 
 ## Step 4 — Pass 1 for ALTERNATIVE (only if --compare was given)
 
