@@ -143,7 +143,26 @@ multi-byte character split across two chunk reads is never corrupted. Blank and 
 skipped and a non-object JSON value is dropped, mirroring `_parse_records`'s existing contract (shared
 via the new `_record_from_line` helper). `load_records` is unchanged — this is a purely additive
 alternative, not a replacement, matching the issue's explicit guidance to keep it as-is for callers
-that genuinely need the whole transcript (`stop-tile-enumeration-gate.py`'s session-wide scan).
+that genuinely need the whole transcript (`stop-tile-enumeration-gate.py`'s session-wide scan). A
+not-yet-terminated line's bytes accumulate in a list across chunk reads and are joined once a
+terminator is found, rather than re-concatenating a growing buffer every chunk — see the review
+finding below for why this matters, not just as a micro-optimization.
+
+**Review finding: quadratic buffer growth (caught pre-merge).** The first implementation of the chunk
+loop did `buf = f.read(read_size) + tail` every iteration — reassembling the whole not-yet-terminated
+fragment from scratch each time a chunk read found no newline. For a single line spanning `k` chunks
+this costs `O(k)` concatenations of a buffer that itself grows by `chunk_size` each time, i.e.
+`O(line_length^2 / chunk_size)` total copying — quadratic, not linear, in the line's length. An
+adversarial `/review` subagent on this same PR caught it and, critically, identified that this isn't
+just a pathological-input curiosity: the record immediately before whatever `iter_records_reverse` is
+scanning past is very often the transcript's *newest* entry — on `idle-refresher.py`'s
+`UserPromptSubmit` path, that's the user's just-submitted prompt, whose size a large paste puts
+directly under the user's control. Empirically measured against the pre-fix code: a 2MB paste added
+~30ms of *overhead* versus `load_records`, a 10MB paste added ~540ms — the exact multi-MB-transcript
+scenario this whole change exists to help could instead have made `idle-refresher.py` slower than the
+`load_records` call it replaced. Fixed by accumulating fragments in a list and joining once
+(`b"".join(reversed(pending))`) instead of repeated concatenation — see the Decision paragraph above
+and `_hookutil.py`'s updated docstring for the corrected algorithm.
 
 **Consumer: `idle-refresher.py`.** `last_activity_epoch`'s contract changed from "a forward-chronological
 list, reversed internally" to "an already most-recent-first iterable, consumed with a plain `for` loop"
@@ -156,20 +175,28 @@ reordered newest-first to match the new contract, and a new `test_last_activity_
 proves the laziness itself with a hand-rolled generator that raises `AssertionError` if pulled past its
 first match.
 
-**Coverage.** `test_hookutil.py` gains 11 new tests (21 -> 32): direct coverage of `_record_from_line`
+**Coverage.** `test_hookutil.py` gains 12 new tests (21 -> 33): direct coverage of `_record_from_line`
 (a valid line; blank/malformed/non-object -> `None`) and `iter_records_reverse` (basic reverse order; a
 property check — results match `reversed(load_records(...))` — across 9 chunk sizes from 1 byte to
 4096, forcing lines to be reassembled across many chunk boundaries; a file with no trailing newline;
 blank/malformed lines skipped; multi-byte UTF-8 characters surviving small chunk sizes; an empty file;
-`FileNotFoundError` on a missing path; `ValueError` on a non-positive `chunk_size`; and — the one test
-in this file that mocks, following `test_prune_merged_worktrees.py`'s established precedent, since the
-"doesn't read the whole file" property isn't otherwise observable from pure inputs/outputs alone — a
-`builtins.open` read-call counter proving a ~4000-line fixture yields its single matching tail record
-after just one chunk read). `test_idle_refresher.py` gains 1 new test and updates 3 existing fixtures
-(14 -> 15 total). The other three callers named in dev-env#679 (`posttooluse-inert-advisory.py`,
-`stop-tile-enumeration-gate.py`, `reconcile-open-prs.py`) import `_hookutil` but were confirmed via grep,
-before starting, to never call `load_records`/`_parse_records` on a path this change touches; their
-existing test suites (items 18, 48, 19) were re-run in full and pass unchanged (32 + 116 + 15 tests).
+`FileNotFoundError` on a missing path; `ValueError` on a non-positive `chunk_size`; a `builtins.open`
+read-call counter — following `test_prune_merged_worktrees.py`'s established mocking precedent, since
+the "doesn't read the whole file" property isn't otherwise observable from pure inputs/outputs alone —
+proving a ~4000-line fixture yields its single matching tail record after just one chunk read, with its
+own `>= 1` floor assertion so the test can't vacuously pass if a future refactor stops routing reads
+through `open()`; and the one timing-based test in this file, a regression guard for the quadratic
+buffer-growth finding above — a ~2MB single line forced across ~15600 chunk reads, asserting it parses
+correctly within a generous 5s bound (it takes ~0.08s post-fix) rather than the many-second blowup the
+pre-fix code would hit at this shape). `test_idle_refresher.py` gains 1 new test and updates 3 existing
+fixtures (14 -> 15 total); its `last_activity_epoch` docstring gained an explicit sentence that a
+caller passing forward-chronological order gets a silently *wrong* (not erroring) answer, since
+laziness means the function can't verify the order it's handed. The other three callers named in
+dev-env#679 (`posttooluse-inert-advisory.py`, `stop-tile-enumeration-gate.py`, `reconcile-open-prs.py`)
+import `_hookutil` but were confirmed via grep, before starting, to never call
+`load_records`/`_parse_records` on a path this change touches; their existing test suites (items 18,
+48, 19) were re-run in full and pass unchanged (32 + 116 + 15 tests) both before and after the
+quadratic-growth fix.
 
 **Out of scope.** No second convenience wrapper (e.g. a `find_last_record(path, predicate)`) was added
 alongside the generator — `idle-refresher.py` is the only current consumer and it's served directly by

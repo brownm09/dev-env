@@ -103,6 +103,12 @@ def last_activity_epoch(records_reverse):
     unparseable/missing timestamp is skipped in favor of an earlier one. None
     means no assistant record carried a parseable timestamp (typically: the
     first prompt of a fresh session, where no assistant turn exists yet).
+
+    A caller that mistakenly passes a forward-chronological (oldest-first)
+    sequence does NOT get an error here -- laziness means this function can't
+    verify the order it's handed, so the failure is silent: it would return
+    the OLDEST matching timestamp instead of the newest, which reads as a
+    too-large idle gap rather than a crash.
     """
     for rec in records_reverse:
         if isinstance(rec, dict) and rec.get("type") == "assistant":

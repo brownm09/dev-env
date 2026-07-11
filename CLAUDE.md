@@ -520,9 +520,17 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     the one test in this file that mocks, following `test_prune_merged_worktrees.py`'s precedent,
     since the property isn't otherwise observable from pure inputs/outputs — a `builtins.open`
     read-call counter proving a ~4000-line file yields its single matching tail record after just
-    one chunk read, never touching the unread remainder). Used by `idle-refresher.py`, which needs
-    only the last assistant record's timestamp and would otherwise pay a full parse on every prompt
-    submit.
+    one chunk read, never touching the unread remainder, with its own `>= 1` floor assertion so the
+    test can't vacuously pass if a future refactor stops routing reads through `open()`). Also
+    exercises, via a dedicated timing-based regression test (`chunk_size` far smaller than a single
+    ~2MB line, forcing ~15600 chunk reads across it, generous 5s bound), that a single line spanning
+    many chunks parses in `O(line length)`, not the `O(line length^2 / chunk_size)` an adversarial
+    `/review` pass on this same PR caught in the first implementation (a `chunk + tail` buffer
+    re-concatenated on every chunk read) — the exact shape that bites `idle-refresher.py`'s live
+    caller, since the record immediately before whatever it's scanning past is often the
+    transcript's newest entry (the user's just-submitted prompt), whose size a large paste puts
+    directly under the user's control. Used by `idle-refresher.py`, which needs only the last
+    assistant record's timestamp and would otherwise pay a full parse on every prompt submit.
 
     ```bash
     py -3 claude/scripts/tests/test_hookutil.py

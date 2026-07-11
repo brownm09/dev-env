@@ -217,10 +217,14 @@ def load_records(transcript_path: Path) -> list:
 def _record_from_line(raw: bytes):
     """Decode+parse one raw JSONL line (bytes, no trailing newline) into a
     dict record, or ``None`` for a blank/malformed/non-object line. Shared by
-    ``iter_records_reverse``'s chunk loop; ``errors="replace"`` on decode
-    means a corrupted byte sequence degrades to a JSON parse failure (caught
-    below) rather than raising, matching ``_parse_records``'s skip-and-continue
-    contract."""
+    ``iter_records_reverse``'s chunk loop. Note this is *more* lenient than
+    ``load_records``'s strict ``open(..., encoding="utf-8")`` (which raises
+    ``UnicodeDecodeError`` on malformed bytes): ``errors="replace"`` here
+    degrades a corrupted byte sequence to a JSON parse failure -- caught
+    below and skipped, like any other malformed line -- rather than raising.
+    Real transcripts are always well-formed UTF-8, so this only matters for a
+    corrupted file, where "skip the bad line" is arguably the more useful
+    behavior for a best-effort tail read anyway."""
     text = raw.decode("utf-8", errors="replace").strip()
     if not text:
         return None
@@ -248,11 +252,25 @@ def iter_records_reverse(transcript_path: Path, chunk_size: int = DEFAULT_REVERS
     ``"s"``, ``null``, ``[1]``) is dropped, mirroring ``_parse_records``'s
     contract -- see ``_record_from_line``.
 
+    A single line's bytes accumulate in a list (``pending``) across chunk
+    reads and are joined *once* when a terminator is finally found, rather
+    than re-concatenating a growing buffer on every chunk (``buf = chunk +
+    tail``) -- the latter costs O(line_length^2 / chunk_size) for a line that
+    spans many chunks, which matters here specifically: the record right
+    before whatever this generator is scanning for is often the transcript's
+    newest entry (e.g. the user's just-submitted prompt on the
+    UserPromptSubmit path), and its size is exactly the thing a large paste
+    puts under the caller's control. This function is O(file bytes actually
+    read) end to end, matching ``chunk_size``-bounded reads, not O(bytes^2)
+    on any single line.
+
     Raises the same exceptions ``open()`` would (``FileNotFoundError`` /
     ``OSError``) on a missing/unreadable path, and ``ValueError`` for a
     non-positive ``chunk_size`` (which would never advance the read
-    position). Callers that want fail-open behavior should catch around
-    consumption, same as ``load_records``'s contract.
+    position) -- raised on the first ``next()``/iteration, like any generator
+    function's body, not at the ``iter_records_reverse(...)`` call itself.
+    Callers that want fail-open behavior should catch around consumption,
+    same as ``load_records``'s contract.
     """
     if chunk_size <= 0:
         raise ValueError(f"chunk_size must be positive, got {chunk_size}")
@@ -260,22 +278,45 @@ def iter_records_reverse(transcript_path: Path, chunk_size: int = DEFAULT_REVERS
     with open(transcript_path, "rb") as f:
         f.seek(0, 2)  # SEEK_END
         pos = f.tell()
-        tail = b""  # a leading line fragment that continues into bytes not yet read
+        # Fragments of a not-yet-terminated line, most-recently-read first;
+        # joined via b"".join(reversed(pending)) only once a terminator is
+        # found (see the docstring for why this avoids quadratic copying).
+        pending: list = []
         while pos > 0:
             read_size = min(chunk_size, pos)
             pos -= read_size
             f.seek(pos)
-            buf = f.read(read_size) + tail
-            lines = buf.split(b"\n")
+            chunk = f.read(read_size)
+            nl_pos = chunk.rfind(b"\n")
+            if nl_pos == -1:
+                # No terminator anywhere in this chunk -- it's all part of the
+                # still-growing pending fragment; keep reading earlier bytes.
+                pending.append(chunk)
+                continue
+            # chunk[nl_pos + 1:] completes the pending fragment (empty when
+            # this terminator is the file's very last byte).
+            pending.append(chunk[nl_pos + 1:])
+            rec = _record_from_line(b"".join(reversed(pending)))
+            if rec is not None:
+                yield rec
+            pending = []
+            # Everything before that terminator may hold further complete
+            # lines plus a new leading fragment -- same split-based handling
+            # as before, just scoped to this chunk instead of the whole file.
+            rest = chunk[:nl_pos]
+            lines = rest.split(b"\n")
             if pos > 0:
-                # lines[0] continues before this chunk -- hold it, don't yield yet.
-                tail = lines[0]
+                pending = [lines[0]]
                 complete = lines[1:]
             else:
-                # Start of file: lines[0] is now bounded on both ends.
-                tail = b""
                 complete = lines
             for raw in reversed(complete):
                 rec = _record_from_line(raw)
                 if rec is not None:
                     yield rec
+        if pending:
+            # The file's first line never found its own (preceding)
+            # terminator -- it's complete because it's bounded by BOF.
+            rec = _record_from_line(b"".join(reversed(pending)))
+            if rec is not None:
+                yield rec

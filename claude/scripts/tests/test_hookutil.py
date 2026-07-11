@@ -18,6 +18,11 @@ the consuming hooks' main() functions is not covered (pure-helper convention).
 matching the precedent already set in test_prune_merged_worktrees.py, because
 proving the whole point of this function (it does NOT read the whole file) is
 not otherwise observable from pure inputs/outputs alone.
+`test_iter_records_reverse_long_single_line_is_not_quadratic` is the one
+timing-based test in this file -- a regression guard (with several times' margin)
+for a real O(line_length^2 / chunk_size) buffer-re-concatenation bug an
+adversarial /review pass caught before merge; see that test's own comment for
+the full rationale and the empirical numbers behind its bound.
 
 Usage:
     py -3 claude/scripts/tests/test_hookutil.py
@@ -386,11 +391,49 @@ def test_iter_records_reverse_is_lazy_stops_early() -> str:
             gen.close()
 
         assert first == {"type": "assistant", "marker": "TAIL"}, f"expected the tail record first, got {first}"
+        assert len(read_calls) >= 1, (
+            "the open()/.read() patch never intercepted a call -- this test would vacuously "
+            "pass with 0 reads if iter_records_reverse stopped calling the builtin open() it "
+            "patches (e.g. a future refactor to Path.read_bytes()); a real chunk read must occur"
+        )
         assert len(read_calls) <= 2, (
             f"expected the match in the first chunk (or two), got {len(read_calls)} reads "
             f"-- a count this low proves the ~4000 leading lines were never touched"
         )
     return f"iter_records_reverse found the tail record in {len(read_calls)} chunk read(s), not a full parse"
+
+
+def test_iter_records_reverse_long_single_line_is_not_quadratic() -> str:
+    # Regression guard for a real bug caught by an adversarial /review pass: the
+    # first implementation re-concatenated a growing buffer (`chunk + tail`) on
+    # every chunk read, costing O(line_length^2 / chunk_size) for a single line
+    # spanning many chunks. That shape matters specifically here -- the record
+    # right before whatever this generator is scanning for is often the
+    # transcript's newest entry (e.g. the user's just-submitted prompt on the
+    # UserPromptSubmit path idle-refresher.py drives), and a large paste puts
+    # its size directly under the user's control. A small chunk_size below
+    # forces ~15600 chunk reads across one ~2MB line; the fixed (list-of-
+    # fragments, join-once) implementation finishes in well under a second.
+    # The reviewing subagent independently measured the pre-fix quadratic
+    # version at 573ms-23s+ for comparably- and more-aggressively-shaped
+    # inputs, so the 5s bound below has several times' margin against a
+    # reintroduced O(n^2) while leaving ample room for a slow CI machine on
+    # the passing (linear) side.
+    with tempfile.TemporaryDirectory() as root:
+        p = Path(root) / "long_line.jsonl"
+        big_record = {"type": "user", "text": "x" * 2_000_000}
+        p.write_text(json.dumps(big_record) + "\n", encoding="utf-8")
+
+        start = time.time()
+        got = list(_hookutil.iter_records_reverse(p, chunk_size=128))
+        elapsed = time.time() - start
+
+        assert got == [big_record], "the long line must still parse correctly, not just quickly"
+        assert elapsed < 5.0, (
+            f"took {elapsed:.2f}s for a ~2MB single line across ~15600 chunk reads -- "
+            f"this smells like the O(n^2) re-concatenation bug this test guards against"
+        )
+    return f"a ~2MB single line across ~15600 small chunks parses correctly in {elapsed:.2f}s (not quadratic)"
 
 
 def main() -> int:
@@ -427,6 +470,7 @@ def main() -> int:
         ("iter_records_reverse: missing file -> FileNotFoundError", test_iter_records_reverse_missing_file_raises),
         ("iter_records_reverse: non-positive chunk_size -> ValueError", test_iter_records_reverse_nonpositive_chunk_size_raises),
         ("iter_records_reverse: lazy, stops early", test_iter_records_reverse_is_lazy_stops_early),
+        ("iter_records_reverse: long single line is not quadratic", test_iter_records_reverse_long_single_line_is_not_quadratic),
     ]
     failed = 0
     for name, fn in tests:
