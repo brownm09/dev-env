@@ -10,7 +10,11 @@ Follow every step in order. Do not skip steps.
 
 Supporting files:
 - `~/.claude/skills/sources.md` — shared primary source library, organized by topic tag;
-  use Grep on this file before spawning any research subagent (see Section 11)
+  use Grep on this file before spawning any research subagent (see Section 11). Reading this
+  path is fine from anywhere. **Never write to it** — it is a directory junction onto the
+  canonical dev-env checkout regardless of this skill's own engineering-journal worktree
+  isolation (ADR-082 isolates only this skill's *engineering-journal* writes; dev-env is a
+  different repo). See Section 11 Pass 2 for the write path.
 
 ## Step 0 — Session isolation check
 
@@ -951,9 +955,21 @@ Use the Agent tool to spawn a general-purpose subagent with this task:
 > Do not fabricate URLs — only return sources you can verify exist.
 
 The subagent runs in isolation so its research does not expand this session's context.
-Use its output to supplement the source library entry if the source is high-quality;
-add it as a new entry to `~/.claude/skills/sources.md` under the appropriate tag
-section for future use (this grows the library over time without extra effort).
+Use its output to supplement the source library entry if the source is high-quality. Do
+**not** write directly to `~/.claude/skills/sources.md` — that path resolves to the
+canonical dev-env checkout regardless of this skill's own engineering-journal worktree
+isolation (ADR-082 isolates this skill's *engineering-journal* writes only; dev-env is a
+different repo, and writing through this path from here left the dev-env canonical dirty
+and blocked every session's sync hook on this machine, twice —
+[dev-env#649](https://github.com/brownm09/dev-env/pull/649),
+[dev-env#697](https://github.com/brownm09/dev-env/issues/697)). Format the entry exactly
+as it already appears elsewhere in that file (`- **<Title>** | <Author/Org> | <URL> |`
+plus an indented one-sentence relevance note on the next line), then read
+`~/.claude/skills/queue-source-library-entry/SKILL.md` and execute its **Behavior**
+section with `SECTION` = the appropriate tag section, `ENTRY_MARKDOWN` = the formatted
+entry, and `CALLER` = `journal-compose`. This grows the library over time without extra
+effort, and without ever touching the canonical dev-env checkout
+([dev-env#708](https://github.com/brownm09/dev-env/issues/708)).
 
 **Output format per session:**
 
