@@ -151,6 +151,17 @@ and adopted across the following PRs (a foundation-then-gates-then-migrations se
   (UserPromptSubmit) migrations. The `#701`/`#705` pace is exactly why the allowlist is
   two-sided: a concurrently-landed per-site fix just turns an entry stale, and removing it is a
   one-line follow-up the suite itself demands.
+- **The sweep + gate enhancements (`fix/output-contract-sweep-727`, dev-env#727)** close the two
+  loose ends PR3 left. (a) The allowlist entries not owned by any PR5–7 migration: `post-compact`'s
+  four exit-0 stderr status lines (routed to `emit_advisory(audience="user")`, so a manual `/compact`
+  now surfaces a visible confirmation instead of an invisible PostCompact stderr write) and the
+  em-dash literals in `post-compact` / `post-merge-tile-checkpoint` / `pre-merge-findings-gate` (the
+  two blocking hooks routed to `emit_block`, which ASCII-sanitizes). (b) The two gate limitations
+  PR3's own docstring documented as deferred: Check B's blanket `json.dumps` exemption is refined by a
+  new **Check D** (a `json.dumps` payload relying on `additionalContext` is model-invisible on a
+  non-context event, while a `systemMessage` payload stays exempt), and Check C's cross-function blind
+  spot is closed by a one-level `analyze_dropped_by_caller` pass (a helper's stdout dropped by an
+  exit-2 caller). Both enhancements are latent — no wired hook hits either today.
 
 **Verification note for the migrations.** Three contract cells have no prior in-repo exercise —
 `systemMessage` on `PostToolUse`/`Stop` (the `audience="user"` path PR5/PR6 first route there),

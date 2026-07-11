@@ -23,12 +23,14 @@ fallback) per ADR-049/ADR-050 — do NOT read tool_response.output directly.
 
 Exit 0 — not a successful `gh pr merge` call (including a genuinely-failed
          merge the live `gh pr view` fallback also could not confirm); no action.
-Exit 2 — successful merge detected; tile-checkpoint reminder emitted via stderr.
+Exit 2 — successful merge detected; tile-checkpoint reminder emitted via
+         _hookout.emit_block (exit-2 stderr, ASCII-sanitized per ADR-103).
 """
 import json
 import re
 import sys
 
+import _hookout
 from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
@@ -106,13 +108,11 @@ def main() -> None:
         if confirm_merge_via_gh(None, "", effective_merge_dir(command, cwd)) is None:
             sys.exit(0)
 
-    print(
-        "[tile-checkpoint] PR merged — spawn follow-up tiles now via spawn_task for "
+    _hookout.emit_block(
+        "[tile-checkpoint] PR merged - spawn follow-up tiles now via spawn_task for "
         "any out-of-scope fixes, deferred work, or ideas surfaced during this session. "
-        "Only an explicit 'skip tiles' user instruction exempts this checkpoint.",
-        file=sys.stderr,
+        "Only an explicit 'skip tiles' user instruction exempts this checkpoint."
     )
-    sys.exit(2)
 
 
 if __name__ == "__main__":

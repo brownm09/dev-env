@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""PostCompact hook — emit a status line and, for manual compactions with open PRs,
-inject a systemMessage so Claude auto-invokes /review without user input."""
+"""PostCompact hook — on a manual /compact, emit a {"systemMessage"} status toast
+(compaction done + context size) and, when open PRs exist, append the /review
+directive so Claude auto-invokes /review. Auto-compaction stays silent.
+
+Routes its one exit-0 output through _hookout.emit_advisory(audience="user") — the
+systemMessage channel PostCompact delivers to the user on exit 0. The prior
+status/summary/nudge lines went to exit-0 stderr, which PostCompact surfaces to no
+one (ADR-103, dev-env#727)."""
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import subprocess
 import sys
 from pathlib import Path
 
+import _hookout
 from _journal_shards import iter_pr_shards, read_legacy_entries
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
@@ -72,45 +79,46 @@ def main():
     summary = data.get("summary", "")
     tokens = data.get("context_tokens", None)
 
-    if trigger == "manual":
-        label = "[compact]"
-    elif trigger == "auto":
-        label = "[auto-compact]"
-    else:
-        label = f"[compact/{trigger}]"
-    if tokens is not None:
-        print(f"{label} done -- context now {tokens:,} tokens", file=sys.stderr)
-    else:
-        print(f"{label} done", file=sys.stderr)
+    # Only a manual /compact surfaces anything. On PostCompact, exit-0 stderr
+    # reaches no one (ADR-103) — the prior status/summary/nudge stderr writes were
+    # invisible — while exit-0 stdout is delivered to the USER as a
+    # {"systemMessage": ...} toast. A manual /compact is user-initiated, so a
+    # confirmation is expected; auto-compaction stays silent (routing its status
+    # to a systemMessage would newly toast on every auto-compaction — noise, not
+    # signal, and a behavior change this cleanup does not intend).
+    if trigger != "manual":
+        return
 
+    if tokens is not None:
+        lines = [f"[compact] done -- context now {tokens:,} tokens"]
+    else:
+        lines = ["[compact] done"]
     if summary:
         first_line = summary.splitlines()[0].strip()[:120]
-        print(f"  summary: {first_line}", file=sys.stderr)
+        lines.append(f"summary: {first_line}")
 
-    if trigger == "manual":
-        prs = load_open_prs()
-        if prs:
-            if len(prs) == 1:
-                pr = prs[0]
-                pr_ref = f"#{pr['pr']} — {pr['url']}" if pr.get("url") else f"#{pr['pr']}"
-                msg = (
-                    f"PostCompact complete. Open PR: {pr_ref}\n"
-                    f"Per CLAUDE.md workflow: invoke /review {pr.get('url', '')} --post-comment now."
-                )
-            else:
-                pr_list = ", ".join(
-                    f"#{p['pr']} {p.get('url', '')}" for p in prs
-                )
-                msg = (
-                    f"PostCompact complete. Open PRs: {pr_list}\n"
-                    "Per CLAUDE.md workflow: invoke /review on the relevant PR --post-comment now."
-                )
-            print(json.dumps({"systemMessage": msg}))
-            print(
-                "[compact] Open PR(s) detected — type any reply to trigger /review, "
-                "or press Enter to skip.",
-                file=sys.stderr,
+    prs = load_open_prs()
+    if prs:
+        if len(prs) == 1:
+            pr = prs[0]
+            pr_ref = f"#{pr['pr']} — {pr['url']}" if pr.get("url") else f"#{pr['pr']}"
+            review = (
+                f"Open PR: {pr_ref}\n"
+                f"Per CLAUDE.md workflow: invoke /review {pr.get('url', '')} --post-comment now."
             )
+        else:
+            pr_list = ", ".join(f"#{p['pr']} {p.get('url', '')}" for p in prs)
+            review = (
+                f"Open PRs: {pr_list}\n"
+                "Per CLAUDE.md workflow: invoke /review on the relevant PR --post-comment now."
+            )
+        lines.append("")       # blank line separates the status from the /review directive
+        lines.append(review)
+
+    # audience="user" -> {"systemMessage": ...} on exit 0, the one channel
+    # PostCompact delivers to the user. emit_advisory json.dumps(ensure_ascii=True)
+    # escapes the em dash in pr_ref on the wire, so no raw non-ASCII reaches stdout.
+    _hookout.emit_advisory("PostCompact", "\n".join(lines), audience="user")
 
 
 if __name__ == "__main__":

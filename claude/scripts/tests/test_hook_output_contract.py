@@ -16,19 +16,29 @@ single source of truth for which events make exit-0 stdout model-visible):
   * exit-0 stderr is invisible on EVERY event.
   * on exit 2, stderr reaches the model and stdout is ignored on EVERY event.
 
-Three output-contract checks, each an "explicit shape" (plan gotcha #6):
+Four output-contract checks, each an "explicit shape" (plan gotcha #6):
   A (stderr -> exit 0): a `sys.stderr.write(...)` / `print(..., file=sys.stderr)`
      whose governing exit is 0 -- invisible everywhere.
   B (bare stdout -> exit 0, non-context event): a *bare* `print(...)` /
      `sys.stdout.write` (plain text) whose governing exit is 0, in a hook wired
      ONLY to non-context events -- model-invisible there. A hook also wired to a
      context event is not flagged (the same emission is legitimately model-visible
-     on that event), and a `json.dumps(...)`-wrapped stdout write is not flagged
-     either: that is the structured `{"systemMessage": ...}` channel, which the
-     contract delivers to the USER on ANY event at exit 0 (so it is not invisible).
+     on that event). A `json.dumps(...)`-wrapped stdout write is not flagged by B --
+     Check D inspects its payload keys instead (see below).
   C (stdout -> exit 2): a stdout write whose governing exit is 2 -- silently
      dropped, since exit 2 ignores stdout. NOT json.dumps-exempt: a systemMessage
-     JSON printed on an exit-2 path is dropped exactly like bare text.
+     JSON printed on an exit-2 path is dropped exactly like bare text. Check C now
+     also fires cross-function: a stdout emission in a helper whose call site's
+     continuation reaches `sys.exit(2)` is dropped by the caller's exit 2 (one
+     level; see `analyze_dropped_by_caller`, dev-env#727).
+  D (additionalContext json -> exit 0, non-context event): a
+     `json.dumps({"hookSpecificOutput": {"additionalContext": ...}})` stdout write
+     whose governing exit is 0, in a hook wired ONLY to non-context events --
+     model-invisible there (additionalContext is honored only on the context
+     events). A `json.dumps({"systemMessage": ...})` write is NOT D: systemMessage
+     is delivered to the USER on ANY event at exit 0, so it stays exempt. This is
+     the structured-channel refinement of Check B's former blanket json exemption
+     (dev-env#727).
 
 Plus an ASCII-literal lint: a non-`.isascii()` string literal passed DIRECTLY to a
 raw-stream call (`print` / `sys.std*.write`) crashes or vanishes under Claude Code's
@@ -44,12 +54,15 @@ Detection limitations (documented, per gotcha #6):
     emoji come from `status_emoji()` and reach stderr via the built `snapshot`
     string, so this lint flags it only via an incidental direct em-dash (L486);
     the emoji flow is covered by PR5's per-hook `.isascii()` self-pin instead.
-  - Check B's `json.dumps` exemption is blanket: a `json.dumps({"systemMessage":
-    ...})` stdout write is the correct user channel (delivered on any event at
-    exit 0), but a `json.dumps({"hookSpecificOutput": {"additionalContext": ...}})`
-    write on a NON-context event would be invisible (additionalContext is
-    context-events-only) and is NOT flagged. No wired hook emits additionalContext
-    on a non-context event today; a dedicated structured-channel check is deferred.
+  - Check D reads only a LITERAL json.dumps payload dict. A payload built
+    dynamically (a variable, a dict comprehension) classifies as "unknown" and is
+    exempt -- the same indirection limitation as the non-ASCII lint. No wired hook
+    builds its systemMessage/additionalContext payload that way today.
+  - The cross-function Check C pass is ONE level: it pairs a helper's stdout
+    emission with its DIRECT call sites' continuation exits. A helper reached
+    through an intermediate function (two hops) is not traced. It also inspects
+    only call sites naming the helper as a bare `Name` (a `mod.helper()` attribute
+    call is not paired). No wired hook nests an emitter that deep today.
 
 Governing exit (reaching approximation): from an emission, scan forward through the
 rest of its block, then ascend to each enclosing block's remainder, to the scope
@@ -66,18 +79,18 @@ miss: the dominant real shape (block reason then `sys.exit(2)`) and the
 if/else-branch-then-exit-2 shape both resolve to gov 2 by ascent and so are not
 flagged, and the only error direction left is calling a genuinely-invisible stderr
 write "co-located with an exit 2" it is not -- i.e. over-flagging. **Check C
-(stdout->exit 2) does have a cross-function blind spot**: a helper that writes
-stdout then returns to a caller which exits 2 is classified gov 0, so the dropped
-stdout escapes Check C (and if it is a `json.dumps({"systemMessage": ...})` write it
-escapes Check B's json exemption too -- the "escape both flag and allowlist" case).
-No wired hook uses that shape today (every stdout emitter co-locates its exit); a
-cross-function structured-channel check is deferred (see the Check-B limitation
-below).
+(stdout->exit 2)** now also traces one level across functions: a helper that writes
+stdout then returns to a caller which exits 2 was previously classified gov 0 and
+escaped C (and, for a `json.dumps({"systemMessage": ...})` write, Check B's json
+exemption too -- the "escape both flag and allowlist" case). `analyze_dropped_by_caller`
+pairs a helper's stdout emission with its direct call sites, so that drop is now
+flagged as C (dev-env#727). Two hops deep is still not traced (documented above);
+no wired hook nests an emitter that deep.
 
 Two-sided allowlists (the `test_no_crude_command_substring_checks.py` mechanism: a
 stale entry fails the suite too). `_OUTPUT_CONTRACT_ALLOWLIST` maps `(script, check)`
 -> the count of currently-accepted offense lines for that check in that script -- a
-hook is a known offender for check A/B/C until every one of that check's sites is
+hook is a known offender for check A/B/C/D until every one of that check's sites is
 migrated onto `_hookout`, at which point the entry goes stale and must be removed. A
 *new* offense line added to an already-listed hook makes the live count EXCEED the
 recorded count and fails the gate (the "grew" bucket -- mirroring the sibling's
@@ -85,12 +98,6 @@ recorded count and fails the gate (the "grew" bucket -- mirroring the sibling's
 migration that removes some-but-not-all lines leaves the count higher than live,
 which is tolerated as harmless over-count until the entry is fully removed).
 `_NONASCII_EMISSION_ALLOWLIST` maps `script -> count` the same way.
-
-Two-sided allowlists (the `test_no_crude_command_substring_checks.py` mechanism: a
-stale entry fails the suite too). `_OUTPUT_CONTRACT_ALLOWLIST` is keyed by
-`(script, check)` -- a hook is a known offender for check A/B/C until every one of
-that check's sites is migrated onto `_hookout`, at which point the entry goes stale
-and must be removed. `_NONASCII_EMISSION_ALLOWLIST` is keyed by script.
 
 Usage:
     py -3 claude/scripts/tests/test_hook_output_contract.py
@@ -114,7 +121,7 @@ from _hookout import STDOUT_MODEL_VISIBLE_EVENTS  # noqa: E402  (the SSOT, ADR-1
 # Two-sided allowlists (populated with current offenders; migrations shrink them)
 # Verified against origin/main @ 2cc6afa (2026-07-11).
 # ---------------------------------------------------------------------------
-# {(script, check): count} — check in {"A","B","C"}, count = currently-accepted
+# {(script, check): count} — check in {"A","B","C","D"}, count = currently-accepted
 # offense lines for that check in that script. A hook stays listed until every site
 # of that check is routed through _hookout (PRs 5-7); then it drops off `offenses`
 # entirely and the entry goes stale (must be deleted). A NEW offense line in a listed
@@ -124,11 +131,9 @@ from _hookout import STDOUT_MODEL_VISIBLE_EVENTS  # noqa: E402  (the SSOT, ADR-1
 # Migration owner per ADR-103:
 #   PR5 -> post-pr-merge-pull, post-pr-merge-reclaim
 #   PR6 -> token-tracker, journal-stop-check (checks 2-3), posttooluse-inert-advisory
-#   (post-compact was surfaced by this gate, not in the named T1 set -- its exit-0
-#    stderr status is invisible on PostCompact; follow-up sweep dev-env#727.)
+#   (post-compact's exit-0 stderr status was swept onto _hookout in dev-env#727.)
 _OUTPUT_CONTRACT_ALLOWLIST: dict[tuple[str, str], int] = {
     ("journal-stop-check.py", "B"): 1,        # checks 2-3 print()+exit0 (PR6)
-    ("post-compact.py", "A"): 4,              # stderr status on PostCompact (follow-up)
     ("post-pr-merge-pull.py", "A"): 8,        # stderr status/park warnings, all exit 0 (PR5)
     ("post-pr-merge-reclaim.py", "A"): 1,     # stderr status, exit 0 (PR5)
     ("posttooluse-inert-advisory.py", "B"): 1,  # bare stdout on Stop, exit 0 (PR6)
@@ -143,15 +148,12 @@ _OUTPUT_CONTRACT_ALLOWLIST: dict[tuple[str, str], int] = {
 # indirection limitation in the module docstring -- so it is flagged here only via a
 # direct em-dash; PR5's own .isascii() pin covers the emoji). PR5 also clears
 # post-pr-merge-pull/reclaim; PR6 token-tracker; PR7 dev-env-sync. post-compact /
-# post-merge-tile-checkpoint / pre-merge-findings-gate are follow-up sweep targets
-# (dev-env#727).
+# post-merge-tile-checkpoint / pre-merge-findings-gate were swept onto _hookout in
+# dev-env#727.
 _NONASCII_EMISSION_ALLOWLIST: dict[str, int] = {
     "dev-env-sync.py": 4,
-    "post-compact.py": 1,
-    "post-merge-tile-checkpoint.py": 1,
     "post-pr-merge-pull.py": 7,
     "post-pr-merge-reclaim.py": 1,
-    "pre-merge-findings-gate.py": 1,
     "token-tracker.py": 2,
     "usage-snapshot.py": 1,
 }
@@ -261,10 +263,62 @@ def _emits_json(call: ast.Call) -> bool:
     return bool(call.args) and _is_json_dumps(call.args[0])
 
 
+def _dict_str_keys(d: ast.Dict) -> set:
+    """The set of literal string keys of an `ast.Dict` (dynamic/`**` keys ignored)."""
+    return {
+        k.value for k in d.keys
+        if isinstance(k, ast.Constant) and isinstance(k.value, str)
+    }
+
+
+def _dict_value_for(d: ast.Dict, key: str):
+    """The value node paired with literal string *key* in an `ast.Dict`, or None."""
+    for k, v in zip(d.keys, d.values):
+        if isinstance(k, ast.Constant) and k.value == key:
+            return v
+    return None
+
+
+def _json_payload_channel(call: ast.Call) -> str | None:
+    """Classify a `json.dumps({...})` emission's delivery channel by its literal
+    payload keys (None if the emission's first arg is not a json.dumps call):
+
+      "additionalContext" -- the payload sets hookSpecificOutput.additionalContext
+                             (model-visible ONLY on the context events). Wins even
+                             when systemMessage is also present: a payload that RELIES
+                             on additionalContext to reach the model is invisible on
+                             a non-context event regardless of a co-present toast.
+      "user"             -- the payload sets systemMessage and NOT additionalContext
+                             (delivered to the USER on any event at exit 0).
+      "unknown"          -- a json.dumps emission whose payload dict can't be read
+                             statically (built from a variable / comprehension), or a
+                             literal dict with neither key. Exempt, to avoid a false
+                             positive on an indirection this gate can't see (a
+                             documented limitation).
+    """
+    if not (call.args and _is_json_dumps(call.args[0])):
+        return None
+    dumps = call.args[0]
+    payload = dumps.args[0] if dumps.args else None
+    if not isinstance(payload, ast.Dict):
+        return "unknown"
+    keys = _dict_str_keys(payload)
+    if "hookSpecificOutput" in keys:
+        hso = _dict_value_for(payload, "hookSpecificOutput")
+        if isinstance(hso, ast.Dict) and "additionalContext" in _dict_str_keys(hso):
+            return "additionalContext"
+    if "additionalContext" in keys:  # defensive: a top-level additionalContext too
+        return "additionalContext"
+    if "systemMessage" in keys:
+        return "user"
+    return "unknown"
+
+
 def _walk_scope(stmts, outer_tails, results):
-    """Record (lineno, stream, governing_exit, is_json) for every emission in this
-    scope's statement list, recursing nested blocks but NOT nested function/class
-    scopes."""
+    """Record (lineno, stream, governing_exit, is_json, channel) for every emission
+    in this scope's statement list, recursing nested blocks but NOT nested
+    function/class scopes. `channel` is the json payload channel
+    (`_json_payload_channel`), or None for a non-json emission."""
     for i, stmt in enumerate(stmts):
         tails = [(stmts, i + 1)] + outer_tails
         if isinstance(stmt, _SCOPE):
@@ -277,22 +331,87 @@ def _walk_scope(stmts, outer_tails, results):
                 if isinstance(node, ast.Call):
                     stream = _emission_stream(node)
                     if stream:
-                        results.append(
-                            (stmt.lineno, stream, _continuation_exit(tails), _emits_json(node))
-                        )
+                        results.append((
+                            stmt.lineno, stream, _continuation_exit(tails),
+                            _emits_json(node), _json_payload_channel(node),
+                        ))
 
 
 def analyze_emissions(source: str, filename: str = "<string>"):
-    """Return [(lineno, stream, governing_exit, is_json), ...] for every raw-stream
-    emission, across the module top level and each function scope. `is_json` is True
-    for a `json.dumps(...)`-wrapped write (the structured channel)."""
+    """Return [(lineno, stream, governing_exit, is_json, channel), ...] for every
+    raw-stream emission, across the module top level and each function scope.
+    `is_json` is True for a `json.dumps(...)`-wrapped write; `channel` is that write's
+    payload channel ("user" / "additionalContext" / "unknown", else None)."""
     tree = ast.parse(source, filename=filename)
-    results: list[tuple[int, str, int, bool]] = []
+    results: list[tuple] = []
     _walk_scope(tree.body, [], results)
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             _walk_scope(node.body, [], results)
     return results
+
+
+# ---------------------------------------------------------------------------
+# Cross-function drop-by-caller pass (Check C, one level) -- dev-env#727
+# ---------------------------------------------------------------------------
+
+def _walk_callsites(stmts, outer_tails, func_names, results):
+    """Populate {func_name: {continuation_exit, ...}} for every call to a known local
+    function found in a SIMPLE statement of *stmts* (recursing nested blocks, not
+    nested scopes). The continuation exit is `_continuation_exit` of what runs AFTER
+    the statement containing the call -- i.e. what the process does once the callee
+    returns. A call in a compound-statement header (`if helper():`) is not paired
+    (only child blocks and simple statements are walked; documented limitation)."""
+    for i, stmt in enumerate(stmts):
+        tails = [(stmts, i + 1)] + outer_tails
+        if isinstance(stmt, _SCOPE):
+            continue
+        if isinstance(stmt, _COMPOUND):
+            for block in _child_blocks(stmt):
+                _walk_callsites(block, tails, func_names, results)
+        else:
+            exit_after = _continuation_exit(tails)
+            for node in ast.walk(stmt):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id in func_names
+                ):
+                    results.setdefault(node.func.id, set()).add(exit_after)
+
+
+def analyze_dropped_by_caller(source: str, filename: str = "<string>") -> set:
+    """Return line numbers of stdout emissions inside a helper whose DIRECT call
+    site's continuation reaches `sys.exit(2)` -- the process exits 2 after the helper
+    returns, so its already-written stdout is dropped (exit 2 ignores stdout). This is
+    the one-level cross-function extension of Check C (dev-env#727): the emission is
+    gov-0 within its own function (the function returns) yet effectively gov-2 at that
+    call site.
+
+    Only gov-0 stdout emissions are returned; a gov-2 stdout emission inside the
+    helper itself is already a direct Check C hit and needs no cross-function pass."""
+    tree = ast.parse(source, filename=filename)
+    func_names = {
+        n.name for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    callsite_exits: dict = {}
+    _walk_callsites(tree.body, [], func_names, callsite_exits)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            _walk_callsites(node.body, [], func_names, callsite_exits)
+
+    dropped: set = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if 2 not in callsite_exits.get(node.name, set()):
+                continue
+            recs: list = []
+            _walk_scope(node.body, [], recs)
+            for (lineno, stream, gov, _is_json, _channel) in recs:
+                if stream == "stdout" and gov == 0:
+                    dropped.add(lineno)
+    return dropped
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +455,35 @@ def analyze_nonascii_emissions(source: str, filename: str = "<string>") -> list[
 # Real-repo scan
 # ---------------------------------------------------------------------------
 
+def _classify_emission(stream, gov, is_json, channel, only_noncontext, dropped=False):
+    """Map one emission to its output-contract check letter, or None (not an offense).
+
+    Pure, so it can be unit-tested without the real wired-hook scan. `dropped` is the
+    cross-function signal from `analyze_dropped_by_caller` (this emission's line sits
+    in a helper whose caller exits 2).
+
+      A -- stderr, gov 0 (invisible on every event).
+      C -- stdout, gov 2 (dropped directly), OR stdout dropped-by-caller (the process
+           exits 2 after this helper returns). exit 2 ignores stdout on EVERY event,
+           so C is independent of the context/non-context distinction.
+      B -- bare stdout (not json), gov 0, on a non-context-only hook (model-invisible).
+      D -- json stdout whose payload relies on additionalContext, gov 0, on a
+           non-context-only hook (additionalContext is honored only on context events).
+      None -- everything else, incl. a systemMessage/unknown json write (the user
+           channel / an indirection the gate can't read) and any exit-0 stdout on a
+           hook also wired to a context event.
+    """
+    if stream == "stderr" and gov == 0:
+        return "A"
+    if stream == "stdout" and (gov == 2 or dropped):
+        return "C"
+    if stream == "stdout" and gov == 0 and only_noncontext:
+        if is_json:
+            return "D" if channel == "additionalContext" else None
+        return "B"
+    return None
+
+
 def _scan_output_contract():
     """Return {(script, check): [linenos]} for every output-contract offense."""
     settings = wiring.load_settings()
@@ -345,14 +493,11 @@ def _scan_output_contract():
         events = events_by_script[script]
         only_noncontext = not (events & STDOUT_MODEL_VISIBLE_EVENTS)
         source = (wiring.SCRIPTS_DIR / script).read_text(encoding="utf-8")
-        for lineno, stream, gov, is_json in analyze_emissions(source, filename=script):
-            check = None
-            if stream == "stderr" and gov == 0:
-                check = "A"
-            elif stream == "stdout" and gov == 0 and only_noncontext and not is_json:
-                check = "B"
-            elif stream == "stdout" and gov == 2:
-                check = "C"
+        dropped = analyze_dropped_by_caller(source, filename=script)
+        for lineno, stream, gov, is_json, channel in analyze_emissions(source, filename=script):
+            check = _classify_emission(
+                stream, gov, is_json, channel, only_noncontext, dropped=lineno in dropped
+            )
             if check:
                 offenses.setdefault((script, check), []).append(lineno)
     return offenses
@@ -376,13 +521,13 @@ def _scan_nonascii():
 
 def test_stderr_then_exit0_is_governing_0() -> str:
     src = "def main():\n    sys.stderr.write('x')\n    sys.exit(0)\n"
-    assert analyze_emissions(src) == [(2, "stderr", 0, False)], analyze_emissions(src)
+    assert analyze_emissions(src) == [(2, "stderr", 0, False, None)], analyze_emissions(src)
     return "stderr write then sys.exit(0) -> governing 0"
 
 
 def test_stderr_then_exit2_is_governing_2() -> str:
     src = "def main():\n    sys.stderr.write('x')\n    sys.exit(2)\n"
-    assert analyze_emissions(src) == [(2, "stderr", 2, False)], analyze_emissions(src)
+    assert analyze_emissions(src) == [(2, "stderr", 2, False, None)], analyze_emissions(src)
     return "stderr write then sys.exit(2) -> governing 2 (a correct block, not flagged A)"
 
 
@@ -395,19 +540,19 @@ def test_emission_in_if_branch_ascends_to_exit2() -> str:
         "    sys.exit(2)\n"
     )
     got = analyze_emissions(src)
-    assert sorted(got) == [(3, "stderr", 2, False), (5, "stderr", 2, False)], got
+    assert sorted(got) == [(3, "stderr", 2, False, None), (5, "stderr", 2, False, None)], got
     return "emit in if/else, sys.exit(2) after -> both ascend to governing 2 (not flagged)"
 
 
 def test_bare_print_falls_through_to_0() -> str:
     src = "def main():\n    print('hello')\n"
-    assert analyze_emissions(src) == [(2, "stdout", 0, False)], analyze_emissions(src)
+    assert analyze_emissions(src) == [(2, "stdout", 0, False, None)], analyze_emissions(src)
     return "bare print, no exit (main fall-through) -> stdout governing 0"
 
 
 def test_print_file_stderr_is_stderr() -> str:
     src = "def main():\n    print('x', file=sys.stderr)\n    sys.exit(0)\n"
-    assert analyze_emissions(src) == [(2, "stderr", 0, False)], analyze_emissions(src)
+    assert analyze_emissions(src) == [(2, "stderr", 0, False, None)], analyze_emissions(src)
     return "print(file=sys.stderr) classified as stderr"
 
 
@@ -419,7 +564,7 @@ def test_print_file_other_is_not_a_stream_emission() -> str:
 
 def test_stdout_then_exit2_is_governing_2() -> str:
     src = "def main():\n    print('x')\n    sys.exit(2)\n"
-    assert analyze_emissions(src) == [(2, "stdout", 2, False)], analyze_emissions(src)
+    assert analyze_emissions(src) == [(2, "stdout", 2, False, None)], analyze_emissions(src)
     return "stdout then sys.exit(2) -> governing 2 (Check C shape)"
 
 
@@ -428,8 +573,8 @@ def test_json_dumps_stdout_flagged_is_json_true() -> str:
     # channel (delivered on any event) -- is_json True so _scan_output_contract
     # exempts it from Check B. The post-compact L108 shape.
     src = "def main():\n    print(json.dumps({'systemMessage': 'hi'}))\n"
-    assert analyze_emissions(src) == [(2, "stdout", 0, True)], analyze_emissions(src)
-    return "print(json.dumps({'systemMessage':...})) -> is_json True (Check B exempts the structured user channel)"
+    assert analyze_emissions(src) == [(2, "stdout", 0, True, "user")], analyze_emissions(src)
+    return "print(json.dumps({'systemMessage':...})) -> is_json True, channel 'user' (Check B/D exempt)"
 
 
 def test_nonascii_in_raw_emission_detected() -> str:
@@ -461,7 +606,7 @@ def test_emission_stream_requires_sys_base() -> str:
     assert analyze_emissions("def main():\n    proc.stdout.write('x')\n") == [], "proc.stdout.write should not match"
     assert analyze_emissions("def main():\n    print('x', file=proc.stderr)\n") == [], "file=proc.stderr should not match"
     got = analyze_emissions("def main():\n    sys.stdout.write('x')\n")
-    assert got == [(2, "stdout", 0, False)], got
+    assert got == [(2, "stdout", 0, False, None)], got
     return "only sys.stdout/sys.stderr count; proc.stdout / file=proc.stderr are ignored"
 
 
@@ -469,11 +614,152 @@ def test_return_int_literal_is_that_governing_exit() -> str:
     # `sys.stderr.write(r); return 2` -> gov 2 (a sys.exit(main()) entrypoint
     # propagates the return value), so a blocking stderr write is not false-flagged A.
     got = analyze_emissions("def main():\n    sys.stderr.write('r')\n    return 2\n")
-    assert got == [(2, "stderr", 2, False)], got
+    assert got == [(2, "stderr", 2, False, None)], got
     # A bare return still means fall-through exit 0.
     got0 = analyze_emissions("def main():\n    sys.stderr.write('r')\n    return\n")
-    assert got0 == [(2, "stderr", 0, False)], got0
+    assert got0 == [(2, "stderr", 0, False, None)], got0
     return "`return 2` -> gov 2; bare `return` -> gov 0"
+
+
+# ---------------------------------------------------------------------------
+# Structured-channel classification (Check D) -- dev-env#727
+# ---------------------------------------------------------------------------
+
+def test_json_channel_additionalContext_detected() -> str:
+    src = ("def main():\n"
+           "    print(json.dumps({'hookSpecificOutput': {'additionalContext': 'x'}}))\n")
+    got = analyze_emissions(src)
+    assert got == [(2, "stdout", 0, True, "additionalContext")], got
+    return "hookSpecificOutput.additionalContext payload -> channel 'additionalContext'"
+
+
+def test_json_channel_both_keys_is_additionalContext() -> str:
+    # A payload with BOTH keys still RELIES on additionalContext to reach the model,
+    # so on a non-context event it is invisible regardless of the co-present toast.
+    src = ("def main():\n"
+           "    print(json.dumps({'systemMessage': 't', "
+           "'hookSpecificOutput': {'additionalContext': 'x'}}))\n")
+    got = analyze_emissions(src)
+    assert got == [(2, "stdout", 0, True, "additionalContext")], got
+    return "systemMessage + additionalContext -> 'additionalContext' (it wins)"
+
+
+def test_json_channel_dynamic_payload_is_unknown() -> str:
+    # A payload built from a variable can't be read statically -> exempt (unknown).
+    src = "def main():\n    print(json.dumps(payload))\n"
+    got = analyze_emissions(src)
+    assert got == [(2, "stdout", 0, True, "unknown")], got
+    return "json.dumps(<variable>) -> channel 'unknown' (indirection the gate can't read)"
+
+
+def test_json_channel_no_known_keys_is_unknown() -> str:
+    src = "def main():\n    print(json.dumps({'foo': 'bar'}))\n"
+    got = analyze_emissions(src)
+    assert got == [(2, "stdout", 0, True, "unknown")], got
+    return "json.dumps with neither systemMessage nor additionalContext -> 'unknown'"
+
+
+def test_classify_stderr_exit0_is_A() -> str:
+    assert _classify_emission("stderr", 0, False, None, only_noncontext=True) == "A"
+    assert _classify_emission("stderr", 0, False, None, only_noncontext=False) == "A"
+    return "stderr gov 0 -> A (context-independent)"
+
+
+def test_classify_stdout_exit2_is_C() -> str:
+    assert _classify_emission("stdout", 2, False, None, only_noncontext=True) == "C"
+    assert _classify_emission("stdout", 2, True, "user", only_noncontext=False) == "C"
+    return "stdout gov 2 -> C (json or not; exit 2 ignores stdout on every event)"
+
+
+def test_classify_dropped_by_caller_is_C() -> str:
+    # A gov-0 stdout emission dropped by an exit-2 caller -> C, regardless of json /
+    # context: the process exits 2, so the stdout is ignored everywhere.
+    assert _classify_emission("stdout", 0, False, None, only_noncontext=False, dropped=True) == "C"
+    assert _classify_emission("stdout", 0, True, "user", only_noncontext=False, dropped=True) == "C"
+    return "stdout gov 0 dropped-by-caller -> C (cross-function)"
+
+
+def test_classify_bare_stdout_noncontext_is_B() -> str:
+    assert _classify_emission("stdout", 0, False, None, only_noncontext=True) == "B"
+    return "bare stdout gov 0 on a non-context-only hook -> B"
+
+
+def test_classify_bare_stdout_context_exempt() -> str:
+    assert _classify_emission("stdout", 0, False, None, only_noncontext=False) is None
+    return "bare stdout gov 0 on a context-wired hook -> exempt (model-visible there)"
+
+
+def test_classify_additionalContext_noncontext_is_D() -> str:
+    assert _classify_emission("stdout", 0, True, "additionalContext", only_noncontext=True) == "D"
+    return "additionalContext json gov 0 on a non-context-only hook -> D"
+
+
+def test_classify_additionalContext_context_exempt() -> str:
+    assert _classify_emission("stdout", 0, True, "additionalContext", only_noncontext=False) is None
+    return "additionalContext json on a context-wired hook -> exempt (honored there)"
+
+
+def test_classify_systemMessage_and_unknown_exempt() -> str:
+    assert _classify_emission("stdout", 0, True, "user", only_noncontext=True) is None
+    assert _classify_emission("stdout", 0, True, "unknown", only_noncontext=True) is None
+    return "systemMessage / unknown json gov 0 -> exempt (user channel / unreadable)"
+
+
+# ---------------------------------------------------------------------------
+# Cross-function drop-by-caller (Check C, one level) -- dev-env#727
+# ---------------------------------------------------------------------------
+
+def test_dropped_by_caller_detects_helper_stdout() -> str:
+    # helper() writes stdout and returns; main() exits 2 after calling it -> the
+    # stdout is dropped (exit 2 ignores stdout). The helper's L2 is flagged.
+    src = (
+        "def helper():\n    print('x')\n"
+        "def main():\n    helper()\n    sys.exit(2)\n"
+    )
+    assert analyze_dropped_by_caller(src) == {2}, analyze_dropped_by_caller(src)
+    return "helper prints, caller exits 2 -> helper's stdout line in the dropped set"
+
+
+def test_dropped_by_caller_exit0_caller_not_dropped() -> str:
+    src = (
+        "def helper():\n    print('x')\n"
+        "def main():\n    helper()\n    sys.exit(0)\n"
+    )
+    assert analyze_dropped_by_caller(src) == set(), analyze_dropped_by_caller(src)
+    return "helper prints, caller exits 0 -> not dropped (stdout survives on exit 0)"
+
+
+def test_dropped_by_caller_stderr_not_included() -> str:
+    # A stderr write in the helper is Check A (gov 0), not a cross-function C.
+    src = (
+        "def helper():\n    sys.stderr.write('x')\n"
+        "def main():\n    helper()\n    sys.exit(2)\n"
+    )
+    assert analyze_dropped_by_caller(src) == set(), analyze_dropped_by_caller(src)
+    return "helper's stderr is not a dropped-stdout (it's Check A, handled separately)"
+
+
+def test_dropped_by_caller_helper_own_exit2_not_double_counted() -> str:
+    # A helper that exits 2 ITSELF after printing is already a direct Check C (gov 2);
+    # analyze_dropped_by_caller only collects gov-0 stdout, so it is not re-added.
+    src = (
+        "def helper():\n    print('x')\n    sys.exit(2)\n"
+        "def main():\n    helper()\n    sys.exit(2)\n"
+    )
+    assert analyze_dropped_by_caller(src) == set(), analyze_dropped_by_caller(src)
+    return "helper prints then exits 2 itself -> direct C, not re-added by cross-function pass"
+
+
+def test_dropped_by_caller_two_hops_not_traced() -> str:
+    # One level only: helper() is called by mid() (which returns), and main() exits 2
+    # after mid(). helper's stdout is NOT flagged (two hops from the exit 2).
+    src = (
+        "def helper():\n    print('x')\n"
+        "def mid():\n    helper()\n"
+        "def main():\n    mid()\n    sys.exit(2)\n"
+    )
+    assert analyze_dropped_by_caller(src) == set(), analyze_dropped_by_caller(src)
+    return "two-hops-from-exit-2 -> not traced (one-level pass, documented limitation)"
 
 
 def test_diff_grew_flags_new_offense_behind_entry() -> str:
@@ -564,7 +850,8 @@ def test_repo_wide_output_contract_gate() -> str:
                 desc = {
                     "A": "stderr -> exit 0 (invisible everywhere)",
                     "B": "bare stdout -> exit 0 on a non-context event (model-invisible)",
-                    "C": "stdout -> exit 2 (dropped; exit 2 ignores stdout)",
+                    "C": "stdout -> exit 2, or dropped by an exit-2 caller (stdout ignored on exit 2)",
+                    "D": "additionalContext json -> exit 0 on a non-context event (model-invisible)",
                 }[check]
                 lines.append(f"  {script} [{check}: {desc}] at {ls}")
         if stale:
@@ -638,6 +925,25 @@ def main() -> int:
         ("ASCII-only raw emission not flagged", test_ascii_only_raw_emission_not_flagged),
         ("emission stream requires sys base", test_emission_stream_requires_sys_base),
         ("return <int> is that governing exit", test_return_int_literal_is_that_governing_exit),
+        # Structured-channel classification (Check D) -- dev-env#727
+        ("json channel: additionalContext detected", test_json_channel_additionalContext_detected),
+        ("json channel: both keys -> additionalContext", test_json_channel_both_keys_is_additionalContext),
+        ("json channel: dynamic payload -> unknown", test_json_channel_dynamic_payload_is_unknown),
+        ("json channel: no known keys -> unknown", test_json_channel_no_known_keys_is_unknown),
+        ("classify: stderr exit0 -> A", test_classify_stderr_exit0_is_A),
+        ("classify: stdout exit2 -> C", test_classify_stdout_exit2_is_C),
+        ("classify: dropped-by-caller -> C", test_classify_dropped_by_caller_is_C),
+        ("classify: bare stdout non-context -> B", test_classify_bare_stdout_noncontext_is_B),
+        ("classify: bare stdout context -> exempt", test_classify_bare_stdout_context_exempt),
+        ("classify: additionalContext non-context -> D", test_classify_additionalContext_noncontext_is_D),
+        ("classify: additionalContext context -> exempt", test_classify_additionalContext_context_exempt),
+        ("classify: systemMessage/unknown -> exempt", test_classify_systemMessage_and_unknown_exempt),
+        # Cross-function drop-by-caller (Check C, one level) -- dev-env#727
+        ("cross-fn: helper stdout + exit-2 caller -> dropped", test_dropped_by_caller_detects_helper_stdout),
+        ("cross-fn: exit-0 caller -> not dropped", test_dropped_by_caller_exit0_caller_not_dropped),
+        ("cross-fn: helper stderr -> not dropped", test_dropped_by_caller_stderr_not_included),
+        ("cross-fn: helper own exit2 -> not double-counted", test_dropped_by_caller_helper_own_exit2_not_double_counted),
+        ("cross-fn: two hops -> not traced", test_dropped_by_caller_two_hops_not_traced),
         ("diff: grew flags new offense behind entry", test_diff_grew_flags_new_offense_behind_entry),
         ("diff: shrink is tolerated", test_diff_shrink_is_tolerated),
         ("diff: stale when fully migrated", test_diff_stale_when_fully_migrated),
