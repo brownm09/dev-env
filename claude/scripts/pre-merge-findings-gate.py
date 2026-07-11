@@ -52,6 +52,7 @@ import re
 import subprocess
 import sys
 
+import _hookout
 from _hookio import is_merge_help_only, mask_quoted_spans, scan_top_level
 
 _MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
@@ -236,21 +237,20 @@ def main() -> None:
         sys.exit(0)  # author recorded a disposition section
 
     num = pr.get("number", ref or "current branch")
-    sys.stderr.write(
+    _hookout.emit_block(
         f"[merge-gate] BLOCKED: PR #{num} has an open /review with "
         f"{blocking} blocking + {non_blocking} non-blocking finding(s), and the PR "
         f"body records no disposition.\n\n"
         f"Per ADR-028, every finding must be either FIXED in this PR or FILED as a "
-        f"tracked issue and linked — none may be left \"as-is\".\n\n"
+        f"tracked issue and linked - none may be left \"as-is\".\n\n"
         f"To proceed:\n"
         f"  1. For each finding in the review comment, fix it (commit) or file a "
         f"follow-up issue.\n"
         f"  2. Add a \"Review findings disposition\" section to the PR body listing "
         f"each finding's disposition (fixed in <sha> | filed #N), or add the "
         f"sentinel <!-- findings-disposed --> once all are genuinely closed.\n"
-        f"  3. Re-run `gh pr merge`.\n"
+        f"  3. Re-run `gh pr merge`."
     )
-    sys.exit(2)
 
 
 if __name__ == "__main__":

@@ -1534,27 +1534,38 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `claude/scripts/tests/_hook_wiring.py` (the settings.json parser all three PR3 gates —
     items 61/62/63 — share; run all three when changing it). AST gate over every wired hook
     (via `_hook_wiring`, cross-referencing each script's event class against the SSOT
-    `_hookout.STDOUT_MODEL_VISIBLE_EVENTS`, ADR-103) for the three invisible-emission shapes: **A**
+    `_hookout.STDOUT_MODEL_VISIBLE_EVENTS`, ADR-103) for four invisible-emission shapes: **A**
     stderr write whose governing exit is 0 (invisible everywhere); **B** *bare* stdout write whose
     governing exit is 0 on a hook wired only to non-context events (model-invisible there — a
-    `json.dumps(...)`-wrapped write is exempt, it is the `systemMessage` user channel delivered on any
-    event); **C** stdout write whose governing exit is 2 (dropped — exit 2 ignores stdout, NOT
-    json.dumps-exempt). Plus an ASCII-literal lint: a non-`.isascii()` string literal passed directly
-    to a raw-stream call (json.dumps-exempt via `ensure_ascii`). Governing exit is a documented reaching
-    approximation (forward-then-ascending scan; a `return`/scope-end -> exit 0; compound statements
-    scanned over and cross-function pairing are pass-through — can only over-flag into the allowlist,
-    never miss an emission co-located with its `sys.exit(2)`, incl. the if/else-branch-then-exit-2
-    shape by ascent). Pins the reaching self-tests (stderr->exit0/exit2, if/else ascent, bare-print
-    fall-through, `print(file=...)` stream classification, the `json.dumps` systemMessage exemption,
-    the `ensure_ascii=False` non-exemption). Two-sided allowlists (the
-    `test_no_crude_command_substring_checks.py` mechanism): `_OUTPUT_CONTRACT_ALLOWLIST` keyed by
-    `(script, check)` (7 current offenders; PRs 5-6 shrink it), `_NONASCII_EMISSION_ALLOWLIST` keyed by
-    script (8 current offenders, mostly cp1252-safe em-dash/ellipsis that are still non-`.isascii()`).
-    Documented limitations: the ASCII lint sees only literals *direct* in the emission call
-    (usage-snapshot's emoji reach stderr via a variable, so it is flagged only via an incidental
-    em-dash — PR5's own `.isascii()` self-pin covers the emoji), and Check B's `json.dumps` exemption is
-    blanket (an `additionalContext` JSON on a non-context event would be invisible but is not flagged; no
-    hook does this today). ([ADR-103](docs/adr/103-shared-hookout-emitter.md); dev-env#720)
+    `json.dumps(...)`-wrapped write is not B; Check D inspects its payload keys instead); **C** stdout
+    write whose governing exit is 2 (dropped — exit 2 ignores stdout, NOT json.dumps-exempt), now also
+    firing **cross-function one level**: a stdout emission in a helper whose direct call site's
+    continuation reaches `sys.exit(2)` is dropped by the caller's exit 2 (`analyze_dropped_by_caller`,
+    dev-env#727); **D** a `json.dumps({"hookSpecificOutput": {"additionalContext": ...}})` stdout write,
+    governing exit 0, on a non-context-only hook — model-invisible there (additionalContext is honored
+    only on the context events), while a `json.dumps({"systemMessage": ...})` write stays exempt (the
+    user channel, any event). D is the structured-channel refinement of Check B's former blanket json
+    exemption (dev-env#727). Plus an ASCII-literal lint: a non-`.isascii()` string literal passed
+    directly to a raw-stream call (json.dumps-exempt via `ensure_ascii`). Governing exit is a documented
+    reaching approximation (forward-then-ascending scan; a `return`/scope-end -> exit 0; compound
+    statements scanned over are pass-through — can only over-flag into the allowlist, never miss an
+    emission co-located with its `sys.exit(2)`, incl. the if/else-branch-then-exit-2 shape by ascent).
+    Pins the reaching self-tests (stderr->exit0/exit2, if/else ascent, bare-print fall-through,
+    `print(file=...)` stream classification, the `json.dumps` systemMessage exemption, the
+    `ensure_ascii=False` non-exemption), the payload-channel classifier
+    (systemMessage/additionalContext/both-keys/dynamic/no-known-keys), the pure `_classify_emission`
+    (A/B/C/D plus the exempt cells), and the cross-function drop-by-caller pass (helper-stdout + exit-2
+    caller flagged; exit-0 caller / helper-stderr / helper-own-exit-2 / two-hops not flagged). Two-sided
+    allowlists (the `test_no_crude_command_substring_checks.py` mechanism): `_OUTPUT_CONTRACT_ALLOWLIST`
+    keyed by `(script, check)` (6 current offenders; PRs 5-6 shrink it), `_NONASCII_EMISSION_ALLOWLIST`
+    keyed by script (5 current offenders, mostly cp1252-safe em-dash/ellipsis that are still
+    non-`.isascii()`). Documented limitations: the ASCII lint and Check D both see only literals
+    *direct* in the emission call (usage-snapshot's emoji reach stderr via a variable, flagged only via
+    an incidental em-dash — PR5's own `.isascii()` self-pin covers the emoji; a json payload built from
+    a variable classifies as "unknown" and is exempt), and the cross-function Check C pass is one level
+    and matches only a bare-`Name` call site (a two-hop or `mod.helper()` call is not traced). No wired
+    hook hits Check D or the cross-function C today (both latent).
+    ([ADR-103](docs/adr/103-shared-hookout-emitter.md); dev-env#720, dev-env#727)
 
     ```bash
     py -3 claude/scripts/tests/test_hook_output_contract.py
