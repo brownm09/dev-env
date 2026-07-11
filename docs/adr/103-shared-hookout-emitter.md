@@ -142,6 +142,21 @@ and adopted across the following PRs (a foundation-then-gates-then-migrations se
   green with every current offender in a **two-sided allowlist** (the `_KNOWN_EXCEPTIONS`
   mechanism from `test_no_crude_command_substring_checks.py`: a stale entry fails the suite too).
   `_hookout` adoption is what shrinks those allowlists.
+- **PR4 (`config/ci-hook-test-suite`)** makes the gates *run*. `claude/scripts/run-hook-tests.py`
+  discovers and runs the whole suite — every `claude/scripts/tests/test_*.py` plus the bash gates in
+  `claude/scripts/tests/` and `claude/hooks/tests/` — and `.github/workflows/hook-tests.yml` executes
+  it on `windows-latest` for every `pull_request`. This turns PR3's three contract/wiring gates (and
+  the ~60 tests around them) into an external gate on every PR, rather than one that depends on an
+  author remembering the local `## Testing` commands — the same "no signal that the safety system
+  itself broke" gap this initiative targets, one level up. The runner glob-discovers, so a new test
+  file is gated automatically; it runner-skips only `test_pyw_stdio.py` (a real-`pyw`
+  Windows-subsystem stdio probe a headless runner can't host faithfully, documented in-place) and
+  treats a bash gate's own `SKIP:` self-exit (no shellcheck, no authenticated gh) as non-failing.
+  `windows-latest` is faithful to the real `py -3` / Git Bash / cp1252 runtime
+  ([ADR-007](007-hook-command-invocation.md)); `pull_request`-only (never on `main` pushes) follows
+  the lockfile-gate scoping lesson (dev-env `CLAUDE.md` → Dependency and lockfile policy). The
+  runner's own pure helpers are unit-tested (`tests/test_run_hook_tests.py`); its end-to-end
+  acceptance test is the first green CI run.
 - **PRs 5–7 (migrations)** move the live per-site offenders onto `_hookout`, each deleting its
   allowlist entries: PR5 the PostToolUse advisory channels (`post-pr-merge-pull` park →
   `emit_block`, status → `emit_advisory(..., audience="user")`; `post-pr-merge-reclaim`;
@@ -241,3 +256,5 @@ reviewable and lets the migrations land incrementally against a stable contract.
 - [dev-env#717](https://github.com/brownm09/dev-env/issues/717) — the top-level
   hook-reliability initiative issue.
 - [dev-env#719](https://github.com/brownm09/dev-env/issues/719) — this sub-issue (PR2).
+- [dev-env#721](https://github.com/brownm09/dev-env/issues/721) — the CI-runner sub-issue (PR4),
+  recorded in *Enforcement & migration* above.

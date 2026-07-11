@@ -1,0 +1,58 @@
+name: hook-tests
+
+# Pull-request trigger ONLY -- never on pushes to main. The suite reads live
+# repo state (settings.json, every claude/scripts/*.py) and some tests recompute
+# from the environment; running it on the PR is where a contributor's change is
+# gated, exactly the scoping lesson the lockfile drift gate learned (see the
+# dev-env CLAUDE.md "Dependency and lockfile policy" -> pull_request-not-main
+# note). A push to main can add no new script-breaking change a merged PR did not
+# already carry through this gate.
+on:
+  pull_request:
+
+# Least privilege: read-only, and deliberately NO gh token in the job env. The
+# network-dependent gates (test-get-project-item.sh) and the shellcheck gate then
+# self-SKIP (exit 0 with a "SKIP:" line) rather than run -- the runner reports
+# those as non-failing environment skips.
+permissions:
+  contents: read
+
+concurrency:
+  group: hook-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: Hook & script test suite (windows)
+    # windows-latest is faithful to the real runtime: the Windows `py -3`
+    # launcher (ADR-007), Git Bash for the *.sh gates, and cp1252 stdio
+    # semantics -- the exact environment the hooks and their tests target.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show tool versions
+        shell: bash
+        run: |
+          py -3 --version
+          git --version
+          bash --version | head -1
+
+      - name: Configure git identity
+        shell: bash
+        run: |
+          # Many tests spin up throwaway git repos and commit into them; a
+          # GitHub-hosted runner has no global git identity, so an unset one
+          # would fail every such commit with "Please tell me who you are".
+          git config --global user.email "dev-env-ci@users.noreply.github.com"
+          git config --global user.name "dev-env CI"
+          git config --global init.defaultBranch main
+
+      - name: Run hook/script test suite
+        shell: bash
+        # Invoked via the Windows `py -3` launcher (not `python3`, which is the
+        # MS Store stub -- ADR-007). The runner discovers every test_*.py plus
+        # the bash *.sh gates, runs each, and exits non-zero iff any failed.
+        run: py -3 claude/scripts/run-hook-tests.py

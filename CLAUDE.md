@@ -17,6 +17,14 @@ guidelines, and journal conventions are defined there and apply to every project
 This is the canonical, complete set of dev-env verification commands. The global "Test
 before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section.
 
+**Run the whole suite at once** with `py -3 claude/scripts/run-hook-tests.py` — it glob-discovers
+every `test_*.py` and bash gate listed below, so it stays in sync with this list automatically, and
+it is exactly what `.github/workflows/hook-tests.yml` runs on `windows-latest` for every
+`pull_request` (so the suite now gates PRs in CI, not just locally — [ADR-103](docs/adr/103-shared-hookout-emitter.md), dev-env#721).
+The runner-skips and self-skips are documented in item 64 and in [`docs/REFERENCE.md` → Script
+verification suite](docs/REFERENCE.md#script-verification-suite). The per-item commands below remain
+the canonical reference for *when* to run each individual test.
+
 Item numbers below (and `docs/adr/INDEX.md`'s ADR numbers) are checked for collisions against
 `origin/main` immediately before every `gh pr merge`, by `pre-merge-numbering-check.py`
 ([ADR-074](docs/adr/074-pre-merge-numbering-collision-check.md); dev-env#516) — concurrent PRs
@@ -1598,6 +1606,26 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 
     ```bash
     py -3 claude/scripts/tests/test_settings_hook_wiring.py
+    ```
+
+64. **run-hook-tests runner test** — required when changing `claude/scripts/run-hook-tests.py`.
+    Exercises the runner's pure helpers offline (tempfile fixtures; no subprocess, no network, no
+    real test execution): `discover_python_tests` / `discover_bash_tests` (the `test_*.py` / `*.sh`
+    glob with `test_`-prefix and leading-`_` filtering, multi-directory union, and missing-directory
+    tolerance), `runner_skip_reason` / `SKIP_TESTS` (the deliberately single-entry runner-skip list —
+    `test_pyw_stdio.py`, a real-`pyw` Windows-subsystem stdio probe a non-interactive CI runner can't
+    host — pinned so any future runner-skip is a test-visible change), `_command_for` (the interpreter
+    argv for a `.py` vs `.sh` file, plus the bash-missing → `None` and non-test-suffix → `None`
+    cases), and `classify_result` (the pass / self-skip / fail mapping, including a non-zero exit
+    overriding a `SKIP:` marker so a bash gate that prints `SKIP:` but still fails is a real failure).
+    The runner's `main` / `_run_one` (which shell out to run the real suite) are not covered — the
+    runner's end-to-end acceptance test is the first green run of the `hook-tests` CI workflow
+    (`.github/workflows/hook-tests.yml`, `windows-latest`, `pull_request`), which is also how the
+    whole suite is now gated on every PR ([ADR-103](docs/adr/103-shared-hookout-emitter.md);
+    dev-env#721).
+
+    ```bash
+    py -3 claude/scripts/tests/test_run_hook_tests.py
     ```
 
 ## Observability
