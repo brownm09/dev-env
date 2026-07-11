@@ -207,7 +207,16 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `is_issue_create_help_only()` / `is_pr_create_help_only()`, is covered in item 12 above). `_hookio` is
     imported by all five PostToolUse Bash hooks plus `pr-merge-reminder.py`
     ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md)). `confirm_merge_via_gh()`
-    itself is not covered (it shells out to `gh pr view`).
+    itself is not covered (it shells out to `gh pr view`). Also exercises `is_absolute_path()`
+    ([ADR-050 Amendment 22](docs/adr/050-shared-hookio-sibling-hook-fixes.md); dev-env#732 — the
+    Python 3.13 `ntpath.isabs` regression, where a driveless-rooted path like `/Git/dev-env` now
+    reads as non-absolute): forward-slash / backslash / UNC rooted, drive-absolute, and
+    relative/empty inputs, plus a **3.13 simulation** that patches `os.path.isabs` to return `False`
+    (as 3.13 does for a driveless-rooted path) and asserts the leading-separator short-circuit still
+    classifies the target absolute — the only way to pin the 3.13 fix on this 3.12 runtime, where the
+    `startswith` and `isabs` branches are otherwise indistinguishable for `/x`. The `effective_merge_dir`
+    relative-path assertion is made version-agnostic via `is_absolute_path` in the same change, and
+    `_effective_push_dir` / `_blockable_redirect_root` (items 28 / 33) reuse the shared helper.
 
     ```bash
     py -3 claude/scripts/tests/test_hookio.py
@@ -565,7 +574,11 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     Amendment 18) — the `is_create` branch's own counterpart, gaining the identical `--repo`/`-R` flag-first
     precedence, but falling back to plain cwd (no cd-chain dir) when absent, since that branch never had one.
     The live `_open_pr_for_cwd` and `confirm_merge_via_gh` subprocess boundaries are not covered (the repo
-    avoids subprocess mocks).
+    avoids subprocess mocks). `_effective_push_dir` now decides absoluteness via the shared `is_absolute_path`
+    ([ADR-050 Amendment 22](docs/adr/050-shared-hookio-sibling-hook-fixes.md); dev-env#732), and this suite's
+    relative-push-dir assertion is version-agnostic accordingly (`os.path.isabs` on a driveless
+    `\base\sub\repo` is `False` on Python 3.13+, which would otherwise break the assertion independently of the
+    fix).
 
     ```bash
     py -3 claude/scripts/tests/test_pr_merge_reminder.py
@@ -675,7 +688,12 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     End-to-end: `gh pr merge --delete-branch`/`-d` from a canonical (non-worktree) checkout is blocked (exit 2)
     with the matched command named in the reason; the same command from a worktree-pattern cwd is allowed
     (out of scope, unchanged); a bare `gh pr merge`/`--squash` is allowed from a canonical root; and the
-    override token bypasses the block.
+    override token bypasses the block. `_blockable_redirect_root`'s `-C`/`--git-dir`/`--work-tree` redirect
+    resolution now decides absoluteness via the shared `is_absolute_path`
+    ([ADR-050 Amendment 22](docs/adr/050-shared-hookio-sibling-hook-fixes.md); dev-env#732 — a forward-slash
+    redirect target like `git -C /repo` would otherwise fail-open the guard on Python 3.13+); the pure
+    resolution semantic is pinned by `is_absolute_path`'s own tests (item 13), so this file needs no new case
+    for it.
 
     ```bash
     py -3 claude/scripts/tests/test_canonical_mutate_guard.py

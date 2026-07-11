@@ -120,6 +120,26 @@ _BARE_MERGE_RE = re.compile(r"\bgh\s+pr\s+merge\b")
 _MERGE_CD_CHAIN_RE = re.compile(r"""cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)""")
 
 
+def is_absolute_path(path: str) -> bool:
+    r"""True if *path* is absolute, treating a leading ``/`` or ``\`` as absolute.
+
+    Python 3.13 changed ``ntpath.isabs`` so a rooted-but-driveless path
+    (``/Git/dev-env``, ``\Git\dev-env``) now returns ``False`` where <=3.12
+    returned ``True`` (https://docs.python.org/3/whatsnew/3.13.html#os-path).
+    Every cd-chain / redirect resolver keyed off this — ``effective_merge_dir``,
+    ``_effective_push_dir`` in pr-merge-reminder.py, ``_blockable_redirect_root``
+    in pre-tool-use-canonical-mutate-guard.py — joins such a path onto *cwd* when
+    it reads as relative. So on 3.13 a ``cd /repo && gh pr merge`` target (or a
+    ``git -C /repo`` redirect) would silently resolve to the wrong directory
+    (``normpath(join(cwd, "/repo"))`` -> ``\repo``), mis-scoping the ADR-065/067
+    merge/push hooks and fail-opening the canonical-mutate guard. Short-circuiting
+    on the leading separator restores the <=3.12 semantics on every version, so a
+    driveless-rooted target is kept as-is. Pure; total (any str, incl. "").
+    dev-env#732.
+    """
+    return path.startswith(("/", "\\")) or os.path.isabs(path)
+
+
 def effective_merge_dir(command: str, cwd: str) -> str:
     """Best-effort directory a top-level ``gh pr merge`` in *command* runs in.
 
@@ -143,7 +163,7 @@ def effective_merge_dir(command: str, cwd: str) -> str:
     if not target:
         return cwd
     path = target.strip("\"'")
-    if not os.path.isabs(path):
+    if not is_absolute_path(path):
         path = os.path.normpath(os.path.join(cwd, path))
     return path
 

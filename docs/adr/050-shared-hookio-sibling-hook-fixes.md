@@ -1770,3 +1770,67 @@ find. `gh issue list --search` against this exact gap's shape returned nothing b
 dev-env#685, despite two separate amendments describing it in detail. The practical takeaway: "note it, file it"
 means an actual issue number, not just a prose paragraph in an ADR amendment that happens to be the third
 occurrence of the same accepted gap.
+
+## Amendment 22 (2026-07-11) — restoring `ntpath.isabs`'s pre-3.13 semantics in the cd-chain / redirect path resolvers (dev-env#732)
+
+**The gap — a new class for this ADR.** Every prior amendment fixed a *command-parsing* false-positive (a
+quoted / heredoc / subshell decoy mistaken for a real token). This one is a *Python-version* compatibility bug
+in the shared resolvers themselves. `effective_merge_dir` (this file), `_effective_push_dir`
+(`pr-merge-reminder.py`, ADR-065), and `_blockable_redirect_root` (`pre-tool-use-canonical-mutate-guard.py`,
+Amendment 7 / ADR-071) each decide whether a `cd <path> && …` / `git -C <path> …` target is absolute via
+`os.path.isabs(path)`, joining it onto *cwd* only when relative.
+[Python 3.13 changed `ntpath.isabs`](https://docs.python.org/3/whatsnew/3.13.html#os-path) so a
+rooted-but-driveless path (`/Git/dev-env`, `\Git\dev-env`) returns `False` where ≤3.12 returned `True`. So on
+3.13+ a forward-slash `cd` target wrongly takes the relative branch —
+`normpath(join(cwd, "/Git/dev-env"))` → `\Git\dev-env` — silently mis-scoping the ADR-065/067 merge/push
+hooks and, more seriously, **fail-opening the canonical-mutate guard**: a `git -C /repo checkout` redirect
+into a canonical checkout resolves to a wrong/nonexistent directory, its `git rev-parse` fails, the redirect
+is skipped, and the mutating command is no longer blocked.
+
+**Latent, not live — surfaced by CI.** Production `py -3` is 3.12, where the code is correct; the bug bites
+the moment the runtime moves to 3.13+. It was caught by
+[PR #730](https://github.com/brownm09/dev-env/pull/730)'s new `windows-latest` CI (whose `py -3` is 3.13+):
+`test_hookio.py` (5 cases) and `test_pr_merge_reminder.py` (7 cases) failed with
+`expected /Git/dev-env, got '\Git\dev-env'`. PR #730 pinned CI to the production runtime (3.12) so it stayed
+faithful and green; this amendment is the forward-compat fix (surfaced while adding CI in PR4 of the
+hook-reliability initiative #717).
+
+**Fix.** A new shared pure helper in `_hookio.py` — `is_absolute_path(path)` =
+`path.startswith(("/", "\\")) or os.path.isabs(path)` — restores the ≤3.12 semantics on every version by
+short-circuiting on the leading separator (a drive-absolute / UNC target still flows to `os.path.isabs`, which
+handles it unchanged on both). All three resolvers swap `os.path.isabs(...)` for it (`pr-merge-reminder.py`
+and the canonical-mutate guard import it; `effective_merge_dir` is in the same file). Behaviour-identical on
+3.12 (both branches agree for a `/`-rooted path), correct on 3.13+. One helper, three call sites — the same
+"share the fix, don't re-derive it" discipline as the rest of this ADR.
+
+**Two failure shapes, two fix surfaces.** The 12 CI failures had two independent causes. The absolute-path
+cases (`cd /Git/dev-env` → assert `== "/Git/dev-env"`) failed because the *function* routed the target
+through `normpath`; the helper fixes them with no test edit. The relative-path cases
+(`assert os.path.isabs(out)` where `out` is a driveless `\base\sub\repo`) failed because the *assertion
+itself* called 3.13's `isabs` on a driveless path — fixed by swapping those two assertions to the
+version-agnostic `is_absolute_path(out)`.
+
+**Verified not sensitive (audited, unchanged).** The issue's "re-verify every other `os.path.isabs` /
+`os.path.normpath` user" step cleared the two remaining `isabs` sites: `post-tool-use.py`'s
+`_canonical_root_from_common_dir` (input is `git rev-parse --git-common-dir`, which emits drive-absolute or
+relative on Windows, never driveless-rooted — its own `test_post_tool_use.py:442` already passes on 3.13) and
+`pre-tool-use-worktree-path-check.py`'s `file_path` guard (input is always a drive-absolute Windows path from
+the Write/Edit tool contract). The remaining `os.path.normpath`-only sites are separator normalizers, not
+absoluteness decisions, and are unaffected by the `isabs` change.
+
+**Coverage.** `test_hookio.py` gains 5 `is_absolute_path` cases (forward-slash / backslash / UNC rooted,
+drive-absolute, relative/empty) including a **3.13 simulation** — it patches `os.path.isabs` to return `False`
+(as 3.13 does for a driveless path) and asserts the `startswith` short-circuit still classifies rooted targets
+absolute, the only way to pin the 3.13 behaviour on a 3.12 interpreter, where the `startswith` and `isabs`
+branches are otherwise indistinguishable for `/x`. The two relative-path assertions in `test_hookio.py` /
+`test_pr_merge_reminder.py` are made version-agnostic. `test_canonical_mutate_guard.py` (64) is re-run
+unchanged — its git-shelling redirect path stays integration-covered and the pure resolution semantic is now
+pinned by `is_absolute_path`'s own tests. Full suites green on the local 3.12 runtime: `test_hookio.py` (91),
+`test_pr_merge_reminder.py` (56), `test_canonical_mutate_guard.py` (64); the 3.13 fix is validated by PR #730's
+`windows-latest` CI.
+
+**General lesson.** `os.path.isabs`/`normpath`/`splitdrive` semantics can shift across CPython minor versions,
+and a Windows-only `ntpath` change is invisible on a POSIX CI or a pinned-3.12 runtime. When a shared helper's
+correctness rests on a stdlib path predicate, prefer an explicit, version-independent condition at the exact
+site where the version behaviour matters over trusting the stdlib default — and pin it with a test that
+*simulates* the other version rather than trusting the interpreter you happen to run on.

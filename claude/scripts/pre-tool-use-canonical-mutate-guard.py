@@ -144,7 +144,7 @@ import shlex
 import subprocess
 import sys
 
-from _hookio import split_top_level
+from _hookio import is_absolute_path, split_top_level
 
 # Matches `.claude/worktrees/<name>` anywhere in a path — same pattern as
 # ADR-024's hook. A cwd matching this is out of scope for this hook entirely;
@@ -676,7 +676,7 @@ def _blockable_redirect_root(redirect_dirs: list, cwd: str, toplevel_cache: dict
     one command before this memoization).
     """
     for d in redirect_dirs:
-        resolved = d if os.path.isabs(d) else os.path.join(cwd, d)
+        resolved = d if is_absolute_path(d) else os.path.join(cwd, d)
         if resolved not in toplevel_cache:
             toplevel_cache[resolved] = _resolve_git_toplevel(resolved)
         root = toplevel_cache[resolved]

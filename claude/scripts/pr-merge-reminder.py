@@ -33,6 +33,7 @@ import sys
 from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
+    is_absolute_path,
     is_merge_help_only,
     mask_quoted_spans,
     output_has_merge_marker,
@@ -143,7 +144,7 @@ def _effective_push_dir(command: str, cwd: str) -> str:
     if not target:
         return cwd
     path = target.strip("\"'")
-    if not os.path.isabs(path):
+    if not is_absolute_path(path):
         # A relative target resolves against cwd, not against any earlier `cd` in
         # the same chain (`cd /a && cd b && git push` -> cwd/b, not /a/b).  That
         # mis-resolve is a downstream silent no-op (no such dir -> no open PR),

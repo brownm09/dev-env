@@ -25,6 +25,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from _hookio import (  # noqa: E402
     effective_merge_dir,
+    is_absolute_path,
     is_help_only,
     is_merge_help_only,
     mask_prose_flag_values,
@@ -189,10 +190,71 @@ def test_merge_dir_quoted_path() -> str:
 def test_merge_dir_relative_resolved_against_cwd() -> str:
     import os
     out = effective_merge_dir("cd sub/repo && gh pr merge --squash", "/base")
-    assert os.path.isabs(out), f"relative target not resolved: {out!r}"
+    # is_absolute_path (not os.path.isabs) so the "was the relative target
+    # resolved to a rooted path?" check is itself version-agnostic: on 3.13
+    # os.path.isabs("\\base\\sub\\repo") is False, which broke this assertion
+    # independently of the effective_merge_dir fix (dev-env#732).
+    assert is_absolute_path(out), f"relative target not resolved: {out!r}"
     assert os.path.basename(out) == "repo"
     assert out == os.path.normpath(os.path.join("/base", "sub/repo"))
     return "relative cd path -> normalized join under cwd"
+
+
+# ---------------------------------------------------------------------------
+# is_absolute_path  (dev-env#732 — the ntpath.isabs Python 3.13 regression)
+# ---------------------------------------------------------------------------
+
+def test_is_absolute_path_forward_slash_rooted() -> str:
+    # The 3.13-sensitive case: a driveless, forward-slash-rooted path. `startswith`
+    # carries it True independent of os.path.isabs, which returns False on 3.13
+    # (True on <=3.12) for exactly this shape.
+    assert is_absolute_path("/Git/dev-env") is True
+    assert is_absolute_path("/Git/dir with spaces") is True
+    return "forward-slash-rooted driveless path -> absolute"
+
+
+def test_is_absolute_path_backslash_rooted() -> str:
+    assert is_absolute_path("\\Git\\dev-env") is True
+    assert is_absolute_path("\\\\server\\share") is True  # UNC
+    return "backslash-rooted / UNC path -> absolute"
+
+
+def test_is_absolute_path_drive_absolute() -> str:
+    # Drive-absolute paths are unaffected by the 3.13 change; os.path.isabs
+    # keeps them absolute on every version.
+    assert is_absolute_path("C:/Git/dev-env") is True
+    assert is_absolute_path("C:\\Git\\dev-env") is True
+    return "drive-absolute path -> absolute"
+
+
+def test_is_absolute_path_relative_and_empty() -> str:
+    assert is_absolute_path("sub/repo") is False
+    assert is_absolute_path("repo") is False
+    assert is_absolute_path("") is False  # total: no exception on empty
+    return "relative / empty path -> not absolute"
+
+
+def test_is_absolute_path_simulates_py313_isabs() -> str:
+    # Directly simulate Python 3.13 on this 3.12 interpreter: force os.path.isabs
+    # to always return False (as 3.13 does for driveless-rooted paths) and prove
+    # the leading-separator short-circuit still classifies rooted targets absolute
+    # — i.e. the fix does NOT depend on the interpreter's isabs semantics. On bare
+    # 3.12 the startswith and isabs branches are indistinguishable for "/x", so
+    # this patch is the only way to pin the 3.13 behaviour locally. is_absolute_path
+    # resolves os.path.isabs on the shared os.path module at call time, so patching
+    # it here reaches _hookio's own lookup.
+    import os as _os
+    real_isabs = _os.path.isabs
+    _os.path.isabs = lambda _p: False
+    try:
+        assert is_absolute_path("/Git/dev-env") is True
+        assert is_absolute_path("\\Git\\dev-env") is True
+        # A genuinely relative path is still False when isabs is neutralised.
+        assert is_absolute_path("sub/repo") is False
+    finally:
+        _os.path.isabs = real_isabs
+    assert _os.path.isabs("C:/x") is True, "os.path.isabs not restored"
+    return "leading-separator short-circuit is independent of os.path.isabs (3.13 sim)"
 
 
 def test_merge_dir_semicolon_chain() -> str:
@@ -848,6 +910,11 @@ def main() -> int:
         ("merge dir: relative path resolved vs cwd", test_merge_dir_relative_resolved_against_cwd),
         ("merge dir: semicolon chain", test_merge_dir_semicolon_chain),
         ("merge dir: cd after merge ignored", test_merge_dir_cd_after_merge_ignored),
+        ("is_absolute_path: forward-slash rooted (dev-env#732)", test_is_absolute_path_forward_slash_rooted),
+        ("is_absolute_path: backslash / UNC rooted", test_is_absolute_path_backslash_rooted),
+        ("is_absolute_path: drive-absolute", test_is_absolute_path_drive_absolute),
+        ("is_absolute_path: relative / empty -> False", test_is_absolute_path_relative_and_empty),
+        ("is_absolute_path: 3.13 isabs simulation", test_is_absolute_path_simulates_py313_isabs),
         ("scan_top_level: bare statement matches", test_scan_top_level_matches_bare_statement),
         ("scan_top_level: no match anywhere -> False", test_scan_top_level_no_match_returns_false),
         ("scan_top_level: no split inside double quotes (dev-env#499)", test_scan_top_level_does_not_split_inside_double_quotes),
