@@ -1,0 +1,88 @@
+name: hook-tests
+
+# Pull-request trigger ONLY -- never on pushes to main. The suite reads live
+# repo state (settings.json, every claude/scripts/*.py) and some tests recompute
+# from the environment; running it on the PR is where a contributor's change is
+# gated, exactly the scoping lesson the lockfile drift gate learned (see the
+# dev-env CLAUDE.md "Dependency and lockfile policy" -> pull_request-not-main
+# note). A push to main can add no new script-breaking change a merged PR did not
+# already carry through this gate.
+on:
+  pull_request:
+
+# Least privilege: read-only, and deliberately NO gh token in the job env. The
+# network-dependent gates (test-get-project-item.sh) and the shellcheck gate then
+# self-SKIP (exit 0 with a "SKIP:" line) rather than run -- the runner reports
+# those as non-failing environment skips.
+permissions:
+  contents: read
+
+concurrency:
+  group: hook-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: Hook & script test suite (windows)
+    # windows-latest is faithful to the real runtime: the Windows `py -3`
+    # launcher (ADR-007), Git Bash for the *.sh gates, and cp1252 stdio
+    # semantics -- the exact environment the hooks and their tests target.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        # SHA-pinned (supply-chain hardening); trailing comment tracks the tag.
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Pin to Python 3.12 -- the version the user's `py -3` launcher resolves to
+      # in production (C:\...\Programs\Python\Python312). The runner's own `py -3`
+      # resolves to a newer Python (3.13+), where `ntpath.isabs('/foo')` changed
+      # to return False; that surfaces a PRE-EXISTING _hookio.effective_merge_dir
+      # portability bug (dev-env#732), not a CI-config problem. Testing the
+      # production runtime keeps CI faithful; the forward-compat fix is its own PR.
+      # The runner is invoked via this `python` (below), so every spawned test
+      # inherits 3.12 via sys.executable.
+      - name: Set up Python 3.12 (production runtime)
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Show tool versions
+        shell: bash
+        run: |
+          python --version
+          py --list 2>/dev/null || true
+          git --version
+          bash --version | head -1
+
+      - name: Configure git identity
+        shell: bash
+        run: |
+          # Many tests spin up throwaway git repos and commit into them; a
+          # GitHub-hosted runner has no global git identity, so an unset one
+          # would fail every such commit with "Please tell me who you are".
+          git config --global user.email "dev-env-ci@users.noreply.github.com"
+          git config --global user.name "dev-env CI"
+          git config --global init.defaultBranch main
+
+      - name: Run hook/script test suite
+        shell: bash
+        # Invoked via the setup-python `python` (3.12, above) rather than the
+        # launcher's newest `py -3`, so sys.executable -> 3.12 for every spawned
+        # test. (ADR-007's "use py -3, not python3" is a local-machine concern --
+        # python3 is the MS Store stub there; setup-python puts a real python.exe
+        # first on PATH here.)
+        #
+        # Point TMPDIR/TMP/TEMP at a clean long-path dir. The runner's default
+        # TEMP (C:\Users\RUNNERADMIN\...) has an 11-char component with an 8.3
+        # short-name alias (RUNNER~1); a few tests build a throwaway repo under
+        # tempfile and compare its Python path against git's canonical
+        # `--show-toplevel`, which resolves the long form -- a short-vs-long
+        # mismatch that only bites in CI. RUNNER_TEMP (D:\a\_temp) has no
+        # long-name component, so `cygpath -m` yields a forward-slash path that
+        # matches git's resolution.
+        run: |
+          TMPDIR="$(cygpath -m "$RUNNER_TEMP")/hktmp"
+          mkdir -p "$TMPDIR"
+          export TMPDIR TMP="$TMPDIR" TEMP="$TMPDIR"
+          python claude/scripts/run-hook-tests.py
