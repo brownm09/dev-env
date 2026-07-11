@@ -41,8 +41,6 @@ a stale marker.
 Exit 0 — allow: not a `gh pr merge`, no `--auto` (or an explicit falsy value), a `--help`-only
 invocation, or all checks pass.
 """
-import _winsubp  # noqa: F401  -- suppress console windows on Windows; also future-proofs the
-                                 # _winsubp patch in case the _pmfg reuse below ever changes shape
 import importlib.util
 import json
 import os
@@ -78,6 +76,10 @@ def _fail_closed(msg: str) -> None:
 # broken sibling now blocks all Bash *loudly* (a dev-time state CI catches
 # first) rather than disabling the gate *silently*.
 try:
+    import _winsubp  # noqa: F401  -- suppress console windows on Windows; also future-proofs
+    # the _winsubp patch if the _pmfg reuse below ever changes shape. Kept INSIDE this
+    # fail-closed guard (review of PR #722) so a _winsubp import failure also blocks (exit 2)
+    # rather than failing open -- it was the one sibling import previously left outside it.
     from _hookio import is_merge_help_only, mask_quoted_spans
 
     _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
