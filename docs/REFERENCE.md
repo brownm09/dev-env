@@ -876,6 +876,82 @@ Motivating incident: career-playbook [#587](https://github.com/brownm09/career-p
 (Step 4.7) / [#591](https://github.com/brownm09/career-playbook/pull/591) (Step 4.8, which superseded
 the orphaned #588).
 
+### Bare `--force` after rebase auto-closes any open PR on the target branch
+
+**Trigger.** A `git rebase origin/main` rewrites local commits but does **not** refresh the remote-tracking
+ref (`refs/remotes/origin/<branch>`). Running `git push --force-with-lease` immediately after rejects
+with `(stale info)` because the lease comparison — local tracking ref vs. what the remote actually
+holds — finds a mismatch (the rebase changed local SHAs; the tracking ref still shows pre-rebase SHAs).
+Falling back to bare `git push origin HEAD:<branch> --force` (or `git push --force`) succeeds at the
+wire level, but GitHub treats a force-push whose new tip does not descend from the old tip as a
+**branch-delete + branch-recreate**. Any open PR targeting that branch is **auto-closed** with
+`mergedAt: null` and `mergeCommit: null`.
+
+**Symptom.**
+
+```
+! [rejected]  HEAD -> <branch> (stale info)
+error: failed to push some refs
+```
+
+followed by a bare `--force` push that exits 0, and then:
+
+```bash
+gh pr view <N> --json state,mergedAt,mergeCommit
+# {"state":"CLOSED","mergedAt":null,"mergeCommit":null}
+gh pr reopen <N>
+# Could not open the pull request: <N>
+```
+
+**Diagnosis.** The `(stale info)` variant of a `--force-with-lease` rejection is distinct from a real
+concurrent push. A concurrent push leaves `(fetch first)` in the rejection message; `(stale info)` means
+the *local* tracking ref is out of date — the remote-tracking ref was never refreshed after the rebase.
+The safe test before resorting to bare `--force`:
+
+```bash
+git fetch origin                  # update the tracking ref
+git log origin/<branch>..HEAD     # should show only your rebased commits; empty = nothing to push
+git push --force-with-lease       # retry now — should succeed
+```
+
+**Fix (always use this sequence after a rebase).**
+
+```bash
+git rebase origin/main            # rewrites history; tracking ref becomes stale
+git fetch origin                  # refreshes the remote-tracking ref to match the actual remote
+git push --force-with-lease       # now the lease check passes; push succeeds; PR stays open
+```
+
+Never use bare `git push --force` / `git push origin HEAD:<branch> --force` as a fallback for a
+`--force-with-lease` stale-info rejection. The stale-info rejection is a solvable local state problem,
+not a signal to bypass the safety check.
+
+**Recovery — PR already auto-closed.**
+
+`gh pr reopen <N>` fails unconditionally when the PR was auto-closed by a branch-delete (GitHub does
+not allow reopening a PR whose base branch was deleted and recreated). Steps:
+
+1. Confirm the PR is truly auto-closed (not intentionally closed):
+   ```bash
+   gh pr view <N> --json state,closedAt,mergedAt,mergeCommit,timelineItems
+   # state=CLOSED, mergedAt=null, mergeCommit=null confirms the auto-close
+   ```
+2. The branch itself is fine — the commits are still intact on the pushed branch; only the PR object
+   is unrecoverable. Create a replacement PR:
+   ```bash
+   gh pr create --head <branch> --base main \
+     --title "<same title>" \
+     --body "<same body>\n\nReplaces #N (auto-closed by bare --force after rebase; see <original PR URL>)"
+   ```
+3. Reference the original PR number in the new body to preserve review history context. The old PR
+   number is permanently gone — do not try to reuse it.
+
+Motivating incident: win11-init-tools [PR #34](https://github.com/brownm09/win11-init-tools/pull/34)
+was auto-closed and replaced by [PR #46](https://github.com/brownm09/win11-init-tools/pull/46)
+(2026-07-11). Tracking issue: [dev-env#724](https://github.com/brownm09/dev-env/issues/724). Summary
+rule in [`claude/CLAUDE.md`](../claude/CLAUDE.md) → Git Workflow → "Bare `--force` after rebase
+auto-closes any open PR on the target branch".
+
 ### Separate clones for fully independent parallel work
 
 Worktrees share the `.git` ref database (branches, stash, FETCH_HEAD, packed-refs). When two sessions

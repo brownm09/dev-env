@@ -148,6 +148,27 @@ gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"   # pure REST re
 
 Confirmed as a **general git-worktree mechanic**, not a quirk of any one repo's worktree count: [dev-env#575](https://github.com/brownm09/dev-env/pull/575) (canonical correctly on `main`) and [lifting-logbook#664](https://github.com/brownm09/lifting-logbook/pull/664) (an idle worktree left squatting `main` by an earlier merge; that repo's CLAUDE.md "Standard Issue Workflow" step 8 carries its own copy of this same two-step pattern). Full detection, root cause, and non-destructive auto-correction (parking idle squatters instead of removing them): dev-env [ADR-058](../docs/adr/058-worktree-squatting-main-detection-correction.md); complete runbook: dev-env [`docs/REFERENCE.md` → Git Workflow Runbooks](../docs/REFERENCE.md#git-workflow-runbooks).
 
+### Bare `--force` after rebase auto-closes any open PR on the target branch
+
+**Pattern:** After `git rebase origin/main`, `--force-with-lease` rejects with `(stale info)` because the rebase rewrote local commits without refreshing the remote-tracking ref. Falling back to bare `git push origin HEAD:<branch> --force` (or `--force`) succeeds at the network level — but GitHub interprets it as a branch-delete + branch-recreate. **Any open PR targeting that branch is auto-closed** with `mergedAt: null`, `mergeCommit: null`, and `gh pr reopen` fails with "Could not open the pull request."
+
+**Symptom:** `! [rejected] HEAD -> <branch> (stale info)` from `--force-with-lease`, then a bare `--force` push succeeds, and the PR shows `state: CLOSED` with no merge commit.
+
+**Fix:** After any rebase, run `git fetch origin` *before* retrying `--force-with-lease` — never fall back to bare `--force`:
+```bash
+git rebase origin/main
+git fetch origin              # refreshes the stale remote-tracking ref
+git push --force-with-lease   # now succeeds without closing the PR
+```
+
+**Recovery (PR already auto-closed):** `gh pr reopen` fails with "Could not open the pull request." Create a replacement PR:
+```bash
+gh pr create --head <branch> --base main --title "..." \
+  --body "Replaces #N (auto-closed by bare --force after rebase; [context](https://github.com/.../pull/N))"
+```
+
+Motivating incident: [win11-init-tools PR #46](https://github.com/brownm09/win11-init-tools/pull/46) — PR #34 was auto-closed and replaced. Full runbook: [`docs/REFERENCE.md` → Git Workflow Runbooks](../docs/REFERENCE.md#git-workflow-runbooks).
+
 ---
 
 ## Dev-Env & Project Boards
