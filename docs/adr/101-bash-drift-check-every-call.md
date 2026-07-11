@@ -77,12 +77,13 @@ time** since the last recorded Bash state, rather than on command content:
 3. `should_check_drift(age, MIN_GAP_SECONDS=60.0)` — pure gate function: `False` for `None` or any
    `age <= 60`, `True` otherwise. Back-to-back Bash calls — the overwhelming majority in any
    session — return `False` here and the hook exits immediately, no subprocess spawned.
-4. Only when the gate passes: `current_repo_state(cwd)` (the same combined
-   `git rev-parse --show-toplevel --abbrev-ref HEAD` call ADR-085 already uses) →
-   `read_state(session_id)` → `format_drift_warning(...)` → print
-   `{"systemMessage": "[bash-drift-check] ..."}` if non-`None`. Exit 0 always — advisory only,
-   never blocks, matching ADR-085's other three checkpoints and its stated reasoning (the mechanism
-   cannot distinguish a legitimate `EnterWorktree`/`cd` switch from a silent crash-induced revert).
+4. Only when the gate passes: `_bash_state.drift_warning_for(session_id, cwd)` — a new wrapper
+   (see Judgment calls) combining the same `current_repo_state()`/`read_state()`/
+   `format_drift_warning()` sequence ADR-085 already uses — then print
+   `{"systemMessage": "[bash-drift-check] ..."}` if the returned warning is non-`None`. Exit 0
+   always — advisory only, never blocks, matching ADR-085's other three checkpoints and its stated
+   reasoning (the mechanism cannot distinguish a legitimate `EnterWorktree`/`cd` switch from a
+   silent crash-induced revert).
 
 This works correctly for the observed trigger shape specifically because `PreToolUse` fires
 *before* the gap-ending call's own `PostToolUse` write can overwrite ("launder") the comparison
@@ -138,6 +139,32 @@ off *subprocess-call frequency* against *detection latency*, not false-positive 
 `format_drift_warning` still no-ops on "no repo/branch change" regardless of how eagerly the gate
 fires, so a smaller number only costs more `git rev-parse` calls, never more spurious warnings.
 
+### Broadening from 3 rare checkpoints to every post-gap call raises how often the warning fires on a *legitimate* change — traced, and found self-limiting
+
+`/review` flagged that widening the comparison from 3 command-gated moments to "every Bash call
+after a ≥60s gap" gives a deliberate `EnterWorktree`/`cd` or `git checkout`, followed by any
+qualifying gap (a long build, a run of Read/Grep/Edit calls, an Agent call), far more
+opportunities to trip the advisory than the 3 original checkpoints ever had — risking alarm
+fatigue that could dull the signal exactly when a real revert occurs.
+
+Traced through rather than dismissed: `post-tool-use-cwd-track.py` still rewrites the recorded
+state after *every* Bash call, unconditionally, independent of this hook's own gate. So the
+first Bash call after a legitimate switch-plus-gap does trip one warning (correct — this is
+the same "verify branch" prompt ADR-085 already asks for, now automatic) — but that same call's
+own `PostToolUse` write immediately re-baselines the record to the new, now-current state. A
+second call, even after another ≥60s gap, compares current-vs-current and sees no drift. The
+broadened surface produces **one** advisory per genuine transition, not a recurring nag for a
+stable, unchanged intentional state — the every-call gate changes how many transitions get
+noticed, not how many times an unchanged state gets re-flagged. Considered, and not built:
+suppressing the warning specifically when the *current* state resolves to a `.claude/worktrees/`
+path (a cheap, plausible "this looks like a deliberate switch" signal) — asymmetric in exactly
+the direction that matters, since it would only ever suppress the *safe* direction (into a
+worktree) and never weaken the warning for the *dangerous* one (worktree silently reverting to
+canonical, dev-env#682's actual shape) — but not implemented here: the self-limiting property
+above already keeps the practical false-positive rate low without it, and adding an unproven
+heuristic + its own test surface isn't justified against a cost this trace shows is smaller than
+first feared. Worth revisiting only if real-world use shows otherwise.
+
 ### Rejected alternative: a separate, dedicated throttle-marker file
 
 Considered mirroring `disk-space-check.py`'s own `_marker_path`-per-band pattern with a dedicated
@@ -163,6 +190,21 @@ given its name and its sole, documented trigger (`git commit`). A fourth sibling
 its trigger *axis* (elapsed time vs. command content), matches this repo's one-hook-per-concern
 convention (see ADR-024/ADR-071's identical reasoning for staying separate files despite both being
 worktree/canonical-root guards).
+
+### `drift_warning_for()`: closing a second layer of duplication `/review` caught
+
+Adding this hook made the `current_repo_state()` → `read_state()` → `format_drift_warning()`
+three-call orchestration sequence duplicated, verbatim, across all four checkpoint hooks — `/review`
+pointed out this is exactly the class of risk `_bash_state.py`'s own module docstring already
+names as having caused one real bug during ADR-085's own development (a display-placeholder
+return value in one copy that didn't match the others' `None` convention). Consolidating
+`current_repo_state()` itself didn't close this: the *orchestration around it* was still
+re-composed by hand at every call site. Fixed by extracting `_bash_state.drift_warning_for(session_id,
+cwd) -> (repo_root, branch, drift_warning)` and updating all four consumers —
+`pre-commit-branch-check.py`, `pre-pr-create-check.py`, `pre-merge-branch-check.py`, and this
+hook — to call it instead. `repo_root`/`branch` are still returned (not just the warning) because
+three of the four consumers show "current branch/repo" as their own primary message content,
+independent of whether there's drift.
 
 ### Edge cases in `state_age_seconds`
 
@@ -191,7 +233,11 @@ relies on for its own per-session marker-file gate.
   reported `cwd` field never itself changes, both stay invisible to this mechanism by construction.
 - **Testing.** `claude/scripts/tests/test_bash_state.py` gains four cases for the new
   `state_age_seconds()`: missing file → `None`; a file aged ~90s into the past → age ≈ 90; a future
-  mtime → negative age, no raise; an unstattable scratch path → `None`, no raise.
+  mtime → negative age, no raise; an unstattable scratch path → `None`, no raise — plus a case for
+  `drift_warning_for()` confirming it composes the three underlying calls correctly (a drift-free
+  round trip returns the current `(repo_root, branch)` with `None` for the warning; an empty
+  `session_id` still resolves `(repo_root, branch)` but always returns `None` for the warning,
+  matching every consumer's pre-existing `if session_id:` guard).
   `claude/scripts/tests/test_pre_bash_drift_check.py` (new) pins `should_check_drift`'s five
   decision cases (`None`, below/at/above the threshold boundary, negative) and `build_message`'s
   tagging — pure-function-only, matching this hook family's established convention (`main()`'s I/O
@@ -210,11 +256,18 @@ relies on for its own per-session marker-file gate.
   `session_id`/`cwd`, a `git` call that fails or times out, an unstattable state file — all degrade
   to "no comparison possible" rather than raising, matching this hook family's established
   convention.
-- **Performance.** Zero added subprocess cost for the overwhelming majority of Bash calls (those
-  under 60s of the prior call) — the gate is a single file `.stat()`. Only a call following a
-  genuine ≥60s gap pays one additional `git rev-parse` subprocess (~10-30ms with
+- **Performance.** Zero added **`git`** subprocess cost for the overwhelming majority of Bash calls
+  (those under 60s of the prior call) — the gate itself is a single file `.stat()`. Only a call
+  following a genuine ≥60s gap pays one additional `git rev-parse` subprocess (~10-30ms with
   `CREATE_NO_WINDOW`), on top of the one `post-tool-use-cwd-track.py` already spawns unconditionally
-  on every call.
+  on every call. `/review` correctly noted this is narrower than "zero added cost" outright: the
+  `pyw -3` interpreter launch to *run* this hook at all is itself an unconditional per-call
+  subprocess spawn — the 11th such spawn already present in the `PreToolUse`/`Bash` array before
+  this PR, not a cost this decision introduces, but real and larger on Windows than the `git` call
+  the gate avoids. Amortizing one interpreter startup across the whole `_bash_state`-family hook
+  array (a single dispatcher instead of N separate `pyw -3` invocations) would address it, but
+  reaches all 10 pre-existing entries in that array, not just this one — out of scope for this PR;
+  tracked as a follow-up rather than built speculatively here.
 - **Data integrity.** N/A — read-only against the existing per-session state file; this hook never
   writes to it.
 - **ADR warranted** because this introduces a new hook script wired into `claude/settings.json` and
@@ -225,7 +278,9 @@ relies on for its own per-session marker-file gate.
 ## References
 
 - `claude/scripts/pre-bash-drift-check.py` — implementation
-- `claude/scripts/_bash_state.py` — extended with `state_age_seconds()`
+- `claude/scripts/_bash_state.py` — extended with `state_age_seconds()` and `drift_warning_for()`
+- `claude/scripts/pre-commit-branch-check.py`, `pre-pr-create-check.py`, `pre-merge-branch-check.py`
+  — updated to call `drift_warning_for()` instead of re-composing its three-call sequence
 - `claude/scripts/tests/test_pre_bash_drift_check.py`,
   `claude/scripts/tests/test_bash_state.py` — test coverage
 - `claude/settings.json` — hook wiring (11th entry in the `PreToolUse` → `Bash` matcher array)

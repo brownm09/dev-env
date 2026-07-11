@@ -212,6 +212,48 @@ def test_drift_warning_handles_missing_fields_gracefully() -> str:
     return "format_drift_warning renders '<unknown>' for a recorded non-git state instead of raising"
 
 
+def test_drift_warning_for_empty_session_id() -> str:
+    # REPO_ROOT (this repo's checkout) is a real git repo, so current_repo_state
+    # resolves a real (repo_root, branch) regardless of which branch happens to
+    # be checked out when the test runs.
+    with tempfile.TemporaryDirectory() as root:
+        scratch = Path(root)
+        repo_root, branch, warning = _bash_state.drift_warning_for(
+            "", str(REPO_ROOT), scratch=scratch
+        )
+        assert repo_root is not None, "expected a real repo_root for a real git cwd"
+        assert warning is None, f"expected no warning for an empty session_id, got {warning!r}"
+    return "drift_warning_for resolves repo_root/branch even with an empty session_id, but never warns"
+
+
+def test_drift_warning_for_no_drift() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        scratch = Path(root)
+        repo_root, branch, _ = _bash_state.drift_warning_for("", str(REPO_ROOT), scratch=scratch)
+        _bash_state.write_state("sess-nodrift", repo_root, branch, str(REPO_ROOT), scratch=scratch)
+        got_repo, got_branch, warning = _bash_state.drift_warning_for(
+            "sess-nodrift", str(REPO_ROOT), scratch=scratch
+        )
+        assert warning is None, f"expected no warning when recorded matches current, got {warning!r}"
+        assert got_repo == repo_root and got_branch == branch
+    return "drift_warning_for returns no warning when the recorded state matches current"
+
+
+def test_drift_warning_for_fires_on_drift() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        scratch = Path(root)
+        _bash_state.write_state(
+            "sess-drift", "C:/some/other/repo", "some-other-branch",
+            "C:/some/other/repo", scratch=scratch,
+        )
+        _repo_root, _branch, warning = _bash_state.drift_warning_for(
+            "sess-drift", str(REPO_ROOT), scratch=scratch
+        )
+        assert warning is not None, "expected a warning when recorded differs from current"
+        assert "cwd-drift" in warning
+    return "drift_warning_for fires a warning when the recorded state differs from current"
+
+
 def main() -> int:
     tests = [
         ("state_path: correct path with override", test_state_path_returns_correct_path),
@@ -234,6 +276,9 @@ def main() -> int:
         ("drift: fires on repo_root change", test_drift_warning_fires_on_repo_change),
         ("drift: fires on branch-only change", test_drift_warning_fires_on_branch_only_change),
         ("drift: handles missing fields gracefully", test_drift_warning_handles_missing_fields_gracefully),
+        ("drift_warning_for: empty session_id -> no warning", test_drift_warning_for_empty_session_id),
+        ("drift_warning_for: no warning when unchanged", test_drift_warning_for_no_drift),
+        ("drift_warning_for: fires on drift", test_drift_warning_for_fires_on_drift),
     ]
     failed = 0
     for name, fn in tests:

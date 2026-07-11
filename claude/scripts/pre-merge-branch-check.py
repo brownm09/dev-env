@@ -85,12 +85,7 @@ def main() -> None:
 
     cwd = data.get("cwd", "")
     session_id = data.get("session_id", "") or ""
-    repo_root, branch = _bash_state.current_repo_state(cwd)
-
-    drift_warning = None
-    if session_id:
-        recorded = _bash_state.read_state(session_id)
-        drift_warning = _bash_state.format_drift_warning(recorded, repo_root, branch, cwd)
+    repo_root, branch, drift_warning = _bash_state.drift_warning_for(session_id, cwd)
 
     print(json.dumps({"systemMessage": build_message(branch, repo_root, drift_warning)}))
     sys.exit(0)

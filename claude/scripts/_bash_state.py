@@ -36,6 +36,13 @@ return value in one copy that didn't match the others' ``None`` convention,
 which would have manufactured spurious drift warnings on every detached-HEAD
 commit).
 
+The *orchestration* around ``current_repo_state()`` — read the recorded state,
+compute the current state, diff them — was still duplicated across all four
+checkpoint hooks even after that consolidation, the exact class of risk the
+module docstring above already names. ``drift_warning_for()`` closes that
+second layer: all four hooks now call it instead of re-composing the
+three-call sequence by hand.
+
 Usage:
     import _bash_state
 
@@ -45,6 +52,7 @@ Usage:
     recorded = _bash_state.read_state(session_id)
     warning = _bash_state.format_drift_warning(recorded, repo_root, branch, cwd)
     age = _bash_state.state_age_seconds(session_id)
+    repo_root, branch, warning = _bash_state.drift_warning_for(session_id, cwd)
 """
 from __future__ import annotations
 
@@ -216,3 +224,32 @@ def format_drift_warning(
         "  If this wasn't an intentional EnterWorktree/cd, STOP and verify with `pwd` "
         "and `git branch --show-current` before proceeding — see dev-env#573."
     )
+
+
+def drift_warning_for(
+    session_id: str, cwd: str, scratch: Path | None = None
+) -> tuple[str | None, str | None, str | None]:
+    """Convenience wrapper combining ``current_repo_state`` + ``read_state`` +
+    ``format_drift_warning`` — the exact three-call sequence that was
+    duplicated verbatim across all four PreToolUse(Bash) consumers of this
+    module (dev-env#682 `/review`: the same class of divergence risk this
+    module's own consolidation of ``current_repo_state`` was originally meant
+    to close, see the module docstring, had crept back in one layer up).
+
+    Returns ``(repo_root, branch, drift_warning)`` — ``repo_root``/``branch``
+    for a caller's own "current branch/repo" display (three of the four
+    consumers show this regardless of drift), and ``drift_warning`` (``None``
+    when there's nothing to warn about, see ``format_drift_warning``).
+    *session_id* may be empty — ``drift_warning`` is then always ``None``,
+    matching each consumer's own prior ``if session_id:`` guard; ``cwd`` is
+    still resolved either way, since every consumer needs it independent of
+    whether a session record exists. *scratch* overrides SCRATCH (used by
+    tests) and is forwarded to ``read_state`` only — no real caller passes
+    it; it exists purely so tests can inject a recorded state without
+    touching ``~/.claude/scratch``."""
+    repo_root, branch = current_repo_state(cwd)
+    drift_warning = None
+    if session_id:
+        recorded = read_state(session_id, scratch=scratch)
+        drift_warning = format_drift_warning(recorded, repo_root, branch, cwd)
+    return repo_root, branch, drift_warning

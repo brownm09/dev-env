@@ -82,9 +82,7 @@ def main() -> None:
     if not should_check_drift(age, MIN_GAP_SECONDS):
         sys.exit(0)
 
-    recorded = _bash_state.read_state(session_id)
-    repo_root, branch = _bash_state.current_repo_state(cwd)
-    warning = _bash_state.format_drift_warning(recorded, repo_root, branch, cwd)
+    _, _, warning = _bash_state.drift_warning_for(session_id, cwd)
     if warning:
         print(json.dumps({"systemMessage": build_message(warning)}))
     sys.exit(0)
