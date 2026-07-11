@@ -70,6 +70,10 @@
           {
             "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/scripts/disk-space-check.py"
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-bash-drift-check.py"
           }
         ]
       },

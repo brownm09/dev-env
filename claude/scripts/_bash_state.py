@@ -23,13 +23,18 @@ Imported the same way as _hookutil: a sibling module in scripts/ that the
 and the test harness (sys.path.insert(0, scripts_dir)) both resolve.
 
 ``current_repo_state()`` is shared by post-tool-use-cwd-track.py (the writer,
-called on every single Bash tool call) and the three checkpoint hooks
-(pre-commit-branch-check.py, pre-pr-create-check.py, pre-merge-branch-check.py)
-rather than each defining its own git-wrapping helper. Originally duplicated
-across all four call sites; consolidated here after the duplication already
-caused one bug during development (a display-placeholder return value in one
-copy that didn't match the others' ``None`` convention, which would have
-manufactured spurious drift warnings on every detached-HEAD commit).
+called on every single Bash tool call) and four checkpoint hooks:
+pre-commit-branch-check.py, pre-pr-create-check.py, and pre-merge-branch-check.py
+(gated on specific command content — ``git commit`` / ``gh pr create`` /
+``gh pr merge``), plus pre-bash-drift-check.py (dev-env#682 — gated instead on
+elapsed time since the last recorded call, via ``state_age_seconds()`` below,
+so a drift affecting any *other* Bash command — not just those three — also
+gets caught, without paying a git subprocess on every single call). Originally
+duplicated across all four original call sites; consolidated here after the
+duplication already caused one bug during development (a display-placeholder
+return value in one copy that didn't match the others' ``None`` convention,
+which would have manufactured spurious drift warnings on every detached-HEAD
+commit).
 
 Usage:
     import _bash_state
@@ -39,6 +44,7 @@ Usage:
     _bash_state.cleanup_stale_state()
     recorded = _bash_state.read_state(session_id)
     warning = _bash_state.format_drift_warning(recorded, repo_root, branch, cwd)
+    age = _bash_state.state_age_seconds(session_id)
 """
 from __future__ import annotations
 
@@ -116,6 +122,25 @@ def state_path(session_id: str, scratch: Path | None = None) -> Path:
     root = scratch if scratch is not None else SCRATCH
     safe = session_id or "unknown"
     return root / f"bash_state_{safe}.json"
+
+
+def state_age_seconds(session_id: str, scratch: Path | None = None) -> float | None:
+    """Return seconds since *session_id*'s state file was last written, or
+    ``None`` if it doesn't exist (or can't be stat'd).
+
+    Used by pre-bash-drift-check.py (dev-env#682) to gate its own git
+    subprocess call on elapsed time rather than command content — cheap
+    (a file stat, not a subprocess) on the common case of two Bash calls in
+    quick succession. A future/skewed mtime is not special-cased here: it
+    simply yields a negative float, which the caller's gating function treats
+    the same as "too recent to check" (see ``pre-bash-drift-check.py``'s
+    ``should_check_drift``). *scratch* overrides SCRATCH (used by tests)."""
+    root = scratch if scratch is not None else SCRATCH
+    try:
+        mtime = state_path(session_id, scratch=root).stat().st_mtime
+    except OSError:
+        return None
+    return time.time() - mtime
 
 
 def write_state(

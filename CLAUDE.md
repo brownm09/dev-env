@@ -880,11 +880,17 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     fire — the key precision property this module exists for), a `repo_root` change (the
     worktree-silently-replaced-by-canonical-root incident shape), a branch-only change with the same
     `repo_root` (the same-repo-branch-reverted incident shape), and a recorded state with `None`
-    fields rendering a `<unknown>` placeholder instead of raising. Backs
+    fields rendering a `<unknown>` placeholder instead of raising. Also exercises the new
+    `state_age_seconds()` (dev-env#682, [ADR-101](docs/adr/101-bash-drift-check-every-call.md)):
+    a missing state file returns `None`; a file `os.utime`'d ~90s into the past reports an age
+    within a few seconds of 90; a file `os.utime`'d into the future returns a negative age rather
+    than raising; and the same file-where-directory-expected fixture `write_state`'s own
+    unwritable-scratch test uses returns `None` rather than raising. Backs
     `post-tool-use-cwd-track.py`'s state writes and the drift check in
     `pre-commit-branch-check.py` / `pre-pr-create-check.py` / `pre-merge-branch-check.py`
-    ([ADR-085](docs/adr/085-bash-repo-branch-drift-detection.md); dev-env#573). `current_repo_state()`
-    — the single combined `git rev-parse --show-toplevel --abbrev-ref HEAD` call shared by all four
+    ([ADR-085](docs/adr/085-bash-repo-branch-drift-detection.md); dev-env#573), plus the
+    elapsed-time gate in `pre-bash-drift-check.py` (item 59 below). `current_repo_state()`
+    — the single combined `git rev-parse --show-toplevel --abbrev-ref HEAD` call shared by all five
     consuming files (extracted here after three near-duplicate copies existed briefly and one already
     diverged in its failure-mode return value) — shells out and is not covered here (pure-helper
     convention).
@@ -1447,6 +1453,23 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 
     ```bash
     py -3 claude/scripts/tests/test_stop_journal_stub_checkpoint.py
+    ```
+
+59. **pre-bash-drift-check test** — required when changing `claude/scripts/pre-bash-drift-check.py`.
+    Exercises the pure `should_check_drift(age_seconds, min_gap)` gate offline: `None` age (no
+    prior state file yet) -> `False`; an age below the threshold -> `False`; the exact boundary
+    (`age == min_gap`) -> `False` (strict `>`, the cheaper "skip" side owns the boundary, matching
+    `disk-space-check.py`'s `classify_free_space` convention — item 47); an age above the
+    threshold -> `True`; and a negative age (future/skewed mtime) -> `False`. Also pins
+    `build_message()`'s `[bash-drift-check]` tag wrapping. `format_drift_warning` itself is not
+    re-tested here — already fully covered by `test_bash_state.py` (item 42), which also covers
+    the new `state_age_seconds()` helper this hook's gate reads. `main()`'s stdin plumbing and
+    `current_repo_state()`'s git subprocess call are not covered (pure-helper convention, matching
+    `pre-commit-branch-check.py` / `pre-pr-create-check.py` / `pre-merge-branch-check.py`'s own
+    test files — items 43-45). ([ADR-101](docs/adr/101-bash-drift-check-every-call.md); dev-env#682)
+
+    ```bash
+    py -3 claude/scripts/tests/test_pre_bash_drift_check.py
     ```
 
 ## Observability

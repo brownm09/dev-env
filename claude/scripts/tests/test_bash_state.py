@@ -45,6 +45,46 @@ def test_state_path_default_scratch() -> str:
     return "default scratch is SCRATCH (~/.claude/scratch)"
 
 
+def test_state_age_seconds_missing_file_returns_none() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        got = _bash_state.state_age_seconds("nonexistent", scratch=Path(root))
+        assert got is None, f"expected None, got {got}"
+    return "state_age_seconds returns None when no state file exists yet"
+
+
+def test_state_age_seconds_reports_elapsed_time() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        scratch = Path(root)
+        _bash_state.write_state("s", "C:/repo", "main", "C:/repo", scratch=scratch)
+        past = time.time() - 90
+        os.utime(_bash_state.state_path("s", scratch=scratch), (past, past))
+        got = _bash_state.state_age_seconds("s", scratch=scratch)
+        assert got is not None, "expected a numeric age"
+        assert 85 <= got <= 95, f"expected age ~90s, got {got}"
+    return "state_age_seconds reports elapsed time since the file's mtime"
+
+
+def test_state_age_seconds_future_mtime_returns_negative() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        scratch = Path(root)
+        _bash_state.write_state("s", "C:/repo", "main", "C:/repo", scratch=scratch)
+        future = time.time() + 120
+        os.utime(_bash_state.state_path("s", scratch=scratch), (future, future))
+        got = _bash_state.state_age_seconds("s", scratch=scratch)
+        assert got is not None and got < 0, f"expected a negative age, got {got}"
+    return "state_age_seconds returns a negative float for a future/skewed mtime rather than raising"
+
+
+def test_state_age_seconds_no_crash_on_unstattable_path() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        # A file (not a directory) at the scratch path makes the join+stat fail.
+        blocked = Path(root) / "blocked"
+        blocked.write_text("occupied", encoding="utf-8")
+        got = _bash_state.state_age_seconds("s", scratch=blocked)
+        assert got is None, f"expected None, got {got}"
+    return "state_age_seconds returns None (not a raise) when the scratch path can't be stat'd"
+
+
 def test_write_then_read_round_trip() -> str:
     with tempfile.TemporaryDirectory() as root:
         scratch = Path(root)
@@ -176,6 +216,10 @@ def main() -> int:
     tests = [
         ("state_path: correct path with override", test_state_path_returns_correct_path),
         ("state_path: default SCRATCH parent", test_state_path_default_scratch),
+        ("state_age_seconds: missing file -> None", test_state_age_seconds_missing_file_returns_none),
+        ("state_age_seconds: reports elapsed time", test_state_age_seconds_reports_elapsed_time),
+        ("state_age_seconds: future mtime -> negative", test_state_age_seconds_future_mtime_returns_negative),
+        ("state_age_seconds: no crash on unstattable path", test_state_age_seconds_no_crash_on_unstattable_path),
         ("write/read: round-trip", test_write_then_read_round_trip),
         ("read: missing file -> None", test_read_state_missing_file_returns_none),
         ("read: malformed JSON -> None", test_read_state_malformed_json_returns_none),
