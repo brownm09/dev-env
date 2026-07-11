@@ -1529,6 +1529,77 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_hookout.py
     ```
 
+61. **hook output-contract + ASCII-literal gate** — required when changing
+    `claude/scripts/tests/test_hook_output_contract.py` or the shared
+    `claude/scripts/tests/_hook_wiring.py` (the settings.json parser all three PR3 gates —
+    items 61/62/63 — share; run all three when changing it). AST gate over every wired hook
+    (via `_hook_wiring`, cross-referencing each script's event class against the SSOT
+    `_hookout.STDOUT_MODEL_VISIBLE_EVENTS`, ADR-103) for the three invisible-emission shapes: **A**
+    stderr write whose governing exit is 0 (invisible everywhere); **B** *bare* stdout write whose
+    governing exit is 0 on a hook wired only to non-context events (model-invisible there — a
+    `json.dumps(...)`-wrapped write is exempt, it is the `systemMessage` user channel delivered on any
+    event); **C** stdout write whose governing exit is 2 (dropped — exit 2 ignores stdout, NOT
+    json.dumps-exempt). Plus an ASCII-literal lint: a non-`.isascii()` string literal passed directly
+    to a raw-stream call (json.dumps-exempt via `ensure_ascii`). Governing exit is a documented reaching
+    approximation (forward-then-ascending scan; a `return`/scope-end -> exit 0; compound statements
+    scanned over and cross-function pairing are pass-through — can only over-flag into the allowlist,
+    never miss an emission co-located with its `sys.exit(2)`, incl. the if/else-branch-then-exit-2
+    shape by ascent). Pins the reaching self-tests (stderr->exit0/exit2, if/else ascent, bare-print
+    fall-through, `print(file=...)` stream classification, the `json.dumps` systemMessage exemption,
+    the `ensure_ascii=False` non-exemption). Two-sided allowlists (the
+    `test_no_crude_command_substring_checks.py` mechanism): `_OUTPUT_CONTRACT_ALLOWLIST` keyed by
+    `(script, check)` (7 current offenders; PRs 5-6 shrink it), `_NONASCII_EMISSION_ALLOWLIST` keyed by
+    script (8 current offenders, mostly cp1252-safe em-dash/ellipsis that are still non-`.isascii()`).
+    Documented limitations: the ASCII lint sees only literals *direct* in the emission call
+    (usage-snapshot's emoji reach stderr via a variable, so it is flagged only via an incidental
+    em-dash — PR5's own `.isascii()` self-pin covers the emoji), and Check B's `json.dumps` exemption is
+    blanket (an `additionalContext` JSON on a non-context event would be invisible but is not flagged; no
+    hook does this today). ([ADR-103](docs/adr/103-shared-hookout-emitter.md); dev-env#720)
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_output_contract.py
+    ```
+
+62. **hook safe-exit structural gate** — required when changing
+    `claude/scripts/tests/test_hook_safe_exit_guard.py` (or `_hook_wiring.py`, item 61). Structural AST
+    gate: every wired hook has a top-level `if __name__ == "__main__":` block with a
+    `try: ... except Exception|<bare>:` handler that deterministically `sys.exit(N)`s (a literal, or a
+    one-level call to a module-level helper that does — e.g. pre-auto-merge-checkpoint-gate's
+    `_fail_closed`), and that N equals the hook's declared fail direction in `FAIL_CLOSED` (exit 2 for
+    the two ADR-083/ADR-096 fail-closed gates, exit 0 for every other wired hook — including the
+    *blocking* gates that exit 2 to block but fail OPEN on their own crash). An `except SystemExit: raise`
+    pass-through is correctly ignored (not mistaken for the fail-direction handler). Pins the guard-shape
+    self-tests (guarded exit 0/2, exit-2-via-helper, unguarded bare `main()` / `sys.exit(main())` / no
+    `__main__` block / handler-without-exit, wrong-direction reported faithfully) and that `FAIL_CLOSED`
+    names only wired scripts. Two-sided `_UNGUARDED_ALLOWLIST` (14 current offenders lacking a compliant
+    guard; the PR7 safe-exit sweep shrinks it — a stale entry, i.e. a now-guarded script, fails too). A
+    guarded hook whose crash-exit contradicts its declared direction is a hard failure, never
+    allowlist-able. Does NOT verify the fail-closed gates' module-level dependency-load guard (rule 5) —
+    that surface is pinned by items 52/55. ([ADR-103](docs/adr/103-shared-hookout-emitter.md);
+    dev-env#720)
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_safe_exit_guard.py
+    ```
+
+63. **settings-hook wiring lint** — required when changing
+    `claude/scripts/tests/test_settings_hook_wiring.py` (or `_hook_wiring.py`, item 61) or the `hooks`
+    block of `claude/settings.json`. For every `(event, matcher, hook)` entry: the command resolves to a
+    `<name>.py` that exists in `claude/scripts/`, and it carries an explicit integer `timeout` (seconds)
+    at or above its budget floor — `usage-snapshot.py` -> 90, a hook importing `_winsubp` (the
+    subprocess-hook marker, authoring rule 4) -> 30, pure-Python -> 10 (a FLOOR, `>=`, so a longer
+    timeout is allowed). Pins `min_timeout`'s three tiers and `script_from_command`. The `pyw -3`
+    invocation invariant (authoring rule 3) is deliberately not re-checked here — `test_pyw_stdio.py`'s
+    `test_all_settings_hooks_use_pyw_and_resolve_to_repo` (item 2) already gates it; the resolution check
+    overlaps that test's resolution half by design (it is the precondition for the `_winsubp`-based
+    budget). Iterates entries generically, so a new event/matcher group (e.g. PR9's PowerShell mirror) is
+    covered with no change beyond any new script's budget classification.
+    ([ADR-103](docs/adr/103-shared-hookout-emitter.md); dev-env#720)
+
+    ```bash
+    py -3 claude/scripts/tests/test_settings_hook_wiring.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

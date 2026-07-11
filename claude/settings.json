@@ -33,47 +33,58 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-commit-branch-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-commit-branch-check.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-pr-create-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-pr-create-check.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-message-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-message-check.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-branch-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-branch-check.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-findings-gate.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-findings-gate.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-auto-merge-checkpoint-gate.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-auto-merge-checkpoint-gate.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-numbering-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-numbering-check.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-canonical-mutate-guard.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-canonical-mutate-guard.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-journal-compose-force-guard.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-journal-compose-force-guard.py",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/disk-space-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/disk-space-check.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-bash-drift-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-bash-drift-check.py",
+            "timeout": 30
           }
         ]
       },
@@ -82,7 +93,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py",
+            "timeout": 30
           }
         ]
       },
@@ -91,7 +103,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py",
+            "timeout": 30
           }
         ]
       },
@@ -100,7 +113,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-worktree-path-check.py",
+            "timeout": 30
           }
         ]
       }
@@ -110,51 +124,63 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/session-mode-prompt.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/session-mode-prompt.py",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/idle-refresher.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/idle-refresher.py",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/dev-env-sync.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/dev-env-sync.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-canonical-guard.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-canonical-guard.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/new-day-journal-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/new-day-journal-check.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-onboard-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-onboard-check.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/turn-count-hook.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/turn-count-hook.py",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/multi-worktree-alert.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/multi-worktree-alert.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/worktree-npm-install.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/worktree-npm-install.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/disk-space-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/disk-space-check.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/reconcile-open-prs.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/reconcile-open-prs.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/awake-blocker.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/awake-blocker.py",
+            "timeout": 30
           }
         ]
       }
@@ -164,27 +190,33 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/token-tracker.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/token-tracker.py",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-stop-check.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-stop-check.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/posttooluse-inert-advisory.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/posttooluse-inert-advisory.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/stop-tile-enumeration-gate.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/stop-tile-enumeration-gate.py",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/stop-journal-stub-checkpoint.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/stop-journal-stub-checkpoint.py",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/awake-blocker.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/awake-blocker.py",
+            "timeout": 30
           }
         ]
       }
@@ -194,7 +226,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/awake-blocker.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/awake-blocker.py",
+            "timeout": 30
           }
         ]
       }
@@ -204,7 +237,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-compact.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-compact.py",
+            "timeout": 30
           }
         ]
       }
@@ -215,43 +249,53 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/pr-merge-reminder.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pr-merge-reminder.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-merge-tile-checkpoint.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-merge-tile-checkpoint.py",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-tool-use.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-tool-use.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-pr-merge-pull.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-pr-merge-pull.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-pr-merge-reclaim.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-pr-merge-reclaim.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/stub-push-archive-reminder.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/stub-push-archive-reminder.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-pr-merge-project.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-pr-merge-project.py",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/usage-snapshot.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/usage-snapshot.py",
+            "timeout": 90
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-shard-write-advisory.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-shard-write-advisory.py",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-tool-use-cwd-track.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-tool-use-cwd-track.py",
+            "timeout": 30
           }
         ]
       },
@@ -260,11 +304,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/memory-write-advisory.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/memory-write-advisory.py",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-shard-write-advisory.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-shard-write-advisory.py",
+            "timeout": 10
           }
         ]
       },
@@ -273,7 +319,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-shard-write-advisory.py"
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-shard-write-advisory.py",
+            "timeout": 10
           }
         ]
       }
