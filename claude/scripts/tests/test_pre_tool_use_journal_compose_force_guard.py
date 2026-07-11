@@ -17,7 +17,11 @@ Layer 2 -- behavioral subprocess tests driving the real hook over stdin
 JOURNAL_COMPOSE_FORCE_MARKER_DIR redirected at a disposable temp dir so no
 run ever touches the real scratch directory or depends on which day it
 executes (today-dated commands are built from `datetime.date.today()` at
-test-run time).
+test-run time). Includes the dev-env#718 __main__ crash-guard case: an
+env-gated fault-injection seam in main() (JOURNAL_COMPOSE_FORCE_GUARD_TEST_CRASH)
+fired on a matched same-day compose target proves an unexpected main() crash
+becomes a fail-CLOSED exit 2 (it was exit 1 = fail-OPEN before), since this
+otherwise-defensive gate has no natural runtime-crash vector to drive it.
 """
 import datetime
 import importlib.util
@@ -235,10 +239,15 @@ def test_command_targets_today_compose_short_circuits_when_date_absent():
 # Layer 2: end-to-end subprocess tests
 # ---------------------------------------------------------------------------
 
-def _run_hook(payload, marker_dir=None):
+def _run_hook(payload, marker_dir=None, extra_env=None):
     env = dict(os.environ)
+    # Never inherit the __main__-crash-guard fault-injection seam from an ambient/leaked env --
+    # only a test that explicitly opts in via extra_env should ever trip that e2e path.
+    env.pop("JOURNAL_COMPOSE_FORCE_GUARD_TEST_CRASH", None)
     if marker_dir is not None:
         env[jcf.MARKER_DIR_ENV] = marker_dir
+    if extra_env:
+        env.update(extra_env)
     if isinstance(payload, str):
         stdin_text = payload
     else:
@@ -374,6 +383,32 @@ def test_e2e_missing_command_allows():
 def test_e2e_non_dict_json_allows():
     proc = _run_hook("[1, 2, 3]")
     assert proc.returncode == 0
+
+
+def test_e2e_crash_after_trigger_fails_closed():
+    # The __main__ crash guard (dev-env#718) converts any unexpected exception in main() into a
+    # fail-CLOSED exit 2 -- it was exit 1 = fail-OPEN (a same-day compose waved through) before.
+    # This gate is otherwise fully defensive (read_marker swallows OSError/ValueError,
+    # is_marker_fresh swallows ValueError/TypeError), so the hook exposes an env-gated
+    # fault-injection seam -- fired here AFTER the command already matched a same-day compose
+    # target -- as the only way to drive a genuine main() crash from an e2e subprocess.
+    with tempfile.TemporaryDirectory() as tmp:
+        today = datetime.date.today().isoformat()
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": _today_worktree_add_command(today)},
+            "cwd": "C:/x",
+        }
+        proc = _run_hook(
+            payload,
+            marker_dir=tmp,
+            extra_env={"JOURNAL_COMPOSE_FORCE_GUARD_TEST_CRASH": "1"},
+        )
+        assert proc.returncode == 2
+        assert proc.stdout == ""
+        reason = json.loads(proc.stderr)["reason"]
+        assert "BLOCKED" in reason
+        assert "crashed" in reason
 
 
 if __name__ == "__main__":

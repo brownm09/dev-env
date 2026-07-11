@@ -685,3 +685,41 @@ judgment criterion a session applies *before* writing `written` into the marker.
 **Disposition.** Not a decision reversal — a clarification of an existing one, per the same "Not a
 decision" framing the 2026-07-06 addendum above uses. Closes
 [dev-env#688](https://github.com/brownm09/dev-env/issues/688).
+
+---
+
+## Addendum (2026-07-10) — Crash-guard hardening: the gate now fails closed on its own import/runtime crash, not just on gh/network gaps
+
+Decision point 3 above ("Fail closed, not fail open") reasoned about *evaluation* gaps — a
+gh/network error, a missing marker, a stale marker — and made those fail closed. It did **not** cover
+the gate crashing in its *own* code before it could evaluate anything. Two such paths existed:
+
+1. The module-level `importlib` `exec_module` of `pre-merge-findings-gate.py` (reused for
+   `is_pr_merge_command`, `_parse_merge_target`, `_fetch_pr_json`, etc.) was **unguarded** — a broken
+   sibling raised at import time, before `main()`, and the process exited 1.
+2. `main()` had no top-level `try/except`, so any unhandled exception (e.g. a malformed
+   `gh pr view --json` response whose `commits[-1]` is not a dict) also exited 1.
+
+Claude Code reads any non-2 exit as *"the hook allowed the tool."* So both paths were fail-**OPEN**:
+a crash in the highest-urgency gate in the repo *silently ungated* `gh pr merge --auto` — the exact
+failure class the hook-reliability initiative ([dev-env#717](https://github.com/brownm09/dev-env/issues/717))
+exists to close.
+
+**Fix ([dev-env#718](https://github.com/brownm09/dev-env/issues/718), Phase A).** Wrap the
+dependency load in `try/except → sys.exit(2)`, and add a top-level `try/except → sys.exit(2)` around
+`main()` that **re-raises `SystemExit`** so the gate's own deliberate exit 0 (allow) / exit 2 (block)
+verdicts are never reclassified. Crash reasons are ASCII-sanitized (the cp1252-stderr concern).
+
+**Load-surface note.** This gate is registered on *every* Bash call, so failing the *dependency
+load* closed means a broken sibling blocks *all* Bash — a loud, CI-caught, dev-time-only state. That
+is the deliberate trade: a broken gate blocking everything loudly is strictly better than one that
+silently waves `--auto` merges through. (The sibling `pre-tool-use-journal-compose-force-guard.py`
+resolves the same trade the *opposite* way for its plain imports — see [ADR-096](096-journal-compose-mechanical-force-guard.md)'s
+2026-07-10 addendum — because its per-call surface is broader and its ungated action far less severe.)
+
+**Generalized.** This established authoring invariant #5 ("declared fail direction") in
+[`docs/REFERENCE.md` → Hooks → Authoring rules](../REFERENCE.md#authoring-rules). Tests: two e2e
+cases added to `test-auto-merge-checkpoint-gate.sh` — a crash-after-trigger (malformed `commits`) and
+a corrupted-sibling-import, both asserting exit 2. **Disposition.** Not a decision reversal — an
+extension of Decision point 3 to the gate's own-code failure modes. Closes (with the ADR-096
+addendum) [dev-env#718](https://github.com/brownm09/dev-env/issues/718).

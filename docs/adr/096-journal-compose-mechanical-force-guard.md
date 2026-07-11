@@ -264,3 +264,38 @@ string-literal `in`/`not in` checks against a `command` variable).
   which this ADR deliberately departs from.
 - [ADR-084](084-nightly-compose-targets-yesterday.md) — why the nightly routine's normal path never
   reaches this guard at all.
+
+---
+
+## Addendum (2026-07-10) — Crash-guard: `main()` now fails closed, but the top-level imports stay fail-open
+
+The Decision and Limitations sections above made a *missing / corrupt / stale marker* fail closed,
+but `main()` itself had no top-level `try/except`: any unhandled exception exited 1, which Claude
+Code reads as *"the hook allowed the tool."* So a crash while evaluating a same-day compose command
+was fail-**OPEN**, letting the compose proceed ungated — the same failure class as
+[ADR-083](083-auto-merge-checkpoint-gate.md)'s 2026-07-10 addendum, fixed in the same PR
+([dev-env#718](https://github.com/brownm09/dev-env/issues/718), Phase A of the hook-reliability
+initiative [dev-env#717](https://github.com/brownm09/dev-env/issues/717)).
+
+**Fix.** A top-level `try/except → sys.exit(2)` around `main()` that **re-raises `SystemExit`** so the
+gate's own deliberate exit 0 (allow) / exit 2 (block) verdicts survive. The crash reason reuses
+`_emit_block`'s `json.dumps({"reason": …})`-on-stderr channel (`ensure_ascii=True` keeps it
+cp1252-safe).
+
+**Deliberate asymmetry with ADR-083: the top-level *imports* stay fail-OPEN.** Unlike the auto-merge
+gate, this hook is registered on *every* Bash call. Failing its `from _hookio import …` /
+`from _journal_compose_force import …` closed (exit 2) would block *every* Bash command the moment a
+shared module broke — a catastrophic, disproportionate blast radius for a guard whose own action
+(blocking a rare same-day compose) is minor. So only a crash *inside* `main()` — reached solely after
+`command_targets_today_compose` has already matched a same-day target — fails closed; an import-time
+crash stays the pre-existing fail-open exit 1.
+
+**Testing.** This gate is otherwise fully defensive (`read_marker` swallows `(OSError, ValueError)`,
+`is_marker_fresh` swallows `(ValueError, TypeError)`), so it has no natural runtime-crash vector. The
+hook therefore carries a small, env-gated (`JOURNAL_COMPOSE_FORCE_GUARD_TEST_CRASH`), production-inert
+fault-injection seam placed just after the compose-target match, letting the new e2e case in
+`test_pre_tool_use_journal_compose_force_guard.py` drive a genuine `main()` crash and assert exit 2.
+
+**Generalized.** Contributes to authoring invariant #5 ("declared fail direction") in
+[`docs/REFERENCE.md` → Hooks → Authoring rules](../REFERENCE.md#authoring-rules). Closes (with the
+ADR-083 addendum) [dev-env#718](https://github.com/brownm09/dev-env/issues/718).
