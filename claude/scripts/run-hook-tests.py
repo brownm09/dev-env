@@ -48,8 +48,11 @@ from pathlib import Path
 
 # repo root == .../claude/scripts/run-hook-tests.py -> parents[2]
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PY_TESTS_DIR = REPO_ROOT / "claude" / "scripts" / "tests"
-BASH_TESTS_DIRS = (
+# Both dedicated test directories. Python (`test_*.py`) and bash (`*.sh`) gates
+# are discovered from the SAME set, so a test can never be silently missed by
+# living in the "wrong" one -- e.g. a hook's Python test placed under
+# claude/hooks/tests (which already hosts test-pre-push-lockfile.sh).
+TESTS_DIRS = (
     REPO_ROOT / "claude" / "scripts" / "tests",
     REPO_ROOT / "claude" / "hooks" / "tests",
 )
@@ -66,24 +69,42 @@ SKIP_TESTS = {
     ),
 }
 
-# A self-skipping bash gate prints a leading "SKIP:" line and exits 0.
+# A self-skipping bash gate prints a leading "SKIP:" line and exits 0. This is the
+# whole-gate skip signal (a gate that self-skips one optional sub-check but still
+# runs must NOT print "SKIP:" -- it would be mislabeled a whole-file skip). It can
+# never mask a *failure*: exit 0 is required, and classify_result checks the exit
+# code first.
 _SELF_SKIP_RE = re.compile(r"(?m)^\s*SKIP:")
 
 DEFAULT_TIMEOUT_SECONDS = 300
 
 
-def discover_python_tests(tests_dir: Path):
-    """Sorted ``test_*.py`` files directly under ``tests_dir`` (non-recursive).
+def _discover(dirs, pattern, name_ok):
+    """Sorted files matching ``pattern`` across ``dirs`` (non-recursive).
+
+    Both dedicated test directories are searched so a test is never silently
+    missed by directory asymmetry. Deduplicated by resolved path in case the
+    dirs ever overlap; sorted by ``(name, path)`` for deterministic ordering.
+    """
+    found = {}
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        for p in d.glob(pattern):
+            if p.is_file() and name_ok(p.name):
+                found.setdefault(p.resolve(), p)
+    return sorted(found.values(), key=lambda p: (p.name, str(p)))
+
+
+def discover_python_tests(dirs):
+    """Sorted ``test_*.py`` files across the given dedicated test directories.
 
     The ``test_`` prefix is the naming convention every Python test in the repo
     follows, and it deliberately excludes shared helpers like ``_hook_wiring.py``.
+    Searched across *both* test dirs (mirroring ``discover_bash_tests``) so a
+    Python test under either is always run.
     """
-    if not tests_dir.is_dir():
-        return []
-    return sorted(
-        (p for p in tests_dir.glob("test_*.py") if p.is_file()),
-        key=lambda p: p.name,
-    )
+    return _discover(dirs, "test_*.py", lambda _n: True)
 
 
 def discover_bash_tests(dirs):
@@ -91,21 +112,33 @@ def discover_bash_tests(dirs):
 
     Every ``.sh`` in these directories is a test/gate by convention. A leading
     underscore is excluded so a future shared ``_helper.sh`` would not be run as a
-    test. Sorted by ``(name, path)`` for deterministic, readable ordering.
+    test.
     """
-    found = []
-    for d in dirs:
-        if not d.is_dir():
-            continue
-        found.extend(
-            p for p in d.glob("*.sh") if p.is_file() and not p.name.startswith("_")
-        )
-    return sorted(found, key=lambda p: (p.name, str(p)))
+    return _discover(dirs, "*.sh", lambda n: not n.startswith("_"))
 
 
 def runner_skip_reason(path: Path):
     """Return the runner-skip reason for ``path`` (by basename), or ``None``."""
     return SKIP_TESTS.get(path.name)
+
+
+def suite_discovery_error(py_tests):
+    """Error message if discovery found no Python tests, else ``None``.
+
+    A CI gate whose whole purpose is to run the suite must never report success
+    while running nothing. Zero Python tests means a broken ``REPO_ROOT`` (a
+    moved script -> wrong ``parents[2]``) or a renamed/relocated test dir; the
+    repo always has 50+ ``test_*.py``. Guarding on the Python set (bash tests can
+    legitimately be absent in a stripped checkout) turns that silent-green hole
+    into a loud failure.
+    """
+    if not py_tests:
+        return (
+            "discovered 0 Python test files under "
+            f"{', '.join(str(d) for d in TESTS_DIRS)} -- REPO_ROOT or the test "
+            "glob is broken; refusing to report success on an empty suite"
+        )
+    return None
 
 
 def classify_result(returncode: int, output: str) -> str:
@@ -141,6 +174,15 @@ def _run_one(path: Path, bash_bin, timeout: int):
         return "skip", 0.0, "SKIP: bash interpreter not found on PATH"
     start = time.monotonic()
     try:
+        # Deliberate encoding tradeoff: capture as utf-8/replace so a chatty test
+        # can never crash the capture, and DON'T force the child's stdio encoding
+        # (no PYTHONUTF8/PYTHONIOENCODING) -- that would perturb the cp1252 runtime
+        # several tests assert against. A Windows Python child writes its pipe in
+        # cp1252, so a non-ASCII byte in a *failing* test's dump may render as
+        # U+FFFD; harmless, since classification is exit-code-based and the SKIP
+        # marker is ASCII. `timeout` kills only the direct child, not any
+        # grandchildren it spawned (no Windows process-group kill); acceptable
+        # because CI job teardown reaps everything at timeout-minutes.
         proc = subprocess.run(
             cmd,
             cwd=str(REPO_ROOT),
@@ -153,7 +195,7 @@ def _run_one(path: Path, bash_bin, timeout: int):
         elapsed = time.monotonic() - start
         output = (proc.stdout or "") + (proc.stderr or "")
         return classify_result(proc.returncode, output), elapsed, output
-    except subprocess.TimeoutExpired as exc:  # noqa: PERF203
+    except subprocess.TimeoutExpired as exc:
         elapsed = time.monotonic() - start
         partial = ""
         if exc.stdout:
@@ -204,8 +246,8 @@ def main(argv=None) -> int:
     args = _parse_args(argv)
     bash_bin = shutil.which("bash")
 
-    py_tests = discover_python_tests(PY_TESTS_DIR)
-    sh_tests = discover_bash_tests(BASH_TESTS_DIRS)
+    py_tests = discover_python_tests(TESTS_DIRS)
+    sh_tests = discover_bash_tests(TESTS_DIRS)
     all_tests = py_tests + sh_tests
 
     runner_skipped = [p for p in all_tests if runner_skip_reason(p)]
@@ -216,6 +258,10 @@ def main(argv=None) -> int:
         f"({len(runner_skipped)} runner-skipped).",
         flush=True,
     )
+    discovery_error = suite_discovery_error(py_tests)
+    if discovery_error:
+        print(f"ERROR: {discovery_error}", flush=True)
+        return 1
     if bash_bin is None and sh_tests:
         print("WARNING: bash not found on PATH -- bash tests will be skipped.", flush=True)
 

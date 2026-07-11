@@ -143,8 +143,9 @@ and adopted across the following PRs (a foundation-then-gates-then-migrations se
   mechanism from `test_no_crude_command_substring_checks.py`: a stale entry fails the suite too).
   `_hookout` adoption is what shrinks those allowlists.
 - **PR4 (`config/ci-hook-test-suite`)** makes the gates *run*. `claude/scripts/run-hook-tests.py`
-  discovers and runs the whole suite — every `claude/scripts/tests/test_*.py` plus the bash gates in
-  `claude/scripts/tests/` and `claude/hooks/tests/` — and `.github/workflows/hook-tests.yml` executes
+  discovers and runs the whole suite — every `test_*.py` and bash `*.sh` gate across both test
+  directories (`claude/scripts/tests/` and `claude/hooks/tests/`) — and
+  `.github/workflows/hook-tests.yml` executes
   it on `windows-latest` for every `pull_request`. This turns PR3's three contract/wiring gates (and
   the ~60 tests around them) into an external gate on every PR, rather than one that depends on an
   author remembering the local `## Testing` commands — the same "no signal that the safety system

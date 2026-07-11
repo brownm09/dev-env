@@ -1616,9 +1616,13 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `test_pyw_stdio.py`, a real-`pyw` Windows-subsystem stdio probe a non-interactive CI runner can't
     host — pinned so any future runner-skip is a test-visible change), `_command_for` (the interpreter
     argv for a `.py` vs `.sh` file, plus the bash-missing → `None` and non-test-suffix → `None`
-    cases), and `classify_result` (the pass / self-skip / fail mapping, including a non-zero exit
-    overriding a `SKIP:` marker so a bash gate that prints `SKIP:` but still fails is a real failure).
-    The runner's `main` / `_run_one` (which shell out to run the real suite) are not covered — the
+    cases), `classify_result` (the pass / self-skip / fail mapping, including a non-zero exit
+    overriding a `SKIP:` marker so a bash gate that prints `SKIP:` but still fails is a real failure),
+    and `suite_discovery_error` (dev-env#730 review — the zero-Python-test floor guard that turns a
+    broken `REPO_ROOT`/glob into a loud failure instead of a silent green). The `_run_one`
+    bash-missing branch (which returns a skip *without* shelling out) is covered too. The runner's
+    `main` and the subprocess-spawning path of `_run_one` (which shell out to run the real suite) are
+    not covered — the
     runner's end-to-end acceptance test is the first green run of the `hook-tests` CI workflow
     (`.github/workflows/hook-tests.yml`, `windows-latest`, `pull_request`), which is also how the
     whole suite is now gated on every PR ([ADR-103](docs/adr/103-shared-hookout-emitter.md);

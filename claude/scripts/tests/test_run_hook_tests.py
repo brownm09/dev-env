@@ -50,7 +50,7 @@ def test_discover_python_tests_matches_prefix_only():
         _touch(d, "_hook_wiring.py")   # shared helper, underscore
         _touch(d, "test_gamma.txt")    # not .py
         _touch(d, "README.md")
-        got = [p.name for p in mod.discover_python_tests(Path(d))]
+        got = [p.name for p in mod.discover_python_tests([Path(d)])]
     assert got == ["test_alpha.py", "test_beta.py"], got
 
 
@@ -58,12 +58,23 @@ def test_discover_python_tests_sorted():
     with tempfile.TemporaryDirectory() as d:
         for name in ("test_z.py", "test_a.py", "test_m.py"):
             _touch(d, name)
-        got = [p.name for p in mod.discover_python_tests(Path(d))]
+        got = [p.name for p in mod.discover_python_tests([Path(d)])]
     assert got == ["test_a.py", "test_m.py", "test_z.py"], got
 
 
 def test_discover_python_tests_missing_dir_is_empty():
-    assert mod.discover_python_tests(Path(os.sep) / "no" / "such" / "dir") == []
+    assert mod.discover_python_tests([Path(os.sep) / "no" / "such" / "dir"]) == []
+
+
+def test_discover_python_tests_spans_multiple_dirs_and_skips_missing():
+    # dev-env#730 review (A-1): Python tests must be found in BOTH test dirs, so a
+    # test_*.py under claude/hooks/tests is never silently missed.
+    with tempfile.TemporaryDirectory() as d1, tempfile.TemporaryDirectory() as d2:
+        _touch(d1, "test_a.py")
+        _touch(d2, "test_b.py")
+        missing = Path(os.sep) / "no" / "such" / "dir"
+        got = [p.name for p in mod.discover_python_tests([Path(d1), missing, Path(d2)])]
+    assert got == ["test_a.py", "test_b.py"], got
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +116,19 @@ def test_runner_skip_reason_by_basename():
     assert mod.runner_skip_reason(Path("claude/scripts/tests/test_pyw_stdio.py"))
     assert mod.runner_skip_reason(Path("test_pyw_stdio.py"))
     assert mod.runner_skip_reason(Path("claude/scripts/tests/test_hookout.py")) is None
+
+
+# ---------------------------------------------------------------------------
+# suite_discovery_error (dev-env#730 review B-1: zero-discovery silent-green guard)
+# ---------------------------------------------------------------------------
+
+def test_suite_discovery_error_flags_empty():
+    msg = mod.suite_discovery_error([])
+    assert msg is not None and "0 Python test files" in msg, msg
+
+
+def test_suite_discovery_error_ok_when_nonempty():
+    assert mod.suite_discovery_error([Path("test_x.py")]) is None
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +176,19 @@ def test_command_for_bash_missing_returns_none():
 
 def test_command_for_unknown_suffix_returns_none():
     assert mod._command_for(Path("notes.txt"), "bash") is None
+
+
+# ---------------------------------------------------------------------------
+# _run_one -- only the no-subprocess (bash-missing) branch (dev-env#730 review B-4)
+# ---------------------------------------------------------------------------
+
+def test_run_one_skips_without_shelling_out_when_bash_missing():
+    # cmd is None short-circuits before any subprocess.run, so this branch is
+    # pure and covered here even though the rest of _run_one shells out.
+    status, seconds, output = mod._run_one(Path("gate.sh"), None, 300)
+    assert status == "skip", status
+    assert seconds == 0.0, seconds
+    assert output.startswith("SKIP:"), output
 
 
 # ---------------------------------------------------------------------------
