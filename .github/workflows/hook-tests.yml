@@ -55,4 +55,17 @@ jobs:
         # Invoked via the Windows `py -3` launcher (not `python3`, which is the
         # MS Store stub -- ADR-007). The runner discovers every test_*.py plus
         # the bash *.sh gates, runs each, and exits non-zero iff any failed.
-        run: py -3 claude/scripts/run-hook-tests.py
+        #
+        # Point TMPDIR/TMP/TEMP at a clean long-path dir. The runner's default
+        # TEMP (C:\Users\RUNNERADMIN\...) has an 11-char component with an 8.3
+        # short-name alias (RUNNER~1); a few tests build a throwaway repo under
+        # tempfile and compare its Python path against git's canonical
+        # `--show-toplevel`, which resolves the long form -- a short-vs-long
+        # mismatch that only bites in CI. RUNNER_TEMP (D:\a\_temp) has no
+        # long-name component, so `cygpath -m` yields a forward-slash path that
+        # matches git's resolution.
+        run: |
+          TMPDIR="$(cygpath -m "$RUNNER_TEMP")/hktmp"
+          mkdir -p "$TMPDIR"
+          export TMPDIR TMP="$TMPDIR" TEMP="$TMPDIR"
+          py -3 claude/scripts/run-hook-tests.py

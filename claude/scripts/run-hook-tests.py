@@ -181,7 +181,26 @@ def _parse_args(argv):
     return ap.parse_args(argv)
 
 
+def _make_stdout_crash_proof():
+    """Ensure printing captured test output never crashes the runner.
+
+    On Windows/CI the runner's own stdout defaults to cp1252; a failing test's
+    captured output can contain bytes that decoded (errors="replace") to U+FFFD
+    or other non-cp1252 characters. Printing those to a cp1252 stream raises
+    ``UnicodeEncodeError``, which would abort the runner mid-suite and mask every
+    later test. Reconfiguring to UTF-8/replace makes the runner's *own* output
+    robust; it does NOT touch the test subprocesses' stdio, which keep their
+    native (cp1252) encoding via their pipes -- the runtime the tests target.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):  # not a reconfigurable TextIOWrapper
+            pass
+
+
 def main(argv=None) -> int:
+    _make_stdout_crash_proof()
     args = _parse_args(argv)
     bash_bin = shutil.which("bash")
 
