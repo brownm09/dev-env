@@ -1511,14 +1511,18 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     wherever its model half isn't deliverable, an invalid audience, and `event=None` non-blocking.
     Pins `ascii_sanitize`'s punctuation/operator map (dashes, curly quotes, ellipsis, arrows,
     comparison ops, bullet, middle dot, and the no-break space spelled `chr(0xA0)` so the source is
-    unambiguous), the emoji/unmapped `?` backstop, None/non-str coercion, and that the result is
-    ALWAYS `.isascii()`; that exit-0 stdout is valid JSON and stays `.isascii()` even when the
+    unambiguous), the emoji/unmapped `?` backstop, C0-control/DEL neutralization (except
+    newline/tab, so an ANSI/ESC or carriage-return sequence can't reach the raw stderr stream),
+    None/non-str coercion, and that the result is ALWAYS `.isascii()`; that exit-0 stdout is valid
+    JSON and stays `.isascii()` even when the
     advisory text carries Unicode (ensure_ascii escaping) while `json.loads` restores the original
     content; and that exit-2 stderr is `.isascii()` (ascii_sanitize applied). The `emit_advisory` /
     `emit_block` deliverers are exercised in-process (redirecting stdout/stderr to `io.StringIO` and
     catching the `SystemExit` they raise — still offline, no subprocess): each writes the planned
-    stream and exits with the planned code, and an undeliverable `emit_advisory` propagates the
-    `ValueError` rather than reaching a stream write.
+    stream and exits with the planned code, an undeliverable `emit_advisory` propagates the
+    `ValueError` rather than reaching a stream write, and `_deliver` still delivers the exit code
+    even when the stream write raises `OSError` (closed-pipe resilience — a block's exit code is
+    load-bearing and must survive a broken pipe).
     ([ADR-103](docs/adr/103-shared-hookout-emitter.md); dev-env#719)
 
     ```bash

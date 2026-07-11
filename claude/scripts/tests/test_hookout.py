@@ -12,8 +12,8 @@ subprocess.
 Cases pinned:
 - ``ascii_sanitize``: ASCII passthrough, the punctuation/operator map (dashes,
   curly quotes, ellipsis, arrows, comparison ops, bullet, middle dot, no-break
-  space), the emoji/unmapped "?" backstop, None/non-str coercion, and that the
-  result is ALWAYS ``.isascii()``.
+  space), the emoji/unmapped "?" backstop, C0-control/DEL neutralization (except
+  newline/tab), None/non-str coercion, and that the result is ALWAYS ``.isascii()``.
 - ``plan_emission`` matrix — every (audience x event-class x blocking) cell:
   model+context+non-blocking -> additionalContext JSON (exit 0); model+context+
   blocking and model+non-context+blocking -> exit-2 stderr; model+non-context+
@@ -28,7 +28,8 @@ Cases pinned:
   (ascii_sanitize applied).
 - ``emit_advisory`` / ``emit_block``: the deliverers write the planned stream and
   exit with the planned code; an undeliverable ``emit_advisory`` propagates the
-  ``ValueError`` (it never reaches a stream write).
+  ``ValueError`` (it never reaches a stream write); and ``_deliver`` still delivers
+  the exit code even when the stream write raises (closed-pipe resilience).
 - ``STDOUT_MODEL_VISIBLE_EVENTS`` is exactly the three context events.
 """
 import contextlib
@@ -135,6 +136,21 @@ def test_ascii_result_always_isascii():
         assert ascii_sanitize(s).isascii()
 
 
+def test_ascii_control_chars_neutralized():
+    # C0 controls (except \n, \t) and DEL are ASCII, so they survive the
+    # .isascii() guarantee -- they must be replaced with "?" so an ANSI/ESC or
+    # carriage-return sequence can't reach the raw stderr stream literally.
+    out = ascii_sanitize("a\x00b\x1b[31mc\x07\r\x7fd")
+    assert out.isascii()
+    assert out == "a?b?[31mc???d"
+    for c in ("\x00", "\x1b", "\r", "\x07", "\x7f"):
+        assert c not in out
+
+
+def test_ascii_preserves_newline_and_tab():
+    assert ascii_sanitize("line1\nline2\tcol") == "line1\nline2\tcol"
+
+
 # ---------------------------------------------------------------------------
 # plan_emission — model audience
 # ---------------------------------------------------------------------------
@@ -207,6 +223,13 @@ def test_user_nonblocking_works_on_all_events():
 
 def test_user_blocking_raises():
     _raises(ValueError, plan_emission, "Stop", "x", audience="user", blocking=True)
+
+
+def test_user_context_blocking_raises():
+    # user+blocking raises regardless of event class (the blocking branch checks
+    # want_user before it ever looks at the event) -- pin the context-event side
+    # too so the matrix claim covers the whole user+blocking row.
+    _raises(ValueError, plan_emission, "UserPromptSubmit", "x", audience="user", blocking=True)
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +360,30 @@ def test_emit_block_sanitizes_nonascii():
     assert code == 2
     assert err.isascii()
     assert err.strip() == "blocked - reason ?"
+
+
+def test_emit_block_exits_2_even_if_stderr_write_raises():
+    # _deliver must deliver the exit code even when the stream write fails (closed
+    # pipe): for a block the exit code is the load-bearing effect, and losing it to
+    # an OSError would silently degrade the block to exit 0 via a fail-open guard.
+    class _Boom:
+        def write(self, s):
+            raise OSError("pipe closed")
+
+        def flush(self):
+            pass
+
+    saved = sys.stderr
+    sys.stderr = _Boom()
+    code = "no-exit"
+    try:
+        try:
+            emit_block("reason")
+        except SystemExit as e:
+            code = e.code
+    finally:
+        sys.stderr = saved
+    assert code == 2
 
 
 def test_emit_advisory_undeliverable_propagates_valueerror():

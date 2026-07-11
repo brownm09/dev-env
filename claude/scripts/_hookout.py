@@ -139,7 +139,7 @@ _ASCII_MAP = {
     ord("÷"): "/",    # division sign
     ord("•"): "*",    # bullet
     ord("·"): ".",    # middle dot
-    ord(" "): " ",    # no-break space
+    ord("\u00A0"): " ",    # no-break space
 }
 
 
@@ -148,23 +148,46 @@ def ascii_sanitize(text) -> str:
 
     Maps common Unicode punctuation and operators to sensible ASCII (dashes ->
     "-", curly quotes -> straight, ellipsis -> "...", arrows, comparison
-    operators, bullet, middle dot, no-break space), then replaces anything still
-    non-ASCII — emoji, rare symbols — with "?" via ``encode("ascii", "replace")``.
+    operators, bullet, middle dot, no-break space), replaces anything still
+    non-ASCII -- emoji, accented letters, rare symbols -- with "?" via
+    ``encode("ascii", "replace")``, and finally neutralizes C0 control
+    characters and DEL (except newline/tab) to "?".
 
-    Guaranteeing ``.isascii()`` also guarantees cp1252-encodability (ASCII is a
-    subset of cp1252), so the result survives Claude Code's cp1252-decoded
-    hook-output pipe on Windows, where a raw non-cp1252 byte on stderr/stdout
-    otherwise raises ``UnicodeEncodeError`` at print time and the whole advisory
-    is lost. ``None`` and non-str inputs are coerced (``None`` -> "").
+    Guaranteeing ``.isascii()`` is deliberately *stronger* than cp1252-
+    encodability: ASCII is a subset of BOTH cp1252 and UTF-8 and the two agree on
+    it, so the result survives Claude Code's hook-output pipe whether the writing
+    interpreter's stdio is cp1252 (the Windows default, where a raw non-cp1252
+    byte otherwise raises ``UnicodeEncodeError`` at print time and the whole
+    advisory is lost) or UTF-8. The cost of that stronger guarantee: a
+    cp1252-encodable accented Latin character (``é``, ``£``, ``°``, ...) is
+    intentionally reduced to "?" rather than passed through -- a block reason
+    that interpolates a branch name, path, or username containing one will show
+    "?" there. A caller needing those preserved must not rely on this helper.
+
+    Control-character neutralization matters specifically for the raw exit-2
+    stderr channel (``emit_block`` / ``blocking=True``), the only consumer of
+    this function: an ESC/ANSI or carriage-return sequence in dynamic reason
+    text would otherwise reach the terminal (an injection surface) and the
+    model's context literally. The JSON channel escapes controls to ``\\uXXXX``
+    via ``json.dumps`` and does NOT route through here. Newline and tab are
+    preserved (benign, common in multi-line reasons); C1 controls (0x80-0x9F)
+    are non-ASCII and already became "?" in the backstop above.
+
+    ``None`` and non-str inputs are coerced (``None`` -> "").
     """
     if text is None:
         return ""
     translated = str(text).translate(_ASCII_MAP)
-    if translated.isascii():
-        return translated
-    # Backstop: any remaining non-ASCII code point -> "?" (keeps a placeholder so
-    # a stripped glyph leaves a visible trace rather than vanishing silently).
-    return translated.encode("ascii", "replace").decode("ascii")
+    if not translated.isascii():
+        # Backstop: any non-ASCII code point -> "?" (keeps a placeholder so a
+        # stripped glyph leaves a visible trace rather than vanishing silently).
+        translated = translated.encode("ascii", "replace").decode("ascii")
+    # `translated` is now guaranteed ASCII; replace C0 controls + DEL (all ASCII,
+    # so they survived the guarantee above) EXCEPT newline/tab with "?" so an
+    # ANSI/ESC or carriage-return sequence can't reach the raw stream literally.
+    return "".join(
+        ch if (ch in "\n\t" or 0x20 <= ord(ch) <= 0x7E) else "?" for ch in translated
+    )
 
 
 class Emission(NamedTuple):
@@ -174,6 +197,10 @@ class Emission(NamedTuple):
     = write nothing to that stream); ``exit_code`` is the process exit code the
     channel requires (0 for a non-blocking advisory, 2 for a block). Exactly one of
     ``stdout`` / ``stderr`` is set for any Emission this module produces.
+
+    Produce an Emission via ``plan_emission``, not by hand: a hand-built Emission
+    with non-ASCII ``stderr`` bypasses the ``ascii_sanitize`` wire-safety guarantee
+    that ``plan_emission`` applies on the raw-stream (blocking) path.
     """
 
     stdout: str | None
@@ -201,6 +228,8 @@ def plan_emission(event, text, *, audience: str = "model", blocking: bool = Fals
 
     Every real call site passes these as literals, so a ``ValueError`` is a
     development-time signal (it surfaces in the hook's test), not a runtime risk.
+    The one shape that can defeat this — an ``audience="model"`` call with a
+    *dynamic* event — must be avoided; see ``emit_advisory``'s migration note.
     """
     if audience not in _VALID_AUDIENCES:
         raise ValueError(
@@ -257,14 +286,22 @@ def _deliver(emission: Emission) -> NoReturn:
 
     Writes are flushed explicitly so nothing is lost if the interpreter is torn
     down abruptly after ``sys.exit`` (the ASCII guarantee means the encode under
-    Windows' cp1252 stdio never raises)."""
-    if emission.stdout is not None:
-        sys.stdout.write(emission.stdout + "\n")
-        sys.stdout.flush()
-    if emission.stderr is not None:
-        sys.stderr.write(emission.stderr + "\n")
-        sys.stderr.flush()
-    sys.exit(emission.exit_code)
+    Windows' cp1252 stdio never raises). The writes run inside ``try`` with
+    ``sys.exit`` in ``finally`` so the exit code is delivered **even if a write
+    raises** (e.g. ``BrokenPipeError``/``OSError`` on a closed downstream pipe):
+    for a block the exit code is the load-bearing effect — it is what actually
+    halts the tool/prompt/stop — and losing it to a stream error would silently
+    defeat the block and, via the caller's fail-open guard, exit 0. Output is
+    best-effort; the exit code is not."""
+    try:
+        if emission.stdout is not None:
+            sys.stdout.write(emission.stdout + "\n")
+            sys.stdout.flush()
+        if emission.stderr is not None:
+            sys.stderr.write(emission.stderr + "\n")
+            sys.stderr.flush()
+    finally:
+        sys.exit(emission.exit_code)
 
 
 def emit_advisory(
@@ -275,6 +312,18 @@ def emit_advisory(
     Thin wrapper over ``plan_emission`` + ``_deliver`` — see ``plan_emission`` for
     the routing rules and the ``ValueError`` conditions. Always exits: exit 0 for a
     non-blocking advisory, exit 2 for ``blocking=True``.
+
+    **Migration note (audience="model"):** pass *event* as a hardcoded literal,
+    never a runtime value like ``data["hook_event_name"]``. The
+    raises-rather-than-vanishes safety property holds only because the triple is
+    static at the call site: a *dynamic* event that resolved to a non-context
+    event (PreToolUse/PostToolUse/Stop) would make ``plan_emission`` raise
+    ``ValueError`` on every fire, which the calling hook's fail-open
+    ``except Exception: sys.exit(0)`` guard swallows — reintroducing the exact
+    silent-vanishing this module prevents, and passing *green* in an end-to-end
+    ``main()`` test (raise -> exit 0 reads as "correctly emitted nothing"). Every
+    real call site knows its event statically, so a literal costs nothing.
+    ``audience="user"`` and ``emit_block`` are immune (both event-independent).
     """
     _deliver(plan_emission(event, text, audience=audience, blocking=blocking))
 

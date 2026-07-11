@@ -152,6 +152,24 @@ and adopted across the following PRs (a foundation-then-gates-then-migrations se
   two-sided: a concurrently-landed per-site fix just turns an entry stale, and removing it is a
   one-line follow-up the suite itself demands.
 
+**Verification note for the migrations.** Three contract cells have no prior in-repo exercise —
+`systemMessage` on `PostToolUse`/`Stop` (the `audience="user"` path PR5/PR6 first route there),
+`additionalContext` on `UserPromptExpansion`, and the combined both-keys object. Each is asserted
+by the documented common-field contract (`systemMessage` is an event-agnostic top-level field per
+the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks)), but the migration that
+first routes a user advisory to a `PostToolUse`/`Stop` event should do a one-time live confirmation
+that the toast renders — a wrong channel belief on an as-yet-unexercised cell is exactly the
+silent-invisibility class this module exists to close.
+
+**Migration hazard (author-facing, encoded in the emitter's docstrings).** The
+raises-rather-than-vanishes property holds only for a *static* `(event, audience, blocking)` triple.
+An `audience="model"` call with a **dynamic** event (e.g. `emit_advisory(data["hook_event_name"],
+…, audience="model")`) that resolved to a non-context event would raise `ValueError` on every fire,
+which the calling hook's fail-open guard swallows — reintroducing the silent-vanishing and passing
+*green* in an end-to-end `main()` test. `emit_advisory`'s docstring carries an explicit note to pass
+the event as a literal on that path; `audience="user"` and `emit_block` are event-independent and
+immune.
+
 PR2 itself is **purely additive** — a new module + its tests + docs. It changes no existing
 hook's behavior; nothing imports `_hookout` yet. That keeps the foundation independently
 reviewable and lets the migrations land incrementally against a stable contract.
