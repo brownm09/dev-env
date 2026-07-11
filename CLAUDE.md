@@ -508,7 +508,29 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     lines), and `load_records` (reads a JSONL file to its object records). Imported by
     `posttooluse-inert-advisory.py`, `stop-tile-enumeration-gate.py`, `reconcile-open-prs.py`, and
     `token-tracker.py` ([ADR-064](docs/adr/064-shared-hookutil-sentinel-transcript-locate.md),
-    [ADR-090](docs/adr/090-shared-transcript-readers-hookutil.md)).
+    [ADR-090](docs/adr/090-shared-transcript-readers-hookutil.md)). Also exercises the bounded tail
+    reader ([dev-env#679](https://github.com/brownm09/dev-env/issues/679),
+    [ADR-090 Amendment 1](docs/adr/090-shared-transcript-readers-hookutil.md)): `_record_from_line`
+    (a valid dict line, and blank/malformed/non-object lines -> `None`) and `iter_records_reverse`
+    (most-recent-first order; a property check that results match `reversed(load_records(...))`
+    across 9 chunk sizes from 1 byte to 4096, forcing lines to be reassembled across many chunk
+    boundaries; multi-byte UTF-8 characters decoding correctly even when a chunk boundary lands
+    inside one; a file with no trailing newline; blank/malformed lines skipped; an empty file;
+    `FileNotFoundError` on a missing path; `ValueError` on a non-positive `chunk_size`; and —
+    the one test in this file that mocks, following `test_prune_merged_worktrees.py`'s precedent,
+    since the property isn't otherwise observable from pure inputs/outputs — a `builtins.open`
+    read-call counter proving a ~4000-line file yields its single matching tail record after just
+    one chunk read, never touching the unread remainder, with its own `>= 1` floor assertion so the
+    test can't vacuously pass if a future refactor stops routing reads through `open()`). Also
+    exercises, via a dedicated timing-based regression test (`chunk_size` far smaller than a single
+    ~2MB line, forcing ~15600 chunk reads across it, generous 5s bound), that a single line spanning
+    many chunks parses in `O(line length)`, not the `O(line length^2 / chunk_size)` an adversarial
+    `/review` pass on this same PR caught in the first implementation (a `chunk + tail` buffer
+    re-concatenated on every chunk read) — the exact shape that bites `idle-refresher.py`'s live
+    caller, since the record immediately before whatever it's scanning past is often the
+    transcript's newest entry (the user's just-submitted prompt), whose size a large paste puts
+    directly under the user's control. Used by `idle-refresher.py`, which needs only the last
+    assistant record's timestamp and would otherwise pay a full parse on every prompt submit.
 
     ```bash
     py -3 claude/scripts/tests/test_hookutil.py
@@ -1154,16 +1176,22 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     bad/`None`/non-str input yields `None`); `last_activity_epoch` (anchors on the **last** assistant
     record's timestamp — deliberately not "the last record of any type," which would be the just-submitted
     user prompt appended around submit time and always read as gap ~0 — and returns `None` when no assistant
-    turn exists, which doubles as the first-prompt-of-session skip); `has_prior_assistant_turn`;
-    `compute_gap_seconds`; `should_refresh` (the strict-`>` threshold boundary: `== thresh` does not fire,
-    `> thresh` does, `None` never does); `load_threshold_minutes` via `tempfile.TemporaryDirectory` (the
-    `idle_refresher_minutes` override honored, and the missing-config / absent-key / malformed-JSON
-    fallbacks to the 60-min default); `is_automated_prompt` (the XML-prefixed skip, incl. leading
-    whitespace and the lowercase-initial-only match); `humanize_gap`; and the ASCII/cp1252-encodability of
-    the injected `additionalContext` cue (per `test_posttooluse_inert_advisory.py`'s precedent, so it can't
-    vanish under Claude Code's cp1252-piped hook stdout). `main()`'s stdin plumbing and the live transcript
-    read (through the already-tested `_hookutil.load_records` / `find_transcript`) are not covered
-    (pure-helper convention) — exercised instead by the manual end-to-end smoke run in the PR
+    turn exists, which doubles as the first-prompt-of-session skip); `compute_gap_seconds`; `should_refresh`
+    (the strict-`>` threshold boundary: `== thresh` does not fire, `> thresh` does, `None` never does);
+    `load_threshold_minutes` via `tempfile.TemporaryDirectory` (the `idle_refresher_minutes` override
+    honored, and the missing-config / absent-key / malformed-JSON fallbacks to the 60-min default);
+    `is_automated_prompt` (the XML-prefixed skip, incl. leading whitespace and the lowercase-initial-only
+    match); `humanize_gap`; and the ASCII/cp1252-encodability of the injected `additionalContext` cue (per
+    `test_posttooluse_inert_advisory.py`'s precedent, so it can't vanish under Claude Code's cp1252-piped
+    hook stdout). Since [dev-env#679](https://github.com/brownm09/dev-env/issues/679)
+    ([ADR-090 Amendment 1](docs/adr/090-shared-transcript-readers-hookutil.md)),
+    `last_activity_epoch` takes an already most-recent-first iterable (no internal `reversed()`) so a live
+    caller can feed it a lazy, bounded generator instead of a fully materialized list — the three fixtures
+    above are written newest-first accordingly, and a dedicated test
+    (`test_last_activity_epoch_consumes_lazily`) proves the laziness itself with a hand-rolled generator
+    that raises `AssertionError` if pulled past its first match. `main()`'s stdin plumbing and the live
+    transcript read (through the already-tested `_hookutil.iter_records_reverse` / `find_transcript`) are
+    not covered (pure-helper convention) — exercised instead by the manual end-to-end smoke run in the PR
     ([ADR-095](docs/adr/095-session-boundary-summaries-and-idle-refresher.md); dev-env#655).
 
     ```bash

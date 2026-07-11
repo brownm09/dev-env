@@ -40,6 +40,14 @@ Windows (the vanishing-output failure class posttooluse-inert-advisory.py
 guards against). Stateless by design: the gap is self-limiting (once the user
 is active, inter-prompt gaps fall below the threshold), so no per-session
 marker is needed to avoid re-firing.
+
+Reading the transcript: this hook only ever needs the single last assistant
+record, so it sources one via _hookutil.iter_records_reverse (a bounded tail
+read, chunked from the end of the file) instead of _hookutil.load_records (a
+full parse) -- a multi-MB transcript costs a couple of chunk reads here, not
+a full parse on every prompt submit (dev-env#679, ADR-090 Amendment 1).
+last_activity_epoch takes an already most-recent-first iterable for exactly
+this reason -- see its docstring.
 """
 from __future__ import annotations
 
@@ -82,17 +90,27 @@ def parse_iso_to_epoch(ts):
     return dt.timestamp()
 
 
-def last_activity_epoch(records):
+def last_activity_epoch(records_reverse):
     """Epoch of the last assistant record with a parseable timestamp, or None.
 
-    Transcripts are append-only chronological, so scanning from the end finds
-    the answer without visiting the whole list in the common case (the reply
-    that just finished is at the tail); a record with an unparseable/missing
-    timestamp is skipped in favor of an earlier one. None means no assistant
-    record carried a parseable timestamp (typically: the first prompt of a
-    fresh session, where no assistant turn exists yet).
+    *records_reverse* must yield records most-recent-first — a materialized
+    list built via ``reversed(records)``, or (the live path) a lazy generator
+    like ``_hookutil.iter_records_reverse`` that reads the transcript file
+    from the end in bounded chunks. Consuming *records_reverse* lazily (a
+    plain ``for`` loop, no eager ``reversed()`` call in here) is what lets a
+    bounded generator short-circuit as soon as a match is found instead of
+    first reading a session's whole transcript into memory. A record with an
+    unparseable/missing timestamp is skipped in favor of an earlier one. None
+    means no assistant record carried a parseable timestamp (typically: the
+    first prompt of a fresh session, where no assistant turn exists yet).
+
+    A caller that mistakenly passes a forward-chronological (oldest-first)
+    sequence does NOT get an error here -- laziness means this function can't
+    verify the order it's handed, so the failure is silent: it would return
+    the OLDEST matching timestamp instead of the newest, which reads as a
+    too-large idle gap rather than a crash.
     """
-    for rec in reversed(records):
+    for rec in records_reverse:
         if isinstance(rec, dict) and rec.get("type") == "assistant":
             ep = parse_iso_to_epoch(rec.get("timestamp"))
             if ep is not None:
@@ -157,14 +175,16 @@ def build_refresher_context(gap_seconds):
     )
 
 
-def _read_records(path):
-    """Load transcript records, or [] on any failure (fail-open)."""
+def _last_activity_epoch_from_path(path):
+    """last_activity_epoch, sourced from a bounded tail read of *path* instead
+    of a fully materialized record list -- None on any failure (fail-open),
+    matching the old _read_records contract this replaces (dev-env#679)."""
     if not path:
-        return []
+        return None
     try:
-        return _hookutil.load_records(path)
+        return last_activity_epoch(_hookutil.iter_records_reverse(path))
     except Exception:
-        return []
+        return None
 
 
 def main():
@@ -186,8 +206,7 @@ def main():
             found = _hookutil.find_transcript(data.get("session_id", "") or "")
             path = str(found) if found else ""
 
-        records = _read_records(path)
-        last = last_activity_epoch(records)
+        last = _last_activity_epoch_from_path(path)
         if last is None:
             # No assistant record with a parseable timestamp: either the first
             # prompt of a fresh session (no assistant turn yet) or a corrupted
