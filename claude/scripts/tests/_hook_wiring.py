@@ -65,11 +65,20 @@ def hook_entries(settings: dict) -> list[HookEntry]:
     entry's timeout independently.
     """
     entries: list[HookEntry] = []
-    for event, groups in settings.get("hooks", {}).items():
+    hooks = settings.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return entries
+    for event, groups in hooks.items():
+        if not isinstance(groups, list):
+            continue
         for group in groups:
+            if not isinstance(group, dict):
+                continue
             matcher = group.get("matcher")
-            for h in group.get("hooks", []):
-                command = h.get("command", "")
+            for h in group.get("hooks", []) or []:
+                if not isinstance(h, dict):
+                    continue
+                command = h.get("command", "") or ""
                 entries.append(
                     HookEntry(
                         event=event,
@@ -80,6 +89,16 @@ def hook_entries(settings: dict) -> list[HookEntry]:
                     )
                 )
     return entries
+
+
+def unparsed_commands(settings: dict) -> list[HookEntry]:
+    """Wired entries whose command did not resolve to a `<name>.py` (script is None).
+
+    Every gate that derives its scan set from :func:`wired_scripts` silently drops
+    these (a None script contributes no basename), so each such gate calls this to
+    fail loudly on an unparseable command rather than trusting a sibling gate to
+    catch it (dev-env#726 review)."""
+    return [e for e in hook_entries(settings) if e.script is None]
 
 
 def wired_script_events(settings: dict) -> dict[str, set[str]]:

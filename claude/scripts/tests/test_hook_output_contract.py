@@ -53,15 +53,38 @@ Detection limitations (documented, per gotcha #6):
 
 Governing exit (reaching approximation): from an emission, scan forward through the
 rest of its block, then ascend to each enclosing block's remainder, to the scope
-end. The first literal `sys.exit(N)` / `raise SystemExit(N)` reached wins; a
-`return` or falling off the scope end -> exit 0 (a bare `main()` / `sys.exit(main())`
-both make main's return exit 0). Compound statements passed *over* (an `if` after
-the emission) are treated as pass-through, and cross-function pairing (a helper that
+end. The first literal `sys.exit(N)` / `raise SystemExit(N)` reached wins; a `return
+<int literal>` -> that code (a `sys.exit(main())` entrypoint propagates main's
+return value as the exit code), and a bare `return` / non-literal return / falling
+off the scope end -> exit 0. Compound statements passed *over* (an `if` after the
+emission) are treated as pass-through, and cross-function pairing (a helper that
 emits then returns to a caller which exits 2) is NOT traced -- both are documented
-approximations. They can only *over*-flag (-> an allowlist entry), never let a real
-exit-2 pairing be missed for an emission co-located with its exit (the dominant
-real shape: block reason then `sys.exit(2)`, and the if/else-branch-then-exit-2
-shape, both resolve correctly by ascent).
+approximations.
+
+For **Check A (stderr)** this can only *over*-flag (-> an allowlist entry), never
+miss: the dominant real shape (block reason then `sys.exit(2)`) and the
+if/else-branch-then-exit-2 shape both resolve to gov 2 by ascent and so are not
+flagged, and the only error direction left is calling a genuinely-invisible stderr
+write "co-located with an exit 2" it is not -- i.e. over-flagging. **Check C
+(stdout->exit 2) does have a cross-function blind spot**: a helper that writes
+stdout then returns to a caller which exits 2 is classified gov 0, so the dropped
+stdout escapes Check C (and if it is a `json.dumps({"systemMessage": ...})` write it
+escapes Check B's json exemption too -- the "escape both flag and allowlist" case).
+No wired hook uses that shape today (every stdout emitter co-locates its exit); a
+cross-function structured-channel check is deferred (see the Check-B limitation
+below).
+
+Two-sided allowlists (the `test_no_crude_command_substring_checks.py` mechanism: a
+stale entry fails the suite too). `_OUTPUT_CONTRACT_ALLOWLIST` maps `(script, check)`
+-> the count of currently-accepted offense lines for that check in that script -- a
+hook is a known offender for check A/B/C until every one of that check's sites is
+migrated onto `_hookout`, at which point the entry goes stale and must be removed. A
+*new* offense line added to an already-listed hook makes the live count EXCEED the
+recorded count and fails the gate (the "grew" bucket -- mirroring the sibling's
+`duplicated` check, so a second offense can't hide behind an existing entry; a
+migration that removes some-but-not-all lines leaves the count higher than live,
+which is tolerated as harmless over-count until the entry is fully removed).
+`_NONASCII_EMISSION_ALLOWLIST` maps `script -> count` the same way.
 
 Two-sided allowlists (the `test_no_crude_command_substring_checks.py` mechanism: a
 stale entry fails the suite too). `_OUTPUT_CONTRACT_ALLOWLIST` is keyed by
@@ -91,40 +114,46 @@ from _hookout import STDOUT_MODEL_VISIBLE_EVENTS  # noqa: E402  (the SSOT, ADR-1
 # Two-sided allowlists (populated with current offenders; migrations shrink them)
 # Verified against origin/main @ 2cc6afa (2026-07-11).
 # ---------------------------------------------------------------------------
-# (script, check) pairs. check in {"A","B","C"}. A hook stays listed until every
-# site of that check is routed through _hookout (PRs 5-7); then the entry is stale
-# and this suite fails until it is deleted. Migration owner per ADR-103:
+# {(script, check): count} — check in {"A","B","C"}, count = currently-accepted
+# offense lines for that check in that script. A hook stays listed until every site
+# of that check is routed through _hookout (PRs 5-7); then it drops off `offenses`
+# entirely and the entry goes stale (must be deleted). A NEW offense line in a listed
+# hook pushes the live count above `count` and fails the gate (the "grew" bucket), so
+# a second offense can't hide behind an existing entry. Line numbers are deliberately
+# NOT recorded here (they rot); the gate prints live line numbers on failure.
+# Migration owner per ADR-103:
 #   PR5 -> post-pr-merge-pull, post-pr-merge-reclaim
 #   PR6 -> token-tracker, journal-stop-check (checks 2-3), posttooluse-inert-advisory
-#   (post-compact was surfaced by this gate; not in the named T1 set -- its exit-0
-#    stderr status is invisible on PostCompact. Address it in a follow-up sweep.)
-_OUTPUT_CONTRACT_ALLOWLIST: set[tuple[str, str]] = {
-    ("journal-stop-check.py", "B"),        # L272 checks 2-3 print()+exit0 (PR6)
-    ("post-compact.py", "A"),              # L82/84/88/109 stderr status on PostCompact
-    ("post-pr-merge-pull.py", "A"),        # stderr status/park warnings, all exit 0 (PR5)
-    ("post-pr-merge-reclaim.py", "A"),     # L154 stderr status, exit 0 (PR5)
-    ("posttooluse-inert-advisory.py", "B"),  # L327 bare stdout on Stop, exit 0 (PR6)
-    ("token-tracker.py", "A"),             # L168 stderr diagnostic, exit 0 (PR6)
-    ("token-tracker.py", "B"),             # L217/237 stdout echoes on Stop, exit 0 (PR6)
+#   (post-compact was surfaced by this gate, not in the named T1 set -- its exit-0
+#    stderr status is invisible on PostCompact; follow-up sweep dev-env#727.)
+_OUTPUT_CONTRACT_ALLOWLIST: dict[tuple[str, str], int] = {
+    ("journal-stop-check.py", "B"): 1,        # checks 2-3 print()+exit0 (PR6)
+    ("post-compact.py", "A"): 4,              # stderr status on PostCompact (follow-up)
+    ("post-pr-merge-pull.py", "A"): 8,        # stderr status/park warnings, all exit 0 (PR5)
+    ("post-pr-merge-reclaim.py", "A"): 1,     # stderr status, exit 0 (PR5)
+    ("posttooluse-inert-advisory.py", "B"): 1,  # bare stdout on Stop, exit 0 (PR6)
+    ("token-tracker.py", "A"): 1,             # stderr diagnostic, exit 0 (PR6)
+    ("token-tracker.py", "B"): 2,             # stdout echoes on Stop, exit 0 (PR6)
 }
 
-# Scripts emitting a non-ASCII string literal DIRECTLY in a raw-stream call
-# (mostly em-dash U+2014 / ellipsis U+2026 -- cp1252-safe but not .isascii(), the
-# stronger _hookout guarantee). PR5 clears usage-snapshot (its emoji reach stderr
-# via a variable -- see the indirection limitation in the module docstring -- so it
-# is flagged here only via a direct em-dash at L486; PR5's own .isascii() pin covers
-# the emoji). PR5 also clears post-pr-merge-pull/reclaim; PR6 token-tracker; PR7
-# dev-env-sync. post-compact / post-merge-tile-checkpoint / pre-merge-findings-gate
-# are follow-up sweep targets.
-_NONASCII_EMISSION_ALLOWLIST: set[str] = {
-    "dev-env-sync.py",
-    "post-compact.py",
-    "post-merge-tile-checkpoint.py",
-    "post-pr-merge-pull.py",
-    "post-pr-merge-reclaim.py",
-    "pre-merge-findings-gate.py",
-    "token-tracker.py",
-    "usage-snapshot.py",
+# {script: count} — scripts emitting a non-ASCII string literal DIRECTLY in a
+# raw-stream call (mostly em-dash U+2014 / ellipsis U+2026 -- cp1252-safe but not
+# .isascii(), the stronger _hookout guarantee), with the count of such emission
+# lines. PR5 clears usage-snapshot (its emoji reach stderr via a variable -- see the
+# indirection limitation in the module docstring -- so it is flagged here only via a
+# direct em-dash; PR5's own .isascii() pin covers the emoji). PR5 also clears
+# post-pr-merge-pull/reclaim; PR6 token-tracker; PR7 dev-env-sync. post-compact /
+# post-merge-tile-checkpoint / pre-merge-findings-gate are follow-up sweep targets
+# (dev-env#727).
+_NONASCII_EMISSION_ALLOWLIST: dict[str, int] = {
+    "dev-env-sync.py": 4,
+    "post-compact.py": 1,
+    "post-merge-tile-checkpoint.py": 1,
+    "post-pr-merge-pull.py": 7,
+    "post-pr-merge-reclaim.py": 1,
+    "pre-merge-findings-gate.py": 1,
+    "token-tracker.py": 2,
+    "usage-snapshot.py": 1,
 }
 
 
@@ -132,28 +161,38 @@ _NONASCII_EMISSION_ALLOWLIST: set[str] = {
 # Emission detection + governing-exit reaching approximation (pure)
 # ---------------------------------------------------------------------------
 
+def _is_sys_std_stream(node: ast.AST) -> str | None:
+    """'stdout'/'stderr' if *node* is `sys.stdout` / `sys.stderr`, else None.
+
+    Requires the `sys` base explicitly so a captured subprocess stream
+    (`proc.stdout.write(...)`, `result.stderr`) is NOT mistaken for a std-stream
+    emission (dev-env#726 review). The `from sys import stderr` bare-name form is
+    not matched -- no wired hook uses it; the dominant `sys.stderr` attribute form
+    is what the hooks and _hookout use."""
+    if (
+        isinstance(node, ast.Attribute)
+        and node.attr in ("stdout", "stderr")
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "sys"
+    ):
+        return node.attr
+    return None
+
+
 def _emission_stream(call: ast.Call) -> str | None:
     """'stdout' / 'stderr' if *call* is a raw output write, else None.
 
     `print(...)` -> 'stdout' unless `file=sys.stderr` (-> 'stderr'); an explicit
     `file=sys.stdout` -> 'stdout'. `sys.stdout.write` / `sys.stderr.write` -> that
-    stream. A `print(file=<other>)` (e.g. an open log file) -> None (not a
-    std-stream emission)."""
+    stream. A `print(file=<other>)` (e.g. an open log file, a captured
+    `proc.stdout`) -> None (not a std-stream emission)."""
     f = call.func
-    if (
-        isinstance(f, ast.Attribute)
-        and f.attr == "write"
-        and isinstance(f.value, ast.Attribute)
-        and f.value.attr in ("stdout", "stderr")
-    ):
-        return f.value.attr
+    if isinstance(f, ast.Attribute) and f.attr == "write":
+        return _is_sys_std_stream(f.value)
     if isinstance(f, ast.Name) and f.id == "print":
         for kw in call.keywords:
             if kw.arg == "file":
-                v = kw.value
-                if isinstance(v, ast.Attribute) and v.attr in ("stdout", "stderr"):
-                    return v.attr
-                return None  # file=<not a std stream> -> not a std-stream emission
+                return _is_sys_std_stream(kw.value)  # file=<non-sys-stream> -> None
         return "stdout"
     return None
 
@@ -192,6 +231,13 @@ def _continuation_exit(tails) -> int:
             if code is not None:
                 return code
             if isinstance(s, ast.Return):
+                # `return <int literal>` -> that exit code (a `sys.exit(main())`
+                # entrypoint propagates main's return value as the process exit
+                # code; treating it as the governing exit matches that far better
+                # than assuming 0 -- dev-env#726 review). A bare `return`, `return
+                # None`, or a non-literal return -> fall-through exit 0.
+                if isinstance(s.value, ast.Constant) and isinstance(s.value.value, int):
+                    return s.value.value
                 return 0
             # compound / plain statement -> pass through (documented approximation)
     return 0
@@ -410,6 +456,68 @@ def test_ascii_only_raw_emission_not_flagged() -> str:
     return "ASCII-only literal in a raw emission -> not flagged"
 
 
+def test_emission_stream_requires_sys_base() -> str:
+    # A captured subprocess stream is NOT a std-stream emission (dev-env#726).
+    assert analyze_emissions("def main():\n    proc.stdout.write('x')\n") == [], "proc.stdout.write should not match"
+    assert analyze_emissions("def main():\n    print('x', file=proc.stderr)\n") == [], "file=proc.stderr should not match"
+    got = analyze_emissions("def main():\n    sys.stdout.write('x')\n")
+    assert got == [(2, "stdout", 0, False)], got
+    return "only sys.stdout/sys.stderr count; proc.stdout / file=proc.stderr are ignored"
+
+
+def test_return_int_literal_is_that_governing_exit() -> str:
+    # `sys.stderr.write(r); return 2` -> gov 2 (a sys.exit(main()) entrypoint
+    # propagates the return value), so a blocking stderr write is not false-flagged A.
+    got = analyze_emissions("def main():\n    sys.stderr.write('r')\n    return 2\n")
+    assert got == [(2, "stderr", 2, False)], got
+    # A bare return still means fall-through exit 0.
+    got0 = analyze_emissions("def main():\n    sys.stderr.write('r')\n    return\n")
+    assert got0 == [(2, "stderr", 0, False)], got0
+    return "`return 2` -> gov 2; bare `return` -> gov 0"
+
+
+def test_diff_grew_flags_new_offense_behind_entry() -> str:
+    unexpected, stale, grew = _diff_against_allowlist({("x.py", "A"): 3}, {("x.py", "A"): 2})
+    assert unexpected == set() and stale == set(), (unexpected, stale)
+    assert grew == {("x.py", "A"): (3, 2)}, grew
+    return "live count 3 > accepted 2 -> flagged as grown (a new offense can't hide behind the entry)"
+
+
+def test_diff_shrink_is_tolerated() -> str:
+    unexpected, stale, grew = _diff_against_allowlist({("x.py", "A"): 1}, {("x.py", "A"): 2})
+    assert unexpected == set() and stale == set() and grew == {}, (unexpected, stale, grew)
+    return "live count 1 < accepted 2 -> tolerated (harmless over-count from a partial migration)"
+
+
+def test_diff_stale_when_fully_migrated() -> str:
+    unexpected, stale, grew = _diff_against_allowlist({}, {("x.py", "A"): 2})
+    assert stale == {("x.py", "A")} and unexpected == set() and grew == {}, (unexpected, stale, grew)
+    return "no live offense for an allowlisted key -> stale (must be removed)"
+
+
+def test_diff_unexpected_new_key() -> str:
+    unexpected, stale, grew = _diff_against_allowlist({("y.py", "B"): 1}, {})
+    assert unexpected == {("y.py", "B")} and stale == set() and grew == {}, (unexpected, stale, grew)
+    return "a live key with no allowlist entry -> unexpected"
+
+
+def test_diff_exact_match_clean() -> str:
+    unexpected, stale, grew = _diff_against_allowlist({("x.py", "A"): 2}, {("x.py", "A"): 2})
+    assert unexpected == set() and stale == set() and grew == {}, (unexpected, stale, grew)
+    return "live count == accepted count -> clean"
+
+
+def test_all_wired_commands_parse_to_a_script() -> str:
+    # Mirror the safe-exit gate: this gate's scan set comes from wired_scripts(),
+    # which drops None-script entries -- fail loudly here rather than relying on the
+    # wiring lint's separate run (dev-env#726 review).
+    unparsed = wiring.unparsed_commands(wiring.load_settings())
+    assert not unparsed, "Wired commands not resolving to a .py script:\n  " + "\n  ".join(
+        f"{e.event}/{e.matcher}: {e.command!r}" for e in unparsed
+    )
+    return "all wired commands resolve to a .py script (none silently dropped from this scan)"
+
+
 # ---------------------------------------------------------------------------
 # Repo-wide gates
 # ---------------------------------------------------------------------------
@@ -418,15 +526,36 @@ def _fmt(pairs):
     return ", ".join(f"{s}:{c}" for s, c in sorted(pairs))
 
 
-def test_repo_wide_output_contract_gate() -> str:
-    """Fail on an output-contract offense not in _OUTPUT_CONTRACT_ALLOWLIST, or a
-    stale allowlist entry (its check's sites all migrated onto _hookout)."""
-    offenses = _scan_output_contract()
-    live = set(offenses)
-    unexpected = live - _OUTPUT_CONTRACT_ALLOWLIST
-    stale = _OUTPUT_CONTRACT_ALLOWLIST - live
+def _diff_against_allowlist(live_counts: dict, allowed: dict):
+    """Compare live {key: count} against an allowlist {key: accepted_count}.
 
-    if unexpected or stale:
+    Returns (unexpected, stale, grew):
+      - unexpected: live keys with no allowlist entry (a new offense elsewhere).
+      - stale: allowlist keys with no live offense (fully migrated -- remove them).
+      - grew: {key: (live, accepted)} where live > accepted (a NEW offense line
+        hiding behind an existing entry -- the sibling's `duplicated` check, keyed
+        by count rather than the implicit-1 the literal-based sibling assumes).
+    A live count BELOW the accepted count is tolerated (harmless over-count from a
+    partial migration); only growth and full-removal are flagged, matching the
+    sibling's growth-only stance.
+    """
+    live = set(live_counts)
+    allowed_keys = set(allowed)
+    unexpected = live - allowed_keys
+    stale = allowed_keys - live
+    grew = {k: (live_counts[k], allowed[k]) for k in allowed_keys & live if live_counts[k] > allowed[k]}
+    return unexpected, stale, grew
+
+
+def test_repo_wide_output_contract_gate() -> str:
+    """Fail on an output-contract offense not in _OUTPUT_CONTRACT_ALLOWLIST, a stale
+    allowlist entry (its check's sites all migrated onto _hookout), or an allowlisted
+    entry whose live offense count GREW (a new invisible emission hiding behind it)."""
+    offenses = _scan_output_contract()
+    live_counts = {k: len(v) for k, v in offenses.items()}
+    unexpected, stale, grew = _diff_against_allowlist(live_counts, _OUTPUT_CONTRACT_ALLOWLIST)
+
+    if unexpected or stale or grew:
         lines = []
         if unexpected:
             lines.append("New/unlisted output-contract offenses (route via _hookout, or allowlist):")
@@ -442,20 +571,31 @@ def test_repo_wide_output_contract_gate() -> str:
             lines.append("Stale _OUTPUT_CONTRACT_ALLOWLIST entries (migrated -- remove them):")
             for pair in sorted(stale):
                 lines.append(f"  {pair!r}")
+        if grew:
+            lines.append(
+                "Allowlisted output-contract offenses that GREW (a new invisible emission "
+                "is hiding behind an existing entry -- fix it via _hookout, or bump the count "
+                "if it is genuinely the same accepted offense):"
+            )
+            for (script, check), (now, was) in sorted(grew.items()):
+                ls = ", ".join(f"L{n}" for n in offenses[(script, check)])
+                lines.append(f"  {script} [{check}]: {was} -> {now} lines, now at {ls}")
         raise AssertionError("\n".join(lines))
 
-    return f"{len(_OUTPUT_CONTRACT_ALLOWLIST)} known offender(s) [{_fmt(_OUTPUT_CONTRACT_ALLOWLIST)}], 0 unexpected, 0 stale"
+    return (
+        f"{len(_OUTPUT_CONTRACT_ALLOWLIST)} known offender(s) [{_fmt(_OUTPUT_CONTRACT_ALLOWLIST)}], "
+        "0 unexpected, 0 stale, 0 grown"
+    )
 
 
 def test_repo_wide_nonascii_emission_gate() -> str:
-    """Fail on a non-ASCII raw emission not in _NONASCII_EMISSION_ALLOWLIST, or a
-    stale allowlist entry."""
+    """Fail on a non-ASCII raw emission not in _NONASCII_EMISSION_ALLOWLIST, a stale
+    allowlist entry, or an allowlisted script whose non-ASCII emission count GREW."""
     found = _scan_nonascii()
-    live = set(found)
-    unexpected = live - _NONASCII_EMISSION_ALLOWLIST
-    stale = _NONASCII_EMISSION_ALLOWLIST - live
+    live_counts = {k: len(v) for k, v in found.items()}
+    unexpected, stale, grew = _diff_against_allowlist(live_counts, _NONASCII_EMISSION_ALLOWLIST)
 
-    if unexpected or stale:
+    if unexpected or stale or grew:
         lines = []
         if unexpected:
             lines.append("Non-ASCII string literal(s) emitted to a raw stream (ASCII-ify / route via _hookout, or allowlist):")
@@ -466,9 +606,20 @@ def test_repo_wide_nonascii_emission_gate() -> str:
             lines.append("Stale _NONASCII_EMISSION_ALLOWLIST entries (now ASCII-clean -- remove them):")
             for script in sorted(stale):
                 lines.append(f"  {script!r}")
+        if grew:
+            lines.append(
+                "Allowlisted non-ASCII emitters that GREW (a new non-ASCII raw emission -- "
+                "ASCII-ify it, or bump the count if genuinely the same accepted offense):"
+            )
+            for script, (now, was) in sorted(grew.items()):
+                ls = ", ".join(f"L{n}" for n in found[script])
+                lines.append(f"  {script}: {was} -> {now} lines, now at {ls}")
         raise AssertionError("\n".join(lines))
 
-    return f"{len(_NONASCII_EMISSION_ALLOWLIST)} known offender(s) [{', '.join(sorted(_NONASCII_EMISSION_ALLOWLIST))}], 0 unexpected, 0 stale"
+    return (
+        f"{len(_NONASCII_EMISSION_ALLOWLIST)} known offender(s) "
+        f"[{', '.join(sorted(_NONASCII_EMISSION_ALLOWLIST))}], 0 unexpected, 0 stale, 0 grown"
+    )
 
 
 def main() -> int:
@@ -485,6 +636,14 @@ def main() -> int:
         ("non-ASCII in json.dumps exempt", test_nonascii_in_json_dumps_is_exempt),
         ("json.dumps ensure_ascii=False not exempt", test_nonascii_in_json_dumps_ensure_ascii_false_not_exempt),
         ("ASCII-only raw emission not flagged", test_ascii_only_raw_emission_not_flagged),
+        ("emission stream requires sys base", test_emission_stream_requires_sys_base),
+        ("return <int> is that governing exit", test_return_int_literal_is_that_governing_exit),
+        ("diff: grew flags new offense behind entry", test_diff_grew_flags_new_offense_behind_entry),
+        ("diff: shrink is tolerated", test_diff_shrink_is_tolerated),
+        ("diff: stale when fully migrated", test_diff_stale_when_fully_migrated),
+        ("diff: unexpected new key", test_diff_unexpected_new_key),
+        ("diff: exact match clean", test_diff_exact_match_clean),
+        ("all wired commands parse to a script", test_all_wired_commands_parse_to_a_script),
         ("repo-wide output-contract gate", test_repo_wide_output_contract_gate),
         ("repo-wide non-ASCII emission gate", test_repo_wide_nonascii_emission_gate),
     ]

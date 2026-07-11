@@ -17,15 +17,21 @@ This gate checks, for every script wired in claude/settings.json:
      `try: ... except Exception|<bare>: ...` whose handler deterministically
      `sys.exit(N)`s (a literal, or a one-level call to a module-level helper that
      does — e.g. pre-auto-merge-checkpoint-gate's `_fail_closed`); and
-  2. that handler's exit code N equals the direction the hook declares in
-     FAIL_DIRECTION below (0 = fail open / advisory, 2 = fail closed / gate).
+  2. that handler's exit code N equals the direction the hook declares via
+     `fail_direction()` (0 = fail open / advisory, 2 = fail closed / gate).
 
-FAIL_DIRECTION is a hard-coded map because the fail direction is a *design*
-decision per hook, not derivable from the code — the whole point is to pin it so
-a future edit that flips it (an advisory that starts exiting 2, a fail-closed gate
-downgraded to 0) fails here. The map must cover exactly the wired set: a newly
-wired hook with no entry fails ("unmapped"), and an entry for a no-longer-wired
-script fails ("stale map entry").
+The fail direction is a *design* decision per hook, not derivable from the code, so
+it is pinned here: `FAIL_CLOSED` is the hard-coded set of the two ADR-083/ADR-096
+gates that fail closed (exit 2); `fail_direction()` returns 0 for every other wired
+hook (fail open). Pinning it makes a future edit that flips a hook's direction — an
+advisory that starts exiting 2, or a fail-closed gate downgraded to 0 — a hard
+failure here (the `wrong_direction` bucket below), never allowlist-able. Two
+narrower guards keep `FAIL_CLOSED` itself honest: `test_fail_direction_map_covers_exactly_wired_set`
+fails on a `FAIL_CLOSED` entry naming a no-longer-wired script (stale), and any
+guarded hook whose crash-exit contradicts its direction fails regardless of the
+allowlist. A newly wired hook with no `FAIL_CLOSED` entry is NOT rejected — it
+defaults to the fail-open expectation, which the guarded / wrong-direction checks
+then verify.
 
 Two-sided allowlist (the `test_no_crude_command_substring_checks.py` mechanism):
 _UNGUARDED_ALLOWLIST holds the scripts that do NOT yet have a compliant guard
@@ -117,40 +123,40 @@ def _find_main_block(tree: ast.Module):
                 isinstance(t, ast.Compare)
                 and isinstance(t.left, ast.Name)
                 and t.left.id == "__name__"
+                and len(t.comparators) == 1
+                and isinstance(t.comparators[0], ast.Constant)
+                and t.comparators[0].value == "__main__"
             ):
                 return node
     return None
 
 
-def _first_try(stmts) -> ast.Try | None:
-    for s in stmts:
-        if isinstance(s, ast.Try):
-            return s
-    return None
-
-
 def _exception_handler(try_node: ast.Try) -> ast.ExceptHandler | None:
-    """The handler catching `Exception` or bare `except:` -- the fail-direction
-    handler. An `except SystemExit` handler is deliberately skipped (it only
-    re-raises main()'s own verdicts)."""
+    """The handler catching `Exception` / `BaseException` / bare `except:` -- the
+    fail-direction handler. An `except SystemExit` handler is deliberately skipped
+    (it only re-raises main()'s own verdicts)."""
     for h in try_node.handlers:
         if h.type is None:  # bare except:
             return h
-        if isinstance(h.type, ast.Name) and h.type.id == "Exception":
+        if isinstance(h.type, ast.Name) and h.type.id in ("Exception", "BaseException"):
             return h
     return None
 
 
 def _exit_code_in(stmts, tree: ast.Module, _depth: int = 0) -> int | None:
-    """First literal `sys.exit(N)` / `exit(N)` reachable in *stmts*, resolving one
-    level into a module-level helper the code calls. Returns N or None."""
-    # Direct sys.exit(N) / exit(N) anywhere in these statements.
+    """First literal `sys.exit(N)` / `exit(N)` / `raise SystemExit(N)` reachable in
+    *stmts*, resolving one level into a module-level helper the code calls. Returns
+    N or None. (`SystemExit` is accepted to match the sibling `_literal_exit` in
+    test_hook_output_contract.py, so both AST gates agree on what counts as an exit
+    -- dev-env#726 review.)"""
+    # Direct sys.exit(N) / exit(N) / SystemExit(N) anywhere in these statements
+    # (a bare `raise SystemExit(N)`'s call node is reached by the same walk).
     for stmt in stmts:
         for node in ast.walk(stmt):
             if isinstance(node, ast.Call):
                 f = node.func
                 is_exit = (isinstance(f, ast.Attribute) and f.attr == "exit") or (
-                    isinstance(f, ast.Name) and f.id == "exit"
+                    isinstance(f, ast.Name) and f.id in ("exit", "SystemExit")
                 )
                 if (
                     is_exit
@@ -182,21 +188,25 @@ def _module_func(tree: ast.Module, name: str):
 def classify_guard(source: str, filename: str = "<string>") -> tuple[str, int | None]:
     """Return (shape, exit_code). shape is "guarded" (a safe-exit try/except whose
     Exception handler deterministically exits) or "unguarded"; exit_code is the
-    resolved handler exit code when guarded, else None."""
+    resolved handler exit code when guarded, else None.
+
+    Scans EVERY top-level `try` in the `__main__` block, not just the first: a hook
+    may open with a setup `try/except` whose handler does not exit (e.g.
+    `except Exception: cfg = None`) before the real `try: main() except: sys.exit(...)`
+    guard. Returns the first try whose Exception/bare handler yields a deterministic
+    exit (dev-env#726 review)."""
     tree = ast.parse(source, filename=filename)
     main_if = _find_main_block(tree)
     if main_if is None:
         return ("unguarded", None)
-    try_node = _first_try(main_if.body)
-    if try_node is None:
-        return ("unguarded", None)
-    handler = _exception_handler(try_node)
-    if handler is None:
-        return ("unguarded", None)
-    code = _exit_code_in(handler.body, tree)
-    if code is None:
-        return ("unguarded", None)
-    return ("guarded", code)
+    for stmt in main_if.body:
+        if isinstance(stmt, ast.Try):
+            handler = _exception_handler(stmt)
+            if handler is not None:
+                code = _exit_code_in(handler.body, tree)
+                if code is not None:
+                    return ("guarded", code)
+    return ("unguarded", None)
 
 
 # ---------------------------------------------------------------------------
@@ -300,13 +310,53 @@ def test_handler_without_exit_is_unguarded() -> str:
 
 def test_wrong_direction_is_detected_as_guarded_with_that_code() -> str:
     # classify_guard reports the code faithfully; the repo gate compares it to
-    # FAIL_DIRECTION. An advisory that wrongly exits 2 is "guarded, 2".
+    # the declared direction. An advisory that wrongly exits 2 is "guarded, 2".
     src = (
         'if __name__ == "__main__":\n'
         "    try:\n        main()\n    except Exception:\n        sys.exit(2)\n"
     )
     assert classify_guard(src) == ("guarded", 2), classify_guard(src)
-    return "handler exiting 2 -> ('guarded', 2) reported faithfully for the map comparison"
+    return "handler exiting 2 -> ('guarded', 2) reported faithfully for the direction comparison"
+
+
+def test_guarded_scans_past_leading_setup_try() -> str:
+    # A leading setup try/except whose handler does NOT exit, then the real guard.
+    # The first-try-only detector would misclassify this as unguarded (dev-env#726).
+    src = (
+        'if __name__ == "__main__":\n'
+        "    try:\n        cfg = load()\n    except Exception:\n        cfg = None\n"
+        "    try:\n        main()\n    except Exception:\n        sys.exit(0)\n"
+    )
+    assert classify_guard(src) == ("guarded", 0), classify_guard(src)
+    return "leading non-exiting setup try + real guard -> guarded (scans all tries, not just the first)"
+
+
+def test_guarded_raise_systemexit() -> str:
+    src = (
+        'if __name__ == "__main__":\n'
+        "    try:\n        main()\n    except Exception:\n        raise SystemExit(2)\n"
+    )
+    assert classify_guard(src) == ("guarded", 2), classify_guard(src)
+    return "handler `raise SystemExit(2)` -> guarded, code 2 (matches sibling _literal_exit)"
+
+
+def test_guarded_except_baseexception() -> str:
+    src = (
+        'if __name__ == "__main__":\n'
+        "    try:\n        main()\n    except BaseException:\n        sys.exit(0)\n"
+    )
+    assert classify_guard(src) == ("guarded", 0), classify_guard(src)
+    return "`except BaseException:` recognized as the fail-direction handler"
+
+
+def test_non_main_dunder_block_is_not_a_guard() -> str:
+    # `if __name__ == "__not_main__":` must not be mistaken for the entrypoint guard.
+    src = (
+        'if __name__ == "__not_main__":\n'
+        "    try:\n        main()\n    except Exception:\n        sys.exit(0)\n"
+    )
+    assert classify_guard(src) == ("unguarded", None), classify_guard(src)
+    return 'a non-"__main__" `if __name__ == ...` block is not treated as the guard'
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +372,20 @@ def test_fail_direction_map_covers_exactly_wired_set() -> str:
     stale_closed = FAIL_CLOSED - wired
     assert not stale_closed, f"FAIL_CLOSED names non-wired scripts (remove): {sorted(stale_closed)}"
     return f"FAIL_CLOSED = {sorted(FAIL_CLOSED)}; all wired; {len(wired)} scripts each have a direction"
+
+
+def test_all_wired_commands_parse_to_a_script() -> str:
+    """Fail if any wired command doesn't resolve to a `<name>.py`. This gate derives
+    its scan set from wired_scripts(), which silently drops a None-script entry, so a
+    command that stops parsing (e.g. a trailing arg after the .py) would vanish from
+    coverage with a false all-clear -- assert it here rather than trusting the wiring
+    lint's separate run to catch it (dev-env#726 review)."""
+    settings = wiring.load_settings()
+    unparsed = wiring.unparsed_commands(settings)
+    assert not unparsed, "Wired commands not resolving to a .py script:\n  " + "\n  ".join(
+        f"{e.event}/{e.matcher}: {e.command!r}" for e in unparsed
+    )
+    return "all wired commands resolve to a .py script (none silently dropped from this scan)"
 
 
 def test_repo_wide_safe_exit_guard_gate() -> str:
@@ -371,7 +435,12 @@ def main() -> int:
         ("unguarded: no __main__ block", test_unguarded_no_main_block),
         ("unguarded: handler without sys.exit", test_handler_without_exit_is_unguarded),
         ("wrong-direction reported faithfully", test_wrong_direction_is_detected_as_guarded_with_that_code),
+        ("guarded: scans past a leading setup try", test_guarded_scans_past_leading_setup_try),
+        ("guarded: raise SystemExit(2)", test_guarded_raise_systemexit),
+        ("guarded: except BaseException", test_guarded_except_baseexception),
+        ('non-"__main__" dunder block is not a guard', test_non_main_dunder_block_is_not_a_guard),
         ("FAIL_CLOSED map covers only wired scripts", test_fail_direction_map_covers_exactly_wired_set),
+        ("all wired commands parse to a script", test_all_wired_commands_parse_to_a_script),
         ("repo-wide safe-exit guard gate", test_repo_wide_safe_exit_guard_gate),
     ]
     failed = 0

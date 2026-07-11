@@ -37,6 +37,7 @@ Exit 0 = all pass.
 """
 
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -49,13 +50,20 @@ _SUBPROCESS_BUDGET = 30
 _USAGE_SNAPSHOT_BUDGET = 90
 _USAGE_SNAPSHOT = "usage-snapshot.py"
 
+# Line-anchored `import _winsubp` / `from _winsubp import ...` detector (matches the
+# form in test_pyw_stdio.py). Anchored to line-start (after leading whitespace) so a
+# commented-out `# import _winsubp` is not matched, and it catches the `from _winsubp
+# import X` form a raw `"import _winsubp" in text` substring would miss (dev-env#726
+# review).
+_WINSUBP_IMPORT_RE = re.compile(r"^\s*(?:import\s+_winsubp\b|from\s+_winsubp\b)", re.MULTILINE)
+
 
 def _imports_winsubp(script: str) -> bool:
     """True if *script* imports _winsubp (the subprocess-hook marker, rule 4)."""
     path = wiring.SCRIPTS_DIR / script
     if not path.exists():
         return False
-    return "import _winsubp" in path.read_text(encoding="utf-8")
+    return bool(_WINSUBP_IMPORT_RE.search(path.read_text(encoding="utf-8")))
 
 
 def min_timeout(script: str) -> int:
@@ -99,6 +107,16 @@ def test_min_timeout_pure_python_is_10() -> str:
     return "a pure-Python hook (turn-count-hook.py) budget floor is 10s"
 
 
+def test_winsubp_import_regex() -> str:
+    assert _WINSUBP_IMPORT_RE.search("import _winsubp")
+    assert _WINSUBP_IMPORT_RE.search("import _winsubp  # noqa: F401")
+    assert _WINSUBP_IMPORT_RE.search("from _winsubp import apply")  # the form a substring check missed
+    assert _WINSUBP_IMPORT_RE.search("    import _winsubp")         # indented
+    assert not _WINSUBP_IMPORT_RE.search("# import _winsubp")       # commented out
+    assert not _WINSUBP_IMPORT_RE.search("import _winsubp_other")   # word boundary
+    return "anchored regex matches import/from _winsubp, ignores commented lines + _winsubp_other"
+
+
 # ---------------------------------------------------------------------------
 # repo-wide gates
 # ---------------------------------------------------------------------------
@@ -140,6 +158,7 @@ def main() -> int:
         ("min_timeout usage-snapshot = 90", test_min_timeout_usage_snapshot_is_90),
         ("min_timeout subprocess = 30", test_min_timeout_subprocess_is_30),
         ("min_timeout pure-Python = 10", test_min_timeout_pure_python_is_10),
+        ("_winsubp import regex (anchored)", test_winsubp_import_regex),
         ("every command resolves to an existing script", test_every_command_resolves_to_existing_script),
         ("every entry timeout >= budget", test_every_entry_has_timeout_at_or_above_budget),
     ]
