@@ -33,10 +33,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Pin to Python 3.12 -- the version the user's `py -3` launcher resolves to
+      # in production (C:\...\Programs\Python\Python312). The runner's own `py -3`
+      # resolves to a newer Python (3.13+), where `ntpath.isabs('/foo')` changed
+      # to return False; that surfaces a PRE-EXISTING _hookio.effective_merge_dir
+      # portability bug (dev-env#732), not a CI-config problem. Testing the
+      # production runtime keeps CI faithful; the forward-compat fix is its own PR.
+      # The runner is invoked via this `python` (below), so every spawned test
+      # inherits 3.12 via sys.executable.
+      - name: Set up Python 3.12 (production runtime)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Show tool versions
         shell: bash
         run: |
-          py -3 --version
+          python --version
+          py --list 2>/dev/null || true
           git --version
           bash --version | head -1
 
@@ -52,9 +66,11 @@ jobs:
 
       - name: Run hook/script test suite
         shell: bash
-        # Invoked via the Windows `py -3` launcher (not `python3`, which is the
-        # MS Store stub -- ADR-007). The runner discovers every test_*.py plus
-        # the bash *.sh gates, runs each, and exits non-zero iff any failed.
+        # Invoked via the setup-python `python` (3.12, above) rather than the
+        # launcher's newest `py -3`, so sys.executable -> 3.12 for every spawned
+        # test. (ADR-007's "use py -3, not python3" is a local-machine concern --
+        # python3 is the MS Store stub there; setup-python puts a real python.exe
+        # first on PATH here.)
         #
         # Point TMPDIR/TMP/TEMP at a clean long-path dir. The runner's default
         # TEMP (C:\Users\RUNNERADMIN\...) has an 11-char component with an 8.3
@@ -68,4 +84,4 @@ jobs:
           TMPDIR="$(cygpath -m "$RUNNER_TEMP")/hktmp"
           mkdir -p "$TMPDIR"
           export TMPDIR TMP="$TMPDIR" TEMP="$TMPDIR"
-          py -3 claude/scripts/run-hook-tests.py
+          python claude/scripts/run-hook-tests.py
