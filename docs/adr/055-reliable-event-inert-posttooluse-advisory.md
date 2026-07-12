@@ -92,6 +92,21 @@ just-ended session's transcript and prints a one-line, non-blocking advisory whe
    is ASCII by construction, a unit test pins it cp1252-encodable, and `main()` also reconfigures
    stdout to `errors="replace"` defensively.
 
+> **Amendment (2026-07-12, dev-env#740 / [ADR-103](103-shared-hookout-emitter.md)).** Decision
+> points 3 and 5 above are **superseded** by the PR6 `_hookout` migration. A Stop hook's exit-0
+> stdout is transcript-only (invisible to the model — the very contract ADR-103 encodes), so the
+> original "advisory only — never block, stdout exit 0" channel meant the advisory *this hook
+> exists to surface* was itself never seen. The hook now **blocks once (exit 2 + stderr)** — the
+> one Stop channel that reaches the model — via a manual `sys.stderr.write(_hookout.ascii_sanitize(
+> …))` + literal `sys.exit(2)`, gated on `not stop_hook_active` (the loop guard) **and** a truthy
+> `session_id` (so an un-dedupable payload can't block every turn), with `mark_resolved` run
+> *after* the emission so a failed delivery retries (dev-env#629). §5's defensive reconfigure now
+> targets **stderr** (the stream the advisory rides), not stdout. The once-per-session `scratch/`
+> sentinel (point 1) and the detection/no-false-positive design (points 2/4) are unchanged. Known
+> limitation carried forward: whether an exit-2 Stop block forces continuation in a *terminating*
+> one-shot background/SDK session is an upstream Claude Code behavior not verified here — but the
+> exit-2 path is never worse than the prior always-invisible exit-0 print for that population.
+
 ### Scope
 
 Detection is **dev-env-only** (project #3): the created URL / merged PR must be `brownm09/dev-env`.

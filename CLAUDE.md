@@ -1705,6 +1705,10 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     stderr is invisible (dev-env#740, [ADR-103](docs/adr/103-shared-hookout-emitter.md)) — pinned
     `.isascii()` + `.encode("cp1252")` (so it can't vanish under Claude Code's cp1252 hook-output pipe on
     Windows), names the hook + the session id + "not recorded", and stays ASCII for an empty session id;
+    `should_advise_locate_failure(session_id, scratch=tmp)` — the once-per-session guard added in the
+    PR6 review (dev-env#740): a Stop hook fires every turn-end, so a persistently unlocatable transcript
+    would re-toast every turn without it; pins advise-once-then-suppress, per-session (not global)
+    keying, and the empty-session-id "always advise" fallback (can't dedupe -> fail toward visible);
     plus `get_pricing` (known models incl. a dated/suffixed id via substring match, and the default
     fallback for an unknown/empty model) and `compute_cost` (the four-bucket per-million arithmetic, and
     `$0` for empty usage). Added in PR6 (the file had no test before): the migration moved the transcript-

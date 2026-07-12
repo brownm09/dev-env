@@ -29,6 +29,7 @@ Exit 0 = all pass.
 
 import importlib.util
 import sys
+import tempfile
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -71,6 +72,43 @@ def test_format_locate_error_empty_session() -> str:
     msg = tt.format_locate_error("")
     assert msg.isascii() and "token-tracker" in msg, msg
     return "empty session id -> still ASCII, still names the hook (no crash)"
+
+
+# --- should_advise_locate_failure() (once-per-session guard) --------------------
+
+def test_should_advise_locate_failure_once_per_session() -> str:
+    # A Stop hook fires every turn-end; the diagnostic must toast at most once per
+    # session, else a persistently unlocatable transcript re-spams every turn
+    # (dev-env#740 review). First call advises + writes the sentinel; second returns
+    # False. `scratch=tmp` isolates from the real ~/.claude/scratch.
+    with tempfile.TemporaryDirectory() as d:
+        scratch = Path(d)
+        first = tt.should_advise_locate_failure("sess-xyz", scratch=scratch)
+        second = tt.should_advise_locate_failure("sess-xyz", scratch=scratch)
+        third = tt.should_advise_locate_failure("sess-xyz", scratch=scratch)
+    assert first is True, "first locate failure must advise"
+    assert second is False and third is False, "later failures in the same session must not re-advise"
+    return "should_advise_locate_failure: advises once per session, suppresses after (no per-turn spam)"
+
+
+def test_should_advise_locate_failure_distinct_sessions() -> str:
+    # Different sessions each get their own one-shot (keyed on session_id).
+    with tempfile.TemporaryDirectory() as d:
+        scratch = Path(d)
+        assert tt.should_advise_locate_failure("sess-A", scratch=scratch) is True
+        assert tt.should_advise_locate_failure("sess-B", scratch=scratch) is True
+        assert tt.should_advise_locate_failure("sess-A", scratch=scratch) is False
+    return "distinct session ids each advise once (per-session, not global)"
+
+
+def test_should_advise_locate_failure_empty_session_always_advises() -> str:
+    # No session_id -> can't dedupe -> err toward advising (better a rare duplicate
+    # toast than a silently-lost diagnostic). Must not touch the filesystem/raise.
+    with tempfile.TemporaryDirectory() as d:
+        scratch = Path(d)
+        assert tt.should_advise_locate_failure("", scratch=scratch) is True
+        assert tt.should_advise_locate_failure("", scratch=scratch) is True
+    return "empty session id -> always advises (no dedup possible, fail toward visible)"
 
 
 # --- get_pricing() -------------------------------------------------------------
@@ -123,6 +161,9 @@ def main() -> int:
         ("format_locate_error cp1252-safe", test_format_locate_error_is_cp1252_safe),
         ("format_locate_error names hook + session", test_format_locate_error_names_hook_and_session),
         ("format_locate_error empty session", test_format_locate_error_empty_session),
+        ("should_advise_locate_failure once per session", test_should_advise_locate_failure_once_per_session),
+        ("should_advise_locate_failure distinct sessions", test_should_advise_locate_failure_distinct_sessions),
+        ("should_advise_locate_failure empty session always advises", test_should_advise_locate_failure_empty_session_always_advises),
         ("get_pricing known models", test_get_pricing_known_models),
         ("get_pricing unknown -> default", test_get_pricing_unknown_defaults),
         ("compute_cost arithmetic", test_compute_cost_arithmetic),

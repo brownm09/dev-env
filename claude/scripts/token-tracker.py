@@ -21,6 +21,11 @@ SCRATCH_DIR = CLAUDE_DIR / "scratch"
 TOKEN_LOG = SCRATCH_DIR / "token-sessions.jsonl"
 LATEST_SESSION = SCRATCH_DIR / "latest-session.json"
 
+# Per-session sentinel prefix for the transcript-locate diagnostic, so it toasts at
+# most once per session — a Stop hook fires at every turn-end, and a persistently
+# unlocatable transcript would otherwise re-toast the user every turn.
+LOCATE_FAIL_PREFIX = "token-tracker-locate-fail-"
+
 # Pricing per million tokens — Sonnet 4.6 as of 2026-04
 PRICING = {
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
@@ -59,6 +64,29 @@ def format_locate_error(session_id: str) -> str:
         f"[token-tracker] Could not locate the transcript for session "
         f"{session_id!r}; token usage was not recorded for this session."
     )
+
+
+def should_advise_locate_failure(session_id: str, scratch=None) -> bool:
+    """True the FIRST time a transcript-locate failure is seen this session, else
+    False — a once-per-session guard.
+
+    A Stop hook fires at every turn-end, so a persistently unlocatable transcript
+    would re-toast the user every turn without this guard (the same per-turn-spam
+    reason the status echoes are dropped rather than routed to systemMessage).
+    Best-effort: with no session_id (can't dedupe) or an unwritable scratch dir, err
+    toward advising — a rare duplicate toast in a degraded state beats a silently
+    lost diagnostic. *scratch* overrides SCRATCH for offline tests."""
+    if not session_id:
+        return True
+    sentinel = _hookutil.sentinel_path(LOCATE_FAIL_PREFIX, session_id, scratch=scratch)
+    if sentinel.exists():
+        return False
+    try:
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text("")
+    except Exception:
+        pass
+    return True
 
 
 def _count_turns(jsonl_path: Path) -> tuple[dict, int, str]:
@@ -164,6 +192,8 @@ def aggregate_session(transcript_path: Path) -> dict:
 
 
 def main() -> None:
+    _hookutil.cleanup_stale_sentinels(LOCATE_FAIL_PREFIX)
+
     raw = sys.stdin.read().strip()
     hook_data = json.loads(raw) if raw else {}
 
@@ -180,10 +210,16 @@ def main() -> None:
         transcript_path = _hookutil.find_transcript(session_id)
 
     if transcript_path is None:
-        # systemMessage (exit 0) — a Stop hook's exit-0 stderr is invisible; route
-        # the diagnostic through the shared _hookout channel so it actually reaches
-        # the user. emit_advisory exits 0, so token-tracker never blocks the stop.
-        _hookout.emit_advisory("Stop", format_locate_error(session_id), audience="user")
+        # A Stop hook's exit-0 stdout/stderr are invisible, so surface the
+        # transcript-locate failure via the shared _hookout user channel (ADR-103) —
+        # at most once per session (should_advise_locate_failure), since a Stop hook
+        # fires every turn-end and a persistently unlocatable transcript would
+        # otherwise re-toast every turn. emit_advisory exits 0; the explicit
+        # sys.exit(0) keeps the "nothing to aggregate, never block" stop visible even
+        # when the once-guard suppresses the emit (and guards a future NoReturn break).
+        if should_advise_locate_failure(session_id):
+            _hookout.emit_advisory("Stop", format_locate_error(session_id), audience="user")
+        sys.exit(0)
 
     data = aggregate_session(transcript_path)
     prices = get_pricing(data["model"])

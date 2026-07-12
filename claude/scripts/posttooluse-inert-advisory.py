@@ -345,16 +345,30 @@ def main() -> None:
         # would read as gov-0 -> a false Check A). Gate the block on
         # `not stop_hook_active` so the continuation after our own block never
         # re-blocks (the loop guard); the per-session sentinel then suppresses later
-        # fresh Stops.
-        if not stop_hook_active:
+        # fresh Stops. Require a truthy session_id: mark_resolved and the sentinel
+        # short-circuit are both keyed on it (an empty session_id no-ops both), so
+        # blocking without one would re-fire the exit-2 block on every genuine Stop
+        # all session — un-dedupable, visible, disruptive spam. A payload we can't
+        # dedupe we don't block (fall through to exit 0); Stop payloads reliably
+        # carry session_id, so this only forgoes the advisory in an anomalous session.
+        if session_id and not stop_hook_active:
             # Emit FIRST, mark_resolved AFTER — so a failed stderr write (caught by
             # the outer guard -> exit 0) leaves the session unresolved to retry on
             # the next Stop, rather than silencing an undelivered warning (dev-env#629).
             sys.stderr.write(_hookout.ascii_sanitize(format_advisory(actions)) + "\n")
             mark_resolved(session_id)
             sys.exit(2)
-        # A stop_hook_active continuation reaching here means the sentinel write must
-        # have failed on the prior Stop; do NOT re-block — fall through to exit 0.
+        # Reached only on a continuation Stop — but stop_hook_active is a GLOBAL
+        # signal, true whenever ANY Stop hook blocked on the prior turn, not just
+        # this one. Two ways to arrive here with no sentinel yet: (a) a sibling Stop
+        # hook (tile gate / journal-stop-check Check 1 / stub-checkpoint) blocked
+        # first and this session's inert board action only became detectable during
+        # that forced continuation, so THIS hook never blocked and never wrote the
+        # sentinel; or (b) our own prior block's sentinel write failed. Either way do
+        # NOT re-block (the loop guard). In case (a) the advisory still fires on the
+        # next fresh (stop_hook_active=false) Stop; only a session that ends
+        # immediately after such a continuation loses it — a narrow window, and still
+        # strictly better than the pre-migration always-invisible exit-0 print.
     elif posttooluse_attachment_present(records):
         # PostToolUse dispatch works this session (a session-level property; ADR-053),
         # so it can never be inert — resolve it so later Stops skip the full re-scan.
