@@ -41,8 +41,12 @@ composition test below pins that `is_successful_merge` (the predicate the
 guard sits behind) returns False for exactly the `--help` shape
 `is_merge_help_only` returns True for.
 
-The `pull_main` / `extract_repo` git calls are intentionally not tested (they
-shell out and the repo avoids subprocess mocks).
+The `pull_main` / `park_worktree_off_main` / `extract_repo` git calls are
+intentionally not tested (they shell out and the repo avoids subprocess mocks);
+their pure message builders (`format_pull_message` / `format_park_message`) and
+the `plan_advisory` channel decision — extracted in PR5 (dev-env#736) so the
+hook's advisories route through `_hookout` (park warning -> model via exit-2
+stderr, routine pull status -> user systemMessage) — are covered below.
 
 Usage:
     py -3 claude/scripts/tests/test_post_pr_merge_pull.py
@@ -69,6 +73,9 @@ _spec.loader.exec_module(ppmp)  # safe: main() is guarded by __main__
 is_successful_merge = ppmp.is_successful_merge
 extract_repo = ppmp.extract_repo
 pull_command = ppmp.pull_command
+format_pull_message = ppmp.format_pull_message
+format_park_message = ppmp.format_park_message
+plan_advisory = ppmp.plan_advisory
 
 # is_merge_help_only lives in _hookio (a sibling); SCRIPT.parent already on
 # sys.path via the insert above.
@@ -301,6 +308,93 @@ def test_unresolved_real_merge_is_not_help_only() -> str:
     return "unresolved real merge (no marker, non-help) -> is_merge_help_only False (fallback unaffected)"
 
 
+# ---------------------------------------------------------------------------
+# PR5 (dev-env#736): pure message builders + channel decision. The
+# subprocess-bound pull_main / park_worktree_off_main wrappers stay untested
+# (repo convention); their message text and the channel routing are pinned here.
+# ---------------------------------------------------------------------------
+
+def test_format_pull_message_success_with_detail() -> str:
+    msg = format_pull_message(
+        "brownm09/dev-env", "pull", returncode=0, stdout="Updating 1abc..2def", stderr="",
+    )
+    assert msg == "[post-merge-pull] brownm09/dev-env: local main updated — Updating 1abc..2def", msg
+    return "returncode 0 with detail -> 'local main updated — <detail>'"
+
+
+def test_format_pull_message_already_up_to_date() -> str:
+    msg = format_pull_message("brownm09/dev-env", "pull", returncode=0, stdout="", stderr="")
+    assert msg.endswith("local main updated — already up to date"), msg
+    return "returncode 0, no output -> 'already up to date'"
+
+
+def test_format_pull_message_git_failed() -> str:
+    msg = format_pull_message(
+        "brownm09/dev-env", "fetch", returncode=1, stdout="", stderr="fatal: refusing",
+    )
+    assert msg == "[post-merge-pull] brownm09/dev-env: git fetch failed — fatal: refusing", msg
+    return "returncode != 0 -> 'git <kind> failed — <err>'"
+
+
+def test_format_pull_message_timeout() -> str:
+    msg = format_pull_message("brownm09/dev-env", "pull", timed_out=True)
+    assert msg == "[post-merge-pull] brownm09/dev-env: git pull timed out", msg
+    return "timed_out -> 'git pull timed out'"
+
+
+def test_format_pull_message_exception() -> str:
+    msg = format_pull_message("brownm09/dev-env", "fetch", error="boom")
+    assert msg == "[post-merge-pull] brownm09/dev-env: unexpected error — boom", msg
+    return "error -> 'unexpected error — <exc>'"
+
+
+def test_format_park_message_success() -> str:
+    msg = format_park_message("claude/foo", ok=True)
+    assert "parked this worktree off main onto claude/foo" in msg, msg
+    assert "freed the main ref" in msg, msg
+    return "ok -> 'parked this worktree off main onto <branch> — freed the main ref ...'"
+
+
+def test_format_park_message_exception() -> str:
+    msg = format_park_message("claude/foo", exc="detached HEAD")
+    assert msg == "[post-merge-pull] could not park worktree off main — detached HEAD", msg
+    return "exc -> 'could not park worktree off main — <exc>'"
+
+
+def test_format_park_message_branch_exists() -> str:
+    msg = format_park_message("claude/foo", detail="fatal: branch 'claude/foo' already exists")
+    assert "could not park worktree off main (branch claude/foo may already exist)" in msg, msg
+    assert "already exists" in msg, msg
+    return "non-zero checkout -> 'could not park ... (branch <b> may already exist) — <detail>'"
+
+
+def test_plan_advisory_park_present_is_block() -> str:
+    # A park message means the model's own cwd branch changed underneath it, so it
+    # must be surfaced to the model (channel "block" -> exit-2 stderr), carrying the
+    # routine status too.
+    planned = plan_advisory("status line", "parked ...")
+    assert planned == ("block", "status line\nparked ..."), planned
+    return "status + park -> ('block', both lines) — model must see it"
+
+
+def test_plan_advisory_park_only_is_block() -> str:
+    planned = plan_advisory(None, "parked ...")
+    assert planned == ("block", "parked ..."), planned
+    return "park only -> ('block', park)"
+
+
+def test_plan_advisory_status_only_is_user() -> str:
+    planned = plan_advisory("status line", None)
+    assert planned == ("user", "status line"), planned
+    return "status only -> ('user', status) — systemMessage toast"
+
+
+def test_plan_advisory_nothing_is_none() -> str:
+    assert plan_advisory(None, None) is None
+    assert plan_advisory("", "") is None
+    return "no messages -> None (nothing to emit)"
+
+
 def main() -> int:
     tests = [
         ("merge marker present -> pulls", test_clean_merge_with_marker_pulls),
@@ -323,6 +417,18 @@ def main() -> int:
         ("pull_command: canonical off main -> fetch-into-ref", test_pull_command_off_main_uses_fetch_into_ref),
         ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_successful_merge_and_is_help_only),
         ("unresolved real merge: guard does not suppress fallback", test_unresolved_real_merge_is_not_help_only),
+        ("format_pull_message: success with detail", test_format_pull_message_success_with_detail),
+        ("format_pull_message: already up to date", test_format_pull_message_already_up_to_date),
+        ("format_pull_message: git failed", test_format_pull_message_git_failed),
+        ("format_pull_message: timeout", test_format_pull_message_timeout),
+        ("format_pull_message: exception", test_format_pull_message_exception),
+        ("format_park_message: success", test_format_park_message_success),
+        ("format_park_message: checkout raised", test_format_park_message_exception),
+        ("format_park_message: branch already exists", test_format_park_message_branch_exists),
+        ("plan_advisory: status + park -> block", test_plan_advisory_park_present_is_block),
+        ("plan_advisory: park only -> block", test_plan_advisory_park_only_is_block),
+        ("plan_advisory: status only -> user", test_plan_advisory_status_only_is_user),
+        ("plan_advisory: nothing -> None", test_plan_advisory_nothing_is_none),
     ]
     failed = 0
     for name, fn in tests:

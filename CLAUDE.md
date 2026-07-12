@@ -102,7 +102,13 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
    success marker present, exit code non-zero) confirms despite the exit code, while a queued
    `--auto` (no marker yet) and a non-merge command do not — the exit-code-only gate this replaced
    silently dropped the snapshot on every worktree merge
-   ([dev-env#474](https://github.com/brownm09/dev-env/issues/474), ADR-049/ADR-050 amendment). The
+   ([dev-env#474](https://github.com/brownm09/dev-env/issues/474), ADR-049/ADR-050 amendment). Also
+   (PR5 of dev-env#717, [dev-env#736](https://github.com/brownm09/dev-env/issues/736)) pins
+   `status_emoji()` and `format_snapshot()` output as `.isascii()`: the emoji and `≤` were ASCII-ified
+   (OVER/NEAR/OK tokens, `<=`) and all four emissions moved onto `_hookout.emit_block` (exit-2 stderr,
+   `ascii_sanitize` backstop + exit-code-safe `finally`), so a cp1252 encode crash can no longer flip
+   exit 2→0 and silently drop the snapshot (the #670 pattern); `status_emoji`/`format_snapshot` were
+   previously unexercised. The
    live usage API call is not covered (the repo avoids urllib mocks).
 
    ```bash
@@ -126,8 +132,12 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     failed merge, an exit-0 non-merge invocation like `gh pr merge --help` (dev-env#485), or `gh pr merge`
     text mentioned only inside a heredoc body, a quoted argument, or a `$()` subshell (dev-env#529, the
     command-shape check is `scan_top_level`-anchored, not a raw substring test —
-    [ADR-050 Amendment 9](docs/adr/050-shared-hookio-sibling-hook-fixes.md)) does not. The detached reclaim
-    spawn is not covered (it shells out).
+    [ADR-050 Amendment 9](docs/adr/050-shared-hookio-sibling-hook-fixes.md)) does not. Also (PR5 of
+    dev-env#717, [dev-env#736](https://github.com/brownm09/dev-env/issues/736)) pins the `RECLAIM_MSG`
+    constant (content + `.isascii()`): the post-merge status now emits via
+    `_hookout.emit_advisory(audience="user")` (a systemMessage toast) rather than a raw exit-0 stderr
+    print (invisible on PostToolUse); the channel itself is enforced by the output-contract gate
+    (item 61). The detached reclaim spawn is not covered (it shells out).
 
     ```bash
     py -3 claude/scripts/tests/test_post_pr_merge_reclaim.py
@@ -272,8 +282,16 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     [ADR-058 amendment](docs/adr/058-worktree-squatting-main-detection-correction.md)); a feature branch
     (or squatting worktree) checked out gets the original fetch-into-ref, unchanged. Also exercises the
     pure-string resolution paths of `extract_repo()`'s `--repo`/`-R` flag check (`-R` shorthand added in
-    dev-env#616) and its GitHub-URL parse. The `pull_main` / `list_worktrees` git calls and `extract_repo`'s
-    git-remote subprocess fallback are not covered
+    dev-env#616) and its GitHub-URL parse. Also (PR5 of dev-env#717,
+    [dev-env#736](https://github.com/brownm09/dev-env/issues/736)) exercises the pure message builders
+    `format_pull_message()` (success / already-up-to-date / git-fail / timeout / exception) and
+    `format_park_message()` (parked / checkout-raised / branch-already-exists), plus the `plan_advisory()`
+    channel decision — a park message means the model's own cwd branch changed underneath it, so it routes
+    to `_hookout.emit_block` (exit-2 stderr, model-visible), while routine pull status alone routes to
+    `_hookout.emit_advisory(audience="user")` (a systemMessage toast), and nothing-to-say returns `None`;
+    `pull_main`/`park_worktree_off_main` now return their message and `main()` dispatches once. The
+    `pull_main` / `park_worktree_off_main` / `list_worktrees` git calls and `extract_repo`'s git-remote
+    subprocess fallback are not covered
     ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md), incl. Amendment 9 for the command-shape
     anchoring).
 

@@ -33,6 +33,14 @@ itself is exhaustively tested in `test_hookio.py`; the composition test below
 pins that `merge_confirmed` (the predicate the guard sits behind) returns
 False for exactly the `--help` shape `is_merge_help_only` returns True for.
 
+PR5 (dev-env#736) routed all four emissions through `_hookout.emit_block`
+(exit-2 stderr, `ascii_sanitize` backstop + exit-code-safe `finally`) and made the
+snapshot content ASCII (`status_emoji` returns OVER/NEAR/OK tokens; the target
+line uses `<=` not U+2264). The two tests below pin `status_emoji` and
+`format_snapshot(...)` output as `.isascii()` so the snapshot can't be silently
+lost to a cp1252 encode crash again (the #670 pattern); both were previously
+unexercised.
+
 The live network call (`fetch_usage`) is intentionally not tested — the repo
 avoids urllib mocks, consistent with the other script tests.
 
@@ -62,6 +70,8 @@ _spec.loader.exec_module(usage_snapshot)  # safe: main() is guarded by __main__
 classify_token = usage_snapshot.classify_token
 snapshot_action = usage_snapshot.snapshot_action
 merge_confirmed = usage_snapshot.merge_confirmed
+status_emoji = usage_snapshot.status_emoji
+format_snapshot = usage_snapshot.format_snapshot
 
 # is_merge_help_only lives in _hookio (a sibling); SCRIPT.parent already on
 # sys.path via the insert above.
@@ -177,9 +187,49 @@ def test_unresolved_real_merge_is_not_help_only() -> str:
     return "unresolved real merge (no marker, non-help) -> is_merge_help_only False (fallback unaffected)"
 
 
+def test_status_emoji_bands_are_ascii() -> str:
+    # PR5 (dev-env#736): status_emoji returned emoji outside cp1252; on the raw
+    # stderr channel the print raised, flipping exit 2 -> 0 and silently dropping
+    # the whole snapshot. It now returns ASCII tokens.
+    over = status_emoji(120, 100, 5)
+    near = status_emoji(97, 100, 5)
+    under = status_emoji(50, 100, 5)
+    none = status_emoji(0, 0, 5)
+    for s in (over, near, under, none):
+        assert s.isascii(), f"non-ASCII status token: {s!r}"
+    assert (over, near, under, none) == ("OVER cap", "NEAR cap", "OK under cap", ""), \
+        (over, near, under, none)
+    return "status_emoji bands -> ASCII tokens (OVER/NEAR/OK), .isascii() (dev-env#736)"
+
+
+def test_format_snapshot_output_is_ascii() -> str:
+    # The assembled snapshot (previously carrying U+2264 and emoji) must be
+    # .isascii() so emit_block's stderr write can't crash under cp1252.
+    config = {"alert_approaching_margin": 5}
+    over = format_snapshot(
+        {
+            "seven_day": {"utilization": 99, "resets_at": "2026-07-14T00:00:00Z"},
+            "five_hour": {"utilization": 40},
+            "extra_usage": {"is_enabled": True, "used_credits": 1.5, "monthly_limit": 50, "utilization": 3.0},
+        },
+        config,
+        [{"action": "Bash", "input": 1000, "cache_write": 50, "output": 200, "total": 1250}],
+    )
+    under = format_snapshot(
+        {"seven_day": {"utilization": 10}, "five_hour": {"utilization": 5}}, config, [],
+    )
+    assert over.isascii(), f"non-ASCII in snapshot: {over!r}"
+    assert under.isascii(), f"non-ASCII in snapshot: {under!r}"
+    # the target line now uses ASCII "<=" instead of U+2264
+    assert "<=" in under and "≤" not in under, under
+    return "format_snapshot output is .isascii() (emoji + U+2264 removed) (dev-env#736)"
+
+
 def main() -> int:
     tests = [
         ("no-expiry token proceeds silently", test_no_expiry_proceeds_silently),
+        ("status_emoji bands are ASCII (dev-env#736)", test_status_emoji_bands_are_ascii),
+        ("format_snapshot output is ASCII (dev-env#736)", test_format_snapshot_output_is_ascii),
         ("valid token proceeds silently", test_valid_token_proceeds_silently),
         ("token expiring within 1h warns", test_expiring_within_hour_warns),
         ("expired token now yields advisory", test_expired_token_now_visible),

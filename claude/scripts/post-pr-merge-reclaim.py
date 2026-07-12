@@ -33,13 +33,16 @@ Stdin JSON shape (PostToolUse):
     "cwd": "..."
   }
 
-Exit 0 always — informational only; never blocks Claude.
+Exit 0 always — a background-housekeeping systemMessage toast at most (via _hookout,
+PR5 of dev-env#717); never blocks Claude.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import re
 import subprocess
 import sys
+
+import _hookout
 from pathlib import Path
 
 from _hookio import (
@@ -50,6 +53,11 @@ from _hookio import (
     read_command_output,
     scan_top_level,
     should_confirm_via_gh,
+)
+
+RECLAIM_MSG = (
+    "[post-merge-reclaim] PR merged - reclaiming node_modules/.turbo from "
+    "now-idle worktrees in the background (regenerable on next use)."
 )
 
 SCAN_DIR = "C:/Users/brown/Git"
@@ -151,11 +159,7 @@ def main() -> None:
             sys.exit(0)
 
     if _spawn_reclaim(cwd):
-        print(
-            "[post-merge-reclaim] PR merged — reclaiming node_modules/.turbo from "
-            "now-idle worktrees in the background (regenerable on next use).",
-            file=sys.stderr,
-        )
+        _hookout.emit_advisory("PostToolUse", RECLAIM_MSG, audience="user")
 
     sys.exit(0)
 

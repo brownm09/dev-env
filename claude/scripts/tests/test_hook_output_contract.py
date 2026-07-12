@@ -131,13 +131,11 @@ from _hookout import STDOUT_MODEL_VISIBLE_EVENTS  # noqa: E402  (the SSOT, ADR-1
 # a second offense can't hide behind an existing entry. Line numbers are deliberately
 # NOT recorded here (they rot); the gate prints live line numbers on failure.
 # Migration owner per ADR-103:
-#   PR5 -> post-pr-merge-pull, post-pr-merge-reclaim
 #   PR6 -> token-tracker, journal-stop-check (checks 2-3), posttooluse-inert-advisory
-#   (post-compact's exit-0 stderr status was swept onto _hookout in dev-env#727.)
+#   (PR5 swept post-pr-merge-pull + post-pr-merge-reclaim onto _hookout -- dev-env#736;
+#    post-compact's exit-0 stderr status was swept in dev-env#727.)
 _OUTPUT_CONTRACT_ALLOWLIST: dict[tuple[str, str], int] = {
     ("journal-stop-check.py", "B"): 1,        # checks 2-3 print()+exit0 (PR6)
-    ("post-pr-merge-pull.py", "A"): 8,        # stderr status/park warnings, all exit 0 (PR5)
-    ("post-pr-merge-reclaim.py", "A"): 1,     # stderr status, exit 0 (PR5)
     ("posttooluse-inert-advisory.py", "B"): 1,  # bare stdout on Stop, exit 0 (PR6)
     ("token-tracker.py", "A"): 1,             # stderr diagnostic, exit 0 (PR6)
     ("token-tracker.py", "B"): 2,             # stdout echoes on Stop, exit 0 (PR6)
@@ -146,18 +144,14 @@ _OUTPUT_CONTRACT_ALLOWLIST: dict[tuple[str, str], int] = {
 # {script: count} — scripts emitting a non-ASCII string literal DIRECTLY in a
 # raw-stream call (mostly em-dash U+2014 / ellipsis U+2026 -- cp1252-safe but not
 # .isascii(), the stronger _hookout guarantee), with the count of such emission
-# lines. PR5 clears usage-snapshot (its emoji reach stderr via a variable -- see the
-# indirection limitation in the module docstring -- so it is flagged here only via a
-# direct em-dash; PR5's own .isascii() pin covers the emoji). PR5 also clears
-# post-pr-merge-pull/reclaim; PR6 token-tracker; PR7 dev-env-sync. post-compact /
+# lines. PR5 cleared usage-snapshot (emoji + <= now ASCII, emissions on _hookout,
+# with an .isascii() pin on format_snapshot) and post-pr-merge-pull/reclaim
+# (dev-env#736); PR6 token-tracker; PR7 dev-env-sync. post-compact /
 # post-merge-tile-checkpoint / pre-merge-findings-gate were swept onto _hookout in
 # dev-env#727.
 _NONASCII_EMISSION_ALLOWLIST: dict[str, int] = {
     "dev-env-sync.py": 4,
-    "post-pr-merge-pull.py": 7,
-    "post-pr-merge-reclaim.py": 1,
     "token-tracker.py": 2,
-    "usage-snapshot.py": 1,
 }
 
 
