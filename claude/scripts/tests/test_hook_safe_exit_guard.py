@@ -90,24 +90,15 @@ def fail_direction(script: str) -> int:
 
 # Scripts that do NOT yet carry a compliant safe-exit `__main__` guard (bare
 # `main()` / `sys.exit(main())` / no `__main__` block). Two-sided: a stale entry
-# (script since guarded) fails the gate, so the PR7 sweep must delete each entry
-# as it lands the guard. Verified against origin/main @ 2cc6afa (2026-07-11).
-_UNGUARDED_ALLOWLIST: set[str] = {
-    "awake-blocker.py",
-    "idle-refresher.py",
-    "multi-worktree-alert.py",
-    "pre-commit-branch-check.py",
-    "pre-merge-branch-check.py",
-    "pre-merge-findings-gate.py",
-    "pre-merge-message-check.py",
-    "pre-merge-numbering-check.py",
-    "pre-pr-create-check.py",
-    "pre-tool-use-canonical-mutate-guard.py",
-    "pre-tool-use-worktree-path-check.py",
-    "session-mode-prompt.py",
-    "token-tracker.py",
-    "turn-count-hook.py",
-}
+# (script since guarded) fails the gate. PR7 (dev-env#743) guarded the last 14
+# offenders (awake-blocker, idle-refresher, multi-worktree-alert,
+# pre-commit-branch-check, pre-merge-branch-check, pre-merge-findings-gate,
+# pre-merge-message-check, pre-merge-numbering-check, pre-pr-create-check,
+# pre-tool-use-canonical-mutate-guard, pre-tool-use-worktree-path-check,
+# session-mode-prompt, token-tracker, turn-count-hook), so this allowlist is now
+# empty; any new entry the gate reports is a genuine regression to guard, not
+# something to re-add here.
+_UNGUARDED_ALLOWLIST: set[str] = set()
 
 
 # ---------------------------------------------------------------------------

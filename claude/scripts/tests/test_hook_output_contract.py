@@ -150,12 +150,13 @@ _OUTPUT_CONTRACT_ALLOWLIST: dict[tuple[str, str], int] = {}
 # lines. PR5 cleared usage-snapshot (emoji + <= now ASCII, emissions on _hookout,
 # with an .isascii() pin on format_snapshot) and post-pr-merge-pull/reclaim
 # (dev-env#736); PR6 (dev-env#740) cleared token-tracker (both non-ASCII lines were
-# in the dropped per-turn echoes); PR7 -> dev-env-sync (the last remaining). post-compact /
-# post-merge-tile-checkpoint / pre-merge-findings-gate were swept onto _hookout in
-# dev-env#727.
-_NONASCII_EMISSION_ALLOWLIST: dict[str, int] = {
-    "dev-env-sync.py": 4,
-}
+# in the dropped per-turn echoes); PR7 (dev-env#743) hand-fixed dev-env-sync's 4
+# em-dash print() calls to plain ASCII hyphens (the last remaining offender), so
+# this allowlist is now empty; any new entry the gate reports is a genuine
+# regression to route through _hookout or hand-fix, not something to re-add here.
+# post-compact / post-merge-tile-checkpoint / pre-merge-findings-gate were swept
+# onto _hookout in dev-env#727.
+_NONASCII_EMISSION_ALLOWLIST: dict[str, int] = {}
 
 
 # ---------------------------------------------------------------------------

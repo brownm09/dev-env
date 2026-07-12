@@ -180,7 +180,7 @@ def main() -> None:
             # warning and let the user switch back manually.
             print(
                 f"[dev-env-sync] WARNING: Canonical worktree is on '{current_branch}' and its worktree "
-                "list could not be read — ~/.claude/ symlinks may serve stale hooks/scripts.\n"
+                "list could not be read - ~/.claude/ symlinks may serve stale hooks/scripts.\n"
                 f"Switch it back manually: git -C {DEV_ENV_REPO} checkout main"
             )
             sys.exit(0)
@@ -194,8 +194,8 @@ def main() -> None:
             print(
                 f"[dev-env-sync] WARNING: Canonical worktree is on '{current_branch}' and worktree\n"
                 f"  {action.squatter_path}\n"
-                "is squatting 'main' — the canonical cannot return until that worktree is parked\n"
-                "off main. Free the ref (non-destructive — changes no files):\n"
+                "is squatting 'main' - the canonical cannot return until that worktree is parked\n"
+                "off main. Free the ref (non-destructive - changes no files):\n"
                 f"  git -C {action.squatter_path} checkout -b {action.park_branch}\n"
                 "then the next prompt returns the canonical to main automatically (or run\n"
                 f"  git -C {DEV_ENV_REPO} checkout main\n"
@@ -206,7 +206,7 @@ def main() -> None:
         if action.kind == "warn-dirty":
             print(
                 f"[dev-env-sync] WARNING: Canonical worktree is on '{current_branch}' with uncommitted\n"
-                "changes — ~/.claude/ symlinks may serve stale hooks/scripts. Not auto-switching to\n"
+                "changes - ~/.claude/ symlinks may serve stale hooks/scripts. Not auto-switching to\n"
                 "preserve your drift; commit or stash, then:\n"
                 f"  git -C {DEV_ENV_REPO} checkout main"
             )
@@ -222,7 +222,7 @@ def main() -> None:
                 )
                 sys.exit(0)
             print(
-                f"[dev-env-sync] Returned canonical worktree to main (was on '{current_branch}') — "
+                f"[dev-env-sync] Returned canonical worktree to main (was on '{current_branch}') - "
                 "symlinked tooling restored."
             )
             current_branch = "main"
