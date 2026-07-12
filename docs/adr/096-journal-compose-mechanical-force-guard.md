@@ -335,9 +335,13 @@ checks so it still fires only when a genuine compose op is being evaluated.
 raw command and cwd strings — no re-parse of segments. The compose path re-uses the already-split
 segments from the outer `command_targets_today_compose` call; no double-split.
 
-**Testing.** Eight new tests in `test_pre_tool_use_journal_compose_force_guard.py`:
-- Six Layer 1 unit tests for `_is_compose_op` covering: compose cwd (hyphen and slash forms), `-C`
+**Testing.** Twelve new tests in `test_pre_tool_use_journal_compose_force_guard.py`:
+- Eight Layer 1 unit tests for `_is_compose_op` covering: compose cwd (hyphen and slash forms), `-C`
   compose path, stub-write simple push, stub-write refspec push, compose token in message prose
   (must not trigger), empty cwd, and the normal worktree-add command.
 - Four Layer 2 e2e tests: stub push allowed without marker; full refspec push allowed without marker;
   push from compose cwd still blocked; push with `-C compose-<today>` still blocked.
+
+A ninth e2e test — `test_e2e_chained_stub_write_allows_without_marker`, confirming that a stub-write
+push chained after an unrelated command (`&&`-joined) still allows without a marker — was added in
+the `/review` follow-up commit on PR #735 and is not counted in the twelve above.
