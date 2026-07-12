@@ -520,6 +520,29 @@ def test_e2e_stub_write_with_C_compose_path_still_blocked():
         proc = _run_hook(payload, marker_dir=tmp)
         assert proc.returncode == 2
 
+def test_e2e_chained_stub_write_allows_without_marker():
+    # Regression for dev-env#728: the Stub file workflow step 7 issues a
+    # chained command (git add && git commit && git push -u origin draft/<today>).
+    # The full chain has no compose token in cwd or command, so it must be
+    # allowed even when no force marker exists.
+    with tempfile.TemporaryDirectory() as tmp:
+        today = datetime.date.today().isoformat()
+        stub = f"sessions/meta/{today}_120000.stub.md"
+        manifest = f"sessions/meta/{today}_120000.manifest.jsonl"
+        cmd = (
+            f'git add {stub} {manifest} && '
+            f'git commit -m "draft: {today} session 1" -- {stub} {manifest} && '
+            f'git push -u origin draft/{today}'
+        )
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+            "cwd": "C:/Users/brown/Git/engineering-journal",
+        }
+        proc = _run_hook(payload, marker_dir=tmp)
+        assert proc.returncode == 0
+        assert proc.stderr == ""
+
 
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

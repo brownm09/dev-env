@@ -264,7 +264,7 @@ def command_targets_today_compose(command: str, today: str, segments=None) -> bo
 
 def _command_has_compose_token(command: str, today: str, segments=None) -> bool:
     """Return True if any non-message scan token in `command` contains
-    compose[-/<today>.  Accepts pre-computed segments to avoid double-parsing
+    compose[-/]<today>.  Accepts pre-computed segments to avoid double-parsing
     when called from _is_compose_op with segments already split."""
     if segments is None:
         segments = split_top_level(command, split_pipe=True)
