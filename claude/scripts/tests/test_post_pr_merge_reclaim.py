@@ -33,7 +33,10 @@ that `is_successful_merge` (the predicate the guard sits behind) returns
 False for exactly the `--help` shape `is_merge_help_only` returns True for.
 
 The detached spawn (`_spawn_reclaim`) is intentionally not tested — it shells out
-and the repo avoids subprocess mocks.
+and the repo avoids subprocess mocks. PR5 (dev-env#736) routed the post-merge
+status through `_hookout.emit_advisory(audience="user")` (a systemMessage toast);
+the channel itself is enforced by the output-contract gate, and the message
+constant `RECLAIM_MSG` is pinned below (content + cp1252-safety).
 
 Usage:
     py -3 claude/scripts/tests/test_post_pr_merge_reclaim.py
@@ -58,6 +61,7 @@ assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 ppmr = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ppmr)  # safe: main() is guarded by __main__
 is_successful_merge = ppmr.is_successful_merge
+RECLAIM_MSG = ppmr.RECLAIM_MSG
 
 # is_merge_help_only lives in _hookio (a sibling); SCRIPT.parent already on
 # sys.path via the insert above.
@@ -158,9 +162,25 @@ def test_unresolved_real_merge_is_not_help_only() -> str:
     return "unresolved real merge (no marker, non-help) -> is_merge_help_only False (fallback unaffected)"
 
 
+def test_reclaim_msg_content_and_ascii() -> str:
+    # PR5 (dev-env#736): the post-merge status moved off a raw stderr print onto
+    # _hookout.emit_advisory(audience="user"). That systemMessage channel is
+    # json.dumps(ensure_ascii=True) -- wire-safe regardless of content -- so the
+    # .isascii() check here is a *consistency* guard with the raw-channel messages
+    # (it caught the original em-dash -> hyphen), NOT a safety requirement of this
+    # channel (that vanishing class is specific to raw stderr). The channel itself
+    # is enforced by the output-contract gate.
+    assert RECLAIM_MSG.startswith("[post-merge-reclaim] PR merged"), RECLAIM_MSG
+    assert "reclaiming node_modules/.turbo" in RECLAIM_MSG, RECLAIM_MSG
+    assert "regenerable on next use" in RECLAIM_MSG, RECLAIM_MSG
+    assert RECLAIM_MSG.isascii(), "RECLAIM_MSG kept ASCII for consistency (systemMessage is JSON-escaped)"
+    return "RECLAIM_MSG content pinned + .isascii() consistency guard (dev-env#736)"
+
+
 def main() -> int:
     tests = [
         ("merge marker present -> reclaims", test_clean_merge_with_marker_reclaims),
+        ("RECLAIM_MSG content + .isascii() (dev-env#736)", test_reclaim_msg_content_and_ascii),
         ("non-merge command ignored", test_non_merge_command_ignored),
         ("failed merge with no marker ignored", test_failed_merge_no_marker_ignored),
         ("gh pr merge --help (no marker) ignored (dev-env#485)", test_help_invocation_no_marker_ignored),

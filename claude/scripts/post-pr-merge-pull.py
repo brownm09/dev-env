@@ -19,7 +19,11 @@ Stdin JSON shape (PostToolUse):
     "cwd": "..."
   }
 
-Exit 0 always — informational output only; never blocks Claude.
+Output channels (via _hookout, PR5 of dev-env#717): routine pull status is a user
+systemMessage (exit 0); a "parked this worktree off main" warning goes to the model
+via exit-2 stderr — the model's own cwd branch just changed underneath it and it must
+know. Exit-2 on PostToolUse only feeds stderr to the model as feedback; it never
+blocks Claude's work.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
@@ -28,6 +32,7 @@ import re
 import subprocess
 import sys
 
+import _hookout
 from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
@@ -155,38 +160,75 @@ def pull_command(local_path: str, on_main: bool) -> list[str]:
     return ["git", "-C", local_path, "fetch", "origin", "main:main"]
 
 
-def pull_main(local_path: str, repo: str, on_main: bool) -> None:
-    """Fast-forward local main from origin (see pull_command for command choice)."""
+def format_pull_message(
+    repo: str,
+    kind: str,
+    *,
+    returncode: int | None = None,
+    stdout: str = "",
+    stderr: str = "",
+    timed_out: bool = False,
+    error: str | None = None,
+) -> str:
+    """Pure: the status line for a local-main fast-forward outcome.
+
+    Split out from pull_main so the user-facing message text is testable without a
+    live git call — mirrors dev-env-sync.py's formatter extraction (CLAUDE.md
+    Testing item 56).
+    """
+    if timed_out:
+        return f"[post-merge-pull] {repo}: git {kind} timed out"
+    if error is not None:
+        return f"[post-merge-pull] {repo}: unexpected error — {error}"
+    if returncode == 0:
+        parts = [p for p in (stdout.strip(), stderr.strip()) if p]
+        detail = "\n".join(parts) or "already up to date"
+        return f"[post-merge-pull] {repo}: local main updated — {detail}"
+    err = (stderr or stdout).strip()
+    return f"[post-merge-pull] {repo}: git {kind} failed — {err}"
+
+
+def pull_main(local_path: str, repo: str, on_main: bool) -> str:
+    """Fast-forward local main from origin; return the status line (see pull_command)."""
     cmd = pull_command(local_path, on_main)
     kind = "pull" if on_main else "fetch"
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            parts = [p for p in (result.stdout.strip(), result.stderr.strip()) if p]
-            detail = "\n".join(parts) or "already up to date"
-            print(
-                f"[post-merge-pull] {repo}: local main updated — {detail}",
-                file=sys.stderr,
-            )
-        else:
-            err = (result.stderr or result.stdout).strip()
-            print(
-                f"[post-merge-pull] {repo}: git {kind} failed — {err}",
-                file=sys.stderr,
-            )
+        return format_pull_message(
+            repo, kind,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
     except subprocess.TimeoutExpired:
-        print(
-            f"[post-merge-pull] {repo}: git {kind} timed out",
-            file=sys.stderr,
-        )
+        return format_pull_message(repo, kind, timed_out=True)
     except Exception as exc:
-        print(
-            f"[post-merge-pull] {repo}: unexpected error — {exc}",
-            file=sys.stderr,
+        return format_pull_message(repo, kind, error=str(exc))
+
+
+def format_park_message(park: str, *, ok: bool = False, exc: str | None = None, detail: str = "") -> str:
+    """Pure: the message when this worktree was (or couldn't be) parked off main.
+
+    `ok` — parked successfully; `exc` — the checkout itself raised; otherwise the
+    checkout exited non-zero (the branch likely already exists), with git's stderr in
+    `detail`. Split out so the model-visible warning text is testable without a live
+    checkout (mirrors format_pull_message / CLAUDE.md Testing item 56).
+    """
+    if ok:
+        return (
+            f"[post-merge-pull] parked this worktree off main onto {park} — freed the main ref. "
+            "The canonical ~/Git/dev-env is off main; dev-env-sync returns it on the next prompt "
+            "if clean (else switch it back manually to refresh ~/.claude/)."
         )
+    if exc is not None:
+        return f"[post-merge-pull] could not park worktree off main — {exc}"
+    return (
+        f"[post-merge-pull] could not park worktree off main (branch {park} may already exist) "
+        f"— {detail}"
+    )
 
 
-def park_worktree_off_main(cwd: str, worktrees: list[dict]) -> None:
+def park_worktree_off_main(cwd: str, worktrees: list[dict]) -> str | None:
     """If `gh pr merge --delete-branch` left this worktree squatting main, park it off.
 
     gh deletes the merged local branch and checks out the default branch; from a worktree
@@ -201,33 +243,25 @@ def park_worktree_off_main(cwd: str, worktrees: list[dict]) -> None:
     on-main detection via `list_worktrees` — one `git worktree list` call per merge event),
     so it parks only when `cwd` is genuinely a worktree of that repo on main — a `gh pr merge
     --repo X` run from an unrelated checkout never touches that other repo (correctness review).
+
+    Returns the message to surface (the caller routes it to the model via exit-2 stderr),
+    or None when no park was needed.
     """
     if not cwd:
-        return
+        return None
     park = merge_park_target(cwd, worktrees)
     if not park:
-        return
+        return None
     try:
         r = subprocess.run(
             ["git", "-C", cwd, "checkout", "-b", park],
             capture_output=True, text=True, timeout=15,
         )
     except Exception as exc:
-        print(f"[post-merge-pull] could not park worktree off main — {exc}", file=sys.stderr)
-        return
+        return format_park_message(park, exc=str(exc))
     if r.returncode == 0:
-        print(
-            f"[post-merge-pull] parked this worktree off main onto {park} — freed the main ref. "
-            "The canonical ~/Git/dev-env is off main; dev-env-sync returns it on the next prompt "
-            "if clean (else switch it back manually to refresh ~/.claude/).",
-            file=sys.stderr,
-        )
-    else:
-        print(
-            f"[post-merge-pull] could not park worktree off main (branch {park} may already exist) "
-            f"— {r.stderr.strip()}",
-            file=sys.stderr,
-        )
+        return format_park_message(park, ok=True)
+    return format_park_message(park, detail=r.stderr.strip())
 
 
 def is_successful_merge(command: str, output: str) -> bool:
@@ -252,6 +286,22 @@ def is_successful_merge(command: str, output: str) -> bool:
     if not scan_top_level(command, _check_merge_stmt):
         return False
     return output_has_merge_marker(output)
+
+
+def plan_advisory(status_msg: str | None, park_msg: str | None) -> tuple[bool, str] | None:
+    """Pure: whether this merge's advisory must reach the model, and its combined text.
+
+    A park message means this worktree's branch changed underneath the model, so the
+    model must see it (needs_block True -> exit-2 stderr via emit_block); routine pull
+    status alone is a user systemMessage (needs_block False). Returns (needs_block, text),
+    or None when there is nothing to say. Returning a bool (not a channel string) keeps
+    the untested main() consumer un-typo-able: a mistaken channel string would silently
+    downgrade a park warning to a toast — the exact invisibility this migration removes.
+    """
+    lines = [m for m in (status_msg, park_msg) if m]
+    if not lines:
+        return None
+    return (bool(park_msg), "\n".join(lines))
 
 
 def main() -> None:
@@ -301,16 +351,25 @@ def main() -> None:
         sys.exit(0)
 
     if not os.path.isdir(local_path):
-        print(
+        # emit_advisory is NoReturn (exits 0 here) — nothing below this branch runs.
+        _hookout.emit_advisory(
+            "PostToolUse",
             f"[post-merge-pull] {repo}: local path not found ({local_path}) — skipping",
-            file=sys.stderr,
+            audience="user",
         )
-        sys.exit(0)
 
     worktrees = list_worktrees(local_path)
-    pull_main(local_path, repo, canonical_on_main(worktrees))
-    park_worktree_off_main(cwd, worktrees)
-    sys.exit(0)
+    status_msg = pull_main(local_path, repo, canonical_on_main(worktrees))
+    park_msg = park_worktree_off_main(cwd, worktrees)
+
+    planned = plan_advisory(status_msg, park_msg)
+    if planned is None:
+        sys.exit(0)
+    needs_block, text = planned
+    if needs_block:
+        # The model's own cwd branch just changed underneath it — it must see this.
+        _hookout.emit_block(text)
+    _hookout.emit_advisory("PostToolUse", text, audience="user")
 
 
 if __name__ == "__main__":

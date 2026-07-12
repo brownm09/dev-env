@@ -39,6 +39,7 @@ import urllib.error
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+import _hookout
 from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
@@ -226,14 +227,17 @@ def refresh_token_now(timeout: int = 45) -> bool:
         return False
 
 
-def status_emoji(util: float, target: int, margin: int) -> str:
+def status_label(util: float, target: int, margin: int) -> str:
+    # ASCII tokens (not emoji) so the snapshot stays cp1252-encodable on the raw
+    # stderr channel: emoji are outside cp1252 and crashed the print, flipping
+    # exit 2 -> 0 and silently dropping the whole snapshot (PR5 of dev-env#717).
     if target == 0:
         return ""
     if util >= target:
-        return "🔴 over cap"
+        return "OVER cap"
     if util >= target - margin:
-        return "⚠️ approaching cap"
-    return "✅ under cap"
+        return "NEAR cap"
+    return "OK under cap"
 
 
 # --- JSONL parsing ---
@@ -372,7 +376,7 @@ def format_snapshot(util_data: dict, config: dict, exchanges: list[dict]) -> str
     margin = config.get("alert_approaching_margin", 5)
 
     target, day_num, window_days = compute_cumulative_target(resets_at_str, config)
-    emoji = status_emoji(util_7d, target, margin)
+    label = status_label(util_7d, target, margin)
 
     resets_display = ""
     if resets_at_str:
@@ -385,7 +389,7 @@ def format_snapshot(util_data: dict, config: dict, exchanges: list[dict]) -> str
     lines = ["### Usage Snapshot (post-merge)"]
     lines.append(
         f"- **Weekly:** {util_7d:.0f}% used "
-        f"(day {day_num}/{window_days} — target ≤{target}% — {emoji})"
+        f"(day {day_num}/{window_days} - target <={target}% - {label})"
     )
     lines.append(f"- **5-hour window:** {util_5h:.0f}%")
 
@@ -411,7 +415,7 @@ def format_snapshot(util_data: dict, config: dict, exchanges: list[dict]) -> str
             )
     else:
         lines.append("")
-        lines.append("*(No session JSONL found — exchange breakdown unavailable)*")
+        lines.append("*(No session JSONL found - exchange breakdown unavailable)*")
 
     return "\n".join(lines)
 
@@ -465,12 +469,10 @@ def main() -> None:
     if not token:
         # Creds file exists but holds no usable token — surface it rather than
         # failing silently (creds-file-absent is handled silently above).
-        print(
+        _hookout.emit_block(
             "[usage-snapshot] Skipped: .credentials.json has no usable OAuth token "
-            "(missing or unparseable). Run `claude` interactively to rewrite it.",
-            file=sys.stderr,
+            "(missing or unparseable). Run `claude` interactively to rewrite it."
         )
-        sys.exit(2)
 
     # Only a truly-expired token blocks the snapshot. Claude Code refreshes lazily,
     # so a scheduled keep-warm can't fully close the gap; instead, refresh on demand
@@ -483,12 +485,10 @@ def main() -> None:
             token, expires_at_ms = get_access_token(creds)
             state, _ = classify_token(expires_at_ms, time.time() * 1000)
         if state == "expired" or not token:
-            print(
+            _hookout.emit_block(
                 "[usage-snapshot] OAuth token expired and on-demand refresh failed "
-                "(the refresh token may be dead) — run `claude` interactively to re-auth.",
-                file=sys.stderr,
+                "(the refresh token may be dead) - run `claude` interactively to re-auth."
             )
-            sys.exit(2)
 
     util_data = fetch_usage(token)
     if not util_data:
@@ -496,12 +496,10 @@ def main() -> None:
         time.sleep(1)
         util_data = fetch_usage(token)
     if not util_data:
-        print(
+        _hookout.emit_block(
             "[usage-snapshot] Skipped: usage API unavailable (network error or "
-            "transient 5xx). The snapshot was omitted for this merge.",
-            file=sys.stderr,
+            "transient 5xx). The snapshot was omitted for this merge."
         )
-        sys.exit(2)
 
     config = load_config()
     session_id = data.get("session_id", "")
@@ -510,8 +508,7 @@ def main() -> None:
     exchanges = top_exchanges(jsonl_path) if jsonl_path else []
 
     snapshot = format_snapshot(util_data, config, exchanges)
-    print(snapshot, file=sys.stderr)
-    sys.exit(2)
+    _hookout.emit_block(snapshot)
 
 
 if __name__ == "__main__":
