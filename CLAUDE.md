@@ -1620,9 +1620,10 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     allowlists (the `test_no_crude_command_substring_checks.py` mechanism): `_OUTPUT_CONTRACT_ALLOWLIST`
     keyed by `(script, check)` (**empty** as of PR6/dev-env#740 — PR5 swept the PostToolUse hooks and PR6
     the Stop-family hooks, so every output-contract offender is now migrated onto `_hookout`; a new entry
-    the gate reports is a genuine regression), `_NONASCII_EMISSION_ALLOWLIST` keyed by script (1 remaining:
-    `dev-env-sync.py`'s 4 cp1252-safe em-dash/ellipsis lines, PR7 — token-tracker's 2 lines cleared in PR6
-    when the per-turn echoes carrying them were dropped). Documented limitations: the ASCII lint and Check D both see only literals
+    the gate reports is a genuine regression), `_NONASCII_EMISSION_ALLOWLIST` keyed by script (**empty**
+    as of PR7/dev-env#743 — `dev-env-sync.py`'s 4 em-dash print() calls were hand-fixed to plain ASCII
+    hyphens, the last remaining offender; token-tracker's 2 lines were cleared in PR6 when the per-turn
+    echoes carrying them were dropped; a new entry the gate reports is a genuine regression). Documented limitations: the ASCII lint and Check D both see only literals
     *direct* in the emission call (usage-snapshot's emoji reach stderr via a variable, flagged only via
     an incidental em-dash — PR5's own `.isascii()` self-pin covers the emoji; a json payload built from
     a variable classifies as "unknown" and is exempt), and the cross-function Check C pass is one level
@@ -1645,8 +1646,12 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     pass-through is correctly ignored (not mistaken for the fail-direction handler). Pins the guard-shape
     self-tests (guarded exit 0/2, exit-2-via-helper, unguarded bare `main()` / `sys.exit(main())` / no
     `__main__` block / handler-without-exit, wrong-direction reported faithfully) and that `FAIL_CLOSED`
-    names only wired scripts. Two-sided `_UNGUARDED_ALLOWLIST` (14 current offenders lacking a compliant
-    guard; the PR7 safe-exit sweep shrinks it — a stale entry, i.e. a now-guarded script, fails too). A
+    names only wired scripts. Two-sided `_UNGUARDED_ALLOWLIST` (**empty** as of PR7/dev-env#743 — the last
+    14 offenders (awake-blocker, idle-refresher, multi-worktree-alert, pre-commit-branch-check,
+    pre-merge-branch-check, pre-merge-findings-gate, pre-merge-message-check, pre-merge-numbering-check,
+    pre-pr-create-check, pre-tool-use-canonical-mutate-guard, pre-tool-use-worktree-path-check,
+    session-mode-prompt, token-tracker, turn-count-hook) were all guarded; a stale entry, i.e. a
+    now-guarded script, fails too, and a new unguarded hook not in the allowlist also fails). A
     guarded hook whose crash-exit contradicts its declared direction is a hard failure, never
     allowlist-able. Does NOT verify the fail-closed gates' module-level dependency-load guard (rule 5) —
     that surface is pinned by items 52/55. ([ADR-103](docs/adr/103-shared-hookout-emitter.md);
