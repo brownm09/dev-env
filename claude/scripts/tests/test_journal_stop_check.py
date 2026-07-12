@@ -7,8 +7,11 @@ Then stop." -- which must reach Claude's context. For a Stop hook, exit-0 stdout
 is NOT added to Claude's context (only UserPromptSubmit / UserPromptExpansion /
 SessionStart are), so the reminder is now emitted on STDERR with exit 2 (blocking
 the stop), mirroring stop-tile-enumeration-gate.py (ADR-088). Its Checks 2-3
-(stale-draft / unmerged-branch advisories) stay NON-blocking (exit 0, stdout)
-because they point at work for a later, dedicated session and must not block.
+(stale-draft / unmerged-branch advisories) stay NON-blocking but now ride the
+_hookout systemMessage channel (exit 0) rather than plain stdout: a Stop hook's
+exit-0 stdout is invisible (transcript-only), so the former print() surfaced
+nothing (ADR-103, dev-env#740). They point at work for a later, dedicated session
+and must not block.
 
 Two layers, mirroring this repo's hook-test convention:
 
@@ -31,6 +34,10 @@ Two layers, mirroring this repo's hook-test convention:
       the flag is consumed.
     - no flag -> exit 0 (advisory path; the git advisory calls fail closed against
       the nonexistent tmp journal repo, so output is empty).
+    - no flag + a planted stale (uncomposed, pre-today) stub in the tmp journal repo
+      -> exit 0 with the Checks 2-3 advisory delivered as a `{"systemMessage": ...}`
+      JSON object on STDOUT and empty stderr (the re-pin of the corrected channel:
+      systemMessage, not the former invisible plain-stdout print -- dev-env#740).
     - flag present + stop_hook_active=true -> exit 0 (loop guard: no re-block) and
       the flag is PRESERVED (not consumed without delivery).
 
@@ -190,6 +197,30 @@ def test_e2e_stop_hook_active_allows_and_preserves_flag():
     return "e2e flag + stop_hook_active=true -> exit 0 (loop guard), flag preserved"
 
 
+def test_e2e_stale_advisory_is_systemmessage():
+    # The re-pin of the corrected Checks 2-3 channel (dev-env#740): plant an old,
+    # uncomposed stub in the tmp journal repo (JOURNAL_REPO = <home>/Git/
+    # engineering-journal) so stale_draft_artifacts() fires, then assert the
+    # advisory arrives as a {"systemMessage": ...} JSON object on STDOUT (exit 0) --
+    # NOT the former invisible plain-stdout print. The non-git tmp repo makes the
+    # orphan-cleanup git status fail closed, so the planted stub stays "still stale".
+    with tempfile.TemporaryDirectory() as home:
+        stub = (
+            Path(home) / "Git" / "engineering-journal" / "sessions" / "proj"
+            / "2020-01-01_120000.stub.md"
+        )
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text("old uncomposed draft")
+        rc, out, err = _run_hook(home, flag_present=False, stop_hook_active=False)
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    assert err.strip() == "", f"stderr must be empty on the advisory path, got {err!r}"
+    payload = json.loads(out)  # emit_advisory writes exactly one JSON object to stdout
+    assert "systemMessage" in payload, f"advisory must be a systemMessage JSON, got {out!r}"
+    assert "Stale draft artifact" in payload["systemMessage"], payload
+    assert "2020-01-01" in payload["systemMessage"], payload
+    return "e2e no flag + planted stale stub -> exit 0, Checks 2-3 delivered as a systemMessage JSON on stdout"
+
+
 def main():
     tests = [
         ("archive message cp1252-encodable", test_archive_message_is_cp1252_encodable),
@@ -203,6 +234,7 @@ def main():
         ("consume absent -> None", test_consume_absent_returns_none),
         ("e2e flag blocks on stderr + consumes", test_e2e_flag_blocks_on_stderr_and_consumes),
         ("e2e no flag allows", test_e2e_no_flag_allows),
+        ("e2e stale advisory is a systemMessage", test_e2e_stale_advisory_is_systemmessage),
         ("e2e stop_hook_active allows + preserves flag", test_e2e_stop_hook_active_allows_and_preserves_flag),
     ]
     failed = 0

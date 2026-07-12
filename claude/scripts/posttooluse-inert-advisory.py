@@ -12,7 +12,11 @@ no PostToolUse hook-code change can fix because the hooks never dispatch
 This Stop hook converts that *silent* gap into a *visible* one. It scans the
 just-ended session's transcript and, when a board-relevant `gh` command ran but
 **no** PostToolUse hook fired all session, emits a one-line advisory pointing to
-the documented manual fallback. It never blocks (stdout, exit 0).
+the documented manual fallback. Because a Stop hook's exit-0 stdout is invisible
+to Claude (transcript-only), the advisory is delivered on **exit-2 stderr** — the
+only Stop channel that reaches the model (ADR-091/103) — blocking the stop once so
+the reminder is actually seen. It fires at most once (a `stop_hook_active` loop
+guard plus a per-session sentinel), then exits 0.
 
 Detection (no `gh` calls, no `project` scope — purely the transcript the Stop
 payload points at):
@@ -42,16 +46,22 @@ False-positive guards:
 
 Fires at most once per session; once it has advised or confirmed the session is
 healthy (any PostToolUse attachment present), a scratch sentinel short-circuits the
-transcript re-scan on later Stops. Advisory only — exit 0 always.
+transcript re-scan on later Stops. The advisory blocks once (exit 2 + stderr); the
+`stop_hook_active` loop guard prevents a re-block on the immediate continuation, and
+`mark_resolved` runs *after* the stderr emission so a failed delivery leaves the
+session unresolved to retry on the next Stop (dev-env#629). Every other path exits 0.
 
 Stdin JSON shape (Stop):
-  {"session_id": "uuid", "transcript_path": "/abs/path/to/session.jsonl", ...}
+  {"session_id": "uuid", "transcript_path": "/abs/path/to/session.jsonl",
+   "stop_hook_active": false, ...}
 
-See ADR-053 (the inert-PostToolUse limitation) and ADR-055 (this safety net).
+See ADR-053 (the inert-PostToolUse limitation), ADR-055 (this safety net), and
+ADR-091/103 (the exit-2 Stop delivery contract).
 """
 from __future__ import annotations
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+import _hookout
 import _hookutil
 import json
 import re
@@ -253,10 +263,11 @@ def should_emit(records: list[dict]) -> list[dict] | None:
 
 
 def format_advisory(actions: list[dict]) -> str:
-    # ASCII-only: Claude Code pipes hook stdout as cp1252, so a char outside it
-    # (e.g. an arrow or em-dash) would raise UnicodeEncodeError and the whole
-    # advisory would vanish through main()'s exit-0 guard — the exact silent
-    # failure this hook exists to surface.
+    # ASCII by construction: this text is emitted on exit-2 stderr, which Claude
+    # Code pipes as cp1252 on Windows — a char outside it would raise at write time
+    # and the whole advisory would vanish. main() routes it through
+    # _hookout.ascii_sanitize as a wire-safety backstop, but keeping the source
+    # ASCII (`->`, `-`, no emoji) keeps the sanitizer a no-op here.
     labels = "\n".join(f"    - {a['action']}: {a['label']}" for a in actions)
     return (
         "[posttooluse-inert] PostToolUse hooks did not fire this session "
@@ -284,11 +295,11 @@ def mark_resolved(session_id: str) -> None:
 
 
 def main() -> None:
-    # Defensive: degrade an unencodable char to a replacement instead of letting
-    # print() raise (and the advisory vanish through the exit-0 guard). The text
-    # is ASCII by construction; this protects future edits.
+    # Defensive: degrade an unencodable char to a replacement instead of letting the
+    # exit-2 stderr write raise. The advisory is ASCII by construction and is also
+    # routed through _hookout.ascii_sanitize below; this protects future edits.
     try:
-        sys.stdout.reconfigure(errors="replace")
+        sys.stderr.reconfigure(errors="replace")
     except Exception:
         pass
 
@@ -303,6 +314,7 @@ def main() -> None:
         sys.exit(0)
 
     session_id = data.get("session_id") or ""
+    stop_hook_active = bool(data.get("stop_hook_active"))
 
     # Resolved once per session — skip the transcript re-scan on later Stops. (Stop
     # fires at every turn-end, many times per session.)
@@ -323,8 +335,26 @@ def main() -> None:
 
     actions = should_emit(records)
     if actions:
-        mark_resolved(session_id)
-        print(format_advisory(actions))
+        # The inert signature was detected. A Stop hook's exit-0 stdout is invisible
+        # to Claude, so BLOCK (exit 2 + stderr) — the one Stop channel that reaches
+        # the model (ADR-091/103). This mirrors ADR-100's stop-journal-stub-checkpoint
+        # and journal-stop-check Check 1: a manual stderr write ascii_sanitize-d via
+        # _hookout, then a literal `sys.exit(2)`. mark_resolved between the two writes
+        # a NoReturn emit_block would forbid, and the literal exit code keeps the gate
+        # able to see this stderr write is governed by exit 2 (a variable exit code
+        # would read as gov-0 -> a false Check A). Gate the block on
+        # `not stop_hook_active` so the continuation after our own block never
+        # re-blocks (the loop guard); the per-session sentinel then suppresses later
+        # fresh Stops.
+        if not stop_hook_active:
+            # Emit FIRST, mark_resolved AFTER — so a failed stderr write (caught by
+            # the outer guard -> exit 0) leaves the session unresolved to retry on
+            # the next Stop, rather than silencing an undelivered warning (dev-env#629).
+            sys.stderr.write(_hookout.ascii_sanitize(format_advisory(actions)) + "\n")
+            mark_resolved(session_id)
+            sys.exit(2)
+        # A stop_hook_active continuation reaching here means the sentinel write must
+        # have failed on the prior Stop; do NOT re-block — fall through to exit 0.
     elif posttooluse_attachment_present(records):
         # PostToolUse dispatch works this session (a session-level property; ADR-053),
         # so it can never be inert — resolve it so later Stops skip the full re-scan.

@@ -16,12 +16,15 @@ Check 1 — stub-push sentinel (CLAUDE-facing, BLOCKING via exit 2 + stderr):
   ADR-088's tile gate fixed). Fires at most once (the sentinel is consumed on
   read) and honors the stop_hook_active loop guard.
 
-Checks 2–3 (user-facing, NON-blocking — exit 0, stdout):
+Checks 2–3 (user-facing, NON-blocking — exit 0, systemMessage):
 1. Stale *_draft.md / *.stub.md files from before today
 2. Unmerged remote draft/* branches
   These point at work for a LATER, dedicated session (journal composition is
   dedicated-session-only and must never be triggered proactively; stale-PR
-  merges are separate work), so they must not block the stop.
+  merges are separate work), so they must not block the stop. A Stop hook's
+  exit-0 stdout is invisible (transcript-only), so these ride the _hookout
+  systemMessage channel — the one exit-0 channel a Stop hook delivers to the
+  user (ADR-103) — NOT plain stdout, which never surfaced them at all.
 
 Also cleans up orphaned draft files: physical files left on disk as untracked
 after git rm. This prevents new-day-journal-check.py false positives on the
@@ -29,6 +32,7 @@ next session (see dev-env#31).
 """
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+import _hookout
 import glob
 import json
 import os
@@ -229,9 +233,12 @@ def main() -> None:
             sys.exit(2)
 
     # Checks 2–3 — genuinely user-facing advisories (NON-blocking: exit 0,
-    # stdout). These point at work for a LATER, dedicated session (composition is
-    # dedicated-session-only and must never be triggered proactively; stale PRs
-    # are separate work), so they must not block the stop.
+    # systemMessage via _hookout). These point at work for a LATER, dedicated
+    # session (composition is dedicated-session-only and must never be triggered
+    # proactively; stale PRs are separate work), so they must not block the stop.
+    # A Stop hook's exit-0 stdout is transcript-only (invisible), so the former
+    # print() here surfaced nothing; the _hookout systemMessage channel is the one
+    # exit-0 channel a Stop hook delivers to the user (ADR-103).
     #
     # Note: only Check 1 (the block) is gated on stop_hook_active — unlike
     # stop-tile-enumeration-gate.py, which exits 0 for the WHOLE hook when
@@ -269,7 +276,9 @@ def main() -> None:
         )
 
     if messages:
-        print("\n".join(messages))
+        # systemMessage (exit 0) — the one exit-0 channel a Stop hook delivers to
+        # the user. emit_advisory exits 0, so these advisories never block the stop.
+        _hookout.emit_advisory("Stop", "\n".join(messages), audience="user")
 
     sys.exit(0)
 

@@ -6,13 +6,21 @@ In background / `spawn_task`-launched sessions, every PostToolUse hook is silent
 inert (upstream Claude Code limitation; ADR-053). This Stop hook reads the
 just-ended transcript and, when a dev-env (project #3) `gh issue/pr create` or
 `gh pr merge` ran but **no** PostToolUse hook left an `attachment` record all
-session, emits a one-line advisory pointing at the manual fallback. It never
-blocks (stdout, exit 0).
+session, surfaces the manual fallback. Because a Stop hook's exit-0 stdout is
+invisible to Claude, the advisory is now delivered on **exit-2 stderr** (the one
+Stop channel that reaches the model — ADR-091/103), blocking the stop once so it is
+actually seen; a `stop_hook_active` loop guard plus a per-session sentinel keep it
+to one fire, and `mark_resolved` runs *after* the emission so a failed delivery is
+retried (dev-env#629, dev-env#740).
 
-These tests exercise the pure helpers offline against synthetic transcript
-records (no stdin, no network, no gh, no disk) — matching the repo's fixture-only
-convention. The thin I/O in `main()` (stdin parse, transcript locate, sentinel
-write) is not covered.
+The pure helpers are exercised offline against synthetic transcript records (no
+stdin, no network, no gh, no disk). A behavioral layer additionally drives the real
+hook end-to-end over stdin via subprocess (HOME/USERPROFILE pointed at a temp dir so
+the sentinel + transcript-locate resolve under the tmp scratch, mirroring
+test_journal_stop_check.py): an inert session blocks (exit 2, advisory on stderr,
+empty stdout); a `stop_hook_active` continuation and a healthy session (a PostToolUse
+attachment present) each exit 0; and the per-session sentinel suppresses a second
+fire (proving mark_resolved ran on the blocking Stop).
 
 Usage:
     py -3 claude/scripts/tests/test_posttooluse_inert_advisory.py
@@ -21,15 +29,20 @@ Exit 0 = all pass.
 """
 
 import importlib.util
+import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "claude" / "scripts" / "posttooluse-inert-advisory.py"
 
-# The script imports _winsubp (a sibling in scripts/); make it resolvable when
-# exec_module runs the module body.
+# The script imports _winsubp / _hookout (siblings in scripts/); make them
+# resolvable when exec_module runs the module body.
 sys.path.insert(0, str(SCRIPT.parent))
 
 _spec = importlib.util.spec_from_file_location("posttooluse_inert_advisory", SCRIPT)
@@ -445,9 +458,10 @@ def test_format_advisory_mentions_fallback() -> str:
 
 
 def test_advisory_is_cp1252_safe() -> str:
-    # Claude Code pipes hook stdout as cp1252; a char outside it (an arrow, an
-    # em-dash) makes print() raise and the advisory vanish through the exit-0
-    # guard. Pin the advisory ASCII/cp1252-encodable so that can't regress.
+    # Claude Code pipes hook output as cp1252; a char outside it (an arrow, an
+    # em-dash) makes the exit-2 stderr write raise and the advisory vanish through
+    # the outer guard. main() also routes it through _hookout.ascii_sanitize, but
+    # keeping format_advisory ASCII/cp1252-encodable keeps the sanitizer a no-op.
     for actions in (
         [{"action": "create", "label": f"issue {DEVENV_ISSUE_URL}"}],
         [{"action": "merge", "label": "PR #241"}],
@@ -455,7 +469,89 @@ def test_advisory_is_cp1252_safe() -> str:
         msg = format_advisory(actions)
         msg.encode("cp1252")  # raises UnicodeEncodeError on a non-cp1252 char
         assert msg.isascii(), f"advisory must be ASCII, got non-ASCII: {msg!r}"
-    return "advisory is ASCII / cp1252-encodable (won't vanish under cp1252 stdout)"
+    return "advisory is ASCII / cp1252-encodable (won't vanish under the cp1252 stderr pipe)"
+
+
+# --- behavioral: real hook over stdin via subprocess (HOME-isolated sentinel) --
+
+def _py_cmd():
+    return ["py", "-3"] if shutil.which("py") else ["python3"]
+
+
+INERT_RECORDS = [
+    bash_use("t1", "gh issue create --repo brownm09/dev-env --title x"),
+    tool_result("t1", DEVENV_ISSUE_URL),
+    attachment("hook_success", "Stop"),  # Stop fires even when inert; no PostToolUse
+]
+HEALTHY_RECORDS = INERT_RECORDS + [attachment("hook_blocking_error", "PostToolUse")]
+
+
+def _run_hook(home, records, *, stop_hook_active=False, session_id="sess-e2e-1"):
+    """Drive the real hook once against a planted transcript. (rc, stdout, stderr).
+
+    HOME/USERPROFILE point at *home* so _hookutil.SCRATCH (the sentinel dir) and any
+    find_transcript fallback resolve under the tmp dir. The scratch dir is
+    pre-created because mark_resolved's `SCRATCH.mkdir(exist_ok=True)` does not create
+    parents (matching production, where ~/.claude already exists)."""
+    home = Path(home)
+    (home / ".claude" / "scratch").mkdir(parents=True, exist_ok=True)
+    tpath = home / "transcript.jsonl"
+    tpath.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
+    payload = json.dumps({
+        "session_id": session_id,
+        "transcript_path": str(tpath),
+        "stop_hook_active": stop_hook_active,
+        "hook_event_name": "Stop",
+    })
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)  # Path.home() honors USERPROFILE on Windows
+    proc = subprocess.run(
+        _py_cmd() + [str(SCRIPT)], input=payload,
+        capture_output=True, text=True, env=env,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def test_e2e_inert_blocks_on_stderr() -> str:
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(home, INERT_RECORDS, stop_hook_active=False)
+    assert rc == 2, f"inert session must block (exit 2), got {rc} (stderr={err!r})"
+    assert "[posttooluse-inert]" in err, err
+    assert out.strip() == "", f"stdout must be empty on exit 2, got {out!r}"
+    return "e2e inert + not-continuation -> exit 2, advisory on stderr, empty stdout"
+
+
+def test_e2e_stop_hook_active_does_not_block() -> str:
+    # A continuation Stop (the loop guard): even with the inert signature present and
+    # no sentinel yet, do NOT re-block -- exit 0 with no advisory.
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(home, INERT_RECORDS, stop_hook_active=True)
+    assert rc == 0, f"stop_hook_active continuation must not block, got {rc} (stderr={err!r})"
+    assert "[posttooluse-inert]" not in err, f"must not re-emit on a continuation, got {err!r}"
+    return "e2e inert + stop_hook_active=true -> exit 0 (loop guard), no re-block"
+
+
+def test_e2e_healthy_session_silent() -> str:
+    # A PostToolUse attachment present => dispatch worked => never inert => silent.
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(home, HEALTHY_RECORDS, stop_hook_active=False)
+    assert rc == 0, f"healthy session must exit 0, got {rc} (stderr={err!r})"
+    assert "[posttooluse-inert]" not in err and out.strip() == "", (out, err)
+    return "e2e healthy (PostToolUse attachment present) -> exit 0, silent"
+
+
+def test_e2e_sentinel_suppresses_second_fire() -> str:
+    # First Stop blocks (exit 2) and mark_resolved writes the sentinel AFTER the
+    # emission; a second Stop in the same session finds the sentinel and exits 0 --
+    # proving the advisory fires at most once and mark_resolved ran on the block.
+    with tempfile.TemporaryDirectory() as home:
+        rc1, _out1, err1 = _run_hook(home, INERT_RECORDS, stop_hook_active=False)
+        rc2, out2, err2 = _run_hook(home, INERT_RECORDS, stop_hook_active=False)
+    assert rc1 == 2 and "[posttooluse-inert]" in err1, (rc1, err1)
+    assert rc2 == 0, f"second Stop must be suppressed by the sentinel, got {rc2} (stderr={err2!r})"
+    assert "[posttooluse-inert]" not in err2, f"must not re-fire, got {err2!r}"
+    return "e2e first Stop blocks + sets sentinel; second Stop -> exit 0 (fires at most once)"
 
 
 def main() -> int:
@@ -491,7 +587,12 @@ def main() -> int:
         ("should_emit: no action -> silent", test_should_emit_no_action_silent),
         ("should_emit: inert merge -> advise", test_should_emit_inert_merge),
         ("format_advisory mentions fallback", test_format_advisory_mentions_fallback),
-        ("advisory is cp1252-safe (no vanish under cp1252 stdout)", test_advisory_is_cp1252_safe),
+        ("advisory is cp1252-safe (no vanish under cp1252 stderr)", test_advisory_is_cp1252_safe),
+        # behavioral: real hook over stdin (exit-2 stderr migration, dev-env#740)
+        ("e2e inert blocks on stderr (exit 2)", test_e2e_inert_blocks_on_stderr),
+        ("e2e stop_hook_active does not block", test_e2e_stop_hook_active_does_not_block),
+        ("e2e healthy session silent", test_e2e_healthy_session_silent),
+        ("e2e sentinel suppresses second fire", test_e2e_sentinel_suppresses_second_fire),
     ]
     failed = 0
     for name, fn in tests:

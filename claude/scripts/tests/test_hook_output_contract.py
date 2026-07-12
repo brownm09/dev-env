@@ -124,7 +124,7 @@ from _hookout import STDOUT_MODEL_VISIBLE_EVENTS  # noqa: E402  (the SSOT, ADR-1
 
 # ---------------------------------------------------------------------------
 # Two-sided allowlists (populated with current offenders; migrations shrink them)
-# Verified against origin/main @ 2cc6afa (2026-07-11).
+# Verified against origin/main @ ec10f8b (2026-07-12).
 # ---------------------------------------------------------------------------
 # {(script, check): count} — check in {"A","B","C","D"}, count = currently-accepted
 # offense lines for that check in that script. A hook stays listed until every site
@@ -134,27 +134,27 @@ from _hookout import STDOUT_MODEL_VISIBLE_EVENTS  # noqa: E402  (the SSOT, ADR-1
 # a second offense can't hide behind an existing entry. Line numbers are deliberately
 # NOT recorded here (they rot); the gate prints live line numbers on failure.
 # Migration owner per ADR-103:
-#   PR6 -> token-tracker, journal-stop-check (checks 2-3), posttooluse-inert-advisory
-#   (PR5 swept post-pr-merge-pull + post-pr-merge-reclaim onto _hookout -- dev-env#736;
-#    post-compact's exit-0 stderr status was swept in dev-env#727.)
-_OUTPUT_CONTRACT_ALLOWLIST: dict[tuple[str, str], int] = {
-    ("journal-stop-check.py", "B"): 1,        # checks 2-3 print()+exit0 (PR6)
-    ("posttooluse-inert-advisory.py", "B"): 1,  # bare stdout on Stop, exit 0 (PR6)
-    ("token-tracker.py", "A"): 1,             # stderr diagnostic, exit 0 (PR6)
-    ("token-tracker.py", "B"): 2,             # stdout echoes on Stop, exit 0 (PR6)
-}
+#   PR5 swept post-pr-merge-pull + post-pr-merge-reclaim onto _hookout (dev-env#736);
+#   post-compact's exit-0 stderr status was swept in dev-env#727;
+#   PR6 (dev-env#740) swept the Stop-family hooks -- token-tracker (stderr diagnostic
+#   -> systemMessage; the two per-turn stdout echoes dropped), journal-stop-check
+#   (checks 2-3 -> systemMessage), posttooluse-inert-advisory (advisory -> exit-2
+#   stderr). With that, EVERY output-contract offender is migrated, so this allowlist
+#   is empty; any new entry the gate reports is a genuine regression to route through
+#   _hookout, not something to re-add here.
+_OUTPUT_CONTRACT_ALLOWLIST: dict[tuple[str, str], int] = {}
 
 # {script: count} — scripts emitting a non-ASCII string literal DIRECTLY in a
 # raw-stream call (mostly em-dash U+2014 / ellipsis U+2026 -- cp1252-safe but not
 # .isascii(), the stronger _hookout guarantee), with the count of such emission
 # lines. PR5 cleared usage-snapshot (emoji + <= now ASCII, emissions on _hookout,
 # with an .isascii() pin on format_snapshot) and post-pr-merge-pull/reclaim
-# (dev-env#736); PR6 token-tracker; PR7 dev-env-sync. post-compact /
+# (dev-env#736); PR6 (dev-env#740) cleared token-tracker (both non-ASCII lines were
+# in the dropped per-turn echoes); PR7 -> dev-env-sync (the last remaining). post-compact /
 # post-merge-tile-checkpoint / pre-merge-findings-gate were swept onto _hookout in
 # dev-env#727.
 _NONASCII_EMISSION_ALLOWLIST: dict[str, int] = {
     "dev-env-sync.py": 4,
-    "token-tracker.py": 2,
 }
 
 
