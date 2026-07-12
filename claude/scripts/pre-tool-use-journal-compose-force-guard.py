@@ -117,6 +117,10 @@ _GATED_VERBS = {"worktree", "commit", "push"}
 # raw substring search over free text, since scan_tokens already excludes
 # message-flag values (see _verb_and_scan_tokens).
 _DATE_TOKEN_RE = re.compile(r"(?:draft/|compose[-/])(\d{4}-\d{2}-\d{2})")
+# Matches only compose-<date> / compose/<date> -- used by _is_compose_op to
+# distinguish a compose operation from a stub-write (which only references
+# draft/<today>, never a compose worktree path).
+_COMPOSE_DATE_TOKEN_RE = re.compile(r"compose[-/](\d{4}-\d{2}-\d{2})")
 
 
 def _strip_leading_env(segment: str) -> str:
@@ -258,6 +262,53 @@ def command_targets_today_compose(command: str, today: str, segments=None) -> bo
     return any(segment_targets_today_compose(seg, today) for seg in segments)
 
 
+def _command_has_compose_token(command: str, today: str, segments=None) -> bool:
+    """Return True if any non-message scan token in `command` contains
+    compose[-/]<today>.  Accepts pre-computed segments to avoid double-parsing
+    when called from _is_compose_op with segments already split."""
+    if segments is None:
+        segments = split_top_level(command, split_pipe=True)
+    for seg in segments:
+        tokens = _git_rest_tokens(seg)
+        if not tokens:
+            continue
+        _, scan_tokens = _verb_and_scan_tokens(tokens)
+        for tok in scan_tokens:
+            m = _COMPOSE_DATE_TOKEN_RE.search(tok)
+            if m and m.group(1) == today:
+                return True
+    return False
+
+
+def _is_compose_op(command: str, cwd: str, today: str, segments=None) -> bool:
+    """Return True only when `command` is a journal-compose operation.
+
+    Stub-writes to draft/<today> (git push -u origin draft/<today> etc.) are
+    the legitimate same-session operations that the broad _DATE_TOKEN_RE match
+    in segment_targets_today_compose incorrectly gates.  Compose ops always
+    carry a compose-<today> worktree path -- in the cwd when the session is
+    running inside the worktree, or in an explicit -C path / worktree-add
+    destination token.  Stub-writes only ever reference draft/<today>.
+
+    Fast path: if compose-<today> appears nowhere in cwd or the raw command
+    string, it cannot appear in a scan token either -- return False immediately
+    (no parse needed).
+    """
+    cwd = cwd or ""
+    compose_hyphen = f"compose-{today}"
+    compose_slash = f"compose/{today}"
+    if (
+        compose_hyphen not in cwd
+        and compose_slash not in cwd
+        and compose_hyphen not in command
+        and compose_slash not in command
+    ):
+        return False  # only draft/<today> in command -- stub-write, not a compose op
+    if compose_hyphen in cwd or compose_slash in cwd:
+        return True  # cwd is inside a compose worktree
+    return _command_has_compose_token(command, today, segments)
+
+
 def _emit_block(today: str) -> None:
     reason = (
         f"[journal-compose-force-guard] BLOCKED: this command mutates a "
@@ -294,8 +345,18 @@ def main() -> None:
     if not command:
         sys.exit(0)
 
+    cwd = data.get("cwd") or ""
     today = datetime.date.today().isoformat()
-    if not command_targets_today_compose(command, today):
+    # Pre-split segments once so command_targets_today_compose and
+    # _is_compose_op can share the parse result without double-splitting.
+    segments = split_top_level(command, split_pipe=True) if today in command else None
+    if not command_targets_today_compose(command, today, segments):
+        sys.exit(0)
+
+    # Allow stub-write operations (git push -u origin draft/<today>, etc.) from
+    # regular checkouts -- only gate genuine journal-compose operations, which
+    # always carry a compose-<today> worktree path in the cwd or a scan token.
+    if not _is_compose_op(command, cwd, today, segments):
         sys.exit(0)
 
     # Test-only fault-injection seam (inert in production -- the env var is never
@@ -304,10 +365,9 @@ def main() -> None:
     # swallows (OSError, ValueError) and is_marker_fresh swallows (ValueError,
     # TypeError) -- so there is NO natural runtime-crash vector to drive the
     # __main__ crash guard from an e2e subprocess. Placed here, after the same-day
-    # compose target is confirmed, so the test proves a crash while evaluating a
-    # genuine gated command becomes a fail-CLOSED exit 2, not the fail-OPEN exit 1
-    # it was before dev-env#718. (Unlike file 1, whose gh-response handling has a
-    # natural crash vector, so its e2e needs no such seam.)
+    # compose target is confirmed AND the compose-op check passed, so the test
+    # proves a crash while evaluating a genuine gated command becomes a fail-CLOSED
+    # exit 2, not the fail-OPEN exit 1 it was before dev-env#718.
     if os.environ.get("JOURNAL_COMPOSE_FORCE_GUARD_TEST_CRASH"):
         raise RuntimeError("injected crash for __main__ guard e2e test (dev-env#718)")
 
