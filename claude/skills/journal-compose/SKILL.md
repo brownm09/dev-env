@@ -1342,8 +1342,9 @@ If a legacy `open-prs.jsonl` exists for this project, apply the same per-entry s
 each line, rewrite the file with only the still-open entries (or delete it if now empty), and
 `git -C "$WT" add` the result.
 
-Carry `RECONCILED_SHARDS` forward — it goes into the Step 11 PR body, and (on the Step 10.5
-conflict-recovery path only) may need to be re-applied after checking out `origin/main`'s tree.
+Carry `RECONCILED_SHARDS` forward — it goes into the Step 11 PR body. On the Step 10.5
+conflict-recovery path, these deletions are picked up automatically by that step's
+diff-and-replay against `$MERGE_BASE`..`$PREV` — no manual re-application needed.
 
 ## Step 10 — Commit
 
@@ -1439,32 +1440,26 @@ PREV=$(git -C "$WT" rev-parse HEAD)
 # 1. Move the compose worktree onto a clean branch from origin/main
 git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
 
-# 2. Cherry-pick only the composed output files from the pre-recovery commit.
-#    Include the open-PR records if present — today's sessions may have updated them.
-#    Per ADR-056 these are per-PR shards under open-prs/; a pre-ADR-056 day uses open-prs.jsonl.
-git -C "$WT" checkout "$PREV" -- \
-  sessions/<project>/YYYY-MM-DD-<slug>.md \
-  sessions/<project>/README.md \
-  README.md
-[ -f "$WT/sessions/<project>/open-prs.jsonl" ] && \
-  git -C "$WT" checkout "$PREV" -- sessions/<project>/open-prs.jsonl
-[ -d "$WT/sessions/<project>/open-prs" ] && \
-  git -C "$WT" checkout "$PREV" -- sessions/<project>/open-prs
-
-# 2b. Re-apply this run's Step 9.5 reconciliation — REQUIRED, not optional. Empirically
-#     confirmed: `git checkout <commit> -- <dir>` does NOT delete files present in the current
-#     working tree but absent from <commit> — it only adds/updates what <commit> has. The
-#     `checkout -b ... origin/main` above left `open-prs/` at origin/main's STALE state (still
-#     containing shards Step 9.5 already verified-and-removed in $PREV, since those removals
-#     haven't reached main yet); the `checkout "$PREV" -- open-prs` line just above does NOT
-#     remove them — $PREV doesn't have them either, so nothing changes them either way. Without
-#     this step, every reconciled shard from Step 9.5 silently reappears in the branch about to
-#     be pushed. For every PR number this run's Step 9.5 reconciled for this project (you already
-#     have this list from Step 9.5 — do not skip re-deriving it), remove it again explicitly:
-for N in <the exact PR numbers this run's Step 9.5 removed for this project, space-separated>; do
-  [ -f "$WT/sessions/<project>/open-prs/$N.json" ] && \
-    git -C "$WT" rm --quiet -- "sessions/<project>/open-prs/$N.json"
-done
+# 2. Diff-and-replay: reconcile against everything the draft branch actually changed —
+#    added, modified, OR deleted — since it diverged from main ($MERGE_BASE, already computed
+#    by the conflict probe above), instead of a hand-maintained allowlist of known file classes
+#    that has to be updated by hand every time a new file class is introduced (dev-env#684 only
+#    patched the open-PR-shard case; this generalizes it — dev-env#742). One mechanism now
+#    covers the composed journal, both READMEs, open-PR shards/legacy files, every deletion
+#    Step 9.5's reconciliation made, and any other file class (e.g. sessions/<project>/reports/)
+#    with no per-class code required here. --no-renames keeps the status column to plain A/M/D
+#    — a rename surfaces as a D of the old path plus an A of the new one, which the replay loop
+#    below already handles correctly without special-casing R.
+git -C "$WT" diff --no-renames --name-status "$MERGE_BASE" "$PREV" -- \
+    "sessions/<project>/" README.md > "$WT/.compose-diff-plan.txt"
+while IFS=$'\t' read -r STATUS FILEPATH; do
+  case "$STATUS" in
+    A|M) git -C "$WT" checkout "$PREV" -- "$FILEPATH" ;;
+    D)   [ -e "$WT/$FILEPATH" ] && git -C "$WT" rm --quiet -- "$FILEPATH" ;;
+    *)   echo "WARNING: unhandled diff status '$STATUS' for $FILEPATH — inspect manually" ;;
+  esac
+done < "$WT/.compose-diff-plan.txt"
+rm -f "$WT/.compose-diff-plan.txt"
 
 # 3. Commit and push
 git -C "$WT" commit -m \
@@ -1496,28 +1491,22 @@ for two projects `meta` and `lifting-logbook`:
 ```bash
 PREV=$(git -C "$WT" rev-parse HEAD)
 git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
-git -C "$WT" checkout "$PREV" -- \
-  sessions/meta/YYYY-MM-DD-<slug-a>.md \
-  sessions/meta/README.md \
-  sessions/lifting-logbook/YYYY-MM-DD-<slug-b>.md \
-  sessions/lifting-logbook/README.md \
-  README.md
-# open-PR records per project (conditional) — legacy file and/or ADR-056 shard dir
-for proj in meta lifting-logbook; do
-  [ -f "$WT/sessions/$proj/open-prs.jsonl" ] && \
-    git -C "$WT" checkout "$PREV" -- "sessions/$proj/open-prs.jsonl"
-  [ -d "$WT/sessions/$proj/open-prs" ] && \
-    git -C "$WT" checkout "$PREV" -- "sessions/$proj/open-prs"
-done
-# REQUIRED, not optional — see the single-project note above for why: the checkouts above
-# cannot delete a shard that's absent from $PREV but present in origin/main's stale tree. For
-# every PR number each project's own Step 9.5 reconciled, remove it again explicitly:
-for proj in meta lifting-logbook; do
-  for N in <the exact PR numbers this run's Step 9.5 removed for $proj, space-separated>; do
-    [ -f "$WT/sessions/$proj/open-prs/$N.json" ] && \
-      git -C "$WT" rm --quiet -- "sessions/$proj/open-prs/$N.json"
-  done
-done
+
+# Diff-and-replay across all composed projects' directories plus the top-level README — the
+# same generalized mechanism as the single-project case above, just scoped to every project
+# touched this run instead of one. Replaces the old per-file-class checkout plus manual
+# per-project shard re-removal.
+git -C "$WT" diff --no-renames --name-status "$MERGE_BASE" "$PREV" -- \
+    sessions/meta/ sessions/lifting-logbook/ README.md > "$WT/.compose-diff-plan.txt"
+while IFS=$'\t' read -r STATUS FILEPATH; do
+  case "$STATUS" in
+    A|M) git -C "$WT" checkout "$PREV" -- "$FILEPATH" ;;
+    D)   [ -e "$WT/$FILEPATH" ] && git -C "$WT" rm --quiet -- "$FILEPATH" ;;
+    *)   echo "WARNING: unhandled diff status '$STATUS' for $FILEPATH — inspect manually" ;;
+  esac
+done < "$WT/.compose-diff-plan.txt"
+rm -f "$WT/.compose-diff-plan.txt"
+
 git -C "$WT" commit -m \
   "[docs] Add YYYY-MM-DD journals: <slug-a>, <slug-b> (compose branch — draft had conflicts)"
 git -C "$WT" push -u origin compose/YYYY-MM-DD
@@ -1593,13 +1582,14 @@ git -C "$EJ" branch -D compose/YYYY-MM-DD 2>/dev/null || true  # only exists aft
 ```
 
 **Post-merge shard-leak check** — surfaces a leak without ever mutating the canonical to fix it.
-This checks for a leak of the shards this run's Step 9.5 reconciled (and Step 10.5's "2b", if the
-conflict-recovery path ran) — **not** a shard for the compose PR itself, which by design (see
-"Disregard the pr-merge-reminder hook's..." above) never exists in the first place:
+This checks for a leak of the shards this run's Step 9.5 reconciled (and Step 10.5's
+diff-and-replay, if the conflict-recovery path ran) — **not** a shard for the compose PR itself,
+which by design (see "Disregard the pr-merge-reminder hook's..." above) never exists in the
+first place:
 
 ```bash
 git -C "$EJ" fetch origin main
-for N in <the exact PR numbers this run's Step 9.5 (and Step 10.5's re-application, if it ran)
+for N in <the exact PR numbers this run's Step 9.5 (and Step 10.5's diff-and-replay, if it ran)
           reconciled, space-separated>; do
   git -C "$EJ" ls-tree -r origin/main --name-only | grep -q "open-prs/$N.json" && \
     echo "WARNING: shard open-prs/$N.json landed back on origin/main despite reconciliation — remove it in a follow-up commit"
