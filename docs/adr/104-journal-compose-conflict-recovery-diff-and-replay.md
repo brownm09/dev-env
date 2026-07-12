@@ -105,6 +105,13 @@ reconciled*, independent of *how the recovery path re-applies it*.
   of being silently dropped or silently mis-replayed.
 
 **Trade-offs / limits:**
+- An `A`/`M` status always takes `$PREV`'s content wholesale via `git checkout "$PREV" --
+  <path>` — it does not attempt to reconcile against whatever `origin/main` independently holds
+  at that path (most relevant for the shared top-level `README.md`, which more than one
+  project's compose could touch on the same day). This is **not** new behavior — the
+  pre-existing allowlist did the identical unconditional `checkout "$PREV" -- ... README.md` —
+  but is worth stating explicitly here since "diff-and-replay" could otherwise read as reconciling
+  concurrent edits, which it does not: for any path both sides touched, `$PREV` simply wins.
 - The diff is pathspec-scoped to the composed project's own `sessions/<project>/` tree (or, in
   multi-project mode, every composed project's tree) plus `README.md` — deliberately, so a stray
   unrelated file elsewhere in the repo touched by some other mechanism is never swept in. This
