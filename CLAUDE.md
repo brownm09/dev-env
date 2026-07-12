@@ -369,8 +369,17 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     correctly bounds it. `iter_bash_calls`,
     `load_records`, and `_result_text` are imported from `_hookutil`
     ([ADR-090](docs/adr/090-shared-transcript-readers-hookutil.md)) and reached via module-attribute
-    indirection, so this suite pins the advisory-specific behavior unchanged. The `main()` I/O (stdin,
-    transcript locate, sentinel) is not covered (pure-helper convention).
+    indirection, so this suite pins the advisory-specific behavior unchanged. Since dev-env#740
+    ([ADR-103](docs/adr/103-shared-hookout-emitter.md)) the advisory is delivered on **exit-2 stderr** (a
+    Stop hook's exit-0 stdout is invisible; ADR-091) rather than the former invisible exit-0 stdout
+    `print()`, so a behavioral layer now drives the real hook end-to-end over stdin via subprocess
+    (HOME/USERPROFILE isolated to a temp dir so the sentinel + transcript-locate resolve under the tmp
+    scratch, mirroring item 50): an inert session blocks (exit 2, advisory on stderr, **empty stdout**);
+    a `stop_hook_active` continuation and a healthy session (a PostToolUse attachment present) each exit
+    0; and the per-session sentinel suppresses a second fire — proving the advisory fires at most once and
+    that `mark_resolved` ran on the blocking Stop, *after* the emission (the dev-env#629 retry-safety
+    ordering). The remaining `main()` I/O beyond those end-to-end runs is not separately unit-tested
+    (pure-helper convention).
 
     ```bash
     py -3 claude/scripts/tests/test_posttooluse_inert_advisory.py
@@ -1223,10 +1232,15 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `~/.claude/scratch`, mirroring item 48): a present flag + `stop_hook_active:false` blocks the stop
     (exit 2, reminder on **stderr**, **empty stdout** — Claude Code shows a Stop hook's stderr on exit 2,
     not stdout) and consumes the flag; no flag exits 0 (advisory path, fail-closed against the tmp journal
-    repo); a present flag + `stop_hook_active:true` exits 0 (loop guard, no re-block) and **preserves** the
+    repo); a no-flag run with a *planted* stale (uncomposed, pre-today) stub in the tmp journal repo
+    delivers the Checks 2-3 advisory as a `{"systemMessage": ...}` JSON object on **stdout** (exit 0) with
+    empty stderr — the re-pin of the corrected non-blocking channel (dev-env#740,
+    [ADR-103](docs/adr/103-shared-hookout-emitter.md): a Stop hook's exit-0 stdout is invisible, so the
+    former plain-`print()` surfaced nothing, and Checks 2-3 now ride the `_hookout` systemMessage channel);
+    a present flag + `stop_hook_active:true` exits 0 (loop guard, no re-block) and **preserves** the
     flag (never consumed without delivery). `main()`'s advisory branches (stale-draft / unmerged-branch /
     orphan cleanup) shell out to git and are not separately unit-tested (pure-helper convention) — the
-    end-to-end no-flag run exercises their fail-closed path.
+    end-to-end runs exercise their fail-closed path and, with the planted stub, the systemMessage delivery.
 
     ```bash
     py -3 claude/scripts/tests/test_journal_stop_check.py
@@ -1604,15 +1618,17 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     (A/B/C/D plus the exempt cells), and the cross-function drop-by-caller pass (helper-stdout + exit-2
     caller flagged; exit-0 caller / helper-stderr / helper-own-exit-2 / two-hops not flagged). Two-sided
     allowlists (the `test_no_crude_command_substring_checks.py` mechanism): `_OUTPUT_CONTRACT_ALLOWLIST`
-    keyed by `(script, check)` (6 current offenders; PRs 5-6 shrink it), `_NONASCII_EMISSION_ALLOWLIST`
-    keyed by script (5 current offenders, mostly cp1252-safe em-dash/ellipsis that are still
-    non-`.isascii()`). Documented limitations: the ASCII lint and Check D both see only literals
+    keyed by `(script, check)` (**empty** as of PR6/dev-env#740 — PR5 swept the PostToolUse hooks and PR6
+    the Stop-family hooks, so every output-contract offender is now migrated onto `_hookout`; a new entry
+    the gate reports is a genuine regression), `_NONASCII_EMISSION_ALLOWLIST` keyed by script (1 remaining:
+    `dev-env-sync.py`'s 4 cp1252-safe em-dash/ellipsis lines, PR7 — token-tracker's 2 lines cleared in PR6
+    when the per-turn echoes carrying them were dropped). Documented limitations: the ASCII lint and Check D both see only literals
     *direct* in the emission call (usage-snapshot's emoji reach stderr via a variable, flagged only via
     an incidental em-dash — PR5's own `.isascii()` self-pin covers the emoji; a json payload built from
     a variable classifies as "unknown" and is exempt), and the cross-function Check C pass is one level
     and matches only a bare-`Name` call site (a two-hop or `mod.helper()` call is not traced). No wired
     hook hits Check D or the cross-function C today (both latent).
-    ([ADR-103](docs/adr/103-shared-hookout-emitter.md); dev-env#720, dev-env#727)
+    ([ADR-103](docs/adr/103-shared-hookout-emitter.md); dev-env#720, dev-env#727, dev-env#740)
 
     ```bash
     py -3 claude/scripts/tests/test_hook_output_contract.py
@@ -1680,6 +1696,31 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 
     ```bash
     py -3 claude/scripts/tests/test_run_hook_tests.py
+    ```
+
+65. **token-tracker test** — required when changing `claude/scripts/token-tracker.py`. Exercises the
+    pure helpers offline (no stdin, network, gh, or disk): `format_locate_error(session_id)` — the
+    user-facing "could not locate the transcript" diagnostic, now delivered via
+    `_hookout.emit_advisory(audience="user")` as a systemMessage (exit 0) because a Stop hook's exit-0
+    stderr is invisible (dev-env#740, [ADR-103](docs/adr/103-shared-hookout-emitter.md)) — pinned
+    `.isascii()` + `.encode("cp1252")` (so it can't vanish under Claude Code's cp1252 hook-output pipe on
+    Windows), names the hook + the session id + "not recorded", and stays ASCII for an empty session id;
+    `should_advise_locate_failure(session_id, scratch=tmp)` — the once-per-session guard added in the
+    PR6 review (dev-env#740): a Stop hook fires every turn-end, so a persistently unlocatable transcript
+    would re-toast every turn without it; pins advise-once-then-suppress, per-session (not global)
+    keying, and the empty-session-id "always advise" fallback (can't dedupe -> fail toward visible);
+    plus `get_pricing` (known models incl. a dated/suffixed id via substring match, and the default
+    fallback for an unknown/empty model) and `compute_cost` (the four-bucket per-million arithmetic, and
+    `$0` for empty usage). Added in PR6 (the file had no test before): the migration moved the transcript-
+    locate diagnostic onto the systemMessage channel and **dropped** the two per-turn stdout status echoes
+    (invisible on a Stop hook, and a systemMessage in their place would be per-turn toast spam), which also
+    cleared token-tracker's `_OUTPUT_CONTRACT_ALLOWLIST` entries (A + B) and its `_NONASCII_EMISSION_ALLOWLIST`
+    entry (the `…`/`—` lived only in the dropped echoes) — verified by item 61's gate. `main()`'s I/O
+    (stdin parse, transcript aggregation, log write, the emission) is not covered (pure-helper convention);
+    the emission channel is pinned by items 60/61 (`test_hookout.py` / the output-contract gate).
+
+    ```bash
+    py -3 claude/scripts/tests/test_token_tracker.py
     ```
 
 ## Observability

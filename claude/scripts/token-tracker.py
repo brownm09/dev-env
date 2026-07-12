@@ -9,6 +9,7 @@ Outputs:
     ~/.claude/scratch/token-sessions.jsonl   — one record per session (append)
     ~/.claude/scratch/latest-session.json    — latest session (overwrite)
 """
+import _hookout
 import _hookutil
 import json
 import sys
@@ -19,6 +20,11 @@ CLAUDE_DIR = Path.home() / ".claude"
 SCRATCH_DIR = CLAUDE_DIR / "scratch"
 TOKEN_LOG = SCRATCH_DIR / "token-sessions.jsonl"
 LATEST_SESSION = SCRATCH_DIR / "latest-session.json"
+
+# Per-session sentinel prefix for the transcript-locate diagnostic, so it toasts at
+# most once per session — a Stop hook fires at every turn-end, and a persistently
+# unlocatable transcript would otherwise re-toast the user every turn.
+LOCATE_FAIL_PREFIX = "token-tracker-locate-fail-"
 
 # Pricing per million tokens — Sonnet 4.6 as of 2026-04
 PRICING = {
@@ -44,6 +50,43 @@ def compute_cost(usage: dict, prices: dict) -> float:
         + usage.get("cache_read_input_tokens", 0)  * prices["cache_read"]  / 1_000_000
         + usage.get("cache_creation_input_tokens", 0) * prices["cache_write"] / 1_000_000
     )
+
+
+def format_locate_error(session_id: str) -> str:
+    """The user-facing diagnostic when the session transcript can't be located.
+
+    Delivered via _hookout as a systemMessage (exit 0): token-tracker is a Stop
+    hook and must never block the stop, and a Stop hook's exit-0 stdout/stderr are
+    invisible to Claude and the user, so systemMessage is the only channel that
+    surfaces this failure (ADR-103). ASCII by construction (session_id is a UUID),
+    so it can't vanish under Claude Code's cp1252 hook-output pipe on Windows."""
+    return (
+        f"[token-tracker] Could not locate the transcript for session "
+        f"{session_id!r}; token usage was not recorded for this session."
+    )
+
+
+def should_advise_locate_failure(session_id: str, scratch=None) -> bool:
+    """True the FIRST time a transcript-locate failure is seen this session, else
+    False — a once-per-session guard.
+
+    A Stop hook fires at every turn-end, so a persistently unlocatable transcript
+    would re-toast the user every turn without this guard (the same per-turn-spam
+    reason the status echoes are dropped rather than routed to systemMessage).
+    Best-effort: with no session_id (can't dedupe) or an unwritable scratch dir, err
+    toward advising — a rare duplicate toast in a degraded state beats a silently
+    lost diagnostic. *scratch* overrides SCRATCH for offline tests."""
+    if not session_id:
+        return True
+    sentinel = _hookutil.sentinel_path(LOCATE_FAIL_PREFIX, session_id, scratch=scratch)
+    if sentinel.exists():
+        return False
+    try:
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text("")
+    except Exception:
+        pass
+    return True
 
 
 def _count_turns(jsonl_path: Path) -> tuple[dict, int, str]:
@@ -149,6 +192,8 @@ def aggregate_session(transcript_path: Path) -> dict:
 
 
 def main() -> None:
+    _hookutil.cleanup_stale_sentinels(LOCATE_FAIL_PREFIX)
+
     raw = sys.stdin.read().strip()
     hook_data = json.loads(raw) if raw else {}
 
@@ -165,8 +210,16 @@ def main() -> None:
         transcript_path = _hookutil.find_transcript(session_id)
 
     if transcript_path is None:
-        print(f"[token-tracker] ERROR: cannot locate transcript for session {session_id!r}", file=sys.stderr)
-        sys.exit(0)  # non-fatal — don't block Claude Code
+        # A Stop hook's exit-0 stdout/stderr are invisible, so surface the
+        # transcript-locate failure via the shared _hookout user channel (ADR-103) —
+        # at most once per session (should_advise_locate_failure), since a Stop hook
+        # fires every turn-end and a persistently unlocatable transcript would
+        # otherwise re-toast every turn. emit_advisory exits 0; the explicit
+        # sys.exit(0) keeps the "nothing to aggregate, never block" stop visible even
+        # when the once-guard suppresses the emit (and guards a future NoReturn break).
+        if should_advise_locate_failure(session_id):
+            _hookout.emit_advisory("Stop", format_locate_error(session_id), audience="user")
+        sys.exit(0)
 
     data = aggregate_session(transcript_path)
     prices = get_pricing(data["model"])
@@ -214,32 +267,24 @@ def main() -> None:
     new_last_turn = summary.get("last_turn_ts") or ""
     if existing_line_idx is not None:
         if new_last_turn <= existing_last_turn:
-            print(f"[token-tracker] {session_id[:8]}… already in log (no new turns) — skipping write")
+            # Already in the log with no new turns — nothing to write. (The former
+            # stdout echo here was invisible on a Stop hook and fired every turn-end;
+            # a systemMessage in its place would be per-turn toast spam, so drop it.)
             return
         # Update in-place: replace the existing line, rewrite the file
         lines[existing_line_idx] = json.dumps(summary) + "\n"
         TOKEN_LOG.write_text("".join(lines), encoding="utf-8")
-        action = "updated"
     else:
         with open(TOKEN_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(summary) + "\n")
-        action = "recorded"
 
     with open(LATEST_SESSION, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
 
-    t = data["tokens"]
-    sa_note = (
-        f" +{data['subagent_count']} subagent(s)/{data['subagent_turn_count']} turns"
-        if data["subagent_count"] > 0
-        else ""
-    )
-    print(
-        f"[token-tracker] {session_id[:8]}… {action} | {data['turn_count']} turns{sa_note} | "
-        f"in={t['input_tokens']:,} out={t['output_tokens']:,} "
-        f"cache_r={t['cache_read_input_tokens']:,} cache_w={t['cache_creation_input_tokens']:,} "
-        f"| est. ${estimated_cost:.4f}"
-    )
+    # The durable record is the token log + latest-session.json written above. The
+    # former per-turn status echo here (`recorded | N turns | in=.. out=.. | $cost`)
+    # was invisible on a Stop hook and fired every turn-end, so a systemMessage in
+    # its place would be per-turn toast spam — drop it entirely.
 
 
 if __name__ == "__main__":
