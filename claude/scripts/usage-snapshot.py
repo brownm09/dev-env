@@ -227,11 +227,10 @@ def refresh_token_now(timeout: int = 45) -> bool:
         return False
 
 
-def status_emoji(util: float, target: int, margin: int) -> str:
+def status_label(util: float, target: int, margin: int) -> str:
     # ASCII tokens (not emoji) so the snapshot stays cp1252-encodable on the raw
     # stderr channel: emoji are outside cp1252 and crashed the print, flipping
     # exit 2 -> 0 and silently dropping the whole snapshot (PR5 of dev-env#717).
-    # Name kept (not renamed) to avoid churning its call site and test names.
     if target == 0:
         return ""
     if util >= target:
@@ -377,7 +376,7 @@ def format_snapshot(util_data: dict, config: dict, exchanges: list[dict]) -> str
     margin = config.get("alert_approaching_margin", 5)
 
     target, day_num, window_days = compute_cumulative_target(resets_at_str, config)
-    emoji = status_emoji(util_7d, target, margin)
+    label = status_label(util_7d, target, margin)
 
     resets_display = ""
     if resets_at_str:
@@ -390,7 +389,7 @@ def format_snapshot(util_data: dict, config: dict, exchanges: list[dict]) -> str
     lines = ["### Usage Snapshot (post-merge)"]
     lines.append(
         f"- **Weekly:** {util_7d:.0f}% used "
-        f"(day {day_num}/{window_days} - target <={target}% - {emoji})"
+        f"(day {day_num}/{window_days} - target <={target}% - {label})"
     )
     lines.append(f"- **5-hour window:** {util_5h:.0f}%")
 

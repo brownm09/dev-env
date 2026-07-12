@@ -368,25 +368,25 @@ def test_format_park_message_branch_exists() -> str:
     return "non-zero checkout -> 'could not park ... (branch <b> may already exist) — <detail>'"
 
 
-def test_plan_advisory_park_present_is_block() -> str:
+def test_plan_advisory_park_present_needs_block() -> str:
     # A park message means the model's own cwd branch changed underneath it, so it
-    # must be surfaced to the model (channel "block" -> exit-2 stderr), carrying the
+    # must be surfaced to the model (needs_block True -> exit-2 stderr), carrying the
     # routine status too.
     planned = plan_advisory("status line", "parked ...")
-    assert planned == ("block", "status line\nparked ..."), planned
-    return "status + park -> ('block', both lines) — model must see it"
+    assert planned == (True, "status line\nparked ..."), planned
+    return "status + park -> (True, both lines) — model must see it"
 
 
-def test_plan_advisory_park_only_is_block() -> str:
+def test_plan_advisory_park_only_needs_block() -> str:
     planned = plan_advisory(None, "parked ...")
-    assert planned == ("block", "parked ..."), planned
-    return "park only -> ('block', park)"
+    assert planned == (True, "parked ..."), planned
+    return "park only -> (True, park)"
 
 
-def test_plan_advisory_status_only_is_user() -> str:
+def test_plan_advisory_status_only_is_user_toast() -> str:
     planned = plan_advisory("status line", None)
-    assert planned == ("user", "status line"), planned
-    return "status only -> ('user', status) — systemMessage toast"
+    assert planned == (False, "status line"), planned
+    return "status only -> (False, status) — systemMessage toast"
 
 
 def test_plan_advisory_nothing_is_none() -> str:
@@ -425,9 +425,9 @@ def main() -> int:
         ("format_park_message: success", test_format_park_message_success),
         ("format_park_message: checkout raised", test_format_park_message_exception),
         ("format_park_message: branch already exists", test_format_park_message_branch_exists),
-        ("plan_advisory: status + park -> block", test_plan_advisory_park_present_is_block),
-        ("plan_advisory: park only -> block", test_plan_advisory_park_only_is_block),
-        ("plan_advisory: status only -> user", test_plan_advisory_status_only_is_user),
+        ("plan_advisory: status + park -> needs_block", test_plan_advisory_park_present_needs_block),
+        ("plan_advisory: park only -> needs_block", test_plan_advisory_park_only_needs_block),
+        ("plan_advisory: status only -> user toast", test_plan_advisory_status_only_is_user_toast),
         ("plan_advisory: nothing -> None", test_plan_advisory_nothing_is_none),
     ]
     failed = 0

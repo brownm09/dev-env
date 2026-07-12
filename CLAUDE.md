@@ -104,11 +104,14 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
    silently dropped the snapshot on every worktree merge
    ([dev-env#474](https://github.com/brownm09/dev-env/issues/474), ADR-049/ADR-050 amendment). Also
    (PR5 of dev-env#717, [dev-env#736](https://github.com/brownm09/dev-env/issues/736)) pins
-   `status_emoji()` and `format_snapshot()` output as `.isascii()`: the emoji and `≤` were ASCII-ified
-   (OVER/NEAR/OK tokens, `<=`) and all four emissions moved onto `_hookout.emit_block` (exit-2 stderr,
-   `ascii_sanitize` backstop + exit-code-safe `finally`), so a cp1252 encode crash can no longer flip
-   exit 2→0 and silently drop the snapshot (the #670 pattern); `status_emoji`/`format_snapshot` were
-   previously unexercised. The
+   `status_label()` (renamed from `status_emoji`) and the `format_snapshot()` static template as
+   `.isascii()`, plus — the real end-to-end guarantee — that
+   `ascii_sanitize(format_snapshot(<non-ASCII action>))` is `.isascii()` (the action column
+   interpolates arbitrary Unicode, so wire-safety lives in `emit_block`, not `format_snapshot`): the
+   emoji and `≤` were ASCII-ified (OVER/NEAR/OK tokens, `<=`) and all four emissions moved onto
+   `_hookout.emit_block` (exit-2 stderr, `ascii_sanitize` backstop + exit-code-safe `finally`), so a
+   cp1252 encode crash can no longer flip exit 2→0 and silently drop the snapshot (the #670 pattern);
+   `status_label`/`format_snapshot` were previously unexercised. The
    live usage API call is not covered (the repo avoids urllib mocks).
 
    ```bash

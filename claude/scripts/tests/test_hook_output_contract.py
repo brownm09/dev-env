@@ -50,10 +50,13 @@ wire. This is the `.isascii()` guarantee `_hookout`'s `ascii_sanitize` /
 Detection limitations (documented, per gotcha #6):
   - The non-ASCII literal must appear directly in the emission call's args. A
     literal reaching the stream INDIRECTLY -- through a variable or a helper's
-    return value -- is not detected. usage-snapshot is the worked example: its
-    emoji come from `status_emoji()` and reach stderr via the built `snapshot`
-    string, so this lint flags it only via an incidental direct em-dash (L486);
-    the emoji flow is covered by PR5's per-hook `.isascii()` self-pin instead.
+    return value -- is not detected. usage-snapshot was the worked example
+    (pre-dev-env#736): its emoji came from `status_label()` (then `status_emoji`)
+    and reached stderr via the built `snapshot` string, so this lint flagged it
+    only via an incidental direct em-dash -- the emoji flow was covered by a
+    per-hook `.isascii()` self-pin instead. PR5 migrated it onto `_hookout`
+    (ASCII content + emit_block), so it is no longer allowlisted here, but the
+    indirection limitation it illustrated still holds for any future hook.
   - Check D reads only a LITERAL json.dumps payload dict. A payload built
     dynamically (a variable, a dict comprehension) classifies as "unknown" and is
     exempt -- the same indirection limitation as the non-ASCII lint. No wired hook

@@ -288,19 +288,20 @@ def is_successful_merge(command: str, output: str) -> bool:
     return output_has_merge_marker(output)
 
 
-def plan_advisory(status_msg: str | None, park_msg: str | None) -> tuple[str, str] | None:
-    """Pure: which _hookout channel + combined text this merge's messages need.
+def plan_advisory(status_msg: str | None, park_msg: str | None) -> tuple[bool, str] | None:
+    """Pure: whether this merge's advisory must reach the model, and its combined text.
 
     A park message means this worktree's branch changed underneath the model, so the
-    model must see it (channel "block" -> exit-2 stderr via emit_block); routine pull
-    status alone is a user systemMessage (channel "user"). Returns (channel, text), or
-    None when there is nothing to say.
+    model must see it (needs_block True -> exit-2 stderr via emit_block); routine pull
+    status alone is a user systemMessage (needs_block False). Returns (needs_block, text),
+    or None when there is nothing to say. Returning a bool (not a channel string) keeps
+    the untested main() consumer un-typo-able: a mistaken channel string would silently
+    downgrade a park warning to a toast — the exact invisibility this migration removes.
     """
     lines = [m for m in (status_msg, park_msg) if m]
     if not lines:
         return None
-    channel = "block" if park_msg else "user"
-    return (channel, "\n".join(lines))
+    return (bool(park_msg), "\n".join(lines))
 
 
 def main() -> None:
@@ -350,6 +351,7 @@ def main() -> None:
         sys.exit(0)
 
     if not os.path.isdir(local_path):
+        # emit_advisory is NoReturn (exits 0 here) — nothing below this branch runs.
         _hookout.emit_advisory(
             "PostToolUse",
             f"[post-merge-pull] {repo}: local path not found ({local_path}) — skipping",
@@ -363,8 +365,8 @@ def main() -> None:
     planned = plan_advisory(status_msg, park_msg)
     if planned is None:
         sys.exit(0)
-    channel, text = planned
-    if channel == "block":
+    needs_block, text = planned
+    if needs_block:
         # The model's own cwd branch just changed underneath it — it must see this.
         _hookout.emit_block(text)
     _hookout.emit_advisory("PostToolUse", text, audience="user")
