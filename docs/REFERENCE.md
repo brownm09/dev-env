@@ -936,8 +936,8 @@ git -C <main-repo-path> worktree prune               # drop stale admin entries
 # directory (confirmed live, git 2.37.1.windows.1). Inspect before removing: confirm
 # there is no `.git` file/link inside (i.e. it is not a live registered worktree) and no
 # valuable uncommitted content, then clear it.
-ls -la .claude/worktrees/<name>                      # confirm: no .git link, no real content
-rm -rf .claude/worktrees/<name>                      # only once the above is confirmed safe
+ls -la <main-repo-path>/.claude/worktrees/<name>     # confirm: no .git link, no real content
+rm -rf <main-repo-path>/.claude/worktrees/<name>     # only once the above is confirmed safe
 
 git -C <main-repo-path> worktree add --force .claude/worktrees/<name> <feature-branch>   # --force: branch-checked-out-elsewhere safeguard only
 npm install                                          # from the recreated worktree, no cd
