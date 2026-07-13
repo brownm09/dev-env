@@ -1,6 +1,6 @@
 # ADR-106: Hook Heartbeat/Liveness Ledger
 
-**Date:** 2026-07-13
+**Date:** 2026-07-13 (amended 2026-07-13)
 **Status:** Accepted
 **Tags:** hooks, heartbeat, liveness, reliability, UserPromptSubmit, silent-failure, monitoring, shared-module, adr-064, adr-103, adr-717
 
@@ -218,3 +218,75 @@ it or extract a shared production module for `hook-liveness-check.py` to reuse �
 - [dev-env#745](https://github.com/brownm09/dev-env/issues/745) — this sub-issue (PR8, Phase D).
 - [Claude Code hooks reference](https://code.claude.com/docs/en/hooks) — the `UserPromptSubmit`
   `additionalContext` / `systemMessage` channel semantics `_hookout.emit_advisory` relies on.
+
+## Addendum (2026-07-13) — `/review` findings: self-check, debounce, cross-check test, structural gate
+
+`/review` on PR #752 (this ADR's own introducing PR) surfaced four findings, all fixed in the same
+PR before merge — recorded here because each changes a design decision this ADR documents, not
+just an implementation detail.
+
+**1. `hook-liveness-check.py` could go silently dark on its own settings.json parse failure
+(reliability).** The original `main()` called `_hookutil.record_heartbeat("hook-liveness-check")`
+first (correct — matches every other hook), then on a `SETTINGS_PATH` read/parse failure silently
+`sys.exit(0)`'d. Because the heartbeat call already ran, this hook's *own* liveness ledger entry
+stayed perfectly fresh even while the mechanism it implements was doing nothing — the exact
+"silently dead, discovered only by accident" failure class (dev-env#377, dev-env#355) reintroduced
+in the tool meant to catch it, with the one place that could not self-detect it being the one place
+that mattered most. **Fix:** a self-check after parsing — if `"hook-liveness-check"` (this hook's
+own name) is not present in the parsed `wired_hook_events()` result, that is itself anomalous (a
+real settings.json always has this hook wired, since the hook is running), and now emits a distinct
+`format_self_check_failure()` advisory (`audience="model"`) rather than a silent exit. Covers both
+sub-cases: the JSON literally failing to parse, and a parse that succeeds but degrades to something
+that doesn't include this hook's own wiring. Two new end-to-end tests in
+`test_hook_liveness_check.py` drive both paths via a `HOOK_LIVENESS_SETTINGS_PATH` test seam.
+
+**2. No structural enforcement that a wired hook actually calls `record_heartbeat` correctly
+(maintainability).** The 41-file sweep that wired every hook into the ledger was a one-off,
+uncommitted AST transformation script — correct for this PR (verified file-by-file, see the PR's
+own review disposition), but nothing stops a 42nd hook added by hand, or a future edit reordering
+an existing hook's `main()`, from silently omitting or misplacing the call. **Fix:** a new
+structural gate, `claude/scripts/tests/test_hook_heartbeat_guard.py`, mirroring
+`test_hook_safe_exit_guard.py` / `test_hook_output_contract.py`'s established pattern — an AST
+check, run against every currently wired hook via `tests/_hook_wiring.py`, asserting
+`_hookutil.record_heartbeat("<own-name>")` is the literal first statement of `main()` (after any
+docstring). Unlike those two precedent gates, it ships with an **empty allowlist from day one**:
+PR8 made every wired hook compliant in the same change that introduced the gate, so there is no
+pre-existing debt to migrate — a newly wired hook must be compliant from its first commit. This
+gate is also what caught `hook-liveness-check.py`'s own initial implementation using a module-level
+`OWN_HOOK_NAME` variable instead of the literal `"hook-liveness-check"` in its heartbeat call — a
+real, if harmless, inconsistency with the other 41 hooks' convention, fixed immediately by the
+gate that exists to prevent exactly this class of drift.
+
+**3. No regression guard against `hook-liveness-check.py`'s own settings.json parser drifting from
+`tests/_hook_wiring.py`'s near-identical one (maintainability).** This ADR's *Settings-parsing
+scope decision* (above) explains why the two parsers stay separate until Phase E; it did not,
+originally, explain how drift between them would be caught in the meantime. **Fix:** a new test,
+`test_wired_hook_events_agrees_with_hook_wiring_module`, runs both `wired_hook_events()` and
+`_hook_wiring.wired_script_events()` against the **real** `claude/settings.json` (not just a shared
+static fixture) and asserts their outputs agree (modulo the `.py`-suffix convention difference).
+This does not eliminate the duplication the deferral accepts, but it does mean a future
+settings.json schema change applied to one parser and not the other fails a test immediately,
+rather than drifting silently until Phase E.
+
+**4. No discussion of the per-prompt cost of the new `UserPromptSubmit` registration
+(performance).** `hook-liveness-check.py` is a 13th script in that event's hook group (each paying
+its own `pyw -3` interpreter startup — a standing per-call-startup concern this repo tracks
+separately, dev-env#715), and `stale_hooks()` reads one heartbeat file per non-exempt wired hook
+(~40 as of this PR) on top of the settings.json parse — real synchronous I/O that, unmitigated,
+would repeat on **every single prompt in every session**, not just once per session like the
+staleness signal actually needs (a 7-day cadence has no meaningful per-prompt resolution). **Fix:**
+debounced to once per session via a `_hookutil` sentinel file, the same established pattern
+`reconcile-open-prs.py` / `session-mode-prompt.py` already use (`_already_ran(session_id)` /
+`_mark_done(session_id)`, keyed by the `session_id` the `UserPromptSubmit` payload already carries,
+with a synthetic fallback key when absent). The self-check failure paths (finding 1) are debounced
+identically — a broken settings.json doesn't fix itself mid-session, so re-emitting the same
+diagnostic every prompt would be alert-fatigue-inducing without adding information. Four new
+end-to-end tests cover the debounce (same-session second call silenced; a different session still
+fires) plus the two self-check-failure paths.
+
+None of these four changes altered the *Decision* section's design above — the heartbeat writer,
+the exemption-by-event-set rule, and the settings.json-derived (not hardcoded) wired set are all
+unchanged. They harden the *reader*'s (`hook-liveness-check.py`'s) own reliability, close a
+maintainability gap in how the invariant is enforced going forward, and address a performance
+concern the original PR body did not discuss — all found by the same review process this
+initiative's other PRs (ADR-098, ADR-099, ADR-100) also relied on to catch per-site channel bugs.

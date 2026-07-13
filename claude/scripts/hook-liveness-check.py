@@ -21,6 +21,21 @@ any other event is NOT exempt, even if PostCompact/Notification is among its
 registrations (e.g. awake-blocker.py is wired to Notification too, but also
 to UserPromptSubmit/Stop, so it stays subject to the normal cadence).
 
+Self-check: if this hook's own name is missing from its parsed wired-hook set --
+settings.json failed to read/parse, or the parse silently degraded to something
+wrong or empty -- that is itself exactly the "silently dead, discovered only by
+accident" failure class this whole mechanism exists to close (dev-env#377,
+dev-env#355), and it would otherwise go unnoticed precisely because the
+heartbeat call above already ran (proving invocation, not correct operation).
+Emits a distinct loud advisory in that case instead of silently exiting 0.
+
+Debounced to once per session (a `_hookutil` sentinel, matching
+`reconcile-open-prs.py` / `session-mode-prompt.py`'s established pattern):
+the 7-day staleness cadence needs nowhere near per-prompt resolution, and the
+full check (settings.json parse + one heartbeat-file read per non-exempt wired
+hook) is real synchronous I/O on the UserPromptSubmit critical path that
+should not repeat on every single prompt in a session.
+
 Stdin JSON shape (UserPromptSubmit):
   {
     "hook_event_name": "UserPromptSubmit",
@@ -36,6 +51,7 @@ the #717 initiative's "warnings model-visible first" decision.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -44,9 +60,16 @@ from pathlib import Path
 import _hookout
 import _hookutil
 
-SETTINGS_PATH = Path(__file__).resolve().parent.parent / "settings.json"
+# Test seam: HOOK_LIVENESS_SETTINGS_PATH overrides the real claude/settings.json,
+# so an end-to-end test can exercise the self-check-failure path (an unreadable
+# or malformed settings.json) without touching the real file. Unset in production.
+SETTINGS_PATH = Path(os.environ["HOOK_LIVENESS_SETTINGS_PATH"]) if os.environ.get(
+    "HOOK_LIVENESS_SETTINGS_PATH"
+) else Path(__file__).resolve().parent.parent / "settings.json"
 DEFAULT_CADENCE_DAYS = 7
 EXEMPT_EVENTS = frozenset({"PostCompact", "Notification"})
+SENTINEL_PREFIX = "hook_liveness_check_"
+OWN_HOOK_NAME = "hook-liveness-check"
 
 # The last whitespace-delimited token of a hook command is the script path --
 # capture its basename minus ".py", which is exactly the literal string every
@@ -158,14 +181,71 @@ def format_warning(stale: list[dict], now: float, cadence_days: float) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
-    _hookutil.record_heartbeat("hook-liveness-check")
+def format_self_check_failure(reason: str, hook_count: int) -> str:
+    """Build the model-visible advisory text for the self-check failure path --
+    this hook's own name is missing from its parsed wired-hook set (settings.json
+    couldn't be read/parsed, or the parse degraded to something wrong or empty).
+    Distinct message from format_warning() so the two failure classes ("some
+    other hook is stale" vs. "this check's own machinery may be broken") are
+    never conflated in the advisory Claude sees."""
+    return (
+        f"[hook-liveness] self-check failed: {reason} -- "
+        f"parsed {hook_count} wired hook(s) from {SETTINGS_PATH} but "
+        f"{OWN_HOOK_NAME!r} (this hook's own name) is not among them. "
+        "The liveness check itself may be broken; investigate before trusting "
+        "any staleness result (or its absence) from this hook."
+    )
+
+
+def _already_ran(session_id: str) -> bool:
+    return _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).exists()
+
+
+def _mark_done(session_id: str) -> None:
     try:
-        settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).write_text("")
     except Exception:
+        pass
+
+
+def main() -> None:
+    _hookutil.record_heartbeat("hook-liveness-check")  # literal -- see test_hook_heartbeat_guard.py
+    _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
+
+    raw = sys.stdin.read().strip()
+    try:
+        data = json.loads(raw) if raw else {}
+    except Exception:
+        data = {}
+    session_id = data.get("session_id") or f"unknown-{int(time.time())}"
+
+    # Debounced to once per session -- the 7-day staleness cadence needs nowhere
+    # near per-prompt resolution, and the full check below is real synchronous
+    # I/O (settings.json parse + one heartbeat-file read per non-exempt wired
+    # hook) that should not repeat on every prompt in a session.
+    if _already_ran(session_id):
         sys.exit(0)
 
+    try:
+        settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        _mark_done(session_id)
+        _hookout.emit_advisory(
+            "UserPromptSubmit",
+            format_self_check_failure(f"could not read/parse settings.json ({exc})", 0),
+            audience="model",
+        )
+
     hook_events = wired_hook_events(settings)
+    if OWN_HOOK_NAME not in hook_events:
+        _mark_done(session_id)
+        _hookout.emit_advisory(
+            "UserPromptSubmit",
+            format_self_check_failure("parse did not find this hook's own wiring", len(hook_events)),
+            audience="model",
+        )
+
+    _mark_done(session_id)
     now = time.time()
     stale = stale_hooks(hook_events, _hookutil.HEARTBEAT_DIR, now, DEFAULT_CADENCE_DAYS)
     if not stale:
