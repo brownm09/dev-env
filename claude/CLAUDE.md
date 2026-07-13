@@ -48,6 +48,14 @@ See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md), [ADR-0
 
 ---
 
+## Tool Discovery
+
+`ToolSearch` finds tools that are *deferred* — announced by name only in a system-reminder, needing a schema fetch before they're callable. It does not index every tool available in a session: many tools are already fully defined in the system prompt's tool list and never appear in `ToolSearch` results, by design — that's not a gap in the search, it's tools that don't need finding.
+
+**Before concluding any tool is "unavailable in this session," check the full tool list already present in the system prompt first** — both directly-defined tools and the deferred-tool names surfaced in system-reminders. A zero-result `ToolSearch` only means the tool isn't in the *deferred* set; it says nothing about whether the tool is already directly callable. Incident: a session searched `ToolSearch("spawn_task")`, got nothing, wrongly concluded the tile-spawning tool was absent, and silently skipped a tile the tile-checkpoint rule required ([dev-env#754](https://github.com/brownm09/dev-env/issues/754)) — `mcp__ccd_session__spawn_task` was directly available the whole time. See [ADR-107](../docs/adr/107-toolsearch-is-not-a-tool-availability-check.md).
+
+---
+
 ## CLI Scripting Checklist
 
 Before writing a `gh` or other CLI automation script:
