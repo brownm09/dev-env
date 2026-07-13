@@ -22,6 +22,15 @@ knocked off `main`) and decides the non-destructive correction (dev-env#396, ADR
  11. is_hijacked_branch()        — the dev-env#630 hijack signature: "<detached>" or a
                                    "claude/*" branch on the canonical; not main / draft/* /
                                    any other named branch; None/"" safe (no raise).
+ 12. DRAFT_BRANCH_RE              — draft/YYYY-MM-DD and -recovery suffix match; malformed
+                                   dates / other suffixes / other branches don't (dev-env#747).
+ 13. non_canonical_worktrees_matching() — finds every non-canonical squatter of a pattern
+                                   (not just the first); the canonical itself is never
+                                   flagged even when it legitimately holds the pattern; no
+                                   match anywhere -> [].
+ 14. pattern_squat_action()       — warn-live (never touch a live session) / park-and-remove
+                                   (idle, clean, fully pushed) / park-only (dirty, or not
+                                   provably fully pushed — the conservative default).
 
 Fully offline — no git, no network, no filesystem writes (paths need not exist; the
 module resolves them for comparison only). The git-driven prune/post-merge/dev-env-sync/
@@ -288,6 +297,81 @@ def test_is_hijacked_branch() -> str:
     return "claude/* and <detached> -> hijacked; main/draft/named/empty/None -> not hijacked, no raise"
 
 
+EJ_CANON = "C:/Users/brown/Git/engineering-journal"
+EJ_STUB_TODAY = "C:/Users/brown/Git/engineering-journal/.claude/worktrees/stub-829-165612"
+EJ_STUB_YESTERDAY = "C:/Users/brown/Git/engineering-journal/.claude/worktrees/stub-823-120134"
+
+
+def test_draft_branch_re() -> str:
+    for b in ("draft/2026-07-12", "draft/2026-01-01-recovery"):
+        if not wt.DRAFT_BRANCH_RE.match(b):
+            raise AssertionError(f"{b!r} should match DRAFT_BRANCH_RE")
+    for b in ("draft/2026-7-12", "draft/2026-07-12-late", "main", ""):
+        if wt.DRAFT_BRANCH_RE.match(b):
+            raise AssertionError(f"{b!r} should NOT match DRAFT_BRANCH_RE")
+    return "draft/YYYY-MM-DD and -recovery suffix match; malformed/other-suffixed/other branches don't"
+
+
+def test_non_canonical_worktrees_matching_finds_all() -> str:
+    # dev-env#747: two DIFFERENT dates squatted by two DIFFERENT worktrees, simultaneously --
+    # both must be returned, not just the first.
+    worktrees = wt.parse_worktree_porcelain(_porcelain([
+        (EJ_CANON, "draft/2026-07-12"),
+        (EJ_STUB_YESTERDAY, "draft/2026-07-11"),
+        (EJ_STUB_TODAY, "draft/2026-07-12"),
+    ]))
+    got = wt.non_canonical_worktrees_matching(worktrees, wt.DRAFT_BRANCH_RE)
+    got_paths = {w["path"] for w in got}
+    if got_paths != {EJ_STUB_YESTERDAY, EJ_STUB_TODAY}:
+        raise AssertionError(f"expected both squatters found, got {got_paths}")
+    return "two simultaneous squatters on two different dates both found"
+
+
+def test_non_canonical_worktrees_matching_excludes_canonical() -> str:
+    # The canonical itself legitimately holds draft/YYYY-MM-DD most of the day -- must never
+    # be flagged as its own squatter.
+    worktrees = wt.parse_worktree_porcelain(_porcelain([(EJ_CANON, "draft/2026-07-12"), (WT_FOO, "claude/x")]))
+    got = wt.non_canonical_worktrees_matching(worktrees, wt.DRAFT_BRANCH_RE)
+    if got:
+        raise AssertionError(f"canonical legitimately holding the pattern must not match itself, got {got}")
+    return "canonical holding draft/YYYY-MM-DD is never flagged as a squatter of itself"
+
+
+def test_non_canonical_worktrees_matching_none_when_no_match() -> str:
+    worktrees = wt.parse_worktree_porcelain(_porcelain([(EJ_CANON, "main"), (WT_FOO, "claude/x")]))
+    if wt.non_canonical_worktrees_matching(worktrees, wt.DRAFT_BRANCH_RE) != []:
+        raise AssertionError("no draft/* branch anywhere -> no matches")
+    return "no matching branch anywhere -> []"
+
+
+def test_pattern_squat_action_live() -> str:
+    a = wt.pattern_squat_action(EJ_STUB_TODAY, "draft/2026-07-12", live=True, dirty=False, fully_pushed=True)
+    if a.kind != "warn-live" or a.park_branch is not None:
+        raise AssertionError(f"a live squatter must never be touched: {a}")
+    return "live=True -> warn-live, no park_branch offered (never touch a live session)"
+
+
+def test_pattern_squat_action_park_and_remove() -> str:
+    a = wt.pattern_squat_action(EJ_STUB_TODAY, "draft/2026-07-12", live=False, dirty=False, fully_pushed=True)
+    if a.kind != "park-and-remove" or a.park_branch != "claude/stub-829-165612":
+        raise AssertionError(f"idle+clean+fully-pushed -> park-and-remove: {a}")
+    return "idle, clean, fully pushed -> park-and-remove (zero data at risk)"
+
+
+def test_pattern_squat_action_park_only_dirty() -> str:
+    a = wt.pattern_squat_action(EJ_STUB_YESTERDAY, "draft/2026-07-11", live=False, dirty=True, fully_pushed=True)
+    if a.kind != "park-only" or a.park_branch != "claude/stub-823-120134":
+        raise AssertionError(f"dirty -> park-only (preserve untouched, never discard): {a}")
+    return "idle but dirty -> park-only, worktree contents left untouched (dev-env#747 stub-823-120134 case)"
+
+
+def test_pattern_squat_action_park_only_not_fully_pushed() -> str:
+    a = wt.pattern_squat_action(EJ_STUB_TODAY, "draft/2026-07-12", live=False, dirty=False, fully_pushed=False)
+    if a.kind != "park-only":
+        raise AssertionError(f"not provably fully pushed -> park-only (conservative default): {a}")
+    return "clean but not provably fully pushed -> park-only, not park-and-remove (conservative default)"
+
+
 def main() -> int:
     tests = [
         ("parse_worktree_porcelain", test_parse_worktree_porcelain),
@@ -307,6 +391,14 @@ def main() -> int:
         ("resolve_current_branch (dev-env#619)", test_resolve_current_branch),
         ("canonical_sync_action with detached HEAD (dev-env#619)", test_canonical_sync_action_detached_head),
         ("is_hijacked_branch (dev-env#630)", test_is_hijacked_branch),
+        ("DRAFT_BRANCH_RE matrix (dev-env#747)", test_draft_branch_re),
+        ("non_canonical_worktrees_matching finds all squatters", test_non_canonical_worktrees_matching_finds_all),
+        ("non_canonical_worktrees_matching excludes canonical", test_non_canonical_worktrees_matching_excludes_canonical),
+        ("non_canonical_worktrees_matching none when no match", test_non_canonical_worktrees_matching_none_when_no_match),
+        ("pattern_squat_action: live", test_pattern_squat_action_live),
+        ("pattern_squat_action: park-and-remove", test_pattern_squat_action_park_and_remove),
+        ("pattern_squat_action: park-only (dirty)", test_pattern_squat_action_park_only_dirty),
+        ("pattern_squat_action: park-only (not fully pushed)", test_pattern_squat_action_park_only_not_fully_pushed),
     ]
     failed = 0
     for name, fn in tests:

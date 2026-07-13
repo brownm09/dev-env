@@ -12,6 +12,14 @@ without changing any working-tree files, so it frees main even for a dirty squat
 the old `git worktree remove` refused. The freed worktree is removed on a later run by
 the normal merged-branch path once it is idle and clean.
 
+Also parks (and, when safe, removes outright) any non-primary worktree squatting an
+engineering-journal draft/YYYY-MM-DD branch — the daily Stub file workflow's own shared
+canonical-only branch (claude/CLAUDE.md -> Engineering Journal -> Stub file workflow). A
+squatting worktree here blocks the canonical (and every other concurrent stub-writing
+session) from reaching that day's draft branch at all, not just this repo's own main
+(dev-env#747, ADR-105). Checked unconditionally, across every repo this script scans --
+the branch-pattern match naturally only ever fires against engineering-journal.
+
 Safe: skips the current worktree, dirty worktrees, live-session worktrees (ADR-051), and
       any non-claude/* branch (unless that branch is main, which is parked off — main
       cannot have unmerged work by definition) unless --include-named is passed, in which
@@ -70,7 +78,14 @@ from pathlib import Path
 
 from _repo_scan import find_git_repos
 from _worktree_liveness import parse_liveness_window_seconds, worktree_session_is_live
-from _worktree_topology import main_squatter, park_branch_for, parse_worktree_porcelain
+from _worktree_topology import (
+    DRAFT_BRANCH_RE,
+    main_squatter,
+    non_canonical_worktrees_matching,
+    park_branch_for,
+    parse_worktree_porcelain,
+    pattern_squat_action,
+)
 
 
 # Default: the repo that owns this script (dev-env). Override with --repo-path.
@@ -146,6 +161,24 @@ def is_dirty(path: str) -> bool:
         return True
     r = run(["git", "status", "--porcelain"], cwd=path)
     return bool(r.stdout.strip())
+
+
+def _origin_ahead_count(branch: str, repo: str) -> "int | None":
+    """Commits on `branch` not yet on `origin/<branch>`, or None if unresolvable (remote
+    branch missing, fetch failed). Caller treats None as "not provably fully pushed" — the
+    conservative default, matching pattern_squat_action's own park-only fallback. Used for
+    draft-branch-squat eligibility (dev-env#747, ADR-105), which cannot reuse is_merged()'s
+    origin/main ancestor check: a composed draft branch reaches main via a fresh squash
+    commit (ADR-082), never a fast-forward or matching PR head, so is_merged() would never
+    fire for it.
+    """
+    fetch = run(["git", "fetch", "origin", branch], cwd=repo)
+    if fetch.returncode != 0:
+        return None
+    r = run(["git", "rev-list", "--count", f"origin/{branch}..{branch}"], cwd=repo)
+    if r.returncode != 0 or not r.stdout.strip().isdigit():
+        return None
+    return int(r.stdout.strip())
 
 
 CONFIG_FILE = ".claude/hook-config.json"
@@ -315,6 +348,41 @@ def prune_one(
                 continue
             pruned.append(path)
             print(f"  parked off main: {path} ({park}) — freed the main ref")
+            continue
+
+        # Non-primary worktree squatting a draft/YYYY-MM-DD-shaped engineering-journal
+        # branch: illegitimate on ANY non-canonical worktree in ANY repo, checked
+        # unconditionally (before the BRANCH_PREFIX gate below, which would otherwise skip
+        # it — a draft/* branch never starts with claude/). The ADR-051 liveness guard
+        # already ran for this worktree earlier in this loop, so a live squatter never
+        # reaches here (dev-env#747, ADR-105).
+        if DRAFT_BRANCH_RE.match(branch or ""):
+            dirty = is_dirty(path)
+            fully_pushed = _origin_ahead_count(branch, repo) == 0
+            action = pattern_squat_action(path, branch, live=False, dirty=dirty, fully_pushed=fully_pushed)
+            if dry_run:
+                pruned.append(path)
+                print(f"  [dry-run] would {action.kind}: {path} ({branch} -> {action.park_branch})")
+                continue
+            r = run(["git", "-C", path, "checkout", "-b", action.park_branch], cwd=repo)
+            if r.returncode != 0:
+                skipped.append((path, f"park off {branch} failed (branch {action.park_branch} may already exist): {r.stderr.strip()}"))
+                continue
+            if action.kind == "park-and-remove":
+                try:
+                    rm = run(["git", "worktree", "remove", path], cwd=repo, timeout=300)
+                except subprocess.TimeoutExpired:
+                    skipped.append((path, "parked, but git worktree remove timed out — retry manually"))
+                    pruned.append(path)
+                    continue
+                if rm.returncode != 0:
+                    skipped.append((path, f"parked but remove failed: {rm.stderr.strip()}"))
+                    pruned.append(path)
+                    continue
+                print(f"  parked + removed: {path} (was {branch})")
+            else:
+                print(f"  parked only (left in place for review): {path} (was {branch} -> {action.park_branch})")
+            pruned.append(path)
             continue
 
         if not branch.startswith(BRANCH_PREFIX) and not include_named:

@@ -308,6 +308,6 @@ before extraction).
   ADR without amending it
 - [ADR-082](082-journal-compose-worktree-isolation.md) — why the compose skill/routine can't host the
   mutating correction themselves
-- [ADR-071](071-canonical-checkout-mutate-guard-hook.md) — the temporary engineering-journal carve-out
-  from the canonical-mutate guard (pending dev-env#346) that makes this hook's `git -C <repo> checkout
-  main` call reachable at all
+- [ADR-071](071-canonical-checkout-mutate-guard-hook.md) — the engineering-journal carve-out from the
+  canonical-mutate guard (permanent by design, not pending dev-env#346 — corrected by dev-env#747 /
+  ADR-105) that makes this hook's `git -C <repo> checkout main` call reachable at all

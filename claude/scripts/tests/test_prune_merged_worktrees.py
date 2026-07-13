@@ -20,6 +20,13 @@ reason when include_named=False (the default; regression proof of unchanged beha
 and pruned via the exact same is_merged()/is_dirty() path claude/* branches already use
 when include_named=True.
 
+Also covers the ADR-105 draft-branch-squat wiring (dev-env#747): a non-canonical worktree
+squatting an engineering-journal draft/YYYY-MM-DD branch is parked AND removed when idle,
+clean, and fully pushed (mocking is_dirty=False and a rev-list --count of 0), or parked
+ONLY (worktree left untouched) when dirty (mocking is_dirty=True) — mirrors the real
+stub-829-165612 (park+remove) / stub-823-120134 (park-only) disposition from the live
+2026-07-12 incident.
+
 Pure-helper tests follow the pattern of test_reclaim_worktree_disk.py and
 test_worktree_topology.py; the load_ephemeral_patterns tests use a real
 tempfile.TemporaryDirectory() rather than mocking open(), matching this codebase's
@@ -172,6 +179,74 @@ def test_named_branch_pruned_with_include_named() -> str:
     return "include_named=True: named branch falls through to merged/dirty checks, pruned=1"
 
 
+# Fake worktree porcelain: one primary on main, one non-canonical worktree squatting a
+# draft/YYYY-MM-DD engineering-journal branch (dev-env#747, ADR-105).
+_PORCELAIN_DRAFT_SQUAT = (
+    "worktree /FAKE_EJ_PRIMARY\n"
+    "HEAD abc123\n"
+    "branch refs/heads/main\n"
+    "\n"
+    "worktree /FAKE_EJ_STUB_TODAY\n"
+    "HEAD 789abc\n"
+    "branch refs/heads/draft/2026-07-12\n"
+    "\n"
+)
+
+
+def _dispatch_draft_squat(args, **_kwargs):
+    if args[1:2] == ["remote"]:                    # git remote get-url origin
+        return _ok("git@github.com:brownm09/engineering-journal.git\n")
+    if args[1:3] == ["fetch", "origin"]:            # git fetch origin main, AND
+        return _ok()                                # _origin_ahead_count's git fetch origin <branch>
+    if args[1:3] == ["worktree", "list"]:           # git worktree list --porcelain
+        return _ok(_PORCELAIN_DRAFT_SQUAT)
+    if args[1:3] == ["rev-list", "--count"]:        # _origin_ahead_count -> fully pushed
+        return _ok("0\n")
+    if "checkout" in args and "-b" in args:         # the park: git -C <path> checkout -b <park>
+        return _ok()
+    if args[1:3] == ["worktree", "remove"]:         # park-and-remove's second step
+        return _ok()
+    return _ok()
+
+
+def test_draft_branch_squat_park_and_remove() -> str:
+    """dev-env#747: a non-canonical worktree squatting draft/YYYY-MM-DD, idle, clean, and
+    fully pushed, is parked AND removed in the same pass -- unlike a main-squatter (which is
+    only ever parked, never auto-removed), this shape is safe to fully clean up because
+    nothing else can legitimately need that exact throwaway worktree again."""
+    with unittest.mock.patch("subprocess.run", side_effect=_dispatch_draft_squat):
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                    repo="/FAKE_EJ_REPO",
+                    dry_run=False,
+                    liveness_window_seconds=86400,
+                )
+    assert pruned_count == 1, f"expected 1 pruned (parked + removed), got {pruned_count}"
+    assert skipped_count == 1, f"expected 1 skipped (primary only), got {skipped_count}"
+    assert not fetch_failed, "fetch should not be marked failed"
+    return "idle+clean+fully-pushed draft-branch squatter: parked and removed, pruned=1"
+
+
+def test_draft_branch_squat_park_only_when_dirty() -> str:
+    """A dirty squatter is parked (frees the branch name) but NOT removed -- its uncommitted
+    content is preserved for human review, mirroring the real stub-823-120134 disposition
+    from dev-env#747's live incident."""
+    with unittest.mock.patch("subprocess.run", side_effect=_dispatch_draft_squat):
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            with unittest.mock.patch.object(prune, "is_dirty", return_value=True):
+                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                    repo="/FAKE_EJ_REPO",
+                    dry_run=False,
+                    liveness_window_seconds=86400,
+                )
+    # park-only still counts as "pruned" (handled), matching the existing main-squatter
+    # park block's own convention of appending to `pruned` for a park, not just a removal.
+    assert pruned_count == 1, f"expected 1 pruned (park-only still counts as handled), got {pruned_count}"
+    assert skipped_count == 1, f"expected 1 skipped (primary only), got {skipped_count}"
+    return "dirty draft-branch squatter: parked only (branch freed), worktree left in place"
+
+
 def test_timeout_skips_worktree_and_continues() -> str:
     """git worktree remove timing out must skip that worktree and continue — not raise."""
     with unittest.mock.patch("subprocess.run", side_effect=_dispatch):
@@ -314,6 +389,8 @@ def main() -> int:
         ("--include-named unset: named branch still skipped (default unchanged)", test_named_branch_skipped_by_default),
         ("--include-named set: named branch now pruned", test_named_branch_pruned_with_include_named),
         ("git worktree remove timeout: skip-and-continue, not abort", test_timeout_skips_worktree_and_continues),
+        ("draft-branch squat: idle+clean+fully-pushed -> park+remove", test_draft_branch_squat_park_and_remove),
+        ("draft-branch squat: dirty -> park-only, contents preserved", test_draft_branch_squat_park_only_when_dirty),
         ("files_are_all_ephemeral: all files match", test_files_are_all_ephemeral_matches),
         ("files_are_all_ephemeral: one mismatch -> False", test_files_are_all_ephemeral_one_mismatch),
         ("files_are_all_ephemeral: empty patterns -> False", test_files_are_all_ephemeral_empty_patterns_never_true),
