@@ -537,11 +537,19 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `include_named=False` (the default — regression proof), and pruned via the exact same
     `is_merged()`/`is_dirty()` path `claude/*` branches already use when `include_named=True`
     ([dev-env#545](https://github.com/brownm09/dev-env/issues/545)). Also exercises the dev-env#747/
-    ADR-105 draft-branch-squat wiring via the same `subprocess.run` mocking: a non-canonical worktree
-    squatting an engineering-journal `draft/YYYY-MM-DD` branch is parked AND removed when idle, clean,
-    and fully pushed, or parked ONLY (worktree left untouched) when dirty — mirroring the real
-    `stub-829-165612` (park+remove) / `stub-823-120134` (park-only) disposition from the live
-    2026-07-12 incident. The
+    ADR-105 draft-branch-squat wiring via the same `subprocess.run` mocking, now against a
+    call-recording dispatcher (`_make_dispatch_draft_squat`) so each case asserts not just the
+    `(pruned, skipped)` counts — identical for park-and-remove vs. park-only — but whether `git
+    worktree remove` was actually invoked (a `/review` finding: the original two tests asserted
+    only the counts, so a regression that stopped removing entirely still passed): a non-canonical
+    worktree squatting an engineering-journal `draft/YYYY-MM-DD` branch is parked AND removed
+    (remove call recorded) when idle, clean, and fully pushed, or parked ONLY (worktree left
+    untouched, remove NEVER called) when dirty — mirroring the real `stub-829-165612` (park+remove)
+    / `stub-823-120134` (park-only) disposition from the live 2026-07-12 incident. Two more cases
+    cover `git worktree remove` failing (non-zero exit) or timing out after a successful park: both
+    must still count the item as pruned (the branch was freed independently of the removal) while
+    flagging it skipped for manual retry — a deliberate divergence from the generic merged-worktree
+    timeout path above, which skips only. The
     merge-detection and worktree-list steps are not covered here — they are exercised end-to-end by
     `--dry-run` in the PR.
 
@@ -1743,25 +1751,42 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `claude/scripts/pre-tool-use-journal-draft-worktree-guard.py`. Two layers, mirroring item 33's
     (`canonical-mutate-guard`) convention: pure-function tests of `find_worktree_add_blocks()` (a
     bare `git worktree add <path> ... draft/YYYY-MM-DD` blocks unconditionally, no git subprocess
-    needed; `-b <newbranch>` naming a *different* branch with `draft/YYYY-MM-DD` as a mere
-    commit-ish startpoint is correctly NOT blocked, while `-b draft/YYYY-MM-DD` itself IS; a `cd`
-    anywhere takes the whole command out of scope; a mention inside a commit-message heredoc body
-    does not trigger) and `find_checkout_candidates()` (ambient/`-C`-redirected `checkout`/`switch`
-    of a `draft/YYYY-MM-DD`-shaped branch is a candidate with its redirect dirs captured, resolution
-    deferred to `main()`; `checkout <branch> -- <path>` — a file restore, not a branch switch — is
-    not a candidate; a non-draft branch is not a candidate); `_worktree_add_target()`'s `-b`-present-
-    vs-absent token scan (including a dangling `-b` with no value not raising); and `_has_override()`
-    (a leading `ALLOW_JOURNAL_DRAFT_WORKTREE=1` bypasses; the same text merely quoted inside a commit
-    message does not). Plus end-to-end `main()` tests via subprocess against real throwaway git
-    repos: `git worktree add` onto a draft branch blocked (exit 2) from any repo; a `-C` redirect at
-    the (env-overridden) journal canonical allowed (exit 0) — the one legitimate case; the identical
-    checkout with no redirect from a non-canonical cwd blocked (exit 2), naming the resolved (wrong)
-    target; the override token bypassing the block; a non-draft `checkout main` allowed regardless of
-    cwd; and malformed JSON / missing cwd / non-Bash `tool_name` / non-object JSON all failing open.
-    A relative `-C` redirect resolving against the *command's* cwd (not the hook script's own process
-    cwd) — the identical fix `_blockable_redirect_root` needed in item 33's hook (dev-env#576/PR#584)
-    — was verified manually against a real target during development and is exercised by the redirect
-    test above. See [ADR-105](docs/adr/105-draft-branch-worktree-squat-guard.md).
+    needed and — unlike `find_checkout_candidates()` below — a leading `cd` provides NO exemption
+    here, since this function needs no cwd at all; `-b <newbranch>` naming a *different* branch with
+    `draft/YYYY-MM-DD` as a mere commit-ish startpoint is correctly NOT blocked, while `-b
+    draft/YYYY-MM-DD` itself IS; `--detach` is never a candidate (a detached HEAD holds no branch
+    ref); a mention inside a commit-message heredoc body does not trigger) and
+    `find_checkout_candidates()` (ambient/`-C`-redirected `checkout`/`switch` of a
+    `draft/YYYY-MM-DD`-shaped branch is a candidate with its redirect dirs captured, resolution
+    deferred to `main()`; a `cd` anywhere DOES take this extractor's candidates out of scope, since
+    resolving a target genuinely requires a real cwd; `checkout <branch> -- <path>` — a file
+    restore, not a branch switch — is not a candidate, but a *trailing* `--` with nothing after it
+    still switches branches and IS a candidate; a non-draft branch is not a candidate);
+    `_worktree_add_target()`'s `-b`-present-vs-absent token scan (including a dangling `-b` with no
+    value not raising) and its `--detach` short-circuit; and `_has_override()` (a leading
+    `ALLOW_JOURNAL_DRAFT_WORKTREE=1` bypasses; the same text merely quoted inside a commit message
+    does not). Plus end-to-end `main()` tests via subprocess against real throwaway git repos: `git
+    worktree add` onto a draft branch blocked (exit 2) from any repo, including when preceded by an
+    unrelated `cd`; a `-C` redirect at the (env-overridden) journal canonical, with the path
+    rendered in **forward slashes** — matching the documented production convention, and load-
+    bearing: `_tokenize()`'s `shlex.split(posix=True)` silently strips every backslash from a
+    Windows-rendered path, so a test built via `str(Path(...))` would pass regardless of whether the
+    canonical-matching logic is even correct — allowed (exit 0), the one legitimate case; the
+    identical checkout with no redirect from a non-canonical cwd blocked (exit 2), naming the
+    resolved (wrong) target; the override token bypassing the block; a non-draft `checkout main`
+    allowed regardless of cwd; and malformed JSON / missing cwd / non-Bash `tool_name` / non-object
+    JSON all failing open. A relative `-C` redirect resolving against the *command's* cwd (not the
+    hook script's own process cwd) — the identical fix `_blockable_redirect_root` needed in item
+    33's hook (dev-env#576/PR#584) — was verified manually against a real target during development
+    and is exercised by the redirect test above; the resolution loop also shares a `toplevel_cache`
+    across candidates within one command, the same memoization item 33's hook uses. Five gaps in
+    this list (the `cd`-bypass on `find_worktree_add_blocks`, the tautological forward-slash-vs-
+    backslash `-C` test, the trailing-`--`-still-switches case, the `--detach` false-positive, and
+    the park-and-remove/park-only tests in item 26 below not actually verifying `git worktree
+    remove` was invoked) were found by `/review` on the PR that introduced this hook and fixed
+    before merge — each independently confirmed via a sabotage-then-reconfirm check (break the
+    logic, watch the test fail, restore, watch it pass), not just re-read. See
+    [ADR-105](docs/adr/105-draft-branch-worktree-squat-guard.md).
 
     ```bash
     py -3 claude/scripts/tests/test_journal_draft_worktree_guard.py

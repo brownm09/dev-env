@@ -238,16 +238,24 @@ def _cd_takes_command_out_of_scope(segments: list) -> bool:
 def _worktree_add_target(tokens_after_add: list) -> list:
     """The branch/commit-ish candidates `git worktree add` would check out.
 
-    If `-b`/`-B` names a NEW branch, that new branch — not any commit-ish
-    startpoint elsewhere in the command — is what actually gets checked out,
-    so only ITS value is returned (`git worktree add -b myfix <path>
-    draft/2026-07-12` bases a new, differently-named branch off a draft
-    branch as a mere starting point; it does not lock draft/2026-07-12
+    `--detach` checks out a detached HEAD at the given commit-ish — it holds
+    no branch ref at all, so nothing here can ever be a squat regardless of
+    what the other tokens look like; returns `[]` unconditionally in that
+    case (review finding: a bare `--detach <draft-branch>` was previously a
+    false-positive over-block).
+
+    Otherwise, if `-b`/`-B` names a NEW branch, that new branch — not any
+    commit-ish startpoint elsewhere in the command — is what actually gets
+    checked out, so only ITS value is returned (`git worktree add -b myfix
+    <path> draft/2026-07-12` bases a new, differently-named branch off a
+    draft branch as a mere starting point; it does not lock draft/2026-07-12
     itself, and must not be blocked). Otherwise, any non-flag token is a
     candidate (typically `<path>` then `<commit-ish>`) — deliberately
     permissive since `git worktree add`'s full flag grammar is not modeled
     here; the caller checks every candidate against DRAFT_BRANCH_RE.
     """
+    if "--detach" in tokens_after_add:
+        return []
     for i, tok in enumerate(tokens_after_add):
         if tok in ("-b", "-B"):
             return [tokens_after_add[i + 1]] if i + 1 < len(tokens_after_add) else []
@@ -258,11 +266,19 @@ def find_worktree_add_blocks(cmd: str, segments: list = None) -> list:
     """Return the segment text of every top-level `git worktree add ...
     <draft-branch>` invocation — unconditionally blockable. Pure/offline: no
     git subprocess, since no legitimate target exists for this shape at all.
+
+    Deliberately does NOT apply the `cd`-takes-the-command-out-of-scope guard
+    `find_checkout_candidates` uses: that guard exists because a `checkout`/
+    `switch` candidate's blockability depends on resolving a real cwd, which
+    a preceding `cd` makes unknowable. This function needs no cwd at all — it
+    blocks purely on the branch-name token, unconditionally, regardless of
+    where the worktree would physically be created — so a preceding `cd`
+    provides no cover (review finding: `cd <repo> && git worktree add <path>
+    draft/YYYY-MM-DD` previously bypassed the block entirely, reproducing the
+    exact incident this hook exists to prevent).
     """
     if segments is None:
         segments = split_top_level(cmd, split_pipe=True)
-    if _cd_takes_command_out_of_scope(segments):
-        return []
     out = []
     for seg in segments:
         tokens = _git_rest_tokens(seg)
@@ -301,26 +317,44 @@ def find_checkout_candidates(cmd: str, segments: list = None) -> list:
             continue
         rest = tokens[1:]
         if verb == "checkout" and "--" in rest:
-            continue  # file restore (`checkout <tree-ish> -- <paths>`), not a branch switch
+            # `checkout <tree-ish> -- <paths>` is a file restore, not a branch switch --
+            # but only when a real pathspec actually follows `--`. A TRAILING `--` with
+            # nothing after it (`checkout draft/2026-07-12 --`) still switches branches
+            # (verified against real git behavior) and must not be exempted (review
+            # finding: this previously let a trailing-`--` squat through unblocked).
+            dash_index = rest.index("--")
+            if dash_index < len(rest) - 1:
+                continue
         if not any(DRAFT_BRANCH_RE.match(t) for t in rest):
             continue
         out.append({"segment": seg.strip(), "redirect_dirs": redirect_dirs})
     return out
 
 
-def _resolve_checkout_target(candidate: dict, cwd: str):
+def _resolve_checkout_target(candidate: dict, cwd: str, toplevel_cache: dict):
     """Resolve one find_checkout_candidates() candidate to a git toplevel, or
     None if unresolvable (fail-open). A relative redirect dir is resolved
     against `cwd` (the command's own cwd from the PreToolUse payload, not the
     hook script's own process cwd) before being handed to
     `_resolve_git_toplevel` — same fix as the sibling hook's
-    `_blockable_redirect_root` (review finding on dev-env#576/PR#584)."""
+    `_blockable_redirect_root` (review finding on dev-env#576/PR#584).
+
+    `toplevel_cache` memoizes resolved-path -> toplevel across the whole
+    command (one dict per Bash call, shared across every candidate) so a
+    command with several draft-branch checkout segments repeating the same
+    target spawns at most one `git rev-parse` per distinct resolved path —
+    mirrors the sibling hook's own `toplevel_cache` (added there as a
+    dev-env#576/PR#584 review fix for a crafted worst case that spawned 15
+    subprocesses for one command; review finding that this hook had silently
+    dropped that hardening when the parsing helpers were copied).
+    """
     redirect_dirs = candidate["redirect_dirs"]
-    if not redirect_dirs:
-        return _resolve_git_toplevel(cwd)
-    for d in redirect_dirs:
+    targets = redirect_dirs if redirect_dirs else [cwd]
+    for d in targets:
         resolved = d if is_absolute_path(d) else os.path.join(cwd, d)
-        root = _resolve_git_toplevel(resolved)
+        if resolved not in toplevel_cache:
+            toplevel_cache[resolved] = _resolve_git_toplevel(resolved)
+        root = toplevel_cache[resolved]
         if root is not None:
             return root
     return None
@@ -413,8 +447,12 @@ def main() -> None:
     if wt_blocks:
         _emit_block(wt_blocks[0], None)  # writes stderr JSON + exit 2
 
+    # Shared across every _resolve_checkout_target() call for this command so a
+    # redirect target repeated across multiple candidates resolves via `git
+    # rev-parse` at most once (dev-env#576/PR#584 review finding, ported here).
+    toplevel_cache = {}
     for candidate in checkout_candidates:
-        root = _resolve_checkout_target(candidate, cwd)
+        root = _resolve_checkout_target(candidate, cwd, toplevel_cache)
         if root is None:
             continue  # unresolvable target -> fail open, keep scanning later candidates
         if _is_journal_canonical(root):

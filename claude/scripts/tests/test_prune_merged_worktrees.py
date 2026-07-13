@@ -25,7 +25,15 @@ squatting an engineering-journal draft/YYYY-MM-DD branch is parked AND removed w
 clean, and fully pushed (mocking is_dirty=False and a rev-list --count of 0), or parked
 ONLY (worktree left untouched) when dirty (mocking is_dirty=True) — mirrors the real
 stub-829-165612 (park+remove) / stub-823-120134 (park-only) disposition from the live
-2026-07-12 incident.
+2026-07-12 incident. The subprocess.run side_effect records every dispatched call
+(`_make_dispatch_draft_squat`'s `calls` list) so each test asserts not just the
+(pruned, skipped) counts — which are identical for park-and-remove vs. park-only — but
+whether `git worktree remove` was actually invoked (review finding: the original two tests
+asserted only the counts, so sabotaging the removal decision to always park-only still
+passed the "park and remove" test). Two further tests cover `git worktree remove` failing
+(non-zero exit) or timing out (`subprocess.TimeoutExpired`) after a successful park: both
+must still count the item as pruned (the branch was freed independently of the removal)
+while also flagging it skipped for manual retry.
 
 Pure-helper tests follow the pattern of test_reclaim_worktree_disk.py and
 test_worktree_topology.py; the load_ephemeral_patterns tests use a real
@@ -193,20 +201,45 @@ _PORCELAIN_DRAFT_SQUAT = (
 )
 
 
-def _dispatch_draft_squat(args, **_kwargs):
-    if args[1:2] == ["remote"]:                    # git remote get-url origin
-        return _ok("git@github.com:brownm09/engineering-journal.git\n")
-    if args[1:3] == ["fetch", "origin"]:            # git fetch origin main, AND
-        return _ok()                                # _origin_ahead_count's git fetch origin <branch>
-    if args[1:3] == ["worktree", "list"]:           # git worktree list --porcelain
-        return _ok(_PORCELAIN_DRAFT_SQUAT)
-    if args[1:3] == ["rev-list", "--count"]:        # _origin_ahead_count -> fully pushed
-        return _ok("0\n")
-    if "checkout" in args and "-b" in args:         # the park: git -C <path> checkout -b <park>
+def _make_dispatch_draft_squat(remove_result=None, remove_exception=None):
+    """Build a subprocess.run side_effect for the draft-branch-squat tests, plus a `calls`
+    list every dispatched args tuple is recorded into -- so a test can assert not just the
+    (pruned, skipped) counts (which are IDENTICAL for park-and-remove vs. park-only: both
+    append to `pruned`, only the primary is ever skipped in the happy path) but whether
+    `git worktree remove` was actually invoked, and how many times (review finding: the
+    original tests asserted only the counts, so sabotaging pattern_squat_action to always
+    return park-only still passed the "park and remove" test).
+
+    remove_result: a types.SimpleNamespace to return for the `worktree remove` call instead
+    of the default success (`_ok()`) -- used to simulate a failed removal.
+    remove_exception: an exception instance to raise instead of returning, for the
+    `worktree remove` call -- used to simulate subprocess.TimeoutExpired.
+    """
+    calls: list = []
+
+    def _dispatch(args, **_kwargs):
+        calls.append(list(args))
+        if args[1:2] == ["remote"]:                    # git remote get-url origin
+            return _ok("git@github.com:brownm09/engineering-journal.git\n")
+        if args[1:3] == ["fetch", "origin"]:            # git fetch origin main, AND
+            return _ok()                                # _origin_ahead_count's git fetch origin <branch>
+        if args[1:3] == ["worktree", "list"]:           # git worktree list --porcelain
+            return _ok(_PORCELAIN_DRAFT_SQUAT)
+        if args[1:3] == ["rev-list", "--count"]:        # _origin_ahead_count -> fully pushed
+            return _ok("0\n")
+        if "checkout" in args and "-b" in args:         # the park: git -C <path> checkout -b <park>
+            return _ok()
+        if args[1:3] == ["worktree", "remove"]:         # park-and-remove's second step
+            if remove_exception is not None:
+                raise remove_exception
+            return remove_result if remove_result is not None else _ok()
         return _ok()
-    if args[1:3] == ["worktree", "remove"]:         # park-and-remove's second step
-        return _ok()
-    return _ok()
+
+    return _dispatch, calls
+
+
+def _remove_calls(calls: list) -> list:
+    return [c for c in calls if c[1:3] == ["worktree", "remove"]]
 
 
 def test_draft_branch_squat_park_and_remove() -> str:
@@ -214,7 +247,8 @@ def test_draft_branch_squat_park_and_remove() -> str:
     fully pushed, is parked AND removed in the same pass -- unlike a main-squatter (which is
     only ever parked, never auto-removed), this shape is safe to fully clean up because
     nothing else can legitimately need that exact throwaway worktree again."""
-    with unittest.mock.patch("subprocess.run", side_effect=_dispatch_draft_squat):
+    dispatch, calls = _make_dispatch_draft_squat()
+    with unittest.mock.patch("subprocess.run", side_effect=dispatch):
         with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
             with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
                 pruned_count, skipped_count, fetch_failed = prune.prune_one(
@@ -225,14 +259,17 @@ def test_draft_branch_squat_park_and_remove() -> str:
     assert pruned_count == 1, f"expected 1 pruned (parked + removed), got {pruned_count}"
     assert skipped_count == 1, f"expected 1 skipped (primary only), got {skipped_count}"
     assert not fetch_failed, "fetch should not be marked failed"
-    return "idle+clean+fully-pushed draft-branch squatter: parked and removed, pruned=1"
+    removed = _remove_calls(calls)
+    assert len(removed) == 1, f"expected exactly one `git worktree remove` call, got {removed}"
+    return "idle+clean+fully-pushed draft-branch squatter: parked and removed, pruned=1, remove actually invoked once"
 
 
 def test_draft_branch_squat_park_only_when_dirty() -> str:
     """A dirty squatter is parked (frees the branch name) but NOT removed -- its uncommitted
     content is preserved for human review, mirroring the real stub-823-120134 disposition
     from dev-env#747's live incident."""
-    with unittest.mock.patch("subprocess.run", side_effect=_dispatch_draft_squat):
+    dispatch, calls = _make_dispatch_draft_squat()
+    with unittest.mock.patch("subprocess.run", side_effect=dispatch):
         with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
             with unittest.mock.patch.object(prune, "is_dirty", return_value=True):
                 pruned_count, skipped_count, fetch_failed = prune.prune_one(
@@ -244,7 +281,55 @@ def test_draft_branch_squat_park_only_when_dirty() -> str:
     # park block's own convention of appending to `pruned` for a park, not just a removal.
     assert pruned_count == 1, f"expected 1 pruned (park-only still counts as handled), got {pruned_count}"
     assert skipped_count == 1, f"expected 1 skipped (primary only), got {skipped_count}"
-    return "dirty draft-branch squatter: parked only (branch freed), worktree left in place"
+    removed = _remove_calls(calls)
+    assert not removed, f"park-only must NEVER call `git worktree remove` -- content must stay untouched, got {removed}"
+    return "dirty draft-branch squatter: parked only (branch freed), remove NOT invoked, worktree left in place"
+
+
+def test_draft_branch_squat_park_and_remove_when_remove_fails() -> str:
+    """`git worktree remove` returning non-zero AFTER a successful park must still count the
+    branch as freed (pruned) while flagging the item for manual retry (skipped) -- diverges
+    deliberately from the generic merged-worktree timeout path (skipped only, never pruned),
+    because here the branch-freeing park already succeeded independently of the removal."""
+    fail_result = types.SimpleNamespace(returncode=1, stdout="", stderr="fatal: could not remove worktree")
+    dispatch, calls = _make_dispatch_draft_squat(remove_result=fail_result)
+    with unittest.mock.patch("subprocess.run", side_effect=dispatch):
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                    repo="/FAKE_EJ_REPO",
+                    dry_run=False,
+                    liveness_window_seconds=86400,
+                )
+    assert pruned_count == 1, f"branch was freed despite the failed remove -- expected pruned=1, got {pruned_count}"
+    assert skipped_count == 2, f"expected primary + the failed-remove retry flag, got {skipped_count}"
+    removed = _remove_calls(calls)
+    assert len(removed) == 1, f"expected exactly one (failed) `git worktree remove` attempt, got {removed}"
+    return "remove failure after a successful park: branch freed (pruned=1) but also flagged for manual retry (skipped includes it)"
+
+
+def test_draft_branch_squat_park_and_remove_when_remove_times_out() -> str:
+    """`git worktree remove` raising subprocess.TimeoutExpired AFTER a successful park must
+    degrade the same way as a non-zero exit (branch freed, item flagged for manual retry) --
+    not propagate and abort the scan, mirroring the generic worktree-remove TimeoutExpired
+    handling this file already covers (test_timeout_skips_worktree_and_continues) but for
+    THIS branch's own separate try/except (new code, not shared with that path)."""
+    dispatch, calls = _make_dispatch_draft_squat(
+        remove_exception=subprocess.TimeoutExpired(cmd=["git", "worktree", "remove"], timeout=300)
+    )
+    with unittest.mock.patch("subprocess.run", side_effect=dispatch):
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                    repo="/FAKE_EJ_REPO",
+                    dry_run=False,
+                    liveness_window_seconds=86400,
+                )
+    assert pruned_count == 1, f"branch was freed despite the remove timeout -- expected pruned=1, got {pruned_count}"
+    assert skipped_count == 2, f"expected primary + the timed-out-remove retry flag, got {skipped_count}"
+    removed = _remove_calls(calls)
+    assert len(removed) == 1, f"expected exactly one (timed-out) `git worktree remove` attempt, got {removed}"
+    return "remove timeout after a successful park: branch freed (pruned=1), flagged for manual retry, loop continues"
 
 
 def test_timeout_skips_worktree_and_continues() -> str:
@@ -389,8 +474,10 @@ def main() -> int:
         ("--include-named unset: named branch still skipped (default unchanged)", test_named_branch_skipped_by_default),
         ("--include-named set: named branch now pruned", test_named_branch_pruned_with_include_named),
         ("git worktree remove timeout: skip-and-continue, not abort", test_timeout_skips_worktree_and_continues),
-        ("draft-branch squat: idle+clean+fully-pushed -> park+remove", test_draft_branch_squat_park_and_remove),
-        ("draft-branch squat: dirty -> park-only, contents preserved", test_draft_branch_squat_park_only_when_dirty),
+        ("draft-branch squat: idle+clean+fully-pushed -> park+remove (remove actually invoked)", test_draft_branch_squat_park_and_remove),
+        ("draft-branch squat: dirty -> park-only (remove NEVER invoked), contents preserved", test_draft_branch_squat_park_only_when_dirty),
+        ("draft-branch squat: park+remove degrades gracefully when remove fails", test_draft_branch_squat_park_and_remove_when_remove_fails),
+        ("draft-branch squat: park+remove degrades gracefully when remove times out", test_draft_branch_squat_park_and_remove_when_remove_times_out),
         ("files_are_all_ephemeral: all files match", test_files_are_all_ephemeral_matches),
         ("files_are_all_ephemeral: one mismatch -> False", test_files_are_all_ephemeral_one_mismatch),
         ("files_are_all_ephemeral: empty patterns -> False", test_files_are_all_ephemeral_empty_patterns_never_true),

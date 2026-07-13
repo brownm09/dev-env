@@ -204,13 +204,42 @@ schedule.
   itself, and a relative `-C` redirect resolved against the command's own cwd against a real,
   existing, non-canonical target) before the formal test suite was written, then re-verified via that
   suite.
-- **Testing.** `claude/scripts/tests/test_journal_draft_worktree_guard.py` (new, 21 cases: pure
+- **Testing.** `claude/scripts/tests/test_journal_draft_worktree_guard.py` (new, 25 cases: pure
   extraction-function coverage + subprocess end-to-end coverage against real throwaway git repos,
   mirroring `test_canonical_mutate_guard.py`'s two-layer convention). `test_worktree_topology.py`
   extended (dev-env `## Testing` item 22) with `DRAFT_BRANCH_RE`,
   `non_canonical_worktrees_matching`, and all three `pattern_squat_action` outcomes.
-  `test_prune_merged_worktrees.py` extended with the park-and-remove and park-only integration paths
-  via the file's existing `subprocess.run` mocking convention. All three suites pass.
+  `test_prune_merged_worktrees.py` extended (item 26) with four draft-branch-squat integration
+  cases via the file's existing `subprocess.run` mocking convention. All three suites pass.
+  **`/review` on this PR found five real gaps this initial pass missed, all fixed before merge**
+  (each independently confirmed via a sabotage-then-reconfirm check — break the logic, watch the
+  relevant test actually fail, restore, watch it pass again — not just re-read): (1) the one test
+  protecting the hook's single most important invariant (distinguishing the legitimate `-C
+  <journal-canonical>` case from every squat) was tautological — it built the `-C` path via
+  `str(Path(...))`, which renders Windows backslashes that `shlex.split(posix=True)` silently
+  strips, so the test passed whether or not `_is_journal_canonical` was even correct; fixed by
+  rendering the path with forward slashes, matching the documented production convention. (2) a
+  leading `cd` fully exempted `git worktree add ... draft/YYYY-MM-DD` from the block — the
+  `cd`-scope-loss guard was copied onto `find_worktree_add_blocks` even though that function needs
+  no cwd resolution at all (it blocks purely on the branch-name token), so `cd <repo> && git
+  worktree add ... draft/YYYY-MM-DD` silently reproduced the exact incident this PR fixes; fixed by
+  removing that guard from `find_worktree_add_blocks` specifically (it correctly stays on
+  `find_checkout_candidates`, which does need a resolvable cwd). (3) the park-and-remove test
+  asserted only `(pruned, skipped)` counts, which are identical to park-only's — sabotaging
+  `pattern_squat_action` to always return park-only still passed; fixed by recording every
+  dispatched subprocess call and asserting `git worktree remove` was (or wasn't) actually invoked,
+  plus two new tests for that removal failing or timing out after a successful park. (4) a trailing
+  `git checkout <branch> --` with no pathspec after it still switches branches (confirmed against
+  real git) but was wrongly exempted as a file restore; fixed to require a real pathspec after
+  `--`. (5) `git worktree add --detach <draft-branch>` was a false-positive over-block (a detached
+  checkout holds no branch ref, so it can never be a squat); fixed by exempting `--detach`
+  unconditionally. `prune-merged-worktrees.py`'s new draft-squat branch was also refactored to
+  actually call `non_canonical_worktrees_matching` (precomputed once before the loop, mirroring
+  `main_squatter`) instead of leaving it as an unused import with the check re-implemented inline —
+  and the new hook's `_resolve_checkout_target` gained the `toplevel_cache` memoization the sibling
+  hook's equivalent function has (dev-env#576/PR#584), which the initial pass had silently dropped
+  when copying the parsing helpers. Full methodology and findings: `/review`'s posted comment on
+  [PR #748](https://github.com/brownm09/dev-env/pull/748).
 - **Observability.** The new hook's block reason follows the established stderr-only,
   exit-2-discards-stdout convention (`pre-tool-use-canonical-mutate-guard.py`'s own docstring
   explains why: Claude Code discards a PreToolUse hook's stdout on exit 2). `prune-merged-worktrees.py`'s

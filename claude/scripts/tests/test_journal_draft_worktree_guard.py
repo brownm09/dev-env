@@ -5,18 +5,29 @@ Two layers, both hermetic (no real git repos beyond throwaway `git init`s):
 
   1. Pure-function tests of `find_worktree_add_blocks()` / `find_checkout_candidates()` /
      `DRAFT_BRANCH_RE` / `_worktree_add_target()` / `_has_override()` — no git subprocess.
+     Covers two asymmetric `cd`-scope decisions: `find_worktree_add_blocks` needs no cwd at
+     all (blocks purely on the branch-name token) so a leading `cd` provides NO exemption
+     there, while `find_checkout_candidates` genuinely can't resolve a target after a `cd`
+     and correctly stays out of scope. Also covers `--detach` (never a candidate — a
+     detached HEAD holds no branch ref) and a trailing `--` with no paths after it (still a
+     branch switch, not a file restore).
   2. End-to-end main() via subprocess — drives the real hook over stdin against real
      throwaway git repos (a "canonical" and a "worktree") and asserts exit codes for:
-       - `git worktree add <path> ... draft/YYYY-MM-DD` from any cwd is BLOCKED (exit 2);
+       - `git worktree add <path> ... draft/YYYY-MM-DD` from any cwd is BLOCKED (exit 2),
+         including when preceded by an unrelated `cd`;
        - `git checkout draft/YYYY-MM-DD` redirected at the (env-overridden) journal
-         canonical via `-C` is ALLOWED (exit 0) — the one legitimate case;
+         canonical via `-C`, with the path rendered in FORWARD slashes (matching the
+         documented production convention — see the dedicated comment on this test: a
+         backslash-rendered path silently defeats `shlex.split(posix=True)`, which would
+         make this test pass for the wrong reason and give zero regression protection for
+         the hook's single most important invariant), is ALLOWED (exit 0) — the one
+         legitimate case;
        - the identical checkout with no redirect, ambient cwd NOT the canonical, is
          BLOCKED (exit 2);
        - the override token bypasses the block (exit 0);
        - `git checkout main` (not a draft branch) is allowed;
        - `git checkout draft/2026-07-12 -- somefile.txt` (file restore, not a branch
          switch) is allowed;
-       - a `cd` anywhere in the command takes the rest out of scope (allowed);
        - malformed JSON / missing cwd / non-Bash tool_name fail open.
 
 Usage:
@@ -95,11 +106,25 @@ def test_find_worktree_add_blocks_no_draft_branch_allowed() -> str:
     return "git worktree add <path> origin/main -> not blocked"
 
 
-def test_find_worktree_add_blocks_cd_out_of_scope() -> str:
+def test_find_worktree_add_blocks_not_exempted_by_leading_cd() -> str:
+    # Review finding: worktree-add needs no cwd resolution at all (it blocks purely on the
+    # branch-name token), so a preceding `cd` must NOT provide cover the way it does for
+    # find_checkout_candidates (which genuinely can't resolve a target after a cd). Before
+    # the fix, this exact shape silently bypassed the block, reproducing the incident.
     got = jdwg.find_worktree_add_blocks("cd /somewhere && git worktree add .claude/worktrees/foo draft/2026-07-12")
+    if not got:
+        raise AssertionError("a leading cd must NOT exempt worktree-add -- it needs no cwd at all")
+    return "cd <path> && git worktree add ... draft/YYYY-MM-DD -> still blocked (cd provides no cover here)"
+
+
+def test_find_checkout_candidates_cd_out_of_scope() -> str:
+    # Unlike worktree-add, a checkout/switch candidate's blockability genuinely depends on
+    # resolving a real cwd -- a preceding cd makes that cwd unknowable, so this extractor
+    # (unlike find_worktree_add_blocks above) correctly stays out of scope.
+    got = jdwg.find_checkout_candidates("cd /somewhere && git checkout draft/2026-07-12")
     if got:
-        raise AssertionError(f"a cd anywhere must take the whole command out of scope, got {got}")
-    return "cd <path> && ... -> whole command out of scope, not blocked here (main() still sees no candidates)"
+        raise AssertionError(f"a cd anywhere must take checkout candidates out of scope, got {got}")
+    return "cd <path> && git checkout draft/YYYY-MM-DD -> out of scope (real cwd unknowable after cd)"
 
 
 def test_find_worktree_add_blocks_heredoc_mention_not_triggered() -> str:
@@ -145,6 +170,16 @@ def test_find_checkout_candidates_file_restore_allowed() -> str:
     return "git checkout draft/YYYY-MM-DD -- <path> (file restore) -> not a candidate"
 
 
+def test_find_checkout_candidates_trailing_dash_dash_still_switches() -> str:
+    # Review finding: `checkout <branch> --` with NOTHING after the -- still switches
+    # branches (verified against real git behavior) -- only a `--` followed by an actual
+    # pathspec is a file restore. Before the fix, a bare trailing `--` was wrongly exempted.
+    got = jdwg.find_checkout_candidates("git checkout draft/2026-07-12 --")
+    if len(got) != 1:
+        raise AssertionError(f"a trailing -- with no paths after it must still be a candidate, got {got}")
+    return "git checkout draft/YYYY-MM-DD -- (trailing, no paths) -> still a candidate, not a file restore"
+
+
 def test_find_checkout_candidates_dash_b_create() -> str:
     got = jdwg.find_checkout_candidates("git checkout -b draft/2026-07-12")
     if len(got) != 1:
@@ -160,6 +195,15 @@ def test_worktree_add_target_dash_b_vs_positional() -> str:
     if jdwg._worktree_add_target(["-b"]) != []:
         raise AssertionError("dangling -b with no value -> no candidates, not an index error")
     return "-b <val> isolates the real target; no -b scans all positionals; dangling -b doesn't crash"
+
+
+def test_worktree_add_target_detach_never_a_candidate() -> str:
+    # Review finding: --detach checks out a DETACHED HEAD, which holds no branch ref at all
+    # -- it can never be a squat regardless of what the other tokens look like. Before the
+    # fix, `--detach <draft-branch>` was a false-positive over-block.
+    if jdwg._worktree_add_target(["--detach", "path", "draft/2026-07-12"]) != []:
+        raise AssertionError("--detach must yield zero candidates -- nothing gets checked out as a branch")
+    return "--detach ... draft/YYYY-MM-DD -> no candidates (detached HEAD holds no branch ref)"
 
 
 def test_has_override() -> str:
@@ -223,6 +267,20 @@ def test_main_blocks_worktree_add_onto_draft_branch() -> str:
 
 
 def test_main_allows_redirect_at_journal_canonical() -> str:
+    # The -C path is deliberately rendered with forward slashes, matching the documented
+    # production convention (`git -C C:/Users/brown/Git/engineering-journal ...`) -- NOT
+    # str(Path(...)), which renders Windows backslashes. _tokenize() uses shlex.split(
+    # posix=True), which treats backslash as an escape character and silently EATS every
+    # backslash in a raw Windows path (confirmed: shlex.split(r'C:\Users\brown\...')
+    # collapses to a single mangled token with the separators stripped). A prior version of
+    # this test used str(journal) directly, which meant the -C target never resolved to the
+    # real journal directory at all -- the test passed only because BOTH a broken resolution
+    # AND a correct one exit 0 for different reasons, so it gave zero regression protection
+    # for the hook's single most important invariant (distinguishing the one legitimate case
+    # from every squat). Verified by sabotaging _is_journal_canonical to always return False
+    # (which would break the documented daily workflow for every session) -- with the
+    # backslash path, the full suite still passed; with the forward-slash fix below, this
+    # test correctly fails.
     with tempfile.TemporaryDirectory() as tmp:
         journal = Path(tmp) / "engineering-journal"
         journal.mkdir()
@@ -230,16 +288,17 @@ def test_main_allows_redirect_at_journal_canonical() -> str:
         elsewhere = Path(tmp) / "elsewhere"
         elsewhere.mkdir()
         _init_throwaway_repo(elsewhere)
+        journal_fwd = str(journal).replace("\\", "/")
         payload = {
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
-            "tool_input": {"command": f"git -C {journal} checkout draft/2026-07-12"},
+            "tool_input": {"command": f"git -C {journal_fwd} checkout draft/2026-07-12"},
             "cwd": str(elsewhere),
         }
         proc = _run_hook(payload, env_overrides={"JOURNAL_DRAFT_WORKTREE_GUARD_REPO_PATH": str(journal)})
         if proc.returncode != 0:
             raise AssertionError(f"expected exit 0 (the one legitimate case), got {proc.returncode}. stderr={proc.stderr!r}")
-    return "-C <journal-canonical> checkout draft/YYYY-MM-DD allowed (exit 0) -- the documented workflow itself"
+    return "-C <journal-canonical> checkout draft/YYYY-MM-DD (forward-slash path) allowed (exit 0) -- the documented workflow itself"
 
 
 def test_main_blocks_ambient_checkout_outside_canonical() -> str:
@@ -287,6 +346,27 @@ def test_main_override_bypasses_block() -> str:
             raise AssertionError(f"override must bypass the block, got exit {proc.returncode}. stderr={proc.stderr!r}")
     return "ALLOW_JOURNAL_DRAFT_WORKTREE=1 prefix bypasses the block (exit 0)"
 
+def test_main_blocks_worktree_add_despite_leading_cd() -> str:
+    # End-to-end regression proof for the cd-bypass fix (see
+    # test_find_worktree_add_blocks_not_exempted_by_leading_cd for the pure-function version):
+    # before the fix, `cd <repo> && git worktree add ... draft/YYYY-MM-DD` slipped through
+    # main() unblocked (exit 0), reproducing the exact incident this hook exists to prevent.
+    with tempfile.TemporaryDirectory() as tmp:
+        other_repo = Path(tmp) / "other-repo"
+        other_repo.mkdir()
+        _init_throwaway_repo(other_repo)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f"cd {other_repo} && git worktree add .claude/worktrees/foo draft/2026-07-12"},
+            "cwd": str(other_repo),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(f"expected exit 2 despite the leading cd, got {proc.returncode}. stderr={proc.stderr!r}")
+    return "cd <repo> && git worktree add ... draft/YYYY-MM-DD -- still blocked (exit 2) despite the leading cd"
+
+
 def test_main_allows_non_draft_checkout() -> str:
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp) / "repo"
@@ -326,20 +406,24 @@ def main() -> int:
         ("find_worktree_add_blocks: -b startpoint allowed", test_find_worktree_add_blocks_dash_b_startpoint_allowed),
         ("find_worktree_add_blocks: -b draft-name blocked", test_find_worktree_add_blocks_dash_b_draft_name_blocked),
         ("find_worktree_add_blocks: no draft branch allowed", test_find_worktree_add_blocks_no_draft_branch_allowed),
-        ("find_worktree_add_blocks: cd out of scope", test_find_worktree_add_blocks_cd_out_of_scope),
+        ("find_worktree_add_blocks: NOT exempted by a leading cd", test_find_worktree_add_blocks_not_exempted_by_leading_cd),
         ("find_worktree_add_blocks: heredoc mention not triggered", test_find_worktree_add_blocks_heredoc_mention_not_triggered),
         ("find_checkout_candidates: basic", test_find_checkout_candidates_basic),
         ("find_checkout_candidates: switch", test_find_checkout_candidates_switch),
         ("find_checkout_candidates: redirect captured", test_find_checkout_candidates_redirect_captured),
         ("find_checkout_candidates: non-draft allowed", test_find_checkout_candidates_not_draft_branch_allowed),
         ("find_checkout_candidates: file restore allowed", test_find_checkout_candidates_file_restore_allowed),
+        ("find_checkout_candidates: trailing -- still switches", test_find_checkout_candidates_trailing_dash_dash_still_switches),
         ("find_checkout_candidates: -b create", test_find_checkout_candidates_dash_b_create),
+        ("find_checkout_candidates: cd out of scope", test_find_checkout_candidates_cd_out_of_scope),
         ("_worktree_add_target: -b vs positional scan", test_worktree_add_target_dash_b_vs_positional),
+        ("_worktree_add_target: --detach never a candidate", test_worktree_add_target_detach_never_a_candidate),
         ("_has_override: leading vs quoted mention", test_has_override),
         ("main(): blocks worktree add onto draft branch", test_main_blocks_worktree_add_onto_draft_branch),
         ("main(): allows -C redirect at journal canonical", test_main_allows_redirect_at_journal_canonical),
         ("main(): blocks ambient checkout outside canonical", test_main_blocks_ambient_checkout_outside_canonical),
         ("main(): override bypasses block", test_main_override_bypasses_block),
+        ("main(): blocks worktree add despite leading cd", test_main_blocks_worktree_add_despite_leading_cd),
         ("main(): allows non-draft checkout", test_main_allows_non_draft_checkout),
         ("main(): fails open on malformed input", test_main_fails_open_on_malformed_input),
     ]

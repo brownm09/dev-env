@@ -308,6 +308,15 @@ def prune_one(
     squatter = main_squatter(worktrees)
     squatter_path = str(Path(squatter["path"]).resolve()) if squatter else None
 
+    # Every non-canonical worktree squatting a draft/YYYY-MM-DD-shaped engineering-journal
+    # branch (dev-env#747, ADR-105) — precomputed once before the loop via the shared
+    # topology helper, mirroring main_squatter() above, rather than re-matching
+    # DRAFT_BRANCH_RE against each worktree's branch inline inside the loop.
+    draft_squatter_paths = {
+        str(Path(wt["path"]).resolve())
+        for wt in non_canonical_worktrees_matching(worktrees, DRAFT_BRANCH_RE)
+    }
+
     pruned: list[str] = []
     skipped: list[tuple[str, str]] = []
 
@@ -351,12 +360,13 @@ def prune_one(
             continue
 
         # Non-primary worktree squatting a draft/YYYY-MM-DD-shaped engineering-journal
-        # branch: illegitimate on ANY non-canonical worktree in ANY repo, checked
-        # unconditionally (before the BRANCH_PREFIX gate below, which would otherwise skip
-        # it — a draft/* branch never starts with claude/). The ADR-051 liveness guard
-        # already ran for this worktree earlier in this loop, so a live squatter never
-        # reaches here (dev-env#747, ADR-105).
-        if DRAFT_BRANCH_RE.match(branch or ""):
+        # branch (membership in the precomputed draft_squatter_paths set above):
+        # illegitimate on ANY non-canonical worktree in ANY repo, checked unconditionally
+        # (before the BRANCH_PREFIX gate below, which would otherwise skip it — a draft/*
+        # branch never starts with claude/). The ADR-051 liveness guard already ran for
+        # this worktree earlier in this loop, so a live squatter never reaches here
+        # (dev-env#747, ADR-105).
+        if path in draft_squatter_paths:
             dirty = is_dirty(path)
             fully_pushed = _origin_ahead_count(branch, repo) == 0
             action = pattern_squat_action(path, branch, live=False, dirty=dirty, fully_pushed=fully_pushed)
