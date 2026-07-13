@@ -269,6 +269,7 @@ def dirty_open_pr_status_lines(journal_repo: Path) -> list[str]:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("reconcile-open-prs")
     _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
     raw = sys.stdin.read().strip()

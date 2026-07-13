@@ -36,6 +36,7 @@ import sys
 
 import _bash_state
 from _hookio import scan_top_level
+import _hookutil
 
 _MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
 
@@ -67,6 +68,7 @@ def build_message(branch: str | None, repo_root: str | None, drift_warning: str 
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("pre-merge-branch-check")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

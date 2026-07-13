@@ -44,6 +44,7 @@ from _hookio import (
     scan_top_level,
     should_confirm_via_gh,
 )
+import _hookutil
 from _worktree_topology import canonical_on_main, merge_park_target, parse_worktree_porcelain
 
 # Anchored top-level match — mirrors usage-snapshot.py / pr-merge-reminder.py /
@@ -305,6 +306,7 @@ def plan_advisory(status_msg: str | None, park_msg: str | None) -> tuple[bool, s
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("post-pr-merge-pull")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

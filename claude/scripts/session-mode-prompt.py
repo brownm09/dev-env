@@ -37,6 +37,8 @@ import sys
 import time
 import traceback
 
+import _hookutil
+
 MARKER_DIR = "C:/Users/brown/.claude/scratch"
 LOG_PATH = "C:/Users/brown/.claude/scratch/session-mode-prompt.log"
 
@@ -83,6 +85,7 @@ def _log(event):
 
 
 def main():
+    _hookutil.record_heartbeat("session-mode-prompt")
     event = {"stage": "start"}
 
     try:

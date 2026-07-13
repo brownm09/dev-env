@@ -49,6 +49,7 @@ from _hookio import (
     scan_top_level,
     should_confirm_via_gh,
 )
+import _hookutil
 
 CREDS_PATH = "C:/Users/brown/.claude/.credentials.json"
 CONFIG_PATH = "C:/Users/brown/Git/dev-env/claude/usage-config.json"
@@ -423,6 +424,7 @@ def format_snapshot(util_data: dict, config: dict, exchanges: list[dict]) -> str
 # --- main ---
 
 def main() -> None:
+    _hookutil.record_heartbeat("usage-snapshot")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

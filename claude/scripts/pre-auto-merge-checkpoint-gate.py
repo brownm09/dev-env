@@ -48,6 +48,8 @@ import re
 import shlex
 import sys
 
+import _hookutil
+
 
 def _fail_closed(msg: str) -> None:
     """Block the merge (exit 2) with an ASCII-sanitized reason on stderr.
@@ -239,6 +241,7 @@ def _qualifying_comment(comments):
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("pre-auto-merge-checkpoint-gate")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

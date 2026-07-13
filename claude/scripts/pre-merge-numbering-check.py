@@ -62,6 +62,7 @@ import subprocess
 import sys
 
 from _hookio import effective_merge_dir, is_merge_help_only, scan_top_level
+import _hookutil
 
 _MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
 _TESTING_ITEM_RE = re.compile(r'^(\d+)\.\s+\*\*')
@@ -227,6 +228,7 @@ def _run_git(args, cwd):
 
 
 def main():
+    _hookutil.record_heartbeat("pre-merge-numbering-check")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

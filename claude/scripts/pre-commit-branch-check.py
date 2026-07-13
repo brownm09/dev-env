@@ -28,6 +28,7 @@ import re
 import sys
 
 import _bash_state
+import _hookutil
 
 # Matches `git commit` as an actual command invocation, not inside a string or
 # after --message / -m (where "commit" would be a flag argument value).
@@ -49,6 +50,7 @@ def build_message(branch: str | None, drift_warning: str | None) -> str:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("pre-commit-branch-check")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

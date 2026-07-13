@@ -47,6 +47,7 @@ from _hookio import (
     scan_top_level,
     should_confirm_via_gh,
 )
+import _hookutil
 
 CONFIG_FILE = ".claude/hook-config.json"
 
@@ -336,6 +337,7 @@ def move_to_done(item_id: str, config: dict) -> bool:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("post-pr-merge-project")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

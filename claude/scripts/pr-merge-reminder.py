@@ -41,6 +41,7 @@ from _hookio import (
     scan_top_level,
     should_confirm_via_gh,
 )
+import _hookutil
 
 # Matches the start of a statement token against `gh pr merge`, `gh pr create`,
 # or `git push`.
@@ -368,6 +369,7 @@ def _build_messages(
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("pr-merge-reminder")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

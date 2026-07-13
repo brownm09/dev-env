@@ -54,6 +54,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import _hookutil
+
 SCRATCH = Path("C:/Users/brown/.claude/scratch")
 # Drive whose free space gates reclamation, and the tree scanned for idle worktrees.
 TARGET_DRIVE = "C:/"
@@ -138,6 +140,7 @@ def _spawn_reclaim(protect_cwd: str) -> bool:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("disk-space-check")
     raw = sys.stdin.read().strip()
     session_id = ""
     cwd = ""

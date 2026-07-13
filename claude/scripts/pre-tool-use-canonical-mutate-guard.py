@@ -145,6 +145,7 @@ import subprocess
 import sys
 
 from _hookio import is_absolute_path, split_top_level
+import _hookutil
 
 # Matches `.claude/worktrees/<name>` anywhere in a path — same pattern as
 # ADR-024's hook. A cwd matching this is out of scope for this hook entirely;
@@ -726,6 +727,7 @@ def _emit_block(matched: str, root: str) -> None:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("pre-tool-use-canonical-mutate-guard")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

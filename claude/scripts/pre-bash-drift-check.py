@@ -35,6 +35,7 @@ import json
 import sys
 
 import _bash_state
+import _hookutil
 
 # Margin-of-safety default, not fit to the one observed 5-7 min incident — a
 # smaller threshold only costs more `git rev-parse` calls, never more false
@@ -61,6 +62,7 @@ def build_message(drift_warning: str) -> str:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("pre-bash-drift-check")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

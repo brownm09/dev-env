@@ -64,6 +64,7 @@ import sys
 
 from _gh_project import add_to_project
 from _hookio import is_help_only, read_command_output, scan_top_level, split_top_level
+import _hookutil
 from _worktree_canon import canonical_root_from_worktree
 
 CONFIG_FILE = ".claude/hook-config.json"
@@ -522,6 +523,7 @@ def format_reminder(
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("post-tool-use")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

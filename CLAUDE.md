@@ -597,6 +597,15 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     transcript's newest entry (the user's just-submitted prompt), whose size a large paste puts
     directly under the user's control. Used by `idle-refresher.py`, which needs only the last
     assistant record's timestamp and would otherwise pay a full parse on every prompt submit.
+    Also exercises `record_heartbeat(hook_name, heartbeat_dir=None)`
+    ([ADR-106](docs/adr/106-hook-heartbeat-liveness-ledger.md); dev-env#745, PR8 of #717): a real
+    tmp-dir round trip pins that it writes a parseable, current Unix timestamp to
+    `heartbeat_dir / f"{hook_name}.ts"`, creates the directory (and parents) if absent, overwrites
+    with an updated timestamp on a second call, leaves no leftover tmp file (the atomic
+    `os.replace` swap), swallows errors when the target directory can't be created (a plain file
+    occupying the path), and that the default `heartbeat_dir` is `SCRATCH / "hook-heartbeat"`. This
+    is the writer side, called as the first statement of `main()` by all 41 currently-wired hooks
+    plus `hook-liveness-check.py` itself — see item 67 for the reader side.
 
     ```bash
     py -3 claude/scripts/tests/test_hookutil.py
@@ -1790,6 +1799,87 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 
     ```bash
     py -3 claude/scripts/tests/test_journal_draft_worktree_guard.py
+    ```
+
+67. **hook-liveness-check test** — required when changing `claude/scripts/hook-liveness-check.py`.
+    Exercises the pure helpers offline (tmp dirs for heartbeat files, hand-built settings.json
+    fixtures — never the live `claude/settings.json`, so this suite's pass/fail doesn't drift with
+    production wiring changes; [ADR-106](docs/adr/106-hook-heartbeat-liveness-ledger.md);
+    dev-env#745, PR8 of #717): `hook_name_from_command` (script-basename-minus-`.py` extraction,
+    matching the literal string every hook passes to `_hookutil.record_heartbeat` — trailing
+    whitespace tolerated, a non-`.py` command and empty/`None` input both -> `None`);
+    `wired_hook_events` (a settings.json fixture mapping each wired hook name to the union of
+    events it's registered under; multiple matcher groups under one event — e.g.
+    `journal-shard-write-advisory`'s real Bash/Write/Edit tripling — dedupe to a single event
+    membership; a non-`.py` command contributes nothing; malformed structure at any level — a
+    non-list event group, a non-dict group, non-dict hook entries, a non-dict top-level `hooks`
+    key — degrades to skipping that piece rather than raising); `exempt_hooks` (a hook wired
+    *exclusively* to `PostCompact` and/or `Notification` is exempt; a hook also wired to any other
+    event — e.g. `awake-blocker`'s real `Notification`+`UserPromptSubmit`+`Stop` shape — is NOT
+    exempt even though `Notification` is among its events; a hand-built empty event set is not
+    exempt either, guarding the vacuous-subset case); `stale_hooks` (fresh/missing/old/malformed-
+    content decisions against injected heartbeat files and a caller-supplied `now` — never the real
+    clock; the boundary is inclusive on the healthy side, exactly `cadence_days` old is NOT stale,
+    one second past it IS; an exempt hook is never flagged even with no heartbeat file at all;
+    output sorted by hook name); `_age_desc` and `format_warning` (`.isascii()`-safe; names the
+    stale hook(s); shows `"never recorded"` for `last_seen=None` and a one-decimal day count for a
+    real stale timestamp; a whole-number `cadence_days` renders `"7 days"`, not `"7.0 days"`).
+
+    Extended same-PR (`/review` findings on PR #752, recorded in
+    [ADR-106's 2026-07-13 addendum](docs/adr/106-hook-heartbeat-liveness-ledger.md)) with
+    `format_self_check_failure` (`.isascii()`-safe; names the specific failure reason and the
+    parsed hook count; text distinct from `format_warning`'s so the two failure classes are never
+    conflated) and a cross-check test, `test_wired_hook_events_agrees_with_hook_wiring_module`, that
+    runs `wired_hook_events()` and `tests/_hook_wiring.wired_script_events()` against the **real**
+    `claude/settings.json` and asserts agreement (modulo the `.py`-suffix convention) — a regression
+    guard against the two deliberately-not-yet-consolidated parsers (see the ADR's Settings-parsing
+    scope decision) silently drifting apart. `main()`'s stdin plumbing IS now covered: a behavioral
+    layer drives the real hook end-to-end over stdin via subprocess, with HOME/USERPROFILE isolated
+    to a temp dir (mirroring `test_stop_journal_stub_checkpoint.py`'s pattern, so
+    `_hookutil.HEARTBEAT_DIR` and the once-per-session sentinel never touch the real
+    `~/.claude/scratch/`) and `SETTINGS_PATH` overridden via the `HOOK_LIVENESS_SETTINGS_PATH` test
+    seam. Six cases: the healthy no-stale-hooks path is silent (own heartbeat just recorded, exit 0,
+    empty stdout/stderr); a stale non-exempt hook (no heartbeat file at all) emits a model-visible
+    `additionalContext` warning naming it; an unreadable/malformed settings.json emits the
+    self-check-failure advisory rather than a silent exit; a settings.json missing this hook's own
+    wiring emits the self-check-failure advisory (the review's core finding — this hook's own
+    heartbeat previously stayed fresh even while this exact failure silently no-op'd); and the
+    once-per-session debounce silences an identical second call in the same session while a
+    different `session_id` still fires. The writer side (`_hookutil.record_heartbeat`) is covered in
+    item 27 above; the structural enforcement that every wired hook (including this one) actually
+    calls it correctly is item 68 below.
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_liveness_check.py
+    ```
+
+68. **hook-heartbeat-guard structural gate** — required when changing which hooks are wired in
+    `claude/settings.json`, or any wired hook's `main()`. Mirrors
+    `test_hook_safe_exit_guard.py` / `test_hook_output_contract.py`'s established AST-gate pattern
+    ([ADR-106](docs/adr/106-hook-heartbeat-liveness-ledger.md)'s 2026-07-13 addendum;
+    dev-env#745, PR8 of #717 `/review`): asserts every currently-wired hook (discovered via
+    `tests/_hook_wiring.py`, so the checked set self-updates with `claude/settings.json` — never a
+    hardcoded list) calls `_hookutil.record_heartbeat("<own-name>")` as the literal first statement
+    of its own `main()` (after any docstring). Unlike its two precedent gates, ships with an
+    **empty allowlist from day one** — PR8 made every wired hook compliant in the same change that
+    introduced the gate, so there is no pre-existing debt to migrate; a newly wired hook must be
+    compliant from its first commit. Pure-fixture self-tests pin the detector
+    (`classify_heartbeat`) against: compliant (first statement, and first statement after a
+    docstring); no `main()`; an empty `main()` (only `pass`); a docstring-only `main()`; the call
+    present but not first; the call naming a *different* hook; a non-literal (variable) name
+    argument (documented scope limitation — this is exactly the shape the gate itself caught in
+    `hook-liveness-check.py`'s own first draft, which used a module-level `OWN_HOOK_NAME` variable
+    instead of the literal, fixed immediately); the unqualified `from _hookutil import
+    record_heartbeat` call shape (also out of scope by design); and an unrelated first call. The
+    repo-wide gate then asserts zero non-compliant wired hooks against the real
+    `claude/settings.json` + `claude/scripts/*.py`.
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_heartbeat_guard.py
+    ```
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_liveness_check.py
     ```
 
 ## Observability

@@ -39,6 +39,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import _hookutil
 from _worktree_topology import (
     DETACHED,
     canonical_sync_action,
@@ -68,6 +69,7 @@ def run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("journal-canonical-guard")
     try:
         sys.stdin.read()
     except Exception:

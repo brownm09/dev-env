@@ -188,6 +188,7 @@ def _last_activity_epoch_from_path(path):
 
 
 def main():
+    _hookutil.record_heartbeat("idle-refresher")
     try:
         data = json.loads(sys.stdin.read() or "{}")
         if not isinstance(data, dict):

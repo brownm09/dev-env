@@ -42,6 +42,7 @@ import sys
 from pathlib import Path
 
 from _hookio import read_command_output, scan_top_level
+import _hookutil
 from _journal_schema import decode_shard_bytes, has_unresolved_open_pr, parse_manifest_text
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
@@ -221,6 +222,7 @@ def has_push_error(output: str) -> bool:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("stub-push-archive-reminder")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

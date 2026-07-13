@@ -298,6 +298,7 @@ def main() -> None:
     # Defensive: degrade an unencodable char to a replacement instead of letting the
     # exit-2 stderr write raise. The advisory is ASCII by construction and is also
     # routed through _hookout.ascii_sanitize below; this protects future edits.
+    _hookutil.record_heartbeat("posttooluse-inert-advisory")
     try:
         sys.stderr.reconfigure(errors="replace")
     except Exception:
