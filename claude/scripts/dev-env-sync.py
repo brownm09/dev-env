@@ -32,6 +32,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import _hookutil
 from _worktree_topology import (
     canonical_sync_action,
     diagnose_main_topology,
@@ -146,6 +147,7 @@ def format_pulled_message(local: str, remote: str, behind_count: int, pulled_lin
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("dev-env-sync")
     try:
         sys.stdin.read()
     except Exception:

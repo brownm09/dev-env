@@ -7,8 +7,10 @@ copies in posttooluse-inert-advisory.py, reconcile-open-prs.py, and
 token-tracker.py — ADR-064), the transcript-record readers `load_records` /
 `_parse_records` / `iter_bash_calls` / `_result_text` / `_content_items`
 (extracted from posttooluse-inert-advisory.py and stop-tile-enumeration-gate.py —
-ADR-090), and the bounded tail reader `iter_records_reverse` / `_record_from_line`
-(dev-env#679, ADR-090 Amendment 1).
+ADR-090), the bounded tail reader `iter_records_reverse` / `_record_from_line`
+(dev-env#679, ADR-090 Amendment 1), and the hook heartbeat writer
+`record_heartbeat` (ADR-106) — called by every wired hook's `main()`, read by
+`hook-liveness-check.py` (see test_hook_liveness_check.py for the reader side).
 
 Exercises the pure helpers offline (tmp dirs, injected paths, hand-built records —
 no real ~/.claude/scratch or ~/.claude/projects).  The live sentinel write path in
@@ -436,6 +438,69 @@ def test_iter_records_reverse_long_single_line_is_not_quadratic() -> str:
     return f"a ~2MB single line across ~15600 small chunks parses correctly in {elapsed:.2f}s (not quadratic)"
 
 
+# --- hook heartbeat (ADR-106) --------------------------------------------------
+
+def test_record_heartbeat_writes_parseable_recent_timestamp() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        hb_dir = Path(root) / "hook-heartbeat"
+        before = time.time()
+        _hookutil.record_heartbeat("my-hook", heartbeat_dir=hb_dir)
+        after = time.time()
+        target = hb_dir / "my-hook.ts"
+        assert target.exists(), "heartbeat file was not created"
+        value = float(target.read_text(encoding="utf-8").strip())
+        assert before - 1 <= value <= after + 1, f"timestamp {value} not within [{before}, {after}]"
+    return "record_heartbeat writes a parseable, current Unix timestamp"
+
+
+def test_record_heartbeat_creates_dir_if_absent() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        hb_dir = Path(root) / "does" / "not" / "exist" / "yet"
+        assert not hb_dir.exists()
+        _hookutil.record_heartbeat("foo", heartbeat_dir=hb_dir)
+        assert (hb_dir / "foo.ts").exists()
+    return "record_heartbeat creates the heartbeat directory (and parents) if absent"
+
+
+def test_record_heartbeat_overwrites_on_second_call() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        hb_dir = Path(root)
+        _hookutil.record_heartbeat("foo", heartbeat_dir=hb_dir)
+        first = float((hb_dir / "foo.ts").read_text(encoding="utf-8").strip())
+        time.sleep(0.01)  # force a detectably later timestamp regardless of clock resolution
+        _hookutil.record_heartbeat("foo", heartbeat_dir=hb_dir)
+        second = float((hb_dir / "foo.ts").read_text(encoding="utf-8").strip())
+        assert second >= first, f"second call's timestamp {second} should be >= first {first}"
+    return "a second record_heartbeat call overwrites with an updated timestamp"
+
+
+def test_record_heartbeat_leaves_no_tmp_file() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        hb_dir = Path(root)
+        _hookutil.record_heartbeat("foo", heartbeat_dir=hb_dir)
+        leftovers = [p for p in hb_dir.iterdir() if p.name != "foo.ts"]
+        assert leftovers == [], f"unexpected leftover files: {leftovers}"
+    return "record_heartbeat's tmp file is removed by the atomic os.replace (no .tmp leftovers)"
+
+
+def test_record_heartbeat_swallows_errors_when_dir_uncreatable() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        # A plain file occupying the path where record_heartbeat needs a directory --
+        # mkdir(parents=True, exist_ok=True) raises FileExistsError/NotADirectoryError.
+        blocker = Path(root) / "blocker"
+        blocker.write_text("")
+        hb_dir = blocker / "hook-heartbeat"
+        _hookutil.record_heartbeat("foo", heartbeat_dir=hb_dir)  # must not raise
+    return "record_heartbeat swallows errors when the heartbeat directory can't be created"
+
+
+def test_record_heartbeat_default_dir_is_scratch_subdir() -> str:
+    assert _hookutil.HEARTBEAT_DIR == _hookutil.SCRATCH / "hook-heartbeat", (
+        f"HEARTBEAT_DIR should be SCRATCH/hook-heartbeat, got {_hookutil.HEARTBEAT_DIR}"
+    )
+    return "HEARTBEAT_DIR (the default heartbeat_dir) is SCRATCH / 'hook-heartbeat'"
+
+
 def main() -> int:
     tests = [
         ("sentinel_path: correct path with override", test_sentinel_path_returns_correct_path),
@@ -471,6 +536,12 @@ def main() -> int:
         ("iter_records_reverse: non-positive chunk_size -> ValueError", test_iter_records_reverse_nonpositive_chunk_size_raises),
         ("iter_records_reverse: lazy, stops early", test_iter_records_reverse_is_lazy_stops_early),
         ("iter_records_reverse: long single line is not quadratic", test_iter_records_reverse_long_single_line_is_not_quadratic),
+        ("record_heartbeat: writes parseable recent timestamp", test_record_heartbeat_writes_parseable_recent_timestamp),
+        ("record_heartbeat: creates dir if absent", test_record_heartbeat_creates_dir_if_absent),
+        ("record_heartbeat: overwrites on second call", test_record_heartbeat_overwrites_on_second_call),
+        ("record_heartbeat: no leftover tmp file", test_record_heartbeat_leaves_no_tmp_file),
+        ("record_heartbeat: swallows errors when dir uncreatable", test_record_heartbeat_swallows_errors_when_dir_uncreatable),
+        ("record_heartbeat: default dir is SCRATCH/hook-heartbeat", test_record_heartbeat_default_dir_is_scratch_subdir),
     ]
     failed = 0
     for name, fn in tests:

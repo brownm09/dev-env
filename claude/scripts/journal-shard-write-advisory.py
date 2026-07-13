@@ -44,6 +44,8 @@ import re
 import sys
 from pathlib import Path
 
+import _hookutil
+
 try:
     from _journal_schema import (
         decode_shard_bytes,
@@ -348,6 +350,7 @@ def format_advisory(problems: list[tuple[str, list[str]]]) -> str:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("journal-shard-write-advisory")
     raw_stdin = sys.stdin.read().strip()
     if not raw_stdin:
         sys.exit(0)

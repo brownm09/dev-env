@@ -597,6 +597,15 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     transcript's newest entry (the user's just-submitted prompt), whose size a large paste puts
     directly under the user's control. Used by `idle-refresher.py`, which needs only the last
     assistant record's timestamp and would otherwise pay a full parse on every prompt submit.
+    Also exercises `record_heartbeat(hook_name, heartbeat_dir=None)`
+    ([ADR-106](docs/adr/106-hook-heartbeat-liveness-ledger.md); dev-env#745, PR8 of #717): a real
+    tmp-dir round trip pins that it writes a parseable, current Unix timestamp to
+    `heartbeat_dir / f"{hook_name}.ts"`, creates the directory (and parents) if absent, overwrites
+    with an updated timestamp on a second call, leaves no leftover tmp file (the atomic
+    `os.replace` swap), swallows errors when the target directory can't be created (a plain file
+    occupying the path), and that the default `heartbeat_dir` is `SCRATCH / "hook-heartbeat"`. This
+    is the writer side, called as the first statement of `main()` by all 41 currently-wired hooks
+    plus `hook-liveness-check.py` itself — see item 67 for the reader side.
 
     ```bash
     py -3 claude/scripts/tests/test_hookutil.py
@@ -1790,6 +1799,42 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 
     ```bash
     py -3 claude/scripts/tests/test_journal_draft_worktree_guard.py
+    ```
+
+67. **hook-liveness-check test** — required when changing `claude/scripts/hook-liveness-check.py`.
+    Exercises the pure helpers offline (tmp dirs for heartbeat files, hand-built settings.json
+    fixtures — never the live `claude/settings.json`, so this suite's pass/fail doesn't drift with
+    production wiring changes; [ADR-106](docs/adr/106-hook-heartbeat-liveness-ledger.md);
+    dev-env#745, PR8 of #717): `hook_name_from_command` (script-basename-minus-`.py` extraction,
+    matching the literal string every hook passes to `_hookutil.record_heartbeat` — trailing
+    whitespace tolerated, a non-`.py` command and empty/`None` input both -> `None`);
+    `wired_hook_events` (a settings.json fixture mapping each wired hook name to the union of
+    events it's registered under; multiple matcher groups under one event — e.g.
+    `journal-shard-write-advisory`'s real Bash/Write/Edit tripling — dedupe to a single event
+    membership; a non-`.py` command contributes nothing; malformed structure at any level — a
+    non-list event group, a non-dict group, non-dict hook entries, a non-dict top-level `hooks`
+    key — degrades to skipping that piece rather than raising); `exempt_hooks` (a hook wired
+    *exclusively* to `PostCompact` and/or `Notification` is exempt; a hook also wired to any other
+    event — e.g. `awake-blocker`'s real `Notification`+`UserPromptSubmit`+`Stop` shape — is NOT
+    exempt even though `Notification` is among its events; a hand-built empty event set is not
+    exempt either, guarding the vacuous-subset case); `stale_hooks` (fresh/missing/old/malformed-
+    content decisions against injected heartbeat files and a caller-supplied `now` — never the real
+    clock; the boundary is inclusive on the healthy side, exactly `cadence_days` old is NOT stale,
+    one second past it IS; an exempt hook is never flagged even with no heartbeat file at all;
+    output sorted by hook name); `_age_desc` and `format_warning` (`.isascii()`-safe; names the
+    stale hook(s); shows `"never recorded"` for `last_seen=None` and a one-decimal day count for a
+    real stale timestamp; a whole-number `cadence_days` renders `"7 days"`, not `"7.0 days"`).
+    `main()`'s stdin plumbing and the real `~/.claude/scratch/hook-heartbeat/` +
+    `claude/settings.json` reads are not covered here (pure-helper convention, matching
+    `pre-bash-drift-check.py`'s own test file, item 59) — manually verified end-to-end instead: a
+    smoke run against the real worktree correctly found all 40 non-exempt wired hooks
+    `"never recorded"` (a fresh worktree with no heartbeat history yet) while `hook-liveness-check`
+    itself was absent from the list, proving its own first-statement `record_heartbeat` call had
+    already run before `stale_hooks` checked it. The writer side
+    (`_hookutil.record_heartbeat`) is covered in item 27 above.
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_liveness_check.py
     ```
 
 ## Observability

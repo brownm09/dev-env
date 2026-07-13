@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import _hookutil
+
 JOURNAL_SESSIONS = Path.home() / "Git" / "engineering-journal" / "sessions"
 SCRATCH = Path.home() / ".claude" / "scratch"
 
@@ -42,6 +44,7 @@ def get_repo_name(cwd: str) -> str | None:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("journal-onboard-check")
     raw = ""
     try:
         raw = sys.stdin.read().strip()

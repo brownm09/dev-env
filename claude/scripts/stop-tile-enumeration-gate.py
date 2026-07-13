@@ -763,6 +763,7 @@ def _mark_trigger_fired(trigger: str, session_id: str) -> None:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("stop-tile-enumeration-gate")
     _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
     raw = sys.stdin.read().strip()

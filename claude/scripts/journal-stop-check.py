@@ -33,6 +33,7 @@ next session (see dev-env#31).
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import _hookout
+import _hookutil
 import glob
 import json
 import os
@@ -210,6 +211,7 @@ def parse_stop_hook_active(raw: str) -> bool:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("journal-stop-check")
     try:
         raw = sys.stdin.read().strip()
     except Exception:

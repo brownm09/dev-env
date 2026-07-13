@@ -22,6 +22,8 @@ import time
 from datetime import date
 from pathlib import Path
 
+import _hookutil
+
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SCRATCH = Path.home() / ".claude" / "scratch"
 TODAY = date.today().strftime("%Y-%m-%d")
@@ -201,6 +203,7 @@ def resurrected_draft_branches() -> list[str]:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("new-day-journal-check")
     raw = ""
     try:
         raw = sys.stdin.read().strip()

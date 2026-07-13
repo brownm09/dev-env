@@ -40,6 +40,7 @@ from _hookio import (
     scan_top_level,
     should_confirm_via_gh,
 )
+import _hookutil
 
 # Anchored top-level match — mirrors usage-snapshot.py / pr-merge-reminder.py /
 # post-pr-merge-project.py's identical _check_merge_stmt (ADR-050 Amendments 5/6).
@@ -72,6 +73,7 @@ def is_successful_merge(command: str, output: str) -> bool:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("post-merge-tile-checkpoint")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

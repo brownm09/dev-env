@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import _hookout
+import _hookutil
 from _journal_shards import iter_pr_shards, read_legacy_entries
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
@@ -71,6 +72,7 @@ def load_open_prs() -> list[dict]:
 
 
 def main():
+    _hookutil.record_heartbeat("post-compact")
     raw = sys.stdin.read().strip()
     if not raw:
         return

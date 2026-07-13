@@ -39,9 +39,11 @@ import json
 import sys
 
 import _bash_state
+import _hookutil
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("post-tool-use-cwd-track")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

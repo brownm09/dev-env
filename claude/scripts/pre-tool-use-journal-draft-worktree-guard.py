@@ -85,6 +85,7 @@ import subprocess
 import sys
 
 from _hookio import is_absolute_path, split_top_level
+import _hookutil
 
 # draft/YYYY-MM-DD, or draft/YYYY-MM-DD-recovery (docs/REFERENCE.md's
 # documented recovery-branch suffix for the draft/YYYY-MM-DD-recovery
@@ -409,6 +410,7 @@ def _emit_block(matched: str, root) -> None:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("pre-tool-use-journal-draft-worktree-guard")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

@@ -43,6 +43,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import _hookutil
+
 TARGET_DRIVE = "C:/"
 SCAN_DIR = "C:/Users/brown/Git"
 RECLAIM_SCRIPT = Path(__file__).resolve().parent / "reclaim-worktree-disk.py"
@@ -175,6 +177,7 @@ def _gate_install(cmd: str, cwd: str) -> bool:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("worktree-npm-install")
     raw = sys.stdin.read().strip()
     cwd = ""
     if raw:

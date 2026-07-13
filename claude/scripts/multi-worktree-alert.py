@@ -22,6 +22,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import _hookutil
+
 
 def repo_name_from_path(path: str) -> str:
     """Extract the repository directory name from a worktree path.
@@ -77,6 +79,7 @@ def find_current_worktree(worktrees: list[dict], cwd: str) -> dict | None:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("multi-worktree-alert")
     raw = sys.stdin.read().strip()
     cwd = ""
     if raw:

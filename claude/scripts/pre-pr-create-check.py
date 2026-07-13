@@ -38,6 +38,7 @@ import subprocess
 import sys
 
 import _bash_state
+import _hookutil
 
 _GH_PR_CREATE_RE = re.compile(
     r"(?:^|&&|\|+|;|\n)\s*gh\s+pr\s+create\b"
@@ -163,6 +164,7 @@ def build_checklist(
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("pre-pr-create-check")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

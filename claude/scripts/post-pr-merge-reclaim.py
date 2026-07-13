@@ -54,6 +54,7 @@ from _hookio import (
     scan_top_level,
     should_confirm_via_gh,
 )
+import _hookutil
 
 RECLAIM_MSG = (
     "[post-merge-reclaim] PR merged - reclaiming node_modules/.turbo from "
@@ -122,6 +123,7 @@ def _spawn_reclaim(protect_cwd: str) -> bool:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("post-pr-merge-reclaim")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

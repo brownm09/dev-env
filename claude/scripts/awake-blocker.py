@@ -25,6 +25,8 @@ import sys
 import time
 from pathlib import Path
 
+import _hookutil
+
 SCRATCH = Path("C:/Users/brown/.claude/scratch")
 SENTINEL = SCRATCH / "awake.lock"
 PID_FILE = SCRATCH / "awake.pid"
@@ -254,6 +256,7 @@ def _notification_should_release(payload: dict) -> bool:
 
 
 def main() -> int:
+    _hookutil.record_heartbeat("awake-blocker")
     if len(sys.argv) > 1 and sys.argv[1] == "--watcher":
         # Watcher process: only run on Windows (ctypes.windll is Windows-only).
         if not _is_windows():

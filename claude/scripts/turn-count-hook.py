@@ -27,6 +27,8 @@ import sys
 import time
 from pathlib import Path
 
+import _hookutil
+
 SCRATCH = Path.home() / ".claude" / "scratch"
 
 # --- Signal 1: context token size ---
@@ -179,6 +181,7 @@ def check_prompt_count(session_id: str, cwd: str) -> str | None:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("turn-count-hook")
     cleanup_stale_counters()
 
     raw = sys.stdin.read().strip()

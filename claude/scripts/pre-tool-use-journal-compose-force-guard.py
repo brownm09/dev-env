@@ -81,6 +81,7 @@ import shlex
 import sys
 
 from _hookio import split_top_level
+import _hookutil
 from _journal_compose_force import is_marker_fresh, marker_path_for, read_marker
 
 _GIT_INVOCATION_RE = re.compile(r"^git(?:\.exe)?\s+(.*)$", re.IGNORECASE)
@@ -329,6 +330,7 @@ def _emit_block(today: str) -> None:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("pre-tool-use-journal-compose-force-guard")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

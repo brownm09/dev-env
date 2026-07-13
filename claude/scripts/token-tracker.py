@@ -192,6 +192,7 @@ def aggregate_session(transcript_path: Path) -> dict:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("token-tracker")
     _hookutil.cleanup_stale_sentinels(LOCATE_FAIL_PREFIX)
 
     raw = sys.stdin.read().strip()

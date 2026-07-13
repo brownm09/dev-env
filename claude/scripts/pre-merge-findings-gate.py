@@ -54,6 +54,7 @@ import sys
 
 import _hookout
 from _hookio import is_merge_help_only, mask_quoted_spans, scan_top_level
+import _hookutil
 
 _MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
 _MARKER_RE = re.compile(
@@ -183,6 +184,7 @@ def _fetch_pr_json(view_cmd, cwd):
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("pre-merge-findings-gate")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

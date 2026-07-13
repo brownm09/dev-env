@@ -21,6 +21,12 @@ in the consuming scripts before this module:
   the file from the end in bounded chunks instead of the whole thing; a caller
   that stops consuming the generator early never touches the unread remainder
   (dev-env#679, ADR-090 Amendment 1).
+- **Hook heartbeat** (`record_heartbeat`) — called by every wired hook's `main()`
+  as its first statement, so a hook that is registered in settings.json but has
+  silently stopped firing (the #377 / #355 failure class -- post-tool-use.py dead
+  for months, usage-snapshot.py for 8 days, discovered only by accident) leaves a
+  detectable trace. `hook-liveness-check.py` reads the ledger this writes and warns
+  when a wired hook has gone quiet longer than its expected cadence (ADR-106).
 
 Mirrors how _hookio.py was extracted for PostToolUse Bash hooks (ADR-050).
 See ADR-064 and ADR-090 for rationale.
@@ -44,15 +50,23 @@ Usage:
         if rec.get("type") == "assistant":
             ...  # first match is the most recent -- stop here if that's all you need
             break
+
+    # First statement of main() -- unconditional, regardless of what the rest
+    # of the hook does or whether it raises:
+    def main() -> None:
+        _hookutil.record_heartbeat("my-hook-name")
+        ...
 """
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
 SCRATCH = Path.home() / ".claude" / "scratch"
 PROJECTS = Path.home() / ".claude" / "projects"
+HEARTBEAT_DIR = SCRATCH / "hook-heartbeat"
 MAX_AGE_DAYS = 30
 DEFAULT_REVERSE_CHUNK_SIZE = 65536  # 64 KiB
 
@@ -98,6 +112,36 @@ def find_transcript(session_id: str, projects: Path | None = None) -> Path | Non
     # Session ids are unique, so the first match is the answer — next() short-circuits
     # instead of materializing every JSONL under ~/.claude/projects/.
     return next(root.glob(f"**/{session_id}.jsonl"), None)
+
+
+def record_heartbeat(hook_name: str, heartbeat_dir: Path | None = None) -> None:
+    """Record that *hook_name* just fired, for `hook-liveness-check.py` to notice
+    when a wired hook has gone quiet (ADR-106).
+
+    Writes ``heartbeat_dir / f"{hook_name}.ts"`` (default
+    ``~/.claude/scratch/hook-heartbeat/``) containing the current Unix
+    timestamp, via a per-process tmp file + ``os.replace`` atomic swap — no
+    locks, no subprocess, and no risk of a concurrent session's write
+    corrupting this one's (each writer's tmp file has a distinct name; the
+    rename is atomic on both POSIX and Windows). *hook_name* is always a
+    literal the caller controls (its own script basename minus ``.py``), not
+    untrusted input, so no sanitization is needed — same trust model as
+    ``sentinel_path``'s *session_id*.
+
+    Best-effort: swallows all I/O errors, matching every other sentinel
+    writer in this module. A heartbeat write must never be the reason a hook
+    fails — call this as the unconditional first statement of ``main()`` so
+    it still records even if the rest of the hook body raises.
+    """
+    root = heartbeat_dir if heartbeat_dir is not None else HEARTBEAT_DIR
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / f"{hook_name}.ts"
+        tmp = root / f"{hook_name}.ts.{os.getpid()}.tmp"
+        tmp.write_text(str(time.time()), encoding="utf-8")
+        os.replace(tmp, target)
+    except Exception:
+        pass
 
 
 # --- transcript record readers -------------------------------------------------

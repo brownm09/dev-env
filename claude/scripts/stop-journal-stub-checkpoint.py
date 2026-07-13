@@ -425,6 +425,7 @@ def _mark_fired(session_id: str) -> None:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("stop-journal-stub-checkpoint")
     _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
     raw = sys.stdin.read().strip()

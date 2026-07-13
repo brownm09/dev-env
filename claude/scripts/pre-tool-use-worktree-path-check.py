@@ -42,6 +42,8 @@ import re
 import subprocess
 import sys
 
+import _hookutil
+
 # Matches `.claude/worktrees/<name>` anywhere in a path, capturing the repo
 # root (everything before `/.claude/`).
 _WORKTREE_RE = re.compile(
@@ -126,6 +128,7 @@ def _block(reason: str) -> None:
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("pre-tool-use-worktree-path-check")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

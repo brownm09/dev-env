@@ -31,6 +31,7 @@ import re
 import sys
 
 from _hookio import scan_top_level
+import _hookutil
 
 _QUEUE_FILE = "C:/Users/brown/.claude/merge-queue.md"
 _MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
@@ -59,6 +60,7 @@ def _read_queue():
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("pre-merge-message-check")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)

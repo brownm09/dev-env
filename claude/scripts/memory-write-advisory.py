@@ -33,6 +33,8 @@ import json
 import re
 import sys
 
+import _hookutil
+
 # An immortalization link anywhere in the written body suppresses the nudge.
 # Intentionally permissive (substring / loose regex): over-suppression is the safe
 # direction for a non-blocking advisory — see the module docstring before tightening.
@@ -79,6 +81,7 @@ ADVISORY = (
 
 
 def main() -> None:
+    _hookutil.record_heartbeat("memory-write-advisory")
     raw = sys.stdin.read().strip()
     if not raw:
         sys.exit(0)
