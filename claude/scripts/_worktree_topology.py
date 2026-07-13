@@ -12,7 +12,7 @@ post-merge checkout for every *other* worktree's merge, and the canonical can't 
 `main`, so newly-merged hooks/scripts stay silently inert in the live `~/.claude/`. The
 2026-06-22 PR #391 recovery is the motivating incident — see ADR-058 and dev-env#396.
 
-This module hosts **two distinct invariants** now. The dev-env-specific one above (a
+This module hosts **three distinct invariants** now. The dev-env-specific one above (a
 canonical that must *always* be ``main``) drives ``main_squatter``/``canonical_sync_action``'s
 "healthy = on main" framing. A second, repo-agnostic one — a canonical must never be
 *detached* or checked out onto a Claude-managed worktree's own ``claude/<slug>`` branch,
@@ -23,6 +23,17 @@ uses the first directly; a caller with a broader "may legitimately be on many br
 never a hijacked one" invariant (``journal-canonical-guard.py``) uses the second to *gate*
 before reusing ``diagnose_main_topology``/``canonical_sync_action`` for the "is it safe to
 auto-correct" sub-decision only.
+
+A third invariant is repo-agnostic and branch-*pattern*-scoped rather than tied to a single
+literal name: some branches (engineering-journal's ``draft/YYYY-MM-DD``) must never be held by
+any non-canonical worktree at all, independent of what the canonical itself currently holds.
+Unlike ``main`` — which ``main_squatter`` only flags once the canonical has already freed the
+ref, since git's one-worktree-per-branch rule makes the two mutually exclusive — a
+``draft/YYYY-MM-DD`` branch can be squatted by a second worktree while the canonical sits on
+``main`` (early in the day) or already on that exact draft branch; either way, a second
+worktree holding the literal branch name is a bug, not a state to compare the canonical
+against. Drives ``non_canonical_worktrees_matching``/``pattern_squat_action`` below
+(dev-env#747, ADR-105).
 
 This module is **policy-free and pure** (no ``_winsubp``, no subprocess, no ``main()``) so
 its helpers unit-test offline. It parses ``git worktree list --porcelain``, diagnoses the
@@ -44,6 +55,7 @@ is the correction precedent: ``git checkout -b`` changes no working-tree files, 
 worktree must still honor the ADR-051 liveness guard first (never move a live session);
 parking the caller's own just-merged session worktree (post-merge) is inherently safe.
 """
+import re
 from collections import namedtuple
 from pathlib import Path
 
@@ -248,3 +260,66 @@ def is_hijacked_branch(branch: "str | None") -> bool:
     raising — mirrors ``main_squatter``'s own falsy-branch guard.
     """
     return bool(branch) and (branch == DETACHED or branch.startswith("claude/"))
+
+
+# engineering-journal's Stub file workflow branch-naming convention (claude/CLAUDE.md ->
+# Engineering Journal -> Stub file workflow): draft/YYYY-MM-DD, or draft/YYYY-MM-DD-recovery
+# (docs/REFERENCE.md's documented recovery-branch suffix). Anchored full-match. Shared with
+# pre-tool-use-journal-draft-worktree-guard.py's own identically-defined constant — that file
+# documents why it is a deliberate duplicate rather than an import (see its module docstring);
+# this module's copy is the "source of truth" shape the other one must stay byte-identical to.
+DRAFT_BRANCH_RE = re.compile(r"^draft/\d{4}-\d{2}-\d{2}(-recovery)?$")
+
+
+def non_canonical_worktrees_matching(worktrees: "list[dict]", pattern: "re.Pattern") -> "list[dict]":
+    """Every non-canonical worktree whose branch matches ``pattern``.
+
+    Generalizes ``main_squatter``'s "a non-canonical worktree holding a branch it shouldn't"
+    check to an arbitrary pattern, for branches whose invariant is "never legitimately held
+    anywhere but the canonical" regardless of what the canonical itself currently holds (see
+    this module's own docstring for why that differs from ``main``'s mutual-exclusion shape).
+    Returns every match, not just the first — more than one stale squatter can coexist
+    (confirmed live: yesterday's AND today's draft branches, each locked to a different
+    throwaway worktree, dev-env#747).
+    """
+    canonical = canonical_worktree(worktrees)
+    canonical_path = _norm(canonical["path"]) if canonical else ""
+    return [
+        wt for wt in worktrees
+        if _norm(wt["path"]) != canonical_path and pattern.match(wt.get("branch") or "")
+    ]
+
+
+PatternSquatAction = namedtuple("PatternSquatAction", ["kind", "path", "branch", "park_branch"])
+
+
+def pattern_squat_action(path: str, branch: str, *, live: bool, dirty: bool, fully_pushed: bool) -> PatternSquatAction:
+    """Decide what to do about one non-canonical worktree holding a squatted branch.
+
+    ``kind`` is one of:
+      - ``"warn-live"``       a live Claude session (ADR-051) owns this worktree — never touch it.
+      - ``"park-and-remove"`` idle, clean, and fully pushed (0 commits ahead of the squatted
+                              branch's own ``origin/<branch>``) — safe to park (free the branch
+                              name, non-destructive) AND remove the worktree in the same pass.
+                              Measured against the squatted branch's own origin, NOT
+                              ``origin/main`` via the generic ``is_merged()`` check the rest of
+                              ``prune-merged-worktrees.py`` uses — a composed draft branch's
+                              content reaches ``main`` via a fresh squash commit (ADR-082), never
+                              a fast-forward or matching PR head, so ``is_merged()`` would never
+                              fire for this branch shape and a merely-parked worktree would
+                              linger forever.
+      - ``"park-only"``      idle but dirty, or not provably fully pushed — free the branch name
+                              only; leave the worktree and its contents completely untouched for
+                              human review (mirrors the ``stub-823-120134`` disposition,
+                              dev-env#747).
+
+    Caller supplies ``live``/``dirty``/``fully_pushed`` as pre-computed booleans — this module
+    stays pure/subprocess-free, mirroring ``canonical_sync_action(topo, canonical_clean)``'s own
+    pattern.
+    """
+    if live:
+        return PatternSquatAction("warn-live", path, branch, None)
+    park = park_branch_for(path)
+    if not dirty and fully_pushed:
+        return PatternSquatAction("park-and-remove", path, branch, park)
+    return PatternSquatAction("park-only", path, branch, park)

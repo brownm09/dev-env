@@ -173,16 +173,25 @@ OVERRIDE_TOKEN = "ALLOW_CANONICAL_MUTATE=1"
 # command, not just the segment it appears in.
 _GIT_REDIRECT_FLAGS = ("-C", "--git-dir", "--work-tree")
 
-# TEMPORARY carve-out (dev-env#576): a redirect target whose resolved canonical
-# toplevel exactly matches one of these (separator- and case-normalized) paths
-# is NOT blocked, even though it is a canonical (non-worktree) checkout. The
-# engineering-journal canonical checkout is the shared tree the documented stub
-# workflow mutates via `git -C <journal> checkout/commit/pull` on every PR
-# open/merge (global CLAUDE.md Engineering Journal section + ADR-066); blocking
-# that automated path would force ALLOW_CANONICAL_MUTATE=1 onto it — untenable.
-# Remove this carve-out once journal git work moves into a worktree
-# (dev-env#346), after which no direct canonical-journal mutation happens and
-# the guard covers it like any other repo.
+# PERMANENT carve-out (dev-env#576, corrected dev-env#747): a redirect target
+# whose resolved canonical toplevel exactly matches one of these (separator-
+# and case-normalized) paths is NOT blocked, even though it is a canonical
+# (non-worktree) checkout. The engineering-journal canonical checkout is the
+# shared tree the documented stub workflow mutates via
+# `git -C <journal> checkout/commit/pull` on every PR open/merge (global
+# CLAUDE.md Engineering Journal section + ADR-066); blocking that automated
+# path would force ALLOW_CANONICAL_MUTATE=1 onto it — untenable.
+# This carve-out is permanent by design, not a stopgap: the Stub file
+# workflow's whole premise is one shared canonical every concurrent session
+# reaches via `-C` instead of a per-session worktree (see claude/CLAUDE.md ->
+# Engineering Journal -> Stub file workflow). dev-env#346 is a narrower,
+# unrelated case (only the biweekly-retro routine's own report-writing step)
+# and does not remove this carve-out — a prior version of this comment cited
+# #346 as if it would; see dev-env#747, the correctly-scoped issue for the
+# actual worktree-locking bug (a worktree squatting draft/YYYY-MM-DD instead
+# of the canonical mutating it — the inverse of what THIS hook guards
+# against), and ADR-105's pre-tool-use-journal-draft-worktree-guard.py, the
+# new hook that closes that gap.
 #
 # Matched by exact absolute path, not a bare basename (review finding on
 # dev-env#576/PR#584): a basename-only match would exempt ANY canonical
