@@ -924,12 +924,22 @@ branch on **main**. Mid-session the harness surfaces it as
 `PreToolUse:Edit hook error: [...worktree-path-check.py]: No stderr output` — the session's own cwd
 worktree is orphaned, which blocks **every** Edit (the hook keys off session cwd, not the target path).
 
-**Recovery** (validated 2026-06-04):
+**Recovery** (validated 2026-06-04; `--force` caveat corrected 2026-07-13 — dev-env#751):
 
 ```bash
 git -C <main-repo-path> checkout main                # frees the branch
 git -C <main-repo-path> worktree prune               # drop stale admin entries
-git -C <main-repo-path> worktree add --force .claude/worktrees/<name> <feature-branch>   # --force: orphaned dir still has files
+
+# If .claude/worktrees/<name> still exists on disk, `worktree add` fails with
+# `fatal: '.claude/worktrees/<name>' already exists` — `--force` overrides only the
+# "branch already checked out elsewhere" safeguard, NOT a pre-existing non-empty target
+# directory (confirmed live, git 2.37.1.windows.1). Inspect before removing: confirm
+# there is no `.git` file/link inside (i.e. it is not a live registered worktree) and no
+# valuable uncommitted content, then clear it.
+ls -la .claude/worktrees/<name>                      # confirm: no .git link, no real content
+rm -rf .claude/worktrees/<name>                      # only once the above is confirmed safe
+
+git -C <main-repo-path> worktree add --force .claude/worktrees/<name> <feature-branch>   # --force: branch-checked-out-elsewhere safeguard only
 npm install                                          # from the recreated worktree, no cd
 ```
 
