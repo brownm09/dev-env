@@ -1,6 +1,6 @@
 # ADR-024: PreToolUse Hook to Block Canonical-Root Writes from Worktrees
 
-**Date:** 2026-05-23 (amended 2026-06-06)
+**Date:** 2026-05-23 (amended 2026-06-06, 2026-07-14)
 **Status:** Accepted
 **Tags:** hooks, worktrees, pre-tool-use, file-safety, write, edit, orphaned-worktree
 
@@ -149,6 +149,39 @@ and giving the recovery recipe `git worktree add --force <worktree_root> <branch
 
 ---
 
+---
+
+## Addendum (2026-07-14): sibling-worktree carve-out (dev-env#750)
+
+### Problem
+
+Step 5 of the original logic blocks a write when `file_path` starts with `canonical_root` but not `worktree_root`. This correctly blocks writes landing on the shared canonical working tree, but also — incorrectly — blocks writes targeting *another worktree* under the same canonical root (a sibling-worktree write).
+
+**Motivating incident:** During the 2026-07-12 journal compose, the compose session ran with its cwd inside an `engineering-journal/.claude/worktrees/<session-branch>/` worktree. Writing to `engineering-journal/.claude/worktrees/compose-2026-07-12/sessions/...` was blocked even though the compose worktree is its own isolated tree, not the shared canonical working tree. The workaround was `shutil.copy2` via scratch files — fragile and token-costly. Root cause filed as dev-env#750.
+
+### Extended decision
+
+Insert a new step between original steps 5 and 6:
+
+**5a. If the target path is itself inside another worktree under the same canonical root → exit 0 (no-op).**
+
+Implementation: `_WORKTREE_RE.match(file_norm)` matches if the target path contains `/.claude/worktrees/<name>`; compare `_normalize(target_m.group(1))` (the target's canonical root) against `canonical_norm` (the session's canonical root). A match means the write goes to a different worktree's own isolated tree — allow it.
+
+### Judgment calls (addendum)
+
+**General carve-out, not compose-specific regex.** A `compose-YYYY-MM-DD` pattern solves the immediate case but creates a maintenance surface. The general rule — any write targeting a worktree under the same canonical root is safe — is semantically correct and forward-compatible.
+
+**Same-canonical-root only.** The `canonical_norm` comparison ensures the carve-out only applies to sibling worktrees of the *same* repo. A write from an EJ worktree to a dev-env worktree path is not reachable by step 5a — the dev-env path doesn't start with the EJ canonical root, so the earlier check at step 4 exits 0 first.
+
+**Liveness is not checked on the target.** The hook checks liveness only for the session's own worktree (step 3). The hook's purpose is to prevent accidental writes landing on the *shared canonical working tree*, not to audit any other worktree's state.
+
+### Consequences (addendum)
+
+- `test_main_allows_write_to_sibling_worktree` added to `claude/scripts/tests/test_worktree_path_check.py`.
+- No performance impact: one additional regex match on an already-normalized path, behind the two cheaper pass-throughs above it.
+
+---
+
 ## References
 
 - `claude/scripts/pre-tool-use-worktree-path-check.py` — implementation
@@ -157,6 +190,8 @@ and giving the recovery recipe `git worktree add --force <worktree_root> <branch
 - `brownm09/career-playbook#276` — downstream symptom tracker (original)
 - `brownm09/dev-env#328` — orphaned-worktree hardening (addendum)
 - `brownm09/dev-env#469` — stdout→stderr block-reason fix (both sites), `_block()` helper introduced
+- `brownm09/dev-env#750` — sibling-worktree carve-out (this addendum)
 - Engineering-journal `sessions/career-playbook/2026-05-22_140307.stub.md` — third occurrence
 - Engineering-journal `sessions/career-playbook/2026-06-06_105718.stub.md` — orphaned-worktree incident
+- Engineering-journal `sessions/meta/2026-07-13_070949.stub.md` — compose-session incident (dev-env#750)
 - [Claude Code Hooks documentation](https://docs.anthropic.com/en/docs/claude-code/hooks) — hook exit codes and JSON output format
