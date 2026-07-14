@@ -206,12 +206,12 @@ def resolve_candidates(tokens: list[str], bases: list[str], isfile=os.path.isfil
 def candidate_paths(tool_name: str, tool_input: dict, cwd: str, isfile=os.path.isfile) -> list[str]:
     """Candidate shard paths touched by this tool call. Write/Edit: the exact
     `file_path` from the payload (existence is checked later, uniformly, in
-    `collect_problems`). Bash: paths resolved from tokens harvested out of the command
-    string. Any other tool: none."""
+    `collect_problems`). Bash/PowerShell: paths resolved from tokens harvested out of
+    the command string (dev-env#763). Any other tool: none."""
     if tool_name in ("Write", "Edit"):
         file_path = tool_input.get("file_path", "")
         return [file_path] if file_path else []
-    if tool_name == "Bash":
+    if tool_name in ("Bash", "PowerShell"):
         command = tool_input.get("command", "")
         if not command:
             return []

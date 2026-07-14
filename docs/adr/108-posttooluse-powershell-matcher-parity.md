@@ -43,6 +43,12 @@ distinct fix shapes rather than one:
 2. **1 hook** needed its tuple gate extended: `journal-shard-write-advisory.py`
    (`tool_name not in ("Write", "Edit", "Bash")` → add `"PowerShell"`) — it is wired under three
    PostToolUse matchers (Write/Edit/Bash), and only the Bash-equivalent trigger needed the mirror.
+   **`/review` caught that this shape has a second, internal dispatch point**: `main()`'s outer
+   gate was widened correctly, but `candidate_paths()` — the function that actually harvests
+   command-shape tokens — had its own separate `if tool_name == "Bash":` check that the outer-gate
+   fix didn't touch, so a PowerShell-run command passed the outer gate and then silently harvested
+   zero paths. Fixed in the same PR by widening that check too, plus a regression test mirroring
+   the existing Bash-harvest test with `tool_name="PowerShell"`.
 3. **1 hook** needed **zero code change**: `stub-push-archive-reminder.py` has no `tool_name` gate
    at all — it reads `tool_input.command` unconditionally, relying entirely on the settings.json
    matcher to control which invocations reach it. Once a PowerShell matcher exists, it just works —
