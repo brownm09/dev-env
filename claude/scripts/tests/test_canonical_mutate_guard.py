@@ -843,6 +843,104 @@ def test_resolve_git_toplevel_failsopen_on_null_byte() -> str:
     return "_resolve_git_toplevel returns None (fail open) on a null-byte path rather than raising"
 
 
+# dev-env#749: fixtures for the _worktree_root_from_cwd / _is_live_worktree tests below.
+_WORKTREE_ROOT_FIXTURE = "C:/Users/brown/Git/dev-env/.claude/worktrees/some-worktree-name"
+_CANONICAL_FIXTURE = "C:/Users/brown/Git/dev-env"
+
+
+def test_worktree_root_from_cwd_matches_and_extracts() -> str:
+    """dev-env#749: `_worktree_root_from_cwd` extracts the worktree-root PREFIX
+    of a cwd anchored inside `.claude/worktrees/<name>`, including when cwd is
+    a subdirectory nested deeper inside the worktree — and returns None for a
+    cwd that isn't inside one at all (a canonical root, or an unrelated path).
+    """
+    cases = [
+        (_WORKTREE_ROOT_FIXTURE, _WORKTREE_ROOT_FIXTURE, "bare worktree root"),
+        (f"{_WORKTREE_ROOT_FIXTURE}/some/nested/path", _WORKTREE_ROOT_FIXTURE, "nested subdirectory cwd"),
+        (
+            "C:\\Users\\brown\\Git\\dev-env\\.CLAUDE\\WORKTREES\\Some-Worktree-Name",
+            "C:\\Users\\brown\\Git\\dev-env\\.CLAUDE\\WORKTREES\\Some-Worktree-Name",
+            "mixed-separator, uppercase variant",
+        ),
+    ]
+    for cwd, expected_root, label in cases:
+        got = cmg._worktree_root_from_cwd(cwd)
+        if got != expected_root:
+            raise AssertionError(f"{label}: expected {expected_root!r}, got {got!r} for cwd {cwd!r}")
+
+    non_worktree = (_CANONICAL_FIXTURE, "C:/Users/brown/Git/unrelated-repo")
+    for cwd in non_worktree:
+        got = cmg._worktree_root_from_cwd(cwd)
+        if got is not None:
+            raise AssertionError(f"expected None for non-worktree cwd {cwd!r}, got {got!r}")
+    return f"{len(cases)} worktree-shaped extractions + {len(non_worktree)} non-worktree None cases correct"
+
+
+def test_is_live_worktree_decision_table() -> str:
+    """Mirrors `test_worktree_path_check.py`'s `test_worktree_is_live_decision_table`
+    (ADR-024's dev-env#328 addendum) for this file's copy of the same liveness
+    logic (dev-env#749).
+    """
+    wt = _WORKTREE_ROOT_FIXTURE
+    canon = _CANONICAL_FIXTURE
+    cases = [
+        # (label, git_link_present, git_toplevel_return, expected_live)
+        ("live: .git present, toplevel == worktree_root", True, wt, True),
+        ("orphan: .git link missing", False, wt, False),
+        ("orphan: git resolves up to canonical root", True, canon, False),
+        ("orphan: git returns unrelated path", True, "C:/somewhere/else", False),
+        (".git present but git exec failed (None) -> don't false-block", True, None, True),
+        ("live: toplevel differs only by case/sep", True, wt.replace("/", "\\").upper(), True),
+    ]
+    for label, link_present, top, expected in cases:
+        live = cmg._is_live_worktree(
+            wt,
+            wt,
+            path_exists=lambda _p, _present=link_present: _present,
+            git_toplevel=lambda _c, _top=top: _top,
+        )
+        if live != expected:
+            raise AssertionError(f"{label}: _is_live_worktree = {live}, expected {expected}")
+    return f"{len(cases)} liveness combinations classified correctly"
+
+
+def test_is_live_worktree_short_circuits_before_git() -> str:
+    """When the .git link is missing, git_toplevel must not even be consulted
+    — mirrors test_worktree_path_check.py's identical short-circuit test.
+    """
+    called = {"n": 0}
+
+    def _spy(_cwd):
+        called["n"] += 1
+        return _WORKTREE_ROOT_FIXTURE
+
+    live = cmg._is_live_worktree(
+        _WORKTREE_ROOT_FIXTURE, _WORKTREE_ROOT_FIXTURE, path_exists=lambda _p: False, git_toplevel=_spy
+    )
+    if live is not False:
+        raise AssertionError("missing .git link should yield not-live")
+    if called["n"] != 0:
+        raise AssertionError("git_toplevel was called despite missing .git link (no short-circuit)")
+    return "missing .git link blocks without spawning git"
+
+
+def test_blockable_ambient_root_guards_against_worktree_shaped_resolution() -> str:
+    """Review finding, dev-env#749: mirrors `_blockable_redirect_root`'s
+    identical `not _WORKTREE_RE.search(root)` guard. The ambient branch's
+    original invariant ("cwd already failed the worktree pattern, so any
+    resolved toplevel IS canonical") no longer strictly holds once
+    cwd_is_worktree can be False for a cwd that IS worktree-shaped but wasn't
+    confirmed live — `_blockable_ambient_root` closes that latent gap.
+    """
+    if cmg._blockable_ambient_root(None) is not None:
+        raise AssertionError("None input should stay None")
+    if cmg._blockable_ambient_root(_CANONICAL_FIXTURE) != _CANONICAL_FIXTURE:
+        raise AssertionError("a canonical (non-worktree-shaped) root should pass through unchanged")
+    if cmg._blockable_ambient_root(_WORKTREE_ROOT_FIXTURE) is not None:
+        raise AssertionError("a worktree-shaped resolved root must not be treated as blockable")
+    return "_blockable_ambient_root guards against a worktree-shaped resolved root (dev-env#749 review finding)"
+
+
 def main_unit() -> list:
     return [
         ("mutating verbs classified as mutating", test_mutating_verbs_classified_as_mutating),
@@ -882,6 +980,10 @@ def main_unit() -> list:
         ("_tokenize captures quoted space-bearing redirect path (dev-env#576/PR#584)", test_tokenize_quoted_redirect_path_with_space),
         ("_tokenize falls back on unbalanced quote (dev-env#576/PR#584)", test_tokenize_falls_back_on_unbalanced_quote),
         ("_resolve_git_toplevel fails open on null byte (dev-env#576/PR#584)", test_resolve_git_toplevel_failsopen_on_null_byte),
+        ("_worktree_root_from_cwd matches and extracts (dev-env#749)", test_worktree_root_from_cwd_matches_and_extracts),
+        ("_is_live_worktree decision table (dev-env#749)", test_is_live_worktree_decision_table),
+        ("_is_live_worktree short-circuits before git (dev-env#749)", test_is_live_worktree_short_circuits_before_git),
+        ("_blockable_ambient_root guards against worktree-shaped resolution (dev-env#749 review finding)", test_blockable_ambient_root_guards_against_worktree_shaped_resolution),
     ]
 
 
@@ -1598,6 +1700,99 @@ def test_main_blocks_relative_redirect_resolved_against_command_cwd() -> str:
     return "relative -C target resolved against the command's own cwd, blocked (dev-env#576/PR#584)"
 
 
+def _init_repo_with_live_worktree(canonical: Path, worktree_path: Path) -> None:
+    """Real canonical repo + a REAL, actually-registered `git worktree add` at
+    worktree_path -- for the one test needing genuine worktree liveness, not
+    just a worktree-shaped directory (dev-env#749). `git worktree add` needs
+    an existing commit, which `_init_throwaway_repo` deliberately doesn't
+    create (kept that way since 20+ existing tests in this file rely on its
+    no-commit behavior). Mirrors the commit-then-worktree-add sequence already
+    proven in `test_journal_canonical_guard.py`'s own `_init_throwaway_repo`.
+
+    The worktree is created on a NEW branch (`-b`), not `main` itself: git
+    only allows one worktree to hold a given branch at a time, and `main` is
+    already checked out in the canonical after `branch -M main` above --
+    confirmed by reproducing `fatal: 'main' is already checked out at ...`
+    when this used `worktree add <path> main` directly. Git DOES auto-create
+    the nested `.claude/worktrees/` intermediate directories on its own (also
+    confirmed while debugging this); that was never the actual gap.
+    """
+    _init_throwaway_repo(canonical)
+    subprocess.run(
+        ["git", "-C", str(canonical), "commit", "--allow-empty", "-q", "-m", "init"],
+        check=True, capture_output=True,
+    )
+    subprocess.run(["git", "-C", str(canonical), "branch", "-M", "main"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(canonical), "worktree", "add", "-q", "-b", "worktree-live-branch", str(worktree_path)],
+        check=True, capture_output=True,
+    )
+
+
+def test_main_allows_ambient_mutating_command_from_live_worktree() -> str:
+    """dev-env#749's explicit ask: "a real worktree still passes." Every other
+    worktree-cwd test in this file uses a bare worktree-SHAPED directory that
+    was never a real git repo at all -- none of them actually prove the hook
+    still gives zero-friction treatment to a genuinely live, registered
+    worktree once liveness is confirmed rather than assumed from shape.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        canonical = Path(tmp) / "canonical-repo"
+        canonical.mkdir()
+        worktree_path = canonical / ".claude" / "worktrees" / "real-live-worktree"
+        _init_repo_with_live_worktree(canonical, worktree_path)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git checkout -b some-branch"},
+            "cwd": str(worktree_path),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"expected exit 0 (live worktree stays zero-friction), got {proc.returncode}. "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+    return "ambient mutating command from a REAL, registered live worktree allowed (exit 0, dev-env#749)"
+
+
+def test_main_blocks_orphaned_worktree_shaped_cwd_nested_in_canonical() -> str:
+    """dev-env#749 core case, reproducing the dev-env#630 live-confirmed
+    signature exactly: an orphaned worktree-shaped directory NESTED inside a
+    real canonical repo's own tree, with no `.git` of its own. Real git
+    naturally walks up and resolves `git rev-parse --show-toplevel` to the
+    canonical repo -- no mocking needed. Before this fix, `_WORKTREE_RE`
+    matched the path's shape alone and exited 0 without ever asking git;
+    after, liveness is confirmed false, cwd falls through to normal
+    canonical-root resolution, and the mutating command is correctly blocked
+    against the canonical root git actually resolves to.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        canonical = Path(tmp) / "canonical-repo"
+        canonical.mkdir()
+        _init_throwaway_repo(canonical)
+        orphan = canonical / ".claude" / "worktrees" / "orphan-name"
+        orphan.mkdir(parents=True)  # no .git of its own -- the orphan signature
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git checkout -b some-branch"},
+            "cwd": str(orphan),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (orphaned worktree-shaped dir resolves to canonical, blocked), "
+                f"got {proc.returncode}. stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+        if proc.stdout.strip():
+            raise AssertionError(f"expected empty stdout (reason must go to stderr), got {proc.stdout!r}")
+        reason = json.loads(proc.stderr).get("reason", "")
+        if "canonical-repo" not in reason:
+            raise AssertionError(f"block reason must name the resolved canonical root, got {reason!r}")
+    return "orphaned worktree-shaped cwd nested in a real canonical is blocked, canonical root named (dev-env#749)"
+
+
 def main_e2e() -> list:
     return [
         ("main() blocks mutating command from canonical root", test_main_blocks_mutating_command_from_canonical_root),
@@ -1620,6 +1815,8 @@ def main_e2e() -> list:
         ("main() override bypasses redirect block (dev-env#576)", test_main_override_bypasses_redirect_block),
         ("main() blocks quoted space-bearing redirect target (dev-env#576/PR#584)", test_main_blocks_quoted_space_bearing_redirect_target),
         ("main() blocks relative redirect resolved against command cwd (dev-env#576/PR#584)", test_main_blocks_relative_redirect_resolved_against_command_cwd),
+        ("main() allows ambient mutating command from a real live worktree (dev-env#749)", test_main_allows_ambient_mutating_command_from_live_worktree),
+        ("main() blocks orphaned worktree-shaped cwd nested in canonical (dev-env#749)", test_main_blocks_orphaned_worktree_shaped_cwd_nested_in_canonical),
         ("main() fails open on non-git cwd", test_main_failsopen_on_nongit_cwd),
         ("main() fails open on malformed JSON", test_main_failsopen_on_malformed_json),
         ("main() fails open on non-dict JSON", test_main_failsopen_on_nondict_json),
