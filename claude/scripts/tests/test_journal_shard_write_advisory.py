@@ -399,6 +399,21 @@ def test_candidate_paths_bash_harvest():
     )
     assert result == [target]
 
+def test_candidate_paths_powershell_harvest():
+    # dev-env#763 review: main()'s outer gate widened to accept "PowerShell", but
+    # this function's own internal dispatch originally still checked
+    # `tool_name == "Bash"` literally, so a PowerShell-run command silently
+    # harvested nothing even after the outer gate accepted it. Mirrors
+    # test_candidate_paths_bash_harvest with tool_name="PowerShell".
+    target = "C:/Users/brown/Git/engineering-journal/sessions/dev-env/x.manifest.jsonl"
+    result = candidate_paths(
+        "PowerShell",
+        {"command": "git add sessions/dev-env/x.manifest.jsonl"},
+        "C:/Users/brown/Git/engineering-journal",
+        isfile=lambda p: p == target,
+    )
+    assert result == [target]
+
 def test_candidate_paths_other_tool_returns_empty():
     assert candidate_paths("Read", {"file_path": "x"}, "cwd") == []
 

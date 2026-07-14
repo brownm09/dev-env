@@ -375,6 +375,61 @@
         ]
       },
       {
+        "matcher": "PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pr-merge-reminder.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-merge-tile-checkpoint.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-tool-use.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-pr-merge-pull.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-pr-merge-reclaim.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/stub-push-archive-reminder.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-pr-merge-project.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/usage-snapshot.py",
+            "timeout": 90
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/journal-shard-write-advisory.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/post-tool-use-cwd-track.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
         "matcher": "Write",
         "hooks": [
           {
