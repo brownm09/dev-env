@@ -975,7 +975,7 @@ by removing both local constants so all eleven sites use the identical inline fo
 
 ---
 
-## Amendment 4 (2026-07-14) — recognize the sibling-directory worktree convention, `<repo>-worktrees/<name>` (dev-env#760)
+## Amendment 5 (2026-07-14) — recognize the sibling-directory worktree convention, `<repo>-worktrees/<name>` (dev-env#760)
 
 ### The gap
 
@@ -1065,7 +1065,11 @@ need updating.
    the harm model and remedies at a level of abstraction that doesn't name the worktree-path regex's
    shape, so nothing there was inaccurate.
 4. This ADR's own Decision/Judgment-calls text and Amendments 1–3 — left **unedited** for history; this
-   Amendment 4 section is the addition, per this repo's established amended-ADR convention.
+   Amendment 5 section is the addition, per this repo's established amended-ADR convention. Numbered 5,
+   not 4: PR #762 (dev-env#620, PowerShell `PreToolUse` matcher coverage — an unrelated fix) independently
+   added its own "Amendment 4" to this same file, concurrently, from the same `origin/main` base. Whichever
+   of the two PRs merges first claims Amendment 4; this one was renumbered ahead of merge to avoid landing
+   a duplicate heading.
 5. `docs/REFERENCE.md` — the Hooks-table row / worktree cross-reference for this hook, extended to
    mention both conventions.
 6. `docs/adr/INDEX.md` row 071 — `Date` cell already lists `2026-07-14` (Amendment 3 landed the same

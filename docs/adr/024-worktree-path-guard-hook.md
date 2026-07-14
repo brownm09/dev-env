@@ -191,7 +191,7 @@ second convention reached via manual `git worktree add` (never `EnterWorktree`):
 named `<repo>-worktrees/` next to the canonical checkout, holding named worktrees as its own
 subdirectories — e.g. `dev-env-worktrees/adr-096-correction`, confirmed live via `git worktree list`
 alongside `dev-env-worktrees/fix-758-double-resolve`. A genuine live worktree at this second shape was
-invisible to this hook's own regex, exactly the same gap [ADR-071 Amendment 4](071-canonical-checkout-mutate-guard-hook.md#amendment-4-2026-07-14--recognize-the-sibling-directory-worktree-convention-repo-worktreesname-dev-env760)
+invisible to this hook's own regex, exactly the same gap [ADR-071 Amendment 5](071-canonical-checkout-mutate-guard-hook.md#amendment-5-2026-07-14--recognize-the-sibling-directory-worktree-convention-repo-worktreesname-dev-env760)
 found and fixed in the sibling `pre-tool-use-canonical-mutate-guard.py` hook, filed together as
 dev-env#760.
 
@@ -211,7 +211,7 @@ changes.
 
 A bare `<repo>-<suffix>` sibling with no `-worktrees` marker (e.g. `dev-env-188`) remains unmatched,
 deliberately — the same still-ambiguous shape `_worktree_canon.py`'s own tested contract already leaves
-out of scope; see ADR-071 Amendment 4 for the full reasoning, shared verbatim across both hooks.
+out of scope; see ADR-071 Amendment 5 for the full reasoning, shared verbatim across both hooks.
 
 ### Judgment calls (addendum)
 
@@ -246,7 +246,7 @@ to either.
 - `brownm09/dev-env#469` — stdout→stderr block-reason fix (both sites), `_block()` helper introduced
 - `brownm09/dev-env#750` — sibling-worktree carve-out (addendum)
 - `brownm09/dev-env#760` — sibling-directory worktree convention recognition (this addendum)
-- [ADR-071](071-canonical-checkout-mutate-guard-hook.md) Amendment 4 — the same gap and fix in the
+- [ADR-071](071-canonical-checkout-mutate-guard-hook.md) Amendment 5 — the same gap and fix in the
   sibling `pre-tool-use-canonical-mutate-guard.py` hook, fixed in the same PR
 - Engineering-journal `sessions/career-playbook/2026-05-22_140307.stub.md` — third occurrence
 - Engineering-journal `sessions/career-playbook/2026-06-06_105718.stub.md` — orphaned-worktree incident
