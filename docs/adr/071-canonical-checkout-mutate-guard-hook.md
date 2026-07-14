@@ -559,3 +559,144 @@ implementation, +6 from the review-hardening above), split across the existing t
   the class of bug item 1 above fixes in the hook itself and would otherwise silently corrupt the test
   fixtures the same way. The `test_no_crude_command_substring_checks.py` AST gate passes — the new
   parsing is tokenized (`_parse_git_prefix`/`_tokenize`), not a substring test.
+
+---
+
+## Amendment 3 (2026-07-14) — confirm worktree-cwd liveness before trusting the shape-only exemption (dev-env#749)
+
+### The gap
+
+`main()`'s `cwd_is_worktree = bool(_WORKTREE_RE.search(cwd))` trusted the *shape* of `cwd` alone — a
+path matching `.../.claude/worktrees/<name>` — with no confirmation that the directory is an actual,
+live, registered git worktree. When true, the ambient-mutation short-circuit
+(`if cwd_is_worktree and not any(redirect_dirs): sys.exit(0)`) and the per-match loop's `elif
+cwd_is_worktree: continue` both exited without ever asking git to resolve `cwd`.
+
+An **orphaned** worktree directory — its `.git` link file missing or broken, e.g. left behind after an
+incomplete `git worktree add`/`remove` — still textually matches the pattern. When git resolves such a
+directory (`git rev-parse --show-toplevel`), it walks up the filesystem tree looking for a `.git` and
+lands on the CANONICAL repo instead, since a worktree's real location (`<canonical>/.claude/worktrees/
+<name>`) is nested inside the canonical's own tree. Live-confirmed on
+[dev-env#630](https://github.com/brownm09/dev-env/issues/630) (a comment on that issue, not a reopen —
+its own root-cause conclusion still holds): an orphaned worktree directory with no `.git` resolved `git
+rev-parse --show-toplevel` straight to the canonical checkout, giving that session fully unguarded
+ambient mutate access to it — the exact dev-env#453 collision this hook exists to prevent, entirely
+undetected because the shape-only check exited before git was ever consulted.
+
+`_WORKTREE_RE` has a second use site, in `_blockable_redirect_root()` (checking a `-C`/`--git-dir`/
+`--work-tree` redirect target). That site is **not** buggy: it always resolves the target via
+`_resolve_git_toplevel()` first, and only checks the pattern against the git-RESOLVED result — an
+orphaned target is already "unmasked" to its real canonical root by the resolution step itself, before
+the pattern check ever runs. No change needed there.
+
+The sibling hook `pre-tool-use-worktree-path-check.py` (ADR-024) hit and fixed the identical bug shape
+in its own cwd-facing use site five weeks earlier
+([dev-env#328](https://github.com/brownm09/dev-env/issues/328), ADR-024's 2026-06-06 addendum) with a
+proven `_worktree_is_live()` two-signal liveness check. This amendment ports that pattern into this
+hook's own cwd-facing use site.
+
+### The fix
+
+Three new pieces, adapted from `pre-tool-use-worktree-path-check.py`'s own `_worktree_is_live()`/
+`_normalize()` — copied rather than imported, per this codebase's convention of tolerating duplication
+through two consumers before extracting a shared module (see `_worktree_topology.py`'s own docstring
+and ADR-093's Maintainability section for the precedent of this convention; this is a *different*
+duplicated bundle than the git-redirect-parsing helpers ADR-105 discusses reusing — do not conflate the
+two):
+
+- **`_WORKTREE_ROOT_RE`** — an anchored capture variant of `_WORKTREE_RE`, used only to extract the
+  worktree-root PREFIX of a raw cwd. Kept separate from `_WORKTREE_RE` (whose other use site needs its
+  unanchored `.search()` form against an already-resolved root, and is not buggy — see above).
+- **`_worktree_root_from_cwd(cwd)`** — cheap, pure string extraction, no subprocess.
+- **`_is_live_worktree(worktree_root, cwd, *, path_exists=..., git_toplevel=...)`** — the two-signal
+  liveness check: (1) the `.git` link file must exist at `worktree_root` (catches the common orphan
+  case, no subprocess); (2) git's resolved toplevel for `cwd` must equal `worktree_root` (catches the
+  subtler orphan mode where the `.git` link file itself is still present but its target inside
+  `<canonical>/.git/worktrees/<name>` was independently pruned away). A git-resolution failure (`None`)
+  is treated as live — a transient git failure must not widen this hook's block surface. The injectable
+  `path_exists=`/`git_toplevel=` keywords mirror the sibling's identical seam, for the same reason:
+  deterministic pure-function test coverage without real subprocess/filesystem calls. Reuses this
+  file's own existing `_resolve_git_toplevel` as the default `git_toplevel=` — it already has a more
+  defensive except-tuple (`ValueError` for null-byte paths, dev-env#576/PR#584) than the sibling's copy.
+
+Unlike the sibling hook (which BLOCKS on a non-live worktree, since any write there risks landing on
+the wrong tree), a non-live result here does not itself block anything — it just disables the
+shape-only exemption in `main()`. `cwd` then falls through to this hook's own normal canonical-root
+resolution, exactly as an ordinary non-worktree cwd would: if the orphaned directory's git-resolved
+toplevel is a real canonical root, the existing block logic correctly blocks it; if git can't resolve
+it at all, the file's existing fail-open guarantee applies unchanged.
+
+`main()` is restructured so the (now possibly subprocess-spawning) liveness check is deferred until
+after `matches` is confirmed non-empty, and the override check (`_has_override`) is checked *before*
+the liveness confirmation — preserving the module docstring's "no subprocess spawn unless a mutating
+segment is actually found" contract now that liveness confirmation can itself spawn one. This reordering
+is a pure performance win with no behavior change: `_has_override` and `cwd_is_worktree` are independent
+of each other and both lead to the identical exit-0 outcome when true, so their relative check order
+cannot affect the result for any input — only whether a wasted subprocess call happens before an
+override short-circuits.
+
+### Why this is an amendment, not a new ADR
+
+Same harm model (silent shared-canonical-checkout collision, dev-env#453), same file, same hook, same
+override/worktree-scope machinery, same severity (hard block, exit 2) — only a previously-unrecognized
+way for `cwd` to *look* like a worktree without *being* a live one. Mirrors Amendment 1 (an
+unrecognized command surface reaching the same harm through a different CLI binary) and Amendment 2 (an
+unresolved redirect target) in framing: this closes a gap that let the *original* harm through, it does
+not introduce a new one. A genuinely live worktree still gets zero-friction treatment (proven by the new
+`test_main_allows_ambient_mutating_command_from_live_worktree` end-to-end test); every previously
+fail-open cwd shape stays fail-open (proven by re-running all 9 pre-existing worktree-cwd tests
+unchanged — see Coverage below).
+
+### Sync-location update
+
+The four re-spelled locations this hook's module docstring names (see the `NOTE:` comment inside
+`is_mutating_segment()`) describe the *mutating-verb list*, which is unchanged by this amendment — no
+update needed there. This amendment instead touches the docstring's own worktree-detection description
+in two places, plus the standard external sync locations:
+
+1. The module docstring in `pre-tool-use-canonical-mutate-guard.py` — logic step 2's prose and the
+   "Coverage note" paragraph both now describe the liveness confirmation and cite dev-env#749.
+2. `claude/CLAUDE.md`'s "Never mutate git state directly…" bullet — its existing wording already implied
+   a *real* worktree; left as-is (precision touch only, not a contract change, so not worth the diff
+   noise).
+3. This ADR's own Decision/Judgment-calls text and Amendments 1–2 — left **unedited** for history; this
+   Amendment 3 section is the addition, per this repo's established amended-ADR convention.
+4. `docs/REFERENCE.md` — the Hooks table row for `pre-tool-use-canonical-mutate-guard.py`, and the
+   separate "Prevention" paragraph in the Git Workflow Runbook section (which previously framed the
+   `cd`-into-canonical case as the hook's "sole remaining documented v1 gap" — reworded, since this
+   amendment closes a different-axis gap, not that one, and the `cd`-into-canonical gap remains
+   separately true).
+5. `docs/adr/INDEX.md` row 071 — `Date` cell appended with this amendment's date; tag `orphaned-worktree`
+   added (the same tag ADR-024's own INDEX row already uses for its structurally identical addendum).
+
+### Coverage
+
+`claude/scripts/tests/test_canonical_mutate_guard.py` grows from 64 to 69 tests (+5), split across the
+existing two-layer convention:
+
+- **Pure-function layer:** `test_worktree_root_from_cwd_matches_and_extracts` (bare worktree root, a
+  nested-subdirectory cwd, a mixed-separator/uppercase variant, and two non-worktree `None` cases);
+  `test_is_live_worktree_decision_table` (mirrors `test_worktree_path_check.py`'s identical table:
+  live; `.git` missing; git resolves to canonical; git resolves to an unrelated path; git exec fails →
+  treat as live; toplevel differs only by case/separator → still live); `test_is_live_worktree_short_
+  circuits_before_git` (a spy on `git_toplevel` proves zero calls when the `.git` link is already
+  missing).
+- **End-to-end `main()`-via-subprocess layer:** `test_main_allows_ambient_mutating_command_from_live_
+  worktree` — a REAL, `git worktree add`-registered worktree (not just a worktree-shaped directory; no
+  existing test in this file exercised a genuine live worktree before this amendment) still gets
+  zero-friction treatment; `test_main_blocks_orphaned_worktree_shaped_cwd_nested_in_canonical` —
+  reproduces the dev-env#630 signature exactly (an orphaned worktree-shaped directory nested inside a
+  real canonical repo, no `.git` of its own, real git naturally walks up to the canonical's `.git`, no
+  mocking needed) and confirms the mutating command is now blocked with the canonical root named in the
+  reason. Both new e2e tests were confirmed to actually exercise the fix (the orphan test fails red
+  against the pre-amendment code; the live-worktree test passes both before and after, correctly proving
+  a no-regression property rather than a bug-reproduction property, since the legitimate live-worktree
+  path was never broken).
+
+All 9 pre-existing worktree-cwd tests were traced and re-verified to pass unchanged, via three distinct
+mechanisms rather than by accident: 2 tests use a bare non-git directory, which is now correctly found
+"not live" and falls through to the existing fail-open path (same exit code, different internal route);
+6 tests carry a `-C`/`--git-dir`/`--work-tree` redirect, whose control flow never depended on
+`cwd_is_worktree`'s value in the first place; 1 test relies on the override token, which now
+short-circuits before the liveness check even runs. The full suite (`py -3
+claude/scripts/run-hook-tests.py`) passes unchanged elsewhere.
