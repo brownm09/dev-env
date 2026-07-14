@@ -8,6 +8,12 @@ not just each function's happy path — is covered here (each script's own test 
 covers the same functions through its module-attribute indirection, unchanged by this
 extraction).
 
+dev-env#760 adds a second recognized convention (`<repo>-worktrees/<name>`, a sibling
+directory, alongside the original nested `.claude/worktrees/<name>`) — see the
+"sibling-directory convention" test group below. The pre-existing "sibling worktree not
+matched" test pins a *different*, still-unmatched shape (`dev-env-188`, no `-worktrees`
+marker) — the two are not the same case; see that test's own comment.
+
 Usage:
     py -3 claude/scripts/tests/test_worktree_canon.py
 
@@ -30,6 +36,11 @@ WT_BACK = r"C:\Users\brown\Git\dev-env\.claude\worktrees\sweet-mendel-8e98d1"
 CANON_WIN = "C:/Users/brown/Git/dev-env"
 CANON_POSIX = "/home/user/dev-env"
 WT_POSIX = CANON_POSIX + "/.claude/worktrees/foo-123"
+
+# dev-env#760 sibling-directory convention fixtures — real shape confirmed via
+# `git worktree list` (dev-env-worktrees/adr-096-correction).
+SIBLING_FWD = "C:/Users/brown/Git/dev-env-worktrees/adr-096-correction"
+SIBLING_BACK = r"C:\Users\brown\Git\dev-env-worktrees\adr-096-correction"
 
 
 # --- shared-regex match cases (both functions must agree when there IS a match) ------
@@ -60,6 +71,38 @@ def test_posix_path_match() -> str:
     return "POSIX worktree path -> canonical root, both functions agree"
 
 
+# --- sibling-directory convention (dev-env#760) ---------------------------------------
+
+
+def test_sibling_convention_forward_slash_match() -> str:
+    assert canonical_root_from_worktree(SIBLING_FWD) == CANON_WIN
+    assert canonical_repo_root(SIBLING_FWD) == CANON_WIN
+    return "forward-slash <repo>-worktrees/<name> cwd -> canonical root, both functions agree"
+
+
+def test_sibling_convention_backslash_match() -> str:
+    assert canonical_root_from_worktree(SIBLING_BACK) == r"C:\Users\brown\Git\dev-env"
+    assert canonical_repo_root(SIBLING_BACK) == r"C:\Users\brown\Git\dev-env"
+    return "backslash <repo>-worktrees/<name> cwd -> canonical root (separator preserved), both functions agree"
+
+
+def test_sibling_convention_subdir_beyond_worktree_name() -> str:
+    deep = SIBLING_FWD + "/claude/scripts"
+    assert canonical_root_from_worktree(deep) == CANON_WIN
+    assert canonical_repo_root(deep) == CANON_WIN
+    return "a cwd nested below the sibling worktree name still resolves to the canonical root"
+
+
+def test_sibling_convention_repo_name_with_hyphen() -> str:
+    # The repo name itself containing a hyphen (engineering-journal) must not confuse the
+    # non-greedy canonical-root capture into stopping at the wrong "-" component.
+    cwd = "C:/Users/brown/Git/engineering-journal-worktrees/compose-2026-07-14"
+    expected = "C:/Users/brown/Git/engineering-journal"
+    assert canonical_root_from_worktree(cwd) == expected
+    assert canonical_repo_root(cwd) == expected
+    return "a hyphenated repo name resolves to the correct (full) canonical root"
+
+
 # --- divergent no-match contracts (the reconciliation pin) ---------------------------
 
 
@@ -76,13 +119,17 @@ def test_no_match_passes_through_for_repo_root() -> str:
 
 
 def test_sibling_worktree_not_matched_by_regex() -> str:
-    # Sibling worktrees (dev-env-188) are not under .claude/worktrees/, so the pure
-    # regex misses them by design — post-tool-use.py's canonical_root_via_git (which
-    # stays local to that file, not shared here) handles that case via git instead.
+    # A BARE <repo>-<suffix> sibling (dev-env-188) has no "-worktrees" marker segment, so
+    # it's still ambiguous from the path string alone (is "-188" a worktree suffix, or an
+    # unrelated repo?) and the pure regex misses it by design, even after dev-env#760 added
+    # recognition of the *marked* `<repo>-worktrees/<name>` sibling-directory shape (see the
+    # "sibling-directory convention" test group above, which this case is deliberately NOT
+    # part of) — post-tool-use.py's canonical_root_via_git (which stays local to that file,
+    # not shared here) handles this bare-suffix case via git instead.
     sibling = "C:/Users/brown/Git/dev-env-188"
     assert canonical_root_from_worktree(sibling) is None
     assert canonical_repo_root(sibling) == sibling
-    return "sibling worktree path -> None / passthrough per each contract (git fallback is out of scope here)"
+    return "bare-suffix sibling path -> None / passthrough per each contract (git fallback is out of scope here)"
 
 
 def test_empty_and_none_contracts() -> str:
@@ -99,9 +146,13 @@ def main() -> int:
         ("backslash worktree match (both functions)", test_backslash_match),
         ("subdir beyond worktree name (both functions)", test_subdir_beyond_worktree_name),
         ("POSIX worktree path match (both functions)", test_posix_path_match),
+        ("sibling-directory convention: forward-slash match (dev-env#760)", test_sibling_convention_forward_slash_match),
+        ("sibling-directory convention: backslash match (dev-env#760)", test_sibling_convention_backslash_match),
+        ("sibling-directory convention: subdir beyond worktree name (dev-env#760)", test_sibling_convention_subdir_beyond_worktree_name),
+        ("sibling-directory convention: hyphenated repo name (dev-env#760)", test_sibling_convention_repo_name_with_hyphen),
         ("no-match -> None (canonical_root_from_worktree)", test_no_match_returns_none_for_from_worktree),
         ("no-match -> passthrough (canonical_repo_root)", test_no_match_passes_through_for_repo_root),
-        ("sibling worktree not matched by regex", test_sibling_worktree_not_matched_by_regex),
+        ("bare-suffix sibling worktree still not matched by regex", test_sibling_worktree_not_matched_by_regex),
         ("empty/None input contracts", test_empty_and_none_contracts),
     ]
     failed = 0

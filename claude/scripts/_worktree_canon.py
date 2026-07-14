@@ -10,6 +10,16 @@ convention, not a universal one — some projects track it in git, e.g. lifting-
 dev-env#527): `git worktree add` never checks out a gitignored file, and the harness
 copies it into Claude-managed worktrees only inconsistently — dev-env#378.
 
+`_WORKTREE_RE` also recognizes a second, sibling-directory worktree convention,
+`<repo>-worktrees/<name>` (e.g. `dev-env-worktrees/adr-096-correction`) — in active use in
+this environment (manually via `git worktree add`, not `EnterWorktree`) alongside the
+nested `.claude/worktrees/<name>` shape (dev-env#760). Unlike the fully-ambiguous bare
+`<repo>-<suffix>` sibling shape (`dev-env-188` — see `test_sibling_worktree_not_matched_by_regex`,
+still deliberately out of scope for this pure regex, with `post-tool-use.py`'s
+`canonical_root_via_git` as its git-based fallback), the `-worktrees/<name>` shape carries
+an unambiguous marker segment, so a regex extension is reliable here the same way it is for
+the nested convention.
+
 The two scripts want different "no match" behavior, so this module exposes both shapes
 over one shared regex + primitive rather than picking one and breaking the other:
 
@@ -41,17 +51,20 @@ from __future__ import annotations
 
 import re
 
-# Matches `<root>/.claude/worktrees/<name>` at the start of a path, capturing the
-# canonical repo root (everything before `/.claude/`). Tolerates `/` and `\` separators.
+# Matches `<root>/.claude/worktrees/<name>` OR `<root>-worktrees/<name>` at the start of a
+# path, capturing the canonical repo root (everything before the matched worktree segment).
+# Tolerates `/` and `\` separators. dev-env#760: the second alternative covers the
+# sibling-directory convention; a bare `<repo>-<suffix>` with no `-worktrees` marker (e.g.
+# `dev-env-188`) still does not match — see the module docstring.
 _WORKTREE_RE = re.compile(
-    r"^(.+?)[/\\]\.claude[/\\]worktrees[/\\][^/\\]+",
+    r"^(.+?)(?:[/\\]\.claude[/\\]worktrees[/\\]|-worktrees[/\\])[^/\\]+",
     re.IGNORECASE,
 )
 
 
 def canonical_root_from_worktree(cwd: str) -> str | None:
     """Canonical repo root for a Claude-managed worktree cwd
-    (`<root>/.claude/worktrees/<name>/...`), else None."""
+    (`<root>/.claude/worktrees/<name>/...` or `<root>-worktrees/<name>/...`), else None."""
     m = _WORKTREE_RE.match(cwd or "")
     return m.group(1) if m else None
 

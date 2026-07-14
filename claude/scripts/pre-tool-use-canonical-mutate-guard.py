@@ -26,9 +26,10 @@ Logic (cheapest checks first — no subprocess spawn unless a mutating segment
 is actually found):
   1. Read stdin JSON. Fail open (exit 0) on anything unparseable, a missing or
      empty `cwd`, or a tool_name that is neither `Bash` nor `PowerShell`.
-  2. Note whether `cwd` matches the worktree path pattern
-     (`.../.claude/worktrees/<name>`) AND is confirmed a *live*, registered
-     worktree — not merely a path that looks like one (dev-env#749: an
+  2. Note whether `cwd` matches a worktree path pattern — either
+     `.../.claude/worktrees/<name>` or the sibling-directory
+     `.../<repo>-worktrees/<name>` (dev-env#760) — AND is confirmed a *live*,
+     registered worktree — not merely a path that looks like one (dev-env#749: an
      orphaned worktree directory, its `.git` link missing or broken, still
      matches the pattern textually, so shape alone is not trusted; see
      `_is_live_worktree()`). A live worktree cwd is out of scope for an
@@ -150,12 +151,16 @@ issue for the remaining PowerShell-specific parsing gaps this PR does not
 close.
 
 A worktree-shaped cwd is now confirmed LIVE before being trusted (dev-env#749,
-ADR-071 Amendment 3): a `.claude/worktrees/<name>` path whose `.git` link is
-missing/broken, or whose git-resolved toplevel doesn't match itself, is no
-longer exempted — it falls through to the same canonical-root resolution an
-ordinary cwd gets, so an orphaned worktree directory that git resolves up to a
-real canonical checkout is correctly blocked rather than silently trusted.
-See `_is_live_worktree()`.
+ADR-071 Amendment 3): a `.claude/worktrees/<name>` or `<repo>-worktrees/<name>`
+path whose `.git` link is missing/broken, or whose git-resolved toplevel
+doesn't match itself, is no longer exempted — it falls through to the same
+canonical-root resolution an ordinary cwd gets, so an orphaned worktree
+directory that git resolves up to a real canonical checkout is correctly
+blocked rather than silently trusted. See `_is_live_worktree()`. Recognizing
+the sibling-directory convention alongside the nested one is dev-env#760;
+liveness confirmation itself needed no change to support it, since
+`_is_live_worktree()` operates on whatever `worktree_root` string it is given,
+regardless of shape.
 
 Stdin JSON shape (PreToolUse):
   {
@@ -179,12 +184,19 @@ import _hookutil
 
 # Shared fragment for the two worktree-path regexes below (dev-env#749 review
 # finding — was independently spelled twice; factored out so the two can't
-# silently drift if the worktree-location convention ever changes).
-_WORKTREE_PATH_FRAGMENT = r"\.claude[/\\]worktrees[/\\][^/\\]+"
+# silently drift if the worktree-location convention ever changes). Recognizes
+# EITHER the nested `.claude/worktrees/<name>` convention (`EnterWorktree`) OR
+# the sibling-directory `<repo>-worktrees/<name>` convention (manual
+# `git worktree add`, e.g. `dev-env-worktrees/adr-096-correction`) — dev-env#760.
+# A bare `<repo>-<suffix>` sibling with no `-worktrees` marker (e.g.
+# `dev-env-188`) is still not covered; that shape is ambiguous from the path
+# string alone and has no liveness-check anchor to extract a worktree root from.
+_WORKTREE_PATH_FRAGMENT = r"(?:\.claude[/\\]worktrees|[^/\\]+-worktrees)[/\\][^/\\]+"
 
-# Matches `.claude/worktrees/<name>` anywhere in a path — same pattern as
-# ADR-024's hook. A cwd matching this is out of scope for this hook entirely;
-# any command (mutating or not) is fine from inside a worktree.
+# Matches `.claude/worktrees/<name>` or `<repo>-worktrees/<name>` anywhere in a
+# path — same pattern as ADR-024's hook. A cwd matching this is out of scope
+# for this hook entirely; any command (mutating or not) is fine from inside a
+# worktree.
 _WORKTREE_RE = re.compile(
     r"[/\\]" + _WORKTREE_PATH_FRAGMENT,
     re.IGNORECASE,

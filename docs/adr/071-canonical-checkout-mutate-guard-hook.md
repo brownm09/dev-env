@@ -972,3 +972,127 @@ by removing both local constants so all eleven sites use the identical inline fo
   `pre-merge-message-check.py` above, which review hardening item 3 corrected.
 - Full suite (`py -3 claude/scripts/run-hook-tests.py`): 67 files passed, 2 skipped (both pre-existing,
   documented runner/environment skips unrelated to this change), 0 failed.
+
+---
+
+## Amendment 4 (2026-07-14) — recognize the sibling-directory worktree convention, `<repo>-worktrees/<name>` (dev-env#760)
+
+### The gap
+
+`_WORKTREE_PATH_FRAGMENT` (and therefore both `_WORKTREE_RE` and `_WORKTREE_ROOT_RE`, which share it)
+matched only the nested `.claude/worktrees/<name>` shape — the `EnterWorktree` convention. This
+environment also uses a second, sibling-directory convention reached via manual `git worktree add`
+(never `EnterWorktree`, which cannot target a different repo than the session's primary one): a
+directory named `<repo>-worktrees/` next to the canonical checkout, holding named worktrees as its own
+subdirectories — e.g. `dev-env-worktrees/adr-096-correction`, confirmed live via `git worktree list`
+alongside `dev-env-worktrees/fix-758-double-resolve`.
+
+A genuine, registered worktree at this second shape was invisible to `_worktree_root_from_cwd()` (no
+match at all), so `cwd_worktree_root` came back `None` and the liveness confirmation added by Amendment
+3 was never even attempted — `cwd` fell straight through to ordinary canonical-root resolution, and
+`git -C <cwd> rev-parse --show-toplevel` correctly resolves a live worktree to *itself*, which the hook
+then (correctly, given the information it had) treated as a positively-identified canonical root and
+blocked. Found while working dev-env#758 in a manually-created worktree at exactly this path shape
+(`dev-env-worktrees/fix-758-double-resolve`); worked around at the time via the documented
+`ALLOW_CANONICAL_MUTATE=1` override rather than the hook actually recognizing the worktree, since a
+genuine worktree should never need that override at all.
+
+Distinct from Amendment 3 (dev-env#749): that fix taught the hook not to *trust* a worktree-shaped path
+without confirming liveness. This gap is the inverse — a path that IS live and genuinely registered, but
+never reaches the shape check in the first place because it doesn't match the one shape the regex knew
+about.
+
+### The fix
+
+`_WORKTREE_PATH_FRAGMENT` becomes an alternation: `.claude/worktrees` (nested) OR
+`[^/\\]+-worktrees` (sibling-directory, requiring at least one character before the `-worktrees`
+marker so a bare, unprefixed `-worktrees` directory doesn't match). Both `_WORKTREE_RE`'s unanchored
+`.search()` use (recognizing an already-resolved root as worktree-shaped, in `_blockable_redirect_root`/
+`_blockable_ambient_root`) and `_WORKTREE_ROOT_RE`'s anchored capture (extracting the worktree-root
+PREFIX for the liveness check) needed no further changes beyond the shared fragment — both regexes
+already treat the fragment as an opaque "is this a worktree segment" unit.
+
+No liveness-check logic changed. `_is_live_worktree()` takes whatever `worktree_root` string it's given
+and confirms it two ways (a `.git` link file at that path, and `git`'s resolved toplevel for `cwd`
+equaling it) — neither check has any opinion on the path's shape, nested or sibling. The bug was purely
+in *recognizing* the second shape well enough to hand it to the (already shape-agnostic) liveness check
+at all.
+
+A bare `<repo>-<suffix>` sibling with no `-worktrees` marker (e.g. `dev-env-188`, also visible in the
+same `git worktree list` output) remains unmatched, deliberately: unlike `-worktrees/<name>`, that shape
+has no unambiguous marker segment — "is `-188` a worktree suffix, or a genuinely different repo?" isn't
+answerable from the path string alone. This mirrors `_worktree_canon.py`'s own pre-existing, tested
+contract for the identical shape (`test_sibling_worktree_not_matched_by_regex`, which this PR leaves
+passing unchanged) — the two files' regexes now agree on exactly what they do and don't cover.
+
+### An asymmetry this fix surfaces, not introduces
+
+An orphaned (no `.git`) directory shaped like the NESTED convention sits inside the canonical repo's own
+tree by construction, so git's upward walk resolves it TO the canonical root — Amendment 3's core fix.
+An orphaned directory shaped like the SIBLING-DIRECTORY convention is never nested inside any repo's
+tree at all, so there is nothing for git to walk up to: `git rev-parse --show-toplevel` fails outright
+and the hook's pre-existing fail-open contract applies (same as any other unresolvable path), rather
+than resolving to a blockable canonical root. Both outcomes are correct under the hook's "block only a
+positively-identified canonical root" philosophy — the sibling-directory shape structurally cannot
+reproduce the nested shape's orphan-resolves-to-canonical mechanic. Pinned by
+`test_main_failsopen_on_orphaned_sibling_directory_cwd_not_nested_in_any_repo` so it isn't later mistaken
+for a regression.
+
+### Why this is an amendment, not a new ADR
+
+Same harm model (dev-env#453), same file, same hook, same override/redirect/liveness machinery — only a
+previously-unrecognized *shape* for a worktree cwd, exactly analogous to Amendment 1 (an unrecognized
+command surface) and Amendment 2 (an unresolved redirect target): each closes a gap that let the
+*original* harm through via a previously-blind spot, none change the harm model itself. A genuinely live
+worktree at the new shape now gets the same zero-friction treatment the nested shape already had
+(`test_main_allows_ambient_mutating_command_from_live_sibling_directory_worktree`); every previously
+fail-open or blocked shape stays exactly as it was (the full 72-test pre-amendment suite re-run
+unchanged, now 76 with this amendment's 4 additions).
+
+### Sync-location update
+
+This amendment touches only the worktree-shape *recognition* the module docstring and `_WORKTREE_RE`/
+`_WORKTREE_ROOT_RE`/`_WORKTREE_PATH_FRAGMENT` comments describe — the mutating-verb list the module
+docstring's `NOTE:` warns about is unrelated and unchanged, so none of that note's four sync locations
+need updating.
+
+1. The module docstring in `pre-tool-use-canonical-mutate-guard.py` — logic step 2's prose and the
+   "worktree-shaped cwd is now confirmed LIVE" paragraph both now name both conventions.
+2. `_worktree_canon.py` and `pre-tool-use-worktree-path-check.py` — companion fixes in the same PR
+   (identical gap, near-identical regex, per dev-env#760's own framing); see those files' own updated
+   docstrings/comments.
+3. `claude/CLAUDE.md`'s "Never mutate git state directly…" bullet — not updated; it already describes
+   the harm model and remedies at a level of abstraction that doesn't name the worktree-path regex's
+   shape, so nothing there was inaccurate.
+4. This ADR's own Decision/Judgment-calls text and Amendments 1–3 — left **unedited** for history; this
+   Amendment 4 section is the addition, per this repo's established amended-ADR convention.
+5. `docs/REFERENCE.md` — the Hooks-table row / worktree cross-reference for this hook, extended to
+   mention both conventions.
+6. `docs/adr/INDEX.md` row 071 — `Date` cell already lists `2026-07-14` (Amendment 3 landed the same
+   day); no new date needed. Tags left as-is — `worktrees` already covers this amendment's subject
+   without needing a shape-specific tag (consistent with ADR-024's own dev-env#750 addendum, which
+   likewise added no new tag).
+7. ADR-024 (`pre-tool-use-worktree-path-check.py`'s own ADR) gains a parallel addendum in the same PR,
+   since that hook's `_WORKTREE_RE` had the identical gap.
+
+### Coverage
+
+`claude/scripts/tests/test_canonical_mutate_guard.py` grows from 72 to 76 tests, split across the
+existing two-layer convention:
+
+- **Pure-function layer:** `test_worktree_root_from_cwd_matches_and_extracts_sibling_directory_convention`
+  (bare sibling-directory worktree root, a nested-subdirectory cwd, and the bare-suffix
+  `dev-env-188`-shaped `None` case); `test_blockable_ambient_root_guards_against_sibling_directory_worktree_shaped_resolution`
+  (a sibling-directory-shaped resolved root is never treated as blockable, mirroring the existing
+  nested-shape guard test).
+- **End-to-end `main()`-via-subprocess layer:**
+  `test_main_allows_ambient_mutating_command_from_live_sibling_directory_worktree` — a REAL,
+  `git worktree add`-registered worktree at the sibling-directory shape (reusing
+  `_init_repo_with_live_worktree` unchanged, since `git worktree add` itself has no opinion on where the
+  worktree directory lives) still gets zero-friction treatment, directly reproducing and closing the
+  issue's own reported scenario; `test_main_failsopen_on_orphaned_sibling_directory_cwd_not_nested_in_any_repo`
+  — pins the fail-open asymmetry described above.
+
+All pre-amendment tests across `test_worktree_canon.py`, `test_worktree_path_check.py`, and
+`test_canonical_mutate_guard.py` were re-run and pass unchanged. The full suite (`py -3
+claude/scripts/run-hook-tests.py`) passes.

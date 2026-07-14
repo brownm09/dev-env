@@ -182,6 +182,60 @@ Implementation: `_WORKTREE_RE.match(file_norm)` matches if the target path conta
 
 ---
 
+## Addendum (2026-07-14): sibling-directory worktree convention, `<repo>-worktrees/<name>` (dev-env#760)
+
+### Problem
+
+`_WORKTREE_RE` matched only the nested `.claude/worktrees/<name>` shape. This environment also uses a
+second convention reached via manual `git worktree add` (never `EnterWorktree`): a sibling directory
+named `<repo>-worktrees/` next to the canonical checkout, holding named worktrees as its own
+subdirectories — e.g. `dev-env-worktrees/adr-096-correction`, confirmed live via `git worktree list`
+alongside `dev-env-worktrees/fix-758-double-resolve`. A genuine live worktree at this second shape was
+invisible to this hook's own regex, exactly the same gap [ADR-071 Amendment 4](071-canonical-checkout-mutate-guard-hook.md#amendment-4-2026-07-14--recognize-the-sibling-directory-worktree-convention-repo-worktreesname-dev-env760)
+found and fixed in the sibling `pre-tool-use-canonical-mutate-guard.py` hook, filed together as
+dev-env#760.
+
+For *this* hook specifically, a cwd shaped like the sibling-directory convention that failed to match
+meant step 1 ("if cwd does not match ... pass immediately") exited 0 unconditionally — the hook was a
+silent no-op for any Write/Edit/NotebookEdit issued from inside such a worktree, including the exact
+canonical-root-escape scenario this hook exists to catch (step 5 was never reached at all).
+
+### Extended decision
+
+`_WORKTREE_RE` becomes an alternation: `.claude/worktrees` (nested) OR `[^/\\]+-worktrees`
+(sibling-directory, requiring at least one character before the `-worktrees` marker). `canonical_root`
+(`m.group(1)`) and `worktree_root` (`m.group(0)`) are extracted identically regardless of which
+alternative matched — every step downstream (the liveness guard, the path-scoping checks, the
+dev-env#750 sibling-worktree carve-out) operates on those two strings alone and needed no shape-specific
+changes.
+
+A bare `<repo>-<suffix>` sibling with no `-worktrees` marker (e.g. `dev-env-188`) remains unmatched,
+deliberately — the same still-ambiguous shape `_worktree_canon.py`'s own tested contract already leaves
+out of scope; see ADR-071 Amendment 4 for the full reasoning, shared verbatim across both hooks.
+
+### Judgment calls (addendum)
+
+**Same regex text as `_worktree_canon.py` and `pre-tool-use-canonical-mutate-guard.py`'s
+`_WORKTREE_PATH_FRAGMENT`.** All three files independently define this pattern (dev-env#510 tracks
+consolidating them onto a shared module); this addendum keeps the three spellings in sync rather than
+letting only one of them learn the new convention, per dev-env#760's own explicit ask to touch all three
+call sites together.
+
+**No new liveness-check logic.** The orphaned-worktree liveness guard (this ADR's first addendum) and
+the sibling-worktree carve-out (this ADR's second addendum, dev-env#750) both already operate on
+`worktree_root`/`canonical_root` as opaque strings — recognizing a second path shape needed no changes
+to either.
+
+### Consequences (addendum)
+
+- `test_main_blocks_write_escaping_to_canonical_root_sibling_directory_convention` and
+  `test_main_blocks_edit_from_orphaned_sibling_directory_worktree` added to
+  `claude/scripts/tests/test_worktree_path_check.py`, mirroring the original decision's and the first
+  addendum's coverage for the new shape.
+- No performance impact: same single regex match, now covering one more alternative.
+
+---
+
 ## References
 
 - `claude/scripts/pre-tool-use-worktree-path-check.py` — implementation
@@ -190,7 +244,10 @@ Implementation: `_WORKTREE_RE.match(file_norm)` matches if the target path conta
 - `brownm09/career-playbook#276` — downstream symptom tracker (original)
 - `brownm09/dev-env#328` — orphaned-worktree hardening (addendum)
 - `brownm09/dev-env#469` — stdout→stderr block-reason fix (both sites), `_block()` helper introduced
-- `brownm09/dev-env#750` — sibling-worktree carve-out (this addendum)
+- `brownm09/dev-env#750` — sibling-worktree carve-out (addendum)
+- `brownm09/dev-env#760` — sibling-directory worktree convention recognition (this addendum)
+- [ADR-071](071-canonical-checkout-mutate-guard-hook.md) Amendment 4 — the same gap and fix in the
+  sibling `pre-tool-use-canonical-mutate-guard.py` hook, fixed in the same PR
 - Engineering-journal `sessions/career-playbook/2026-05-22_140307.stub.md` — third occurrence
 - Engineering-journal `sessions/career-playbook/2026-06-06_105718.stub.md` — orphaned-worktree incident
 - Engineering-journal `sessions/meta/2026-07-13_070949.stub.md` — compose-session incident (dev-env#750)

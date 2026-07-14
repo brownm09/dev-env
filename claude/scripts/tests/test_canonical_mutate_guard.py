@@ -962,6 +962,33 @@ def test_worktree_root_from_cwd_matches_and_extracts() -> str:
     return f"{len(cases)} worktree-shaped extractions + {len(non_worktree)} non-worktree None cases correct"
 
 
+_SIBLING_WORKTREE_ROOT_FIXTURE = "C:/Users/brown/Git/dev-env-worktrees/some-worktree-name"
+
+
+def test_worktree_root_from_cwd_matches_and_extracts_sibling_directory_convention() -> str:
+    """dev-env#760: `_worktree_root_from_cwd` also extracts the worktree-root PREFIX for
+    the sibling-directory convention (`<repo>-worktrees/<name>`, e.g.
+    `dev-env-worktrees/adr-096-correction` from real `git worktree list` output), mirroring
+    `test_worktree_root_from_cwd_matches_and_extracts`'s coverage of the nested convention.
+    A bare-suffix sibling with no `-worktrees` marker (e.g. `dev-env-188`) stays unmatched,
+    same as `_worktree_canon.py`'s identical contract.
+    """
+    cases = [
+        (_SIBLING_WORKTREE_ROOT_FIXTURE, _SIBLING_WORKTREE_ROOT_FIXTURE, "bare sibling-directory worktree root"),
+        (f"{_SIBLING_WORKTREE_ROOT_FIXTURE}/some/nested/path", _SIBLING_WORKTREE_ROOT_FIXTURE, "nested subdirectory cwd"),
+    ]
+    for cwd, expected_root, label in cases:
+        got = cmg._worktree_root_from_cwd(cwd)
+        if got != expected_root:
+            raise AssertionError(f"{label}: expected {expected_root!r}, got {got!r} for cwd {cwd!r}")
+
+    bare_suffix = "C:/Users/brown/Git/dev-env-188"
+    got = cmg._worktree_root_from_cwd(bare_suffix)
+    if got is not None:
+        raise AssertionError(f"expected None for bare-suffix sibling cwd {bare_suffix!r}, got {got!r}")
+    return f"{len(cases)} sibling-directory-convention extractions + 1 bare-suffix-sibling None case correct"
+
+
 def test_is_live_worktree_decision_table() -> str:
     """Mirrors `test_worktree_path_check.py`'s `test_worktree_is_live_decision_table`
     (ADR-024's dev-env#328 addendum) for this file's copy of the same liveness
@@ -1027,6 +1054,16 @@ def test_blockable_ambient_root_guards_against_worktree_shaped_resolution() -> s
     return "_blockable_ambient_root guards against a worktree-shaped resolved root (dev-env#749 review finding)"
 
 
+def test_blockable_ambient_root_guards_against_sibling_directory_worktree_shaped_resolution() -> str:
+    """dev-env#760: mirrors test_blockable_ambient_root_guards_against_worktree_shaped_resolution
+    for the sibling-directory convention -- a resolved root shaped like `<repo>-worktrees/<name>`
+    must not be treated as blockable either, since `_WORKTREE_RE` now recognizes it too.
+    """
+    if cmg._blockable_ambient_root(_SIBLING_WORKTREE_ROOT_FIXTURE) is not None:
+        raise AssertionError("a sibling-directory-convention worktree-shaped resolved root must not be treated as blockable")
+    return "_blockable_ambient_root guards against a sibling-directory-convention worktree-shaped resolved root (dev-env#760)"
+
+
 def main_unit() -> list:
     return [
         ("mutating verbs classified as mutating", test_mutating_verbs_classified_as_mutating),
@@ -1069,9 +1106,11 @@ def main_unit() -> list:
         ("_resolve_git_toplevel fails open on null byte (dev-env#576/PR#584)", test_resolve_git_toplevel_failsopen_on_null_byte),
         ("_memoized_toplevel dedupes across callers, incl. a memoized None (dev-env#758)", test_memoized_toplevel_dedupes_across_callers),
         ("_worktree_root_from_cwd matches and extracts (dev-env#749)", test_worktree_root_from_cwd_matches_and_extracts),
+        ("_worktree_root_from_cwd matches and extracts, sibling-directory convention (dev-env#760)", test_worktree_root_from_cwd_matches_and_extracts_sibling_directory_convention),
         ("_is_live_worktree decision table (dev-env#749)", test_is_live_worktree_decision_table),
         ("_is_live_worktree short-circuits before git (dev-env#749)", test_is_live_worktree_short_circuits_before_git),
         ("_blockable_ambient_root guards against worktree-shaped resolution (dev-env#749 review finding)", test_blockable_ambient_root_guards_against_worktree_shaped_resolution),
+        ("_blockable_ambient_root guards against sibling-directory worktree-shaped resolution (dev-env#760)", test_blockable_ambient_root_guards_against_sibling_directory_worktree_shaped_resolution),
     ]
 
 
@@ -1933,6 +1972,70 @@ def test_main_blocks_orphaned_worktree_shaped_cwd_nested_in_canonical() -> str:
     return "orphaned worktree-shaped cwd nested in a real canonical is blocked, canonical root named (dev-env#749)"
 
 
+def test_main_allows_ambient_mutating_command_from_live_sibling_directory_worktree() -> str:
+    """dev-env#760's exact reported scenario: same acceptance as
+    test_main_allows_ambient_mutating_command_from_live_worktree above, but the real,
+    `git worktree add`-registered worktree lives at the SIBLING-DIRECTORY convention
+    (`<repo>-worktrees/<name>`, a directory next to the canonical repo, not nested inside
+    it) instead of `.claude/worktrees/<name>`. `git worktree add` has no opinion on where
+    the worktree directory lives, so `_init_repo_with_live_worktree` works unchanged for
+    either shape -- only the hook's own path-shape regex needed to learn the second
+    convention. Before this fix, a command from here was misclassified as an ambient
+    mutation against a canonical (non-worktree) root and blocked -- exactly the incident
+    the issue reports (found while working dev-env#758 in a manually-created worktree at
+    `dev-env-worktrees/fix-758-double-resolve`).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        canonical = tmp / "canonical-repo"
+        canonical.mkdir()
+        worktree_path = tmp / "canonical-repo-worktrees" / "real-live-worktree"
+        _init_repo_with_live_worktree(canonical, worktree_path)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git checkout -b some-branch"},
+            "cwd": str(worktree_path),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"expected exit 0 (live sibling-directory worktree stays zero-friction), got {proc.returncode}. "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+    return "ambient mutating command from a REAL, registered live sibling-directory-convention worktree allowed (exit 0, dev-env#760)"
+
+
+def test_main_failsopen_on_orphaned_sibling_directory_cwd_not_nested_in_any_repo() -> str:
+    """dev-env#760 asymmetry, pinned so it isn't later mistaken for a regression:
+    test_main_blocks_orphaned_worktree_shaped_cwd_nested_in_canonical (above) reproduces an
+    orphan NESTED inside a real canonical repo's own tree, so git's upward walk resolves it
+    TO the canonical root and the hook correctly blocks. An orphaned SIBLING-DIRECTORY-shaped
+    directory (no `.git`) is, by construction, never nested inside any repo's tree -- there is
+    nothing for git to walk up to -- so `git rev-parse --show-toplevel` fails outright and the
+    hook's existing fail-open contract applies, same as any other unresolvable path. Both
+    outcomes are correct under the hook's "block only a positively-identified canonical root"
+    philosophy; this is not a gap introduced by this fix, just a shape where the nested
+    convention's orphan-resolves-to-canonical mechanic structurally cannot occur.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        orphan = Path(tmp) / "canonical-repo-worktrees" / "orphan-name"
+        orphan.mkdir(parents=True)  # no .git -- and not nested inside any repo either
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git checkout -b some-branch"},
+            "cwd": str(orphan),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"expected exit 0 (fails open -- not nested inside any git repo to resolve up to), "
+                f"got {proc.returncode}. stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+    return "orphaned sibling-directory-shaped cwd not nested in any repo fails open (exit 0, dev-env#760)"
+
+
 def test_main_wiring_shares_one_toplevel_resolution_for_cwd() -> str:
     """dev-env#758 review follow-up: `test_memoized_toplevel_dedupes_across_callers` above proves
     `_memoized_toplevel()` itself memoizes correctly, but nothing else in this suite proves `main()`
@@ -2023,6 +2126,8 @@ def main_e2e() -> list:
         ("main() blocks relative redirect resolved against command cwd (dev-env#576/PR#584)", test_main_blocks_relative_redirect_resolved_against_command_cwd),
         ("main() allows ambient mutating command from a real live worktree (dev-env#749)", test_main_allows_ambient_mutating_command_from_live_worktree),
         ("main() blocks orphaned worktree-shaped cwd nested in canonical (dev-env#749)", test_main_blocks_orphaned_worktree_shaped_cwd_nested_in_canonical),
+        ("main() allows ambient mutating command from a real live sibling-directory worktree (dev-env#760)", test_main_allows_ambient_mutating_command_from_live_sibling_directory_worktree),
+        ("main() fails open on orphaned sibling-directory cwd not nested in any repo (dev-env#760)", test_main_failsopen_on_orphaned_sibling_directory_cwd_not_nested_in_any_repo),
         ("main() shares one toplevel resolution for cwd, in-process (dev-env#758)", test_main_wiring_shares_one_toplevel_resolution_for_cwd),
         ("main() fails open on non-git cwd", test_main_failsopen_on_nongit_cwd),
         ("main() fails open on malformed JSON", test_main_failsopen_on_malformed_json),

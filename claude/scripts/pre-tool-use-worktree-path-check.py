@@ -7,8 +7,15 @@ Problem: Absolute paths like `C:/Users/brown/Git/dev-env/foo.py` resolve to
 the main working tree, not the active worktree. Files land in the wrong place
 silently. This hook intercepts those calls before the write happens.
 
+Recognizes two worktree-path conventions (dev-env#760): the nested
+`.claude/worktrees/<name>` shape (`EnterWorktree`) and the sibling-directory
+`<repo>-worktrees/<name>` shape (manual `git worktree add`, e.g.
+`dev-env-worktrees/adr-096-correction`) — see `_WORKTREE_RE` below. A bare
+`<repo>-<suffix>` sibling with no `-worktrees` marker (e.g. `dev-env-188`) is
+not covered; that shape is ambiguous from the path string alone.
+
 Logic:
-  1. If cwd does not contain `/.claude/worktrees/<name>/`, pass immediately.
+  1. If cwd does not match either worktree-path convention, pass immediately.
   2. Extract canonical_root (repo root) and worktree_root from cwd.
   3. Liveness guard (ADR-024 addendum, dev-env#328): assert the worktree is a
      *live* registered worktree, not an orphan whose `.git` link is gone. An
@@ -44,10 +51,12 @@ import sys
 
 import _hookutil
 
-# Matches `.claude/worktrees/<name>` anywhere in a path, capturing the repo
-# root (everything before `/.claude/`).
+# Matches `.claude/worktrees/<name>` OR `<repo>-worktrees/<name>` at the start of a path,
+# capturing the repo root (everything before the matched worktree segment). dev-env#760:
+# the second alternative is the sibling-directory convention; a bare `<repo>-<suffix>` with
+# no `-worktrees` marker (e.g. `dev-env-188`) still does not match — see module docstring.
 _WORKTREE_RE = re.compile(
-    r"^(.+?)[/\\]\.claude[/\\]worktrees[/\\][^/\\]+",
+    r"^(.+?)(?:[/\\]\.claude[/\\]worktrees[/\\]|-worktrees[/\\])[^/\\]+",
     re.IGNORECASE,
 )
 

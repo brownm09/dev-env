@@ -28,7 +28,7 @@ Consult the relevant ADR before overriding any rule, hook, skill, or config.
 | [021](021-auto-stub-on-pr-push.md) | Auto-Write Journal Stub on git push to Open PR Branch | 2026-05-11 | Accepted | journal, stubs, hooks, post-tool-use, git-push, automation |
 | [022](022-test-coverage-gate-before-pr.md) | Test Coverage Gate: Require Declaration of New Testable Behavior Before PR | 2026-05-16 | Accepted | testing, coverage, workflow, git, pr, blocking-rule |
 | [023](023-generic-required-fields-issue-hook.md) | Generic `required_fields` Config for Issue/PR Project-Board Hook | 2026-05-16 | Accepted | hooks, github-project, post-tool-use, hook-config, automation, workflow |
-| [024](024-worktree-path-guard-hook.md) | PreToolUse Hook to Block Canonical-Root Writes from Worktrees | 2026-05-23 (amended 2026-06-06) | Accepted | hooks, worktrees, pre-tool-use, file-safety, write, edit, orphaned-worktree |
+| [024](024-worktree-path-guard-hook.md) | PreToolUse Hook to Block Canonical-Root Writes from Worktrees | 2026-05-23 (amended 2026-06-06, 2026-07-14) | Accepted | hooks, worktrees, pre-tool-use, file-safety, write, edit, orphaned-worktree |
 | [025](025-default-plan-mode.md) | Default Plan Mode | 2026-05-23 | Accepted | config, settings, plan-mode, workflow, defaults |
 | [026](026-suppression-policy.md) | Suppression Policy: No Silent Workarounds for Type and Lint Errors | 2026-05-24 | Accepted | code-quality, typescript, eslint, workflow, suppression, pre-pr |
 | [027](027-userpromptsubmit-blocking-hook-conventions.md) | UserPromptSubmit Hook Output: stderr for Blocking, Per-Session Marker Files | 2026-05-27 | Accepted | hooks, UserPromptSubmit, stderr, per-session-state, claude-code-contract |

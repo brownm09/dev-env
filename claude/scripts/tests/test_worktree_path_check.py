@@ -237,6 +237,70 @@ def test_main_allows_write_to_sibling_worktree() -> str:
     return "Write to sibling worktree under same canonical root is allowed (exit 0)"
 
 
+def test_main_blocks_write_escaping_to_canonical_root_sibling_directory_convention() -> str:
+    """dev-env#760: same acceptance as test_main_blocks_write_escaping_to_canonical_root,
+    but cwd is the SIBLING-DIRECTORY worktree convention (`<repo>-worktrees/<name>`, a
+    directory next to the canonical root, not nested inside it) rather than the nested
+    `.claude/worktrees/<name>` convention. Confirms `_WORKTREE_RE`'s second alternative
+    correctly extracts canonical_root/worktree_root and the escape-blocking logic
+    downstream needs no shape-specific changes.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        canonical_root = tmp / "canon-repo"
+        worktree_root = tmp / "canon-repo-worktrees" / "some-worktree"
+        worktree_root.mkdir(parents=True)
+        (worktree_root / ".git").write_text("not a real gitdir link")
+        escaping_path = canonical_root / "some_file.py"
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(escaping_path)},
+            "cwd": str(worktree_root),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (block), got {proc.returncode}. "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+        try:
+            reason = json.loads(proc.stderr).get("reason", "")
+        except json.JSONDecodeError:
+            raise AssertionError(f"stderr was not JSON: {proc.stderr!r}")
+        if "canonical repo root" not in reason or "Corrected" not in reason:
+            raise AssertionError(f"block reason missing expected markers: {reason!r}")
+    return "Write escaping to canonical root blocked (exit 2) from a sibling-directory-convention worktree (dev-env#760)"
+
+
+def test_main_blocks_edit_from_orphaned_sibling_directory_worktree() -> str:
+    """dev-env#760: same acceptance as test_main_blocks_edit_from_orphaned_worktree, but
+    for an orphaned SIBLING-DIRECTORY-convention worktree (no `.git` link) rather than the
+    nested convention — confirms the liveness guard fires identically regardless of shape.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        orphan = Path(tmp) / "canon-repo-worktrees" / "orphan-name"
+        orphan.mkdir(parents=True)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(orphan / "some_file.py")},
+            "cwd": str(orphan),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (block), got {proc.returncode}. stderr={proc.stderr!r}"
+            )
+        try:
+            reason = json.loads(proc.stderr).get("reason", "")
+        except json.JSONDecodeError:
+            raise AssertionError(f"stderr was not JSON: {proc.stderr!r}")
+        if "orphaned" not in reason or "git worktree add --force" not in reason:
+            raise AssertionError(f"block reason missing orphan/recovery text: {reason!r}")
+    return "Edit from orphaned sibling-directory-convention worktree blocked (exit 2, dev-env#760)"
+
+
 def main() -> int:
     tests = [
         ("_worktree_is_live decision table", test_worktree_is_live_decision_table),
@@ -244,6 +308,8 @@ def main() -> int:
         ("main() blocks Edit from orphaned worktree", test_main_blocks_edit_from_orphaned_worktree),
         ("main() blocks Write escaping to canonical root", test_main_blocks_write_escaping_to_canonical_root),
         ("main() allows Write to sibling worktree", test_main_allows_write_to_sibling_worktree),
+        ("main() blocks Write escaping to canonical root, sibling-directory convention (dev-env#760)", test_main_blocks_write_escaping_to_canonical_root_sibling_directory_convention),
+        ("main() blocks Edit from orphaned sibling-directory worktree (dev-env#760)", test_main_blocks_edit_from_orphaned_sibling_directory_worktree),
         ("main() no-op outside worktree", test_main_noop_outside_worktree),
     ]
     failed = 0
