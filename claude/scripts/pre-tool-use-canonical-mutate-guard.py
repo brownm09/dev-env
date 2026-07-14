@@ -67,12 +67,14 @@ is actually found):
          become its own segment and be misclassified as a real invocation.
      Two redirect shapes are handled specially, scanned per-segment after
      segmentation:
-       - A bare `cd <path>` in ANY segment persists for the rest of the shell
-         invocation (that's what `&&`-chaining a `cd` means), so the whole
-         command is treated as out of scope the moment a `cd` appears anywhere
-         in it — a later segment's real execution directory is then unknown,
-         not `cwd`. (A `cd` *into* a canonical root is still a v1 gap — see the
-         module-level coverage note below.)
+       - A bare `cd <path>` in a segment persists for the rest of the shell
+         invocation (that's what `&&`-chaining a `cd` means), so every segment
+         from that point on is out of scope — its real execution directory is
+         unknown, not `cwd`. A mutating segment BEFORE the first `cd` is still
+         evaluated normally (order-sensitive; dev-env#762 review — fixed a
+         regression where ANY `cd` anywhere, including one after a mutating
+         segment, cleared the whole command). (A `cd` *into* a canonical root
+         is still a v1 gap — see the module-level coverage note below.)
        - `git -C <path>` / `git --git-dir=<path>` / `git --work-tree=<path>`
          redirect a single git invocation at another repo. As of dev-env#576
          these are no longer merely skipped: `_parse_git_prefix()` captures the
@@ -174,10 +176,6 @@ import sys
 
 from _hookio import is_absolute_path, split_top_level
 import _hookutil
-
-# Sanctioned shell tools this guard evaluates (dev-env#620) — every other
-# tool_name fails open below, unchanged from before this PR.
-_SANCTIONED_TOOL_NAMES = ("Bash", "PowerShell")
 
 # Shared fragment for the two worktree-path regexes below (dev-env#749 review
 # finding — was independently spelled twice; factored out so the two can't
@@ -600,20 +598,36 @@ def find_mutating_segments(cmd: str, segments: list = None) -> list:
     Pure/offline by construction: extracting the dirs is string work; the git
     subprocess that resolves them to canonical roots is deliberately the
     CALLER's (`main()`'s) job, so the pure-function test layer never shells
-    out. A bare `cd <path>` in ANY segment persists across the rest of the
-    shell invocation (that's what `&&`-chaining a `cd` means), so a later
-    segment's real execution directory is unknown, not `cwd` — the whole
-    command is taken out of scope (`[]`). The cd check runs against the
-    env-stripped segment (same helper `is_mutating_segment` uses) so
-    `FOO=1 cd /tmp && git checkout -b x` is still recognized as a cd-redirect.
+    out. A bare `cd <path>` in a segment persists across the REST of the
+    shell invocation (that's what `&&`-chaining a `cd` means), so every
+    segment from that point on has an unknown real execution directory and is
+    excluded — order-sensitively: a mutating segment appearing BEFORE the
+    first `cd` still executed in the known, original `cwd`, and is still
+    evaluated normally. The cd check runs against the env-stripped segment
+    (same helper `is_mutating_segment` uses) so `FOO=1 cd /tmp && git
+    checkout -b x` is still recognized as a cd-redirect.
+
+    Order-sensitivity fix (dev-env#762 review): earlier scanned ALL segments
+    for a `cd` first and returned `[]` for the WHOLE command the instant any
+    segment matched, regardless of position — so a mutating segment that came
+    BEFORE a later, unrelated `cd` was incorrectly cleared too. Confirmed as a
+    real, exploitable regression introduced by this PR's own `{`-as-split-
+    trigger addition to `_hookio.split_top_level`: `git checkout main; if ($?)
+    { cd C:/repo }` (the PowerShell conditional-chain idiom this PR adds
+    support for) now segments `cd C:/repo }` as its own top-level segment,
+    which matched the old whole-command escape and silently un-blocked the
+    preceding `git checkout main` — the exact dev-env#453 collision this hook
+    exists to prevent. (The identical order-insensitivity already existed for
+    a plain `git checkout main; cd C:/repo` semicolon chain even before this
+    PR; fixing it order-sensitively closes both shapes at once rather than
+    special-casing the newly-exposed one.)
     """
     if segments is None:
         segments = split_top_level(cmd, split_pipe=True)
-    for seg in segments:
-        if _CD_RE.match(_strip_leading_env(seg)):
-            return []  # cd persists across the rest of the command — out of scope entirely
     out = []
     for seg in segments:
+        if _CD_RE.match(_strip_leading_env(seg)):
+            break  # cd persists across the REST of the command -- only prior segments are known-safe to evaluate
         if is_mutating_segment(seg) or is_mutating_gh_segment(seg):
             out.append({"segment": seg.strip(), "redirect_dirs": _segment_redirect_dirs(seg)})
     return out
@@ -899,7 +913,7 @@ def main() -> None:
     if not isinstance(data, dict):
         sys.exit(0)  # valid JSON but not an object (e.g. `[]`, `"x"`, `123`, `null`) -> fail open
 
-    if data.get("tool_name") not in _SANCTIONED_TOOL_NAMES:
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
     cwd = data.get("cwd", "") or ""

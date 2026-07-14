@@ -31,13 +31,18 @@ Exit 0 — allow (queue absent, empty, whitespace-only, or any error).
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
+import os
 import re
 import sys
 
 from _hookio import scan_top_level
 import _hookutil
 
-_QUEUE_FILE = "C:/Users/brown/.claude/merge-queue.md"
+# Overridable so a subprocess-driven end-to-end test can point this at a
+# disposable temp file instead of the developer's real queue (mirrors
+# pre-tool-use-journal-draft-worktree-guard.py's JOURNAL_DRAFT_WORKTREE_GUARD_REPO_PATH
+# and pre-tool-use-canonical-mutate-guard.py's CANONICAL_MUTATE_GUARD_JOURNAL_PATH).
+_QUEUE_FILE = os.environ.get("MERGE_QUEUE_FILE_PATH", "C:/Users/brown/.claude/merge-queue.md")
 _MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
 
 

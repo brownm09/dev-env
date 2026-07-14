@@ -518,44 +518,49 @@ def test_split_top_level_brace_splits_even_with_split_pipe_enabled() -> str:
 
 
 def test_scan_top_level_herestring_with_embedded_quote_no_longer_hides_real_command() -> str:
-    # The load-bearing regression. WITHOUT here-string awareness, the naive
-    # POSIX single-quote tracking closes prematurely at the stray apostrophe
-    # in "don't" (rather than the real line-start '@ closer), toggles back
-    # into "single" state at the closer's own leading ', and then never finds
-    # another ' to close it -- the entire rest of the command, including the
-    # real "gh pr merge" invocation, was silently DROPPED as an "unterminated
-    # quote" tail (split_top_level's existing fail-permissive contract) before
-    # this fix. Traced by hand against the pre-fix parser: it returns exactly
-    # one segment, "@'don't merge yet", with "gh pr merge --squash" gone.
-    cmd = "@'don't merge yet\n'@\ngh pr merge --squash"
+    # The load-bearing regression. A SYNTACTICALLY VALID PowerShell here-string
+    # (opener immediately followed by a line break, per real PowerShell
+    # grammar -- dev-env#762 review: an earlier fixture used an invalid
+    # same-line body and was rewritten to this valid multi-line form).
+    # WITHOUT here-string awareness, the naive POSIX single-quote tracking
+    # closes prematurely at the stray apostrophe in "don't" (rather than the
+    # real line-start '@ closer), toggles back into "single" state at the
+    # closer's own leading ', and then never finds another ' to close it --
+    # the entire rest of the command, including the real "gh pr merge"
+    # invocation, was silently DROPPED as an "unterminated quote" tail
+    # (split_top_level's existing fail-permissive contract) before this fix.
+    # Traced by hand against the pre-fix parser: it returns exactly one
+    # segment, "@'\ndon't merge yet", with "gh pr merge --squash" gone.
+    cmd = "@'\ndon't merge yet\n'@\ngh pr merge --squash"
     assert scan_top_level(cmd, _starts_with("gh pr merge"))
     return "PowerShell here-string body with an embedded apostrophe no longer hides a real command after it"
 
 
 def test_split_top_level_herestring_literal_embedded_quote_segments_correctly() -> str:
-    cmd = "@'don't merge yet\n'@\ngh pr merge --squash"
+    cmd = "@'\ndon't merge yet\n'@\ngh pr merge --squash"
     out = split_top_level(cmd)
     assert len(out) == 2, out
-    assert out[0] == "@'don't merge yet\n'@", out
+    assert out[0] == "@'\ndon't merge yet\n'@", out
     assert out[1] == "gh pr merge --squash", out
     return "literal here-string (incl. embedded apostrophe) is one segment; real command after is separate"
 
 
 def test_scan_top_level_herestring_expandable_with_embedded_quote_no_longer_hides_real_command() -> str:
-    # Same regression, expandable (@"..."@) form: one embedded " prematurely
+    # Same regression, expandable (@"..."@) form, also syntactically valid
+    # (opener immediately followed by a line break): one embedded " prematurely
     # closes the naive double-quote tracking, then a second " (the real
     # closer's own leading quote) reopens it with nothing left to close --
     # dropping "gh pr merge --squash" the same way.
-    cmd = '@"say "hi now\n"@\ngh pr merge --squash'
+    cmd = '@"\nsay "hi now\n"@\ngh pr merge --squash'
     assert scan_top_level(cmd, _starts_with("gh pr merge"))
     return "PowerShell expandable here-string body with an embedded double-quote no longer hides a real command after it"
 
 
 def test_split_top_level_herestring_expandable_embedded_quote_segments_correctly() -> str:
-    cmd = '@"say "hi now\n"@\ngh pr merge --squash'
+    cmd = '@"\nsay "hi now\n"@\ngh pr merge --squash'
     out = split_top_level(cmd)
     assert len(out) == 2, out
-    assert out[0] == '@"say "hi now\n"@', out
+    assert out[0] == '@"\nsay "hi now\n"@', out
     assert out[1] == "gh pr merge --squash", out
     return "expandable here-string (incl. embedded double-quote) is one segment; real command after is separate"
 
@@ -565,11 +570,30 @@ def test_split_top_level_herestring_no_closer_runs_to_end() -> str:
     # entire rest of the string is consumed as one (safely opaque) segment
     # rather than raising or leaving the parser in a dropped-trailing-segment
     # state (that state is specific to an unterminated QUOTE, not a heredoc/
-    # here-string, neither of which touch `stack` at all).
-    cmd = "@'no closer anywhere\ngh pr merge --squash"
+    # here-string, neither of which touch `stack` at all). The opener must
+    # still be a syntactically valid one (immediately followed by a line
+    # break) for _is_herestring_opener to recognize it at all.
+    cmd = "@'\nno closer anywhere\ngh pr merge --squash"
     out = split_top_level(cmd)
     assert out == [cmd], out
     return "here-string with no closer found -> runs to end of string (matches heredoc's fallback)"
+
+
+def test_split_top_level_herestring_same_line_body_not_recognized_as_opener() -> str:
+    # dev-env#762 review regression proof: a bare "@'"/'@"' NOT followed by a
+    # line break (real PowerShell requires the opener to be the last thing on
+    # its line) must NOT be treated as a here-string opener -- otherwise
+    # ordinary bash text containing "@'"/'@"' anywhere (e.g. a stray
+    # `user@'host'`-shaped token) would swallow a real trailing separator and
+    # command. Both confirmed live regressions before this fix.
+    cmd1 = "echo a@'b' ; git checkout -b evil"
+    out1 = split_top_level(cmd1)
+    assert any(s.lstrip().startswith("git checkout") for s in out1), out1
+
+    cmd2 = 'echo x@"y" && git reset --hard HEAD'
+    out2 = split_top_level(cmd2)
+    assert any(s.lstrip().startswith("git reset") for s in out2), out2
+    return "a same-line '@'/'@\"' (not a real here-string opener) no longer swallows a real trailing command"
 
 
 # ---------------------------------------------------------------------------
@@ -652,20 +676,31 @@ def test_mask_quoted_spans_command_sub_heredoc_masked() -> str:
 
 def test_mask_quoted_spans_herestring_literal_masked() -> str:
     # PowerShell literal here-string (@'...'@) -- the heredoc-equivalent
-    # opacity rule, dev-env#620 / ADR-071 Amendment 4.
-    cmd = "echo before && @'\nsome -R x/y body\n'@\necho after"
+    # opacity rule, dev-env#620 / ADR-071 Amendment 4. The body deliberately
+    # embeds a stray apostrophe ("don't") -- dev-env#762 review: a body with
+    # NO embedded quote masks identically under the naive pre-fix parser (it
+    # closes "by luck" at the real closer's own leading quote), so it never
+    # actually exercised _find_herestring_end's masking path. With the stray
+    # apostrophe, the pre-fix parser desyncs (closes early, reopens at the
+    # closer, then runs unterminated to end-of-string) and FAILS both
+    # assertions below: "-R" survives unmasked (it falls in the gap between
+    # the two mis-toggled spans) and "echo after" gets swallowed into the
+    # trailing unterminated span instead of surviving. Verified by hand.
+    cmd = "echo before && @'\nsome don't merge -R x/y body\n'@\necho after"
     masked = mask_quoted_spans(cmd)
     assert "-R" not in masked, masked
     assert masked.endswith("\necho after"), masked
-    return "PowerShell literal here-string body masked; trailing real command after it survives"
+    return "PowerShell literal here-string body (incl. embedded apostrophe) masked; trailing real command after it survives"
 
 
 def test_mask_quoted_spans_herestring_expandable_masked() -> str:
-    cmd = 'echo before && @"\nsome -R x/y body\n"@\necho after'
+    # Same discriminating-fixture rationale as the literal-form test above,
+    # with a stray embedded double-quote instead of an apostrophe.
+    cmd = 'echo before && @"\nsay "hi -R x/y body\n"@\necho after'
     masked = mask_quoted_spans(cmd)
     assert "-R" not in masked, masked
     assert masked.endswith("\necho after"), masked
-    return "PowerShell expandable here-string body masked; trailing real command after it survives"
+    return "PowerShell expandable here-string body (incl. embedded double-quote) masked; trailing real command after it survives"
 
 
 def test_mask_quoted_spans_preserves_newlines() -> str:
@@ -725,8 +760,9 @@ _CONSISTENCY_FIXTURES = [
     'echo "$(echo a && b)" && git push',
     "git status <<EOF\na && b\nEOF\ngit push && echo done",
     # PowerShell here-string (dev-env#620, ADR-071 Amendment 4): a decoy &&
-    # inside the here-string body, followed by a real && outside it.
-    "@'a && b\n'@ && git push",
+    # inside the here-string body, followed by a real && outside it. Opener
+    # immediately followed by a line break -- the syntactically valid form.
+    "@'\na && b\n'@ && git push",
 ]
 
 
@@ -1077,6 +1113,7 @@ def main() -> int:
         ("scan_top_level: here-string (expandable) no longer hides real command", test_scan_top_level_herestring_expandable_with_embedded_quote_no_longer_hides_real_command),
         ("split_top_level: here-string (expandable) segments correctly", test_split_top_level_herestring_expandable_embedded_quote_segments_correctly),
         ("split_top_level: here-string with no closer runs to end", test_split_top_level_herestring_no_closer_runs_to_end),
+        ("split_top_level: same-line '@'/'@\"' not a real opener (dev-env#762 review)", test_split_top_level_herestring_same_line_body_not_recognized_as_opener),
         ("mask_quoted_spans: no quotes -> unchanged", test_mask_quoted_spans_no_quotes_unchanged),
         ("mask_quoted_spans: double-quoted span masked (dev-env#626)", test_mask_quoted_spans_double_quoted_span_masked),
         ("mask_quoted_spans: single-quoted span masked", test_mask_quoted_spans_single_quoted_span_masked),

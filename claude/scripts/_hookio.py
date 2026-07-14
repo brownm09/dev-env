@@ -322,21 +322,48 @@ def _find_heredoc_end(cmd: str, start: int) -> int:
     return i
 
 
+def _is_herestring_opener(command: str, i: int) -> bool:
+    """True iff command[i] starts a genuine PowerShell here-string opener:
+    "@'" or '@"', itself followed (after only spaces/tabs) by a line break —
+    the real PowerShell grammar (the opener must be the last thing on its
+    line; see Microsoft's about_Quoting_Rules).
+
+    dev-env#762 review (both an independent subagent and a hand-traced,
+    executed repro confirmed this): an EARLIER version of this check fired on
+    ANY "@'"/'@"' regardless of what followed, reasoning that over-masking is
+    always the benign direction in this module. That reasoning holds for
+    mask_quoted_spans (over-masking only blanks a flag value — see that
+    function's own docstring) but is INVERTED for split_top_level: when a
+    same-line, non-here-string "@'"/'@"' (e.g. plain bash text like
+    `echo a@'b' ; git checkout -b evil`) was treated as an opener anyway,
+    _find_herestring_end scanned to the next line-start closer or, finding
+    none on a single-line command, to end-of-string — silently swallowing the
+    REAL `;`/`&&` separator and hiding a genuine trailing mutating command
+    from every segment-start-anchored classifier in this hook family. Requiring
+    the opener to actually be followed by a line break (as real PowerShell
+    requires) closes this: ordinary same-line bash text no longer matches, so
+    it falls through to ordinary single/double-quote handling on the next
+    character instead.
+    """
+    n = len(command)
+    if command[i] != "@" or i + 1 >= n or command[i + 1] not in ("'", '"'):
+        return False
+    j = i + 2
+    while j < n and command[j] in (" ", "\t"):
+        j += 1
+    return j < n and command[j] in ("\n", "\r")
+
+
 def _find_herestring_end(cmd: str, start: int) -> int:
-    """start = index of '@' in "@'…'@" or '@"…"@' (a PowerShell here-string).
+    """start = index of '@' in "@'…'@" or '@"…"@' (a PowerShell here-string),
+    where `_is_herestring_opener` has already confirmed this is a genuine
+    opener (followed by a line break, mod whitespace).
 
     Returns index just past the here-string. Mirrors _find_heredoc_end's
     fallback: if no closer is found, masks through the end of the string
-    rather than raising or under-masking.
-
-    Heuristically treats ANY "@'" / '@"' as an opener — it does not verify
-    that the opener itself is followed by end-of-line, which real PowerShell
-    requires. That's deliberate: this is a masking heuristic, not a real
-    PowerShell parser, and treating a non-here-string "@'"/'@"' occurrence as
-    one anyway only risks over-masking (the benign direction for this
-    module — see mask_quoted_spans's docstring), never under-masking a real
-    one. The closer (PowerShell requires it to start a line) is found by
-    scanning to each line start and checking for quote+"@" there.
+    rather than raising or under-masking. The closer (PowerShell requires it
+    to start a line) is found by scanning to each line start and checking for
+    quote+"@" there.
     """
     n = len(cmd)
     quote = cmd[start + 1]  # "'" or '"'
@@ -431,7 +458,7 @@ def split_top_level(command: str, *, split_pipe: bool = False) -> list[str]:
                 i += 1
             elif c == "(":
                 stack.append("subshell")
-            elif c == "@" and i + 1 < n and command[i + 1] in ("'", '"'):
+            elif _is_herestring_opener(command, i):
                 # PowerShell here-string inside subshell — skip body entirely
                 i = _find_herestring_end(command, i)
                 continue
@@ -448,7 +475,7 @@ def split_top_level(command: str, *, split_pipe: bool = False) -> list[str]:
             elif c == "$" and i + 1 < n and command[i + 1] == "(":
                 stack.append("subshell")
                 i += 1
-            elif c == "@" and i + 1 < n and command[i + 1] in ("'", '"'):
+            elif _is_herestring_opener(command, i):
                 i = _find_herestring_end(command, i)
                 continue
             elif c == "<" and i + 1 < n and command[i + 1] == "<":
@@ -604,7 +631,7 @@ def _opaque_spans(command: str) -> list[tuple[int, int]]:
                 stack.append("subshell")
                 span_start = i
                 i += 1
-            elif c == "@" and i + 1 < n and command[i + 1] in ("'", '"'):
+            elif _is_herestring_opener(command, i):
                 # PowerShell here-string -- opaque the same way a heredoc is
                 # (see split_top_level's docstring for why both are needed).
                 end = _find_herestring_end(command, i)
@@ -652,7 +679,7 @@ def _opaque_spans(command: str) -> list[tuple[int, int]]:
                 i += 1
             elif c == "(":
                 stack.append("subshell")
-            elif c == "@" and i + 1 < n and command[i + 1] in ("'", '"'):
+            elif _is_herestring_opener(command, i):
                 i = _find_herestring_end(command, i)
                 continue
             elif c == "<" and i + 1 < n and command[i + 1] == "<":

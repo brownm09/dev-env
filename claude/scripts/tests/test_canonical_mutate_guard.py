@@ -556,9 +556,10 @@ def test_env_prefixed_mutating_command_still_classified() -> str:
 def test_cd_redirect_takes_whole_command_out_of_scope() -> str:
     """A bare `cd <path>` persists across the rest of the shell invocation —
     `cd X && git checkout -b foo` really does run the checkout in X, not in
-    `cwd`. So once a `cd` appears anywhere, the WHOLE command is out of scope,
-    not just the segment carrying it — a later segment must not be flagged
-    against the wrong (unknown) directory.
+    `cwd`. Every segment from the `cd` ONWARD is out of scope — in both these
+    cases the `cd` is the very first segment, so the whole command is out of
+    scope (see test_mutating_segment_before_a_later_cd_still_detected below
+    for the order-sensitive case where a mutating segment PRECEDES the cd).
     """
     cases = [
         "cd C:/Users/brown/Git/dev-env && git checkout -b foo",
@@ -569,6 +570,37 @@ def test_cd_redirect_takes_whole_command_out_of_scope() -> str:
         if matched is not None:
             raise AssertionError(f"cd anywhere should take the whole command out of scope, got {matched!r} for {cmd!r}")
     return f"{len(cases)} cd-redirect commands correctly out of scope in full (not just the cd segment)"
+
+
+def test_mutating_segment_before_a_later_cd_still_detected() -> str:
+    """dev-env#762 review: a mutating segment BEFORE a later, unrelated `cd`
+    still executed in the known, original cwd -- it must still be detected,
+    even though every segment from the `cd` onward is (correctly) out of
+    scope. `find_mutating_segments` previously scanned ALL segments for a
+    `cd` upfront and returned `[]` for the WHOLE command the instant ANY
+    segment matched, regardless of position -- silently un-blocking a real
+    mutating command that happened to precede a later, unrelated cd.
+
+    The PowerShell-idiom case (`if ($?) { cd X }`, PR9/dev-env#620's own
+    `{`-as-split-trigger addition to _hookio.split_top_level) is what actually
+    exposed this in practice: `cd C:/repo` nested inside the brace group
+    becomes its own top-level segment post-split, newly reaching the
+    already-existing (but previously unreachable from this exact shape)
+    order-insensitive escape. The plain bash semicolon-chained equivalent
+    (`git checkout main; cd C:/repo`, no braces at all) is included too,
+    since it hit the identical order-insensitivity even before this PR --
+    fixed by the same change, not a separate one.
+    """
+    cases = [
+        "git checkout main; if ($?) { cd C:/repo }",
+        "git checkout main; cd C:/repo",
+        "gh pr merge --delete-branch; cd ..",
+    ]
+    for cmd in cases:
+        matched = cmg.classify(cmd)
+        if matched is None:
+            raise AssertionError(f"a mutating segment before a later cd must still be detected, got None for {cmd!r}")
+    return f"{len(cases)} mutating segments preceding a later cd are still correctly detected"
 
 
 def test_dashC_redirect_captured_and_classified() -> str:
@@ -972,6 +1004,7 @@ def main_unit() -> list:
         ("DOTALL alternative would have been wrong (dev-env#511 follow-up)", test_dotall_alternative_would_have_been_wrong),
         ("env-prefixed mutating command still classified", test_env_prefixed_mutating_command_still_classified),
         ("cd redirect takes whole command out of scope", test_cd_redirect_takes_whole_command_out_of_scope),
+        ("mutating segment before a later cd still detected (dev-env#762 review)", test_mutating_segment_before_a_later_cd_still_detected),
         ("-C/--git-dir/--work-tree redirect captured + classified (dev-env#576)", test_dashC_redirect_captured_and_classified),
         ("flag-prefixed stash pop/apply classified as mutating", test_flag_prefixed_stash_pop_apply_classified_as_mutating),
         ("env-prefixed cd recognized as redirect", test_env_prefixed_cd_recognized_as_redirect),
@@ -1449,6 +1482,32 @@ def test_main_blocks_mutating_command_via_powershell_tool_name() -> str:
     return "a mutating command from a canonical root is BLOCKED identically for tool_name=PowerShell (dev-env#620)"
 
 
+def test_main_blocks_mutating_segment_before_a_later_brace_wrapped_cd() -> str:
+    """dev-env#762 review, end-to-end proof: the PowerShell conditional-chain
+    idiom `A; if ($?) { cd X }` must not let a mutating `A` slip past the
+    guard just because a later, unrelated `cd` (now its own segment, thanks
+    to this PR's own `{`-split addition) trips the order-insensitive cd-escape.
+    See test_mutating_segment_before_a_later_cd_still_detected for the pure
+    classify()-level version of this same regression proof."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "canonical-repo"
+        repo.mkdir()
+        _init_throwaway_repo(repo)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "PowerShell",
+            "tool_input": {"command": "git checkout -b some-branch; if ($?) { cd C:/elsewhere }"},
+            "cwd": str(repo),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (block), got {proc.returncode}. "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+    return "a mutating command before a later brace-wrapped cd is still BLOCKED end-to-end (dev-env#762 review)"
+
+
 def test_main_empty_stdin_noop() -> str:
     proc = subprocess.run(
         [sys.executable, str(MODULE_PATH)],
@@ -1855,6 +1914,7 @@ def main_e2e() -> list:
         ("main() fails open on empty cwd", test_main_failsopen_on_empty_cwd),
         ("main() no-ops on non-Bash tool", test_main_noop_on_non_bash_tool),
         ("main() blocks mutating command via tool_name=PowerShell (dev-env#620)", test_main_blocks_mutating_command_via_powershell_tool_name),
+        ("main() blocks mutating segment before a later brace-wrapped cd (dev-env#762 review)", test_main_blocks_mutating_segment_before_a_later_brace_wrapped_cd),
         ("main() no-ops on empty stdin", test_main_empty_stdin_noop),
     ]
 

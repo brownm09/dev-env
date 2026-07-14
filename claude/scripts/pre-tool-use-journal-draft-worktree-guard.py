@@ -91,10 +91,6 @@ import sys
 from _hookio import is_absolute_path, split_top_level
 import _hookutil
 
-# Sanctioned shell tools this guard evaluates (dev-env#620) — every other
-# tool_name fails open below, unchanged from before this PR.
-_SANCTIONED_TOOL_NAMES = ("Bash", "PowerShell")
-
 # draft/YYYY-MM-DD, or draft/YYYY-MM-DD-recovery (docs/REFERENCE.md's
 # documented recovery-branch suffix for the draft/YYYY-MM-DD-recovery
 # runbook). Anchored full-match — a branch merely CONTAINING this shape
@@ -236,14 +232,6 @@ def _is_journal_canonical(root: str) -> bool:
     return root.replace("\\", "/").rstrip("/").lower() == JOURNAL_REPO
 
 
-def _cd_takes_command_out_of_scope(segments: list) -> bool:
-    """A bare `cd <path>` in ANY segment persists across the rest of the
-    shell invocation, so a later segment's real execution directory is
-    unknown, not `cwd` — the whole command is out of scope. Mirrors the
-    sibling hook's own `find_mutating_segments()` cd-scan."""
-    return any(_CD_RE.match(_strip_leading_env(seg)) for seg in segments)
-
-
 def _worktree_add_target(tokens_after_add: list) -> list:
     """The branch/commit-ish candidates `git worktree add` would check out.
 
@@ -308,13 +296,27 @@ def find_checkout_candidates(cmd: str, segments: list = None) -> list:
     DRAFT_BRANCH_RE-matching branch. Pure/offline — the caller (`main()`)
     resolves each candidate's actual target and decides whether it's
     blockable (whether it lands on the journal canonical or not).
+
+    A bare `cd <path>` in a segment persists across the REST of the shell
+    invocation, so every segment from that point on has an unknown real
+    execution directory and is excluded — order-sensitively: a candidate
+    BEFORE the first `cd` still executed in the known cwd and is still
+    returned. (dev-env#762 review: an earlier version scanned ALL segments
+    for a `cd` upfront and returned `[]` for the WHOLE command the instant any
+    segment matched, regardless of position — so a real candidate before a
+    later, unrelated `cd` was incorrectly cleared too. Confirmed exploitable
+    via this PR's own `{`-as-split-trigger addition to `_hookio.split_top_level`:
+    `git checkout draft/2026-07-14; if ($?) { cd C:/elsewhere }` segments the
+    braced `cd` on its own, newly reaching the old whole-command escape and
+    silently un-blocking the preceding draft-branch checkout — mirrors the
+    identical fix in the sibling `pre-tool-use-canonical-mutate-guard.py`.)
     """
     if segments is None:
         segments = split_top_level(cmd, split_pipe=True)
-    if _cd_takes_command_out_of_scope(segments):
-        return []
     out = []
     for seg in segments:
+        if _CD_RE.match(_strip_leading_env(seg)):
+            break  # cd persists across the REST of the command -- only prior segments are known-safe to evaluate
         tokens = _git_rest_tokens(seg)
         if not tokens:
             continue
@@ -431,7 +433,7 @@ def main() -> None:
     if not isinstance(data, dict):
         sys.exit(0)
 
-    if data.get("tool_name") not in _SANCTIONED_TOOL_NAMES:
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
     cwd = data.get("cwd", "") or ""

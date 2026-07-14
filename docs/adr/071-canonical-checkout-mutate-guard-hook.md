@@ -801,11 +801,13 @@ assuming a bash-oriented parser generalizes for free:
 
 - **`claude/settings.json`** — a new `"matcher": "PowerShell"` array under `PreToolUse`, mirroring
   the `"Bash"` array's 12 scripts (this hook included) and their timeouts exactly.
-- **This hook's `main()`** — `data.get("tool_name") not in _SANCTIONED_TOOL_NAMES` where
-  `_SANCTIONED_TOOL_NAMES = ("Bash", "PowerShell")`, replacing the `!= "Bash"` check. Applied
-  identically (each with its own local check, not a shared cross-file constant — kept per-file since
-  three of the ten sibling files don't otherwise import anything that would justify a new shared
-  dependency) to the other 10 tool_name-gated PreToolUse hooks: `pre-commit-branch-check.py`,
+- **This hook's `main()`** — `data.get("tool_name") not in ("Bash", "PowerShell")`, replacing the
+  `!= "Bash"` check. Applied identically (each file inlines the same tuple literal at its own check
+  site — no shared cross-file constant, kept per-file since three of the ten sibling files don't
+  otherwise import anything that would justify a new shared dependency; an initial version of this PR
+  inconsistently gave two of the eleven files a single-use local named constant instead, caught and
+  reverted to the uniform inline form during `/review`, see Review hardening below) to the other 10
+  tool_name-gated PreToolUse hooks: `pre-commit-branch-check.py`,
   `pre-pr-create-check.py`, `pre-merge-message-check.py`, `pre-merge-branch-check.py`,
   `pre-merge-findings-gate.py`, `pre-auto-merge-checkpoint-gate.py`, `pre-merge-numbering-check.py`,
   `pre-tool-use-journal-draft-worktree-guard.py`, `pre-tool-use-journal-compose-force-guard.py`, and
@@ -867,38 +869,106 @@ already has a dedicated ADR whose own stated scope this change directly widens.
    2026-07-04 amendment and were missing the `redirect-target`/`orphaned-worktree` tags Amendments 2
    and 3 had already added to INDEX.md but never back-ported into this file's own header.)
 
+### Review hardening (dev-env#762 review)
+
+`/review` on this PR (two Opus-model subagents, correctness/security and reliability/performance/
+maintainability, run independently against the diff) found the initial implementation above was
+incomplete in four ways — the first two are genuine, confirmed **fail-open regressions on this
+security-critical guard**, independently surfaced by both subagents and verified by direct execution
+(not just read) before being accepted. All four fixed in the same PR before merge:
+
+1. **Here-string false-trigger swallowed a real trailing command.** The initial `_find_herestring_end`
+   trigger fired on ANY `@'`/`@"` regardless of what followed, reasoning (in its own docstring) that
+   over-triggering only risks "over-masking... never under-masking a real one." That reasoning holds
+   for `mask_quoted_spans` (over-masking there only blanks a flag value) but is **inverted** for
+   `split_top_level`: over-triggering means *more* text is swallowed into one opaque "here-string"
+   span, hiding whatever real command follows it on the same line. Confirmed live:
+   `echo a@'b' ; git checkout -b evil` and `echo x@"y" && git reset --hard HEAD` — both ordinary bash,
+   nothing PowerShell-specific — produced a single unsplit segment, silently hiding the mutating
+   command from every classifier in this hook family. Fixed by `_is_herestring_opener()`: the opener
+   is now only recognized when actually followed (mod only spaces/tabs) by a line break, matching real
+   PowerShell's own here-string grammar (the opener must be the last thing on its line). Ordinary
+   same-line bash text no longer matches at all, falling through to normal quote handling instead.
+2. **The `{`-split newly exposed a pre-existing, order-insensitive `cd`-escape bug.**
+   `find_mutating_segments()`'s cd-scan checked ALL segments for a `cd` match upfront and returned `[]`
+   for the WHOLE command the instant ANY segment matched, regardless of position — so a mutating
+   segment *before* a later, unrelated `cd` was incorrectly cleared too. This exact order-insensitivity
+   already existed for a plain semicolon chain (`git checkout main; cd C:/repo`) even before this PR,
+   but was unreachable from the PowerShell brace-group idiom until this PR's own `{`-split addition
+   made a braced `cd` (`if ($?) { cd C:/repo }`) newly decompose into its own cd-shaped segment.
+   Confirmed live: `git checkout main; if ($?) { cd C:/repo }` — the exact idiom this PR adds support
+   for — flipped from blocked to allowed. Fixed by making the escape order-sensitive (`break` on the
+   first `cd`-matching segment instead of an upfront any-match check): a mutating segment before the
+   first `cd` is still evaluated against the known, original cwd; only segments from the `cd` onward
+   are excluded. This also closes the identical, already-existing semicolon-chain gap — the same fix,
+   not a separate one. The sibling hook `pre-tool-use-journal-draft-worktree-guard.py`'s
+   `find_checkout_candidates()` had the byte-identical bug shape (via its own `_cd_takes_command_out_of_scope`
+   helper, now removed and inlined order-sensitively) and received the same fix.
+3. **This amendment's own Coverage section mischaracterized a blocking gate as advisory.** The original
+   text justified skipping PowerShell test coverage for `pre-merge-message-check.py` by lumping it in
+   with two genuinely-advisory siblings under "all three are pure advisories, never a blocking gate" —
+   factually wrong for this hook, whose own docstring states `Exit 2 — block the merge`. It was, in
+   fact, the *only* blocking gate in the family left without PowerShell coverage. Fixed by adding a
+   `MERGE_QUEUE_FILE_PATH` env-var test seam (mirroring the identical pattern already used by
+   `pre-tool-use-journal-draft-worktree-guard.py`/`pre-tool-use-canonical-mutate-guard.py` for their own
+   repo-path overrides) and a genuine subprocess-driven end-to-end test proving the block fires
+   identically for `tool_name=Bash` and `tool_name=PowerShell` — rather than just correcting the prose
+   to admit the gap.
+4. **Two of the two `{`-anchor/here-string-masking test fixtures didn't actually discriminate.**
+   `test_mask_quoted_spans_herestring_literal_masked`/`_expandable_masked` used a here-string body with
+   no embedded quote character, which the PRE-fix (naive) parser also masked correctly by coincidence —
+   so neither test exercised the actual fix. Fixed by adding a stray embedded quote to each body
+   (mirroring the already-correct load-bearing `split_top_level`/`scan_top_level` here-string tests),
+   confirmed by hand to fail against the pre-fix parser on both assertions.
+
+A fifth, lower-severity finding (two of the eleven `tool_name`-gated hooks defined a
+`_SANCTIONED_TOOL_NAMES` local constant used exactly once, while the other nine inlined the tuple
+directly — an arbitrary inconsistency introduced within this same PR, not a functional bug) was fixed
+by removing both local constants so all eleven sites use the identical inline form.
+
 ### Coverage
 
-- **`test_hookio.py`** gains 11 new tests for the shared parser extension: the PowerShell
-  conditional-brace idiom and the bash brace-group equivalent are now detected via `scan_top_level`;
-  an unquoted `{` inside a quoted string is confirmed NOT a split trigger; `{`-splitting still applies
-  with `split_pipe=True` (this hook's own mode); both here-string forms (literal/expandable) with an
-  embedded stray quote no longer hide a real trailing command (the load-bearing regression pins,
-  traced by hand against the pre-fix parser to confirm each would have failed); a here-string with no
-  closer runs to end-of-string like a heredoc; `mask_quoted_spans` masks both here-string forms; and
-  the existing `mask_quoted_spans`/`split_top_level` cross-consistency fixture list gains a
-  here-string case. All pre-existing tests in this file pass unchanged (91 -> 102).
-- **`test_canonical_mutate_guard.py`** gains one new end-to-end test: a mutating command with
-  `tool_name: "PowerShell"` is blocked (exit 2) identically to `tool_name: "Bash"`, while the existing
-  `test_main_noop_on_non_bash_tool` (a genuinely unrelated tool, `"Write"`) continues to no-op
-  unchanged (70 -> 71).
-- **`test_journal_draft_worktree_guard.py`**, **`test_pre_merge_numbering_check.py`** (the latter via
-  a refactored shared `_run_collision_test(tool_name)` helper so the expensive real-git-repo collision
-  scenario isn't duplicated verbatim), **`test_pre_tool_use_journal_compose_force_guard.py`**, and the
-  two shell-driven suites **`test-auto-merge-checkpoint-gate.sh`** / **`test-merge-findings-gate.sh`**
-  each gain an equivalent end-to-end `tool_name=PowerShell` case proving their own hook's real blocking
-  path (not just a no-op) fires identically for both tool names.
+- **`test_hookio.py`** gains 12 new tests for the shared parser extension (11 originally, +1 from
+  review hardening item 1 above): the PowerShell conditional-brace idiom and the bash brace-group
+  equivalent are now detected via `scan_top_level`; an unquoted `{` inside a quoted string is confirmed
+  NOT a split trigger; `{`-splitting still applies with `split_pipe=True` (this hook's own mode); both
+  here-string forms (literal/expandable), rewritten to syntactically valid multi-line form during
+  review hardening, with an embedded stray quote no longer hide a real trailing command (the
+  load-bearing regression pins, traced by hand against the pre-fix parser to confirm each would have
+  failed); a here-string with no closer runs to end-of-string like a heredoc; a same-line `@'`/`@"` NOT
+  followed by a line break is confirmed NOT a real opener (review hardening item 1's own regression
+  proof); `mask_quoted_spans` masks both here-string forms, now with a discriminating embedded-quote
+  body (review hardening item 4); and the existing `mask_quoted_spans`/`split_top_level`
+  cross-consistency fixture list gains a here-string case. All pre-existing tests in this file pass
+  unchanged (91 -> 103).
+- **`test_canonical_mutate_guard.py`** gains three new end-to-end/pure tests (one originally, +2 from
+  review hardening item 2): a mutating command with `tool_name: "PowerShell"` is blocked (exit 2)
+  identically to `tool_name: "Bash"`, while the existing `test_main_noop_on_non_bash_tool` (a genuinely
+  unrelated tool, `"Write"`) continues to no-op unchanged; a mutating segment before a later,
+  brace-wrapped `cd` (both the pure `classify()` form and an end-to-end subprocess form) is still
+  correctly blocked, alongside the plain-semicolon equivalent (70 -> 73).
+- **`test_journal_draft_worktree_guard.py`** gains its own PowerShell e2e test plus a
+  before-a-later-cd regression test mirroring the sibling hook's fix (25 -> 27).
+  **`test_pre_merge_numbering_check.py`** (via a refactored shared `_run_collision_test(tool_name)`
+  helper so the expensive real-git-repo collision scenario isn't duplicated verbatim),
+  **`test_pre_tool_use_journal_compose_force_guard.py`**, and the two shell-driven suites
+  **`test-auto-merge-checkpoint-gate.sh`** / **`test-merge-findings-gate.sh`** each gain an equivalent
+  end-to-end `tool_name=PowerShell` case proving their own hook's real blocking path (not just a no-op)
+  fires identically for both tool names.
 - **`test_pre_commit_branch_check.py`** and **`test_pre_pr_create_check.py`** each gain two pure-function
   tests confirming their own local `{`-anchor regex now detects both the PowerShell conditional-brace
   idiom and the bash brace-group equivalent.
 - **`test_settings_hook_wiring.py`** gains `test_pretooluse_bash_and_powershell_matchers_are_mirrored`
   (see The fix, above).
-- Three PreToolUse hooks (`pre-merge-branch-check.py`, `pre-merge-message-check.py`,
-  `pre-bash-drift-check.py`) received the identical `tool_name` fix but no new test: each has an
-  established, deliberate "pure-helper convention, `main()`'s stdin plumbing not covered" scope
-  documented in its own test file's docstring, predating this amendment — adding `main()`-level
-  coverage newly, only for this one fix, would be inconsistent with that standing per-file convention
-  rather than an extension of it. All three are pure advisories (exit 0 always), never a blocking
-  gate, so the risk this leaves untested is low.
+- **`test_pre_merge_message_check.py`** gains a `MERGE_QUEUE_FILE_PATH`-seamed end-to-end layer (review
+  hardening item 3): four new subprocess-driven tests proving the genuine exit-2 block fires for both
+  `tool_name=Bash` and `tool_name=PowerShell`, allows when the queue is empty, and still no-ops for an
+  unrelated tool — this hook is a real blocking gate, not an advisory, so it needed the same proof the
+  other blocking gates already have.
+- Two PreToolUse hooks (`pre-merge-branch-check.py`, `pre-bash-drift-check.py`) received the identical
+  `tool_name` fix but no new test: both have an established, deliberate "pure-helper convention,
+  `main()`'s stdin plumbing not covered" scope documented in their own test files' docstrings, predating
+  this amendment, and both are genuinely pure advisories (exit 0 always), never a blocking gate — unlike
+  `pre-merge-message-check.py` above, which review hardening item 3 corrected.
 - Full suite (`py -3 claude/scripts/run-hook-tests.py`): 67 files passed, 2 skipped (both pre-existing,
   documented runner/environment skips unrelated to this change), 0 failed.

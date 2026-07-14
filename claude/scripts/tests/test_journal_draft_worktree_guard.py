@@ -127,6 +127,25 @@ def test_find_checkout_candidates_cd_out_of_scope() -> str:
     return "cd <path> && git checkout draft/YYYY-MM-DD -> out of scope (real cwd unknowable after cd)"
 
 
+def test_find_checkout_candidates_before_a_later_cd_still_found() -> str:
+    """dev-env#762 review: a checkout candidate BEFORE a later, unrelated cd
+    still executed in the known, original cwd -- it must still be found, even
+    though segments from the cd onward are (correctly) out of scope. Mirrors
+    the identical fix/regression in the sibling
+    pre-tool-use-canonical-mutate-guard.py's find_mutating_segments(); the
+    PowerShell brace-group form (`if ($?) { cd X }`) is what actually exposes
+    this via this PR's own `{`-split addition to _hookio.split_top_level."""
+    cases = [
+        "git checkout draft/2026-07-14; if ($?) { cd C:/elsewhere }",
+        "git checkout draft/2026-07-14; cd C:/elsewhere",
+    ]
+    for cmd in cases:
+        got = jdwg.find_checkout_candidates(cmd)
+        if not got:
+            raise AssertionError(f"a checkout candidate before a later cd must still be found, got {got} for {cmd!r}")
+    return f"{len(cases)} draft-branch checkouts preceding a later cd are still correctly found"
+
+
 def test_find_worktree_add_blocks_heredoc_mention_not_triggered() -> str:
     cmd = 'git commit -m "$(cat <<\'EOF\'\ngit worktree add foo draft/2026-07-12\nEOF\n)"'
     got = jdwg.find_worktree_add_blocks(cmd)
@@ -438,6 +457,7 @@ def main() -> int:
         ("find_checkout_candidates: trailing -- still switches", test_find_checkout_candidates_trailing_dash_dash_still_switches),
         ("find_checkout_candidates: -b create", test_find_checkout_candidates_dash_b_create),
         ("find_checkout_candidates: cd out of scope", test_find_checkout_candidates_cd_out_of_scope),
+        ("find_checkout_candidates: before a later cd still found (dev-env#762 review)", test_find_checkout_candidates_before_a_later_cd_still_found),
         ("_worktree_add_target: -b vs positional scan", test_worktree_add_target_dash_b_vs_positional),
         ("_worktree_add_target: --detach never a candidate", test_worktree_add_target_detach_never_a_candidate),
         ("_has_override: leading vs quoted mention", test_has_override),
