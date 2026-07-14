@@ -843,6 +843,55 @@ def test_resolve_git_toplevel_failsopen_on_null_byte() -> str:
     return "_resolve_git_toplevel returns None (fail open) on a null-byte path rather than raising"
 
 
+def test_memoized_toplevel_dedupes_across_callers() -> str:
+    """dev-env#758: `_memoized_toplevel(path, cache)` must call
+    `_resolve_git_toplevel` at most once per distinct path, no matter how many
+    separate call sites ask for it with the same `cache` dict — this is the
+    mechanism `main()` relies on to avoid resolving an identical `cwd` twice
+    (once inside `_is_live_worktree()`'s liveness check, once again in the
+    ambient branch) in the narrow case where cwd is worktree-shaped with a
+    `.git` link present but git resolves it to a different root (not live).
+
+    Also confirms a `None` result (git couldn't resolve the path) is itself
+    memoized rather than retried — the pre-existing `_blockable_redirect_root`
+    memoization already relied on this (a resolution failure is stable within
+    one command), and `_memoized_toplevel` must preserve it now that both
+    call sites share the one helper.
+    """
+    original_resolve = cmg._resolve_git_toplevel
+    calls = {"n": 0}
+
+    def _counting_resolve(path):
+        calls["n"] += 1
+        return None if path == "C:/unresolvable" else f"RESOLVED:{path}"
+
+    try:
+        cmg._resolve_git_toplevel = _counting_resolve
+
+        cache = {}
+        first = cmg._memoized_toplevel("C:/some/cwd", cache)
+        second = cmg._memoized_toplevel("C:/some/cwd", cache)
+        if first != "RESOLVED:C:/some/cwd" or second != first:
+            raise AssertionError(f"expected consistent resolved value, got {first!r} then {second!r}")
+        if calls["n"] != 1:
+            raise AssertionError(f"expected exactly 1 resolver call for a repeated path, got {calls['n']}")
+
+        none_result_first = cmg._memoized_toplevel("C:/unresolvable", cache)
+        none_result_second = cmg._memoized_toplevel("C:/unresolvable", cache)
+        if none_result_first is not None or none_result_second is not None:
+            raise AssertionError("expected None to be memoized, not just non-None results")
+        if calls["n"] != 2:
+            raise AssertionError(f"expected exactly 1 additional resolver call for the None-path, got {calls['n'] - 1}")
+
+        third = cmg._memoized_toplevel("C:/another/cwd", cache)
+        if third != "RESOLVED:C:/another/cwd" or calls["n"] != 3:
+            raise AssertionError(f"expected a distinct path to still resolve fresh, got {third!r}, calls={calls['n']}")
+    finally:
+        cmg._resolve_git_toplevel = original_resolve
+
+    return "_memoized_toplevel resolves each distinct path at most once, including a memoized None (dev-env#758)"
+
+
 # dev-env#749: fixtures for the _worktree_root_from_cwd / _is_live_worktree tests below.
 _WORKTREE_ROOT_FIXTURE = "C:/Users/brown/Git/dev-env/.claude/worktrees/some-worktree-name"
 _CANONICAL_FIXTURE = "C:/Users/brown/Git/dev-env"
@@ -980,6 +1029,7 @@ def main_unit() -> list:
         ("_tokenize captures quoted space-bearing redirect path (dev-env#576/PR#584)", test_tokenize_quoted_redirect_path_with_space),
         ("_tokenize falls back on unbalanced quote (dev-env#576/PR#584)", test_tokenize_falls_back_on_unbalanced_quote),
         ("_resolve_git_toplevel fails open on null byte (dev-env#576/PR#584)", test_resolve_git_toplevel_failsopen_on_null_byte),
+        ("_memoized_toplevel dedupes across callers, incl. a memoized None (dev-env#758)", test_memoized_toplevel_dedupes_across_callers),
         ("_worktree_root_from_cwd matches and extracts (dev-env#749)", test_worktree_root_from_cwd_matches_and_extracts),
         ("_is_live_worktree decision table (dev-env#749)", test_is_live_worktree_decision_table),
         ("_is_live_worktree short-circuits before git (dev-env#749)", test_is_live_worktree_short_circuits_before_git),

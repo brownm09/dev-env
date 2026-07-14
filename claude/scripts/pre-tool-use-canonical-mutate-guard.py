@@ -675,6 +675,30 @@ def _resolve_git_toplevel(cwd: str):
     return top or None
 
 
+def _memoized_toplevel(path: str, cache: dict):
+    """`_resolve_git_toplevel(path)`, memoized in `cache` (path -> resolved
+    toplevel-or-None).
+
+    Lets `main()` share a single resolution per distinct path across every
+    caller that needs it for the same command — in particular,
+    `_is_live_worktree()`'s own `git_toplevel()` call (passed in as
+    `lambda path: _memoized_toplevel(path, toplevel_cache)`) and the ambient
+    branch's later resolution of the identical `cwd` both land in the same
+    `cache` dict, so the narrow case where cwd is worktree-shaped with a
+    `.git` link present but git resolves it to a different root (not live)
+    spawns `git rev-parse` at most once instead of once per caller — the two
+    calls necessarily agreed anyway, since neither cwd nor repo state changes
+    between them (dev-env#758). Also used directly for redirect-dir
+    resolution via `_blockable_redirect_root()`, unifying what used to be two
+    separate memoization schemes (that function's own `toplevel_cache`
+    handling and `main()`'s separate `cwd_root`/`cwd_root_resolved` pair) into
+    one.
+    """
+    if path not in cache:
+        cache[path] = _resolve_git_toplevel(path)
+    return cache[path]
+
+
 def _normalize_path(path: str) -> str:
     return os.path.normcase(os.path.normpath(path))
 
@@ -799,13 +823,14 @@ def _blockable_redirect_root(redirect_dirs: list, cwd: str, toplevel_cache: dict
     across several `&&`-chained segments spawns at most one `git rev-parse`
     per distinct resolved path rather than one per occurrence (review finding
     on dev-env#576/PR#584 — a crafted worst case spawned 15 subprocesses for
-    one command before this memoization).
+    one command before this memoization). Delegated to the shared
+    `_memoized_toplevel()` helper (dev-env#758), the same one `main()` uses
+    for cwd's own resolution — one memoization scheme, one cache dict, for
+    every path this hook ever resolves in a single command.
     """
     for d in redirect_dirs:
         resolved = d if is_absolute_path(d) else os.path.join(cwd, d)
-        if resolved not in toplevel_cache:
-            toplevel_cache[resolved] = _resolve_git_toplevel(resolved)
-        root = toplevel_cache[resolved]
+        root = _memoized_toplevel(resolved, toplevel_cache)
         if root and not _WORKTREE_RE.search(root) and not _is_allowlisted_root(root):
             return root
     return None
@@ -933,25 +958,34 @@ def main() -> None:
     # consulted below when a match has no redirect_dirs — when every match is
     # a redirect (e.g. the common `git -C <journal> pull` shape), computing
     # liveness would spawn a `git rev-parse` whose result is never read.
+    #
+    # Shared across every toplevel resolution this command needs (see
+    # _memoized_toplevel()). Both the liveness check just below and the
+    # ambient branch's own cwd resolution further down key off this same
+    # dict, so a worktree-shaped-but-not-live cwd (`.git` link present, but
+    # git resolves it to a different root — _is_live_worktree()'s signal 2)
+    # resolves cwd's toplevel via `git rev-parse` at most once instead of
+    # once per caller (dev-env#758) — the two calls necessarily agreed
+    # anyway, since neither cwd nor repo state changes between them.
+    # _is_live_worktree()'s own bool-only return stays untouched — it's a
+    # deliberately-kept-in-sync copy of pre-tool-use-worktree-path-check.py's
+    # _worktree_is_live() (ADR-071 Amendment 3), so the cache is threaded
+    # through its existing `git_toplevel` injection seam instead.
+    toplevel_cache = {}
+
     cwd_is_worktree = (
         any(not m["redirect_dirs"] for m in matches)
         and cwd_worktree_root is not None
-        and _is_live_worktree(cwd_worktree_root, cwd)
+        and _is_live_worktree(
+            cwd_worktree_root, cwd,
+            git_toplevel=lambda path: _memoized_toplevel(path, toplevel_cache),
+        )
     )
 
     # A worktree cwd with no redirecting mutating segment mutates only the
     # worktree itself — fine.
     if cwd_is_worktree and not any(m["redirect_dirs"] for m in matches):
         sys.exit(0)
-
-    # Resolve cwd's own canonical root lazily — only when an ambient
-    # (no-redirect) mutating segment actually needs it.
-    cwd_root = None
-    cwd_root_resolved = False
-    # Shared across every _blockable_redirect_root() call for this command so
-    # a redirect target repeated across multiple &&-chained segments resolves
-    # via `git rev-parse` at most once (dev-env#576/PR#584 review finding).
-    toplevel_cache = {}
 
     for m in matches:
         if m["redirect_dirs"]:
@@ -968,10 +1002,7 @@ def main() -> None:
             # finding, dev-env#749 — since cwd_is_worktree being False no
             # longer guarantees cwd was never worktree-shaped at all, only
             # that it wasn't confirmed LIVE).
-            if not cwd_root_resolved:
-                cwd_root = _resolve_git_toplevel(cwd)
-                cwd_root_resolved = True
-            block_root = _blockable_ambient_root(cwd_root)  # None -> not blockable -> fail open
+            block_root = _blockable_ambient_root(_memoized_toplevel(cwd, toplevel_cache))  # None -> not blockable -> fail open
 
         if block_root is None:
             continue  # this match isn't blockable — keep scanning later segments
