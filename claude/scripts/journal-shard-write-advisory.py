@@ -27,9 +27,15 @@ Schema validation itself is shared with `validate-manifest.py` via `_journal_sch
 (never duplicated) — see that module's docstring. `_journal_shards.shard_pr_number` is
 reused for the open-PR shard's numeric-filename check.
 
+The Bash trigger also fires for the PowerShell tool (dev-env#763): registered
+under both the Bash and PowerShell PostToolUse matchers in settings.json (the
+separate Write/Edit matchers are unaffected), since PowerShell is an equally
+sanctioned way to run the git/journal commands this hook harvests candidate
+shard paths from.
+
 Stdin JSON shape (PostToolUse):
   Write/Edit: {"tool_name": "Write", "tool_input": {"file_path": "...", ...}, "cwd": "...", ...}
-  Bash:       {"tool_name": "Bash", "tool_input": {"command": "..."}, "cwd": "...", ...}
+  Bash:       {"tool_name": "Bash", "tool_input": {"command": "..."}, "cwd": "...", ...}  # or "PowerShell"
 
 Exit 0 — no candidate shard path had a problem (including: not a journal shard, no
          candidate paths found, or every found shard is healthy); silent.
@@ -360,7 +366,7 @@ def main() -> None:
         sys.exit(0)
 
     tool_name = data.get("tool_name", "")
-    if tool_name not in ("Write", "Edit", "Bash"):
+    if tool_name not in ("Write", "Edit", "Bash", "PowerShell"):
         sys.exit(0)
 
     tool_input = data.get("tool_input", {}) or {}

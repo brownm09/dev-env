@@ -8,10 +8,14 @@ cleanup sequence that runs immediately after merge. This hook provides the same
 enforcement model as pr-merge-reminder.py: fires on every successful merge and
 blocks until acknowledged.
 
+Also fires for the PowerShell tool (dev-env#763): registered under both the
+Bash and PowerShell PostToolUse matchers in settings.json, since PowerShell is
+an equally sanctioned way to run `gh pr merge` in this environment.
+
 Stdin JSON shape (PostToolUse):
   {
     "hook_event_name": "PostToolUse",
-    "tool_name": "Bash",
+    "tool_name": "Bash",  # or "PowerShell"
     "tool_input": {"command": "...", "description": "..."},
     "tool_response": {"stdout": "...", "stderr": "...", "exitCode": 0},
     "session_id": "...",
@@ -83,7 +87,7 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
     command = data.get("tool_input", {}).get("command", "")
