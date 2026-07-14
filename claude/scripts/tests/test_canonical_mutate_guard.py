@@ -924,6 +924,23 @@ def test_is_live_worktree_short_circuits_before_git() -> str:
     return "missing .git link blocks without spawning git"
 
 
+def test_blockable_ambient_root_guards_against_worktree_shaped_resolution() -> str:
+    """Review finding, dev-env#749: mirrors `_blockable_redirect_root`'s
+    identical `not _WORKTREE_RE.search(root)` guard. The ambient branch's
+    original invariant ("cwd already failed the worktree pattern, so any
+    resolved toplevel IS canonical") no longer strictly holds once
+    cwd_is_worktree can be False for a cwd that IS worktree-shaped but wasn't
+    confirmed live — `_blockable_ambient_root` closes that latent gap.
+    """
+    if cmg._blockable_ambient_root(None) is not None:
+        raise AssertionError("None input should stay None")
+    if cmg._blockable_ambient_root(_CANONICAL_FIXTURE) != _CANONICAL_FIXTURE:
+        raise AssertionError("a canonical (non-worktree-shaped) root should pass through unchanged")
+    if cmg._blockable_ambient_root(_WORKTREE_ROOT_FIXTURE) is not None:
+        raise AssertionError("a worktree-shaped resolved root must not be treated as blockable")
+    return "_blockable_ambient_root guards against a worktree-shaped resolved root (dev-env#749 review finding)"
+
+
 def main_unit() -> list:
     return [
         ("mutating verbs classified as mutating", test_mutating_verbs_classified_as_mutating),
@@ -966,6 +983,7 @@ def main_unit() -> list:
         ("_worktree_root_from_cwd matches and extracts (dev-env#749)", test_worktree_root_from_cwd_matches_and_extracts),
         ("_is_live_worktree decision table (dev-env#749)", test_is_live_worktree_decision_table),
         ("_is_live_worktree short-circuits before git (dev-env#749)", test_is_live_worktree_short_circuits_before_git),
+        ("_blockable_ambient_root guards against worktree-shaped resolution (dev-env#749 review finding)", test_blockable_ambient_root_guards_against_worktree_shaped_resolution),
     ]
 
 

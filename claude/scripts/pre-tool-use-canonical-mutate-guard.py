@@ -161,11 +161,16 @@ import sys
 from _hookio import is_absolute_path, split_top_level
 import _hookutil
 
+# Shared fragment for the two worktree-path regexes below (dev-env#749 review
+# finding — was independently spelled twice; factored out so the two can't
+# silently drift if the worktree-location convention ever changes).
+_WORKTREE_PATH_FRAGMENT = r"\.claude[/\\]worktrees[/\\][^/\\]+"
+
 # Matches `.claude/worktrees/<name>` anywhere in a path — same pattern as
 # ADR-024's hook. A cwd matching this is out of scope for this hook entirely;
 # any command (mutating or not) is fine from inside a worktree.
 _WORKTREE_RE = re.compile(
-    r"[/\\]\.claude[/\\]worktrees[/\\][^/\\]+",
+    r"[/\\]" + _WORKTREE_PATH_FRAGMENT,
     re.IGNORECASE,
 )
 
@@ -177,7 +182,7 @@ _WORKTREE_RE = re.compile(
 # see _is_live_worktree's docstring for why only the cwd-facing use site was
 # vulnerable to trusting shape alone.
 _WORKTREE_ROOT_RE = re.compile(
-    r"^(.+?[/\\]\.claude[/\\]worktrees[/\\][^/\\]+)",
+    r"^(.+?[/\\]" + _WORKTREE_PATH_FRAGMENT + r")",
     re.IGNORECASE,
 )
 
@@ -716,10 +721,20 @@ def _is_live_worktree(
     Two signals, cheapest first:
       1. The `.git` link file must exist at worktree_root. An orphaned dir has
          lost it — caught without spawning git.
-      2. git's resolved top-level for `cwd` must equal worktree_root. This
-         catches the subtler orphan mode where the `.git` link file itself is
-         still present but its target inside
-         `<canonical>/.git/worktrees/<name>` was independently pruned away.
+      2. git's resolved top-level for `cwd` must equal worktree_root. Mainly
+         catches a resolution mismatch (e.g. cwd resolving up to the canonical
+         root, or to an unrelated repo). NOTE (review finding, dev-env#749):
+         this does NOT reliably catch the subtler orphan mode where the `.git`
+         link file is present but its target inside
+         `<canonical>/.git/worktrees/<name>` was independently pruned — git
+         typically errors in that state rather than walking up, so
+         `git_toplevel` returns None and signal 2 falls through to the
+         transient-failure branch below (treated as live). That's harmless
+         here: the same None also makes main()'s own `_resolve_git_toplevel(cwd)`
+         resolve to nothing blockable, so every path still converges on
+         fail-open — but it means this pruned-gitdir orphan mode is NOT
+         actually detected by this function, despite earlier revisions of this
+         docstring claiming it was.
 
     If git cannot run at all (returns None) but the `.git` link is present,
     treat the worktree as live — a transient git failure must not widen this
@@ -729,8 +744,13 @@ def _is_live_worktree(
     Unlike the sibling hook (which BLOCKS on a non-live worktree, since any
     write there risks landing on the wrong tree), a non-live result here just
     disables the shape-only exemption in main() — cwd then falls through to
-    this hook's own normal canonical-root resolution, consistent with the
-    file's existing fail-open philosophy.
+    this hook's own normal canonical-root resolution, guarded by
+    `_blockable_ambient_root()` below, consistent with the file's existing
+    fail-open philosophy.
+
+    Keep this function in sync with the sibling's `_worktree_is_live()` if its
+    liveness logic ever changes — the two are deliberately parallel copies
+    (see the duplication-convention note above), just under different names.
     """
     if not path_exists(os.path.join(worktree_root, ".git")):
         return False
@@ -788,6 +808,31 @@ def _blockable_redirect_root(redirect_dirs: list, cwd: str, toplevel_cache: dict
         root = toplevel_cache[resolved]
         if root and not _WORKTREE_RE.search(root) and not _is_allowlisted_root(root):
             return root
+    return None
+
+
+def _blockable_ambient_root(cwd_root):
+    """Return `cwd_root` if it's non-None and NOT itself worktree-shaped, else None.
+
+    Defense-in-depth mirror of `_blockable_redirect_root`'s `not
+    _WORKTREE_RE.search(root)` guard (review finding, dev-env#749). The
+    ambient branch's original invariant — "cwd already failed the worktree
+    pattern, so any resolved toplevel IS canonical by construction" — assumed
+    `cwd_is_worktree` could only be False when cwd was never worktree-shaped
+    at all. That's no longer strictly guaranteed: cwd CAN be worktree-shaped
+    (`_worktree_root_from_cwd(cwd)` is not None) yet still reach the ambient
+    branch, if `_is_live_worktree()` returns False for a cwd that is, in
+    fact, a genuinely live worktree — e.g. a resolved-toplevel vs.
+    extracted-prefix mismatch from a junction, symlink, or short-path
+    component. Not reproduced in this codebase's own layout (verified during
+    review), but not provably impossible on every filesystem. Guarding the
+    resolved root itself, exactly like the redirect branch already does,
+    closes that latent gap without weakening the orphan-blocking fix this PR
+    exists to make: an orphan's resolved root is the CANONICAL repo, never
+    worktree-shaped, so this guard is a no-op for the actual bug being fixed.
+    """
+    if cwd_root and not _WORKTREE_RE.search(cwd_root):
+        return cwd_root
     return None
 
 
@@ -883,9 +928,14 @@ def main() -> None:
     # check is deferred to this point, once a real mutating segment is known
     # to exist and the override token has already been ruled out, preserving
     # the module docstring's "no subprocess spawn unless a mutating segment is
-    # actually found" contract.
+    # actually found" contract. Further gated on at least one match being
+    # AMBIENT (review finding, dev-env#749): cwd_is_worktree is only ever
+    # consulted below when a match has no redirect_dirs — when every match is
+    # a redirect (e.g. the common `git -C <journal> pull` shape), computing
+    # liveness would spawn a `git rev-parse` whose result is never read.
     cwd_is_worktree = (
-        cwd_worktree_root is not None
+        any(not m["redirect_dirs"] for m in matches)
+        and cwd_worktree_root is not None
         and _is_live_worktree(cwd_worktree_root, cwd)
     )
 
@@ -912,13 +962,16 @@ def main() -> None:
             # Ambient mutation inside a worktree targets the worktree itself — fine.
             continue
         else:
-            # Ambient mutation with a non-worktree cwd: blockable iff cwd
-            # resolves to a canonical root (it already failed the worktree
-            # pattern, so any resolved toplevel *is* canonical by construction).
+            # Ambient mutation with a non-worktree (or non-live-worktree) cwd:
+            # blockable iff cwd resolves to a root that is itself NOT
+            # worktree-shaped (_blockable_ambient_root guards this — review
+            # finding, dev-env#749 — since cwd_is_worktree being False no
+            # longer guarantees cwd was never worktree-shaped at all, only
+            # that it wasn't confirmed LIVE).
             if not cwd_root_resolved:
                 cwd_root = _resolve_git_toplevel(cwd)
                 cwd_root_resolved = True
-            block_root = cwd_root  # None -> not a git repo / git unavailable -> fail open
+            block_root = _blockable_ambient_root(cwd_root)  # None -> not blockable -> fail open
 
         if block_root is None:
             continue  # this match isn't blockable — keep scanning later segments

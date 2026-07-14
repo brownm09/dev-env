@@ -669,10 +669,62 @@ in two places, plus the standard external sync locations:
 5. `docs/adr/INDEX.md` row 071 — `Date` cell appended with this amendment's date; tag `orphaned-worktree`
    added (the same tag ADR-024's own INDEX row already uses for its structurally identical addendum).
 
+### Review hardening (dev-env#749/PR#757)
+
+`/review` on this PR (two Opus-model subagents, correctness/security and reliability/performance/
+maintainability, run independently) found the initial implementation above was incomplete in two ways,
+both fixed in the same PR before merge:
+
+1. **Wasted liveness-check subprocess on the all-redirect path.** `cwd_is_worktree` was computed
+   unconditionally whenever `cwd_worktree_root` was non-None, but its value is only ever consulted in
+   the per-match loop's `elif cwd_is_worktree` branch — unreachable for any match carrying
+   `redirect_dirs`. A command whose every mutating segment is a redirect (the common
+   `git -C <journal-canonical> pull` shape the Stub file workflow runs on nearly every PR open/merge)
+   spawned a wasted `git rev-parse` for a `cwd_is_worktree` value the loop never reads. Fixed by gating
+   the computation on `any(not m["redirect_dirs"] for m in matches)` — confirmed behavior-preserving:
+   when every match is a redirect, `cwd_is_worktree` was never consulted before this fix either, so
+   forcing it to `False` (via the short-circuited `any(...)`) changes no outcome, only whether the
+   subprocess runs.
+2. **The ambient branch's canonical-root invariant was weakened by this amendment.** Before this
+   amendment, `cwd_is_worktree == False` could only mean "cwd never looked worktree-shaped at all," so
+   the ambient branch's `block_root = cwd_root` was safe under the stated invariant "any resolved
+   toplevel IS canonical by construction." This amendment breaks that guarantee in one respect: `cwd`
+   can now be worktree-*shaped* yet still reach the ambient branch, if `_is_live_worktree()` returns
+   `False` for a cwd that is, in fact, a genuinely live worktree (e.g. a resolved-toplevel vs.
+   extracted-prefix mismatch from a junction, symlink, or short-path component — not reproduced in this
+   codebase's own layout, but not provably impossible on every filesystem). Left unguarded, that gap
+   would let the ambient branch block a legitimate in-worktree mutation against the worktree's own
+   resolved root — a false-positive over-block that never existed pre-amendment, and a contradiction of
+   this amendment's own "every previously fail-open cwd shape stays fail-open" framing above. Fixed by
+   `_blockable_ambient_root()`, a direct mirror of `_blockable_redirect_root()`'s existing
+   `not _WORKTREE_RE.search(root)` guard: a resolved `cwd_root` that is itself worktree-shaped is never
+   treated as blockable. A no-op for the actual bug this amendment fixes — an orphan's resolved root is
+   the canonical repo, never worktree-shaped — so the fix for dev-env#749 itself is unaffected; this
+   only closes a latent, not-currently-reachable gap the fix's own restructuring introduced.
+
+A third finding (the `_is_live_worktree` docstring overclaiming that signal 2 catches a pruned-gitdir
+orphan mode, when in that state git actually errors and `git_toplevel` returns `None`, which signal 2
+treats as live — harmless in practice, since the same `None` also leaves the ambient branch nothing
+blockable, so every path still converges on fail-open) was fixed by correcting the docstring rather than
+the logic, since the logic's fail-open behavior was already correct.
+
+Two further findings were surfaced and deliberately **not** acted on in this PR: (a) a duplicated
+worktree-path regex fragment between `_WORKTREE_RE` and `_WORKTREE_ROOT_RE`, fixed inline via a shared
+`_WORKTREE_PATH_FRAGMENT` constant (a same-file, zero-risk factor, unlike the deliberate cross-file
+duplication convention discussed above); (b) `_resolve_git_toplevel(cwd)` running twice for the same
+cwd in the narrow "worktree-shaped, `.git` present, but not live" sub-case (once inside
+`_is_live_worktree`'s signal 2, once again in the ambient branch) — filed as
+[dev-env#758](https://github.com/brownm09/dev-env/issues/758) rather than fixed inline, since a clean
+fix requires either threading the resolved toplevel out of `_is_live_worktree`'s bool-only return (a
+signature change that would diverge it from the sibling hook's identical copy) or seeding
+`toplevel_cache` with a cwd entry (a small scope widening of a cache that today only memoizes redirect
+targets) — both judged to warrant their own focused review rather than folding into an already-large
+review-response commit.
+
 ### Coverage
 
-`claude/scripts/tests/test_canonical_mutate_guard.py` grows from 64 to 69 tests (+5), split across the
-existing two-layer convention:
+`claude/scripts/tests/test_canonical_mutate_guard.py` grows from 64 to 70 tests (+6: the 5 described
+below, plus one review-hardening addition), split across the existing two-layer convention:
 
 - **Pure-function layer:** `test_worktree_root_from_cwd_matches_and_extracts` (bare worktree root, a
   nested-subdirectory cwd, a mixed-separator/uppercase variant, and two non-worktree `None` cases);
@@ -680,7 +732,9 @@ existing two-layer convention:
   live; `.git` missing; git resolves to canonical; git resolves to an unrelated path; git exec fails →
   treat as live; toplevel differs only by case/separator → still live); `test_is_live_worktree_short_
   circuits_before_git` (a spy on `git_toplevel` proves zero calls when the `.git` link is already
-  missing).
+  missing); `test_blockable_ambient_root_guards_against_worktree_shaped_resolution` (review hardening
+  #2 above — `None` stays `None`, a canonical root passes through unchanged, a worktree-shaped resolved
+  root is never treated as blockable).
 - **End-to-end `main()`-via-subprocess layer:** `test_main_allows_ambient_mutating_command_from_live_
   worktree` — a REAL, `git worktree add`-registered worktree (not just a worktree-shaped directory; no
   existing test in this file exercised a genuine live worktree before this amendment) still gets
