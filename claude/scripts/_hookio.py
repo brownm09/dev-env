@@ -237,6 +237,42 @@ def confirm_merge_via_gh(pr_number: int | None, repo: str, cwd: str) -> int | No
 # boolean) to find cd-redirects, skip git -C/--git-dir segments, and report
 # which segment matched. scan_top_level() is now a thin boolean-reducer
 # wrapper over split_top_level(); its own two callers are unaffected.
+#
+# PowerShell here-string + brace-group support (dev-env#620, ADR-071 Amendment
+# 4): this engine was written against bash syntax only. Extending PreToolUse
+# coverage to the PowerShell tool (dev-env#620) surfaced two gaps a bash-only
+# parser has no way to see:
+#
+#   1. A PowerShell here-string (@'...'@ literal, @"..."@ expandable) is the
+#      functional equivalent of a bash heredoc, but uses a structurally
+#      different opener/closer. Without recognizing it, the existing quote-
+#      state-machine still fires on the bare '/" inside the @'/@" opener using
+#      POSIX close-on-next-quote semantics that don't match PowerShell's
+#      close-on-line-start-'@/"@ semantics — a stray quote character inside
+#      the here-string body can then leave the parser's quote-tracking out of
+#      sync with the real string for the remainder of the command.
+#   2. PowerShell 5.1 has no && / || (the PowerShell tool's own description
+#      confirms both are parser errors there), so its documented idiom for
+#      "run B only if A succeeds" is `A; if ($?) { B }` — and this engine had
+#      no concept of an unquoted `{` as a statement boundary, so `{ B }`
+#      never became its own segment. Every check_fn in this hook family
+#      matches via `.match()` anchored at a segment's *start* (see
+#      scan_top_level's docstring), so `B` nested inside `{ }` was invisible
+#      to them even though `split_top_level` itself doesn't treat `{`/`}` as
+#      quote-like content to protect. This also fixes the equivalent bash
+#      brace-group idiom (`{ cmd1; cmd2; }`), which had the identical gap.
+#
+# _find_herestring_end() mirrors _find_heredoc_end() below; `{` is added as an
+# unconditional split trigger (like ;/\n/&&/||) in split_top_level's top state
+# only — never inside a subshell, matching how every other separator is
+# already scoped there. Deliberately NOT special-cased for a PowerShell @{...}
+# hashtable-literal/splat token (@{Name='x'; Value=1} would still be split at
+# both `{` and the internal `;`) — the risk is over-segmentation (benign; see
+# module comment on mask_quoted_spans below for why this codebase treats
+# "detects more, not less" as the safe direction), and this idiom is not
+# expected in ordinary git/gh invocations. See dev-env#620 follow-up issue for
+# the remaining documented gaps (Set-Location vs. cd, POSIX-vs-PowerShell
+# shlex quoting) this change does not attempt to close.
 # ---------------------------------------------------------------------------
 
 
@@ -286,6 +322,39 @@ def _find_heredoc_end(cmd: str, start: int) -> int:
     return i
 
 
+def _find_herestring_end(cmd: str, start: int) -> int:
+    """start = index of '@' in "@'…'@" or '@"…"@' (a PowerShell here-string).
+
+    Returns index just past the here-string. Mirrors _find_heredoc_end's
+    fallback: if no closer is found, masks through the end of the string
+    rather than raising or under-masking.
+
+    Heuristically treats ANY "@'" / '@"' as an opener — it does not verify
+    that the opener itself is followed by end-of-line, which real PowerShell
+    requires. That's deliberate: this is a masking heuristic, not a real
+    PowerShell parser, and treating a non-here-string "@'"/'@"' occurrence as
+    one anyway only risks over-masking (the benign direction for this
+    module — see mask_quoted_spans's docstring), never under-masking a real
+    one. The closer (PowerShell requires it to start a line) is found by
+    scanning to each line start and checking for quote+"@" there.
+    """
+    n = len(cmd)
+    quote = cmd[start + 1]  # "'" or '"'
+    closer = quote + "@"
+    i = start + 2  # skip '@' + quote
+    while i < n:
+        if cmd[i] in ("\n", "\r"):
+            j = i + 1
+            if cmd[i] == "\r" and j < n and cmd[j] == "\n":
+                j += 1  # \r\n counts as one line break
+            if cmd[j : j + 2] == closer:
+                return j + 2
+            i = j
+            continue
+        i += 1
+    return n
+
+
 def split_top_level(command: str, *, split_pipe: bool = False) -> list[str]:
     """Split *command* into its top-level statements/segments — i.e. not
     inside a quoted string, $() subshell, or heredoc body.
@@ -297,8 +366,15 @@ def split_top_level(command: str, *, split_pipe: bool = False) -> list[str]:
     - Single/double quotes
     - $() subshells (including $() inside "…")
     - <<DELIM / <<'DELIM' heredoc bodies (both bare and inside a subshell)
+    - @'...'@ / @"..."@ PowerShell here-string bodies (both bare and inside a
+      subshell) — see the "PowerShell here-string + brace-group support"
+      module comment above _find_heredoc_end for why this is needed.
 
-    Always splits on ``;``, ``\\n``, ``&&``, and ``||``. A lone ``|`` (not part
+    Always splits on ``;``, ``\\n``, ``&&``, ``||``, and an unquoted ``{``
+    (top-level only, never inside a subshell — see the same module comment
+    for why: PowerShell's `A; if ($?) { B }` conditional-chain idiom, and the
+    equivalent bash brace-group `{ cmd1; cmd2; }`, otherwise hide `B` from
+    every caller's segment-start-anchored `check_fn`). A lone ``|`` (not part
     of ``||``) is also a split point when *split_pipe* is True — off by
     default so `scan_top_level`'s existing callers (`pr-merge-reminder.py`,
     `post-tool-use.py`, neither of which needs pipe-awareness) see zero
@@ -355,6 +431,10 @@ def split_top_level(command: str, *, split_pipe: bool = False) -> list[str]:
                 i += 1
             elif c == "(":
                 stack.append("subshell")
+            elif c == "@" and i + 1 < n and command[i + 1] in ("'", '"'):
+                # PowerShell here-string inside subshell — skip body entirely
+                i = _find_herestring_end(command, i)
+                continue
             elif c == "<" and i + 1 < n and command[i + 1] == "<":
                 # heredoc inside subshell — skip body entirely
                 i = _find_heredoc_end(command, i)
@@ -368,9 +448,15 @@ def split_top_level(command: str, *, split_pipe: bool = False) -> list[str]:
             elif c == "$" and i + 1 < n and command[i + 1] == "(":
                 stack.append("subshell")
                 i += 1
+            elif c == "@" and i + 1 < n and command[i + 1] in ("'", '"'):
+                i = _find_herestring_end(command, i)
+                continue
             elif c == "<" and i + 1 < n and command[i + 1] == "<":
                 i = _find_heredoc_end(command, i)
                 continue
+            elif c == "{":
+                segments.append(command[stmt_start:i])
+                stmt_start = i + 1
             elif c in (";", "\n"):
                 segments.append(command[stmt_start:i])
                 stmt_start = i + 1
@@ -480,7 +566,7 @@ def scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
 
 def _opaque_spans(command: str) -> list[tuple[int, int]]:
     """Return the ``[start, end)`` offsets of every single-/double-quoted span,
-    ``$()`` subshell, and heredoc body in *command*.
+    ``$()`` subshell, heredoc body, and PowerShell here-string body in *command*.
 
     The shared span-finding walk both ``mask_quoted_spans`` and
     ``mask_prose_flag_values`` (dev-env#634, ADR-050 Amendment 17) mask from,
@@ -518,6 +604,13 @@ def _opaque_spans(command: str) -> list[tuple[int, int]]:
                 stack.append("subshell")
                 span_start = i
                 i += 1
+            elif c == "@" and i + 1 < n and command[i + 1] in ("'", '"'):
+                # PowerShell here-string -- opaque the same way a heredoc is
+                # (see split_top_level's docstring for why both are needed).
+                end = _find_herestring_end(command, i)
+                opaque.append((i, end))
+                i = end
+                continue
             elif c == "<" and i + 1 < n and command[i + 1] == "<":
                 end = _find_heredoc_end(command, i)
                 opaque.append((i, end))
@@ -559,6 +652,9 @@ def _opaque_spans(command: str) -> list[tuple[int, int]]:
                 i += 1
             elif c == "(":
                 stack.append("subshell")
+            elif c == "@" and i + 1 < n and command[i + 1] in ("'", '"'):
+                i = _find_herestring_end(command, i)
+                continue
             elif c == "<" and i + 1 < n and command[i + 1] == "<":
                 i = _find_heredoc_end(command, i)
                 continue

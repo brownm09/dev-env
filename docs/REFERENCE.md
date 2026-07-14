@@ -1000,11 +1000,12 @@ mid-work. The REST `core` bucket is a separate quota and typically stays healthy
 REST-backed `gh api` calls over GraphQL-backed `gh pr *` subcommands when the GraphQL bucket is
 known to be exhausted (`gh api rate_limit` shows the remaining count per bucket).
 
-**Prevention.** A `PreToolUse(Bash)` hook (`pre-tool-use-canonical-mutate-guard.py`) now hard-blocks
-git-mutating commands issued with cwd at a canonical (non-worktree) root — isolate into a worktree
-before this recovery sequence is ever needed. This runbook is the fallback for what the hook can't
-catch: a manual terminal session outside Claude Code, or a bare `cd` into the canonical root from
-elsewhere (the hook's sole remaining documented v1 gap along that axis — a `-C`/`--git-dir`/
+**Prevention.** A `PreToolUse(Bash/PowerShell)` hook (`pre-tool-use-canonical-mutate-guard.py`,
+dev-env#620/ADR-071 Amendment 4) now hard-blocks git-mutating commands issued with cwd at a
+canonical (non-worktree) root — isolate into a worktree before this recovery sequence is ever
+needed. This runbook is the fallback for what the hook can't catch: a manual terminal session
+outside Claude Code, or a bare `cd`/`Set-Location` into the canonical root from elsewhere (the
+hook's sole remaining documented v1 gap along that axis — a `-C`/`--git-dir`/
 `--work-tree` redirect into a canonical root is now caught, dev-env#576/ADR-071 Amendment 2). A
 *different* axis — a worktree-shaped cwd that only looks like a worktree without being a live,
 registered one (e.g. an orphaned directory left behind by an incomplete `git worktree add`/`remove`) —

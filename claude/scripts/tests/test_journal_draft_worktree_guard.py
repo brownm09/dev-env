@@ -263,6 +263,28 @@ def test_main_blocks_worktree_add_onto_draft_branch() -> str:
         reason = json.loads(proc.stderr).get("reason", "")
         if "journal-draft-worktree-guard" not in reason or "ALLOW_JOURNAL_DRAFT_WORKTREE=1" not in reason:
             raise AssertionError(f"block reason missing expected markers: {reason!r}")
+    return "git worktree add ... draft/YYYY-MM-DD blocked (exit 2), reason on stderr"
+
+
+def test_main_blocks_worktree_add_via_powershell_tool_name() -> str:
+    """dev-env#620 (ADR-071 Amendment 4): PowerShell is a sanctioned way to run
+    the same commands Bash can, and settings.json now wires this hook under a
+    PowerShell PreToolUse matcher too -- so tool_name=PowerShell must be
+    evaluated exactly like tool_name=Bash, not silently no-op (the fail-open
+    test above still correctly no-ops for a genuinely unrelated tool, "Write")."""
+    with tempfile.TemporaryDirectory() as tmp:
+        other_repo = Path(tmp) / "other-repo"
+        other_repo.mkdir()
+        _init_throwaway_repo(other_repo)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "PowerShell",
+            "tool_input": {"command": "git worktree add .claude/worktrees/foo draft/2026-07-12"},
+            "cwd": str(other_repo),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(f"expected exit 2 for tool_name=PowerShell, got {proc.returncode}. stderr={proc.stderr!r}")
     return "git worktree add <path> draft/YYYY-MM-DD blocked (exit 2), reason on stderr, from ANY repo"
 
 
@@ -420,6 +442,7 @@ def main() -> int:
         ("_worktree_add_target: --detach never a candidate", test_worktree_add_target_detach_never_a_candidate),
         ("_has_override: leading vs quoted mention", test_has_override),
         ("main(): blocks worktree add onto draft branch", test_main_blocks_worktree_add_onto_draft_branch),
+        ("main(): blocks worktree add via tool_name=PowerShell (dev-env#620)", test_main_blocks_worktree_add_via_powershell_tool_name),
         ("main(): allows -C redirect at journal canonical", test_main_allows_redirect_at_journal_canonical),
         ("main(): blocks ambient checkout outside canonical", test_main_blocks_ambient_checkout_outside_canonical),
         ("main(): override bypasses block", test_main_override_bypasses_block),

@@ -20,7 +20,11 @@ quote/subshell/heredoc-aware engine `pre-merge-numbering-check.py` and
 the whole command string, which could spuriously fire on a `gh pr merge`
 mentioned only inside a heredoc body or `$()` subshell (dev-env#499).
 
-Stdin JSON shape (PreToolUse): {"tool_name":"Bash","tool_input":{"command":...},"cwd":...}
+Also fires for the PowerShell tool (dev-env#620): registered under both the
+Bash and PowerShell PreToolUse matchers in settings.json, since PowerShell is
+an equally sanctioned way to run `gh pr merge` in this environment.
+
+Stdin JSON shape (PreToolUse): {"tool_name":"Bash" (or "PowerShell"),"tool_input":{"command":...},"cwd":...}
 
 Exit 2 — block the merge and show queued messages (queue has content).
 Exit 0 — allow (queue absent, empty, whitespace-only, or any error).
@@ -68,7 +72,7 @@ def main() -> None:
         data = json.loads(raw)
     except json.JSONDecodeError:
         sys.exit(0)
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
     command = data.get("tool_input", {}).get("command", "")
     if not is_pr_merge_command(command):

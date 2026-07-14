@@ -63,14 +63,18 @@ consumers, extract at a third" convention (`_worktree_topology.py`'s module
 docstring; ADR-093's Maintainability section) — this is the second consumer.
 Extract into `_hookio.py` if/when a third caller needs the identical parsing.
 
-Fail-open (exit 0) on anything unparseable, a missing/empty cwd, a non-Bash
-tool_name, or an unresolvable git path — matches the sibling hook's own
-fail-open contract throughout.
+Fail-open (exit 0) on anything unparseable, a missing/empty cwd, a tool_name
+that is neither Bash nor PowerShell, or an unresolvable git path — matches the
+sibling hook's own fail-open contract throughout.
+
+Also fires for the PowerShell tool (dev-env#620): registered under both the
+Bash and PowerShell PreToolUse matchers in settings.json, mirroring the
+sibling canonical-mutate-guard hook's own PowerShell extension.
 
 Stdin JSON shape (PreToolUse):
   {
     "hook_event_name": "PreToolUse",
-    "tool_name": "Bash",
+    "tool_name": "Bash",  # or "PowerShell"
     "tool_input": {"command": "..."},
     "session_id": "...",
     "cwd": "..."
@@ -86,6 +90,10 @@ import sys
 
 from _hookio import is_absolute_path, split_top_level
 import _hookutil
+
+# Sanctioned shell tools this guard evaluates (dev-env#620) — every other
+# tool_name fails open below, unchanged from before this PR.
+_SANCTIONED_TOOL_NAMES = ("Bash", "PowerShell")
 
 # draft/YYYY-MM-DD, or draft/YYYY-MM-DD-recovery (docs/REFERENCE.md's
 # documented recovery-branch suffix for the draft/YYYY-MM-DD-recovery
@@ -423,7 +431,7 @@ def main() -> None:
     if not isinstance(data, dict):
         sys.exit(0)
 
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in _SANCTIONED_TOOL_NAMES:
         sys.exit(0)
 
     cwd = data.get("cwd", "") or ""

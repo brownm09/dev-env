@@ -19,10 +19,14 @@ appends a drift warning when the repo/branch recorded by
 post-tool-use-cwd-track.py after the session's last Bash call differs from
 the repo/branch right now. Both are advisory only; never blocks.
 
+Also fires for the PowerShell tool (dev-env#620): registered under both the
+Bash and PowerShell PreToolUse matchers in settings.json, since PowerShell is
+an equally sanctioned way to run `gh pr create` in this environment.
+
 Stdin JSON shape (PreToolUse):
   {
     "hook_event_name": "PreToolUse",
-    "tool_name": "Bash",
+    "tool_name": "Bash",  # or "PowerShell"
     "tool_input": {"command": "...", "description": "..."},
     "session_id": "...",
     "cwd": "..."
@@ -40,8 +44,12 @@ import sys
 import _bash_state
 import _hookutil
 
+# The trailing `{` alternative (dev-env#620) catches PowerShell's documented
+# `A; if ($?) { gh pr create ... }` conditional-chain idiom (no && in PS 5.1)
+# — and the equivalent bash brace-group `{ gh pr create ...; }` — both of
+# which otherwise put "gh pr create" right after an unrecognized anchor char.
 _GH_PR_CREATE_RE = re.compile(
-    r"(?:^|&&|\|+|;|\n)\s*gh\s+pr\s+create\b"
+    r"(?:^|&&|\|+|;|\n|\{)\s*gh\s+pr\s+create\b"
 )
 
 _DOC_PATHS = ("claude/skills/", "claude/hooks/", "claude/scripts/", "claude/routines/")
@@ -174,7 +182,7 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
     command = data.get("tool_input", {}).get("command", "")

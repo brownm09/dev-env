@@ -19,10 +19,15 @@ Advisory only, matching ADR-085's other three checkpoints: this mechanism
 cannot distinguish a legitimate EnterWorktree/cd switch from a silent
 crash-induced revert (see ADR-085 Judgment calls) — never blocks.
 
+Also fires for the PowerShell tool (dev-env#620): registered under both the
+Bash and PowerShell PreToolUse matchers in settings.json, since PowerShell is
+an equally sanctioned way to run commands in this environment — a silent
+cwd/branch drift is just as possible there.
+
 Stdin JSON shape (PreToolUse):
   {
     "hook_event_name": "PreToolUse",
-    "tool_name": "Bash",
+    "tool_name": "Bash",  # or "PowerShell"
     "tool_input": {"command": "...", ...},
     "session_id": "...",
     "cwd": "..."
@@ -72,7 +77,7 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
     session_id = data.get("session_id", "") or ""

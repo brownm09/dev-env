@@ -10,6 +10,7 @@
 #   - no /review marker on the PR          -> allow  (exit 0)
 #   - gh failure                           -> allow  (exit 0, fail-open)
 #   - command is not `gh pr merge`         -> allow  (exit 0)
+#   - open findings, no disposition, via tool_name=PowerShell (dev-env#620) -> BLOCK (exit 2)
 #
 # Run: bash claude/scripts/tests/test-merge-findings-gate.sh
 set -u
@@ -34,11 +35,11 @@ canned() { # body comment_body
   echo "$f"
 }
 
-# Run the hook; echoes exit code. $1=command  $2=seam ("UNSET" to not set env).
+# Run the hook; echoes exit code. $1=command  $2=seam ("UNSET" to not set env)  $3=tool_name (default Bash).
 run_gate() {
-  local cmd="$1" seam="$2" stdin
-  stdin=$(printf '{"tool_name":"Bash","tool_input":{"command":%s},"cwd":"."}' \
-            "$(printf '%s' "$cmd" | json_str)")
+  local cmd="$1" seam="$2" tool="${3:-Bash}" stdin
+  stdin=$(printf '{"tool_name":"%s","tool_input":{"command":%s},"cwd":"."}' \
+            "$tool" "$(printf '%s' "$cmd" | json_str)")
   if [ "$seam" = "UNSET" ]; then
     printf '%s' "$stdin" | $PY "$HOOK" >/dev/null 2>&1
   else
@@ -61,6 +62,12 @@ RC=$(run_gate "$MERGE_CMD" "$J"); [ "$RC" = "0" ] && ok "exit 0" || bad "expecte
 echo "[2] open findings, no disposition -> BLOCK"
 J=$(canned "body with no disposition section" "$MARK_OPEN")
 RC=$(run_gate "$MERGE_CMD" "$J"); [ "$RC" = "2" ] && ok "exit 2 (blocked)" || bad "expected 2, got $RC"; rm -f "$J"
+
+echo "[2b] open findings, no disposition, via tool_name=PowerShell (dev-env#620) -> BLOCK"
+# Proves the PowerShell PreToolUse extension reaches this gate too -- if
+# tool_name filtering were still Bash-only, this would incorrectly exit 0.
+J=$(canned "body with no disposition section" "$MARK_OPEN")
+RC=$(run_gate "$MERGE_CMD" "$J" "PowerShell"); [ "$RC" = "2" ] && ok "exit 2 (blocked, tool_name=PowerShell)" || bad "expected 2, got $RC"; rm -f "$J"
 
 echo "[3] open findings, disposition recorded -> allow"
 J=$(canned "## Review findings disposition: all fixed" "$MARK_OPEN")

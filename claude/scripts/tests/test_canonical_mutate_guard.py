@@ -70,7 +70,12 @@ no worktrees needed):
          (exit 2); the same command from a worktree-pattern cwd is allowed
          (exit 0); a bare `gh pr merge` / `gh pr merge --squash` is allowed
          from a canonical root; and the override token bypasses the block
-         (dev-env#558, ADR-071 Amendment 1).
+         (dev-env#558, ADR-071 Amendment 1);
+       - a mutating command with `tool_name` set to `PowerShell` (rather than
+         `Bash`) is BLOCKED identically, proving the dev-env#620 / ADR-071
+         Amendment 4 PowerShell extension reaches the real hook process, not
+         just a payload-shape assumption (an unrelated tool, e.g. `Write`,
+         still correctly no-ops).
 
 Usage:
     py -3 claude/scripts/tests/test_canonical_mutate_guard.py
@@ -1418,6 +1423,32 @@ def test_main_noop_on_non_bash_tool() -> str:
     return "non-Bash tool_name is a no-op (exit 0)"
 
 
+def test_main_blocks_mutating_command_via_powershell_tool_name() -> str:
+    """dev-env#620 (ADR-071 Amendment 4): PowerShell is a sanctioned way to run
+    the same mutating commands Bash can, and settings.json now wires this hook
+    under a PowerShell PreToolUse matcher too -- so a tool_name of "PowerShell"
+    must be evaluated exactly like "Bash", not silently no-op like the
+    pre-fix behavior (which is still correct for genuinely unrelated tools,
+    e.g. "Write", per test_main_noop_on_non_bash_tool above)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "canonical-repo"
+        repo.mkdir()
+        _init_throwaway_repo(repo)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "PowerShell",
+            "tool_input": {"command": "git checkout -b some-branch"},
+            "cwd": str(repo),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (block) for tool_name=PowerShell, got {proc.returncode}. "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+    return "a mutating command from a canonical root is BLOCKED identically for tool_name=PowerShell (dev-env#620)"
+
+
 def test_main_empty_stdin_noop() -> str:
     proc = subprocess.run(
         [sys.executable, str(MODULE_PATH)],
@@ -1823,6 +1854,7 @@ def main_e2e() -> list:
         ("main() fails open on missing cwd", test_main_failsopen_on_missing_cwd),
         ("main() fails open on empty cwd", test_main_failsopen_on_empty_cwd),
         ("main() no-ops on non-Bash tool", test_main_noop_on_non_bash_tool),
+        ("main() blocks mutating command via tool_name=PowerShell (dev-env#620)", test_main_blocks_mutating_command_via_powershell_tool_name),
         ("main() no-ops on empty stdin", test_main_empty_stdin_noop),
     ]
 

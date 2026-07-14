@@ -1,8 +1,8 @@
 # ADR-071: PreToolUse Hook to Block Git-Mutating Bash Commands in a Canonical (Non-Worktree) Checkout
 
-**Date:** 2026-07-01 (amended 2026-07-04)
+**Date:** 2026-07-01 (amended 2026-07-04, 2026-07-05, 2026-07-14, 2026-07-14)
 **Status:** Accepted
-**Tags:** hooks, worktrees, pre-tool-use, bash, git, gh-cli, concurrency, canonical-checkout, rate-limit
+**Tags:** hooks, worktrees, pre-tool-use, bash, powershell, git, gh-cli, concurrency, canonical-checkout, rate-limit, redirect-target, orphaned-worktree
 
 ---
 
@@ -754,3 +754,151 @@ mechanisms rather than by accident: 2 tests use a bare non-git directory, which 
 `cwd_is_worktree`'s value in the first place; 1 test relies on the override token, which now
 short-circuits before the liveness check even runs. The full suite (`py -3
 claude/scripts/run-hook-tests.py`) passes unchanged elsewhere.
+
+---
+
+## Amendment 4 (2026-07-14) — extend coverage to the PowerShell tool (dev-env#620)
+
+### The gap
+
+This hook's own `main()` — like 10 of its 11 PreToolUse sibling hooks — hard-gated on
+`data.get("tool_name") != "Bash"`, and `claude/settings.json` wired all 12 PreToolUse safety hooks
+(this one included) under a `"matcher": "Bash"` array only, with **no equivalent registration for
+the `"PowerShell"` tool anywhere in the file** (dev-env#620, filed after the #617 detached-HEAD
+investigation surfaced it as a freestanding structural gap). PowerShell is not a misuse case in this
+environment — it is a fully sanctioned, parallel way to run git/gh commands (the PowerShell tool's
+own description: *"for terminal operations via PowerShell: git, npm, docker, and PS cmdlets"*; the
+global CLAUDE.md environment section lists it as the primary shell). Net effect: `git checkout main`
+(or any other mutating command this hook blocks for Bash) run via the PowerShell tool against a
+canonical checkout **completely bypassed this guard, silently** — not a corner case, but the
+identical dev-env#453 collision this ADR exists to prevent, reached through a different tool
+invocation rather than a different CLI binary (Amendment 1's shape) or an unresolved redirect target
+(Amendment 2's shape).
+
+Verification (per #620's own recommendation) went one level deeper than "is the matcher wired":
+mirroring the settings.json block alone would have been a **silent no-op**, since this hook's `!=
+"Bash"` check would still fail-open on a real `tool_name: "PowerShell"` payload. Two further,
+narrower gaps surfaced from reading `_hookio.py`'s shared `split_top_level`/`_opaque_spans` engine
+(which this hook's `find_mutating_segments()` depends on) against real PowerShell syntax rather than
+assuming a bash-oriented parser generalizes for free:
+
+1. **Here-strings.** A PowerShell here-string (`@'...'@` literal, `@"..."@` expandable) is the
+   functional equivalent of a bash heredoc but uses a structurally unrelated opener/closer. Without
+   recognizing it, the engine's existing POSIX single/double-quote tracking still fired on the bare
+   `'`/`"` inside the `@'`/`@"` opener, closing prematurely at the first embedded quote character in
+   the body — traced by hand (and pinned as a regression test) to a case where this **dropped a real
+   trailing command entirely** as an "unterminated quote" tail, exactly the silent-bypass direction
+   that matters here.
+2. **The brace-conditional idiom.** PowerShell 5.1 has no `&&`/`||` (confirmed parser errors in this
+   environment — the PowerShell tool's own description says so), so its documented "run B only if A
+   succeeds" idiom is `A; if ($?) { B }`. `split_top_level` had no concept of an unquoted `{` as a
+   statement boundary, and every caller in this hook family (this one included) matches via
+   `.match()` anchored at a segment's *start* — so `B` nested inside `{ }` was invisible to
+   `is_mutating_segment()`/`is_mutating_gh_segment()` even though nothing else about the command was
+   unusual. The identical bash brace-group idiom (`{ cmd; }`) had the same gap.
+
+### The fix
+
+- **`claude/settings.json`** — a new `"matcher": "PowerShell"` array under `PreToolUse`, mirroring
+  the `"Bash"` array's 12 scripts (this hook included) and their timeouts exactly.
+- **This hook's `main()`** — `data.get("tool_name") not in _SANCTIONED_TOOL_NAMES` where
+  `_SANCTIONED_TOOL_NAMES = ("Bash", "PowerShell")`, replacing the `!= "Bash"` check. Applied
+  identically (each with its own local check, not a shared cross-file constant — kept per-file since
+  three of the ten sibling files don't otherwise import anything that would justify a new shared
+  dependency) to the other 10 tool_name-gated PreToolUse hooks: `pre-commit-branch-check.py`,
+  `pre-pr-create-check.py`, `pre-merge-message-check.py`, `pre-merge-branch-check.py`,
+  `pre-merge-findings-gate.py`, `pre-auto-merge-checkpoint-gate.py`, `pre-merge-numbering-check.py`,
+  `pre-tool-use-journal-draft-worktree-guard.py`, `pre-tool-use-journal-compose-force-guard.py`, and
+  `pre-bash-drift-check.py`. `disk-space-check.py` needed no change — it already ignores `tool_name`
+  entirely.
+- **`_hookio.py`** — a new `_find_herestring_end()` (mirrors `_find_heredoc_end()`) recognizes
+  `@'...'@`/`@"..."@` as an opaque span in both `split_top_level`'s and `_opaque_spans`'s `top` and
+  `subshell` states; an unquoted `{` is added as an unconditional split trigger in `split_top_level`'s
+  `top` state only (never inside a subshell, matching how every other separator is already scoped
+  there) — closing the brace-conditional gap for every hook that routes through `scan_top_level`, not
+  just this one. Deliberately **not** special-cased for a PowerShell `@{...}` hashtable-literal/splat
+  token (over-segmentation is the accepted benign direction here, per this same file's existing
+  `mask_quoted_spans` docstring reasoning) — see dev-env#761 for what this change does not attempt.
+- **Two hooks with their own local, non-`scan_top_level` regex** (`pre-commit-branch-check.py`'s
+  `_GIT_COMMIT_RE`, `pre-pr-create-check.py`'s `_GH_PR_CREATE_RE`) needed a parallel, independent fix:
+  `{` added to each one's own anchor alternation, since neither routes through the shared engine.
+- **New regression test**: `test_settings_hook_wiring.py`'s
+  `test_pretooluse_bash_and_powershell_matchers_are_mirrored` asserts the two matcher arrays wire the
+  identical script set — nothing before this amendment would have caught a future hook added to one
+  matcher and forgotten on the other.
+- **Documented, not fixed, in this amendment**: `_CD_RE`'s literal-`cd`-only anchoring (here and in
+  `pre-tool-use-journal-draft-worktree-guard.py`) does not recognize PowerShell's `Set-Location`/`sl`
+  — see the updated "Coverage note" above, which now states this explicitly extends (does not newly
+  create) the already-accepted bare-`cd`-into-canonical-root v1 gap. `Set-Location`/`sl` recognition,
+  the `shlex.split(posix=True)` vs. PowerShell-quoting mismatch in three files' `_tokenize()`, a
+  PowerShell-native override-token syntax, and the equally Bash-only **PostToolUse** hook family are
+  tracked in [dev-env#761](https://github.com/brownm09/dev-env/issues/761) rather than folded into
+  this already-large amendment.
+
+### Why this is an amendment, not a new ADR
+
+Same harm model this ADR exists to prevent (silent shared-canonical-checkout collision, dev-env#453),
+same file, same hook, same override/worktree-scope machinery, same severity (hard block, exit 2) —
+only a previously-unrecognized *tool* surface (PowerShell, not Bash) reaching that already-decided
+harm model, exactly mirroring Amendment 1's framing for a previously-unrecognized *command* surface
+(`gh`, not `git`) and Amendment 3's framing for a previously-unrecognized *cwd-shape* surface (an
+orphaned worktree). This amendment is filed against ADR-071 specifically because it is this hook's
+own dedicated ADR and this hook is one of the twelve directly affected; the identical `tool_name` fix
+and settings.json mirror applied to the other ten sibling PreToolUse hooks, and the shared
+`_hookio.py` parser extension, are cross-referenced here rather than each carrying their own ADR,
+since none of them individually meets the ADR-warrant bar (a settings.json wiring change plus a
+one-line conditional widening, repeated) — this hook's is the one file in the affected set that
+already has a dedicated ADR whose own stated scope this change directly widens.
+
+### Sync-location update
+
+1. The module docstring in `pre-tool-use-canonical-mutate-guard.py` — logic step 1 and the
+   "Explicitly NOT blocked" / "Still deferred (v1)" paragraphs now describe PowerShell coverage and
+   the `Set-Location` extension of the existing `cd` gap.
+2. `claude/CLAUDE.md`'s "Never mutate git state directly…" bullet — updated in the same PR to
+   describe the hook as `PreToolUse(Bash/PowerShell)` rather than `PreToolUse(Bash)`.
+3. This ADR's own Decision-section text and Amendments 1–3 — left **unedited** for history; this
+   Amendment 4 section is the addition, per this repo's established amended-ADR convention.
+4. `docs/REFERENCE.md`'s ADR-071 Hooks-table pointer — updated in the same PR if it made the same
+   Bash-exclusive claim.
+5. `docs/adr/INDEX.md` row 071 — `Date` cell appended with this amendment's date; `powershell` tag
+   added. (The header `Date`/`Tags` lines at the top of this file were also brought in sync with
+   INDEX.md's already-current state as of this same edit — they had drifted to show only the
+   2026-07-04 amendment and were missing the `redirect-target`/`orphaned-worktree` tags Amendments 2
+   and 3 had already added to INDEX.md but never back-ported into this file's own header.)
+
+### Coverage
+
+- **`test_hookio.py`** gains 11 new tests for the shared parser extension: the PowerShell
+  conditional-brace idiom and the bash brace-group equivalent are now detected via `scan_top_level`;
+  an unquoted `{` inside a quoted string is confirmed NOT a split trigger; `{`-splitting still applies
+  with `split_pipe=True` (this hook's own mode); both here-string forms (literal/expandable) with an
+  embedded stray quote no longer hide a real trailing command (the load-bearing regression pins,
+  traced by hand against the pre-fix parser to confirm each would have failed); a here-string with no
+  closer runs to end-of-string like a heredoc; `mask_quoted_spans` masks both here-string forms; and
+  the existing `mask_quoted_spans`/`split_top_level` cross-consistency fixture list gains a
+  here-string case. All pre-existing tests in this file pass unchanged (91 -> 102).
+- **`test_canonical_mutate_guard.py`** gains one new end-to-end test: a mutating command with
+  `tool_name: "PowerShell"` is blocked (exit 2) identically to `tool_name: "Bash"`, while the existing
+  `test_main_noop_on_non_bash_tool` (a genuinely unrelated tool, `"Write"`) continues to no-op
+  unchanged (70 -> 71).
+- **`test_journal_draft_worktree_guard.py`**, **`test_pre_merge_numbering_check.py`** (the latter via
+  a refactored shared `_run_collision_test(tool_name)` helper so the expensive real-git-repo collision
+  scenario isn't duplicated verbatim), **`test_pre_tool_use_journal_compose_force_guard.py`**, and the
+  two shell-driven suites **`test-auto-merge-checkpoint-gate.sh`** / **`test-merge-findings-gate.sh`**
+  each gain an equivalent end-to-end `tool_name=PowerShell` case proving their own hook's real blocking
+  path (not just a no-op) fires identically for both tool names.
+- **`test_pre_commit_branch_check.py`** and **`test_pre_pr_create_check.py`** each gain two pure-function
+  tests confirming their own local `{`-anchor regex now detects both the PowerShell conditional-brace
+  idiom and the bash brace-group equivalent.
+- **`test_settings_hook_wiring.py`** gains `test_pretooluse_bash_and_powershell_matchers_are_mirrored`
+  (see The fix, above).
+- Three PreToolUse hooks (`pre-merge-branch-check.py`, `pre-merge-message-check.py`,
+  `pre-bash-drift-check.py`) received the identical `tool_name` fix but no new test: each has an
+  established, deliberate "pure-helper convention, `main()`'s stdin plumbing not covered" scope
+  documented in its own test file's docstring, predating this amendment — adding `main()`-level
+  coverage newly, only for this one fix, would be inconsistent with that standing per-file convention
+  rather than an extension of it. All three are pure advisories (exit 0 always), never a blocking
+  gate, so the risk this leaves untested is low.
+- Full suite (`py -3 claude/scripts/run-hook-tests.py`): 67 files passed, 2 skipped (both pre-existing,
+  documented runner/environment skips unrelated to this change), 0 failed.

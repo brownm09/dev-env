@@ -33,7 +33,11 @@ directory on `sys.path[0]` automatically, and since this file lives alongside
 `pre-merge-findings-gate.py` in the same `claude/scripts/` directory, that's already enough for
 both the dynamic load and `_pmfg`'s own internal `from _hookio import ...` to resolve.
 
-Stdin JSON shape (PreToolUse): {"tool_name":"Bash","tool_input":{"command":...},"cwd":...}
+Also fires for the PowerShell tool (dev-env#620): registered under both the
+Bash and PowerShell PreToolUse matchers in settings.json, since PowerShell is
+an equally sanctioned way to run `gh pr merge --auto` in this environment.
+
+Stdin JSON shape (PreToolUse): {"tool_name":"Bash" (or "PowerShell"),"tool_input":{"command":...},"cwd":...}
 
 Exit 2 — block (stderr shown to Claude), on any of: gh/network error, no comment carries both
 markers together, open findings with no recorded disposition, an incomplete checkpoints marker, or
@@ -249,7 +253,7 @@ def main() -> None:
         data = json.loads(raw)
     except json.JSONDecodeError:
         sys.exit(0)
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
     command = data.get("tool_input", {}).get("command", "")
 

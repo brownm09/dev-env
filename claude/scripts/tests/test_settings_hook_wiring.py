@@ -28,7 +28,11 @@ names resolution as a wiring-lint requirement.
 
 The lint iterates every entry generically, so adding a new event/matcher group
 (e.g. PR9's PowerShell PreToolUse mirror of the Bash group) is covered with no
-change here beyond any new script's budget classification.
+change here beyond any new script's budget classification. PR9 (dev-env#620)
+additionally added `test_pretooluse_bash_and_powershell_matchers_are_mirrored`
+below: resolution/timeout well-formedness alone doesn't catch a FUTURE hook
+added to one PreToolUse matcher and forgotten on the other, so that dedicated
+sync check exists on top of the generic per-entry gates above.
 
 Usage:
     py -3 claude/scripts/tests/test_settings_hook_wiring.py
@@ -151,6 +155,30 @@ def test_every_entry_has_timeout_at_or_above_budget() -> str:
     return f"all {len(entries)} hook entries declare an explicit timeout >= their budget floor"
 
 
+def test_pretooluse_bash_and_powershell_matchers_are_mirrored() -> str:
+    """dev-env#620 (ADR-071 Amendment 4): PowerShell is a fully sanctioned way
+    to run the same git/gh commands Bash can, so every PreToolUse safety hook
+    wired under the `Bash` matcher must also be wired under `PowerShell` --
+    otherwise a hook silently stops applying the instant the same command is
+    run via the other tool. Nothing before this test asserted the two matcher
+    groups stay in sync; a future PR adding a 13th hook to one matcher and
+    forgetting the other would otherwise pass every other check in this file
+    (each entry it DOES have is still well-formed) while silently reopening
+    the exact bypass dev-env#620 closed.
+    """
+    settings = wiring.load_settings()
+    entries = wiring.hook_entries(settings)
+    bash_scripts = {e.script for e in entries if e.event == "PreToolUse" and e.matcher == "Bash"}
+    powershell_scripts = {e.script for e in entries if e.event == "PreToolUse" and e.matcher == "PowerShell"}
+    assert bash_scripts, "expected at least one PreToolUse/Bash hook entry -- found none"
+    assert powershell_scripts, "expected at least one PreToolUse/PowerShell hook entry -- found none"
+    only_bash = bash_scripts - powershell_scripts
+    only_powershell = powershell_scripts - bash_scripts
+    assert not only_bash, f"wired under PreToolUse/Bash but missing from PreToolUse/PowerShell: {sorted(only_bash)}"
+    assert not only_powershell, f"wired under PreToolUse/PowerShell but missing from PreToolUse/Bash: {sorted(only_powershell)}"
+    return f"PreToolUse Bash and PowerShell matchers wire the identical {len(bash_scripts)}-script set"
+
+
 def main() -> int:
     tests = [
         ("script_from_command extracts basename", test_script_from_command_extracts_basename),
@@ -161,6 +189,7 @@ def main() -> int:
         ("_winsubp import regex (anchored)", test_winsubp_import_regex),
         ("every command resolves to an existing script", test_every_command_resolves_to_existing_script),
         ("every entry timeout >= budget", test_every_entry_has_timeout_at_or_above_budget),
+        ("PreToolUse Bash/PowerShell matchers mirrored (dev-env#620)", test_pretooluse_bash_and_powershell_matchers_are_mirrored),
     ]
     failed = 0
     for name, fn in tests:

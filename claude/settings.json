@@ -94,6 +94,71 @@
         ]
       },
       {
+        "matcher": "PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-commit-branch-check.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-pr-create-check.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-message-check.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-branch-check.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-findings-gate.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-auto-merge-checkpoint-gate.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-merge-numbering-check.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-canonical-mutate-guard.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-journal-draft-worktree-guard.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-journal-compose-force-guard.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/disk-space-check.py",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-bash-drift-check.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
         "matcher": "Write",
         "hooks": [
           {

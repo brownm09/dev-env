@@ -11,10 +11,14 @@ the repo/branch at commit time — a signal that the session's tracked cwd may
 have silently reverted (e.g. after an intermittent Git Bash crash) between
 that call and this one. Advisory only; never blocks.
 
+Also fires for the PowerShell tool (dev-env#620): registered under both the
+Bash and PowerShell PreToolUse matchers in settings.json, since PowerShell is
+an equally sanctioned way to run `git commit` in this environment.
+
 Stdin JSON shape (PreToolUse):
   {
     "hook_event_name": "PreToolUse",
-    "tool_name": "Bash",
+    "tool_name": "Bash",  # or "PowerShell"
     "tool_input": {"command": "...", "description": "..."},
     "session_id": "...",
     "cwd": "..."
@@ -31,9 +35,13 @@ import _bash_state
 import _hookutil
 
 # Matches `git commit` as an actual command invocation, not inside a string or
-# after --message / -m (where "commit" would be a flag argument value).
+# after --message / -m (where "commit" would be a flag argument value). The
+# trailing `{` alternative (dev-env#620) catches PowerShell's documented
+# `A; if ($?) { git commit ... }` conditional-chain idiom (no && in PS 5.1) —
+# and the equivalent bash brace-group `{ git commit ...; }` — both of which
+# otherwise put "git commit" right after an unrecognized anchor character.
 _GIT_COMMIT_RE = re.compile(
-    r"(?:^|&&|\|\||;|\n)\s*(?:cd\s+\S+\s+&&\s+)?git\s+commit\b"
+    r"(?:^|&&|\|\||;|\n|\{)\s*(?:cd\s+\S+\s+&&\s+)?git\s+commit\b"
 )
 
 
@@ -60,7 +68,7 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
     command = data.get("tool_input", {}).get("command", "")

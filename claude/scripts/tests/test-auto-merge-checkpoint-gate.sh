@@ -24,6 +24,9 @@
 #   - broken sibling dependency (corrupt pre-merge-findings-gate.py loaded via exec_module)
 #                                                             -> BLOCK  (exit 2 via the module-level
 #                                                                import guard; was exit 1 before #718)
+#   - --auto via tool_name=PowerShell (dev-env#620): open findings/no disposition -> BLOCK,
+#     clean review + complete checkpoints -> allow (proves the PowerShell PreToolUse
+#     extension reaches this gate, not just a settings.json wiring assumption)
 #
 # Run: bash claude/scripts/tests/test-auto-merge-checkpoint-gate.sh
 set -u
@@ -55,11 +58,11 @@ print(json.dumps({
   echo "$f"
 }
 
-# Run the hook; echoes exit code. $1=command  $2=seam ("UNSET" to not set env).
+# Run the hook; echoes exit code. $1=command  $2=seam ("UNSET" to not set env)  $3=tool_name (default Bash).
 run_gate() {
-  local cmd="$1" seam="$2" stdin
-  stdin=$(printf '{"tool_name":"Bash","tool_input":{"command":%s},"cwd":"."}' \
-            "$(printf '%s' "$cmd" | json_str)")
+  local cmd="$1" seam="$2" tool="${3:-Bash}" stdin
+  stdin=$(printf '{"tool_name":"%s","tool_input":{"command":%s},"cwd":"."}' \
+            "$tool" "$(printf '%s' "$cmd" | json_str)")
   if [ "$seam" = "UNSET" ]; then
     printf '%s' "$stdin" | $PY "$HOOK" >/dev/null 2>&1
   else
@@ -163,7 +166,17 @@ f = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json")
 json.dump(data, f); f.close(); print(f.name)' "$MARK_CLEAN $CHECKPOINTS_OK" "$FRESH_CREATED")
 RC=$(run_gate "$AUTO_CMD" "$J"); [ "$RC" = "2" ] && ok "exit 2 (crash -> fail closed)" || bad "expected 2, got $RC"; rm -f "$J"
 
-echo "[17] broken sibling dependency (corrupt pre-merge-findings-gate.py) -> BLOCK via module-level import guard"
+echo "[17b] --auto via tool_name=PowerShell (dev-env#620), open findings + NO disposition -> BLOCK"
+# Proves the PowerShell PreToolUse extension reaches this gate too -- if tool_name filtering
+# were still Bash-only, this would incorrectly exit 0 (fail-open no-op) instead of blocking.
+J=$(canned "body with no disposition section" "$MARK_OPEN $CHECKPOINTS_OK" "$FRESH_CREATED" "$FRESH_HEAD")
+RC=$(run_gate "$AUTO_CMD" "$J" "PowerShell"); [ "$RC" = "2" ] && ok "exit 2 (blocked, tool_name=PowerShell)" || bad "expected 2, got $RC"; rm -f "$J"
+
+echo "[17c] --auto via tool_name=PowerShell, clean review + complete checkpoints + fresh -> allow"
+J=$(canned "some body" "$MARK_CLEAN $CHECKPOINTS_OK" "$FRESH_CREATED" "$FRESH_HEAD")
+RC=$(run_gate "$AUTO_CMD" "$J" "PowerShell"); [ "$RC" = "0" ] && ok "exit 0 (allowed, tool_name=PowerShell)" || bad "expected 0, got $RC"; rm -f "$J"
+
+echo "[18] broken sibling dependency (corrupt pre-merge-findings-gate.py) -> BLOCK via module-level import guard"
 # Run a copy of the hook in a temp dir whose pre-merge-findings-gate.py raises on import, so the
 # module-level exec_module fails. Before #718 this raised uncaught -> exit 1 = fail-OPEN; the import
 # guard now fails CLOSED (exit 2). The crash fires at import, before stdin is even read, so the

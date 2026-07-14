@@ -39,6 +39,20 @@ def test_ignores_non_commit_command() -> str:
     return "an unrelated git command is not detected"
 
 
+def test_detects_powershell_conditional_brace_commit() -> str:
+    # dev-env#620: PowerShell 5.1 has no && (the tool's own description confirms
+    # it's a parser error there), so its documented "run B only if A succeeds"
+    # idiom is `A; if ($?) { B }` -- the added `{` anchor alternative catches
+    # this exactly like the bash brace-group equivalent.
+    assert pre_commit_branch_check.is_git_commit_command('git add -A; if ($?) { git commit -m "x" }')
+    return "PowerShell 'A; if ($?) { git commit ... }' idiom is now detected (dev-env#620)"
+
+
+def test_detects_bash_brace_group_commit() -> str:
+    assert pre_commit_branch_check.is_git_commit_command('{ git commit -m "x"; }')
+    return "bash brace-group '{ git commit ...; }' idiom is now detected too"
+
+
 def test_build_message_no_drift() -> str:
     msg = pre_commit_branch_check.build_message("feat/x", None)
     assert msg == "[branch-check] committing to: feat/x", msg
@@ -63,6 +77,8 @@ def main() -> int:
         ("is_git_commit_command: bare", test_detects_bare_git_commit),
         ("is_git_commit_command: chained", test_detects_chained_git_commit),
         ("is_git_commit_command: ignores non-commit", test_ignores_non_commit_command),
+        ("is_git_commit_command: PowerShell conditional-brace idiom (dev-env#620)", test_detects_powershell_conditional_brace_commit),
+        ("is_git_commit_command: bash brace-group idiom", test_detects_bash_brace_group_commit),
         ("build_message: no drift", test_build_message_no_drift),
         ("build_message: with drift", test_build_message_with_drift),
         ("build_message: None branch placeholder", test_build_message_none_branch_shows_placeholder),

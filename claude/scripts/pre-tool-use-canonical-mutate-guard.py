@@ -17,10 +17,15 @@ case: "session is NOT in a worktree at all, mutates the canonical root
 directly" — a case ADR-024's hook is a complete no-op for, since it only fires
 on Write/Edit/NotebookEdit and only when cwd matches the worktree pattern.
 
+Also fires for the PowerShell tool (dev-env#620): registered under both the
+Bash and PowerShell PreToolUse matchers in settings.json, since PowerShell is
+an equally sanctioned way to run mutating git/gh commands in this environment
+— everything below applies identically to a PowerShell-invoked command.
+
 Logic (cheapest checks first — no subprocess spawn unless a mutating segment
 is actually found):
   1. Read stdin JSON. Fail open (exit 0) on anything unparseable, a missing or
-     empty `cwd`, or a non-`Bash` tool_name.
+     empty `cwd`, or a tool_name that is neither `Bash` nor `PowerShell`.
   2. Note whether `cwd` matches the worktree path pattern
      (`.../.claude/worktrees/<name>`) AND is confirmed a *live*, registered
      worktree — not merely a path that looks like one (dev-env#749: an
@@ -117,7 +122,8 @@ fetch, branch --show-current, rev-parse, ls-tree, blame, remote -v, plain
 `git pull --ff-only`, a bare `gh pr merge` or `gh pr merge --squash` (no
 delete-branch flag — merges only remotely via the GitHub API, touches no
 local state), and anything non-git/non-gh. Plain Read/Grep/Glob against a
-canonical checkout is untouched entirely since this hook only matches Bash.
+canonical checkout is untouched entirely since this hook only matches
+Bash/PowerShell.
 
 Coverage note: a `git -C`/`--git-dir`/`--work-tree` redirect *into* a canonical
 root from elsewhere (e.g. from a worktree's Bash,
@@ -131,7 +137,15 @@ elsewhere is not caught. That still requires deliberate, visible authorship
 rather than the silent default-cwd collision #453 documents, so leaving it
 uncovered remains an acceptable deferral — extend if it recurs in practice
 (same incremental-hardening precedent as ADR-024's own orphan-liveness
-addendum).
+addendum). This deferral extends symmetrically to PowerShell's `Set-Location`/
+`sl` (dev-env#620, ADR-071 Amendment 4): `_CD_RE` recognizes only the literal
+`cd` token, so `Set-Location C:/Users/brown/Git/dev-env; git checkout -b foo`
+is not recognized as a cd-redirect either — but it reaches the SAME already-
+accepted gap, not a new one, since `git checkout -b foo` there would then be
+evaluated as an *ambient* mutation against cwd (the worktree it actually ran
+from), not the true post-Set-Location target. See dev-env#620's follow-up
+issue for the remaining PowerShell-specific parsing gaps this PR does not
+close.
 
 A worktree-shaped cwd is now confirmed LIVE before being trusted (dev-env#749,
 ADR-071 Amendment 3): a `.claude/worktrees/<name>` path whose `.git` link is
@@ -144,7 +158,7 @@ See `_is_live_worktree()`.
 Stdin JSON shape (PreToolUse):
   {
     "hook_event_name": "PreToolUse",
-    "tool_name": "Bash",
+    "tool_name": "Bash",  # or "PowerShell"
     "tool_input": {"command": "..."},
     "session_id": "...",
     "cwd": "..."
@@ -160,6 +174,10 @@ import sys
 
 from _hookio import is_absolute_path, split_top_level
 import _hookutil
+
+# Sanctioned shell tools this guard evaluates (dev-env#620) — every other
+# tool_name fails open below, unchanged from before this PR.
+_SANCTIONED_TOOL_NAMES = ("Bash", "PowerShell")
 
 # Shared fragment for the two worktree-path regexes below (dev-env#749 review
 # finding — was independently spelled twice; factored out so the two can't
@@ -881,7 +899,7 @@ def main() -> None:
     if not isinstance(data, dict):
         sys.exit(0)  # valid JSON but not an object (e.g. `[]`, `"x"`, `123`, `null`) -> fail open
 
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in _SANCTIONED_TOOL_NAMES:
         sys.exit(0)
 
     cwd = data.get("cwd", "") or ""
