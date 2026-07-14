@@ -23,6 +23,10 @@ import tempfile
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "run-hook-tests.py"
+
+# The script imports _winsubp (a sibling in scripts/); make it resolvable.
+sys.path.insert(0, str(SCRIPT.parent))
+
 _spec = importlib.util.spec_from_file_location("run_hook_tests", SCRIPT)
 mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)
