@@ -8,6 +8,18 @@ schedule: "0 8 * * *"
 
 Research pending topics from the queue file. Run fully autonomously — never call AskUserQuestion.
 
+> **Autonomous-run guard (do not strip when regenerating the live copy).** This is an unattended
+> scheduled run with no human present. Do **not** open with a greeting, a question, or any "how can I
+> help" / "what would you like to work on" reply — your **first output must be a tool call** (begin with
+> the first step below). The live scheduled-task copy must carry this same imperative at the very top
+> *and* bottom of its prompt, because the greeting-instead-of-execute failure it guards against happens
+> *before* any canonical read-through step is reached. Rationale and incident history: the
+> [`prune-stale-worktrees` reliability caveat](../prune-stale-worktrees/SKILL.md),
+> [dev-env#698](https://github.com/brownm09/dev-env/issues/698), and
+> [dev-env#703](https://github.com/brownm09/dev-env/issues/703) (which confirmed the frontmatter `model:`
+> pin is **inert** — the scheduler ignores it — making this imperative the sole effective, model-agnostic
+> mitigation). See the **Restorable live-copy imperative** at the bottom of this file.
+
 **Schedule note:** `0 8 * * *` = 3:00 AM CDT (UTC−5). Update to `0 9 * * *` for CST (UTC−6) in winter.
 
 **Objective:** Process as many pending topics from `research-queue.md` as fit within a 5-hour runtime budget, write one structured markdown note per topic, update the queue to mark completed items (or annotate failed items), and commit everything to the research-notes repo.
@@ -268,3 +280,28 @@ rm -f "${SCRATCH}/nightly-research-update-"*.js
 - **No remote push** — local-only repo during testing phase
 - **Model:** Sonnet for all steps
 - **Platform:** Windows 11, Git Bash
+
+---
+
+**Restorable live-copy imperative ([dev-env#703](https://github.com/brownm09/dev-env/issues/703) item 3, [dev-env#767](https://github.com/brownm09/dev-env/issues/767)).**
+The execute-now / do-not-greet mitigation ([dev-env#698](https://github.com/brownm09/dev-env/issues/698))
+is the **only** effective, model-agnostic guard against an autonomous scheduled run greeting instead of
+executing — the frontmatter `model:` pin is confirmed **inert** (dev-env#703 item 2). It lives verbatim
+only in the machine-local live copy (`~/.claude/scheduled-tasks/nightly-research/SKILL.md`, which is
+**not** version-controlled), so the exact deployed strings are captured here — a machine rebuild, or a
+live-copy regeneration from this canonical file, restores the hardened guard **deterministically**
+rather than reconstructing it from memory. When (re)creating the live copy, paste the **top** block as
+its first line (immediately after the YAML frontmatter) and the **bottom** block as its last line; keep
+both verbatim, including the ASCII `--` in the top block and the em dash in the bottom block.
+
+_Top — first line of the live prompt:_
+
+```text
+EXECUTE NOW -- DO NOT GREET. This is an autonomous scheduled run; no human is present. Do NOT reply with a greeting, a question, or any variant of "how can I help" / "what would you like to work on" -- a concrete task is defined below and your FIRST output MUST be a tool call (begin with the first step below). If you catch yourself about to acknowledge, greet, or ask what to do, stop and begin executing the first step instead.
+```
+
+_Bottom — last line of the live prompt:_
+
+```text
+REMINDER: Begin immediately. Your first action is a tool call for the first step below — not a text reply. Do not greet or ask what to work on.
+```
