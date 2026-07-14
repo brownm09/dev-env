@@ -1002,7 +1002,8 @@ def main() -> None:
             # finding, dev-env#749 — since cwd_is_worktree being False no
             # longer guarantees cwd was never worktree-shaped at all, only
             # that it wasn't confirmed LIVE).
-            block_root = _blockable_ambient_root(_memoized_toplevel(cwd, toplevel_cache))  # None -> not blockable -> fail open
+            # None -> not blockable -> fail open
+            block_root = _blockable_ambient_root(_memoized_toplevel(cwd, toplevel_cache))
 
         if block_root is None:
             continue  # this match isn't blockable — keep scanning later segments

@@ -1843,6 +1843,72 @@ def test_main_blocks_orphaned_worktree_shaped_cwd_nested_in_canonical() -> str:
     return "orphaned worktree-shaped cwd nested in a real canonical is blocked, canonical root named (dev-env#749)"
 
 
+def test_main_wiring_shares_one_toplevel_resolution_for_cwd() -> str:
+    """dev-env#758 review follow-up: `test_memoized_toplevel_dedupes_across_callers` above proves
+    `_memoized_toplevel()` itself memoizes correctly, but nothing else in this suite proves `main()`
+    actually wires the SAME `toplevel_cache` instance into both `_is_live_worktree()`'s liveness check
+    and the ambient branch's own cwd resolution -- a future edit that silently reintroduced a second,
+    unshared `toplevel_cache = {}` would regress the dedup this PR adds, and no other test here would
+    catch it (the e2e suite has no fixture for "cwd worktree-shaped, `.git` present, resolves elsewhere"
+    -- that scenario is hard to construct with real git plumbing, per this PR's own body).
+
+    Constructs that exact narrow sub-case directly: a worktree-shaped cwd with a `.git` entry present
+    (signal 1 passes) whose resolved toplevel (mocked) differs from the worktree root (signal 2 fails,
+    not live) -- forcing BOTH the liveness check and the ambient branch to need cwd's toplevel for the
+    same single-segment command. Runs `main()` IN-PROCESS (unlike every other e2e test in this file,
+    which uses the subprocess-based `_run_hook()` helper) specifically so `_resolve_git_toplevel` can be
+    monkeypatched with a call-counter -- subprocess isolation would make counting impossible.
+    """
+    import io
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worktree_root = Path(tmp) / "some-parent" / ".claude" / "worktrees" / "some-name"
+        worktree_root.mkdir(parents=True)
+        (worktree_root / ".git").write_text("gitdir: nowhere\n", encoding="utf-8")
+
+        calls = {"n": 0}
+        canonical_looking_root = str(Path(tmp) / "canonical-elsewhere")
+
+        def _counting_resolve(_path):
+            calls["n"] += 1
+            return canonical_looking_root
+
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git checkout -b some-branch"},
+            "cwd": str(worktree_root),
+        }
+
+        original_resolve = cmg._resolve_git_toplevel
+        original_stdin = cmg.sys.stdin
+        original_stderr = cmg.sys.stderr
+        exit_code = None
+        try:
+            cmg._resolve_git_toplevel = _counting_resolve
+            cmg.sys.stdin = io.StringIO(json.dumps(payload))
+            cmg.sys.stderr = io.StringIO()
+            try:
+                cmg.main()
+            except SystemExit as e:
+                exit_code = e.code
+        finally:
+            cmg._resolve_git_toplevel = original_resolve
+            cmg.sys.stdin = original_stdin
+            cmg.sys.stderr = original_stderr
+
+    if exit_code != 2:
+        raise AssertionError(
+            f"expected exit 2 (cwd resolves to a non-worktree-shaped root, blocked), got {exit_code!r}"
+        )
+    if calls["n"] != 1:
+        raise AssertionError(
+            f"expected main() to resolve cwd's toplevel exactly once across the liveness check AND "
+            f"the ambient branch, got {calls['n']} calls"
+        )
+    return "main() shares one toplevel resolution for cwd between _is_live_worktree() and the ambient branch (dev-env#758)"
+
+
 def main_e2e() -> list:
     return [
         ("main() blocks mutating command from canonical root", test_main_blocks_mutating_command_from_canonical_root),
@@ -1867,6 +1933,7 @@ def main_e2e() -> list:
         ("main() blocks relative redirect resolved against command cwd (dev-env#576/PR#584)", test_main_blocks_relative_redirect_resolved_against_command_cwd),
         ("main() allows ambient mutating command from a real live worktree (dev-env#749)", test_main_allows_ambient_mutating_command_from_live_worktree),
         ("main() blocks orphaned worktree-shaped cwd nested in canonical (dev-env#749)", test_main_blocks_orphaned_worktree_shaped_cwd_nested_in_canonical),
+        ("main() shares one toplevel resolution for cwd, in-process (dev-env#758)", test_main_wiring_shares_one_toplevel_resolution_for_cwd),
         ("main() fails open on non-git cwd", test_main_failsopen_on_nongit_cwd),
         ("main() fails open on malformed JSON", test_main_failsopen_on_malformed_json),
         ("main() fails open on non-dict JSON", test_main_failsopen_on_nondict_json),
