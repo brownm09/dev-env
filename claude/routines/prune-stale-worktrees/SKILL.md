@@ -2,6 +2,13 @@
 name: prune-stale-worktrees
 description: Remove Claude session worktrees whose branches have been merged into main, across all repos under C:/Users/brown/Git.
 schedule: "0 4 * * *"
+# NOTE: the `model:` pin below is CONFIRMED INERT as of 2026-07-14 (dev-env#703 item 2) — the
+# scheduler ignores frontmatter `model:`. All four unattended runs 07-11..07-14 came up on
+# claude-sonnet-5 despite this pin (verified from the run transcripts). It is kept active rather
+# than removed only because it is harmless when ignored and would take effect automatically if the
+# scheduler ever gains frontmatter-model support; it is NOT a working mitigation today. The
+# do-not-greet imperative (below, and in the live copy) is the actual, proven mitigation — all four
+# Sonnet runs executed the routine in full. See the Autonomous-run reliability caveat.
 model: claude-opus-4-8
 ---
 
@@ -67,8 +74,12 @@ Prune stale Claude session worktrees across all git repos under `C:/Users/brown/
 > because the greeting happens before Step 0.5 reads this canonical file; and (2) a
 > `model: claude-opus-4-8` **frontmatter pin** (added to both copies). The MCP
 > `update_scheduled_task` / `create_scheduled_task` tools expose no model parameter, so the
-> frontmatter pin is the only per-task model lever available — confirm on the next run whether the
-> scheduler actually honors it; if not, the imperative alone is the model-agnostic backstop.
+> frontmatter pin is the only per-task model lever available. **Confirmed inert (dev-env#703 item 2,
+> 2026-07-14):** all four unattended runs 07-11→07-14 came up on `claude-sonnet-5` despite the pin —
+> the scheduler does not honor frontmatter `model:`. The do-not-greet imperative is therefore the
+> **sole effective, model-agnostic mitigation**, and it is confirmed working: all four Sonnet runs
+> executed the routine in full rather than greeting. The pin is kept (annotated inert in the
+> frontmatter) only because it is harmless and would activate if the scheduler ever honors it.
 > The scheduler-ignores-`settings.json`-model finding is cross-cutting (it affects every scheduled
 > task) and is recorded centrally in the [ADR-003 amendment (2026-07-10)](../../../docs/adr/003-config-in-version-control.md)
 > and [`docs/REFERENCE.md` → Routines](../../../docs/REFERENCE.md#routines).

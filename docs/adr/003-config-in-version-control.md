@@ -160,17 +160,28 @@ left a per-routine copy in `claude/routines/prune-stale-worktrees/SKILL.md`.)
 **Mitigation pattern (for any routine).**
 
 1. **Frontmatter `model:` pin** (e.g. `model: claude-opus-4-8`) in both the canonical and live
-   copies — but its **efficacy is unverified**: the `create_scheduled_task` / `update_scheduled_task`
-   MCP tools expose no model parameter and `list_scheduled_tasks` no model field, so whether the
-   scheduler reads a routine's frontmatter `model:` at all is unknown pending a run observation
-   ([dev-env#703](https://github.com/brownm09/dev-env/issues/703) item 2). If it proves inert, the
-   pin is annotated/removed and the imperative below becomes the sole mitigation.
+   copies — but **confirmed inert** (see the Verification note below): the scheduler does not honor
+   frontmatter `model:`, consistent with the `create_scheduled_task` / `update_scheduled_task` MCP
+   tools exposing no model parameter and `list_scheduled_tasks` no model field. The pin is kept but
+   annotated inert (harmless when ignored; would activate only if the scheduler ever gains
+   frontmatter-model support), and the imperative below is the sole *effective* mitigation.
 2. **Execute-now / do-not-greet imperative** at the very **top and bottom** of the *live* prompt —
-   the model-agnostic backstop. It must live in the live copy, not only the canonical one, because
+   the model-agnostic backstop, now **confirmed effective** (see the Verification note below). It
+   must live in the live copy, not only the canonical one, because
    the greeting happens *before* any Step-0 canonical read-through is reached. Because the live copy
    is machine-local and not version-controlled, its exact strings are captured verbatim in the
    canonical routine's caveat for deterministic restore
    ([dev-env#703](https://github.com/brownm09/dev-env/issues/703) item 3).
+
+**Verification (dev-env#703 item 2, 2026-07-14).** Confirmed against the four unattended
+`prune-stale-worktrees` runs after the #700 fix: **all four (07-11 → 07-14) came up on
+`claude-sonnet-5`, none on the pinned `claude-opus-4-8`** — the frontmatter pin is **inert**; the
+scheduler ignores it. All four nonetheless **executed the routine in full** (17–18 tool calls each,
+opening with an execution-intent line, not the 07-10 greeting), so the **do-not-greet imperative is
+the sole effective, model-agnostic mitigation** and is empirically working. The pin is retained but
+annotated inert in both copies (harmless; would activate only if the scheduler ever honors
+frontmatter `model:`). Verified by replaying each run's transcript (model + first-output + tool-call
+count); method and evidence on [dev-env#703](https://github.com/brownm09/dev-env/issues/703).
 
 ---
 
