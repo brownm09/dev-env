@@ -48,7 +48,11 @@ the same file (throwaway `git init` repos, no live network) -- unlike this
 hook's `pre-merge-message-check.py` sibling, whose main() has no such
 coverage since it never shells out to git.
 
-Stdin JSON shape (PreToolUse): {"tool_name":"Bash","tool_input":{"command":...},"cwd":...}
+Also fires for the PowerShell tool (dev-env#620): registered under both the
+Bash and PowerShell PreToolUse matchers in settings.json, since PowerShell is
+an equally sanctioned way to run `gh pr merge` in this environment.
+
+Stdin JSON shape (PreToolUse): {"tool_name":"Bash" (or "PowerShell"),"tool_input":{"command":...},"cwd":...}
 
 Exit 2 -- block the merge (stderr shown to Claude): a genuine number collision.
 Exit 0 -- allow: not a merge command, not dev-env, no collision, or any
@@ -236,7 +240,7 @@ def main():
         data = json.loads(raw)
     except json.JSONDecodeError:
         sys.exit(0)
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
     command = data.get("tool_input", {}).get("command", "")
     if not is_pr_merge_command(command):

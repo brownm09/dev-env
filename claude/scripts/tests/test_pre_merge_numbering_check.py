@@ -407,6 +407,22 @@ def test_main_non_merge_command_is_noop():
 
 
 def test_main_blocks_genuine_cross_branch_collision():
+    """End-to-end reproduction of the dev-env#516 incident shape -- see
+    `_run_collision_test`'s own docstring for the full scenario."""
+    return _run_collision_test("Bash")
+
+
+def test_main_blocks_genuine_cross_branch_collision_via_powershell_tool_name():
+    """dev-env#620 (ADR-071 Amendment 4): the identical collision scenario,
+    with tool_name=PowerShell instead of Bash -- proves the PowerShell
+    PreToolUse extension reaches this hook's actual git-fetch-and-compare
+    logic, not just a settings.json wiring assumption. If tool_name filtering
+    were still Bash-only, this would incorrectly exit 0 (no-op) instead of
+    blocking."""
+    return _run_collision_test("PowerShell")
+
+
+def _run_collision_test(tool_name: str):
     """End-to-end reproduction of the dev-env#516 incident shape: two
     independent branches both add Testing item 2 with different text; the
     one that reaches `gh pr merge` second must be blocked.
@@ -468,14 +484,14 @@ def test_main_blocks_genuine_cross_branch_collision():
         _git(["push", origin_url, "main:main"], competitor)
 
         payload = {
-            "tool_name": "Bash",
+            "tool_name": tool_name,
             "tool_input": {"command": "gh pr merge --squash --delete-branch"},
             "cwd": str(work),
         }
         proc = _run_hook(payload)
         if proc.returncode != 2:
             raise AssertionError(
-                f"expected exit 2 (collision), got {proc.returncode}. "
+                f"expected exit 2 (collision) for tool_name={tool_name!r}, got {proc.returncode}. "
                 f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
             )
         if proc.stdout.strip():
@@ -484,7 +500,10 @@ def test_main_blocks_genuine_cross_branch_collision():
         for expected in ("BLOCKED", "#2", "CLAUDE.md Testing section", "Alice's item", "Bob's item"):
             if expected not in stderr:
                 raise AssertionError(f"expected {expected!r} in block message, got: {stderr!r}")
-    return "a genuine cross-branch collision discovered via a real git fetch blocks the merge (exit 2), reason on stderr"
+    return (
+        f"a genuine cross-branch collision discovered via a real git fetch blocks the merge "
+        f"(exit 2) for tool_name={tool_name!r}, reason on stderr"
+    )
 
 
 # ---------------------------------------------------------------------------

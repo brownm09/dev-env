@@ -16,10 +16,12 @@ believes."
 
 How it decides:
   1. Read stdin JSON. Fail OPEN (exit 0) on anything unparseable, a missing
-     `command`, or a non-Bash `tool_name` -- these are payload-shape issues
-     unrelated to the guard itself; blocking blind on an unparseable command
-     would not even correctly target the same-day compose case this hook
-     exists for.
+     `command`, or a `tool_name` that is neither Bash nor PowerShell (dev-env#620:
+     also registered under the PowerShell PreToolUse matcher, since PowerShell is
+     an equally sanctioned way to run `git`/`gh` in this environment) -- these
+     are payload-shape issues unrelated to the guard itself; blocking blind on
+     an unparseable command would not even correctly target the same-day
+     compose case this hook exists for.
   2. Compute TODAY from this process's own local clock
      (`datetime.date.today()`) -- never from anything the command or a
      marker file claims.
@@ -68,7 +70,7 @@ with the SAME literal `$ARGUMENTS` text used at Step 0.6 -- never with a
 hand-typed `--force` unless the user has explicitly said so earlier in the
 current conversation.
 
-Stdin JSON shape (PreToolUse): {"tool_name":"Bash","tool_input":{"command":...},"cwd":...}
+Stdin JSON shape (PreToolUse): {"tool_name":"Bash" (or "PowerShell"),"tool_input":{"command":...},"cwd":...}
 
 Exit 2 -- block (same-day compose mutation, no valid fresh force=true marker).
 Exit 0 -- allow (not a same-day compose mutation, or a valid marker exists).
@@ -340,7 +342,7 @@ def main() -> None:
         sys.exit(0)
     if not isinstance(data, dict):
         sys.exit(0)
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
     command = (data.get("tool_input") or {}).get("command", "") or ""

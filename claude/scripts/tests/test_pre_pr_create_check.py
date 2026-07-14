@@ -27,6 +27,20 @@ import importlib
 pre_pr_create_check = importlib.import_module("pre-pr-create-check")
 
 
+def test_detects_powershell_conditional_brace_pr_create() -> str:
+    # dev-env#620: PowerShell 5.1 has no && (the tool's own description confirms
+    # it's a parser error there), so its documented "run B only if A succeeds"
+    # idiom is `A; if ($?) { B }` -- the added `{` anchor alternative catches
+    # this exactly like the bash brace-group equivalent.
+    assert pre_pr_create_check._GH_PR_CREATE_RE.search('git push; if ($?) { gh pr create --fill }')
+    return "PowerShell 'A; if ($?) { gh pr create ... }' idiom is now detected (dev-env#620)"
+
+
+def test_detects_bash_brace_group_pr_create() -> str:
+    assert pre_pr_create_check._GH_PR_CREATE_RE.search("{ gh pr create --fill; }")
+    return "bash brace-group '{ gh pr create ...; }' idiom is now detected too"
+
+
 def test_build_checklist_baseline_no_extras() -> str:
     msg = pre_pr_create_check.build_checklist("", "", "feat/x", "C:/repo", None)
     assert msg.startswith("[pre-pr-check] Before this PR is created, confirm:\n")
@@ -71,6 +85,8 @@ def test_build_checklist_omits_absent_optional_lines() -> str:
 
 def main() -> int:
     tests = [
+        ("_GH_PR_CREATE_RE: PowerShell conditional-brace idiom (dev-env#620)", test_detects_powershell_conditional_brace_pr_create),
+        ("_GH_PR_CREATE_RE: bash brace-group idiom", test_detects_bash_brace_group_pr_create),
         ("build_checklist: baseline, no extras", test_build_checklist_baseline_no_extras),
         ("build_checklist: None branch/repo placeholders", test_build_checklist_none_branch_and_repo_show_placeholders),
         ("build_checklist: appends drift warning", test_build_checklist_appends_drift_warning),

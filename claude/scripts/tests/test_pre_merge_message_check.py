@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Tests for pre-merge-message-check.py pure helpers.
+"""Tests for pre-merge-message-check.py.
 
 Exercises the command-detection predicate and queue-read helper offline (no
-disk I/O for the detection tests, a tmp file for the read tests). The stdin
-plumbing and exit-2 emission are not covered (pure-helper convention).
+disk I/O for the detection tests, a tmp file for the read tests), plus an
+end-to-end subprocess layer proving the real exit-2 blocking behavior (added
+dev-env#762 review: this hook DOES block -- `Exit 2 -- block the merge` per
+its own docstring -- so it must not be left without PowerShell tool_name
+coverage the way the genuinely-advisory sibling hooks are; a prior version of
+this PR's ADR-071 Amendment 4 mischaracterized it as "pure advisory").
 """
 import importlib.util
+import json
 import os
+import subprocess
 import sys
 import tempfile
 
@@ -105,6 +111,75 @@ def test_queue_missing_file():
         assert mod._read_queue() == ""
     finally:
         mod._QUEUE_FILE = original
+
+
+# ---------------------------------------------------------------------------
+# End-to-end main() via subprocess (dev-env#762 review)
+#
+# This hook genuinely blocks (exit 2) -- unlike the sibling advisory hooks
+# (pre-merge-branch-check.py, pre-bash-drift-check.py) that have an
+# established, deliberate "no main() coverage" convention, this one's
+# blocking behavior must be proven end-to-end for both tool_name values.
+# MERGE_QUEUE_FILE_PATH redirects the hook's queue file at a disposable temp
+# file so this never touches the developer's real merge-queue.md.
+# ---------------------------------------------------------------------------
+
+def _run_hook(payload, queue_path=None):
+    env = dict(os.environ)
+    if queue_path is not None:
+        env["MERGE_QUEUE_FILE_PATH"] = queue_path
+    return subprocess.run(
+        [sys.executable, _SCRIPT],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+
+def test_e2e_blocks_via_bash_tool_name_when_queue_has_content():
+    with tempfile.TemporaryDirectory() as tmp:
+        queue = os.path.join(tmp, "merge-queue.md")
+        with open(queue, "w", encoding="utf-8") as f:
+            f.write("please check the flaky test first")
+        payload = {"tool_name": "Bash", "tool_input": {"command": "gh pr merge --squash"}, "cwd": "."}
+        proc = _run_hook(payload, queue_path=queue)
+        assert proc.returncode == 2, f"expected exit 2, got {proc.returncode}. stderr={proc.stderr!r}"
+        assert "flaky test" in proc.stderr
+
+
+def test_e2e_blocks_via_powershell_tool_name_when_queue_has_content():
+    # dev-env#620/dev-env#762: PowerShell must block identically to Bash --
+    # this is the one genuinely-blocking gate that was missing this proof.
+    with tempfile.TemporaryDirectory() as tmp:
+        queue = os.path.join(tmp, "merge-queue.md")
+        with open(queue, "w", encoding="utf-8") as f:
+            f.write("please check the flaky test first")
+        payload = {"tool_name": "PowerShell", "tool_input": {"command": "gh pr merge --squash"}, "cwd": "."}
+        proc = _run_hook(payload, queue_path=queue)
+        assert proc.returncode == 2, f"expected exit 2 for tool_name=PowerShell, got {proc.returncode}. stderr={proc.stderr!r}"
+        assert "flaky test" in proc.stderr
+
+
+def test_e2e_allows_via_powershell_tool_name_when_queue_empty():
+    with tempfile.TemporaryDirectory() as tmp:
+        queue = os.path.join(tmp, "merge-queue.md")
+        with open(queue, "w", encoding="utf-8") as f:
+            f.write("")
+        payload = {"tool_name": "PowerShell", "tool_input": {"command": "gh pr merge --squash"}, "cwd": "."}
+        proc = _run_hook(payload, queue_path=queue)
+        assert proc.returncode == 0, f"expected exit 0 (empty queue), got {proc.returncode}. stderr={proc.stderr!r}"
+
+
+def test_e2e_noop_on_unrelated_tool_name():
+    with tempfile.TemporaryDirectory() as tmp:
+        queue = os.path.join(tmp, "merge-queue.md")
+        with open(queue, "w", encoding="utf-8") as f:
+            f.write("please check the flaky test first")
+        payload = {"tool_name": "Write", "tool_input": {"file_path": "x.md"}, "cwd": "."}
+        proc = _run_hook(payload, queue_path=queue)
+        assert proc.returncode == 0, f"expected exit 0 (unrelated tool), got {proc.returncode}"
 
 
 # ---------------------------------------------------------------------------

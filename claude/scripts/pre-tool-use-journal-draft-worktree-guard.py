@@ -63,14 +63,18 @@ consumers, extract at a third" convention (`_worktree_topology.py`'s module
 docstring; ADR-093's Maintainability section) — this is the second consumer.
 Extract into `_hookio.py` if/when a third caller needs the identical parsing.
 
-Fail-open (exit 0) on anything unparseable, a missing/empty cwd, a non-Bash
-tool_name, or an unresolvable git path — matches the sibling hook's own
-fail-open contract throughout.
+Fail-open (exit 0) on anything unparseable, a missing/empty cwd, a tool_name
+that is neither Bash nor PowerShell, or an unresolvable git path — matches the
+sibling hook's own fail-open contract throughout.
+
+Also fires for the PowerShell tool (dev-env#620): registered under both the
+Bash and PowerShell PreToolUse matchers in settings.json, mirroring the
+sibling canonical-mutate-guard hook's own PowerShell extension.
 
 Stdin JSON shape (PreToolUse):
   {
     "hook_event_name": "PreToolUse",
-    "tool_name": "Bash",
+    "tool_name": "Bash",  # or "PowerShell"
     "tool_input": {"command": "..."},
     "session_id": "...",
     "cwd": "..."
@@ -228,14 +232,6 @@ def _is_journal_canonical(root: str) -> bool:
     return root.replace("\\", "/").rstrip("/").lower() == JOURNAL_REPO
 
 
-def _cd_takes_command_out_of_scope(segments: list) -> bool:
-    """A bare `cd <path>` in ANY segment persists across the rest of the
-    shell invocation, so a later segment's real execution directory is
-    unknown, not `cwd` — the whole command is out of scope. Mirrors the
-    sibling hook's own `find_mutating_segments()` cd-scan."""
-    return any(_CD_RE.match(_strip_leading_env(seg)) for seg in segments)
-
-
 def _worktree_add_target(tokens_after_add: list) -> list:
     """The branch/commit-ish candidates `git worktree add` would check out.
 
@@ -300,13 +296,27 @@ def find_checkout_candidates(cmd: str, segments: list = None) -> list:
     DRAFT_BRANCH_RE-matching branch. Pure/offline — the caller (`main()`)
     resolves each candidate's actual target and decides whether it's
     blockable (whether it lands on the journal canonical or not).
+
+    A bare `cd <path>` in a segment persists across the REST of the shell
+    invocation, so every segment from that point on has an unknown real
+    execution directory and is excluded — order-sensitively: a candidate
+    BEFORE the first `cd` still executed in the known cwd and is still
+    returned. (dev-env#762 review: an earlier version scanned ALL segments
+    for a `cd` upfront and returned `[]` for the WHOLE command the instant any
+    segment matched, regardless of position — so a real candidate before a
+    later, unrelated `cd` was incorrectly cleared too. Confirmed exploitable
+    via this PR's own `{`-as-split-trigger addition to `_hookio.split_top_level`:
+    `git checkout draft/2026-07-14; if ($?) { cd C:/elsewhere }` segments the
+    braced `cd` on its own, newly reaching the old whole-command escape and
+    silently un-blocking the preceding draft-branch checkout — mirrors the
+    identical fix in the sibling `pre-tool-use-canonical-mutate-guard.py`.)
     """
     if segments is None:
         segments = split_top_level(cmd, split_pipe=True)
-    if _cd_takes_command_out_of_scope(segments):
-        return []
     out = []
     for seg in segments:
+        if _CD_RE.match(_strip_leading_env(seg)):
+            break  # cd persists across the REST of the command -- only prior segments are known-safe to evaluate
         tokens = _git_rest_tokens(seg)
         if not tokens:
             continue
@@ -423,7 +433,7 @@ def main() -> None:
     if not isinstance(data, dict):
         sys.exit(0)
 
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
     cwd = data.get("cwd", "") or ""

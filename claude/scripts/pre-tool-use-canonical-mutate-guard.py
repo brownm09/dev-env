@@ -17,10 +17,15 @@ case: "session is NOT in a worktree at all, mutates the canonical root
 directly" — a case ADR-024's hook is a complete no-op for, since it only fires
 on Write/Edit/NotebookEdit and only when cwd matches the worktree pattern.
 
+Also fires for the PowerShell tool (dev-env#620): registered under both the
+Bash and PowerShell PreToolUse matchers in settings.json, since PowerShell is
+an equally sanctioned way to run mutating git/gh commands in this environment
+— everything below applies identically to a PowerShell-invoked command.
+
 Logic (cheapest checks first — no subprocess spawn unless a mutating segment
 is actually found):
   1. Read stdin JSON. Fail open (exit 0) on anything unparseable, a missing or
-     empty `cwd`, or a non-`Bash` tool_name.
+     empty `cwd`, or a tool_name that is neither `Bash` nor `PowerShell`.
   2. Note whether `cwd` matches the worktree path pattern
      (`.../.claude/worktrees/<name>`) AND is confirmed a *live*, registered
      worktree — not merely a path that looks like one (dev-env#749: an
@@ -62,12 +67,14 @@ is actually found):
          become its own segment and be misclassified as a real invocation.
      Two redirect shapes are handled specially, scanned per-segment after
      segmentation:
-       - A bare `cd <path>` in ANY segment persists for the rest of the shell
-         invocation (that's what `&&`-chaining a `cd` means), so the whole
-         command is treated as out of scope the moment a `cd` appears anywhere
-         in it — a later segment's real execution directory is then unknown,
-         not `cwd`. (A `cd` *into* a canonical root is still a v1 gap — see the
-         module-level coverage note below.)
+       - A bare `cd <path>` in a segment persists for the rest of the shell
+         invocation (that's what `&&`-chaining a `cd` means), so every segment
+         from that point on is out of scope — its real execution directory is
+         unknown, not `cwd`. A mutating segment BEFORE the first `cd` is still
+         evaluated normally (order-sensitive; dev-env#762 review — fixed a
+         regression where ANY `cd` anywhere, including one after a mutating
+         segment, cleared the whole command). (A `cd` *into* a canonical root
+         is still a v1 gap — see the module-level coverage note below.)
        - `git -C <path>` / `git --git-dir=<path>` / `git --work-tree=<path>`
          redirect a single git invocation at another repo. As of dev-env#576
          these are no longer merely skipped: `_parse_git_prefix()` captures the
@@ -117,7 +124,8 @@ fetch, branch --show-current, rev-parse, ls-tree, blame, remote -v, plain
 `git pull --ff-only`, a bare `gh pr merge` or `gh pr merge --squash` (no
 delete-branch flag — merges only remotely via the GitHub API, touches no
 local state), and anything non-git/non-gh. Plain Read/Grep/Glob against a
-canonical checkout is untouched entirely since this hook only matches Bash.
+canonical checkout is untouched entirely since this hook only matches
+Bash/PowerShell.
 
 Coverage note: a `git -C`/`--git-dir`/`--work-tree` redirect *into* a canonical
 root from elsewhere (e.g. from a worktree's Bash,
@@ -131,7 +139,15 @@ elsewhere is not caught. That still requires deliberate, visible authorship
 rather than the silent default-cwd collision #453 documents, so leaving it
 uncovered remains an acceptable deferral — extend if it recurs in practice
 (same incremental-hardening precedent as ADR-024's own orphan-liveness
-addendum).
+addendum). This deferral extends symmetrically to PowerShell's `Set-Location`/
+`sl` (dev-env#620, ADR-071 Amendment 4): `_CD_RE` recognizes only the literal
+`cd` token, so `Set-Location C:/Users/brown/Git/dev-env; git checkout -b foo`
+is not recognized as a cd-redirect either — but it reaches the SAME already-
+accepted gap, not a new one, since `git checkout -b foo` there would then be
+evaluated as an *ambient* mutation against cwd (the worktree it actually ran
+from), not the true post-Set-Location target. See dev-env#620's follow-up
+issue for the remaining PowerShell-specific parsing gaps this PR does not
+close.
 
 A worktree-shaped cwd is now confirmed LIVE before being trusted (dev-env#749,
 ADR-071 Amendment 3): a `.claude/worktrees/<name>` path whose `.git` link is
@@ -144,7 +160,7 @@ See `_is_live_worktree()`.
 Stdin JSON shape (PreToolUse):
   {
     "hook_event_name": "PreToolUse",
-    "tool_name": "Bash",
+    "tool_name": "Bash",  # or "PowerShell"
     "tool_input": {"command": "..."},
     "session_id": "...",
     "cwd": "..."
@@ -582,20 +598,36 @@ def find_mutating_segments(cmd: str, segments: list = None) -> list:
     Pure/offline by construction: extracting the dirs is string work; the git
     subprocess that resolves them to canonical roots is deliberately the
     CALLER's (`main()`'s) job, so the pure-function test layer never shells
-    out. A bare `cd <path>` in ANY segment persists across the rest of the
-    shell invocation (that's what `&&`-chaining a `cd` means), so a later
-    segment's real execution directory is unknown, not `cwd` — the whole
-    command is taken out of scope (`[]`). The cd check runs against the
-    env-stripped segment (same helper `is_mutating_segment` uses) so
-    `FOO=1 cd /tmp && git checkout -b x` is still recognized as a cd-redirect.
+    out. A bare `cd <path>` in a segment persists across the REST of the
+    shell invocation (that's what `&&`-chaining a `cd` means), so every
+    segment from that point on has an unknown real execution directory and is
+    excluded — order-sensitively: a mutating segment appearing BEFORE the
+    first `cd` still executed in the known, original `cwd`, and is still
+    evaluated normally. The cd check runs against the env-stripped segment
+    (same helper `is_mutating_segment` uses) so `FOO=1 cd /tmp && git
+    checkout -b x` is still recognized as a cd-redirect.
+
+    Order-sensitivity fix (dev-env#762 review): earlier scanned ALL segments
+    for a `cd` first and returned `[]` for the WHOLE command the instant any
+    segment matched, regardless of position — so a mutating segment that came
+    BEFORE a later, unrelated `cd` was incorrectly cleared too. Confirmed as a
+    real, exploitable regression introduced by this PR's own `{`-as-split-
+    trigger addition to `_hookio.split_top_level`: `git checkout main; if ($?)
+    { cd C:/repo }` (the PowerShell conditional-chain idiom this PR adds
+    support for) now segments `cd C:/repo }` as its own top-level segment,
+    which matched the old whole-command escape and silently un-blocked the
+    preceding `git checkout main` — the exact dev-env#453 collision this hook
+    exists to prevent. (The identical order-insensitivity already existed for
+    a plain `git checkout main; cd C:/repo` semicolon chain even before this
+    PR; fixing it order-sensitively closes both shapes at once rather than
+    special-casing the newly-exposed one.)
     """
     if segments is None:
         segments = split_top_level(cmd, split_pipe=True)
-    for seg in segments:
-        if _CD_RE.match(_strip_leading_env(seg)):
-            return []  # cd persists across the rest of the command — out of scope entirely
     out = []
     for seg in segments:
+        if _CD_RE.match(_strip_leading_env(seg)):
+            break  # cd persists across the REST of the command -- only prior segments are known-safe to evaluate
         if is_mutating_segment(seg) or is_mutating_gh_segment(seg):
             out.append({"segment": seg.strip(), "redirect_dirs": _segment_redirect_dirs(seg)})
     return out
@@ -906,7 +938,7 @@ def main() -> None:
     if not isinstance(data, dict):
         sys.exit(0)  # valid JSON but not an object (e.g. `[]`, `"x"`, `123`, `null`) -> fail open
 
-    if data.get("tool_name") != "Bash":
+    if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
     cwd = data.get("cwd", "") or ""

@@ -333,6 +333,20 @@ def test_e2e_no_marker_blocks():
         assert "BLOCKED" in reason
         assert today in reason
 
+def test_e2e_no_marker_blocks_via_powershell_tool_name():
+    # dev-env#620 (ADR-071 Amendment 4): PowerShell is a sanctioned way to run
+    # this command too, and settings.json now wires this hook under a
+    # PowerShell PreToolUse matcher -- tool_name=PowerShell must be evaluated
+    # exactly like tool_name=Bash here (test_e2e_non_bash_tool_allows below
+    # still correctly no-ops for a genuinely unrelated tool, "Write").
+    with tempfile.TemporaryDirectory() as tmp:
+        today = datetime.date.today().isoformat()
+        payload = {"tool_name": "PowerShell", "tool_input": {"command": _today_worktree_add_command(today)}, "cwd": "C:/x"}
+        proc = _run_hook(payload, marker_dir=tmp)
+        assert proc.returncode == 2
+        reason = json.loads(proc.stderr)["reason"]
+        assert "BLOCKED" in reason
+
 def test_e2e_fresh_true_marker_allows():
     with tempfile.TemporaryDirectory() as tmp:
         today_dt = datetime.datetime.now()
