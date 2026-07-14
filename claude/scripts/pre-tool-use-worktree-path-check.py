@@ -188,6 +188,14 @@ def main() -> None:
     if file_norm == worktree_norm or file_norm.startswith(worktree_norm + os.sep):
         sys.exit(0)
 
+    # Allow writes targeting another worktree under the same canonical root.
+    # Those land in that worktree's own tree, not the shared canonical working tree.
+    # Motivating case: a compose session writes to compose-YYYY-MM-DD while the
+    # session's own cwd is a different worktree of the same repo (dev-env#750).
+    target_m = _WORKTREE_RE.match(file_norm)
+    if target_m and _normalize(target_m.group(1)) == canonical_norm:
+        sys.exit(0)
+
     # Path targets the canonical root but not the active worktree — block.
     try:
         rel = os.path.relpath(file_path, canonical_root)
