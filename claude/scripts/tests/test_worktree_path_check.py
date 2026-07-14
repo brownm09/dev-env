@@ -199,12 +199,51 @@ def test_main_noop_outside_worktree() -> str:
     return "non-worktree cwd is a no-op (exit 0)"
 
 
+def test_main_allows_write_to_sibling_worktree() -> str:
+    """Write targeting a sibling worktree under the same canonical root is allowed.
+
+    Motivating case (dev-env#750): during journal compose, the session's cwd is
+    inside one EJ worktree but the compose skill writes to the compose-YYYY-MM-DD
+    worktree, which is a *different* worktree under the same canonical root. The
+    hook was incorrectly blocking these as "escaping to canonical root" writes.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        canonical_root = Path(tmp) / "canon-repo"
+        # Session is running inside worktree-A.
+        worktree_a = canonical_root / ".claude" / "worktrees" / "worktree-A"
+        worktree_a.mkdir(parents=True)
+        (worktree_a / ".git").write_text("not a real gitdir link")
+        # Write target is compose-2026-07-12, a sibling worktree.
+        compose_wt = canonical_root / ".claude" / "worktrees" / "compose-2026-07-12"
+        compose_wt.mkdir(parents=True)
+        target_file = compose_wt / "sessions" / "meta" / "2026-07-12-journal.md"
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(target_file)},
+            "cwd": str(worktree_a),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            stderr_msg = ""
+            try:
+                stderr_msg = json.loads(proc.stderr).get("reason", proc.stderr)
+            except json.JSONDecodeError:
+                stderr_msg = proc.stderr
+            raise AssertionError(
+                f"expected exit 0 (sibling worktree write allowed), got {proc.returncode}. "
+                f"reason={stderr_msg!r}"
+            )
+    return "Write to sibling worktree under same canonical root is allowed (exit 0)"
+
+
 def main() -> int:
     tests = [
         ("_worktree_is_live decision table", test_worktree_is_live_decision_table),
         ("missing .git short-circuits before git", test_git_link_check_short_circuits_before_git),
         ("main() blocks Edit from orphaned worktree", test_main_blocks_edit_from_orphaned_worktree),
         ("main() blocks Write escaping to canonical root", test_main_blocks_write_escaping_to_canonical_root),
+        ("main() allows Write to sibling worktree", test_main_allows_write_to_sibling_worktree),
         ("main() no-op outside worktree", test_main_noop_outside_worktree),
     ]
     failed = 0
