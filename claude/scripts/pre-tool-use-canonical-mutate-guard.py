@@ -162,6 +162,17 @@ liveness confirmation itself needed no change to support it, since
 `_is_live_worktree()` operates on whatever `worktree_root` string it is given,
 regardless of shape.
 
+An already git-RESOLVED root (`_blockable_ambient_root()`/`_blockable_redirect_root()`'s
+own `root` parameter, as opposed to the raw client-supplied `cwd` the paragraph above
+covers) is likewise no longer exempted on path shape alone (dev-env#774): a genuine,
+INDEPENDENTLY-CLONED canonical checkout (a real `git clone`/`git init`, never a
+`git worktree add`) that happens to sit at a worktree-shaped path is exposed to the exact
+same dev-env#453 collision as any other canonical, so `_is_confirmed_worktree_root()` asks
+git directly — via `git worktree list --porcelain` — whether the resolved root is actually
+a LINKED (non-canonical) entry of its own repository, rather than trusting `_WORKTREE_RE`
+to say so from the path string alone. `_WORKTREE_RE` is retained only as that function's
+fail-open backstop for when git can't answer at all.
+
 Stdin JSON shape (PreToolUse):
   {
     "hook_event_name": "PreToolUse",
@@ -180,6 +191,7 @@ import subprocess
 import sys
 
 from _hookio import is_absolute_path, split_top_level
+from _worktree_topology import find_worktree_by_path, parse_worktree_porcelain
 import _hookutil
 
 # Shared fragment for the two worktree-path regexes below (dev-env#749 review
@@ -205,9 +217,13 @@ _WORKTREE_RE = re.compile(
 # Anchored capture variants used only to extract the worktree-root PREFIX of a raw,
 # client-supplied cwd for the liveness check in _is_live_worktree() below (via
 # _worktree_root_from_cwd()). Kept separate from _WORKTREE_RE: that regex's other use site
-# (_blockable_redirect_root/_blockable_ambient_root) checks an already git-RESOLVED root,
-# which is safe as-is and needs no liveness confirmation — see _is_live_worktree's docstring
-# for why only the cwd-facing use site was vulnerable to trusting shape alone.
+# (_blockable_redirect_root/_blockable_ambient_root, via _is_confirmed_worktree_root()) checks
+# an already git-RESOLVED root, which no longer trusts this regex as its primary signal — see
+# _is_confirmed_worktree_root()'s docstring (dev-env#774): a genuine independent canonical
+# clone that merely happens to sit at a worktree-shaped path is NOT exempt from liveness-style
+# confirmation there either, it's just confirmed via `git worktree list` membership instead of
+# the cwd-facing site's `.git`-isfile + `rev-parse` liveness check. `_WORKTREE_RE` itself is
+# retained only as that confirmation's fail-open backstop when git can't answer at all.
 #
 # Split into two ordered patterns (nested tried before sibling) rather than one combined
 # alternation — review finding, dev-env#760: a single regex with non-greedy `(.+?)` lets the
@@ -870,7 +886,83 @@ def _is_allowlisted_root(root: str) -> bool:
     return normalized in _REDIRECT_TARGET_ALLOWLIST
 
 
-def _blockable_redirect_root(redirect_dirs: list, cwd: str, toplevel_cache: dict):
+def _resolve_worktree_list(root: str):
+    """Return `git -C <root> worktree list --porcelain`, parsed via the shared
+    `_worktree_topology.parse_worktree_porcelain`, or None if git can't resolve
+    it (not a repo, git missing, timeout, non-zero exit, or an illegal path).
+
+    `root` here is always an ALREADY `git rev-parse`-resolved toplevel (see
+    `_resolve_git_toplevel`/`_memoized_toplevel`), so this call succeeding is
+    the expected common case — the None branch is a defensive fail-open
+    backstop for git becoming unavailable between the two calls, not a path
+    exercised on every invocation. Same defensive except-tuple as
+    `_resolve_git_toplevel` (dev-env#576/PR#584's `ValueError` addition for a
+    null-byte path applies identically here, since `root` can itself be a
+    command-string-derived redirect target).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", root, "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    return parse_worktree_porcelain(result.stdout)
+
+
+def _memoized_worktree_list(root: str, cache: dict):
+    """`_resolve_worktree_list(root)`, memoized in `cache` (root -> parsed-list-or-None).
+
+    A separate cache from `_memoized_toplevel`'s — different subprocess,
+    different return shape (a list of dicts, not a string) — but the same
+    one-dict-per-Bash-call sharing convention (dev-env#758): a command
+    resolving the same root's worktree membership from both
+    `_blockable_ambient_root` and `_blockable_redirect_root` (unlikely in
+    practice, but not precluded) spawns at most one `git worktree list` per
+    distinct root.
+    """
+    if root not in cache:
+        cache[root] = _resolve_worktree_list(root)
+    return cache[root]
+
+
+def _is_confirmed_worktree_root(root: str, cache: dict) -> bool:
+    """True if `root` (an already git-resolved toplevel) is confirmed, via
+    `git worktree list --porcelain` membership, to be a LINKED (non-canonical)
+    worktree of its repository — not merely a path that LOOKS worktree-shaped
+    (dev-env#774 gap (a)).
+
+    A genuine, INDEPENDENTLY-CLONED canonical checkout that happens to sit at
+    a worktree-shaped path (e.g. `<repo>-worktrees/<name>`, or the nested
+    `.claude/worktrees/<name>` shape) is its own repository's sole/first
+    (canonical) `git worktree list` entry — never a linked one, since it was
+    never created via `git worktree add` — so this correctly classifies it as
+    canonical (blockable) regardless of what its path string looks like.
+    `root`'s own entry not being found at all (should not happen, since `root`
+    was itself resolved from this same repo, but not asserted) is treated the
+    same as "not confirmed a linked worktree" — fail toward blockable, the
+    conservative direction for an unexpected state.
+
+    Falls back to the path-shape regex (`_WORKTREE_RE`) when git itself can't
+    answer at all (fail open — matches this hook's existing philosophy
+    elsewhere, e.g. `_resolve_git_toplevel`'s own None-on-failure contract): a
+    backstop, not the primary signal, per dev-env#774's "replace (or
+    backstop)" framing.
+    """
+    worktrees = _memoized_worktree_list(root, cache)
+    if not worktrees:
+        return _WORKTREE_RE.search(root) is not None
+    entry = find_worktree_by_path(worktrees, root, normalize=_normalize_path)
+    if entry is None:
+        return _WORKTREE_RE.search(root) is not None
+    return entry is not worktrees[0]
+
+
+def _blockable_redirect_root(redirect_dirs: list, cwd: str, toplevel_cache: dict, worktree_list_cache: dict):
     """Resolve each `-C`/`--git-dir`/`--work-tree` dir hint and return the first
     that lands on a canonical (non-worktree) root NOT on the carve-out, or None.
 
@@ -898,21 +990,25 @@ def _blockable_redirect_root(redirect_dirs: list, cwd: str, toplevel_cache: dict
     one command before this memoization). Delegated to the shared
     `_memoized_toplevel()` helper (dev-env#758), the same one `main()` uses
     for cwd's own resolution — one memoization scheme, one cache dict, for
-    every path this hook ever resolves in a single command.
+    every path this hook ever resolves in a single command. `worktree_list_cache`
+    is the equivalent cache for `_is_confirmed_worktree_root`'s own
+    `git worktree list` calls (dev-env#774) — a separate dict, since it caches
+    a different subprocess's output shape.
     """
     for d in redirect_dirs:
         resolved = d if is_absolute_path(d) else os.path.join(cwd, d)
         root = _memoized_toplevel(resolved, toplevel_cache)
-        if root and not _WORKTREE_RE.search(root) and not _is_allowlisted_root(root):
+        if root and not _is_confirmed_worktree_root(root, worktree_list_cache) and not _is_allowlisted_root(root):
             return root
     return None
 
 
-def _blockable_ambient_root(cwd_root):
-    """Return `cwd_root` if it's non-None and NOT itself worktree-shaped, else None.
+def _blockable_ambient_root(cwd_root, worktree_list_cache: dict):
+    """Return `cwd_root` if it's non-None and NOT a git-confirmed worktree, else None.
 
-    Defense-in-depth mirror of `_blockable_redirect_root`'s `not
-    _WORKTREE_RE.search(root)` guard (review finding, dev-env#749). The
+    Defense-in-depth mirror of `_blockable_redirect_root`'s own
+    `_is_confirmed_worktree_root` guard (review finding, dev-env#749; upgraded
+    from a path-shape-only check to a git-membership one, dev-env#774). The
     ambient branch's original invariant — "cwd already failed the worktree
     pattern, so any resolved toplevel IS canonical by construction" — assumed
     `cwd_is_worktree` could only be False when cwd was never worktree-shaped
@@ -925,10 +1021,13 @@ def _blockable_ambient_root(cwd_root):
     review), but not provably impossible on every filesystem. Guarding the
     resolved root itself, exactly like the redirect branch already does,
     closes that latent gap without weakening the orphan-blocking fix this PR
-    exists to make: an orphan's resolved root is the CANONICAL repo, never
-    worktree-shaped, so this guard is a no-op for the actual bug being fixed.
+    exists to make: an orphan's resolved root is the CANONICAL repo, never a
+    confirmed worktree, so this guard is a no-op for the actual bug being
+    fixed — and, as of dev-env#774, ALSO correctly blocks an independently-
+    cloned canonical checkout that merely happens to sit at a worktree-shaped
+    path (a case the old shape-only check wrongly exempted).
     """
-    if cwd_root and not _WORKTREE_RE.search(cwd_root):
+    if cwd_root and not _is_confirmed_worktree_root(cwd_root, worktree_list_cache):
         return cwd_root
     return None
 
@@ -1044,6 +1143,12 @@ def main() -> None:
     # _worktree_is_live() (ADR-071 Amendment 3), so the cache is threaded
     # through its existing `git_toplevel` injection seam instead.
     toplevel_cache = {}
+    # Separate cache for `_is_confirmed_worktree_root()`'s `git worktree list`
+    # calls (dev-env#774) — a distinct subprocess/return-shape from
+    # `toplevel_cache`, threaded through both `_blockable_ambient_root()` and
+    # `_blockable_redirect_root()` below so a command resolving the same root
+    # from both call sites spawns at most one `git worktree list` per root.
+    worktree_list_cache = {}
 
     cwd_is_worktree = (
         any(not m["redirect_dirs"] for m in matches)
@@ -1063,19 +1168,20 @@ def main() -> None:
         if m["redirect_dirs"]:
             # Redirect mutation: blockable iff a target resolves to a canonical
             # (non-worktree, non-carve-out) root — regardless of cwd.
-            block_root = _blockable_redirect_root(m["redirect_dirs"], cwd, toplevel_cache)
+            block_root = _blockable_redirect_root(m["redirect_dirs"], cwd, toplevel_cache, worktree_list_cache)
         elif cwd_is_worktree:
             # Ambient mutation inside a worktree targets the worktree itself — fine.
             continue
         else:
             # Ambient mutation with a non-worktree (or non-live-worktree) cwd:
-            # blockable iff cwd resolves to a root that is itself NOT
-            # worktree-shaped (_blockable_ambient_root guards this — review
-            # finding, dev-env#749 — since cwd_is_worktree being False no
-            # longer guarantees cwd was never worktree-shaped at all, only
-            # that it wasn't confirmed LIVE).
+            # blockable iff cwd resolves to a root that is itself NOT a
+            # git-confirmed worktree (_blockable_ambient_root guards this —
+            # review finding, dev-env#749; git-membership-based as of
+            # dev-env#774 — since cwd_is_worktree being False no longer
+            # guarantees cwd was never worktree-shaped at all, only that it
+            # wasn't confirmed LIVE).
             # None -> not blockable -> fail open
-            block_root = _blockable_ambient_root(_memoized_toplevel(cwd, toplevel_cache))
+            block_root = _blockable_ambient_root(_memoized_toplevel(cwd, toplevel_cache), worktree_list_cache)
 
         if block_root is None:
             continue  # this match isn't blockable — keep scanning later segments

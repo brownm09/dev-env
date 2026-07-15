@@ -31,6 +31,10 @@ knocked off `main`) and decides the non-destructive correction (dev-env#396, ADR
  14. pattern_squat_action()       — warn-live (never touch a live session) / park-and-remove
                                    (idle, clean, fully pushed) / park-only (dirty, or not
                                    provably fully pushed — the conservative default).
+ 15. find_worktree_by_path()      — exact-path lookup against a parsed worktree list, with an
+                                   injectable normalize (dev-env#774: git-membership confirmation
+                                   for the two PreToolUse hooks, replacing/backstopping their
+                                   path-shape-regex classification).
 
 Fully offline — no git, no network, no filesystem writes (paths need not exist; the
 module resolves them for comparison only). The git-driven prune/post-merge/dev-env-sync/
@@ -89,6 +93,44 @@ def test_canonical_worktree() -> str:
     if wt.canonical_worktree([]) is not None:
         raise AssertionError("no worktrees -> None")
     return "first entry is canonical; empty list -> None"
+
+
+def test_find_worktree_by_path() -> str:
+    worktrees = wt.parse_worktree_porcelain(_porcelain([(CANON, "main"), (WT_FOO, "claude/foo-bar-abc123")]))
+    canon_entry = wt.find_worktree_by_path(worktrees, CANON)
+    if canon_entry is None or canon_entry["path"] != CANON:
+        raise AssertionError(f"expected the canonical entry, got {canon_entry}")
+    if canon_entry is not worktrees[0]:
+        raise AssertionError("expected the exact same object as worktrees[0], not a copy")
+
+    linked_entry = wt.find_worktree_by_path(worktrees, WT_FOO)
+    if linked_entry is None or linked_entry["path"] != WT_FOO:
+        raise AssertionError(f"expected the linked entry, got {linked_entry}")
+
+    if wt.find_worktree_by_path(worktrees, "C:/Users/brown/Git/unrelated-repo") is not None:
+        raise AssertionError("a path matching no entry must return None")
+    if wt.find_worktree_by_path([], CANON) is not None:
+        raise AssertionError("an empty worktree list must return None")
+
+    # Windows-vs-POSIX and case spelling must compare equal under the default normalize (Path.resolve()-based).
+    win_spelling = r"C:\Users\brown\Git\dev-env"
+    if wt.find_worktree_by_path(worktrees, win_spelling) is None:
+        raise AssertionError("Windows-spelled path must still match the POSIX-spelled entry under default normalize")
+
+    # A caller-supplied normalize (mirroring a PreToolUse hook's own normcase/normpath convention,
+    # deliberately NOT this module's own symlink-resolving default) is honored instead.
+    calls = []
+
+    def _spy_normalize(path):
+        calls.append(path)
+        return path.replace("\\", "/").rstrip("/").lower()
+
+    custom = wt.find_worktree_by_path(worktrees, CANON.upper(), normalize=_spy_normalize)
+    if custom is None or custom["path"] != CANON:
+        raise AssertionError("a caller-supplied normalize must be used instead of the module default")
+    if not calls:
+        raise AssertionError("the caller-supplied normalize must actually be invoked")
+    return "exact-path lookup finds canonical/linked entries, returns the same object, honors a caller-supplied normalize (dev-env#774)"
 
 
 def test_park_branch_for() -> str:
@@ -376,6 +418,7 @@ def main() -> int:
     tests = [
         ("parse_worktree_porcelain", test_parse_worktree_porcelain),
         ("canonical_worktree (first / empty)", test_canonical_worktree),
+        ("find_worktree_by_path (exact-match lookup, dev-env#774)", test_find_worktree_by_path),
         ("park_branch_for (Windows + POSIX)", test_park_branch_for),
         ("main_squatter found", test_main_squatter_found),
         ("main_squatter none when canonical on main", test_main_squatter_none_when_canonical_on_main),

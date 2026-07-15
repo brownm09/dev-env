@@ -1,8 +1,8 @@
 # ADR-071: PreToolUse Hook to Block Git-Mutating Bash Commands in a Canonical (Non-Worktree) Checkout
 
-**Date:** 2026-07-01 (amended 2026-07-04, 2026-07-05, 2026-07-14, 2026-07-14)
+**Date:** 2026-07-01 (amended 2026-07-04, 2026-07-05, 2026-07-14, 2026-07-14, 2026-07-14, 2026-07-14)
 **Status:** Accepted
-**Tags:** hooks, worktrees, pre-tool-use, bash, powershell, git, gh-cli, concurrency, canonical-checkout, rate-limit, redirect-target, orphaned-worktree
+**Tags:** hooks, worktrees, pre-tool-use, bash, powershell, git, gh-cli, concurrency, canonical-checkout, rate-limit, redirect-target, orphaned-worktree, worktree-membership
 
 ---
 
@@ -1198,4 +1198,143 @@ copy of the identical logic.
 
 All pre-amendment tests across `test_worktree_canon.py`, `test_worktree_path_check.py`, and
 `test_canonical_mutate_guard.py` were re-run and pass unchanged. The full suite (`py -3
+claude/scripts/run-hook-tests.py`) passes.
+
+---
+
+## Amendment 6 (2026-07-14) — confirm resolved-root worktree membership via `git worktree list`, not path shape (dev-env#774 gap (a))
+
+### The gap
+
+`_blockable_ambient_root()` and `_blockable_redirect_root()` both decide whether an already
+git-*resolved* toplevel (`root`) is exempt from blocking purely by re-checking `_WORKTREE_RE.search(root)`
+— the SAME path-shape regex the cwd-facing site uses, but applied here to a value that has already been
+through `git rev-parse --show-toplevel`. Amendment 3's own module-docstring comment stated this was safe
+"as-is," on the assumption that once a root is resolved, only a real worktree or a real canonical could
+produce it — an assumption never actually re-verified after Amendment 5 (dev-env#760) taught this hook a
+SECOND worktree-path shape (`<repo>-worktrees/<name>`, reached via manual `git worktree add` rather than
+`EnterWorktree`).
+
+That assumption is false: a genuine, INDEPENDENTLY-CLONED canonical checkout (a real `git clone`/`git
+init`, never a `git worktree add`) that happens to sit at a path shaped like `<repo>-worktrees/<name>` —
+or the nested `.claude/worktrees/<name>` shape — resolves its own git toplevel to ITSELF, and
+`_WORKTREE_RE.search(root)` then matches the path STRING and wrongly exempts it, even though it is in
+fact its own distinct canonical checkout, exposed to the exact dev-env#453 collision this hook exists to
+prevent. Confirmed reproducible end-to-end in this PR (`test_main_blocks_mutating_command_from_independent_clone_at_worktree_shaped_path`):
+before this fix, a real `git init`-created repo at `<tmp>/some-repo-worktrees/some-name` was silently
+exempted from the ambient-mutation block despite `_is_live_worktree()`'s OWN, separate liveness check
+(Amendment 3) already correctly determining `cwd_is_worktree = False` for the identical directory (its
+`.git` is a real DIRECTORY, not a worktree's gitdir-pointer FILE, so signal 1 already fails it) — the two
+checks simply disagreed, and the ambient-root guard's path-shape check was the one still wrong.
+
+Found during `/review` on PR #764 (dev-env#760's own sibling-directory convention fix) — two independent
+Opus-model review subagents both surfaced this gap, plus a companion gap (b) in the sibling
+`pre-tool-use-worktree-path-check.py` hook (ADR-024's own new addendum documents that half), filed
+together as [dev-env#774](https://github.com/brownm09/dev-env/issues/774). Generalizes
+[dev-env#749](https://github.com/brownm09/dev-env/issues/749) (Amendment 3, closed) — that fix confirmed
+liveness at the RAW-cwd-facing site via a lighter `.git`-isfile + `rev-parse`-equality check; it never
+touched the two RESOLVED-root sites this amendment fixes, since Amendment 3's own text explicitly
+carved them out as "safe as-is."
+
+### The fix
+
+Replaces (with a fail-open backstop, not a wholesale removal) `_WORKTREE_RE.search(root)` at both call
+sites with `_is_confirmed_worktree_root(root, worktree_list_cache)`:
+
+- Runs `git -C <root> worktree list --porcelain` (a new `_resolve_worktree_list()`, defensive except-tuple
+  mirroring `_resolve_git_toplevel`'s own) and parses it via the shared `_worktree_topology.parse_worktree_porcelain`
+  — the same parser `_worktree_topology.py` already uses for main-branch-squatter detection (dev-env#396,
+  ADR-058), now reused for a second, unrelated purpose per that module's own "could be extended or reused"
+  framing in the dev-env#774 issue body.
+- `root` is confirmed a LINKED (non-canonical) worktree of its own repository iff it is NOT the list's
+  first (canonical) entry — reusing the new shared `find_worktree_by_path()` primitive (below) rather than
+  hand-rolling the lookup. An independent clone at a worktree-shaped path is its own repository's
+  sole/first entry (it was never `git worktree add`-created), so this correctly classifies it as
+  canonical regardless of what its path string looks like; a genuine linked worktree's own `git worktree
+  list` call (run from anywhere in that same repo, including from itself) always includes the canonical
+  as entry zero and itself as a later entry.
+- Falls back to `_WORKTREE_RE.search(root)` only when git itself can't answer at all (timeout, non-zero
+  exit, an unresolvable/illegal path) — the "or backstop" half of the dev-env#774 issue's own framing, not
+  the primary signal anymore. This is expected to be a rare path in practice: `root` was itself JUST
+  resolved via a successful `git rev-parse --show-toplevel` moments earlier in the same hook invocation, so
+  `git worktree list` against the identical root failing outright would itself be an unusual state (git
+  becoming unavailable mid-invocation, a race with the repo being torn down, etc.).
+- A new `worktree_list_cache` dict, threaded through `main()` exactly like the pre-existing `toplevel_cache`
+  (dev-env#758's memoization convention), so a command touching the same root from both
+  `_blockable_ambient_root` and `_blockable_redirect_root` spawns at most one `git worktree list` per
+  distinct root.
+
+**New shared primitive, `_worktree_topology.find_worktree_by_path(worktrees, path, *, normalize=_norm)`:**
+an exact-path lookup against a parsed worktree list, with an injectable `normalize` callable so a caller
+with its own established path-comparison convention (both PreToolUse hooks use `os.path.normcase(os.path.normpath(...))`,
+deliberately NOT this module's own symlink-resolving `_norm` default) can supply it rather than accept a
+mismatched comparison. Both this hook and ADR-024's sibling hook (its own new addendum) build their
+git-membership confirmation on top of this one function.
+
+### Why this is an amendment, not a new ADR
+
+Same harm model (silent shared-canonical-checkout collision, dev-env#453), same file, same hook, same
+override/worktree-scope machinery, same severity (hard block, exit 2) — only the SIGNAL the two
+resolved-root exemption checks trust is upgraded from a path-shape regex to actual git membership. Mirrors
+Amendment 3's own framing (an unrecognized way for a value to *look* safe without *being* safe): that
+amendment fixed the raw-cwd-facing site; this one fixes the two resolved-root sites Amendment 3's own text
+assumed didn't need the same treatment. A genuinely linked worktree still gets zero-friction treatment
+(proven by re-running every pre-existing worktree/redirect-target test unchanged, plus the strengthened
+`test_main_allows_redirect_into_worktree_target` — see Coverage below); every previously-blocked canonical
+stays blocked.
+
+### Sync-location update
+
+1. The module docstring in `pre-tool-use-canonical-mutate-guard.py` — the paragraph following the
+   Amendment 3 "worktree-shaped cwd is now confirmed LIVE" note now describes the resolved-root
+   confirmation and cites dev-env#774; the `_WORKTREE_RE`-vs-liveness comment block right after the
+   regex's own definition (previously claiming the resolved-root site "is safe as-is and needs no liveness
+   confirmation") is corrected to point at `_is_confirmed_worktree_root()` instead.
+2. `claude/CLAUDE.md` — no change; its existing "Never mutate git state directly…" bullet already describes
+   the harm model and hook behavior at a level this amendment doesn't alter (it changes an internal
+   confirmation mechanism, not the user-visible contract).
+3. This ADR's own Decision/Judgment-calls text and Amendments 1–5 — left **unedited** for history; this
+   Amendment 6 section is the addition, per this repo's established amended-ADR convention.
+4. `docs/REFERENCE.md` — the Hooks table row for `pre-tool-use-canonical-mutate-guard.py` gains a clause
+   noting the resolved-root git-membership confirmation.
+5. `docs/adr/INDEX.md` row 071 — `Date` cell gains a fourth `2026-07-14` entry (also backfilling a prior
+   gap: the header was already missing a date for Amendment 5, which this correction folds in); tag
+   `worktree-membership` added.
+6. [ADR-024](024-worktree-path-guard-hook.md) gains its own new addendum for gap (b) — the sibling
+   `pre-tool-use-worktree-path-check.py` hook's version of the identical underlying issue, fixed in the
+   same PR; the two documents cross-reference each other the same way Amendment 5 and ADR-024's dev-env#760
+   addendum already do.
+
+### Coverage
+
+`claude/scripts/tests/test_canonical_mutate_guard.py` grows from 81 to 86 tests:
+
+- **New pure-function tests:** `test_is_confirmed_worktree_root_decision_table` (an independent clone's
+  sole/canonical entry is NOT confirmed a worktree regardless of path shape; a genuinely linked entry IS;
+  git-unavailable falls back to the shape regex); `test_memoized_worktree_list_dedupes_across_callers`
+  (mirrors dev-env#758's `_memoized_toplevel` dedup proof for the new cache); `test_resolve_worktree_list_failsopen_on_timeout_and_oserror`
+  (mirrors the existing `_resolve_git_toplevel` fail-open proof for the new subprocess call).
+- **Updated pure-function tests:** `test_blockable_ambient_root_guards_against_worktree_shaped_resolution`
+  and its sibling-directory-convention variant — both updated to the new `(root, cache)` signature, with
+  the cache dict pre-seeded so they stay hermetic (no real `git worktree list` spawned against fixture
+  paths, one of which happens to be a real path on the dev machine but must not be depended on as one).
+- **New end-to-end tests:** `test_main_blocks_mutating_command_from_independent_clone_at_worktree_shaped_path`
+  (ambient side — the exact gap (a) reproduction, a real `git init`-created repo at a worktree-shaped path
+  still blocked) and `test_main_blocks_redirect_into_independent_clone_at_worktree_shaped_path` (the
+  identical proof through the `-C` redirect path).
+- **Strengthened existing test:** `test_main_allows_redirect_into_worktree_target` previously proved its
+  own claim ("target is a worktree, allowed") using a fixture that was actually just an independent
+  `_init_throwaway_repo` at a worktree-shaped path — i.e., exactly the gap (a) scenario, which happened to
+  pass only because of the bug this amendment fixes. Rewritten to use a REAL `git worktree add`-registered
+  target (`_init_repo_with_live_worktree`, already established elsewhere in this file) so the test now
+  proves what its name and docstring actually claim.
+
+`claude/scripts/tests/test_worktree_topology.py` gains `test_find_worktree_by_path` for the new shared
+primitive (canonical/linked-entry lookup returns the same object by identity, an empty list and a
+non-matching path both return `None`, and a caller-supplied `normalize` is honored instead of the module's
+own default) — grows from 25 to 26 tests.
+
+All pre-amendment tests across `test_worktree_topology.py`, `test_worktree_path_check.py`, and
+`test_canonical_mutate_guard.py` were re-run and pass unchanged (the two `_blockable_ambient_root` tests
+required a signature update, not a behavior change — see above). The full suite (`py -3
 claude/scripts/run-hook-tests.py`) passes.

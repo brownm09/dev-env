@@ -49,6 +49,12 @@ topology, and returns a *decision*; each caller performs the git mutation itself
     return-canonical/warn-squatter/warn-dirty decision, gated by a narrower predicate since
     that repo's canonical is legitimately on many other branches (e.g. ``draft/YYYY-MM-DD``).
 
+A fourth, non-mutating consumer pair uses this module's parsing for a different purpose entirely —
+membership confirmation rather than topology diagnosis (dev-env#774): ``pre-tool-use-canonical-mutate-guard.py``
+and ``pre-tool-use-worktree-path-check.py`` both build on the shared ``find_worktree_by_path()`` below to
+confirm a candidate root is (or isn't) a git-registered worktree, replacing a path-shape-regex guess with
+actual ``git worktree list`` ground truth — see ADR-071 Amendment 6 and ADR-024's own dev-env#774 addendum.
+
 The non-destructive **park** (recreate ``claude/<slug>`` at the worktree's current commit)
 is the correction precedent: ``git checkout -b`` changes no working-tree files, so it frees
 ``main`` without touching even a dirty worktree's state. A caller parking a *different*
@@ -105,6 +111,32 @@ def _norm(path: "str | Path") -> str:
 def canonical_worktree(worktrees: "list[dict]") -> "dict | None":
     """The canonical (primary) worktree — always the first ``git worktree list`` entry."""
     return worktrees[0] if worktrees else None
+
+
+def find_worktree_by_path(worktrees: "list[dict]", path: str, *, normalize=_norm) -> "dict | None":
+    """The worktree entry (canonical or linked) whose path exactly equals ``path``, after
+    both sides are run through ``normalize`` — or ``None`` if none match.
+
+    Exact-path only (no prefix/ancestor matching): a caller checking whether some OTHER
+    path is *nested inside* a worktree should compare against each returned entry's own
+    ``path`` as a prefix itself; this only answers "is this exact path one of the known
+    worktree roots, and if so which entry."
+
+    Pass a ``normalize`` matching the CALLER's own path-comparison convention — e.g. a
+    PreToolUse hook's ``os.path.normcase(os.path.normpath(...))`` — rather than relying on
+    this module's own symlink-resolving ``_norm`` default, so both sides of every
+    comparison go through the identical transform the caller already trusts elsewhere in
+    the same file. Used by ``pre-tool-use-canonical-mutate-guard.py`` and
+    ``pre-tool-use-worktree-path-check.py`` to confirm actual ``git worktree list``
+    membership rather than trusting a path-shape regex alone (dev-env#774) — a resolved or
+    candidate root is checked against the real worktree list instead of merely matching a
+    path string that LOOKS worktree-shaped.
+    """
+    target = normalize(path)
+    for wt in worktrees:
+        if normalize(wt["path"]) == target:
+            return wt
+    return None
 
 
 def park_branch_for(path: "str | Path") -> str:

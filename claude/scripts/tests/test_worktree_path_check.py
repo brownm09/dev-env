@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """Unit + integration tests for pre-tool-use-worktree-path-check.py.
 
-Two layers, both hermetic (no real git repos, no real worktrees):
+Two layers. The `_worktree_is_live()` unit-test layer and most of the
+end-to-end layer are hermetic (no real git repos, no real worktrees) — they
+build worktree fixtures from bogus (non-real-repo) `.git` files, which is
+enough to exercise `_resolve_worktree_scope()`'s regex+liveness FALLBACK path
+(`git worktree list` fails against a bogus `.git`, same as it always has). A
+smaller set of tests (dev-env#774, below) use a REAL throwaway git repo —
+needed to exercise the git-CONFIRMED path, which a bogus `.git` file cannot
+reach at all:
 
   1. _worktree_is_live() decision table — the orphaned-worktree liveness guard
      (dev-env#328). Driven with stubbed `path_isfile` / `git_toplevel` so every
@@ -13,7 +20,17 @@ Two layers, both hermetic (no real git repos, no real worktrees):
        - a Write escaping to the canonical root from a live worktree is
          BLOCKED (exit 2) with the escape recovery message, on stderr
          (dev-env#469 — this call site had zero coverage before);
-       - a call from a non-worktree cwd is a no-op (exit 0).
+       - a call from a non-worktree cwd is a no-op (exit 0);
+       - (dev-env#774, real-git-repo fixtures) a Write from a subdirectory of a
+         repo literally named `<x>-worktrees` is allowed — gap (b): the regex
+         alone misclassifies the subdirectory as a worktree name, but
+         `_resolve_worktree_scope()`'s git confirmation catches the mismatch
+         against git's own canonical entry and no-ops instead; an orphan
+         nested in a REAL canonical repo is still correctly blocked; a REAL,
+         `git worktree add`-registered worktree still gets zero-friction
+         treatment; and escape-detection (this hook's core purpose) still
+         fires against a REAL canonical root, not just the bogus-`.git`-file
+         fixtures every other test in this file uses.
 
 Both block scenarios assert the reason lands on stderr with empty stdout —
 Claude Code discards a PreToolUse hook's stdout on exit code 2, so a reason
@@ -52,6 +69,43 @@ wpc = _load_module()
 
 _WT = "C:/Users/brown/Git/dev-env/.claude/worktrees/hardcore-williams-9df32f"
 _CANON = "C:/Users/brown/Git/dev-env"
+
+
+def _init_throwaway_repo(root: Path) -> None:
+    """Initialize a minimal real git repo at `root` (dev-env#774) — needed for
+    the tests below that exercise `_resolve_worktree_scope()`'s git-backed path,
+    as opposed to every pre-existing test in this file, which uses a bogus
+    (non-real-repo) `.git` file and so only ever reaches the regex+liveness
+    fallback. Mirrors `test_canonical_mutate_guard.py`'s identical helper
+    (duplicated rather than imported, per this codebase's convention of
+    tolerating duplication through two test-file consumers before extracting a
+    shared module).
+    """
+    subprocess.run(
+        ["git", "-c", "init.templateDir=", "-c", "core.hooksPath=", "init", "-q", str(root)],
+        check=True, capture_output=True,
+    )
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True, capture_output=True)
+
+
+def _init_repo_with_real_worktree(canonical: Path, worktree_path: Path) -> None:
+    """Real canonical repo + a REAL, actually-registered `git worktree add` at
+    `worktree_path` (dev-env#774) — mirrors `test_canonical_mutate_guard.py`'s
+    `_init_repo_with_live_worktree`. `git worktree add` needs an existing commit
+    and a distinct branch (git allows a branch checked out in at most one
+    worktree at a time, and `main` is already checked out in the canonical).
+    """
+    _init_throwaway_repo(canonical)
+    subprocess.run(
+        ["git", "-C", str(canonical), "commit", "--allow-empty", "-q", "-m", "init"],
+        check=True, capture_output=True,
+    )
+    subprocess.run(["git", "-C", str(canonical), "branch", "-M", "main"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(canonical), "worktree", "add", "-q", "-b", "real-worktree-branch", str(worktree_path)],
+        check=True, capture_output=True,
+    )
 
 
 def test_worktree_is_live_decision_table() -> str:
@@ -361,6 +415,124 @@ def test_main_allows_write_to_nested_worktree_inside_sibling_directory_worktree(
     return "Write inside a nested worktree created inside a sibling-directory worktree is allowed, root correctly resolved to the inner worktree (exit 0, dev-env#760)"
 
 
+def test_main_allows_write_from_subdirectory_of_repo_literally_named_worktrees_suffix() -> str:
+    """dev-env#774 gap (b): a repo whose OWN root directory name literally ends in
+    `-worktrees` (e.g. `some-repo-worktrees`) must not have every Write/Edit from a
+    subdirectory misclassified as targeting a non-live "worktree".
+
+    Before this fix, `_SIBLING_WORKTREE_RE` matched the subdirectory as if it were a
+    worktree name and a truncated prefix as the "canonical root" -- then blocked
+    because no `.git` exists at that fabricated worktree_root. The
+    `_resolve_worktree_scope()` git-confirmation now recognizes that git's own
+    canonical entry (`some-repo-worktrees` itself) does not match the regex's
+    truncated guess, so nothing is enforced here at all.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "some-repo-worktrees"
+        subdir = repo / "src"
+        subdir.mkdir(parents=True)
+        _init_throwaway_repo(repo)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(subdir / "some_file.py")},
+            "cwd": str(subdir),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            stderr_msg = ""
+            try:
+                stderr_msg = json.loads(proc.stderr).get("reason", proc.stderr)
+            except json.JSONDecodeError:
+                stderr_msg = proc.stderr
+            raise AssertionError(
+                f"expected exit 0 (repo literally named *-worktrees must not be "
+                f"misclassified), got {proc.returncode}. reason={stderr_msg!r}"
+            )
+    return "Write from a subdirectory of a repo literally named *-worktrees is allowed (exit 0, dev-env#774 gap (b))"
+
+
+def test_main_blocks_edit_from_orphaned_worktree_nested_in_real_canonical() -> str:
+    """dev-env#774: proves the new git-worktree-list-based confirmation still
+    correctly BLOCKS a genuine orphan (its `.git` link missing) nested inside a
+    REAL canonical repo -- git's own canonical entry (found by walking up past
+    the orphan) matches the regex's guess, but the orphan's own path is not among
+    the repo's registered (linked) worktrees, so it is correctly treated as not live.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        canonical = Path(tmp) / "canonical-repo"
+        canonical.mkdir()
+        _init_throwaway_repo(canonical)
+        orphan = canonical / ".claude" / "worktrees" / "orphan-name"
+        orphan.mkdir(parents=True)  # no .git of its own
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(orphan / "some_file.py")},
+            "cwd": str(orphan),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (orphan nested in a real canonical still blocked), "
+                f"got {proc.returncode}. stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+        reason = json.loads(proc.stderr).get("reason", "")
+        if "orphaned" not in reason:
+            raise AssertionError(f"block reason missing orphan text: {reason!r}")
+    return "Edit from an orphaned worktree nested in a REAL canonical repo is still blocked (exit 2, dev-env#774)"
+
+
+def test_main_allows_write_from_real_registered_worktree() -> str:
+    """dev-env#774: a genuine, `git worktree add`-registered worktree (not just a
+    worktree-shaped bogus-`.git`-file directory) is still recognized as live and
+    in-scope -- a write correctly targeting it is allowed. Positive control for
+    the new git-worktree-list-based confirmation.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        canonical = Path(tmp) / "canonical-repo"
+        worktree_root = canonical / ".claude" / "worktrees" / "real-worktree"
+        _init_repo_with_real_worktree(canonical, worktree_root)
+        target_file = worktree_root / "some_file.py"
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(target_file)},
+            "cwd": str(worktree_root),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            raise AssertionError(f"expected exit 0, got {proc.returncode}. stderr={proc.stderr!r}")
+    return "Write correctly targeting a REAL registered worktree is allowed (exit 0, dev-env#774)"
+
+
+def test_main_blocks_write_escaping_to_real_canonical_root() -> str:
+    """dev-env#774: escape-detection (this hook's core purpose) still fires
+    correctly when using a REAL, `git worktree add`-registered worktree + REAL
+    canonical, not just the bogus-`.git`-file fixtures the pre-existing tests
+    in this file use (all of which only ever exercise the regex+liveness
+    fallback path, since a bogus `.git` file makes `git worktree list` fail).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        canonical = Path(tmp) / "canonical-repo"
+        worktree_root = canonical / ".claude" / "worktrees" / "real-worktree"
+        _init_repo_with_real_worktree(canonical, worktree_root)
+        escaping_path = canonical / "some_file.py"
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(escaping_path)},
+            "cwd": str(worktree_root),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(f"expected exit 2, got {proc.returncode}. stderr={proc.stderr!r}")
+        reason = json.loads(proc.stderr).get("reason", "")
+        if "canonical repo root" not in reason or "Corrected" not in reason:
+            raise AssertionError(f"block reason missing expected markers: {reason!r}")
+    return "Write escaping to a REAL canonical root (from a REAL registered worktree) still blocked (exit 2, dev-env#774)"
+
+
 def main() -> int:
     tests = [
         ("_worktree_is_live decision table", test_worktree_is_live_decision_table),
@@ -373,6 +545,10 @@ def main() -> int:
         ("main() blocks Edit from orphaned sibling-directory worktree (dev-env#760)", test_main_blocks_edit_from_orphaned_sibling_directory_worktree),
         ("main() allows Write to nested worktree inside a sibling-directory worktree (dev-env#760 review finding)", test_main_allows_write_to_nested_worktree_inside_sibling_directory_worktree),
         ("main() no-op outside worktree", test_main_noop_outside_worktree),
+        ("main() allows Write from a subdirectory of a repo literally named *-worktrees (dev-env#774 gap (b))", test_main_allows_write_from_subdirectory_of_repo_literally_named_worktrees_suffix),
+        ("main() blocks Edit from an orphan nested in a REAL canonical repo (dev-env#774)", test_main_blocks_edit_from_orphaned_worktree_nested_in_real_canonical),
+        ("main() allows Write from a REAL registered worktree (dev-env#774)", test_main_allows_write_from_real_registered_worktree),
+        ("main() blocks Write escaping to a REAL canonical root (dev-env#774)", test_main_blocks_write_escaping_to_real_canonical_root),
     ]
     failed = 0
     for name, fn in tests:
