@@ -103,6 +103,27 @@ def test_sibling_convention_repo_name_with_hyphen() -> str:
     return "a hyphenated repo name resolves to the correct (full) canonical root"
 
 
+def test_sibling_convention_bare_worktrees_dir_not_matched() -> str:
+    # Review finding, dev-env#760: a directory literally named "-worktrees" with no
+    # repo-name prefix at all must not match — pre-tool-use-canonical-mutate-guard.py's
+    # equivalent fragment already rejected this; this pattern must agree with it.
+    cwd = "C:/Foo/-worktrees/x"
+    assert canonical_root_from_worktree(cwd) is None
+    assert canonical_repo_root(cwd) == cwd
+    return "a bare, unprefixed '-worktrees' directory does not match (dev-env#760 review finding)"
+
+
+def test_nested_worktree_inside_sibling_worktree_resolves_to_inner() -> str:
+    # Review finding, dev-env#760: a nested-convention worktree created inside a
+    # sibling-convention worktree must resolve to ITS OWN (deeper) root, not the outer
+    # sibling directory — the nested pattern is tried first for exactly this reason.
+    cwd = "C:/Users/brown/Git/dev-env-worktrees/adr-096/.claude/worktrees/some-name"
+    expected = "C:/Users/brown/Git/dev-env-worktrees/adr-096"
+    assert canonical_root_from_worktree(cwd) == expected
+    assert canonical_repo_root(cwd) == expected
+    return "a nested worktree inside a sibling worktree resolves to the correct (inner) canonical root (dev-env#760 review finding)"
+
+
 # --- divergent no-match contracts (the reconciliation pin) ---------------------------
 
 
@@ -150,6 +171,8 @@ def main() -> int:
         ("sibling-directory convention: backslash match (dev-env#760)", test_sibling_convention_backslash_match),
         ("sibling-directory convention: subdir beyond worktree name (dev-env#760)", test_sibling_convention_subdir_beyond_worktree_name),
         ("sibling-directory convention: hyphenated repo name (dev-env#760)", test_sibling_convention_repo_name_with_hyphen),
+        ("bare unprefixed '-worktrees' dir not matched (dev-env#760 review finding)", test_sibling_convention_bare_worktrees_dir_not_matched),
+        ("nested worktree inside sibling worktree resolves to inner root (dev-env#760 review finding)", test_nested_worktree_inside_sibling_worktree_resolves_to_inner),
         ("no-match -> None (canonical_root_from_worktree)", test_no_match_returns_none_for_from_worktree),
         ("no-match -> passthrough (canonical_repo_root)", test_no_match_passes_through_for_repo_root),
         ("bare-suffix sibling worktree still not matched by regex", test_sibling_worktree_not_matched_by_regex),

@@ -1079,23 +1079,122 @@ need updating.
 7. ADR-024 (`pre-tool-use-worktree-path-check.py`'s own ADR) gains a parallel addendum in the same PR,
    since that hook's `_WORKTREE_RE` had the identical gap.
 
+### Review hardening (dev-env#760/PR#764)
+
+`/review` on this PR (two Opus-model subagents, correctness/security and reliability/performance/
+maintainability, run independently against the full diff) found the initial implementation above was
+incomplete in three ways, all fixed in the same PR before merge, plus two findings deliberately
+deferred as follow-ups:
+
+1. **Non-greedy capture let the sibling alternative steal a shallower match than a genuine nested
+   worktree deeper in the same path.** Both subagents independently found this: a `.claude/worktrees/
+   <name>` worktree created *inside* a `<repo>-worktrees/<name>` sibling worktree (e.g. `EnterWorktree`
+   run from a session whose primary repo is itself a manually-created sibling worktree) resolved to the
+   OUTER sibling directory, not the actual, deeper worktree — because a single combined-alternation
+   regex with non-greedy `(.+?)` matches at the *first* valid split point it finds, not the correct one.
+   In `pre-tool-use-worktree-path-check.py` this mis-resolution fed a `worktree_root` with no `.git` of
+   its own into the liveness check, so the hook wrongly blocked every write from the genuinely live
+   inner worktree with an "orphaned worktree" message — a real functional regression, not just a
+   theoretical one. Fixed by splitting the combined alternation into two separately-ordered regexes in
+   all three files (`_NESTED_WORKTREE_RE`/`_NESTED_WORKTREE_ROOT_RE` tried first, `_SIBLING_WORKTREE_RE`/
+   `_SIBLING_WORKTREE_ROOT_RE` only as a fallback): since a real path normally contains at most one
+   `.claude/worktrees/` segment, matching the nested pattern against the *whole* string first correctly
+   finds it regardless of what a `-worktrees` segment earlier in the same path might otherwise steal.
+   `_WORKTREE_RE`'s own `.search()` use sites (checking whether an already git-*resolved* root is
+   worktree-shaped, in `_blockable_ambient_root`/`_blockable_redirect_root`) needed no equivalent split —
+   a boolean "does any worktree shape occur here" check is unaffected by which alternative happens to
+   match first.
+2. **`os.path.exists` on the `.git` link doesn't distinguish a worktree's `.git` FILE from a canonical
+   checkout's `.git` DIRECTORY.** Security finding: a genuine, independent `git clone` (not a
+   `git worktree add`) that happens to be placed at a path shaped like `<repo>-worktrees/<name>` would
+   pass the `.git`-existence signal (a clone's `.git` is a directory, and `os.path.exists` doesn't care)
+   and then legitimately resolve `git rev-parse --show-toplevel` to itself — `_is_live_worktree()` would
+   therefore treat it as a live worktree and exempt it from the ambient-mutation block, even though it is
+   in fact its own distinct canonical checkout, just as exposed to the dev-env#453 collision as any other.
+   This exact gap already existed for the nested convention (a stray clone at
+   `<repo>/.claude/worktrees/<name>` would be equally exempted) — this PR's regex widening does not
+   introduce a new class of exposure, but it does extend the same latent weakness to a shape
+   (`<repo>-worktrees/`) that is the *conventional* location for genuine worktrees in this environment, so
+   a stray clone landing there is a more realistic collision than one nested under `.claude/`. Fixed by
+   changing the signal from `os.path.exists` to `os.path.isfile` in both `_is_live_worktree()` (this
+   file) and its sibling `_worktree_is_live()` (`pre-tool-use-worktree-path-check.py`) — a real worktree's
+   `.git` is always a `gitdir: ...` pointer *file*, never a directory, so `isfile` correctly rejects a
+   directory while still passing every existing worktree fixture (which all create `.git` as a file, real
+   or bogus). The `path_exists=` keyword parameter is renamed to `path_isfile=` in both functions (not
+   just its default value) for accuracy; the two test files' stubbed-lambda call sites are updated to
+   match, and a new test in each proves the fix against a REAL `.git` directory (not a stubbed lambda).
+3. **The three "same" regexes had quietly diverged on how much must precede `-worktrees`.** Both
+   subagents independently caught this too: `_worktree_canon.py` and `pre-tool-use-worktree-path-check.py`
+   accepted a bare, unprefixed `-worktrees` directory (nothing but a path separator before the hyphen),
+   while `pre-tool-use-canonical-mutate-guard.py`'s fragment already required at least one non-separator
+   character immediately before it. Low real-world impact (no repo in this environment is named exactly
+   `-worktrees`), but the three copies are documented and intended to encode the *same* predicate pending
+   their eventual consolidation (dev-env#510) — a silent divergence defeats that intent. Fixed by adding
+   the same `[^/\\]` requirement to the other two files' sibling patterns, verified empirically (not just
+   by inspection) that all three now agree on both the accept and reject cases.
+
+Two further findings were surfaced and deliberately **not** fixed in this PR, both pre-existing
+architectural limitations of the path-shape-regex approach (not introduced by this PR, only newly
+reachable via the second convention) that would require the more invasive git-based membership check the
+original issue's own "option 2" described, rather than a further regex patch:
+
+- **(a)** `_blockable_ambient_root`/`_blockable_redirect_root` treat an already git-*resolved* root as
+  exempt purely because its path string looks worktree-shaped — with no liveness confirmation at all
+  (unlike the cwd-facing path, this code path has no `_is_live_worktree()` backstop to begin with,
+  by original design, since a resolved root was assumed to need no further confirmation — see this
+  amendment's own "The fix" section above and Amendment 3's context). A genuine canonical checkout
+  physically located at a worktree-shaped path is therefore unconditionally exempted here, regardless of
+  the `isfile` fix in (2) above.
+- **(b)** A repo whose own root directory name literally ends in `-worktrees` (e.g. a real repo named
+  `some-worktrees`, distinct from the sibling-directory *container* convention) has every subdirectory
+  write misclassified as targeting a non-live "worktree," since the regex cannot distinguish "the
+  container convention" from "a repo whose name happens to end that way" from path text alone.
+
+Filed as [dev-env#774](https://github.com/brownm09/dev-env/issues/774) — adopt `git worktree list
+--porcelain`-based membership confirmation (the shared `_worktree_topology.py` module already parses
+this for a different purpose) to close both gaps at their root, generalizing beyond whatever additional
+naming conventions might appear in the future. A third, unrelated finding —
+`usage-snapshot.py`'s `find_session_jsonl()` uses its own hardcoded `"/.claude/worktrees/"` string marker
+and doesn't recognize the sibling convention at all — degrades gracefully (falls through to a full
+project-dir scan rather than failing) and is outside this PR's stated "path guards" scope; filed
+separately as [dev-env#775](https://github.com/brownm09/dev-env/issues/775).
+
+A fourth, informational-only finding: `_worktree_canon.py`'s `canonical_root_from_worktree()` is also
+consumed by `post-tool-use.py`'s `resolve_project_config()`, which the PR description didn't call out.
+Verified benign for the standard layout (a sibling-worktree cwd now resolves through the pure-string
+branch instead of the previous `canonical_root_via_git()` fallback; a wrong guess self-corrects since
+`_read_config` returns `None` and falls through to the git fallback exactly as before) — noted here
+rather than filed, since no behavior change is needed.
+
 ### Coverage
 
-`claude/scripts/tests/test_canonical_mutate_guard.py` grows from 72 to 76 tests, split across the
-existing two-layer convention:
+`claude/scripts/tests/test_canonical_mutate_guard.py` grows from 72 to 78 tests (76 at initial
+implementation, +2 from the review-hardening above), split across the existing two-layer convention:
 
 - **Pure-function layer:** `test_worktree_root_from_cwd_matches_and_extracts_sibling_directory_convention`
   (bare sibling-directory worktree root, a nested-subdirectory cwd, and the bare-suffix
   `dev-env-188`-shaped `None` case); `test_blockable_ambient_root_guards_against_sibling_directory_worktree_shaped_resolution`
   (a sibling-directory-shaped resolved root is never treated as blockable, mirroring the existing
-  nested-shape guard test).
+  nested-shape guard test); `test_is_live_worktree_rejects_git_directory` (review hardening #2 — a real
+  `.git` directory, not a stubbed lambda, at a worktree-shaped path is correctly not-live).
 - **End-to-end `main()`-via-subprocess layer:**
   `test_main_allows_ambient_mutating_command_from_live_sibling_directory_worktree` — a REAL,
   `git worktree add`-registered worktree at the sibling-directory shape (reusing
   `_init_repo_with_live_worktree` unchanged, since `git worktree add` itself has no opinion on where the
   worktree directory lives) still gets zero-friction treatment, directly reproducing and closing the
   issue's own reported scenario; `test_main_failsopen_on_orphaned_sibling_directory_cwd_not_nested_in_any_repo`
-  — pins the fail-open asymmetry described above.
+  — pins the fail-open asymmetry described above;
+  `test_main_allows_ambient_mutating_command_from_nested_worktree_inside_sibling_directory_worktree`
+  (review hardening #1) — TWO real, `git worktree add`-registered worktrees (an outer sibling-convention
+  one, an inner nested-convention one created inside it) prove the regex-ordering fix against real git
+  toplevel resolution, not just string extraction, since this bug's mechanism specifically depends on
+  git's own toplevel comparison differing between the outer and inner worktree.
+
+`test_worktree_canon.py` gains 2 tests for review hardening #1 and #3 (bare `-worktrees` rejected,
+nested-inside-sibling resolves to the inner root) exercising the same fixes at the pure-function level.
+`test_worktree_path_check.py` gains 2 tests mirroring `test_canonical_mutate_guard.py`'s
+`test_is_live_worktree_rejects_git_directory` and the nested-inside-sibling end-to-end proof, for its own
+copy of the identical logic.
 
 All pre-amendment tests across `test_worktree_canon.py`, `test_worktree_path_check.py`, and
 `test_canonical_mutate_guard.py` were re-run and pass unchanged. The full suite (`py -3

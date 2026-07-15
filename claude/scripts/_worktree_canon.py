@@ -10,15 +10,21 @@ convention, not a universal one — some projects track it in git, e.g. lifting-
 dev-env#527): `git worktree add` never checks out a gitignored file, and the harness
 copies it into Claude-managed worktrees only inconsistently — dev-env#378.
 
-`_WORKTREE_RE` also recognizes a second, sibling-directory worktree convention,
-`<repo>-worktrees/<name>` (e.g. `dev-env-worktrees/adr-096-correction`) — in active use in
-this environment (manually via `git worktree add`, not `EnterWorktree`) alongside the
-nested `.claude/worktrees/<name>` shape (dev-env#760). Unlike the fully-ambiguous bare
-`<repo>-<suffix>` sibling shape (`dev-env-188` — see `test_sibling_worktree_not_matched_by_regex`,
-still deliberately out of scope for this pure regex, with `post-tool-use.py`'s
-`canonical_root_via_git` as its git-based fallback), the `-worktrees/<name>` shape carries
-an unambiguous marker segment, so a regex extension is reliable here the same way it is for
-the nested convention.
+`canonical_root_from_worktree()` also recognizes a second, sibling-directory worktree
+convention, `<repo>-worktrees/<name>` (e.g. `dev-env-worktrees/adr-096-correction`) — in
+active use in this environment (manually via `git worktree add`, not `EnterWorktree`)
+alongside the nested `.claude/worktrees/<name>` shape (dev-env#760). Unlike the
+fully-ambiguous bare `<repo>-<suffix>` sibling shape (`dev-env-188` — see
+`test_sibling_worktree_not_matched_by_regex`, still deliberately out of scope for this pure
+regex, with `post-tool-use.py`'s `canonical_root_via_git` as its git-based fallback), the
+`-worktrees/<name>` shape carries an unambiguous marker segment, so a regex extension is
+reliable here the same way it is for the nested convention. Implemented as two SEPARATE
+regexes (`_NESTED_WORKTREE_RE` tried first, `_SIBLING_WORKTREE_RE` as fallback) rather than
+one combined alternation — review finding, dev-env#760: a single regex with non-greedy
+`(.+?)` lets the sibling alternative match at a shallower position than a genuine nested
+worktree occurring deeper in the same path (e.g. a nested worktree created inside a
+sibling-convention one), mis-extracting the outer directory. See `_NESTED_WORKTREE_RE`'s
+own comment for the full reasoning.
 
 The two scripts want different "no match" behavior, so this module exposes both shapes
 over one shared regex + primitive rather than picking one and breaking the other:
@@ -51,21 +57,47 @@ from __future__ import annotations
 
 import re
 
-# Matches `<root>/.claude/worktrees/<name>` OR `<root>-worktrees/<name>` at the start of a
-# path, capturing the canonical repo root (everything before the matched worktree segment).
-# Tolerates `/` and `\` separators. dev-env#760: the second alternative covers the
-# sibling-directory convention; a bare `<repo>-<suffix>` with no `-worktrees` marker (e.g.
-# `dev-env-188`) still does not match — see the module docstring.
-_WORKTREE_RE = re.compile(
-    r"^(.+?)(?:[/\\]\.claude[/\\]worktrees[/\\]|-worktrees[/\\])[^/\\]+",
+# Matches `<root>/.claude/worktrees/<name>` at the start of a path, capturing the canonical
+# repo root (everything before the matched segment). Tolerates `/` and `\` separators.
+# Tried BEFORE `_SIBLING_WORKTREE_RE` (see `canonical_root_from_worktree`) — review finding,
+# dev-env#760: a single combined alternation with non-greedy `(.+?)` lets the sibling
+# alternative "win" at a shallower position than a genuine nested worktree occurring deeper
+# in the same path (e.g. a `.claude/worktrees/<name>` worktree created inside a
+# `<repo>-worktrees/<name>` sibling worktree), mis-extracting the outer sibling directory as
+# the root instead of the actual, deeper worktree. Checking this pattern against the WHOLE
+# string first sidesteps that: since a real path normally contains at most one
+# `.claude/worktrees/` segment, matching it directly finds the correct (only) occurrence
+# regardless of what a `-worktrees` segment earlier in the same path might otherwise steal.
+_NESTED_WORKTREE_RE = re.compile(
+    r"^(.+?)[/\\]\.claude[/\\]worktrees[/\\][^/\\]+",
+    re.IGNORECASE,
+)
+
+# Matches `<root>-worktrees/<name>` at the start of a path — the sibling-directory
+# convention (dev-env#760), e.g. `dev-env-worktrees/adr-096-correction`. Only consulted when
+# `_NESTED_WORKTREE_RE` above doesn't match, so a nested worktree's own occurrence always
+# takes precedence over an enclosing sibling directory's. A bare `<repo>-<suffix>` with no
+# `-worktrees` marker (e.g. `dev-env-188`) still does not match — see the module docstring.
+# The trailing `[^/\\]` in the capture group requires at least one non-separator character
+# immediately before the literal `-worktrees` (review finding, dev-env#760: without it, a
+# directory literally named `-worktrees` with no repo-name prefix at all would also match —
+# `pre-tool-use-canonical-mutate-guard.py`'s equivalent fragment already required this;
+# this pattern now agrees with it).
+_SIBLING_WORKTREE_RE = re.compile(
+    r"^(.+?[^/\\])-worktrees[/\\][^/\\]+",
     re.IGNORECASE,
 )
 
 
 def canonical_root_from_worktree(cwd: str) -> str | None:
     """Canonical repo root for a Claude-managed worktree cwd
-    (`<root>/.claude/worktrees/<name>/...` or `<root>-worktrees/<name>/...`), else None."""
-    m = _WORKTREE_RE.match(cwd or "")
+    (`<root>/.claude/worktrees/<name>/...` or `<root>-worktrees/<name>/...`), else None.
+    The nested convention is tried first — see `_NESTED_WORKTREE_RE`'s comment for why."""
+    cwd = cwd or ""
+    m = _NESTED_WORKTREE_RE.match(cwd)
+    if m:
+        return m.group(1)
+    m = _SIBLING_WORKTREE_RE.match(cwd)
     return m.group(1) if m else None
 
 

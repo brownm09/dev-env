@@ -997,19 +997,26 @@ def test_is_live_worktree_decision_table() -> str:
     wt = _WORKTREE_ROOT_FIXTURE
     canon = _CANONICAL_FIXTURE
     cases = [
-        # (label, git_link_present, git_toplevel_return, expected_live)
-        ("live: .git present, toplevel == worktree_root", True, wt, True),
+        # (label, git_link_is_file, git_toplevel_return, expected_live)
+        ("live: .git present as a file, toplevel == worktree_root", True, wt, True),
         ("orphan: .git link missing", False, wt, False),
         ("orphan: git resolves up to canonical root", True, canon, False),
         ("orphan: git returns unrelated path", True, "C:/somewhere/else", False),
         (".git present but git exec failed (None) -> don't false-block", True, None, True),
         ("live: toplevel differs only by case/sep", True, wt.replace("/", "\\").upper(), True),
+        (
+            "not live: .git present but as a DIRECTORY, not a file (dev-env#760 review finding — "
+            "a genuine canonical clone at a worktree-shaped path must not be treated as live)",
+            False,
+            wt,
+            False,
+        ),
     ]
-    for label, link_present, top, expected in cases:
+    for label, link_is_file, top, expected in cases:
         live = cmg._is_live_worktree(
             wt,
             wt,
-            path_exists=lambda _p, _present=link_present: _present,
+            path_isfile=lambda _p, _is_file=link_is_file: _is_file,
             git_toplevel=lambda _c, _top=top: _top,
         )
         if live != expected:
@@ -1028,13 +1035,29 @@ def test_is_live_worktree_short_circuits_before_git() -> str:
         return _WORKTREE_ROOT_FIXTURE
 
     live = cmg._is_live_worktree(
-        _WORKTREE_ROOT_FIXTURE, _WORKTREE_ROOT_FIXTURE, path_exists=lambda _p: False, git_toplevel=_spy
+        _WORKTREE_ROOT_FIXTURE, _WORKTREE_ROOT_FIXTURE, path_isfile=lambda _p: False, git_toplevel=_spy
     )
     if live is not False:
         raise AssertionError("missing .git link should yield not-live")
     if called["n"] != 0:
         raise AssertionError("git_toplevel was called despite missing .git link (no short-circuit)")
     return "missing .git link blocks without spawning git"
+
+
+def test_is_live_worktree_rejects_git_directory() -> str:
+    """dev-env#760 review finding: a genuine canonical checkout (a real `git clone`, whose
+    `.git` is a DIRECTORY) that happens to sit at a worktree-shaped path must not be treated
+    as a live worktree. Exercises the REAL default (`os.path.isfile`, not a stubbed lambda)
+    against a real filesystem directory named `.git`, proving the fix — `os.path.exists`
+    would have wrongly returned True here.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        worktree_shaped_root = Path(tmp) / ".claude" / "worktrees" / "actually-a-clone"
+        (worktree_shaped_root / ".git").mkdir(parents=True)  # .git as a DIRECTORY, not a file
+        live = cmg._is_live_worktree(str(worktree_shaped_root), str(worktree_shaped_root))
+        if live is not False:
+            raise AssertionError("a worktree-shaped path whose .git is a directory must not be live")
+    return "a real .git directory (not file) at a worktree-shaped path is correctly not-live (dev-env#760)"
 
 
 def test_blockable_ambient_root_guards_against_worktree_shaped_resolution() -> str:
@@ -1109,6 +1132,7 @@ def main_unit() -> list:
         ("_worktree_root_from_cwd matches and extracts, sibling-directory convention (dev-env#760)", test_worktree_root_from_cwd_matches_and_extracts_sibling_directory_convention),
         ("_is_live_worktree decision table (dev-env#749)", test_is_live_worktree_decision_table),
         ("_is_live_worktree short-circuits before git (dev-env#749)", test_is_live_worktree_short_circuits_before_git),
+        ("_is_live_worktree rejects a real .git directory (dev-env#760 review finding)", test_is_live_worktree_rejects_git_directory),
         ("_blockable_ambient_root guards against worktree-shaped resolution (dev-env#749 review finding)", test_blockable_ambient_root_guards_against_worktree_shaped_resolution),
         ("_blockable_ambient_root guards against sibling-directory worktree-shaped resolution (dev-env#760)", test_blockable_ambient_root_guards_against_sibling_directory_worktree_shaped_resolution),
     ]
@@ -2036,6 +2060,50 @@ def test_main_failsopen_on_orphaned_sibling_directory_cwd_not_nested_in_any_repo
     return "orphaned sibling-directory-shaped cwd not nested in any repo fails open (exit 0, dev-env#760)"
 
 
+def test_main_allows_ambient_mutating_command_from_nested_worktree_inside_sibling_directory_worktree() -> str:
+    """dev-env#760 review finding: a `.claude/worktrees/<name>` (nested-convention) worktree
+    created INSIDE a `<repo>-worktrees/<name>` (sibling-convention) worktree must resolve to
+    ITS OWN root. A single combined-alternation regex with non-greedy `(.+?)` would let the
+    sibling alternative match at the shallower (outer) position, mis-identifying
+    `cwd_worktree_root` as the outer worktree -- which has a DIFFERENT git-resolved toplevel
+    than cwd (since the inner directory is its own, separately-registered worktree) -- so the
+    liveness check's signal 2 would fail and the ambient mutating command would be incorrectly
+    blocked against a wrongly-resolved canonical root. `_worktree_root_from_cwd` tries the
+    nested pattern against the whole string first, which correctly finds the (unique)
+    `.claude/worktrees/` segment regardless of the sibling directory enclosing it.
+
+    Uses TWO real, `git worktree add`-registered worktrees (outer sibling-convention, inner
+    nested-convention nested inside it) rather than bogus `.git` files, since this scenario's
+    whole point is that git's OWN toplevel resolution for the inner cwd differs from the
+    outer worktree's path -- a bogus `.git` (git resolution failure, treated as live per the
+    fail-open contract) would not exercise the actual signal-2 comparison this bug lives in.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        canonical = tmp / "canonical-repo"
+        outer_worktree_path = tmp / "canonical-repo-worktrees" / "outer-worktree"
+        _init_repo_with_live_worktree(canonical, outer_worktree_path)
+        inner_worktree_path = outer_worktree_path / ".claude" / "worktrees" / "inner-worktree"
+        subprocess.run(
+            ["git", "-C", str(canonical), "worktree", "add", "-q", "-b", "inner-live-branch", str(inner_worktree_path)],
+            check=True, capture_output=True,
+        )
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git checkout -b some-branch"},
+            "cwd": str(inner_worktree_path),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"expected exit 0 (nested worktree inside a sibling-directory worktree stays "
+                f"zero-friction, root correctly resolved to the inner worktree), got "
+                f"{proc.returncode}. stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+    return "ambient mutating command from a real nested worktree created inside a sibling-directory worktree allowed, root correctly resolved to the inner worktree (exit 0, dev-env#760)"
+
+
 def test_main_wiring_shares_one_toplevel_resolution_for_cwd() -> str:
     """dev-env#758 review follow-up: `test_memoized_toplevel_dedupes_across_callers` above proves
     `_memoized_toplevel()` itself memoizes correctly, but nothing else in this suite proves `main()`
@@ -2128,6 +2196,7 @@ def main_e2e() -> list:
         ("main() blocks orphaned worktree-shaped cwd nested in canonical (dev-env#749)", test_main_blocks_orphaned_worktree_shaped_cwd_nested_in_canonical),
         ("main() allows ambient mutating command from a real live sibling-directory worktree (dev-env#760)", test_main_allows_ambient_mutating_command_from_live_sibling_directory_worktree),
         ("main() fails open on orphaned sibling-directory cwd not nested in any repo (dev-env#760)", test_main_failsopen_on_orphaned_sibling_directory_cwd_not_nested_in_any_repo),
+        ("main() allows ambient mutating command from nested worktree inside a sibling-directory worktree (dev-env#760 review finding)", test_main_allows_ambient_mutating_command_from_nested_worktree_inside_sibling_directory_worktree),
         ("main() shares one toplevel resolution for cwd, in-process (dev-env#758)", test_main_wiring_shares_one_toplevel_resolution_for_cwd),
         ("main() fails open on non-git cwd", test_main_failsopen_on_nongit_cwd),
         ("main() fails open on malformed JSON", test_main_failsopen_on_malformed_json),

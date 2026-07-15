@@ -10,9 +10,14 @@ silently. This hook intercepts those calls before the write happens.
 Recognizes two worktree-path conventions (dev-env#760): the nested
 `.claude/worktrees/<name>` shape (`EnterWorktree`) and the sibling-directory
 `<repo>-worktrees/<name>` shape (manual `git worktree add`, e.g.
-`dev-env-worktrees/adr-096-correction`) — see `_WORKTREE_RE` below. A bare
-`<repo>-<suffix>` sibling with no `-worktrees` marker (e.g. `dev-env-188`) is
-not covered; that shape is ambiguous from the path string alone.
+`dev-env-worktrees/adr-096-correction`) — see `_match_worktree()` below, which
+tries the nested convention first and the sibling convention as a fallback (a
+review finding: trying both via one combined alternation lets the sibling
+shape steal a match at a shallower position than a nested worktree occurring
+deeper in the same path, e.g. one created inside a sibling-convention
+worktree). A bare `<repo>-<suffix>` sibling with no `-worktrees` marker (e.g.
+`dev-env-188`) is not covered; that shape is ambiguous from the path string
+alone.
 
 Logic:
   1. If cwd does not match either worktree-path convention, pass immediately.
@@ -51,14 +56,47 @@ import sys
 
 import _hookutil
 
-# Matches `.claude/worktrees/<name>` OR `<repo>-worktrees/<name>` at the start of a path,
-# capturing the repo root (everything before the matched worktree segment). dev-env#760:
-# the second alternative is the sibling-directory convention; a bare `<repo>-<suffix>` with
-# no `-worktrees` marker (e.g. `dev-env-188`) still does not match — see module docstring.
-_WORKTREE_RE = re.compile(
-    r"^(.+?)(?:[/\\]\.claude[/\\]worktrees[/\\]|-worktrees[/\\])[^/\\]+",
+# Matches `.claude/worktrees/<name>` at the start of a path, capturing the repo root
+# (everything before the matched segment). Tried BEFORE `_SIBLING_WORKTREE_RE` (see
+# `_match_worktree` below) — review finding, dev-env#760: a single combined alternation
+# with non-greedy `(.+?)` lets the sibling alternative "win" at a shallower position than a
+# genuine nested worktree occurring deeper in the same path (e.g. a `.claude/worktrees/<name>`
+# worktree created inside a `<repo>-worktrees/<name>` sibling worktree), mis-extracting the
+# outer sibling directory as the root instead of the actual, deeper worktree. Checking this
+# pattern against the whole string first sidesteps that: a real path normally contains at
+# most one `.claude/worktrees/` segment, so matching it directly finds the correct (only)
+# occurrence regardless of what a `-worktrees` segment earlier in the same path might
+# otherwise steal.
+_NESTED_WORKTREE_RE = re.compile(
+    r"^(.+?)[/\\]\.claude[/\\]worktrees[/\\][^/\\]+",
     re.IGNORECASE,
 )
+
+# Matches `<repo>-worktrees/<name>` at the start of a path — the sibling-directory
+# convention (dev-env#760), e.g. `dev-env-worktrees/adr-096-correction`. Only consulted when
+# `_NESTED_WORKTREE_RE` above doesn't match — see `_match_worktree`. A bare `<repo>-<suffix>`
+# with no `-worktrees` marker (e.g. `dev-env-188`) still does not match — see module docstring.
+# The trailing `[^/\\]` in the capture group requires at least one non-separator character
+# immediately before the literal `-worktrees` (review finding, dev-env#760: without it, a
+# directory literally named `-worktrees` with no repo-name prefix at all would also match —
+# `pre-tool-use-canonical-mutate-guard.py`'s equivalent fragment already required this;
+# this pattern now agrees with it).
+_SIBLING_WORKTREE_RE = re.compile(
+    r"^(.+?[^/\\])-worktrees[/\\][^/\\]+",
+    re.IGNORECASE,
+)
+
+
+def _match_worktree(path: str):
+    """Match `path` against the nested convention first, then the sibling convention.
+
+    Trying nested first ensures a nested worktree created inside a sibling-convention
+    worktree resolves to its own (deeper, more specific) root rather than the outer sibling
+    worktree stealing the match at a shallower position (dev-env#760 review finding). Shared
+    by both call sites below (cwd and a write target) so they can't drift on this ordering.
+    """
+    m = _NESTED_WORKTREE_RE.match(path)
+    return m if m else _SIBLING_WORKTREE_RE.match(path)
 
 # Maps tool name → the field in tool_input that holds the file path.
 _PATH_FIELD = {
@@ -99,15 +137,21 @@ def _worktree_is_live(
     worktree_root: str,
     cwd: str,
     *,
-    path_exists=os.path.exists,
+    path_isfile=os.path.isfile,
     git_toplevel=_resolve_git_toplevel,
 ) -> bool:
     """True if `worktree_root` is a live registered worktree, not an orphan.
 
     Two signals, cheapest first:
-      1. The `.git` link file must exist at the worktree root. An orphaned dir
-         has lost it — this is the documented incident (dev-env#328), caught
-         without spawning git.
+      1. The `.git` link file must exist AT the worktree root, as a FILE (a real
+         worktree's `.git` is always a `gitdir: ...` pointer file, never a
+         directory). An orphaned dir has lost it entirely — the documented
+         incident (dev-env#328), caught without spawning git. `os.path.isfile`,
+         not `os.path.exists` (review finding, dev-env#760): a genuine canonical
+         checkout (a real clone, `.git` a directory) that merely happens to sit
+         at a worktree-shaped path would otherwise pass this signal and be
+         wrongly treated as a live worktree — `exists` can't tell a `.git` file
+         from a `.git` directory, only `isfile` can.
       2. git's resolved top-level for `cwd` must equal `worktree_root`. This
          catches the subtle case where git mis-resolves up to the canonical repo.
 
@@ -115,7 +159,7 @@ def _worktree_is_live(
     worktree as live — a transient git failure must not block every write when
     the link file clearly exists.
     """
-    if not path_exists(os.path.join(worktree_root, ".git")):
+    if not path_isfile(os.path.join(worktree_root, ".git")):
         return False
     top = git_toplevel(cwd)
     if top is None:
@@ -152,7 +196,7 @@ def main() -> None:
         sys.exit(0)
 
     cwd = data.get("cwd", "")
-    m = _WORKTREE_RE.match(cwd)
+    m = _match_worktree(cwd)
     if not m:
         sys.exit(0)  # not in a worktree — nothing to enforce
 
@@ -201,7 +245,7 @@ def main() -> None:
     # Those land in that worktree's own tree, not the shared canonical working tree.
     # Motivating case: a compose session writes to compose-YYYY-MM-DD while the
     # session's own cwd is a different worktree of the same repo (dev-env#750).
-    target_m = _WORKTREE_RE.match(file_norm)
+    target_m = _match_worktree(file_norm)
     if target_m and _normalize(target_m.group(1)) == canonical_norm:
         sys.exit(0)
 

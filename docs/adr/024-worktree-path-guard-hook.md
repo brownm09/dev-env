@@ -234,6 +234,38 @@ to either.
   addendum's coverage for the new shape.
 - No performance impact: same single regex match, now covering one more alternative.
 
+### Review hardening (dev-env#760/PR#764)
+
+`/review` found this hook shared two of the three gaps described in [ADR-071 Amendment
+5](071-canonical-checkout-mutate-guard-hook.md#amendment-5-2026-07-14--recognize-the-sibling-directory-worktree-convention-repo-worktreesname-dev-env760)'s
+own "Review hardening" section — full reasoning there, since both hooks' logic and fix are identical;
+summarized here for this hook's own record:
+
+1. **Non-greedy capture let the sibling alternative steal a shallower match than a nested worktree
+   deeper in the same path.** A `.claude/worktrees/<name>` worktree created inside a
+   `<repo>-worktrees/<name>` sibling worktree resolved `worktree_root` to the OUTER sibling directory,
+   which has no `.git` of its own at that exact path — so this hook's liveness guard wrongly blocked
+   every write from the genuinely live inner worktree with an "orphaned worktree" message. Fixed by
+   splitting the single combined-alternation `_WORKTREE_RE` into `_NESTED_WORKTREE_RE` (tried first) and
+   `_SIBLING_WORKTREE_RE` (fallback only), via a shared `_match_worktree()` helper used at both this
+   hook's call sites (cwd, and the dev-env#750 sibling-worktree-target check).
+2. **`os.path.exists` on the `.git` link doesn't distinguish a worktree's `.git` FILE from a canonical
+   checkout's `.git` DIRECTORY.** Renamed the `_worktree_is_live()` parameter from `path_exists=` to
+   `path_isfile=` (default `os.path.isfile`) so a genuine canonical clone that happens to sit at a
+   worktree-shaped path is correctly rejected rather than treated as live.
+3. **Sibling-pattern divergence from `pre-tool-use-canonical-mutate-guard.py`'s equivalent fragment** —
+   this hook's `_SIBLING_WORKTREE_RE` accepted a bare, unprefixed `-worktrees` directory that the
+   mutate-guard's fragment already rejected. Reconciled by requiring at least one non-separator character
+   immediately before the literal `-worktrees`, matching the mutate-guard exactly.
+
+`claude/scripts/tests/test_worktree_path_check.py` grows from 8 to 10 tests for these three fixes:
+`test_worktree_is_live_rejects_git_directory` (a real `.git` *directory*, not a stubbed lambda, is
+correctly not-live) and `test_main_allows_write_to_nested_worktree_inside_sibling_directory_worktree` (a
+real end-to-end reproduction of fix #1, using bogus-but-file `.git` links matching this file's existing
+hermetic test style). The bare-`-worktrees`-rejection fix (#3) is covered by
+`test_worktree_canon.py`'s `test_sibling_convention_bare_worktrees_dir_not_matched` at the pure-function
+level, since both files share the identical corrected pattern.
+
 ---
 
 ## References

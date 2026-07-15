@@ -202,15 +202,31 @@ _WORKTREE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Anchored capture variant of _WORKTREE_RE (dev-env#749), used only to extract
-# the worktree-root PREFIX of a raw, client-supplied cwd for the liveness
-# check in _is_live_worktree() below. Kept separate from _WORKTREE_RE: that
-# regex's other use site (_blockable_redirect_root) checks an already
-# git-RESOLVED root, which is safe as-is and needs no liveness confirmation —
-# see _is_live_worktree's docstring for why only the cwd-facing use site was
-# vulnerable to trusting shape alone.
-_WORKTREE_ROOT_RE = re.compile(
-    r"^(.+?[/\\]" + _WORKTREE_PATH_FRAGMENT + r")",
+# Anchored capture variants used only to extract the worktree-root PREFIX of a raw,
+# client-supplied cwd for the liveness check in _is_live_worktree() below (via
+# _worktree_root_from_cwd()). Kept separate from _WORKTREE_RE: that regex's other use site
+# (_blockable_redirect_root/_blockable_ambient_root) checks an already git-RESOLVED root,
+# which is safe as-is and needs no liveness confirmation — see _is_live_worktree's docstring
+# for why only the cwd-facing use site was vulnerable to trusting shape alone.
+#
+# Split into two ordered patterns (nested tried before sibling) rather than one combined
+# alternation — review finding, dev-env#760: a single regex with non-greedy `(.+?)` lets the
+# sibling alternative "win" at a shallower position than a genuine nested worktree occurring
+# deeper in the same path (e.g. a `.claude/worktrees/<name>` worktree created inside a
+# `<repo>-worktrees/<name>` sibling worktree), mis-extracting the outer sibling directory as
+# the root instead of the actual, deeper worktree. Checking the nested pattern against the
+# whole string first sidesteps that: a real path normally contains at most one
+# `.claude/worktrees/` segment, so matching it directly finds the correct (only) occurrence
+# regardless of what a `-worktrees` segment earlier in the same path might otherwise steal.
+# `_WORKTREE_RE`'s `.search()` use sites need no equivalent split: they only answer a
+# boolean "is this resolved root worktree-shaped," which is unaffected by which alternative
+# happens to match first.
+_NESTED_WORKTREE_ROOT_RE = re.compile(
+    r"^(.+?[/\\]\.claude[/\\]worktrees[/\\][^/\\]+)",
+    re.IGNORECASE,
+)
+_SIBLING_WORKTREE_ROOT_RE = re.compile(
+    r"^(.+?[/\\][^/\\]+-worktrees[/\\][^/\\]+)",
     re.IGNORECASE,
 )
 
@@ -749,10 +765,14 @@ def _normalize_path(path: str) -> str:
 
 def _worktree_root_from_cwd(cwd: str):
     """Return the worktree-root PREFIX of `cwd` (up through and including the
-    `.claude/worktrees/<name>` segment), or None if `cwd` isn't anchored
-    inside one. Cheap, pure string work — no subprocess.
+    `.claude/worktrees/<name>` or `<repo>-worktrees/<name>` segment), or None if `cwd`
+    isn't anchored inside one. Cheap, pure string work — no subprocess. Nested is tried
+    before sibling — see `_NESTED_WORKTREE_ROOT_RE`'s comment for why.
     """
-    m = _WORKTREE_ROOT_RE.match(cwd)
+    m = _NESTED_WORKTREE_ROOT_RE.match(cwd)
+    if m:
+        return m.group(1)
+    m = _SIBLING_WORKTREE_ROOT_RE.match(cwd)
     return m.group(1) if m else None
 
 
@@ -760,7 +780,7 @@ def _is_live_worktree(
     worktree_root: str,
     cwd: str,
     *,
-    path_exists=os.path.exists,
+    path_isfile=os.path.isfile,
     git_toplevel=_resolve_git_toplevel,
 ) -> bool:
     """True if `worktree_root` is a live, registered git worktree — not an
@@ -768,8 +788,9 @@ def _is_live_worktree(
 
     An orphaned worktree directory (its `.git` link file missing or broken,
     e.g. left behind after an incomplete `git worktree add`/`remove`) still
-    textually matches `_WORKTREE_ROOT_RE`. When git is asked to resolve such a
-    directory, it walks up the filesystem tree looking for a `.git` and lands
+    textually matches `_NESTED_WORKTREE_ROOT_RE` or `_SIBLING_WORKTREE_ROOT_RE`.
+    When git is asked to resolve such a directory, it walks up the filesystem
+    tree looking for a `.git` and lands
     on the CANONICAL repo instead — live-confirmed on dev-env#630: an orphaned
     worktree with no `.git` resolved `git rev-parse --show-toplevel` straight
     to the canonical checkout, giving that session fully unguarded ambient
@@ -787,8 +808,15 @@ def _is_live_worktree(
     sibling's copy.
 
     Two signals, cheapest first:
-      1. The `.git` link file must exist at worktree_root. An orphaned dir has
-         lost it — caught without spawning git.
+      1. The `.git` link file must exist at worktree_root, as a FILE (a real
+         worktree's `.git` is always a `gitdir: ...` pointer file, never a
+         directory). An orphaned dir has lost it entirely — caught without
+         spawning git. `os.path.isfile`, not `os.path.exists` (review finding,
+         dev-env#760): a genuine canonical checkout (a real clone, `.git` a
+         directory) that merely happens to sit at a worktree-shaped path would
+         otherwise pass this signal and be wrongly treated as a live worktree —
+         `exists` can't tell a `.git` file from a `.git` directory, only
+         `isfile` can.
       2. git's resolved top-level for `cwd` must equal worktree_root. Mainly
          catches a resolution mismatch (e.g. cwd resolving up to the canonical
          root, or to an unrelated repo). NOTE (review finding, dev-env#749):
@@ -820,7 +848,7 @@ def _is_live_worktree(
     liveness logic ever changes — the two are deliberately parallel copies
     (see the duplication-convention note above), just under different names.
     """
-    if not path_exists(os.path.join(worktree_root, ".git")):
+    if not path_isfile(os.path.join(worktree_root, ".git")):
         return False
     top = git_toplevel(cwd)
     if top is None:
