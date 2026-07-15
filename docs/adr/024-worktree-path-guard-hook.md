@@ -1,8 +1,8 @@
 # ADR-024: PreToolUse Hook to Block Canonical-Root Writes from Worktrees
 
-**Date:** 2026-05-23 (amended 2026-06-06, 2026-07-14)
+**Date:** 2026-05-23 (amended 2026-06-06, 2026-07-14, 2026-07-14, 2026-07-14)
 **Status:** Accepted
-**Tags:** hooks, worktrees, pre-tool-use, file-safety, write, edit, orphaned-worktree
+**Tags:** hooks, worktrees, pre-tool-use, file-safety, write, edit, orphaned-worktree, worktree-membership
 
 ---
 
@@ -268,6 +268,153 @@ level, since both files share the identical corrected pattern.
 
 ---
 
+## Addendum (2026-07-14): confirm the regex candidate against `git worktree list`, not path shape alone (dev-env#774 gap (b))
+
+### Problem
+
+`_match_worktree(cwd)`'s regex is trusted outright: whatever `(canonical_root, worktree_root)` it
+extracts is used directly, with no independent confirmation that `cwd` is actually inside a real worktree
+structure at all. A repo whose OWN root directory name literally ends in `-worktrees` (e.g.
+`some-repo-worktrees`) breaks this: `_SIBLING_WORKTREE_RE` cannot distinguish "the `<repo>-worktrees/`
+sibling-directory *container* convention" from "a repo whose own root directory name happens to literally
+end in `-worktrees`." For the latter, a cwd like `some-repo-worktrees/src` matches the sibling pattern as
+if `src` were a worktree name and `some-repo` (a truncated, likely nonexistent path) were the canonical
+root — every Write/Edit/NotebookEdit from that subdirectory is then misclassified as targeting a non-live
+"worktree" (no `.git` exists at the fabricated `worktree_root`) and blocked with a misleading "orphaned
+worktree" message, while a write from the repo root itself (no subdirectory component for the regex's
+trailing `[^/\\]+` to capture) passes through untouched — an inconsistent and confusing failure mode not
+currently triggered anywhere in this environment (no repo here is named `*-worktrees`), but with no way to
+disambiguate from the path string alone.
+
+Found alongside [ADR-071 Amendment
+6](071-canonical-checkout-mutate-guard-hook.md#amendment-6-2026-07-14--confirm-resolved-root-worktree-membership-via-git-worktree-list-not-path-shape-dev-env774-gap-a)'s
+gap (a) during `/review` on PR #764 (dev-env#760's own sibling-directory convention fix), filed together
+as [dev-env#774](https://github.com/brownm09/dev-env/issues/774).
+
+### Extended decision
+
+`_match_worktree(cwd)`'s regex match becomes a cheap PRE-FILTER only, not the final word. A new
+`_resolve_worktree_scope(regex_canonical_root, regex_worktree_root, cwd)` confirms (or corrects) the
+candidate against `git -C <cwd> worktree list --porcelain` (a new `_resolve_worktrees()`, parsed via the
+shared `_worktree_topology.parse_worktree_porcelain` — the same reuse ADR-071 Amendment 6 makes of that
+module):
+
+- If git's own canonical (first) entry does NOT match the regex's `canonical_root` guess (compared via
+  this hook's existing `_normalize()`), `cwd` was never really inside a worktree structure at all — the
+  regex match was a path-shape false positive. Returns a sentinel (`canonical_root is None`) telling
+  `main()` to no-op (exit 0) — this is the gap (b) fix itself: a repo literally named `some-repo-worktrees`
+  now correctly falls through here, since git's canonical entry is `some-repo-worktrees` (the real repo
+  root) while the regex guessed the truncated `some-repo`.
+- If the canonical guess IS confirmed, the shared `find_worktree_by_path()` primitive (ADR-071 Amendment
+  6) looks for `regex_worktree_root` among the repo's LINKED (non-canonical) entries. Found → confirmed
+  live, using git's own path strings as the authoritative `canonical_root`/`worktree_root` going forward
+  (rather than the regex-extracted substrings) for every downstream check. Not found → treated as
+  `is_live = False` directly (orphaned or removed) — git's own membership list is stronger proof of "not
+  currently registered" than the pre-existing `.git`-isfile + `rev-parse` heuristic it replaces here.
+- When git can't answer AT ALL (the sibling-directory orphan case is the clean example: by construction
+  it's never nested inside any repo for git to walk up to, so `git worktree list` fails outright, same as
+  it always has), falls back to the regex-derived roots plus the pre-existing `_worktree_is_live()` check —
+  a backstop, not the primary signal, per dev-env#774's own "replace (or backstop)" framing. This is also
+  why every test already in this file before this addendum continues to pass unchanged: all of them build
+  worktree fixtures from a bogus (non-real-repo) `.git` file rather than an actual git repo, so
+  `_resolve_worktrees()` fails for every one of them and they all exercise this same fallback path,
+  regardless of this addendum landing.
+
+### Judgment calls (addendum)
+
+**Pre-filter regex retained, not replaced outright.** This hook fires on every single Write/Edit/
+NotebookEdit call — far more frequent than `pre-tool-use-canonical-mutate-guard.py`'s Bash-only trigger.
+Running `git worktree list` unconditionally on every call (even when cwd doesn't look remotely
+worktree-shaped) would add a subprocess spawn to the overwhelmingly common non-worktree case. The regex
+stays as a free, cheap gate — a subprocess is spawned only once a candidate match already exists, exactly
+mirroring this hook's own pre-existing performance posture (it already spawned one `git rev-parse` per
+matched call for the liveness check; this addendum swaps THAT one subprocess for `git worktree list`
+instead of adding a second one — same per-call subprocess count as before).
+
+**git's own path strings supersede the regex's once confirmed.** Rather than keep using the
+regex-extracted `canonical_root`/`worktree_root` substrings once git has answered, the confirmed entries'
+own `path` fields become authoritative for every downstream check (the path-scoping logic, the
+dev-env#750 sibling-worktree carve-out). This incidentally also closes any latent case-normalization
+mismatch between the regex's string extraction and git's own canonicalized paths, though no such mismatch
+was observed in practice.
+
+**Orphan detection via absence-from-list, not a second liveness call.** Once git has successfully
+answered for a given `cwd`, `regex_worktree_root` simply not appearing among the confirmed repo's linked
+worktrees is treated as sufficient proof of non-liveness directly, without an additional
+`_worktree_is_live()` call — that function remains valuable, but purely as this addendum's own fallback
+path (git unavailable), not as a second, redundant check layered on top of a successful git answer.
+
+### Consequences (addendum)
+
+- `test_main_allows_write_from_subdirectory_of_repo_literally_named_worktrees_suffix` (the direct gap (b)
+  reproduction — a real repo named `some-repo-worktrees`, write from a subdirectory, now correctly
+  allowed) added to `claude/scripts/tests/test_worktree_path_check.py`, along with three more REAL-git-repo
+  tests proving the git-confirmed path doesn't regress the hook's core purposes: an orphan nested in a
+  real canonical is still blocked, a REAL `git worktree add`-registered worktree still gets zero-friction
+  treatment, and canonical-root escape-detection still fires against a real canonical (not just the
+  bogus-`.git`-file fixtures every pre-existing test in this file uses). Grows from 10 to 14 tests.
+- New shared helpers `_worktree_topology.find_worktree_by_path()` (this ADR's sibling, ADR-071 Amendment
+  6, introduces it) and this file's own `_resolve_worktrees()`/`_resolve_worktree_scope()`.
+- No change to the Bash-coverage gap (still deferred, per the original Decision) or to the dev-env#750
+  sibling-worktree carve-out's own logic — both operate downstream of `canonical_root`/`worktree_root` as
+  opaque strings, unaffected by where those strings now come from.
+- Performance: for the live-worktree hot path, unchanged subprocess count per matched call (one
+  `git worktree list` in place of the one `git rev-parse` this hook already spawned) — the common
+  non-worktree-shaped-cwd case still spawns nothing, gated by the same regex pre-filter as before. This
+  claim is precise for that hot path but not for every path: the orphan-reject case goes from zero
+  subprocesses (the old `.git`-isfile check short-circuited before any git call) to one (`git worktree
+  list` now runs unconditionally once the regex matches, before any liveness signal is checked) — see
+  Review hardening below, corrected during `/review`.
+
+### Review hardening (dev-env#774/PR#783)
+
+`/review` on this PR (two Opus-model subagents, correctness/security and reliability/performance/
+maintainability, run independently) found three issues in the initial implementation above, all fixed in
+the same PR before merge:
+
+1. **A `UnicodeDecodeError` from `_resolve_worktrees`/`_resolve_git_toplevel` could silently disable
+   enforcement entirely — a genuine correctness regression, not just an inconsistency.** Both functions'
+   except-tuples were missing `ValueError` (a `UnicodeDecodeError` superclass) — present on the sibling
+   hook's equivalent `_resolve_worktree_list` (ADR-071 Amendment 6) from the start, since that PR's own
+   `_resolve_git_toplevel` already carried it from dev-env#576/PR#584's null-byte-path fix. `subprocess.run(...,
+   text=True)` decodes git's stdout in the process locale encoding; a worktree/branch path containing bytes
+   undecodable there raises `UnicodeDecodeError`. Uncaught, that error unwinds to this hook's outer
+   `except Exception: sys.exit(0)` — the hook exits 0 with **no enforcement at all**, never reaching the
+   intended regex + `_worktree_is_live` fallback. This is a real regression relative to the pre-#774 code:
+   the OLD orphan check (`.git`-isfile) cannot decode-fail, so an orphaned-worktree write was blocked
+   regardless of any path's encoding; the NEW code runs `git worktree list` first, unconditionally, moving
+   orphan detection behind a subprocess whose decode error silently drops the block. Fixed by adding
+   `ValueError` to both except-tuples, matching the sibling hook.
+2. **The performance claim in Consequences was imprecise for the orphan-reject path** — corrected above
+   rather than in a separate bullet, since it's a documentation-precision fix, not a behavior change.
+3. **`_resolve_worktree_scope`'s canonical-mismatch check ran before, not after, a direct worktree-root
+   membership check — a latent path-form-divergence gap.** The original ordering treated ANY textual
+   disagreement between git's canonical entry and the regex's `regex_canonical_root` guess as proof "cwd
+   was never inside a worktree" (the gap (b) outcome). But the identical disagreement is also produced by
+   benign path-form divergence — a symlink/junction/8.3-short-path component making git's canonicalized
+   path differ in FORM (not substance) from the regex's raw cwd-derived substring — on a **genuine**
+   worktree or orphan, silently dropping both the orphan-block and the escape-block (this hook's core
+   purpose) for that cwd. Not reproduced on the dev machine (both git commands emit identical forms there)
+   and fail-open in direction, but a real, if narrow, regression this PR introduced exposure to (the
+   pre-#774 regex-only code never asked git to independently agree on a path form at all). Fixed by
+   checking `regex_worktree_root` against the FULL confirmed list (canonical entry included) FIRST: a
+   direct match there is git's strongest possible confirmation of a live, registered worktree, and is now
+   trusted even when the canonical-root guess would have disagreed on form. The canonical-comparison
+   heuristic remains, narrowed to the one case a direct worktree-root match can't resolve on its own:
+   distinguishing a genuine orphan (canonical confirmed correct, this specific path just isn't registered)
+   from gap (b) (the canonical guess itself was wrong).
+
+A fourth, shared finding — `parse_worktree_porcelain(result.stdout)` sitting outside the `try` in both
+hooks' new resolvers — is documented once, in [ADR-071 Amendment
+6](071-canonical-checkout-mutate-guard-hook.md#review-hardening-dev-env774pr783)'s own Review hardening
+section, since the fix (move the parse call inside the same `try`) is identical in both files.
+
+`claude/scripts/tests/test_worktree_path_check.py`'s existing 14 tests were re-run against all three fixes
+and pass unchanged — none of them were coupled to the specific ordering or except-tuple gaps corrected here,
+so this is a robustness hardening pass with no test-count change.
+
+---
+
 ## References
 
 - `claude/scripts/pre-tool-use-worktree-path-check.py` — implementation
@@ -278,8 +425,15 @@ level, since both files share the identical corrected pattern.
 - `brownm09/dev-env#469` — stdout→stderr block-reason fix (both sites), `_block()` helper introduced
 - `brownm09/dev-env#750` — sibling-worktree carve-out (addendum)
 - `brownm09/dev-env#760` — sibling-directory worktree convention recognition (this addendum)
+- `brownm09/dev-env#774` — git-worktree-list-based confirmation, gap (b) (this addendum)
 - [ADR-071](071-canonical-checkout-mutate-guard-hook.md) Amendment 5 — the same gap and fix in the
   sibling `pre-tool-use-canonical-mutate-guard.py` hook, fixed in the same PR
+- [ADR-071](071-canonical-checkout-mutate-guard-hook.md) Amendment 6 — the sibling hook's own gap (a) fix,
+  fixed in the same PR as this addendum, and the origin of the shared `find_worktree_by_path()` primitive
+  this addendum builds on
+- `brownm09/dev-env#510` (open) — tracks consolidating the duplicated `_WORKTREE_RE`-family regex copies
+  onto a shared module; worth coordinating with, since `find_worktree_by_path()`/`_worktree_topology.py`
+  are a natural home for that consolidation, though this addendum does not attempt it
 - Engineering-journal `sessions/career-playbook/2026-05-22_140307.stub.md` — third occurrence
 - Engineering-journal `sessions/career-playbook/2026-06-06_105718.stub.md` — orphaned-worktree incident
 - Engineering-journal `sessions/meta/2026-07-13_070949.stub.md` — compose-session incident (dev-env#750)

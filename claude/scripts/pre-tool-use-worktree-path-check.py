@@ -19,16 +19,29 @@ worktree). A bare `<repo>-<suffix>` sibling with no `-worktrees` marker (e.g.
 `dev-env-188`) is not covered; that shape is ambiguous from the path string
 alone.
 
+`_match_worktree()`'s regex is a cheap PRE-FILTER only, not the final word
+(dev-env#774): a repo whose OWN root directory name literally ends in
+`-worktrees` (e.g. `some-repo-worktrees`) makes `_SIBLING_WORKTREE_RE` mistake
+an ordinary subdirectory for a worktree name and a truncated prefix for the
+canonical root. Once the regex finds a *candidate* match, `_resolve_worktree_scope()`
+confirms (or corrects) it against `git worktree list --porcelain` ground truth
+before anything is enforced — see that function's own docstring for the full
+decision table, and gap (b) in dev-env#774 for the original report.
+
 Logic:
-  1. If cwd does not match either worktree-path convention, pass immediately.
-  2. Extract canonical_root (repo root) and worktree_root from cwd.
-  3. Liveness guard (ADR-024 addendum, dev-env#328): assert the worktree is a
-     *live* registered worktree, not an orphan whose `.git` link is gone. An
-     orphaned worktree dir silently resolves every git command up the tree to
-     the canonical repo's `.git`, so writes land on the wrong tree or in a
-     disconnected directory invisible to git. If `<worktree_root>/.git` is
-     missing, or `git -C <cwd> rev-parse --show-toplevel` resolves to anything
-     other than worktree_root → exit 2 with the recovery recipe.
+  1. If cwd does not match either worktree-path convention, pass immediately —
+     no subprocess needed.
+  2. Extract a CANDIDATE canonical_root (repo root) and worktree_root from cwd,
+     then confirm/correct them via `_resolve_worktree_scope()`. If git confirms
+     cwd was never really inside a worktree structure at all (the candidate
+     canonical_root doesn't match git's own), pass immediately (dev-env#774
+     gap (b)) — nothing here to enforce.
+  3. Liveness guard (ADR-024 addendum, dev-env#328; git-membership-confirmed as
+     of dev-env#774): assert the worktree is a *live*, registered worktree, not
+     an orphan or removed entry. An orphaned worktree dir silently resolves
+     every git command up the tree to the canonical repo's `.git`, so writes
+     land on the wrong tree or in a disconnected directory invisible to git.
+     Not live → exit 2 with the recovery recipe.
   4. Read file_path (Write/Edit) or notebook_path (NotebookEdit) from tool input.
   5. If the path is absolute and starts with canonical_root but NOT with
      worktree_root → exit 2 with a blocking message naming both paths and the
@@ -55,6 +68,7 @@ import subprocess
 import sys
 
 import _hookutil
+from _worktree_topology import find_worktree_by_path, parse_worktree_porcelain
 
 # Matches `.claude/worktrees/<name>` at the start of a path, capturing the repo root
 # (everything before the matched segment). Tried BEFORE `_SIBLING_WORKTREE_RE` (see
@@ -117,6 +131,13 @@ def _resolve_git_toplevel(cwd: str):
     (no `.git` link file), git walks up the tree and returns the canonical repo
     root instead — that mismatch is the orphan signature the liveness guard keys
     on. Any execution failure (git missing, timeout, non-zero exit) returns None.
+    `ValueError` also fails open here (dev-env#774 review finding): `subprocess.run(...,
+    text=True)` decodes git's stdout in the process locale encoding, and a path
+    containing bytes undecodable there raises `UnicodeDecodeError` (a `ValueError`
+    subclass) — without this, that decode error would propagate uncaught to this
+    hook's outer `except Exception: sys.exit(0)`, silently disabling enforcement
+    entirely instead of falling back to the fail-open contract this function exists
+    to provide.
     """
     try:
         result = subprocess.run(
@@ -125,7 +146,7 @@ def _resolve_git_toplevel(cwd: str):
             text=True,
             timeout=10,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
         return None
     if result.returncode != 0:
         return None
@@ -167,6 +188,112 @@ def _worktree_is_live(
     return _normalize(top) == _normalize(worktree_root)
 
 
+def _resolve_worktrees(cwd: str):
+    """Run `git -C <cwd> worktree list --porcelain` and parse it via the shared
+    `_worktree_topology.parse_worktree_porcelain`, or None if git can't resolve
+    it at all (no `.git` found anywhere up the tree from `cwd`, git missing,
+    timeout, non-zero exit, or a decode/parse failure).
+
+    `ValueError` fails open here for the same reason `_resolve_git_toplevel` does
+    (dev-env#774 review finding): a `UnicodeDecodeError` from decoding git's stdout
+    is a `ValueError` subclass, and letting it propagate uncaught would silently
+    disable this hook's enforcement entirely (escape to the outer
+    `except Exception: sys.exit(0)`) instead of falling back to the regex +
+    `_worktree_is_live` path `_resolve_worktree_scope` provides for exactly this
+    "git can't answer" case. The parse call is inside the same `try` for the same
+    reason, even though `parse_worktree_porcelain` is pure string splitting with no
+    known raise path today — a future change to it should not have to remember to
+    keep this call site's fail-open contract intact.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        return parse_worktree_porcelain(result.stdout)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
+        return None
+
+
+def _resolve_worktree_scope(regex_canonical_root: str, regex_worktree_root: str, cwd: str):
+    """Confirm (or correct) the regex-derived `(canonical_root, worktree_root)`
+    candidate against `git worktree list --porcelain` ground truth, and
+    determine liveness. Returns `(canonical_root, worktree_root, is_live)`:
+
+      - `canonical_root is None` means git confirms `cwd` was never really
+        inside a worktree structure at all — the regex match was a path-shape
+        false positive (dev-env#774 gap (b): a repo whose OWN root directory
+        name literally ends in `-worktrees`, e.g. `some-repo-worktrees`, has
+        every subdirectory misclassified by `_match_worktree()` as if it were
+        a worktree name). The caller should no-op (exit 0) in this case.
+      - Otherwise `canonical_root`/`worktree_root` are the CONFIRMED roots —
+        from git when available, else the regex's own guess — and `is_live`
+        says whether the worktree is genuinely registered (False = orphaned
+        or removed, block).
+
+    Falls back to the regex-derived roots + the pre-existing `_worktree_is_live`
+    liveness check when git itself can't answer at all (fail open — e.g. the
+    sibling-directory orphan case, which by construction is never nested inside
+    any repo for git to walk up to, so `git worktree list` fails outright) — a
+    backstop, not the primary signal, per dev-env#774's "replace (or backstop)"
+    framing. This preserves every pre-existing test's behavior, since all of
+    them build their worktree fixtures from bogus (non-real-repo) `.git` files
+    rather than actual git repos, so `_resolve_worktrees` fails for all of them
+    and they exercise this fallback path unchanged.
+
+    When git DOES answer: `regex_worktree_root` not found among the confirmed
+    repo's LINKED (non-canonical) worktrees is treated as `is_live=False`
+    (orphaned/removed) directly, without a further `_worktree_is_live` call —
+    git's own authoritative membership list is stronger proof of "not currently
+    registered" than the `.git`-isfile/`rev-parse` heuristic it replaces here.
+
+    `regex_worktree_root` is checked against the FULL confirmed list (canonical
+    entry included) BEFORE the canonical-root textual comparison, not after
+    (review finding, dev-env#774): a direct match there is git's strongest
+    possible confirmation that `cwd` really is inside a live, registered
+    worktree, and is trusted even when the canonical-root guess would have
+    disagreed — e.g. a symlink/junction/8.3-short-path component making git's
+    own canonicalized path differ in FORM (not substance) from the regex's raw
+    cwd-derived substring. Checking the canonical guess first, as an earlier
+    version of this function did, would have exited 0 (gap (b)'s "never really
+    a worktree" outcome) for that case even though `cwd` genuinely is inside a
+    live worktree — silently dropping BOTH the orphan-block and the
+    escape-block, this hook's core purpose, under a path-form quirk this PR
+    introduced no exposure to before (the pre-#774 regex-only code never asked
+    git to independently agree on a form at all). The canonical-comparison
+    heuristic remains as the fallback for the one case a direct worktree-root
+    match can't resolve on its own: distinguishing a genuine orphan (canonical
+    confirmed correct, this specific worktree path just isn't registered) from
+    gap (b) (the canonical guess itself was wrong).
+    """
+    worktrees = _resolve_worktrees(cwd)
+    if not worktrees:
+        return regex_canonical_root, regex_worktree_root, _worktree_is_live(regex_worktree_root, cwd)
+
+    canonical_entry = worktrees[0]
+    matched = find_worktree_by_path(worktrees, regex_worktree_root, normalize=_normalize)
+    if matched is not None:
+        # regex_worktree_root is confirmed a registered worktree of THIS
+        # repository -- trust it regardless of whether the canonical-root
+        # guess textually agreed (see the path-form note above).
+        return canonical_entry["path"], matched["path"], True
+
+    if _normalize(canonical_entry["path"]) != _normalize(regex_canonical_root):
+        # regex_worktree_root wasn't found anywhere in the list, AND the
+        # canonical guess disagrees too -- cwd was never really inside a
+        # worktree structure at all (dev-env#774 gap (b)).
+        return None, None, None
+
+    # canonical_root confirmed correct, but this specific worktree path isn't
+    # among the repo's registered (linked) worktrees -- orphaned or removed.
+    return canonical_entry["path"], regex_worktree_root, False
+    return canonical_entry["path"], matched["path"], True
+
+
 def _block(reason: str) -> None:
     """Emit a blocking {"reason": ...} payload and exit 2.
 
@@ -198,17 +325,23 @@ def main() -> None:
     cwd = data.get("cwd", "")
     m = _match_worktree(cwd)
     if not m:
-        sys.exit(0)  # not in a worktree — nothing to enforce
+        sys.exit(0)  # doesn't even look worktree-shaped — nothing to enforce, no subprocess needed
 
-    canonical_root = m.group(1)   # e.g. C:/Users/brown/Git/dev-env
-    worktree_root = m.group(0)    # e.g. C:/Users/brown/Git/dev-env/.claude/worktrees/dreamy-feistel-e004d7
+    # Confirm (or correct) the regex's candidate against `git worktree list`
+    # ground truth (dev-env#774) rather than trusting it outright — closes the
+    # gap where a repo literally named `<x>-worktrees` has every subdirectory
+    # misclassified as a worktree name by the regex alone. See
+    # _resolve_worktree_scope()'s own docstring for the full decision table.
+    canonical_root, worktree_root, is_live = _resolve_worktree_scope(m.group(1), m.group(0), cwd)
+    if canonical_root is None:
+        sys.exit(0)  # dev-env#774 gap (b): git confirms cwd was never really inside a worktree structure
 
     # Liveness guard (dev-env#328): an orphaned worktree dir silently resolves
     # git up to the canonical repo, so *any* write from here — relative paths and
     # in-worktree absolute paths included — risks landing on the wrong tree or in
     # a disconnected directory. Check before the path-scoping below so it covers
     # all three cases, not just canonical-root absolute paths.
-    if not _worktree_is_live(worktree_root, cwd):
+    if not is_live:
         reason = (
             f"[worktree-path-guard] BLOCKED: {tool_name} issued from an orphaned / "
             f"disconnected worktree. The worktree directory exists but is not a live "

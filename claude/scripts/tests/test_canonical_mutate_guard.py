@@ -75,7 +75,13 @@ no worktrees needed):
          `Bash`) is BLOCKED identically, proving the dev-env#620 / ADR-071
          Amendment 4 PowerShell extension reaches the real hook process, not
          just a payload-shape assumption (an unrelated tool, e.g. `Write`,
-         still correctly no-ops).
+         still correctly no-ops);
+       - a genuine, INDEPENDENTLY-CLONED canonical checkout (never `git worktree
+         add`) that happens to sit at a worktree-shaped path is still BLOCKED,
+         both ambient (cwd itself) and via a `-C` redirect target — the
+         `_blockable_ambient_root`/`_blockable_redirect_root` git-membership fix
+         (dev-env#774 gap (a)) — while a REAL, `git worktree add`-registered
+         worktree at the same-shaped path stays exempt.
 
 Usage:
     py -3 claude/scripts/tests/test_canonical_mutate_guard.py
@@ -1062,29 +1068,161 @@ def test_is_live_worktree_rejects_git_directory() -> str:
 
 def test_blockable_ambient_root_guards_against_worktree_shaped_resolution() -> str:
     """Review finding, dev-env#749: mirrors `_blockable_redirect_root`'s
-    identical `not _WORKTREE_RE.search(root)` guard. The ambient branch's
-    original invariant ("cwd already failed the worktree pattern, so any
-    resolved toplevel IS canonical") no longer strictly holds once
-    cwd_is_worktree can be False for a cwd that IS worktree-shaped but wasn't
-    confirmed live — `_blockable_ambient_root` closes that latent gap.
+    identical worktree-confirmation guard. The ambient branch's original
+    invariant ("cwd already failed the worktree pattern, so any resolved
+    toplevel IS canonical") no longer strictly holds once cwd_is_worktree can
+    be False for a cwd that IS worktree-shaped but wasn't confirmed live —
+    `_blockable_ambient_root` closes that latent gap.
+
+    As of dev-env#774, the guard is git-membership-based (`_is_confirmed_worktree_root`)
+    rather than a bare `_WORKTREE_RE.search(root)` shape check -- the cache dict is
+    pre-seeded here so this stays a hermetic, subprocess-free unit test rather than
+    spawning a real `git worktree list` against these fixture paths (one of which,
+    `_CANONICAL_FIXTURE`, happens to be a real path on the dev machine but must not be
+    depended on as one by this test).
     """
-    if cmg._blockable_ambient_root(None) is not None:
+    cache = {}
+    if cmg._blockable_ambient_root(None, cache) is not None:
         raise AssertionError("None input should stay None")
-    if cmg._blockable_ambient_root(_CANONICAL_FIXTURE) != _CANONICAL_FIXTURE:
-        raise AssertionError("a canonical (non-worktree-shaped) root should pass through unchanged")
-    if cmg._blockable_ambient_root(_WORKTREE_ROOT_FIXTURE) is not None:
-        raise AssertionError("a worktree-shaped resolved root must not be treated as blockable")
-    return "_blockable_ambient_root guards against a worktree-shaped resolved root (dev-env#749 review finding)"
+
+    cache[_CANONICAL_FIXTURE] = [{"path": _CANONICAL_FIXTURE, "branch": "main"}]
+    if cmg._blockable_ambient_root(_CANONICAL_FIXTURE, cache) != _CANONICAL_FIXTURE:
+        raise AssertionError("a canonical (non-worktree) root should pass through unchanged")
+
+    cache[_WORKTREE_ROOT_FIXTURE] = [
+        {"path": _CANONICAL_FIXTURE, "branch": "main"},
+        {"path": _WORKTREE_ROOT_FIXTURE, "branch": "claude/x"},
+    ]
+    if cmg._blockable_ambient_root(_WORKTREE_ROOT_FIXTURE, cache) is not None:
+        raise AssertionError("a git-confirmed LINKED worktree root must not be treated as blockable")
+    return "_blockable_ambient_root guards against a git-confirmed worktree root (dev-env#749 review finding; git-membership-based, dev-env#774)"
 
 
 def test_blockable_ambient_root_guards_against_sibling_directory_worktree_shaped_resolution() -> str:
     """dev-env#760: mirrors test_blockable_ambient_root_guards_against_worktree_shaped_resolution
     for the sibling-directory convention -- a resolved root shaped like `<repo>-worktrees/<name>`
-    must not be treated as blockable either, since `_WORKTREE_RE` now recognizes it too.
+    must not be treated as blockable either, when git confirms it as a LINKED worktree entry.
     """
-    if cmg._blockable_ambient_root(_SIBLING_WORKTREE_ROOT_FIXTURE) is not None:
-        raise AssertionError("a sibling-directory-convention worktree-shaped resolved root must not be treated as blockable")
-    return "_blockable_ambient_root guards against a sibling-directory-convention worktree-shaped resolved root (dev-env#760)"
+    cache = {
+        _SIBLING_WORKTREE_ROOT_FIXTURE: [
+            {"path": _CANONICAL_FIXTURE, "branch": "main"},
+            {"path": _SIBLING_WORKTREE_ROOT_FIXTURE, "branch": "claude/x"},
+        ]
+    }
+    if cmg._blockable_ambient_root(_SIBLING_WORKTREE_ROOT_FIXTURE, cache) is not None:
+        raise AssertionError("a git-confirmed sibling-directory-convention worktree root must not be treated as blockable")
+    return "_blockable_ambient_root guards against a git-confirmed sibling-directory-convention worktree root (dev-env#760; git-membership-based, dev-env#774)"
+
+
+def test_is_confirmed_worktree_root_decision_table() -> str:
+    """dev-env#774: `_is_confirmed_worktree_root` decides via `git worktree list`
+    membership (pre-seeded cache -- no real subprocess), not path shape:
+
+      - `root` as the list's FIRST (canonical) entry -> not confirmed a worktree
+        (blockable), regardless of whether its path string looks worktree-shaped
+        (the gap (a) fix: an independently-cloned canonical at a worktree-shaped
+        path is its own sole/first entry, never a linked one).
+      - `root` as a LATER (linked) entry -> confirmed a worktree (not blockable).
+      - git unable to answer at all (empty/None cache value) -> falls back to the
+        path-shape regex (the "backstop" half of dev-env#774's "replace (or
+        backstop)" framing).
+    """
+    cache = {}
+
+    # An independent clone at a worktree-shaped path: its own git worktree list
+    # reports only itself, as the canonical (first) entry.
+    cache[_WORKTREE_ROOT_FIXTURE] = [{"path": _WORKTREE_ROOT_FIXTURE, "branch": ""}]
+    if cmg._is_confirmed_worktree_root(_WORKTREE_ROOT_FIXTURE, cache):
+        raise AssertionError(
+            "an independent clone at a worktree-shaped path (sole/canonical entry) "
+            "must NOT be confirmed a worktree (dev-env#774 gap (a))"
+        )
+
+    # A genuinely linked worktree: canonical is a DIFFERENT path, this root is a later entry.
+    cache[_CANONICAL_FIXTURE + "/linked"] = [
+        {"path": _CANONICAL_FIXTURE, "branch": "main"},
+        {"path": _CANONICAL_FIXTURE + "/linked", "branch": "claude/x"},
+    ]
+    if not cmg._is_confirmed_worktree_root(_CANONICAL_FIXTURE + "/linked", cache):
+        raise AssertionError("a git-confirmed LINKED worktree entry must be confirmed a worktree")
+
+    # git couldn't resolve anything at all for this root (empty list) -> falls back to shape.
+    cache["C:/some/unresolvable/path"] = []
+    if cmg._is_confirmed_worktree_root("C:/some/unresolvable/path", cache):
+        raise AssertionError("a non-worktree-shaped path with no git answer must fall back to the (non-matching) shape check")
+    cache[_WORKTREE_ROOT_FIXTURE + "-fallback"] = None
+    if not cmg._is_confirmed_worktree_root(_WORKTREE_ROOT_FIXTURE + "-fallback", cache):
+        raise AssertionError(
+            "a worktree-SHAPED path with no git answer at all must fall back to the "
+            "path-shape regex (the backstop half of dev-env#774)"
+        )
+    return "_is_confirmed_worktree_root: canonical (first) entry not confirmed, linked entry confirmed, git-unavailable falls back to shape (dev-env#774)"
+
+
+def test_memoized_worktree_list_dedupes_across_callers() -> str:
+    """Mirrors `test_memoized_toplevel_dedupes_across_callers` (dev-env#758) for the new
+    `_memoized_worktree_list` cache (dev-env#774): at most one `_resolve_worktree_list` call
+    per distinct root, including a memoized `None` (git couldn't resolve that root at all).
+    """
+    original_resolve = cmg._resolve_worktree_list
+    calls = {"n": 0}
+
+    def _counting_resolve(root):
+        calls["n"] += 1
+        return None if root == "C:/unresolvable" else [{"path": root, "branch": "main"}]
+
+    try:
+        cmg._resolve_worktree_list = _counting_resolve
+
+        cache = {}
+        first = cmg._memoized_worktree_list("C:/some/root", cache)
+        second = cmg._memoized_worktree_list("C:/some/root", cache)
+        if first != second or first != [{"path": "C:/some/root", "branch": "main"}]:
+            raise AssertionError(f"expected consistent resolved value, got {first!r} then {second!r}")
+        if calls["n"] != 1:
+            raise AssertionError(f"expected exactly 1 resolver call for a repeated root, got {calls['n']}")
+
+        none_first = cmg._memoized_worktree_list("C:/unresolvable", cache)
+        none_second = cmg._memoized_worktree_list("C:/unresolvable", cache)
+        if none_first is not None or none_second is not None:
+            raise AssertionError("expected None to be memoized, not just non-None results")
+        if calls["n"] != 2:
+            raise AssertionError(f"expected exactly 1 additional resolver call for the None-root, got {calls['n'] - 1}")
+    finally:
+        cmg._resolve_worktree_list = original_resolve
+
+    return "_memoized_worktree_list resolves each distinct root at most once, including a memoized None (dev-env#774, mirrors dev-env#758)"
+
+
+def test_resolve_worktree_list_failsopen_on_timeout_and_oserror() -> str:
+    """Mirrors `test_resolve_git_toplevel_failsopen_on_timeout_and_oserror` for the new
+    `_resolve_worktree_list` (dev-env#774) -- the fail-open guarantee `_is_confirmed_worktree_root`'s
+    backstop path relies on.
+    """
+    import subprocess as _subprocess_module
+
+    original_run = cmg.subprocess.run
+
+    def _raise_timeout(*args, **kwargs):
+        raise _subprocess_module.TimeoutExpired(cmd="git", timeout=10)
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError("git binary not found")
+
+    try:
+        cmg.subprocess.run = _raise_timeout
+        result = cmg._resolve_worktree_list("C:/some/root")
+        if result is not None:
+            raise AssertionError(f"expected None on TimeoutExpired, got {result!r}")
+
+        cmg.subprocess.run = _raise_oserror
+        result = cmg._resolve_worktree_list("C:/some/root")
+        if result is not None:
+            raise AssertionError(f"expected None on OSError, got {result!r}")
+    finally:
+        cmg.subprocess.run = original_run
+
+    return "_resolve_worktree_list returns None on both TimeoutExpired and OSError (fail-open guarantee, dev-env#774)"
 
 
 def main_unit() -> list:
@@ -1135,6 +1273,9 @@ def main_unit() -> list:
         ("_is_live_worktree rejects a real .git directory (dev-env#760 review finding)", test_is_live_worktree_rejects_git_directory),
         ("_blockable_ambient_root guards against worktree-shaped resolution (dev-env#749 review finding)", test_blockable_ambient_root_guards_against_worktree_shaped_resolution),
         ("_blockable_ambient_root guards against sibling-directory worktree-shaped resolution (dev-env#760)", test_blockable_ambient_root_guards_against_sibling_directory_worktree_shaped_resolution),
+        ("_is_confirmed_worktree_root decision table (dev-env#774)", test_is_confirmed_worktree_root_decision_table),
+        ("_memoized_worktree_list dedupes across callers, incl. a memoized None (dev-env#774)", test_memoized_worktree_list_dedupes_across_callers),
+        ("_resolve_worktree_list fails open on timeout/OSError (dev-env#774)", test_resolve_worktree_list_failsopen_on_timeout_and_oserror),
     ]
 
 
@@ -1359,10 +1500,18 @@ def test_main_allows_gh_pr_merge_delete_branch_from_worktree_cwd() -> str:
     """cwd matching the worktree pattern is out of scope for every mutating
     command this hook recognizes, gh-based or git-based alike — ADR-024's
     hook covers the worktree surface.
+
+    Uses a REAL, `git worktree add`-registered worktree (dev-env#774 review
+    finding): a bare (non-git) worktree-shaped directory would pass this test
+    only via the UNRELATED non-git-cwd fail-open path (`_resolve_git_toplevel`
+    fails entirely, `_blockable_ambient_root(None, ...)` short-circuits) —
+    giving zero real coverage of the worktree-cwd exemption this test's name
+    and docstring claim to verify.
     """
     with tempfile.TemporaryDirectory() as tmp:
-        wt = Path(tmp) / ".claude" / "worktrees" / "some-worktree-name"
-        wt.mkdir(parents=True)
+        canonical = Path(tmp) / "canonical-repo"
+        wt = canonical / ".claude" / "worktrees" / "some-worktree-name"
+        _init_repo_with_live_worktree(canonical, wt)
         payload = {
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
@@ -1372,10 +1521,10 @@ def test_main_allows_gh_pr_merge_delete_branch_from_worktree_cwd() -> str:
         proc = _run_hook(payload)
         if proc.returncode != 0:
             raise AssertionError(
-                f"expected exit 0 (out of scope) from worktree cwd, got {proc.returncode}. "
+                f"expected exit 0 (out of scope) from a REAL live worktree cwd, got {proc.returncode}. "
                 f"stdout={proc.stdout!r}"
             )
-    return "gh pr merge --delete-branch from a worktree-pattern cwd allowed (out of scope, exit 0, dev-env#558)"
+    return "gh pr merge --delete-branch from a REAL registered worktree cwd allowed (out of scope, exit 0, dev-env#558; strengthened fixture, dev-env#774)"
 
 
 def test_main_gh_pr_merge_delete_branch_override_bypasses() -> str:
@@ -1430,6 +1579,15 @@ def test_main_allows_any_command_from_worktree_cwd() -> str:
     longer "entirely out of scope": a worktree command that redirects a mutating
     verb at a *canonical* checkout IS evaluated (see
     test_main_blocks_redirect_into_canonical_from_worktree_cwd below).
+
+    This fixture (a bare, non-git worktree-shaped directory) covers only the
+    NON-GIT-cwd fail-open boundary (dev-env#774 review finding — `_resolve_git_toplevel`
+    fails entirely here, so `_blockable_ambient_root(None, ...)` short-circuits before
+    ever consulting `_is_confirmed_worktree_root`), not the git-membership-confirmed
+    worktree-cwd exemption itself. Real coverage of THAT path — a genuine, `git
+    worktree add`-registered worktree — lives in
+    `test_main_allows_ambient_mutating_command_from_live_worktree` below; not duplicated
+    here to avoid two tests spawning the same real-repo setup for identical coverage.
     """
     with tempfile.TemporaryDirectory() as tmp:
         wt = Path(tmp) / ".claude" / "worktrees" / "some-worktree-name"
@@ -1742,14 +1900,23 @@ def test_main_allows_redirect_into_worktree_target() -> str:
     root) is allowed — the target is itself isolated, so no shared-checkout
     collision. Proves the block keys off the target's canonical-ness, not merely
     the presence of a redirect flag.
+
+    Uses a REAL, `git worktree add`-registered worktree as the target (dev-env#774)
+    — not merely a worktree-SHAPED directory that was independently `git init`'d.
+    The latter is exactly the gap (a) scenario this issue closes: an independent
+    clone at a worktree-shaped path is now correctly recognized as its OWN
+    canonical (via `git worktree list` membership), not exempted on path shape
+    alone, so a bare `_init_throwaway_repo` fixture here would now (correctly)
+    be BLOCKED rather than allowed — this test's fixture is strengthened to
+    prove what its name actually claims.
     """
     with tempfile.TemporaryDirectory() as tmp:
         cwd_repo = Path(tmp) / "canonical-cwd"
         cwd_repo.mkdir()
         _init_throwaway_repo(cwd_repo)
-        wt_target = Path(tmp) / ".claude" / "worktrees" / "wt-target"
-        wt_target.mkdir(parents=True)
-        _init_throwaway_repo(wt_target)
+        target_canonical = Path(tmp) / "target-canonical-repo"
+        wt_target = target_canonical / ".claude" / "worktrees" / "wt-target"
+        _init_repo_with_live_worktree(target_canonical, wt_target)
         payload = {
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
@@ -1759,9 +1926,9 @@ def test_main_allows_redirect_into_worktree_target() -> str:
         proc = _run_hook(payload)
         if proc.returncode != 0:
             raise AssertionError(
-                f"expected exit 0 (target is a worktree), got {proc.returncode}. stderr={proc.stderr!r}"
+                f"expected exit 0 (target is a REAL registered worktree), got {proc.returncode}. stderr={proc.stderr!r}"
             )
-    return "git -C <worktree> mutating verb allowed (target is not a canonical root, dev-env#576)"
+    return "git -C <a REAL registered worktree> mutating verb allowed (target is not canonical, dev-env#576; strengthened fixture, dev-env#774)"
 
 
 def test_main_blocks_redirect_into_other_canonical_from_canonical_cwd() -> str:
@@ -2104,6 +2271,73 @@ def test_main_allows_ambient_mutating_command_from_nested_worktree_inside_siblin
     return "ambient mutating command from a real nested worktree created inside a sibling-directory worktree allowed, root correctly resolved to the inner worktree (exit 0, dev-env#760)"
 
 
+def test_main_blocks_mutating_command_from_independent_clone_at_worktree_shaped_path() -> str:
+    """dev-env#774 gap (a), ambient side: a genuine, INDEPENDENT canonical checkout
+    (a real `git init`/`git clone`, never a `git worktree add`) that happens to sit
+    at a path shaped like `<repo>-worktrees/<name>` must still be BLOCKED like any
+    other canonical checkout — it is its own distinct repository, exposed to the
+    exact same dev-env#453 collision as any other, regardless of its path string.
+
+    Before this fix, this scenario was silently exempted twice over: the cwd-facing
+    `_is_live_worktree()` check already (correctly, per dev-env#760) rejects it as
+    NOT live, since its `.git` is a real DIRECTORY, not a worktree's gitdir-pointer
+    FILE — but `_blockable_ambient_root()`'s OWN, separate `_WORKTREE_RE.search(root)`
+    shape check then wrongly re-exempted the very same resolved root anyway, purely
+    because its path string matches the sibling-directory pattern.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        lookalike = Path(tmp) / "some-repo-worktrees" / "some-name"
+        lookalike.mkdir(parents=True)
+        _init_throwaway_repo(lookalike)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git checkout -b some-branch"},
+            "cwd": str(lookalike),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (independent clone at a worktree-shaped path is "
+                f"still its own canonical, blocked), got {proc.returncode}. "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+        reason = json.loads(proc.stderr).get("reason", "")
+        if "some-repo-worktrees" not in reason:
+            raise AssertionError(f"block reason must name the resolved (lookalike) canonical root, got {reason!r}")
+    return "independent canonical clone at a worktree-shaped path is still blocked, ambient side (exit 2, dev-env#774 gap (a))"
+
+
+def test_main_blocks_redirect_into_independent_clone_at_worktree_shaped_path() -> str:
+    """dev-env#774 gap (a), redirect side: mirrors the ambient-side proof above
+    through `_blockable_redirect_root()`'s own, previously-identical
+    `_WORKTREE_RE.search(root)` shape check — a `git -C <path>` redirect targeting
+    a genuine independent clone at a worktree-shaped path must still be BLOCKED.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        cwd_repo = tmp / "canonical-cwd"
+        cwd_repo.mkdir()
+        _init_throwaway_repo(cwd_repo)
+        lookalike = tmp / "some-repo-worktrees" / "some-name"
+        lookalike.mkdir(parents=True)
+        _init_throwaway_repo(lookalike)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {lookalike.as_posix()} checkout -b x"},
+            "cwd": str(cwd_repo),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (redirect into an independent clone at a "
+                f"worktree-shaped path must still be blocked), got {proc.returncode}. "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+    return "git -C <independent clone at worktree-shaped path> still blocked, redirect side (exit 2, dev-env#774 gap (a))"
+
+
 def test_main_wiring_shares_one_toplevel_resolution_for_cwd() -> str:
     """dev-env#758 review follow-up: `test_memoized_toplevel_dedupes_across_callers` above proves
     `_memoized_toplevel()` itself memoizes correctly, but nothing else in this suite proves `main()`
@@ -2197,6 +2431,8 @@ def main_e2e() -> list:
         ("main() allows ambient mutating command from a real live sibling-directory worktree (dev-env#760)", test_main_allows_ambient_mutating_command_from_live_sibling_directory_worktree),
         ("main() fails open on orphaned sibling-directory cwd not nested in any repo (dev-env#760)", test_main_failsopen_on_orphaned_sibling_directory_cwd_not_nested_in_any_repo),
         ("main() allows ambient mutating command from nested worktree inside a sibling-directory worktree (dev-env#760 review finding)", test_main_allows_ambient_mutating_command_from_nested_worktree_inside_sibling_directory_worktree),
+        ("main() blocks mutating command from an independent clone at a worktree-shaped path, ambient side (dev-env#774 gap (a))", test_main_blocks_mutating_command_from_independent_clone_at_worktree_shaped_path),
+        ("main() blocks redirect into an independent clone at a worktree-shaped path, redirect side (dev-env#774 gap (a))", test_main_blocks_redirect_into_independent_clone_at_worktree_shaped_path),
         ("main() shares one toplevel resolution for cwd, in-process (dev-env#758)", test_main_wiring_shares_one_toplevel_resolution_for_cwd),
         ("main() fails open on non-git cwd", test_main_failsopen_on_nongit_cwd),
         ("main() fails open on malformed JSON", test_main_failsopen_on_malformed_json),
