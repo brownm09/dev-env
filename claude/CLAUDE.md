@@ -150,7 +150,7 @@ Confirmed as a **general git-worktree mechanic**, not a quirk of any one repo's 
 
 ### Bare `--force` after rebase auto-closes any open PR on the target branch
 
-**Pattern:** After `git rebase origin/main`, `--force-with-lease` rejects with `(stale info)` because the rebase rewrote local commits without refreshing the remote-tracking ref. Falling back to bare `git push origin HEAD:<branch> --force` (or `--force`) succeeds at the network level — but GitHub interprets it as a branch-delete + branch-recreate. **Any open PR targeting that branch is auto-closed** with `mergedAt: null`, `mergeCommit: null`, and `gh pr reopen` fails with "Could not open the pull request."
+**Pattern:** After `git rebase origin/main`, `--force-with-lease` may reject with `(stale info)` when the remote branch has advanced since the last fetch — the local tracking ref no longer matches the actual remote tip. Falling back to bare `git push origin HEAD:<branch> --force` (or `--force`) succeeds at the network level — but GitHub auto-closes any open PR targeting that branch (precise mechanism unknown; see [dev-env#724](https://github.com/brownm09/dev-env/issues/724)). **The result: `mergedAt: null`, `mergeCommit: null`, and `gh pr reopen` fails** with "Could not open the pull request."
 
 **Symptom:** `! [rejected] HEAD -> <branch> (stale info)` from `--force-with-lease`, then a bare `--force` push succeeds, and the PR shows `state: CLOSED` with no merge commit.
 

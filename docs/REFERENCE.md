@@ -878,14 +878,14 @@ the orphaned #588).
 
 ### Bare `--force` after rebase auto-closes any open PR on the target branch
 
-**Trigger.** A `git rebase origin/main` rewrites local commits but does **not** refresh the remote-tracking
-ref (`refs/remotes/origin/<branch>`). Running `git push --force-with-lease` immediately after rejects
-with `(stale info)` because the lease comparison — local tracking ref vs. what the remote actually
-holds — finds a mismatch (the rebase changed local SHAs; the tracking ref still shows pre-rebase SHAs).
+**Trigger.** After a `git rebase origin/main`, the remote-tracking ref (`refs/remotes/origin/<branch>`)
+is not updated. If the remote branch has also advanced since the last fetch — a push from another
+machine or a concurrent collaborator push — running `git push --force-with-lease` rejects with
+`(stale info)`: the lease comparison (local tracking ref vs. actual remote tip) finds a mismatch.
 Falling back to bare `git push origin HEAD:<branch> --force` (or `git push --force`) succeeds at the
-wire level, but GitHub treats a force-push whose new tip does not descend from the old tip as a
-**branch-delete + branch-recreate**. Any open PR targeting that branch is **auto-closed** with
-`mergedAt: null` and `mergeCommit: null`.
+wire level, but GitHub auto-closes any open PR targeting that branch — the precise mechanism is not
+fully understood (see [dev-env#724](https://github.com/brownm09/dev-env/issues/724) for the incident
+record). The result: `mergedAt: null`, `mergeCommit: null`, and `gh pr reopen` fails.
 
 **Symptom.**
 
@@ -903,10 +903,12 @@ gh pr reopen <N>
 # Could not open the pull request: <N>
 ```
 
-**Diagnosis.** The `(stale info)` variant of a `--force-with-lease` rejection is distinct from a real
-concurrent push. A concurrent push leaves `(fetch first)` in the rejection message; `(stale info)` means
-the *local* tracking ref is out of date — the remote-tracking ref was never refreshed after the rebase.
-The safe test before resorting to bare `--force`:
+**Diagnosis.** The `(stale info)` rejection from `--force-with-lease` means the local remote-tracking ref
+(`refs/remotes/origin/<branch>`) differs from what the remote actually holds — either because the remote
+advanced since the last fetch (a push from another machine or a concurrent collaborator push), or because
+the tracking ref was simply never refreshed. Both cases look identical in the rejection message. After
+running `git fetch origin`, inspect `git log HEAD..origin/<branch>` to check for concurrent commits
+before retrying. Use this sequence instead of resorting to bare `--force`:
 
 ```bash
 git fetch origin                  # update the tracking ref
@@ -933,7 +935,7 @@ not allow reopening a PR whose base branch was deleted and recreated). Steps:
 
 1. Confirm the PR is truly auto-closed (not intentionally closed):
    ```bash
-   gh pr view <N> --json state,closedAt,mergedAt,mergeCommit,timelineItems
+   gh pr view <N> --json state,closedAt,mergedAt,mergeCommit
    # state=CLOSED, mergedAt=null, mergeCommit=null confirms the auto-close
    ```
 2. The branch itself is fine — the commits are still intact on the pushed branch; only the PR object
@@ -941,7 +943,7 @@ not allow reopening a PR whose base branch was deleted and recreated). Steps:
    ```bash
    gh pr create --head <branch> --base main \
      --title "<same title>" \
-     --body "<same body>\n\nReplaces #N (auto-closed by bare --force after rebase; see <original PR URL>)"
+     --body $'<same body>\n\nReplaces #N (auto-closed by bare --force after rebase; see <original PR URL>)'
    ```
 3. Reference the original PR number in the new body to preserve review history context. The old PR
    number is permanently gone — do not try to reuse it.
