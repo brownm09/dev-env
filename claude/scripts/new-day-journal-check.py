@@ -31,6 +31,16 @@ FLAG_MAX_AGE_HOURS = 24
 
 
 def cleanup_stale_flags() -> None:
+    # Deliberately NOT delegated to _hookutil.cleanup_stale_sentinels: this
+    # hook's flags need a 24-HOUR retention (this hook fires once per
+    # calendar day, so anything older than a day is stale), not the shared
+    # helper's fixed 30-DAY MAX_AGE_DAYS -- migrating would silently
+    # 30x-extend this flag's retention. Left as its own bespoke loop rather
+    # than generalizing the shared helper's retention window too, which
+    # would widen this PR's scope beyond its non-cleaning-writer fix
+    # (dev-env#768 review; see turn-count-hook.py's cleanup_stale_counters
+    # for the sibling case that legitimately COULD migrate but is also
+    # deferred to Phase E).
     cutoff = time.time() - FLAG_MAX_AGE_HOURS * 3600
     try:
         for f in SCRATCH.glob("journal_hook_*.flag"):

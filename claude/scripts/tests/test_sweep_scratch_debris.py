@@ -126,6 +126,64 @@ def test_sweep_across_multiple_families_independently() -> str:
     return "sweep tracks every KNOWN_PATTERNS family independently in one pass"
 
 
+def test_sweep_apply_does_not_count_failed_unlink_as_removed() -> str:
+    # dev-env#768 review: sweep() previously reported the pre-deletion match
+    # count/bytes as "Removed" regardless of whether unlink() actually
+    # succeeded. A directory in place of a file matching the glob pattern
+    # makes unlink() raise (IsADirectoryError / PermissionError depending on
+    # platform) without relying on OS-specific permission tricks.
+    with tempfile.TemporaryDirectory() as root:
+        scratch = Path(root)
+        fake = scratch / "journal_onboard_faketest.flag"
+        fake.mkdir()
+        past = time.time() - 31 * 86400
+        os.utime(fake, (past, past))
+
+        results = ssd.sweep(scratch, 30, apply=True)
+        count, size = results["journal_onboard_*.flag"]
+        assert count == 0, f"a failed unlink must not be counted as removed, got count={count}"
+        assert size == 0, f"bytes for a failed unlink must not be counted, got size={size}"
+        assert fake.exists(), "the directory should still exist since unlink() must have failed"
+    return "sweep(apply=True) does not count a failed unlink (e.g. IsADirectoryError) as removed"
+
+
+def test_sweep_apply_counts_already_gone_file_as_removed() -> str:
+    # The opposite case from the previous test: a file that vanishes between
+    # find_stale() and sweep()'s own unlink() call (e.g. a race with the
+    # owning hook's own cleanup) should still count as removed -- the goal
+    # (the stale file is gone) was met, regardless of who removed it. Not
+    # observable from pure inputs/outputs alone (the race can't be
+    # reproduced by timing on a single thread), so this monkeypatches
+    # Path.unlink to simulate the file having already been removed by
+    # something else at the exact moment sweep() tries -- the one mocking
+    # exception in this file, matching test_hookutil.py's own precedent for
+    # proving an otherwise-unobservable code path.
+    with tempfile.TemporaryDirectory() as root:
+        scratch = Path(root)
+        f = scratch / "session_mode_ack_race.txt"
+        f.write_text("x")
+        past = time.time() - 31 * 86400
+        os.utime(f, (past, past))
+
+        original_unlink = Path.unlink
+
+        def racy_unlink(self, *a, **kw):
+            if self.name == "session_mode_ack_race.txt":
+                raise FileNotFoundError(f"simulated race: {self}")
+            return original_unlink(self, *a, **kw)
+
+        Path.unlink = racy_unlink
+        try:
+            results = ssd.sweep(scratch, 30, apply=True)
+        finally:
+            Path.unlink = original_unlink
+
+        assert results["session_mode_ack_*.txt"] == (1, 1), (
+            f"a FileNotFoundError from unlink() (already gone) must still count as removed, got {results['session_mode_ack_*.txt']}"
+        )
+    return "a file already gone by the time unlink() runs (FileNotFoundError) still counts as removed"
+
+
 def test_sweep_no_crash_on_missing_scratch_dir() -> str:
     with tempfile.TemporaryDirectory() as root:
         nonexistent = Path(root) / "does-not-exist"
@@ -142,6 +200,8 @@ def main() -> int:
         ("sweep: dry run does not delete", test_sweep_dry_run_does_not_delete),
         ("sweep: apply deletes stale, keeps fresh", test_sweep_apply_deletes_stale_keeps_fresh),
         ("sweep: multiple families tracked independently", test_sweep_across_multiple_families_independently),
+        ("sweep: failed unlink not counted as removed", test_sweep_apply_does_not_count_failed_unlink_as_removed),
+        ("sweep: already-gone file (race) still counts as removed", test_sweep_apply_counts_already_gone_file_as_removed),
         ("sweep: no crash on missing scratch dir", test_sweep_no_crash_on_missing_scratch_dir),
     ]
     failed = 0

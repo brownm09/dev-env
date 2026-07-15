@@ -146,6 +146,12 @@ def main():
 
     # Write marker BEFORE emitting so any retry on the same session passes through.
     try:
+        # Explicit mkdir rather than relying on record_heartbeat's own
+        # mkdir(parents=True) (called earlier in main()) as an implicit,
+        # unrelated side effect that happens to create this same directory
+        # (dev-env#768 review) -- this write is self-sufficient regardless
+        # of what else main() does before it.
+        os.makedirs(MARKER_DIR, exist_ok=True)
         with open(marker_path, "w") as f:
             f.write(str(now))
         event["marker_written"] = True

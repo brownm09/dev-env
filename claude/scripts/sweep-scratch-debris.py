@@ -18,6 +18,16 @@ singleton files that happen to share the .flag suffix by convention but are
 NOT per-session debris. Update this list when a new per-session/per-day
 sentinel family is added elsewhere in claude/scripts/.
 
+Completeness of this list is NOT mechanically enforced -- there is no test
+asserting every sentinel-writing prefix in claude/scripts/ has a
+corresponding entry here (only the reverse: that dangerous filenames never
+match an entry). A new hook that forgets to add itself here produces no test
+failure; correctness relies on a human following the instruction above. This
+is an accepted, bounded risk for a manual backlog-clearing utility -- every
+hook already self-cleans on its own next invocation regardless of whether
+this registry knows about it, so an omission here only delays a one-time
+force-clear, never leaves debris permanently unswept.
+
 Deliberately excluded (do not add to KNOWN_PATTERNS without re-reading this
 docstring first):
   - awake.lock / awake.pid / awake.log[.1]   -- singleton state for a live
@@ -45,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import _hookutil
@@ -76,7 +87,6 @@ def find_stale(prefix: str, ext: str, scratch: Path, max_age_days: int) -> list[
     """Return files matching {prefix}*{ext} in scratch older than max_age_days.
     Mirrors _hookutil.cleanup_stale_sentinels's own matching logic, but
     separates discovery from deletion so callers can report before acting."""
-    import time
     cutoff = time.time() - max_age_days * 86400
     try:
         candidates = list(scratch.glob(f"{prefix}*{ext}"))
@@ -93,25 +103,36 @@ def find_stale(prefix: str, ext: str, scratch: Path, max_age_days: int) -> list[
 
 
 def sweep(scratch: Path, max_age_days: int, apply: bool) -> dict[str, tuple[int, int]]:
-    """Sweep every KNOWN_PATTERNS family. Returns {pattern: (count, bytes)}
-    for files matched -- and removed, if apply=True. Each family is guarded
-    independently so one family's I/O error never aborts the rest."""
+    """Sweep every KNOWN_PATTERNS family. Returns {pattern: (count, bytes)}.
+
+    In dry-run mode (apply=False), (count, bytes) is every stale file matched
+    -- nothing is deleted. In apply mode, (count, bytes) is only files
+    actually confirmed gone afterward: a genuine unlink failure (permission,
+    a locked handle) is NOT counted, so the report never overstates what was
+    actually cleared (a file already removed by a race with the owning
+    hook's own cleanup still counts -- the goal, an absent stale file, was
+    met regardless of who removed it). Each family is guarded independently
+    so one family's I/O error never aborts the rest."""
     results: dict[str, tuple[int, int]] = {}
     for prefix, ext in KNOWN_PATTERNS:
         stale = find_stale(prefix, ext, scratch, max_age_days)
+        count = 0
         size = 0
         for f in stale:
             try:
-                size += f.stat().st_size
-            except Exception:
-                continue
-        if apply:
-            for f in stale:
+                file_size = f.stat().st_size
+            except OSError:
+                file_size = 0
+            if apply:
                 try:
-                    f.unlink(missing_ok=True)
+                    f.unlink()
+                except FileNotFoundError:
+                    pass  # already gone (e.g. a race with the hook's own cleanup) -- goal met
                 except Exception:
-                    continue
-        results[f"{prefix}*{ext}"] = (len(stale), size)
+                    continue  # genuine failure -- do not count as removed
+            count += 1
+            size += file_size
+        results[f"{prefix}*{ext}"] = (count, size)
     return results
 
 

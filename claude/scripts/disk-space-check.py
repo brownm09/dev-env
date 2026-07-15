@@ -56,7 +56,12 @@ from pathlib import Path
 
 import _hookutil
 
-SCRATCH = Path("C:/Users/brown/.claude/scratch")
+# Path.home()-derived (identical real-world value to a hardcoded string on
+# this machine) rather than a literal, matching the session-mode-prompt.py
+# fix in this same PR -- so a future HOME-redirected test of this hook's
+# marker writes isolates the same way _hookutil.SCRATCH (used by the cleanup
+# call below) already does (dev-env#768 review).
+SCRATCH = Path.home() / ".claude" / "scratch"
 # Drive whose free space gates reclamation, and the tree scanned for idle worktrees.
 TARGET_DRIVE = "C:/"
 SCAN_DIR = "C:/Users/brown/Git"

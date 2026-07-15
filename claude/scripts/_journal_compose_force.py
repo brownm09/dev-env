@@ -26,8 +26,9 @@ import datetime
 import json
 import os
 import re
-import time
 from pathlib import Path
+
+import _hookutil
 
 MARKER_DIR_ENV = "JOURNAL_COMPOSE_FORCE_MARKER_DIR"
 _DEFAULT_MARKER_DIR = "C:/Users/brown/.claude/scratch"
@@ -121,19 +122,16 @@ def cleanup_stale_markers(max_age_days=MARKER_CLEANUP_MAX_AGE_DAYS):
     own clock -- see marker_path_for's docstring), so a marker for any earlier
     date has zero remaining utility the moment that day ends -- unlike e.g. a
     branch-lifetime-scoped snapshot, age-based sweeping here carries no risk
-    of deleting a still-needed file. Swallows all I/O errors -- best-effort,
-    must never block the writer (dev-env#768)."""
-    cutoff = time.time() - max_age_days * 86400
-    try:
-        markers = list(Path(marker_dir()).glob("journal-compose-force-*.json"))
-    except Exception:
-        return
-    for f in markers:
-        try:
-            if f.stat().st_mtime < cutoff:
-                f.unlink(missing_ok=True)
-        except Exception:
-            continue
+    of deleting a still-needed file. Delegates to the shared
+    _hookutil.cleanup_stale_sentinels helper (same glob/cutoff/unlink shape,
+    same best-effort/never-raise contract) rather than a second copy of that
+    loop (dev-env#768 review)."""
+    _hookutil.cleanup_stale_sentinels(
+        "journal-compose-force-",
+        scratch=Path(marker_dir()),
+        ext=".json",
+        max_age_days=max_age_days,
+    )
 
 
 def is_marker_fresh(marker, now, max_age_seconds=MAX_MARKER_AGE_SECONDS):

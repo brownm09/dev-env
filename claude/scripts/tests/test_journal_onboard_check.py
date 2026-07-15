@@ -117,6 +117,27 @@ def test_no_crash_on_malformed_stdin() -> str:
     return "malformed stdin JSON does not raise (fails open, exits 0)"
 
 
+def test_cleanup_still_runs_on_malformed_stdin() -> str:
+    # dev-env#768 review: cleanup was previously placed after the unguarded
+    # json.loads(raw) call, so a JSONDecodeError from malformed stdin
+    # propagated to the __main__ guard's exit(0) before cleanup was ever
+    # reached -- the sweep was silently skipped on exactly the invocations
+    # this test simulates. Cleanup must now run regardless.
+    with tempfile.TemporaryDirectory() as home_s:
+        home = Path(home_s)
+        scratch = _scratch(home)
+        scratch.mkdir(parents=True, exist_ok=True)
+        stale = scratch / f"{SENTINEL_PREFIX}old-session.flag"
+        stale.write_text("")
+        past = time.time() - (MAX_AGE_DAYS + 1) * 86400
+        os.utime(stale, (past, past))
+
+        proc = _run_hook(None, home, raw_stdin="{not valid json")
+        assert proc.returncode == 0, f"expected exit 0, got {proc.returncode}: {proc.stderr}"
+        assert not stale.exists(), "cleanup must still sweep a stale flag even when this invocation's own stdin is malformed"
+    return "cleanup runs (and sweeps a stale flag) even when this invocation's own stdin is malformed"
+
+
 def main() -> int:
     tests = [
         ("creates sentinel flag for a new session", test_creates_sentinel_flag_for_new_session),
@@ -124,6 +145,7 @@ def main() -> int:
         ("sweeps stale flag, keeps fresh", test_sweeps_stale_flag_keeps_fresh),
         ("no crash on missing session_id", test_no_crash_on_missing_session_id),
         ("no crash on malformed stdin", test_no_crash_on_malformed_stdin),
+        ("cleanup still runs on malformed stdin", test_cleanup_still_runs_on_malformed_stdin),
     ]
     failed = 0
     for name, fn in tests:
