@@ -1369,18 +1369,17 @@ PR that still lives there, remove its one line instead of deleting a shard.
 
 ### Stub structure
 
-Each stub file contains exactly one session block. The `<!-- opening-brief -->` block appears
-**only in the first stub of the day**; subsequent stubs begin directly at `<!-- session: <slug> -->`.
+Each stub file contains exactly one session block — the filename's `HHMMSS` component is what
+delimits sessions (ADR-056 per-session sharding), so no header marker is needed for that job. The
+`<!-- opening-brief -->` block appears **only in the first stub of the day**; subsequent stubs
+begin directly at the `## Session: ...` heading.
 
 ```
-<!-- stub: YYYY-MM-DD HHMMSS -->
-
 <!-- opening-brief (first stub of the day only) -->
 Opening brief: <paste the Next Session Context from the previous day's published journal verbatim;
                use "First session — no prior context." only if this is the project's very first entry>
 
-<!-- session: <slug> -->
-## <Topic>
+## Session: YYYY-MM-DD HH:MM — <Topic>
 ...
 <!-- tokens: input=12,450 output=3,200 cost≈$0.08 -->
 <!-- next-session-context -->

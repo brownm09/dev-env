@@ -554,11 +554,15 @@ From the stubs, extract:
 - **Project path** — the `sessions/<project>/` directory component of the stub paths
 - **Opening brief** — from the `<!-- opening-brief -->` block in the **first** stub only.
   If absent, use `"First session for this project — no prior Next Session Context."`
-- **Session blocks** — from each stub, in filename order:
-  `<!-- session: <slug> -->` … `<!-- tokens: ... -->` … `<!-- next-session-context -->` unit
-  - Session slug, H2 heading, body content
+- **Session blocks** — one per stub file, in filename order. ADR-056 per-session sharding means
+  the file boundary alone delimits a session — real stubs do not carry a `<!-- session: <slug> -->`
+  marker, so extraction must not depend on one being present:
+  - H2 heading and body content — everything in the file except the `<!-- opening-brief -->` block
+    (first stub only), the `<!-- tokens: ... -->` comment, and the `<!-- next-session-context -->`
+    paragraph
   - Token comment (may be absent — note if missing)
   - Next-session-context paragraph
+  - Session slug — synthesize from the H2 heading when a filename-safe identifier is needed (Step 3)
 - **Last next-session-context** — the final `<!-- next-session-context -->` paragraph across
   all stubs (used in Section 9)
 
@@ -662,7 +666,7 @@ That session's data will need to be added retroactively if it matters.
 
 **Source B — Draft token comments (supplemental):**
 
-For each `<!-- session: <slug> -->` block in the draft, extract the
+For each stub (one session block per file), extract the
 `<!-- tokens: ... -->` comment if present. Format variants:
 - `<!-- tokens: input=N output=N cost≈$N -->`
 - `<!-- tokens: input=N output=N cache_r=N cache_w=N cost≈$N -->`
