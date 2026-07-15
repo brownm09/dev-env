@@ -563,7 +563,10 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `~/.claude/scratch` or `~/.claude/projects`): pins sentinel-path correctness, that
     `cleanup_stale_sentinels` removes flags older than `MAX_AGE_DAYS` matching the given prefix
     while leaving fresh ones and files with other prefixes intact, that it does not raise when the
-    scratch directory is absent, and that `find_transcript` returns the matching path (or `None`)
+    scratch directory is absent, that its default `ext` stays `.flag` (backward compatible with
+    every pre-existing caller, which passes only `prefix`) and that an overridden `ext` (e.g. `.txt`)
+    sweeps only that suffix (dev-env#768 — the generalization `session-mode-prompt.py`'s `.txt`
+    markers needed; see item 70), and that `find_transcript` returns the matching path (or `None`)
     including when the JSONL is nested under a project subdirectory. Also exercises the
     transcript-record readers ([ADR-090](docs/adr/090-shared-transcript-readers-hookutil.md)):
     `_content_items` (list content vs the non-dict-rec / non-dict-message / non-list-content guard
@@ -1070,7 +1073,12 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     implicit. This hook is now registered under both `UserPromptSubmit` and `PreToolUse(Bash)`,
     reusing the same script and the same per-session marker-file gate for both (ADR-087); the
     `disk_usage` syscall, marker-file I/O, and the detached `reclaim-worktree-disk.py` spawn are not
-    covered here (pure-helper convention, matching item 9's `install_decision()` precedent).
+    covered here (pure-helper convention, matching item 9's `install_decision()` precedent). Also
+    exercises the extracted `should_cleanup_sentinels(hook_event_name)` predicate (dev-env#768): the
+    sentinel sweep now added to `main()` (this hook never swept its own markers) is gated to `True`
+    only for `"UserPromptSubmit"` — `"PreToolUse"`/`"Stop"`/empty are all `False` — so the
+    scratch/ directory scan doesn't run on every single Bash call under this hook's `PreToolUse`
+    registration.
 
     ```bash
     py -3 claude/scripts/tests/test_disk_space_check.py
@@ -1434,7 +1442,14 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `write_marker()` (a monkeypatched `os.getpid()` proving one writer's in-progress, not-yet-renamed
     temp file survives an independent writer's own write-and-rename, now that the temp filename is
     per-PID rather than a single fixed `path + ".tmp"`)
-    ([ADR-096](docs/adr/096-journal-compose-mechanical-force-guard.md); dev-env#631).
+    ([ADR-096](docs/adr/096-journal-compose-mechanical-force-guard.md); dev-env#631). Also exercises
+    the new `cleanup_stale_markers()` (dev-env#768): removes a marker older than
+    `MARKER_CLEANUP_MAX_AGE_DAYS` (default 30) while keeping a fresh one, ignores files that don't
+    match the `journal-compose-force-*.json` glob, does not raise when the marker directory is
+    absent, and honors a custom `max_age_days` override. Age-based sweeping is safe here — unlike
+    e.g. a branch-lifetime-scoped baseline snapshot — because a marker is only ever consulted on the
+    same calendar day it was written; any earlier date's marker has zero remaining utility the
+    moment that day ends.
 
     ```bash
     py -3 claude/scripts/tests/test_journal_compose_force.py
@@ -1450,7 +1465,11 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     merging with it; and that a nonexistent marker directory is created rather than erroring. The
     script's own logic (`resolve_force`, `build_marker`, `write_marker`) is unit-tested directly in
     item 53 above — this file exercises only the CLI-glue layer (argv handling, stdout format,
-    on-disk effect). ([ADR-096](docs/adr/096-journal-compose-mechanical-force-guard.md); dev-env#631)
+    on-disk effect). Also exercises the new `cleanup_stale_markers()` wiring (dev-env#768): a stale
+    marker from an earlier calendar date, planted in the redirected marker dir before invocation, is
+    swept by the same run that writes today's own marker — proving the sweep call and the write
+    don't race each other (today's fresh write always survives its own run's cleanup pass).
+    ([ADR-096](docs/adr/096-journal-compose-mechanical-force-guard.md); dev-env#631)
 
     ```bash
     py -3 claude/scripts/tests/test_journal_compose_force_resolve.py
@@ -1921,6 +1940,59 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 
     ```bash
     py -3 claude/scripts/tests/test_hook_liveness_check.py
+    ```
+
+69. **journal-onboard-check sentinel test** — required when changing
+    `claude/scripts/journal-onboard-check.py`. Drives the real hook end-to-end over stdin via
+    subprocess, with HOME/USERPROFILE pointed at a temp dir (mirroring items 48/50/58's pattern):
+    pins that a new session writes `scratch/journal_onboard_<session_id>.flag` via the now-shared
+    `SENTINEL_PREFIX` + `_hookutil.sentinel_path()`/`cleanup_stale_sentinels()` convention — replacing
+    a hand-rolled path that was never swept (dev-env#768; this single prefix accounted for 986 files
+    at the 2026-07-10 hook-reliability assessment); that a repeat invocation for an already-acked
+    session is a no-op; that a >30-day-old flag from an unrelated session is swept while a fresh one
+    is kept; and that a missing `session_id` or malformed stdin JSON both fail open (exit 0). The
+    `get_repo_name()` git subprocess and journal-home-detection logic (unchanged by this fix) are not
+    exercised here.
+
+    ```bash
+    py -3 claude/scripts/tests/test_journal_onboard_check.py
+    ```
+
+70. **session-mode-prompt sentinel test** — required when changing
+    `claude/scripts/session-mode-prompt.py`. Drives the real hook end-to-end over stdin via
+    subprocess, with HOME/USERPROFILE pointed at a temp dir: pins that a new session writes
+    `scratch/session_mode_ack_<session_id>.txt` and emits the `additionalContext` reminder; that a
+    second prompt in an already-acked session passes through silently (no output); that a
+    >30-day-old marker from an unrelated session is swept via
+    `_hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX, ext=".txt")` — the generalized `ext` parameter
+    this dev-env#768 fix added (see item 27) — while a fresh marker is kept; and that an automated
+    (XML-tagged) prompt is still suppressed after adding the cleanup call. `MARKER_DIR`/`LOG_PATH`
+    were changed from a hardcoded absolute-path string to a `Path.home()`-derived one in the same fix
+    (identical real-world value, but now honors HOME/USERPROFILE) — the hardcoded string had silently
+    defeated this test's own HOME-redirection isolation on first write, caught while authoring this
+    test file and cleaned up before landing (no stray files left on the real machine).
+
+    ```bash
+    py -3 claude/scripts/tests/test_session_mode_prompt.py
+    ```
+
+71. **sweep-scratch-debris test** — required when changing `claude/scripts/sweep-scratch-debris.py`.
+    Exercises `find_stale()`/`sweep()` offline against real `tempfile.TemporaryDirectory()` fixtures
+    (no real `~/.claude/scratch`): pins that `KNOWN_PATTERNS` is a non-empty list of well-formed
+    `(prefix, ext)` pairs; a structural safety net asserting none of the module docstring's
+    documented "deliberately excluded" filenames (`awake.lock`, a per-hook `hook-heartbeat/*.ts`,
+    `token-sessions.jsonl`, a `baseline_<repo>_<branch>.json`) match any `KNOWN_PATTERNS` glob, so a
+    future edit can't accidentally widen a prefix to catch one of them; `find_stale()`'s
+    prefix/ext/age filtering; `sweep(apply=False)` reporting counts/bytes without deleting;
+    `sweep(apply=True)` deleting only stale matches across multiple families independently in one
+    pass; and no crash when the scratch directory is absent. This is the one-time/on-demand utility
+    used to force-clear the existing backlog (dev-env#768 — 513 files / 1,303 bytes removed across
+    `journal_onboard_*`/`session_mode_ack_*`/`disk_space_check_*` at merge time; the 11 other
+    already-self-cleaning families reported zero backlog, confirming they were already compliant)
+    rather than waiting for each hook's own next natural invocation to self-clean.
+
+    ```bash
+    py -3 claude/scripts/tests/test_sweep_scratch_debris.py
     ```
 
 ## Observability

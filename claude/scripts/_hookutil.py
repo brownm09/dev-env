@@ -71,15 +71,35 @@ MAX_AGE_DAYS = 30
 DEFAULT_REVERSE_CHUNK_SIZE = 65536  # 64 KiB
 
 
-def cleanup_stale_sentinels(prefix: str, scratch: Path | None = None) -> None:
+def cleanup_stale_sentinels(
+    prefix: str,
+    scratch: Path | None = None,
+    ext: str = ".flag",
+    max_age_days: int = MAX_AGE_DAYS,
+) -> None:
     """Remove per-session sentinel files whose names start with *prefix* and whose
-    mtime is older than MAX_AGE_DAYS.  Swallows all I/O errors — the cleanup is
-    best-effort and must never block a hook.  *scratch* overrides SCRATCH (used by
-    tests to isolate against the real ~/.claude/scratch directory)."""
+    mtime is older than *max_age_days* (default MAX_AGE_DAYS).  Swallows all I/O
+    errors — the cleanup is best-effort and must never block a hook.  *scratch*
+    overrides SCRATCH (used by tests to isolate against the real
+    ~/.claude/scratch directory).  *ext* overrides the default ``.flag`` suffix
+    (e.g. ``.txt``) for callers whose sentinel files predate the ``.flag``
+    convention — every existing caller passes only *prefix*, so this stays
+    backward compatible (dev-env#768).  *max_age_days* lets a caller with a
+    different retention need (e.g. a per-calendar-day marker) reuse this
+    helper instead of duplicating the glob/cutoff/unlink loop.
+
+    *ext* must start with ``.`` — a caller passing an empty string or a
+    dot-less value (e.g. ``"flag"`` instead of ``".flag"``) would silently
+    broaden the glob to match every/any-suffixed file under *prefix*, which
+    is never the intent for a function whose sole job is deleting files; such
+    a call is a no-op rather than a wider-than-intended sweep (dev-env#768
+    review)."""
+    if not ext.startswith("."):
+        return
     root = scratch if scratch is not None else SCRATCH
-    cutoff = time.time() - MAX_AGE_DAYS * 86400
+    cutoff = time.time() - max_age_days * 86400
     try:
-        flags = list(root.glob(f"{prefix}*.flag"))
+        flags = list(root.glob(f"{prefix}*{ext}"))
     except Exception:
         return
     # Guard each file independently — a single stat()/unlink() failure (race,

@@ -13,6 +13,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import time
 
 _SCRIPT = os.path.join(os.path.dirname(__file__), "..", "_journal_compose_force.py")
 sys.path.insert(0, os.path.dirname(_SCRIPT))
@@ -27,8 +28,10 @@ build_marker = mod.build_marker
 write_marker = mod.write_marker
 read_marker = mod.read_marker
 is_marker_fresh = mod.is_marker_fresh
+cleanup_stale_markers = mod.cleanup_stale_markers
 MAX_MARKER_AGE_SECONDS = mod.MAX_MARKER_AGE_SECONDS
 MARKER_DIR_ENV = mod.MARKER_DIR_ENV
+MARKER_CLEANUP_MAX_AGE_DAYS = mod.MARKER_CLEANUP_MAX_AGE_DAYS
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +258,51 @@ def test_write_marker_concurrent_pids_do_not_collide():
             assert os.path.isfile(tmp_path_a)  # writer A's temp file untouched, not clobbered
         finally:
             os.getpid = original_getpid
+
+
+# ---------------------------------------------------------------------------
+# cleanup_stale_markers (dev-env#768)
+# ---------------------------------------------------------------------------
+
+def test_cleanup_stale_markers_removes_old_keeps_fresh():
+    with tempfile.TemporaryDirectory() as tmp:
+        old = os.path.join(tmp, "journal-compose-force-2026-01-01.json")
+        fresh = os.path.join(tmp, "journal-compose-force-2026-07-09.json")
+        with open(old, "w", encoding="utf-8") as f:
+            f.write("{}")
+        with open(fresh, "w", encoding="utf-8") as f:
+            f.write("{}")
+        past = time.time() - (MARKER_CLEANUP_MAX_AGE_DAYS + 1) * 86400
+        os.utime(old, (past, past))
+        _with_marker_dir(tmp, cleanup_stale_markers)
+        assert not os.path.exists(old), "marker older than MARKER_CLEANUP_MAX_AGE_DAYS should be removed"
+        assert os.path.exists(fresh), "recent marker should be kept"
+
+def test_cleanup_stale_markers_ignores_other_files():
+    with tempfile.TemporaryDirectory() as tmp:
+        other = os.path.join(tmp, "unrelated-file.json")
+        with open(other, "w", encoding="utf-8") as f:
+            f.write("{}")
+        past = time.time() - (MARKER_CLEANUP_MAX_AGE_DAYS + 1) * 86400
+        os.utime(other, (past, past))
+        _with_marker_dir(tmp, cleanup_stale_markers)
+        assert os.path.exists(other), "a file not matching the marker glob must be left alone"
+
+def test_cleanup_stale_markers_no_crash_on_missing_dir():
+    nonexistent = os.path.join(tempfile.gettempdir(), "no-such-dir-for-test-768")
+    _with_marker_dir(nonexistent, cleanup_stale_markers)  # must not raise
+
+def test_cleanup_stale_markers_custom_max_age():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "journal-compose-force-2026-06-01.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("{}")
+        past = time.time() - 5 * 86400
+        os.utime(path, (past, past))
+        _with_marker_dir(tmp, lambda: cleanup_stale_markers(max_age_days=10))
+        assert os.path.exists(path), "5-day-old marker survives a 10-day threshold"
+        _with_marker_dir(tmp, lambda: cleanup_stale_markers(max_age_days=1))
+        assert not os.path.exists(path), "5-day-old marker is removed under a 1-day threshold"
 
 
 # ---------------------------------------------------------------------------

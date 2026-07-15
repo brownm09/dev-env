@@ -19,7 +19,10 @@ Per-session marker file at scratch/session_mode_ack_<session_id>.txt records
 that the reminder has been injected for this session; any subsequent prompt
 in the same session passes through silently. Markers from other sessions are
 not read, so a reminder in session A does not suppress one in session B.
-Old markers from closed sessions are orphaned but harmless (~18 bytes each).
+Markers older than _hookutil.MAX_AGE_DAYS are swept via
+_hookutil.cleanup_stale_sentinels on each invocation (dev-env#768 — previously
+these were never cleaned up, one of several non-cleaning sentinel writers
+found at the 2026-07-10 hook-reliability assessment).
 
 Suppressed for automated sessions whose prompt begins with an XML tag (e.g.
 <scheduled-task>, <ci-monitor-event>). These are machine-generated triggers
@@ -36,11 +39,20 @@ import re
 import sys
 import time
 import traceback
+from pathlib import Path
 
 import _hookutil
 
-MARKER_DIR = "C:/Users/brown/.claude/scratch"
-LOG_PATH = "C:/Users/brown/.claude/scratch/session-mode-prompt.log"
+# Derived from Path.home() (identical real-world value to the literal string
+# this replaced) rather than hardcoded, so HOME/USERPROFILE overrides in tests
+# isolate the marker/log writes from ~/.claude/scratch -- dev-env#768 review:
+# a hardcoded MARKER_DIR meant a subprocess test's HOME redirection silently
+# failed to isolate the marker write, writing a real file to the actual
+# machine's scratch directory.
+_SCRATCH_DIR = str(Path.home() / ".claude" / "scratch")
+MARKER_DIR = _SCRATCH_DIR
+LOG_PATH = f"{_SCRATCH_DIR}/session-mode-prompt.log"
+SENTINEL_PREFIX = "session_mode_ack_"
 
 # Automated triggers use XML-tagged prompts; human prompts never start with <tag>.
 # Matches lowercase-initial tags only — all current triggers use lowercase; update if that changes.
@@ -86,6 +98,7 @@ def _log(event):
 
 def main():
     _hookutil.record_heartbeat("session-mode-prompt")
+    _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX, ext=".txt")
     event = {"stage": "start"}
 
     try:
@@ -133,6 +146,12 @@ def main():
 
     # Write marker BEFORE emitting so any retry on the same session passes through.
     try:
+        # Explicit mkdir rather than relying on record_heartbeat's own
+        # mkdir(parents=True) (called earlier in main()) as an implicit,
+        # unrelated side effect that happens to create this same directory
+        # (dev-env#768 review) -- this write is self-sufficient regardless
+        # of what else main() does before it.
+        os.makedirs(MARKER_DIR, exist_ok=True)
         with open(marker_path, "w") as f:
             f.write(str(now))
         event["marker_written"] = True

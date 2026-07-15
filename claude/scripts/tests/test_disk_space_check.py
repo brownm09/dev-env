@@ -34,6 +34,7 @@ assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 dsc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(dsc)  # safe: main() is guarded by __main__
 classify_free_space = dsc.classify_free_space
+should_cleanup_sentinels = dsc.should_cleanup_sentinels
 
 WARN_GB = dsc.WARN_GB  # 20.0
 ACT_GB = dsc.ACT_GB    # 10.0
@@ -73,6 +74,32 @@ def test_zero_free_is_act() -> str:
     return "0 GB free -> act"
 
 
+def test_cleanup_gated_to_user_prompt_submit() -> str:
+    # dev-env#768: this hook is also registered under PreToolUse(Bash), firing on
+    # every Bash call in a turn. The sentinel sweep (a scratch/ directory scan)
+    # must only run on the once-per-prompt UserPromptSubmit event, not on every
+    # Bash call, or it becomes a per-tool-call perf regression.
+    assert should_cleanup_sentinels("UserPromptSubmit") is True
+    assert should_cleanup_sentinels("PreToolUse") is False
+    assert should_cleanup_sentinels("") is False
+    assert should_cleanup_sentinels("Stop") is False
+    return "should_cleanup_sentinels is True only for UserPromptSubmit"
+
+
+def test_scratch_is_home_derived_not_hardcoded() -> str:
+    # dev-env#768 review: SCRATCH was a hardcoded "C:/Users/brown/..." literal
+    # while the new cleanup call (added in this PR) reads via the
+    # Path.home()-derived _hookutil.SCRATCH -- both resolved to the same real
+    # path on this machine, but only the Path.home()-derived form is
+    # test-isolatable via HOME/USERPROFILE redirection. Pins the fix by
+    # construction (mirrors test_hookutil.py's
+    # test_record_heartbeat_default_dir_is_scratch_subdir).
+    assert dsc.SCRATCH == Path.home() / ".claude" / "scratch", (
+        f"SCRATCH should be Path.home()-derived, got {dsc.SCRATCH}"
+    )
+    return "SCRATCH is Path.home() / '.claude' / 'scratch', not a hardcoded literal"
+
+
 def main() -> int:
     tests = [
         ("ample space is ok", test_ample_space_is_ok),
@@ -81,6 +108,8 @@ def main() -> int:
         ("act boundary is warn, just under is act", test_act_boundary_is_warn),
         ("low space is act", test_low_space_is_act),
         ("zero free is act", test_zero_free_is_act),
+        ("cleanup gated to UserPromptSubmit only", test_cleanup_gated_to_user_prompt_submit),
+        ("SCRATCH is Path.home()-derived, not hardcoded", test_scratch_is_home_derived_not_hardcoded),
     ]
     failed = 0
     for name, fn in tests:
