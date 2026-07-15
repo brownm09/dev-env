@@ -584,13 +584,15 @@ worktree convention alongside the original nested `.claude/worktrees/<name>` sha
 ADR-071 Amendment 5 for the full rationale, shared across all three files that independently define this
 pattern).
 
-`usage-snapshot.py` (PostToolUse hooks above) is a third direct consumer of
-`canonical_root_from_worktree` — its `find_session_jsonl()` used to hardcode its own
+`usage-snapshot.py` (PostToolUse hooks above) is a third consumer of `_worktree_canon.py`'s
+worktree-resolution capability — its `find_session_jsonl()` used to hardcode its own
 nested-convention-only marker check instead of importing the shared resolver, so a
 sibling-convention cwd fell through to a full project-directory scan instead of the
-direct canonical-retry step. Fixed the same way as the other two call sites: import and
-delegate, no regex change (dev-env#775, see [ADR-073](adr/073-shared-worktree-canon-gh-project-modules.md)
-Amendment 1 for the full rationale).
+direct canonical-retry step. Fixed the same way `post-tool-use.py` already resolves it:
+import `canonical_root_from_worktree` and delegate directly, no regex change (dev-env#775,
+see [ADR-073](adr/073-shared-worktree-canon-gh-project-modules.md) Amendment 1 for the
+full rationale, including how `reconcile-project-board.py` differs — it consumes the
+module via the separate `canonical_repo_root` wrapper, not this function directly).
 
 ### Script verification suite
 
