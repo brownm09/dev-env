@@ -71,15 +71,18 @@ MAX_AGE_DAYS = 30
 DEFAULT_REVERSE_CHUNK_SIZE = 65536  # 64 KiB
 
 
-def cleanup_stale_sentinels(prefix: str, scratch: Path | None = None) -> None:
+def cleanup_stale_sentinels(prefix: str, scratch: Path | None = None, ext: str = ".flag") -> None:
     """Remove per-session sentinel files whose names start with *prefix* and whose
     mtime is older than MAX_AGE_DAYS.  Swallows all I/O errors — the cleanup is
     best-effort and must never block a hook.  *scratch* overrides SCRATCH (used by
-    tests to isolate against the real ~/.claude/scratch directory)."""
+    tests to isolate against the real ~/.claude/scratch directory).  *ext* overrides
+    the default ``.flag`` suffix (e.g. ``.txt``) for callers whose sentinel files
+    predate the ``.flag`` convention — every existing caller passes only *prefix*,
+    so this stays backward compatible (dev-env#768)."""
     root = scratch if scratch is not None else SCRATCH
     cutoff = time.time() - MAX_AGE_DAYS * 86400
     try:
-        flags = list(root.glob(f"{prefix}*.flag"))
+        flags = list(root.glob(f"{prefix}*{ext}"))
     except Exception:
         return
     # Guard each file independently — a single stat()/unlink() failure (race,

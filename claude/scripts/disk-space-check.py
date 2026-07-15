@@ -67,6 +67,22 @@ RECLAIM_SCRIPT = Path(__file__).resolve().parent / "reclaim-worktree-disk.py"
 WARN_GB = 20.0   # below this: warn the user
 ACT_GB = 10.0    # below this: auto-reclaim regenerable worktree artifacts
 
+# Matches both the "_act.flag" and "_warn.flag" per-session marker suffixes
+# _marker_path writes below (dev-env#768 — this hook never swept its own
+# markers, one of several non-cleaning sentinel writers found at the
+# 2026-07-10 hook-reliability assessment).
+SENTINEL_PREFIX = "disk_space_check_"
+
+
+def should_cleanup_sentinels(hook_event_name: str) -> bool:
+    """True only for the once-per-prompt UserPromptSubmit event.
+
+    This hook is also registered under PreToolUse(Bash) (ADR-087), firing on
+    every Bash call in a turn. Gating the sentinel sweep to UserPromptSubmit
+    keeps the scratch/ directory scan (thousands of entries) from running on
+    every single Bash call in a busy session (dev-env#768)."""
+    return hook_event_name == "UserPromptSubmit"
+
 
 def classify_free_space(free_gb: float, warn_gb: float, act_gb: float) -> str:
     """Return "act", "warn", or "ok" for a free-space reading.
@@ -144,13 +160,18 @@ def main() -> None:
     raw = sys.stdin.read().strip()
     session_id = ""
     cwd = ""
+    hook_event_name = ""
     if raw:
         try:
             payload = json.loads(raw)
             session_id = payload.get("session_id", "") or ""
             cwd = payload.get("cwd", "") or ""
+            hook_event_name = payload.get("hook_event_name", "") or ""
         except json.JSONDecodeError:
             pass
+
+    if should_cleanup_sentinels(hook_event_name):
+        _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
     try:
         free = _free_gb(TARGET_DRIVE)

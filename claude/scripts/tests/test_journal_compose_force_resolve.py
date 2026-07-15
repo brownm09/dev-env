@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).parent.parent / "journal-compose-force-resolve.py"
@@ -88,6 +89,26 @@ def test_creates_marker_dir_if_absent():
         proc = _run_resolve("--force", nested)
         assert proc.returncode == 0
         assert os.path.isdir(nested)
+
+
+def test_invocation_sweeps_stale_markers_from_earlier_dates():
+    # dev-env#768: the resolve script now also sweeps markers from earlier
+    # calendar dates -- previously these accumulated forever (one per
+    # /journal-compose --force invocation, never cleaned up).
+    with tempfile.TemporaryDirectory() as tmp:
+        stale = os.path.join(tmp, "journal-compose-force-2026-01-01.json")
+        with open(stale, "w", encoding="utf-8") as f:
+            f.write("{}")
+        past = time.time() - (jcf.MARKER_CLEANUP_MAX_AGE_DAYS + 1) * 86400
+        os.utime(stale, (past, past))
+
+        proc = _run_resolve("--force", tmp)
+        assert proc.returncode == 0
+        assert not os.path.exists(stale), "a marker older than MARKER_CLEANUP_MAX_AGE_DAYS must be swept"
+        today = datetime.date.today().isoformat()
+        assert os.path.exists(os.path.join(tmp, f"journal-compose-force-{today}.json")), (
+            "today's own just-written marker must survive the sweep"
+        )
 
 
 if __name__ == "__main__":

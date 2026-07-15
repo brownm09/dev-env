@@ -29,7 +29,13 @@ Prints exactly one line: `FORCE=true` or `FORCE=false`.
 import datetime
 import sys
 
-from _journal_compose_force import build_marker, marker_path_for, resolve_force, write_marker
+from _journal_compose_force import (
+    build_marker,
+    cleanup_stale_markers,
+    marker_path_for,
+    resolve_force,
+    write_marker,
+)
 
 
 def main() -> None:
@@ -39,6 +45,7 @@ def main() -> None:
     today = now.date().isoformat()
     marker = build_marker(force, raw_args, now)
     write_marker(marker_path_for(today), marker)
+    cleanup_stale_markers()
     print(f"FORCE={'true' if force else 'false'}")
 
 

@@ -17,7 +17,7 @@ from pathlib import Path
 import _hookutil
 
 JOURNAL_SESSIONS = Path.home() / "Git" / "engineering-journal" / "sessions"
-SCRATCH = Path.home() / ".claude" / "scratch"
+SENTINEL_PREFIX = "journal_onboard_"
 
 
 def get_repo_name(cwd: str) -> str | None:
@@ -54,13 +54,19 @@ def main() -> None:
     session_id = hook_data.get("session_id", "")
     cwd = hook_data.get("cwd", "")
 
+    # Cleanup runs unconditionally so sessions that skip the block below (no
+    # session_id on this invocation) still sweep flags left by earlier
+    # sessions (dev-env#768 — this prefix alone accounted for 986 never-swept
+    # files at the 2026-07-10 hook-reliability assessment).
+    _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
+
     # Fire once per session regardless of outcome
     if session_id:
-        flag_path = SCRATCH / f"journal_onboard_{session_id}.flag"
+        flag_path = _hookutil.sentinel_path(SENTINEL_PREFIX, session_id)
         if flag_path.exists():
             sys.exit(0)
         try:
-            SCRATCH.mkdir(parents=True, exist_ok=True)
+            flag_path.parent.mkdir(parents=True, exist_ok=True)
             flag_path.touch()
         except Exception:
             pass

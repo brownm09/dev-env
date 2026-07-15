@@ -97,6 +97,40 @@ def test_cleanup_no_crash_on_missing_dir() -> str:
     return "cleanup_stale_sentinels does not raise when scratch dir is absent"
 
 
+def test_cleanup_default_ext_is_flag() -> str:
+    # Backward-compat pin: every pre-existing caller passes only `prefix`, so
+    # the default `ext` must stay ".flag" (dev-env#768).
+    with tempfile.TemporaryDirectory() as root:
+        scratch = Path(root)
+        flag = scratch / f"{PREFIX}old.flag"
+        txt = scratch / f"{PREFIX}old.txt"
+        flag.write_text("")
+        txt.write_text("")
+        past = time.time() - (_hookutil.MAX_AGE_DAYS + 1) * 86400
+        os.utime(flag, (past, past))
+        os.utime(txt, (past, past))
+        _hookutil.cleanup_stale_sentinels(PREFIX, scratch=scratch)
+        assert not flag.exists(), "stale .flag sentinel should have been removed by default"
+        assert txt.exists(), ".txt file must be untouched when ext is not overridden"
+    return "cleanup_stale_sentinels defaults to sweeping only *.flag (backward compatible)"
+
+
+def test_cleanup_custom_ext() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        scratch = Path(root)
+        txt = scratch / f"{PREFIX}old.txt"
+        flag = scratch / f"{PREFIX}old.flag"
+        txt.write_text("")
+        flag.write_text("")
+        past = time.time() - (_hookutil.MAX_AGE_DAYS + 1) * 86400
+        os.utime(txt, (past, past))
+        os.utime(flag, (past, past))
+        _hookutil.cleanup_stale_sentinels(PREFIX, scratch=scratch, ext=".txt")
+        assert not txt.exists(), "stale .txt sentinel should have been removed with ext='.txt'"
+        assert flag.exists(), ".flag file must be untouched when ext='.txt' is requested"
+    return "cleanup_stale_sentinels(ext='.txt') sweeps only the requested suffix"
+
+
 def test_find_transcript_found() -> str:
     with tempfile.TemporaryDirectory() as root:
         projects = Path(root)
@@ -508,6 +542,8 @@ def main() -> int:
         ("cleanup: removes stale, keeps fresh", test_cleanup_removes_stale_keeps_fresh),
         ("cleanup: ignores different prefix", test_cleanup_ignores_different_prefix),
         ("cleanup: no crash on missing dir", test_cleanup_no_crash_on_missing_dir),
+        ("cleanup: default ext is .flag (backward compatible)", test_cleanup_default_ext_is_flag),
+        ("cleanup: custom ext sweeps only that suffix", test_cleanup_custom_ext),
         ("find_transcript: found", test_find_transcript_found),
         ("find_transcript: not found -> None", test_find_transcript_not_found),
         ("find_transcript: nested dir", test_find_transcript_nested),

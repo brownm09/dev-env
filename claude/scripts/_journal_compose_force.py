@@ -26,6 +26,8 @@ import datetime
 import json
 import os
 import re
+import time
+from pathlib import Path
 
 MARKER_DIR_ENV = "JOURNAL_COMPOSE_FORCE_MARKER_DIR"
 _DEFAULT_MARKER_DIR = "C:/Users/brown/.claude/scratch"
@@ -35,6 +37,12 @@ _DEFAULT_MARKER_DIR = "C:/Users/brown/.claude/scratch"
 # This bounds only truly ancient, crash-orphaned markers -- not realistic
 # compose durations.
 MAX_MARKER_AGE_SECONDS = 4 * 60 * 60
+
+# Unlike MAX_MARKER_AGE_SECONDS (freshness of *today's* marker for gating),
+# this bounds how long an old date's marker file is kept on disk before being
+# swept -- matches the MAX_AGE_DAYS convention _hookutil/_bash_state use for
+# every other per-session/per-day state file (dev-env#768).
+MARKER_CLEANUP_MAX_AGE_DAYS = 30
 
 # Whitespace-bounded so a longer flag ("--force-push") or a substring inside
 # prose never counts -- only a literal, standalone `--force` token does.
@@ -103,6 +111,29 @@ def read_marker(path):
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def cleanup_stale_markers(max_age_days=MARKER_CLEANUP_MAX_AGE_DAYS):
+    """Remove journal-compose-force-*.json markers older than max_age_days.
+
+    Each marker is keyed to a single calendar date and is only ever consulted
+    on that same real day (writer and reader both compute "today" from their
+    own clock -- see marker_path_for's docstring), so a marker for any earlier
+    date has zero remaining utility the moment that day ends -- unlike e.g. a
+    branch-lifetime-scoped snapshot, age-based sweeping here carries no risk
+    of deleting a still-needed file. Swallows all I/O errors -- best-effort,
+    must never block the writer (dev-env#768)."""
+    cutoff = time.time() - max_age_days * 86400
+    try:
+        markers = list(Path(marker_dir()).glob("journal-compose-force-*.json"))
+    except Exception:
+        return
+    for f in markers:
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+        except Exception:
+            continue
 
 
 def is_marker_fresh(marker, now, max_age_seconds=MAX_MARKER_AGE_SECONDS):
