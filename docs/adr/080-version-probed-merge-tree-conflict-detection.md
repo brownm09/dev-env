@@ -108,6 +108,34 @@ exists. Rejected as disproportionate.
 
 ---
 
+## Addendum — 2026-07-15 (dev-env#786, dev-env PR #788)
+
+The rejected alternative above referred to *full section-structure parsing* — reading the
+multi-line `changed in both` block header, then the staged object entries, then the merged
+content. That complexity was the basis for rejection.
+
+A real false-negative surfaced in the 2026-07-15 automated compose run: some git-for-Windows
+builds in the < 2.38 range emit **only the summary-form header** (`changed in both`) for a
+conflicting file and **do not emit `+<<<<<<< .our` diff markers**. The existing
+`^\+?<<<<<<<`-only grep matched nothing and returned 0 conflicts on a genuinely conflicting
+draft branch.
+
+The fix is narrower than the rejected alternative: a single `|^changed in both` arm appended
+to the existing grep pattern. This does not parse the section structure; it only checks for
+the presence of the header line as a proxy for "conflict detected." The original rejection
+reasoning (parsing overhead, deprecated-mode coupling) does not apply to a one-arm OR
+extension. The full section-parsing alternative remains rejected on those same grounds.
+
+Updated grep:
+```bash
+grep -cE "^\+?<<<<<<<|^changed in both"
+```
+
+The `^\+?<<<<<<<` arm remains for git versions that do emit diff-style markers; the new arm
+catches builds that do not.
+
+---
+
 ## References
 
 - [git-merge-tree documentation](https://git-scm.com/docs/git-merge-tree) — modern
