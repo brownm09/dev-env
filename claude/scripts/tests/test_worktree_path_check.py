@@ -4,7 +4,7 @@
 Two layers, both hermetic (no real git repos, no real worktrees):
 
   1. _worktree_is_live() decision table — the orphaned-worktree liveness guard
-     (dev-env#328). Driven with stubbed `path_exists` / `git_toplevel` so every
+     (dev-env#328). Driven with stubbed `path_isfile` / `git_toplevel` so every
      branch is exercised deterministically.
   2. End-to-end main() via subprocess — drives the real hook over stdin and
      asserts exit codes for:
@@ -56,19 +56,26 @@ _CANON = "C:/Users/brown/Git/dev-env"
 
 def test_worktree_is_live_decision_table() -> str:
     cases = [
-        # (label, git_link_present, git_toplevel_return, expected_live)
-        ("live: .git present, toplevel == worktree_root", True, _WT, True),
+        # (label, git_link_is_file, git_toplevel_return, expected_live)
+        ("live: .git present as a file, toplevel == worktree_root", True, _WT, True),
         ("orphan: .git link missing", False, _WT, False),
         ("orphan: git resolves up to canonical root", True, _CANON, False),
         ("orphan: git returns unrelated path", True, "C:/somewhere/else", False),
         (".git present but git exec failed (None) → don't false-block", True, None, True),
         ("live: toplevel differs only by case/sep", True, _WT.replace("/", "\\").upper(), True),
+        (
+            "not live: .git present but as a DIRECTORY, not a file (dev-env#760 review finding — "
+            "a genuine canonical clone at a worktree-shaped path must not be treated as live)",
+            False,
+            _WT,
+            False,
+        ),
     ]
-    for label, link_present, top, expected in cases:
+    for label, link_is_file, top, expected in cases:
         live = wpc._worktree_is_live(
             _WT,
             _WT,
-            path_exists=lambda _p, _present=link_present: _present,
+            path_isfile=lambda _p, _is_file=link_is_file: _is_file,
             git_toplevel=lambda _c, _top=top: _top,
         )
         if live != expected:
@@ -85,13 +92,29 @@ def test_git_link_check_short_circuits_before_git() -> str:
         return _WT
 
     live = wpc._worktree_is_live(
-        _WT, _WT, path_exists=lambda _p: False, git_toplevel=_spy
+        _WT, _WT, path_isfile=lambda _p: False, git_toplevel=_spy
     )
     if live is not False:
         raise AssertionError("missing .git link should yield not-live")
     if called["n"] != 0:
         raise AssertionError("git_toplevel was called despite missing .git link (no short-circuit)")
     return "missing .git link blocks without spawning git"
+
+
+def test_worktree_is_live_rejects_git_directory() -> str:
+    """dev-env#760 review finding: a genuine canonical checkout (a real `git clone`,
+    whose `.git` is a DIRECTORY) that happens to sit at a worktree-shaped path must not
+    be treated as a live worktree. `os.path.isfile` on a directory returns False, so this
+    exercises the REAL default (not a stubbed lambda) against a real filesystem directory
+    named `.git`, proving the fix — `os.path.exists` would have wrongly returned True here.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        worktree_shaped_root = Path(tmp) / ".claude" / "worktrees" / "actually-a-clone"
+        (worktree_shaped_root / ".git").mkdir(parents=True)  # .git as a DIRECTORY, not a file
+        live = wpc._worktree_is_live(str(worktree_shaped_root), str(worktree_shaped_root))
+        if live is not False:
+            raise AssertionError("a worktree-shaped path whose .git is a directory must not be live")
+    return "a real .git directory (not file) at a worktree-shaped path is correctly not-live (dev-env#760)"
 
 
 def _run_hook(payload: dict) -> subprocess.CompletedProcess:
@@ -237,13 +260,118 @@ def test_main_allows_write_to_sibling_worktree() -> str:
     return "Write to sibling worktree under same canonical root is allowed (exit 0)"
 
 
+def test_main_blocks_write_escaping_to_canonical_root_sibling_directory_convention() -> str:
+    """dev-env#760: same acceptance as test_main_blocks_write_escaping_to_canonical_root,
+    but cwd is the SIBLING-DIRECTORY worktree convention (`<repo>-worktrees/<name>`, a
+    directory next to the canonical root, not nested inside it) rather than the nested
+    `.claude/worktrees/<name>` convention. Confirms `_WORKTREE_RE`'s second alternative
+    correctly extracts canonical_root/worktree_root and the escape-blocking logic
+    downstream needs no shape-specific changes.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        canonical_root = tmp / "canon-repo"
+        worktree_root = tmp / "canon-repo-worktrees" / "some-worktree"
+        worktree_root.mkdir(parents=True)
+        (worktree_root / ".git").write_text("not a real gitdir link")
+        escaping_path = canonical_root / "some_file.py"
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(escaping_path)},
+            "cwd": str(worktree_root),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (block), got {proc.returncode}. "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+        try:
+            reason = json.loads(proc.stderr).get("reason", "")
+        except json.JSONDecodeError:
+            raise AssertionError(f"stderr was not JSON: {proc.stderr!r}")
+        if "canonical repo root" not in reason or "Corrected" not in reason:
+            raise AssertionError(f"block reason missing expected markers: {reason!r}")
+    return "Write escaping to canonical root blocked (exit 2) from a sibling-directory-convention worktree (dev-env#760)"
+
+
+def test_main_blocks_edit_from_orphaned_sibling_directory_worktree() -> str:
+    """dev-env#760: same acceptance as test_main_blocks_edit_from_orphaned_worktree, but
+    for an orphaned SIBLING-DIRECTORY-convention worktree (no `.git` link) rather than the
+    nested convention — confirms the liveness guard fires identically regardless of shape.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        orphan = Path(tmp) / "canon-repo-worktrees" / "orphan-name"
+        orphan.mkdir(parents=True)
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(orphan / "some_file.py")},
+            "cwd": str(orphan),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (block), got {proc.returncode}. stderr={proc.stderr!r}"
+            )
+        try:
+            reason = json.loads(proc.stderr).get("reason", "")
+        except json.JSONDecodeError:
+            raise AssertionError(f"stderr was not JSON: {proc.stderr!r}")
+        if "orphaned" not in reason or "git worktree add --force" not in reason:
+            raise AssertionError(f"block reason missing orphan/recovery text: {reason!r}")
+    return "Edit from orphaned sibling-directory-convention worktree blocked (exit 2, dev-env#760)"
+
+
+def test_main_allows_write_to_nested_worktree_inside_sibling_directory_worktree() -> str:
+    """dev-env#760 review finding: a `.claude/worktrees/<name>` (nested-convention) worktree
+    created INSIDE a `<repo>-worktrees/<name>` (sibling-convention) worktree must resolve to
+    ITS OWN root, not the outer sibling directory. A combined single-regex alternation with
+    non-greedy `(.+?)` would let the sibling alternative match at the shallower (outer)
+    position, mis-identifying worktree_root as the outer directory — which has no `.git` of
+    its own at that exact path (only the inner one does) — and wrongly block every write here
+    as if from an orphaned worktree. `_match_worktree` tries the nested pattern against the
+    whole string first, which correctly finds the (unique) `.claude/worktrees/` segment
+    regardless of the sibling directory enclosing it.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        outer_sibling_worktree = Path(tmp) / "canon-repo-worktrees" / "outer-worktree"
+        inner_nested_worktree = outer_sibling_worktree / ".claude" / "worktrees" / "inner-worktree"
+        inner_nested_worktree.mkdir(parents=True)
+        (inner_nested_worktree / ".git").write_text("not a real gitdir link")
+        target_file = inner_nested_worktree / "some_file.py"
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(target_file)},
+            "cwd": str(inner_nested_worktree),
+        }
+        proc = _run_hook(payload)
+        if proc.returncode != 0:
+            stderr_msg = ""
+            try:
+                stderr_msg = json.loads(proc.stderr).get("reason", proc.stderr)
+            except json.JSONDecodeError:
+                stderr_msg = proc.stderr
+            raise AssertionError(
+                f"expected exit 0 (write inside the correctly-identified inner worktree "
+                f"allowed), got {proc.returncode}. reason={stderr_msg!r}"
+            )
+    return "Write inside a nested worktree created inside a sibling-directory worktree is allowed, root correctly resolved to the inner worktree (exit 0, dev-env#760)"
+
+
 def main() -> int:
     tests = [
         ("_worktree_is_live decision table", test_worktree_is_live_decision_table),
         ("missing .git short-circuits before git", test_git_link_check_short_circuits_before_git),
+        ("_worktree_is_live rejects a real .git directory (dev-env#760 review finding)", test_worktree_is_live_rejects_git_directory),
         ("main() blocks Edit from orphaned worktree", test_main_blocks_edit_from_orphaned_worktree),
         ("main() blocks Write escaping to canonical root", test_main_blocks_write_escaping_to_canonical_root),
         ("main() allows Write to sibling worktree", test_main_allows_write_to_sibling_worktree),
+        ("main() blocks Write escaping to canonical root, sibling-directory convention (dev-env#760)", test_main_blocks_write_escaping_to_canonical_root_sibling_directory_convention),
+        ("main() blocks Edit from orphaned sibling-directory worktree (dev-env#760)", test_main_blocks_edit_from_orphaned_sibling_directory_worktree),
+        ("main() allows Write to nested worktree inside a sibling-directory worktree (dev-env#760 review finding)", test_main_allows_write_to_nested_worktree_inside_sibling_directory_worktree),
         ("main() no-op outside worktree", test_main_noop_outside_worktree),
     ]
     failed = 0
