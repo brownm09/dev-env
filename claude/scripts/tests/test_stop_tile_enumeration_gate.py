@@ -1395,6 +1395,19 @@ def test_deferral_question_detected_want_me_to_now():
     return "'Want me to implement this now' -> deferral_question_present True"
 
 
+def test_deferral_question_detected_apostrophe_d_like_contraction():
+    # Regression pin (review finding): a first draft's regex put the
+    # required space BEFORE the alternation group (`you (?:want|'d like)
+    # me to`), which only matches the unnatural "you 'd like" (with a
+    # space before the apostrophe) -- the real contraction "you'd like"
+    # (no space) is one of the two phrasings ADR-109 documents this
+    # trigger as targeting and was silently undetectable.
+    records = [_asst_text("Let me know if you'd like me to start it now.")]
+    assert gate.deferral_question_present(records), (
+        "the natural contraction \"you'd like\" (no space before the apostrophe) must match")
+    return "\"let me know if you'd like me to\" (natural contraction) -> detected"
+
+
 def test_deferral_question_not_detected_unrelated_design_question():
     # "Should I use approach A or B" is a genuine design question, not one of
     # the bounded verb phrasings (start/begin/implement/proceed/go
@@ -1576,6 +1589,44 @@ def test_e2e_deferral_sentinel_suppresses_refire():
     return "e2e deferral sentinel: first fire emits the advisory, second stays silent"
 
 
+def test_e2e_deferral_advisory_resurfaces_after_blocking_trigger_resolves():
+    # Regression pin (review finding, independently confirmed by two review
+    # passes): the deferral trigger's advisory must not be permanently lost
+    # when a blocking trigger co-fires the same turn. Turn 1: an
+    # UN-enumerated merge (blocks via trigger 1) with the deferral phrase
+    # also present -- the advisory is preempted this turn (exit 2, trigger
+    # 1's reminder only), but the fix requires the defer- sentinel to stay
+    # UNSET here (a first draft set it unconditionally in the same pass as
+    # fire_defer, silently consuming trigger 4's one fire for the rest of
+    # the session without ever having delivered it). Turn 2: the SAME
+    # transcript, now with trigger 1 resolved via a spawn + table heading --
+    # the deferral phrase (and the underlying merge context) is still
+    # present, so the advisory must now surface via the systemMessage
+    # channel, exactly as the module docstring and ADR-109 both promise
+    # ("can still surface on a later Stop once the harder trigger
+    # resolves").
+    records_turn1 = _MERGED_DEFERRAL_QUESTION
+    records_turn2 = _MERGED_DEFERRAL_QUESTION_OTHERWISE_RESOLVED
+    with tempfile.TemporaryDirectory() as home:
+        rc1, out1, err1 = _run_hook(records_turn1, home, session_id="sess-defer-resurface")
+        defer_set_after_turn1 = _sentinel_file(
+            home, gate._TRIGGER_DEFER, "sess-defer-resurface").exists()
+        rc2, out2, err2 = _run_hook(records_turn2, home, session_id="sess-defer-resurface")
+    assert rc1 == 2, f"turn 1 (blocking merge trigger) expected exit 2, got {rc1} (stderr={err1!r})"
+    assert "#762" in err1
+    assert not defer_set_after_turn1, (
+        "the defer- sentinel must NOT be set after turn 1 -- the advisory was preempted by "
+        "the blocking trigger and never actually delivered; marking it here would silently "
+        "and permanently suppress trigger 4 for the rest of the session")
+    assert rc2 == 0, f"turn 2 (trigger 1 resolved) expected exit 0, got {rc2} (stderr={err2!r})"
+    payload2 = json.loads(out2)
+    assert payload2.get("systemMessage"), (
+        f"turn 2 expected the deferral advisory to resurface, got {out2!r}")
+    return ("e2e: a blocking trigger co-firing with the deferral trigger does NOT permanently "
+            "consume trigger 4's fire -- the advisory resurfaces once the blocking trigger "
+            "resolves on a later Stop")
+
+
 def main():
     tests = [
         ("direct merge marker detected", test_direct_merge_marker_detected),
@@ -1701,6 +1752,7 @@ def main():
         ("deferral_question: detects 'let me know if you want me to'", test_deferral_question_detected_let_me_know),
         ("deferral_question: detects 'should I start...now'", test_deferral_question_detected_should_i_start),
         ("deferral_question: detects 'want me to...now'", test_deferral_question_detected_want_me_to_now),
+        ("deferral_question: detects natural \"you'd like\" contraction (regression pin)", test_deferral_question_detected_apostrophe_d_like_contraction),
         ("deferral_question: unrelated design question NOT detected", test_deferral_question_not_detected_unrelated_design_question),
         ("deferral_question: ignores user record", test_deferral_question_ignores_user_record),
         ("deferral_question: ignores tool_result", test_deferral_question_ignores_tool_result),
@@ -1717,6 +1769,7 @@ def main():
         ("e2e no deferral phrase -> no systemMessage", test_e2e_no_deferral_phrase_no_systemmessage),
         ("e2e deferral 'should i' phrasing after issue create", test_e2e_deferral_should_i_phrasing_after_issue_create),
         ("e2e deferral sentinel suppresses re-fire", test_e2e_deferral_sentinel_suppresses_refire),
+        ("e2e deferral advisory resurfaces after blocking trigger resolves (regression pin)", test_e2e_deferral_advisory_resurfaces_after_blocking_trigger_resolves),
     ]
     failed = 0
     for name, fn in tests:

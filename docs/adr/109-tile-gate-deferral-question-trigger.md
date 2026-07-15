@@ -116,6 +116,57 @@ docstring and `evaluate_deferral`'s own docstring for the full reasoning). This 
 the implementation against the real incident by hand, not by a `/review` pass — recorded here so a
 future edit doesn't quietly reintroduce the same, previously-rejected shortcut.
 
+### Review hardening (dev-env PR #776 review)
+
+Two independent Opus subagents (correctness/security; reliability/performance/maintainability) reviewed
+this PR and both independently found the same highest-severity issue — strong convergent confirmation,
+each verified by hand before accepting:
+
+1. **[reliability/correctness] The defer- sentinel was marked "fired" even when the advisory was never
+   actually delivered.** `main()`'s shared sentinel-marking loop ran `_mark_trigger_fired` for trigger 4
+   whenever `fire_defer` was true — but when a blocking trigger (1-3) *also* fired the same turn, the
+   early `sys.exit(2)` (emitting the blocking reminder) ran **before** the `if fire_defer:` advisory
+   branch was ever reached. The sentinel was set regardless, so `already_done[_TRIGGER_DEFER]` became
+   `True` for the rest of the session and the advisory could never resurface — directly contradicting
+   this very ADR's and the module docstring's explicit promise ("not lost forever ... can still surface
+   on a later Stop once the harder trigger resolves"). Confirmed by hand: this is exactly the co-fire
+   shape the "Precedence when triggers overlap" section above describes, and the one existing precedence
+   test (`test_e2e_blocking_trigger_takes_precedence_over_deferral_advisory`) only drove a single Stop, so
+   it could not have caught a bug in what happens on a *later* one. **Fix:** the shared marking loop now
+   passes a hardcoded `False` for trigger 4's "fired" argument (only `resolved_defer` — the skip-override
+   case — is marked there); the FIRED sentinel is instead marked at the actual point of emission, inside
+   `if fire_defer:`, which is only reached when no blocking trigger preempted it. New regression test:
+   `test_e2e_deferral_advisory_resurfaces_after_blocking_trigger_resolves` drives two Stops with the same
+   session — an un-enumerated merge with the deferral phrase (blocks, sentinel must stay unset) followed
+   by the same condition with the merge now resolved (the advisory must surface) — and directly inspects
+   the sentinel file on disk after turn 1. Confirmed as a genuine regression test by reverting the fix and
+   observing the new test fail with the exact predicted symptom, then restoring it.
+
+2. **[correctness] A dead regex alternation branch.** `_DEFERRAL_QUESTION_RES[0]` was
+   `r"let me know if you (?:want|'d like) me to"` — the space sits *before* the alternation group, so the
+   second branch requires "you 'd like" (a space before the apostrophe), which nobody writes; the natural
+   contraction "you'd like" (no space) — one of the two phrasings this very ADR documents the trigger as
+   targeting — silently never matched. Verified empirically (both by the reviewing subagent and
+   independently by hand) before and after. **Fix:** moved the space inside the group —
+   `r"let me know if you(?: want|'d like) me to"` — so both "you want" and "you'd like" match. New
+   regression test: `test_deferral_question_detected_apostrophe_d_like_contraction`.
+
+3. **[performance] The pre-filter's 4th clause was not scoped to the merge/issue-create context
+   `evaluate_deferral` itself requires.** Unlike the other three pre-filter clauses (which key on rare
+   command/tool markers — `"merged"`, `gh issue create`, `"spawn_task"`), the deferral clause's substrings
+   (`"should i "`, `"want me to"`) are common conversational phrases. Without a scoping check, any session
+   containing one of these — even with no merge or issue-create anywhere in the transcript — would force a
+   full `_parse_records` reparse on every remaining Stop, defeating the ADR-097 fast path for what is, in
+   practice, the common case rather than a narrow edge case. **Fix:** the clause now additionally requires
+   the same `"merged" in lower or _ISSUE_CREATE_STMT_RE.search(text)` signal already computed for the
+   other clauses — a safe superset, since `evaluate_deferral` itself returns `(False, False)` immediately
+   absent that same signal, so no real firing case is excluded. This is a pure internal-optimization fix
+   with no externally observable behavior change (confirmed by the full existing e2e suite continuing to
+   pass unmodified) — consistent with this file's own established precedent (ADR-097's identical
+   per-trigger pre-filter gating), no dedicated new test was added for it specifically.
+
+All three fixes landed in the same PR before merge. Full suite after fixing: `test_stop_tile_enumeration_gate.py` at 137 tests (135 → +2 regression tests), 0 failures; `py -3 claude/scripts/run-hook-tests.py` at 67 passed / 2 skipped / 0 failed.
+
 ## Consequences
 
 - A future recurrence of the exact motivating pattern — a known follow-up asked about instead of tiled,
@@ -134,8 +185,9 @@ future edit doesn't quietly reintroduce the same, previously-rejected shortcut.
 
 ### Testing
 
-`test_stop_tile_enumeration_gate.py` grows from 116 to 135 tests, 0 failures; all 116 pre-existing tests
-pass **unmodified**. 19 new tests:
+`test_stop_tile_enumeration_gate.py` grows from 116 to 137 tests (135 in the initial implementation, +2
+from the review-hardening pass below), 0 failures; all 116 pre-existing tests pass **unmodified**. 19
+initial new tests:
 
 - **Detection** (6): the three phrasings each independently detected; an unrelated design question
   ("should I use approach A or B") correctly NOT matched (not one of the bounded verb phrasings); a user

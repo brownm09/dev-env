@@ -1236,8 +1236,8 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     (`_DEFERRAL_QUESTION_RES`), not an objectively verifiable fact, so a fire here does NOT block via
     exit 2 — it rides `_hookout.emit_advisory("Stop", ..., audience="user")` (a systemMessage, exit 0),
     and is silently skipped in favor of the harder block whenever a blocking trigger ALSO fires in the
-    same turn (only one exit code exists per invocation). 19 new tests: phrase detection (including that
-    an unrelated design question like "should I use approach A or B" does NOT match, and that a user
+    same turn (only one exit code exists per invocation). 19 initial tests: phrase detection (including
+    that an unrelated design question like "should I use approach A or B" does NOT match, and that a user
     record / tool_result containing the phrase is correctly ignored — assistant-text-only scope);
     `evaluate_deferral`'s composition, including the regression pin for the rejected first draft (an
     unrelated `spawn_task` elsewhere in the session must NOT resolve this trigger); and 5 e2e cases
@@ -1247,6 +1247,21 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     command-keyed `post-merge-tile-checkpoint.py`'s existing blocking reminder (ADR-060) to explicitly
     name this same anti-pattern — that hook's own test file only exercises its merge-detection
     predicate, not message text, so no test change was needed there.
+
+    **`/review` on PR #776 found 3 findings, all fixed, +2 more tests (137 total)** — see the ADR's own
+    "Review hardening" section for full detail. The headline one: two independent subagents both caught
+    that the shared sentinel-marking loop set trigger 4's FIRED sentinel whenever `fire_defer` was true,
+    even on a turn where a co-firing blocking trigger (1-3) preempted the advisory via an early
+    `sys.exit(2)` — silently and permanently suppressing the advisory for the rest of the session, the
+    opposite of what this ADR and the module docstring explicitly promise. Fixed by marking trigger 4's
+    FIRED sentinel only at its actual point of emission (unreachable when a blocking trigger fired first),
+    not in the shared pre-emission loop. Also fixed: a dead regex-alternation branch (`_DEFERRAL_QUESTION_RES[0]`
+    required an unnatural space before the apostrophe in "'d like", so the real contraction "you'd like" —
+    one of the two phrasings the ADR documents as targeted — never matched); and the pre-filter's 4th
+    clause forcing a full reparse on every Stop in ANY session containing the common phrases "should i "/
+    "want me to", regardless of whether a merge or issue-create ever happened (fixed by adding the same
+    scoping check `evaluate_deferral` itself already requires — a safe superset, confirmed no dedicated
+    test needed since it's a pure internal-optimization with no externally observable behavior change).
 
     ```bash
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py

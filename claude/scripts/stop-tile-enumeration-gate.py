@@ -287,7 +287,14 @@ _TABLE_MARKER_RE = re.compile(r"^#{1,6}\s*tiles\s+spawned\s+this\s+session",
 # comment) -- there is no mechanical link between the two, so a new phrase
 # added to one must be added to the other.
 _DEFERRAL_QUESTION_RES = (
-    re.compile(r"let me know if you (?:want|\'d like) me to", re.IGNORECASE),
+    # The space sits INSIDE the alternation (not before it), so both "you
+    # want me to" and the natural contraction "you'd like me to" (no space
+    # before the apostrophe) match. A first draft put the space before the
+    # group (`you (?:want|'d like) me to`), which requires "you 'd like" --
+    # nobody writes that; the actual contraction "you'd" was silently
+    # undetectable despite being one of the two phrasings this trigger is
+    # documented (ADR-109) to target. Caught by /review, verified by hand.
+    re.compile(r"let me know if you(?: want|'d like) me to", re.IGNORECASE),
     re.compile(r"\bshould i (?:start|begin|implement|proceed|go ahead|do this|tackle)\b",
                re.IGNORECASE),
     re.compile(r"\bwant me to (?:start|begin|implement|proceed|tackle|do (?:this|that))\b"
@@ -996,7 +1003,19 @@ def main() -> None:
     #
     # Trigger 4 (deferral-question, new ADR, dev-env#772) requires one of the
     # _DEFER_PREFILTER_SUBSTRINGS to be present -- see that tuple's own
-    # comment for why it's a true superset of _DEFERRAL_QUESTION_RES.
+    # comment for why it's a true superset of _DEFERRAL_QUESTION_RES -- AND
+    # (unlike the other three clauses) additionally requires the SAME
+    # merge/issue-create signal the "merged"/issue-create clauses already
+    # check. This is still a safe superset: evaluate_deferral() itself
+    # returns (False, False) immediately unless session_merged_prs or
+    # session_created_issues is non-empty (its own scoping decision, see
+    # evaluate_deferral's docstring), so a transcript with neither signal can
+    # never fire trigger 4 regardless of phrasing. Without this addition
+    # (review finding), any session merely containing "should i "/"want me
+    # to" -- common conversational phrases, unlike the other three clauses'
+    # rare command/tool markers -- would force a full reparse on every Stop
+    # even with no merge or issue-create anywhere in the transcript, defeating
+    # the ADR-097 fast path for the overwhelmingly common no-signal case.
     #
     # Each clause is gated on that trigger's OWN already_done state (ADR-097
     # review, dev-env#677 follow-up): a transcript signal never disappears once
@@ -1010,11 +1029,13 @@ def main() -> None:
     # not-yet-resolved trigger's own clause is unaffected (reduces to the
     # original unconditional check).
     lower = text.lower()
+    has_merge_or_issue_signal = "merged" in lower or bool(_ISSUE_CREATE_STMT_RE.search(text))
     if ((already_done[_TRIGGER_PR] or "merged" not in lower)
             and (already_done[_TRIGGER_ISSUE] or not _ISSUE_CREATE_STMT_RE.search(text))
             and (already_done[_TRIGGER_TABLE] or _SPAWN_TASK_SUBSTRING not in lower)
             and (already_done[_TRIGGER_DEFER]
-                 or not any(s in lower for s in _DEFER_PREFILTER_SUBSTRINGS))):
+                 or not (has_merge_or_issue_signal
+                         and any(s in lower for s in _DEFER_PREFILTER_SUBSTRINGS)))):
         sys.exit(0)
 
     # Fail-open: a parse/scan failure is a deliberate exit-0 skip, not an
@@ -1043,11 +1064,21 @@ def main() -> None:
 
     # Mark each trigger's own sentinel BEFORE emitting, so a re-entrant Stop
     # cannot double-block (mirrors the original single-sentinel ordering).
+    # Trigger 4's FIRED mark is deliberately excluded here (marked only where
+    # its advisory actually emits, below) -- marking it on fire_defer alone
+    # would set its sentinel even on a turn where a co-firing blocking
+    # trigger (1-3) preempts the advisory via the early sys.exit(2) below,
+    # permanently silencing a persisting deferral-question condition for the
+    # rest of the session (review finding: this contradicted the module
+    # docstring's and ADR-109's own promise that such a condition "can still
+    # surface on a later Stop once the harder trigger resolves"). Its
+    # RESOLVED mark (skip_override present) is unaffected -- that state is
+    # genuinely stable regardless of what else fires this turn.
     for trigger, fired, resolved in (
         (_TRIGGER_PR, fire_pr is not None, resolved_pr),
         (_TRIGGER_ISSUE, fire_issue is not None, resolved_issue),
         (_TRIGGER_TABLE, fire_table, resolved_table),
-        (_TRIGGER_DEFER, fire_defer, resolved_defer),
+        (_TRIGGER_DEFER, False, resolved_defer),
     ):
         if fired or resolved:
             _mark_trigger_fired(trigger, session_id)
@@ -1068,7 +1099,10 @@ def main() -> None:
     # module docstring's trigger-4 section) -- only reached when none of
     # triggers 1-3 fired, so there is no exit-code conflict with the
     # advisory channel below (_hookout.emit_advisory always exits 0 here).
+    # Mark its FIRED sentinel HERE, at the point of actual emission, not in
+    # the shared loop above -- see that loop's comment for why.
     if fire_defer:
+        _mark_trigger_fired(_TRIGGER_DEFER, session_id)
         _hookout.emit_advisory("Stop", format_deferral_reminder(), audience="user")
     sys.exit(0)
 
