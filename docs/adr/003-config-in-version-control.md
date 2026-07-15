@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-13  
 **Status:** Accepted  
-**Amended:** 2026-07-01, 2026-07-06, 2026-07-08, 2026-07-10 (see Amendment sections below)
+**Amended:** 2026-07-01, 2026-07-06, 2026-07-08, 2026-07-10, 2026-07-14 (see Amendment sections below)
 
 ---
 
@@ -182,6 +182,19 @@ the sole effective, model-agnostic mitigation** and is empirically working. The 
 annotated inert in both copies (harmless; would activate only if the scheduler ever honors
 frontmatter `model:`). Verified by replaying each run's transcript (model + first-output + tool-call
 count); method and evidence on [dev-env#703](https://github.com/brownm09/dev-env/issues/703).
+
+**Generalization ([dev-env#767](https://github.com/brownm09/dev-env/issues/767), 2026-07-14).** With the
+imperative confirmed as the *sole effective* mitigation, it was deployed to **every** registered
+scheduled routine — not just `prune-stale-worktrees`. Each live copy (`daily-journal-compose-local`,
+`reconcile-project-board`, `weekly-memory-audit`, `biweekly-retro`, `reclaim-worktree-disk`,
+`nightly-research`) now carries the execute-now / do-not-greet imperative at the very **top and bottom**
+of its prompt, and each canonical routine (`claude/routines/<name>/SKILL.md`, plus `nightly-cover-letters`
+whose live task is not yet registered) carries an **Autonomous-run guard** blockquote and a **Restorable
+live-copy imperative** section holding the deployed strings verbatim for deterministic restore (the
+machine-local live copies are not version-controlled). The frontmatter `model:` pin was **not** added to
+the other routines — it is inert, so only `prune-stale-worktrees` retains its (annotated) pin. This is
+the application of the mitigation pattern above, not a new decision; the imperative strings were
+genericized to "the first step below" so they are correct regardless of each routine's step numbering.
 
 ---
 
