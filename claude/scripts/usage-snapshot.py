@@ -54,6 +54,7 @@ from _hookio import (
     should_confirm_via_gh,
 )
 import _hookutil
+from _worktree_canon import canonical_root_from_worktree
 
 CREDS_PATH = "C:/Users/brown/.claude/.credentials.json"
 CONFIG_PATH = "C:/Users/brown/Git/dev-env/claude/usage-config.json"
@@ -258,8 +259,11 @@ def find_session_jsonl(cwd: str, session_id: str) -> Path | None:
 
     Strategy:
     1. Try the session-specific file in the encoded-cwd project dir.
-    2. If cwd is a worktree path (contains /.claude/worktrees/), strip that
-       suffix and retry with the canonical repo path.
+    2. If cwd is a worktree path (either the nested `.claude/worktrees/<name>`
+       convention or the sibling `<repo>-worktrees/<name>` convention,
+       dev-env#760), resolve the canonical repo root via the shared
+       _worktree_canon resolver (the same one post-tool-use.py uses) and
+       retry there.
     3. Fall back to searching all project dirs for <session_id>.jsonl.
     """
     def _find_in_dir(project_dir: Path) -> Path | None:
@@ -274,11 +278,9 @@ def find_session_jsonl(cwd: str, session_id: str) -> Path | None:
     if result:
         return result
 
-    # 2. Strip worktree suffix if present
-    worktree_marker = "/.claude/worktrees/"
-    norm = cwd.replace("\\", "/")
-    if worktree_marker in norm:
-        canonical = norm.split(worktree_marker)[0]
+    # 2. Resolve a worktree cwd to its canonical repo root and retry
+    canonical = canonical_root_from_worktree(cwd)
+    if canonical:
         encoded_canonical = encode_cwd(canonical)
         result = _find_in_dir(PROJECTS_ROOT / encoded_canonical)
         if result:

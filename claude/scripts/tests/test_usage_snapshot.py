@@ -43,6 +43,17 @@ guarantee — that `ascii_sanitize(format_snapshot(<non-ASCII action>))` is
 lives in `emit_block`, not `format_snapshot` (the #670 pattern). All were previously
 unexercised.
 
+dev-env#775: `find_session_jsonl`'s worktree-cwd resolution step used to strip a
+hardcoded `"/.claude/worktrees/"` marker instead of reusing
+`_worktree_canon.canonical_root_from_worktree` (the resolver post-tool-use.py already
+uses), so a cwd under the sibling `<repo>-worktrees/<name>` convention (dev-env#760)
+skipped straight to the full directory scan instead of the direct canonical-retry
+step. The tests below use a real `tempfile.TemporaryDirectory` (matching
+test_post_tool_use.py's `test_load_config_falls_back_to_canonical` fixture style, since
+`find_session_jsonl` does real filesystem I/O) to pin that both the nested and sibling
+conventions now resolve via the shared resolver, with `PROJECTS_ROOT` monkeypatched for
+the duration of each test.
+
 The live network call (`fetch_usage`) is intentionally not tested — the repo
 avoids urllib mocks, consistent with the other script tests.
 
@@ -54,6 +65,7 @@ Exit 0 = all pass.
 
 import importlib.util
 import sys
+import tempfile
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -74,6 +86,8 @@ snapshot_action = usage_snapshot.snapshot_action
 merge_confirmed = usage_snapshot.merge_confirmed
 status_label = usage_snapshot.status_label
 format_snapshot = usage_snapshot.format_snapshot
+find_session_jsonl = usage_snapshot.find_session_jsonl
+encode_cwd = usage_snapshot.encode_cwd
 
 # is_merge_help_only lives in _hookio (a sibling); SCRIPT.parent already on
 # sys.path via the insert above.
@@ -249,6 +263,61 @@ def test_snapshot_wire_safe_even_with_non_ascii_action() -> str:
     return "non-ASCII action -> format_snapshot not ASCII, but ascii_sanitize(snapshot) is (emit_block backstop)"
 
 
+# ---------------------------------------------------------------------------
+# find_session_jsonl worktree-cwd resolution (dev-env#775)
+# ---------------------------------------------------------------------------
+
+def test_find_session_jsonl_resolves_nested_worktree_convention() -> str:
+    # Regression check: the nested `.claude/worktrees/<name>` convention must keep
+    # resolving now that the hardcoded marker split was replaced by the shared
+    # canonical_root_from_worktree resolver.
+    with tempfile.TemporaryDirectory() as tmp:
+        projects_root = Path(tmp) / "projects"
+        canonical = str(Path(tmp) / "dev-env")
+        worktree_cwd = str(Path(tmp) / "dev-env" / ".claude" / "worktrees" / "some-fix")
+        session_id = "nested-session-id"
+        canon_dir = projects_root / encode_cwd(canonical)
+        canon_dir.mkdir(parents=True)
+        (canon_dir / f"{session_id}.jsonl").write_text("", encoding="utf-8")
+
+        original_root = usage_snapshot.PROJECTS_ROOT
+        usage_snapshot.PROJECTS_ROOT = projects_root
+        try:
+            result = find_session_jsonl(worktree_cwd, session_id)
+        finally:
+            usage_snapshot.PROJECTS_ROOT = original_root
+
+        expected = canon_dir / f"{session_id}.jsonl"
+        assert result == expected, f"expected {expected!r}, got {result!r}"
+    return "nested .claude/worktrees/<name> cwd still resolves via the shared resolver"
+
+
+def test_find_session_jsonl_resolves_sibling_worktree_convention() -> str:
+    # The fix: a cwd under the sibling `<repo>-worktrees/<name>` convention
+    # (dev-env#760) used to skip straight to the full directory scan (step 3)
+    # because the old code only recognized the nested marker. It now resolves
+    # directly via canonical_root_from_worktree, same as post-tool-use.py.
+    with tempfile.TemporaryDirectory() as tmp:
+        projects_root = Path(tmp) / "projects"
+        canonical = str(Path(tmp) / "dev-env")
+        worktree_cwd = str(Path(tmp) / "dev-env-worktrees" / "fix-775-usage-snapshot")
+        session_id = "sibling-session-id"
+        canon_dir = projects_root / encode_cwd(canonical)
+        canon_dir.mkdir(parents=True)
+        (canon_dir / f"{session_id}.jsonl").write_text("", encoding="utf-8")
+
+        original_root = usage_snapshot.PROJECTS_ROOT
+        usage_snapshot.PROJECTS_ROOT = projects_root
+        try:
+            result = find_session_jsonl(worktree_cwd, session_id)
+        finally:
+            usage_snapshot.PROJECTS_ROOT = original_root
+
+        expected = canon_dir / f"{session_id}.jsonl"
+        assert result == expected, f"expected {expected!r}, got {result!r}"
+    return "sibling <repo>-worktrees/<name> cwd now resolves via canonical_root_from_worktree (dev-env#775)"
+
+
 def main() -> int:
     tests = [
         ("no-expiry token proceeds silently", test_no_expiry_proceeds_silently),
@@ -270,6 +339,14 @@ def main() -> int:
         ("non-merge command is not confirmed", test_merge_confirmed_false_for_non_merge_command),
         ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_merge_confirmed_and_is_help_only),
         ("unresolved real merge: guard does not suppress fallback", test_unresolved_real_merge_is_not_help_only),
+        (
+            "nested worktree convention still resolves (dev-env#775)",
+            test_find_session_jsonl_resolves_nested_worktree_convention,
+        ),
+        (
+            "sibling worktree convention now resolves via shared resolver (dev-env#775)",
+            test_find_session_jsonl_resolves_sibling_worktree_convention,
+        ),
     ]
     failed = 0
     for name, fn in tests:

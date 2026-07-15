@@ -153,3 +153,35 @@ numbers/line references gathered during planning.
   [ADR-072](072-shared-repo-scan-module.md) — the shared-module and reconcile-project-board precedents this builds on.
 - `claude/scripts/_worktree_canon.py`, `claude/scripts/_gh_project.py`,
   `claude/scripts/tests/test_worktree_canon.py`.
+
+## Amendment 1 (2026-07-14) — `usage-snapshot.py` becomes a third consumer of `canonical_root_from_worktree` (dev-env#775)
+
+`usage-snapshot.py`'s `find_session_jsonl()` predates this ADR and independently
+hardcoded its own worktree-cwd marker check (`"/.claude/worktrees/"`, a plain string
+split, no sibling-convention recognition) instead of consuming the shared resolver this
+ADR introduced — a fourth duplicate of the regex this ADR set out to consolidate
+(tracked separately at dev-env#510). Found during `/review` on PR #764 (dev-env#760's
+sibling-directory-convention fix) and filed as
+[dev-env#775](https://github.com/brownm09/dev-env/issues/775) rather than fixed inline
+there (out of that PR's stated "path guards" scope; the gap degraded gracefully — a
+sibling-convention cwd just fell through to the full project-directory scan instead of
+the direct canonical-retry step).
+
+Fixed by importing `canonical_root_from_worktree` and replacing the hand-rolled marker
+split with a direct call, the same pattern `post-tool-use.py` already uses (Decision
+point 4). No regex or contract change was needed — `find_session_jsonl` only ever relied
+on the `None`-on-no-match shape, already `canonical_root_from_worktree`'s existing
+contract.
+
+This updates the Consequences section's "consumed by exactly two files today" claim:
+`canonical_root_from_worktree` now has three consumers (`post-tool-use.py` directly,
+`reconcile-project-board.py` via the `canonical_repo_root` wrapper, and
+`usage-snapshot.py` directly), and all three now recognize both the nested
+`.claude/worktrees/<name>` and sibling `<repo>-worktrees/<name>` (dev-env#760)
+conventions uniformly. `test_usage_snapshot.py` gained two `tempfile.TemporaryDirectory`-based
+tests pinning both conventions resolve, mirroring `test_post_tool_use.py`'s
+`test_load_config_falls_back_to_canonical` fixture style.
+
+dev-env#510 (open) still tracks the larger, separate consolidation of the
+`pre-tool-use-canonical-mutate-guard.py` / `pre-tool-use-worktree-path-check.py` regex
+copies onto this module — not addressed here.

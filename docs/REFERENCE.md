@@ -584,6 +584,14 @@ worktree convention alongside the original nested `.claude/worktrees/<name>` sha
 ADR-071 Amendment 5 for the full rationale, shared across all three files that independently define this
 pattern).
 
+`usage-snapshot.py` (PostToolUse hooks above) is a third direct consumer of
+`canonical_root_from_worktree` — its `find_session_jsonl()` used to hardcode its own
+nested-convention-only marker check instead of importing the shared resolver, so a
+sibling-convention cwd fell through to a full project-directory scan instead of the
+direct canonical-retry step. Fixed the same way as the other two call sites: import and
+delegate, no regex change (dev-env#775, see [ADR-073](adr/073-shared-worktree-canon-gh-project-modules.md)
+Amendment 1 for the full rationale).
+
 ### Script verification suite
 
 Execution-level checks for the shell scripts themselves, run from the dev-env `## Testing`
