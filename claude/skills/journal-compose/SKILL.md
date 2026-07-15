@@ -1400,10 +1400,13 @@ may have diverged from main via squash-merges, making it unmergeable.
 
 The snippet below probes for modern `git merge-tree --write-tree` (git >= 2.38: the exit
 code carries the result) and falls back to the deprecated 3-argument `merge-tree` on older
-git. Do not "tighten" the fallback grep back to an anchored `^<<<<<<<`: old-style
-merge-tree emits diff-style output whose conflict markers are `+`-prefixed
-(`+<<<<<<< .our`), so the anchored form matches nothing and silently reports 0 conflicts
-on a genuinely conflicting branch (engineering-journal PR #150, 2026-07-03; ADR-080).
+git. The fallback grep must handle two different old-format output styles:
+- Git versions that output diff-style content prefix conflict markers with `+` (e.g.
+  `+<<<<<<< .our`), so the bare `^<<<<<<<` form matches nothing — use `^\+?<<<<<<<`
+  (engineering-journal PR #150, 2026-07-03; ADR-080).
+- Older git versions output a summary form with lines like `changed in both` instead of
+  conflict markers entirely — `^\+?<<<<<<<` matches nothing and silently reports 0 conflicts
+  on a genuinely conflicting branch (dev-env#786, 2026-07-15).
 
 ```bash
 git -C "$WT" fetch origin main
@@ -1420,11 +1423,13 @@ if [ "$RC" -eq 0 ]; then
 elif [ "$RC" -eq 1 ]; then
   CONFLICT_LINES=1
 else
-  # Old git (< 2.38) rejects --write-tree; fall back to 3-arg merge-tree, whose
-  # diff-style output '+'-prefixes conflict markers — hence "^\+?<<<<<<<", never
-  # a bare "^<<<<<<<" (ADR-080).
+  # Old git (< 2.38) rejects --write-tree; fall back to 3-arg merge-tree.
+  # Two output formats exist: diff-style output '+'-prefixes conflict markers
+  # ("^\+?<<<<<<<", ADR-080), while older git emits a summary form with
+  # "changed in both" lines instead (dev-env#786). Match both.
   CONFLICT_LINES=$(git -C "$WT" \
-    merge-tree "$MERGE_BASE" HEAD origin/main | grep -cE "^\+?<<<<<<<" || true)
+    merge-tree "$MERGE_BASE" HEAD origin/main \
+    | grep -cE "^\+?<<<<<<<|^changed in both" || true)
 fi
 echo "CONFLICT_LINES=$CONFLICT_LINES"
 ```
@@ -1464,6 +1469,21 @@ while IFS=$'\t' read -r STATUS FILEPATH; do
   esac
 done < "$WT/.compose-diff-plan.txt"
 rm -f "$WT/.compose-diff-plan.txt"
+
+# 2b. Open-PR shard integrity check — the diff-and-replay above is scoped to the
+#     composed project's directory and README.md. Any open-PR shard from a DIFFERENT
+#     project's sessions/ directory (e.g. sessions/dev-env/open-prs/770.json when
+#     composing lifting-logbook) would be silently absent from the recovery branch
+#     because it never appeared in the pathspec-filtered diff (dev-env#787). For every
+#     shard that existed on $PREV, verify it is present in the working tree; restore
+#     any that are missing by checking them out directly from $PREV.
+SHARD_CHECK_LOG=""
+while IFS= read -r SHARD_PATH; do
+  [ -e "$WT/$SHARD_PATH" ] && continue
+  git -C "$WT" checkout "$PREV" -- "$SHARD_PATH" 2>/dev/null && \
+    SHARD_CHECK_LOG="${SHARD_CHECK_LOG:+$SHARD_CHECK_LOG }$SHARD_PATH"
+done < <(git -C "$WT" ls-tree -r "$PREV" --name-only -- sessions/ | grep -E '/open-prs/[0-9]+\.json$')
+[ -n "$SHARD_CHECK_LOG" ] && echo "SHARD_INTEGRITY_RESTORED=$SHARD_CHECK_LOG"
 
 # 3. Commit and push
 git -C "$WT" commit -m \
@@ -1510,6 +1530,17 @@ while IFS=$'\t' read -r STATUS FILEPATH; do
   esac
 done < "$WT/.compose-diff-plan.txt"
 rm -f "$WT/.compose-diff-plan.txt"
+
+# Open-PR shard integrity check — same as the single-project recovery block above;
+# handles shards from any sessions/ project directory not explicitly listed in the
+# diff pathspec (dev-env#787). Run once here covering all projects in one pass.
+SHARD_CHECK_LOG=""
+while IFS= read -r SHARD_PATH; do
+  [ -e "$WT/$SHARD_PATH" ] && continue
+  git -C "$WT" checkout "$PREV" -- "$SHARD_PATH" 2>/dev/null && \
+    SHARD_CHECK_LOG="${SHARD_CHECK_LOG:+$SHARD_CHECK_LOG }$SHARD_PATH"
+done < <(git -C "$WT" ls-tree -r "$PREV" --name-only -- sessions/ | grep -E '/open-prs/[0-9]+\.json$')
+[ -n "$SHARD_CHECK_LOG" ] && echo "SHARD_INTEGRITY_RESTORED=$SHARD_CHECK_LOG"
 
 git -C "$WT" commit -m \
   "[docs] Add YYYY-MM-DD journals: <slug-a>, <slug-b> (compose branch — draft had conflicts)"
