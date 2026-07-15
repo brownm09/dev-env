@@ -1305,6 +1305,45 @@ stays blocked.
    same PR; the two documents cross-reference each other the same way Amendment 5 and ADR-024's dev-env#760
    addendum already do.
 
+### Review hardening (dev-env#774/PR#783)
+
+`/review` on this PR (two Opus-model subagents, correctness/security and reliability/performance/
+maintainability, run independently) found the initial implementation above correct in its core logic but
+imprecise or suboptimal in four ways, all fixed in the same PR before merge:
+
+1. **`_blockable_redirect_root` spawned the new subprocess before the cheap allowlist check.** The
+   engineering-journal carve-out (`_is_allowlisted_root`) is the most frequent redirect target in this
+   environment — the Stub file workflow runs `git -C <journal> commit`/`checkout`/`pull` on nearly every PR
+   open/merge — so checking it after `_is_confirmed_worktree_root` paid an unnecessary `git worktree list`
+   on that hot, already-allowed path. Reordered to check the pure allowlist first; zero behavior change
+   (both conditions are still required for a block), only fewer wasted subprocess spawns.
+2. **The module docstring's Logic step 6 still described the pre-#774 mental model.** It read "once
+   resolved it *is* the canonical root by construction," naming only `git rev-parse` — accurate before this
+   amendment, stale after it added a second confirmation step. Corrected to describe the
+   `_is_confirmed_worktree_root()` git-membership check.
+3. **`_is_confirmed_worktree_root`'s `entry is None` fallback contradicted its own docstring.** The
+   docstring claimed this state (git answers, but `root` matches no entry at all — "should not happen") was
+   treated as "fail toward blockable," but the code fell through to the SAME path-shape-regex fallback the
+   git-totally-unavailable case uses — which, for a worktree-SHAPED `root`, returns `True` (confirmed a
+   worktree, i.e. exempt) — the OPPOSITE of blockable. Fixed by giving the two distinct "can't fully
+   confirm" states two different fallbacks: git-totally-unavailable still falls back to the shape regex (a
+   genuine backstop, no other signal exists); `entry is None` now returns `False` directly (git DID answer,
+   and `root` matching nothing in that answer is positive, specific evidence it isn't a linked worktree —
+   stronger than "no signal at all," so it doesn't need the weaker fallback). Also made the canonical-vs-entry
+   comparison value-based (`_normalize_path(entry["path"]) != _normalize_path(worktrees[0]["path"])`) rather
+   than relying on `find_worktree_by_path` returning the same object by identity — a latent fragility a
+   future refactor of that shared primitive could otherwise silently reintroduce gap (a) through (documented
+   as a `find_worktree_by_path` docstring guarantee too, so a caller that DOES want the identity shortcut
+   knows it's relying on something the primitive states explicitly, not an accident).
+4. **`parse_worktree_porcelain(result.stdout)` sat outside the `try` in the new resolver.** Defensive-only —
+   `parse_worktree_porcelain` is pure string splitting with no known raise path today — but moved inside the
+   same `try`/`except` so a future change to that parser can't silently escape this function's fail-open
+   contract to the hook's outer `except Exception: sys.exit(0)`.
+
+None of these four change the *shape* of the fix this amendment describes above (git-membership confirmation
+replacing/backstopping the shape check) — they correct the implementation's precision and robustness, the
+same class of hardening Amendment 2's review pass applied to its own initial implementation.
+
 ### Coverage
 
 `claude/scripts/tests/test_canonical_mutate_guard.py` grows from 81 to 86 tests:
@@ -1328,6 +1367,22 @@ stays blocked.
   pass only because of the bug this amendment fixes. Rewritten to use a REAL `git worktree add`-registered
   target (`_init_repo_with_live_worktree`, already established elsewhere in this file) so the test now
   proves what its name and docstring actually claim.
+- **Review hardening (test completeness):** `/review` found two more pre-existing tests with the identical
+  "fixture doesn't prove the claim" shape —
+  `test_main_allows_gh_pr_merge_delete_branch_from_worktree_cwd` and
+  `test_main_allows_any_command_from_worktree_cwd`, both using a bare, non-git worktree-shaped directory
+  that passes only via the unrelated non-git-cwd fail-open path (`_resolve_git_toplevel` fails entirely, so
+  `_blockable_ambient_root(None, ...)` short-circuits before ever reaching `_is_confirmed_worktree_root`).
+  The former was strengthened to a REAL registered worktree (it covers `gh pr merge --delete-branch`
+  specifically, not otherwise tested against a live worktree anywhere in this file). The latter's docstring
+  was narrowed to state plainly it covers only the non-git fail-open boundary, rather than duplicating the
+  real-worktree setup `test_main_allows_ambient_mutating_command_from_live_worktree` already covers for the
+  identical command — two tests spawning the same real-repo fixture for identical coverage would add
+  runtime for no new signal.
+- **Value-based comparison test:** the existing `test_is_confirmed_worktree_root_decision_table` and
+  `test_blockable_ambient_root_guards_against_*` tests were re-run against the value-based
+  `_is_confirmed_worktree_root` rewrite (finding 3 above) and pass unchanged — they were never coupled to
+  the identity-based implementation detail the rewrite removed.
 
 `claude/scripts/tests/test_worktree_topology.py` gains `test_find_worktree_by_path` for the new shared
 primitive (canonical/linked-entry lookup returns the same object by identity, an empty list and a

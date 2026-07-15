@@ -131,6 +131,13 @@ def _resolve_git_toplevel(cwd: str):
     (no `.git` link file), git walks up the tree and returns the canonical repo
     root instead — that mismatch is the orphan signature the liveness guard keys
     on. Any execution failure (git missing, timeout, non-zero exit) returns None.
+    `ValueError` also fails open here (dev-env#774 review finding): `subprocess.run(...,
+    text=True)` decodes git's stdout in the process locale encoding, and a path
+    containing bytes undecodable there raises `UnicodeDecodeError` (a `ValueError`
+    subclass) — without this, that decode error would propagate uncaught to this
+    hook's outer `except Exception: sys.exit(0)`, silently disabling enforcement
+    entirely instead of falling back to the fail-open contract this function exists
+    to provide.
     """
     try:
         result = subprocess.run(
@@ -139,7 +146,7 @@ def _resolve_git_toplevel(cwd: str):
             text=True,
             timeout=10,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
         return None
     if result.returncode != 0:
         return None
@@ -185,7 +192,18 @@ def _resolve_worktrees(cwd: str):
     """Run `git -C <cwd> worktree list --porcelain` and parse it via the shared
     `_worktree_topology.parse_worktree_porcelain`, or None if git can't resolve
     it at all (no `.git` found anywhere up the tree from `cwd`, git missing,
-    timeout, non-zero exit).
+    timeout, non-zero exit, or a decode/parse failure).
+
+    `ValueError` fails open here for the same reason `_resolve_git_toplevel` does
+    (dev-env#774 review finding): a `UnicodeDecodeError` from decoding git's stdout
+    is a `ValueError` subclass, and letting it propagate uncaught would silently
+    disable this hook's enforcement entirely (escape to the outer
+    `except Exception: sys.exit(0)`) instead of falling back to the regex +
+    `_worktree_is_live` path `_resolve_worktree_scope` provides for exactly this
+    "git can't answer" case. The parse call is inside the same `try` for the same
+    reason, even though `parse_worktree_porcelain` is pure string splitting with no
+    known raise path today — a future change to it should not have to remember to
+    keep this call site's fail-open contract intact.
     """
     try:
         result = subprocess.run(
@@ -194,11 +212,11 @@ def _resolve_worktrees(cwd: str):
             text=True,
             timeout=10,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        if result.returncode != 0:
+            return None
+        return parse_worktree_porcelain(result.stdout)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
         return None
-    if result.returncode != 0:
-        return None
-    return parse_worktree_porcelain(result.stdout)
 
 
 def _resolve_worktree_scope(regex_canonical_root: str, regex_worktree_root: str, cwd: str):
@@ -232,23 +250,47 @@ def _resolve_worktree_scope(regex_canonical_root: str, regex_worktree_root: str,
     (orphaned/removed) directly, without a further `_worktree_is_live` call —
     git's own authoritative membership list is stronger proof of "not currently
     registered" than the `.git`-isfile/`rev-parse` heuristic it replaces here.
+
+    `regex_worktree_root` is checked against the FULL confirmed list (canonical
+    entry included) BEFORE the canonical-root textual comparison, not after
+    (review finding, dev-env#774): a direct match there is git's strongest
+    possible confirmation that `cwd` really is inside a live, registered
+    worktree, and is trusted even when the canonical-root guess would have
+    disagreed — e.g. a symlink/junction/8.3-short-path component making git's
+    own canonicalized path differ in FORM (not substance) from the regex's raw
+    cwd-derived substring. Checking the canonical guess first, as an earlier
+    version of this function did, would have exited 0 (gap (b)'s "never really
+    a worktree" outcome) for that case even though `cwd` genuinely is inside a
+    live worktree — silently dropping BOTH the orphan-block and the
+    escape-block, this hook's core purpose, under a path-form quirk this PR
+    introduced no exposure to before (the pre-#774 regex-only code never asked
+    git to independently agree on a form at all). The canonical-comparison
+    heuristic remains as the fallback for the one case a direct worktree-root
+    match can't resolve on its own: distinguishing a genuine orphan (canonical
+    confirmed correct, this specific worktree path just isn't registered) from
+    gap (b) (the canonical guess itself was wrong).
     """
     worktrees = _resolve_worktrees(cwd)
     if not worktrees:
         return regex_canonical_root, regex_worktree_root, _worktree_is_live(regex_worktree_root, cwd)
 
     canonical_entry = worktrees[0]
+    matched = find_worktree_by_path(worktrees, regex_worktree_root, normalize=_normalize)
+    if matched is not None:
+        # regex_worktree_root is confirmed a registered worktree of THIS
+        # repository -- trust it regardless of whether the canonical-root
+        # guess textually agreed (see the path-form note above).
+        return canonical_entry["path"], matched["path"], True
+
     if _normalize(canonical_entry["path"]) != _normalize(regex_canonical_root):
-        # git's own canonical root disagrees with the regex's guess -- cwd was
-        # never really inside a worktree structure at all (dev-env#774 gap (b)).
+        # regex_worktree_root wasn't found anywhere in the list, AND the
+        # canonical guess disagrees too -- cwd was never really inside a
+        # worktree structure at all (dev-env#774 gap (b)).
         return None, None, None
 
-    matched = find_worktree_by_path(worktrees[1:], regex_worktree_root, normalize=_normalize)
-    if matched is None:
-        # canonical_root confirmed correct, but this specific worktree path
-        # isn't among the repo's registered (linked) worktrees -- orphaned
-        # or removed.
-        return canonical_entry["path"], regex_worktree_root, False
+    # canonical_root confirmed correct, but this specific worktree path isn't
+    # among the repo's registered (linked) worktrees -- orphaned or removed.
+    return canonical_entry["path"], regex_worktree_root, False
     return canonical_entry["path"], matched["path"], True
 
 

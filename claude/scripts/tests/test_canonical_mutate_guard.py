@@ -1500,10 +1500,18 @@ def test_main_allows_gh_pr_merge_delete_branch_from_worktree_cwd() -> str:
     """cwd matching the worktree pattern is out of scope for every mutating
     command this hook recognizes, gh-based or git-based alike — ADR-024's
     hook covers the worktree surface.
+
+    Uses a REAL, `git worktree add`-registered worktree (dev-env#774 review
+    finding): a bare (non-git) worktree-shaped directory would pass this test
+    only via the UNRELATED non-git-cwd fail-open path (`_resolve_git_toplevel`
+    fails entirely, `_blockable_ambient_root(None, ...)` short-circuits) —
+    giving zero real coverage of the worktree-cwd exemption this test's name
+    and docstring claim to verify.
     """
     with tempfile.TemporaryDirectory() as tmp:
-        wt = Path(tmp) / ".claude" / "worktrees" / "some-worktree-name"
-        wt.mkdir(parents=True)
+        canonical = Path(tmp) / "canonical-repo"
+        wt = canonical / ".claude" / "worktrees" / "some-worktree-name"
+        _init_repo_with_live_worktree(canonical, wt)
         payload = {
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
@@ -1513,10 +1521,10 @@ def test_main_allows_gh_pr_merge_delete_branch_from_worktree_cwd() -> str:
         proc = _run_hook(payload)
         if proc.returncode != 0:
             raise AssertionError(
-                f"expected exit 0 (out of scope) from worktree cwd, got {proc.returncode}. "
+                f"expected exit 0 (out of scope) from a REAL live worktree cwd, got {proc.returncode}. "
                 f"stdout={proc.stdout!r}"
             )
-    return "gh pr merge --delete-branch from a worktree-pattern cwd allowed (out of scope, exit 0, dev-env#558)"
+    return "gh pr merge --delete-branch from a REAL registered worktree cwd allowed (out of scope, exit 0, dev-env#558; strengthened fixture, dev-env#774)"
 
 
 def test_main_gh_pr_merge_delete_branch_override_bypasses() -> str:
@@ -1571,6 +1579,15 @@ def test_main_allows_any_command_from_worktree_cwd() -> str:
     longer "entirely out of scope": a worktree command that redirects a mutating
     verb at a *canonical* checkout IS evaluated (see
     test_main_blocks_redirect_into_canonical_from_worktree_cwd below).
+
+    This fixture (a bare, non-git worktree-shaped directory) covers only the
+    NON-GIT-cwd fail-open boundary (dev-env#774 review finding — `_resolve_git_toplevel`
+    fails entirely here, so `_blockable_ambient_root(None, ...)` short-circuits before
+    ever consulting `_is_confirmed_worktree_root`), not the git-membership-confirmed
+    worktree-cwd exemption itself. Real coverage of THAT path — a genuine, `git
+    worktree add`-registered worktree — lives in
+    `test_main_allows_ambient_mutating_command_from_live_worktree` below; not duplicated
+    here to avoid two tests spawning the same real-repo setup for identical coverage.
     """
     with tempfile.TemporaryDirectory() as tmp:
         wt = Path(tmp) / ".claude" / "worktrees" / "some-worktree-name"

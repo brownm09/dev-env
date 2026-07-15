@@ -131,6 +131,14 @@ def find_worktree_by_path(worktrees: "list[dict]", path: str, *, normalize=_norm
     membership rather than trusting a path-shape regex alone (dev-env#774) — a resolved or
     candidate root is checked against the real worktree list instead of merely matching a
     path string that LOOKS worktree-shaped.
+
+    Returns the actual matching element from ``worktrees`` (never a copy), so a caller MAY
+    compare the result against a specific entry (e.g. ``worktrees[0]``) via identity (``is``)
+    rather than re-normalizing both sides again — ``test_find_worktree_by_path`` pins this.
+    A caller relying on that shortcut should prefer a value-based comparison instead if it
+    cannot guarantee this contract survives a future refactor (review finding, dev-env#774):
+    identity is an implementation detail of the current "search and return the element"
+    approach, not a promise this docstring makes callers depend on.
     """
     target = normalize(path)
     for wt in worktrees:

@@ -97,10 +97,12 @@ is actually found):
      argument or inside a `$(...)`/heredoc span — step 3's opacity applies
      identically here), exit 0 — a deliberate, visible human override.
   6. For an *ambient* (no-redirect) mutating segment, resolve the git toplevel
-     for `cwd` via `git -C <cwd> rev-parse --show-toplevel`; once resolved it
-     *is* the canonical root by construction (cwd is not a worktree here). For a
-     *redirect* mutating segment, resolve each captured target dir the same way
-     and block iff it lands on a canonical (non-worktree, non-carve-out) root.
+     for `cwd` via `git -C <cwd> rev-parse --show-toplevel`. For a *redirect*
+     mutating segment, resolve each captured target dir the same way. Neither
+     resolved root is trusted as canonical purely "by construction" any more
+     (dev-env#774): each is confirmed via `_is_confirmed_worktree_root()` —
+     `git worktree list --porcelain` membership, not path shape — and blocked
+     iff it is NOT a confirmed linked worktree and NOT on the carve-out.
      Fail open if git can't resolve a path at all (not a repo, git missing,
      timeout).
   7. Exit 2 with a blocking JSON `{"reason": ...}` naming the matched command,
@@ -898,7 +900,10 @@ def _resolve_worktree_list(root: str):
     exercised on every invocation. Same defensive except-tuple as
     `_resolve_git_toplevel` (dev-env#576/PR#584's `ValueError` addition for a
     null-byte path applies identically here, since `root` can itself be a
-    command-string-derived redirect target).
+    command-string-derived redirect target). The parse call is inside the same
+    `try` (dev-env#774 review finding) so a future change to `parse_worktree_porcelain`
+    can't accidentally let a parse failure escape this function's fail-open
+    contract, even though it is pure string splitting with no known raise path today.
     """
     try:
         result = subprocess.run(
@@ -907,11 +912,11 @@ def _resolve_worktree_list(root: str):
             text=True,
             timeout=10,
         )
+        if result.returncode != 0:
+            return None
+        return parse_worktree_porcelain(result.stdout)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
         return None
-    if result.returncode != 0:
-        return None
-    return parse_worktree_porcelain(result.stdout)
 
 
 def _memoized_worktree_list(root: str, cache: dict):
@@ -942,24 +947,33 @@ def _is_confirmed_worktree_root(root: str, cache: dict) -> bool:
     (canonical) `git worktree list` entry — never a linked one, since it was
     never created via `git worktree add` — so this correctly classifies it as
     canonical (blockable) regardless of what its path string looks like.
-    `root`'s own entry not being found at all (should not happen, since `root`
-    was itself resolved from this same repo, but not asserted) is treated the
-    same as "not confirmed a linked worktree" — fail toward blockable, the
-    conservative direction for an unexpected state.
 
-    Falls back to the path-shape regex (`_WORKTREE_RE`) when git itself can't
-    answer at all (fail open — matches this hook's existing philosophy
-    elsewhere, e.g. `_resolve_git_toplevel`'s own None-on-failure contract): a
-    backstop, not the primary signal, per dev-env#774's "replace (or
-    backstop)" framing.
+    Two distinct "can't fully confirm" states get two DIFFERENT fallbacks
+    (review finding, dev-env#774 — the original implementation collapsed both
+    into the same path-shape-regex fallback, which for a worktree-shaped `root`
+    silently returns "confirmed a worktree" — the OPPOSITE of the "fail toward
+    blockable" this docstring documents):
+      - Git can't answer AT ALL (`worktrees` is empty/None) — genuinely no
+        signal. Falls back to the path-shape regex (`_WORKTREE_RE`) — matches
+        this hook's existing fail-open philosophy elsewhere (e.g.
+        `_resolve_git_toplevel`'s own None-on-failure contract): a backstop,
+        not the primary signal, per dev-env#774's "replace (or backstop)"
+        framing.
+      - Git answers, but `root` matches NO entry at all (should not happen,
+        since `root` was itself resolved from this same repo moments earlier,
+        but not asserted) — this is actual, specific evidence `root` is not a
+        registered worktree of the repository git just described, stronger
+        than "no signal at all." Returns `False` (not confirmed a linked
+        worktree, i.e. blockable) directly, matching the conservative
+        direction this docstring intends.
     """
     worktrees = _memoized_worktree_list(root, cache)
     if not worktrees:
         return _WORKTREE_RE.search(root) is not None
     entry = find_worktree_by_path(worktrees, root, normalize=_normalize_path)
     if entry is None:
-        return _WORKTREE_RE.search(root) is not None
-    return entry is not worktrees[0]
+        return False
+    return _normalize_path(entry["path"]) != _normalize_path(worktrees[0]["path"])
 
 
 def _blockable_redirect_root(redirect_dirs: list, cwd: str, toplevel_cache: dict, worktree_list_cache: dict):
@@ -998,7 +1012,17 @@ def _blockable_redirect_root(redirect_dirs: list, cwd: str, toplevel_cache: dict
     for d in redirect_dirs:
         resolved = d if is_absolute_path(d) else os.path.join(cwd, d)
         root = _memoized_toplevel(resolved, toplevel_cache)
-        if root and not _is_confirmed_worktree_root(root, worktree_list_cache) and not _is_allowlisted_root(root):
+        # _is_allowlisted_root (pure string comparison) checked BEFORE
+        # _is_confirmed_worktree_root (spawns `git worktree list`) — review
+        # finding, dev-env#774: the engineering-journal carve-out is the most
+        # frequent redirect target in this environment (the Stub file workflow
+        # runs `git -C <journal> commit`/`checkout`/`pull` on nearly every PR
+        # open/merge), so checking the cheap, pure allowlist first avoids a
+        # wasted subprocess spawn on that hot, already-allowed path. Order has
+        # no effect on the outcome — both conditions must hold for `root` to be
+        # blockable, so swapping which one short-circuits first never changes
+        # which roots end up blockable, only how many resolve a subprocess.
+        if root and not _is_allowlisted_root(root) and not _is_confirmed_worktree_root(root, worktree_list_cache):
             return root
     return None
 
