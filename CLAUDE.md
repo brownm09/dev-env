@@ -2013,8 +2013,8 @@ gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
 
 **GraphQL-only, no REST fallback.** Every command in this section — `gh project item-add`,
 `item-edit`, `item-list` — is GraphQL-only; GitHub Projects v2 has no REST API surface at all
-(Projects *classic* did; v2 does not). This is unlike `gh pr merge`/`gh pr edit`/`gh pr checks`,
-which all have documented REST equivalents (see [docs/REFERENCE.md → Git Workflow
+(Projects *classic* did; v2 does not). This is unlike `gh pr merge`/`gh pr comment`/`gh pr view
+--json`, which all have documented REST equivalents (see [docs/REFERENCE.md → Git Workflow
 Runbooks](docs/REFERENCE.md#git-workflow-runbooks)) for when the GraphQL bucket is exhausted. When
 GraphQL hits 0/5000, every project-board operation above — adding an issue/PR, setting
 Impact/Why/Status, looking up an item ID — is completely blocked with **no workaround** except
