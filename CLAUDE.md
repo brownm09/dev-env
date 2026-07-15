@@ -1222,6 +1222,32 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     stays allowed; and a three-turn sequence proving trigger 1's stale `"merged"` text does not block
     detection of trigger 3 arising two turns later.
 
+    **A fourth trigger, deferral-question** ([ADR-109](docs/adr/109-tile-gate-deferral-question-trigger.md);
+    dev-env#772), catches a session asking the user a scheduling/permission question about a known
+    follow-up instead of tiling it (e.g. "let me know if you want me to start it now") — the motivating
+    incident was the next PR in a multi-PR initiative (ADR-059) asked about instead of tiled, even
+    though the plain-language tile-now rule already existed and other genuine follow-ups WERE correctly
+    tiled in that same turn. That last detail is exactly why `evaluate_deferral` deliberately does NOT
+    accept `enumeration_recorded` as resolution the way triggers 1/2 do — only `skip_override` — since
+    the first draft, which did reuse `enumeration_recorded`, would have been silently resolved by those
+    unrelated tiles and never fired for the incident it exists to catch (walked through by hand against
+    the real incident, not caught by `/review`; see the ADR's own "rejected first draft" section). Also
+    unlike triggers 1-3, this one is a bounded natural-language phrase match
+    (`_DEFERRAL_QUESTION_RES`), not an objectively verifiable fact, so a fire here does NOT block via
+    exit 2 — it rides `_hookout.emit_advisory("Stop", ..., audience="user")` (a systemMessage, exit 0),
+    and is silently skipped in favor of the harder block whenever a blocking trigger ALSO fires in the
+    same turn (only one exit code exists per invocation). 19 new tests: phrase detection (including that
+    an unrelated design question like "should I use approach A or B" does NOT match, and that a user
+    record / tool_result containing the phrase is correctly ignored — assistant-text-only scope);
+    `evaluate_deferral`'s composition, including the regression pin for the rejected first draft (an
+    unrelated `spawn_task` elsewhere in the session must NOT resolve this trigger); and 5 e2e cases
+    covering the motivating-incident shape end-to-end (exit 0 + systemMessage), the
+    blocking-trigger-wins precedence case, a clean session emitting no systemMessage at all, the
+    "should i" phrasing after an issue-create, and sentinel suppression. Also sharpens the
+    command-keyed `post-merge-tile-checkpoint.py`'s existing blocking reminder (ADR-060) to explicitly
+    name this same anti-pattern — that hook's own test file only exercises its merge-detection
+    predicate, not message text, so no test change was needed there.
+
     ```bash
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
     ```

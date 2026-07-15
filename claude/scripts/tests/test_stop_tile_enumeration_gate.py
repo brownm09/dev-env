@@ -1352,6 +1352,230 @@ def test_e2e_stale_merged_text_does_not_block_a_later_distinct_trigger():
             "block detection of trigger 3 arising three turns later")
 
 
+# ---------------------------------------------------------------------------
+# deferral-question trigger (new ADR, dev-env#772)
+# ---------------------------------------------------------------------------
+
+# A minimal "PR merged, deferral question asked, nothing tiled" session --
+# the motivating incident's shape (a known follow-up asked about, not tiled).
+_MERGED_DEFERRAL_QUESTION = [
+    _asst_bash("t1", "gh pr merge 762 --squash --delete-branch"),
+    _tool_result("t1", "Squashed and merged pull request #762 (PR9)"),
+    _asst_text("Merged PR #762. PR10 is next -- let me know if you want me "
+               "to start it now or leave it for a fresh session."),
+]
+
+# The same session, but with OTHER genuine follow-ups properly tiled AND
+# tabled -- fully resolves triggers 1/3 (2 doesn't apply, no issue created)
+# via a real spawn_task + the table heading, leaving ONLY the deferral
+# trigger (4) live. This is the actual motivating incident's shape: a spawn
+# without a table heading would otherwise (correctly) arm trigger 3 too,
+# which is not what these tests are isolating.
+_MERGED_DEFERRAL_QUESTION_OTHERWISE_RESOLVED = _MERGED_DEFERRAL_QUESTION + [
+    _asst_spawn(),
+    _asst_text("### Tiles spawned this session\n| Tile | Issue | Status | Next |\n"
+               "| other follow-up | #761 | open | click the chip |\n"),
+]
+
+
+def test_deferral_question_detected_let_me_know():
+    assert gate.deferral_question_present(_MERGED_DEFERRAL_QUESTION)
+    return "'let me know if you want me to start it now' -> deferral_question_present True"
+
+
+def test_deferral_question_detected_should_i_start():
+    records = [_asst_text("Should I start implementing this now?")]
+    assert gate.deferral_question_present(records)
+    return "'Should I start implementing this now?' -> deferral_question_present True"
+
+
+def test_deferral_question_detected_want_me_to_now():
+    records = [_asst_text("Want me to implement this now, or should it wait?")]
+    assert gate.deferral_question_present(records)
+    return "'Want me to implement this now' -> deferral_question_present True"
+
+
+def test_deferral_question_not_detected_unrelated_design_question():
+    # "Should I use approach A or B" is a genuine design question, not one of
+    # the bounded verb phrasings (start/begin/implement/proceed/go
+    # ahead/do this/tackle) -- must not match.
+    records = [_asst_text("Should I use approach A or approach B for the cache layer?")]
+    assert not gate.deferral_question_present(records)
+    return "unrelated design question ('should I use...') -> NOT detected"
+
+
+def test_deferral_question_ignores_user_record():
+    records = [_user_str("let me know if you want me to start it now")]
+    assert not gate.deferral_question_present(records)
+    return "deferral phrase in a USER record -> NOT present (assistant-only scope)"
+
+
+def test_deferral_question_ignores_tool_result():
+    records = [_tool_result("t1", "let me know if you want me to start it now")]
+    assert not gate.deferral_question_present(records)
+    return "deferral phrase in a tool_result -> NOT present (assistant-text-only scope)"
+
+
+def test_evaluate_deferral_fires_after_merge():
+    fire, resolved = gate.evaluate_deferral(_MERGED_DEFERRAL_QUESTION)
+    assert fire is True and resolved is False
+    return "merged + deferral phrase + no skip -> (True, resolved=False) [FIRE]"
+
+
+def test_evaluate_deferral_fires_after_issue_create():
+    records = [
+        _asst_bash("i1", 'gh issue create --title "PR10 sub-issue" --body "part of #717"'),
+        _tool_result("i1", "https://github.com/brownm09/dev-env/issues/768"),
+        _asst_text("Filed the sub-issue. Should I start implementing it now?"),
+    ]
+    fire, resolved = gate.evaluate_deferral(records)
+    assert fire is True and resolved is False
+    return "issue created + deferral phrase + no skip -> (True, resolved=False) [FIRE]"
+
+
+def test_evaluate_deferral_resolved_with_skip():
+    records = _MERGED_DEFERRAL_QUESTION + [_user_str("skip tiles")]
+    fire, resolved = gate.evaluate_deferral(records)
+    assert fire is False and resolved is True
+    return "merged + deferral phrase + 'skip tiles' override -> (False, resolved=True)"
+
+
+def test_evaluate_deferral_not_resolved_by_unrelated_enumeration():
+    # THE fix this trigger's design specifically targets: an unrelated
+    # spawn_task / enumeration elsewhere in the session must NOT resolve
+    # this trigger -- the deferred item itself was never tiled. Reproduces
+    # the actual motivating incident's shape (genuine tiles spawned in the
+    # same session the deferral question was asked about a DIFFERENT item).
+    records = _MERGED_DEFERRAL_QUESTION + [
+        _asst_spawn("s1"), _asst_text("Also filed a tile for the flaky test.")]
+    assert gate.enumeration_recorded(records), (
+        "sanity check: the spawn DOES satisfy enumeration_recorded")
+    fire, resolved = gate.evaluate_deferral(records)
+    assert fire is True and resolved is False
+    return ("merged + deferral phrase + an UNRELATED spawn_task elsewhere -> still "
+            "(True, resolved=False) -- enumeration_recorded is deliberately NOT "
+            "accepted as resolution here (see evaluate_deferral's docstring)")
+
+
+def test_evaluate_deferral_noop_without_merge_or_issue():
+    records = [_asst_text("Should I start implementing this now?")]
+    fire, resolved = gate.evaluate_deferral(records)
+    assert fire is False and resolved is False
+    return "deferral phrase with no merge/issue-create context -> (False, resolved=False)"
+
+
+def test_evaluate_deferral_noop_without_phrase():
+    fire, resolved = gate.evaluate_deferral(_MERGED_NO_ENUM)
+    assert fire is False and resolved is False
+    return "merged, no deferral phrase -> (False, resolved=False)"
+
+
+def test_format_deferral_reminder_is_cp1252_encodable():
+    msg = gate.format_deferral_reminder()
+    assert msg.isascii(), "reminder must be ASCII (Claude Code pipes hook output as cp1252)"
+    msg.encode("cp1252")  # must not raise
+    assert "tile-now discipline" in msg and "spawn_task" in msg
+    return "format_deferral_reminder is ASCII/cp1252-encodable"
+
+
+def test_deferral_trigger_independent_of_resolved_merge_trigger():
+    # Merge trigger (1) resolves via a genuine spawn; the deferral trigger is
+    # a fully separate evaluation and still fires on its own phrase.
+    records = _MERGED_DEFERRAL_QUESTION_OTHERWISE_RESOLVED
+    fire_pr, resolved_pr = gate.evaluate(records)
+    fire_defer, resolved_defer = gate.evaluate_deferral(records)
+    assert fire_pr is None and resolved_pr is True
+    assert fire_defer is True and resolved_defer is False
+    return "spawn resolves the merge trigger (1) but the deferral trigger (4) still fires"
+
+
+# ---------------------------------------------------------------------------
+# behavioral layer -- deferral-question trigger (new ADR, dev-env#772)
+# ---------------------------------------------------------------------------
+
+def test_e2e_deferral_only_fires_advisory_systemmessage_exit_0():
+    # Merge trigger (1) is silently resolved by a genuine spawn (enumeration),
+    # and trigger 3 is resolved by the table heading -- reproduces the
+    # motivating incident exactly: other real follow-ups were correctly
+    # tiled AND tabled, yet the deferral question about a DIFFERENT item
+    # still surfaces, via the non-blocking advisory channel.
+    records = _MERGED_DEFERRAL_QUESTION_OTHERWISE_RESOLVED
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 0, f"expected exit 0 (advisory only, not blocking), got {rc} (stderr={err!r})"
+    assert err.strip() == "", f"stderr must be empty on the advisory path, got {err!r}"
+    payload = json.loads(out)
+    assert payload.get("systemMessage"), f"expected a systemMessage payload, got {out!r}"
+    assert "tile-now discipline" in payload["systemMessage"]
+    return ("e2e merge resolved via spawn (trigger 1 silent) + deferral phrase about a "
+            "DIFFERENT item -> exit 0 with a systemMessage advisory, not a block")
+
+
+def test_e2e_blocking_trigger_takes_precedence_over_deferral_advisory():
+    # Merge trigger (1) is UN-enumerated (no spawn at all) -- it blocks via
+    # exit 2. The deferral phrase is ALSO present. Only one exit code is
+    # possible per invocation (the channel is coupled to it, _hookout.py) --
+    # the harder blocking enforcement wins this turn; the advisory is
+    # skipped, not lost forever (a persisting condition can still surface on
+    # a later Stop once trigger 1 resolves).
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(_MERGED_DEFERRAL_QUESTION, home)
+    assert rc == 2, f"expected exit 2 (blocking trigger wins), got {rc} (stderr={err!r})"
+    assert "#762" in err  # trigger 1's reminder names the merged PR
+    assert out.strip() == "", f"stdout must be empty on exit 2, got {out!r}"
+    return ("e2e merge un-enumerated (blocking) + deferral phrase present -> exit 2 "
+            "names the merge trigger; the advisory is not ALSO emitted this turn")
+
+
+def test_e2e_no_deferral_phrase_no_systemmessage():
+    # Cleanly resolved (spawn + table heading), no deferral phrase anywhere.
+    records = _MERGED_NO_ENUM + [
+        _asst_spawn(),
+        _asst_text("### Tiles spawned this session\n| Tile | Issue | Status | Next |\n"),
+    ]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    assert out.strip() == "", (
+        f"expected no systemMessage when no deferral phrase present, got {out!r}")
+    return "e2e cleanly-resolved session with no deferral phrase -> exit 0, no systemMessage"
+
+
+def test_e2e_deferral_should_i_phrasing_after_issue_create():
+    # Exercises the "should i " pre-filter substring / regex branch and the
+    # issue-create scoping path end-to-end (the pure-test layer above covers
+    # both already; this proves main()'s pre-filter doesn't exclude them).
+    # The issue is resolved via an explicit close (trigger 2) and the spawn
+    # is tabled (trigger 3), leaving ONLY the deferral trigger live.
+    records = [
+        _asst_bash("i1", 'gh issue create --title "PR10 sub-issue" --body "part of #717"'),
+        _tool_result("i1", "https://github.com/brownm09/dev-env/issues/768"),
+        _asst_text("Filed the sub-issue. Should I start implementing it now?"),
+        _asst_bash("i2", "gh issue close 768"),
+        _tool_result("i2", "Closed issue #768"),
+        _asst_spawn(),
+        _asst_text("### Tiles spawned this session\n| Tile | Issue | Status | Next |\n"),
+    ]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 0, f"expected exit 0 (advisory only), got {rc} (stderr={err!r})"
+    payload = json.loads(out)
+    assert payload.get("systemMessage"), f"expected a systemMessage payload, got {out!r}"
+    return "e2e issue-create + 'should I start...now' phrasing -> exit 0 with advisory"
+
+
+def test_e2e_deferral_sentinel_suppresses_refire():
+    records = _MERGED_DEFERRAL_QUESTION_OTHERWISE_RESOLVED
+    with tempfile.TemporaryDirectory() as home:
+        rc1, out1, _ = _run_hook(records, home, session_id="sess-defer-refire")
+        rc2, out2, _ = _run_hook(records, home, session_id="sess-defer-refire")
+    assert rc1 == 0 and json.loads(out1).get("systemMessage"), (
+        f"first run expected an advisory, got rc={rc1} out={out1!r}")
+    assert rc2 == 0 and out2.strip() == "", (
+        f"second run expected a silent exit 0 (sentinel), got rc={rc2} out={out2!r}")
+    return "e2e deferral sentinel: first fire emits the advisory, second stays silent"
+
+
 def main():
     tests = [
         ("direct merge marker detected", test_direct_merge_marker_detected),
@@ -1473,6 +1697,26 @@ def main():
         ("e2e partial session only sets the fired trigger's sentinel", test_e2e_partial_session_only_sets_the_fired_triggers_sentinel),
         ("e2e fully-compliant session sets all three sentinels, stays allowed", test_e2e_fully_compliant_session_sets_all_three_sentinels_and_stays_allowed),
         ("e2e stale 'merged' text does not block a later distinct trigger", test_e2e_stale_merged_text_does_not_block_a_later_distinct_trigger),
+        # --- deferral-question trigger (new ADR, dev-env#772) ---
+        ("deferral_question: detects 'let me know if you want me to'", test_deferral_question_detected_let_me_know),
+        ("deferral_question: detects 'should I start...now'", test_deferral_question_detected_should_i_start),
+        ("deferral_question: detects 'want me to...now'", test_deferral_question_detected_want_me_to_now),
+        ("deferral_question: unrelated design question NOT detected", test_deferral_question_not_detected_unrelated_design_question),
+        ("deferral_question: ignores user record", test_deferral_question_ignores_user_record),
+        ("deferral_question: ignores tool_result", test_deferral_question_ignores_tool_result),
+        ("evaluate_deferral: fires after merge", test_evaluate_deferral_fires_after_merge),
+        ("evaluate_deferral: fires after issue create", test_evaluate_deferral_fires_after_issue_create),
+        ("evaluate_deferral: resolved with skip override", test_evaluate_deferral_resolved_with_skip),
+        ("evaluate_deferral: NOT resolved by unrelated enumeration (regression pin)", test_evaluate_deferral_not_resolved_by_unrelated_enumeration),
+        ("evaluate_deferral: no-op without merge/issue context", test_evaluate_deferral_noop_without_merge_or_issue),
+        ("evaluate_deferral: no-op without phrase", test_evaluate_deferral_noop_without_phrase),
+        ("format_deferral_reminder: cp1252-encodable", test_format_deferral_reminder_is_cp1252_encodable),
+        ("interaction: deferral trigger independent of resolved merge trigger", test_deferral_trigger_independent_of_resolved_merge_trigger),
+        ("e2e deferral-only fires advisory systemMessage, exit 0", test_e2e_deferral_only_fires_advisory_systemmessage_exit_0),
+        ("e2e blocking trigger takes precedence over deferral advisory", test_e2e_blocking_trigger_takes_precedence_over_deferral_advisory),
+        ("e2e no deferral phrase -> no systemMessage", test_e2e_no_deferral_phrase_no_systemmessage),
+        ("e2e deferral 'should i' phrasing after issue create", test_e2e_deferral_should_i_phrasing_after_issue_create),
+        ("e2e deferral sentinel suppresses re-fire", test_e2e_deferral_sentinel_suppresses_refire),
     ]
     failed = 0
     for name, fn in tests:
