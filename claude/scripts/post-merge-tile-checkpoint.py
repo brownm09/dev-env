@@ -117,7 +117,11 @@ def main() -> None:
     _hookout.emit_block(
         "[tile-checkpoint] PR merged - spawn follow-up tiles now via spawn_task for "
         "any out-of-scope fixes, deferred work, or ideas surfaced during this session. "
-        "Only an explicit 'skip tiles' user instruction exempts this checkpoint."
+        "This includes the next not-yet-started unit of a multi-PR initiative (ADR-059) "
+        "if one exists -- do not convert it into a scheduling/permission question back "
+        "to the user ('let me know if you want me to start it now'); tile it the same "
+        "as any other follow-up. Only an explicit 'skip tiles' user instruction exempts "
+        "this checkpoint."
     )
 
 
