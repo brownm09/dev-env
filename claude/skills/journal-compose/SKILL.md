@@ -1439,6 +1439,23 @@ draft branch as the PR head. Set `PR_HEAD=$SOURCE_BRANCH`.
 
 **If `CONFLICT_LINES` > 0** — conflicts detected. Recover via a clean compose branch:
 
+Define the shared helper used by both recovery paths below:
+
+```bash
+restore_missing_shards() {
+  # For every open-PR shard that existed on $PREV, verify it is present in the
+  # working tree; restore any that are missing by checking them out directly from
+  # $PREV (dev-env#787). Reads $WT and $PREV from the calling scope.
+  SHARD_CHECK_LOG=""
+  while IFS= read -r SHARD_PATH; do
+    [ -e "$WT/$SHARD_PATH" ] && continue
+    git -C "$WT" checkout "$PREV" -- "$SHARD_PATH" 2>/dev/null && \
+      SHARD_CHECK_LOG="${SHARD_CHECK_LOG:+$SHARD_CHECK_LOG }$SHARD_PATH"
+  done < <(git -C "$WT" ls-tree -r "$PREV" --name-only -- sessions/ | grep -E '/open-prs/[0-9]+\.json$')
+  [ -n "$SHARD_CHECK_LOG" ] && echo "SHARD_INTEGRITY_RESTORED=$SHARD_CHECK_LOG"
+}
+```
+
 ```bash
 # Capture the compose worktree's current (detached) HEAD before switching it onto a new
 # branch — this is the commit Step 10 just pushed. The worktree is detached, so there is no
@@ -1470,20 +1487,8 @@ while IFS=$'\t' read -r STATUS FILEPATH; do
 done < "$WT/.compose-diff-plan.txt"
 rm -f "$WT/.compose-diff-plan.txt"
 
-# 2b. Open-PR shard integrity check — the diff-and-replay above is scoped to the
-#     composed project's directory and README.md. Any open-PR shard from a DIFFERENT
-#     project's sessions/ directory (e.g. sessions/dev-env/open-prs/770.json when
-#     composing lifting-logbook) would be silently absent from the recovery branch
-#     because it never appeared in the pathspec-filtered diff (dev-env#787). For every
-#     shard that existed on $PREV, verify it is present in the working tree; restore
-#     any that are missing by checking them out directly from $PREV.
-SHARD_CHECK_LOG=""
-while IFS= read -r SHARD_PATH; do
-  [ -e "$WT/$SHARD_PATH" ] && continue
-  git -C "$WT" checkout "$PREV" -- "$SHARD_PATH" 2>/dev/null && \
-    SHARD_CHECK_LOG="${SHARD_CHECK_LOG:+$SHARD_CHECK_LOG }$SHARD_PATH"
-done < <(git -C "$WT" ls-tree -r "$PREV" --name-only -- sessions/ | grep -E '/open-prs/[0-9]+\.json$')
-[ -n "$SHARD_CHECK_LOG" ] && echo "SHARD_INTEGRITY_RESTORED=$SHARD_CHECK_LOG"
+# 2b. Restore any open-PR shards from other projects missing from the recovery branch (dev-env#787).
+restore_missing_shards
 
 # 3. Commit and push
 git -C "$WT" commit -m \
@@ -1531,16 +1536,8 @@ while IFS=$'\t' read -r STATUS FILEPATH; do
 done < "$WT/.compose-diff-plan.txt"
 rm -f "$WT/.compose-diff-plan.txt"
 
-# Open-PR shard integrity check — same as the single-project recovery block above;
-# handles shards from any sessions/ project directory not explicitly listed in the
-# diff pathspec (dev-env#787). Run once here covering all projects in one pass.
-SHARD_CHECK_LOG=""
-while IFS= read -r SHARD_PATH; do
-  [ -e "$WT/$SHARD_PATH" ] && continue
-  git -C "$WT" checkout "$PREV" -- "$SHARD_PATH" 2>/dev/null && \
-    SHARD_CHECK_LOG="${SHARD_CHECK_LOG:+$SHARD_CHECK_LOG }$SHARD_PATH"
-done < <(git -C "$WT" ls-tree -r "$PREV" --name-only -- sessions/ | grep -E '/open-prs/[0-9]+\.json$')
-[ -n "$SHARD_CHECK_LOG" ] && echo "SHARD_INTEGRITY_RESTORED=$SHARD_CHECK_LOG"
+# Restore any open-PR shards missing from the recovery branch (dev-env#787).
+restore_missing_shards
 
 git -C "$WT" commit -m \
   "[docs] Add YYYY-MM-DD journals: <slug-a>, <slug-b> (compose branch — draft had conflicts)"
