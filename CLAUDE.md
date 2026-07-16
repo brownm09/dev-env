@@ -2151,6 +2151,34 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     bash claude/scripts/tests/test-baseline-tests-gc.sh
     ```
 
+73. **`_repo_target` shared-module test** — required when changing `claude/scripts/_repo_target.py`
+    or the five hooks that delegate to it (`post-pr-merge-project.py`, `pr-merge-reminder.py`,
+    `posttooluse-inert-advisory.py`, `post-pr-merge-pull.py`, `stop-tile-enumeration-gate.py`).
+    Exercises the pure resolver offline (no I/O — the module is pure): `repo_from_flag` (the
+    `--repo`/`-R` flag in both `=` and space forms — the `=` form three of the five copies
+    silently missed, dev-env#482 — strict GitHub slug, case preservation, the `(?<!\S)`
+    standalone-token lookbehind rejecting a mid-word `-R`, the internal `mask_quoted_spans` that
+    blinds a `--subject` "-R other/repo" decoy, and a non-slug value -> None); `merge_args` /
+    `create_args` (the quote-aware statement-bounding, incl. the dev-env#667 chained create+merge
+    cross-contamination case in both statement orders — each resolves its OWN invocation's flag —
+    and the dev-env#660 quoted-`&&`/bare-`&` no-early-truncation boundary while a genuine chained
+    `&&` still bounds it); `repo_from_pr_url` / `pr_number_from_pr_url` / `iter_pr_urls` and
+    `issue_number_from_issue_url` / `iter_issue_urls` (scheme-agnostic, strict slug,
+    multiple-in-order, and the deliberate **no-internal-masking** contract — the caller decides
+    masking, so a URL inside a quoted `--subject` is still matched here); and `positional_number`
+    (the bare token, the internal `mask_quoted_spans` decoy safety of dev-env#650, and that a digit
+    inside a URL / a `--flag=12` value / a hyphenated branch name is not a standalone token). The
+    five consumers each delegate to this module and keep their own suites (items 14/15/18/28/48)
+    green, with per-bug regression cases added for #482 (equals form + chained-flag scoping), #569
+    (`load_config` scoped via `effective_merge_dir`), #667 (chained create+merge), and #685
+    (tile-gate URL fallbacks masked with `mask_prose_flag_values`). See
+    [ADR-111](docs/adr/111-shared-repo-target-resolution.md) — the module ends the per-site ADR-050
+    amendment treadmill (Amendments 14/15/17/18/19/20/21) for the repo-flag/URL/number concern.
+
+    ```bash
+    py -3 claude/scripts/tests/test_repo_target.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
