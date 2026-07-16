@@ -1551,13 +1551,46 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     Also pins that every formatter's output is `.encode("cp1252")`-safe (not the stricter
     `.isascii()`, since the pre-existing em dash is non-ASCII but cp1252-safe) — a fourth review
     finding, since this PR's entire premise is fixing a cp1252 failure and the original test
-    suite had no assertion that would catch a regression. The git/subprocess orchestration
+    suite had no assertion that would catch a regression. Also (dev-env#797,
+    [ADR-110](docs/adr/110-escalate-persistent-dev-env-sync-ff-failures.md)) exercises the
+    persistent-ff-failure escalation helpers offline: `parse_blocking_files()` (git's two
+    `--ff-only`-abort stderr shapes — a dirty tracked file and an untracked-file conflict —
+    multiple files in order, and the no-tab-lines / empty cases -> `[]`); `format_duration()`
+    (the under-a-minute / `Xm` / `Xh` / `Xh Ym` renderings and negative-clamp);
+    `record_failure()` (a fresh run from `None`, an ongoing run preserving `first_failure_at`
+    while incrementing the count, and the malformed-prev / valid-timestamp-corrupt-count
+    recovery paths, including `bool`-rejection so a JSON `true` can't masquerade as a
+    timestamp/count); `should_escalate()` (the count and time boundaries in isolation, and the
+    key robustness property that the time arm still fires when the count was lost to a
+    concurrent-write race); `format_escalated_pull_failure_message()` (naming the
+    consecutive-prompt count, duration, commits-behind count + SHAs, blocking file path(s), the
+    STALE-tooling blast radius, and still echoing git's own diagnostic; singular
+    prompt/commit; graceful degradation when git names no files; and `.isascii()`-safety for the
+    stdout channel); and the best-effort scratch-state I/O (`read`/`write`/`clear_failure_state`)
+    against a `tempfile.TemporaryDirectory()` — a write/read round-trip, no `.tmp` orphan left by
+    the atomic `os.replace` swap, `clear` deleting (and a double-`clear` being a no-op), and
+    malformed / non-dict JSON both reading back as `None`. The PR #800 `/review` (two independent
+    opus reviewers) added coverage for its fixes: `build_failure_response()` — the escalate-vs-plain
+    decision extracted from `main()` into a pure helper — is unit-tested for the fresh/plain,
+    count-arm, and time-arm cases (so the state machine is no longer exercised only through the
+    git-shelling `main()`); the escalated message's `behind == 0` guard (renders "unmeasured number
+    of commits", never the "0 commits behind … STALE" self-contradiction PR #701 fixed in the sibling
+    formatters); the `_hookout.ascii_sanitize` of the echoed `git_stderr` in BOTH failure formatters
+    (a non-cp1252 stderr no longer `UnicodeEncodeError`s the advisory away — asserted `.isascii()` for
+    the all-ASCII escalated message and `.encode("cp1252")` for the one-off message, which carries a
+    pre-existing cp1252-safe em dash); `read_failure_state`'s `(OSError, ValueError)` catch (a non-UTF-8
+    state file reads back as `None`); the per-PID-tmp write isolation (monkeypatched `os.getpid`,
+    mirroring `test_journal_compose_force.py`); and the `.tmp` orphan sweep (a stale orphan reaped,
+    a fresh in-flight one spared). `main()`'s remaining glue (`read` → `build_failure_response` →
+    `write` + `print`, the `clear_failure_state` calls, and the `_hookutil.cleanup_stale_sentinels`
+    backstop sweeps) is not covered (pure-helper convention). The git/subprocess orchestration
     (fetch, rev-parse, merge-base, the actual pull, and the off-main worktree-topology diagnosis
     reused from `_worktree_topology.py`) is not covered here — it has no local pure logic beyond
     the formatters above, matching this repo's established convention for topology-diagnosing
     orchestration scripts (items 22/26/30; PR #661's own note that this file previously had
-    "zero local pure logic"). ([ADR-098](docs/adr/098-dev-env-sync-advisories-to-stdout.md);
-    dev-env#694)
+    "zero local pure logic"). ([ADR-098](docs/adr/098-dev-env-sync-advisories-to-stdout.md),
+    [ADR-110](docs/adr/110-escalate-persistent-dev-env-sync-ff-failures.md);
+    dev-env#694, dev-env#797)
 
     ```bash
     py -3 claude/scripts/tests/test_dev_env_sync.py
