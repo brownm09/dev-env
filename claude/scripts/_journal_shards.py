@@ -61,7 +61,8 @@ def iter_pr_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
 
       - non-numeric stems (``index.json``, ``bad.json``) are skipped (not a PR shard);
       - shards sort by PR number ascending (PR 2 before PR 10), not lexically;
-      - unparseable JSON (and any ``OSError`` reading the file) is skipped, left for a human;
+      - unparseable JSON, a non-UTF-8 file (``UnicodeDecodeError``), or any ``OSError``
+        reading the file is skipped, left for a human;
       - a parsed **non-object** value (a JSON list/scalar) is skipped — without this a
         downstream ``entry.get(...)`` would raise into a context-dropping guard (see ADR-057).
 
@@ -85,7 +86,7 @@ def iter_pr_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
     for _n, path in numbered:
         try:
             entry = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             continue  # leave unparseable shards for a human
         if not isinstance(entry, dict):
             continue  # a non-object shard can't be a tracking entry — skip defensively
@@ -97,13 +98,14 @@ def read_legacy_entries(path: Path) -> list[dict]:
     """Read the legacy single-file ``open-prs.jsonl`` — one JSON object per line.
 
     Returns the parsed objects in file order. Tolerant of everything ``iter_pr_shards`` is:
-    blank lines, unparseable lines, and non-object lines are skipped; a missing /
-    unreadable file yields ``[]`` (so callers need not guard ``path.exists()`` first). This
-    is the pre-ADR-056 format that drains to empty as its PRs merge.
+    blank lines, unparseable lines, and non-object lines are skipped; a missing,
+    unreadable, or non-UTF-8 file yields ``[]`` (so callers need not guard
+    ``path.exists()`` first). This is the pre-ADR-056 format that drains to empty as its
+    PRs merge.
     """
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return []
     entries: list[dict] = []
     for line in text.splitlines():
