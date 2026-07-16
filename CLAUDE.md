@@ -2044,6 +2044,39 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_sweep_scratch_debris.py
     ```
 
+72. **baseline-tests gc test** — required when changing `claude/scripts/baseline-tests.sh`.
+    Drives the real script end-to-end against throwaway git fixtures (a bare "origin" + a working
+    clone, mirroring item 34's `merge-stale-pr.sh` pattern) via both sourced-function calls
+    (`branch_exists_locally`, `branch_exists_remotely`, `branch_is_gone`, `read_baseline_meta`,
+    `cmd_gc` — the file is now sourcing-safe via a `BASH_SOURCE` guard at its own tail instead of
+    an unconditional `main "$@"`) and real subprocess invocations (`baseline-tests gc`,
+    `baseline-tests snapshot`). Pins the branch-existence-based cleanup this test file exists for
+    (dev-env#778, a follow-up from dev-env#768/PR#777, which deliberately excluded this snapshot
+    family from its own age-based sweep — see `sweep-scratch-debris.py`'s module docstring, item 71
+    above): a baseline is kept when its branch still exists locally, kept when it exists only on
+    `origin` (pushed, then deleted locally — the remote check queries the real remote via `git
+    ls-remote`, not a stale local remote-tracking ref), removed only when confirmed gone in both
+    places, and — the conservative-on-uncertainty guarantee this design centers on — kept whenever
+    the remote check itself fails (an unreachable `origin`), since `branch_exists_remotely` returns
+    a three-way result (exists / confirmed-absent / check-failed) and only confirmed-absent counts
+    as gone. Also pins that `gc` scans only the CURRENT repo's own `baseline_<repo>_*.json` files
+    (a different repo's file sitting in the same scratch dir is never even touched, by construction
+    of the glob) and never guesses on malformed JSON or a well-formed envelope missing the `branch`
+    field — both are kept, matching this codebase's convention elsewhere for irreversible-ish
+    cleanup (e.g. item 71's `sweep()` never counting a failed unlink as removed). `cmd_snapshot` is
+    proven to auto-invoke `gc` on its way out (a fake `test_command` emits minimal valid Jest
+    `--json` output so no real jest/npx install is needed) — sweeping a stale, unrelated
+    gone-branch baseline in the same run that writes the new one, without touching the baseline
+    snapshot just wrote for the branch actually checked out. Every fixture repo explicitly
+    overrides `core.hooksPath` to an empty directory, since this machine sets it globally and a
+    throwaway fixture's `commit`/`push` would otherwise invoke dev-env's own real git hooks (e.g.
+    the pre-push lockfile-drift guard). See [ADR-030](docs/adr/030-baseline-test-failure-policy.md)'s
+    2026-07-16 amendment for the design rationale.
+
+    ```bash
+    bash claude/scripts/tests/test-baseline-tests-gc.sh
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose

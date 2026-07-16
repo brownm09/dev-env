@@ -4,6 +4,7 @@
 # Usage:
 #   baseline-tests snapshot   # run tests on the current branch, save failing tests as the baseline
 #   baseline-tests diff       # run tests now, compare against the baseline, classify failures
+#   baseline-tests gc         # remove baseline snapshots for the current repo whose branch is gone
 #
 # Reads test_command from .claude/hook-config.json (default: "npx jest --json --silent").
 # Writes baseline JSON to C:/Users/brown/.claude/scratch/baseline_<repo>_<branch>.json.
@@ -19,11 +20,22 @@
 #   1 — new failures introduced on this branch (must be fixed before PR)
 #   2 — script/usage error (no test command, no baseline, parse failure)
 #
+# `gc` sweeps baseline_<repo>_*.json files for the CURRENT repo (repo_name())
+# whose recorded `branch` (read from the JSON envelope, never reverse-parsed
+# from the filename) no longer exists locally or on origin. Branch-existence,
+# not age -- a long-lived branch's snapshot can legitimately outlive any fixed
+# age cutoff, and sweeping it by age would silently break the ADR-030
+# fix-on-touch policy for that branch (dev-env#778, a follow-up from #768/
+# PR#777, which deliberately excluded this family from its own age-based
+# sweep -- see sweep-scratch-debris.py's module docstring). `snapshot` calls
+# `gc` automatically (best-effort, never fails the snapshot) since writing a
+# new baseline is the natural moment to sweep old ones for the same repo.
+#
 # See docs/adr/030-baseline-test-failure-policy.md for the policy rationale.
 
 set -u
 
-SCRATCH_DIR="C:/Users/brown/.claude/scratch"
+: "${SCRATCH_DIR:=C:/Users/brown/.claude/scratch}"
 DEFAULT_TEST_COMMAND="npx jest --json --silent"
 
 err() { echo "[baseline-tests] $*" >&2; }
@@ -130,6 +142,87 @@ touched_files() {
   git diff --name-only origin/main -- . 2>/dev/null || true
 }
 
+# True (0) iff $1 is a local branch ref in the current repo.
+branch_exists_locally() {
+  git rev-parse --verify --quiet "refs/heads/$1" >/dev/null 2>&1
+}
+
+# Checks whether $1 exists as a branch on origin.
+#   0 — confirmed present on origin
+#   1 — confirmed absent on origin (ls-remote ran fine, no matching ref)
+#   2 — check itself failed (no network, no origin remote, auth failure, ...)
+# Exit code 2 is deliberately distinct from 1: the caller must never treat a
+# failed check as "confirmed absent" -- that would delete a snapshot for a
+# branch that might still be very much alive.
+branch_exists_remotely() {
+  local branch="$1" out
+  out=$(git ls-remote --heads origin "$branch" 2>/dev/null) || return 2
+  [ -n "$out" ]
+}
+
+# True (0) only when $1 is confirmed gone both locally and on origin. Any
+# uncertainty (the remote check itself failed) keeps the snapshot -- fail
+# toward not deleting, matching this codebase's convention elsewhere for
+# irreversible-ish cleanup (e.g. sweep-scratch-debris.py never counts a
+# failed unlink as removed).
+branch_is_gone() {
+  local branch="$1" remote_rc
+  branch_exists_locally "$branch" && return 1
+  branch_exists_remotely "$branch"
+  remote_rc=$?
+  [ "$remote_rc" -eq 1 ]
+}
+
+# Prints "<repo>\t<branch>" read from a baseline JSON file's envelope, or
+# nothing if the file is unparseable or missing either field. Reads content,
+# never reverse-parses the filename -- branch_name_sanitized() replaces "/"
+# with "-", so a filename fragment alone cannot be trusted to recover the
+# original branch name.
+read_baseline_meta() {
+  local file="$1"
+  FILE="$file" node -e '
+    const fs = require("fs");
+    try {
+      const d = JSON.parse(fs.readFileSync(process.env.FILE, "utf8"));
+      if (typeof d.repo === "string" && d.repo && typeof d.branch === "string" && d.branch) {
+        process.stdout.write(d.repo + "\t" + d.branch);
+      }
+    } catch (e) { /* leave stdout empty -- caller skips */ }
+  '
+}
+
+cmd_gc() {
+  local repo f meta frepo branch removed=0 kept=0
+  repo=$(repo_name) || { err "gc: not inside a git repo"; return 1; }
+  mkdir -p "$SCRATCH_DIR"
+  shopt -s nullglob
+  for f in "$SCRATCH_DIR"/baseline_"${repo}"_*.json; do
+    meta=$(read_baseline_meta "$f")
+    if [ -z "$meta" ]; then
+      err "gc: skip (unparseable or missing repo/branch): $f"
+      kept=$((kept + 1))
+      continue
+    fi
+    frepo="${meta%%$'\t'*}"
+    branch="${meta#*$'\t'}"
+    if [ "$frepo" != "$repo" ]; then
+      # Defensive: matched the filename glob but the envelope's own repo
+      # field disagrees (e.g. hand-edited or corrupted) -- never guess.
+      kept=$((kept + 1))
+      continue
+    fi
+    if branch_is_gone "$branch"; then
+      rm -f -- "$f"
+      err "gc: removed (branch gone: $branch): $f"
+      removed=$((removed + 1))
+    else
+      kept=$((kept + 1))
+    fi
+  done
+  shopt -u nullglob
+  err "gc: removed $removed, kept $kept (repo=$repo)"
+}
+
 cmd_snapshot() {
   local repo branch out tmp tc
   repo=$(repo_name) || { err "not inside a git repo"; exit 2; }
@@ -144,6 +237,10 @@ cmd_snapshot() {
   parse_jest_to_failures "$tmp" "$out" "$repo" "$branch" || { rm -f "$tmp"; exit 2; }
   rm -f "$tmp"
   err "Baseline written → $out"
+
+  # Best-effort: writing a new baseline is a natural moment to sweep old
+  # ones for this repo. Never let a gc hiccup fail the snapshot itself.
+  cmd_gc || true
 }
 
 cmd_diff() {
@@ -229,12 +326,16 @@ main() {
   case "$sub" in
     snapshot) cmd_snapshot ;;
     diff) cmd_diff ;;
+    gc) cmd_gc ;;
     -h|--help|"")
       cat <<EOF
-Usage: baseline-tests <snapshot|diff>
+Usage: baseline-tests <snapshot|diff|gc>
 
   snapshot   Run tests on the current branch and save failing tests as the baseline.
+             Also sweeps stale baselines for this repo (see 'gc') on the way out.
   diff       Run tests now and classify failures vs the baseline (new / preexisting-touched / preexisting-untouched).
+  gc         Remove baseline_<repo>_*.json files for this repo whose branch no longer
+             exists locally or on origin. Never deletes on an inconclusive remote check.
 
 Reads .claude/hook-config.json field 'test_command' (default: '$DEFAULT_TEST_COMMAND').
 Snapshot path: $SCRATCH_DIR/baseline_<repo>_<branch>.json
@@ -244,4 +345,9 @@ EOF
   esac
 }
 
-main "$@"
+# Guard so this file can be sourced (e.g. by its own test suite, to call the
+# functions above directly against fixtures) without immediately executing
+# main with the sourcing script's own argv.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

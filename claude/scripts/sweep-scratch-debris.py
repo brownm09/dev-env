@@ -43,8 +43,10 @@ docstring first):
     BRANCH's lifetime, not a session or calendar day. A long-lived branch's
     baseline can legitimately be older than any fixed age cutoff; sweeping
     it by age would silently break the ADR-030 fix-on-touch policy for that
-    branch. Needs branch-existence-based cleanup instead of age-based --
-    tracked as a follow-up, not handled here.
+    branch. Cleaned up by branch-existence (not age) instead: `baseline-tests
+    gc` -- run automatically at the end of `baseline-tests snapshot`, and
+    invocable on its own -- removes a repo's own baseline files whose branch
+    no longer exists locally or on origin (dev-env#778).
 
 Usage:
     py -3 claude/scripts/sweep-scratch-debris.py               # dry run (default)

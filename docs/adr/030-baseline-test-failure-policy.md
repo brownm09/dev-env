@@ -81,3 +81,28 @@ The hard gate is the behavioral rule in CLAUDE.md, consistent with ADR-026 and A
 - [Jest CLI — `--json`](https://jestjs.io/docs/cli#--json) — official documentation of the structured output the baseline parser consumes
 - [Jest JSON output schema — `aggregatedResult`](https://github.com/jestjs/jest/blob/main/packages/jest-test-result/src/types.ts) — primary source for the `testResults[].assertionResults[]` shape parsed by `baseline-tests.sh`
 - [dev-env#282](https://github.com/brownm09/dev-env/issues/282) — the issue that prompted this ADR
+
+---
+
+## Amendment (2026-07-16) — Branch-Existence-Based Cleanup for Baseline Snapshots (dev-env#778)
+
+**Gap.** `baseline_<repo>_<branch>.json` (Rule 1) had no cleanup mechanism at all — it accumulated forever, one file per branch ever created in an opted-in repo. This was surfaced during dev-env#768/PR#777, a broader initiative that added self-cleaning sweeps to every other per-session/per-day sentinel and marker family in `~/.claude/scratch/`. That PR deliberately *excluded* this family from its own age-based sweep (see `sweep-scratch-debris.py`'s module docstring) and filed the gap as dev-env#778 rather than papering over it with the same mechanism used everywhere else.
+
+**Why not age-based, like everything else.** Every other sentinel family that PR cleaned up is scoped to a session or a calendar day, so "older than N days" is a safe proxy for "no longer needed." A baseline snapshot is scoped to a *branch's lifetime* instead — a long-lived branch (a large refactor, say) can legitimately need its baseline for weeks. Sweeping by age would silently delete a still-needed snapshot, and the next `baseline-tests diff` on that branch would either fail outright (no baseline found) or — worse — a freshly re-captured "baseline" would silently bake the branch's own already-introduced failures in as if they had pre-existed, defeating the whole point of Rule 3's `new` vs. `preexisting` classification.
+
+**Fix.** A new `baseline-tests gc` subcommand (and a same-named internal function `cmd_gc`) sweeps `baseline_<repo>_*.json` files for the *current* repo whose recorded `branch` — read from the JSON envelope itself, never reverse-parsed from the filename — no longer exists as a branch, locally or on `origin`:
+
+- **Local check:** `git rev-parse --verify --quiet refs/heads/<branch>`.
+- **Remote check:** `git ls-remote --heads origin <branch>`, only when the local check comes up empty.
+- **Deletion requires both checks to affirmatively agree the branch is gone.** A branch is *kept* whenever it's found in either place, **and — the design's central guarantee — whenever the remote check itself fails** (no network, no `origin` remote, auth failure). `branch_exists_remotely` returns a three-way result (exists / confirmed-absent / check-failed); only confirmed-absent counts toward deletion. This mirrors the conservative-on-uncertainty posture this codebase already applies to other irreversible-ish cleanup (e.g. `sweep-scratch-debris.py never counts a failed `unlink()` as removed).
+- A malformed baseline file, or a well-formed one missing the `branch` field, is likewise kept rather than guessed at.
+- `gc` runs automatically (best-effort — a `gc` hiccup never fails the snapshot itself) at the end of `cmd_snapshot`, since writing a new baseline is the natural moment to sweep old ones for the same repo. It is also directly invocable (`baseline-tests gc`) for on-demand or scripted use.
+
+**Consequences.**
+- **Positive:** the accumulation gap is closed without reintroducing the age-based failure mode Rule 1's design space explicitly rejected for this family. No new opt-in flag or config is needed — cleanup piggybacks on the same `snapshot` invocation Rule 1 already requires at branch creation.
+- **Negative:** `gc` only ever runs for the repo it's invoked from (via `repo_name()`, matching how `baseline_path()` already names files) — a repo whose branches never get a fresh `new-branch`/`snapshot` call (e.g. abandoned mid-initiative) keeps accumulating until the next snapshot in that repo. This is accepted as a bounded, self-limiting risk: no worse than the pre-fix baseline of "never," and the standalone `gc` subcommand is available for manual/scripted sweeping if a repo's backlog needs clearing without waiting for the next branch.
+- **Negative:** the remote check adds one `git ls-remote` network round-trip per candidate file whose branch is already gone locally, on every `snapshot` call. Bounded by the number of stale local baselines for that repo (typically small), and skipped entirely for any baseline whose branch still exists locally.
+
+**Testing.** `claude/scripts/tests/test-baseline-tests-gc.sh` (see `CLAUDE.md` → Testing, item 72) drives the real script against throwaway git fixtures (a bare `origin` + a working clone) — a baseline is kept when its branch exists locally, kept when it exists only on `origin`, removed only when confirmed gone in both places, kept whenever the remote check itself fails, and never touched when it belongs to a different repo or fails to parse.
+
+See [dev-env#778](https://github.com/brownm09/dev-env/issues/778).
