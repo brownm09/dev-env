@@ -1860,15 +1860,23 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     degrade-to-fresh-log behavior is unit-testable: a missing, unreadable (`OSError`, incl. a directory
     path), or non-UTF-8 (`UnicodeDecodeError`) log all resolve to `[]`, and a real log round-trips its
     lines unchanged (same fix shape as item 42's `_bash_state.read_state`, dev-env#801); and
-    `_count_turns` / `aggregate_session` — a happy-path smoke test each (pinning the new try/except wrap
-    around their per-line iteration didn't change normal behavior) plus the matching resilience case: a
-    file of only invalid UTF-8 bytes degrades to the zero/None defaults instead of raising, so a
-    corrupted subagent or session transcript no longer crashes `main()` before it can record anything
-    (dev-env#804 — these two functions had no prior test coverage; kept to a smoke test plus the new
-    behavior rather than backfilling exhaustive pre-existing-behavior coverage). Added in PR6 (the file
-    had no test before): the migration moved the transcript-locate diagnostic onto the systemMessage
-    channel and **dropped** the two per-turn stdout status echoes (invisible on a Stop hook, and a
-    systemMessage in their place would be per-turn toast spam), which also cleared token-tracker's
+    `_count_turns` / `aggregate_session` — a happy-path smoke test each (pinning that the shared
+    `_iter_file_lines_safely(path)` generator refactor didn't change normal behavior) plus the matching
+    resilience case: a file of only invalid UTF-8 bytes degrades to the zero/None defaults instead of
+    raising, so a corrupted subagent or session transcript no longer crashes `main()` before it can
+    record anything (dev-env#804 — these two functions had no prior test coverage; kept to a smoke test
+    plus the new behavior rather than backfilling exhaustive pre-existing-behavior coverage). A `/review`
+    finding on PR #808 found the two functions had each pasted an identical try/except-around-open()+
+    for-loop scaffold; both now consume the shared `_iter_file_lines_safely` generator instead, exercised
+    only indirectly through these same two functions' tests (it has no behavior of its own beyond what
+    its callers already prove). A second `/review` finding on the same PR: `main()`'s existing-session
+    dedup now writes `TOKEN_LOG` fresh (instead of appending) whenever `read_token_log_lines` returns `[]`
+    — covering a missing, empty, *or* corrupted log, which it can't distinguish — so a corrupted log
+    actually gets replaced instead of accreting unreadable growth forever; this branch lives entirely
+    inside `main()`'s untested I/O and has no dedicated test, consistent with the convention below. Added
+    in PR6 (the file had no test before): the migration moved the transcript-locate diagnostic onto the
+    systemMessage channel and **dropped** the two per-turn stdout status echoes (invisible on a Stop hook,
+    and a systemMessage in their place would be per-turn toast spam), which also cleared token-tracker's
     `_OUTPUT_CONTRACT_ALLOWLIST` entries (A + B) and its `_NONASCII_EMISSION_ALLOWLIST` entry (the
     `…`/`—` lived only in the dropped echoes) — verified by item 61's gate. `main()`'s remaining I/O
     (stdin parse, transcript locate, the log write/rewrite, the emission) is not covered (pure-helper

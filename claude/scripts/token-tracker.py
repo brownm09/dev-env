@@ -89,6 +89,27 @@ def should_advise_locate_failure(session_id: str, scratch=None) -> bool:
     return True
 
 
+def _iter_file_lines_safely(path: Path):
+    """Yield stripped, non-blank lines from path, one at a time.
+
+    Best-effort like read_token_log_lines: stops silently (does not raise) on an
+    unreadable file (OSError) or a non-UTF-8 byte anywhere in it (UnicodeDecodeError)
+    — whatever was already yielded before the failure stands, so a caller
+    accumulating totals as it consumes this keeps its partial progress rather than
+    losing everything. Shared by _count_turns and aggregate_session, which each used
+    to paste this same try/except scaffold around their own open()+for-loop
+    (dev-env#804 review: a future third call site or exception-set change now needs
+    only one edit)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    yield line
+    except (OSError, UnicodeDecodeError):
+        return
+
+
 def _count_turns(jsonl_path: Path) -> tuple[dict, int, str]:
     """Return (token totals, turn count, last seen model) from a single JSONL file.
 
@@ -104,27 +125,20 @@ def _count_turns(jsonl_path: Path) -> tuple[dict, int, str]:
     }
     turn_count = 0
     model = "claude-sonnet-4-6"
-    try:
-        with open(jsonl_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if record.get("type") == "assistant":
-                    msg = record.get("message", {})
-                    usage = msg.get("usage", {})
-                    if usage:
-                        for key in totals:
-                            totals[key] += usage.get(key, 0)
-                        turn_count += 1
-                        if msg.get("model"):
-                            model = msg["model"]
-    except (OSError, UnicodeDecodeError):
-        pass
+    for line in _iter_file_lines_safely(jsonl_path):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if record.get("type") == "assistant":
+            msg = record.get("message", {})
+            usage = msg.get("usage", {})
+            if usage:
+                for key in totals:
+                    totals[key] += usage.get(key, 0)
+                turn_count += 1
+                if msg.get("model"):
+                    model = msg["model"]
     return totals, turn_count, model
 
 
@@ -149,38 +163,31 @@ def aggregate_session(transcript_path: Path) -> dict:
     git_branch = None
     entrypoint = None
 
-    try:
-        with open(transcript_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if record.get("type") == "assistant":
-                    msg = record.get("message", {})
-                    usage = msg.get("usage", {})
-                    if usage:
-                        for key in totals:
-                            totals[key] += usage.get(key, 0)
-                        turn_count += 1
-                        if msg.get("model"):
-                            model = msg["model"]
-                    ts = record.get("timestamp")
-                    if ts:
-                        if first_ts is None:
-                            first_ts = ts
-                        last_ts = ts
-                if cwd is None and record.get("cwd"):
-                    cwd = record["cwd"]
-                if git_branch is None and record.get("gitBranch"):
-                    git_branch = record["gitBranch"]
-                if entrypoint is None and record.get("entrypoint"):
-                    entrypoint = record["entrypoint"]
-    except (OSError, UnicodeDecodeError):
-        pass
+    for line in _iter_file_lines_safely(transcript_path):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if record.get("type") == "assistant":
+            msg = record.get("message", {})
+            usage = msg.get("usage", {})
+            if usage:
+                for key in totals:
+                    totals[key] += usage.get(key, 0)
+                turn_count += 1
+                if msg.get("model"):
+                    model = msg["model"]
+            ts = record.get("timestamp")
+            if ts:
+                if first_ts is None:
+                    first_ts = ts
+                last_ts = ts
+        if cwd is None and record.get("cwd"):
+            cwd = record["cwd"]
+        if git_branch is None and record.get("gitBranch"):
+            git_branch = record["gitBranch"]
+        if entrypoint is None and record.get("entrypoint"):
+            entrypoint = record["entrypoint"]
 
     # Aggregate subagent JSONLs (session-uuid/subagents/agent-*.jsonl)
     subagents_dir = transcript_path.with_suffix("") / "subagents"
@@ -304,9 +311,17 @@ def main() -> None:
         # Update in-place: replace the existing line, rewrite the file
         lines[existing_line_idx] = json.dumps(summary) + "\n"
         TOKEN_LOG.write_text("".join(lines), encoding="utf-8")
-    else:
+    elif lines:
         with open(TOKEN_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(summary) + "\n")
+    else:
+        # No existing lines to append after -- missing, empty, or unreadable/corrupt
+        # log (read_token_log_lines can't distinguish these; all three return []).
+        # Write fresh rather than append: appending onto a non-UTF-8 log would leave
+        # it permanently undecodable, so every future run would keep getting []
+        # here too, silently breaking dedup for every session forever (dev-env#804
+        # review).
+        TOKEN_LOG.write_text(json.dumps(summary) + "\n", encoding="utf-8")
 
     with open(LATEST_SESSION, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)

@@ -23,15 +23,26 @@ These tests exercise the pure helpers offline (no stdin, network, gh, or disk):
     log all resolve to [], and a real log round-trips its lines unchanged (same fix
     shape as _bash_state.read_state, dev-env#801).
   * _count_turns / aggregate_session (dev-env#804): a happy-path smoke test each
-    (proving the new try/except wrap didn't change normal behavior) plus the new
-    resilience behavior — a file of only invalid UTF-8 bytes degrades to the
-    zero/None defaults instead of raising, so a corrupted transcript no longer
-    crashes main() before it can record anything for the session.
+    (proving the shared-generator refactor below didn't change normal behavior)
+    plus the new resilience behavior — a file of only invalid UTF-8 bytes degrades
+    to the zero/None defaults instead of raising, so a corrupted transcript no
+    longer crashes main() before it can record anything for the session. Both
+    functions now consume a shared `_iter_file_lines_safely(path)` generator (a
+    `/review` finding on PR #808: the two had each pasted the identical
+    try/except-around-open()+for-loop scaffold) rather than each wrapping their own
+    copy — exercised only indirectly through these same tests, since it has no
+    behavior of its own beyond what its two callers already prove.
 
 main()'s remaining I/O (stdin parse, transcript locate, the log write/rewrite, the
 `_hookout.emit_advisory` emission) is not covered — the emission channel itself is
 pinned by test_hook_output_contract.py (the gate finds ZERO output-contract offenses
-in token-tracker after this migration) and by test_hookout.py.
+in token-tracker after this migration) and by test_hookout.py. This also covers a
+second `/review` finding on PR #808: when `read_token_log_lines` returns `[]` (a
+missing, empty, *or* corrupted log — it can't distinguish these), `main()` now
+writes the log fresh instead of appending, so a corrupted log actually gets
+replaced rather than accreting unreadable growth forever; this branch lives
+entirely inside `main()`'s pre-existing untested I/O and is not given a dedicated
+test, consistent with this file's established pure-helper-only convention.
 
 Usage:
     py -3 claude/scripts/tests/test_token_tracker.py
