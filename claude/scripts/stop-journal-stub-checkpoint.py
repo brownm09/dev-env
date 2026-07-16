@@ -80,7 +80,7 @@ import sys
 from pathlib import Path
 
 from _hookio import is_help_only, scan_top_level
-from _hookutil import _content_items, _parse_records
+from _hookutil import _content_items, _is_synthetic_user, _parse_records, _user_message_texts
 
 SENTINEL_PREFIX = "journal-stub-checkpoint-"
 
@@ -185,38 +185,11 @@ _SUBSTANTIVE_TOOLS = frozenset({
 
 
 # --- transcript helpers --------------------------------------------------------
-
-def _user_message_texts(rec: dict) -> list:
-    """The raw user-message text pieces of a ``type == "user"`` record — a bare
-    ``str`` content, or the text of each ``{"type": "text"}`` content item — or
-    ``[]`` when the record isn't a user message or carries no text. Callers apply
-    their own synthetic-record (``isMeta`` / ``isCompactSummary``) filtering
-    (mirrors ``stop-tile-enumeration-gate.py``'s ``skip_override`` extraction)."""
-    if not isinstance(rec, dict) or rec.get("type") != "user":
-        return []
-    msg = rec.get("message")
-    if not isinstance(msg, dict):
-        return []
-    c = msg.get("content")
-    if isinstance(c, str):
-        return [c]
-    if isinstance(c, list):
-        return [
-            item.get("text", "") or ""
-            for item in c
-            if isinstance(item, dict) and item.get("type") == "text"
-        ]
-    return []
-
-
-def _is_synthetic_user(rec: dict) -> bool:
-    """True for a synthetic user record — keyed on the ``isMeta`` /
-    ``isCompactSummary`` flags that compact summaries and ``<local-command-*>``
-    caveat blocks carry. These are not a fresh user instruction: a compact
-    summary that restates an earlier request must not count as new report
-    intent, especially since the workflow prompts ``/compact`` right after
-    PR-create."""
-    return bool(rec.get("isMeta") or rec.get("isCompactSummary"))
+#
+# ``_user_message_texts`` / ``_is_synthetic_user`` were promoted to ``_hookutil``
+# (dev-env#710) and are imported above, shared with
+# ``stop-tile-enumeration-gate.py``'s ``skip_override``. ``_bash_commands`` below
+# stays local — its unpaired walk is specific to this hook (see its docstring).
 
 
 def _bash_commands(records: list) -> list:

@@ -184,6 +184,46 @@ def _content_items(rec: dict) -> list:
     return c if isinstance(c, list) else []
 
 
+def _user_message_texts(rec: dict) -> list:
+    """The raw user-message text pieces of a ``type == "user"`` record — a bare
+    ``str`` content, or the text of each ``{"type": "text"}`` content item — or
+    ``[]`` when the record isn't a user message or carries no text. Synthetic-record
+    (``isMeta`` / ``isCompactSummary``) filtering is the caller's job (see
+    ``_is_synthetic_user``); this only extracts. Shared by
+    ``stop-journal-stub-checkpoint.py`` and ``stop-tile-enumeration-gate.py``'s
+    ``skip_override`` (dev-env#710), which previously factored / inlined the same
+    extraction independently — the exact transcript-parsing drift ADR-090
+    hoisted ``_content_items`` / ``_parse_records`` / ``iter_bash_calls`` here to
+    prevent."""
+    if not isinstance(rec, dict) or rec.get("type") != "user":
+        return []
+    msg = rec.get("message")
+    if not isinstance(msg, dict):
+        return []
+    c = msg.get("content")
+    if isinstance(c, str):
+        return [c]
+    if isinstance(c, list):
+        return [
+            item.get("text", "") or ""
+            for item in c
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+    return []
+
+
+def _is_synthetic_user(rec: dict) -> bool:
+    """True for a synthetic user record — keyed on the ``isMeta`` /
+    ``isCompactSummary`` flags that compact summaries and ``<local-command-*>``
+    caveat blocks carry. These are not a fresh user instruction: a compact summary
+    that restates an earlier request must not count as new intent, especially
+    since the workflow prompts ``/compact`` right after PR-create. A non-dict
+    record reads as not-synthetic (``False``) rather than raising, so a caller may
+    front this check ahead of ``_user_message_texts``'s own dict guard on a
+    hand-built or malformed record list (dev-env#710)."""
+    return isinstance(rec, dict) and bool(rec.get("isMeta") or rec.get("isCompactSummary"))
+
+
 def _result_text(item: dict, record: dict) -> str:
     """Best-available text of a tool_result: the per-id content the model saw,
     falling back to the record's structured ``toolUseResult`` (stdout+stderr)."""

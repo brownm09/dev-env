@@ -21,7 +21,8 @@ alone.
 
 `_match_worktree()`'s regex is a cheap PRE-FILTER only, not the final word
 (dev-env#774): a repo whose OWN root directory name literally ends in
-`-worktrees` (e.g. `some-repo-worktrees`) makes `_SIBLING_WORKTREE_RE` mistake
+`-worktrees` (e.g. `some-repo-worktrees`) makes the sibling pattern (now
+single-sourced in `_worktree_canon.match_worktree()`, dev-env#510) mistake
 an ordinary subdirectory for a worktree name and a truncated prefix for the
 canonical root. Once the regex finds a *candidate* match, `_resolve_worktree_scope()`
 confirms (or corrects) it against `git worktree list --porcelain` ground truth
@@ -63,54 +64,25 @@ Stdin JSON shape (PreToolUse):
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
 import os
-import re
 import subprocess
 import sys
 
 import _hookutil
+import _worktree_canon
 from _worktree_topology import find_worktree_by_path, parse_worktree_porcelain
 
-# Matches `.claude/worktrees/<name>` at the start of a path, capturing the repo root
-# (everything before the matched segment). Tried BEFORE `_SIBLING_WORKTREE_RE` (see
-# `_match_worktree` below) — review finding, dev-env#760: a single combined alternation
-# with non-greedy `(.+?)` lets the sibling alternative "win" at a shallower position than a
-# genuine nested worktree occurring deeper in the same path (e.g. a `.claude/worktrees/<name>`
-# worktree created inside a `<repo>-worktrees/<name>` sibling worktree), mis-extracting the
-# outer sibling directory as the root instead of the actual, deeper worktree. Checking this
-# pattern against the whole string first sidesteps that: a real path normally contains at
-# most one `.claude/worktrees/` segment, so matching it directly finds the correct (only)
-# occurrence regardless of what a `-worktrees` segment earlier in the same path might
-# otherwise steal.
-_NESTED_WORKTREE_RE = re.compile(
-    r"^(.+?)[/\\]\.claude[/\\]worktrees[/\\][^/\\]+",
-    re.IGNORECASE,
-)
-
-# Matches `<repo>-worktrees/<name>` at the start of a path — the sibling-directory
-# convention (dev-env#760), e.g. `dev-env-worktrees/adr-096-correction`. Only consulted when
-# `_NESTED_WORKTREE_RE` above doesn't match — see `_match_worktree`. A bare `<repo>-<suffix>`
-# with no `-worktrees` marker (e.g. `dev-env-188`) still does not match — see module docstring.
-# The trailing `[^/\\]` in the capture group requires at least one non-separator character
-# immediately before the literal `-worktrees` (review finding, dev-env#760: without it, a
-# directory literally named `-worktrees` with no repo-name prefix at all would also match —
-# `pre-tool-use-canonical-mutate-guard.py`'s equivalent fragment already required this;
-# this pattern now agrees with it).
-_SIBLING_WORKTREE_RE = re.compile(
-    r"^(.+?[^/\\])-worktrees[/\\][^/\\]+",
-    re.IGNORECASE,
-)
-
-
+# The nested/sibling worktree-path regexes and this matcher's nested-first
+# ordering are single-sourced in `_worktree_canon.match_worktree()` (dev-env#510)
+# — the same convention `pre-tool-use-canonical-mutate-guard.py` also consumes, so
+# a future change to the worktree-location convention (`.claude/worktrees/<name>`
+# nested / `<repo>-worktrees/<name>` sibling, dev-env#760) touches one module, not
+# three. `main()`'s two call sites read both `group(1)` (the canonical root) and
+# `group(0)` (the worktree root) off the returned match, exactly as they did off
+# the byte-identical local copies this replaces.
 def _match_worktree(path: str):
-    """Match `path` against the nested convention first, then the sibling convention.
-
-    Trying nested first ensures a nested worktree created inside a sibling-convention
-    worktree resolves to its own (deeper, more specific) root rather than the outer sibling
-    worktree stealing the match at a shallower position (dev-env#760 review finding). Shared
-    by both call sites below (cwd and a write target) so they can't drift on this ordering.
-    """
-    m = _NESTED_WORKTREE_RE.match(path)
-    return m if m else _SIBLING_WORKTREE_RE.match(path)
+    """Match `path` against the nested convention first, then the sibling
+    convention — delegates to the shared `_worktree_canon.match_worktree()`."""
+    return _worktree_canon.match_worktree(path)
 
 # Maps tool name → the field in tool_input that holds the file path.
 _PATH_FIELD = {

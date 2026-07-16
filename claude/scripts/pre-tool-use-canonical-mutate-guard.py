@@ -171,9 +171,10 @@ INDEPENDENTLY-CLONED canonical checkout (a real `git clone`/`git init`, never a
 `git worktree add`) that happens to sit at a worktree-shaped path is exposed to the exact
 same dev-env#453 collision as any other canonical, so `_is_confirmed_worktree_root()` asks
 git directly — via `git worktree list --porcelain` — whether the resolved root is actually
-a LINKED (non-canonical) entry of its own repository, rather than trusting `_WORKTREE_RE`
-to say so from the path string alone. `_WORKTREE_RE` is retained only as that function's
-fail-open backstop for when git can't answer at all.
+a LINKED (non-canonical) entry of its own repository, rather than trusting a path-shape
+regex to say so from the path string alone. The shared `_worktree_canon.is_worktree_path()`
+shape check (dev-env#510) is retained only as that function's fail-open backstop for when
+git can't answer at all.
 
 Stdin JSON shape (PreToolUse):
   {
@@ -195,58 +196,36 @@ import sys
 from _hookio import is_absolute_path, split_top_level
 from _worktree_topology import find_worktree_by_path, parse_worktree_porcelain
 import _hookutil
+import _worktree_canon
 
-# Shared fragment for the two worktree-path regexes below (dev-env#749 review
-# finding — was independently spelled twice; factored out so the two can't
-# silently drift if the worktree-location convention ever changes). Recognizes
-# EITHER the nested `.claude/worktrees/<name>` convention (`EnterWorktree`) OR
-# the sibling-directory `<repo>-worktrees/<name>` convention (manual
-# `git worktree add`, e.g. `dev-env-worktrees/adr-096-correction`) — dev-env#760.
-# A bare `<repo>-<suffix>` sibling with no `-worktrees` marker (e.g.
-# `dev-env-188`) is still not covered; that shape is ambiguous from the path
-# string alone and has no liveness-check anchor to extract a worktree root from.
-_WORKTREE_PATH_FRAGMENT = r"(?:\.claude[/\\]worktrees|[^/\\]+-worktrees)[/\\][^/\\]+"
-
-# Matches `.claude/worktrees/<name>` or `<repo>-worktrees/<name>` anywhere in a
-# path — same pattern as ADR-024's hook. A cwd matching this is out of scope
-# for this hook entirely; any command (mutating or not) is fine from inside a
-# worktree.
-_WORKTREE_RE = re.compile(
-    r"[/\\]" + _WORKTREE_PATH_FRAGMENT,
-    re.IGNORECASE,
-)
-
-# Anchored capture variants used only to extract the worktree-root PREFIX of a raw,
-# client-supplied cwd for the liveness check in _is_live_worktree() below (via
-# _worktree_root_from_cwd()). Kept separate from _WORKTREE_RE: that regex's other use site
-# (_blockable_redirect_root/_blockable_ambient_root, via _is_confirmed_worktree_root()) checks
-# an already git-RESOLVED root, which no longer trusts this regex as its primary signal — see
-# _is_confirmed_worktree_root()'s docstring (dev-env#774): a genuine independent canonical
-# clone that merely happens to sit at a worktree-shaped path is NOT exempt from liveness-style
-# confirmation there either, it's just confirmed via `git worktree list` membership instead of
-# the cwd-facing site's `.git`-isfile + `rev-parse` liveness check. `_WORKTREE_RE` itself is
-# retained only as that confirmation's fail-open backstop when git can't answer at all.
+# The worktree-path regexes this hook needs are single-sourced in
+# `_worktree_canon.py` (dev-env#510) — the same module ADR-024's
+# `pre-tool-use-worktree-path-check.py` also consumes, so the worktree-location
+# convention (`.claude/worktrees/<name>` nested / `<repo>-worktrees/<name>`
+# sibling, dev-env#760; a bare `<repo>-<suffix>` with no `-worktrees` marker,
+# e.g. `dev-env-188`, is still not covered — ambiguous from the path string
+# alone) lives in one place across all consumers, and the two former local
+# copies here can no longer drift from it:
 #
-# Split into two ordered patterns (nested tried before sibling) rather than one combined
-# alternation — review finding, dev-env#760: a single regex with non-greedy `(.+?)` lets the
-# sibling alternative "win" at a shallower position than a genuine nested worktree occurring
-# deeper in the same path (e.g. a `.claude/worktrees/<name>` worktree created inside a
-# `<repo>-worktrees/<name>` sibling worktree), mis-extracting the outer sibling directory as
-# the root instead of the actual, deeper worktree. Checking the nested pattern against the
-# whole string first sidesteps that: a real path normally contains at most one
-# `.claude/worktrees/` segment, so matching it directly finds the correct (only) occurrence
-# regardless of what a `-worktrees` segment earlier in the same path might otherwise steal.
-# `_WORKTREE_RE`'s `.search()` use sites need no equivalent split: they only answer a
-# boolean "is this resolved root worktree-shaped," which is unaffected by which alternative
-# happens to match first.
-_NESTED_WORKTREE_ROOT_RE = re.compile(
-    r"^(.+?[/\\]\.claude[/\\]worktrees[/\\][^/\\]+)",
-    re.IGNORECASE,
-)
-_SIBLING_WORKTREE_ROOT_RE = re.compile(
-    r"^(.+?[/\\][^/\\]+-worktrees[/\\][^/\\]+)",
-    re.IGNORECASE,
-)
+#   - `_worktree_root_from_cwd()` (the raw-cwd anchor `_is_live_worktree()`
+#     liveness-checks) reads the full worktree ROOT via
+#     `_worktree_canon.worktree_root_from_path()` — the nested-tried-first,
+#     anchored whole-match its former local `_NESTED_WORKTREE_ROOT_RE` /
+#     `_SIBLING_WORKTREE_ROOT_RE` produced. Nested is tried first so a nested
+#     worktree created inside a sibling-convention worktree resolves to its own
+#     (deeper) root, not the outer sibling stealing a shallower match (dev-env#760).
+#   - `_is_confirmed_worktree_root()`'s fail-open backstop asks the boolean
+#     `_worktree_canon.is_worktree_path()` (its former unanchored
+#     `_WORKTREE_RE.search`) whether an already git-RESOLVED root is
+#     worktree-shaped — only when `git worktree list` can't answer at all, so a
+#     genuine independent canonical clone at a worktree-shaped path is confirmed
+#     via git membership first, shape only as a last resort (dev-env#774; see
+#     `_is_confirmed_worktree_root`'s docstring).
+#
+# Both callers only ever pass an ABSOLUTE path (a client-supplied cwd, or a git
+# `--show-toplevel`), for which the shared functions return exactly what the
+# former local regexes did — see `_worktree_canon`'s docstrings and
+# `test_worktree_canon.py`'s equivalence pins.
 
 # The sole override token. A genuine leading prefix on a command/segment (not
 # a substring appearing anywhere, e.g. inside a commit message) bypasses the
@@ -327,6 +306,23 @@ _GH_INVOCATION_RE = re.compile(r"^gh(?:\.exe)?\s+(.*)$", re.IGNORECASE)
 # LOCAL state (checks out the base branch, deletes the local branch) rather
 # than merging purely via the GitHub API. See is_mutating_gh_segment().
 _GH_DELETE_BRANCH_FLAGS = {"-d", "--delete-branch"}
+
+# Single source of truth for the ALWAYS-mutating git verbs (dev-env#514) — a
+# verb here mutates working-tree/branch/history state unconditionally, so it is
+# blocked in a canonical checkout with no further token inspection. The
+# CONDITIONAL verbs are deliberately NOT in this set: `checkout` (a `--` file
+# restore is allowed), `stash` (only pop/apply mutate), `branch` (only -d/-D/
+# --delete), and `pull` (only without --ff-only) each keep their own guarded
+# branch in is_mutating_segment() below, since they mutate only under a specific
+# flag/subcommand. The module docstring's "Mutating verbs blocked:" section is
+# the authoritative prose narrative; the mirrors in claude/CLAUDE.md,
+# docs/adr/071-*.md, and docs/REFERENCE.md are kept self-contained by the
+# reference-doc convention (dev-env#683) rather than stripped to pointers —
+# update this set + the docstring when the verb list changes, then propagate to
+# those three.
+_ALWAYS_MUTATING_VERBS = frozenset({
+    "switch", "commit", "merge", "rebase", "reset", "cherry-pick", "revert",
+})
 
 # Git-level options that can precede the actual subcommand (git's own option
 # grammar, not the subcommand's) — e.g. `git -c gc.auto=0 stash pop` or
@@ -511,15 +507,10 @@ def is_mutating_segment(segment: str) -> bool:
         return False
     verb = tokens[0].lower()
 
-    # NOTE: the mutating-verb list is spread across this branch chain with no
-    # single canonical source. It is independently re-spelled in four prose
-    # locations that must stay in sync whenever a verb is added, removed, or
-    # its condition changes: the module docstring above ("Mutating verbs
-    # blocked:"), claude/CLAUDE.md's "Never mutate git state directly..."
-    # bullet, docs/adr/071-canonical-checkout-mutate-guard-hook.md's
-    # "Mutating verbs blocked:" line, and docs/REFERENCE.md's ADR-071
-    # pointer. Update all four when this branch chain changes.
-    if verb in ("switch", "commit", "merge", "rebase", "reset", "cherry-pick", "revert"):
+    # Always-mutating verbs are single-sourced in _ALWAYS_MUTATING_VERBS
+    # (dev-env#514); the conditional verbs (checkout / stash / branch / pull)
+    # each keep their own guarded branch below.
+    if verb in _ALWAYS_MUTATING_VERBS:
         return True
 
     if verb == "checkout":
@@ -782,16 +773,16 @@ def _normalize_path(path: str) -> str:
 
 
 def _worktree_root_from_cwd(cwd: str):
-    """Return the worktree-root PREFIX of `cwd` (up through and including the
+    """Return the worktree ROOT of `cwd` (up through and including the
     `.claude/worktrees/<name>` or `<repo>-worktrees/<name>` segment), or None if `cwd`
-    isn't anchored inside one. Cheap, pure string work — no subprocess. Nested is tried
-    before sibling — see `_NESTED_WORKTREE_ROOT_RE`'s comment for why.
+    isn't anchored inside one. Cheap, pure string work — no subprocess.
+
+    Delegates to the shared `_worktree_canon.worktree_root_from_path()` (dev-env#510),
+    which tries the nested convention before the sibling one for the same reason the
+    former local regexes did. Kept as a thin named wrapper so `main()`'s call site and
+    this hook's test suite (`test_worktree_root_from_cwd_*`) reference a stable local name.
     """
-    m = _NESTED_WORKTREE_ROOT_RE.match(cwd)
-    if m:
-        return m.group(1)
-    m = _SIBLING_WORKTREE_ROOT_RE.match(cwd)
-    return m.group(1) if m else None
+    return _worktree_canon.worktree_root_from_path(cwd)
 
 
 def _is_live_worktree(
@@ -806,7 +797,8 @@ def _is_live_worktree(
 
     An orphaned worktree directory (its `.git` link file missing or broken,
     e.g. left behind after an incomplete `git worktree add`/`remove`) still
-    textually matches `_NESTED_WORKTREE_ROOT_RE` or `_SIBLING_WORKTREE_ROOT_RE`.
+    textually matches the worktree-path convention (`_worktree_root_from_cwd`
+    returns a non-None root for it).
     When git is asked to resolve such a directory, it walks up the filesystem
     tree looking for a `.git` and lands
     on the CANONICAL repo instead — live-confirmed on dev-env#630: an orphaned
@@ -954,7 +946,8 @@ def _is_confirmed_worktree_root(root: str, cache: dict) -> bool:
     silently returns "confirmed a worktree" — the OPPOSITE of the "fail toward
     blockable" this docstring documents):
       - Git can't answer AT ALL (`worktrees` is empty/None) — genuinely no
-        signal. Falls back to the path-shape regex (`_WORKTREE_RE`) — matches
+        signal. Falls back to the path-shape check (the shared
+        `_worktree_canon.is_worktree_path()`, dev-env#510) — matches
         this hook's existing fail-open philosophy elsewhere (e.g.
         `_resolve_git_toplevel`'s own None-on-failure contract): a backstop,
         not the primary signal, per dev-env#774's "replace (or backstop)"
@@ -969,7 +962,7 @@ def _is_confirmed_worktree_root(root: str, cache: dict) -> bool:
     """
     worktrees = _memoized_worktree_list(root, cache)
     if not worktrees:
-        return _WORKTREE_RE.search(root) is not None
+        return _worktree_canon.is_worktree_path(root)
     entry = find_worktree_by_path(worktrees, root, normalize=_normalize_path)
     if entry is None:
         return False

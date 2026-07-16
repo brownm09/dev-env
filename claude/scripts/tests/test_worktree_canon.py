@@ -19,6 +19,7 @@ Usage:
 
 Exit 0 = all pass.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -30,6 +31,9 @@ import _worktree_canon  # noqa: E402
 
 canonical_root_from_worktree = _worktree_canon.canonical_root_from_worktree
 canonical_repo_root = _worktree_canon.canonical_repo_root
+match_worktree = _worktree_canon.match_worktree
+worktree_root_from_path = _worktree_canon.worktree_root_from_path
+is_worktree_path = _worktree_canon.is_worktree_path
 
 WT_FWD = "C:/Users/brown/Git/dev-env/.claude/worktrees/sweet-mendel-8e98d1"
 WT_BACK = r"C:\Users\brown\Git\dev-env\.claude\worktrees\sweet-mendel-8e98d1"
@@ -161,6 +165,155 @@ def test_empty_and_none_contracts() -> str:
     return "empty/None input: the None-contract stays None, the passthrough-contract yields ''"
 
 
+# --- dev-env#510: new SSOT functions consumed by the two PreToolUse guards -----
+
+
+def test_match_worktree_exposes_both_groups() -> str:
+    # The single matcher every other function is built on: group(1) is the
+    # canonical-root PREFIX, group(0) is the full worktree ROOT (prefix + marker).
+    m = match_worktree(WT_FWD)
+    assert m is not None
+    assert m.group(1) == CANON_WIN
+    assert m.group(0) == WT_FWD  # bare nested root, no trailing subdir
+    deep = match_worktree(WT_FWD + "/claude/scripts")
+    assert deep.group(1) == CANON_WIN and deep.group(0) == WT_FWD
+    ms = match_worktree(SIBLING_FWD)
+    assert ms is not None
+    assert ms.group(1) == CANON_WIN and ms.group(0) == SIBLING_FWD
+    # no-match / empty / None
+    assert match_worktree(CANON_WIN) is None
+    assert match_worktree("") is None
+    assert match_worktree(None) is None
+    return "match_worktree exposes group(1)=canonical root, group(0)=worktree root; None on no-match/empty/None"
+
+
+def test_worktree_root_from_path_returns_full_root() -> str:
+    # group(0) of the shared match — the full worktree root, both conventions.
+    assert worktree_root_from_path(WT_FWD) == WT_FWD
+    assert worktree_root_from_path(WT_FWD + "/claude/scripts") == WT_FWD
+    assert worktree_root_from_path(SIBLING_FWD) == SIBLING_FWD
+    assert worktree_root_from_path(SIBLING_FWD + "/a/b") == SIBLING_FWD
+    assert worktree_root_from_path(CANON_WIN) is None
+    assert worktree_root_from_path("C:/Users/brown/Git/dev-env-188") is None
+    assert worktree_root_from_path("") is None
+    assert worktree_root_from_path(None) is None
+    return "worktree_root_from_path returns the full worktree root (prefix + marker), None on no-match"
+
+
+def test_worktree_root_from_path_matches_mutate_guard_fixtures() -> str:
+    # Equivalence pin (dev-env#510): worktree_root_from_path returns exactly what
+    # pre-tool-use-canonical-mutate-guard.py's former _NESTED_WORKTREE_ROOT_RE /
+    # _SIBLING_WORKTREE_ROOT_RE produced for the ABSOLUTE cwds that hook ever
+    # passes — the fixtures lifted verbatim from test_canonical_mutate_guard.py.
+    cases = [
+        ("C:/Users/brown/Git/dev-env/.claude/worktrees/some-worktree-name",
+         "C:/Users/brown/Git/dev-env/.claude/worktrees/some-worktree-name"),
+        ("C:/Users/brown/Git/dev-env/.claude/worktrees/some-worktree-name/some/nested/path",
+         "C:/Users/brown/Git/dev-env/.claude/worktrees/some-worktree-name"),
+        (r"C:\Users\brown\Git\dev-env\.CLAUDE\WORKTREES\Some-Worktree-Name",
+         r"C:\Users\brown\Git\dev-env\.CLAUDE\WORKTREES\Some-Worktree-Name"),
+        ("C:/Users/brown/Git/dev-env-worktrees/some-worktree-name",
+         "C:/Users/brown/Git/dev-env-worktrees/some-worktree-name"),
+        ("C:/Users/brown/Git/dev-env-worktrees/some-worktree-name/some/nested/path",
+         "C:/Users/brown/Git/dev-env-worktrees/some-worktree-name"),
+    ]
+    for path, expected in cases:
+        got = worktree_root_from_path(path)
+        assert got == expected, f"expected {expected!r}, got {got!r} for {path!r}"
+    for path in ("C:/Users/brown/Git/dev-env", "C:/Users/brown/Git/dev-env-188"):
+        assert worktree_root_from_path(path) is None, f"expected None for {path!r}"
+    return "worktree_root_from_path equivalence with the mutate-guard's former anchored root regexes (absolute paths)"
+
+
+def test_worktree_root_from_path_divergence_boundary() -> str:
+    # dev-env#810 review: worktree_root_from_path can differ from the mutate-guard's
+    # former _NESTED/_SIBLING_WORKTREE_ROOT_RE only when the SIBLING marker is the
+    # very FIRST path component — never a resolved toplevel on this Windows-only
+    # system. Reconstruct the former root regexes and pin both the reachable
+    # agreement and the unreachable divergence.
+    old_nested = re.compile(r"^(.+?[/\\]\.claude[/\\]worktrees[/\\][^/\\]+)", re.IGNORECASE)
+    old_sibling = re.compile(r"^(.+?[/\\][^/\\]+-worktrees[/\\][^/\\]+)", re.IGNORECASE)
+
+    def old_root(p):
+        m = old_nested.match(p)
+        if m:
+            return m.group(1)
+        m = old_sibling.match(p)
+        return m.group(1) if m else None
+
+    # Absolute Windows paths (the reachable contract): exact agreement.
+    for p in (WT_FWD, SIBLING_FWD, WT_FWD + "/a/b", SIBLING_FWD + "/a/b",
+              CANON_WIN, "C:/Users/brown/Git/dev-env-188"):
+        assert worktree_root_from_path(p) == old_root(p), f"reachable mismatch for {p!r}"
+    # Sibling marker-first divergences (unreachable): the former sibling-root regex
+    # required a component before <repo>-worktrees and returned None; the shared
+    # function returns the root.
+    for p in ("dev-env-worktrees/foo", "/dev-env-worktrees/foo"):
+        assert old_root(p) is None, f"expected former None for {p!r}"
+        assert worktree_root_from_path(p) == p, f"expected shared root for {p!r}"
+    return "worktree_root_from_path == former root regexes for absolute Windows paths; sibling marker-first divergences pinned unreachable"
+
+
+def test_is_worktree_path_boolean() -> str:
+    assert is_worktree_path(WT_FWD) is True
+    assert is_worktree_path(WT_BACK) is True
+    assert is_worktree_path(SIBLING_FWD) is True
+    assert is_worktree_path(WT_POSIX) is True
+    # a resolved worktree root whose NAME ends in "-fallback" still matches (the
+    # exact shape test_is_confirmed_worktree_root_decision_table's backstop uses)
+    assert is_worktree_path(WT_FWD + "-fallback") is True
+    assert is_worktree_path(CANON_WIN) is False
+    assert is_worktree_path("C:/some/unresolvable/path") is False
+    assert is_worktree_path("C:/Users/brown/Git/dev-env-188") is False
+    assert is_worktree_path("") is False
+    assert is_worktree_path(None) is False
+    return "is_worktree_path: True for both conventions (incl. resolved roots), False for canonical/bare-suffix/empty/None"
+
+
+def test_is_worktree_path_agrees_with_former_unanchored_search_for_absolute_paths() -> str:
+    # Equivalence pin (dev-env#510): is_worktree_path (an anchored match) agrees
+    # with the mutate-guard's FORMER unanchored `_WORKTREE_RE.search` for every
+    # ABSOLUTE path that hook passes it (a git-resolved --show-toplevel).
+    # Reconstruct that exact former regex here and assert agreement.
+    former = re.compile(
+        r"[/\\](?:\.claude[/\\]worktrees|[^/\\]+-worktrees)[/\\][^/\\]+",
+        re.IGNORECASE,
+    )
+    absolute_paths = [
+        "C:/Users/brown/Git/dev-env/.claude/worktrees/some-worktree-name",
+        "C:/Users/brown/Git/dev-env/.claude/worktrees/some-worktree-name-fallback",
+        "C:/Users/brown/Git/dev-env-worktrees/some-worktree-name",
+        r"C:\Users\brown\Git\dev-env\.claude\worktrees\foo",
+        "/home/user/dev-env/.claude/worktrees/foo-123",
+        "C:/Users/brown/Git/dev-env",       # canonical, no marker
+        "C:/Users/brown/Git/dev-env-188",   # bare-suffix sibling, no marker
+        "C:/some/unresolvable/path",
+    ]
+    for path in absolute_paths:
+        anchored = is_worktree_path(path)
+        unanchored = former.search(path) is not None
+        assert anchored == unanchored, (
+            f"is_worktree_path={anchored} but former .search={unanchored} for {path!r}"
+        )
+    # The divergences are all MARKER-AS-FIRST-COMPONENT paths — never a resolved
+    # toplevel on this Windows-only system (git emits `C:/…`; cwds are `C:/…`/UNC,
+    # each with a genuine drive/share component before any marker). Pinned as
+    # understood boundaries rather than silent traps (dev-env#810 review):
+    #   - sibling marker at a bare relative start: anchored sibling MATCHES; the
+    #     unanchored search (needs a leading separator) does not.
+    #   - nested marker at the Unix filesystem root: the unanchored search MATCHES
+    #     via the leading `/`, but the anchored nested pattern needs a `<char><sep>`
+    #     before `.claude`, which a root-anchored `/.claude/...` lacks.
+    divergences = [
+        ("dev-env-worktrees/foo", True, False),   # sibling, bare-relative start
+        ("/.claude/worktrees/foo", False, True),  # nested, Unix-root start
+    ]
+    for path, expect_new, expect_old in divergences:
+        assert is_worktree_path(path) is expect_new, f"new mismatch for {path!r}"
+        assert (former.search(path) is not None) is expect_old, f"old mismatch for {path!r}"
+    return "is_worktree_path == former unanchored .search for all absolute roots; the 2 marker-first divergences pinned + documented unreachable"
+
+
 def main() -> int:
     tests = [
         ("forward-slash worktree match (both functions)", test_forward_slash_match),
@@ -177,6 +330,12 @@ def main() -> int:
         ("no-match -> passthrough (canonical_repo_root)", test_no_match_passes_through_for_repo_root),
         ("bare-suffix sibling worktree still not matched by regex", test_sibling_worktree_not_matched_by_regex),
         ("empty/None input contracts", test_empty_and_none_contracts),
+        ("match_worktree exposes both capture groups (dev-env#510)", test_match_worktree_exposes_both_groups),
+        ("worktree_root_from_path returns the full root (dev-env#510)", test_worktree_root_from_path_returns_full_root),
+        ("worktree_root_from_path equivalence w/ mutate-guard fixtures (dev-env#510)", test_worktree_root_from_path_matches_mutate_guard_fixtures),
+        ("worktree_root_from_path divergence boundary pinned (dev-env#810 review)", test_worktree_root_from_path_divergence_boundary),
+        ("is_worktree_path boolean shape check (dev-env#510)", test_is_worktree_path_boolean),
+        ("is_worktree_path == former unanchored .search for absolute paths (dev-env#510)", test_is_worktree_path_agrees_with_former_unanchored_search_for_absolute_paths),
     ]
     failed = 0
     for name, fn in tests:

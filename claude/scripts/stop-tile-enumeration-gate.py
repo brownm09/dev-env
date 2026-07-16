@@ -154,7 +154,9 @@ from _hookio import (
 )
 from _hookutil import (
     _content_items,
+    _is_synthetic_user,
     _parse_records,
+    _user_message_texts,
     iter_bash_calls as _iter_bash_calls,
 )
 
@@ -662,31 +664,18 @@ def enumeration_recorded(records: list) -> bool:
 def skip_override(records: list) -> bool:
     """True iff a genuine user message this session waived the checkpoint
     ("skip tiles" / "don't spawn tiles" / "no tiles"). Only real user-typed text
-    is considered — never tool_result output that merely contains the phrase."""
+    is considered — never tool_result output that merely contains the phrase, and
+    never a synthetic (``isMeta`` / ``isCompactSummary``) record such as a compact
+    summary restating an earlier "skip tiles" mention (the workflow prompts
+    /compact right after PR-create — review of PR #604).
+
+    Text extraction + synthetic-record filtering are the shared ``_hookutil``
+    helpers (dev-env#710), the same pair ``stop-journal-stub-checkpoint.py``
+    uses — this hook previously inlined the identical logic."""
     for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "user":
+        if _is_synthetic_user(rec):
             continue
-        # Synthetic user-type records — compact summaries and
-        # <local-command-*> caveat blocks — are not a fresh user instruction. A
-        # compact summary that merely restates an earlier "skip tiles" mention
-        # must not waive the gate, especially since the workflow prompts
-        # /compact right after PR-create (review of PR #604).
-        if rec.get("isMeta") or rec.get("isCompactSummary"):
-            continue
-        msg = rec.get("message")
-        if not isinstance(msg, dict):
-            continue
-        c = msg.get("content")
-        texts: list = []
-        if isinstance(c, str):
-            texts.append(c)
-        elif isinstance(c, list):
-            texts += [
-                item.get("text", "") or ""
-                for item in c
-                if isinstance(item, dict) and item.get("type") == "text"
-            ]
-        if any(_SKIP_RE.search(t) for t in texts):
+        if any(_SKIP_RE.search(t) for t in _user_message_texts(rec)):
             return True
     return False
 
