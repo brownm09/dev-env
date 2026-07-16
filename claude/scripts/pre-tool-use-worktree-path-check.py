@@ -21,7 +21,8 @@ alone.
 
 `_match_worktree()`'s regex is a cheap PRE-FILTER only, not the final word
 (dev-env#774): a repo whose OWN root directory name literally ends in
-`-worktrees` (e.g. `some-repo-worktrees`) makes `_SIBLING_WORKTREE_RE` mistake
+`-worktrees` (e.g. `some-repo-worktrees`) makes the sibling pattern (now
+single-sourced in `_worktree_canon.match_worktree()`, dev-env#510) mistake
 an ordinary subdirectory for a worktree name and a truncated prefix for the
 canonical root. Once the regex finds a *candidate* match, `_resolve_worktree_scope()`
 confirms (or corrects) it against `git worktree list --porcelain` ground truth

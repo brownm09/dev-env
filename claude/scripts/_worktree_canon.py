@@ -141,9 +141,14 @@ def worktree_root_from_path(path: str) -> str | None:
     (the worktree-root string it hands its `.git`-liveness check) — dev-env#510.
     That hook only ever passes an absolute cwd, for which this returns the same
     root its former local `_NESTED_WORKTREE_ROOT_RE`/`_SIBLING_WORKTREE_ROOT_RE`
-    did (the two share the nested pattern exactly; the sibling patterns agree for
-    any path with a leading component before the marker, which an absolute path
-    always has) — see `test_worktree_root_from_path_*`."""
+    did: the two share the nested pattern exactly, and the sibling patterns agree
+    for any path with a genuine leading component before the marker segment — which
+    a Windows absolute path (drive-letter `C:/…` or UNC `\\…`) always has. The one
+    divergence is a path whose *sibling* marker is the very FIRST component (a bare
+    relative `dev-env-worktrees/foo`, or one at the Unix filesystem root
+    `/dev-env-worktrees/foo`): the former regex required a component before
+    `<repo>-worktrees` and returned None, this returns the root. Neither occurs as
+    a resolved toplevel on this system — see `test_worktree_root_from_path_*`."""
     m = match_worktree(path)
     return m.group(0) if m else None
 
@@ -158,10 +163,13 @@ def is_worktree_path(path: str) -> bool:
     Equivalent, for the absolute paths that hook ever passes (a git-resolved
     `--show-toplevel`), to that hook's former unanchored `_WORKTREE_RE.search`:
     an anchored `match_worktree` and an unanchored search agree on *whether* a
-    marker segment is present whenever the path has any leading component before
-    the marker, which an absolute path always does. They can differ only for a
-    marker at the very START of a relative path (e.g. `dev-env-worktrees/foo`),
-    which never occurs as a resolved toplevel — see `test_is_worktree_path_*`."""
+    marker segment is present whenever the path has a genuine leading component
+    before the marker, which a Windows absolute path (drive-letter `C:/…` or UNC
+    `\\…`) always does. They differ only when the marker is the very FIRST path
+    component — a bare relative path (`dev-env-worktrees/foo` → this True, search
+    False) or one at the Unix filesystem root (`/.claude/worktrees/foo` → this
+    False, search True) — neither of which occurs as a resolved toplevel on this
+    system (git emits `C:/…`) — see `test_is_worktree_path_*`."""
     return match_worktree(path) is not None
 
 

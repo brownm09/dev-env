@@ -225,6 +225,35 @@ def test_worktree_root_from_path_matches_mutate_guard_fixtures() -> str:
     return "worktree_root_from_path equivalence with the mutate-guard's former anchored root regexes (absolute paths)"
 
 
+def test_worktree_root_from_path_divergence_boundary() -> str:
+    # dev-env#810 review: worktree_root_from_path can differ from the mutate-guard's
+    # former _NESTED/_SIBLING_WORKTREE_ROOT_RE only when the SIBLING marker is the
+    # very FIRST path component — never a resolved toplevel on this Windows-only
+    # system. Reconstruct the former root regexes and pin both the reachable
+    # agreement and the unreachable divergence.
+    old_nested = re.compile(r"^(.+?[/\\]\.claude[/\\]worktrees[/\\][^/\\]+)", re.IGNORECASE)
+    old_sibling = re.compile(r"^(.+?[/\\][^/\\]+-worktrees[/\\][^/\\]+)", re.IGNORECASE)
+
+    def old_root(p):
+        m = old_nested.match(p)
+        if m:
+            return m.group(1)
+        m = old_sibling.match(p)
+        return m.group(1) if m else None
+
+    # Absolute Windows paths (the reachable contract): exact agreement.
+    for p in (WT_FWD, SIBLING_FWD, WT_FWD + "/a/b", SIBLING_FWD + "/a/b",
+              CANON_WIN, "C:/Users/brown/Git/dev-env-188"):
+        assert worktree_root_from_path(p) == old_root(p), f"reachable mismatch for {p!r}"
+    # Sibling marker-first divergences (unreachable): the former sibling-root regex
+    # required a component before <repo>-worktrees and returned None; the shared
+    # function returns the root.
+    for p in ("dev-env-worktrees/foo", "/dev-env-worktrees/foo"):
+        assert old_root(p) is None, f"expected former None for {p!r}"
+        assert worktree_root_from_path(p) == p, f"expected shared root for {p!r}"
+    return "worktree_root_from_path == former root regexes for absolute Windows paths; sibling marker-first divergences pinned unreachable"
+
+
 def test_is_worktree_path_boolean() -> str:
     assert is_worktree_path(WT_FWD) is True
     assert is_worktree_path(WT_BACK) is True
@@ -266,14 +295,23 @@ def test_is_worktree_path_agrees_with_former_unanchored_search_for_absolute_path
         assert anchored == unanchored, (
             f"is_worktree_path={anchored} but former .search={unanchored} for {path!r}"
         )
-    # The sole divergence is a marker at the very START of a RELATIVE path, which
-    # never occurs as a resolved toplevel: the anchored sibling pattern matches it,
-    # the unanchored search (requiring a leading separator) does not. Documented so
-    # this boundary is a pinned, understood limit rather than a silent trap.
-    rel = "dev-env-worktrees/foo"
-    assert is_worktree_path(rel) is True
-    assert (former.search(rel) is not None) is False
-    return "is_worktree_path == former unanchored .search for all absolute roots; sole divergence (relative marker-at-start) documented and unreachable in practice"
+    # The divergences are all MARKER-AS-FIRST-COMPONENT paths — never a resolved
+    # toplevel on this Windows-only system (git emits `C:/…`; cwds are `C:/…`/UNC,
+    # each with a genuine drive/share component before any marker). Pinned as
+    # understood boundaries rather than silent traps (dev-env#810 review):
+    #   - sibling marker at a bare relative start: anchored sibling MATCHES; the
+    #     unanchored search (needs a leading separator) does not.
+    #   - nested marker at the Unix filesystem root: the unanchored search MATCHES
+    #     via the leading `/`, but the anchored nested pattern needs a `<char><sep>`
+    #     before `.claude`, which a root-anchored `/.claude/...` lacks.
+    divergences = [
+        ("dev-env-worktrees/foo", True, False),   # sibling, bare-relative start
+        ("/.claude/worktrees/foo", False, True),  # nested, Unix-root start
+    ]
+    for path, expect_new, expect_old in divergences:
+        assert is_worktree_path(path) is expect_new, f"new mismatch for {path!r}"
+        assert (former.search(path) is not None) is expect_old, f"old mismatch for {path!r}"
+    return "is_worktree_path == former unanchored .search for all absolute roots; the 2 marker-first divergences pinned + documented unreachable"
 
 
 def main() -> int:
@@ -295,6 +333,7 @@ def main() -> int:
         ("match_worktree exposes both capture groups (dev-env#510)", test_match_worktree_exposes_both_groups),
         ("worktree_root_from_path returns the full root (dev-env#510)", test_worktree_root_from_path_returns_full_root),
         ("worktree_root_from_path equivalence w/ mutate-guard fixtures (dev-env#510)", test_worktree_root_from_path_matches_mutate_guard_fixtures),
+        ("worktree_root_from_path divergence boundary pinned (dev-env#810 review)", test_worktree_root_from_path_divergence_boundary),
         ("is_worktree_path boolean shape check (dev-env#510)", test_is_worktree_path_boolean),
         ("is_worktree_path == former unanchored .search for absolute paths (dev-env#510)", test_is_worktree_path_agrees_with_former_unanchored_search_for_absolute_paths),
     ]
