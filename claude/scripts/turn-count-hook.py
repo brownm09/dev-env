@@ -24,7 +24,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
 from pathlib import Path
 
 import _hookutil
@@ -57,22 +56,16 @@ def load_prompt_threshold(cwd: str) -> int:
 def cleanup_stale_counters() -> None:
     """Delete counter and ctx-warn files older than COUNTER_MAX_AGE_DAYS.
 
-    Deliberately NOT delegated to _hookutil.cleanup_stale_sentinels (even
-    though `ext=".txt"` now makes that shape-compatible, per dev-env#768) --
-    this file was never "non-cleaning" (unlike the three hooks that PR
-    fixed), so migrating already-working, already-tested cleanup logic here
-    is left to the Phase E SSOT-consolidation track rather than folded into
-    that bug-fix PR's scope (dev-env#768 review)."""
-    cutoff = time.time() - COUNTER_MAX_AGE_DAYS * 86400
-    try:
-        for f in SCRATCH.glob("turn-count-*.txt"):
-            if f.stat().st_mtime < cutoff:
-                f.unlink(missing_ok=True)
-        for f in SCRATCH.glob("ctx-warn-*.txt"):
-            if f.stat().st_mtime < cutoff:
-                f.unlink(missing_ok=True)
-    except Exception:
-        pass
+    Delegates to the shared ``_hookutil.cleanup_stale_sentinels`` helper — one
+    call per prefix, both ``.txt`` — rather than re-implementing the
+    glob/cutoff/unlink loop. This is the Phase E SSOT migration dev-env#768's
+    review deferred to "the Phase E SSOT-consolidation track": ``ext=".txt"``
+    (added in that PR) made the shared helper shape-compatible, and this PR
+    (dev-env#780) folds the already-working cleanup onto it. ``max_age_days`` is
+    passed explicitly so the retention stays COUNTER_MAX_AGE_DAYS regardless of
+    ``_hookutil.MAX_AGE_DAYS``."""
+    _hookutil.cleanup_stale_sentinels("turn-count-", ext=".txt", max_age_days=COUNTER_MAX_AGE_DAYS)
+    _hookutil.cleanup_stale_sentinels("ctx-warn-", ext=".txt", max_age_days=COUNTER_MAX_AGE_DAYS)
 
 
 def get_current_context_tokens(transcript_path_str: str) -> int | None:

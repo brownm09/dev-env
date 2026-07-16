@@ -179,6 +179,27 @@ def test_readonly_commands_classified_as_safe() -> str:
     return f"{len(_READONLY_CASES)} read-only cases correctly classified as safe"
 
 
+def test_always_mutating_verbs_constant() -> str:
+    # dev-env#514: _ALWAYS_MUTATING_VERBS is the single source for the
+    # unconditionally-mutating verb set that is_mutating_segment() reads. Pin its
+    # exact contents so a verb silently added to / removed from it is a
+    # test-visible change (the extraction's whole point). The CONDITIONAL verbs
+    # (checkout, stash, branch, pull) are deliberately NOT here — each keeps its
+    # own guarded branch, since it mutates only under a specific flag/subcommand.
+    if cmg._ALWAYS_MUTATING_VERBS != frozenset({
+        "switch", "commit", "merge", "rebase", "reset", "cherry-pick", "revert",
+    }):
+        raise AssertionError(f"_ALWAYS_MUTATING_VERBS drifted: {sorted(cmg._ALWAYS_MUTATING_VERBS)!r}")
+    for conditional in ("checkout", "stash", "branch", "pull"):
+        if conditional in cmg._ALWAYS_MUTATING_VERBS:
+            raise AssertionError(f"conditional verb {conditional!r} must NOT be in the always-mutating set")
+    # Each always-verb is still classified mutating end-to-end via is_mutating_segment.
+    for verb in sorted(cmg._ALWAYS_MUTATING_VERBS):
+        if not cmg.is_mutating_segment(f"git {verb} something"):
+            raise AssertionError(f"always-verb {verb!r} should classify as mutating")
+    return "_ALWAYS_MUTATING_VERBS pins the 7 unconditional verbs; 4 conditional verbs excluded; each still classified mutating"
+
+
 _GH_MUTATING_CASES = [
     ("gh pr merge --delete-branch", "gh pr merge --delete-branch"),
     ("gh pr merge -d", "gh pr merge -d"),
@@ -1229,6 +1250,7 @@ def main_unit() -> list:
     return [
         ("mutating verbs classified as mutating", test_mutating_verbs_classified_as_mutating),
         ("read-only commands classified as safe", test_readonly_commands_classified_as_safe),
+        ("_ALWAYS_MUTATING_VERBS constant pinned (dev-env#514)", test_always_mutating_verbs_constant),
         ("gh pr merge -d/--delete-branch classified as mutating (dev-env#558)", test_gh_pr_merge_delete_branch_classified_as_mutating),
         ("gh pr merge without delete-branch classified as safe (dev-env#558)", test_gh_pr_merge_without_delete_branch_classified_as_safe),
         ("classify() flags gh pr merge --delete-branch (dev-env#558)", test_classify_flags_gh_pr_merge_delete_branch),

@@ -615,7 +615,15 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `os.replace` swap), swallows errors when the target directory can't be created (a plain file
     occupying the path), and that the default `heartbeat_dir` is `SCRATCH / "hook-heartbeat"`. This
     is the writer side, called as the first statement of `main()` by all 41 currently-wired hooks
-    plus `hook-liveness-check.py` itself — see item 67 for the reader side.
+    plus `hook-liveness-check.py` itself — see item 67 for the reader side. Also exercises the
+    user-text extraction helpers `_user_message_texts(rec)` and `_is_synthetic_user(rec)` (dev-env#710):
+    the bare-string / list-of-`{"type":"text"}` extraction with its `[]` guards for a non-user / non-dict
+    / malformed record and missing-`text`→`""` coercion, and that `_is_synthetic_user` flags
+    `isMeta`/`isCompactSummary` while returning `False` (not raising) on a non-dict — the guard that lets
+    `stop-tile-enumeration-gate.py`'s `skip_override` front it ahead of `_user_message_texts`'s own dict
+    check. Promoted here from `stop-journal-stub-checkpoint.py` and shared with that tile gate, which
+    previously inlined the same extraction (the transcript-parsing drift ADR-090 hoists readers here to
+    prevent).
 
     ```bash
     py -3 claude/scripts/tests/test_hookutil.py
@@ -761,7 +769,16 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     ([ADR-050 Amendment 22](docs/adr/050-shared-hookio-sibling-hook-fixes.md); dev-env#732 — a forward-slash
     redirect target like `git -C /repo` would otherwise fail-open the guard on Python 3.13+); the pure
     resolution semantic is pinned by `is_absolute_path`'s own tests (item 13), so this file needs no new case
-    for it.
+    for it. Also (dev-env#514) pins `_ALWAYS_MUTATING_VERBS` — the extracted single-source frozenset of
+    unconditionally-mutating verbs `is_mutating_segment()` reads — by exact contents, that the four
+    conditional verbs (checkout/stash/branch/pull) stay OUT of it (they keep their own guarded branches),
+    and that each always-verb still classifies mutating end-to-end. The worktree-path regexes this hook
+    needed are now single-sourced in `_worktree_canon.py` (dev-env#510): `_worktree_root_from_cwd()`
+    delegates to `_worktree_canon.worktree_root_from_path()` and `_is_confirmed_worktree_root()`'s fail-open
+    backstop to `_worktree_canon.is_worktree_path()`; both keep their existing tests
+    (`test_worktree_root_from_cwd_*`, `test_is_confirmed_worktree_root_*`) green unchanged (the shared
+    functions return the same result for the absolute paths this hook passes), with the equivalence itself
+    pinned in `test_worktree_canon.py` (item 35).
 
     ```bash
     py -3 claude/scripts/tests/test_canonical_mutate_guard.py
@@ -794,7 +811,14 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     path (e.g. `dev-env-188`, outside `.claude/worktrees/`, so the regex misses it by design) and on
     empty/`None` input. `post-tool-use.py`'s and `reconcile-project-board.py`'s own test files continue
     to exercise the same functions unchanged, through the module-attribute indirection `from X import Y`
-    preserves. [ADR-073](docs/adr/073-shared-worktree-canon-gh-project-modules.md)
+    preserves. dev-env#510 adds coverage for the three SSOT functions this module now single-sources for
+    the two PreToolUse worktree guards: `match_worktree()` (exposing `group(1)`=canonical root and
+    `group(0)`=worktree root), `worktree_root_from_path()`, and `is_worktree_path()` — with two equivalence
+    pins that the latter two return exactly what `pre-tool-use-canonical-mutate-guard.py`'s former local
+    `_NESTED_WORKTREE_ROOT_RE`/`_SIBLING_WORKTREE_ROOT_RE`/`_WORKTREE_RE` produced for the ABSOLUTE paths
+    that hook ever passes (a git-resolved `--show-toplevel`), plus the sole theoretical divergence (a
+    marker at the very start of a RELATIVE path, unreachable as a resolved toplevel) documented as a pinned
+    boundary. [ADR-073](docs/adr/073-shared-worktree-canon-gh-project-modules.md)
 
     ```bash
     py -3 claude/scripts/tests/test_worktree_canon.py

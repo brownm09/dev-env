@@ -38,6 +38,16 @@ over one shared regex + primitive rather than picking one and breaking the other
     from `__file__`) and needs it normalized whether or not it happens to be a worktree
     path; a `None` here would crash the `os.path.join` in its caller.
 
+dev-env#510 extends the consumer set to the two PreToolUse worktree guards, whose
+byte-identical (or trivially-variant) copies of these regexes this module now
+single-sources. `pre-tool-use-worktree-path-check.py` consumes `match_worktree()`
+directly (it needs both the canonical-root `group(1)` and the worktree-root `group(0)`
+of one match); `pre-tool-use-canonical-mutate-guard.py` consumes `worktree_root_from_path()`
+(the full worktree root of a cwd) and `is_worktree_path()` (a boolean shape check on an
+already git-resolved toplevel). All three are built on the one `match_worktree()`
+matcher below, so the worktree-path convention lives in exactly one place across all
+four consumers — see ADR-073.
+
 Not folded into `_worktree_topology.py` despite the similar subject matter: that module
 already has an unrelated `canonical_worktree(worktrees)` (first entry of a *parsed*
 `git worktree list --porcelain` result) — reusing the "canonical" name for a completely
@@ -89,16 +99,70 @@ _SIBLING_WORKTREE_RE = re.compile(
 )
 
 
+def match_worktree(path: str):
+    """The `re.Match` for `path` against the nested convention (tried first) then
+    the sibling convention, or None. The single matcher every worktree-path
+    operation in this module — and its consumer hooks (dev-env#510) — is built
+    on, so there is exactly one pair of regexes and one match ordering behind all
+    of them:
+
+      - `canonical_root_from_worktree()` reads its `group(1)` — the canonical-root
+        PREFIX (everything before the marker segment).
+      - `worktree_root_from_path()` reads its `group(0)` — the full worktree root
+        (the PREFIX plus the `.claude/worktrees/<name>` / `<repo>-worktrees/<name>`
+        marker segment).
+      - `is_worktree_path()` just tests it for None.
+
+    Nested is tried first so a nested worktree created inside a sibling-convention
+    worktree resolves to its own (deeper) root rather than the outer sibling
+    stealing the match at a shallower position — see `_NESTED_WORKTREE_RE`'s
+    comment for the full reasoning."""
+    path = path or ""
+    m = _NESTED_WORKTREE_RE.match(path)
+    return m if m else _SIBLING_WORKTREE_RE.match(path)
+
+
 def canonical_root_from_worktree(cwd: str) -> str | None:
     """Canonical repo root for a Claude-managed worktree cwd
     (`<root>/.claude/worktrees/<name>/...` or `<root>-worktrees/<name>/...`), else None.
     The nested convention is tried first — see `_NESTED_WORKTREE_RE`'s comment for why."""
-    cwd = cwd or ""
-    m = _NESTED_WORKTREE_RE.match(cwd)
-    if m:
-        return m.group(1)
-    m = _SIBLING_WORKTREE_RE.match(cwd)
+    m = match_worktree(cwd)
     return m.group(1) if m else None
+
+
+def worktree_root_from_path(path: str) -> str | None:
+    """The full worktree ROOT of `path` — everything up through and including the
+    `.claude/worktrees/<name>` or `<repo>-worktrees/<name>` marker segment — or
+    None if `path` isn't anchored inside a worktree. This is `match_worktree`'s
+    whole-match `group(0)`, i.e. `canonical_root_from_worktree`'s PREFIX plus the
+    marker segment.
+
+    Consumed by `pre-tool-use-canonical-mutate-guard.py`'s `_worktree_root_from_cwd`
+    (the worktree-root string it hands its `.git`-liveness check) — dev-env#510.
+    That hook only ever passes an absolute cwd, for which this returns the same
+    root its former local `_NESTED_WORKTREE_ROOT_RE`/`_SIBLING_WORKTREE_ROOT_RE`
+    did (the two share the nested pattern exactly; the sibling patterns agree for
+    any path with a leading component before the marker, which an absolute path
+    always has) — see `test_worktree_root_from_path_*`."""
+    m = match_worktree(path)
+    return m.group(0) if m else None
+
+
+def is_worktree_path(path: str) -> bool:
+    """True if `path` is anchored inside a Claude-managed worktree (either
+    convention). A boolean-only shape check for callers that need to know
+    *whether* a path is worktree-shaped, not extract a root from it — consumed by
+    `pre-tool-use-canonical-mutate-guard.py`'s `_is_confirmed_worktree_root`
+    fail-open backstop (dev-env#510).
+
+    Equivalent, for the absolute paths that hook ever passes (a git-resolved
+    `--show-toplevel`), to that hook's former unanchored `_WORKTREE_RE.search`:
+    an anchored `match_worktree` and an unanchored search agree on *whether* a
+    marker segment is present whenever the path has any leading component before
+    the marker, which an absolute path always does. They can differ only for a
+    marker at the very START of a relative path (e.g. `dev-env-worktrees/foo`),
+    which never occurs as a resolved toplevel — see `test_is_worktree_path_*`."""
+    return match_worktree(path) is not None
 
 
 def canonical_repo_root(path: str) -> str:

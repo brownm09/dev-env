@@ -245,6 +245,39 @@ def test_content_items_guards() -> str:
     return "_content_items returns [] for a non-dict rec / message / non-list content"
 
 
+def test_user_message_texts_extracts() -> str:
+    # dev-env#710: bare-string content, list-of-text-items, and the various empties.
+    assert _hookutil._user_message_texts({"type": "user", "message": {"content": "skip tiles"}}) == ["skip tiles"]
+    rec = {"type": "user", "message": {"content": [
+        {"type": "text", "text": "one"},
+        {"type": "tool_result", "content": "ignored"},  # non-text item ignored
+        {"type": "text", "text": "two"},
+    ]}}
+    assert _hookutil._user_message_texts(rec) == ["one", "two"]
+    # non-user / non-dict rec / non-dict message / non-str-non-list content -> []
+    assert _hookutil._user_message_texts({"type": "assistant", "message": {"content": "x"}}) == []
+    assert _hookutil._user_message_texts("not-a-dict") == []
+    assert _hookutil._user_message_texts({"type": "user", "message": "not-a-dict"}) == []
+    assert _hookutil._user_message_texts({"type": "user", "message": {"content": 42}}) == []
+    # a text item with missing / None "text" coerces to ""
+    rec2 = {"type": "user", "message": {"content": [{"type": "text"}, {"type": "text", "text": None}]}}
+    assert _hookutil._user_message_texts(rec2) == ["", ""]
+    return "_user_message_texts: bare-string / text-items extraction; [] for non-user/non-dict/malformed; missing text -> ''"
+
+
+def test_is_synthetic_user_flags() -> str:
+    # dev-env#710: isMeta / isCompactSummary -> synthetic; a plain user record ->
+    # not; the non-dict guard returns False (does NOT raise), so a caller may front
+    # this check ahead of _user_message_texts's own dict guard on a malformed list.
+    assert _hookutil._is_synthetic_user({"type": "user", "isMeta": True}) is True
+    assert _hookutil._is_synthetic_user({"type": "user", "isCompactSummary": True}) is True
+    assert _hookutil._is_synthetic_user({"type": "user", "message": {"content": "hi"}}) is False
+    assert _hookutil._is_synthetic_user({"isMeta": False, "isCompactSummary": False}) is False
+    assert _hookutil._is_synthetic_user("not-a-dict") is False
+    assert _hookutil._is_synthetic_user(None) is False
+    return "_is_synthetic_user: True for isMeta/isCompactSummary, False for a plain user record and (without raising) a non-dict"
+
+
 def test_result_text_string_content() -> str:
     assert _hookutil._result_text({"content": "the URL"}, {}) == "the URL"
     return "_result_text returns string content verbatim"
@@ -618,6 +651,8 @@ def main() -> int:
         ("find_transcript: nested dir", test_find_transcript_nested),
         ("_content_items: returns list", test_content_items_returns_list),
         ("_content_items: guards -> []", test_content_items_guards),
+        ("_user_message_texts: extraction + guards (dev-env#710)", test_user_message_texts_extracts),
+        ("_is_synthetic_user: flags + non-dict guard (dev-env#710)", test_is_synthetic_user_flags),
         ("_result_text: string content", test_result_text_string_content),
         ("_result_text: list content", test_result_text_list_content),
         ("_result_text: toolUseResult fallback", test_result_text_tooluseresult_fallback),
