@@ -1439,13 +1439,12 @@ draft branch as the PR head. Set `PR_HEAD=$SOURCE_BRANCH`.
 
 **If `CONFLICT_LINES` > 0** — conflicts detected. Recover via a clean compose branch:
 
-Define the shared helper used by both recovery paths below:
-
 ```bash
+# restore_missing_shards is defined here (and again in the multi-project block below) so
+# it is in scope for this subprocess. Restores any open-PR shard from sessions/ that
+# existed on $PREV but is absent from the recovery branch (dev-env#787); reads $WT and
+# $PREV from the calling scope.
 restore_missing_shards() {
-  # For every open-PR shard that existed on $PREV, verify it is present in the
-  # working tree; restore any that are missing by checking them out directly from
-  # $PREV (dev-env#787). Reads $WT and $PREV from the calling scope.
   SHARD_CHECK_LOG=""
   while IFS= read -r SHARD_PATH; do
     [ -e "$WT/$SHARD_PATH" ] && continue
@@ -1454,9 +1453,7 @@ restore_missing_shards() {
   done < <(git -C "$WT" ls-tree -r "$PREV" --name-only -- sessions/ | grep -E '/open-prs/[0-9]+\.json$')
   [ -n "$SHARD_CHECK_LOG" ] && echo "SHARD_INTEGRITY_RESTORED=$SHARD_CHECK_LOG"
 }
-```
 
-```bash
 # Capture the compose worktree's current (detached) HEAD before switching it onto a new
 # branch — this is the commit Step 10 just pushed. The worktree is detached, so there is no
 # guarantee a local branch named $SOURCE_BRANCH exists to check out FROM; the worktree's
@@ -1518,6 +1515,18 @@ together on a single `compose/YYYY-MM-DD` branch before opening the combined PR.
 for two projects `meta` and `lifting-logbook`:
 
 ```bash
+# restore_missing_shards is defined here (and in the single-project block above) so it is
+# in scope for this subprocess. See the single-project block for the full explanation.
+restore_missing_shards() {
+  SHARD_CHECK_LOG=""
+  while IFS= read -r SHARD_PATH; do
+    [ -e "$WT/$SHARD_PATH" ] && continue
+    git -C "$WT" checkout "$PREV" -- "$SHARD_PATH" 2>/dev/null && \
+      SHARD_CHECK_LOG="${SHARD_CHECK_LOG:+$SHARD_CHECK_LOG }$SHARD_PATH"
+  done < <(git -C "$WT" ls-tree -r "$PREV" --name-only -- sessions/ | grep -E '/open-prs/[0-9]+\.json$')
+  [ -n "$SHARD_CHECK_LOG" ] && echo "SHARD_INTEGRITY_RESTORED=$SHARD_CHECK_LOG"
+}
+
 PREV=$(git -C "$WT" rev-parse HEAD)
 git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
 
