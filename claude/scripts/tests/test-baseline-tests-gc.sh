@@ -32,7 +32,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SCRIPT="$REPO_ROOT/claude/scripts/baseline-tests.sh"
 
 TMPROOT=$(mktemp -d)
-trap 'rm -rf "$TMPROOT"' EXIT
+trap 'rm -rf "$TMPROOT"' EXIT INT TERM
 
 NOHOOKS_DIR="$TMPROOT/no-hooks"
 mkdir -p "$NOHOOKS_DIR"
@@ -146,6 +146,14 @@ setup_main_fixture() {
   echo '{"repo": "myrepo", "captured_at": "2026-01-01T00:00:00.000Z", "failures": []}' \
     > "$MAIN_SCRATCH/baseline_myrepo_nobranch.json"
 
+  # g) filename matches the current repo's glob (baseline_myrepo_*.json),
+  #    but the envelope's OWN repo field disagrees (hand-edited/corrupted)
+  #    -> kept. The glob alone would include this file; only the internal
+  #    repo re-check (not exercised by (d) above, since that file's NAME
+  #    already excludes it from the glob) keeps it from being deleted on
+  #    filename trust alone.
+  write_baseline "$MAIN_SCRATCH" "not-actually-myrepo" "feature-long-gone" "baseline_myrepo_impersonating.json"
+
   (
     cd "$MAIN_WORK" || exit 1
     SCRATCH_DIR="$MAIN_SCRATCH"
@@ -181,6 +189,11 @@ test_kept_malformed_json() {
 test_kept_missing_branch_field() {
   assert_kept "gc keeps a well-formed baseline file that is missing the branch field" \
     "$MAIN_SCRATCH/baseline_myrepo_nobranch.json"
+}
+
+test_kept_filename_repo_matches_but_content_disagrees() {
+  assert_kept "gc keeps a file whose filename matches the current repo's glob but whose envelope content names a different repo" \
+    "$MAIN_SCRATCH/baseline_myrepo_impersonating.json"
 }
 
 # --- direct helper-function tests (reuse the main fixture) -------------
@@ -225,24 +238,75 @@ test_branch_exists_remotely_confirmed_present() {
   fi
 }
 
-test_read_baseline_meta_parses_fields() {
-  local meta expected
-  meta=$(read_baseline_meta "$MAIN_SCRATCH/baseline_myrepo_feature-local.json")
-  expected=$(printf 'myrepo\tfeature-local')
-  if [ "$meta" = "$expected" ]; then
-    pass "read_baseline_meta: parses repo/branch from a well-formed envelope"
+# dev-env#778 /review regression: git ls-remote's own pattern matching treats
+# a bare branch name as a "*/<name>" suffix match, so a sibling branch that
+# merely ENDS with the queried name (not equals it) could be mistaken for a
+# match unless the result is re-filtered for an exact ref match.
+test_branch_exists_remotely_suffix_sibling_not_false_positive() {
+  local root work rc
+  root="$TMPROOT/remote-suffix"
+  mkdir -p "$root"
+  work=$(make_fixture "$root")
+  git -C "$work" checkout --quiet -b topic/foo
+  git -C "$work" push --quiet origin topic/foo
+
+  (cd "$work" && branch_exists_remotely foo)
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    pass "branch_exists_remotely: a sibling branch sharing only a path suffix (topic/foo vs foo) is not a false positive"
   else
-    fail "read_baseline_meta: parses repo/branch from a well-formed envelope" "got: '$meta'"
+    fail "branch_exists_remotely: a sibling branch sharing only a path suffix (topic/foo vs foo) is not a false positive" \
+      "expected exit 1 (confirmed absent), got $rc"
   fi
 }
 
-test_read_baseline_meta_empty_on_malformed() {
-  local meta
-  meta=$(read_baseline_meta "$MAIN_SCRATCH/baseline_myrepo_brokenfile.json")
-  if [ -z "$meta" ]; then
-    pass "read_baseline_meta: empty on unparseable JSON"
+# The mirror-image case: guards against a naive substring-based fix (as
+# opposed to git's own suffix-match behavior) introducing a NEW false
+# positive in the other direction.
+test_branch_exists_remotely_prefix_sibling_not_false_positive() {
+  local root work rc
+  root="$TMPROOT/remote-prefix"
+  mkdir -p "$root"
+  work=$(make_fixture "$root")
+  git -C "$work" checkout --quiet -b foo-bar
+  git -C "$work" push --quiet origin foo-bar
+
+  (cd "$work" && branch_exists_remotely foo)
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    pass "branch_exists_remotely: a sibling branch sharing only a string prefix (foo-bar vs foo) is not a false positive"
   else
-    fail "read_baseline_meta: empty on unparseable JSON" "got: '$meta'"
+    fail "branch_exists_remotely: a sibling branch sharing only a string prefix (foo-bar vs foo) is not a false positive" \
+      "expected exit 1 (confirmed absent), got $rc"
+  fi
+}
+
+test_read_baseline_meta_batch_ok_and_skip_together() {
+  local root scratch ok_file skip_file ok_file_norm skip_file_norm out expected
+  root="$TMPROOT/meta-batch"
+  mkdir -p "$root"
+  scratch="$root/scratch"
+  mkdir -p "$scratch"
+  ok_file="$scratch/baseline_x_ok.json"
+  skip_file="$scratch/baseline_x_broken.json"
+  write_baseline "$scratch" "x" "some-branch" "baseline_x_ok.json"
+  echo "{not valid json" > "$skip_file"
+
+  # read_baseline_meta_batch normalizes every path via `cygpath -m` before
+  # handing it to node (see its own comment), so its OUTPUT echoes back
+  # that normalized form too -- not necessarily the exact string the caller
+  # passed in.
+  ok_file_norm=$(cygpath -m -- "$ok_file")
+  skip_file_norm=$(cygpath -m -- "$skip_file")
+
+  out=$(read_baseline_meta_batch "$ok_file" "$skip_file")
+  expected=$(printf 'ok\tx\tsome-branch\t%s\nskip\t\t\t%s' "$ok_file_norm" "$skip_file_norm")
+
+  if [ "$out" = "$expected" ]; then
+    pass "read_baseline_meta_batch: one node call parses a well-formed file and flags a malformed one, order-preserving"
+  else
+    fail "read_baseline_meta_batch: one node call parses a well-formed file and flags a malformed one, order-preserving" \
+      "got:" "$out"
   fi
 }
 
@@ -270,6 +334,73 @@ test_kept_when_remote_check_itself_fails() {
 
   assert_kept "gc keeps a baseline when the remote existence check itself fails (unreachable origin)" \
     "$scratch/baseline_repo2_feature-unknown.json"
+}
+
+# --- dev-env#778 /review regression: sanitized vs. raw branch name -----
+#
+# cmd_snapshot must store the RAW (unsanitized) branch name in the
+# envelope's `branch` field -- cmd_gc compares it against real git refs,
+# which never contain the sanitized ("/" -> "-") form. This repo's own
+# branch-naming convention (feat/, fix/, config/, chore/, draft/) always
+# contains a slash, so a regression here silently deletes the baseline
+# JUST written on nearly every real snapshot -- and every fixture branch
+# name elsewhere in this file is deliberately slash-free, so only these two
+# tests actually exercise the sanitization round-trip.
+
+test_kept_branch_with_slash_in_name() {
+  local root work scratch
+  root="$TMPROOT/slash-branch"
+  mkdir -p "$root"
+  work=$(make_fixture "$root")
+  scratch="$root/scratch"
+  mkdir -p "$scratch"
+
+  git -C "$work" checkout --quiet -b feat/778-foo
+  # Filename uses the sanitized form (what baseline_path really produces);
+  # the envelope's branch field uses the RAW form (what cmd_snapshot's
+  # fixed behavior actually writes) -- branch_is_gone must be fed this raw
+  # form to find the real ref.
+  write_baseline "$scratch" "myrepo" "feat/778-foo" "baseline_myrepo_feat-778-foo.json"
+
+  (
+    cd "$work" || exit 1
+    SCRATCH_DIR="$scratch"
+    cmd_gc
+  ) > "$root/gc.log" 2>&1
+
+  assert_kept "gc keeps a baseline for a branch whose name contains a slash (this repo's own naming convention)" \
+    "$scratch/baseline_myrepo_feat-778-foo.json"
+}
+
+test_snapshot_with_slashed_branch_name_survives_its_own_gc() {
+  local root work scratch out rc new_baseline
+  root="$TMPROOT/autogc-slash"
+  mkdir -p "$root"
+  work=$(make_fixture "$root")
+  scratch="$root/scratch"
+  mkdir -p "$scratch"
+
+  mkdir -p "$work/.claude"
+  cat > "$work/.claude/hook-config.json" <<'JSON'
+{"test_command": "echo '{\"testResults\":[],\"numPassedTests\":0,\"numFailedTests\":0,\"numPendingTests\":0,\"numTotalTests\":0}'"}
+JSON
+
+  # The exact end-to-end shape the review caught: a real `git checkout -b`
+  # with a slash, then a real `snapshot` invocation -- the baseline
+  # snapshot just wrote for the branch actually checked out must survive
+  # snapshot's own auto-gc call in the same run.
+  git -C "$work" checkout --quiet -b feat/778-regression
+
+  out=$(cd "$work" && SCRATCH_DIR="$scratch" bash "$SCRIPT" snapshot 2>&1)
+  rc=$?
+  new_baseline="$scratch/baseline_myrepo_feat-778-regression.json"
+
+  if [ "$rc" -eq 0 ] && [ -f "$new_baseline" ]; then
+    pass "snapshot on a slashed branch name does not delete its own just-written baseline (dev-env#778 review regression)"
+  else
+    fail "snapshot on a slashed branch name does not delete its own just-written baseline (dev-env#778 review regression)" \
+      "rc=$rc" "new_baseline_exists=$([ -f "$new_baseline" ] && echo yes || echo no)" "output: $out"
+  fi
 }
 
 # --- subcommand dispatch + auto-gc-on-snapshot (real subprocesses) -----
@@ -341,13 +472,17 @@ main() {
   test_kept_other_repo_file_never_scanned
   test_kept_malformed_json
   test_kept_missing_branch_field
+  test_kept_filename_repo_matches_but_content_disagrees
   test_branch_exists_locally_true
   test_branch_exists_locally_false
   test_branch_exists_remotely_confirmed_absent
   test_branch_exists_remotely_confirmed_present
-  test_read_baseline_meta_parses_fields
-  test_read_baseline_meta_empty_on_malformed
+  test_branch_exists_remotely_suffix_sibling_not_false_positive
+  test_branch_exists_remotely_prefix_sibling_not_false_positive
+  test_read_baseline_meta_batch_ok_and_skip_together
   test_kept_when_remote_check_itself_fails
+  test_kept_branch_with_slash_in_name
+  test_snapshot_with_slashed_branch_name_survives_its_own_gc
   test_gc_subcommand_dispatch
   test_snapshot_auto_invokes_gc
 
