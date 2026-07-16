@@ -1569,9 +1569,21 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     stdout channel); and the best-effort scratch-state I/O (`read`/`write`/`clear_failure_state`)
     against a `tempfile.TemporaryDirectory()` — a write/read round-trip, no `.tmp` orphan left by
     the atomic `os.replace` swap, `clear` deleting (and a double-`clear` being a no-op), and
-    malformed / non-dict JSON both reading back as `None`. `main()`'s track-on-failure /
-    clear-on-success wiring and the `_hookutil.cleanup_stale_sentinels` backstop sweep are not
-    covered (pure-helper convention). The git/subprocess orchestration
+    malformed / non-dict JSON both reading back as `None`. The PR #800 `/review` (two independent
+    opus reviewers) added coverage for its fixes: `build_failure_response()` — the escalate-vs-plain
+    decision extracted from `main()` into a pure helper — is unit-tested for the fresh/plain,
+    count-arm, and time-arm cases (so the state machine is no longer exercised only through the
+    git-shelling `main()`); the escalated message's `behind == 0` guard (renders "unmeasured number
+    of commits", never the "0 commits behind … STALE" self-contradiction PR #701 fixed in the sibling
+    formatters); the `_hookout.ascii_sanitize` of the echoed `git_stderr` in BOTH failure formatters
+    (a non-cp1252 stderr no longer `UnicodeEncodeError`s the advisory away — asserted `.isascii()` for
+    the all-ASCII escalated message and `.encode("cp1252")` for the one-off message, which carries a
+    pre-existing cp1252-safe em dash); `read_failure_state`'s `(OSError, ValueError)` catch (a non-UTF-8
+    state file reads back as `None`); the per-PID-tmp write isolation (monkeypatched `os.getpid`,
+    mirroring `test_journal_compose_force.py`); and the `.tmp` orphan sweep (a stale orphan reaped,
+    a fresh in-flight one spared). `main()`'s remaining glue (`read` → `build_failure_response` →
+    `write` + `print`, the `clear_failure_state` calls, and the `_hookutil.cleanup_stale_sentinels`
+    backstop sweeps) is not covered (pure-helper convention). The git/subprocess orchestration
     (fetch, rev-parse, merge-base, the actual pull, and the off-main worktree-topology diagnosis
     reused from `_worktree_topology.py`) is not covered here — it has no local pure logic beyond
     the formatters above, matching this repo's established convention for topology-diagnosing

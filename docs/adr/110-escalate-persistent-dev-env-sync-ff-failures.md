@@ -52,18 +52,35 @@ mechanism unchanged.
   central decision. The whole point of the issue is *multi-session* persistence; a per-session
   state file (the `_bash_state.py` / sentinel convention) would reset on every new session and
   never accumulate, so the two real incidents (which spanned many sessions) would never have
-  escalated. The state's *storage convention* follows `_bash_state.py` (atomic tmp-file +
-  `os.replace` write, best-effort I/O that swallows `OSError`, malformed/non-dict JSON read back
-  as `None` → fresh run, `scratch=` injection for offline tests); only its *keying* differs
-  (one file for the canonical, not one per session).
+  escalated. The state's *storage convention* is split across the two established sibling
+  patterns (a `/review` finding on PR #800 corrected an earlier draft that wrongly attributed
+  the atomic write to `_bash_state.py`): the **read** path mirrors `_bash_state.read_state`
+  (best-effort, malformed/non-dict/non-UTF-8 JSON read back as `None` → fresh run, `scratch=`
+  injection for offline tests), while the **atomic tmp-file + `os.replace` write** mirrors
+  `_hookutil.record_heartbeat` — a per-PID tmp keeps two racing writers from clobbering each
+  other, and the atomic swap keeps a concurrent reader from ever seeing a torn file (which would
+  otherwise decode to `None` → a spurious fresh run that *overwrites* the accumulated state).
+  `_bash_state.write_state` is a *direct, non-atomic* `write_text`, which this deliberately does
+  not follow. Only the *keying* differs from both (one file for the canonical, not one per
+  session).
 
-- **Update the state only on the fast-forward-pull-failure branch; clear it on the two
-  "canonical is fine" outcomes** (already-up-to-date, and a successful pull). Every other exit
-  path (fetch failure, off-`main` topology warnings, diverged) leaves the state untouched, so
-  `consecutive_count` counts *consecutive fast-forward-pull failures specifically*. This is what
-  makes the counter self-cleaning against the transient case: a concurrent-session pull that
+- **Update the state on the fast-forward-pull-failure branch; clear it on every determinate
+  not-actively-failing outcome** — already-up-to-date, a successful pull, a **diverged** local
+  `main`, and an **off-`main`** canonical (the topology block's entry). Only the *transient*
+  fetch-failure early exit (a network blip, no determinate verdict) leaves the state untouched,
+  so `consecutive_count` counts *consecutive fast-forward-pull failures specifically*. This is
+  what makes the counter self-cleaning against the transient case: a concurrent-session pull that
   momentarily loses the `--ff-only` race resolves to "already up-to-date" on the next prompt,
   which clears the state; only the genuinely-stuck dirty-file case keeps failing and accumulates.
+  Clearing on diverged/off-`main` (added after a `/review` finding on PR #800) closes a
+  stale-timer edge: a resolved failure whose resolution passed through one of those determinate
+  states could otherwise leave an old `first_failure_at` on disk, making a *later, unrelated*
+  failure escalate immediately with a bogus multi-hour duration. A genuinely still-dirty file
+  simply re-accumulates a fresh run once the canonical is back on `main` and the pull fails again
+  — a conservative under-report, the right bias for an escalation signal. The one residual (a
+  resolution immediately followed by a sustained fetch-outage before any clearing prompt) is a
+  deliberately-accepted, extremely narrow over-report on an advisory-only signal that still names
+  the correct blocking file and behind-count.
 
 - **Escalate when `consecutive_count >= 3` OR the failure has persisted `>= 2h`** (OR semantics,
   matching the issue's "≥ N prompts or ≥ M hours"). Thresholds are module constants
@@ -124,12 +141,23 @@ touched — it has no analogous per-prompt-repeating silent-failure mode.
   next prompt and clears the state before the count ever reaches the threshold, so the escalation
   never cries wolf.
 - Two new best-effort scratch I/O operations (one read, one write) on the already-rare
-  `local != remote` path, plus one cheap glob (`cleanup`) per prompt. Negligible relative to the
-  `fetch`/`pull` subprocesses already run.
+  `local != remote` path, plus two cheap globs (`.json` + `.tmp` cleanup) per prompt. Negligible
+  relative to the `fetch`/`pull` subprocesses already run.
 - The escalation is advisory-only (exit 0), so it never blocks a prompt even when the canonical is
   badly stale — matching the hook's standing "Exit 0 always" contract.
 - A new machine-local scratch file family (`dev_env_sync_ff_failure*.json`) exists; it is ephemeral,
   self-clearing, and swept after 30 days, so it needs no migration and leaves no durable state.
+- **Review hardening (PR #800 `/review`, two independent opus reviewers).** Beyond the two
+  design-level changes folded into Decision above (attribution correction; clear-on-diverged/off-`main`),
+  the review drove five implementation-robustness fixes, all with tests: the escalated message guards
+  `behind == 0` against the "0 commits behind … STALE" self-contradiction PR #701 fixed in the sibling
+  formatters; both failure formatters `ascii_sanitize` the echoed `git_stderr` so a non-cp1252 filename/
+  locale can't `UnicodeEncodeError` the advisory away (the exact ADR-098 cp1252 class); `read_failure_state`
+  catches `UnicodeDecodeError` (a `ValueError`) so an externally-corrupted state file degrades to a fresh
+  run rather than defeating the feature; the escalate-vs-plain decision was extracted into the pure,
+  unit-tested `build_failure_response` helper (the state machine is no longer only exercised through the
+  git-shelling `main()`); and a second `cleanup_stale_sentinels(ext=".tmp")` sweep reaps an orphaned
+  atomic-write tmp the `.json` glob couldn't match (the dev-env#768 debris class).
 
 ## Alternatives considered
 

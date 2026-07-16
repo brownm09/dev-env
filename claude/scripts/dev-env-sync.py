@@ -43,6 +43,7 @@ import sys
 import time
 from pathlib import Path
 
+import _hookout
 import _hookutil
 from _worktree_topology import (
     canonical_sync_action,
@@ -97,11 +98,16 @@ def format_sync_note(local: str, remote: str, behind: int) -> str:
 
 
 def format_pull_failure_message(local: str, remote: str, behind: int, git_stderr: str) -> str:
+    # git's stderr is echoed verbatim, but it can carry non-cp1252 bytes (a non-Western
+    # LC_MESSAGES locale, or a U+FFFD from _winsubp's errors="replace" on invalid UTF-8) that
+    # would raise UnicodeEncodeError at print() on Claude Code's Windows hook-output pipe and
+    # lose the whole advisory. ascii_sanitize guarantees a cp1252-safe rendering (review
+    # finding, PR #800; same root cause as ADR-098's cp1252 fix).
     return (
         "[dev-env-sync] WARNING: fast-forward pull failed — "
         + format_sync_note(local, remote, behind)
         + " and could not be applied.\n"
-        + git_stderr.strip()
+        + _hookout.ascii_sanitize(git_stderr).strip()
     )
 
 
@@ -170,10 +176,12 @@ def format_pulled_message(local: str, remote: str, behind_count: int, pulled_lin
 
 
 # --- persistent fast-forward-failure escalation (dev-env#797) --------------------
-# Pure helpers (unit-tested offline) plus best-effort scratch-state I/O following the
-# _bash_state.py convention. State is a single repo-level file (not per-session) so a
-# failure that spans sessions accumulates rather than resetting; see the module-level
-# constants above and ADR-110.
+# Pure helpers (unit-tested offline) plus best-effort scratch-state I/O. The read path mirrors
+# _bash_state.read_state (None on malformed/missing, scratch= injection); the atomic tmp-file +
+# os.replace write mirrors _hookutil.record_heartbeat (NOT _bash_state, whose write_state is a
+# direct non-atomic write_text). State is a single repo-level file (not per-session) so a
+# failure that spans sessions accumulates rather than resetting; see the module-level constants
+# above and ADR-110.
 
 
 def parse_blocking_files(git_stderr: str) -> "list[str]":
@@ -301,11 +309,24 @@ def format_escalated_pull_failure_message(
         files_block = "\n".join(f"    {f}" for f in blocking_files)
     else:
         files_block = "    (none named by git; see its diagnostic below)"
+    # behind == 0 on this path can only mean the `git rev-list --count` measurement itself
+    # failed (_count_from's fail-open sentinel) — a genuine count is always >= 1 here, since
+    # `local != remote` and `base == local` are already established at the call site. Rendering
+    # a literal "0 commits behind ... serving STALE tooling" would be self-contradictory, the
+    # exact case PR #701 fixed in the two sibling formatters (review finding, PR #800).
+    if behind == 0:
+        behind_clause = "behind origin/main by an unmeasured number of commits"
+    else:
+        behind_clause = f"{behind} commit{_plural(behind)} behind origin/main"
+    # "consecutive failing pulls" (not "prompts"): consecutive_count counts fast-forward-pull
+    # failures, which is not literally every prompt — intervening fetch-failure / off-main
+    # prompts don't reach the pull (review finding, PR #800). git's stderr is ascii_sanitized
+    # before echoing for the same cp1252 reason as format_pull_failure_message above.
     return (
         "[dev-env-sync] PERSISTENT FAILURE: the canonical dev-env checkout has failed to "
-        f"fast-forward on {consecutive_count} consecutive prompt{_plural(consecutive_count)} "
+        f"fast-forward on {consecutive_count} consecutive failing pull{_plural(consecutive_count)} "
         f"(failing for {format_duration(seconds_failing)}).\n"
-        f"  It is {behind} commit{_plural(behind)} behind origin/main "
+        f"  It is {behind_clause} "
         f"(local {local[:8]} -> remote {remote[:8]}), so ~/.claude/ CLAUDE.md, hooks, and "
         "scripts are serving STALE tooling on this machine until this is resolved.\n"
         "  Blocked by uncommitted local change(s) to:\n"
@@ -314,8 +335,41 @@ def format_escalated_pull_failure_message(
         "(dev-env#697 / #795 are the precedent for legitimate uncommitted sources.md / "
         "SKILL.md content). The next prompt then fast-forwards automatically.\n"
         "  Git's own diagnostic:\n"
-        + git_stderr.strip()
+        + _hookout.ascii_sanitize(git_stderr).strip()
     )
+
+
+def build_failure_response(
+    prev_state: "dict | None",
+    now: float,
+    local: str,
+    remote: str,
+    behind_count: int,
+    git_stderr: str,
+) -> "tuple[dict, str]":
+    """Pure core of the ff-pull-failure branch: return ``(new_state, message)``.
+
+    Given the prior on-disk state (``None`` on a first failure) and this failure's context,
+    records one more failure, decides escalated-vs-plain, and returns the state to persist plus
+    the advisory to print. ``main()`` does the read / write / print I/O around it. Extracted so
+    the escalate-vs-plain decision — the feature's load-bearing logic — is unit-testable without
+    git (review finding, PR #800); ``main()``'s remaining glue (``read_failure_state`` ->
+    ``build_failure_response`` -> ``write_failure_state`` + ``print``) is trivial one-liners.
+    """
+    state = record_failure(prev_state, now)
+    if should_escalate(state, now):
+        message = format_escalated_pull_failure_message(
+            local,
+            remote,
+            behind_count,
+            parse_blocking_files(git_stderr),
+            state["consecutive_count"],
+            now - state["first_failure_at"],
+            git_stderr,
+        )
+    else:
+        message = format_pull_failure_message(local, remote, behind_count, git_stderr)
+    return state, message
 
 
 def failure_state_path(scratch: "Path | None" = None) -> Path:
@@ -327,17 +381,18 @@ def failure_state_path(scratch: "Path | None" = None) -> Path:
 def read_failure_state(scratch: "Path | None" = None) -> "dict | None":
     """Best-effort read of the persisted ff-failure state.
 
-    Returns ``None`` on a missing / unreadable file or malformed / non-dict JSON — a first
-    failure (or a cleared/corrupt file) is not an error; the caller starts a fresh run.
-    Mirrors ``_bash_state.read_state``. *scratch* overrides SCRATCH (tests).
+    Returns ``None`` on a missing / unreadable file (``OSError``), non-UTF-8 bytes
+    (``UnicodeDecodeError``), or malformed / non-dict JSON (``json.JSONDecodeError``) — a first
+    failure, a cleared file, or an externally-corrupted one is not an error; the caller starts
+    a fresh run. Both decode failures are ``ValueError`` subclasses, so one
+    ``except (OSError, ValueError)`` covers all three. (``_bash_state.read_state`` has the same
+    shape but a narrower ``OSError``-only catch that a non-UTF-8 file would escape — review
+    finding, PR #800.) *scratch* overrides SCRATCH (tests).
     """
     try:
         raw = failure_state_path(scratch).read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -381,10 +436,14 @@ def main() -> None:
         pass
 
     # Best-effort backstop sweep of any stale ff-failure state file (dev-env#797). The state
-    # file self-clears on the next up-to-date/successful pull, so this only matters for a
-    # machine abandoned mid-failure and never prompted again for 30+ days. Cheap glob;
-    # follows the _hookutil cleanup convention.
+    # file self-clears on the next up-to-date/successful pull, so the .json sweep only matters
+    # for a machine abandoned mid-failure and never prompted again for 30+ days. The second
+    # sweep reaps an orphaned atomic-write tmp (dev_env_sync_ff_failure.json.<pid>.tmp) left by
+    # a rare os.replace failure (a Windows sharing violation when a concurrent session is
+    # mid-read), which the .json glob cannot match; 30 days is safely longer than any in-flight
+    # write, so a concurrent writer's live tmp is never swept (review finding, PR #800).
     _hookutil.cleanup_stale_sentinels(FAILURE_STATE_PREFIX, ext=".json")
+    _hookutil.cleanup_stale_sentinels(FAILURE_STATE_PREFIX, ext=".tmp")
 
     # Guard: repo must exist at the expected path.
     if not DEV_ENV_REPO.is_dir():
@@ -403,6 +462,13 @@ def main() -> None:
     branch = run(["git", "symbolic-ref", "--short", "HEAD"])
     current_branch = resolve_current_branch(branch.returncode, branch.stdout)
     if current_branch != "main":
+        # Off main is a determinate not-actively-ff-pull-failing state (a different problem, or
+        # a topological one that pauses the pull) — end any in-progress ff-failure run so a
+        # later, unrelated failure doesn't inherit a stale first_failure_at/count and escalate
+        # with a bogus multi-hour duration (review finding, PR #800). A genuinely still-dirty
+        # file re-accumulates a fresh run once the canonical is back on main and the pull fails
+        # again; a conservative under-report is the right bias for an escalation signal.
+        clear_failure_state()
         # The canonical is off main — diagnose the worktree topology so we can either
         # auto-return a clean canonical to main (restoring the ~/.claude symlinks) or warn
         # precisely. A non-canonical worktree may be squatting main (gh's --delete-branch
@@ -497,7 +563,9 @@ def main() -> None:
     behind_count = _count_from(run(["git", "rev-list", "--count", f"{local}..{remote}"]))
 
     if base != local:
-        # Local main has commits not on origin/main — diverged.
+        # Local main has commits not on origin/main — diverged. A determinate non-ff-failure
+        # state, so end any in-progress ff-failure run (review finding, PR #800).
+        clear_failure_state()
         ahead_count = _count_from(run(["git", "rev-list", "--count", f"{remote}..{local}"]))
         print(format_diverged_message(local, remote, behind_count, ahead_count))
         sys.exit(0)
@@ -514,28 +582,17 @@ def main() -> None:
         # A failed fast-forward is almost always a dirty tracked file conflicting with an
         # incoming commit — a condition that NEVER self-heals (unlike a transient concurrent
         # pull, which resolves to up-to-date on the next prompt and clears the state above).
-        # Track it across prompts/sessions and escalate a persistent one to a distinct,
-        # louder advisory, instead of the same-severity per-prompt warning that let the
-        # canonical drift 21 commits / ~41h unnoticed (dev-env#697, #795, #797, ADR-110).
+        # Track it across prompts/sessions and escalate a persistent one to a distinct, louder
+        # advisory, instead of the same-severity per-prompt warning that let the canonical drift
+        # 21 commits / ~41h unnoticed (dev-env#697, #795, #797, ADR-110). The escalate-vs-plain
+        # decision lives in the pure build_failure_response helper; main() only does the
+        # read/write/print glue around it.
         now = time.time()
-        state = record_failure(read_failure_state(), now)
+        state, message = build_failure_response(
+            read_failure_state(), now, local, remote, behind_count, pull.stderr
+        )
         write_failure_state(state)
-        if should_escalate(state, now):
-            blocking = parse_blocking_files(pull.stderr)
-            seconds_failing = now - state["first_failure_at"]
-            print(
-                format_escalated_pull_failure_message(
-                    local,
-                    remote,
-                    behind_count,
-                    blocking,
-                    state["consecutive_count"],
-                    seconds_failing,
-                    pull.stderr,
-                )
-            )
-        else:
-            print(format_pull_failure_message(local, remote, behind_count, pull.stderr))
+        print(message)
 
     sys.exit(0)
 

@@ -33,9 +33,11 @@ Exit 0 = all pass.
 """
 
 import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -51,6 +53,8 @@ assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 des = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(des)  # safe: main() is guarded by __main__
 
+import _hookutil  # noqa: E402  -- resolvable only after the sys.path.insert above
+
 _plural = des._plural
 _count_from = des._count_from
 format_sync_note = des.format_sync_note
@@ -64,10 +68,12 @@ format_duration = des.format_duration
 record_failure = des.record_failure
 should_escalate = des.should_escalate
 format_escalated_pull_failure_message = des.format_escalated_pull_failure_message
+build_failure_response = des.build_failure_response
 failure_state_path = des.failure_state_path
 read_failure_state = des.read_failure_state
 write_failure_state = des.write_failure_state
 clear_failure_state = des.clear_failure_state
+FAILURE_STATE_PREFIX = des.FAILURE_STATE_PREFIX
 ESCALATE_AFTER_CONSECUTIVE_FAILURES = des.ESCALATE_AFTER_CONSECUTIVE_FAILURES
 ESCALATE_AFTER_HOURS = des.ESCALATE_AFTER_HOURS
 
@@ -358,7 +364,7 @@ def test_format_escalated_message_contains_key_facts() -> str:
         consecutive_count=7, seconds_failing=41 * 3600, git_stderr=_LOCAL_CHANGES_STDERR,
     )
     assert "PERSISTENT FAILURE" in msg, "must lead with the distinct escalation tag"
-    assert "7 consecutive prompts" in msg, "must name the consecutive-prompt count"
+    assert "7 consecutive failing pulls" in msg, "must name the consecutive failing-pull count"
     assert "41h" in msg, "must name how long it has been failing"
     assert "21 commit" in msg, "must name the commits-behind count"
     assert LOCAL[:8] in msg and REMOTE[:8] in msg, "must name local/remote short SHAs"
@@ -373,7 +379,7 @@ def test_format_escalated_message_singular_prompt() -> str:
         LOCAL, REMOTE, behind=1, blocking_files=["a.txt"],
         consecutive_count=1, seconds_failing=7200, git_stderr="",
     )
-    assert "1 consecutive prompt " in msg and "1 consecutive prompts" not in msg, "prompt must be singular"
+    assert "1 consecutive failing pull " in msg and "1 consecutive failing pulls" not in msg, "must be singular"
     assert "1 commit behind" in msg and "1 commits" not in msg, "commit must be singular"
     return "consecutive_count=1 and behind=1 both render singular"
 
@@ -429,6 +435,146 @@ def test_read_failure_state_malformed_and_non_dict_return_none() -> str:
     return "malformed JSON and non-dict JSON both -> None (fresh run, no crash)"
 
 
+# --- PR #800 /review fixes -------------------------------------------------------
+
+
+def test_format_escalated_message_behind_zero_unmeasured() -> str:
+    # Review finding A2: behind == 0 on the escalation path can only be _count_from's fail-open
+    # sentinel (a real count is always >= 1 there). Must not render "0 commits behind ... STALE"
+    # -- the self-contradiction PR #701 fixed in the sibling formatters.
+    msg = format_escalated_pull_failure_message(
+        LOCAL, REMOTE, behind=0, blocking_files=["a.txt"],
+        consecutive_count=3, seconds_failing=2 * 3600, git_stderr="",
+    )
+    assert "unmeasured number of commits" in msg, "behind==0 must read as unmeasured"
+    assert "0 commit" not in msg, "must not render a literal '0 commits behind'"
+    assert "STALE" in msg, "the stale-tooling warning must still be present"
+    return "behind==0 -> 'unmeasured number of commits', never '0 commits behind'"
+
+
+def test_format_escalated_message_sanitizes_git_stderr() -> str:
+    # Review finding A4: git's stderr can carry non-cp1252 bytes (a non-Western LC_MESSAGES
+    # locale, or U+FFFD from errors="replace"); echoing raw would raise UnicodeEncodeError at
+    # print() and lose the advisory. ascii_sanitize must render the whole message ASCII/cp1252-safe.
+    dirty_stderr = "error: Ваши изменения:\n\tclaude/skills/sources.md\nАварийный выход\n"
+    assert not dirty_stderr.isascii(), "fixture must contain non-ASCII to exercise the sanitize"
+    msg = format_escalated_pull_failure_message(
+        LOCAL, REMOTE, behind=5, blocking_files=["claude/skills/sources.md"],
+        consecutive_count=3, seconds_failing=2 * 3600, git_stderr=dirty_stderr,
+    )
+    assert msg.isascii(), "a non-ASCII git stderr must be sanitized so the whole message is ASCII"
+    msg.encode("cp1252")  # must not raise
+    return "non-ASCII git stderr sanitized -> whole escalated message .isascii()/cp1252-safe"
+
+
+def test_format_pull_failure_message_sanitizes_git_stderr() -> str:
+    # Same A4 fix applied to the pre-existing one-off formatter for consistency (both echo
+    # git_stderr). This message carries a pre-existing em dash (U+2014) in its structural text
+    # that is cp1252-safe but not ASCII, so the meaningful assertion is cp1252-encodability (the
+    # actual failure mode: a raw non-cp1252 git stderr raises UnicodeEncodeError on the pipe),
+    # not the stricter .isascii(). Without the sanitize, the Cyrillic below would make
+    # .encode("cp1252") raise; with it, the Cyrillic becomes '?' and only the safe em dash remains.
+    dirty_stderr = "error: Ваши:\n\tclaude/skills/sources.md\nAborting\n"
+    msg = format_pull_failure_message(LOCAL, REMOTE, 5, dirty_stderr)
+    msg.encode("cp1252")  # must not raise -- the whole point of the A4 sanitize
+    assert "Ваши" not in msg, "non-cp1252 prose must be reduced away, not passed through"
+    assert "claude/skills/sources.md" in msg, "an ASCII blocking-file path must be preserved"
+    return "one-off formatter sanitizes git stderr (cp1252-safe); ASCII paths preserved"
+
+
+def test_read_failure_state_non_utf8_returns_none() -> str:
+    # Review finding A3/B4: a non-UTF-8 state file raises UnicodeDecodeError (a ValueError),
+    # which must be caught (not escape and defeat the feature until a pull succeeds). Mirrors
+    # the malformed/non-dict cases -> None (fresh run).
+    with tempfile.TemporaryDirectory() as td:
+        scratch = Path(td)
+        failure_state_path(scratch).write_bytes(b"\xff\xfe\x00 not valid utf-8 \x9d")
+        assert read_failure_state(scratch) is None, "non-UTF-8 bytes -> None, no exception"
+    return "non-UTF-8 state file -> None (UnicodeDecodeError caught)"
+
+
+def test_build_failure_response_fresh_is_plain() -> str:
+    # Review finding B3: the escalate-vs-plain decision extracted into a pure helper.
+    state, msg = build_failure_response(
+        None, now=1000.0, local=LOCAL, remote=REMOTE, behind_count=2, git_stderr="err\n"
+    )
+    assert state["consecutive_count"] == 1, "first failure records count 1"
+    assert state["first_failure_at"] == 1000.0, "first failure stamps the clock"
+    assert "PERSISTENT FAILURE" not in msg, "a first failure must use the plain one-off message"
+    assert "fast-forward pull failed" in msg, "plain message text expected"
+    return "first failure -> count 1, plain (non-escalated) message"
+
+
+def test_build_failure_response_escalates_on_count() -> str:
+    prev = {
+        "first_failure_at": 1000.0,
+        "consecutive_count": ESCALATE_AFTER_CONSECUTIVE_FAILURES - 1,
+        "last_failure_at": 1000.0,
+    }
+    state, msg = build_failure_response(
+        prev, now=1000.0, local=LOCAL, remote=REMOTE, behind_count=5, git_stderr="err\n"
+    )
+    assert state["consecutive_count"] == ESCALATE_AFTER_CONSECUTIVE_FAILURES, "count incremented to threshold"
+    assert "PERSISTENT FAILURE" in msg, "reaching the count threshold escalates"
+    assert LOCAL[:8] in msg and "5 commit" in msg, "escalated message carries the behind/SHA context"
+    return "count reaches threshold -> escalated message with context"
+
+
+def test_build_failure_response_escalates_on_time() -> str:
+    # count stays low; only the elapsed-time arm can fire (robustness property).
+    prev = {"first_failure_at": 0.0, "consecutive_count": 0}
+    state, msg = build_failure_response(
+        prev, now=ESCALATE_AFTER_HOURS * 3600 + 1, local=LOCAL, remote=REMOTE, behind_count=3, git_stderr="err\n"
+    )
+    assert state["consecutive_count"] == 1, "count is 1 (below the count threshold)"
+    assert "PERSISTENT FAILURE" in msg, "the time arm escalates even at count 1"
+    return "time threshold exceeded at count 1 -> escalated message"
+
+
+def test_write_failure_state_per_pid_tmp_isolation() -> str:
+    # Review finding B5: the atomic write uses a per-PID tmp name so two racing writers never
+    # clobber each other's tmp. Mirrors test_journal_compose_force.py's monkeypatched-getpid
+    # precedent. des and this test share the one `os` module object, so patching os.getpid is
+    # seen by des.write_failure_state's os.getpid() call.
+    with tempfile.TemporaryDirectory() as td:
+        scratch = Path(td)
+        real_getpid = os.getpid
+        try:
+            os.getpid = lambda: 11111
+            write_failure_state({"first_failure_at": 1.0, "consecutive_count": 1, "last_failure_at": 1.0}, scratch)
+            os.getpid = lambda: 22222
+            write_failure_state({"first_failure_at": 2.0, "consecutive_count": 2, "last_failure_at": 2.0}, scratch)
+        finally:
+            os.getpid = real_getpid
+        assert read_failure_state(scratch) == {
+            "first_failure_at": 2.0,
+            "consecutive_count": 2,
+            "last_failure_at": 2.0,
+        }, "last writer wins the target"
+        orphans = sorted(p.name for p in scratch.iterdir() if p.name.endswith(".tmp"))
+        assert not orphans, f"per-PID tmps must be consumed by os.replace, found: {orphans}"
+    return "two PIDs write via distinct tmp names, both consumed, last write wins"
+
+
+def test_tmp_orphan_swept_by_tmp_cleanup() -> str:
+    # Review finding B1: a rare os.replace failure can leave an orphaned
+    # dev_env_sync_ff_failure.json.<pid>.tmp that the .json cleanup glob cannot match; the hook
+    # adds a second sweep with ext=".tmp". Confirm that sweep (the exact prefix+ext the hook
+    # uses) reaps a stale orphan while sparing a fresh (concurrent in-flight) one.
+    with tempfile.TemporaryDirectory() as td:
+        scratch = Path(td)
+        orphan = scratch / f"{FAILURE_STATE_PREFIX}.json.99999.tmp"
+        orphan.write_text("{}", encoding="utf-8")
+        old = time.time() - 40 * 86400
+        os.utime(orphan, (old, old))
+        fresh = scratch / f"{FAILURE_STATE_PREFIX}.json.88888.tmp"
+        fresh.write_text("{}", encoding="utf-8")
+        _hookutil.cleanup_stale_sentinels(FAILURE_STATE_PREFIX, scratch=scratch, ext=".tmp")
+        assert not orphan.exists(), "a >30-day-old .tmp orphan must be swept"
+        assert fresh.exists(), "a fresh .tmp (concurrent in-flight write) must NOT be swept"
+    return "stale .tmp orphan swept, fresh in-flight .tmp preserved"
+
+
 def main() -> int:
     tests = [
         ("_plural singular and plural", test_plural_singular_and_plural),
@@ -464,6 +610,15 @@ def main() -> int:
         ("format_escalated_message: is ASCII", test_format_escalated_message_is_ascii),
         ("failure-state: round-trip and clear", test_failure_state_roundtrip_and_clear),
         ("failure-state: malformed/non-dict -> None", test_read_failure_state_malformed_and_non_dict_return_none),
+        ("escalated message: behind==0 unmeasured (A2)", test_format_escalated_message_behind_zero_unmeasured),
+        ("escalated message: sanitizes git stderr (A4)", test_format_escalated_message_sanitizes_git_stderr),
+        ("one-off message: sanitizes git stderr (A4)", test_format_pull_failure_message_sanitizes_git_stderr),
+        ("failure-state: non-UTF-8 -> None (A3/B4)", test_read_failure_state_non_utf8_returns_none),
+        ("build_failure_response: fresh is plain (B3)", test_build_failure_response_fresh_is_plain),
+        ("build_failure_response: escalates on count (B3)", test_build_failure_response_escalates_on_count),
+        ("build_failure_response: escalates on time (B3)", test_build_failure_response_escalates_on_time),
+        ("write_failure_state: per-PID tmp isolation (B5)", test_write_failure_state_per_pid_tmp_isolation),
+        (".tmp orphan swept by .tmp cleanup (B1)", test_tmp_orphan_swept_by_tmp_cleanup),
     ]
     failed = 0
     for name, fn in tests:
