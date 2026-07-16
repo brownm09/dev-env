@@ -136,15 +136,16 @@ def cleanup_stale_markers(max_age_days=MARKER_CLEANUP_MAX_AGE_DAYS):
     dev-env-sync.py and the dev-env#802/PR #805 fix in
     hook-liveness-check.py). Same max_age_days cutoff as the .json sweep, so
     a concurrent writer's own still-in-progress tmp is never swept."""
+    scratch = Path(marker_dir())
     _hookutil.cleanup_stale_sentinels(
         "journal-compose-force-",
-        scratch=Path(marker_dir()),
+        scratch=scratch,
         ext=".json",
         max_age_days=max_age_days,
     )
     _hookutil.cleanup_stale_sentinels(
         "journal-compose-force-",
-        scratch=Path(marker_dir()),
+        scratch=scratch,
         ext=".tmp",
         max_age_days=max_age_days,
     )
