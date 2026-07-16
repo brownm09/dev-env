@@ -926,9 +926,10 @@ machine or a concurrent collaborator push — running `git push --force-with-lea
 Falling back to bare `git push origin HEAD:<branch> --force` (or `git push --force`) succeeds at the
 wire level, but GitHub fires a `head_ref_deleted` event for the PR's head branch when processing the
 force-push, which triggers GitHub's PR auto-close logic — even though the branch itself still exists
-at the new SHA. The event-level mechanism is that GitHub processes a non-fast-forward force-push whose
+at the new SHA. The inferred event-level mechanism is that GitHub may process a non-fast-forward force-push whose
 new tip shares no common ancestry with the previous tip (i.e., a fully-disjoint rewrite produced by
-`git rebase`) as equivalent to a branch delete+recreate for event-firing purposes.
+`git rebase`) as equivalent to a branch delete+recreate for event-firing purposes (not officially
+documented by GitHub; inferred from the timeline correlation).
 (Confirmed from the GitHub API event timeline of the win11-init-tools incident: `closed` at
 03:55:11Z, `head_ref_deleted` at 03:55:12Z, one second later; see
 [dev-env#724](https://github.com/brownm09/dev-env/issues/724).)
