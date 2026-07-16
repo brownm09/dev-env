@@ -423,11 +423,16 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 21. **journal-shards shared-reader test** — required when changing `claude/scripts/_journal_shards.py`.
     Exercises the pure shard/legacy readers offline (tmp dirs, no network, no `gh`): pins `shard_pr_number`
     parsing, that `iter_pr_shards` returns `(path, entry)` pairs numerically sorted (PR 2 before 10) with
-    non-numeric-named, unparseable, and non-object shards skipped and a missing/non-dir path yielding `[]`,
-    that a pr-less dict shard is still returned (the reader stays content-agnostic — the consumer dedups),
-    and that `read_legacy_entries` drains one JSON object per line while skipping blank/malformed/non-dict
-    lines and a missing file. The two consuming hooks (`reconcile-open-prs.py`, `post-compact.py`) import
-    these helpers as one source of truth ([ADR-057](docs/adr/057-shared-journal-shard-reader.md)).
+    non-numeric-named, unparseable, non-UTF-8, and non-object shards skipped and a missing/non-dir path
+    yielding `[]`, that a pr-less dict shard is still returned (the reader stays content-agnostic — the
+    consumer dedups), and that `read_legacy_entries` drains one JSON object per line while skipping
+    blank/malformed/non-dict lines and a missing or non-UTF-8 file. Both readers originally caught only
+    `(json.JSONDecodeError, OSError)` / `OSError` around their `read_text(encoding="utf-8")` call, letting
+    a non-UTF-8 file's `UnicodeDecodeError` (a `ValueError` subclass, not an `OSError`) escape uncaught —
+    widened to also catch it (dev-env#804, the same fix shape as item 42's `_bash_state.read_state` and
+    item 56's `dev-env-sync.py` precedents from dev-env#801/#800). The two consuming hooks
+    (`reconcile-open-prs.py`, `post-compact.py`) import these helpers as one source of truth
+    ([ADR-057](docs/adr/057-shared-journal-shard-reader.md)).
 
     ```bash
     py -3 claude/scripts/tests/test_journal_shards.py
@@ -1849,13 +1854,26 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     keying, and the empty-session-id "always advise" fallback (can't dedupe -> fail toward visible);
     plus `get_pricing` (known models incl. a dated/suffixed id via substring match, and the default
     fallback for an unknown/empty model) and `compute_cost` (the four-bucket per-million arithmetic, and
-    `$0` for empty usage). Added in PR6 (the file had no test before): the migration moved the transcript-
-    locate diagnostic onto the systemMessage channel and **dropped** the two per-turn stdout status echoes
-    (invisible on a Stop hook, and a systemMessage in their place would be per-turn toast spam), which also
-    cleared token-tracker's `_OUTPUT_CONTRACT_ALLOWLIST` entries (A + B) and its `_NONASCII_EMISSION_ALLOWLIST`
-    entry (the `…`/`—` lived only in the dropped echoes) — verified by item 61's gate. `main()`'s I/O
-    (stdin parse, transcript aggregation, log write, the emission) is not covered (pure-helper convention);
-    the emission channel is pinned by items 60/61 (`test_hookout.py` / the output-contract gate).
+    `$0` for empty usage). Also (dev-env#804) `read_token_log_lines(path)` — extracted from `main()`'s
+    previously-inline, unguarded `TOKEN_LOG.read_text(encoding="utf-8")` (which let a non-UTF-8 log's
+    `UnicodeDecodeError` escape uncaught, silently dropping the current session's entire summary) so the
+    degrade-to-fresh-log behavior is unit-testable: a missing, unreadable (`OSError`, incl. a directory
+    path), or non-UTF-8 (`UnicodeDecodeError`) log all resolve to `[]`, and a real log round-trips its
+    lines unchanged (same fix shape as item 42's `_bash_state.read_state`, dev-env#801); and
+    `_count_turns` / `aggregate_session` — a happy-path smoke test each (pinning the new try/except wrap
+    around their per-line iteration didn't change normal behavior) plus the matching resilience case: a
+    file of only invalid UTF-8 bytes degrades to the zero/None defaults instead of raising, so a
+    corrupted subagent or session transcript no longer crashes `main()` before it can record anything
+    (dev-env#804 — these two functions had no prior test coverage; kept to a smoke test plus the new
+    behavior rather than backfilling exhaustive pre-existing-behavior coverage). Added in PR6 (the file
+    had no test before): the migration moved the transcript-locate diagnostic onto the systemMessage
+    channel and **dropped** the two per-turn stdout status echoes (invisible on a Stop hook, and a
+    systemMessage in their place would be per-turn toast spam), which also cleared token-tracker's
+    `_OUTPUT_CONTRACT_ALLOWLIST` entries (A + B) and its `_NONASCII_EMISSION_ALLOWLIST` entry (the
+    `…`/`—` lived only in the dropped echoes) — verified by item 61's gate. `main()`'s remaining I/O
+    (stdin parse, transcript locate, the log write/rewrite, the emission) is not covered (pure-helper
+    convention); the emission channel is pinned by items 60/61 (`test_hookout.py` / the output-contract
+    gate).
 
     ```bash
     py -3 claude/scripts/tests/test_token_tracker.py

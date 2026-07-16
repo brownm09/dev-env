@@ -93,9 +93,11 @@ promoted to one importable sibling module — `_hookio`
   - `post-compact.py` now also ignores **non-numeric-named** files in `open-prs/` (e.g. `index.json`),
     matching `reconcile-open-prs.py` (which already filtered) and the `open-prs/<N>.json` contract — the
     old post-compact reader had no name filter and could surface such a file in the `/review` reminder.
-  - `iter_pr_shards` / `read_legacy_entries` tolerate `OSError` — a mid-read TOCTOU failure now degrades
+  - `iter_pr_shards` / `read_legacy_entries` tolerate `OSError` and a non-UTF-8 file
+    (`UnicodeDecodeError`) — a mid-read TOCTOU failure or a corrupted shard now degrades
     to "skip that shard/line", where the originals propagated (reconcile skipped the whole project,
-    post-compact dropped all open-PR context).
+    post-compact dropped all open-PR context). The `UnicodeDecodeError` case was a gap until
+    dev-env#804.
   - a **non-object legacy line** in `open-prs.jsonl` is now dropped on the next rewrite instead of
     *freezing* all cleanup of that file: the old `reconcile_file` crashed on it and the swallowed
     exception meant the file was never rewritten (so stale merged entries also survived). The file is

@@ -104,6 +104,19 @@ def test_iter_skips_unparseable() -> str:
     return "unparseable JSON shards are skipped (left for a human)"
 
 
+def test_iter_skips_non_utf8() -> str:
+    # dev-env#804: path.read_text(encoding="utf-8") raises UnicodeDecodeError (a
+    # ValueError, not an OSError) on a non-UTF-8 shard, which the pre-fix except
+    # tuple let escape uncaught.
+    with tempfile.TemporaryDirectory() as root:
+        sd = Path(root) / "open-prs"
+        _write_shard(sd, 7)
+        (sd / "9.json").write_bytes(b"\xff\xfe\x00\x9d")
+        prs = [e["pr"] for _p, e in iter_pr_shards(sd)]
+        assert prs == [7], f"good shard kept, non-UTF-8 shard skipped, got {prs}"
+    return "a non-UTF-8 shard is skipped (UnicodeDecodeError caught, dev-env#804)"
+
+
 def test_iter_skips_non_dict() -> str:
     # A numeric-named shard that parses to a JSON list/scalar must not reach a consumer:
     # entry.get(...) would raise, and the hooks only catch that in an outer guard that would
@@ -174,6 +187,16 @@ def test_legacy_missing_file() -> str:
     return "missing legacy file -> [] (no path.exists() guard needed at call site)"
 
 
+def test_legacy_non_utf8_file() -> str:
+    # dev-env#804: same UnicodeDecodeError-escapes-the-except-tuple bug as
+    # test_iter_skips_non_utf8, for the legacy single-file reader.
+    with tempfile.TemporaryDirectory() as root:
+        f = Path(root) / "open-prs.jsonl"
+        f.write_bytes(b"\xff\xfe\x00\x9d")
+        assert read_legacy_entries(f) == [], "non-UTF-8 file -> []"
+    return "non-UTF-8 legacy file -> [] (UnicodeDecodeError caught, dev-env#804)"
+
+
 def main() -> int:
     tests = [
         ("shard_pr_number parsing", test_shard_pr_number),
@@ -181,12 +204,14 @@ def main() -> int:
         ("iter numeric sort", test_iter_numeric_sort),
         ("iter skips non-numeric names", test_iter_skips_nonnumeric_names),
         ("iter skips unparseable JSON", test_iter_skips_unparseable),
+        ("iter skips non-UTF-8 shard", test_iter_skips_non_utf8),
         ("iter skips non-dict shards", test_iter_skips_non_dict),
         ("iter returns dict shard without pr (content-agnostic)", test_iter_returns_dict_without_pr),
         ("iter missing/non-dir -> []", test_iter_missing_or_nondir),
         ("legacy reads objects in order", test_legacy_reads_objects_in_order),
         ("legacy skips blank/malformed/non-dict", test_legacy_skips_blank_malformed_nondict),
         ("legacy missing file -> []", test_legacy_missing_file),
+        ("legacy non-UTF-8 file -> []", test_legacy_non_utf8_file),
     ]
     failed = 0
     for name, fn in tests:
