@@ -42,13 +42,13 @@ from _hookio import (
     effective_merge_dir,
     is_merge_help_only,
     mask_prose_flag_values,
-    mask_quoted_spans,
     output_has_merge_marker,
     read_command_output,
     scan_top_level,
     should_confirm_via_gh,
 )
 import _hookutil
+from _repo_target import merge_args, repo_from_flag, repo_from_pr_url
 from _worktree_topology import canonical_on_main, merge_park_target, parse_worktree_porcelain
 
 # Anchored top-level match — mirrors usage-snapshot.py / pr-merge-reminder.py /
@@ -75,15 +75,16 @@ REPO_LOCAL_PATHS: dict[str, str | None] = {
 def extract_repo(command: str, cwd: str) -> str | None:
     """Return 'owner/repo' for the merged PR, or None.
 
-    Resolution order (ADR-067):
+    Resolution order (ADR-067; the string-parsing steps now share ``_repo_target``,
+    ADR-111):
     1. ``--repo``/``-R owner/repo`` flag — explicit, highest confidence
-       (``-R`` shorthand added in dev-env#616; a standalone-token lookbehind
-       guards against a mid-word match). Checked against a
-       `mask_quoted_spans`-masked copy of `command` (dev-env#626, ADR-050
-       Amendment 15 — this file's own unscoped whole-command search was the
-       most exposed of the four sibling checks to this class of false match),
-       so a `--subject`/`--body` value containing a space-separated
-       "-R other/repo" substring can no longer be mistaken for the flag.
+       (``-R`` shorthand, ``=``-or-space form, standalone-token lookbehind, and
+       ``mask_quoted_spans`` decoy-blinding all live in
+       ``_repo_target.repo_from_flag``). Scoped to the ``gh pr merge``
+       invocation's own args (``merge_args``) so a chained sibling command's
+       ``--repo`` flag can no longer leak in (dev-env#482 Gap 1) — this file's
+       own unscoped whole-command search was the most exposed of the sibling
+       checks to that class of false match.
     2. GitHub PR URL in the command string — e.g. ``gh pr merge
        https://github.com/owner/repo/pull/N``.  Pure parse, no subprocess.
        Checked against a `mask_prose_flag_values`-masked copy of `command`
@@ -97,20 +98,15 @@ def extract_repo(command: str, cwd: str) -> str | None:
     4. Bare fallback: git-remote on cwd (pre-ADR-067 behaviour — still correct
        when the merge was run directly from the target repo's cwd).
     """
-    m = re.search(
-        r"(?<!\S)(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
-        mask_quoted_spans(command),
-    )
-    if m:
-        return m.group(1)
+    args = merge_args(command)
+    flag_repo = repo_from_flag(command if args is None else args)
+    if flag_repo:
+        return flag_repo
 
     # GitHub PR URL in the command (e.g. `gh pr merge https://…/pull/N`)
-    m2 = re.search(
-        r"github\.com[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)/pull/\d+",
-        mask_prose_flag_values(command),
-    )
-    if m2:
-        return m2.group(1)
+    url_repo = repo_from_pr_url(mask_prose_flag_values(command))
+    if url_repo:
+        return url_repo
 
     # cd-chain scoping: a `cd /other/repo && gh pr merge` should query that
     # repo's remote, not cwd's (the cross-repo incident from the #442 session).

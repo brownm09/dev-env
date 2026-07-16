@@ -548,6 +548,39 @@ def test_create_repo_flag_survives_alongside_quoted_decoy() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Chained create+merge cross-contamination (dev-env#667, ADR-111)
+#
+# Pre-consolidation both _effective_*_repo searched the WHOLE masked command for
+# the --repo flag, so whichever --repo appeared textually FIRST won for BOTH
+# functions -- regardless of which statement it belonged to. Scoping each
+# resolver to its own invocation's args (merge_args / create_args, via the
+# shared _repo_target module) fixes the cross-contamination.
+# ---------------------------------------------------------------------------
+
+def test_chained_create_merge_no_cross_contamination() -> str:
+    cmd = (
+        "gh pr create --repo brownm09/repo-a --fill && "
+        "gh pr merge 5 --repo brownm09/repo-b --squash --delete-branch"
+    )
+    assert _effective_create_repo(cmd, "/session/cwd") == "brownm09/repo-a", "create scoped"
+    assert _effective_merge_repo(cmd, "/session/cwd") == "brownm09/repo-b", "merge scoped"
+    return "chained create+merge with different --repo values resolve independently (dev-env#667)"
+
+
+def test_chained_create_merge_reversed_order() -> str:
+    # Reversing statement order reverses which flag is textually first; each
+    # resolver must still pick its OWN statement's flag, proving statement-scoping
+    # rather than position-in-string.
+    cmd = (
+        "gh pr merge 5 --repo brownm09/repo-b --squash && "
+        "gh pr create --repo brownm09/repo-a --fill"
+    )
+    assert _effective_create_repo(cmd, "/session/cwd") == "brownm09/repo-a", "create scoped"
+    assert _effective_merge_repo(cmd, "/session/cwd") == "brownm09/repo-b", "merge scoped"
+    return "chained order reversed -> each resolver still picks its own statement's flag (dev-env#667)"
+
+
+# ---------------------------------------------------------------------------
 # _build_messages  (dev-env#494 — chained create+merge must not suppress an
 # independently-successful create when the merge sub-check is incomplete)
 # ---------------------------------------------------------------------------
@@ -855,6 +888,8 @@ def main() -> int:
         ("create repo: -R shorthand resolves same as --repo", test_create_repo_short_flag_form),
         ("create repo: no flag -> falls back to cwd", test_create_repo_no_flag_falls_back_to_cwd),
         ("create repo: --repo flag survives alongside quoted decoy", test_create_repo_flag_survives_alongside_quoted_decoy),
+        ("chained create+merge: no cross-contamination (dev-env#667)", test_chained_create_merge_no_cross_contamination),
+        ("chained create+merge: reversed order still statement-scoped (dev-env#667)", test_chained_create_merge_reversed_order),
         ("build_messages: chained create + queued --auto -> create still fires (dev-env#494)", test_build_messages_chained_create_and_queued_auto_still_creates),
         ("build_messages: chained create + --help merge -> create still fires (dev-env#494)", test_build_messages_chained_create_and_help_shaped_merge_still_creates),
         ("build_messages: chained create + successful merge -> both fire", test_build_messages_chained_create_and_successful_merge_both_fire),

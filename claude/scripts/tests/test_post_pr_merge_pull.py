@@ -273,6 +273,30 @@ def test_extract_repo_flag_survives_alongside_quoted_url_decoy() -> str:
     return "real --repo flag resolves correctly alongside a quoted URL-shaped decoy (dev-env#634)"
 
 
+def test_extract_repo_equals_flag_form() -> str:
+    # The `=` form (--repo=owner/repo) was silently missed by this file's own
+    # space-only regex pre-consolidation; the shared _repo_target flag accepts
+    # both (dev-env#482 Gap 2 -- sibling of the -R fix already in dev-env#616).
+    repo = extract_repo("gh pr merge 5 --repo=brownm09/dev-env --squash", "/Git/lifting-logbook")
+    assert repo == "brownm09/dev-env", f"got {repo!r}"
+    return "--repo=owner/repo (equals form) now resolves (dev-env#482)"
+
+
+def test_extract_repo_chained_sibling_flag_not_leaked() -> str:
+    # dev-env#482 Gap 1: the --repo flag search was unbounded (the whole
+    # command), so a chained sibling `gh pr create --repo X` leaked its flag
+    # into the merge's repo resolution -- whichever --repo appeared first won.
+    # Scoping the flag to the merge invocation's own args (merge_args, via
+    # _repo_target) fixes it: the merge's OWN --repo wins.
+    repo = extract_repo(
+        "gh pr create --repo brownm09/repo-a --fill && "
+        "gh pr merge 5 --repo brownm09/repo-b --squash --delete-branch",
+        "/Git/lifting-logbook",
+    )
+    assert repo == "brownm09/repo-b", f"got {repo!r} (sibling create's --repo leaked?)"
+    return "chained sibling `gh pr create --repo X`'s flag no longer leaks into the merge (dev-env#482 Gap 1)"
+
+
 def test_pull_command_on_main_uses_ff_only_pull() -> str:
     cmd = pull_command("C:/Users/brown/Git/dev-env", True)
     assert cmd == ["git", "-C", "C:/Users/brown/Git/dev-env", "pull", "--ff-only", "origin", "main"], cmd
@@ -413,6 +437,8 @@ def main() -> int:
         ("extract_repo: --repo flag survives alongside quoted decoy (dev-env#626)", test_extract_repo_flag_survives_alongside_quoted_decoy),
         ("extract_repo: URL-shaped decoy inside quoted --subject not matched (dev-env#634)", test_extract_repo_url_shaped_decoy_inside_subject_not_matched),
         ("extract_repo: --repo flag survives alongside quoted URL-shaped decoy (dev-env#634)", test_extract_repo_flag_survives_alongside_quoted_url_decoy),
+        ("extract_repo: --repo=owner/repo equals form resolves (dev-env#482)", test_extract_repo_equals_flag_form),
+        ("extract_repo: chained sibling create's --repo not leaked into merge (dev-env#482)", test_extract_repo_chained_sibling_flag_not_leaked),
         ("pull_command: canonical on main -> ff-only pull", test_pull_command_on_main_uses_ff_only_pull),
         ("pull_command: canonical off main -> fetch-into-ref", test_pull_command_off_main_uses_fetch_into_ref),
         ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_successful_merge_and_is_help_only),

@@ -73,6 +73,7 @@ Exit 0 = all pass.
 
 import importlib.util
 import sys
+import tempfile
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -472,6 +473,33 @@ def test_unresolved_real_merge_is_not_help_only() -> str:
     return "unresolved real merge (no marker, non-help) -> is_merge_help_only False (fallback unaffected)"
 
 
+def test_load_config_scoped_to_merge_dir() -> str:
+    # dev-env#569: main() now resolves config via effective_merge_dir(command,
+    # cwd), so a `cd <other-repo> && gh pr merge` (no --repo flag, no PR URL)
+    # loads the MERGED repo's .claude/hook-config.json, not the session cwd's --
+    # the cd-chain analog of the dev-env#559 URL-case guard. A filesystem test
+    # (load_config reads a file) proving the resolved dir actually reaches
+    # load_config, mirroring test_pr_merge_reminder.py's
+    # test_merge_dir_cd_chain_redirects_for_reminder (which pins effective_merge_dir
+    # itself). effective_merge_dir is exercised here via ppmp's own import of it.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        target = root / "dev-env"
+        session = root / "lifting-logbook"
+        for d, repo in ((target, "brownm09/dev-env"), (session, "brownm09/lifting-logbook")):
+            (d / ".claude").mkdir(parents=True)
+            (d / ".claude" / "hook-config.json").write_text(
+                '{"repo": "%s"}' % repo, encoding="utf-8"
+            )
+        command = f'cd "{target.as_posix()}" && gh pr merge --squash --delete-branch'
+        merge_dir = ppmp.effective_merge_dir(command, session.as_posix())
+        config = ppmp.load_config(merge_dir)
+        assert config is not None and config.get("repo") == "brownm09/dev-env", (
+            f"expected the MERGED (dev-env) repo's config, got {config!r}"
+        )
+    return "cd <repo> && gh pr merge -> load_config resolves the MERGED repo's config, not cwd's (dev-env#569)"
+
+
 def main() -> int:
     tests = [
         ("command: bare number", test_cmd_bare_number),
@@ -517,6 +545,7 @@ def main() -> int:
         ("merge_succeeded: excludes auto/failure", test_merge_succeeded_excludes_auto_and_failure),
         ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_merge_succeeded_and_is_help_only),
         ("unresolved real merge: guard does not suppress fallback", test_unresolved_real_merge_is_not_help_only),
+        ("config: cd-chain merge -> load_config scoped to merged repo (dev-env#569)", test_load_config_scoped_to_merge_dir),
     ]
     failed = 0
     for name, fn in tests:

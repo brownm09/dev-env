@@ -40,13 +40,13 @@ from _hookio import (
     effective_merge_dir,
     is_absolute_path,
     is_merge_help_only,
-    mask_quoted_spans,
     output_has_merge_marker,
     read_command_output,
     scan_top_level,
     should_confirm_via_gh,
 )
 import _hookutil
+from _repo_target import create_args, merge_args, repo_from_flag
 
 # Matches the start of a statement token against `gh pr merge`, `gh pr create`,
 # or `git push`.
@@ -159,20 +159,6 @@ def _effective_push_dir(command: str, cwd: str) -> str:
     return path
 
 
-# An explicit `--repo owner/repo` flag names the merge or create target
-# directly — the highest-confidence signal, ahead of any cd-chain or cwd
-# resolution. Mirrors extract_repo's resolution order in
-# post-pr-merge-pull.py (ADR-067). Also matches gh's `-R` shorthand for
-# `--repo` (dev-env#616). The `(?<!\S)` lookbehind requires the flag to
-# start a standalone token, so it can't match mid-word. Both
-# `_effective_merge_repo` and `_effective_create_repo` (dev-env#646, ADR-050
-# Amendment 18) run this against a mask_quoted_spans-masked copy of
-# `command` (dev-env#626, ADR-050 Amendment 15), so a `--subject`/`--body`
-# value containing a space-separated "-R other/repo" substring can no
-# longer false-match either.
-_REPO_FLAG_RE = re.compile(r"(?<!\S)(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
-
-
 def _effective_merge_repo(command: str, cwd: str) -> str:
     """Best-effort repo label for a top-level ``gh pr merge`` in *command*.
 
@@ -183,15 +169,21 @@ def _effective_merge_repo(command: str, cwd: str) -> str:
     ``effective_merge_dir(command, cwd)`` (the cd-chain / cwd resolution,
     ADR-067) when no ``--repo``/``-R`` flag is present.
 
-    Unlike `post-pr-merge-project.py`'s `extract_repo_from_command`, this
-    function has no separate URL-fallback branch that needs to stay on the
-    unmasked text — the only regex here is the repo-flag check itself, so the
-    whole `command` is masked before it runs (dev-env#626, ADR-050 Amendment
-    15).
+    The flag search is scoped to the ``gh pr merge`` invocation's own args
+    (``merge_args``) — the shared, statement-scoped resolver (ADR-111) — so a
+    chained sibling ``gh pr create --repo X`` statement's flag can no longer
+    cross-contaminate this one (dev-env#667/#482 Gap 1: whichever ``--repo``
+    appeared textually first in the whole masked command previously won for
+    both functions, regardless of which statement it belonged to).
+    ``repo_from_flag`` masks the args with ``mask_quoted_spans`` internally
+    (dev-env#626, ADR-050 Amendment 15), so a ``--subject``/``--body`` decoy
+    can't false-match.
     """
-    m = _REPO_FLAG_RE.search(mask_quoted_spans(command))
-    if m:
-        return m.group(1)
+    args = merge_args(command)
+    if args is not None:
+        flag_repo = repo_from_flag(args)
+        if flag_repo:
+            return flag_repo
     return effective_merge_dir(command, cwd)
 
 
@@ -206,10 +198,16 @@ def _effective_create_repo(command: str, cwd: str) -> str:
     unlike that function there is no cd-chain-aware dir to fall back to here:
     the ``is_create`` message branch has only ever reported cwd, so an
     unflagged create command's reminder is unchanged by this addition.
+
+    The flag search is scoped to the ``gh pr create`` invocation's own args
+    (``create_args``, ADR-111), so a chained sibling ``gh pr merge --repo Y``
+    statement's flag can no longer cross-contaminate this one (dev-env#667).
     """
-    m = _REPO_FLAG_RE.search(mask_quoted_spans(command))
-    if m:
-        return m.group(1)
+    args = create_args(command)
+    if args is not None:
+        flag_repo = repo_from_flag(args)
+        if flag_repo:
+            return flag_repo
     return cwd
 
 

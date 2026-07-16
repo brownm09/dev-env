@@ -74,10 +74,14 @@ from pathlib import Path
 # module-attribute-indirection the tests rely on (ADR-073).
 from _hookutil import iter_bash_calls, load_records, _result_text  # noqa: F401
 
-# mask_quoted_spans (dev-env#626, ADR-050 Amendment 15; also dev-env#650,
-# Amendment 19) and mask_prose_flag_values (dev-env#634, ADR-050 Amendment 17)
-# -- see _devenv_merge_pr.
-from _hookio import mask_prose_flag_values, mask_quoted_spans
+# mask_prose_flag_values (dev-env#634, ADR-050 Amendment 17) masks
+# --subject/--body decoys before the dev-env PR-URL check -- see
+# _devenv_merge_pr. The --repo/-R flag, bare positional number, gh pr merge
+# args-region bounding, and PR-URL extraction (all quote-aware) now come from
+# the shared _repo_target module (ADR-111), one implementation across the five
+# sibling hooks that each used to carry a near-copy.
+from _hookio import mask_prose_flag_values
+from _repo_target import iter_pr_urls, merge_args, positional_number, repo_from_flag
 
 SENTINEL_PREFIX = "posttooluse-inert-resolved-"
 
@@ -91,42 +95,15 @@ _MERGE_RE = re.compile(r"\bgh\s+pr\s+merge\b")
 _DEVENV_CREATE_URL_RE = re.compile(
     r"https://github\.com/brownm09/dev-env/(issues|pull)/(\d+)"
 )
-# `_devenv_merge_pr` searches this against a `mask_prose_flag_values`-masked
-# copy of `args` (dev-env#634, ADR-050 Amendment 17), so a --subject/--body
-# value containing a decoy dev-env PR URL can't be mistaken for a genuine
-# self-identifying signal -- a bare (unquoted, or quoted-but-not-inside-a-
-# prose-flag) dev-env PR URL is untouched by that masking.
-_DEVENV_PR_URL_RE = re.compile(r"https://github\.com/brownm09/dev-env/pull/(\d+)")
 DEVENV_REPO = "brownm09/dev-env"
-# The argument span of the `gh pr merge` invocation only (up to the next shell
-# separator) -- so a `/pull/N` URL in an unrelated flag value or a chained sibling
-# command cannot hijack the dev-env scoping or the PR-number extraction. Mirrors
-# post-pr-merge-project.py's _MERGE_ARGS_RE.
-_MERGE_ARGS_RE = re.compile(r"\bgh\s+pr\s+merge\b([^\n;|&]*)")
-# A bare positional PR-number token (`42`) within those args; a digit run inside a
-# URL (`/pull/42`) or a flag value (`--foo=12`) is not a standalone token.
-# `_devenv_merge_pr` runs this against a mask_quoted_spans-masked copy of
-# `args` (dev-env#650, ADR-050 Amendment 19), so a --subject/--body value
-# containing a space-separated bare number ("resolves 42 items") can no
-# longer be mistaken for the real positional PR number either -- the
-# (?<!\S)/(?=\s|$) boundary alone can't tell "whitespace inside a quoted
-# value" from "whitespace between top-level tokens," the same gap Amendment
-# 15 already closed for _REPO_FLAG_RE. mask_quoted_spans (not
-# mask_prose_flag_values) is used because this decoy shape is not scoped to
-# a --subject/--body/-t/-b flag specifically -- it could appear inside any
-# quoted value.
-_MERGE_POS_NUM_RE = re.compile(r"(?<!\S)(\d+)(?=\s|$)")
+# The `gh pr merge` args-region bounding, the `--repo`/`-R` flag, the bare
+# positional PR-number, and the PR-URL extraction (all with their quote-aware
+# masking) now come from the shared `_repo_target` module (ADR-111) — one
+# implementation across the five sibling hooks. Only the dev-env-specific
+# scoping glue (`_devenv_*` helpers below, `_AUTO_FLAG_RE`) stays local.
 # A queued `--auto` only *enables* auto-merge -- it is not a completed merge, and
 # even a healthy session would not Done-move it yet (cf. post-pr-merge-project.py).
 _AUTO_FLAG_RE = re.compile(r"(?<!\S)--auto(?:=\S+)?(?=\s|$)")
-# An explicit `--repo owner/name` on the merge invocation overrides the cwd
-# scope. Also matches gh's `-R` shorthand for `--repo` (dev-env#616), same
-# `(?<!\S)` standalone-token discipline as `_AUTO_FLAG_RE` above so the flag
-# can't match mid-word. `_devenv_merge_pr` runs this against a
-# mask_quoted_spans-masked copy of `args` (dev-env#626, ADR-050 Amendment 15),
-# so a `--subject`/`--body` value containing a space-separated "-R other/repo"
-# substring can no longer false-match either.
-_REPO_FLAG_RE = re.compile(r"(?<!\S)(?:--repo|-R)[=\s]+(\S+)")
 # A genuine merge *failure* (not the harmless issue-#275 worktree cleanup tail,
 # which means the PR merged but the local branch could not be deleted).
 _HARD_MERGE_FAIL_RE = re.compile(
@@ -161,71 +138,67 @@ def _is_devenv_cwd(cwd: str) -> bool:
     return bool(_DEVENV_CWD_RE.search(cwd or ""))
 
 
+def _devenv_pr_url_number(masked_args: str) -> str | None:
+    """The number (as a string) of the first `brownm09/dev-env` `/pull/N` URL in
+    *masked_args*, or ``None``.
+
+    Mirrors the pre-ADR-111 `_DEVENV_PR_URL_RE.search(...).group(1)`: the first
+    URL whose owner/repo is dev-env *specifically* — a non-dev-env URL elsewhere
+    in the args does not self-identify the merge as dev-env's. The caller masks
+    `--subject`/`--body` decoy values via `mask_prose_flag_values` first
+    (dev-env#634), so a URL-shaped decoy in a prose flag can't self-identify,
+    while a bare (not-in-a-prose-flag) dev-env PR URL is untouched and still
+    counts, exactly as before.
+    """
+    for repo, num in iter_pr_urls(masked_args):
+        if repo == DEVENV_REPO:
+            return str(num)
+    return None
+
+
 def _devenv_merge_pr(command: str, cwd: str) -> str | None:
     """Return the dev-env PR number a `gh pr merge` invocation targets, else None.
 
-    Scoped to the merge invocation's own argument span (`_MERGE_ARGS_RE`) so a
-    `/pull/N` URL in an unrelated flag value or a chained sibling command can't
-    hijack it. Returns None for a queued `--auto` (not a completed merge) or an
-    explicit non-dev-env `--repo`. Repo identity: an explicit `--repo` wins, else a
-    dev-env `/pull/N` URL self-identifies, else a bare positional number is dev-env
-    only from a dev-env cwd. PR number: positional token preferred, then the URL.
+    Scoped to the merge invocation's own argument span (`_repo_target.merge_args`)
+    so a `/pull/N` URL in an unrelated flag value or a chained sibling command
+    can't hijack it. Returns None for a queued `--auto` (not a completed merge)
+    or an explicit non-dev-env `--repo`. Repo identity: an explicit `--repo`/`-R`
+    flag wins, else a dev-env `/pull/N` URL self-identifies, else a bare
+    positional number is dev-env only from a dev-env cwd. PR number: positional
+    token preferred, then the dev-env URL's own number.
 
-    The args-region boundary itself (`_MERGE_ARGS_RE.search`) is run against a
-    `mask_quoted_spans`-masked copy of `command` first (dev-env#660, ADR-050
-    Amendment 20), not the raw command -- `_MERGE_ARGS_RE`'s negated character
-    class stops at any single `&`/`|`/`;`/`\n` with no quote-awareness of its
-    own, so a --subject/--body value containing a bare separator character
-    (even an ordinary one like `--subject "R&D tracking"`, not just a
-    deliberately crafted `&&`) truncated `args` before a later real `--repo` or
-    dev-env PR-number was ever seen, silently producing a missed (or, from a
-    dev-env-shaped cwd, falsely attributed) board advisory. mask_quoted_spans is
-    length-preserving, so the match's span offsets against the masked command
-    apply unchanged to the original -- `args` below is the REAL (unmasked) text.
-
-    The `--repo`/`-R` flag check and the bare positional PR-number match both
-    run against the same `mask_quoted_spans`-masked copy of that (now correctly
-    bounded) `args` (dev-env#626, ADR-050 Amendment 15; the positional-number
-    match added in dev-env#650, Amendment 19), so a `--subject`/`--body` value
-    containing a space-separated "-R other/repo" substring or a bare decoy
-    number ("resolves 42 items") cannot be mistaken for a real flag or the
-    real PR number. `url_m` runs against a `mask_prose_flag_values`-masked copy
-    of `args` instead (dev-env#634, ADR-050 Amendment 17), so a --subject/--body
-    value containing a decoy dev-env PR URL can't be mistaken for a genuine
-    self-identifying signal either — while a bare (not inside a prose-flag
-    value) dev-env PR URL, quoted or not, is untouched by that masking and
-    still self-identifies exactly as before. `url_m` is reused below for the
-    PR-number fallback.
-
-    These three amendments are complementary, not overlapping: Amendment 20
-    ensures `args` itself is not prematurely truncated before any WITHIN-region
-    search runs; Amendments 15/17/19 ensure those searches aren't hijacked by
-    a decoy once `args` is correctly bounded.
+    All quote-aware masking now lives in `_repo_target` (ADR-111), consolidating
+    what were three complementary local fixes: `merge_args` bounds the args
+    region against a `mask_quoted_spans` copy (dev-env#660, Amendment 20), so a
+    `--subject "R&D tracking"` value can't truncate it early; `repo_from_flag`
+    and `positional_number` each mask their input with `mask_quoted_spans`
+    (dev-env#626/#650, Amendments 15/19), so a "-R other/repo" substring or a
+    bare decoy number ("resolves 42 items") in a quoted value can't false-match;
+    and the dev-env PR-URL check (`_devenv_pr_url_number`) runs against a
+    `mask_prose_flag_values` copy (dev-env#634, Amendment 17), so a prose-flag
+    URL decoy can't self-identify while a bare dev-env URL still does.
     """
-    am = _MERGE_ARGS_RE.search(mask_quoted_spans(command))
-    if not am:
+    args = merge_args(command)
+    if args is None:
         return None
-    start, end = am.span(1)
-    args = command[start:end]
     if _AUTO_FLAG_RE.search(args):
         return None
 
-    masked_quoted_args = mask_quoted_spans(args)
-    repo_m = _REPO_FLAG_RE.search(masked_quoted_args)
-    url_m = _DEVENV_PR_URL_RE.search(mask_prose_flag_values(args))
-    if repo_m:
-        is_devenv = repo_m.group(1) == DEVENV_REPO
-    elif url_m:
+    flag_repo = repo_from_flag(args)
+    devenv_url_num = _devenv_pr_url_number(mask_prose_flag_values(args))
+    if flag_repo is not None:
+        is_devenv = flag_repo == DEVENV_REPO
+    elif devenv_url_num is not None:
         is_devenv = True  # a dev-env /pull/N URL names the repo itself
     else:
         is_devenv = _is_devenv_cwd(cwd)
     if not is_devenv:
         return None
 
-    num_m = _MERGE_POS_NUM_RE.search(masked_quoted_args)
-    if num_m:
-        return num_m.group(1)
-    return url_m.group(1) if url_m else None
+    num = positional_number(args)
+    if num is not None:
+        return str(num)
+    return devenv_url_num
 
 
 def detect_board_actions(calls: list[tuple[str, str, str]]) -> list[dict]:
