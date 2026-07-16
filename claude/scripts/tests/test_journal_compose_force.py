@@ -304,6 +304,30 @@ def test_cleanup_stale_markers_custom_max_age():
         _with_marker_dir(tmp, lambda: cleanup_stale_markers(max_age_days=1))
         assert not os.path.exists(path), "5-day-old marker is removed under a 1-day threshold"
 
+def test_cleanup_stale_markers_tmp_orphan_swept_by_tmp_cleanup():
+    # dev-env#806: a rare os.replace failure inside write_marker() can leave an orphaned
+    # journal-compose-force-<date>.json.<pid>.tmp that the .json sweep's glob cannot match; the
+    # fix adds a second cleanup_stale_sentinels sweep with ext=".tmp" (mirrors
+    # test_dev_env_sync.py::test_tmp_orphan_swept_by_tmp_cleanup, dev-env#797/PR #800, and this
+    # repo's test_hookutil.py::test_cleanup_empty_prefix_sweeps_all_matching_ext, PR #805).
+    # Unlike those two, which call _hookutil.cleanup_stale_sentinels directly, this drives the
+    # real cleanup_stale_markers() end-to-end -- it has no scratch= param of its own, it always
+    # resolves marker_dir() internally -- so both its .json sweep and its new .tmp sweep run from
+    # one call and are proven not to interfere with each other.
+    with tempfile.TemporaryDirectory() as tmp:
+        stale_tmp = os.path.join(tmp, "journal-compose-force-2026-07-09.json.12345.tmp")
+        fresh_tmp = os.path.join(tmp, "journal-compose-force-2026-07-09.json.99999.tmp")
+        live_json = os.path.join(tmp, "journal-compose-force-2026-07-09.json")
+        for path in (stale_tmp, fresh_tmp, live_json):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("{}")
+        past = time.time() - (MARKER_CLEANUP_MAX_AGE_DAYS + 1) * 86400
+        os.utime(stale_tmp, (past, past))
+        _with_marker_dir(tmp, cleanup_stale_markers)
+        assert not os.path.exists(stale_tmp), "a stale .tmp orphan must be swept"
+        assert os.path.exists(fresh_tmp), "a fresh .tmp (concurrent in-flight write) must NOT be swept"
+        assert os.path.exists(live_json), "the live .json marker must NOT be swept by the .tmp sweep"
+
 
 # ---------------------------------------------------------------------------
 # Runner

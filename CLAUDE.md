@@ -1451,7 +1451,17 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     absent, and honors a custom `max_age_days` override. Age-based sweeping is safe here — unlike
     e.g. a branch-lifetime-scoped baseline snapshot — because a marker is only ever consulted on the
     same calendar day it was written; any earlier date's marker has zero remaining utility the
-    moment that day ends.
+    moment that day ends. Extended for dev-env#806 with
+    `test_cleanup_stale_markers_tmp_orphan_swept_by_tmp_cleanup()`: a stale (just past
+    `MARKER_CLEANUP_MAX_AGE_DAYS`) orphaned `journal-compose-force-<date>.json.<pid>.tmp` — left
+    behind if `write_marker()`'s `os.replace` ever fails, e.g. a rare Windows sharing violation — is
+    swept by the new second `cleanup_stale_sentinels(..., ext=".tmp")` call `cleanup_stale_markers()`
+    now makes, while a fresh in-flight `.tmp` and the live `.json` marker are both spared. Driven
+    through the real `cleanup_stale_markers()` end-to-end via `_with_marker_dir` (the function has no
+    `scratch=` param of its own) rather than by calling `_hookutil.cleanup_stale_sentinels` directly,
+    so the pre-existing `.json` sweep and the new `.tmp` sweep are proven not to interfere with each
+    other in one call. Mirrors the identical fix in `dev-env-sync.py` (dev-env#797/PR #800, item 56)
+    and `hook-liveness-check.py` (dev-env#802/PR #805, item 67).
 
     ```bash
     py -3 claude/scripts/tests/test_journal_compose_force.py
