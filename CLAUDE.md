@@ -566,7 +566,9 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     scratch directory is absent, that its default `ext` stays `.flag` (backward compatible with
     every pre-existing caller, which passes only `prefix`) and that an overridden `ext` (e.g. `.txt`)
     sweeps only that suffix (dev-env#768 — the generalization `session-mode-prompt.py`'s `.txt`
-    markers needed; see item 70), and that `find_transcript` returns the matching path (or `None`)
+    markers needed; see item 70), that an empty `prefix` with `ext=".tmp"` sweeps every `.tmp` under
+    the dir while sparing live `.ts` ledgers (dev-env#802 — the heartbeat-orphan sweep
+    `hook-liveness-check.py` relies on; see item 67), and that `find_transcript` returns the matching path (or `None`)
     including when the JSONL is nested under a project subdirectory. Also exercises the
     transcript-record readers ([ADR-090](docs/adr/090-shared-transcript-readers-hookutil.md)):
     `_content_items` (list content vs the non-dict-rec / non-dict-message / non-list-content guard
@@ -1931,14 +1933,18 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     to a temp dir (mirroring `test_stop_journal_stub_checkpoint.py`'s pattern, so
     `_hookutil.HEARTBEAT_DIR` and the once-per-session sentinel never touch the real
     `~/.claude/scratch/`) and `SETTINGS_PATH` overridden via the `HOOK_LIVENESS_SETTINGS_PATH` test
-    seam. Six cases: the healthy no-stale-hooks path is silent (own heartbeat just recorded, exit 0,
+    seam. Seven cases: the healthy no-stale-hooks path is silent (own heartbeat just recorded, exit 0,
     empty stdout/stderr); a stale non-exempt hook (no heartbeat file at all) emits a model-visible
     `additionalContext` warning naming it; an unreadable/malformed settings.json emits the
     self-check-failure advisory rather than a silent exit; a settings.json missing this hook's own
     wiring emits the self-check-failure advisory (the review's core finding — this hook's own
     heartbeat previously stayed fresh even while this exact failure silently no-op'd); and the
     once-per-session debounce silences an identical second call in the same session while a
-    different `session_id` still fires. The writer side (`_hookutil.record_heartbeat`) is covered in
+    different `session_id` still fires; and (dev-env#802) a >30-day-old orphaned heartbeat `.tmp`
+    (`<hook>.ts.<pid>.tmp`) planted in the temp `HEARTBEAT_DIR` is swept by the new
+    `cleanup_stale_sentinels("", scratch=HEARTBEAT_DIR, ext=".tmp")` call in `main()`, while a fresh
+    in-flight `.tmp` and the live `.ts` ledger are spared. The writer side
+    (`_hookutil.record_heartbeat`) is covered in
     item 27 above; the structural enforcement that every wired hook (including this one) actually
     calls it correctly is item 68 below.
 

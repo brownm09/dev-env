@@ -45,6 +45,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -498,6 +499,32 @@ def test_e2e_different_session_not_debounced() -> str:
     return "the once-per-session debounce is keyed by session_id -- a different session still fires"
 
 
+def test_e2e_heartbeat_tmp_orphan_swept() -> str:
+    # dev-env#802: record_heartbeat writes <hook>.ts.<pid>.tmp then os.replace()s it onto <hook>.ts;
+    # a rare os.replace failure orphans the .tmp in HEARTBEAT_DIR. hook-liveness-check now reaps stale
+    # ones. Confirm a >30-day-old orphan is swept while a fresh (in-flight) .tmp and the live .ts
+    # ledger are spared. Mirrors test_dev_env_sync.py::test_tmp_orphan_swept_by_tmp_cleanup.
+    with tempfile.TemporaryDirectory() as home:
+        hb_dir = Path(home) / ".claude" / "scratch" / "hook-heartbeat"
+        hb_dir.mkdir(parents=True)
+        stale_tmp = hb_dir / "some-hook.ts.99999.tmp"
+        fresh_tmp = hb_dir / "some-hook.ts.88888.tmp"
+        ledger = hb_dir / "some-hook.ts"
+        for p in (stale_tmp, fresh_tmp, ledger):
+            p.write_text("x", encoding="utf-8")
+        old = time.time() - 40 * 86400
+        os.utime(stale_tmp, (old, old))
+
+        settings = Path(home) / "settings.json"
+        _write_settings(settings, ["hook-liveness-check"])  # only itself wired -> healthy/silent
+        rc, out, err = _run_hook(settings, home)
+        assert rc == 0, (rc, out, err)
+        assert not stale_tmp.exists(), "a >30-day-old heartbeat .tmp orphan must be swept"
+        assert fresh_tmp.exists(), "a fresh (in-flight) heartbeat .tmp must NOT be swept"
+        assert ledger.exists(), "the live .ts ledger must never be swept by the *.tmp glob"
+    return "hook-liveness-check reaps a stale heartbeat .tmp orphan, sparing the fresh .tmp and the .ts ledger"
+
+
 def main() -> int:
     tests = [
         ("hook_name_from_command: matches .py script", test_hook_name_from_command_matches_py_script),
@@ -539,6 +566,7 @@ def main() -> int:
         ("e2e: own wiring missing -> self-check failure", test_e2e_own_wiring_missing_emits_self_check_failure),
         ("e2e: debounce silences second call, same session", test_e2e_debounce_second_call_same_session_silent),
         ("e2e: different session not debounced", test_e2e_different_session_not_debounced),
+        ("e2e: heartbeat .tmp orphan swept, ledger spared", test_e2e_heartbeat_tmp_orphan_swept),
     ]
     failed = 0
     for name, fn in tests:

@@ -172,6 +172,30 @@ def test_cleanup_custom_max_age_days() -> str:
     return "cleanup_stale_sentinels(max_age_days=N) overrides the default MAX_AGE_DAYS retention"
 
 
+def test_cleanup_empty_prefix_sweeps_all_matching_ext() -> str:
+    # dev-env#802: hook-liveness-check.py sweeps orphaned heartbeat tmps via
+    # cleanup_stale_sentinels("", scratch=HEARTBEAT_DIR, ext=".tmp") -> glob("*.tmp"). The empty
+    # prefix is deliberate -- the per-hook <hook>.ts.<pid>.tmp orphans share no common prefix, and
+    # in HEARTBEAT_DIR the only .tmp files ARE those orphans. Pin that an empty prefix sweeps stale
+    # .tmp files while sparing a fresh (in-flight) .tmp and a live <hook>.ts ledger, so a future
+    # empty-prefix rejection (by analogy with the empty-ext rejection above) is caught by this local
+    # test, not only the full-suite CI e2e.
+    with tempfile.TemporaryDirectory() as root:
+        scratch = Path(root)
+        stale = scratch / "foo.ts.111.tmp"
+        fresh = scratch / "bar.ts.222.tmp"
+        ledger = scratch / "foo.ts"
+        for p in (stale, fresh, ledger):
+            p.write_text("")
+        past = time.time() - (_hookutil.MAX_AGE_DAYS + 1) * 86400
+        os.utime(stale, (past, past))
+        _hookutil.cleanup_stale_sentinels("", scratch=scratch, ext=".tmp")
+        assert not stale.exists(), "a stale .tmp orphan must be swept with an empty prefix"
+        assert fresh.exists(), "a fresh (in-flight) .tmp must be kept"
+        assert ledger.exists(), "a .ts ledger must never match the *.tmp glob"
+    return "cleanup_stale_sentinels('', ext='.tmp') sweeps stale .tmp orphans, sparing fresh .tmp and .ts ledgers"
+
+
 def test_find_transcript_found() -> str:
     with tempfile.TemporaryDirectory() as root:
         projects = Path(root)
@@ -588,6 +612,7 @@ def main() -> int:
         ("cleanup: rejects empty ext (no-op, not broadened glob)", test_cleanup_rejects_empty_ext),
         ("cleanup: rejects dot-less ext (no-op)", test_cleanup_rejects_dotless_ext),
         ("cleanup: custom max_age_days overrides default", test_cleanup_custom_max_age_days),
+        ("cleanup: empty prefix sweeps all matching ext (heartbeat .tmp)", test_cleanup_empty_prefix_sweeps_all_matching_ext),
         ("find_transcript: found", test_find_transcript_found),
         ("find_transcript: not found -> None", test_find_transcript_not_found),
         ("find_transcript: nested dir", test_find_transcript_nested),
