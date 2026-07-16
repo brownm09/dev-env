@@ -2203,6 +2203,34 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_repo_target.py
     ```
 
+74. **session-mode-report test** — required when changing `claude/scripts/session-mode-report.py`.
+    Exercises the pure `parse_log()` / `build_rows()` / `filter_rows()` helpers offline against a
+    synthetic JSONL fixture (a real tempfile, no live `~/.claude/scratch` log): pins that a
+    multi-prompt session's startup mode resolves to its **earliest** `ts` entry rather than
+    whichever line appears first in the file — the fixture deliberately writes the later
+    (`bypassPermissions`) prompt before the earlier (`plan`) one, so this also proves the
+    lexicographic-`ts` comparison, not file order, drives the selection; that a malformed
+    (non-JSON) line and a line with no `session_id` are both counted in `stats` rather than
+    raising; `build_rows()`'s classification (an `automated_suppressed`/`<scheduled-task>` entry is
+    `"automated"` and never flagged even though it started in `bypassPermissions`) and flagging (an
+    interactive session starting in anything other than `plan` IS flagged; one starting in `plan`
+    is not); and `filter_rows()`'s three flags (`--non-plan-only`, `--interactive-only`,
+    `--since`) against the same fixture. A behavioral layer drives the real `main()` against
+    fixture files: a clean fixture exits 0; a prompt containing an em-dash, smart quotes, and an
+    emoji also exits 0 without a `UnicodeEncodeError` (pins `_force_utf8_streams()`'s stdout/stderr
+    reconfiguration — a *redirected* Windows stdout falls back to the narrow cp1252 locale encoding
+    rather than the console's native UTF-16 path, and this report echoes `prompt_prefix` verbatim);
+    and a missing log path returns non-zero with the error on stderr. Read-only, stdlib-only report
+    utility — no `_winsubp` import, no live git/gh call to mock. Not a wired hook (no
+    `settings.json` entry): it is the on-demand report a maintainer runs against
+    `session-mode-prompt.py`'s append-only log (item 70 above) to audit which sessions started off
+    the `defaultMode: "plan"` setting — see ADR-027 background, named in the script's own
+    docstring.
+
+    ```bash
+    py -3 claude/scripts/tests/test_session_mode_report.py
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
