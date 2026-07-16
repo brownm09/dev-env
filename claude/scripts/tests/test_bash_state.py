@@ -119,6 +119,19 @@ def test_read_state_non_dict_json_returns_none() -> str:
     return "read_state returns None when the JSON parses but isn't an object"
 
 
+def test_read_state_non_utf8_returns_none() -> str:
+    # dev-env#801: a non-UTF-8 state file makes read_text(encoding="utf-8") raise
+    # UnicodeDecodeError (a ValueError), which the pre-fix OSError-only catch let
+    # escape, contradicting the docstring ("unreadable file"). Same review-finding
+    # shape PR #800 fixed in dev-env-sync.py's read_failure_state. -> None (fresh run).
+    with tempfile.TemporaryDirectory() as root:
+        scratch = Path(root)
+        _bash_state.state_path("nonutf8", scratch=scratch).write_bytes(b"\xff\xfe\x00\x9d")
+        got = _bash_state.read_state("nonutf8", scratch=scratch)
+        assert got is None, f"expected None for non-UTF-8 bytes, got {got}"
+    return "read_state returns None on a non-UTF-8 file (UnicodeDecodeError caught)"
+
+
 def test_cleanup_removes_stale_keeps_fresh() -> str:
     with tempfile.TemporaryDirectory() as root:
         scratch = Path(root)
@@ -266,6 +279,7 @@ def main() -> int:
         ("read: missing file -> None", test_read_state_missing_file_returns_none),
         ("read: malformed JSON -> None", test_read_state_malformed_json_returns_none),
         ("read: non-dict JSON -> None", test_read_state_non_dict_json_returns_none),
+        ("read: non-UTF-8 file -> None", test_read_state_non_utf8_returns_none),
         ("write: no crash on unwritable scratch", test_write_state_no_crash_on_unwritable_scratch),
         ("cleanup: removes stale, keeps fresh", test_cleanup_removes_stale_keeps_fresh),
         ("cleanup: ignores non-matching files", test_cleanup_ignores_non_matching_files),
