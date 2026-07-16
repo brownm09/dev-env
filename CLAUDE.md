@@ -2231,6 +2231,27 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_session_mode_report.py
     ```
 
+75. **Unreachable-code lint (pylint `unreachable` / W0101)** — required before any PR touching
+    `claude/scripts/*.py`. `run-pylint-unreachable.sh` runs pylint with `--disable=all
+    --enable=unreachable`, a single-check invocation covering ONLY pylint's dead-code-after-
+    `return`/`raise`/`continue`/`break` detector (a pure control-flow check, independent of type
+    annotations) — catching the dev-env#813 class of bug (a trailing `return` in
+    `_resolve_worktree_scope()` that could never execute, only noticed by hand during an unrelated
+    refactor) that nothing else in this suite caught. mypy's `--warn-unreachable` was evaluated and
+    rejected: it skips the bodies of untyped functions by default, and there is no clean way to run
+    "just unreachable" without either bringing the whole tree to mypy-clean or grep-filtering a wave
+    of unrelated type errors. Ruff has no unreachable-code rule at all
+    ([astral-sh/ruff#970](https://github.com/astral-sh/ruff/issues/970) still lists pylint's W0101 as
+    unimplemented). SKIPs (exit 0) with an install hint when pylint is absent, matching
+    `run-shellcheck.sh`'s convention — but unlike shellcheck, CI installs `pylint==4.0.6` explicitly
+    (see `.github/workflows/hook-tests.yml`), so it is NOT self-skipped there. Auto-discovered by
+    `run-hook-tests.py`, so it runs as part of the whole-suite command too. See
+    [ADR-112](docs/adr/112-unreachable-code-lint-check.md).
+
+    ```bash
+    bash claude/scripts/tests/run-pylint-unreachable.sh
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
