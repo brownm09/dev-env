@@ -37,10 +37,11 @@ primitives rather than re-deriving them:
     the text — the merge/create args region, the whole command, or a single
     top-level segment — never *whether* to mask).
   * ``mask_prose_flag_values`` (ADR-050 Amendment 17) — the PR-URL / issue-URL
-    searches are NOT masked internally, because the correct masking scope differs
-    per caller (four sites mask ``--subject``/``--body`` decoy values; the tile
-    gate deliberately keeps a *bare* quoted ``/pull/N`` URL matchable).  Each
-    caller masks (or not) before calling.
+    searches are NOT masked internally, because these primitives are also reused
+    on trusted ``gh`` *output* (``iter_pr_urls``/``iter_issue_urls`` scanning a
+    merge's own confirmation text), which must stay unmasked.  Every
+    command-string caller masks with ``mask_prose_flag_values`` before calling;
+    the choice of *when* to mask lives with the caller, not this module.
 
 Argument-region bounding (``merge_args`` / ``create_args``) is itself
 quote-aware (ADR-050 Amendment 20): the ``[^\n;|&]*`` region regex has no
@@ -74,7 +75,7 @@ from __future__ import annotations
 
 import re
 
-from _hookio import mask_prose_flag_values, mask_quoted_spans
+from _hookio import mask_quoted_spans
 
 # ---------------------------------------------------------------------------
 # --repo / -R flag  (canonical, ends the three-shape drift)

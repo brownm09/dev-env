@@ -474,12 +474,15 @@ def _closed_issue_number(segment_first_line: str) -> int | None:
     satisfied the positional token's `(?<!\\S)` boundary -- review of PR #639,
     confirmed independently by both reviewers). Both checks now route through
     the shared `_repo_target` module (ADR-111), mirroring `_target_pr`'s
-    URL-first-then-positional precedence: the URL check masks `--subject`/
-    `--body` decoy values with `mask_prose_flag_values` first (dev-env#685), so
-    a decoy `/issues/N` URL in a prose flag can't hijack the target issue
-    number, while a bare quoted issue URL still resolves; the positional
-    fallback (`positional_number`) masks quoted spans internally (dev-env#650)
-    so a decoy bare number can't be mistaken for the real one."""
+    URL-first-then-positional precedence: the URL check runs
+    `mask_prose_flag_values` first for consistency with the other four
+    command-parsing call sites that share it, though `gh issue close`'s own
+    free-text flags (`--comment`/`-c`, `--reason`/`-r`) are not in that
+    helper's `--subject`/`--body`/`-t`/`-b` set -- a decoy `/issues/N` URL
+    inside `--comment` is not masked here (pre-existing behavior, unchanged by
+    this PR); the positional fallback (`positional_number`) masks quoted spans
+    internally (dev-env#650) so a decoy bare number can't be mistaken for the
+    real one."""
     m = _STRIP_ISSUE_CLOSE_VERB_RE.match(segment_first_line)
     tail = m.group(1) if m else ""
     n = issue_number_from_issue_url(mask_prose_flag_values(tail))
