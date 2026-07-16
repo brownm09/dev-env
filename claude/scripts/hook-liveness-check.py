@@ -211,6 +211,11 @@ def _mark_done(session_id: str) -> None:
 def main() -> None:
     _hookutil.record_heartbeat("hook-liveness-check")  # literal -- see test_hook_heartbeat_guard.py
     _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
+    # Reap any orphaned heartbeat atomic-write tmp (<hook>.ts.<pid>.tmp) left in HEARTBEAT_DIR by a
+    # rare record_heartbeat os.replace failure (dev-env#802). Only .tmp files exist there besides the
+    # live <hook>.ts ledgers (which *.tmp never matches); 30 days is safely longer than any in-flight
+    # write, so a concurrent writer's live tmp is never swept. Mirrors dev-env-sync.py's #797 sweep.
+    _hookutil.cleanup_stale_sentinels("", scratch=_hookutil.HEARTBEAT_DIR, ext=".tmp")
 
     raw = sys.stdin.read().strip()
     try:
