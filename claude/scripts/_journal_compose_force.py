@@ -125,11 +125,28 @@ def cleanup_stale_markers(max_age_days=MARKER_CLEANUP_MAX_AGE_DAYS):
     of deleting a still-needed file. Delegates to the shared
     _hookutil.cleanup_stale_sentinels helper (same glob/cutoff/unlink shape,
     same best-effort/never-raise contract) rather than a second copy of that
-    loop (dev-env#768 review)."""
+    loop (dev-env#768 review).
+
+    A second sweep with ext=".tmp" reaps an orphaned atomic-write tmp
+    (journal-compose-force-<date>.json.<pid>.tmp) that write_marker leaves
+    behind if its os.replace ever fails (rare, e.g. a Windows sharing
+    violation) -- the .json glob above cannot match a .tmp-suffixed name, so
+    without this second call that orphan would never be cleaned up
+    (dev-env#806; mirrors the identical dev-env#797/PR #800 fix in
+    dev-env-sync.py and the dev-env#802/PR #805 fix in
+    hook-liveness-check.py). Same max_age_days cutoff as the .json sweep, so
+    a concurrent writer's own still-in-progress tmp is never swept."""
+    scratch = Path(marker_dir())
     _hookutil.cleanup_stale_sentinels(
         "journal-compose-force-",
-        scratch=Path(marker_dir()),
+        scratch=scratch,
         ext=".json",
+        max_age_days=max_age_days,
+    )
+    _hookutil.cleanup_stale_sentinels(
+        "journal-compose-force-",
+        scratch=scratch,
+        ext=".tmp",
         max_age_days=max_age_days,
     )
 
