@@ -263,7 +263,6 @@ def _resolve_worktree_scope(regex_canonical_root: str, regex_worktree_root: str,
     # canonical_root confirmed correct, but this specific worktree path isn't
     # among the repo's registered (linked) worktrees -- orphaned or removed.
     return canonical_entry["path"], regex_worktree_root, False
-    return canonical_entry["path"], matched["path"], True
 
 
 def _block(reason: str) -> None:
