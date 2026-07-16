@@ -38,7 +38,8 @@ cd "$REPO_ROOT" || exit 1
 # actions/setup-python puts first on PATH; `py` is not guaranteed present on
 # the runner image).
 resolve_pylint() {
-  if [ -n "${PYLINT_CMD:-}" ]; then
+  # shellcheck disable=SC2086  # intentional word-splitting: PYLINT_CMD may be a launcher + flags
+  if [ -n "${PYLINT_CMD:-}" ] && $PYLINT_CMD --version >/dev/null 2>&1; then
     echo "$PYLINT_CMD"
     return 0
   fi

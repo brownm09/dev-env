@@ -127,11 +127,18 @@ bit). No scope-guard decision about fixing/filing additional findings was needed
 - Local contributors without pylint installed see the gate self-skip (matching the
   shellcheck experience) — CI is the actual enforcement backstop, same division of labor as
   shellcheck's local-optional/CI-self-skip split, except this gate does NOT self-skip in CI.
-- dev-env `CLAUDE.md` `## Testing` gains item 74; `docs/REFERENCE.md`'s Script verification
+- dev-env `CLAUDE.md` `## Testing` gains item 75; `docs/REFERENCE.md`'s Script verification
   suite table gains a row.
 - Future broader lint adoption (style, unused-import, or other pylint/ruff/mypy categories)
   is a separate, larger decision with its own scope and rationale — not implied or
   pre-approved by this ADR.
+- The pinned version (`pylint==4.0.6`) is duplicated across five places — the CI workflow,
+  this file's own comments/references, the bash gate's install-hint strings, the `CLAUDE.md`
+  item, and the `docs/REFERENCE.md` row — with no single source of truth, and pylint's
+  transitive dependencies (astroid, platformdirs, etc.) are left unpinned. A future version
+  bump should `grep -rn "pylint==4.0.6"` across the repo rather than assuming the CI workflow
+  is the only place it lives; not worth a shared-version-file mechanism for one pinned dev
+  dependency (review finding on PR #818).
 
 ## References
 
