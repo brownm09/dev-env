@@ -979,7 +979,19 @@ not a signal to bypass the safety check.
 **Recovery — PR already auto-closed.**
 
 `gh pr reopen <N>` fails unconditionally when the PR was auto-closed by a `head_ref_deleted` event
-(GitHub does not allow reopening a PR whose head branch has been deleted or treated as deleted). Steps:
+(GitHub does not allow reopening a PR whose head branch has been deleted or treated as deleted).
+
+**Why it blocks:** GitHub checks whether the current branch head is a descendant of the SHA
+the branch held when the PR was closed. After a rebase, the rebased commits are disjoint
+from the original commits, so this check always fails (isaacs/github#361, GitHub staff).
+
+**Reopen workaround** (avoids creating a replacement PR):
+1. Find the close-time SHA from `git reflog show <branch-name>` (the pre-rebase tip) or from the PR's Commits tab on GitHub (GitHub preserves commit history on closed PRs).
+2. `git push -f origin <old-sha>:branch-name` (restores the branch to the close-time SHA).
+3. Reopen the PR via `gh pr reopen <N>` or from the GitHub UI (now unblocked — head IS a descendant of itself).
+4. `git push -f origin <rebased-sha>:branch-name` (pushes your actual work).
+
+**Alternatively, create a replacement PR** (when the close-time SHA is unavailable):
 
 1. Confirm the PR is truly auto-closed (not intentionally closed):
    ```bash
