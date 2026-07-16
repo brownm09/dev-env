@@ -42,9 +42,9 @@ import sys
 
 from _hookio import (
     confirm_merge_via_gh,
+    effective_merge_dir,
     is_merge_help_only,
     mask_prose_flag_values,
-    mask_quoted_spans,
     merge_pr_number_from_output,
     output_has_merge_marker,
     read_command_output,
@@ -52,86 +52,27 @@ from _hookio import (
     should_confirm_via_gh,
 )
 import _hookutil
+from _repo_target import (
+    merge_args,
+    positional_number,
+    pr_number_from_pr_url,
+    repo_from_flag,
+    repo_from_pr_url,
+)
 
 CONFIG_FILE = ".claude/hook-config.json"
 
 _MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
 _CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
-# Used two ways: (1) extract_pr_number's scan of `gh pr merge` OUTPUT text,
-# which needs no masking (gh's own output, not attacker-shaped command
-# prose); and (2) extract_pr_number_from_command's own URL fallback, which
-# runs this against a mask_prose_flag_values-masked copy of `args`
-# (dev-env#664, ADR-050 Amendment 21), so a --subject/--body value
-# containing a URL-shaped decoy (e.g. "see https://github.com/other/repo
-# /pull/99 for context") can't false-match either — mirrors
-# _PR_URL_REPO_RE's own mask_prose_flag_values fix below (dev-env#634,
-# Amendment 17), just for the PR-NUMBER extraction path instead of the
-# repo-name one. A BARE quoted PR-URL positional argument (test_cmd_url) is
-# never preceded by --subject/--body, so mask_prose_flag_values leaves it
-# untouched while blanket mask_quoted_spans would have blinded it too.
-_PR_URL_RE = re.compile(r"https://github\.com/\S+/pull/(\d+)")
-# Same PR-URL shape as _PR_URL_RE but capturing the owner/repo segment instead
-# of discarding it — used to detect when a merge command names a DIFFERENT
-# repo than cwd's own config (dev-env#559). extract_repo_from_command runs
-# this against a mask_prose_flag_values-masked copy of `args` (dev-env#634,
-# ADR-050 Amendment 17), so a --subject/--body value containing a URL-shaped
-# decoy (e.g. "see https://github.com/other/repo/pull/1 for context") can't
-# false-match either — mirrors _REPO_FLAG_RE's own mask_quoted_spans fix
-# below, but scoped to prose-flag values only: a BARE quoted PR-URL argument
-# (test_repo_from_cross_repo_url) is never preceded by --subject/--body, so
-# mask_prose_flag_values leaves it untouched while mask_quoted_spans would
-# have blinded it too.
-_PR_URL_REPO_RE = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/\d+")
-# An explicit --repo flag is the highest-confidence signal, ahead of a URL —
-# mirrors _effective_merge_repo's resolution order in pr-merge-reminder.py
-# (dev-env#470). Checked first so a --subject/--body value that happens to
-# mention an unrelated PR URL cannot override an explicitly-named --repo
-# (review finding on dev-env#559 / PR #572). Also matches gh's -R shorthand
-# for --repo (dev-env#616) — a bare `-R` merge command previously fell
-# through to None, silently resolving to cwd's own config instead. The
-# (?<!\S) lookbehind requires -R/--repo to start a standalone token, so it
-# can't match mid-word (e.g. a PR title literally containing "add-R support")
-# — review finding on PR #623. extract_repo_from_command runs this against a
-# mask_quoted_spans-masked string (dev-env#626, ADR-050 Amendment 15) so a
-# --subject/--body value containing a space-separated "-R other/repo"
-# substring can no longer false-match either — the value's whole quoted span
-# is blanked before this regex ever sees it.
-_REPO_FLAG_RE = re.compile(r"(?<!\S)(?:--repo|-R)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
-# The argument list of the `gh pr merge` invocation only — up to the next shell
-# separator — so a /pull/N URL in a --subject/--body value or a chained sibling
-# command cannot hijack the PR-number extraction (the whole-command search did;
-# #380). The merge-success markers themselves live in _hookio (one source).
-_MERGE_ARGS_RE = re.compile(r"\bgh\s+pr\s+merge\b([^\n;|&]*)")
+# The `--repo`/`-R` flag, PR-URL, positional-number, and `gh pr merge`
+# args-region extraction (with their quote-aware masking) now live in the
+# shared `_repo_target` module — one implementation across the five sibling
+# hooks that used to each carry a near-copy (ADR-111). `merge_succeeded` /
+# `extract_pr_number`'s output-marker read still come from `_hookio`.
 
 
 def _check_merge_stmt(token: str) -> bool:
     return bool(_MERGE_RE.match(token.lstrip()))
-
-
-def _merge_args(command: str) -> str | None:
-    """Return the `gh pr merge` invocation's own argument text, or None.
-
-    Bounded via `_MERGE_ARGS_RE` against a `mask_quoted_spans`-masked copy of
-    *command* (dev-env#660, ADR-050 Amendment 20), not the raw command --
-    `_MERGE_ARGS_RE`'s negated character class `[^\n;|&]*` stops at ANY single
-    `&`/`|` (not just doubled `&&`/`||`) with no quote-awareness of its own, so
-    a --subject/--body value containing a bare separator character (e.g.
-    `--subject "R&D tracking"` -- a perfectly ordinary commit subject, not a
-    deliberately crafted string) truncated the args region before a later real
-    flag or URL was ever seen. Confirmed live: `extract_repo_from_command('gh pr
-    merge 42 --subject "part1 && part2" --repo o/r')` returned `None`, silently
-    dropping a real `--repo`. mask_quoted_spans is length-preserving, so the
-    match's span offsets against the masked text apply unchanged to the
-    original -- the returned text is the REAL (unmasked) args, not the masked
-    stand-in, so downstream parsing (the existing `mask_quoted_spans(args)` /
-    `mask_prose_flag_values(args)` calls in `extract_repo_from_command`) still
-    sees genuine quote/flag-value content to mask in its own turn.
-    """
-    m = _MERGE_ARGS_RE.search(mask_quoted_spans(command))
-    if not m:
-        return None
-    start, end = m.span(1)
-    return command[start:end]
 
 
 def load_config(cwd: str) -> dict | None:
@@ -197,19 +138,19 @@ def extract_pr_number_from_command(command: str) -> int | None:
     supported shape that `mask_prose_flag_values` leaves untouched, unlike
     blanket `mask_quoted_spans`.
     """
-    args = _merge_args(command)
+    args = merge_args(command)
     if args is None:
         return None
     # Positional number token (`380`), tolerant of flags before it; a digit run
     # inside a flag value (`--foo=12`) or a branch name (`my-branch-2`) is not a
-    # standalone token and is correctly ignored.
-    num = re.search(r"(?<!\S)(\d+)(?=\s|$)", mask_quoted_spans(args))
-    if num:
-        return int(num.group(1))
-    url = _PR_URL_RE.search(mask_prose_flag_values(args))
-    if url:
-        return int(url.group(1))
-    return None
+    # standalone token and is correctly ignored. `positional_number` masks the
+    # args (dev-env#650) so a bare decoy number in a --subject/--body value is
+    # ignored; the URL fallback masks --subject/--body values (dev-env#664) so a
+    # URL-shaped decoy there can't false-match either.
+    num = positional_number(args)
+    if num is not None:
+        return num
+    return pr_number_from_pr_url(mask_prose_flag_values(args))
 
 
 def extract_repo_from_command(command: str) -> str | None:
@@ -253,14 +194,13 @@ def extract_repo_from_command(command: str) -> str | None:
     --repo o/r`, or even an ordinary subject like `--subject "R&D tracking"`)
     is no longer silently dropped.
     """
-    args = _merge_args(command)
+    args = merge_args(command)
     if args is None:
         return None
-    flag = _REPO_FLAG_RE.search(mask_quoted_spans(args))
-    if flag:
-        return flag.group(1)
-    url = _PR_URL_REPO_RE.search(mask_prose_flag_values(args))
-    return url.group(1) if url else None
+    flag_repo = repo_from_flag(args)
+    if flag_repo:
+        return flag_repo
+    return repo_from_pr_url(mask_prose_flag_values(args))
 
 
 def extract_pr_number(output: str) -> int | None:
@@ -271,9 +211,9 @@ def extract_pr_number(output: str) -> int | None:
     cross-repo "owner/repo#N" variant — via the shared `_hookio` helper.
     """
     for line in reversed(output.strip().splitlines()):
-        m = _PR_URL_RE.search(line)
-        if m:
-            return int(m.group(1))
+        n = pr_number_from_pr_url(line)
+        if n is not None:
+            return n
     return merge_pr_number_from_output(output)
 
 
@@ -360,8 +300,16 @@ def main() -> None:
 
     output = read_command_output(data)
     cwd = data.get("cwd", "")
+    # Scope config resolution to the repo the merge actually targets, not the
+    # session cwd — a `cd <other-repo> && gh pr merge` (no --repo flag, no PR
+    # URL) otherwise loads cwd's own project-board config and risks moving an
+    # unrelated same-numbered issue on the wrong repo's board (dev-env#569,
+    # extending the dev-env#559 URL-case guard below to the cd-chain case).
+    # Reuses `_hookio.effective_merge_dir` (ADR-067), as its two sibling
+    # merge-triggered hooks already do.
+    merge_dir = effective_merge_dir(command, cwd)
 
-    config = load_config(cwd)
+    config = load_config(merge_dir)
     if config is None:
         sys.exit(0)
 
@@ -416,7 +364,7 @@ def main() -> None:
         exit_code = data.get("tool_response", {}).get("exitCode", -1)
         if not should_confirm_via_gh(exit_code, output):
             sys.exit(0)
-        confirmed_number = confirm_merge_via_gh(pr_number, repo, cwd)
+        confirmed_number = confirm_merge_via_gh(pr_number, repo, merge_dir)
         if confirmed_number is None:
             sys.exit(0)
         pr_number = confirmed_number

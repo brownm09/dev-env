@@ -147,7 +147,7 @@ import sys
 from pathlib import Path
 
 from _hookio import (
-    mask_quoted_spans,
+    mask_prose_flag_values,
     merge_pr_number_from_output,
     output_has_merge_marker,
     split_top_level,
@@ -158,6 +158,15 @@ from _hookutil import (
     _parse_records,
     _user_message_texts,
     iter_bash_calls as _iter_bash_calls,
+)
+from _repo_target import (
+    issue_number_from_issue_url,
+    iter_issue_urls,
+    iter_pr_urls,
+    positional_number,
+    pr_number_from_pr_url,
+    repo_from_flag,
+    repo_from_pr_url,
 )
 
 SENTINEL_PREFIX = "tile-enumeration-gate-"
@@ -184,29 +193,16 @@ _GH_API_STMT_RE = re.compile(r"gh(?:\.exe)?\s+api\b", re.IGNORECASE)
 
 # Strip the `gh pr <verb>` prefix so the positional PR arg can be read.
 _STRIP_VERB_RE = re.compile(r"\s*gh(?:\.exe)?\s+pr\s+\w+\b(.*)", re.IGNORECASE | re.DOTALL)
-# A PR URL (`.../pull/N`) capturing owner/repo and number; a bare positional
-# integer token; and an explicit `--repo`/`-R owner/name` flag value. The
-# (?<!\S) lookbehind (dev-env#634, ADR-050 Amendment 17 -- ADR-088's original
-# regex never received PR #623's Amendment 14 lookbehind, since it already
-# recognized `-R` before that PR and so fell outside its audit) requires
-# --repo/-R to start a standalone token, so it can't match mid-word (e.g. a PR
-# title literally containing "add-R support"). `_explicit_repo` additionally
-# runs this against a `mask_quoted_spans`-masked copy of its input (same
-# amendment), so a --subject/--body value containing a space-separated
-# "-R other/repo" substring can't false-match either -- the lookbehind alone
-# only checks that the preceding character is whitespace, which a quoted
-# value's own internal spacing satisfies just as well as a real token boundary.
-_PR_URL_RE = re.compile(r"github\.com/(?P<repo>[^/\s]+/[^/\s]+)/pull/(?P<num>\d+)")
-# `_target_pr` and `_closed_issue_number` both run this against a
-# `mask_quoted_spans`-masked copy of their own `tail` (dev-env#650, ADR-050
-# Amendment 19), so a --subject/--body value containing a space-separated
-# bare number ("resolves 42 items") can't be mistaken for the real target PR
-# or issue number -- the same quoted-value blind spot Amendment 15 closed for
-# _REPO_FLAG_RE below, just for a bare-digit token instead of a --repo/-R
-# flag. mask_quoted_spans (not mask_prose_flag_values) is used because this
-# decoy shape isn't scoped to a --subject/--body/-t/-b flag specifically.
-_POS_NUM_RE = re.compile(r"(?<!\S)(\d+)(?=\s|$)")
-_REPO_FLAG_RE = re.compile(r"(?<!\S)(?:--repo|-R)(?:=|\s+)(?P<repo>[^\s/]+/[^\s]+)")
+# The PR-URL / issue-URL parsing, the bare positional-number token, and the
+# `--repo`/`-R` flag extraction (with their quote-aware masking) now come from
+# the shared `_repo_target` module (ADR-111) — one implementation across the
+# five sibling hooks. This file's own `_PR_URL_RE`/`_ISSUE_URL_RE` fallbacks
+# were the last members of that family still searched UNMASKED; routing them
+# through `_repo_target` lets each call site mask its input with
+# `mask_prose_flag_values` (dev-env#685), so a `--subject`/`--body` value
+# containing a decoy `/pull/N` URL can no longer hijack the extracted number —
+# even when a real positional number is also present — while a bare quoted URL
+# argument (never preceded by `--subject`/`--body`) still resolves.
 
 # --- dangling-created-issue detection (ADR-092, dev-env#638) -------------------
 _ISSUE_CREATE_STMT_RE = re.compile(r"gh(?:\.exe)?\s+issue\s+create\b", re.IGNORECASE)
@@ -217,8 +213,6 @@ _ISSUE_CLOSE_STMT_RE = re.compile(r"gh(?:\.exe)?\s+issue\s+close\b", re.IGNORECA
 # merge/view/checks, since gh's syntax (`gh pr edit <number|url> ...`) is
 # identical in shape.
 _PR_EDIT_STMT_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+edit\b", re.IGNORECASE)
-# An issue URL (`.../issues/N`) capturing owner/repo and number.
-_ISSUE_URL_RE = re.compile(r"github\.com/(?P<repo>[^/\s]+/[^/\s]+)/issues/(?P<num>\d+)")
 # Strip the `gh issue close` prefix so the positional issue number can be read.
 _STRIP_ISSUE_CLOSE_VERB_RE = re.compile(r"\s*gh(?:\.exe)?\s+issue\s+close\b(.*)", re.IGNORECASE | re.DOTALL)
 # GitHub's documented auto-close keywords (close/closes/closed, fix/fixes/fixed,
@@ -349,22 +343,22 @@ def _target_pr(segment_first_line: str) -> int | None:
     URL or the first bare positional integer), else ``None`` (bare form — infers
     from the current branch, no number in the command).
 
-    The positional-integer fallback runs against a `mask_quoted_spans`-masked
-    copy of `tail` (dev-env#650, ADR-050 Amendment 19), so a --subject/--body
-    value containing a space-separated bare number ("resolves 42 items")
-    can't be mistaken for the real target PR number. The `_PR_URL_RE` check
-    deliberately stays on the *unmasked* text, mirroring `_explicit_repo`'s
-    own masking-scope decision immediately below (a quoted `/pull/N` URL is a
-    legitimate shape masking would otherwise blind; this hook's own PR-URL
-    regex remains out of scope for both dev-env#634 and dev-env#650).
+    Both checks now route through the shared ``_repo_target`` module (ADR-111).
+    The URL check masks ``--subject``/``--body`` decoy values with
+    ``mask_prose_flag_values`` first (dev-env#685), so a decoy ``/pull/N`` URL in
+    a prose flag can no longer hijack the target number — the URL check runs
+    FIRST, so before this fix a decoy won even when a real positional number was
+    also present. A bare quoted ``/pull/N`` URL argument is not a prose-flag
+    value and is left matchable, exactly as before. The positional fallback
+    (``positional_number``) masks quoted spans internally (dev-env#650) so a bare
+    decoy number ("resolves 42 items") can't be mistaken for the real one.
     """
     m = _STRIP_VERB_RE.match(segment_first_line)
     tail = m.group(1) if m else ""
-    u = _PR_URL_RE.search(tail)
-    if u:
-        return int(u.group("num"))
-    n = _POS_NUM_RE.search(mask_quoted_spans(tail))
-    return int(n.group(1)) if n else None
+    n = pr_number_from_pr_url(mask_prose_flag_values(tail))
+    if n is not None:
+        return n
+    return positional_number(tail)
 
 
 def _explicit_repo(segment_first_line: str) -> str | None:
@@ -375,22 +369,19 @@ def _explicit_repo(segment_first_line: str) -> str | None:
     MERGED in-session, cannot be mistaken for this session's own PR (review of
     PR #604).
 
-    The `--repo`/`-R` flag check runs against a `mask_quoted_spans`-masked copy
-    of `segment_first_line` (dev-env#634, ADR-050 Amendment 17), so a
-    --subject/--body value containing a space-separated "-R other/repo"
-    substring cannot be mistaken for a real flag. The `_PR_URL_RE` fallback
-    deliberately stays on the *unmasked* text — a quoted `/pull/N` URL is a
-    legitimate shape (mirrors the four sibling hooks' own masking-scope
-    decision in ADR-050 Amendment 15) that masking would otherwise blind; this
-    hook's own PR-URL regex is also out of the dev-env#634 fix's scope (see
-    that issue's point 4, which scopes the URL-regex analog fix to the four
-    files ADR-050 Amendment 15 already touched, not this one).
+    Both checks now route through the shared ``_repo_target`` module (ADR-111).
+    ``repo_from_flag`` masks its input with ``mask_quoted_spans`` internally
+    (dev-env#626/#634), so a ``--subject``/``--body`` value's "-R other/repo"
+    substring can't be mistaken for a real flag. The URL fallback masks
+    ``--subject``/``--body`` decoy values with ``mask_prose_flag_values`` first
+    (dev-env#685) — this file's own ``_PR_URL_RE`` was the last of the family
+    still searched entirely unmasked — while a bare quoted ``/pull/N`` URL
+    argument (not a prose-flag value) still resolves, exactly as before.
     """
-    rf = _REPO_FLAG_RE.search(mask_quoted_spans(segment_first_line))
-    if rf:
-        return rf.group("repo")
-    u = _PR_URL_RE.search(segment_first_line)
-    return u.group("repo") if u else None
+    flag_repo = repo_from_flag(segment_first_line)
+    if flag_repo:
+        return flag_repo
+    return repo_from_pr_url(mask_prose_flag_values(segment_first_line))
 
 
 def session_merged_prs(calls: list) -> set:
@@ -429,8 +420,8 @@ def session_merged_prs(calls: list) -> set:
 
         # --- acted-on: created PRs (repo from the URL) + merge targets ----------
         if has_create:
-            for m in _PR_URL_RE.finditer(output):
-                acted.setdefault(int(m.group("num")), set()).add(m.group("repo"))
+            for repo, num in iter_pr_urls(output):
+                acted.setdefault(num, set()).add(repo)
         for f in merge_firsts:
             n = _target_pr(f)
             if n is not None:
@@ -482,21 +473,24 @@ def _closed_issue_number(segment_first_line: str) -> int | None:
     commonly copy-pastes the URL `gh issue create` itself just printed, and
     the bare-integer-only lookup previously missed that form entirely (the
     issue number in a URL is preceded by `/`, never whitespace, so it never
-    satisfied `_POS_NUM_RE`'s `(?<!\\S)` boundary -- review of PR #639,
-    confirmed independently by both reviewers). Mirrors `_target_pr`'s
-    URL-first-then-positional precedence, including its dev-env#650 fix: the
-    positional-integer fallback runs against a `mask_quoted_spans`-masked
-    copy of `tail`, so a decoy bare number inside a quoted value elsewhere on
-    the same `gh issue close` invocation can't be mistaken for the real
-    target issue number. `_ISSUE_URL_RE` stays on the unmasked text, mirroring
-    `_target_pr`'s own `_PR_URL_RE` scope decision."""
+    satisfied the positional token's `(?<!\\S)` boundary -- review of PR #639,
+    confirmed independently by both reviewers). Both checks now route through
+    the shared `_repo_target` module (ADR-111), mirroring `_target_pr`'s
+    URL-first-then-positional precedence: the URL check runs
+    `mask_prose_flag_values` first for consistency with the other four
+    command-parsing call sites that share it, though `gh issue close`'s own
+    free-text flags (`--comment`/`-c`, `--reason`/`-r`) are not in that
+    helper's `--subject`/`--body`/`-t`/`-b` set -- a decoy `/issues/N` URL
+    inside `--comment` is not masked here (pre-existing behavior, unchanged by
+    this PR); the positional fallback (`positional_number`) masks quoted spans
+    internally (dev-env#650) so a decoy bare number can't be mistaken for the
+    real one."""
     m = _STRIP_ISSUE_CLOSE_VERB_RE.match(segment_first_line)
     tail = m.group(1) if m else ""
-    u = _ISSUE_URL_RE.search(tail)
-    if u:
-        return int(u.group("num"))
-    n = _POS_NUM_RE.search(mask_quoted_spans(tail))
-    return int(n.group(1)) if n else None
+    n = issue_number_from_issue_url(mask_prose_flag_values(tail))
+    if n is not None:
+        return n
+    return positional_number(tail)
 
 
 def session_created_issues(calls: list) -> dict:
@@ -514,8 +508,8 @@ def session_created_issues(calls: list) -> dict:
         firsts = [_first_line(seg).lstrip() for seg in split_top_level(command)]
         if not any(_ISSUE_CREATE_STMT_RE.match(f) for f in firsts):
             continue
-        for m in _ISSUE_URL_RE.finditer(output or ""):
-            created[int(m.group("num"))] = m.group("repo")
+        for repo, num in iter_issue_urls(output or ""):
+            created[num] = repo
     return created
 
 
@@ -574,7 +568,7 @@ def session_resolved_issue_numbers(calls: list, merged_prs: set) -> set:
                 pr_edit_segments.append((seg, first))
 
         if pr_create_segments:
-            pr_numbers = {int(m.group("num")) for m in _PR_URL_RE.finditer(output or "")}
+            pr_numbers = {num for _repo, num in iter_pr_urls(output or "")}
             if pr_numbers & merged_prs:
                 for seg in pr_create_segments:
                     resolved |= {int(n) for n in _CLOSES_KEYWORD_RE.findall(seg)}

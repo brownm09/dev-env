@@ -462,13 +462,14 @@ def test_explicit_repo_dash_r_shorthand_still_resolves():
 
 
 def test_explicit_repo_url_fallback_stays_unmasked():
-    # The PR-URL fallback is deliberately out of dev-env#634's scope (point 4
-    # scopes the URL-regex analog fix to the four files ADR-050 Amendment 15
-    # already touched, not this hook's own _PR_URL_RE) -- a quoted PR URL
-    # used AS the repo signal must keep resolving exactly as before.
+    # Post-dev-env#685 the URL fallback IS masked, but with mask_prose_flag_values
+    # (which masks only --subject/--body/-t/-b values) -- so a BARE quoted PR URL
+    # used AS the repo signal (not preceded by a prose flag) is untouched and
+    # must keep resolving exactly as before. Assertion unchanged from the
+    # pre-#685 "stays unmasked" behavior for this bare-URL shape.
     segment = 'gh pr merge "https://github.com/brownm09/dev-env/pull/42" --squash'
     assert gate._explicit_repo(segment) == "brownm09/dev-env"
-    return "quoted PR URL fallback still resolves (out of dev-env#634's URL-regex scope)"
+    return "bare quoted PR URL fallback still resolves under mask_prose_flag_values (dev-env#685)"
 
 
 # ---------------------------------------------------------------------------
@@ -497,11 +498,12 @@ def test_target_pr_real_number_survives_alongside_bare_number_decoy():
 
 
 def test_target_pr_url_fallback_stays_unmasked():
-    # Mirrors test_explicit_repo_url_fallback_stays_unmasked: the _PR_URL_RE
-    # check is deliberately out of both dev-env#634's and dev-env#650's scope.
+    # Mirrors test_explicit_repo_url_fallback_stays_unmasked: post-dev-env#685 the
+    # URL check masks with mask_prose_flag_values, which leaves a BARE quoted PR
+    # URL (not preceded by --subject/--body) matchable. Assertion unchanged.
     segment = 'gh pr merge "https://github.com/brownm09/dev-env/pull/42" --squash'
     assert gate._target_pr(segment) == 42
-    return "quoted PR URL fallback still resolves (out of dev-env#634/#650's URL-regex scope)"
+    return "bare quoted PR URL fallback still resolves under mask_prose_flag_values (dev-env#685)"
 
 
 def test_target_pr_via_session_merged_prs_with_decoy():
@@ -521,6 +523,40 @@ def test_target_pr_via_session_merged_prs_with_decoy():
     ]
     assert gate.session_merged_prs(calls) == {380}
     return "session_merged_prs: auto-merge correlation resolves the real PR despite a leading --subject bare-number decoy (dev-env#650)"
+
+
+# ---------------------------------------------------------------------------
+# _target_pr / _explicit_repo URL-decoy masking (dev-env#685, ADR-111)
+#
+# This file's own _PR_URL_RE was the LAST member of the repo-target family
+# still searched entirely unmasked. Because the URL check runs FIRST (ahead of
+# the positional fallback) in _target_pr, a decoy /pull/N URL in a --subject
+# value won even when a REAL positional number was also present -- a strictly
+# more severe shape than the bare-number decoy (dev-env#650) above. Routing the
+# check through _repo_target lets the call site mask --subject/--body values
+# with mask_prose_flag_values first, closing the decoy while leaving a bare
+# quoted URL (never preceded by --subject/--body) matchable (see the two
+# "url_fallback_stays_..." tests above, whose assertions are unchanged).
+# ---------------------------------------------------------------------------
+
+def test_target_pr_url_decoy_in_subject_masked():
+    segment = 'gh pr merge --squash --subject "see https://github.com/other/repo/pull/99 for context"'
+    assert gate._target_pr(segment) is None
+    return "URL decoy in --subject -> None (no real PR number in the command; dev-env#685)"
+
+
+def test_target_pr_real_number_survives_url_decoy_in_subject():
+    # The MORE SEVERE dev-env#685 case: the URL check runs first, so before the
+    # fix this decoy won even though a real positional 380 is also present.
+    segment = 'gh pr merge 380 --subject "see https://github.com/other/repo/pull/99 for context"'
+    assert gate._target_pr(segment) == 380
+    return "real positional 380 wins over a URL decoy in --subject (URL check masked; dev-env#685)"
+
+
+def test_explicit_repo_url_decoy_in_subject_masked():
+    segment = 'gh pr merge --squash --subject "see https://github.com/other/repo/pull/99 for context"'
+    assert gate._explicit_repo(segment) is None
+    return "URL decoy in --subject -> None repo (no real --repo or bare URL; dev-env#685)"
 
 
 # ---------------------------------------------------------------------------
@@ -1672,6 +1708,9 @@ def main():
         ("_target_pr: real number survives alongside bare-number decoy (dev-env#650)", test_target_pr_real_number_survives_alongside_bare_number_decoy),
         ("_target_pr: quoted PR URL fallback stays unmasked (dev-env#650)", test_target_pr_url_fallback_stays_unmasked),
         ("_target_pr: session_merged_prs resolves real PR despite leading decoy (dev-env#650)", test_target_pr_via_session_merged_prs_with_decoy),
+        ("_target_pr: URL decoy in --subject masked (dev-env#685)", test_target_pr_url_decoy_in_subject_masked),
+        ("_target_pr: real number survives URL decoy in --subject (dev-env#685)", test_target_pr_real_number_survives_url_decoy_in_subject),
+        ("_explicit_repo: URL decoy in --subject masked (dev-env#685)", test_explicit_repo_url_decoy_in_subject_masked),
         ("e2e merged+no-enum blocks on stderr", test_e2e_merged_no_enum_blocks_on_stderr),
         ("e2e merged+enum allows", test_e2e_merged_with_enum_allows),
         ("e2e no-merge allows", test_e2e_no_merge_allows),
