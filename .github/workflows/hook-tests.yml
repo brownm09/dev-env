@@ -47,11 +47,21 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Unlike shellcheck (self-SKIPs here -- no admin rights to install via
+      # choco on a hosted runner), pylint is a plain pip package: install it
+      # so run-pylint-unreachable.sh actually runs in CI instead of
+      # self-skipping (dev-env#815 / ADR-112). Version-pinned for
+      # reproducibility, matching the SHA-pinned actions above.
+      - name: Install pylint (unreachable-code gate)
+        shell: bash
+        run: python -m pip install "pylint==4.0.6"
+
       - name: Show tool versions
         shell: bash
         run: |
           python --version
           py --list 2>/dev/null || true
+          python -m pylint --version
           git --version
           bash --version | head -1
 
