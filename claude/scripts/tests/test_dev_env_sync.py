@@ -15,6 +15,17 @@ this repo's established convention for topology-diagnosing orchestration scripts
 Testing` items 22/26/30; PR #661's own note that dev-env-sync.py has "zero local pure logic"
 prior to this change).
 
+dev-env#797 (ADR-110): a fast-forward-pull failure that persists across prompts/sessions (a
+dirty tracked file conflicting with an incoming commit — the #697/#795 recurrences) now
+escalates to a distinct, louder advisory instead of the same-severity per-prompt warning.
+This file additionally exercises the pure escalation helpers offline (`parse_blocking_files`,
+`format_duration`, `record_failure`, `should_escalate`, `format_escalated_pull_failure_message`)
+and the best-effort scratch-state I/O (`read/write/clear_failure_state`) against a
+`tempfile.TemporaryDirectory()` (its only impure surface is the filesystem, matching
+`test_hookutil.py`'s convention — no real `~/.claude/scratch`). `main()`'s orchestration (the
+track-on-failure / clear-on-success wiring) is not covered here, consistent with the same
+pure-helper convention above.
+
 Usage:
     py -3 claude/scripts/tests/test_dev_env_sync.py
 
@@ -24,6 +35,7 @@ Exit 0 = all pass.
 import importlib.util
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -46,8 +58,35 @@ format_pull_failure_message = des.format_pull_failure_message
 format_diverged_message = des.format_diverged_message
 format_pulled_message = des.format_pulled_message
 
+# Persistent ff-failure escalation helpers (dev-env#797).
+parse_blocking_files = des.parse_blocking_files
+format_duration = des.format_duration
+record_failure = des.record_failure
+should_escalate = des.should_escalate
+format_escalated_pull_failure_message = des.format_escalated_pull_failure_message
+failure_state_path = des.failure_state_path
+read_failure_state = des.read_failure_state
+write_failure_state = des.write_failure_state
+clear_failure_state = des.clear_failure_state
+ESCALATE_AFTER_CONSECUTIVE_FAILURES = des.ESCALATE_AFTER_CONSECUTIVE_FAILURES
+ESCALATE_AFTER_HOURS = des.ESCALATE_AFTER_HOURS
+
 LOCAL = "33b0036049a9ad6747e1b0d88688ee4fb86420e0"
 REMOTE = "d249ba461e1c64aae45a31297e232a756bcdd2fc"
+
+# git's two `--ff-only` abort shapes (a dirty tracked file, and an untracked-file conflict).
+_LOCAL_CHANGES_STDERR = (
+    "error: Your local changes to the following files would be overwritten by merge:\n"
+    "\tclaude/skills/sources.md\n"
+    "Please commit your changes or stash them before you merge.\n"
+    "Aborting\n"
+)
+_UNTRACKED_STDERR = (
+    "error: The following untracked working tree files would be overwritten by merge:\n"
+    "\tbash.exe.stackdump\n"
+    "Please move or remove them before you merge.\n"
+    "Aborting\n"
+)
 
 
 def _proc(returncode: int, stdout: str) -> subprocess.CompletedProcess:
@@ -196,6 +235,200 @@ def test_all_formatters_are_cp1252_encodable() -> str:
     return f"{len(messages)} formatter outputs all cp1252-encodable"
 
 
+# --- persistent ff-failure escalation (dev-env#797) ------------------------------
+
+
+def test_parse_blocking_files_local_changes_variant() -> str:
+    files = parse_blocking_files(_LOCAL_CHANGES_STDERR)
+    assert files == ["claude/skills/sources.md"], files
+    return "local-changes abort -> ['claude/skills/sources.md']"
+
+
+def test_parse_blocking_files_untracked_variant() -> str:
+    files = parse_blocking_files(_UNTRACKED_STDERR)
+    assert files == ["bash.exe.stackdump"], files
+    return "untracked-file abort -> ['bash.exe.stackdump']"
+
+
+def test_parse_blocking_files_multiple_files() -> str:
+    stderr = (
+        "error: Your local changes to the following files would be overwritten by merge:\n"
+        "\tclaude/skills/sources.md\n"
+        "\tclaude/skills/journal-compose/SKILL.md\n"
+        "Please commit your changes or stash them before you merge.\n"
+        "Aborting\n"
+    )
+    files = parse_blocking_files(stderr)
+    assert files == [
+        "claude/skills/sources.md",
+        "claude/skills/journal-compose/SKILL.md",
+    ], files
+    return "two tab-indented files both captured, in order"
+
+
+def test_parse_blocking_files_no_tab_lines_returns_empty() -> str:
+    # A different failure mode (no tab-indented file list) must not raise or invent paths.
+    assert parse_blocking_files("fatal: some other git error\n") == []
+    assert parse_blocking_files("") == []
+    return "no tab-indented lines (or empty) -> []"
+
+
+def test_format_duration_boundaries() -> str:
+    assert format_duration(0) == "under a minute", "0s"
+    assert format_duration(59) == "under a minute", "59s still under a minute"
+    assert format_duration(60) == "1m", "exactly 60s -> 1m"
+    assert format_duration(45 * 60) == "45m", "45m"
+    assert format_duration(2 * 3600) == "2h", "exactly 2h, no trailing minutes"
+    assert format_duration(2 * 3600 + 15 * 60) == "2h 15m", "2h 15m"
+    assert format_duration(-500) == "under a minute", "negative clamps to 0 (no negative duration)"
+    return "under-a-minute / Xm / Xh / Xh Ym / negative-clamped all correct"
+
+
+def test_record_failure_from_none_starts_fresh() -> str:
+    state = record_failure(None, now=1000.0)
+    assert state["first_failure_at"] == 1000.0, state
+    assert state["consecutive_count"] == 1, state
+    assert state["last_failure_at"] == 1000.0, state
+    return "prev=None -> count 1, first==last==now"
+
+
+def test_record_failure_increments_and_preserves_first() -> str:
+    prev = {"first_failure_at": 1000.0, "consecutive_count": 2, "last_failure_at": 1500.0}
+    state = record_failure(prev, now=2000.0)
+    assert state["first_failure_at"] == 1000.0, "original start time preserved"
+    assert state["consecutive_count"] == 3, "count incremented"
+    assert state["last_failure_at"] == 2000.0, "last advances to now"
+    return "ongoing run: first preserved, count+1, last=now"
+
+
+def test_record_failure_malformed_prev_starts_fresh() -> str:
+    # Missing/invalid first_failure_at -> no trustworthy start time -> fresh run (count reset).
+    for prev in ({"consecutive_count": 9}, {"first_failure_at": "oops", "consecutive_count": 9}, {}, {"first_failure_at": True}):
+        state = record_failure(prev, now=3000.0)
+        assert state["first_failure_at"] == 3000.0, (prev, state)
+        assert state["consecutive_count"] == 1, (prev, state)
+    return "malformed/missing first_failure_at (incl. bool) -> fresh run count 1"
+
+
+def test_record_failure_valid_first_corrupt_count() -> str:
+    # A trustworthy timestamp but a corrupt count: keep the timestamp (time arm still works),
+    # conservatively restart the count.
+    state = record_failure({"first_failure_at": 500.0, "consecutive_count": "x"}, now=900.0)
+    assert state["first_failure_at"] == 500.0, "valid timestamp preserved"
+    assert state["consecutive_count"] == 1, "corrupt count restarts at 1"
+    return "valid first + corrupt count -> first kept, count restarts at 1"
+
+
+def test_should_escalate_below_both_thresholds_false() -> str:
+    state = {"first_failure_at": 1000.0, "consecutive_count": 1, "last_failure_at": 1000.0}
+    assert should_escalate(state, now=1000.0) is False, "1 failure, 0s elapsed must not escalate"
+    return "count 1 + 0s elapsed -> no escalation"
+
+
+def test_should_escalate_count_boundary() -> str:
+    # Isolate the count arm: first_failure_at == now so the time arm contributes 0s.
+    at_thresh = {"first_failure_at": 1000.0, "consecutive_count": ESCALATE_AFTER_CONSECUTIVE_FAILURES}
+    below = {"first_failure_at": 1000.0, "consecutive_count": ESCALATE_AFTER_CONSECUTIVE_FAILURES - 1}
+    assert should_escalate(at_thresh, now=1000.0) is True, "count == threshold escalates"
+    assert should_escalate(below, now=1000.0) is False, "count == threshold-1 does not"
+    return f"count boundary at {ESCALATE_AFTER_CONSECUTIVE_FAILURES}: == True, -1 False"
+
+
+def test_should_escalate_time_boundary() -> str:
+    # Isolate the time arm: count 1 (below the count threshold) so only elapsed time can fire.
+    secs = ESCALATE_AFTER_HOURS * 3600
+    at_thresh = {"first_failure_at": 1000.0, "consecutive_count": 1}
+    below = {"first_failure_at": 1000.0, "consecutive_count": 1}
+    assert should_escalate(at_thresh, now=1000.0 + secs) is True, "elapsed == threshold escalates"
+    assert should_escalate(below, now=1000.0 + secs - 1) is False, "just under threshold does not"
+    return f"time boundary at {ESCALATE_AFTER_HOURS}h: == True, -1s False"
+
+
+def test_should_escalate_time_arm_independent_of_count() -> str:
+    # The robustness property: a long-persisting failure escalates on time even if the count
+    # was lost to a concurrent-write race (count stuck at 1).
+    state = {"first_failure_at": 0.0, "consecutive_count": 1}
+    assert should_escalate(state, now=ESCALATE_AFTER_HOURS * 3600 + 1) is True
+    return "count 1 but > threshold hours elapsed -> escalates (time arm robust to lost count)"
+
+
+def test_format_escalated_message_contains_key_facts() -> str:
+    msg = format_escalated_pull_failure_message(
+        LOCAL, REMOTE, behind=21, blocking_files=["claude/skills/sources.md"],
+        consecutive_count=7, seconds_failing=41 * 3600, git_stderr=_LOCAL_CHANGES_STDERR,
+    )
+    assert "PERSISTENT FAILURE" in msg, "must lead with the distinct escalation tag"
+    assert "7 consecutive prompts" in msg, "must name the consecutive-prompt count"
+    assert "41h" in msg, "must name how long it has been failing"
+    assert "21 commit" in msg, "must name the commits-behind count"
+    assert LOCAL[:8] in msg and REMOTE[:8] in msg, "must name local/remote short SHAs"
+    assert "claude/skills/sources.md" in msg, "must name the blocking file path"
+    assert "STALE" in msg, "must state the stale-tooling blast radius"
+    assert "Aborting" in msg, "must still echo git's own diagnostic"
+    return msg.splitlines()[0]
+
+
+def test_format_escalated_message_singular_prompt() -> str:
+    msg = format_escalated_pull_failure_message(
+        LOCAL, REMOTE, behind=1, blocking_files=["a.txt"],
+        consecutive_count=1, seconds_failing=7200, git_stderr="",
+    )
+    assert "1 consecutive prompt " in msg and "1 consecutive prompts" not in msg, "prompt must be singular"
+    assert "1 commit behind" in msg and "1 commits" not in msg, "commit must be singular"
+    return "consecutive_count=1 and behind=1 both render singular"
+
+
+def test_format_escalated_message_no_blocking_files_degrades() -> str:
+    msg = format_escalated_pull_failure_message(
+        LOCAL, REMOTE, behind=3, blocking_files=[],
+        consecutive_count=4, seconds_failing=3 * 3600, git_stderr="fatal: weird error\n",
+    )
+    assert "none named by git" in msg, "empty blocking list must degrade gracefully, not blank"
+    assert "fatal: weird error" in msg, "git's diagnostic must still be echoed"
+    return "empty blocking_files -> graceful placeholder, git diagnostic preserved"
+
+
+def test_format_escalated_message_is_ascii() -> str:
+    # Delivered on stdout (the model-visible UserPromptSubmit channel); must survive Claude
+    # Code's cp1252 hook-output pipe on Windows. Written all-ASCII, so pin the stronger
+    # .isascii() (matches the ASCII-only convention of the sibling advisory hooks) -- the
+    # git_stderr echo is the only place non-ASCII could enter, and a real conflict path can
+    # carry a non-ASCII filename, so include one and confirm the *formatter's own* structural
+    # text stays ASCII-safe up to that echoed content.
+    msg = format_escalated_pull_failure_message(
+        LOCAL, REMOTE, behind=5, blocking_files=["claude/skills/sources.md"],
+        consecutive_count=3, seconds_failing=2 * 3600 + 30 * 60, git_stderr=_LOCAL_CHANGES_STDERR,
+    )
+    assert msg.isascii(), "escalated message (ASCII inputs) must be pure ASCII for the cp1252 pipe"
+    return "escalated message is .isascii() with ASCII inputs"
+
+
+def test_failure_state_roundtrip_and_clear() -> str:
+    with tempfile.TemporaryDirectory() as td:
+        scratch = Path(td)
+        assert read_failure_state(scratch) is None, "no file yet -> None"
+        state = {"first_failure_at": 1000.0, "consecutive_count": 2, "last_failure_at": 1500.0}
+        write_failure_state(state, scratch)
+        assert read_failure_state(scratch) == state, "written state round-trips"
+        # Atomic write must leave no orphan tmp file behind.
+        leftovers = [p.name for p in scratch.iterdir() if p.name.endswith(".tmp")]
+        assert not leftovers, f"no .tmp orphan after atomic write, found: {leftovers}"
+        clear_failure_state(scratch)
+        assert read_failure_state(scratch) is None, "cleared -> None"
+        clear_failure_state(scratch)  # clearing an already-absent file is a no-op
+    return "write/read round-trip, no tmp orphan, clear deletes, double-clear is a no-op"
+
+
+def test_read_failure_state_malformed_and_non_dict_return_none() -> str:
+    with tempfile.TemporaryDirectory() as td:
+        scratch = Path(td)
+        failure_state_path(scratch).write_text("{not json", encoding="utf-8")
+        assert read_failure_state(scratch) is None, "malformed JSON -> None"
+        failure_state_path(scratch).write_text("[1, 2, 3]", encoding="utf-8")
+        assert read_failure_state(scratch) is None, "non-dict JSON -> None"
+    return "malformed JSON and non-dict JSON both -> None (fresh run, no crash)"
+
+
 def main() -> int:
     tests = [
         ("_plural singular and plural", test_plural_singular_and_plural),
@@ -212,6 +445,25 @@ def main() -> int:
         ("format_pulled_message: mismatch surfaces race note", test_format_pulled_message_mismatch_surfaces_race_note),
         ("format_pulled_message: zero behind_count reports unmeasured", test_format_pulled_message_zero_behind_count_reports_unmeasured),
         ("all formatters are cp1252-encodable", test_all_formatters_are_cp1252_encodable),
+        ("parse_blocking_files: local-changes variant", test_parse_blocking_files_local_changes_variant),
+        ("parse_blocking_files: untracked variant", test_parse_blocking_files_untracked_variant),
+        ("parse_blocking_files: multiple files", test_parse_blocking_files_multiple_files),
+        ("parse_blocking_files: no tab lines -> []", test_parse_blocking_files_no_tab_lines_returns_empty),
+        ("format_duration: boundaries", test_format_duration_boundaries),
+        ("record_failure: from None starts fresh", test_record_failure_from_none_starts_fresh),
+        ("record_failure: increments and preserves first", test_record_failure_increments_and_preserves_first),
+        ("record_failure: malformed prev starts fresh", test_record_failure_malformed_prev_starts_fresh),
+        ("record_failure: valid first + corrupt count", test_record_failure_valid_first_corrupt_count),
+        ("should_escalate: below both thresholds -> False", test_should_escalate_below_both_thresholds_false),
+        ("should_escalate: count boundary", test_should_escalate_count_boundary),
+        ("should_escalate: time boundary", test_should_escalate_time_boundary),
+        ("should_escalate: time arm independent of count", test_should_escalate_time_arm_independent_of_count),
+        ("format_escalated_message: contains key facts", test_format_escalated_message_contains_key_facts),
+        ("format_escalated_message: singular prompt/commit", test_format_escalated_message_singular_prompt),
+        ("format_escalated_message: no blocking files degrades", test_format_escalated_message_no_blocking_files_degrades),
+        ("format_escalated_message: is ASCII", test_format_escalated_message_is_ascii),
+        ("failure-state: round-trip and clear", test_failure_state_roundtrip_and_clear),
+        ("failure-state: malformed/non-dict -> None", test_read_failure_state_malformed_and_non_dict_return_none),
     ]
     failed = 0
     for name, fn in tests:

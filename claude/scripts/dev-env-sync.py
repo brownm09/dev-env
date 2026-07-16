@@ -24,12 +24,23 @@ stderr warning never once reached the model or the user. Every warning now also 
 remote short SHAs and the commit-behind count so a future occurrence is self-diagnosing without
 a manual `git log`/`git fetch` comparison.
 
+When a fast-forward pull keeps failing across prompts/sessions (a dirty tracked file conflicting
+with an incoming commit — dev-env#697, #795), the failure is tracked in a single repo-level
+scratch state file and, once it has persisted across several prompts or a couple of hours,
+escalated to a distinct, louder advisory naming the commits-behind count, the blocking file
+path(s), and how long it has been failing — so a genuinely stuck canonical can't silently drift
+many commits behind (leaving every merged dev-env fix inert, since `~/.claude/` is junctioned to
+this checkout's working tree) the way it has twice before (dev-env#797, ADR-110).
+
 Exit 0 always — never block the user's prompt.
 """
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+import json
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import _hookutil
@@ -41,6 +52,18 @@ from _worktree_topology import (
 )
 
 DEV_ENV_REPO = Path.home() / "Git" / "dev-env"
+SCRATCH = Path.home() / ".claude" / "scratch"
+
+# Persistent fast-forward-failure escalation (dev-env#797). A single, repo-level (NOT
+# per-session) scratch state file records how long / how many consecutive prompts the
+# canonical's fast-forward pull has been failing, so a genuinely stuck canonical (a dirty
+# tracked file conflicting with an incoming commit — dev-env#697, #795) escalates to a
+# distinct, louder advisory instead of the same-severity per-prompt warning that let it drift
+# 21 commits / ~41h unnoticed. Per-session state would reset every session and defeat the
+# multi-session persistence detection that is the whole point of the issue. See ADR-110.
+FAILURE_STATE_PREFIX = "dev_env_sync_ff_failure"
+ESCALATE_AFTER_CONSECUTIVE_FAILURES = 3
+ESCALATE_AFTER_HOURS = 2.0
 
 
 def run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -146,12 +169,222 @@ def format_pulled_message(local: str, remote: str, behind_count: int, pulled_lin
     )
 
 
+# --- persistent fast-forward-failure escalation (dev-env#797) --------------------
+# Pure helpers (unit-tested offline) plus best-effort scratch-state I/O following the
+# _bash_state.py convention. State is a single repo-level file (not per-session) so a
+# failure that spans sessions accumulates rather than resetting; see the module-level
+# constants above and ADR-110.
+
+
+def parse_blocking_files(git_stderr: str) -> "list[str]":
+    """Extract the file paths git names as blocking a `--ff-only` pull, from its stderr.
+
+    `git pull --ff-only` aborts with either of two shapes, both listing the offending paths
+    one per line, tab-indented, between a header and a "Please ..." / "Aborting" line:
+
+        error: Your local changes to the following files would be overwritten by merge:
+        \tclaude/skills/sources.md
+        Please commit your changes or stash them before you merge.
+        Aborting
+
+        error: The following untracked working tree files would be overwritten by merge:
+        \tsomefile
+        Please move or remove them before you merge.
+        Aborting
+
+    Returning every tab-indented line captures the path list from either variant while
+    ignoring the surrounding prose (never tab-indented). Returns `[]` when git's failure
+    names no files (a different failure mode) — the escalated message degrades gracefully.
+    """
+    files = []
+    for line in git_stderr.splitlines():
+        if line.startswith("\t"):
+            stripped = line.strip()
+            if stripped:
+                files.append(stripped)
+    return files
+
+
+def format_duration(seconds: float) -> str:
+    """Human-readable elapsed-time clause for the escalated failure message.
+
+    ``< 60s`` -> "under a minute" (an escalation triggered by the consecutive-count arm
+    rather than elapsed time can fire within seconds, and "0m" would read as broken);
+    otherwise "Xh Ym" / "Xh" / "Ym". A negative input (a skewed/future first-failure
+    timestamp) is clamped to 0 so the message never shows a nonsensical negative duration.
+    """
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return "under a minute"
+    total_minutes = int(seconds // 60)
+    hours, minutes = divmod(total_minutes, 60)
+    if hours and minutes:
+        return f"{hours}h {minutes}m"
+    if hours:
+        return f"{hours}h"
+    return f"{minutes}m"
+
+
+def record_failure(prev: "dict | None", now: float) -> dict:
+    """Return the updated failure-state dict after one more consecutive ff-pull failure.
+
+    Pure — the caller persists the result via ``write_failure_state``. A fresh run (``prev``
+    is ``None``, or its ``first_failure_at`` is missing/non-numeric) starts the clock at
+    ``now`` with a count of 1; a genuine ongoing run preserves the original
+    ``first_failure_at`` and increments the count. ``last_failure_at`` always advances to
+    ``now``. A valid timestamp with a corrupt count keeps the (trustworthy) timestamp but
+    conservatively restarts the count at 1 — the time-based escalation arm still fires off
+    the real ``first_failure_at`` regardless.
+    """
+    first = None
+    count = 0
+    if isinstance(prev, dict):
+        raw_first = prev.get("first_failure_at")
+        if isinstance(raw_first, (int, float)) and not isinstance(raw_first, bool):
+            first = float(raw_first)
+        raw_count = prev.get("consecutive_count")
+        if isinstance(raw_count, int) and not isinstance(raw_count, bool) and raw_count > 0:
+            count = raw_count
+    if first is None:
+        first = now
+        count = 0  # no trustworthy start time -> treat as a fresh run
+    return {
+        "first_failure_at": first,
+        "consecutive_count": count + 1,
+        "last_failure_at": now,
+    }
+
+
+def should_escalate(
+    state: dict,
+    now: float,
+    max_failures: int = ESCALATE_AFTER_CONSECUTIVE_FAILURES,
+    max_hours: float = ESCALATE_AFTER_HOURS,
+) -> bool:
+    """Whether a persistent ff-pull failure warrants the escalated (louder) advisory.
+
+    Escalate when the failure has recurred on ``>= max_failures`` consecutive prompts OR has
+    persisted ``>= max_hours`` hours (OR semantics, per dev-env#797). The time arm is the
+    robust one under concurrency: multiple sessions' hooks racing the shared state file can
+    lose a count increment, but ``first_failure_at`` is set once and elapsed time accumulates
+    regardless, so escalation still fires on schedule.
+    """
+    count = state.get("consecutive_count")
+    if isinstance(count, int) and not isinstance(count, bool) and count >= max_failures:
+        return True
+    first = state.get("first_failure_at")
+    if isinstance(first, (int, float)) and not isinstance(first, bool) and (now - first) >= max_hours * 3600:
+        return True
+    return False
+
+
+def format_escalated_pull_failure_message(
+    local: str,
+    remote: str,
+    behind: int,
+    blocking_files: "list[str]",
+    consecutive_count: int,
+    seconds_failing: float,
+    git_stderr: str,
+) -> str:
+    """Distinct, louder advisory for a *persistent* fast-forward-pull failure (dev-env#797).
+
+    Unlike the one-off ``format_pull_failure_message``, this leads with the persistence
+    (consecutive-prompt count + duration), states the STALE-tooling blast radius explicitly
+    (``~/.claude/`` is junctioned to this checkout's working tree), lists the blocking file
+    path(s) prominently, and points at the remediation precedent — then still echoes git's
+    own diagnostic. Plain ASCII so it survives Claude Code's cp1252 hook-output pipe on
+    Windows (ADR-098); delivered on stdout at exit 0, the model-visible channel for a
+    UserPromptSubmit hook.
+    """
+    if blocking_files:
+        files_block = "\n".join(f"    {f}" for f in blocking_files)
+    else:
+        files_block = "    (none named by git; see its diagnostic below)"
+    return (
+        "[dev-env-sync] PERSISTENT FAILURE: the canonical dev-env checkout has failed to "
+        f"fast-forward on {consecutive_count} consecutive prompt{_plural(consecutive_count)} "
+        f"(failing for {format_duration(seconds_failing)}).\n"
+        f"  It is {behind} commit{_plural(behind)} behind origin/main "
+        f"(local {local[:8]} -> remote {remote[:8]}), so ~/.claude/ CLAUDE.md, hooks, and "
+        "scripts are serving STALE tooling on this machine until this is resolved.\n"
+        "  Blocked by uncommitted local change(s) to:\n"
+        f"{files_block}\n"
+        "  Resolve the listed file(s) so auto-fast-forward can resume - commit or stash them "
+        "(dev-env#697 / #795 are the precedent for legitimate uncommitted sources.md / "
+        "SKILL.md content). The next prompt then fast-forwards automatically.\n"
+        "  Git's own diagnostic:\n"
+        + git_stderr.strip()
+    )
+
+
+def failure_state_path(scratch: "Path | None" = None) -> Path:
+    """Path to the single repo-level ff-failure state file. *scratch* overrides SCRATCH (tests)."""
+    root = scratch if scratch is not None else SCRATCH
+    return root / f"{FAILURE_STATE_PREFIX}.json"
+
+
+def read_failure_state(scratch: "Path | None" = None) -> "dict | None":
+    """Best-effort read of the persisted ff-failure state.
+
+    Returns ``None`` on a missing / unreadable file or malformed / non-dict JSON — a first
+    failure (or a cleared/corrupt file) is not an error; the caller starts a fresh run.
+    Mirrors ``_bash_state.read_state``. *scratch* overrides SCRATCH (tests).
+    """
+    try:
+        raw = failure_state_path(scratch).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_failure_state(state: dict, scratch: "Path | None" = None) -> None:
+    """Best-effort atomic write of the ff-failure state (tmp file + os.replace).
+
+    The atomic swap keeps a concurrent session's racing read from ever seeing a torn file,
+    and a per-PID tmp name keeps two racing writers from clobbering each other's tmp (mirrors
+    ``_hookutil.record_heartbeat``). Swallows all I/O errors — the state is an advisory
+    side-channel, never a hard dependency. *scratch* overrides SCRATCH (tests).
+    """
+    root = scratch if scratch is not None else SCRATCH
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        target = failure_state_path(root)
+        tmp = root / f"{FAILURE_STATE_PREFIX}.json.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, target)
+    except OSError:
+        pass
+
+
+def clear_failure_state(scratch: "Path | None" = None) -> None:
+    """Delete the ff-failure state file (a resolved pull -> fresh start on the next failure).
+
+    Called on every up-to-date / successful-pull outcome. Best-effort; a missing file is a
+    no-op. *scratch* overrides SCRATCH (tests).
+    """
+    try:
+        failure_state_path(scratch).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def main() -> None:
     _hookutil.record_heartbeat("dev-env-sync")
     try:
         sys.stdin.read()
     except Exception:
         pass
+
+    # Best-effort backstop sweep of any stale ff-failure state file (dev-env#797). The state
+    # file self-clears on the next up-to-date/successful pull, so this only matters for a
+    # machine abandoned mid-failure and never prompted again for 30+ days. Cheap glob;
+    # follows the _hookutil cleanup convention.
+    _hookutil.cleanup_stale_sentinels(FAILURE_STATE_PREFIX, ext=".json")
 
     # Guard: repo must exist at the expected path.
     if not DEV_ENV_REPO.is_dir():
@@ -246,7 +479,8 @@ def main() -> None:
     remote = rev_remote.stdout.strip()
 
     if local == remote:
-        # Already up-to-date.
+        # Already up-to-date — clear any persisted failure run (dev-env#797).
+        clear_failure_state()
         sys.exit(0)
 
     # Check if local main is an ancestor of origin/main (fast-forward possible).
@@ -275,8 +509,33 @@ def main() -> None:
         log = run(["git", "log", "--oneline", f"{local}..HEAD"])
         lines = [line for line in log.stdout.strip().splitlines() if line]
         print(format_pulled_message(local, remote, behind_count, lines))
+        clear_failure_state()  # resolved — reset the persistence counter (dev-env#797)
     else:
-        print(format_pull_failure_message(local, remote, behind_count, pull.stderr))
+        # A failed fast-forward is almost always a dirty tracked file conflicting with an
+        # incoming commit — a condition that NEVER self-heals (unlike a transient concurrent
+        # pull, which resolves to up-to-date on the next prompt and clears the state above).
+        # Track it across prompts/sessions and escalate a persistent one to a distinct,
+        # louder advisory, instead of the same-severity per-prompt warning that let the
+        # canonical drift 21 commits / ~41h unnoticed (dev-env#697, #795, #797, ADR-110).
+        now = time.time()
+        state = record_failure(read_failure_state(), now)
+        write_failure_state(state)
+        if should_escalate(state, now):
+            blocking = parse_blocking_files(pull.stderr)
+            seconds_failing = now - state["first_failure_at"]
+            print(
+                format_escalated_pull_failure_message(
+                    local,
+                    remote,
+                    behind_count,
+                    blocking,
+                    state["consecutive_count"],
+                    seconds_failing,
+                    pull.stderr,
+                )
+            )
+        else:
+            print(format_pull_failure_message(local, remote, behind_count, pull.stderr))
 
     sys.exit(0)
 
