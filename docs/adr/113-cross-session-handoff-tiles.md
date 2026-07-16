@@ -1,4 +1,4 @@
-# ADR-112 — Cross-Session Hand-Offs Are Tiles, Not Chat Briefs
+# ADR-113 — Cross-Session Hand-Offs Are Tiles, Not Chat Briefs
 
 **Date:** 2026-07-16
 **Status:** Accepted
