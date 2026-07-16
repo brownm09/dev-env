@@ -2070,6 +2070,87 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     py -3 claude/scripts/tests/test_sweep_scratch_debris.py
     ```
 
+72. **baseline-tests gc test** — required when changing `claude/scripts/baseline-tests.sh`.
+    Drives the real script end-to-end against throwaway git fixtures (a bare "origin" + a working
+    clone, mirroring item 34's `merge-stale-pr.sh` pattern) via both sourced-function calls
+    (`branch_name_raw`, `branch_exists_locally`, `branch_exists_remotely`, `branch_is_gone`,
+    `read_baseline_meta_batch`, `cmd_gc` — the file is now sourcing-safe via a `BASH_SOURCE` guard
+    at its own tail instead of an unconditional `main "$@"`) and real subprocess invocations
+    (`baseline-tests gc`, `baseline-tests snapshot`). Pins the branch-existence-based cleanup this
+    test file exists for (dev-env#778, a follow-up from dev-env#768/PR#777, which deliberately
+    excluded this snapshot family from its own age-based sweep — see `sweep-scratch-debris.py`'s
+    module docstring, item 71 above): a baseline is kept when its branch still exists locally, kept
+    when it exists only on `origin` (pushed, then deleted locally — the remote check queries the
+    real remote via `git ls-remote`, not a stale local remote-tracking ref), removed only when
+    confirmed gone in both places, and — the conservative-on-uncertainty guarantee this design
+    centers on — kept whenever the remote check itself fails (an unreachable `origin`), since
+    `branch_exists_remotely` returns a three-way result (exists / confirmed-absent / check-failed)
+    and only confirmed-absent counts as gone. Also pins that `gc` scans only the CURRENT repo's own
+    `baseline_<repo>_*.json` files (a different repo's file sitting in the same scratch dir is
+    never even touched, by construction of the glob) and never guesses on malformed JSON, a
+    well-formed envelope missing the `branch` field, or a file whose NAME matches the current
+    repo's glob but whose own envelope content names a different repo (a hand-edited/corrupted
+    file) — all three are kept, matching this codebase's convention elsewhere for irreversible-ish
+    cleanup (e.g. item 71's `sweep()` never counting a failed unlink as removed). `cmd_snapshot` is
+    proven to auto-invoke `gc` on its way out (a fake `test_command` emits minimal valid Jest
+    `--json` output so no real jest/npx install is needed) — sweeping a stale, unrelated
+    gone-branch baseline in the same run that writes the new one, without touching the baseline
+    snapshot just wrote for the branch actually checked out. Every fixture repo explicitly
+    overrides `core.hooksPath` to an empty directory, since this machine sets it globally and a
+    throwaway fixture's `commit`/`push` would otherwise invoke dev-env's own real git hooks (e.g.
+    the pre-push lockfile-drift guard).
+
+    **`/review` on the PR that introduced this item found two ship-blocking correctness bugs and a
+    reliability hang risk, all fixed before merge (see [ADR-030](docs/adr/030-baseline-test-failure-policy.md)'s
+    2026-07-16 amendment for full detail) — this test file's coverage grew specifically to pin
+    each one:**
+    - `cmd_snapshot` originally stored the *sanitized* branch name (`branch_name_sanitized()`,
+      slashes replaced with dashes for the filename) in the JSON envelope's `branch` field, but
+      `cmd_gc` compares that field against *real* git refs — which never contain the sanitized
+      form. Since this repo's own branch-naming convention (`feat/`, `fix/`, `config/`, `chore/`,
+      `draft/`) always contains a slash, `gc` would delete the just-written baseline on nearly
+      every real invocation, silently (`cmd_gc || true`). Every other fixture branch name in this
+      file is deliberately slash-free, so nothing else exercises this. Fixed by adding
+      `branch_name_raw()` and storing *that* (not the sanitized form) in the envelope; the
+      sanitized form is now used only for the filename. `test_kept_branch_with_slash_in_name` (a
+      direct `cmd_gc` call) and `test_snapshot_with_slashed_branch_name_survives_its_own_gc` (the
+      full `git checkout -b feat/...` → `snapshot` pipeline) both pin the fix — the second is the
+      exact end-to-end shape the review caught and is the more important of the two.
+    - `branch_exists_remotely` originally passed a bare branch name straight to `git ls-remote
+      --heads origin`, which git matches as a `*/<name>` suffix — a sibling branch merely ending in
+      `/<name>` (e.g. `topic/foo` when checking `foo`) falsely reported "present". Fixed by
+      extracting just the ref-name column from the output and requiring an exact match against
+      `refs/heads/<branch>`. `test_branch_exists_remotely_suffix_sibling_not_false_positive` pins
+      the original bug's shape; `test_branch_exists_remotely_prefix_sibling_not_false_positive`
+      (a sibling sharing only a string *prefix*, e.g. `foo-bar` vs `foo`) pins that the fix's own
+      exact-match approach doesn't introduce the mirror-image false positive a naive
+      substring-based fix would have.
+    - The `git ls-remote` call had no timeout and did nothing to suppress interactive credential
+      prompts — since it now runs on `cmd_snapshot`'s hot path (every `new-branch` in an opted-in
+      repo), an unreachable `origin` or a stale credential cache could hang branch creation
+      indefinitely (this machine's own git credential helper GUI is documented elsewhere in this
+      repo to hang non-interactively). Fixed with `GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never
+      timeout 10`. Not separately unit-tested (a real hang is not practical to construct in a
+      test); `test_kept_when_remote_check_itself_fails` continues to cover the resulting "check
+      failed → keep" behavior once a failure occurs, by whatever means.
+    - Two Windows-specific fixes surfaced *while writing* the new tests, not by `/review`: (1) the
+      performance fix batching `read_baseline_meta`'s per-file `node -e` spawn into one
+      `read_baseline_meta_batch` call initially piped bash-side POSIX-style paths (e.g.
+      `/tmp/tmp.XXXX/...` from a test's own `mktemp -d`) to `node` over stdin — unlike an argv or
+      environment variable, Git Bash's MSYS2 layer does not auto-translate a POSIX path handed to a
+      native Windows binary over a pipe, so `node.exe` silently misread every path (including
+      well-formed files) as a nonexistent literal path and reported them all as unparseable. Fixed
+      by normalizing every path through `cygpath -m` (a single extra subprocess call for the whole
+      batch, not one per file) before the pipe. (2) `read_baseline_meta_batch` echoes back
+      whatever path form it was fed *after* that normalization, so
+      `test_read_baseline_meta_batch_ok_and_skip_together`'s expected value has to be built from
+      `cygpath`'s own output, not the original bash-constructed path string, or the test fails
+      against otherwise-correct behavior.
+
+    ```bash
+    bash claude/scripts/tests/test-baseline-tests-gc.sh
+    ```
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
