@@ -177,17 +177,19 @@ def write_state(
 def read_state(session_id: str, scratch: Path | None = None) -> dict | None:
     """Best-effort read of the last-recorded state for *session_id*.
 
-    Returns ``None`` on a missing file, unreadable file, or malformed/non-dict
-    JSON — a session's first Bash call (or a cleared scratch dir) is not an
-    error. *scratch* overrides SCRATCH (used by tests)."""
+    Returns ``None`` on a missing file, unreadable file (``OSError``), non-UTF-8
+    bytes (``UnicodeDecodeError``), or malformed/non-dict JSON
+    (``json.JSONDecodeError``) — a session's first Bash call (or a cleared/
+    externally-corrupted scratch file) is not an error. Both decode failures are
+    ``ValueError`` subclasses, so one ``except (OSError, ValueError)`` covers all
+    three (mirrors ``dev-env-sync.py``'s ``read_failure_state``; the pre-fix
+    ``OSError``-only catch let a non-UTF-8 file escape — dev-env#801).
+    *scratch* overrides SCRATCH (used by tests)."""
     root = scratch if scratch is not None else SCRATCH
     try:
         raw = state_path(session_id, scratch=root).read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
 

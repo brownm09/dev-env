@@ -954,7 +954,7 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     Exercises every pure helper offline (tmp dirs via an injected `scratch=` parameter, mirroring
     `_hookutil.py`'s test convention — no real `~/.claude/scratch`): `state_path` correctness with
     and without an override; a `write_state`/`read_state` round-trip; `read_state` returning `None`
-    on a missing file, malformed JSON, or a JSON array (non-dict) rather than raising; `write_state`
+    on a missing file, malformed JSON, a JSON array (non-dict), or a non-UTF-8 file (`UnicodeDecodeError`, a `ValueError` subclass — dev-env#801) rather than raising; `write_state`
     swallowing an `OSError` when the scratch path is unwritable (a file occupying where a directory
     is expected); `cleanup_stale_state` removing files older than `MAX_AGE_DAYS` while keeping fresh
     ones and files that don't match the `bash_state_*.json` glob, and not raising when the scratch
