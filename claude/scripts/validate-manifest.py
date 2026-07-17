@@ -32,9 +32,10 @@ glob that the shell passes through literally is harmless):
 Both formats are handled by parsing line-by-line: an ADR-056 per-session shard is a single
 JSON object (one line); a legacy per-day manifest is one JSON object per line.
 
-Exit 0 — every entry has all required fields (or no manifest entries were found).
-Exit 1 — at least one entry is missing a required field, a line failed to parse, or a file
-had an encoding problem (e.g. a UTF-8 BOM).
+Exit 0 — every entry has all required fields with correct types (or no manifest entries were found).
+Exit 1 — at least one entry is missing a required field, has a malformed field value (e.g.
+``tokens`` is a bare int instead of a dict), a line failed to parse, or a file had an encoding
+problem (e.g. a UTF-8 BOM).
 """
 from __future__ import annotations
 
@@ -45,6 +46,7 @@ from _journal_schema import (
     REQUIRED_FIELDS,
     decode_shard_bytes,
     find_entries_missing_fields,
+    malformed_manifest_fields,
     missing_required_fields,
     parse_manifest_text,
 )
@@ -55,6 +57,7 @@ def main(argv) -> int:
     entry_count = 0
     parse_errors = []     # list[str] — "path:lineno" or "path (unreadable: ...)"
     field_errors = []     # list[tuple[str, str, list[str]]] — (path:lineno, stub-label, missing)
+    type_errors = []      # list[tuple[str, str, list[str]]] — (path:lineno, stub-label, problems)
     encoding_errors = []  # list[str] — "path: <problem>" (e.g. a named BOM)
 
     for path in paths:
@@ -84,18 +87,22 @@ def main(argv) -> int:
             if missing:
                 stub = entry.get("stub", "<no stub field>")
                 field_errors.append((src, stub, missing))
+            type_problems = malformed_manifest_fields(entry)
+            if type_problems:
+                stub = entry.get("stub", "<no stub field>")
+                type_errors.append((src, stub, type_problems))
 
-    if not parse_errors and not field_errors and not encoding_errors:
+    if not parse_errors and not field_errors and not type_errors and not encoding_errors:
         noun = "entry" if entry_count == 1 else "entries"
         print(
             f"[validate-manifest] OK - {entry_count} manifest {noun} valid; "
-            "all required fields present."
+            "all required fields present with correct types."
         )
         return 0
 
     sys.stderr.write(
-        "[validate-manifest] FAIL - manifest shard(s) violate the required-field schema "
-        f"({', '.join(REQUIRED_FIELDS)}).\n"
+        "[validate-manifest] FAIL - manifest shard(s) violate the schema "
+        f"(required fields: {', '.join(REQUIRED_FIELDS)}; tokens must be a dict).\n"
         "Fix each entry below before composing - this gate exists so the gap surfaces now,\n"
         "up front, instead of mid-compose where it is hand-patched.\n\n"
     )
@@ -108,6 +115,11 @@ def main(argv) -> int:
         sys.stderr.write("Entries missing required field(s):\n")
         for src, stub, missing in field_errors:
             sys.stderr.write(f"  - {src}\n      stub: {stub}\n      missing: {', '.join(missing)}\n")
+        sys.stderr.write("\n")
+    if type_errors:
+        sys.stderr.write("Entries with malformed field values:\n")
+        for src, stub, problems in type_errors:
+            sys.stderr.write(f"  - {src}\n      stub: {stub}\n      problems: {'; '.join(problems)}\n")
         sys.stderr.write("\n")
     if parse_errors:
         sys.stderr.write("Unparseable lines or unreadable files:\n")
