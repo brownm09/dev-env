@@ -2243,10 +2243,10 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     ```
 
 75. **Unreachable-code lint (pylint `unreachable` / W0101)** — required before any PR touching
-    `claude/scripts/*.py`. `run-pylint-unreachable.sh` runs pylint with `--disable=all
-    --enable=unreachable`, a single-check invocation covering ONLY pylint's dead-code-after-
-    `return`/`raise`/`continue`/`break` detector (a pure control-flow check, independent of type
-    annotations) — catching the dev-env#813 class of bug (a trailing `return` in
+    `claude/scripts/*.py` or `claude/scripts/tests/*.py`. `run-pylint-unreachable.sh` runs pylint
+    with `--disable=all --enable=unreachable`, a single-check invocation covering ONLY pylint's
+    dead-code-after-`return`/`raise`/`continue`/`break` detector (a pure control-flow check,
+    independent of type annotations) — catching the dev-env#813 class of bug (a trailing `return` in
     `_resolve_worktree_scope()` that could never execute, only noticed by hand during an unrelated
     refactor) that nothing else in this suite caught. mypy's `--warn-unreachable` was evaluated and
     rejected: it skips the bodies of untyped functions by default, and there is no clean way to run
@@ -2256,7 +2256,11 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     unimplemented). SKIPs (exit 0) with an install hint when pylint is absent, matching
     `run-shellcheck.sh`'s convention — but unlike shellcheck, CI installs `pylint==4.0.6` explicitly
     (see `.github/workflows/hook-tests.yml`), so it is NOT self-skipped there. Auto-discovered by
-    `run-hook-tests.py`, so it runs as part of the whole-suite command too. See
+    `run-hook-tests.py`, so it runs as part of the whole-suite command too. Originally scoped to
+    `claude/scripts/*.py` only (dev-env#815 / PR #818), with widening to
+    `claude/scripts/tests/*.py` explicitly deferred as a follow-up in ADR-112's "Considered
+    alternatives"; dev-env#821 does that widening — same tool, same single check, wider glob
+    (68 → 134 files scanned), zero new findings surfaced. See
     [ADR-112](docs/adr/112-unreachable-code-lint-check.md).
 
     ```bash
