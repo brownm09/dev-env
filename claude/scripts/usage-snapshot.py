@@ -526,6 +526,17 @@ def main() -> None:
     # so a scheduled keep-warm can't fully close the gap; instead, refresh on demand
     # right here. A still-valid "expiring" token (<1h) proceeds to the fetch rather
     # than being discarded.
+    #
+    # This can be the *second* attempt_token_refresh() call in this invocation (the
+    # branch above already tried once for a missing/malformed token) if that refresh
+    # left a token that's present but still expired -- refresh_token_now() reporting
+    # success only means the subprocess didn't throw, not that the CLI actually
+    # refreshed anything (confirmed live: dev-env#825). Deliberately not deduplicated:
+    # the trigger is narrow (a token that flips from unusable to present-but-expired
+    # between the two checks), each attempt is bounded by refresh_token_now()'s own
+    # ~45s subprocess timeout, and the hook's configured 90s settings.json timeout
+    # (dev-env CLAUDE.md Testing item 63) is an acceptable backstop for this rare case
+    # rather than adding cross-branch state to force a single attempt.
     state, _ = classify_token(expires_at_ms, time.time() * 1000)
     if snapshot_action(state) == "refresh":
         token, expires_at_ms, creds = attempt_token_refresh(creds, token, expires_at_ms)
