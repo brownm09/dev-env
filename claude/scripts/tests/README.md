@@ -65,7 +65,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_run_hook_tests.py` | `run-hook-tests.py` | Tests the pure discovery/classification helpers behind the test-suite runner itself — the engine behind `py -3 claude/scripts/run-hook-tests.py` and the `hook-tests` CI workflow. |
 | `test_settings_hook_wiring.py` | `claude/settings.json` | Lint: every `(event, matcher, hook)` entry resolves to a real script and carries a timeout at or above its budget floor. |
 | `check-script-path-hygiene.sh` | all `claude/scripts/*.sh`, `claude/hooks/*` | Lints for a `$HOME`-rooted scratch path piped to `node` (Git Bash vs. Node-on-Windows path-resolution mismatch, dev-env#334). |
-| `run-pylint-unreachable.sh` | all `claude/scripts/*.py` | Runs pylint's `unreachable` (W0101) check alone — dead-code-after-return/raise, independent of type annotations. |
+| `run-pylint-unreachable.sh` | all `claude/scripts/*.py` and `claude/scripts/tests/*.py` | Runs pylint's `unreachable` (W0101) check alone — dead-code-after-return/raise, independent of type annotations. |
 | `run-shellcheck.sh` | all repo shell scripts | Shellcheck at `--severity=error`, blocking; self-skips if shellcheck isn't installed locally. |
 
 ## Tests for individual hooks & scripts

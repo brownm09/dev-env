@@ -140,11 +140,40 @@ bit). No scope-guard decision about fixing/filing additional findings was needed
   is the only place it lives; not worth a shared-version-file mechanism for one pinned dev
   dependency (review finding on PR #818).
 
+## Amendment (2026-07-17) — Widen Scope to `claude/scripts/tests/*.py` (dev-env#821)
+
+**Gap.** The "Considered alternatives" section above explicitly deferred widening the gate's
+glob to `claude/scripts/tests/*.py`, calling it "a one-line follow-up if wanted, not done here
+to keep this PR's diff matched to its stated scope." dev-env#821 is that follow-up.
+
+**Fix.** `run-pylint-unreachable.sh`'s `FILES` resolution widened from
+`ls claude/scripts/*.py` to `ls claude/scripts/*.py claude/scripts/tests/*.py` — same tool,
+same single `--disable=all --enable=unreachable` check, wider glob. No runner change needed
+(`run-hook-tests.py` auto-discovers this gate by filename, not by which files it happens to
+scan). `claude/hooks/` remains out of scope, unchanged from the original decision — it still
+contains no Python to check as of this writing. Ran the widened gate against the current tree:
+68 → 134 files scanned (68 `claude/scripts/*.py` + 66 `claude/scripts/tests/*.py`), exit 0,
+zero findings — mirroring ADR-112's original first-pass scan result.
+
+**Consequences.**
+- dev-env `CLAUDE.md` item 75 and `docs/REFERENCE.md`'s Script verification suite row updated
+  to describe the wider scope.
+- The "Considered alternatives" section above is left as the historical record of the original,
+  narrower decision — this amendment documents the follow-through rather than editing that
+  section in place.
+- Test-file bugs of the dev-env#813 shape (a dead `return`/`raise`/`continue`/`break`
+  statement) are now caught in the same suite that exercises them, not just in the hook scripts
+  under test.
+
+See [dev-env#821](https://github.com/brownm09/dev-env/issues/821).
+
 ## References
 
 - [dev-env#815](https://github.com/brownm09/dev-env/issues/815) (this change),
   [dev-env#813](https://github.com/brownm09/dev-env/issues/813) /
   [PR #814](https://github.com/brownm09/dev-env/pull/814) (the motivating incident).
+- [dev-env#821](https://github.com/brownm09/dev-env/issues/821) — the 2026-07-17 amendment
+  widening scope to `claude/scripts/tests/*.py`.
 - Pylint `unreachable` / W0101:
   <https://pylint.readthedocs.io/en/stable/user_guide/messages/warning/unreachable.html>
 - Pylint messages control (`--disable=all --enable=<check>` recipe):

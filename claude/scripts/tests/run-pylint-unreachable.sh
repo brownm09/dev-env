@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run-pylint-unreachable.sh — run pylint's unreachable-code check (W0101) over
-# claude/scripts/*.py.
+# claude/scripts/*.py and claude/scripts/tests/*.py.
 #
 # Single-check gate: --disable=all --enable=unreachable runs ONLY pylint's
 # dead-code-after-return/raise/continue/break detector (pylint's basic
@@ -11,6 +11,10 @@
 # to be mypy-clean or grep-filtering a wave of unrelated type errors. Ruff has
 # no unreachable-code rule at all (astral-sh/ruff#970 still lists pylint's
 # W0101 as unimplemented). See dev-env#815 / ADR-112 for the full comparison.
+#
+# Scope: claude/scripts/*.py was the original dev-env#815 scope; ADR-112
+# explicitly deferred widening to claude/scripts/tests/*.py as a follow-up.
+# dev-env#821 does that widening — same tool, same single check, wider glob.
 #
 # Motivating bug: a trailing `return` in _resolve_worktree_scope()
 # (pre-tool-use-worktree-path-check.py) could never execute and went
@@ -59,10 +63,10 @@ PYLINT_INVOCATION=$(resolve_pylint) || {
   exit 0
 }
 
-mapfile -t FILES < <(ls claude/scripts/*.py 2>/dev/null | sort)
+mapfile -t FILES < <(ls claude/scripts/*.py claude/scripts/tests/*.py 2>/dev/null | sort)
 
 if [ "${#FILES[@]}" -eq 0 ]; then
-  echo "run-pylint-unreachable: no Python files found under claude/scripts/." >&2
+  echo "run-pylint-unreachable: no Python files found under claude/scripts/ or claude/scripts/tests/." >&2
   exit 1
 fi
 
