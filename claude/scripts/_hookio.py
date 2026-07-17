@@ -422,9 +422,10 @@ def split_top_level(command: str, *, split_pipe: bool = False) -> list[str]:
     segment either way).
 
     A ``\\``+newline shell line-continuation is deliberately NOT joined here,
-    unlike the four `gh pr merge` boundary-finders that call
-    `strip_line_continuations` (`_merge_tail`, `_parse_merge_target`,
-    `_repo_target._invocation_args`; dev-env#823/#831). The dev-env#836 audit
+    unlike the `gh pr merge` boundary-finders that call
+    `strip_line_continuations` (`_merge_tail`, `_parse_merge_target`, and
+    `_repo_target._invocation_args` — the last shared by `merge_args` /
+    `create_args`; dev-env#823/#831). The dev-env#836 audit
     confirmed this is correct, not an oversight:
       1. Callers use this for *verb detection* only ("does some top-level
          segment start with <verb>?"). A continuation only ever appears
