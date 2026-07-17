@@ -12,8 +12,9 @@ you can't find a row for below, that's why.
 
 **This file is a navigational map, not the authoritative behavioral description.** For exhaustive
 per-file detail — what each test pins, what's deliberately out of scope, incident history — see
-the root [`CLAUDE.md`](../../../CLAUDE.md) → `## Testing` section (numbered items, one per
-file or file pair) and the linked ADRs in [`docs/adr/INDEX.md`](../../../docs/adr/INDEX.md).
+[`docs/TESTING.md`](../../../docs/TESTING.md) (numbered items, one per file or file pair, sharing
+the numbering of the index in the root [`CLAUDE.md`](../../../CLAUDE.md) → `## Testing`) and the
+linked ADRs in [`docs/adr/INDEX.md`](../../../docs/adr/INDEX.md).
 [`docs/REFERENCE.md`'s "Script verification suite"](../../../docs/REFERENCE.md#script-verification-suite)
 table covers a curated ~9-file subset with invocation strings and longer descriptions; this file
 covers all 75, one line each.
@@ -162,4 +163,5 @@ Scripts invoked directly (by a person or a skill), not wired as Claude Code hook
    several rows above were written straight from these.
 3. Add a row to the relevant table above (or a new subsection, if it's a genuinely new category).
 4. If the change is significant enough to need incident/ADR context beyond one line, that detail
-   belongs in the root `CLAUDE.md` → `## Testing` section, not here.
+   belongs in [`docs/TESTING.md`](../../../docs/TESTING.md) (same item numbering as the root
+   `CLAUDE.md` → `## Testing` index), not here.
