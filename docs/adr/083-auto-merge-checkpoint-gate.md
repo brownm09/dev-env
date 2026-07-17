@@ -723,3 +723,84 @@ cases added to `test-auto-merge-checkpoint-gate.sh` — a crash-after-trigger (m
 a corrupted-sibling-import, both asserting exit 2. **Disposition.** Not a decision reversal — an
 extension of Decision point 3 to the gate's own-code failure modes. Closes (with the ADR-096
 addendum) [dev-env#718](https://github.com/brownm09/dev-env/issues/718).
+
+---
+
+## Addendum (2026-07-17) — A multi-line `gh pr merge` command was misdetected as `--auto` and blocked a plain merge
+
+Decision point 2 above scopes this gate to `gh pr merge --auto` only: `main()` exits 0 before any
+live lookup unless `wants_auto_merge(command)` returns `True`. A plain `gh pr merge --squash`
+should never reach the checkpoint logic at all. On 2026-07-16, merging
+[dev-env#820](https://github.com/brownm09/dev-env/pull/820) — a plain, **non-`--auto`** squash
+merge — the fail-closed gate nonetheless **blocked** the first `gh pr merge --squash` attempt,
+citing a stale review. The gate running at all meant `wants_auto_merge` had returned `True` for a
+command carrying no `--auto` flag.
+
+**Root cause (confirmed by offline reproduction, not inferred from the error).** The blocked
+command was written multi-line, with shell backslash-newline line-continuations between its
+arguments:
+
+```
+gh pr merge 820 --repo brownm09/dev-env --squash \
+  --subject "..." \
+  --body "..."
+```
+
+A shell `\`-newline is a *line continuation* — it joins two physical lines into one logical command
+and is **not** a statement separator ([GNU Bash Manual §3.1.2.1, Escape
+Character](https://www.gnu.org/software/bash/manual/bash.html#Escape-Character): "A non-quoted
+backslash `\` … if followed by a newline, it is treated as a line continuation"). But
+`_merge_tail`'s argument-region boundary search, `re.split(r"&&|\|\||;|\n", …)`, treated the `\n`
+inside that continuation as a real separator, **truncating the tail at the first continuation** —
+and, critically, the truncated slice ended in the dangling continuation backslash
+(`… --squash \`). `wants_auto_merge` then called `shlex.split()` on that slice, which raised
+`ValueError: No escaped character` on the trailing backslash ([Python `shlex`
+docs](https://docs.python.org/3/library/shlex.html) — POSIX mode treats a trailing backslash as an
+incomplete escape). That `ValueError` hit `wants_auto_merge`'s **intentional fail-closed
+fallback** — `except ValueError: return True`, added (dev-env PR #588) so a genuinely-unparseable
+command like an unterminated quote can't smuggle a real `--auto` past the gate. For a *well-formed*
+multi-line command, that fallback fired wrongly: the command was perfectly parseable, just not by a
+`\n`-truncated `_merge_tail`. Net effect: a plain multi-line merge → misdetected `--auto` →
+fail-closed block.
+
+**Why single-line offline reproduction was inconclusive** (and why the issue was filed with the
+root cause explicitly unconfirmed): a single-line reconstruction of the same command has no
+`\`-newline to truncate on, so `_merge_tail` returns the whole tail, `shlex.split` succeeds, no
+`--auto` token is found, and `wants_auto_merge` correctly returns `False`. The bug is specific to
+the multi-line shape the PreToolUse payload actually carried.
+
+**Fix.** `_merge_tail` now strips shell line-continuations before the boundary split —
+`re.sub(r"\\\n", "", m.group(1))` — treating the multi-line command as the single logical line the
+shell sees (stripping to the empty string, not a space, matches the shell, which removes
+`\<newline>` entirely). The tail is then well-formed: no dangling backslash, and the *full*
+argument set (not just the first physical line) is preserved, so `shlex.split` tokenizes it without
+raising and the `except ValueError: return True` fallback is left for the genuinely-malformed input
+it was designed for. Verified across the full matrix: the #820 plain multi-line merge → `False`; a
+genuine `--auto` on the merge line **or** on a continued line → still `True` (**no bypass
+introduced** — the critical safety property, since a fix that merely suppressed the `ValueError`
+would have silently dropped a real `--auto` on a continued line); all pre-existing single-line
+detections and `_merge_tail` exact-output regressions unchanged.
+
+**Scope — the three sibling boundary-finders are a separate, milder follow-up.**
+`mask_quoted_spans`'s own docstring already names four call sites that run the same
+`re.split(…\n…)` boundary search: `_parse_merge_target` (`pre-merge-findings-gate.py`), `_merge_args`
+and `_devenv_merge_pr` (elsewhere), and `_merge_tail` (this hook). Only `_merge_tail` pairs that
+truncation with a fail-*closed* `shlex`→`return True` amplification, which is why only it produced a
+wrong *block*. The other three share the truncation pattern but their worst case is milder — a
+missed `--repo`/PR-number on a continued line, resolving against cwd rather than blocking a merge.
+They were left out of this fix to keep it focused, isolated, and revertable (the same one-hook-
+one-responsibility reasoning the Decision's rejected-alternatives section gives), and an audit of
+them is tracked as a follow-up (dev-env#823's tile + tracking issue).
+
+**Tests.** Four pure-helper cases in `test_pre_auto_merge_checkpoint_gate.py` (multi-line plain →
+`False`; genuine `--auto` same-line and continued-line → `True`; `_merge_tail` joins continuations
+without truncating) and one end-to-end case `[19]` in `test-auto-merge-checkpoint-gate.sh` (a plain
+multi-line merge exits 0 without ever reaching `gh`; exit 2 would be the #820 regression). A
+sabotage-then-reconfirm check confirmed exit 2 once the `re.sub` join is reverted, proving the case
+genuinely discriminates rather than vacuously passing.
+
+**Disposition.** Not a decision reversal — a correctness fix to the implementation of Decision
+point 2's `--auto`-scoping predicate, in the same shape as the 2026-07-10 crash-guard addendum
+(also an implementation-reliability fix to this same hook, recorded as an addendum rather than a new
+ADR). The marker text, pass/fail logic, and fail-closed calculus are all unchanged. Closes
+[dev-env#823](https://github.com/brownm09/dev-env/issues/823).

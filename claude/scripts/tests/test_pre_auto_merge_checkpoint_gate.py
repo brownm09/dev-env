@@ -132,6 +132,54 @@ def test_merge_tail_boundary_quoted_decoy_and_real_chain_combined():
 
 
 # ---------------------------------------------------------------------------
+# Multi-line command shape (dev-env#823) -- shell backslash-newline continuations
+# ---------------------------------------------------------------------------
+# Each `\\\n` below is a Python-source escape for a single backslash followed by a newline,
+# i.e. exactly the `\<newline>` line-continuation the shell joins into one logical command.
+
+def test_multiline_plain_merge_not_detected_as_auto():
+    # dev-env#823 root cause: a plain (non---auto) multi-line `gh pr merge --squash` written with
+    # shell line-continuations must NOT be misdetected as --auto. Before the fix, _merge_tail's
+    # \n-split truncated the tail at the first continuation, leaving a trailing backslash that made
+    # wants_auto_merge's shlex.split raise ValueError and fall through to its fail-closed
+    # `return True` -- blocking a plain merge (incident: PR #820, 2026-07-16).
+    command = (
+        'gh pr merge 820 --repo brownm09/dev-env --squash \\\n'
+        '  --subject "docs(handoff): cross-session hand-offs are tiles" \\\n'
+        '  --body "Closes #820."'
+    )
+    assert wants_auto_merge(command) is False
+
+def test_multiline_merge_with_auto_same_line_still_detected():
+    # The fix must not open a bypass: a multi-line command whose merge line GENUINELY carries
+    # --auto must still be detected (the token would otherwise be dropped by the truncation the
+    # pre-fix code applied, silently ungating a real --auto -- the exact hole the fail-closed
+    # fallback exists to prevent).
+    command = (
+        'gh pr merge 820 --repo brownm09/dev-env --squash --auto \\\n'
+        '  --subject "s" \\\n'
+        '  --body "b"'
+    )
+    assert wants_auto_merge(command) is True
+
+def test_multiline_merge_with_auto_on_continued_line_still_detected():
+    # --auto living on a CONTINUED line (after a line-continuation) is the case the pre-fix
+    # truncation dropped most directly -- it must survive the join and be detected.
+    command = 'gh pr merge 820 --squash \\\n  --auto'
+    assert wants_auto_merge(command) is True
+
+def test_merge_tail_joins_multiline_continuations():
+    # _merge_tail returns the single logical line the shell sees: no backslash-newline survives,
+    # no dangling trailing backslash, and the full argument set (not just the first physical line)
+    # is preserved -- so shlex downstream can tokenize it without raising.
+    command = 'gh pr merge 820 --squash \\\n  --subject "x" \\\n  --body "y"'
+    tail = _merge_tail(command)
+    assert '\\\n' not in tail
+    assert not tail.rstrip().endswith('\\')
+    assert '--subject' in tail and '--body' in tail
+
+
+# ---------------------------------------------------------------------------
 # is_merge_help_only composition with --auto (dev-env#557's guard, exercised alongside --auto)
 # ---------------------------------------------------------------------------
 

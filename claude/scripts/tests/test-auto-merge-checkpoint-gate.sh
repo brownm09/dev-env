@@ -27,6 +27,12 @@
 #   - --auto via tool_name=PowerShell (dev-env#620): open findings/no disposition -> BLOCK,
 #     clean review + complete checkpoints -> allow (proves the PowerShell PreToolUse
 #     extension reaches this gate, not just a settings.json wiring assumption)
+#   - plain (non---auto) MULTI-LINE `gh pr merge --squash` with shell backslash-newline
+#     line-continuations (dev-env#823) -> allow (exit 0, never reaches gh). Pre-fix, the
+#     continuation truncated the tail to a dangling backslash, shlex.split raised, and
+#     wants_auto_merge fell through to its fail-closed `return True` -- so the gate proceeded,
+#     hit the real `gh pr view` for a bogus PR, and BLOCKED (exit 2). This case is the end-to-end
+#     proof of the fix: exit 0 = correctly detected as a plain merge; exit 2 = the #820 regression.
 #
 # Run: bash claude/scripts/tests/test-auto-merge-checkpoint-gate.sh
 set -u
@@ -189,6 +195,15 @@ printf '%s' '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 999 --auto
   | $PY "$TMPD/pre-auto-merge-checkpoint-gate.py" >/dev/null 2>&1
 RC=$?; [ "$RC" = "2" ] && ok "exit 2 (import crash -> fail closed)" || bad "expected 2, got $RC"
 rm -rf "$TMPD"
+
+echo "[19] plain MULTI-LINE merge with backslash-newline continuations (dev-env#823) -> allow, never touches gh"
+# $'...' ANSI-C quoting: \\ is a literal backslash, \n a real newline -- the exact `\<newline>`
+# shell line-continuation shape the PreToolUse payload carries. With seam UNSET, a correct fix
+# exits 0 before any gh call; the pre-#823 truncation misdetected --auto, reached the real
+# `gh pr view` for the bogus PR o/r#999, and failed CLOSED (exit 2) -- so exit 2 here is the
+# #820 regression signal, exit 0 is the fix.
+MULTILINE_PLAIN=$'gh pr merge 999 --repo o/r --squash \\\n  --subject "docs(handoff): tiles" \\\n  --body "Closes #823."'
+RC=$(run_gate "$MULTILINE_PLAIN" "UNSET"); [ "$RC" = "0" ] && ok "exit 0 (plain multi-line merge, never reached gh)" || bad "expected 0, got $RC (the #820 misdetection regression)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

@@ -132,7 +132,7 @@ _COMMITS_PAGE_SIZE_SUSPECT = 100
 
 
 def _merge_tail(command):
-    """The `gh pr merge` statement's own tail, up to the next shell separator.
+    r"""The `gh pr merge` statement's own tail, up to the next shell separator.
 
     Mirrors _parse_merge_target's own tail-extraction so --auto detection is scoped to the same
     statement pre-merge-findings-gate.py resolves its ref/repo from, not the whole (possibly
@@ -148,11 +148,25 @@ def _merge_tail(command):
     this was reached (correctly, if accidentally) via that fallback rather than via a correct
     parse. Fixed here for consistency with the fix now applied to the other three sibling sites in
     the same amendment.
+
+    Shell line-continuations (a backslash immediately followed by a newline) are stripped first
+    (dev-env#823): they join two physical lines into one logical line and are NOT statement
+    separators, so a multi-line `gh pr merge ... \<newline> --subject ...` command must be treated
+    as the single logical line the shell sees. Without this, the `\n`-split below truncated the
+    tail at the first continuation -- and, worse, the truncated slice ended in the dangling
+    continuation backslash, which made wants_auto_merge's own shlex.split() raise
+    `ValueError: No escaped character` and fall through to its fail-closed `return True`. The net
+    effect was a plain (non---auto) multi-line `gh pr merge --squash` being misdetected as --auto
+    and blocked by this fail-closed gate citing a stale review (incident: PR #820, 2026-07-16).
+    Stripping to the empty string (not a space) matches the shell, which removes `\<newline>`
+    entirely so `a\<newline>b` joins to the single token `ab`; the accidental-fallback bypass the
+    Amendment 20 paragraph above describes cannot recur here because a well-formed multi-line
+    command no longer leaves shlex an unbalanced/dangling slice to reject.
     """
     m = re.search(r"gh\s+pr\s+merge\b(.*)", command, re.DOTALL)
     if not m:
         return ""
-    tail = m.group(1)
+    tail = re.sub(r"\\\n", "", m.group(1))  # join shell line-continuations (dev-env#823)
     boundary = len(re.split(r"&&|\|\||;|\n", mask_quoted_spans(tail))[0])
     return tail[:boundary]
 
