@@ -10,6 +10,7 @@ guidelines, and journal conventions are defined there and apply to every project
 |---|---|
 | [README.md](README.md) | Quick-reference tables for skills, hooks, and routines |
 | [docs/REFERENCE.md](docs/REFERENCE.md) | Detailed descriptions, invocation syntax, config options, and ADR links |
+| [docs/TESTING.md](docs/TESTING.md) | Per-item behavioral detail for the `## Testing` index (what each test pins, scope gaps, incident history) |
 | [docs/adr/](docs/adr/) | Design decisions behind rules in `claude/CLAUDE.md` |
 
 ## Testing
@@ -108,6 +109,7 @@ the item). A one-line navigational map of the test directory is
 73. **`_repo_target` shared-module test** — required when changing `claude/scripts/_repo_target.py` or the six hooks that delegate to it (`post-pr-merge-project.py`, `pr-merge-reminder.py`, `posttooluse-inert-advisory.py`, `post-pr-merge-pull.py`, `stop-tile-enumeration-gate.py`, `post-tool-use.py`). Run: `py -3 claude/scripts/tests/test_repo_target.py`
 74. **session-mode-report test** — required when changing `claude/scripts/session-mode-report.py`. Run: `py -3 claude/scripts/tests/test_session_mode_report.py`
 75. **Unreachable-code lint (pylint `unreachable` / W0101)** — required before any PR touching `claude/scripts/*.py` or `claude/scripts/tests/*.py`. Run: `bash claude/scripts/tests/run-pylint-unreachable.sh`
+76. **Testing-index parity gate** — required when changing this `## Testing` index or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule). Run: `py -3 claude/scripts/tests/test_testing_index_parity.py`
 
 ## Observability
 

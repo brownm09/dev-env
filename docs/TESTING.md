@@ -10,26 +10,6 @@ For a one-line navigational map of the test directory, see
 [`claude/scripts/tests/README.md`](../claude/scripts/tests/README.md). To run everything:
 `py -3 claude/scripts/run-hook-tests.py` (from the repo root).
 
-## Original section preamble
-
-This is the canonical, complete set of dev-env verification commands. The global "Test
-before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this section.
-
-**Run the whole suite at once** with `py -3 claude/scripts/run-hook-tests.py` — it glob-discovers
-every `test_*.py` and bash gate listed below, so it stays in sync with this list automatically, and
-it is exactly what `.github/workflows/hook-tests.yml` runs on `windows-latest` for every
-`pull_request` (so the suite now gates PRs in CI, not just locally — [ADR-103](adr/103-shared-hookout-emitter.md), dev-env#721).
-The runner-skips and self-skips are documented in item 64 and in [`docs/REFERENCE.md` → Script
-verification suite](REFERENCE.md#script-verification-suite). The per-item commands below remain
-the canonical reference for *when* to run each individual test.
-
-Item numbers below (and `docs/adr/INDEX.md`'s ADR numbers) are checked for collisions against
-`origin/main` immediately before every `gh pr merge`, by `pre-merge-numbering-check.py`
-([ADR-074](adr/074-pre-merge-numbering-collision-check.md); dev-env#516) — concurrent PRs
-routinely pick the same "next number" from a stale snapshot, and the collision is only ever
-visible at merge time. If blocked, `git fetch origin main && git rebase origin/main`, renumber
-the colliding item(s) to the next free number, and re-run `gh pr merge`.
-
 ## Items
 
 1. **Hook-script syntax check** — run from the repo root to verify all hook scripts parse:
@@ -2302,4 +2282,10 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
 
     ```bash
     bash claude/scripts/tests/run-pylint-unreachable.sh
+    ```
+
+76. **Testing-index parity gate** — required when changing the `## Testing` index in `CLAUDE.md` or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule). Pure offline file parse (no subprocess/network/git); auto-discovered by `run-hook-tests.py`, so it gates CI on every PR. Exists because the merge-time numbering-collision gate (ADR-074) reads only the CLAUDE.md index against `origin/main` — it never opens `docs/TESTING.md` — so cross-file drift (an item added to one file but not the other, or one number titling different tests) had no mechanical guard. Added from `/review` findings on PR #855.
+
+    ```bash
+    py -3 claude/scripts/tests/test_testing_index_parity.py
     ```

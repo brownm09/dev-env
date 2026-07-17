@@ -53,9 +53,12 @@ Two structural constraints bound the change:
   index line carries the operative facts (when to run, what to run); `docs/TESTING.md`
   is consulted when actually modifying a test/script, which is exactly when its detail
   is needed. The tests README and REFERENCE.md pointers were updated in the same PR.
-- Drift risk between the two files is bounded by the shared numbering, the merge-time
-  collision check on the index, and the same-PR sync rule. A CI instruction-weight gate
-  (dev-env#852) will additionally prevent silent regrowth of the index file.
+- Drift risk between the two files is bounded by the shared numbering, the same-PR sync
+  rule, and a parity gate added from `/review` on PR #855 (`test_testing_index_parity.py`,
+  Testing item 76) asserting identical, contiguous item numbers and titles across both
+  files. The merge-time collision check (ADR-074) guards only the index's numbers against
+  origin/main — it never reads docs/TESTING.md. A CI instruction-weight gate (dev-env#852)
+  will additionally prevent silent regrowth of the index file.
 - `docs/TESTING.md` inherits the section's growth curve — acceptable: it is loaded on
   demand, not per session.
 
