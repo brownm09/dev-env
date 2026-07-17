@@ -12,8 +12,9 @@ you can't find a row for below, that's why.
 
 **This file is a navigational map, not the authoritative behavioral description.** For exhaustive
 per-file detail — what each test pins, what's deliberately out of scope, incident history — see
-the root [`CLAUDE.md`](../../../CLAUDE.md) → `## Testing` section (numbered items, one per
-file or file pair) and the linked ADRs in [`docs/adr/INDEX.md`](../../../docs/adr/INDEX.md).
+[`docs/TESTING.md`](../../../docs/TESTING.md) (numbered items, one per file or file pair, sharing
+the numbering of the index in the root [`CLAUDE.md`](../../../CLAUDE.md) → `## Testing`) and the
+linked ADRs in [`docs/adr/INDEX.md`](../../../docs/adr/INDEX.md).
 [`docs/REFERENCE.md`'s "Script verification suite"](../../../docs/REFERENCE.md#script-verification-suite)
 table covers a curated ~9-file subset with invocation strings and longer descriptions; this file
 covers all 75, one line each.
@@ -64,6 +65,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_no_crude_command_substring_checks.py` | all `claude/scripts/*.py` | AST gate against `if "<cli>" not in command`-shaped string checks that false-match inside heredocs/quotes/subshells — the recurring false-positive class behind many ADR-050 amendments. |
 | `test_run_hook_tests.py` | `run-hook-tests.py` | Tests the pure discovery/classification helpers behind the test-suite runner itself — the engine behind `py -3 claude/scripts/run-hook-tests.py` and the `hook-tests` CI workflow. |
 | `test_settings_hook_wiring.py` | `claude/settings.json` | Lint: every `(event, matcher, hook)` entry resolves to a real script and carries a timeout at or above its budget floor. |
+| `test_testing_index_parity.py` | `CLAUDE.md` + `docs/TESTING.md` | Asserts the `## Testing` index and `docs/TESTING.md` carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule). |
 | `check-script-path-hygiene.sh` | all `claude/scripts/*.sh`, `claude/hooks/*` | Lints for a `$HOME`-rooted scratch path piped to `node` (Git Bash vs. Node-on-Windows path-resolution mismatch, dev-env#334). |
 | `run-pylint-unreachable.sh` | all `claude/scripts/*.py` and `claude/scripts/tests/*.py` | Runs pylint's `unreachable` (W0101) check alone — dead-code-after-return/raise, independent of type annotations. |
 | `run-shellcheck.sh` | all repo shell scripts | Shellcheck at `--severity=error`, blocking; self-skips if shellcheck isn't installed locally. |
@@ -161,5 +163,8 @@ Scripts invoked directly (by a person or a skill), not wired as Claude Code hook
 2. Add a one-line module docstring (Python) or header comment (bash) stating what it covers —
    several rows above were written straight from these.
 3. Add a row to the relevant table above (or a new subsection, if it's a genuinely new category).
-4. If the change is significant enough to need incident/ADR context beyond one line, that detail
-   belongs in the root `CLAUDE.md` → `## Testing` section, not here.
+4. Add the numbered index line to the root `CLAUDE.md` → `## Testing` **and** the matching
+   detail item to [`docs/TESTING.md`](../../../docs/TESTING.md) — same number, same PR. Both are
+   required (ADR-114): the numbering gate parses the index and "Test before PR" defers to it;
+   incident/ADR context beyond one line belongs in the detail item, not here. The
+   `test_testing_index_parity.py` gate fails the suite if the two files' item sets diverge.

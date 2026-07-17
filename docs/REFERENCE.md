@@ -607,7 +607,8 @@ module via the separate `canonical_repo_root` wrapper, not this function directl
 ### Script verification suite
 
 Execution-level checks for the shell scripts themselves, run from the dev-env `## Testing`
-section (the canonical list of when to run each). `bash -n` catches only syntax — these catch
+section (the canonical index of when to run each; full per-item behavioral detail lives in
+[`docs/TESTING.md`](TESTING.md) under the same item numbers, ADR-114). `bash -n` catches only syntax — these catch
 runtime and environment bugs it misses, the motivating case being [dev-env#334](https://github.com/brownm09/dev-env/issues/334)
 (a path-resolution bug that parsed cleanly yet failed on every run).
 
