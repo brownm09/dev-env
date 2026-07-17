@@ -1446,8 +1446,19 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `AttributeError`, caught by the new `__main__` guard) and `[17]` a corrupted sibling import (a
     temp-dir copy of the hook whose `pre-merge-findings-gate.py` raises on `exec_module`, caught by
     the new module-level dependency-load guard), both asserting exit 2 where the pre-#718 unguarded
-    `exec_module` / un-`try`-wrapped `main()` exited 1 = fail-OPEN = silently ungated `--auto`. 33
-    pure-helper tests and 17 behavioral cases, both suites green as of 2026-07-10.
+    `exec_module` / un-`try`-wrapped `main()` exited 1 = fail-OPEN = silently ungated `--auto`. Four
+    pure-helper cases and one e2e case (`[19]`) added for dev-env#823 pin the multi-line-command
+    fix: a plain (non-`--auto`) `gh pr merge --squash` written with shell backslash-newline
+    line-continuations must not be misdetected as `--auto` (before the fix, `_merge_tail`'s
+    `\n`-split truncated the tail at the first continuation, leaving a dangling backslash that made
+    `wants_auto_merge`'s `shlex.split` raise `ValueError` and fall through to its fail-closed
+    `return True` — blocking a plain merge; incident: PR #820, 2026-07-16), while a genuine
+    `--auto` on the merge line OR a continued line is still detected (no bypass introduced),
+    `_merge_tail` joins continuations rather than truncating (no surviving backslash-newline, full
+    argument set preserved), and the e2e `[19]` proves the full `main()` flow exits 0 without ever
+    reaching `gh` — a sabotage-then-reconfirm check confirmed exit 2 (the #820 regression) once the
+    `re.sub` join is reverted, so the case genuinely discriminates. 37 pure-helper tests and 20
+    behavioral cases, both suites green as of 2026-07-17.
 
     ```bash
     py -3 claude/scripts/tests/test_pre_auto_merge_checkpoint_gate.py
