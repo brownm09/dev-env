@@ -32,9 +32,10 @@ glob that the shell passes through literally is harmless):
 Both formats are handled by parsing line-by-line: an ADR-056 per-session shard is a single
 JSON object (one line); a legacy per-day manifest is one JSON object per line.
 
-Exit 0 — every entry has all required fields (or no manifest entries were found).
-Exit 1 — at least one entry is missing a required field, a line failed to parse, or a file
-had an encoding problem (e.g. a UTF-8 BOM).
+Exit 0 — every entry has all required fields with correct types (or no manifest entries were found).
+Exit 1 — at least one entry is missing a required field, has a malformed field value (e.g.
+``tokens`` is a bare int instead of a dict), a line failed to parse, or a file had an encoding
+problem (e.g. a UTF-8 BOM).
 """
 from __future__ import annotations
 
@@ -95,13 +96,13 @@ def main(argv) -> int:
         noun = "entry" if entry_count == 1 else "entries"
         print(
             f"[validate-manifest] OK - {entry_count} manifest {noun} valid; "
-            "all required fields present."
+            "all required fields present with correct types."
         )
         return 0
 
     sys.stderr.write(
-        "[validate-manifest] FAIL - manifest shard(s) violate the required-field schema "
-        f"({', '.join(REQUIRED_FIELDS)}).\n"
+        "[validate-manifest] FAIL - manifest shard(s) violate the schema "
+        f"(required fields: {', '.join(REQUIRED_FIELDS)}; tokens must be a dict).\n"
         "Fix each entry below before composing - this gate exists so the gap surfaces now,\n"
         "up front, instead of mid-compose where it is hand-patched.\n\n"
     )

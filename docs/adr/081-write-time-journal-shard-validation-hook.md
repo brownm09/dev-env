@@ -157,3 +157,33 @@ schema — a new drift source of its own.
   ADR's Rationale distinguishes the token harvest from.
 - `docs/REFERENCE.md` → Engineering Journal Internals — the manifest and open-PR shard schemas this hook
   enforces at write time.
+
+---
+
+## Amendment — 2026-07-17: `tokens` field type validation (`malformed_manifest_fields`)
+
+**Closes:** [dev-env#824](https://github.com/brownm09/dev-env/issues/824)
+
+**Incident.** Two manifest shards written on 2026-07-17 had `"tokens": 0` (a bare integer)
+instead of `{"input": 0, "output": 0, "cost": 0}` (the required dict shape). Both the write-time
+hook and `validate-manifest.py` accepted this silently because `missing_required_fields` only
+checks key *presence* — `"tokens"` was present so the check passed. The compose-time gate
+caught it, but the earlier gate should have caught it first.
+
+**Design decision — separate presence checks from type/value checks.**
+Rather than adding type logic to `missing_required_fields` (which is a pure key-absence check
+and readable as such), a new function `malformed_manifest_fields(entry)` was added to
+`_journal_schema.py`. It validates that `tokens` is a dict with keys `input`, `output`, `cost`,
+each numeric (int or float). The function returns `[]` when `tokens` is absent (the presence
+check already covers that case) — the two functions are designed to be called in sequence
+without double-reporting the same problem.
+
+This split has two benefits: (1) `missing_required_fields` stays a single-responsibility
+predicate that is easy to read and test; (2) type/value checks for future fields can be added
+to `malformed_manifest_fields` without touching the presence-check logic.
+
+**Wiring.** Both consumers call `malformed_manifest_fields` after `missing_required_fields`:
+- `journal-shard-write-advisory.py` — `problems.extend(malformed_manifest_fields(entry))`
+  inside the manifest-entry loop in `validate_shard_bytes`.
+- `validate-manifest.py` — `type_errors` list accumulated per entry; reported as a separate
+  "Entries with malformed field values:" section in the FAIL output.
