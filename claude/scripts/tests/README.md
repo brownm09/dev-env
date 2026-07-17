@@ -4,6 +4,12 @@ This directory holds the dev-env hook/script test suite: 65 `test_*.py` files, 9
 one shared test-support module (`_hook_wiring.py`) — 75 files with no per-file index until now
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)).
 
+**Not the only test directory.** `claude/hooks/tests/` is a second, much smaller test directory
+that `run-hook-tests.py` (below) also discovers and runs — e.g. `test-pre-push-lockfile.sh` lives
+there, not here. It's out of scope for this index (tracked separately in
+[dev-env#314](https://github.com/brownm09/dev-env/issues/314)); if a full suite run shows a file
+you can't find a row for below, that's why.
+
 **This file is a navigational map, not the authoritative behavioral description.** For exhaustive
 per-file detail — what each test pins, what's deliberately out of scope, incident history — see
 the root [`CLAUDE.md`](../../../CLAUDE.md) → `## Testing` section (numbered items, one per
