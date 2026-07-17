@@ -159,6 +159,12 @@ Reconciles the active project's agent memory against the version-controlled inst
 
 ## Hooks
 
+For a one-line-per-file index of all 76 files directly in `claude/scripts/` — wired hooks, shared
+`_foo.py` modules, and utility scripts, grouped by workflow domain — see
+[`claude/scripts/README.md`](../claude/scripts/README.md)
+([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The tables below remain the
+authoritative per-hook behavioral description; that index is a navigational map only.
+
 Most hooks are **advisory** — they emit `systemMessage` reminders but do not block tool execution. The exception is `pre-tool-use-worktree-path-check.py` (a `PreToolUse` hook), which exits 2 with a `{"reason": "..."}` payload to block `Write`, `Edit`, and `NotebookEdit` calls that target the canonical repo root instead of the active worktree, or that are issued from an orphaned worktree whose `.git` link no longer resolves (so git silently operates on the canonical repo).
 
 Configuration is in `claude/settings.json` (symlinked to `~/.claude/settings.json`).
@@ -548,7 +554,9 @@ user 2026-06-30. [ADR-069](adr/069-weekly-memory-audit-routine.md)
 
 ## Utilities
 
-On-demand scripts — not wired to any event. Run manually or from other scripts.
+On-demand scripts — not wired to any event. Run manually or from other scripts. See
+[`claude/scripts/README.md`](../claude/scripts/README.md) for the same content grouped with the
+hooks and shared modules that serve the same workflow, rather than split across two sections.
 
 | Script | Invocation | What it does |
 |--------|-----------|-------------|
