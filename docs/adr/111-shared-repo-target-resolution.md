@@ -207,8 +207,15 @@ Two additions to the shared module:
    and `--repo github.com/owner/repo` (both valid per
    [gh's `--repo` docs](https://cli.github.com/manual/gh#--repo-string)) return the bare
    `owner/repo`. This **folds in** `post-tool-use.py`'s former private `_REPO_HOST_PREFIX_RE`
-   (dev-env#544) so that consumer migrates with **no behavior loss** — its two dev-env#544
-   URL/host-prefix tests pass unchanged through the shared path.
+   (dev-env#544) so that consumer migrates with **no loss of tested or realistic behavior**
+   — its two dev-env#544 URL/host-prefix tests pass unchanged through the shared path. (The
+   one micro-difference: `repo_from_flag`'s `mask_quoted_spans` masks a *quoted*
+   `--repo "owner/repo"` value that the old regex's `"[^"]+"` alternative captured, so that
+   form now returns `None` — untested, unrealistic (no reason to quote a spaceless slug), a
+   graceful silent-skip, and now consistent with the five other `repo_from_flag` consumers,
+   which never supported it either. Preserving it isn't cleanly possible: `mask_prose_flag_values`,
+   which would spare a quoted `--repo`, doesn't cover `--title`, so it would reintroduce a
+   `--title`-decoy vulnerability across all six consumers.)
 
    This narrows the Context's claim that "the loose captures differ from the strict slug only
    on malformed input a real `gh` invocation never produces": the host-prefixed / URL forms
