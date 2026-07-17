@@ -804,3 +804,46 @@ point 2's `--auto`-scoping predicate, in the same shape as the 2026-07-10 crash-
 (also an implementation-reliability fix to this same hook, recorded as an addendum rather than a new
 ADR). The marker text, pass/fail logic, and fail-closed calculus are all unchanged. Closes
 [dev-env#823](https://github.com/brownm09/dev-env/issues/823).
+
+---
+
+## Addendum (2026-07-17): sibling boundary-finders propagated + strip hoisted to `_hookio` (dev-env#831)
+
+The dev-env#823 addendum above deferred the three sibling boundary-finders as "a separate, milder
+follow-up." dev-env#831 is that follow-up. An audit confirmed the bug surface is **two code loci
+covering three sibling functions** (ADR-111 had already consolidated two of them into `_repo_target`):
+
+- `_parse_merge_target` (`pre-merge-findings-gate.py`) — an inline `re.split(r"&&|\|\||;|\n", …)`
+  boundary search with no continuation strip.
+- `_repo_target._invocation_args` (`_MERGE_ARGS_RE = r"\bgh\s+pr\s+merge\b([^\n;|&]*)"`) — the
+  `[^\n…]` region regex stops at a continuation's newline. It is shared by `merge_args`/`create_args`,
+  so it is the single locus behind **both** `post-pr-merge-project.py` and `posttooluse-inert-advisory.py`
+  (the `_merge_args`/`_devenv_merge_pr` the `mask_quoted_spans` docstring names).
+
+Both truncate a multi-line `gh pr merge` / `gh pr create` at the first `\`-newline continuation,
+silently dropping a `--repo`/PR-number on a continued line — a wrong-target *misresolve* (against
+cwd's repo), exactly the milder harm the #823 addendum predicted, not a wrong *block*.
+
+**Decision — hoist, don't re-inline.** Rather than paste `re.sub(r"\\\n", "", …)` a third and fourth
+time, the strip is extracted into one shared `_hookio.strip_line_continuations(command)` helper that
+the two vulnerable loci call, and `_merge_tail` is **retrofitted** to call the same helper (behaviour-
+identical to its inline `re.sub`) so the SSOT is real and no divergent inline copy remains as the
+canonical example. This is the same "end the per-site ADR-050 amendment treadmill" move ADR-111 made
+for the repo-flag concern: #823→#831 was this concern recurring for the second time, and the strip
+carries a subtle correctness rule worth centralising once — **LF-only**: bash does not treat a
+`\`+CRLF as a continuation, so the pattern is `r"\\\n"`, never `r"\\\r?\n"`. The per-site boundary
+mechanisms (the `re.split` and the `[^\n…]` character class) stay local — only the continuation-join
+pre-processing is shared — so one-hook-one-responsibility is preserved for the boundary decision itself.
+
+**Tests.** A unit test of the helper in `test_hookio.py` (joins `\`+LF; leaves a bare newline and a
+`\`+CRLF intact; multiple continuations; a realistic multi-line merge), direct `merge_args`/`create_args`
+regressions in `test_repo_target.py`, integration regressions in `test_post_pr_merge_project.py` (both
+extractors) and `test_posttooluse_inert_advisory.py` (`_devenv_merge_pr`), and a step `[10]` in
+`test-merge-findings-gate.sh` for `_parse_merge_target`. Every new case places its consumed token
+**after** a continuation so each discriminates — a sabotage pass (strip → identity) confirmed all ten
+new assertions fail without the fix, while a real top-level `&&` after a continuation still bounds the
+region (guarding against over-widening).
+
+**Disposition.** Not a decision reversal — the same correctness-fix-plus-consolidation shape as the
+#823 addendum, resolving the follow-up that addendum itself scoped out. Marker text, pass/fail logic,
+and fail-closed calculus unchanged. Closes [dev-env#831](https://github.com/brownm09/dev-env/issues/831).

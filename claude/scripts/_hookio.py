@@ -732,7 +732,10 @@ def mask_quoted_spans(command: str) -> str:
     call sites (`_parse_merge_target`, `_merge_args`, `_devenv_merge_pr`,
     `_merge_tail`) run a `re.split` on `\n` (among other separators) against
     masked text to find where a `gh pr merge` invocation's own argument region
-    ends. Because a newline INSIDE a still-open quoted span or heredoc body
+    ends. As of dev-env#831 those sites first strip shell line-continuations
+    (a backslash-newline is a shell line-join, not a statement separator) via
+    `strip_line_continuations`, so only genuine unescaped newlines reach that
+    split. Because a newline INSIDE a still-open quoted span or heredoc body
     stays unmasked, such an embedded newline is (correctly, by this function's
     own newline contract) still treated as a real separator by those callers
     -- a `--subject`/`--body` value containing a literal embedded newline
@@ -762,6 +765,37 @@ def mask_quoted_spans(command: str) -> str:
             if out[idx] not in ("\n", "\r"):
                 out[idx] = "#"
     return "".join(out)
+
+
+def strip_line_continuations(command: str) -> str:
+    r"""Join shell backslash-newline line-continuations in *command*.
+
+    A backslash immediately followed by a newline (a `\` then LF) is a shell
+    line-continuation: the shell removes it entirely, joining the two physical
+    lines into one logical line before any word-splitting. It is NOT a statement
+    separator. A boundary-finder that splits on a newline (or bounds a region
+    with a `[^\n...]` negated character class) must therefore strip these first,
+    or a multi-line `gh pr merge ... <backslash><newline> --repo ...` command is
+    truncated at the first continuation and a flag/value/PR-number sitting on a
+    continued line is silently lost -- the hook then resolves against cwd's repo
+    instead of the command's real target.
+
+    Two occurrences motivated hoisting this into one shared helper: dev-env#823
+    fixed `_merge_tail` (pre-auto-merge-checkpoint-gate.py) inline; dev-env#831
+    found the identical bug in the sibling boundary-finders and moved the strip
+    here so the rule lives once -- `_parse_merge_target` (pre-merge-findings-gate.py)
+    and `_repo_target._invocation_args` (behind `merge_args`/`create_args`, i.e.
+    post-pr-merge-project.py and posttooluse-inert-advisory.py) now call it too.
+
+    LF-only by design: bash does NOT treat a backslash followed by CRLF as a
+    continuation, so the pattern is `r"\\\n"` (not `r"\\\r?\n"`) -- a
+    `\`+CR+LF is left intact. Stripping to the empty string (not a space)
+    matches the shell, which removes the `\`+newline entirely so a token split
+    across a continuation (`a\`+newline+`b`) joins to the single token `ab`. A
+    bare newline with no preceding backslash is untouched, so a genuine
+    top-level newline separator still bounds the region at the call sites.
+    """
+    return re.sub(r"\\\n", "", command)
 
 
 # ---------------------------------------------------------------------------

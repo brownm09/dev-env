@@ -554,6 +554,21 @@ def test_e2e_sentinel_suppresses_second_fire() -> str:
     return "e2e first Stop blocks + sets sentinel; second Stop -> exit 0 (fires at most once)"
 
 
+def test_devenv_merge_pr_repo_on_continued_line() -> str:
+    # dev-env#831: _devenv_merge_pr routes through _repo_target.merge_args, which
+    # now strips backslash+LF shell line-continuations before bounding the args
+    # region. A multi-line `gh pr merge` whose --repo brownm09/dev-env sits on a
+    # continued line must still resolve the PR number from a non-dev-env cwd
+    # (pre-fix: None, because the continuation's newline truncated the region
+    # before --repo was ever seen).
+    cmd = 'gh pr merge 42 --squash \\\n  --repo brownm09/dev-env \\\n  --subject "x"'
+    assert _devenv_merge_pr(cmd, "/other") == "42"
+    # A PR number sitting on a continued line likewise survives the join.
+    cmd2 = 'gh pr merge \\\n  42 --repo brownm09/dev-env'
+    assert _devenv_merge_pr(cmd2, "/other") == "42"
+    return "_devenv_merge_pr resolves a multi-line merge with --repo/number on a continued line (dev-env#831)"
+
+
 def main() -> int:
     tests = [
         ("attachment present: hook_success/PostToolUse", test_attachment_present_hook_success),
@@ -593,6 +608,7 @@ def main() -> int:
         ("e2e stop_hook_active does not block", test_e2e_stop_hook_active_does_not_block),
         ("e2e healthy session silent", test_e2e_healthy_session_silent),
         ("e2e sentinel suppresses second fire", test_e2e_sentinel_suppresses_second_fire),
+        ("_devenv_merge_pr: --repo/number on a continued line (dev-env#831)", test_devenv_merge_pr_repo_on_continued_line),
     ]
     failed = 0
     for name, fn in tests:

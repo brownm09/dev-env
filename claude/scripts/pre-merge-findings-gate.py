@@ -57,7 +57,12 @@ import subprocess
 import sys
 
 import _hookout
-from _hookio import is_merge_help_only, mask_quoted_spans, scan_top_level
+from _hookio import (
+    is_merge_help_only,
+    mask_quoted_spans,
+    scan_top_level,
+    strip_line_continuations,
+)
 import _hookutil
 
 _MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
@@ -122,7 +127,7 @@ def _parse_merge_target(command):
     m = re.search(r"gh\s+pr\s+merge\b(.*)", command, re.DOTALL)
     if not m:
         return None, None
-    tail = m.group(1)
+    tail = strip_line_continuations(m.group(1))  # join shell line-continuations (dev-env#831)
     # Stop at a shell separator so we don't swallow a chained command.
     boundary = len(re.split(r"&&|\|\||;|\n", mask_quoted_spans(tail))[0])
     tail = tail[:boundary]

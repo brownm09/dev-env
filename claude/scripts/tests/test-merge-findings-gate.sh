@@ -148,6 +148,32 @@ PYEOF
 echo "$OUT" | grep -qF "('42', 'brownm09/dev-env')" && ok "real --repo after a quoted && value resolves correctly (dev-env#660)" || bad "&& truncation: $OUT"
 echo "$OUT" | grep -c "('42', 'brownm09/dev-env')" | grep -q "^4$" && ok "bare-&, chained-command, and combined decoy+chain cases all still correct" || bad "expected 4 matching lines: $OUT"
 
+echo "[10] a multi-line gh pr merge (backslash-newline line-continuations) is not truncated (dev-env#831)"
+OUT=$($PY - "$HOOK" <<'PYEOF'
+import importlib.util, os, sys
+p = sys.argv[1]
+sys.path.insert(0, os.path.dirname(p))
+spec = importlib.util.spec_from_file_location("mg", p)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+# dev-env#831: _parse_merge_target now strips shell backslash-newline
+# line-continuations before its &&|;|newline boundary split. Before the fix the
+# split treated the continuation's newline as a real statement separator and
+# truncated the tail at the first continuation -- so a --repo (or the PR number)
+# sitting on a CONTINUED line was silently dropped, returning ('42', None)
+# instead of ('42', 'brownm09/dev-env'). Each case below puts the consumed token
+# AFTER a continuation, so each is discriminating (pre-fix returns the wrong value).
+print(m._parse_merge_target('gh pr merge 42 --squash \\\n  --repo brownm09/dev-env \\\n  --subject "x"'))
+# The PR number itself may sit on a continued line (continuation between the verb
+# and its positional argument) and must survive the join.
+print(m._parse_merge_target('gh pr merge \\\n  42 --repo brownm09/dev-env'))
+# A real top-level && after the continuation must still be excluded: the fix
+# strips only the continuation, it does not delete the boundary check.
+print(m._parse_merge_target('gh pr merge 42 \\\n  --repo brownm09/dev-env && rm -rf /'))
+PYEOF
+)
+echo "$OUT" | grep -c "('42', 'brownm09/dev-env')" | grep -q "^3$" && ok "multi-line merge: --repo/number on a continued line resolves; chained && still excluded (dev-env#831)" || bad "line-continuation truncation: $OUT"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

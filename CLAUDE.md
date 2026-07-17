@@ -229,7 +229,13 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     classifies the target absolute — the only way to pin the 3.13 fix on this 3.12 runtime, where the
     `startswith` and `isabs` branches are otherwise indistinguishable for `/x`. The `effective_merge_dir`
     relative-path assertion is made version-agnostic via `is_absolute_path` in the same change, and
-    `_effective_push_dir` / `_blockable_redirect_root` (items 28 / 33) reuse the shared helper.
+    `_effective_push_dir` / `_blockable_redirect_root` (items 28 / 33) reuse the shared helper. Also
+    (dev-env#831) exercises the new `strip_line_continuations(command)` helper — the shell
+    backslash-newline line-join hoisted here so the four `gh pr merge` boundary-finders share one
+    strip: pins that a backslash+LF continuation is joined, a bare newline and a backslash+CRLF are
+    both left intact (the LF-only rule — bash does not treat backslash+CRLF as a continuation), a
+    lone backslash is untouched, multiple continuations all join, and a realistic multi-line
+    `gh pr merge` collapses to one logical line with `--repo` preserved.
 
     ```bash
     py -3 claude/scripts/tests/test_hookio.py
@@ -267,7 +273,10 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     top-level `&&` chaining a real sibling command still correctly bounds the region. The live `gh`
     calls (`get_pr_body` / `find_project_item` / `move_to_done` / `confirm_merge_via_gh`) are not covered
     ([ADR-050](docs/adr/050-shared-hookio-sibling-hook-fixes.md),
-    [ADR-067](docs/adr/067-scope-merge-keyed-hooks-to-target-repo.md)).
+    [ADR-067](docs/adr/067-scope-merge-keyed-hooks-to-target-repo.md)). Also (dev-env#831) pins that
+    both extractors resolve a `--repo` / PR-number sitting on a continued line of a multi-line
+    `gh pr merge` — the shared `_repo_target.merge_args` now strips backslash-newline
+    line-continuations (via `_hookio.strip_line_continuations`) before bounding the args region.
 
     ```bash
     py -3 claude/scripts/tests/test_post_pr_merge_project.py
@@ -379,7 +388,9 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     0; and the per-session sentinel suppresses a second fire — proving the advisory fires at most once and
     that `mark_resolved` ran on the blocking Stop, *after* the emission (the dev-env#629 retry-safety
     ordering). The remaining `main()` I/O beyond those end-to-end runs is not separately unit-tested
-    (pure-helper convention).
+    (pure-helper convention). Also (dev-env#831) pins that `_devenv_merge_pr` resolves a multi-line
+    `gh pr merge` whose `--repo`/PR-number is on a continued line, via the shared
+    `_repo_target.merge_args` backslash-newline line-continuation strip.
 
     ```bash
     py -3 claude/scripts/tests/test_posttooluse_inert_advisory.py
@@ -899,6 +910,10 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     `&&` command still correctly bounds it. The shell test file pre-dates
     this list — added here (alongside the new pure-helper file) to close the gap where it existed but
     was never cross-referenced ([ADR-028](docs/adr/028-all-findings-merge-gate.md), [ADR-039](docs/adr/039-merge-gate-findings-enforcement.md)).
+    A step `[10]` in the shell test (dev-env#831) pins that `_parse_merge_target` resolves a
+    multi-line `gh pr merge` whose `--repo`/PR-number sits on a backslash-newline-continued line
+    (its inline `re.split` now strips continuations first via `_hookio.strip_line_continuations`),
+    while a real top-level `&&` after the continuation is still excluded.
 
     ```bash
     py -3 claude/scripts/tests/test_pre_merge_findings_gate.py
@@ -1458,7 +1473,9 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     argument set preserved), and the e2e `[19]` proves the full `main()` flow exits 0 without ever
     reaching `gh` — a sabotage-then-reconfirm check confirmed exit 2 (the #820 regression) once the
     `re.sub` join is reverted, so the case genuinely discriminates. 37 pure-helper tests and 20
-    behavioral cases, both suites green as of 2026-07-17.
+    behavioral cases, both suites green as of 2026-07-17. (dev-env#831 retrofitted `_merge_tail`'s
+    inline continuation strip to call the shared `_hookio.strip_line_continuations` helper —
+    behaviour-identical, so these suites are unchanged and stay green.)
 
     ```bash
     py -3 claude/scripts/tests/test_pre_auto_merge_checkpoint_gate.py
@@ -2209,6 +2226,10 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     (tile-gate URL fallbacks masked with `mask_prose_flag_values`). See
     [ADR-111](docs/adr/111-shared-repo-target-resolution.md) — the module ends the per-site ADR-050
     amendment treadmill (Amendments 14/15/17/18/19/20/21) for the repo-flag/URL/number concern.
+    Also (dev-env#831) pins that `merge_args`/`create_args` keep a `--repo` / PR-number on a
+    continued line of a multi-line invocation — `_invocation_args` now strips backslash-newline
+    continuations (via `_hookio.strip_line_continuations`) before the `[^\n…]` region regex — while
+    a real top-level `&&` after a continuation still bounds the region.
 
     ```bash
     py -3 claude/scripts/tests/test_repo_target.py

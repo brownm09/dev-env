@@ -36,6 +36,7 @@ from _hookio import (  # noqa: E402
     scan_top_level,
     should_confirm_via_gh,
     split_top_level,
+    strip_line_continuations,
 )
 
 URL = "https://github.com/brownm09/dev-env/issues/377"
@@ -1053,6 +1054,54 @@ def test_is_help_only_generic_chained_help_then_real_is_false() -> str:
     return "is_help_only: real invocation elsewhere in the chain is not suppressed -> False"
 
 
+# ---------------------------------------------------------------------------
+# strip_line_continuations (dev-env#823 fix hoisted to _hookio in dev-env#831)
+#
+# A backslash immediately followed by LF is a shell line-continuation (a
+# line-join), NOT a statement separator. The four `gh pr merge` boundary-finders
+# strip these before their newline-split / `[^\n...]` region regex, or a
+# multi-line command truncates at the first continuation and a flag/value on a
+# continued line is silently lost. LF-only: bash does not treat a backslash
+# followed by CRLF as a continuation.
+# ---------------------------------------------------------------------------
+
+def test_strip_line_continuations_joins_backslash_lf() -> str:
+    assert strip_line_continuations("a \\\nb") == "a b"
+    return "a backslash+LF continuation is removed, joining the two physical lines"
+
+
+def test_strip_line_continuations_bare_newline_untouched() -> str:
+    # A bare newline (no preceding backslash) is a real separator -- untouched.
+    assert strip_line_continuations("a\nb") == "a\nb"
+    return "a bare newline (no backslash) is left intact as a real separator"
+
+
+def test_strip_line_continuations_crlf_left_intact() -> str:
+    # LF-only by design: bash does NOT treat a backslash followed by CRLF as a
+    # continuation, so `r"\\\n"` (not `r"\\\r?\n"`) leaves this unchanged.
+    assert strip_line_continuations("a \\\r\nb") == "a \\\r\nb"
+    return "a backslash+CRLF is left intact (the LF-only rule)"
+
+
+def test_strip_line_continuations_lone_backslash_untouched() -> str:
+    assert strip_line_continuations("a\\b") == "a\\b"
+    return "a lone backslash not followed by a newline is untouched"
+
+
+def test_strip_line_continuations_multiple() -> str:
+    assert strip_line_continuations("a \\\nb \\\nc") == "a b c"
+    return "every backslash+LF continuation in the string is joined"
+
+
+def test_strip_line_continuations_realistic_gh_merge() -> str:
+    # The dev-env#831 motivating shape: a --repo on a continued line survives.
+    cmd = 'gh pr merge 42 --squash \\\n  --repo brownm09/dev-env \\\n  --subject "x"'
+    joined = strip_line_continuations(cmd)
+    assert "\\\n" not in joined
+    assert "--repo brownm09/dev-env" in joined and "--subject" in joined
+    return "a multi-line gh pr merge joins to one logical line, --repo preserved"
+
+
 def main() -> int:
     tests = [
         ("reads command output from stdout", test_reads_stdout),
@@ -1158,6 +1207,12 @@ def main() -> int:
         ("is_help_only: generic real invocation -> False", test_is_help_only_generic_real_invocation_is_false),
         ("is_help_only: generic no matching segment -> False", test_is_help_only_generic_no_matching_segment_is_false),
         ("is_help_only: generic chained help-then-real -> False", test_is_help_only_generic_chained_help_then_real_is_false),
+        ("strip_line_continuations: joins backslash+LF", test_strip_line_continuations_joins_backslash_lf),
+        ("strip_line_continuations: bare newline untouched", test_strip_line_continuations_bare_newline_untouched),
+        ("strip_line_continuations: backslash+CRLF intact (LF-only)", test_strip_line_continuations_crlf_left_intact),
+        ("strip_line_continuations: lone backslash untouched", test_strip_line_continuations_lone_backslash_untouched),
+        ("strip_line_continuations: multiple continuations", test_strip_line_continuations_multiple),
+        ("strip_line_continuations: realistic gh merge (dev-env#831)", test_strip_line_continuations_realistic_gh_merge),
     ]
     failed = 0
     for name, fn in tests:
