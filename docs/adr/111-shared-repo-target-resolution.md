@@ -181,6 +181,65 @@ It continues this repo's shared-module line: `_hookio` (ADR-050) → `_worktree_
   (matching `_hookio`/`_journal_schema`/`_hookout`), and `post-pr-merge-project.py`'s
   REFERENCE row drops its now-stale "does not yet cover dev-env#569" caveat.
 
+## Amendment 1 — 2026-07-17: sixth consumer (`post-tool-use.py`), host-prefixed/URL `--repo` normalization, `issue_create_args`
+
+[dev-env#838](https://github.com/brownm09/dev-env/issues/838) migrates a sixth member of the
+`--repo`-extraction family — `post-tool-use.py`'s `extract_repo_flag` (feeding the cross-repo
+sibling-config lookup, dev-env#542/#544) — onto this resolver: the "future sixth consumer
+imports and delegates" the Consequences section anticipated. It was the one repo-flag
+extractor never consolidated, running its own `_REPO_FLAG_RE.search` over each
+`split_top_level` segment, so it lacked both continuation-safety (a `--repo` on a
+backslash-continued line landed in a later segment and was silently missed) and quoted-decoy
+masking — the exact two protections every other consumer already had.
+
+Two additions to the shared module:
+
+1. **`issue_create_args(command)`** — the `gh issue create` counterpart of `create_args`.
+   `post-tool-use.py` fires for both `gh issue create` and `gh pr create`, so its extraction
+   needs both invocation regions; the module previously had only `create_args`
+   (`gh pr create`). `extract_repo_flag` now checks `issue_create_args` then `create_args`,
+   inheriting the continuation-stripping (`strip_line_continuations`, dev-env#831) and
+   quote-aware statement-bounding both region helpers already provide.
+
+2. **`repo_from_flag` normalizes a full-URL / host-prefixed `--repo` value.** The strict-slug
+   capture is now preceded by an optional, non-capturing
+   `(?:https?://)?(?:www\.)?(?:github\.com/)?` prefix, so `--repo https://github.com/owner/repo`
+   and `--repo github.com/owner/repo` (both valid per
+   [gh's `--repo` docs](https://cli.github.com/manual/gh#--repo-string)) return the bare
+   `owner/repo`. This **folds in** `post-tool-use.py`'s former private `_REPO_HOST_PREFIX_RE`
+   (dev-env#544) so that consumer migrates with **no loss of tested or realistic behavior**
+   — its two dev-env#544 URL/host-prefix tests pass unchanged through the shared path. (The
+   one micro-difference: `repo_from_flag`'s `mask_quoted_spans` masks a *quoted*
+   `--repo "owner/repo"` value that the old regex's `"[^"]+"` alternative captured, so that
+   form now returns `None` — untested, unrealistic (no reason to quote a spaceless slug), a
+   graceful silent-skip, and now consistent with the five other `repo_from_flag` consumers,
+   which never supported it either. Preserving it isn't cleanly possible: `mask_prose_flag_values`,
+   which would spare a quoted `--repo`, doesn't cover `--title`, so it would reintroduce a
+   `--title`-decoy vulnerability across all six consumers.)
+
+   This narrows the Context's claim that "the loose captures differ from the strict slug only
+   on malformed input a real `gh` invocation never produces": the host-prefixed / URL forms
+   are **valid, if uncommon, `gh` input**, and the strict slug silently mis-captured
+   `github.com/owner` (the first `owner/repo`-shaped run) for the host-prefixed form and
+   returned `None` for the `https://` form. Widening `repo_from_flag` therefore also **fixes
+   that same latent mis-capture in the original five consumers** — none of which had a test
+   exercising a URL-form `--repo` (verified before the change), so the fix is a strict
+   improvement there (a `--repo github.com/o/r` that previously resolved to the nonexistent
+   `github.com/o` and failed downstream now resolves correctly).
+
+   *Alternatives rejected* (both fully analyzed): keeping post-tool-use's richer extraction
+   local (leaving `_REPO_FLAG_RE` in that hook, merely hardened with shared masking) would
+   deliver the two protections but leave the "sixth extractor never consolidated" un-retired,
+   the opposite of this ADR's thesis; migrating to the strict `repo_from_flag` as-is and
+   dropping the URL/host-prefix support would be a (graceful, silent-skip) behavior
+   regression, not the behavior-preserving consolidation intended.
+
+`test_repo_target.py` gains the host-prefixed / full-URL / `www.` / `=`-URL `repo_from_flag`
+cases and the `issue_create_args` cases (basic, chained-sibling-not-leaked, continuation);
+`test_post_tool_use.py` gains sabotage-verified continuation and quoted-`--repo`/URL-decoy
+cases for `extract_repo_flag` (each confirmed to fail against the pre-fix logic).
+`post-tool-use.py` now joins the original five in `README.md` / `docs/REFERENCE.md`.
+
 ## References
 
 - [Issue #779](https://github.com/brownm09/dev-env/issues/779) (this PR),

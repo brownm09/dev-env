@@ -691,6 +691,50 @@ def test_extract_repo_flag_other_segment_not_leaked() -> str:
     return "--repo on an earlier unrelated top-level statement -> not leaked into the create statement"
 
 
+def test_extract_repo_flag_pr_create_continuation_line() -> str:
+    # A --repo on a backslash-newline-continued gh pr create line lands in a
+    # LATER split_top_level segment (the join is not a top-level separator), so
+    # the pre-dev-env#838 split_top_level loop missed it entirely -> None. The
+    # _repo_target.create_args path strips the continuation first (dev-env#831),
+    # so the flag now resolves. Discriminating: reverting to the old loop yields
+    # None here.
+    cmd = "gh pr create --title x \\\n  --repo brownm09/dev-env"
+    got = extract_repo_flag(cmd)
+    assert got == "brownm09/dev-env", f"got {got!r}"
+    return "--repo on a backslash-continued gh pr create line resolves (dev-env#838/#831)"
+
+
+def test_extract_repo_flag_issue_create_continuation_line() -> str:
+    # The gh issue create counterpart, via the new issue_create_args region.
+    cmd = "gh issue create --title x \\\n  --repo brownm09/dev-env"
+    got = extract_repo_flag(cmd)
+    assert got == "brownm09/dev-env", f"got {got!r}"
+    return "--repo on a backslash-continued gh issue create line resolves (dev-env#838/#831)"
+
+
+def test_extract_repo_flag_quoted_body_decoy_not_hijacked() -> str:
+    # A decoy --repo buried in a quoted --body value precedes the real flag
+    # textually. The pre-dev-env#838 unmasked _REPO_FLAG_RE.search captured the
+    # decoy ("evil/repo"); repo_from_flag masks quoted spans first (dev-env#626),
+    # so the real trailing flag wins. Discriminating: the old code returns
+    # "evil/repo" here.
+    cmd = 'gh pr create --body "use --repo evil/repo" --repo real/repo'
+    got = extract_repo_flag(cmd)
+    assert got == "real/repo", f"got {got!r}"
+    return "a decoy --repo inside a quoted --body value does not hijack the real flag (dev-env#838)"
+
+
+def test_extract_repo_flag_quoted_url_decoy_not_hijacked() -> str:
+    # Same hijack shape, but the decoy value is a full github URL -- so the old
+    # code would have captured it AND normalized it to "evil/repo" via the
+    # (now-removed) _REPO_HOST_PREFIX_RE. The masked path ignores it and returns
+    # the real trailing flag.
+    cmd = 'gh issue create --title "see --repo https://github.com/evil/repo here" --repo real/repo'
+    got = extract_repo_flag(cmd)
+    assert got == "real/repo", f"got {got!r}"
+    return "a decoy --repo <url> inside a quoted --title value does not hijack the real flag (dev-env#838)"
+
+
 # ---------------------------------------------------------------------------
 # main() end-to-end: the exit_code != 0 gate (lines immediately following the
 # detection swap) must still short-circuit correctly. Both cases share cwd,
@@ -1054,6 +1098,10 @@ def main() -> int:
         ("extract_repo_flag: no flag -> None (#542)", test_extract_repo_flag_absent),
         ("extract_repo_flag: non-create gh subcommand -> None (#542)", test_extract_repo_flag_not_a_create_command),
         ("extract_repo_flag: unrelated earlier segment not leaked (#542)", test_extract_repo_flag_other_segment_not_leaked),
+        ("extract_repo_flag: --repo on backslash-continued pr-create line resolves (#838)", test_extract_repo_flag_pr_create_continuation_line),
+        ("extract_repo_flag: --repo on backslash-continued issue-create line resolves (#838)", test_extract_repo_flag_issue_create_continuation_line),
+        ("extract_repo_flag: quoted --body decoy --repo not hijacked (#838)", test_extract_repo_flag_quoted_body_decoy_not_hijacked),
+        ("extract_repo_flag: quoted --title decoy URL not hijacked (#838)", test_extract_repo_flag_quoted_url_decoy_not_hijacked),
         ("main(): exitCode!=0 short-circuits even when create detected", test_main_exit_code_nonzero_short_circuits_even_when_create_detected),
         ("main(): exitCode==0 proceeds to no-URL advisory", test_main_exit_code_zero_proceeds_past_gate_to_no_url_advisory),
         ("main(): gh issue create --help -> silent (dev-env#636)", test_main_help_only_issue_create_is_silent),

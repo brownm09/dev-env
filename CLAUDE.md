@@ -191,7 +191,16 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     the no-`live_options`-passed case matching pre-#527 output exactly. The live `gh project item-add` call, the
     `subprocess.run` in `canonical_root_via_git()`, and the live `gh api graphql` call in `fetch_live_field_options()`
     are not covered (the repo avoids subprocess mocks) — the last was instead verified once by hand against dev-env's
-    own live Impact field during development of the #527 fix.
+    own live Impact field during development of the #527 fix. Also (dev-env#838) exercises
+    `extract_repo_flag`'s migration onto the shared `_repo_target` resolver: its `--repo`
+    extraction now delegates to `issue_create_args`/`create_args` + the (widened)
+    `repo_from_flag` instead of a private `_REPO_FLAG_RE` over `split_top_level` segments — new
+    sabotage-verified cases pin that a `--repo` on a backslash-continued `gh pr create` /
+    `gh issue create` line resolves (missed by the old segment loop) and that a decoy
+    `--repo`/URL buried in a quoted `--title`/`--body` value does not hijack the real trailing
+    flag (captured by the old unmasked regex); the pre-existing dev-env#544 URL/host-prefix
+    cases now pass unchanged through the widened shared `repo_from_flag`. See
+    [ADR-111 Amendment 1](docs/adr/111-shared-repo-target-resolution.md).
 
     ```bash
     py -3 claude/scripts/tests/test_post_tool_use.py
@@ -2204,8 +2213,9 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     ```
 
 73. **`_repo_target` shared-module test** — required when changing `claude/scripts/_repo_target.py`
-    or the five hooks that delegate to it (`post-pr-merge-project.py`, `pr-merge-reminder.py`,
-    `posttooluse-inert-advisory.py`, `post-pr-merge-pull.py`, `stop-tile-enumeration-gate.py`).
+    or the six hooks that delegate to it (`post-pr-merge-project.py`, `pr-merge-reminder.py`,
+    `posttooluse-inert-advisory.py`, `post-pr-merge-pull.py`, `stop-tile-enumeration-gate.py`,
+    `post-tool-use.py`).
     Exercises the pure resolver offline (no I/O — the module is pure): `repo_from_flag` (the
     `--repo`/`-R` flag in both `=` and space forms — the `=` form three of the five copies
     silently missed, dev-env#482 — strict GitHub slug, case preservation, the `(?<!\S)`
@@ -2220,7 +2230,7 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     masking, so a URL inside a quoted `--subject` is still matched here); and `positional_number`
     (the bare token, the internal `mask_quoted_spans` decoy safety of dev-env#650, and that a digit
     inside a URL / a `--flag=12` value / a hyphenated branch name is not a standalone token). The
-    five consumers each delegate to this module and keep their own suites (items 14/15/18/28/48)
+    six consumers each delegate to this module and keep their own suites (items 12/14/15/18/28/48)
     green, with per-bug regression cases added for #482 (equals form + chained-flag scoping), #569
     (`load_config` scoped via `effective_merge_dir`), #667 (chained create+merge), and #685
     (tile-gate URL fallbacks masked with `mask_prose_flag_values`). See
@@ -2229,7 +2239,13 @@ the colliding item(s) to the next free number, and re-run `gh pr merge`.
     Also (dev-env#831) pins that `merge_args`/`create_args` keep a `--repo` / PR-number on a
     continued line of a multi-line invocation — `_invocation_args` now strips backslash-newline
     continuations (via `_hookio.strip_line_continuations`) before the `[^\n…]` region regex — while
-    a real top-level `&&` after a continuation still bounds the region.
+    a real top-level `&&` after a continuation still bounds the region. Also (dev-env#838, ADR-111
+    Amendment 1) pins the sixth-consumer additions: `repo_from_flag` normalizing a full-URL /
+    `github.com/`-host-prefixed / `www.` `--repo` value to the bare `owner/repo` (the optional
+    non-capturing host prefix that folds in `post-tool-use.py`'s former `_REPO_HOST_PREFIX_RE` and
+    fixes the same latent `github.com/owner` mis-capture in the other five), and `issue_create_args`
+    — the `gh issue create` counterpart of `create_args` — with basic, chained-sibling-not-leaked,
+    and continuation cases.
 
     ```bash
     py -3 claude/scripts/tests/test_repo_target.py

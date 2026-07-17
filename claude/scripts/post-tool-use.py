@@ -68,8 +68,9 @@ import subprocess
 import sys
 
 from _gh_project import add_to_project
-from _hookio import is_help_only, read_command_output, scan_top_level, split_top_level
+from _hookio import is_help_only, read_command_output, scan_top_level
 import _hookutil
+from _repo_target import create_args, issue_create_args, repo_from_flag
 from _worktree_canon import canonical_root_from_worktree
 
 CONFIG_FILE = ".claude/hook-config.json"
@@ -122,40 +123,36 @@ def is_pr_create_help_only(command: str) -> bool:
     return is_help_only(command, _PR_CREATE_RE)
 
 
-_REPO_FLAG_RE = re.compile(r"(?:--repo|-R)[\s=]+(\"[^\"]+\"|'[^']+'|\S+)")
-
-# `gh --repo` also accepts a full URL or a bare host-prefixed form
-# (https://cli.github.com/manual/gh#--repo-string) -- normalize both down to
-# `owner/name` so _sibling_repo_config's exact-string comparison against a
-# sibling config's own canonical `repo` field still matches (dev-env#544 review).
-_REPO_HOST_PREFIX_RE = re.compile(r"^(?:https?://)?(?:www\.)?github\.com/", re.IGNORECASE)
-
-
 def extract_repo_flag(command: str) -> str | None:
     """Return the `--repo`/`-R` value from *command*'s top-level `gh issue
     create` / `gh pr create` statement, normalized to `owner/name`, or None
     if absent (dev-env#542).
 
-    Only scans the statement segment that itself matched
-    `_check_issue_create_stmt` / `_check_pr_create_stmt` -- never a heredoc
-    body, quoted string, or $() subshell elsewhere in the command -- so this
-    shares is_issue_create_command's top-level-only discipline (dev-env#499).
-    Best-effort within that segment: an unusual construction where a quoted
-    --title/--body value itself contains literal "--repo" text before the
-    real flag could match the wrong occurrence. Conservative by design, same
-    trade-off as effective_merge_dir in _hookio.py -- the caller
-    (_sibling_repo_config) only ever trusts an extracted value that a real
-    sibling checkout's own hook-config.json independently confirms (and
-    _read_config never raises on a malformed derived path -- dev-env#544
-    review), so a misparse here degrades to today's silent skip, never a
-    wrong add or a crash.
+    Delegates to the shared `_repo_target` resolver (dev-env#838, ADR-111):
+    `issue_create_args` / `create_args` bound the extraction to the create
+    invocation's own argument region -- statement-scoped (never a heredoc body,
+    quoted string, or $() subshell elsewhere; dev-env#499) and continuation-safe
+    (a `--repo` on a backslash-newline-continued line is joined first via
+    `strip_line_continuations`; dev-env#831) -- then `repo_from_flag` extracts and
+    normalizes the flag from that region: it masks quoted-value decoys
+    (`mask_quoted_spans`) so a `--repo` buried in a quoted `--title`/`--body`
+    value can't hijack the match, and strips any full-URL / `github.com/` host
+    prefix down to `owner/name` (the former private `_REPO_HOST_PREFIX_RE`, folded
+    into the shared resolver -- dev-env#544). Issue-create is checked first,
+    mirroring main()'s own `item_type = "Issue" if is_issue_create` precedence for
+    a command that somehow chains both.
+
+    Conservative by design: the caller (`_sibling_repo_config`) only ever trusts
+    an extracted value that a real sibling checkout's own hook-config.json
+    independently confirms (and `_read_config` never raises on a malformed derived
+    path -- dev-env#544 review), so any misparse here degrades to today's silent
+    skip, never a wrong add or a crash.
     """
-    for segment in split_top_level(command):
-        if _check_issue_create_stmt(segment) or _check_pr_create_stmt(segment):
-            m = _REPO_FLAG_RE.search(segment)
-            if m:
-                value = m.group(1).strip("\"'")
-                return _REPO_HOST_PREFIX_RE.sub("", value).rstrip("/")
+    for args in (issue_create_args(command), create_args(command)):
+        if args is not None:
+            repo = repo_from_flag(args)
+            if repo:
+                return repo
     return None
 
 
