@@ -2,8 +2,9 @@
 r"""_repo_target.py — one quote-aware resolver for a gh command's target repo/PR.
 
 Five PostToolUse/Stop hooks each independently reimplemented the same primitive:
-given a ``gh pr merge`` / ``gh pr create`` (and, for one, ``gh issue close``)
-command, work out the ``owner/repo`` it targets — honoring an explicit
+given a ``gh pr merge`` / ``gh pr create`` / ``gh issue create`` (and, for
+one, ``gh issue close``) command, work out the ``owner/repo`` it targets —
+honoring an explicit
 ``--repo``/``-R`` flag over cwd, then a ``github.com/<owner>/<repo>/pull/<N>``
 URL, then a positional number — with quote-aware masking so a ``--subject`` /
 ``--body`` value can never hijack the match.  The five copies had **drifted**:
@@ -61,14 +62,17 @@ directory on ``sys.path``) and the test harness (``sys.path.insert(0,
 scripts_dir)``) both resolve.  Pure functions only — no I/O, no subprocess.
 
 Usage:
-    from _repo_target import repo_from_flag, merge_args, create_args
+    from _repo_target import repo_from_flag, merge_args, create_args, issue_create_args
     from _repo_target import repo_from_pr_url, pr_number_from_pr_url, iter_pr_urls
     from _repo_target import iter_issue_urls, issue_number_from_issue_url
     from _repo_target import positional_number
 
 See ADR-111 (this consolidation; ends the per-site ADR-050 amendment treadmill
 for the repo-flag concern) and ADR-050 (the amendment history it supersedes for
-this concern).
+this concern).  ``repo_from_flag`` also normalizes a full-URL / host-prefixed
+``--repo`` value, and ``issue_create_args`` was added, so post-tool-use.py — a
+sixth consumer — fully migrates onto this resolver (dev-env#838, folding in its
+former private ``_REPO_HOST_PREFIX_RE`` / dev-env#544 normalization).
 """
 
 from __future__ import annotations
@@ -87,12 +91,22 @@ from _hookio import mask_quoted_spans, strip_line_continuations
 #   * (?:=|\s+)    BOTH the `--repo=owner/repo` and `--repo owner/repo` forms —
 #                  the space-only copies silently missed the `=` form (dev-env#482
 #                  Gap 2's sibling; gh accepts both).
+#   * host prefix  (?:https?://)?(?:www\.)?(?:github\.com/)? — gh also accepts a
+#                  full URL or a bare `github.com/owner/repo` host-prefixed value
+#                  (https://cli.github.com/manual/gh#--repo-string); the prefix is
+#                  consumed but NOT captured, so the result stays a bare
+#                  `owner/repo`.  Folds in post-tool-use.py's former private
+#                  `_REPO_HOST_PREFIX_RE` so that sixth consumer fully migrates
+#                  onto this resolver (dev-env#838 / dev-env#544) — and fixes the
+#                  same latent mis-capture (`github.com/owner`) in the other five.
 #   * strict slug  [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+ — the GitHub-legal owner/repo
 #                  shape (the loose \S+ / [^\s/]+ captures only ever differed on
 #                  malformed input a real gh invocation never produces).
 # ---------------------------------------------------------------------------
 _REPO_FLAG_RE = re.compile(
-    r"(?<!\S)(?:--repo|-R)(?:=|\s+)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)"
+    r"(?<!\S)(?:--repo|-R)(?:=|\s+)"
+    r"(?:https?://)?(?:www\.)?(?:github\.com/)?"
+    r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)"
 )
 
 # github.com/<owner>/<repo>/pull/<N> and .../issues/<N>.  Scheme-agnostic (a PR
@@ -108,30 +122,36 @@ _ISSUE_URL_RE = re.compile(r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issue
 # number inside a quoted value ("resolves 42 items") can't hijack it.
 _POS_NUM_RE = re.compile(r"(?<!\S)(\d+)(?=\s|$)")
 
-# The argument list of a `gh pr merge` / `gh pr create` invocation only — up to
-# the next shell separator — so a /pull/N URL or a --repo flag in a --subject
-# value, or in a chained sibling command, cannot hijack the extraction.  Group 1
-# is the args span.  The negated class has no quote-awareness of its own, which
-# is why _invocation_args searches a mask_quoted_spans copy (ADR-050 Amendment 20).
+# The argument list of a `gh pr merge` / `gh pr create` / `gh issue create`
+# invocation only — up to the next shell separator — so a /pull/N URL or a --repo
+# flag in a --subject value, or in a chained sibling command, cannot hijack the
+# extraction.  Group 1 is the args span.  The negated class has no quote-awareness
+# of its own, which is why _invocation_args searches a mask_quoted_spans copy
+# (ADR-050 Amendment 20).
 _MERGE_ARGS_RE = re.compile(r"\bgh\s+pr\s+merge\b([^\n;|&]*)")
 _CREATE_ARGS_RE = re.compile(r"\bgh\s+pr\s+create\b([^\n;|&]*)")
+_ISSUE_CREATE_ARGS_RE = re.compile(r"\bgh\s+issue\s+create\b([^\n;|&]*)")
 
 
 def repo_from_flag(text: str) -> str | None:
     """Return the ``owner/repo`` value of a standalone ``--repo``/``-R`` flag in
     *text*, or ``None``.
 
-    Handles both the ``--repo owner/repo`` and ``--repo=owner/repo`` forms (and
-    the ``-R`` shorthand of each).  *text* is masked with ``mask_quoted_spans``
-    internally before the search, so a ``--subject``/``--body`` value containing
-    a space-separated ``-R other/repo`` substring can never be mistaken for a
-    real flag (ADR-050 Amendment 15).
+    Handles the ``--repo owner/repo`` and ``--repo=owner/repo`` forms (and the
+    ``-R`` shorthand of each), plus a full-URL or bare host-prefixed value
+    (``--repo https://github.com/owner/repo`` / ``--repo github.com/owner/repo``)
+    that gh also accepts — the ``https://``/``www.``/``github.com/`` prefix is
+    stripped so the return is always a bare ``owner/repo`` (dev-env#838, folding
+    in post-tool-use.py's former private normalization — dev-env#544).  *text* is
+    masked with ``mask_quoted_spans`` internally before the search, so a
+    ``--subject``/``--body`` value containing a space-separated ``-R other/repo``
+    substring can never be mistaken for a real flag (ADR-050 Amendment 15).
 
     The caller chooses the *scope* of *text* — the merge/create args region
-    (``merge_args`` / ``create_args``, statement-scoped so a chained sibling
-    command's flag can't leak in — dev-env#667/#482), the whole command, or a
-    single top-level segment — but never whether to mask; that invariant, kept
-    re-derived across ADR-050 Amendments 15/17/18, lives here now.
+    (``merge_args`` / ``create_args`` / ``issue_create_args``, statement-scoped so
+    a chained sibling command's flag can't leak in — dev-env#667/#482), the whole
+    command, or a single top-level segment — but never whether to mask; that
+    invariant, kept re-derived across ADR-050 Amendments 15/17/18, lives here now.
     """
     m = _REPO_FLAG_RE.search(mask_quoted_spans(text))
     return m.group(1) if m else None
@@ -171,6 +191,17 @@ def create_args(command: str) -> str | None:
     """The ``gh pr create`` invocation's own argument text in *command*, or
     ``None`` (quote-aware statement-bounded — see ``_invocation_args``)."""
     return _invocation_args(command, _CREATE_ARGS_RE)
+
+
+def issue_create_args(command: str) -> str | None:
+    """The ``gh issue create`` invocation's own argument text in *command*, or
+    ``None`` (quote-aware statement-bounded — see ``_invocation_args``).
+
+    The ``gh issue create`` counterpart of ``create_args``, added so
+    post-tool-use.py's cross-repo ``--repo`` extraction — which fires for both
+    ``gh issue create`` and ``gh pr create`` — resolves both invocations through
+    this one resolver instead of its own private regex (dev-env#838)."""
+    return _invocation_args(command, _ISSUE_CREATE_ARGS_RE)
 
 
 def repo_from_pr_url(text: str) -> str | None:

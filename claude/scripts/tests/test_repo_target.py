@@ -10,6 +10,11 @@ this pins the one canonical behavior they all now delegate to. Each consumer's
 own suite still exercises the same functions through its delegation, unchanged by
 the extraction — this file is the direct, exhaustive coverage of the primitive.
 
+dev-env#838 added a sixth consumer, `post-tool-use.py`, which folded its own
+`--repo` extraction in: `repo_from_flag` now also normalizes a full-URL /
+`github.com/` host-prefixed value, and `issue_create_args` was added as the
+`gh issue create` counterpart of `create_args`.
+
 Mirrors the shared-module test convention of `test_worktree_canon.py` /
 `test_journal_schema.py`: a flat list of `(name, fn)` cases, each returning a
 one-line description, a PASS/FAIL print, and a final `Tests: N passed, ...` line.
@@ -92,6 +97,32 @@ def test_flag_non_slug_value_returns_none() -> str:
     return "non-slug --repo value (no slash) -> None (strict slug)"
 
 
+def test_flag_host_prefixed_form() -> str:
+    # gh also accepts a bare `github.com/owner/repo` host-prefixed value
+    # (https://cli.github.com/manual/gh#--repo-string); the host prefix is
+    # consumed but NOT captured, so the return stays owner/repo (dev-env#838,
+    # folding in post-tool-use.py's former private _REPO_HOST_PREFIX_RE). All
+    # three prior copies mis-captured "github.com/owner" for this form.
+    assert rt.repo_from_flag("gh issue create --repo github.com/brownm09/dev-env") == "brownm09/dev-env"
+    return "--repo github.com/owner/repo host-prefixed form -> owner/repo (dev-env#838)"
+
+
+def test_flag_full_url_form() -> str:
+    assert rt.repo_from_flag("gh pr create --repo https://github.com/brownm09/dev-env") == "brownm09/dev-env"
+    return "--repo https://github.com/owner/repo full URL -> owner/repo (dev-env#838)"
+
+
+def test_flag_url_equals_form() -> str:
+    assert rt.repo_from_flag("gh pr create --repo=https://github.com/brownm09/dev-env") == "brownm09/dev-env"
+    return "--repo=https://github.com/owner/repo (URL, equals form) -> owner/repo (dev-env#838)"
+
+
+def test_flag_url_www_prefix_stripped() -> str:
+    # The optional (?:www\.)? mirrors the former _REPO_HOST_PREFIX_RE exactly.
+    assert rt.repo_from_flag("gh pr create -R https://www.github.com/brownm09/dev-env") == "brownm09/dev-env"
+    return "--repo https://www.github.com/owner/repo (www prefix) -> owner/repo (dev-env#838)"
+
+
 # --- merge_args / create_args: quote-aware statement bounding -----------------
 
 def test_merge_args_basic() -> str:
@@ -114,6 +145,34 @@ def test_merge_args_bare_merge_empty_args() -> str:
 def test_create_args_basic() -> str:
     assert rt.create_args("gh pr create --repo o/r --fill") == " --repo o/r --fill"
     return "create_args returns the create invocation's own args"
+
+
+def test_issue_create_args_basic() -> str:
+    assert rt.issue_create_args("gh issue create --repo o/r --title x") == " --repo o/r --title x"
+    return "issue_create_args returns the gh issue create invocation's own args (dev-env#838)"
+
+
+def test_issue_create_args_no_issue_create_returns_none() -> str:
+    assert rt.issue_create_args("gh pr create --repo o/r --fill") is None
+    return "issue_create_args on a command with no gh issue create -> None (dev-env#838)"
+
+
+def test_issue_create_args_chained_sibling_not_leaked() -> str:
+    # A --repo on a chained sibling command must not leak into the issue-create
+    # args region -- statement-bounded, mirroring create_args/merge_args.
+    cmd = "gh issue list --repo brownm09/other && gh issue create --title x"
+    args = rt.issue_create_args(cmd)
+    assert args is not None and rt.repo_from_flag(args) is None
+    return "issue_create_args: a chained sibling's --repo does not leak in (dev-env#838)"
+
+
+def test_issue_create_args_repo_on_continued_line() -> str:
+    # The gh issue create counterpart of test_create_args_repo_on_continued_line
+    # (dev-env#831): a --repo on a backslash-continued line survives the join.
+    cmd = "gh issue create --title t \\\n  --repo brownm09/dev-env"
+    args = rt.issue_create_args(cmd)
+    assert args is not None and rt.repo_from_flag(args) == "brownm09/dev-env"
+    return "issue_create_args keeps a --repo on a continued line (dev-env#838/#831)"
 
 
 def test_chained_create_merge_flag_scoping() -> str:
@@ -332,11 +391,19 @@ def main() -> int:
         ("flag: real survives alongside quoted decoy", test_flag_real_survives_alongside_quoted_decoy),
         ("flag: absent -> None", test_flag_absent_returns_none),
         ("flag: non-slug value -> None", test_flag_non_slug_value_returns_none),
+        ("flag: host-prefixed github.com/owner/repo -> owner/repo (dev-env#838)", test_flag_host_prefixed_form),
+        ("flag: full https URL -> owner/repo (dev-env#838)", test_flag_full_url_form),
+        ("flag: URL equals form -> owner/repo (dev-env#838)", test_flag_url_equals_form),
+        ("flag: www. URL prefix stripped (dev-env#838)", test_flag_url_www_prefix_stripped),
         # merge_args / create_args
         ("merge_args: basic", test_merge_args_basic),
         ("merge_args: no merge -> None", test_merge_args_no_merge_returns_none),
         ("merge_args: bare merge -> '' ", test_merge_args_bare_merge_empty_args),
         ("create_args: basic", test_create_args_basic),
+        ("issue_create_args: basic (dev-env#838)", test_issue_create_args_basic),
+        ("issue_create_args: no issue-create -> None (dev-env#838)", test_issue_create_args_no_issue_create_returns_none),
+        ("issue_create_args: chained sibling not leaked (dev-env#838)", test_issue_create_args_chained_sibling_not_leaked),
+        ("issue_create_args: --repo on a continued line (dev-env#838/#831)", test_issue_create_args_repo_on_continued_line),
         ("chained create+merge flag scoping (dev-env#667)", test_chained_create_merge_flag_scoping),
         ("chained order reversed", test_chained_create_merge_reversed_order),
         ("merge_args: quoted separator no early truncation (dev-env#660)", test_merge_args_quoted_separator_no_early_truncation),
