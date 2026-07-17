@@ -86,7 +86,7 @@ try:
     # the _winsubp patch if the _pmfg reuse below ever changes shape. Kept INSIDE this
     # fail-closed guard (review of PR #722) so a _winsubp import failure also blocks (exit 2)
     # rather than failing open -- it was the one sibling import previously left outside it.
-    from _hookio import is_merge_help_only, mask_quoted_spans
+    from _hookio import is_merge_help_only, mask_quoted_spans, strip_line_continuations
 
     _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     _PMFG_PATH = os.path.join(_SCRIPT_DIR, "pre-merge-findings-gate.py")
@@ -150,7 +150,8 @@ def _merge_tail(command):
     the same amendment.
 
     Shell line-continuations (a backslash immediately followed by a newline) are stripped first
-    (dev-env#823): they join two physical lines into one logical line and are NOT statement
+    via the shared `strip_line_continuations` helper (dev-env#823; hoisted to `_hookio` in
+    dev-env#831): they join two physical lines into one logical line and are NOT statement
     separators, so a multi-line `gh pr merge ... \<newline> --subject ...` command must be treated
     as the single logical line the shell sees. Without this, the `\n`-split below truncated the
     tail at the first continuation -- and, worse, the truncated slice ended in the dangling
@@ -166,7 +167,7 @@ def _merge_tail(command):
     m = re.search(r"gh\s+pr\s+merge\b(.*)", command, re.DOTALL)
     if not m:
         return ""
-    tail = re.sub(r"\\\n", "", m.group(1))  # join shell line-continuations (dev-env#823)
+    tail = strip_line_continuations(m.group(1))  # join shell line-continuations (dev-env#823, #831)
     boundary = len(re.split(r"&&|\|\||;|\n", mask_quoted_spans(tail))[0])
     return tail[:boundary]
 

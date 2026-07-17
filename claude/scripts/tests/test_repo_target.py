@@ -274,6 +274,51 @@ def test_positional_number_branch_name_digit_not_matched() -> str:
     return "digit in a branch name (my-branch-2) is not a positional token"
 
 
+# ---------------------------------------------------------------------------
+# Multi-line shell line-continuations (dev-env#831)
+#
+# _invocation_args strips backslash+LF continuations (via
+# _hookio.strip_line_continuations) before the `[^\n...]` region regex, so a
+# --repo / PR-number on a continued line is no longer truncated away. A real
+# top-level separator must still bound the region.
+# ---------------------------------------------------------------------------
+
+def test_merge_args_repo_on_continued_line() -> str:
+    cmd = 'gh pr merge 42 --squash \\\n  --repo brownm09/dev-env \\\n  --subject "x"'
+    args = rt.merge_args(cmd)
+    assert args is not None and "--repo brownm09/dev-env" in args
+    assert rt.repo_from_flag(args) == "brownm09/dev-env"
+    return "merge_args keeps a --repo on a continued line (dev-env#831)"
+
+
+def test_merge_args_pr_number_on_continued_line() -> str:
+    # The continuation sits between the verb and its positional argument.
+    cmd = 'gh pr merge \\\n  42 --squash'
+    args = rt.merge_args(cmd)
+    assert args is not None and rt.positional_number(args) == 42
+    return "merge_args keeps a PR number on a continued line (dev-env#831)"
+
+
+def test_create_args_repo_on_continued_line() -> str:
+    cmd = 'gh pr create --title t \\\n  --repo brownm09/dev-env'
+    args = rt.create_args(cmd)
+    assert args is not None and rt.repo_from_flag(args) == "brownm09/dev-env"
+    return "create_args keeps a --repo on a continued line (dev-env#831)"
+
+
+def test_merge_args_real_separator_still_bounds_after_continuation() -> str:
+    # --repo sits AFTER the continuation (so the join is load-bearing) and a real
+    # top-level && follows: the fix must join the continuation AND still bound the
+    # region at the && (never swallow the chained command). Discriminating both
+    # ways -- with the fix off --repo is truncated away; if over-widened `rm -rf`
+    # leaks into the args region.
+    cmd = 'gh pr merge 42 \\\n  --repo brownm09/dev-env --squash && rm -rf /'
+    args = rt.merge_args(cmd)
+    assert args is not None and "rm -rf" not in args
+    assert rt.repo_from_flag(args) == "brownm09/dev-env"
+    return "a --repo on a continued line resolves AND a real top-level && still bounds (dev-env#831)"
+
+
 def main() -> int:
     tests = [
         # repo_from_flag
@@ -318,6 +363,10 @@ def main() -> int:
         ("positional_number: real survives quoted decoy", test_positional_number_real_survives_quoted_decoy),
         ("positional_number: absent -> None", test_positional_number_absent_returns_none),
         ("positional_number: branch-name digit not matched", test_positional_number_branch_name_digit_not_matched),
+        ("merge_args: --repo on a continued line (dev-env#831)", test_merge_args_repo_on_continued_line),
+        ("merge_args: PR number on a continued line (dev-env#831)", test_merge_args_pr_number_on_continued_line),
+        ("create_args: --repo on a continued line (dev-env#831)", test_create_args_repo_on_continued_line),
+        ("merge_args: real && still bounds after a continuation (dev-env#831)", test_merge_args_real_separator_still_bounds_after_continuation),
     ]
     failed = 0
     for name, fn in tests:

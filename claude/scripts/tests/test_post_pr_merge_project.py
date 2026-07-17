@@ -500,6 +500,26 @@ def test_load_config_scoped_to_merge_dir() -> str:
     return "cd <repo> && gh pr merge -> load_config resolves the MERGED repo's config, not cwd's (dev-env#569)"
 
 
+# ---------------------------------------------------------------------------
+# Multi-line shell line-continuations (dev-env#831)
+#
+# Both extractors route through _repo_target.merge_args, which now strips
+# backslash+LF continuations before bounding the args region, so a --repo /
+# PR-number sitting on a continued line is no longer truncated away.
+# ---------------------------------------------------------------------------
+
+def test_extract_repo_from_command_repo_on_continued_line() -> str:
+    cmd = 'gh pr merge 42 --squash \\\n  --repo brownm09/dev-env'
+    assert extract_repo_from_command(cmd) == "brownm09/dev-env"
+    return "extract_repo_from_command resolves a --repo on a continued line (dev-env#831)"
+
+
+def test_extract_pr_number_from_command_number_on_continued_line() -> str:
+    cmd = 'gh pr merge \\\n  42 --repo brownm09/dev-env'
+    assert extract_pr_number_from_command(cmd) == 42
+    return "extract_pr_number_from_command resolves a PR number on a continued line (dev-env#831)"
+
+
 def main() -> int:
     tests = [
         ("command: bare number", test_cmd_bare_number),
@@ -546,6 +566,8 @@ def main() -> int:
         ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_merge_succeeded_and_is_help_only),
         ("unresolved real merge: guard does not suppress fallback", test_unresolved_real_merge_is_not_help_only),
         ("config: cd-chain merge -> load_config scoped to merged repo (dev-env#569)", test_load_config_scoped_to_merge_dir),
+        ("repo: --repo on a continued line (dev-env#831)", test_extract_repo_from_command_repo_on_continued_line),
+        ("command: PR number on a continued line (dev-env#831)", test_extract_pr_number_from_command_number_on_continued_line),
     ]
     failed = 0
     for name, fn in tests:

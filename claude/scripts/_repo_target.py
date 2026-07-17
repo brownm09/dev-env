@@ -75,7 +75,7 @@ from __future__ import annotations
 
 import re
 
-from _hookio import mask_quoted_spans
+from _hookio import mask_quoted_spans, strip_line_continuations
 
 # ---------------------------------------------------------------------------
 # --repo / -R flag  (canonical, ends the three-shape drift)
@@ -148,7 +148,12 @@ def _invocation_args(command: str, invocation_re: re.Pattern) -> str | None:
     original — the returned slice is genuine (unmasked) argument text, so a
     downstream ``repo_from_flag`` / ``mask_prose_flag_values`` call still sees
     real quote/flag-value content to mask in its own turn.
+
+    Shell backslash-newline line-continuations are stripped first
+    (``strip_line_continuations``, dev-env#831) so a multi-line invocation with a
+    ``--repo``/PR-number on a continued line is not truncated at the join.
     """
+    command = strip_line_continuations(command)  # join shell line-continuations (dev-env#831)
     m = invocation_re.search(mask_quoted_spans(command))
     if not m:
         return None
