@@ -107,3 +107,47 @@ clean child-process kill on timeout). No duplicated refresh logic.
 - [dev-env#356](https://github.com/brownm09/dev-env/issues/356) — rejected raw-OAuth self-healing (the CLI-owned refresh here is distinct).
 - [PR #357](https://github.com/brownm09/dev-env/pull/357) — the advisory fallback this preserves.
 - OAuth 2.0 refresh-token grant + rotation — [RFC 6749 §6](https://datatracker.ietf.org/doc/html/rfc6749#section-6).
+
+## Amendment (2026-07-17) — Extend on-demand refresh to the missing/unparseable-token branch (dev-env#819)
+
+This ADR's on-demand refresh only fired on `classify_token()` returning `"expired"` — a token
+*present* in a well-formed `.credentials.json` but past its `expiresAt`. A second, separate branch in
+`main()` (`if not token:`) handles creds that parse as valid JSON but whose oauth substructure yields
+no usable `accessToken` (a missing key, a malformed `expiresAt`, or similar local corruption — distinct
+from the file being entirely absent or invalid JSON, which `if not creds:` already discards silently,
+untouched by this amendment). That branch skipped straight to the advisory with no refresh attempt,
+asymmetric with the adjacent `"expired"` case this ADR already covers.
+
+**Fix.** `if not token:` now attempts the same on-demand refresh before falling back to the advisory,
+via a new shared helper, `attempt_token_refresh(creds, token, expires_at_ms, refresh_fn=..., load_fn=...,
+get_fn=...)`, extracted because both branches now perform an identical retry-and-recheck sequence (call
+`refresh_token_now()`, reload creds, re-extract the token). The three I/O dependencies are
+dependency-injected so the sequence is unit-testable offline — this repo's established pattern for
+testing a decision that wraps live I/O (e.g. `post-tool-use.py`'s `fetch_live_required_field_options()`).
+No new OAuth mechanism: this is the same CLI-owned refresh path this ADR already accepted, now reached
+from a second call site.
+
+**Empirical verification — confounded, documented honestly rather than assumed.** The issue asked
+whether `refresh_token_now()` (headless `claude -p ok --model haiku` via `keep-token-warm.ps1`) can
+actually recover this branch's precondition, since regenerating a broken *token* might need more than
+refreshing an otherwise-valid one. Live testing hit a pre-existing, unrelated confound: the test
+machine's OAuth session was already dead at the time of testing — `claude auth status --json` reported
+`loggedIn: false`, and the `ClaudeKeepTokenWarm` scheduled task had failed (`claude_exit=1`) on every run
+that day. A direct `claude -p ok --model haiku` against the **unmodified** credentials file failed
+immediately (`OAuth session expired and could not be refreshed`), and two further non-interactive
+launch attempts (a redirected-pipe `ProcessStartInfo` launch mirroring `keep-token-warm.ps1` itself, and
+a Git Bash `timeout`-wrapped bare launch) both failed identically — Claude Code treats any non-TTY
+stdout as `--print` mode and refuses without explicit input, confirming no subprocess-based approach
+available to automation can reach whatever startup path a genuine interactive terminal uses to
+self-heal. None of the three attempts altered the credentials file (verified via SHA256 before/after
+each). This dead-session finding is tracked separately as
+[dev-env#825](https://github.com/brownm09/dev-env/issues/825) — it is orthogonal to whether the mirrored
+mechanism helps in the common case (a healthy refresh token, corrupted local field), which this ADR's
+own Consequences section already accepted only partial/deferred verification for on the sibling
+`"expired"` branch ("full confirmation deferred to the next merge that naturally lands on an expired
+token"). The same standard applies here: the fix degrades no worse than the pre-fix behavior even when
+the refresh token is genuinely dead (same advisory, just after a bounded ~5-25s wasted attempt), and it
+helps in exactly the cases the `"expired"` branch already helps in.
+
+See [dev-env#819](https://github.com/brownm09/dev-env/issues/819) and
+[dev-env#825](https://github.com/brownm09/dev-env/issues/825).

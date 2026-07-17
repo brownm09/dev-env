@@ -54,6 +54,23 @@ test_post_tool_use.py's `test_load_config_falls_back_to_canonical` fixture style
 conventions now resolve via the shared resolver, with `PROJECTS_ROOT` monkeypatched for
 the duration of each test.
 
+dev-env#819: the `if not token:` branch (creds file present and valid JSON, but
+the oauth substructure doesn't yield a usable accessToken — distinct from a
+missing/unparseable *file*, which `if not creds:` already discards silently
+above) used to skip straight to the advisory with no refresh attempt, unlike
+the adjacent expired-token branch. The retry-and-recheck sequence duplicated
+by both branches (call refresh_token_now(), reload creds, re-extract the
+token) is now factored into `attempt_token_refresh()`, with its three I/O
+dependencies (refresh_fn/load_fn/get_fn) injectable so the sequence is
+testable offline — mirroring this repo's existing pattern for testing an
+I/O-wrapping decision via an injected fake (post-tool-use.py's
+`fetch_live_required_field_options()`). Live verification of the CLI's own
+refresh mechanism was attempted but confounded by an unrelated, pre-existing
+dead OAuth session on the test machine (every `-p`/non-TTY invocation failed
+identically against the *unmodified* credentials file too — see dev-env#825);
+the tests below therefore pin the function's own retry/fallback contract
+rather than an end-to-end live refresh.
+
 The live network call (`fetch_usage`) is intentionally not tested — the repo
 avoids urllib mocks, consistent with the other script tests.
 
@@ -83,6 +100,8 @@ usage_snapshot = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(usage_snapshot)  # safe: main() is guarded by __main__
 classify_token = usage_snapshot.classify_token
 snapshot_action = usage_snapshot.snapshot_action
+attempt_token_refresh = usage_snapshot.attempt_token_refresh
+get_access_token = usage_snapshot.get_access_token
 merge_confirmed = usage_snapshot.merge_confirmed
 status_label = usage_snapshot.status_label
 format_snapshot = usage_snapshot.format_snapshot
@@ -152,6 +171,116 @@ def test_valid_states_fetch() -> str:
     for st in ("ok", "no_expiry"):
         assert snapshot_action(st) == "fetch", f"{st} should fetch, got {snapshot_action(st)}"
     return "ok / no_expiry -> fetch"
+
+
+# ---------------------------------------------------------------------------
+# attempt_token_refresh (dev-env#819)
+# ---------------------------------------------------------------------------
+
+def test_attempt_token_refresh_recovers_a_missing_token() -> str:
+    # Mirrors the dev-env#819 scenario: creds exists but token extraction failed
+    # (e.g. the oauth substructure is broken). refresh_fn succeeds and the
+    # reloaded creds now yield a usable token.
+    calls = {"refresh": 0, "load": 0, "get": 0}
+    new_creds = {"claudeAiOauth": {"accessToken": "fresh-token", "expiresAt": NOW_MS + 5 * HOUR_MS}}
+
+    def refresh_fn():
+        calls["refresh"] += 1
+        return True
+
+    def load_fn():
+        calls["load"] += 1
+        return new_creds
+
+    def get_fn(creds):
+        calls["get"] += 1
+        return get_access_token(creds)
+
+    token, expires_at_ms, creds = attempt_token_refresh(
+        {"claudeAiOauth": {}}, None, 0, refresh_fn=refresh_fn, load_fn=load_fn, get_fn=get_fn
+    )
+    assert token == "fresh-token", f"expected recovered token, got {token!r}"
+    assert expires_at_ms == NOW_MS + 5 * HOUR_MS, expires_at_ms
+    assert creds == new_creds, creds
+    assert calls == {"refresh": 1, "load": 1, "get": 1}, calls
+    return "missing token + successful refresh -> token recovered from reloaded creds (dev-env#819)"
+
+
+def test_attempt_token_refresh_refresh_succeeds_but_still_broken() -> str:
+    # The refresh CLI call ran to completion (refresh_fn -> True) but the
+    # reloaded file still has no usable token -- e.g. a dead refresh token
+    # (confirmed live: keep-token-warm.ps1 and a direct `claude -p ok` both
+    # exit non-zero when the underlying session itself is unrefreshable, even
+    # against an unmodified credentials file -- dev-env#825). Must not
+    # fabricate a token just because the refresh call itself "succeeded".
+    still_broken_creds = {"claudeAiOauth": {}}  # no accessToken key
+
+    token, expires_at_ms, creds = attempt_token_refresh(
+        {"claudeAiOauth": {}}, None, 0,
+        refresh_fn=lambda: True, load_fn=lambda: still_broken_creds, get_fn=get_access_token,
+    )
+    assert token is None, f"expected no token when refresh doesn't fix it, got {token!r}"
+    assert expires_at_ms == 0, expires_at_ms
+    assert creds == still_broken_creds, "creds should still reflect the reload attempt"
+    return "refresh ran but token still unusable -> stays None, doesn't fabricate one (dev-env#825 case)"
+
+
+def test_attempt_token_refresh_refresh_fails_leaves_everything_unchanged() -> str:
+    # refresh_fn itself reports failure (subprocess error/timeout) -> nothing
+    # to re-read; load_fn/get_fn must not even be called.
+    calls = {"load": 0, "get": 0}
+    original_creds = {"sentinel": True}
+
+    def load_fn():
+        calls["load"] += 1
+        return {"claudeAiOauth": {"accessToken": "should-never-be-seen", "expiresAt": 0}}
+
+    def get_fn(creds):
+        calls["get"] += 1
+        return "should-never-be-called", 0
+
+    token, expires_at_ms, creds = attempt_token_refresh(
+        original_creds, "original-token", 12345,
+        refresh_fn=lambda: False, load_fn=load_fn, get_fn=get_fn,
+    )
+    assert token == "original-token", f"refresh failure must leave token untouched, got {token!r}"
+    assert expires_at_ms == 12345, expires_at_ms
+    assert creds is original_creds, "creds object must be returned unchanged, not a copy"
+    assert calls == {"load": 0, "get": 0}, f"load/get must not run when refresh_fn fails: {calls}"
+    return "refresh_fn() False -> inputs returned unchanged, no reload attempted"
+
+
+def test_attempt_token_refresh_reload_none_falls_back_to_original_creds() -> str:
+    # refresh_fn succeeds but load_fn returns None (file briefly unreadable,
+    # e.g. mid-write) -> creds falls back to the caller's original value
+    # rather than being discarded (matches load_credentials()'s own None
+    # return on a read/parse failure).
+    original_creds = {"claudeAiOauth": {"accessToken": "stale-token", "expiresAt": 999}}
+
+    token, expires_at_ms, creds = attempt_token_refresh(
+        original_creds, "stale-token", 999,
+        refresh_fn=lambda: True, load_fn=lambda: None, get_fn=get_access_token,
+    )
+    assert creds == original_creds, "a None reload must fall back to the original creds, not discard them"
+    assert token == "stale-token", f"re-extracted from the fallback creds, got {token!r}"
+    return "refresh succeeds but reload yields None -> falls back to original creds (no data loss)"
+
+
+def test_missing_token_refresh_recovery_then_classifies_ok() -> str:
+    # End-to-end composition of the actual dev-env#819 happy path using the
+    # real (non-injected) classify_token: a missing token is recovered by
+    # refresh, and the freshly-obtained token then classifies as ok (not
+    # expired) -- so main() would proceed to fetch, not block.
+    recovered_creds = {"claudeAiOauth": {"accessToken": "recovered", "expiresAt": NOW_MS + 5 * HOUR_MS}}
+    token, expires_at_ms, _creds = attempt_token_refresh(
+        {"claudeAiOauth": {}}, None, 0,
+        refresh_fn=lambda: True, load_fn=lambda: recovered_creds, get_fn=get_access_token,
+    )
+    assert token == "recovered", token
+    state, advisory = classify_token(expires_at_ms, NOW_MS)
+    assert state == "ok", f"expected ok after recovery, got {state}"
+    assert advisory == "", advisory
+    return "recovered token classifies as ok -> main() would proceed to fetch, not block (dev-env#819 happy path)"
 
 
 def test_merge_confirmed_true_for_worktree_merge_despite_nonzero_exit() -> str:
@@ -331,6 +460,26 @@ def main() -> int:
         ("expired state triggers on-demand refresh", test_expired_state_triggers_refresh),
         ("expiring state now fetches (not skipped)", test_expiring_state_now_fetches),
         ("ok / no_expiry states fetch", test_valid_states_fetch),
+        (
+            "missing token + successful refresh recovers it (dev-env#819)",
+            test_attempt_token_refresh_recovers_a_missing_token,
+        ),
+        (
+            "refresh runs but token still unusable -> stays None (dev-env#825 case)",
+            test_attempt_token_refresh_refresh_succeeds_but_still_broken,
+        ),
+        (
+            "refresh_fn failure leaves inputs unchanged, no reload attempted",
+            test_attempt_token_refresh_refresh_fails_leaves_everything_unchanged,
+        ),
+        (
+            "reload returning None falls back to original creds",
+            test_attempt_token_refresh_reload_none_falls_back_to_original_creds,
+        ),
+        (
+            "recovered token classifies ok -> proceeds to fetch (dev-env#819 happy path)",
+            test_missing_token_refresh_recovery_then_classifies_ok,
+        ),
         (
             "worktree-merge output confirms despite non-zero exit",
             test_merge_confirmed_true_for_worktree_merge_despite_nonzero_exit,
