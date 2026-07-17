@@ -55,6 +55,7 @@ import _hookutil
 try:
     from _journal_schema import (
         decode_shard_bytes,
+        malformed_manifest_fields,
         missing_open_pr_fields,
         missing_required_fields,
         parse_manifest_text,
@@ -265,6 +266,7 @@ def validate_shard_bytes(raw: bytes, kind: str, stem: str, pr_from_name: int | N
             missing = missing_required_fields(entry)
             if missing:
                 problems.append(f"missing {', '.join(missing)}")
+            problems.extend(malformed_manifest_fields(entry))
         return problems
 
     # kind == "open-pr"

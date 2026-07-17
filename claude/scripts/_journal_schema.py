@@ -39,6 +39,9 @@ REQUIRED_FIELDS = ("stub", "topic", "tokens", "prs_opened", "prs_closed")
 # docs/REFERENCE.md → "Open-PR tracking shards". No optional fields are documented there.
 OPEN_PR_REQUIRED_FIELDS = ("pr", "url", "topic", "stub", "opened")
 
+# Sub-keys required inside the `tokens` dict value (dev-env #824).
+TOKENS_REQUIRED_KEYS = ("input", "output", "cost")
+
 
 def missing_required_fields(entry: object, fields: tuple[str, ...] = REQUIRED_FIELDS) -> list[str]:
     """Return the fields in ``fields`` absent from a single parsed shard entry.
@@ -61,6 +64,32 @@ def missing_required_fields(entry: object, fields: tuple[str, ...] = REQUIRED_FI
 def missing_open_pr_fields(entry: object) -> list[str]:
     """``missing_required_fields`` specialized to the open-PR shard schema."""
     return missing_required_fields(entry, OPEN_PR_REQUIRED_FIELDS)
+
+
+def malformed_manifest_fields(entry: object) -> list[str]:
+    """Return descriptions of present-but-malformed fields in a manifest entry.
+
+    Currently validates only ``tokens``: it must be a dict with keys ``input``,
+    ``output``, ``cost``, each numeric (int or float). A bare scalar, ``None``,
+    or any other wrong type is flagged. Returns ``[]`` for non-dict entries (already
+    caught by ``missing_required_fields``) and when ``tokens`` is absent (also caught
+    there) — no double-reporting. (dev-env #824)
+    """
+    if not isinstance(entry, dict):
+        return []
+    if "tokens" not in entry:
+        return []
+    t = entry["tokens"]
+    if not isinstance(t, dict):
+        return [f"tokens: must be a dict with keys input/output/cost, got {type(t).__name__}"]
+    problems = []
+    missing_keys = [k for k in TOKENS_REQUIRED_KEYS if k not in t]
+    if missing_keys:
+        problems.append(f"tokens dict missing keys: {', '.join(missing_keys)}")
+    bad_type_keys = [k for k in TOKENS_REQUIRED_KEYS if k in t and not isinstance(t[k], (int, float))]
+    if bad_type_keys:
+        problems.append(f"tokens keys not numeric: {', '.join(bad_type_keys)}")
+    return problems
 
 
 def has_unresolved_open_pr(entry: object) -> bool:

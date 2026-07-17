@@ -33,6 +33,7 @@ REQUIRED_FIELDS = mod.REQUIRED_FIELDS
 OPEN_PR_REQUIRED_FIELDS = mod.OPEN_PR_REQUIRED_FIELDS
 missing_required_fields = mod.missing_required_fields
 missing_open_pr_fields = mod.missing_open_pr_fields
+malformed_manifest_fields = mod.malformed_manifest_fields
 has_unresolved_open_pr = mod.has_unresolved_open_pr
 find_entries_missing_fields = mod.find_entries_missing_fields
 parse_manifest_text = mod.parse_manifest_text
@@ -230,6 +231,58 @@ def test_decode_empty_bytes():
     text, problem = decode_shard_bytes(b"")
     assert text == ""
     assert problem is None
+
+
+# ---------------------------------------------------------------------------
+# malformed_manifest_fields — tokens type/shape validation (dev-env #824)
+# ---------------------------------------------------------------------------
+
+def test_malformed_tokens_bare_int():
+    entry = _valid_manifest_entry(tokens=0)
+    result = malformed_manifest_fields(entry)
+    assert len(result) == 1
+    assert "int" in result[0]
+
+def test_malformed_tokens_bare_string():
+    entry = _valid_manifest_entry(tokens="input=0,output=0")
+    result = malformed_manifest_fields(entry)
+    assert len(result) == 1
+    assert "str" in result[0]
+
+def test_malformed_tokens_null():
+    entry = _valid_manifest_entry(tokens=None)
+    result = malformed_manifest_fields(entry)
+    assert len(result) == 1
+    assert "NoneType" in result[0]
+
+def test_malformed_tokens_dict_missing_key():
+    entry = _valid_manifest_entry(tokens={"input": 1, "output": 2})  # missing "cost"
+    result = malformed_manifest_fields(entry)
+    assert len(result) == 1
+    assert "cost" in result[0]
+
+def test_malformed_tokens_dict_non_numeric_value():
+    entry = _valid_manifest_entry(tokens={"input": "many", "output": 200, "cost": 0.01})
+    result = malformed_manifest_fields(entry)
+    assert len(result) == 1
+    assert "input" in result[0]
+
+def test_malformed_tokens_valid_int_values():
+    entry = _valid_manifest_entry(tokens={"input": 1000, "output": 200, "cost": 0})
+    assert malformed_manifest_fields(entry) == []
+
+def test_malformed_tokens_valid_float_cost():
+    # Uses the fixture default: {"input": 1000, "output": 200, "cost": 0.01}
+    entry = _valid_manifest_entry()
+    assert malformed_manifest_fields(entry) == []
+
+def test_malformed_tokens_absent_no_double_report():
+    entry = _valid_manifest_entry()
+    del entry["tokens"]
+    assert malformed_manifest_fields(entry) == []
+
+def test_malformed_tokens_non_dict_entry_no_double_report():
+    assert malformed_manifest_fields(["not", "a", "dict"]) == []
 
 
 # ---------------------------------------------------------------------------
