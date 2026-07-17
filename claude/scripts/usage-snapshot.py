@@ -27,10 +27,13 @@ Stdin JSON shape (PostToolUse):
 Exit 0  — not a merge command, an unconfirmed merge (no success marker and the
           live `gh pr view` fallback also found nothing — e.g. a queued
           `--auto`, or a genuinely failed merge), or creds file absent; silent
-Exit 2  — snapshot emitted via stderr, OR an expired token whose on-demand refresh
-          failed (advisory), OR the usage API was unreachable after one retry
-          (advisory — #302). An expired token is first refreshed on demand via the
-          CLI (keep-token-warm.ps1); a still-valid "expiring" token proceeds to fetch.
+Exit 2  — snapshot emitted via stderr, OR a missing/unparseable token whose
+          on-demand refresh didn't produce one (advisory — dev-env#819), OR an
+          expired token whose on-demand refresh failed (advisory), OR the usage
+          API was unreachable after one retry (advisory — #302). Both a
+          missing/unparseable token and an expired one are first refreshed on
+          demand via the CLI (keep-token-warm.ps1); a still-valid "expiring"
+          token proceeds to fetch.
 """
 import _winsubp  # noqa: F401  -- patches subprocess to suppress console windows
 import json
@@ -231,6 +234,36 @@ def refresh_token_now(timeout: int = 45) -> bool:
         return True
     except Exception:
         return False
+
+
+def attempt_token_refresh(
+    creds: dict,
+    token: str | None,
+    expires_at_ms: int,
+    refresh_fn=refresh_token_now,
+    load_fn=load_credentials,
+    get_fn=get_access_token,
+) -> tuple[str | None, int, dict]:
+    """Best-effort on-demand refresh + re-read, shared by both token-recovery
+    branches in main() (a missing/unparseable token, and an expired one).
+
+    Returns the possibly-updated (token, expires_at_ms, creds). If refresh_fn()
+    itself reports failure, the inputs are returned unchanged — there is nothing
+    to re-read. If it reports success but a subsequent load_fn() can't produce a
+    creds dict (e.g. the file is briefly unreadable mid-write), creds falls back
+    to the caller's original value and the token is re-extracted from that
+    (effectively a no-op, matching prior behavior).
+
+    refresh_fn/load_fn/get_fn are dependency-injected (defaulting to the real
+    subprocess/file-I/O functions above) so the retry sequence itself is
+    testable offline — mirrors this repo's existing pattern for testing an
+    I/O-wrapping decision via an injected fake (e.g. post-tool-use.py's
+    fetch_live_required_field_options()).
+    """
+    if refresh_fn():
+        creds = load_fn() or creds
+        token, expires_at_ms = get_fn(creds)
+    return token, expires_at_ms, creds
 
 
 def status_label(util: float, target: int, margin: int) -> str:
@@ -475,23 +508,39 @@ def main() -> None:
 
     token, expires_at_ms = get_access_token(creds)
     if not token:
-        # Creds file exists but holds no usable token — surface it rather than
-        # failing silently (creds-file-absent is handled silently above).
-        _hookout.emit_block(
-            "[usage-snapshot] Skipped: .credentials.json has no usable OAuth token "
-            "(missing or unparseable). Run `claude` interactively to rewrite it."
-        )
+        # Creds file exists but holds no usable token (missing/malformed oauth
+        # substructure) — surface it rather than failing silently (creds-file-absent
+        # is handled silently above). Attempt an on-demand refresh first, mirroring
+        # the expired-token branch below: the CLI's refresh path can repair a
+        # locally corrupted/missing token field, not just refresh an already-valid
+        # one (dev-env#819).
+        token, expires_at_ms, creds = attempt_token_refresh(creds, token, expires_at_ms)
+        if not token:
+            _hookout.emit_block(
+                "[usage-snapshot] Skipped: .credentials.json has no usable OAuth "
+                "token (missing or unparseable), and an on-demand refresh did not "
+                "produce one. Run `claude` interactively to rewrite it."
+            )
 
     # Only a truly-expired token blocks the snapshot. Claude Code refreshes lazily,
     # so a scheduled keep-warm can't fully close the gap; instead, refresh on demand
     # right here. A still-valid "expiring" token (<1h) proceeds to the fetch rather
     # than being discarded.
+    #
+    # This can be the *second* attempt_token_refresh() call in this invocation (the
+    # branch above already tried once for a missing/malformed token) if that refresh
+    # left a token that's present but still expired -- refresh_token_now() reporting
+    # success only means the subprocess didn't throw, not that the CLI actually
+    # refreshed anything (confirmed live: dev-env#825). Deliberately not deduplicated:
+    # the trigger is narrow (a token that flips from unusable to present-but-expired
+    # between the two checks), each attempt is bounded by refresh_token_now()'s own
+    # ~45s subprocess timeout, and the hook's configured 90s settings.json timeout
+    # (dev-env CLAUDE.md Testing item 63) is an acceptable backstop for this rare case
+    # rather than adding cross-branch state to force a single attempt.
     state, _ = classify_token(expires_at_ms, time.time() * 1000)
     if snapshot_action(state) == "refresh":
-        if refresh_token_now():
-            creds = load_credentials() or creds
-            token, expires_at_ms = get_access_token(creds)
-            state, _ = classify_token(expires_at_ms, time.time() * 1000)
+        token, expires_at_ms, creds = attempt_token_refresh(creds, token, expires_at_ms)
+        state, _ = classify_token(expires_at_ms, time.time() * 1000)
         if state == "expired" or not token:
             _hookout.emit_block(
                 "[usage-snapshot] OAuth token expired and on-demand refresh failed "
