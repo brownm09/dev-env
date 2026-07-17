@@ -603,6 +603,12 @@ section (the canonical list of when to run each). `bash -n` catches only syntax 
 runtime and environment bugs it misses, the motivating case being [dev-env#334](https://github.com/brownm09/dev-env/issues/334)
 (a path-resolution bug that parsed cleanly yet failed on every run).
 
+The table below is a curated subset (the files with the least self-explanatory behavior). For a
+complete, one-line-per-file index of all 75 files in `claude/scripts/tests/` — grouped by shared
+module, structural gate, or which hook/script each test covers — see
+[`claude/scripts/tests/README.md`](../claude/scripts/tests/README.md)
+([dev-env#822](https://github.com/brownm09/dev-env/issues/822)).
+
 **Running the whole suite at once.** `py -3 claude/scripts/run-hook-tests.py` (Utilities table
 above) discovers every `test_*.py` and every bash `*.sh` gate across both test directories
 (`claude/scripts/tests/` and `claude/hooks/tests/` — the same dir set for Python and bash, so a test
