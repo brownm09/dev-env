@@ -420,6 +420,32 @@ def split_top_level(command: str, *, split_pipe: bool = False) -> list[str]:
     `scan_top_level`'s pre-existing fail-permissive behavior for an
     unparseable tail (a caller scanning for a match sees no match from that
     segment either way).
+
+    A ``\\``+newline shell line-continuation is deliberately NOT joined here,
+    unlike the `gh pr merge` boundary-finders that call
+    `strip_line_continuations` (`_merge_tail`, `_parse_merge_target`, and
+    `_repo_target._invocation_args` — the last shared by `merge_args` /
+    `create_args`; dev-env#823/#831). The dev-env#836 audit
+    confirmed this is correct, not an oversight:
+      1. Callers use this for *verb detection* only ("does some top-level
+         segment start with <verb>?"). A continuation only ever appears
+         *within* a statement's argument list, after the verb, so the verb
+         always lands in the first segment and is detected regardless;
+         post-verb data that a continuation could truncate (a `--repo` /
+         PR-number) is extracted by other helpers (`_repo_target`, already
+         continuation-stripping). There is no realistic-command bug to fix.
+      2. A naive whole-command `strip_line_continuations` pre-pass would
+         actively REGRESS this function: it is not heredoc-aware, so joining a
+         heredoc's final ``\\``-terminated content line to its delimiter line
+         defeats `_find_heredoc_end`'s exact-line delimiter match — the walker
+         then runs to end-of-string and swallows every top-level statement
+         *after* the heredoc into one segment, hiding a real trailing verb
+         from a blocking gate. That is strictly worse than the never-observed
+         edge it would "fix" (e.g. a ``\\``+newline split between `git` and
+         `checkout`). A shell-correct fix would instead have to teach the
+         walker to skip a ``\\``+newline in the 'top'/'subshell' states — a far
+         larger change to this heavily-relied-upon primitive, for no realistic
+         benefit.
     """
     segments: list[str] = []
     n = len(command)
@@ -794,6 +820,12 @@ def strip_line_continuations(command: str) -> str:
     across a continuation (`a\`+newline+`b`) joins to the single token `ab`. A
     bare newline with no preceding backslash is untouched, so a genuine
     top-level newline separator still bounds the region at the call sites.
+
+    Note: `split_top_level` — this module's top-level *statement* splitter —
+    deliberately does NOT call this, even though it too splits on ``\n``. See
+    its docstring (dev-env#836) for why a naive pre-pass would corrupt its
+    heredoc-delimiter detection and hide a real trailing verb from a blocking
+    gate, and why its callers don't need the strip anyway.
     """
     return re.sub(r"\\\n", "", command)
 
