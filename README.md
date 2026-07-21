@@ -38,6 +38,7 @@ Custom slash commands loaded from `claude/skills/`. Invoke with `/skill-name [ar
 | [`/review <PR-URL> [flags]`](claude/skills/review/SKILL.md) | Reviews a PR for correctness, security, reliability, maintainability, documentation reconciliation, test coverage (ADR-022), test integrity (ADR-029), and ADR-warrant check (ADR-011). Posts report as PR comment by default. |
 | [`/journal-onboard [slug]`](claude/skills/journal-onboard/SKILL.md) | Scaffolds `sessions/<project>/` in engineering-journal and optionally creates `.claude/CLAUDE.md` in the project repo. |
 | [`/memory-audit`](claude/skills/memory-audit/SKILL.md) | Reconciles agent memory against the version-controlled instructions and emits a table (per entry: durable? instruction-home? disposition). Catches never-ported durables, stale notes, and index drift. |
+| [`/experiment-audit design\|verdict <...>`](claude/skills/experiment-audit/SKILL.md) | Rigor protocol for process experiments. `design` mode pre-registers (tier, hypothesis + primary outcome construct, incumbent-influence inventory, instrument calibration, frozen win bar) before any results; `verdict` mode gates the conclusion (deviation ledger, T1–T10 threat sweep, verdict read off the primary construct, decision legality). See [ADR-115](docs/adr/115-experimental-rigor-protocol.md). |
 
 ## Hooks
 

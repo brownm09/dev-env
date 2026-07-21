@@ -108,15 +108,16 @@ _VERDICT_RES = (
         r"(?:failure|success|win|loss)\b",
         re.IGNORECASE,
     ),
-    # 3. adopt / reject / roll out a challenger or a new process arm. The object
-    #    is either an experiment-anchored noun (challenger/incumbent/
-    #    generate-then-decide) or "the new <process word>"; coupled with a
-    #    decision verb AND the session-level experiment pre-filter (main()), the
-    #    residual false-positive surface is small and bounded by once-only.
+    # 3. adopt / reject / roll out / abandon an experiment-anchored arm
+    #    (challenger / incumbent / generate-then-decide). Deliberately NOT a bare
+    #    "adopt the new flow": without an experiment-anchored object that is
+    #    indistinguishable from an ordinary product decision (a false-positive
+    #    risk), and its object carries no _CTX_PREFILTER token, which would break
+    #    main()'s superset guarantee. Anchoring the object keeps both precision
+    #    and a sound pre-filter superset.
     re.compile(
         r"\b(?:adopt|reject|roll\s+out|abandon)\b\s+(?:the\s+)?"
-        r"(?:challenger|incumbent|generate-then-decide|"
-        r"new\s+(?:flow|approach|process|workflow|paradigm|design|method))\b",
+        r"(?:challenger|incumbent|generate-then-decide)\b",
         re.IGNORECASE,
     ),
     # 4. the challenger won / lost / beat / out(under)performed the incumbent.
@@ -157,10 +158,23 @@ _CTX_PREFILTER = (
     "a/b", "trial", "generate-then-decide",
 )
 _VERDICT_PREFILTER = (
-    "fail", "succe", "pass", "won", "lost", "loss", "win",
+    "fail", "succe", "pass", "won", "lost", "loss", "lose", "win",
     "adopt", "reject", "roll out", "abandon", "beat",
     "outperform", "underperform",
 )
+
+
+def _prefilter_passes(text_lower: str) -> bool:
+    """The cheap pre-filter, factored out of ``main()`` so the sound-superset
+    invariant is directly testable against ``_VERDICT_RES``. A verdict idiom
+    needs BOTH an experiment-context token and a verdict/decision token; this
+    returns whether both are present as raw substrings. Every ``_VERDICT_RES``
+    pattern carries one of each as a *contiguous* literal (idiom objects are
+    experiment-anchored — no whitespace-splittable compound like ``new\\s+flow``
+    — and ``loses`` is covered by the ``lose`` stem), so this can never fast-exit
+    a fire-worthy session (the property ``test_prefilter_is_superset`` pins)."""
+    return (any(s in text_lower for s in _CTX_PREFILTER)
+            and any(s in text_lower for s in _VERDICT_PREFILTER))
 
 
 # --- pure detection helpers (offline-testable) ---------------------------------
@@ -199,6 +213,8 @@ def audit_marker_present(records: list) -> bool:
         if _AUDIT_MARKER_RE.search(text):
             return True
     for rec in records:
+        if isinstance(rec, dict) and _is_synthetic_user(rec):
+            continue  # a compact-summary/isMeta echo of the command is not a real invocation
         if any(_AUDIT_CMD_RE.search(t) for t in _user_message_texts(rec)):
             return True
     return False
@@ -240,8 +256,8 @@ def evaluate(records: list) -> tuple:
 def format_reminder() -> str:
     """The exit-2 stderr message. ASCII-only: Claude Code pipes hook output as
     cp1252 on Windows, so a char outside it (an arrow, an em-dash) would raise
-    UnicodeEncodeError and the whole reminder would vanish -- use ``--`` and
-    ``->`` (mirrors stop-journal-stub-checkpoint.py / stop-tile-enumeration-gate.py)."""
+    UnicodeEncodeError and the whole reminder would vanish -- use ``--`` (mirrors
+    stop-journal-stub-checkpoint.py / stop-tile-enumeration-gate.py)."""
     return (
         "[experiment-verdict-gate] This session states a conclusion about a process "
         "experiment (an A/B spike, challenger-vs-incumbent, or before/after comparison), "
@@ -310,13 +326,11 @@ def main() -> None:
     except Exception:
         sys.exit(0)
 
-    # Cheap pre-filter: a verdict idiom needs BOTH an experiment-context token and
-    # a verdict/decision token in the raw transcript. _CTX_PREFILTER x
-    # _VERDICT_PREFILTER is a guaranteed superset of _VERDICT_RES (each pattern
-    # carries one of each), so this can never fast-exit a fire-worthy session; it
-    # only skips the parse when no match is possible.
-    lower = text.lower()
-    if not (any(s in lower for s in _CTX_PREFILTER) and any(s in lower for s in _VERDICT_PREFILTER)):
+    # Cheap pre-filter (see _prefilter_passes): a verdict idiom needs BOTH an
+    # experiment-context token and a verdict/decision token in the raw transcript.
+    # It is a guaranteed superset of _VERDICT_RES, so it only skips the parse when
+    # no match is possible, never fast-exiting a fire-worthy session.
+    if not _prefilter_passes(text.lower()):
         sys.exit(0)
 
     # Fail-open: a parse/scan failure is a deliberate exit-0 skip, not an

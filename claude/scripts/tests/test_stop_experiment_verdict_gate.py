@@ -154,16 +154,31 @@ def test_verdict_adopt_the_challenger():
     return "verdict: 'adopt the challenger' -> True (idiom 3)"
 
 
-def test_verdict_adopt_new_flow():
-    recs = [_asst_text("Let's adopt the new flow for all future letters.")]
+def test_verdict_abandon_generate_then_decide():
+    recs = [_asst_text("Given the wash, let's abandon generate-then-decide.")]
     assert hook.verdict_conclusion_present(recs) is True
-    return "verdict: 'adopt the new flow' -> True (idiom 3)"
+    return "verdict: 'abandon generate-then-decide' -> True (idiom 3, anchored)"
+
+
+def test_verdict_unanchored_new_flow_not_matched():
+    # Idiom 3 deliberately requires an experiment-anchored object; a bare
+    # "adopt the new flow" (no experiment framing) is an ordinary decision and
+    # must NOT fire (precision + keeps the main() pre-filter a sound superset).
+    recs = [_asst_text("Let's adopt the new flow for all future letters.")]
+    assert hook.verdict_conclusion_present(recs) is False
+    return "verdict: unanchored 'adopt the new flow' -> False (idiom 3 is experiment-anchored)"
 
 
 def test_verdict_challenger_outperformed():
     recs = [_asst_text("The challenger outperformed the incumbent on every input.")]
     assert hook.verdict_conclusion_present(recs) is True
     return "verdict: 'challenger outperformed ...' -> True (idiom 4)"
+
+
+def test_verdict_challenger_loses():
+    recs = [_asst_text("Net, the challenger loses to the incumbent on 3 of 4 inputs.")]
+    assert hook.verdict_conclusion_present(recs) is True
+    return "verdict: 'challenger loses' -> True (idiom 4, the 'loses' pre-filter edge)"
 
 
 def test_verdict_generate_then_decide_succeeded():
@@ -199,6 +214,60 @@ def test_verdict_in_tool_use_input_not_matched():
 
 
 # ---------------------------------------------------------------------------
+# Pre-filter superset invariant — the guard both reviewers flagged as missing
+# (its absence let the idiom-3 'new X' and idiom-4 'loses' pre-filter holes hide)
+# ---------------------------------------------------------------------------
+
+# One+ sentence per _VERDICT_RES idiom branch, including the tricky verb forms
+# (loses / wins / beats / succeeded / passed / was-a-failure) and the anchored
+# idiom-3 objects. Every one MUST both (a) match verdict_conclusion_present and
+# (b) clear the main() pre-filter. If any matches the regex but not the
+# pre-filter, the pre-filter is not a sound superset and the hook silently fails
+# to fire — exactly the bug this test exists to prevent regressing.
+_SUPERSET_SENTENCES = [
+    # idiom 1 — experiment noun + outcome verb
+    "the spike failed on two checks",
+    "generate-then-decide succeeded here",
+    "the a/b test passed cleanly",
+    "the pilot won outright",
+    "the trial lost on cohesion",
+    # idiom 2 — experiment noun + was/is a failure|success|win|loss
+    "the experiment was a failure",
+    "the challenger was a clear success",
+    "the spike is a net win",
+    "the pilot was a loss",
+    # idiom 3 — adopt/reject/roll out/abandon an anchored arm
+    "adopt the challenger",
+    "reject the incumbent",
+    "abandon generate-then-decide",
+    "roll out the challenger",
+    # idiom 4 — challenger + won/lost/beat/beats/wins/loses/out|underperform
+    "the challenger won",
+    "the challenger loses",
+    "the challenger beat the incumbent",
+    "the challenger beats plan-first",
+    "the challenger wins",
+    "the challenger lost",
+    "the challenger outperformed the incumbent",
+    "the challenger underperformed",
+]
+
+
+def test_prefilter_is_superset_of_verdict_res():
+    offenders = []
+    for s in _SUPERSET_SENTENCES:
+        matches = hook.verdict_conclusion_present([_asst_text(s)])
+        assert matches, f"fixture should match a verdict idiom but did not: {s!r}"
+        if not hook._prefilter_passes(s.lower()):
+            offenders.append(s)
+    assert not offenders, (
+        "pre-filter is NOT a superset of _VERDICT_RES — these match the regex but the "
+        f"pre-filter would fast-exit before parsing (silent no-fire): {offenders}"
+    )
+    return f"pre-filter superset holds for all {len(_SUPERSET_SENTENCES)} idiom-branch phrasings"
+
+
+# ---------------------------------------------------------------------------
 # audit_marker_present
 # ---------------------------------------------------------------------------
 
@@ -224,6 +293,13 @@ def test_audit_marker_absent():
     recs = [_asst_text("The spike failed.")]
     assert hook.audit_marker_present(recs) is False
     return "audit_marker: no marker/invocation -> False"
+
+
+def test_audit_marker_compact_summary_wrapper_not_counted():
+    # A compact-summary/isMeta echo of the command is not a real invocation.
+    recs = [_user_compact("Earlier the session ran <command-name>/experiment-audit</command-name> verdict.")]
+    assert hook.audit_marker_present(recs) is False
+    return "audit_marker: /experiment-audit wrapper in an isCompactSummary -> False (synthetic guard)"
 
 
 # ---------------------------------------------------------------------------
@@ -386,12 +462,27 @@ def test_e2e_skip_allows():
 
 
 def test_e2e_no_verdict_allows():
+    # Fixture deliberately CLEARS the pre-filter (ctx 'spike' + verdict stems
+    # 'pass'/'win') so the hook actually reaches evaluate() and returns no-fire on
+    # a non-idiom sentence -- not a pre-filter fast-exit (reviewer-flagged weak test).
     records = [_user_str("tune the spike parameters"),
-               _asst_text("Adjusted k and reran calibration; looks cleaner.")]
+               _asst_text("Adjusted k and reran calibration; the pass rate looks cleaner and win margins tightened.")]
     with tempfile.TemporaryDirectory() as home:
         rc, out, err = _run_hook(records, home)
     assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
-    return "e2e no verdict stated -> exit 0 (pre-filter/parse allows)"
+    return "e2e no verdict idiom (reaches evaluate) -> exit 0 (allowed)"
+
+
+def test_e2e_anchored_idiom3_fires():
+    # idiom-3-only session (anchored object) reaches the real hook through the
+    # pre-filter and fires -- closes the 'idiom-3 e2e untested' gap.
+    records = [_user_str("Should we keep the generate-then-decide spike?"),
+               _asst_text("Given the results, let's abandon generate-then-decide.")]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 2, f"expected exit 2, got {rc} (stderr={err!r})"
+    assert "[experiment-verdict-gate]" in err
+    return "e2e anchored idiom-3 ('abandon generate-then-decide'), no audit -> exit 2"
 
 
 def test_e2e_docs_editing_allows():
@@ -453,18 +544,22 @@ def main():
         ("verdict spike failed", test_verdict_spike_failed),
         ("verdict experiment was a success", test_verdict_experiment_was_a_success),
         ("verdict adopt the challenger", test_verdict_adopt_the_challenger),
-        ("verdict adopt new flow", test_verdict_adopt_new_flow),
+        ("verdict abandon generate-then-decide", test_verdict_abandon_generate_then_decide),
+        ("verdict unanchored new flow not matched", test_verdict_unanchored_new_flow_not_matched),
         ("verdict challenger outperformed", test_verdict_challenger_outperformed),
+        ("verdict challenger loses", test_verdict_challenger_loses),
         ("verdict generate-then-decide succeeded", test_verdict_generate_then_decide_succeeded),
         ("verdict unit-test 'failed' not matched", test_verdict_unit_test_failed_not_matched),
         ("verdict meta-discussion not matched", test_verdict_meta_discussion_not_matched),
         ("verdict plain 'experiment' not matched", test_verdict_plain_experiment_mention_not_matched),
         ("verdict in tool_use input not matched", test_verdict_in_tool_use_input_not_matched),
+        ("prefilter is superset of verdict_res", test_prefilter_is_superset_of_verdict_res),
         # audit_marker_present
         ("audit marker in assistant text", test_audit_marker_in_assistant_text),
         ("audit marker command wrapper", test_audit_marker_command_wrapper),
         ("audit marker prose mention not matched", test_audit_marker_prose_mention_not_matched),
         ("audit marker absent", test_audit_marker_absent),
+        ("audit marker compact-summary wrapper not counted", test_audit_marker_compact_summary_wrapper_not_counted),
         # skip_override
         ("skip override user string", test_skip_override_user_string),
         ("skip override hyphenated", test_skip_override_hyphenated),
@@ -483,6 +578,7 @@ def main():
         ("malformed records do not disable", test_malformed_records_do_not_disable),
         # behavioral end-to-end
         ("e2e fire blocks on stderr", test_e2e_fire_blocks_on_stderr),
+        ("e2e anchored idiom-3 fires", test_e2e_anchored_idiom3_fires),
         ("e2e audit-cmd allows", test_e2e_audit_cmd_allows),
         ("e2e marker allows", test_e2e_marker_allows),
         ("e2e skip allows", test_e2e_skip_allows),

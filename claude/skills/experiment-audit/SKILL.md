@@ -1,6 +1,6 @@
 ---
 name: experiment-audit
-description: Rigor protocol for process experiments — design mode pre-registers (tier, hypothesis, contamination inventory, instrument calibration, frozen win bar) before any results exist; verdict mode gates the conclusion (deviation ledger, threat sweep T1–T9, verdict/decision legality). Invoke as /experiment-audit design <description> | verdict <results-path, issue #N, or description>.
+description: Rigor protocol for process experiments — design mode pre-registers (tier, hypothesis + primary outcome construct, contamination inventory, instrument calibration, frozen win bar) before any results exist; verdict mode gates the conclusion (deviation ledger, threat sweep T1–T10, verdict read off the primary construct, decision legality). Invoke as /experiment-audit design <description> | verdict <results-path, issue #N, or description>.
 argument-hint: "design <experiment description> | verdict <results path | issue #N | description>"
 allowed-tools: Read Grep Glob Bash AskUserQuestion Write Edit
 ---
@@ -76,15 +76,28 @@ process change, it is **Tier 1**. Otherwise:
 
 Auto-draft each field; mark any you cannot derive with a `<CONFIRM>` tag for the user to fill.
 
-1. **Hypothesis & goal.** One falsifiable sentence, then the goal stated *arm-agnostically* ("letters
-   whose close resolves the opener's frame") — never as a paradigm preference ("generate-then-decide
-   is better"). Field 3's criteria must trace to this goal.
+1. **Hypothesis & goal — name the one primary outcome construct.** One falsifiable sentence, then the
+   goal stated *arm-agnostically* as the **single primary construct the change exists to improve** —
+   the outcome itself, never a mechanism or proxy of it. For the narrative-flow case that construct is
+   *overall letter cohesion (a naturally emergent, JD-relevant theme carrying the whole letter)* —
+   **not** "the close resolves the opener's frame," which is one easily-fixed ~20% mechanism of
+   cohesion. State it arm-agnostically ("a more cohesive letter"), never as a paradigm preference
+   ("generate-then-decide is better"). **The hypothesis verdict is read off this construct** (field
+   10); every field-3 criterion traces to it and is classified against it.
 2. **Manipulated variable.** Exactly one, named, with a held-constant list (model, briefing version,
    corpus, processing tail, judge). If the challenger inherently bundles changes, name the bundle and
    pre-narrow the conclusion to the bundle.
-3. **Success criteria — arm-agnostic, goal-traced.** Each verdict-bearing criterion maps to field 1's
-   goal. Mark any criterion that exists *because one arm is known to fail it*: it runs as
-   **DIAGNOSTIC**, not verdict-bearing, until calibrated in D4.
+3. **Success criteria — classify PRIMARY vs. SECONDARY, and trace each to the goal.** Tag every
+   criterion **PRIMARY** (it directly operationalizes the field-1 construct — e.g. a blind
+   whole-letter cohesion rating) or **SECONDARY / mechanism** (a necessary condition, sub-property, or
+   diagnostic — e.g. bookend correspondence, one ~20% easily-fixed slice of cohesion). **The
+   hypothesis verdict is read off the PRIMARY criteria only; a SECONDARY criterion may FLAG or
+   diagnose, but a FLAG on it alone can NEVER produce a `refuted` / failure verdict on the primary
+   construct** — deciding on it would substitute a measurable proxy for the goal (threat **T10**). If
+   no criterion validly operationalizes the primary construct, the instrument set is uncalibrated *for
+   the goal* — a construct-validity gap; build a primary-construct measure before scoring. Separately,
+   mark any criterion that exists *because one arm is known to fail it*: it runs as **DIAGNOSTIC**, not
+   verdict-bearing, until calibrated in D4 (threat T3).
 4. **Baseline (control arm).** Default: a *fresh* incumbent run on this corpus at the D5 stage. An
    archived artifact needs a one-line representativeness justification; a known-*failure* artifact is
    **not** a neutral baseline.
@@ -195,34 +208,46 @@ Do not manufacture a retroactive pre-registration.
 
 ---
 
-## Step V4 — Gate 4: threat sweep T1–T9
+## Step V4 — Gate 4: threat sweep T1–T10
 
 Emit one row per threat, each `PASS` / `FLAG` / `N/A` with one line of evidence. Any `FLAG` on a
 load-bearing threat forces `inconclusive — confounded by <Tn>`.
 
 ```
 [experiment-audit] Threat sweep — <slug>
-| # | Threat                                             | Verdict | Evidence |
-|---|----------------------------------------------------|---------|----------|
-| T1 | Treatment contamination (incumbent leaks in)      | PASS/FLAG | ... |
-| T2 | Uncalibrated instrument                           | ... | ... |
-| T3 | Circular criteria (gate from one arm's known fail)| ... | ... |
-| T4 | Baseline non-neutrality                           | ... | ... |
-| T5 | Processing inequality (stage mismatch)            | ... | ... |
-| T6 | Corpus bias / regression to the mean              | ... | ... |
-| T7 | Power / cherry-picking / optional stopping        | ... | ... |
-| T8 | Peeking / HARKing (bar moved after results)       | ... | ... |
-| T9 | Judge contamination / dependence                  | ... | ... |
+| # | Threat                                              | Verdict | Evidence |
+|----|----------------------------------------------------|---------|----------|
+| T1  | Treatment contamination (incumbent leaks in)      | PASS/FLAG | ... |
+| T2  | Uncalibrated instrument                           | ... | ... |
+| T3  | Circular criteria (gate from one arm's known fail)| ... | ... |
+| T4  | Baseline non-neutrality                           | ... | ... |
+| T5  | Processing inequality (stage mismatch)            | ... | ... |
+| T6  | Corpus bias / regression to the mean              | ... | ... |
+| T7  | Power / cherry-picking / optional stopping        | ... | ... |
+| T8  | Peeking / HARKing (bar moved after results)       | ... | ... |
+| T9  | Judge contamination / dependence                  | ... | ... |
+| T10 | Criterion substitution / surrogate endpoint       | ... | ... |
 ```
+
+**T10 (criterion substitution)** is the "wrong-yardstick" threat and is distinct from T3: a criterion
+can be perfectly fair and independent yet still be the wrong *construct* — the verdict decided on a
+measurable proxy or a SECONDARY / mechanism criterion instead of the field-1 primary construct.
+FLAG it whenever the headline verdict rests on anything other than the primary criteria (field 3).
+The motivating incident: a "failure" verdict driven by bookend correspondence (a ~20%, easily-fixed
+mechanism) while the actual goal — overall letter cohesion — went unmeasured.
 
 ---
 
 ## Step V5 — Gate 5: verdict, scope, decision legality
 
 State the **verdict** from the pre-registered outcome map *only* — `supported` | `refuted` |
-`inconclusive — confounded by <X>`. Add a **scope statement**: "holds for `<corpus>` under `<model
-IDs / prompt-briefing SHAs / processing stage>`" — no unscoped generalization. Then read the
-**decision** off the legality matrix:
+`inconclusive — confounded by <X>`. **The verdict must be read off the field-1 PRIMARY construct via
+its PRIMARY criteria** (field 3): a FLAG confined to SECONDARY / mechanism criteria (e.g. bookend
+correspondence) can drive `iterate` or, if it undermines the primary measure, `inconclusive` — but
+**never `refuted`** of the primary hypothesis; concluding failure on a proxy is threat T10, and Gate 4
+must already have FLAGged it. Add a **scope statement**: "holds for `<corpus>` under `<model IDs /
+prompt-briefing SHAs / processing stage>`" — no unscoped generalization. Then read the **decision**
+off the legality matrix:
 
 | | supported | refuted | inconclusive |
 |---|---|---|---|
@@ -255,6 +280,12 @@ verdict + scope on the tracking issue (and close it if the decision resolves it)
 - **A circular gate is a hypothesis, not evidence.** A check purpose-built from one arm's known
   failure tests that failure mode; it is verdict-bearing against the *other* arm only after it passes
   known-good calibration (then it graduates).
+- **Measure the goal, not a proxy for it (T10).** Name the one primary outcome construct the change
+  exists to improve, and decide the verdict on *that*. A secondary/mechanism criterion — even a fair,
+  independent, goal-connected one — can diagnose or trigger `iterate`, but never declare failure of
+  the primary hypothesis. The incident: a spike judged a "failure" on bookend correspondence (a
+  ~20%, easily-fixed mechanism) while its real target, overall cohesion, was never measured. This is
+  distinct from T3 (a proxy can be perfectly fair and still be the wrong construct).
 - **The audit is a table, not a re-run.** Verdict mode reasons over recorded results + the frozen
   pre-registration; it does not regenerate arms.
 - **Project cross-references** (career-playbook): its calibration harness already encodes
