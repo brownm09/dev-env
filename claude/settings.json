@@ -290,6 +290,11 @@
           },
           {
             "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/stop-experiment-verdict-gate.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/scripts/awake-blocker.py",
             "timeout": 30
           }
