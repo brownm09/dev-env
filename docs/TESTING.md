@@ -2289,3 +2289,9 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_testing_index_parity.py
     ```
+
+77. **experiment-verdict-gate test** — required when changing `claude/scripts/stop-experiment-verdict-gate.py` (ADR-115). Pins the Stop hook that nudges when a session states a process-experiment conclusion with no `/experiment-audit` run. Verdict-language detection: each of the four operative idioms fires ("the spike failed", "experiment was a success", "adopt the challenger", "challenger outperformed ..."), while a bare unit-test "the test failed", meta-discussion that keeps words between the experiment noun and the outcome word, and — the load-bearing rigor-docs guarantee — verdict wording confined to a `Write`/`Edit` `tool_use` input (a session authoring an ADR/report) all do NOT fire. Also pins the suppressors (the `[experiment-audit]` marker in assistant text, a `/experiment-audit` command wrapper, and the "skip experiment audit" user override — a `tool_result`/compact-summary mention of the phrase does not waive), the `evaluate()` composition, the cp1252-encodable reminder, and the end-to-end behavior (fire → exit 2 on stderr with empty stdout; audit-ran / skip / no-verdict / docs-editing / `stop_hook_active` → exit 0; the once-per-session sentinel suppresses a second fire; empty/non-dict stdin → exit 0 fail-open). Structural compliance (heartbeat, safe-exit fail-open, output-contract channel, settings wiring) rides the shared PR3/PR8 gates (items 61/62/63/68), which auto-discover the hook once it is wired in `claude/settings.json`.
+
+    ```bash
+    py -3 claude/scripts/tests/test_stop_experiment_verdict_gate.py
+    ```

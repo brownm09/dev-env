@@ -87,6 +87,8 @@ If the project has no automated tests, the section must say so explicitly and de
 
 Every project CLAUDE.md **must** also include a `## Observability` section describing the project's logging/observability convention — the logger and levels used, structured vs. plain output, where errors and traces go, and what the Observability audit dimension should verify for that project. Projects with no runtime to instrument (content/docs repos) must say so explicitly and name the equivalent verification (e.g. reference-integrity or link-check scripts). The `## Observability` section is what the *Plan-then-optimize → Pass 3* Observability dimension defers to — **if no `## Observability` section exists, note its absence in the plan and ask the user to add one; do not block the PR on it** (advisory, like the `## Testing` reminder — the gate is this CLAUDE.md rule, not a hook).
 
+Projects that run process experiments **should** add an `## Experiments` section — a corpus catalog, an instrument registry naming each judge/check's known-good AND known-bad calibration references, the results home, and default tier triggers. The *Plan-then-optimize → Pass 3* Experimental-validity dimension and the `/experiment-audit` skill defer to it the way the Observability dimension defers to `## Observability`; **absence is advisory, not blocking** (see the global `## Experimental Rigor` section and [ADR-115](../docs/adr/115-experimental-rigor-protocol.md)).
+
 ---
 
 ## Git Workflow
@@ -370,6 +372,19 @@ A direct *or transitive* caret dependency can publish a new in-range version whi
 
 ---
 
+## Experimental Rigor
+
+Any comparative claim about a process change — A/B arms, before/after, challenger vs. incumbent — is an experiment, and carries a declared tier *before* results exist. The full protocol lives in the `/experiment-audit` skill (`design` mode before generating anything, `verdict` mode before concluding anything); see [ADR-115](../docs/adr/115-experimental-rigor-protocol.md). The one law: **no conclusion without a design that could have produced the opposite conclusion.**
+
+- **Tier 0 — probe.** An n=1 exploration, declared in three lines in the tracking issue. Cheap and encouraged. Legal endings *only*: "signal — escalate to Tier 1," "infeasible as specified," or "shelved — untested." Never adopt / reject / "failure" / "success."
+- **Tier 1 — test.** Required before any adopt/reject of a standing process. Pre-registration frozen in the tracking issue *before* generation: hypothesis + the one **primary outcome construct** the change exists to improve (stated arm-agnostically, as the outcome — *cohesion*, not a mechanism/proxy of it like *bookend correspondence*); one manipulated variable + held-constant list; success criteria classified **primary vs. secondary/mechanism** and traced to that construct — a secondary criterion can diagnose but **never alone decide the verdict** (that is criterion substitution, threat T10); a check built from one arm's *known* failure is a diagnostic, not verdict-bearing, until calibrated (T3); a neutral fresh-run baseline; a corpus fixed in advance (n≥3 or all-available, not solely incumbent-failure cases, with ≥1 known-good input); an **incumbent-influence inventory** (neutralize or log every default the challenger inherits — the challenger runs its own natural defaults); instruments **calibrated against known-good AND known-bad references before any arm is scored** (uncalibrated ⇒ quarantined, non-verdict-bearing); stage-matched processing; drafter ≠ scorer, blinded, order-randomized, fresh context per artifact; and a win bar + aggregation + n and k fixed — no generate-until-win. Probe data may inform the design; it never scores in the verdict.
+- **Adoption rider.** When the decision would *replace* a standing process: ≥1 held-out input scored once at the end, plus a named post-adoption tripwire (a golden-set / baseline entry) and rollback path.
+- **Verdict ∈ {supported, refuted, inconclusive — confounded by X}**, read off the **primary construct** (never a secondary proxy — deciding failure on a proxy is criterion substitution), with per-input results (an aggregate may not hide losses) and a scope statement ("holds for \<corpus\> under \<SHAs / conditions\>"). An unfair or unregistered design cannot produce adopt/reject — only a hypothesis for a proper run. Deviations from the pre-registration are listed, or the verdict is void.
+
+Projects that run experiments should declare an `## Experiments` section (see [Per-Project CLAUDE.md Requirements](#per-project-claudemd-requirements)); Pass 3's **Experimental validity** dimension enforces the design half at plan time. A Stop-hook backstop (`stop-experiment-verdict-gate.py`) nudges once when a conclusion is stated with no `/experiment-audit` run.
+
+---
+
 ## Hook Safety
 
 See [docs/REFERENCE.md — Hooks → Authoring rules](../docs/REFERENCE.md#authoring-rules) for the hook authoring invariants (atomic commits, safe-exit guard, `pyw -3` invocation / no `bash -c`, `import _winsubp` for subprocess-spawning hooks, and declared fail direction — advisory hooks fail open, blocking gates fail closed).
@@ -415,7 +430,7 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 - The final outputs (files written, PRs opened, commits made) match what the original plan intended
 - If the plan includes multiple PR merges, the stub-writing step appears once, after the last merge — not once per merge
 
-**Pass 3 — Risk-dimension audit:** before acting, the plan must address each of these six dimensions explicitly. For any that don't apply, state **`N/A — <reason>`** rather than omitting it. The bar is *stating the decision*, not adding work everywhere.
+**Pass 3 — Risk-dimension audit:** before acting, the plan must address each of these seven dimensions explicitly. For any that don't apply, state **`N/A — <reason>`** rather than omitting it. The bar is *stating the decision*, not adding work everywhere.
 
 1. **Testing** — coverage for new behavior (defers to the project `## Testing` section).
 2. **Observability** — what is logged/traced at boundaries and on failure (defers to the project `## Observability` section).
@@ -423,6 +438,7 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 4. **Resilience / failure modes** — error handling, timeouts, fallbacks, and how the change is rolled back / reverted.
 5. **Performance** — data-access patterns (N+1), hot paths, payload/bundle size.
 6. **Data integrity & migrations** — schema changes, multi-tenant isolation, reversibility.
+7. **Experimental validity** — when the plan generates or interprets any comparative result (A/B, before/after, challenger vs. incumbent): declare the tier, confirm pre-registration precedes generation, instruments are calibrated, and arms are contamination-checked and stage-matched — run `/experiment-audit design` before generating and `/experiment-audit verdict` before concluding (defers to the project `## Experiments` section and the global `## Experimental Rigor`). Plans making no comparative claim: `N/A — no experiment`.
 
 **Accessibility** is audited whenever the change touches UI. Each project's CLAUDE.md may declare additional project-specific gates (e.g. lifting-logbook: OTel trace correlation, raw-SQL spans, LLM data scrubbing; career-playbook: `validate.sh`, briefing regeneration, artifact-schema parity) — the audit defers to those.
 
