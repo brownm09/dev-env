@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 65 `test_*.py` files, 9 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 75 files with no per-file index until now
+This directory holds the dev-env hook/script test suite: 69 `test_*.py` files, 10 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 80 files with no per-file index until now
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)).
 
 **Not the only test directory.** `claude/hooks/tests/` is a second, much smaller test directory

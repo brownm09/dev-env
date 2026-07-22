@@ -392,26 +392,37 @@ def test_lookup_states_empty_plan_makes_no_calls() -> str:
 
 
 def test_prune_removes_emptied_tiles_dir_only() -> str:
+    # Both halves must be non-vacuous: dir `a` is fully emptied (must be removed), and dir
+    # `b` must have a shard ACTUALLY removed from it and still survive because one remains.
+    # If b's shards were merely kept, "b survives" would pass even with pruning broken.
+    CP = "brownm09/career-playbook"
+    CP_URL = "https://github.com/brownm09/career-playbook/issues/{n}"
     with tempfile.TemporaryDirectory() as root:
         rootp = Path(root)
         a = _journal(rootp, "dev-env")
         b = _journal(rootp, "career-playbook")
         _write_tile(a, 1)
-        _write_tile(b, 2)
-        _write_tile(b, 3)
+        _write_tile(b, 2, url=CP_URL.format(n=2))
+        _write_tile(b, 3, url=CP_URL.format(n=3))
 
         tiles = load_tiles(rootp)
+        assert {t["repo"] for t in tiles} == {REPO, CP}, \
+            "each project's tiles must resolve to their own repo, or the state map below is inert"
+
         _, removed, _ = reconcile_tiles(tiles, {
             (REPO, 1): "CLOSED",
-            ("brownm09/career-playbook", 2): "CLOSED",
-            ("brownm09/career-playbook", 3): "OPEN",
+            (CP, 2): "CLOSED",
+            (CP, 3): "OPEN",
         })
-        # career-playbook's URLs default to dev-env, so re-point expectations: only assert
-        # the dirs, which is what this test is about.
+        assert sorted(t["issue"] for t in removed) == [1, 2], \
+            f"both closed tiles removed (b's prune must be real, not a no-op), got {removed}"
+
         prune_empty_tile_dirs(removed)
-        assert not (a / "tiles").exists(), "emptied tiles/ dir removed"
+        assert not (a / "tiles").exists(), "fully emptied tiles/ dir removed"
         assert (b / "tiles").exists(), "a tiles/ dir with a survivor is kept"
-    return "an emptied tiles/ dir is removed; one with a surviving shard is left alone"
+        assert not (b / "tiles" / "2.json").exists() and (b / "tiles" / "3.json").exists(), \
+            "b lost exactly its closed shard and kept its open one"
+    return "emptied tiles/ dir removed; a dir that lost a shard but kept one survives intact"
 
 
 def test_prune_leaves_dir_when_a_shard_reappears() -> str:

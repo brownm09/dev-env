@@ -23,7 +23,7 @@ from pathlib import Path
 
 import _hookout
 import _hookutil
-from _journal_shards import iter_pr_shards, iter_tile_shards, read_legacy_entries
+from _journal_shards import iter_pr_shards, iter_tile_shards, read_legacy_entries, shard_number
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 
@@ -94,18 +94,20 @@ def read_tile_entries(project_dir: Path) -> list[dict]:
     Enumeration/parse is delegated to the shared `_journal_shards` reader (ADR-057), so the
     numeric-filename filtering, numeric sort, and malformed-shard tolerance match the
     reconciler exactly. Unit-tested in tests/test_post_compact.py.
+
+    The issue number comes from the **filename** (`shard_number`), never from the `issue`
+    field — the same rule `reconcile-pending-tiles.py` follows, and what ADR-118 designates
+    authoritative. Preferring the field here would make the two readers of the same shard
+    disagree whenever they differ: a shard named `7.json` carrying `"issue": 8` would be
+    listed as #8 by this hook while the reconciler skipped it as corrupt, so the user would
+    see a tile number that nothing else on disk or on GitHub corresponds to. That is exactly
+    the two-readers-drift ADR-057 extracted this shared module to prevent.
     """
     entries: list[dict] = []
     for shard, entry in iter_tile_shards(project_dir / "tiles"):
-        issue = entry.get("issue")
-        if not isinstance(issue, int) or isinstance(issue, bool):
-            # The filename is the authoritative key (ADR-118); fall back to it so a shard
-            # with a missing or non-numeric `issue` field is still listed rather than
-            # dropped — this path only reports, so a best-effort read is the right call.
-            try:
-                issue = int(shard.stem)
-            except ValueError:
-                continue
+        issue = shard_number(shard)
+        if issue is None:
+            continue  # unreachable via iter_tile_shards (numeric stems only) — defensive
         entries.append({**entry, "issue": issue})
     return entries
 

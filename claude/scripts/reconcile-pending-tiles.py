@@ -92,12 +92,16 @@ MAX_SHOWN = 10
 # to None -> kept and counted as unresolved, never silently dropped.
 ISSUE_LIST_LIMIT = 200
 
-# Per-`gh`-call timeout, and the total wall-clock budget for all lookups. The settings.json
-# timeout for this hook is 60s; stopping lookups at the budget means a slow or hanging `gh`
-# degrades to "some tiles unresolved, all kept" instead of the hook being killed mid-flight
-# and losing the whole index.
-GH_CALL_TIMEOUT = 20
-LOOKUP_BUDGET_SECONDS = 40.0
+# Per-`gh`-call timeout, and the total wall-clock budget for all lookups. Both are sized
+# against the fact that this runs on UserPromptSubmit, so every second spent here is a second
+# the user's first prompt of the session is stalled. Batching makes the realistic cost ~1-2s
+# per repo with tiles (usually one or two), so the budget only binds when `gh` is hanging —
+# and stopping there degrades to "some tiles unresolved, all kept, and said so" rather than
+# letting the hook be killed mid-flight and lose the whole index, prunes included.
+# Kept at/below `reconcile-open-prs.py`'s 30s settings timeout, which does strictly more
+# sequential `gh` work; a larger budget here would be slower than the unbatched precedent.
+GH_CALL_TIMEOUT = 15
+LOOKUP_BUDGET_SECONDS = 20.0
 
 # Titles are truncated in the index only; the shard keeps the full value.
 MAX_TITLE_CHARS = 60

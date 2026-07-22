@@ -197,22 +197,28 @@ def test_tiles_malformed_skipped() -> str:
     return "unparseable and non-numeric-named files are skipped; valid shards returned"
 
 
-def test_tiles_issue_falls_back_to_filename() -> str:
-    # The filename is the authoritative key (ADR-118). A shard missing the `issue` field —
-    # or carrying a non-numeric one — must still be listed, since this path only reports.
+def test_tiles_issue_always_from_filename() -> str:
+    # The filename is the authoritative key (ADR-118) — not a fallback. Pinned against all
+    # three field states, including a field that *disagrees* with the filename: preferring
+    # the field there would make this hook report #99 for a shard `reconcile-pending-tiles.py`
+    # skips as corrupt, so the two readers of the same shard would contradict each other.
     with tempfile.TemporaryDirectory() as root:
         proj = Path(root)
         td = proj / "tiles"
         td.mkdir(parents=True)
-        no_field = _tile(7)
-        del no_field["issue"]
-        (td / "7.json").write_text(json.dumps(no_field), encoding="utf-8")
+        missing = _tile(7)
+        del missing["issue"]
+        (td / "7.json").write_text(json.dumps(missing), encoding="utf-8")
         non_numeric = _tile(8)
         non_numeric["issue"] = "not-an-int"
         (td / "8.json").write_text(json.dumps(non_numeric), encoding="utf-8")
+        disagreeing = _tile(9)
+        disagreeing["issue"] = 99
+        (td / "9.json").write_text(json.dumps(disagreeing), encoding="utf-8")
         issues = [e["issue"] for e in read_tile_entries(proj)]
-        assert issues == [7, 8], f"issue resolved from the filename, got {issues}"
-    return "a missing or non-numeric `issue` field falls back to the filename, never dropped"
+        assert issues == [7, 8, 9], \
+            f"issue always taken from the filename (never the field), got {issues}"
+    return "issue comes from the filename in all cases — missing, non-numeric, AND disagreeing field"
 
 
 def test_tiles_read_is_non_destructive() -> str:
@@ -257,7 +263,7 @@ def main() -> int:
         ("tile shards read in numeric order", test_tiles_read_in_numeric_order),
         ("no tiles/ dir -> []", test_tiles_missing_dir),
         ("malformed tile shards skipped", test_tiles_malformed_skipped),
-        ("tile issue falls back to filename", test_tiles_issue_falls_back_to_filename),
+        ("tile issue always from filename", test_tiles_issue_always_from_filename),
         ("tile read is non-destructive", test_tiles_read_is_non_destructive),
         ("tile block states total when capped", test_format_pending_tiles_states_total_when_capped),
         ("empty tile list renders nothing", test_format_pending_tiles_empty),
