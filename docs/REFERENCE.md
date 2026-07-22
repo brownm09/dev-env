@@ -232,6 +232,7 @@ Fires on every user prompt, before Claude processes it.
 | `idle-refresher.py` | On the user's return after an idle gap exceeding the threshold (default 60 min), injects an `additionalContext` cue telling Claude to open its reply with a refresher (what we were working on, current state, pending to-dos/tiles) before addressing the new prompt. Anchors the gap on the last assistant turn's timestamp in the transcript (immune to the just-submitted prompt being appended); skips automated/XML-prefixed prompts and the first prompt of a session; stateless and fail-open (exit 0, ASCII-only cue). Configurable via `"idle_refresher_minutes"` in `.claude/hook-config.json` ([ADR-095](adr/095-session-boundary-summaries-and-idle-refresher.md)). |
 | `multi-worktree-alert.py` | When ≥2 git worktrees are active, emits a list in `repo:branch` format, starring the current one. Fires on every prompt. Suppressed in Claude-managed worktree sessions (`.claude/worktrees/` in cwd). |
 | `reconcile-open-prs.py` | Runs once per session (per-session sentinel in `scratch/`). Calls `gh pr view` for each tracked PR across every project in engineering-journal — both the per-PR shards `sessions/<project>/open-prs/<N>.json` ([ADR-056](adr/056-per-session-sharding-journal-companion-files.md)) and the legacy `sessions/<project>/open-prs.jsonl`. A MERGED/CLOSED shard is unlinked individually (no survivor rewrite; empty `open-prs/` dirs are removed); legacy entries are dropped via a safe read-filter-write. Emits a `systemMessage` listing surviving open PRs and any removals. Does not commit — the unlink stays load-bearing for `post-compact.py`'s same-checkout disk read, but nothing sweeps the deletion into a commit today ([ADR-018](adr/018-reconcile-open-prs-hook.md) + [ADR-056](adr/056-per-session-sharding-journal-companion-files.md) + [ADR-082](adr/082-journal-compose-worktree-isolation.md) together closed that path); a scoped `git status --porcelain` scan surfaces any currently-uncommitted `sessions/*/open-prs*` path in the same `systemMessage` instead, so Claude can fold it into its next stub commit's pathspec ([ADR-082 Addendum](adr/082-journal-compose-worktree-isolation.md), dev-env#578). Fails safe: `gh` errors leave the entry intact. [ADR-018](adr/018-reconcile-open-prs-hook.md), [ADR-056](adr/056-per-session-sharding-journal-companion-files.md) |
+| `reconcile-pending-tiles.py` | Runs once per session (per-session sentinel in `scratch/`, matching `reconcile-open-prs.py`). Walks the per-tile shards `sessions/<project>/tiles/<issue-number>.json` across every project in engineering-journal ([ADR-118](adr/118-tile-persistence-shards.md)) via the shared `iter_tile_shards`, reconciles each against live GitHub issue state, `unlink`s the shards whose paired issue is CLOSED (per-file — no survivor is ever rewritten; an emptied `tiles/` dir is `rmdir`-ed race-tolerantly), and emits a compact **index** — project, issue, title, `spawned` date, shard path — so a chip lost to an app restart can be re-spawned. Surfaces the index, not the payloads: Claude reads a shard for the full `spawn_task` prompt only when it actually re-spawns one, keeping turn-1 context small. The advisory names the `list_sessions` title/branch check, since an already-started tile keeps its issue open and so still appears (the ADR-118 known limitation). Three deliberate departures from the `reconcile-open-prs.py` model it is otherwise built on: **(1)** output rides exit-0 **stdout** as model-visible `additionalContext` via `_hookout` — not the `{"systemMessage"}` *user* toast its model uses, because the index exists for Claude to act on, and not stderr, which reaches no one at exit 0 on this event (the [ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md) bug class); **(2)** each shard's `url` is **validated before it can reach `argv`** — https scheme, `netloc` exactly github.com, owner/repo against `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$` with `.`/`..` segments rejected, and the issue number taken from the **filename**, never the URL — with any failure **skipping and keeping** the shard, because the remove branch deletes an unreconstructable payload and `gh --repo` accepts a `HOST/OWNER/REPO` form; **(3)** state is resolved with **one `gh issue list --state all` per repo**, not one `gh issue view` per shard, so first-prompt cost after the dormant window scales with repo count rather than accumulated-shard count (dev-env#769's quota-exhaustion history; REST transport is dev-env#882). Fails safe throughout: only a confirmed `CLOSED` removes — OPEN, unknown, a `gh` failure, a spent wall-clock budget, or an issue outside the lookup window all keep the shard and are reported as unresolved. Never commits. [ADR-118](adr/118-tile-persistence-shards.md) |
 | `disk-space-check.py` | Free-space safety net for `C:`. Checks `shutil.disk_usage` on every prompt **and** — since dev-env#592/[ADR-087](adr/087-pretooluse-disk-space-check.md) — before every Bash call (also registered under `PreToolUse(Bash)`, closing the gap where a long tool-call-only stretch could outrun the once-per-prompt check). Below 20 GB free: emits a one-time `systemMessage` warning. Below 10 GB free: spawns `reclaim-worktree-disk.py --scan-dir C:/Users/brown/Git --min-free-gb 10 --protect-cwd <cwd>` **detached** (via `sys.executable`, never the `py` launcher — dev-env#300) so the heavy delete never blocks the prompt/call, and emits a `systemMessage`. Each band fires at most once per session via a `session_id`-keyed marker (`scratch/disk_space_check_<session_id>_<band>.flag`, ADR-027), shared across both hook registrations. Markers older than 30 days are swept via `_hookutil.cleanup_stale_sentinels`, gated to the `UserPromptSubmit` registration only (`should_cleanup_sentinels()`) so the scratch/ directory scan doesn't run on every single Bash call under the `PreToolUse` registration (dev-env#768). Advisory only — exit 0 always; any exception is swallowed. Thresholds are hardcoded constants. The pure `classify_free_space()`/`should_cleanup_sentinels()` helpers are unit-tested by `tests/test_disk_space_check.py`. [ADR-037](adr/037-worktree-disk-reclamation.md), [ADR-087](adr/087-pretooluse-disk-space-check.md) |
 | `worktree-npm-install.py` | When the session `cwd` is a Claude-managed worktree (`.claude/worktrees/`) of an npm repo whose `node_modules` is absent, runs `npm ci` (or `npm install`) so tests don't fail on missing deps (ADR-016). **Pre-install free-space gate (ADR-045):** before installing it checks free `C:` space — at ≥10 GB it installs as before; below 10 GB it runs a synchronous reclamation ladder (Tier 1 `reclaim-worktree-disk.py --min-free-gb 10`, Tier 2 `npm cache clean --force`) and re-measures; if still below a 5 GB hard floor it **refuses the install** and emits a loud advisory rather than risk a silently-truncated `node_modules` (ENOSPC, dev-env#364). Reclamation is synchronous (the install it guards is synchronous, so a detached reclaim would race it). Fails open on any measurement error; advisory only — exit 0 always. The pure `install_decision()` helper is unit-tested by `tests/test_worktree_npm_install.py`. [ADR-045](adr/045-pre-install-freespace-gate.md) |
 | `awake-blocker.py` (start) | On UserPromptSubmit, spawns a detached watcher (if not already running) that holds a Windows system-sleep lock via `kernel32!SetThreadExecutionState(ES_CONTINUOUS \| ES_SYSTEM_REQUIRED)`. Refreshes the sentinel heartbeat on every prompt. Watcher self-terminates if the sentinel is missing or older than 30 minutes (crash safety). Idempotent. Display sleep is not blocked — only system sleep. [ADR-033](adr/033-prevent-system-sleep-while-processing.md) |
@@ -1649,25 +1650,46 @@ unlinks the shard of any tile whose issue it finds `CLOSED` at session start, an
 directory once its last shard is gone. A `gh` failure or an indeterminate state keeps the shard —
 conservative, matching `reconcile-open-prs.py`.
 
-**Reader requirements (binding on [#869](https://github.com/brownm09/dev-env/issues/869)).** `url` is a
-git-committed, cross-machine, free-form string that the reader will parse to derive `--repo` for a
-`gh issue view` call. The open-PR precedent it will copy (`reconcile-open-prs.py`) does a bare
+**Reader requirements (implemented in `reconcile-pending-tiles.py`, [#869](https://github.com/brownm09/dev-env/issues/869)).**
+`url` is a git-committed, cross-machine, free-form string that the reader parses to derive `--repo` for
+its `gh` lookup. The open-PR precedent it is otherwise modeled on (`reconcile-open-prs.py`) does a bare
 `urlparse(...).path.split("/")` with no host or character check, which is tolerable there but not here:
 the tile reconciler's remove branch **unlinks the shard**, so a mis-resolved lookup that returns
 `CLOSED` destroys the payload. `gh --repo` also accepts a `HOST/OWNER/REPO` form, so a crafted path can
-aim it at another host. The reader must therefore:
+aim it at another host carrying the user's credentials. `repo_from_issue_url` therefore:
 
-- require `urlparse(url).netloc == "github.com"`;
-- match owner/repo against `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`;
-- take the issue number from the **filename** (`shard_number`), not from `url`;
-- **skip and keep** the shard — never unlink — when any check fails.
+- requires an `https` scheme — a check on `netloc` alone would pass `ssh://github.com/o/r`;
+- requires `urlparse(url).netloc == "github.com"`, compared case-insensitively (host names are
+  case-insensitive per [RFC 3986 §3.2.2](https://www.rfc-editor.org/rfc/rfc3986#section-3.2.2), so this
+  is normalization, not a relaxation — a `userinfo@` prefix, a port, or a subdomain all still fail,
+  since the whole `netloc` must match);
+- matches owner/repo against `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`, **and** rejects a `.` or `..`
+  segment — both are spelled entirely from characters that class allows, so the regex alone accepts
+  `https://github.com/../..` and hands `../..` to `gh --repo`;
+- takes the issue number from the **filename** (`shard_number`), not from `url` — so even a URL that
+  passes every check cannot redirect the lookup to a different issue in the same repo. A shard whose
+  `issue` field contradicts its filename is treated as corrupt and skipped;
+- **skips and keeps** the shard — never unlinks — when any check fails.
 
-> **Phasing.** The shard format, the shared reader support (`iter_tile_shards`), and the write rule are
-> live now. `reconcile-pending-tiles.py` itself lands in
-> [#869](https://github.com/brownm09/dev-env/issues/869), and write-time/Stop-time enforcement in
-> [#870](https://github.com/brownm09/dev-env/issues/870). Until #869 merges, shards are written but never
-> pruned or surfaced — dormant, not wrong. This section is the current-state record; ADR-118 is the
-> decision-time rationale and is not updated as phases land.
+The scheme and dot-segment checks go beyond ADR-118's original three; both were found by this
+function's own tests during implementation, and both fail closed (skip-and-keep), consistent with the
+rest of the reader.
+
+**Lookup batching.** State is resolved with **one `gh issue list --repo <r> --state all --json
+number,state` per repo**, not one `gh issue view` per shard — shards accumulate un-pruned across the
+whole dormant window, so a per-shard lookup would fan out into N sequential subprocess spawns on the
+first prompt after the reader lands. This supersedes ADR-118's Consequences note ("one `gh issue view`
+per pending tile"). `gh issue list` is a GraphQL call, so an exhausted GraphQL bucket degrades the hook
+to "everything unresolved, everything kept, and said so" rather than mispruning; moving it to the REST
+`core` bucket is [#882](https://github.com/brownm09/dev-env/issues/882).
+
+> **Phasing.** The shard format, the shared reader support (`iter_tile_shards`), the write rule, and
+> `reconcile-pending-tiles.py` (plus `post-compact.py`'s read-only listing of the same shards) are all
+> live. Write-time/Stop-time enforcement remains in
+> [#870](https://github.com/brownm09/dev-env/issues/870): until it merges, nothing verifies at write
+> time that a shard carries `TILE_REQUIRED_FIELDS`, and nothing catches a `spawn_task` call that never
+> wrote a shard at all. This section is the current-state record; ADR-118 is the decision-time
+> rationale and is not updated as phases land.
 
 **Known limitation.** There is no non-destructive API to learn whether a chip was actually clicked
 (`dismiss_task` reveals it only by consuming it), so "still pending" is approximated by "issue still

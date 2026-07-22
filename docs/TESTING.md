@@ -408,13 +408,28 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_reconcile_open_prs.py
     ```
 
-20. **post-compact open-PR reader test** — required when changing `claude/scripts/post-compact.py`. Exercises
-    the pure `read_open_pr_entries()` offline (tmp dirs, no `git`): pins that per-PR shards `open-prs/<N>.json`
-    and the legacy `open-prs.jsonl` are unioned and deduped by PR number (shard wins), that shards sort
-    numerically (not lexically), that a malformed shard is skipped without dropping valid ones, and that a
-    record with no `pr` is skipped (no None-key collapse, no downstream KeyError)
-    ([ADR-056](adr/056-per-session-sharding-journal-companion-files.md)). `get_journal_project` (a git
-    call) and the systemMessage emission are not covered.
+20. **post-compact open-PR + pending-tile reader test** — required when changing
+    `claude/scripts/post-compact.py`. Exercises the two pure readers offline (tmp dirs, no `git`).
+
+    `read_open_pr_entries()`: pins that per-PR shards `open-prs/<N>.json` and the legacy
+    `open-prs.jsonl` are unioned and deduped by PR number (shard wins), that shards sort
+    numerically (not lexically), that a malformed shard is skipped without dropping valid ones, and
+    that a record with no `pr` is skipped (no None-key collapse, no downstream KeyError)
+    ([ADR-056](adr/056-per-session-sharding-journal-companion-files.md)).
+
+    `read_tile_entries()` / `format_pending_tiles()` (dev-env#869,
+    [ADR-118](adr/118-tile-persistence-shards.md)) — compaction is the *other* boundary at which tile
+    context is lost, and the workflow prompts `/compact` right after a PR is opened, which is exactly
+    when follow-up tiles have just been spawned. Pins numeric ordering, `[]` for a missing `tiles/`
+    dir, malformed/non-numeric-named shards skipped, and two properties specific to this path:
+    **the read is non-destructive** (asserted by reading twice and comparing bytes — pruning belongs
+    to the session-start reconciler, the only place that checks live issue state first, so a
+    `/compact` must never unlink), and **the `issue` value falls back to the filename** when the
+    field is missing or non-numeric, since the filename is the authoritative key and this path only
+    reports. `format_pending_tiles` is pinned to state the true total when it caps the list, and to
+    keep the payload (`prompt`) out of the message.
+
+    `get_journal_project` (a git call) and the systemMessage emission are not covered.
 
     ```bash
     py -3 claude/scripts/tests/test_post_compact.py
@@ -2375,4 +2390,71 @@ For a one-line navigational map of the test directory, see
 
     ```bash
     bash claude/scripts/tests/check-remote-read-hygiene.sh
+80. **reconcile-pending-tiles test** — required when changing
+    `claude/scripts/reconcile-pending-tiles.py` (dev-env#869,
+    [ADR-118](adr/118-tile-persistence-shards.md)). Pins the UserPromptSubmit hook that
+    re-surfaces `spawn_task` tiles whose chips did not survive an app restart. Pure offline
+    fixtures — the live `gh` boundary (`fetch_repo_issue_states`) is untested per this
+    repo's fixture-only convention, but everything *around* it is, via `lookup_states`'
+    injectable `fetch`/`clock`.
+
+    Three properties carry the real risk and get the most coverage:
+
+    **(1) URL validation gates a destructive path.** Unlike its `reconcile-open-prs.py`
+    model, this reconciler's remove branch `unlink`s the shard — so a mis-resolved `--repo`
+    answering `CLOSED` destroys a payload that cannot be reconstructed, and `gh --repo`
+    accepts a `HOST/OWNER/REPO` form, making an unvalidated `url` a redirect primitive.
+    Pinned: foreign and crafted hosts (`evil.com`, `github.com.evil.com`, a `userinfo@`
+    prefix, an explicit port, a `githubusercontent` subdomain), bad owner/repo characters
+    (space, `;`, `:`), non-string/garbage input, and — the load-bearing one — that a shard
+    failing validation survives even when the state oracle says `CLOSED` for everything.
+    **Two of these cases were failing when first written and drove fixes to the
+    implementation, not to the test:** `ssh://github.com/o/r` passes a `netloc`-only check
+    (hence the added `https` scheme requirement), and `../..` is spelled entirely from
+    characters `^[A-Za-z0-9._-]+$` admits (hence the added dot-segment rejection). Treat
+    both as regression pins, not hypotheticals.
+
+    **(2) The issue number comes from the filename, never the URL.** Pinned directly (a
+    shard named `42.json` whose `url` claims issue 999 and whose `issue` field is absent
+    still resolves to 42, and 42 is what gets looked up), so even a URL passing every check
+    cannot redirect the lookup to a different issue in the same repo. The corrupt case — an
+    `issue` field contradicting the filename — is skip-and-keep: the disagreement is itself
+    evidence the shard cannot be trusted to drive a delete.
+
+    **(3) Cost scales with repo count, not shard count.**
+    `test_lookup_states_one_fetch_per_repo` asserts 9 shards across 2 repos cost exactly 2
+    `gh` calls. This is the cold-start guard: shards accumulate un-pruned across the whole
+    window before the reader lands, so a per-shard `gh issue view` would fan out into N
+    sequential subprocess spawns on the *first* prompt — against a `gh` with documented
+    quota-exhaustion history (dev-env#769). Also pinned: a per-repo fetch failure yields
+    `None` for that repo only; an issue absent from the fetched page resolves to `None`
+    (never `CLOSED` — absence must not delete a live tile's payload); a non-dict fetch
+    return degrades to unresolved rather than raising; the wall-clock budget stops further
+    fetches (so a hanging `gh` degrades instead of letting the hook be killed mid-flight and
+    lose the whole index); and an empty plan issues zero subprocess calls.
+
+    Beyond those: the conservative keep/remove contract (`CLOSED` removes; `OPEN`, `None`,
+    unknown, and lowercase `closed` all keep), the ADR-056 no-clobber guarantee inherited
+    from the open-PR shards (the survivor file is asserted **byte-identical**, not merely
+    present), cross-project discovery with numeric ordering, junk tolerance (unparseable /
+    non-numeric-named / non-object shards are skipped and **never deleted**), race-tolerant
+    `rmdir` (a shard written after the unlink survives the cleanup), and that pruning is
+    scoped to dirs this run emptied so an unrelated empty `tiles/` is untouched.
+
+    Two output-contract tests close the [ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md)
+    loop, which is the failure mode that would make this whole feature silently inert: one
+    asserts the planned emission is exit-0 **stdout** carrying `additionalContext` with
+    `stderr is None` and no `systemMessage` (stderr reaches no one on UserPromptSubmit at
+    exit 0; `systemMessage` is the *user* toast, while the tile index exists for Claude to
+    act on), and one is an **AST scan of the hook's own call site** confirming it passes a
+    *literal* `"UserPromptSubmit"` with `audience="model"` — per `_hookout`'s migration
+    note, a dynamic event would make `plan_emission` raise into the fail-open guard and
+    vanish while still passing an end-to-end "emitted nothing" test.
+
+    Structural compliance (heartbeat, safe-exit fail-open, output-contract channel, settings
+    wiring) rides the shared gates — items 61/62/63/68 — which auto-discover the hook from
+    `claude/settings.json`; no registry edit was needed to bring it under them.
+
+    ```bash
+    py -3 claude/scripts/tests/test_reconcile_pending_tiles.py
     ```

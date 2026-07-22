@@ -167,3 +167,44 @@ surfaced — dormant, not wrong.
   corresponding shard write.
 - If the harness ever exposes a non-destructive "was this chip activated" query, replace the
   issue-state approximation with it and delete the duplicate-chip caveat above.
+
+## Amendment 1 (2026-07-22, dev-env#869) — batched lookup; two further URL checks
+
+Two things changed when the reader was actually built. Both are recorded here because they
+contradict text above rather than merely elaborate it.
+
+**The per-tile `gh issue view` is replaced by one `gh issue list --state all --json
+number,state` per repo.** The Consequences section above says "One `gh issue view` per
+pending tile on the first prompt of a session. Bounded by a per-run call cap." That is the
+wrong shape, and specifically wrong at the moment it matters most: shards accumulate
+un-pruned across the entire window between PR1 and this reader, so the *first* prompt after
+the reader lands faces every tile ever written — exactly when a per-shard lookup is most
+expensive. A per-run cap does not fix that; it just truncates. Batching per repo makes cost
+scale with repo count instead, which is bounded by how many projects exist rather than by
+how long the feature lay dormant. A wall-clock budget replaces the call cap, so a slow `gh`
+degrades to "some repos unresolved, all kept, and said so" instead of the hook being killed
+mid-flight and losing the whole index.
+
+The transport is worth flagging: `gh issue list` is a GraphQL call, and this repo has
+repeated, documented GraphQL exhaustion (dev-env#769, again during PR #872, and again during
+this reader's own implementation session — measured at `graphql 0/5000` while REST `core`
+sat at `4999/5000`). The hook fails safe there (every tile unresolved, every shard kept, the
+message says so), so this is degradation rather than defect; moving the lookup to the REST
+`core` bucket is dev-env#882.
+
+**Two checks are added to the `url` validation the Decision section specifies.** The three
+listed above (`netloc == "github.com"`, the owner/repo character class, issue number from the
+filename) are necessary but not sufficient — both gaps were found by the validator's own
+tests during implementation, not by review:
+
+- a `netloc` check alone passes `ssh://github.com/o/r`, so the scheme must be `https`;
+- `.` and `..` are spelled entirely from characters `^[A-Za-z0-9._-]+$` admits, so the regex
+  alone accepts `https://github.com/../..` and hands `../..` to `gh --repo`.
+
+Both fail closed (skip-and-keep), like every other check on that path. The host comparison is
+also case-insensitive, since host names are case-insensitive
+([RFC 3986 §3.2.2](https://www.rfc-editor.org/rfc/rfc3986#section-3.2.2)) — normalization
+rather than a relaxation of the `== "github.com"` requirement.
+
+The current-state record for all of this is
+[`docs/REFERENCE.md` → Tile shards](../REFERENCE.md#tile-shards-sessionsprojecttilesissue-numberjson).
