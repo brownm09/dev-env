@@ -30,6 +30,14 @@
 # the pattern out inside fenced/inline code or as separated tokens; a genuine
 # offender is an executable-looking line, which is what this catches.
 #
+# The two dedicated test directories are EXCLUDED, for the reason ADR-116's
+# anti-regression pass already established (Testing item 78): a gate asserting a
+# pattern is absent necessarily contains that pattern — this script's own diagnostic
+# `echo` lines are executable, not comments, so a self-scan flags it every time.
+# Nothing under claude/scripts/tests or claude/hooks/tests performs a remote read to
+# decide an absence, so the exclusion costs no real coverage; the target surface is
+# claude/skills, claude/routines, claude/hooks and claude/scripts.
+#
 # Exit 0 = clean; exit 1 = at least one offender (offending file + lines printed
 # to stderr). Run: bash claude/scripts/tests/check-remote-read-hygiene.sh
 set -euo pipefail
@@ -41,7 +49,15 @@ cd "$REPO_ROOT"
 # and scripts are Python/bash, and the failure class is identical in all of them
 # (a session executes what the file tells it to). Binary/vendored paths are excluded
 # by using git's own tracked-file list rather than a filesystem walk.
-mapfile -t FILES < <(git ls-files -- 'claude/**' | sort -u)
+#
+# NOTE the pathspec uses git's `:(exclude)` magic rather than filtering after the
+# fact. `git ls-files` lists TRACKED files only, so an as-yet-uncommitted script is
+# invisible to it — which is precisely how this gate passed locally while failing in
+# CI on its first run: it was still untracked when tested. Verify any change to this
+# file with the file staged (`git add -N`), never from a clean working tree.
+mapfile -t FILES < <(
+  git ls-files -- 'claude/**' ':(exclude)claude/scripts/tests/**' ':(exclude)claude/hooks/tests/**' | sort -u
+)
 
 OFFENDERS=0
 for f in "${FILES[@]}"; do

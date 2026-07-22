@@ -116,6 +116,17 @@ may *document* the hazard (as this one now does at length) without tripping the 
 exit-1-on-offender contract — and is picked up automatically by `run-hook-tests.py`'s glob
 discovery.
 
+The two dedicated test directories are excluded, on the precedent ADR-116 set for its own
+anti-regression pass: a gate asserting a pattern is absent necessarily contains that pattern, and
+this script's diagnostic `echo` lines are executable rather than comments. That exclusion was not
+foreseen — it was forced by CI, and the way it surfaced is worth recording, because it is *this
+ADR's own subject matter*. The gate passed local verification and then failed on its first CI run,
+because `git ls-files` lists **tracked** files only and the script was still untracked when tested:
+a clean local result that was really "the file was invisible to the scan," not "the file is clean."
+That is ADR-117 item 5's *Visibility blind spots* bullet exactly. The lesson generalises past this
+gate — **a self-referential lint must be verified with itself staged** — and is recorded in the
+script header and Testing item 79 as well as here.
+
 **5. Document the hazard where it will recur.** A **Remote reads on Windows** note in `## Notes`
 records the deterministic leading-dot trigger, the `2>/dev/null` prohibition, the API-form
 preference, and the 128-for-both-cases caveat. It sits directly beneath the follow-up /

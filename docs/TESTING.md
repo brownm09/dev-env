@@ -2354,7 +2354,16 @@ For a one-line navigational map of the test directory, see
     git exits non-zero, the redirect swallows the `fatal:`, and the empty output reads exactly like
     "absent" — so the check reports *clean* rather than erroring, which is why nothing caught it for
     three live instances in the `/review` skill ([ADR-120](adr/120-review-skill-absence-checks-over-api.md)).
-    Scans every **tracked** file under `claude/` (git's own file list, not a filesystem walk).
+    Scans every **tracked** file under `claude/` (git's own file list, not a filesystem walk),
+    **excluding `claude/scripts/tests/` and `claude/hooks/tests/`** — for the reason ADR-116's
+    anti-regression pass already established (item 78): a gate asserting a pattern is absent
+    necessarily contains that pattern, and this script's own diagnostic `echo` lines are
+    executable rather than comments, so a self-scan flags it every time. Nothing in those two
+    directories performs a remote read to decide an absence, so the exclusion costs no real
+    coverage. ⚠️ **`git ls-files` lists tracked files only**, so a not-yet-committed script is
+    invisible to it — verify any change to this gate with the file staged (`git add -N`), never
+    from a clean working tree. That blind spot (ADR-117 item 5, *Visibility blind spots*) is
+    exactly how this gate passed locally and then failed in CI on its first run.
     Deliberately keys on the **co-occurrence** of `git show` and `2>/dev/null` on one line rather
     than on `git show <ref>:<path>` alone — the sanctioned `MSYS_NO_PATHCONV=1 git show …` form
     carries no `2>/dev/null`, so it never trips, which is what makes a static lint viable here where
