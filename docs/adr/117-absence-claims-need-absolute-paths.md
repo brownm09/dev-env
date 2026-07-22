@@ -1,4 +1,4 @@
-# ADR-117: An Absence Claim Needs an Absolute Path — One Habit for Three False-Absent Mechanisms
+# ADR-117: An Absence Claim Needs an Absolute Path — One Habit for Four False-Absent Mechanisms
 
 **Date:** 2026-07-22
 **Status:** Accepted
@@ -41,9 +41,21 @@ already known:
    2026-07-22 session: a workflow was reported as having no WIF configuration when it has five
    such lines.
 
-Three mechanisms, one reasoning shortcut: **treating empty output as proof of absence.** Each was
+A fourth surfaced while this ADR was being written, on a different axis — and is the reason the
+rule's headline names the ref as well as the path. The ADR was numbered 116 after `ls docs/adr/`
+and `INDEX.md` both showed 115 as the highest. Both readings were true, and both were scoped to
+`origin/main`; open PR [dev-env#863](https://github.com/brownm09/dev-env/pull/863) had already
+claimed 116. An absolute path would not have helped — the miss was on the **ref** axis, and the
+open-PR set is a scope no checkout answers for. `pre-merge-numbering-check.py` would have caught it
+([ADR-074](074-pre-merge-numbering-collision-check.md) covers the ADR table via `_ADR_ROW_RE`), but
+only at merge time and only once #863 landed first. It was caught here by reading another session's
+journal stub — not by any directory listing.
+
+Four mechanisms, one reasoning shortcut: **treating empty output as proof of absence.** Each was
 being tracked as its own isolated gotcha, which is why hitting two of them in one session did not
-trigger recognition of the pattern — each looked like a fresh, unrelated surprise.
+trigger recognition of the pattern — each looked like a fresh, unrelated surprise. The fourth
+arriving mid-authorship, in the very session writing the fix, is the strongest available evidence
+that the class needs one habit rather than N reminders.
 
 The existing guidance does not cover the cwd-scoping case, and in one respect points the other
 way. The Git Workflow section warns that once a worktree tool has fired, cwd **does not reliably
@@ -65,15 +77,19 @@ persisted `cd` and a false-absent conclusion.
 ## Decision
 
 Rewrite CLI Scripting Checklist **item 5** in the global `claude/CLAUDE.md` from a
-gitignored-files note into a single rule — **"An absence claim needs an absolute path"** — with
-the three mechanisms as sub-bullets under it:
+gitignored-files note into a single rule — **"An absence claim needs an absolute path — and the
+right ref"** — with the four mechanisms as sub-bullets under it:
 
 - **cwd scoping** (new; [dev-env#864](https://github.com/brownm09/dev-env/issues/864))
+- **Ref scoping** (new; the ADR-116 collision above)
 - **Visibility blind spots** (the prior item 5 text, preserved verbatim)
 - **Suppressed failure** (new; [dev-env#602](https://github.com/brownm09/dev-env/issues/602))
 
 The operative instruction is one habit: before concluding something is *not present*, re-run the
 check rooted at the repo root — an absolute path, or `git -C <root>` — and let stderr through.
+Where the claim is that an identifier is *free* rather than that a file is absent (an ADR number,
+a `## Testing` item, a migration or fixture filename), the same habit extends to the open-PR set,
+which no checkout answers for.
 
 Two supporting edits:
 
@@ -88,9 +104,13 @@ Two supporting edits:
 
 ## Consequences
 
-- The three mechanisms are now one habit with one trigger ("I am about to say something is not
-  present") rather than three gotchas each needing independent recall. A session that has never
+- The four mechanisms are now one habit with one trigger ("I am about to say something is not
+  present") rather than four gotchas each needing independent recall. A session that has never
   hit the MSYS mangling still inherits the `2>/dev/null` guard, and vice versa.
+- The **Ref scoping** bullet gives `pre-merge-numbering-check.py` a behavioral counterpart. That
+  gate is real but late — it fires at merge, and only once the competing PR has landed first — so
+  a collision discovered there costs a rebase plus a rename across the ADR body, its filename, and
+  the PR title. Checking `gh pr list` before picking a number costs one call.
 - [dev-env#602](https://github.com/brownm09/dev-env/issues/602) is **partially** addressed, not
   closed: its `MSYS_NO_PATHCONV=1` workaround now appears in the checklist, but its separate ask —
   a note in the `/review` skill, whose "read from remote" step per
@@ -135,6 +155,10 @@ Two supporting edits:
   mangling, the same false-absent harm through a different mechanism; partially addressed here.
 - [dev-env#627](https://github.com/brownm09/dev-env/issues/627) — the inverse cwd behavior (does
   *not* persist after a worktree tool fires), documented in the Git Workflow section.
+- [dev-env#863](https://github.com/brownm09/dev-env/pull/863) — the open PR whose ADR-116 claim
+  produced this ADR's own ref-scoping instance, and which keeps 116.
+- [ADR-074](074-pre-merge-numbering-collision-check.md) — the merge-time numbering-collision gate
+  the *Ref scoping* bullet complements: correct but late, and blind until the competing PR lands.
 - [ADR-107](107-toolsearch-is-not-a-tool-availability-check.md) — the closest precedent: a
   false-absent reasoning correction (a zero-result `ToolSearch` read as "tool unavailable") fixed
   as a global CLAUDE.md instruction.
