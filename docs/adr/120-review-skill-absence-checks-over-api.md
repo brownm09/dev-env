@@ -74,26 +74,49 @@ distinguishes them (`does not exist in` vs. `invalid object name`).
 **1. Read remote blobs over the GitHub API, not `git show`.** Steps 2b and 2c now use:
 
 ```bash
-gh api "repos/<OWNER>/<REPO>/contents/<path>?ref=<headRefName>" \
+gh api "repos/<HEAD_OWNER>/<HEAD_REPO>/contents/<path>?ref=<headRefName>" \
   -H "Accept: application/vnd.github.raw"
 ```
 
-`OWNER`/`REPO` are extracted from `PR_URL` in Step 1. This form never hands a `<ref>:<path>`
-argument to the shell, so it cannot mangle; it needs no prior `git fetch`; and it works when the
-reviewed repo is not the cwd. Verified: the leading-dot path that mangles under `git show` reaches
-GitHub intact and returns a genuine HTTP 404.
+`HEAD_OWNER`/`HEAD_REPO` come from `gh pr view --json headRepositoryOwner,headRepository` in
+Step 2 — the repo the head ref actually lives in. Deliberately **not** the `OWNER`/`REPO` parsed
+out of `PR_URL`: that is the *base* repo, and on a fork PR the head ref does not exist there, so
+every probe would 404. This form never hands a `<ref>:<path>` argument to the shell, so it cannot
+mangle; it needs no prior `git fetch`; and it works when the reviewed repo is not the cwd.
+Verified: the leading-dot path that mangles under `git show` reaches GitHub intact and returns a
+genuine HTTP 404.
 
-**2. Classify by exit status, never by stdout emptiness.** Both steps now use one table: exit 0 →
-present; non-zero with `(HTTP 404)` on stderr → genuinely absent; **any other non-zero → a tool
-error that stops the review and is reported to the user**, never recorded as absence. This matters
-concretely because on a 404 `gh` writes the error JSON to *stdout*, so stdout is non-empty even in
-the absence case — emptiness was never a valid signal in either direction.
+**2. Classify by exit status *and stderr text*, never by stdout emptiness.** On a 404 `gh` writes
+the error JSON to *stdout*, so stdout is non-empty even in the absence case — emptiness was never
+a valid signal in either direction.
+
+Critically, **HTTP 404 is two conditions, not one**, and treating it as one would recreate this
+ADR's own bug one layer up:
+
+| stderr | Meaning | Action |
+|---|---|---|
+| `Not Found (HTTP 404)` | file genuinely absent | record absence |
+| `No commit found for the ref … (HTTP 404)` | ref does not resolve in this repo — wrong repo for a fork head, deleted/renamed branch | **stop and report**; not an absence |
+| anything else non-zero | auth, network, rate limit | **stop and report** |
+
+Matching on `(HTTP 404)` alone collapses "this file is not in the repo" with "I asked the wrong
+repo," and the second silently skips the gate — exactly the shape of the defect being fixed. This
+was caught by the `/review` pass on the PR implementing this ADR, before merge.
 
 **3. No `||` chaining of the two Step 2b probes.** They run as separate commands with separate
 classification, because `||` is exactly what collapsed "first path absent" into "first probe
 failed."
 
-**4. Document the hazard where it will recur.** A **Remote reads on Windows** note in `## Notes`
+**4. Guard the pattern statically.** `claude/scripts/tests/check-remote-read-hygiene.sh` fails the
+suite when any non-comment line under `claude/**` pairs a `git show <ref>:<path>` with
+`2>/dev/null`. Skill behavior itself is prompt markdown and untestable, but *this specific defect*
+is greppable, and nothing otherwise stops it being reintroduced here or in another skill. It
+follows `check-script-path-hygiene.sh` exactly — same directory, same comment-stripping so a file
+may *document* the hazard (as this one now does at length) without tripping the lint, same
+exit-1-on-offender contract — and is picked up automatically by `run-hook-tests.py`'s glob
+discovery.
+
+**5. Document the hazard where it will recur.** A **Remote reads on Windows** note in `## Notes`
 records the deterministic leading-dot trigger, the `2>/dev/null` prohibition, the API-form
 preference, and the 128-for-both-cases caveat. It sits directly beneath the follow-up /
 merge-readiness bullet — the skill's ADR-004 "read from remote" step, which #602 identified as the
@@ -118,8 +141,13 @@ local read against an already-fetched branch is a case where `git show` remains 
   now complete its doc gates on a session where GraphQL is spent.
 - A network or auth failure now **stops the review** where it previously produced a silently
   incomplete one. That is the intended trade: a loud stop beats a clean-looking report.
-- No hook, script, or settings changes — `claude/skills/review/SKILL.md` plus docs. The hook test
-  suite is unaffected but is run as the standing gate.
+- No hook or settings changes. The diff is `claude/skills/review/SKILL.md`, docs, and one new
+  static lint (`claude/scripts/tests/check-remote-read-hygiene.sh`, Testing item 79) — so this is
+  **not** a docs-only change and the item-4 docs-only guard does not apply.
+- The lint costs ~20s per suite run (one grep per tracked file under `claude/`), which is the
+  price of it scanning Markdown skills as well as executable scripts. Acceptable against a ~190s
+  suite; if it becomes a bottleneck, a single `git grep` pass would replace the per-file loop
+  without changing the rule.
 
 ## Alternatives considered
 
@@ -136,10 +164,16 @@ local read against an already-fetched branch is a case where `git show` remains 
   mangle.
 - **`--` separator (`git show <ref> -- <path>`).** Rejected — that form shows the *commit* filtered
   by path, not the blob contents, so it does not answer the question these steps ask.
-- **A hook that greps skill files for `git show <ref>:<path>` paired with `2>/dev/null`.**
-  Rejected for now, on ADR-117's reasoning: the detectable event is the *conclusion drawn from
-  empty output*, not the command. A grep would also fire on the legitimate `MSYS_NO_PATHCONV=1`
-  form this ADR introduces. Worth revisiting only if a third site appears.
+- **A `PreToolUse` hook that warns when a `git show <ref>:<path>` command is executed.** Rejected,
+  on ADR-117's reasoning: the detectable event is the *conclusion drawn from empty output*, not
+  the command, and such a hook would fire on every legitimate remote read — habituation would
+  neutralise it long before it caught a real case.
+
+  A **static lint** over `claude/**` is a different mechanism and **was adopted** (decision 4
+  above). The objection that a grep "would fire on the legitimate `MSYS_NO_PATHCONV=1` form" does
+  not apply to it: the rule keys on `git show` **co-occurring with `2>/dev/null`**, and the
+  `MSYS_NO_PATHCONV=1` form has no `2>/dev/null` — that is the entire point of it. This
+  distinction was missed on the first pass of this ADR and corrected during review.
 
 ## References
 

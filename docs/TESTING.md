@@ -2345,3 +2345,25 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_worktree_recovery.py
     ```
+
+79. **remote-read hygiene lint** — required when adding or changing anything under `claude/` that
+    reads a file from a remote ref. Flags the [dev-env#602](https://github.com/brownm09/dev-env/issues/602)
+    / [#877](https://github.com/brownm09/dev-env/issues/877) failure class: a `git show <ref>:<path>`
+    paired with `2>/dev/null`. MSYS path conversion **deterministically** mangles that argument
+    whenever the path has a leading-dot segment (`origin/main:.gitignore` → `origin\main;.gitignore`);
+    git exits non-zero, the redirect swallows the `fatal:`, and the empty output reads exactly like
+    "absent" — so the check reports *clean* rather than erroring, which is why nothing caught it for
+    three live instances in the `/review` skill ([ADR-120](adr/120-review-skill-absence-checks-over-api.md)).
+    Scans every **tracked** file under `claude/` (git's own file list, not a filesystem walk).
+    Deliberately keys on the **co-occurrence** of `git show` and `2>/dev/null` on one line rather
+    than on `git show <ref>:<path>` alone — the sanctioned `MSYS_NO_PATHCONV=1 git show …` form
+    carries no `2>/dev/null`, so it never trips, which is what makes a static lint viable here where
+    ADR-117 rejected a `PreToolUse` hook. Comments (`#`) and Markdown blockquotes (`>`) are stripped
+    before matching, so a file may *document* the hazard — `claude/skills/review/SKILL.md` and
+    `claude/CLAUDE.md` both do, at length — without being flagged. Pure offline file parse (no
+    subprocess beyond `git ls-files`, no network); auto-discovered by `run-hook-tests.py`, so it
+    gates CI on every PR. Exit 1 on any offender, with the offending file and real line numbers.
+
+    ```bash
+    bash claude/scripts/tests/check-remote-read-hygiene.sh
+    ```
