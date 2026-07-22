@@ -470,6 +470,30 @@ def test_issue_states_from_rows_treats_pull_request_key_presence_not_truthiness(
     return "presence of `pull_request` classifies, not its value -- degrades to kept, not mispruned"
 
 
+def test_issue_projection_preserves_the_pull_request_marker() -> str:
+    # `_ISSUE_PROJECTION` decides what SHAPE reaches issue_states_from_rows, and it cannot be
+    # executed offline (gh owns the jq), so without this gate it is the one piece of the transport
+    # covered by nothing but a comment. The dangerous edit is the natural-looking simplification
+    # `[.[] | {number, state}]` -- dropping the marker as redundant, since Python does the
+    # filtering anyway. That makes PR rows arrive INDISTINGUISHABLE from issues, so a shard
+    # numbered like a closed PR is resolved and unlinked: the exact mis-prune this PR exists to
+    # prevent, with every other test in this file still green.
+    #
+    # Structural, in the same spirit as the AST scan of the emit_advisory call site below: pin the
+    # properties that make the projection safe, not its exact spelling.
+    proj = mod._ISSUE_PROJECTION
+    assert 'has("pull_request")' in proj, \
+        "the projection must DETECT the PR marker"
+    assert proj.count("pull_request") >= 2, \
+        "the marker must be detected AND re-emitted -- one occurrence cannot round-trip it"
+    assert "select(" not in proj, \
+        ("the projection must not filter rows: classification belongs in "
+         "issue_states_from_rows, where it is testable, not in an unexecutable jq string")
+    for field in ("number", "state"):
+        assert field in proj, f"the projection must carry `{field}` through"
+    return "the jq projection detects and re-emits `pull_request`, and never filters rows itself"
+
+
 def test_issue_states_from_rows_uppercases_state() -> str:
     got = issue_states_from_rows([_rest_issue(1, "open"), _rest_issue(2, "closed")])
     assert got == {1: "OPEN", 2: "CLOSED"}, f"REST lowercase must be normalized, got {got}"
@@ -522,6 +546,25 @@ def test_issue_states_from_rows_tolerates_junk() -> str:
 
 def _page(numbers, state="open"):
     return [_rest_issue(n, state) for n in numbers]
+
+
+def test_page_budget_cannot_outrun_the_lookup_budget() -> str:
+    # `fetch_repo_issue_states` deliberately carries no deadline of its own: the constants are
+    # balanced so one hanging repo exhausts LOOKUP_BUDGET_SECONDS exactly, at which point
+    # lookup_states skips every remaining repo. That property is what makes the page loop need no
+    # bookkeeping -- and until now it lived only in a comment. Widening the issue window by
+    # bumping MAX_ISSUE_PAGES (plausible: 100 rows resolved only 65 issues in the live run, since
+    # REST rows include PRs) would silently double the per-repo worst case against an unchanged
+    # budget, reintroducing the multi-repo overrun the rebalance removed. Nothing else goes red:
+    # the symptom is a slow first prompt in a session nobody is timing.
+    worst_case = mod.MAX_ISSUE_PAGES * mod.GH_CALL_TIMEOUT
+    assert worst_case <= mod.LOOKUP_BUDGET_SECONDS, (
+        f"one hanging repo can burn {worst_case}s against a "
+        f"{mod.LOOKUP_BUDGET_SECONDS}s lookup budget -- either lower MAX_ISSUE_PAGES "
+        f"({mod.MAX_ISSUE_PAGES}) / GH_CALL_TIMEOUT ({mod.GH_CALL_TIMEOUT}), raise the budget, "
+        "or give the page loop its own deadline"
+    )
+    return "MAX_ISSUE_PAGES * GH_CALL_TIMEOUT stays within LOOKUP_BUDGET_SECONDS (invariant, not a comment)"
 
 
 def test_should_stop_paging_stops_on_short_or_unusable_page() -> str:
@@ -754,9 +797,11 @@ def main() -> int:
         ("REST: PR rows dropped", test_issue_states_from_rows_drops_pull_requests),
         ("REST: projected PR shape filtered alike", test_issue_states_from_rows_filters_projected_pr_shape_identically),
         ("REST: pull_request presence, not truthiness", test_issue_states_from_rows_treats_pull_request_key_presence_not_truthiness),
+        ("REST: jq projection preserves the PR marker", test_issue_projection_preserves_the_pull_request_marker),
         ("REST: state upper-cased", test_issue_states_from_rows_uppercases_state),
         ('REST: lowercase "closed" prunes end-to-end', test_rest_closed_row_prunes_end_to_end),
         ("REST: malformed rows omitted, never CLOSED", test_issue_states_from_rows_tolerates_junk),
+        ("page budget stays within the lookup budget", test_page_budget_cannot_outrun_the_lookup_budget),
         ("paging stops on a short/unusable page", test_should_stop_paging_stops_on_short_or_unusable_page),
         ("paging stops once wanted is resolved", test_should_stop_paging_stops_when_everything_wanted_is_resolved),
         ("paging stops after crossing min(wanted)", test_should_stop_paging_stops_after_crossing_the_lowest_wanted_number),

@@ -2511,6 +2511,25 @@ For a one-line navigational map of the test directory, see
     goes red. The existing `should_remove_tile("closed") is False` case is now the paired
     regression pin: it is what keeps the predicate strict so the boundary must normalize.
 
+    *The jq projection.* `_ISSUE_PROJECTION` decides what shape reaches
+    `issue_states_from_rows` and cannot be executed offline (`gh` owns the jq), so it is pinned
+    **structurally** — it must detect `pull_request`, re-emit it, and never `select(` rows away.
+    Added from this file's own `/review` (dev-env#886), which found it referenced by no test at
+    all: the natural simplification `[.[] | {number, state}]` drops the marker as redundant since
+    Python does the filtering, at which point PR rows arrive indistinguishable from issues and a
+    shard numbered like a closed PR is unlinked — with every other test here still green. Same
+    spirit as the AST scan of the `emit_advisory` call site: pin the properties that make it safe,
+    not its exact spelling.
+
+    *The page/lookup budget invariant.* `fetch_repo_issue_states` deliberately carries no deadline
+    of its own; the constants are balanced so `MAX_ISSUE_PAGES * GH_CALL_TIMEOUT <=
+    LOOKUP_BUDGET_SECONDS` and one hanging repo exhausts the budget exactly, after which
+    `lookup_states` skips the rest. That property lived only in a comment until the same review
+    flagged it. Widening the issue window by bumping `MAX_ISSUE_PAGES` — plausible, since REST
+    rows include PRs and 100 rows resolved only 65 issues in the live run — would otherwise double
+    the per-repo worst case against an unchanged budget with nothing going red, the symptom being
+    a slow first prompt in a session nobody is timing.
+
     *Pagination.* `should_stop_paging` ends the per-repo walk on any of four rules — a short
     or unusable page, nothing requested, every requested number resolved, or a row below
     `min(wanted)` (REST `GET /issues` is created-desc and GitHub assigns numbers in creation
