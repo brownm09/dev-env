@@ -112,6 +112,7 @@ the item). A one-line navigational map of the test directory is
 76. **Testing-index parity gate** — required when changing this `## Testing` index or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule). Run: `py -3 claude/scripts/tests/test_testing_index_parity.py`
 77. **experiment-verdict-gate test** — required when changing `claude/scripts/stop-experiment-verdict-gate.py`. Run: `py -3 claude/scripts/tests/test_stop_experiment_verdict_gate.py`
 78. **worktree-recovery recipe + runbook-parity gate** — required when changing `claude/scripts/_worktree_recovery.py`, the orphan block message in `claude/scripts/pre-tool-use-worktree-path-check.py`, or the `docs/REFERENCE.md` "Worktree deregistration recovery" runbook. Run: `py -3 claude/scripts/tests/test_worktree_recovery.py`
+79. **remote-read hygiene lint** — required when adding or changing anything under `claude/` that reads a file from a remote ref; flags a `git show <ref>:<path>` paired with `2>/dev/null` (the dev-env#602 / #877 MSYS-mangling false-absent class, ADR-120). Run: `bash claude/scripts/tests/check-remote-read-hygiene.sh`
 
 ## Observability
 

@@ -19,7 +19,11 @@ can act on without a follow-up conversation — every finding must have a "what 
 - **Diff mode:** `--diff` (no URL — you will ask the user to paste the diff)
 
 Parse rules:
-1. If `$ARGUMENTS` starts with `http`, treat the first token as **PR_URL**.
+1. If `$ARGUMENTS` starts with `http`, treat the first token as **PR_URL**, and extract
+   **OWNER** and **REPO** from it (`https://github.com/<OWNER>/<REPO>/pull/<N>`). That is the
+   **base** repo. Steps 2b and 2c read file contents from the PR's **head** repo instead
+   (**HEAD_OWNER** / **HEAD_REPO**, captured in Step 2) — the two differ on a fork PR, and
+   reading the head ref from the base repo would 404 on every probe.
    Otherwise if `$ARGUMENTS` starts with `--diff`, set **DIFF_MODE=true**.
    Otherwise ask: "Provide a PR URL or use --diff to paste a diff."
 2. Extract optional flags from remaining tokens:
@@ -39,10 +43,16 @@ Tell the user what you parsed:
 **If PR_URL is set:**
 
 ```bash
-gh pr view "<PR_URL>" --json title,body,additions,deletions,changedFiles,baseRefName,headRefName,labels
+gh pr view "<PR_URL>" --json title,body,additions,deletions,changedFiles,baseRefName,headRefName,headRepositoryOwner,headRepository,labels
 ```
 
 Store **PR_TITLE**, **PR_BODY**, **ADDITIONS**, **DELETIONS**, **CHANGED_FILES**, and **LABELS**.
+
+Also store **HEAD_OWNER** = `headRepositoryOwner.login` and **HEAD_REPO** = `headRepository.name`
+— the repo the head ref actually lives in, which Steps 2b and 2c read from. On a same-repo PR these
+equal OWNER/REPO; on a fork PR they do not, and using OWNER/REPO there would 404 every probe and be
+misread as "file absent." If either is null (rare — a deleted fork), fall back to OWNER/REPO and
+note that Steps 2b/2c may be unable to read the head ref.
 
 **Duplicate-review guard:** If `reviewed-by-claude` appears in LABELS, tell the user:
 
@@ -73,16 +83,39 @@ Accept the pasted content as **DIFF**. Set PR_TITLE="(pasted diff)", PR_BODY="",
 Applies to PR_URL mode only. Skip if DIFF_MODE is true.
 
 Using the changed file list from Step 2, check whether the repo has a Documentation Maintenance
-table. Fetch the project's `CLAUDE.md` from the remote PR branch (per ADR-004, always read
-from the remote, not the local worktree):
+table. Read the project's `CLAUDE.md` from the PR branch — per ADR-004, always from the remote,
+never the local worktree. Read it over the API rather than with `git show <ref>:<path>`, which
+mangles on Windows and requires the ref to already be fetched into whatever repo happens to be
+the cwd (see **Remote reads on Windows** under `## Notes`):
 
 ```bash
-git show origin/<headRefName>:.claude/CLAUDE.md 2>/dev/null \
-  || git show origin/<headRefName>:CLAUDE.md 2>/dev/null
+gh api "repos/<HEAD_OWNER>/<HEAD_REPO>/contents/.claude/CLAUDE.md?ref=<headRefName>" \
+  -H "Accept: application/vnd.github.raw"
 ```
 
-Search the output for the phrase `Documentation Maintenance`. If not found, skip this step and note
-"No doc-reconciliation rules defined for this repo."
+Classify the result by **exit status and stderr text** — never by whether stdout is empty.
+**A 404 is two different conditions**, and only one of them is an absence:
+
+| Outcome | Meaning | Action |
+|---|---|---|
+| exit 0 | file exists; stdout is its content | search it for the phrase `Documentation Maintenance` |
+| non-zero, stderr is `Not Found (HTTP 404)` | file genuinely absent | fall through to the root-path probe below |
+| non-zero, stderr is `No commit found for the ref …(HTTP 404)` | **the ref does not resolve in this repo** — wrong repo for a fork head, or a deleted/renamed branch. **Not an absence.** | **stop and report it**; re-check HEAD_OWNER/HEAD_REPO first |
+| any other non-zero | **tool error** — auth, network, rate limit | **stop and report it to the user**; do not treat it as absence |
+
+Matching on `(HTTP 404)` alone is the bug this table exists to prevent: it collapses "this file is
+not in the repo" with "I asked the wrong repo," and the second silently skips the whole gate.
+
+On a genuine `Not Found` 404, repeat the probe once against the root-level path
+(`repos/<HEAD_OWNER>/<HEAD_REPO>/contents/CLAUDE.md?ref=<headRefName>`). Only if **both** return
+`Not Found` may you skip this step and note "No doc-reconciliation rules defined for this repo."
+
+Note that on a 404 `gh` writes the error JSON to stdout, so stdout is *not* empty even when the
+file is absent — one more reason the exit status is the only valid discriminator here.
+
+Run the two probes as separate commands. Do **not** chain them with `||`: that collapses "the
+first path is absent" and "the first probe failed" into one indistinguishable branch, which is
+precisely how this check used to skip the entire doc-reconciliation gate in silence (#602, #877).
 
 If the table exists (dev-env and any repo that adopts the pattern):
 
@@ -115,9 +148,22 @@ to an existing file do not qualify.)
 
 1. Identify the file's directory and all ancestor directories up to depth 3 from the
    changed file (stop at repo root). When multiple files share an ancestor, deduplicate
-   the ancestor set before issuing `git show` calls — query each unique ancestor once.
+   the ancestor set before issuing lookups — query each unique ancestor once.
 2. For each unique ancestor directory, check whether a `README.md` exists there.
-   - In PR_URL mode: `git show origin/<headRefName>:<dir>/README.md 2>/dev/null`
+   - In PR_URL mode:
+
+     ```bash
+     gh api "repos/<HEAD_OWNER>/<HEAD_REPO>/contents/<dir>/README.md?ref=<headRefName>" \
+       -H "Accept: application/vnd.github.raw"
+     ```
+
+     Classify using Step 2b's table exactly: exit 0 → the README exists; stderr
+     `Not Found (HTTP 404)` → genuinely absent; stderr `No commit found for the ref` → **wrong
+     repo or missing ref, not an absence**; any other non-zero → tool error. In every non-absent
+     failure case, **stop and report** rather than recording the ancestor as README-less — a
+     silently missing README is a skipped staleness check, not a clean one. Dot-prefixed
+     ancestors (`.github/`, `.claude/`) matter here: they are the case the previous `git show`
+     form could never see, so a stale README under one of them went unflagged every time.
    - In DIFF_MODE: a pasted diff cannot reveal unchanged READMEs. Skip the blocking
      branch entirely (step 4 below) — only the non-blocking suggestion branch (step 5)
      applies. Note in the review output: "DIFF_MODE — README-staleness check skipped;
@@ -631,5 +677,36 @@ If POST_COMMENT is false (i.e., `--no-comment` was passed), or DIFF_MODE is true
 - **Follow-up / merge-readiness checks:** When verifying whether findings have been addressed on
   an existing PR, always fetch the remote branch first — never read files from the local working
   tree or current worktree. Protocol: `git fetch origin <headRefName>`, then read via
-  `git show origin/<headRefName>:<path>`. The local tree may be stale or on a different branch,
-  producing false "still outstanding" results.
+  `MSYS_NO_PATHCONV=1 git show origin/<headRefName>:<path>` (see the next note for why the
+  prefix is not optional). The local tree may be stale or on a different branch, producing
+  false "still outstanding" results.
+- **Remote reads on Windows — `git show <ref>:<path>` mangles, silently.** Git-Bash/MSYS path
+  conversion rewrites a `<ref>:<path>` argument into a single Windows-style token —
+  `origin/main:.github/workflows/x.yml` becomes `origin\main;.github\workflows\x.yml` — and git
+  then fails with `fatal: ambiguous argument`. It is **deterministic, not intermittent**: the
+  trigger is a **leading-dot path segment** immediately after the `:`, independent of path depth
+  (`origin/main:.gitignore` mangles; `origin/main:claude/skills/review/SKILL.md` does not).
+  Quoting the argument does not help. Two consequences for this skill:
+
+  1. **Never pair a remote read with `2>/dev/null`.** The suppressed `fatal:` leaves empty output
+     that is indistinguishable from "the file is absent" or "the pattern is not present" — so the
+     failure mode is a review that reports *clean*, not one that errors. This is the `2>/dev/null`
+     prohibition in CLI Scripting Checklist item 5 of `claude/CLAUDE.md` (ADR-117).
+  2. **Prefer the API form for absence checks.** Steps 2b and 2c read blobs via
+     `gh api "repos/<HEAD_OWNER>/<HEAD_REPO>/contents/<path>?ref=<ref>" -H "Accept: application/vnd.github.raw"`,
+     which never hands a `<ref>:<path>` argument to the shell and so cannot mangle, needs no prior
+     `git fetch`, and works even when the reviewed repo is not the cwd. Where a local read is
+     genuinely the right tool — diffing against a branch already fetched into this checkout —
+     prefix `MSYS_NO_PATHCONV=1` and let stderr through.
+
+  Reinforcing the second point: `git show` exits **128 for both** an absent path and an invalid
+  ref, so its exit code alone cannot tell "file not in tree" from "ref never fetched" — only the
+  stderr text can (`does not exist in` vs. `invalid object name`).
+
+  **The API form has the same two-cases-one-code trap, one layer up** — do not let the fix
+  recreate the bug. `Not Found (HTTP 404)` (the file is absent) and
+  `No commit found for the ref … (HTTP 404)` (the ref does not resolve in the repo you asked)
+  share a status code and differ only in message text. Matching on `(HTTP 404)` alone would
+  record "wrong repo" as "file absent" — which is why Steps 2b/2c key on the message, and why
+  they read from **HEAD_OWNER/HEAD_REPO** rather than the base repo parsed out of the PR URL.
+  Origin: dev-env #602, #877 (ADR-120).

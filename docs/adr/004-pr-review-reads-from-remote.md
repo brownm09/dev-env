@@ -22,6 +22,14 @@ When checking whether a PR has addressed review findings, or when reading PR bra
 
 This rule applies to: review skill follow-up checks, merge-readiness assessments, and any step that compares "what the PR contains" against a checklist.
 
+> **Amended by [ADR-120](120-review-skill-absence-checks-over-api.md) (2026-07-22) — mechanism only; the principle above is unchanged.** Step 2 as written is unsafe on Windows for any path with a leading-dot segment: MSYS path conversion deterministically mangles the `<ref>:<path>` argument (`origin/main:.gitignore` → `origin\main;.gitignore`) and git fails. Two refinements:
+>
+> - Where the ref is **not** known to be fetched into the current checkout — notably a `/review <PR-URL>` run, which may target a repo that is not the cwd — read the blob over the API instead, which needs no local fetch and cannot mangle:
+>   `gh api "repos/<OWNER>/<REPO>/contents/<path>?ref=<ref>" -H "Accept: application/vnd.github.raw"`.
+> - Where a local read **is** right (step 1's fetch has run in this checkout), keep `git show` but prefix `MSYS_NO_PATHCONV=1`, and never pair it with `2>/dev/null` (ADR-117).
+>
+> Note `git show` exits 128 for *both* an absent path and an invalid ref, so its exit code alone cannot distinguish "not in the tree" from "never fetched."
+
 ---
 
 ## Consequences
@@ -39,3 +47,5 @@ This rule applies to: review skill follow-up checks, merge-readiness assessments
 - `dev-env` commit `28f728e` — `fix: read PR branch state from remote, not local worktree`
 - `claude/CLAUDE.md` § Git Workflow — "PR branch state must come from the remote"
 - `claude/skills/review/SKILL.md` — review follow-up procedure
+- [ADR-120](120-review-skill-absence-checks-over-api.md) — refines the *mechanism* of this rule for Windows (API reads for unfetched refs; `MSYS_NO_PATHCONV=1` for local ones), upholding the principle
+- [ADR-117](117-absence-claims-need-absolute-paths.md) — the `2>/dev/null` prohibition that makes a mangled remote read indistinguishable from a genuine absence
