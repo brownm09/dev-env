@@ -189,9 +189,9 @@ Any PostToolUse Bash hook that reads command output must use `read_command_outpu
 
 The worktree-maintenance scripts (`prune-merged-worktrees.py`, `reclaim-worktree-disk.py`) call `worktree_session_is_live` from `claude/scripts/_worktree_liveness.py` to skip a worktree with a live Claude session — it reads the worktree's transcript-dir mtime under `~/.claude/projects/`, the only signal by which an out-of-process routine can avoid severing an active session in another worktree. Windows are blast-radius-scaled (prune 24h, reclaim 6h) and override-able with `--liveness-window-min`. See [ADR-051](adr/051-worktree-liveness-guard.md).
 
-The journal open-PR hooks (`reconcile-open-prs.py`, which `unlink`s merged/closed shards, and `post-compact.py`, which reads them to prompt a `/review`) enumerate the per-PR shards `sessions/<project>/open-prs/<N>.json` and the legacy `open-prs.jsonl` through one shared reader, `claude/scripts/_journal_shards.py` — `iter_pr_shards` returns `(path, entry)` pairs (numerically sorted; non-numeric-named, unparseable, and non-object shards skipped) and `read_legacy_entries` drains the legacy file. Centralising the read keeps the two hooks from drifting on the shard semantics and gives the legacy format a single retirement point (pairs with the engineering-journal#128 data migration). See [ADR-057](adr/057-shared-journal-shard-reader.md).
+The journal open-PR hooks (`reconcile-open-prs.py`, which `unlink`s merged/closed shards, and `post-compact.py`, which reads them to prompt a `/review`) enumerate the per-PR shards `sessions/<project>/open-prs/<N>.json` and the legacy `open-prs.jsonl` through one shared reader, `claude/scripts/_journal_shards.py` — `iter_pr_shards` returns `(path, entry)` pairs (numerically sorted; non-numeric-named, unparseable, and non-object shards skipped) and `read_legacy_entries` drains the legacy file. Centralising the read keeps the two hooks from drifting on the shard semantics and gives the legacy format a single retirement point (pairs with the engineering-journal#128 data migration). See [ADR-057](adr/057-shared-journal-shard-reader.md). [ADR-118](adr/118-tile-persistence-shards.md) added tile shards (`sessions/<project>/tiles/<issue-number>.json`) on the identical numeric layout, so that enumeration now lives in `iter_numeric_shards` with `iter_pr_shards` and `iter_tile_shards` as named delegations to it (and `shard_pr_number` as an alias of a generic `shard_number`) — adding the second shard kind by *copying* the reader would have recreated the very drift ADR-057 was extracted to end.
 
-The manifest and open-PR shard **schemas** — as opposed to the open-PR shard *enumeration* above — live in `claude/scripts/_journal_schema.py`, shared between the compose-time gate `validate-manifest.py` and the write-time `journal-shard-write-advisory.py` PostToolUse hook so the required-field lists and BOM-decoding logic are defined once. It exposes `REQUIRED_FIELDS` / `OPEN_PR_REQUIRED_FIELDS`, `missing_required_fields()` / `missing_open_pr_fields()`, `find_entries_missing_fields()`, `parse_manifest_text()`, and `decode_shard_bytes()` (names a UTF-8/UTF-16 BOM rather than letting it surface as an opaque JSON parse failure on line 1). See [ADR-081](adr/081-write-time-journal-shard-validation-hook.md).
+The manifest, open-PR, and tile shard **schemas** — as opposed to the shard *enumeration* above — live in `claude/scripts/_journal_schema.py`, shared between the compose-time gate `validate-manifest.py` and the write-time `journal-shard-write-advisory.py` PostToolUse hook so the required-field lists and BOM-decoding logic are defined once. It exposes `REQUIRED_FIELDS` / `OPEN_PR_REQUIRED_FIELDS` / `TILE_REQUIRED_FIELDS`, `missing_required_fields()` / `missing_open_pr_fields()` / `missing_tile_fields()`, `find_entries_missing_fields()`, `parse_manifest_text()`, and `decode_shard_bytes()` (names a UTF-8/UTF-16 BOM rather than letting it surface as an opaque JSON parse failure on line 1). See [ADR-081](adr/081-write-time-journal-shard-validation-hook.md) and [ADR-118](adr/118-tile-persistence-shards.md).
 
 Per-session sentinel helpers, transcript-locate, and the transcript-record readers are extracted into `claude/scripts/_hookutil.py` (Stop / UserPromptSubmit hook family — the analogue of `_hookio.py` for the PostToolUse family). It exposes `cleanup_stale_sentinels(prefix)`, `sentinel_path(prefix, session_id) -> Path`, `find_transcript(session_id) -> Path | None`, and the transcript-record readers `load_records` / `_parse_records` / `iter_bash_calls` (pairs Bash tool_use/tool_result by id, returning `(command, output, cwd)`) / `_result_text` / `_content_items` — used by `posttooluse-inert-advisory.py`, `stop-tile-enumeration-gate.py`, `reconcile-open-prs.py`, and `token-tracker.py` so each no longer carries its own `SCRATCH` / `PROJECTS` constants and local copies of these helpers. The `scratch` / `projects` parameters are injectable for offline testing; `stop-tile-enumeration-gate.py` consumes `iter_bash_calls` through a thin 2-tuple adapter that drops `cwd` (it never needs it). It also exposes `iter_records_reverse(transcript_path, chunk_size=DEFAULT_REVERSE_CHUNK_SIZE) -> Iterator[dict]` (dev-env#679, [ADR-090](adr/090-shared-transcript-readers-hookutil.md) Amendment 1) — reads the file from the end in bounded chunks, yielding JSON-object records most-recent-first, so a caller that only needs a small piece of tail state (`idle-refresher.py`'s last-assistant-record timestamp) can stop consuming the generator instead of paying `load_records`'s full parse; `load_records` itself is unchanged, kept for callers needing the whole transcript. See [ADR-064](adr/064-shared-hookutil-sentinel-transcript-locate.md) (sentinels / transcript-locate) and [ADR-090](adr/090-shared-transcript-readers-hookutil.md) (transcript-record readers).
 
@@ -1507,6 +1507,106 @@ and removes the `open-prs/` directory once its last shard is gone.
 as lines in a single per-day-carried file. Readers union it with the shards; the reconcile hook drains
 it (removing merged/closed lines via a safe read-filter-write, deleting the file when empty). To close a
 PR that still lives there, remove its one line instead of deleting a shard.
+
+### Tile shards (`sessions/<project>/tiles/<issue-number>.json`)
+
+Persists a `spawn_task` tile's payload so a lost chip can be re-spawned after an app restart. Per
+[ADR-118](adr/118-tile-persistence-shards.md), each tile is its **own** shard — one JSON object keyed by
+the **paired GitHub issue number** (issue-per-tile, [ADR-094](adr/094-tile-tables-and-issue-per-tile.md),
+guarantees one exists). Same numeric-filename layout as the open-PR shards above, read through the same
+`_journal_shards` core (`iter_tile_shards`).
+
+`<project>` is the tile's **target** project — derived from the tile's `cwd`, *not* the spawning session's
+project — so a tile filed from one repo against another lands in the target's directory and is surfaced
+there. As with open-PR shards, the bare number is unique within that directory and the repo is still
+carried in `url`.
+
+Schema:
+
+```json
+{"issue":868,"url":"https://github.com/brownm09/dev-env/issues/868","title":"<chip label, <=60 chars>","tldr":"<1-2 sentence tooltip>","prompt":"<full self-contained spawn_task prompt>","cwd":"C:/Users/brown/Git/dev-env","stub":"sessions/dev-env/YYYY-MM-DD_HHMMSS.stub.md","spawned":"YYYY-MM-DD"}
+```
+
+Seven fields are required: `issue`, `url`, `title`, `tldr`, `prompt`, `cwd`, `spawned`. The field list
+lives in `TILE_REQUIRED_FIELDS` in `claude/scripts/_journal_schema.py`. `title`/`tldr`/`prompt`/`cwd`
+are the four `spawn_task` arguments; together they are what makes an *exact* re-spawn possible.
+
+`stub` is **optional** (the manifest schema's `priorities` is the same shape). An open-PR shard is
+always written by a session that also writes a stub, but a tile is not: the tiling rule fires the moment
+a follow-up is identified, while the stub triggers are PR-open / PR-merge / report-generation — so a
+session that tiles something in passing may legitimately write no stub at all, and requiring the field
+would force it to invent a value. When present, `stub` must be **project-qualified**
+(`sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md`, the manifest convention) rather than the open-PR
+shard's bare filename — a tile shard is filed under its *target* project, so the spawning session's stub
+may live under a different one and a bare filename would not resolve.
+
+**`task_id` is deliberately not stored.** Chip IDs do not survive an app restart (ADR-094), so persisting
+one would save a value that is dead exactly when the shard is needed — this is ADR-094's rejected
+"task_id record only" alternative.
+
+**When a session spawns a tile:** write the shard immediately after the `spawn_task` call, and commit it
+alongside the stub (explicit per-file pathspec, never the bare `tiles/` directory).
+
+**Do not build this JSON with `echo`.** Unlike every other shard, `prompt` holds free prose — the whole
+`spawn_task` prompt — so string-interpolating it into `echo '{...}'` breaks in three ways, two of them
+silent: a `"` or a Windows `\` path produces invalid JSON that `iter_numeric_shards` skips without a
+word (the payload is lost precisely when a restart needs it), and an apostrophe closes the shell's
+single-quoted string, making any following metacharacters executable — tile prompts routinely quote
+text Claude did not author (issue bodies, `gh` output, error text). Serialize instead, passing the
+prose through a **quoted** heredoc so the shell never parses it:
+
+```bash
+mkdir -p "C:/Users/brown/Git/engineering-journal/sessions/<project>/tiles"
+py -3 -c '
+import json, sys
+prompt = sys.stdin.read().rstrip("\n")
+json.dump({"issue": <N>, "url": "<issue-url>", "title": "<chip label>",
+           "tldr": "<tooltip>", "prompt": prompt, "cwd": "<target repo path>",
+           "stub": "sessions/<spawning-project>/YYYY-MM-DD_HHMMSS.stub.md",
+           "spawned": "YYYY-MM-DD"},
+          open(r"C:/Users/brown/Git/engineering-journal/sessions/<project>/tiles/<N>.json", "w"),
+          ensure_ascii=False)
+' <<'TILE_PROMPT_EOF'
+<the full self-contained spawn_task prompt, verbatim, any characters, any number of lines>
+TILE_PROMPT_EOF
+```
+
+The `mkdir -p` is required, not defensive: `tiles/` exists for no project until its first tile, and the
+reconciler deletes it again whenever a project's last shard is pruned — so the missing-directory case
+recurs, it is not a one-time bootstrap.
+
+Writing the file with the `Write` tool is equally acceptable and avoids the shell entirely; the
+constraint is only that the payload must never be interpolated into a command line.
+
+**When the tile's work completes:** closing the paired issue is the signal. `reconcile-pending-tiles.py`
+unlinks the shard of any tile whose issue it finds `CLOSED` at session start, and removes the `tiles/`
+directory once its last shard is gone. A `gh` failure or an indeterminate state keeps the shard —
+conservative, matching `reconcile-open-prs.py`.
+
+**Reader requirements (binding on [#869](https://github.com/brownm09/dev-env/issues/869)).** `url` is a
+git-committed, cross-machine, free-form string that the reader will parse to derive `--repo` for a
+`gh issue view` call. The open-PR precedent it will copy (`reconcile-open-prs.py`) does a bare
+`urlparse(...).path.split("/")` with no host or character check, which is tolerable there but not here:
+the tile reconciler's remove branch **unlinks the shard**, so a mis-resolved lookup that returns
+`CLOSED` destroys the payload. `gh --repo` also accepts a `HOST/OWNER/REPO` form, so a crafted path can
+aim it at another host. The reader must therefore:
+
+- require `urlparse(url).netloc == "github.com"`;
+- match owner/repo against `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`;
+- take the issue number from the **filename** (`shard_number`), not from `url`;
+- **skip and keep** the shard — never unlink — when any check fails.
+
+> **Phasing.** The shard format, the shared reader support (`iter_tile_shards`), and the write rule are
+> live now. `reconcile-pending-tiles.py` itself lands in
+> [#869](https://github.com/brownm09/dev-env/issues/869), and write-time/Stop-time enforcement in
+> [#870](https://github.com/brownm09/dev-env/issues/870). Until #869 merges, shards are written but never
+> pruned or surfaced — dormant, not wrong. This section is the current-state record; ADR-118 is the
+> decision-time rationale and is not updated as phases land.
+
+**Known limitation.** There is no non-destructive API to learn whether a chip was actually clicked
+(`dismiss_task` reveals it only by consuming it), so "still pending" is approximated by "issue still
+open." A tile whose work already started but whose issue is open will be re-surfaced; the worst case is a
+duplicate chip the user dismisses.
 
 ### Stub structure
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for _journal_shards — the shared open-PR shard/legacy reader (ADR-057).
+"""Unit tests for _journal_shards — the shared numeric-shard/legacy reader (ADR-057, ADR-118).
 
 ADR-056 split open-PR tracking into per-PR shards `sessions/<project>/open-prs/<N>.json`
 plus a draining legacy `open-prs.jsonl`. `reconcile-open-prs.py` (needs the file paths to
@@ -8,6 +8,12 @@ of the enumerate+sort+parse+fold-legacy logic, which drifted once already (the s
 key was lexical in one and numeric in the other until PR #394's review). `_journal_shards`
 is the single source of truth they now both import; these tests pin its behaviour offline
 (tmp dirs, no network, no gh).
+
+ADR-118 added tile shards (`sessions/<project>/tiles/<issue-number>.json`) on the identical
+numeric layout, so the reader generalised to `iter_numeric_shards` with `iter_pr_shards` /
+`iter_tile_shards` as named delegations. `test_all_shard_readers_are_one_implementation`
+is the load-bearing pin there: it fails if anyone re-specialises an entry point and
+reintroduces the very drift this module was extracted to end.
 
 Usage:
     py -3 claude/scripts/tests/test_journal_shards.py
@@ -26,22 +32,46 @@ SCRIPTS_DIR = REPO_ROOT / "claude" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from _journal_shards import (  # noqa: E402
+    iter_numeric_shards,
     iter_pr_shards,
+    iter_tile_shards,
     read_legacy_entries,
+    shard_number,
     shard_pr_number,
 )
 
 URL = "https://github.com/brownm09/dev-env/pull/{n}"
+ISSUE_URL = "https://github.com/brownm09/dev-env/issues/{n}"
 
 
 def _entry(pr):
     return {"pr": pr, "url": URL.format(n=pr), "topic": f"PR {pr}", "stub": "s.stub.md", "opened": "2026-06-22"}
 
 
+def _tile_entry(issue):
+    return {
+        "issue": issue,
+        "url": ISSUE_URL.format(n=issue),
+        "title": f"Tile {issue}",
+        "tldr": "A follow-up.",
+        "prompt": "Do the thing.",
+        "cwd": "C:/Users/brown/Git/dev-env",
+        "stub": "s.stub.md",
+        "spawned": "2026-07-22",
+    }
+
+
 def _write_shard(shard_dir: Path, pr, entry=None):
     shard_dir.mkdir(parents=True, exist_ok=True)
     p = shard_dir / f"{pr}.json"
     p.write_text(json.dumps(_entry(pr) if entry is None else entry), encoding="utf-8")
+    return p
+
+
+def _write_tile_shard(shard_dir: Path, issue, entry=None):
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    p = shard_dir / f"{issue}.json"
+    p.write_text(json.dumps(_tile_entry(issue) if entry is None else entry), encoding="utf-8")
     return p
 
 
@@ -152,6 +182,78 @@ def test_iter_missing_or_nondir() -> str:
     return "missing / non-directory shard dir -> [] (callable unconditionally)"
 
 
+# --- tile shards (ADR-118) ---------------------------------------------------
+
+
+def test_shard_number_generic() -> str:
+    # shard_number is the real parse; shard_pr_number is a retained alias for
+    # journal-shard-write-advisory.py. Both must agree, or the advisory's
+    # filename-vs-field cross-check would disagree with the reader that enumerates it.
+    assert shard_number(Path("tiles/868.json")) == 868
+    assert shard_number(Path("open-prs/386.json")) == 386
+    assert shard_number(Path("index.json")) is None
+    for name in ("tiles/868.json", "open-prs/386.json", "index.json", "bad.json", "12.json"):
+        assert shard_number(Path(name)) == shard_pr_number(Path(name)), f"alias diverged on {name}"
+    return "shard_number parses any <N>.json; shard_pr_number is an exact alias of it"
+
+
+def test_iter_tile_shards_reads_tiles_dir() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        td = Path(root) / "tiles"
+        p868 = _write_tile_shard(td, 868)
+        got = iter_tile_shards(td)
+        assert len(got) == 1, f"one tile shard expected, got {len(got)}"
+        path, entry = got[0]
+        assert path == p868, "returns the real shard path (so reconcile can unlink it)"
+        assert entry["issue"] == 868, "returns the parsed tile entry"
+        assert entry["prompt"] == "Do the thing.", "the spawn payload survives the round-trip"
+    return "iter_tile_shards yields (real_path, parsed_tile_entry) pairs"
+
+
+def test_iter_tile_shards_numeric_sort() -> str:
+    # Tile shards are keyed by paired ISSUE number, which spans the same wide range as PR
+    # numbers — so the lexical-sort bug ADR-057 fixed for PRs would bite identically here.
+    with tempfile.TemporaryDirectory() as root:
+        td = Path(root) / "tiles"
+        _write_tile_shard(td, 10)
+        _write_tile_shard(td, 2)
+        _write_tile_shard(td, 100)
+        issues = [e["issue"] for _p, e in iter_tile_shards(td)]
+        assert issues == [2, 10, 100], f"numeric order, not lexical, got {issues}"
+    return "tile shards sorted by issue number ascending, not lexically"
+
+
+def test_all_shard_readers_are_one_implementation() -> str:
+    # THE anti-drift pin. ADR-057 exists because two copies of "glob, sort, parse" drifted
+    # (lexical vs numeric sort). ADR-118 added a second shard kind on the same layout, so the
+    # temptation to give tiles their own reader is exactly the mistake to prevent. If someone
+    # later "specializes" one entry point, this fails.
+    with tempfile.TemporaryDirectory() as root:
+        d = Path(root) / "shards"
+        _write_shard(d, 10)
+        _write_shard(d, 2)
+        (d / "index.json").write_text(json.dumps({"x": 1}), encoding="utf-8")  # non-numeric
+        (d / "9.json").write_text("{not json", encoding="utf-8")               # unparseable
+        (d / "8.json").write_text(json.dumps([1, 2]), encoding="utf-8")        # non-dict
+        base = iter_numeric_shards(d)
+        assert iter_pr_shards(d) == base, "iter_pr_shards diverged from iter_numeric_shards"
+        assert iter_tile_shards(d) == base, "iter_tile_shards diverged from iter_numeric_shards"
+        # Assert WHICH shards survived, not just how many. The three equality checks above
+        # compare the entry points to each other, so a *uniform* regression (all three
+        # returning the malformed shards, or the right ones misordered) is invisible to
+        # them — only pinning the identity and order of the survivors catches that.
+        assert [e["pr"] for _p, e in base] == [2, 10], f"shared core still filters+sorts, got {base}"
+    return "iter_pr_shards / iter_tile_shards / iter_numeric_shards agree exactly (anti-drift)"
+
+
+def test_iter_tile_shards_missing_dir() -> str:
+    # The common case on every session before any tile is ever spawned: no tiles/ dir at all.
+    # reconcile-pending-tiles.py calls this unconditionally per project, so it must not raise.
+    with tempfile.TemporaryDirectory() as root:
+        assert iter_tile_shards(Path(root) / "tiles") == [], "missing tiles dir -> []"
+    return "missing tiles/ dir -> [] (callable unconditionally, the pre-first-tile case)"
+
+
 # --- read_legacy_entries -----------------------------------------------------
 
 
@@ -208,6 +310,11 @@ def main() -> int:
         ("iter skips non-dict shards", test_iter_skips_non_dict),
         ("iter returns dict shard without pr (content-agnostic)", test_iter_returns_dict_without_pr),
         ("iter missing/non-dir -> []", test_iter_missing_or_nondir),
+        ("shard_number generic + shard_pr_number alias", test_shard_number_generic),
+        ("iter_tile_shards reads tiles dir", test_iter_tile_shards_reads_tiles_dir),
+        ("iter_tile_shards numeric sort", test_iter_tile_shards_numeric_sort),
+        ("all shard readers are one implementation", test_all_shard_readers_are_one_implementation),
+        ("iter_tile_shards missing dir -> []", test_iter_tile_shards_missing_dir),
         ("legacy reads objects in order", test_legacy_reads_objects_in_order),
         ("legacy skips blank/malformed/non-dict", test_legacy_skips_blank_malformed_nondict),
         ("legacy missing file -> []", test_legacy_missing_file),

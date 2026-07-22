@@ -14,6 +14,11 @@ Cases pinned:
 - ``OPEN_PR_REQUIRED_FIELDS`` order and ``missing_open_pr_fields``: all-present, one
   missing, the ``summary``-instead-of-``topic`` shape from the 2026-07-02 meta-shard
   incident, and a non-dict entry.
+- ``TILE_REQUIRED_FIELDS`` order and ``missing_tile_fields`` (ADR-118): all-present, one
+  missing, a missing ``prompt`` (the field without which a chip cannot be reconstructed),
+  a stray ``task_id`` not masking a real omission, a missing subset in schema order,
+  non-dict/empty entries, and — the copy-paste guard — that the tile and open-PR schemas
+  are not interchangeable despite sharing ``url``/``stub`` and a numeric filename layout.
 - ``decode_shard_bytes``: plain UTF-8, a UTF-8 BOM (text returned past the BOM, named
   problem), UTF-16 LE/BE BOMs, invalid UTF-8, and empty bytes.
 - ``has_unresolved_open_pr`` (dev-env#651, ADR-091 Amendment 1): a `prs_opened` PR number
@@ -31,8 +36,10 @@ import _journal_schema as mod  # noqa: E402
 
 REQUIRED_FIELDS = mod.REQUIRED_FIELDS
 OPEN_PR_REQUIRED_FIELDS = mod.OPEN_PR_REQUIRED_FIELDS
+TILE_REQUIRED_FIELDS = mod.TILE_REQUIRED_FIELDS
 missing_required_fields = mod.missing_required_fields
 missing_open_pr_fields = mod.missing_open_pr_fields
+missing_tile_fields = mod.missing_tile_fields
 malformed_manifest_fields = mod.malformed_manifest_fields
 has_unresolved_open_pr = mod.has_unresolved_open_pr
 find_entries_missing_fields = mod.find_entries_missing_fields
@@ -63,6 +70,21 @@ def _valid_open_pr_entry(**overrides):
         "topic": "journal shard write advisory",
         "stub": "2026-07-03_170000.stub.md",
         "opened": "2026-07-03",
+    }
+    base.update(overrides)
+    return base
+
+
+def _valid_tile_entry(**overrides):
+    base = {
+        "issue": 868,
+        "url": "https://github.com/brownm09/dev-env/issues/868",
+        "title": "Tile persistence PR1: schema, store, write rule",
+        "tldr": "Establish the on-disk tile-shard format and the rule that writes it.",
+        "prompt": "Implement the tile-shard schema per dev-env#868. See #867 for full scope.",
+        "cwd": "C:/Users/brown/Git/dev-env",
+        "stub": "sessions/dev-env/2026-07-22_140000.stub.md",
+        "spawned": "2026-07-22",
     }
     base.update(overrides)
     return base
@@ -116,6 +138,74 @@ def test_open_pr_non_dict_treated_as_missing_all():
 
 def test_open_pr_empty_dict_missing_all():
     assert missing_open_pr_fields({}) == list(OPEN_PR_REQUIRED_FIELDS)
+
+
+# ---------------------------------------------------------------------------
+# TILE_REQUIRED_FIELDS / missing_tile_fields (ADR-118)
+# ---------------------------------------------------------------------------
+
+def test_tile_field_order():
+    assert TILE_REQUIRED_FIELDS == (
+        "issue", "url", "title", "tldr", "prompt", "cwd", "spawned"
+    )
+
+def test_tile_stub_is_optional():
+    # `stub` is provenance, not payload, and is genuinely not always knowable: the tiling
+    # rule fires the moment a follow-up is identified, while the stub triggers are
+    # PR-open / PR-merge / report-generation — so a session that tiles something in passing
+    # writes no stub at all. Requiring it would force that session to invent a value.
+    entry = _valid_tile_entry()
+    del entry["stub"]
+    assert missing_tile_fields(entry) == []
+
+def test_tile_stub_present_is_project_qualified():
+    # When present it must carry its project, unlike the open-PR shard's bare filename: a
+    # tile shard is filed under its *target* project, so the spawning session's stub can
+    # live under a different one and a bare filename would not resolve.
+    assert _valid_tile_entry()["stub"].startswith("sessions/")
+
+def test_tile_all_fields_present():
+    assert missing_tile_fields(_valid_tile_entry()) == []
+
+def test_tile_missing_one_field():
+    entry = _valid_tile_entry()
+    del entry["url"]
+    assert missing_tile_fields(entry) == ["url"]
+
+def test_tile_missing_prompt_is_flagged():
+    # The load-bearing field: without `prompt` the shard cannot reconstruct the chip, which
+    # is the shard's entire reason to exist. A "looks populated" shard missing only this one
+    # would otherwise pass a shallow eyeball check and fail silently at re-spawn time.
+    entry = _valid_tile_entry()
+    del entry["prompt"]
+    assert missing_tile_fields(entry) == ["prompt"]
+
+def test_tile_task_id_does_not_substitute_for_required_fields():
+    # ADR-094's rejected "task_id record only" alternative: a chip ID is dead after restart.
+    # Carrying one must not mask a missing required field.
+    entry = _valid_tile_entry()
+    del entry["cwd"]
+    entry["task_id"] = "task_abc123"
+    assert missing_tile_fields(entry) == ["cwd"]
+
+def test_tile_missing_subset_in_schema_order():
+    entry = _valid_tile_entry()
+    del entry["title"]
+    del entry["spawned"]
+    assert missing_tile_fields(entry) == ["title", "spawned"]
+
+def test_tile_non_dict_treated_as_missing_all():
+    assert missing_tile_fields(None) == list(TILE_REQUIRED_FIELDS)
+
+def test_tile_empty_dict_missing_all():
+    assert missing_tile_fields({}) == list(TILE_REQUIRED_FIELDS)
+
+def test_tile_and_open_pr_schemas_are_distinct():
+    # Both are all-required single-object shards on the same numeric-filename layout, so a
+    # copy-paste that validated a tile against the PR schema would "pass" on the shared `url`
+    # /`stub` keys while silently ignoring `prompt`/`cwd`. Pin that they are not interchangeable.
+    assert missing_tile_fields(_valid_open_pr_entry()) != []
+    assert missing_open_pr_fields(_valid_tile_entry()) != []
 
 
 # ---------------------------------------------------------------------------
