@@ -46,8 +46,17 @@ the orphan is the blocked session's **own cwd** (`Device or resource busy`), whi
    row — library modules are documented in prose next to their consumer.
 2. `pre-tool-use-worktree-path-check.py` renders that module instead of carrying its own copy.
 3. The REFERENCE.md runbook is **pinned** to the module by `tests/test_worktree_recovery.py` (Testing
-   item 78), which also fails the build if the disproven `--force` form reappears in any *emittable*
-   string literal. The hooks-table row now points at the runbook rather than restating commands.
+   item 78): the runbook fence's *runnable* lines must **equal** `RECOVERY_STEPS`' commands, in order,
+   modulo a named `RUNBOOK_ONLY_COMMANDS` allowlist. The hooks-table row now points at the runbook
+   rather than restating commands.
+4. Reintroduction of the disproven form is blocked by two complementary passes, neither claimed to be
+   exhaustive: an **AST pass** over `claude/scripts/*.py` non-docstring string literals (which is what
+   distinguishes a *prescription* from the *explanations* this ADR, the module, and the hook all
+   contain), and a **text pass** over the runnable fenced lines of the live docs, skills, and routines
+   (which covers the surfaces the AST pass cannot reach). Known gaps, stated rather than papered over:
+   the AST pass does not see `+`/`%`/`.format()`/f-string-variable/`bytes`/`join()` constructions, and
+   neither pass scans `claude/scripts/tests/` — a test asserting the form is *absent* necessarily
+   contains it. `docs/adr/` is exempt from both by design.
 
 **And the recipe itself is corrected**, re-derived from evidence rather than inherited (below).
 
@@ -57,11 +66,17 @@ Work top to bottom; stop as soon as the worktree is live again.
 
 | # | Command | Why |
 |---|---|---|
-| 1 | `git -C <canonical> worktree repair <orphan>` | Non-destructive, **preserves uncommitted work** — always try first |
-| 2 | `git -C <orphan> rev-parse --show-toplevel` | Verification, not a fix — prints the worktree path ⇒ recovered |
-| 3 | `git -C <canonical> worktree prune` | Clears the stale registration |
-| 4 | `git -C <canonical> worktree add <orphan> <branch>` | Plain add — **not** `--force` |
-| 5 | `find <orphan> -mindepth 1 -delete` | Only if step 4 says `already exists`; empties **in place**, then repeat step 4 |
+| 1 | `git -C "<canonical>" worktree repair "<orphan>"` | Non-destructive, **preserves uncommitted work** — always try first |
+| 2 | `git -C "<orphan>" rev-parse --show-toplevel` | Verification, not a fix — **the only reliable signal**; prints the worktree path ⇒ recovered |
+| 3 | `git -C "<canonical>" worktree prune` | Clears the stale registration |
+| 4 | `git -C "<canonical>" worktree add "<orphan>" <branch>` | Plain add — **not** `--force`/`-f` |
+| — | `cp -r "<orphan>" "<orphan>.salvage"` | **Conditional trailer**, only if step 4 says `already exists`: capture before destroying |
+| — | `find "<orphan>" -mindepth 1 -delete` | **Irreversible**; empties **in place**, then repeat step 4 |
+
+The last two are deliberately **not** numbered. Rendering a destructive step inside a list introduced
+by "run in order" invites a stressed reader to execute it unconditionally, which destroys exactly the
+uncommitted work step 1 exists to preserve. `recovery_recipe()` emits them in a separate trailer, and
+the invariant is pinned on a `destructive` flag rather than list position.
 
 ### Evidence (git 2.37.1.windows.1, throwaway fixtures, 2026-07-22)
 
@@ -71,21 +86,36 @@ above was run against real repos rather than reasoned about:
 | Scenario | Result |
 |---|---|
 | admin dir survives, `.git` link deleted → `worktree repair <path>` | **Recovers**, uncommitted files preserved, worktree back on its branch — **but exits 1** printing `error: unable to locate repository; .git file broken` |
-| `.git` link survives, admin dir deleted → `worktree repair` | Exits **0** and does **nothing**; worktree stays dead |
-| both sides gone → `worktree repair` | Cannot repair — nothing left to relink |
+| `.git` link survives, admin dir deleted → `worktree repair <path>` | **Exits 1**, printing `error: unable to locate repository; .git file does not reference a repository`; repairs nothing (the *bare* `git worktree repair`, a different command, exits 0 here and also repairs nothing) |
+| both sides gone → `worktree repair <path>` | Cannot repair — nothing left to relink; **exits 1 with the byte-identical `.git file broken` message the SUCCESS case prints** |
 | empty dir, still registered → plain `add` | `fatal: … missing but already registered worktree` |
 | empty dir, still registered → `add --force` | **Succeeds** — the narrow case that made the old recipe look right |
 | **non-empty** dir → plain `add` | `fatal: '<path>' already exists` |
-| **non-empty** dir → `add --force` | `fatal: '<path>' already exists` — identical; `--force` is irrelevant here |
+| **non-empty** dir → `add --force` / `add -f` | `fatal: '<path>' already exists` — identical; the flag is irrelevant here |
 | non-empty → `prune` → empty in place → plain `add` | **Succeeds**, branch restored |
 | `find <dir> -mindepth 1 -delete` with cwd == dir | Succeeds; the directory itself survives so the shell keeps a valid cwd |
+| `rev-parse --show-toplevel` on a **sibling-convention** orphan | `fatal: not a git repository (or any of the parent directories): .git` — outside any repo to walk up to |
+| `rev-parse --show-toplevel`, admin dir deleted | `fatal: not a git repository: <canonical>/.git/worktrees/<name>` |
+| `find … -delete` in **PowerShell** | `find` resolves to `C:\windows\system32\find.exe`; `FIND: Parameter format not correct`, exit 2, nothing deleted |
 
-Three findings are load-bearing and none of them were in the prior guidance:
+Four findings are load-bearing and none of them were in the prior guidance:
 
-- **`worktree repair` exits 1 on success.** The message describes the state it *found*, not a failure (a
-  second run exits 0 silently). Judging it by the exit code makes a successful, work-preserving repair
-  look failed — a textbook case for the global `CLAUDE.md` **Error Message Diligence** rule, which is why
-  step 2 is a separate, explicit verification rather than an assumption.
+- **`worktree repair`'s exit code and message cannot tell success from failure.** It exits 1 on
+  success *and* on both failure shapes, and the both-sides-gone failure prints the **byte-identical**
+  `.git file broken` text the success case does. So there is no diagnostic in step 1 at all — which is
+  precisely why step 2 is a separate, mandatory verification rather than a courtesy. This is the global
+  `CLAUDE.md` **Error Message Diligence** rule in its sharpest form: the same words understate success
+  in one case and overstate it in another. (An earlier draft of this ADR asserted the admin-dir-deleted
+  shape "exits 0 and does nothing" — that is true only of the *bare* `git worktree repair`, not of the
+  path-argument form this recipe actually ships. Corrected after review.)
+- **Step 1 cannot recover the both-sides-gone shape**, so in that shape the destructive step is the
+  *only* forward path and the orphan's uncommitted work exists nowhere else. That is what makes the
+  salvage copy mandatory rather than decorative — and it is where the superseded runbook's
+  inspect-before-you-delete gate, which an earlier draft of this PR dropped, actually earned its place
+  (global `CLAUDE.md` → Code Quality → *Back up before you mutate*).
+- **Step 2 has a third outcome.** A sibling-convention orphan (`<repo>-worktrees/<name>`, dev-env#760)
+  sits outside any repo, so `rev-parse` errors rather than printing either expected path. The note now
+  reads "anything else → continue" instead of enumerating two outcomes.
 - **`--force` is irrelevant to a non-empty target.** git evaluates `file_exists(path) &&
   !is_empty_dir(path)` and dies *before* consulting `--force`; the flag overrides only the
   stale-registration and branch-checked-out-elsewhere safeguards. This both confirms #751 and explains
@@ -132,8 +162,11 @@ as safety-critical.
 
 ## Consequences
 
-- The hook message, the runbook, and the hooks-table row can no longer disagree: two are rendered or
-  pinned from `RECOVERY_STEPS`, and the third no longer restates commands.
+- The hook message and the runbook can no longer disagree **about the commands they both carry**: one
+  is rendered from `RECOVERY_STEPS`, the other is pinned to it by equality over runnable lines. The
+  hooks-table row no longer restates commands at all. The gate is not a proof of global consistency —
+  `RUNBOOK_ONLY_COMMANDS` is an explicit, named escape hatch (`npm install` today), and prose in either
+  surface is unconstrained.
 - A blocked session gets a recipe that works from inside the orphan, tries the work-preserving step
   first, and warns about the exit-1-on-success trap it would otherwise misread.
 - Changing the recipe means changing `_worktree_recovery.py` and the runbook in the same PR — item 78

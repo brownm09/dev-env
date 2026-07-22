@@ -50,6 +50,7 @@ the one place all 14 are listed together. Each has its own test file in
 | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning script must `import`. | ~20 subprocess-using scripts |
 | `_worktree_canon.py` | Shared worktree-path-to-canonical-root regex/resolution (`canonical_root_from_worktree`, `is_worktree_path`). | `post-tool-use.py`, `reconcile-project-board.py`, `pre-tool-use-canonical-mutate-guard.py`, `pre-tool-use-worktree-path-check.py`, `usage-snapshot.py` |
 | `_worktree_liveness.py` | Active-session liveness check — stops prune/reclaim from severing a worktree with a live Claude session in it. | `prune-merged-worktrees.py`, `reclaim-worktree-disk.py` |
+| `_worktree_recovery.py` | Single-sourced orphaned-worktree recovery recipe (`RECOVERY_STEPS`, `recovery_recipe`) — the block message a stuck session reads, pinned against the `docs/REFERENCE.md` runbook so the two can't drift ([ADR-116](../../docs/adr/116-single-source-worktree-recovery-recipe.md)). | `pre-tool-use-worktree-path-check.py` |
 | `_worktree_topology.py` | Worktree-on-`main` squat detection/diagnosis and park-target decisions. | `prune-merged-worktrees.py`, `post-pr-merge-pull.py`, `dev-env-sync.py`, `journal-canonical-guard.py` |
 
 ---
