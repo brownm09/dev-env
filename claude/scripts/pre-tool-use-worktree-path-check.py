@@ -42,7 +42,11 @@ Logic:
      an orphan or removed entry. An orphaned worktree dir silently resolves
      every git command up the tree to the canonical repo's `.git`, so writes
      land on the wrong tree or in a disconnected directory invisible to git.
-     Not live → exit 2 with the recovery recipe.
+     Not live → exit 2 with the recovery recipe, which is rendered from
+     `_worktree_recovery.RECOVERY_STEPS` rather than written inline here
+     (dev-env#862, ADR-116): this message is the only recovery instruction a
+     blocked session ever sees, and its former inline copy silently kept the
+     `git worktree add --force` recipe that dev-env#751 had already disproven.
   4. Read file_path (Write/Edit) or notebook_path (NotebookEdit) from tool input.
   5. If the path is absolute and starts with canonical_root but NOT with
      worktree_root → exit 2 with a blocking message naming both paths and the
@@ -69,6 +73,7 @@ import sys
 
 import _hookutil
 import _worktree_canon
+import _worktree_recovery
 from _worktree_topology import find_worktree_by_path, parse_worktree_porcelain
 
 # The nested/sibling worktree-path regexes and this matcher's nested-first
@@ -323,9 +328,12 @@ def main() -> None:
             f"  Worktree : {worktree_root}\n"
             f"  cwd      : {cwd}\n"
             f"\n"
-            f"Recover by re-creating the path as a real worktree, then retry:\n"
-            f"  git worktree add --force {worktree_root} <branch>\n"
-            f"(<branch> is typically claude/<worktree-name>; confirm with `git branch -a`.)"
+            # Rendered from the single-sourced recipe in `_worktree_recovery`, which the
+            # docs/REFERENCE.md runbook is pinned against (ADR-116). Until dev-env#862
+            # this message carried its own copy, and it kept the `worktree add --force`
+            # recipe dev-env#751 had already disproven -- on the one surface a blocked
+            # session actually reads.
+            + _worktree_recovery.recovery_recipe(worktree_root, canonical_root)
         )
         _block(reason)
 
