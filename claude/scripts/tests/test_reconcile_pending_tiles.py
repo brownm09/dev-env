@@ -26,6 +26,17 @@ Three properties carry real risk and get the most coverage here:
    documented quota-exhaustion history (dev-env#769). `test_lookup_states_one_fetch_per_repo`
    asserts the call count equals the number of distinct repos regardless of shard count.
 
+4. **The REST transport's two silent hazards** (dev-env#882, ADR-118 Amendment 3). Moving the
+   lookup off GraphQL onto the `core` bucket introduced two failure modes that a naive test
+   passes straight through, so both are pinned on `issue_states_from_rows`, the pure helper
+   that exists precisely to make them coverable. *PR rows:* REST models a pull request as an
+   issue, so a shard whose number names a PR would resolve to that PR's state and be unlinked
+   on a closed one -- the GraphQL predecessor filtered server-side and needed no such check.
+   *State case:* REST answers lowercase `"closed"` where `should_remove_tile` compares
+   `"CLOSED"`, so without normalization the hook goes *inert* -- fail-safe in direction, total
+   in effect, and reported nowhere. The case pin runs raw REST rows all the way to the
+   `unlink`, because that is the only level at which dropping normalization actually fails.
+
 Also pinned: the conservative keep-on-uncertainty contract (only a confirmed CLOSED
 removes), that a survivor shard is left byte-identical (the ADR-056 no-clobber guarantee,
 inherited), the race-tolerant empty-dir cleanup, and that the emitted message never
@@ -66,6 +77,8 @@ _spec.loader.exec_module(mod)  # safe: main() is guarded by __main__
 
 repo_from_issue_url = mod.repo_from_issue_url
 should_remove_tile = mod.should_remove_tile
+issue_states_from_rows = mod.issue_states_from_rows
+should_stop_paging = mod.should_stop_paging
 project_dirs = mod.project_dirs
 make_tile = mod.make_tile
 load_tiles = mod.load_tiles
@@ -323,7 +336,7 @@ def test_lookup_states_one_fetch_per_repo() -> str:
     # The cold-start guard: N shards across R repos must cost R calls, not N.
     calls = []
 
-    def fake_fetch(repo):
+    def fake_fetch(repo, numbers):
         calls.append(repo)
         return {n: "OPEN" for n in range(1, 100)}
 
@@ -336,7 +349,7 @@ def test_lookup_states_one_fetch_per_repo() -> str:
 
 
 def test_lookup_states_fetch_failure_yields_none_for_that_repo_only() -> str:
-    def fake_fetch(repo):
+    def fake_fetch(repo, numbers):
         return None if repo == "o/a" else {7: "CLOSED"}
 
     states = lookup_states({"o/a": [1], "o/b": [7]}, fetch=fake_fetch)
@@ -348,14 +361,14 @@ def test_lookup_states_fetch_failure_yields_none_for_that_repo_only() -> str:
 def test_lookup_states_missing_number_is_none_not_closed() -> str:
     # An issue outside the page window (or deleted/transferred) is absent from the result.
     # Absence must never be read as "closed" -- that would unlink a live tile's payload.
-    states = lookup_states({"o/a": [1, 2]}, fetch=lambda repo: {1: "OPEN"})
+    states = lookup_states({"o/a": [1, 2]}, fetch=lambda repo, numbers: {1: "OPEN"})
     assert states[("o/a", 1)] == "OPEN"
     assert states[("o/a", 2)] is None, "absent from the page window -> unresolved, not CLOSED"
     return "an issue missing from the fetched page resolves to None (kept), never CLOSED"
 
 
 def test_lookup_states_non_dict_fetch_result_is_tolerated() -> str:
-    states = lookup_states({"o/a": [1]}, fetch=lambda repo: ["unexpected"])
+    states = lookup_states({"o/a": [1]}, fetch=lambda repo, numbers: ["unexpected"])
     assert states[("o/a", 1)] is None, "a non-dict fetch result degrades to unresolved"
     return "a malformed fetch return value degrades to unresolved rather than raising"
 
@@ -369,7 +382,7 @@ def test_lookup_states_budget_stops_further_fetches() -> str:
     def fake_clock():
         return next(ticks)
 
-    def fake_fetch(repo):
+    def fake_fetch(repo, numbers):
         calls.append(repo)
         return {1: "CLOSED", 7: "CLOSED"}
 
@@ -383,9 +396,207 @@ def test_lookup_states_budget_stops_further_fetches() -> str:
 
 def test_lookup_states_empty_plan_makes_no_calls() -> str:
     calls = []
-    states = lookup_states({}, fetch=lambda r: calls.append(r) or {})
+    states = lookup_states({}, fetch=lambda r, numbers: calls.append(r) or {})
     assert states == {} and calls == [], "no tiles -> no gh calls at all"
     return "an empty lookup plan issues zero subprocess calls"
+
+
+def test_lookup_states_passes_requested_numbers_to_fetch() -> str:
+    # The REST transport stops paging as soon as everything asked for is resolved, which it can
+    # only do if it is told what that is. Pinned so a future refactor cannot quietly drop the
+    # argument: doing so would not fail anything else -- the fetch would just walk its full page
+    # cap on every repo, every session, silently.
+    seen = []
+
+    def fake_fetch(repo, numbers):
+        seen.append((repo, list(numbers)))
+        return {n: "OPEN" for n in numbers}
+
+    lookup_states({"o/a": [3, 7], "o/b": [1]}, fetch=fake_fetch)
+    assert seen == [("o/a", [3, 7]), ("o/b", [1])], f"each repo's numbers reach fetch, got {seen}"
+    return "lookup_states hands each repo its requested numbers -- the early-exit input"
+
+
+# --- REST transport: PR rows and state case (dev-env#882) --------------------
+
+
+def _rest_issue(number, state="open", **over):
+    """A row shaped as REST `GET /issues` actually returns it -- lowercase state, no marker."""
+    row = {"number": number, "state": state, "title": f"issue {number}"}
+    row.update(over)
+    return row
+
+
+def _rest_pr(number, state="closed"):
+    """A PR row: REST models pull requests as issues, marked only by `pull_request`."""
+    return {"number": number, "state": state, "title": f"pr {number}",
+            "pull_request": {"url": f"https://api.github.com/repos/o/r/pulls/{number}"}}
+
+
+def test_issue_states_from_rows_drops_pull_requests() -> str:
+    # REST /issues returns PRs too. Issues and PRs share ONE number sequence per repo, so this is
+    # not a collision between two live objects -- the hazard is a shard whose number names a PR,
+    # which without the filter resolves to that PR's state and gets unlinked on a closed one.
+    rows = [_rest_pr(885), _rest_pr(884), _rest_issue(883), _rest_issue(882)]
+    got = issue_states_from_rows(rows)
+    assert got == {883: "OPEN", 882: "OPEN"}, f"only issue rows survive, got {got}"
+    for pr in (885, 884):
+        assert pr not in got, f"PR #{pr} must be absent (-> None -> kept), not resolved"
+    assert should_remove_tile(got.get(885)) is False, \
+        "a shard numbered like a closed PR must resolve to unresolved-and-kept, never removed"
+    return "PR rows are dropped, so a shard naming a PR resolves to None (kept), not to its state"
+
+
+def test_issue_states_from_rows_filters_projected_pr_shape_identically() -> str:
+    # `fetch_repo_issue_states` asks gh for a projection that keeps `pull_request` as a bare
+    # `true` instead of the full object, purely to shrink the payload. The Python rule keys on the
+    # key's PRESENCE, so both shapes must classify the same -- otherwise the projection silently
+    # becomes classification logic living in an untested jq string.
+    full = issue_states_from_rows([_rest_pr(885), _rest_issue(883)])
+    projected = issue_states_from_rows([
+        {"number": 885, "state": "closed", "pull_request": True},
+        {"number": 883, "state": "open"},
+    ])
+    assert full == projected == {883: "OPEN"}, f"{full} != {projected}"
+    return "the projected `pull_request: true` shape and a full REST row classify identically"
+
+
+def test_issue_states_from_rows_treats_pull_request_key_presence_not_truthiness() -> str:
+    # If the projection ever emits an explicit null for issues, presence-based filtering drops
+    # every row -> everything unresolved -> everything kept. That is the safe direction, and it is
+    # the reason the rule is presence rather than truthiness; pinned so it stays that way.
+    got = issue_states_from_rows([{"number": 883, "state": "open", "pull_request": None}])
+    assert got == {}, f"a null `pull_request` still marks a PR row, got {got}"
+    return "presence of `pull_request` classifies, not its value -- degrades to kept, not mispruned"
+
+
+def test_issue_projection_preserves_the_pull_request_marker() -> str:
+    # `_ISSUE_PROJECTION` decides what SHAPE reaches issue_states_from_rows, and it cannot be
+    # executed offline (gh owns the jq), so without this gate it is the one piece of the transport
+    # covered by nothing but a comment. The dangerous edit is the natural-looking simplification
+    # `[.[] | {number, state}]` -- dropping the marker as redundant, since Python does the
+    # filtering anyway. That makes PR rows arrive INDISTINGUISHABLE from issues, so a shard
+    # numbered like a closed PR is resolved and unlinked: the exact mis-prune this PR exists to
+    # prevent, with every other test in this file still green.
+    #
+    # Structural, in the same spirit as the AST scan of the emit_advisory call site below: pin the
+    # properties that make the projection safe, not its exact spelling.
+    proj = mod._ISSUE_PROJECTION
+    assert 'has("pull_request")' in proj, \
+        "the projection must DETECT the PR marker"
+    assert proj.count("pull_request") >= 2, \
+        "the marker must be detected AND re-emitted -- one occurrence cannot round-trip it"
+    assert "select(" not in proj, \
+        ("the projection must not filter rows: classification belongs in "
+         "issue_states_from_rows, where it is testable, not in an unexecutable jq string")
+    for field in ("number", "state"):
+        assert field in proj, f"the projection must carry `{field}` through"
+    return "the jq projection detects and re-emits `pull_request`, and never filters rows itself"
+
+
+def test_issue_states_from_rows_uppercases_state() -> str:
+    got = issue_states_from_rows([_rest_issue(1, "open"), _rest_issue(2, "closed")])
+    assert got == {1: "OPEN", 2: "CLOSED"}, f"REST lowercase must be normalized, got {got}"
+    assert should_remove_tile(got[2]) is True and should_remove_tile(got[1]) is False, \
+        "the normalized values must satisfy should_remove_tile's case-sensitive contract"
+    return 'REST "open"/"closed" are upper-cased into the vocabulary should_remove_tile expects'
+
+
+def test_rest_closed_row_prunes_end_to_end() -> str:
+    # The inertness caveat, pinned at the only level that catches it. If normalization is ever
+    # dropped, every per-function test still passes while the hook silently stops pruning
+    # anything -- fail-safe in direction, total in effect, reported nowhere. Only a chain that
+    # runs raw REST rows all the way to the `unlink` goes red when that happens.
+    with tempfile.TemporaryDirectory() as root:
+        proj = _journal(Path(root))
+        closed = _write_tile(proj, 870)
+        survivor = _write_tile(proj, 882)
+        rows = [_rest_pr(885), _rest_pr(884), _rest_issue(882, "open"), _rest_issue(870, "closed")]
+
+        states = lookup_states({REPO: [870, 882]},
+                               fetch=lambda repo, numbers: issue_states_from_rows(rows))
+        pending, removed, skipped = reconcile_tiles(load_tiles(Path(root)), states)
+
+        assert not closed.exists(), 'a REST lowercase "closed" must actually unlink the shard'
+        assert survivor.exists(), "the open-issue shard must survive"
+        assert [t["issue"] for t in pending] == [882]
+        assert [t["issue"] for t in removed] == [870] and skipped == []
+    return 'raw REST rows -> unlink: a lowercase "closed" prunes end-to-end (the inertness caveat)'
+
+
+def test_issue_states_from_rows_tolerates_junk() -> str:
+    for junk in [None, {}, "rows", 42]:
+        assert issue_states_from_rows(junk) == {}, f"non-list input must yield {{}}: {junk!r}"
+    got = issue_states_from_rows([
+        "not a dict",
+        None,
+        {"number": 1},                                # no state
+        {"number": 2, "state": 7},                    # non-string state
+        {"state": "open"},                            # no number
+        {"number": "3", "state": "open"},             # string number
+        {"number": True, "state": "closed"},          # isinstance(True, int) is True
+        _rest_issue(9, "open"),                       # the one good row
+    ])
+    assert got == {9: "OPEN"}, f"only the well-formed row survives, got {got}"
+    return "malformed rows degrade to omission (-> unresolved -> kept), never to a spurious CLOSED"
+
+
+# --- REST transport: bounded, early-exit pagination --------------------------
+
+
+def _page(numbers, state="open"):
+    return [_rest_issue(n, state) for n in numbers]
+
+
+def test_page_budget_cannot_outrun_the_lookup_budget() -> str:
+    # `fetch_repo_issue_states` deliberately carries no deadline of its own: the constants are
+    # balanced so one hanging repo exhausts LOOKUP_BUDGET_SECONDS exactly, at which point
+    # lookup_states skips every remaining repo. That property is what makes the page loop need no
+    # bookkeeping -- and until now it lived only in a comment. Widening the issue window by
+    # bumping MAX_ISSUE_PAGES (plausible: 100 rows resolved only 65 issues in the live run, since
+    # REST rows include PRs) would silently double the per-repo worst case against an unchanged
+    # budget, reintroducing the multi-repo overrun the rebalance removed. Nothing else goes red:
+    # the symptom is a slow first prompt in a session nobody is timing.
+    worst_case = mod.MAX_ISSUE_PAGES * mod.GH_CALL_TIMEOUT
+    assert worst_case <= mod.LOOKUP_BUDGET_SECONDS, (
+        f"one hanging repo can burn {worst_case}s against a "
+        f"{mod.LOOKUP_BUDGET_SECONDS}s lookup budget -- either lower MAX_ISSUE_PAGES "
+        f"({mod.MAX_ISSUE_PAGES}) / GH_CALL_TIMEOUT ({mod.GH_CALL_TIMEOUT}), raise the budget, "
+        "or give the page loop its own deadline"
+    )
+    return "MAX_ISSUE_PAGES * GH_CALL_TIMEOUT stays within LOOKUP_BUDGET_SECONDS (invariant, not a comment)"
+
+
+def test_should_stop_paging_stops_on_short_or_unusable_page() -> str:
+    assert should_stop_paging(_page(range(200, 195, -1)), {}, {150}, page_size=100) is True
+    for junk in [None, "rows", {}]:
+        assert should_stop_paging(junk, {}, {150}, page_size=100) is True, \
+            f"an unusable page ends the walk rather than looping: {junk!r}"
+    return "a short page is the last page; an unusable one ends the walk instead of looping"
+
+
+def test_should_stop_paging_stops_when_everything_wanted_is_resolved() -> str:
+    full = _page(range(200, 100, -1))
+    assert len(full) == 100, "fixture must be a full page or the short-page rule masks this one"
+    assert should_stop_paging(full, {150: "OPEN", 160: "OPEN"}, {150, 160}, page_size=100) is True
+    assert should_stop_paging(full, {150: "OPEN"}, {150, 99}, page_size=100) is False, \
+        "one number still missing and the floor not yet crossed -> another page is worth fetching"
+    assert should_stop_paging(full, {}, set(), page_size=100) is True, \
+        "nothing requested -> one page is already more than enough"
+    return "the walk stops once every requested number resolves (page 1, in the normal case)"
+
+
+def test_should_stop_paging_stops_after_crossing_the_lowest_wanted_number() -> str:
+    # REST /issues is created-desc and numbers are assigned in creation order, so a row below the
+    # lowest wanted number proves every later page is older still. #105 here is a PR, so it never
+    # reaches `resolved` -- exactly the case that would otherwise page to the cap for nothing.
+    full = _page(range(200, 101, -1)) + [_rest_pr(101)]
+    assert len(full) == 100
+    assert should_stop_paging(full, {150: "OPEN"}, {150, 105}, page_size=100) is True, \
+        "row #101 is below the floor of 105 -> stop; #105 stays unresolved -> kept"
+    assert should_stop_paging(full, {150: "OPEN"}, {150, 100}, page_size=100) is False, \
+        "floor 100 is not crossed by this page -> keep paging"
+    return "crossing min(wanted) ends the walk; the unfound number resolves to None (kept)"
 
 
 # --- directory cleanup --------------------------------------------------------
@@ -582,6 +793,18 @@ def main() -> int:
         ("non-dict fetch result tolerated", test_lookup_states_non_dict_fetch_result_is_tolerated),
         ("wall-clock budget stops further fetches", test_lookup_states_budget_stops_further_fetches),
         ("empty plan makes no calls", test_lookup_states_empty_plan_makes_no_calls),
+        ("fetch receives the requested numbers", test_lookup_states_passes_requested_numbers_to_fetch),
+        ("REST: PR rows dropped", test_issue_states_from_rows_drops_pull_requests),
+        ("REST: projected PR shape filtered alike", test_issue_states_from_rows_filters_projected_pr_shape_identically),
+        ("REST: pull_request presence, not truthiness", test_issue_states_from_rows_treats_pull_request_key_presence_not_truthiness),
+        ("REST: jq projection preserves the PR marker", test_issue_projection_preserves_the_pull_request_marker),
+        ("REST: state upper-cased", test_issue_states_from_rows_uppercases_state),
+        ('REST: lowercase "closed" prunes end-to-end', test_rest_closed_row_prunes_end_to_end),
+        ("REST: malformed rows omitted, never CLOSED", test_issue_states_from_rows_tolerates_junk),
+        ("page budget stays within the lookup budget", test_page_budget_cannot_outrun_the_lookup_budget),
+        ("paging stops on a short/unusable page", test_should_stop_paging_stops_on_short_or_unusable_page),
+        ("paging stops once wanted is resolved", test_should_stop_paging_stops_when_everything_wanted_is_resolved),
+        ("paging stops after crossing min(wanted)", test_should_stop_paging_stops_after_crossing_the_lowest_wanted_number),
         ("emptied tiles/ dir pruned, others kept", test_prune_removes_emptied_tiles_dir_only),
         ("rmdir is race-tolerant", test_prune_leaves_dir_when_a_shard_reappears),
         ("no removals -> nothing pruned", test_prune_with_no_removals_touches_nothing),

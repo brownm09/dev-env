@@ -87,7 +87,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_post_compact.py` | `post-compact.py` | Reads and unions open-PR shards + legacy `open-prs.jsonl` at PostCompact time. |
 | `test_pre_tool_use_journal_compose_force_guard.py` | `pre-tool-use-journal-compose-force-guard.py` | Mechanically blocks a same-day `/journal-compose` git operation unless a fresh `--force` marker exists. |
 | `test_reconcile_open_prs.py` | `reconcile-open-prs.py` | Reconciles open-PR shards against live GitHub state (removes shards for merged/closed PRs). |
-| `test_reconcile_pending_tiles.py` | `reconcile-pending-tiles.py` | Reconciles tile shards against live issue state; URL validation in front of the unlink, filename-authoritative issue numbers, one `gh` call per repo. |
+| `test_reconcile_pending_tiles.py` | `reconcile-pending-tiles.py` | Reconciles tile shards against live issue state; URL validation in front of the unlink, filename-authoritative issue numbers, one paged REST read per repo, and the REST transport's two silent hazards (PR rows dropped, `state` upper-cased). |
 | `test_stop_journal_stub_checkpoint.py` | `stop-journal-stub-checkpoint.py` | Stop-hook checkpoint: a report/analysis/verification session that did substantive work must leave a stub. |
 | `test_stub_push_archive_reminder.py` | `stub-push-archive-reminder.py` | Push-error guard plus unresolved-open-PR detection behind the "archive the branch" reminder after a journal push. |
 | `test_validate_manifest.py` | `validate-manifest.py` | Pre-compose validator: every manifest shard/legacy entry has all five required fields. |
