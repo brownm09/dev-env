@@ -572,15 +572,12 @@ writes**:
   other PR's record, even when a *different* session or the `reconcile-open-prs.py` hook does the removal.
 - **Tiles:** each spawned tile is its own shard `sessions/<project>/tiles/<issue-number>.json`, keyed by
   the tile's paired GitHub issue and filed under the tile's **target** project (from its `cwd`), not the
-  spawning session's. **Write it immediately after each `spawn_task` call** — the eight-field payload
-  (`issue`, `url`, `title`, `tldr`, `prompt`, `cwd`, `stub`, `spawned`) is what lets a lost chip be
-  re-spawned *exactly* after a crash or app restart, which the chip itself cannot survive (ADR-094).
-  Closing the paired issue is the completion signal. The reader that acts on it —
-  `reconcile-pending-tiles.py`, which unlinks the shard once it sees the issue `CLOSED` and re-surfaces
-  the survivors at the next session start — lands in [#869](https://github.com/brownm09/dev-env/issues/869);
-  until it merges, shards accumulate un-pruned and nothing re-surfaces them, so **write the shard anyway**
-  (it is the payload a restart would otherwise lose) but expect no session-start prompt yet. Schema and
-  write/delete steps: [REFERENCE → Tile shards](../docs/REFERENCE.md#tile-shards-sessionsprojecttilesissue-numberjson);
+  spawning session's. **Write it immediately after each `spawn_task` call** — the payload is what lets a
+  lost chip be re-spawned *exactly* after a crash or app restart, which the chip itself cannot survive
+  (ADR-094); closing the paired issue is the completion signal. Build the JSON with a serializer, never
+  `echo` — `prompt` is free prose, so interpolating it corrupts the shard or escapes into the shell.
+  Schema, the write recipe, and current phase:
+  [REFERENCE → Tile shards](../docs/REFERENCE.md#tile-shards-sessionsprojecttilesissue-numberjson);
   rationale, and why a headless process *cannot* respawn tiles instead, in [ADR-118](../docs/adr/118-tile-persistence-shards.md).
 
 Because shards are disjoint files, git merges concurrent sessions' writes cleanly and removal is a
@@ -619,7 +616,7 @@ operational artifacts (compose lock files, log file timestamps).
 4. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
 6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` — one JSON object (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
-7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json`, `git commit -m "draft: YYYY-MM-DD session 1" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json`, `git push -u origin draft/YYYY-MM-DD`
+7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json sessions/<project>/tiles/<issue-number>.json`, `git commit -m "draft: YYYY-MM-DD session 1" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json sessions/<project>/tiles/<issue-number>.json`, `git push -u origin draft/YYYY-MM-DD`
    *(include `sessions/<project>/open-prs/<N>.json` — the exact shard file(s) this session itself
    created or removed, never the bare `open-prs/` directory — in both the `git add` and the `git commit`
    pathspec only if this session opened or merged a PR. More than one PR touched in the same session
@@ -628,7 +625,10 @@ operational artifacts (compose lock files, log file timestamps).
    different concurrent session has just written into that same folder, sweeping it into this
    session's commit under an unrelated message ([dev-env#480](https://github.com/brownm09/dev-env/issues/480)).
    The `--` pathspec on `git commit` is required, not optional — see "Commit with an explicit pathspec"
-   above.)*
+   above. The same three rules apply to `sessions/<project>/tiles/<issue-number>.json`: include it only
+   if this session spawned a tile, name each tile shard exactly (never the bare `tiles/` directory), and
+   drop it from both pathspecs otherwise — `git add` on a path that does not exist fails and aborts the
+   whole add, silently leaving the stub and manifest unstaged.)*
 
 **Subsequent sessions:**
 1. `git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD && git -C C:/Users/brown/Git/engineering-journal pull`
@@ -640,7 +640,7 @@ operational artifacts (compose lock files, log file timestamps).
 4. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` with the current session block
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
 6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` — one JSON object (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
-7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json`, `git commit -m "draft: YYYY-MM-DD session N" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json`, `git push`
+7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json sessions/<project>/tiles/<issue-number>.json`, `git commit -m "draft: YYYY-MM-DD session N" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json sessions/<project>/tiles/<issue-number>.json`, `git push`
    *(include `sessions/<project>/open-prs/<N>.json` — the exact shard file(s) this session itself
    created or removed, never the bare `open-prs/` directory — in both the `git add` and the `git commit`
    pathspec only if this session opened or merged a PR. More than one PR touched in the same session
@@ -649,7 +649,10 @@ operational artifacts (compose lock files, log file timestamps).
    different concurrent session has just written into that same folder, sweeping it into this
    session's commit under an unrelated message ([dev-env#480](https://github.com/brownm09/dev-env/issues/480)).
    The `--` pathspec on `git commit` is required, not optional — see "Commit with an explicit pathspec"
-   above.)*
+   above. The same three rules apply to `sessions/<project>/tiles/<issue-number>.json`: include it only
+   if this session spawned a tile, name each tile shard exactly (never the bare `tiles/` directory), and
+   drop it from both pathspecs otherwise — `git add` on a path that does not exist fails and aborts the
+   whole add, silently leaving the stub and manifest unstaged.)*
 
 **File formats, stub template, and recovery:** the manifest-shard and open-PR-shard schemas
 (referenced in the workflow steps above), the stub-file template, the canonical 11-section compose

@@ -448,7 +448,13 @@ For a one-line navigational map of the test directory, see
     `test_all_shard_readers_are_one_implementation`: it asserts all three entry points return *identical*
     results over a directory containing valid, non-numeric, unparseable, and non-dict shards — so it fails
     if anyone later re-specialises an entry point and reintroduces the exact two-divergent-copies drift
-    this module was extracted to end.
+    this module was extracted to end. That test also pins **which** shards survive
+    (`[e["pr"] for _p, e in base] == [2, 10]`), not merely how many: the three cross-entry-point equality
+    assertions compare the readers to *each other*, so a **uniform** regression — all three returning the
+    malformed shards, or the right two misordered — would satisfy every one of them. An earlier draft
+    asserted `[n for _p, n in base] and len(base) == 2`, whose first conjunct was vacuous (`n` binds the
+    entry dict, and non-emptiness is already implied by the length check) and which never checked identity
+    at all; caught in this PR's own `/review`.
 
     ```bash
     py -3 claude/scripts/tests/test_journal_shards.py
@@ -1005,9 +1011,19 @@ For a one-line navigational map of the test directory, see
     missing only this one would otherwise pass a shallow eyeball check and fail silently at re-spawn
     time); a stray `task_id` does not mask a genuinely missing required field (ADR-094's rejected
     "task_id record only" alternative, kept rejected); and `test_tile_and_open_pr_schemas_are_distinct`
-    asserts the two schemas are **not** interchangeable — both are all-required single-object shards on
-    the same numeric-filename layout sharing `url`/`stub`, so a copy-paste validating a tile against
+    asserts the two schemas are **not** interchangeable — both are single-object shards on the same
+    numeric-filename layout sharing `url`/`stub`, so a copy-paste validating a tile against
     `OPEN_PR_REQUIRED_FIELDS` would "pass" on the overlap while silently ignoring `prompt`/`cwd`.
+
+    Two further pins cover `stub`, which is **optional** in this schema (the manifest's `priorities` is
+    the same shape) and is the one field the open-PR precedent gets wrong for tiles.
+    `test_tile_stub_is_optional` fixes that it may be absent: the tiling rule fires the moment a
+    follow-up is identified, while the stub triggers are PR-open / PR-merge / report-generation, so a
+    session that tiles something in passing writes no stub at all and requiring the field would force it
+    to invent a value. `test_tile_stub_present_is_project_qualified` fixes that when present it carries
+    its project (`sessions/<project>/…stub.md`) rather than the open-PR shard's bare filename — a tile
+    shard is filed under its **target** project, so the spawning session's stub can live under a
+    different one and a bare filename would not resolve. Both gaps were found in this PR's own `/review`.
 
     ```bash
     py -3 claude/scripts/tests/test_journal_schema.py

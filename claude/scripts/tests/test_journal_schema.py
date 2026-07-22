@@ -83,7 +83,7 @@ def _valid_tile_entry(**overrides):
         "tldr": "Establish the on-disk tile-shard format and the rule that writes it.",
         "prompt": "Implement the tile-shard schema per dev-env#868. See #867 for full scope.",
         "cwd": "C:/Users/brown/Git/dev-env",
-        "stub": "2026-07-22_140000.stub.md",
+        "stub": "sessions/dev-env/2026-07-22_140000.stub.md",
         "spawned": "2026-07-22",
     }
     base.update(overrides)
@@ -146,8 +146,23 @@ def test_open_pr_empty_dict_missing_all():
 
 def test_tile_field_order():
     assert TILE_REQUIRED_FIELDS == (
-        "issue", "url", "title", "tldr", "prompt", "cwd", "stub", "spawned"
+        "issue", "url", "title", "tldr", "prompt", "cwd", "spawned"
     )
+
+def test_tile_stub_is_optional():
+    # `stub` is provenance, not payload, and is genuinely not always knowable: the tiling
+    # rule fires the moment a follow-up is identified, while the stub triggers are
+    # PR-open / PR-merge / report-generation — so a session that tiles something in passing
+    # writes no stub at all. Requiring it would force that session to invent a value.
+    entry = _valid_tile_entry()
+    del entry["stub"]
+    assert missing_tile_fields(entry) == []
+
+def test_tile_stub_present_is_project_qualified():
+    # When present it must carry its project, unlike the open-PR shard's bare filename: a
+    # tile shard is filed under its *target* project, so the spawning session's stub can
+    # live under a different one and a bare filename would not resolve.
+    assert _valid_tile_entry()["stub"].startswith("sessions/")
 
 def test_tile_all_fields_present():
     assert missing_tile_fields(_valid_tile_entry()) == []

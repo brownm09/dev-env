@@ -1524,36 +1524,84 @@ carried in `url`.
 Schema:
 
 ```json
-{"issue":868,"url":"https://github.com/brownm09/dev-env/issues/868","title":"<chip label, <=60 chars>","tldr":"<1-2 sentence tooltip>","prompt":"<full self-contained spawn_task prompt>","cwd":"C:/Users/brown/Git/dev-env","stub":"YYYY-MM-DD_HHMMSS.stub.md","spawned":"YYYY-MM-DD"}
+{"issue":868,"url":"https://github.com/brownm09/dev-env/issues/868","title":"<chip label, <=60 chars>","tldr":"<1-2 sentence tooltip>","prompt":"<full self-contained spawn_task prompt>","cwd":"C:/Users/brown/Git/dev-env","stub":"sessions/dev-env/YYYY-MM-DD_HHMMSS.stub.md","spawned":"YYYY-MM-DD"}
 ```
 
-All eight fields are required — a tile shard exists to reconstruct a chip, and a partial one cannot, so
-there is no field it is meaningful to omit. `title`/`tldr`/`prompt`/`cwd` are the four `spawn_task`
-arguments; together they are what makes an *exact* re-spawn possible. The field list lives in
-`TILE_REQUIRED_FIELDS` in `claude/scripts/_journal_schema.py`.
+Seven fields are required: `issue`, `url`, `title`, `tldr`, `prompt`, `cwd`, `spawned`. The field list
+lives in `TILE_REQUIRED_FIELDS` in `claude/scripts/_journal_schema.py`. `title`/`tldr`/`prompt`/`cwd`
+are the four `spawn_task` arguments; together they are what makes an *exact* re-spawn possible.
+
+`stub` is **optional** (the manifest schema's `priorities` is the same shape). An open-PR shard is
+always written by a session that also writes a stub, but a tile is not: the tiling rule fires the moment
+a follow-up is identified, while the stub triggers are PR-open / PR-merge / report-generation — so a
+session that tiles something in passing may legitimately write no stub at all, and requiring the field
+would force it to invent a value. When present, `stub` must be **project-qualified**
+(`sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md`, the manifest convention) rather than the open-PR
+shard's bare filename — a tile shard is filed under its *target* project, so the spawning session's stub
+may live under a different one and a bare filename would not resolve.
 
 **`task_id` is deliberately not stored.** Chip IDs do not survive an app restart (ADR-094), so persisting
 one would save a value that is dead exactly when the shard is needed — this is ADR-094's rejected
 "task_id record only" alternative.
 
 **When a session spawns a tile:** write the shard immediately after the `spawn_task` call, and commit it
-alongside the stub (explicit per-file pathspec, never the bare `tiles/` directory):
+alongside the stub (explicit per-file pathspec, never the bare `tiles/` directory).
+
+**Do not build this JSON with `echo`.** Unlike every other shard, `prompt` holds free prose — the whole
+`spawn_task` prompt — so string-interpolating it into `echo '{...}'` breaks in three ways, two of them
+silent: a `"` or a Windows `\` path produces invalid JSON that `iter_numeric_shards` skips without a
+word (the payload is lost precisely when a restart needs it), and an apostrophe closes the shell's
+single-quoted string, making any following metacharacters executable — tile prompts routinely quote
+text Claude did not author (issue bodies, `gh` output, error text). Serialize instead, passing the
+prose through a **quoted** heredoc so the shell never parses it:
 
 ```bash
-echo '{"issue":<N>,"url":"<issue-url>","title":"<chip label>","tldr":"<tooltip>","prompt":"<full prompt>","cwd":"<target repo path>","stub":"YYYY-MM-DD_HHMMSS.stub.md","spawned":"YYYY-MM-DD"}' \
-  > "C:/Users/brown/Git/engineering-journal/sessions/<project>/tiles/<N>.json"
+mkdir -p "C:/Users/brown/Git/engineering-journal/sessions/<project>/tiles"
+py -3 -c '
+import json, sys
+prompt = sys.stdin.read().rstrip("\n")
+json.dump({"issue": <N>, "url": "<issue-url>", "title": "<chip label>",
+           "tldr": "<tooltip>", "prompt": prompt, "cwd": "<target repo path>",
+           "stub": "sessions/<spawning-project>/YYYY-MM-DD_HHMMSS.stub.md",
+           "spawned": "YYYY-MM-DD"},
+          open(r"C:/Users/brown/Git/engineering-journal/sessions/<project>/tiles/<N>.json", "w"),
+          ensure_ascii=False)
+' <<'TILE_PROMPT_EOF'
+<the full self-contained spawn_task prompt, verbatim, any characters, any number of lines>
+TILE_PROMPT_EOF
 ```
+
+The `mkdir -p` is required, not defensive: `tiles/` exists for no project until its first tile, and the
+reconciler deletes it again whenever a project's last shard is pruned — so the missing-directory case
+recurs, it is not a one-time bootstrap.
+
+Writing the file with the `Write` tool is equally acceptable and avoids the shell entirely; the
+constraint is only that the payload must never be interpolated into a command line.
 
 **When the tile's work completes:** closing the paired issue is the signal. `reconcile-pending-tiles.py`
 unlinks the shard of any tile whose issue it finds `CLOSED` at session start, and removes the `tiles/`
 directory once its last shard is gone. A `gh` failure or an indeterminate state keeps the shard —
 conservative, matching `reconcile-open-prs.py`.
 
+**Reader requirements (binding on [#869](https://github.com/brownm09/dev-env/issues/869)).** `url` is a
+git-committed, cross-machine, free-form string that the reader will parse to derive `--repo` for a
+`gh issue view` call. The open-PR precedent it will copy (`reconcile-open-prs.py`) does a bare
+`urlparse(...).path.split("/")` with no host or character check, which is tolerable there but not here:
+the tile reconciler's remove branch **unlinks the shard**, so a mis-resolved lookup that returns
+`CLOSED` destroys the payload. `gh --repo` also accepts a `HOST/OWNER/REPO` form, so a crafted path can
+aim it at another host. The reader must therefore:
+
+- require `urlparse(url).netloc == "github.com"`;
+- match owner/repo against `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`;
+- take the issue number from the **filename** (`shard_number`), not from `url`;
+- **skip and keep** the shard — never unlink — when any check fails.
+
 > **Phasing.** The shard format, the shared reader support (`iter_tile_shards`), and the write rule are
 > live now. `reconcile-pending-tiles.py` itself lands in
 > [#869](https://github.com/brownm09/dev-env/issues/869), and write-time/Stop-time enforcement in
 > [#870](https://github.com/brownm09/dev-env/issues/870). Until #869 merges, shards are written but never
-> pruned or surfaced — dormant, not wrong.
+> pruned or surfaced — dormant, not wrong. This section is the current-state record; ADR-118 is the
+> decision-time rationale and is not updated as phases land.
 
 **Known limitation.** There is no non-destructive API to learn whether a chip was actually clicked
 (`dismiss_task` reveals it only by consuming it), so "still pending" is approximated by "issue still

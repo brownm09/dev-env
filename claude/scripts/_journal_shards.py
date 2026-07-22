@@ -25,7 +25,7 @@ re-surface tiles whose chips died with an app restart. "Glob, keep numeric stems
 numerically, parse tolerantly" is the same operation for both kinds, differing only in the
 directory and what the number *means* (PR vs. paired issue). That shared core therefore
 lives in ``iter_numeric_shards``; ``iter_pr_shards`` and ``iter_tile_shards`` are named
-delegations to it. Adding the tile kind by *copying* the PR reader would have recreated
+delegations to it (three public names, one implementation). Adding the tile kind by *copying* the PR reader would have recreated
 precisely the two-divergent-copies bug this module was extracted to end.
 
 Imported the same way as ``_winsubp`` / ``_hookio`` / ``_worktree_liveness``: a sibling
@@ -74,8 +74,8 @@ def iter_numeric_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
 
     The shared core behind ``iter_pr_shards`` (open-PR shards, ADR-056) and
     ``iter_tile_shards`` (tile shards, ADR-118) — both layouts are "a directory of
-    ``<N>.json`` files", so the enumeration is one implementation with two named entry
-    points rather than two copies that can drift apart.
+    ``<N>.json`` files", so the enumeration is one implementation reached through two
+    shard-kind-specific entry points rather than two copies that can drift apart.
 
     Returns a list of ``(path, entry)`` pairs — the path so a caller can ``unlink`` the
     shard (``reconcile-open-prs.py``, ``reconcile-pending-tiles.py``) and the parsed object
@@ -145,7 +145,7 @@ def iter_tile_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
 def read_legacy_entries(path: Path) -> list[dict]:
     """Read the legacy single-file ``open-prs.jsonl`` — one JSON object per line.
 
-    Returns the parsed objects in file order. Tolerant of everything ``iter_pr_shards`` is:
+    Returns the parsed objects in file order. Tolerant of everything ``iter_numeric_shards`` is:
     blank lines, unparseable lines, and non-object lines are skipped; a missing,
     unreadable, or non-UTF-8 file yields ``[]`` (so callers need not guard
     ``path.exists()`` first). This is the pre-ADR-056 format that drains to empty as its

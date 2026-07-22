@@ -50,10 +50,29 @@ next session start, where Claude — the only actor that can — re-spawns them.
 **Shard.** `sessions/<project>/tiles/<issue-number>.json`, one JSON object, keyed by the
 paired GitHub issue number. Issue-per-tile (ADR-094) guarantees the issue exists, and it
 doubles as the reconciliation key. `<project>` is the tile's **target** project (from its
-`cwd`), not the spawning session's, so tiles land in their respective projects. Eight
+`cwd`), not the spawning session's, so tiles land in their respective projects. Seven
 required fields (`TILE_REQUIRED_FIELDS` in `_journal_schema.py`): `issue`, `url`, `title`,
-`tldr`, `prompt`, `cwd`, `stub`, `spawned`. The middle four are the `spawn_task` arguments —
+`tldr`, `prompt`, `cwd`, `spawned`. The middle four are the `spawn_task` arguments —
 together they are what makes an *exact* re-spawn possible.
+
+`stub` is **optional**, unlike its open-PR counterpart. An open-PR shard is always written by
+a session that also writes a stub; a tile is not, because the tiling rule fires the moment a
+follow-up is identified while the stub triggers are PR-open / PR-merge / report-generation. A
+session that tiles something in passing legitimately writes no stub, and requiring the field
+would force it to invent one. When present it is **project-qualified**
+(`sessions/<project>/…stub.md`, the manifest convention) rather than the open-PR shard's bare
+filename — the shard is filed under its *target* project, so the spawning session's stub may
+live under a different one and a bare filename would not resolve.
+
+**The payload must be serialized, never interpolated.** `prompt` is free prose — the entire
+`spawn_task` prompt — which makes the `echo '{...}' > file` idiom the other shards use unsafe
+here in three ways, two of them silent: a `"` or a Windows `\` path yields invalid JSON that
+the reader skips without a word (losing the payload exactly when a restart needs it), and an
+apostrophe closes the shell's single-quoted string so following metacharacters execute. Tile
+prompts routinely quote text Claude did not author — issue bodies, `gh` output, error text.
+The documented recipe therefore pipes the prose through a quoted heredoc into a JSON
+serializer, and `mkdir -p` precedes it (`tiles/` does not exist until a project's first tile,
+and the reader deletes it again whenever the last shard is pruned).
 
 **`task_id` is deliberately not stored.** A chip ID is dead after restart, so persisting one
 saves a value that is worthless precisely when the shard is needed. This is ADR-094's
@@ -73,6 +92,17 @@ rest, and emit a compact index on **stdout at exit 0** (the channel that is mode
 that event — getting this backwards is the ADR-098 failure mode). It surfaces the *index*,
 not the payloads; Claude reads a shard for the full prompt only when actually re-spawning,
 keeping turn-1 context small.
+
+**The reader must validate `url` before it reaches `argv`.** `url` is git-committed,
+cross-machine, and (until dev-env#870) unvalidated at write time, yet the reader parses it to
+derive `--repo` for `gh`. The precedent it would otherwise copy — `reconcile-open-prs.py` —
+splits the URL path with no host or character check. That is tolerable for open PRs but not
+here, because the tile reconciler's remove branch **unlinks the shard**: a mis-resolved lookup
+returning `CLOSED` destroys the payload. `gh --repo` also accepts a `HOST/OWNER/REPO` form, so
+a crafted path can aim it at another host with the user's credentials. The reader must require
+`netloc == "github.com"`, match owner/repo against `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`, take
+the issue number from the filename rather than the URL, and **skip-and-keep** — never unlink —
+when any check fails.
 
 **Shared reader, not a copy.** `_journal_shards.py` generalises to `iter_numeric_shards`,
 with `iter_pr_shards` and `iter_tile_shards` as named delegations, and `shard_pr_number`

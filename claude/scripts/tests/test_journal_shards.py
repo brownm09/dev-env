@@ -238,7 +238,11 @@ def test_all_shard_readers_are_one_implementation() -> str:
         base = iter_numeric_shards(d)
         assert iter_pr_shards(d) == base, "iter_pr_shards diverged from iter_numeric_shards"
         assert iter_tile_shards(d) == base, "iter_tile_shards diverged from iter_numeric_shards"
-        assert [n for _p, n in base] and len(base) == 2, f"shared core still filters, got {base}"
+        # Assert WHICH shards survived, not just how many. The three equality checks above
+        # compare the entry points to each other, so a *uniform* regression (all three
+        # returning the malformed shards, or the right ones misordered) is invisible to
+        # them — only pinning the identity and order of the survivors catches that.
+        assert [e["pr"] for _p, e in base] == [2, 10], f"shared core still filters+sorts, got {base}"
     return "iter_pr_shards / iter_tile_shards / iter_numeric_shards agree exactly (anti-drift)"
 
 

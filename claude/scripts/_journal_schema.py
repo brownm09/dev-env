@@ -50,7 +50,18 @@ OPEN_PR_REQUIRED_FIELDS = ("pr", "url", "topic", "stub", "opened")
 # same trick the open-PR shard uses). `task_id` is deliberately absent: chip IDs do not
 # survive an app restart (ADR-094), so storing one would persist a value that is dead
 # exactly when the shard is needed.
-TILE_REQUIRED_FIELDS = ("issue", "url", "title", "tldr", "prompt", "cwd", "stub", "spawned")
+#
+# `stub` is OPTIONAL and deliberately absent from this tuple (the manifest schema's
+# `priorities` is the same shape). Unlike an open-PR shard — always written by a session
+# that also writes a stub — a tile can be spawned by a session that writes no stub at all:
+# the tiling rule fires "the moment you identify" a follow-up, while the stub triggers are
+# PR-open / PR-merge / report-generation. Requiring `stub` would force such a session to
+# invent a value. When present it must be **project-qualified**
+# (`sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md`, the manifest convention) rather than the
+# open-PR shard's bare filename: a tile shard is filed under its *target* project, so the
+# spawning session's stub may live under a different one and a bare filename would not
+# resolve.
+TILE_REQUIRED_FIELDS = ("issue", "url", "title", "tldr", "prompt", "cwd", "spawned")
 
 # Sub-keys required inside the `tokens` dict value (dev-env #824).
 TOKENS_REQUIRED_KEYS = ("input", "output", "cost")
