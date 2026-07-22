@@ -434,6 +434,22 @@ For a one-line navigational map of the test directory, see
     (`reconcile-open-prs.py`, `post-compact.py`) import these helpers as one source of truth
     ([ADR-057](adr/057-shared-journal-shard-reader.md)).
 
+    [ADR-116](adr/116-tile-persistence-shards.md) added tile shards
+    (`sessions/<project>/tiles/<issue-number>.json`) on the identical numeric-filename layout, so the
+    enumeration generalised to `iter_numeric_shards` with `iter_pr_shards` / `iter_tile_shards` as named
+    delegations and `shard_pr_number` retained as an alias of a generic `shard_number` (the advisory hook
+    imports it by the old name). Added coverage pins: `shard_number` parses any `<N>.json` and agrees with
+    `shard_pr_number` on every input (a diverged alias would desync the write-advisory's
+    filename-vs-field cross-check from the reader that enumerates it); `iter_tile_shards` returns
+    `(path, parsed_entry)` with the spawn payload surviving the round-trip, sorts by *issue* number
+    numerically (issue numbers span the same wide range as PR numbers, so ADR-057's lexical-sort bug would
+    bite identically), and yields `[]` for a missing `tiles/` dir (the common pre-first-tile case, since
+    the reconcile hook calls it unconditionally per project). The load-bearing one is
+    `test_all_shard_readers_are_one_implementation`: it asserts all three entry points return *identical*
+    results over a directory containing valid, non-numeric, unparseable, and non-dict shards — so it fails
+    if anyone later re-specialises an entry point and reintroduces the exact two-divergent-copies drift
+    this module was extracted to end.
+
     ```bash
     py -3 claude/scripts/tests/test_journal_shards.py
     ```
@@ -980,6 +996,18 @@ For a one-line navigational map of the test directory, see
     return the documented conservative result. This is now a third consumer of this module, alongside
     `validate-manifest.py` (item 25) and `journal-shard-write-advisory.py` (item 40) —
     `stub-push-archive-reminder.py` (item 16).
+
+    [ADR-116](adr/116-tile-persistence-shards.md) added a third schema, `TILE_REQUIRED_FIELDS` /
+    `missing_tile_fields()`, for tile shards (`sessions/<project>/tiles/<issue-number>.json`). Coverage
+    mirrors the open-PR set (field order, all-present, one missing, a missing subset in schema order,
+    non-dict and empty entries) plus three tile-specific pins: a missing `prompt` is flagged (the field
+    without which the shard cannot reconstruct a chip, which is its entire reason to exist — a shard
+    missing only this one would otherwise pass a shallow eyeball check and fail silently at re-spawn
+    time); a stray `task_id` does not mask a genuinely missing required field (ADR-094's rejected
+    "task_id record only" alternative, kept rejected); and `test_tile_and_open_pr_schemas_are_distinct`
+    asserts the two schemas are **not** interchangeable — both are all-required single-object shards on
+    the same numeric-filename layout sharing `url`/`stub`, so a copy-paste validating a tile against
+    `OPEN_PR_REQUIRED_FIELDS` would "pass" on the overlap while silently ignoring `prompt`/`cwd`.
 
     ```bash
     py -3 claude/scripts/tests/test_journal_schema.py

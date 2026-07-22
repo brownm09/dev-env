@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared reader for the journal's open-PR tracking files (ADR-056 / ADR-057).
+"""Shared reader for the journal's numeric per-item shards (ADR-056 / ADR-057 / ADR-116).
 
 ADR-056 reshaped open-PR tracking from a single shared `open-prs.jsonl` into per-PR
 shards `sessions/<project>/open-prs/<N>.json`, with the legacy single file still read
@@ -19,6 +19,15 @@ review. Centralising the read here means both hooks resolve the shard set identi
 gives **one** place to delete the legacy branch when the back-compat window closes (pairs
 with the engineering-journal#128 data migration).
 
+ADR-116 added a **second** shard kind on the identical layout — per-tile shards
+`sessions/<project>/tiles/<issue-number>.json`, read by ``reconcile-pending-tiles.py`` to
+re-surface tiles whose chips died with an app restart. "Glob, keep numeric stems, sort
+numerically, parse tolerantly" is the same operation for both kinds, differing only in the
+directory and what the number *means* (PR vs. paired issue). That shared core therefore
+lives in ``iter_numeric_shards``; ``iter_pr_shards`` and ``iter_tile_shards`` are named
+delegations to it. Adding the tile kind by *copying* the PR reader would have recreated
+precisely the two-divergent-copies bug this module was extracted to end.
+
 Imported the same way as ``_winsubp`` / ``_hookio`` / ``_worktree_liveness``: a sibling
 module in ``scripts/`` that the ``pyw -3`` hook launcher (which puts the script's own
 directory on ``sys.path``) and the test harness (``sys.path.insert(0, scripts_dir)``) both
@@ -35,12 +44,14 @@ import json
 from pathlib import Path
 
 
-def shard_pr_number(path: Path) -> int | None:
-    """Parse the PR number from an ``open-prs/<N>.json`` shard filename.
+def shard_number(path: Path) -> int | None:
+    """Parse the item number from a ``<N>.json`` shard filename.
 
     Returns ``None`` for any non-numeric stem so stray files (e.g. an ``index.json``) are
-    ignored rather than mistaken for a PR shard. A PR shard is identified **by its numeric
-    filename** — that is the ADR-056 key (``open-prs/<N>.json``).
+    ignored rather than mistaken for a shard. A shard is identified **by its numeric
+    filename** — that is the ADR-056 key (``open-prs/<N>.json``, and ADR-116's
+    ``tiles/<issue-number>.json``). The number's *meaning* is the caller's business; the
+    parse is identical either way.
     """
     try:
         return int(path.stem)
@@ -48,19 +59,35 @@ def shard_pr_number(path: Path) -> int | None:
         return None
 
 
-def iter_pr_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
-    """Enumerate and parse the per-PR shards under ``shard_dir``, numerically sorted.
+def shard_pr_number(path: Path) -> int | None:
+    """``shard_number`` under its original open-PR-specific name.
+
+    Retained because ``journal-shard-write-advisory.py`` imports it by this name to
+    cross-check a shard's ``pr`` field against its filename. A thin delegation, so there is
+    still exactly one implementation of the stem parse.
+    """
+    return shard_number(path)
+
+
+def iter_numeric_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
+    """Enumerate and parse the numeric-named shards under ``shard_dir``, numerically sorted.
+
+    The shared core behind ``iter_pr_shards`` (open-PR shards, ADR-056) and
+    ``iter_tile_shards`` (tile shards, ADR-116) — both layouts are "a directory of
+    ``<N>.json`` files", so the enumeration is one implementation with two named entry
+    points rather than two copies that can drift apart.
 
     Returns a list of ``(path, entry)`` pairs — the path so a caller can ``unlink`` the
-    shard (``reconcile-open-prs.py``) and the parsed object so another can read it
-    (``post-compact.py``). The list is materialised (not a lazy generator) before return,
-    so a caller may safely ``unlink`` shards while iterating the result.
+    shard (``reconcile-open-prs.py``, ``reconcile-pending-tiles.py``) and the parsed object
+    so another can read it (``post-compact.py``). The list is materialised (not a lazy
+    generator) before return, so a caller may safely ``unlink`` shards while iterating the
+    result.
 
     Conservative on every malformed input — a shard is **included only** when it is a
     numeric-named ``*.json`` that parses to a JSON object:
 
-      - non-numeric stems (``index.json``, ``bad.json``) are skipped (not a PR shard);
-      - shards sort by PR number ascending (PR 2 before PR 10), not lexically;
+      - non-numeric stems (``index.json``, ``bad.json``) are skipped (not a shard);
+      - shards sort by number ascending (2 before 10), not lexically;
       - unparseable JSON, a non-UTF-8 file (``UnicodeDecodeError``), or any ``OSError``
         reading the file is skipped, left for a human;
       - a parsed **non-object** value (a JSON list/scalar) is skipped — without this a
@@ -72,13 +99,13 @@ def iter_pr_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
     if not shard_dir.is_dir():
         return []
 
-    # Filter to numeric-named shards first, then sort by PR number — so the sort is over
-    # real PR numbers (ints), never a lexical compare of filenames ('10' < '2').
+    # Filter to numeric-named shards first, then sort by number — so the sort is over
+    # real item numbers (ints), never a lexical compare of filenames ('10' < '2').
     numbered: list[tuple[int, Path]] = []
     for path in shard_dir.glob("*.json"):
-        n = shard_pr_number(path)
+        n = shard_number(path)
         if n is None:
-            continue  # not a PR shard (non-numeric stem) — ignore
+            continue  # not a shard (non-numeric stem) — ignore
         numbered.append((n, path))
     numbered.sort(key=lambda np: np[0])
 
@@ -92,6 +119,27 @@ def iter_pr_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
             continue  # a non-object shard can't be a tracking entry — skip defensively
         result.append((path, entry))
     return result
+
+
+def iter_pr_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
+    """The open-PR shards under ``sessions/<project>/open-prs/`` (ADR-056).
+
+    Numbers are PR numbers. Behaviour is ``iter_numeric_shards``' exactly — this name is
+    what ``reconcile-open-prs.py`` and ``post-compact.py`` already import, and it keeps the
+    call site self-describing about *which* shard kind it is reading.
+    """
+    return iter_numeric_shards(shard_dir)
+
+
+def iter_tile_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
+    """The tile shards under ``sessions/<project>/tiles/`` (ADR-116).
+
+    Numbers are the **paired GitHub issue** numbers, not PR numbers — issue-per-tile
+    (ADR-094) guarantees each tile has one, and it doubles as the key
+    ``reconcile-pending-tiles.py`` reconciles against to decide whether a tile is still
+    pending. Behaviour is ``iter_numeric_shards``' exactly.
+    """
+    return iter_numeric_shards(shard_dir)
 
 
 def read_legacy_entries(path: Path) -> list[dict]:

@@ -14,7 +14,7 @@ A third consumer, ``stub-push-archive-reminder.py``, reads ``prs_opened``/``prs_
 ``has_unresolved_open_pr()`` to gate the post-stub-push archive reminder on a same-session PR
 still being open (dev-env#651, ADR-091 Amendment 1).
 
-Two schemas are covered:
+Three schemas are covered:
 
   - Manifest shards (``sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl``):
     ``REQUIRED_FIELDS`` — kept in sync with docs/REFERENCE.md -> "Manifest shard format".
@@ -22,6 +22,10 @@ Two schemas are covered:
     ``OPEN_PR_REQUIRED_FIELDS`` — kept in sync with docs/REFERENCE.md -> "Open-PR tracking
     shards". Unlike the manifest schema, every field is required (no optional fields
     documented for this shard kind).
+  - Tile shards (``sessions/<project>/tiles/<issue-number>.json``, ADR-116):
+    ``TILE_REQUIRED_FIELDS`` — kept in sync with docs/REFERENCE.md -> "Tile shards". Also
+    all-required: a tile shard exists to reconstruct a lost ``spawn_task`` chip, and a
+    partial one cannot do that, so there is no field it is meaningful to omit.
 
 This module is import-only — no ``main()``, no subprocess, no ``_winsubp`` — so every
 helper unit-tests offline (``tests/test_journal_schema.py``).
@@ -39,6 +43,15 @@ REQUIRED_FIELDS = ("stub", "topic", "tokens", "prs_opened", "prs_closed")
 # docs/REFERENCE.md → "Open-PR tracking shards". No optional fields are documented there.
 OPEN_PR_REQUIRED_FIELDS = ("pr", "url", "topic", "stub", "opened")
 
+# The tile shard schema, in canonical (schema) order. Kept in sync with docs/REFERENCE.md →
+# "Tile shards" (ADR-116). `title`/`tldr`/`prompt`/`cwd` are the four spawn_task arguments —
+# together they are what makes an exact re-spawn possible, which is the whole point of the
+# shard. `url` carries owner/repo so a bare-numeric filename still resolves cross-repo (the
+# same trick the open-PR shard uses). `task_id` is deliberately absent: chip IDs do not
+# survive an app restart (ADR-094), so storing one would persist a value that is dead
+# exactly when the shard is needed.
+TILE_REQUIRED_FIELDS = ("issue", "url", "title", "tldr", "prompt", "cwd", "stub", "spawned")
+
 # Sub-keys required inside the `tokens` dict value (dev-env #824).
 TOKENS_REQUIRED_KEYS = ("input", "output", "cost")
 
@@ -54,7 +67,8 @@ def missing_required_fields(entry: object, fields: tuple[str, ...] = REQUIRED_FI
     ``fields`` defaults to the manifest schema (``REQUIRED_FIELDS``) so every existing
     caller (``validate-manifest.py``, its tests) is unaffected by this parameter's
     addition. Pass ``OPEN_PR_REQUIRED_FIELDS`` (or use ``missing_open_pr_fields`` below)
-    to validate an open-PR shard instead.
+    to validate an open-PR shard instead, or ``TILE_REQUIRED_FIELDS`` /
+    ``missing_tile_fields`` for a tile shard.
     """
     if not isinstance(entry, dict):
         return list(fields)
@@ -64,6 +78,11 @@ def missing_required_fields(entry: object, fields: tuple[str, ...] = REQUIRED_FI
 def missing_open_pr_fields(entry: object) -> list[str]:
     """``missing_required_fields`` specialized to the open-PR shard schema."""
     return missing_required_fields(entry, OPEN_PR_REQUIRED_FIELDS)
+
+
+def missing_tile_fields(entry: object) -> list[str]:
+    """``missing_required_fields`` specialized to the tile shard schema (ADR-116)."""
+    return missing_required_fields(entry, TILE_REQUIRED_FIELDS)
 
 
 def malformed_manifest_fields(entry: object) -> list[str]:
