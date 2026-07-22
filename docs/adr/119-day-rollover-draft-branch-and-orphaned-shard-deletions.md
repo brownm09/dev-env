@@ -48,6 +48,8 @@ Rejected alternatives:
 
 The accepted cost of (b) is real and bounded: `draft/<today>` cut from `main` does not carry yesterday's open-PR shard edits, so its `open-prs/` view is only as current as the last merge to `main`. `reconcile-open-prs.py` corrects that live at session start via `gh pr view`, which is the authority anyway.
 
+**One ordering consequence, found while implementing this.** "Shard edits" includes shard *deletions*: a merged PR's shard removed only on the unmerged branch is still present on `main`, so a fresh branch **resurrects** it. The self-heal is real but lands on a *later* session, because the reconcile hook's sentinel is once-per-session. So the branch cut belongs at the **start** of a session, not after that session has already done shard cleanup — otherwise it leaves the resurrected shards dirty for someone else to inherit, which is the very state decision 3 exists to stop. This was verified concretely: all four shards this decision's own implementation cleaned up were still on `main`, which was 43 commits behind `draft/2026-07-21`. That is also why this ADR's implementing session deliberately did **not** cut `draft/2026-07-22` — doing so would have undone its own cleanup commit — and instead wrote its stub onto the stale branch and tiled the compose-first remediation, i.e. took path (c) as the remediation exactly as this decision prescribes.
+
 ### 2. The divergence gets a name and a handling: *date-mismatched stub*
 
 A stub whose filename date differs from the date of the draft branch it is committed on. When the state already exists, repair **additively** — never rewrite the stale branch's history, since every concurrent session shares that checkout:
