@@ -808,6 +808,14 @@ def tile_shard_write_present(records: list) -> bool:
     Over-matching is deliberately preferred here: a stray ``tiles/12.json`` mention that is
     not a real write merely means the trigger does not fire, whereas a missed real write is
     a false block. Same reasoning as the permissive ``_TILE_SHARD_PATH_RE``.
+
+    **Named limitation:** this detects the path, not the *verb*. A session that only reads,
+    stages, or even deletes a shard (``cat``/``git add``/``rm`` naming a ``tiles/<N>.json``)
+    reads as evidence of a write. Distinguishing intent from command text is exactly the
+    unreliable inference this hook avoids elsewhere, and the failure it admits is the benign
+    direction (a missed nudge, never a false block on compliant work). The write-time half —
+    ``journal-shard-write-advisory.py``, which validates real on-disk bytes — is what catches
+    a shard that exists but is wrong; this trigger only catches the total absence.
     """
     for rec in records:
         if not isinstance(rec, dict) or rec.get("type") != "assistant":
