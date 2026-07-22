@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared reader for the journal's numeric per-item shards (ADR-056 / ADR-057 / ADR-116).
+"""Shared reader for the journal's numeric per-item shards (ADR-056 / ADR-057 / ADR-118).
 
 ADR-056 reshaped open-PR tracking from a single shared `open-prs.jsonl` into per-PR
 shards `sessions/<project>/open-prs/<N>.json`, with the legacy single file still read
@@ -19,7 +19,7 @@ review. Centralising the read here means both hooks resolve the shard set identi
 gives **one** place to delete the legacy branch when the back-compat window closes (pairs
 with the engineering-journal#128 data migration).
 
-ADR-116 added a **second** shard kind on the identical layout — per-tile shards
+ADR-118 added a **second** shard kind on the identical layout — per-tile shards
 `sessions/<project>/tiles/<issue-number>.json`, read by ``reconcile-pending-tiles.py`` to
 re-surface tiles whose chips died with an app restart. "Glob, keep numeric stems, sort
 numerically, parse tolerantly" is the same operation for both kinds, differing only in the
@@ -49,7 +49,7 @@ def shard_number(path: Path) -> int | None:
 
     Returns ``None`` for any non-numeric stem so stray files (e.g. an ``index.json``) are
     ignored rather than mistaken for a shard. A shard is identified **by its numeric
-    filename** — that is the ADR-056 key (``open-prs/<N>.json``, and ADR-116's
+    filename** — that is the ADR-056 key (``open-prs/<N>.json``, and ADR-118's
     ``tiles/<issue-number>.json``). The number's *meaning* is the caller's business; the
     parse is identical either way.
     """
@@ -73,7 +73,7 @@ def iter_numeric_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
     """Enumerate and parse the numeric-named shards under ``shard_dir``, numerically sorted.
 
     The shared core behind ``iter_pr_shards`` (open-PR shards, ADR-056) and
-    ``iter_tile_shards`` (tile shards, ADR-116) — both layouts are "a directory of
+    ``iter_tile_shards`` (tile shards, ADR-118) — both layouts are "a directory of
     ``<N>.json`` files", so the enumeration is one implementation with two named entry
     points rather than two copies that can drift apart.
 
@@ -132,7 +132,7 @@ def iter_pr_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
 
 
 def iter_tile_shards(shard_dir: Path) -> list[tuple[Path, dict]]:
-    """The tile shards under ``sessions/<project>/tiles/`` (ADR-116).
+    """The tile shards under ``sessions/<project>/tiles/`` (ADR-118).
 
     Numbers are the **paired GitHub issue** numbers, not PR numbers — issue-per-tile
     (ADR-094) guarantees each tile has one, and it doubles as the key

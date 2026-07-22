@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for _journal_shards — the shared numeric-shard/legacy reader (ADR-057, ADR-116).
+"""Unit tests for _journal_shards — the shared numeric-shard/legacy reader (ADR-057, ADR-118).
 
 ADR-056 split open-PR tracking into per-PR shards `sessions/<project>/open-prs/<N>.json`
 plus a draining legacy `open-prs.jsonl`. `reconcile-open-prs.py` (needs the file paths to
@@ -9,7 +9,7 @@ key was lexical in one and numeric in the other until PR #394's review). `_journ
 is the single source of truth they now both import; these tests pin its behaviour offline
 (tmp dirs, no network, no gh).
 
-ADR-116 added tile shards (`sessions/<project>/tiles/<issue-number>.json`) on the identical
+ADR-118 added tile shards (`sessions/<project>/tiles/<issue-number>.json`) on the identical
 numeric layout, so the reader generalised to `iter_numeric_shards` with `iter_pr_shards` /
 `iter_tile_shards` as named delegations. `test_all_shard_readers_are_one_implementation`
 is the load-bearing pin there: it fails if anyone re-specialises an entry point and
@@ -182,7 +182,7 @@ def test_iter_missing_or_nondir() -> str:
     return "missing / non-directory shard dir -> [] (callable unconditionally)"
 
 
-# --- tile shards (ADR-116) ---------------------------------------------------
+# --- tile shards (ADR-118) ---------------------------------------------------
 
 
 def test_shard_number_generic() -> str:
@@ -225,7 +225,7 @@ def test_iter_tile_shards_numeric_sort() -> str:
 
 def test_all_shard_readers_are_one_implementation() -> str:
     # THE anti-drift pin. ADR-057 exists because two copies of "glob, sort, parse" drifted
-    # (lexical vs numeric sort). ADR-116 added a second shard kind on the same layout, so the
+    # (lexical vs numeric sort). ADR-118 added a second shard kind on the same layout, so the
     # temptation to give tiles their own reader is exactly the mistake to prevent. If someone
     # later "specializes" one entry point, this fails.
     with tempfile.TemporaryDirectory() as root:

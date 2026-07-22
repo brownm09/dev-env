@@ -434,7 +434,7 @@ For a one-line navigational map of the test directory, see
     (`reconcile-open-prs.py`, `post-compact.py`) import these helpers as one source of truth
     ([ADR-057](adr/057-shared-journal-shard-reader.md)).
 
-    [ADR-116](adr/116-tile-persistence-shards.md) added tile shards
+    [ADR-118](adr/118-tile-persistence-shards.md) added tile shards
     (`sessions/<project>/tiles/<issue-number>.json`) on the identical numeric-filename layout, so the
     enumeration generalised to `iter_numeric_shards` with `iter_pr_shards` / `iter_tile_shards` as named
     delegations and `shard_pr_number` retained as an alias of a generic `shard_number` (the advisory hook
@@ -997,7 +997,7 @@ For a one-line navigational map of the test directory, see
     `validate-manifest.py` (item 25) and `journal-shard-write-advisory.py` (item 40) —
     `stub-push-archive-reminder.py` (item 16).
 
-    [ADR-116](adr/116-tile-persistence-shards.md) added a third schema, `TILE_REQUIRED_FIELDS` /
+    [ADR-118](adr/118-tile-persistence-shards.md) added a third schema, `TILE_REQUIRED_FIELDS` /
     `missing_tile_fields()`, for tile shards (`sessions/<project>/tiles/<issue-number>.json`). Coverage
     mirrors the open-PR set (field order, all-present, one missing, a missing subset in schema order,
     non-dict and empty entries) plus three tile-specific pins: a missing `prompt` is flagged (the field

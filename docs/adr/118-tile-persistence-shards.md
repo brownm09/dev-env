@@ -1,4 +1,4 @@
-# ADR-116: Persist Tile Payloads as Journal Shards and Re-Surface Them After a Restart
+# ADR-118: Persist Tile Payloads as Journal Shards and Re-Surface Them After a Restart
 
 Date: 2026-07-22
 Status: Accepted

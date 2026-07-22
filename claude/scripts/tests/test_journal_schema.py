@@ -14,7 +14,7 @@ Cases pinned:
 - ``OPEN_PR_REQUIRED_FIELDS`` order and ``missing_open_pr_fields``: all-present, one
   missing, the ``summary``-instead-of-``topic`` shape from the 2026-07-02 meta-shard
   incident, and a non-dict entry.
-- ``TILE_REQUIRED_FIELDS`` order and ``missing_tile_fields`` (ADR-116): all-present, one
+- ``TILE_REQUIRED_FIELDS`` order and ``missing_tile_fields`` (ADR-118): all-present, one
   missing, a missing ``prompt`` (the field without which a chip cannot be reconstructed),
   a stray ``task_id`` not masking a real omission, a missing subset in schema order,
   non-dict/empty entries, and — the copy-paste guard — that the tile and open-PR schemas
@@ -141,7 +141,7 @@ def test_open_pr_empty_dict_missing_all():
 
 
 # ---------------------------------------------------------------------------
-# TILE_REQUIRED_FIELDS / missing_tile_fields (ADR-116)
+# TILE_REQUIRED_FIELDS / missing_tile_fields (ADR-118)
 # ---------------------------------------------------------------------------
 
 def test_tile_field_order():
