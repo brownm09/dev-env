@@ -974,17 +974,20 @@ For a one-line navigational map of the test directory, see
     them (dev-env #556, [ADR-081](adr/081-write-time-journal-shard-validation-hook.md)).
     Exercises every pure helper offline: `classify_shard_path` (canonical/backslash/Git-Bash forms,
     a shard nested under a Claude-managed journal worktree, the `engineering_journal` underscore
-    spelling, both shard kinds, and the non-matches — legacy `open-prs.jsonl`, a non-journal repo, a
-    journal path missing `sessions`, `.stub.md`); `extract_candidate_tokens` (the redirect / heredoc /
+    spelling, all three shard kinds, and the non-matches — legacy `open-prs.jsonl`, a non-journal repo, a
+    journal path missing `sessions`, `.stub.md`, and a `tiles/<N>.json` path outside the journal tree,
+    which is what keeps this hook off unrelated repos); `extract_candidate_tokens` (the redirect / heredoc /
     `node -e`-quoted-string / multi-path `git add` / `rm -f` command shapes, the legacy-file
     non-match, and the 20-item cap); `extract_base_dirs` / `resolve_candidates` (cwd first, harvested
     `git -C`/`cd` directories, the constant journal-repo fallback, all via an injected `isfile` so
     they run fully offline); `validate_shard_bytes` (a healthy shard; missing fields in schema order;
     a BOM reported alongside missing fields, not instead of them; the open-PR non-numeric-filename
-    and stem-vs-embedded-`pr` mismatch checks — reusing `_journal_shards.shard_pr_number`, computed
+    and stem-vs-embedded-`pr` mismatch checks — reusing `_journal_shards.shard_number` (the generic
+    name, since the same call site now serves both numeric kinds; it was `shard_pr_number` when
+    open-PR was the only one), computed
     once against the real path to avoid a `Path.stem` double-strip bug a naive re-derivation from the
     stem string would hit; an empty shard; non-JSON-object content); `format_advisory` (multi-file
-    aggregation, both schema templates present, and an `.isascii()` + `.encode("cp1252")` pin per
+    aggregation, all three schema templates present, and an `.isascii()` + `.encode("cp1252")` pin per
     `test_posttooluse_inert_advisory.py`'s precedent); and `candidate_paths` (Write/Edit passthrough,
     Bash harvest, other tools and missing `tool_input` yielding nothing). `collect_problems` is
     exercised against real `tempfile.TemporaryDirectory()` fixtures (its only impure surface is the
@@ -994,6 +997,22 @@ For a one-line navigational map of the test directory, see
     path merely mentioned inside a heredoc/quoted argument/subshell is harmless to check — which also
     means item 39's AST gate does not apply to this file's `re.findall` calls (confirmed: they are not
     `Constant-str in/not in Name('command')` Compare nodes).
+
+    **Tile shards** ([ADR-118](adr/118-tile-persistence-shards.md), dev-env#870) are the third kind,
+    and the one whose write is otherwise wholly unverified — a manifest or open-PR shard is written by
+    a session already doing PR bookkeeping, whereas a tile shard is written right after the
+    `spawn_task` call whose payload it preserves, so a malformed one fails *silently*
+    (`iter_numeric_shards` skips it without a word) *and* late, surfacing only when the payload is
+    needed back after a crash. Covered: a healthy shard; missing fields in schema order; the
+    `prompt`-only omission called out on its own (the field whose loss is total — the issue survives
+    without it, the exact re-spawn does not); `stub` confirmed **optional** both present and absent
+    (ADR-118 deliberately does not require it, since the tiling rule fires when a follow-up is
+    identified while stub triggers are PR-open/PR-merge/report); a non-numeric filename; a BOM
+    reported alongside a missing field rather than instead of it; non-object content; the tile token
+    appearing in a multi-path `git add` alongside a manifest and an open-PR path; a real on-disk
+    fixture through `collect_problems`; and — the one with a stated consequence — a filename that
+    disagrees with the embedded `issue`, whose message names what actually happens
+    (`reconcile-pending-tiles.py` treats the shard as corrupt and will never prune it).
 
     ```bash
     py -3 claude/scripts/tests/test_journal_shard_write_advisory.py
@@ -1181,13 +1200,41 @@ For a one-line navigational map of the test directory, see
 48. **stop-tile-enumeration-gate test** — required when changing
     `claude/scripts/stop-tile-enumeration-gate.py`. Two layers, mirroring this hook family's
     established split ([ADR-088](adr/088-state-keyed-tile-enumeration-gate.md); dev-env#599),
-    now covering **three independent triggers** that share the same enumeration/skip-override
+    now covering **five independent triggers** that share the same enumeration/skip-override
     machinery (each with its OWN per-trigger sentinel as of
     [ADR-097](adr/097-per-trigger-tile-gate-sentinels.md); dev-env#677 — see that paragraph at
     the end of this item): the merged-PR trigger (below), the dangling-created-issue trigger
-    ([ADR-092](adr/092-dangling-issue-tile-enumeration-gate.md); dev-env#638), and the
+    ([ADR-092](adr/092-dangling-issue-tile-enumeration-gate.md); dev-env#638), the
     tiles-spawned-without-a-table trigger ([ADR-094](adr/094-tile-tables-and-issue-per-tile.md)
-    addendum; dev-env#656).
+    addendum; dev-env#656), the tile-spawned-without-its-shard trigger
+    ([ADR-118](adr/118-tile-persistence-shards.md); dev-env#870 — trigger 3b, detailed below),
+    and the deferral-question trigger ([ADR-109](adr/109-tile-gate-deferral-question-trigger.md);
+    dev-env#772).
+
+    **Trigger 3b (tile spawned without its shard).** `tile_shard_write_present` is pinned across
+    all three evidence sources, and the third is the one that matters: a `Write` `file_path`, a
+    Bash `command`, **and Bash tool output**. That last case has its own test with a comment
+    explaining why it is not belt-and-braces — the documented write recipe uses a serializer
+    *script*, so a multi-tile session runs one `py -3 <script>` whose command text contains no
+    `tiles/` path at all and whose shard paths appear only in stdout (observed live: three shards,
+    one call, in the session that shipped the reader). An input-only scan would false-block a
+    compliant session. Also pinned: `tiles/index.json` and `open-prs/<N>.json` are **not**
+    shard-write evidence (the filename is the issue key, and the sibling directory is a different
+    shard kind); `evaluate_tile_shard`'s fire / resolved-by-shard / resolved-by-skip-override /
+    no-spawn-is-a-no-op quadrant; that enumeration *text* alone does not satisfy it (only a real
+    write does, mirroring trigger 3's asymmetry); and that triggers 3 and 3b are **independent** —
+    a session that spawns, tables, but writes no shard resolves 3 while 3b still fires, because
+    they guard different losses (the table tells the user a tile exists; the shard is what lets
+    the tile be re-spawned once the chip dies). `format_shard_reminder` is asserted ASCII (cp1252
+    stderr) and to name the path shape, the target-project rule, the never-`echo` warning, and the
+    escape hatch.
+
+    **Adding trigger 3b turned nine previously-green end-to-end fixtures red, correctly** — each
+    spawned a tile and wrote no shard, which is now precisely the violation. They were fixed by
+    making the fixtures *compliant* (adding a shard write via the shared `_asst_shard_write`
+    helper), never by weakening an assertion; `test_e2e_fully_compliant_session_...` now asserts
+    all four blocking sentinels rather than three. Treat that helper's docstring as the record of
+    why every compliant fixture in the file needs one.
     Pure-helper tests exercise the detection/decision core offline (no stdin, network, gh, or disk):
     `session_merged_prs` across all three merge paths — a `gh pr merge` success marker, a
     `gh api .../pulls/N/merge` with `"merged":true`, and the auto-merge case (a `--auto` enqueue or a

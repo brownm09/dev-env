@@ -278,7 +278,7 @@ def test_validate_manifest_bom_and_missing_fields_both_reported():
 
 def test_validate_open_pr_utf8_bom():
     raw = b"\xef\xbb\xbf" + json.dumps(_valid_open_pr_entry()).encode("utf-8")
-    problems = validate_shard_bytes(raw, "open-pr", "147", pr_from_name=147)
+    problems = validate_shard_bytes(raw, "open-pr", "147", num_from_name=147)
     assert problems == ["UTF-8 BOM"]
 
 def test_validate_open_pr_summary_instead_of_topic():
@@ -286,7 +286,7 @@ def test_validate_open_pr_summary_instead_of_topic():
     del entry["topic"]
     entry["summary"] = "session text"
     raw = json.dumps(entry).encode("utf-8")
-    problems = validate_shard_bytes(raw, "open-pr", "147", pr_from_name=147)
+    problems = validate_shard_bytes(raw, "open-pr", "147", num_from_name=147)
     assert problems == ["missing topic"]
 
 def test_validate_manifest_unparseable_line_with_lineno():
@@ -302,35 +302,35 @@ def test_validate_empty_file_manifest():
     assert validate_shard_bytes(b"", "manifest", "x") == ["empty shard (no JSON object)"]
 
 def test_validate_empty_file_open_pr():
-    # Numeric stem/pr_from_name isolates this from the non-numeric-filename path
+    # Numeric stem/num_from_name isolates this from the non-numeric-filename path
     # (covered separately by test_validate_open_pr_non_numeric_stem_reported_even_when_empty).
-    assert validate_shard_bytes(b"   \n  ", "open-pr", "1", pr_from_name=1) == ["empty shard (no JSON object)"]
+    assert validate_shard_bytes(b"   \n  ", "open-pr", "1", num_from_name=1) == ["empty shard (no JSON object)"]
 
 def test_validate_non_dict_json():
     raw = b'["not", "a", "dict"]'
-    assert validate_shard_bytes(raw, "open-pr", "1", pr_from_name=1) == ["not a JSON object"]
+    assert validate_shard_bytes(raw, "open-pr", "1", num_from_name=1) == ["not a JSON object"]
 
 def test_validate_open_pr_non_numeric_stem():
     raw = json.dumps(_valid_open_pr_entry(pr=1)).encode("utf-8")
-    problems = validate_shard_bytes(raw, "open-pr", "index", pr_from_name=None)
+    problems = validate_shard_bytes(raw, "open-pr", "index", num_from_name=None)
     assert len(problems) == 1
     assert "non-numeric filename 'index.json'" in problems[0]
     assert "reconcile/post-compact/compose" in problems[0]
 
 def test_validate_open_pr_stem_pr_mismatch():
     raw = json.dumps(_valid_open_pr_entry(pr=148)).encode("utf-8")
-    problems = validate_shard_bytes(raw, "open-pr", "147", pr_from_name=147)
+    problems = validate_shard_bytes(raw, "open-pr", "147", num_from_name=147)
     assert problems == ["filename stem '147' does not match embedded pr=148"]
 
 def test_validate_open_pr_matching_stem_pr_silent():
     raw = json.dumps(_valid_open_pr_entry(pr=147)).encode("utf-8")
-    assert validate_shard_bytes(raw, "open-pr", "147", pr_from_name=147) == []
+    assert validate_shard_bytes(raw, "open-pr", "147", num_from_name=147) == []
 
 def test_validate_open_pr_non_numeric_stem_reported_even_when_empty():
     # dev-env#556 /review finding: the non-numeric-filename check must fire even when
     # the shard is ALSO empty/malformed -- previously the empty-shard early return
     # meant the (arguably more important) filename diagnosis never surfaced.
-    problems = validate_shard_bytes(b"", "open-pr", "index", pr_from_name=None)
+    problems = validate_shard_bytes(b"", "open-pr", "index", num_from_name=None)
     assert problems[0] == (
         "non-numeric filename 'index.json' - invisible to every open-PR reader "
         "(reconcile/post-compact/compose)"
@@ -338,7 +338,7 @@ def test_validate_open_pr_non_numeric_stem_reported_even_when_empty():
     assert "empty shard (no JSON object)" in problems
 
 def test_validate_open_pr_non_numeric_stem_reported_even_when_not_json():
-    problems = validate_shard_bytes(b"not json", "open-pr", "index", pr_from_name=None)
+    problems = validate_shard_bytes(b"not json", "open-pr", "index", num_from_name=None)
     assert problems[0].startswith("non-numeric filename 'index.json'")
     assert "not a JSON object" in problems
 
@@ -468,6 +468,138 @@ def test_collect_problems_oversized_shard_skipped():
         with open(path, "wb") as f:
             f.write(b"x" * (MAX_SHARD_BYTES + 1))
         assert collect_problems([path]) == []
+
+
+# ---------------------------------------------------------------------------
+# Tile shards (ADR-118 enforcement, dev-env#870)
+# ---------------------------------------------------------------------------
+
+_TILE_OK = {
+    "issue": 870,
+    "url": "https://github.com/brownm09/dev-env/issues/870",
+    "title": "Tile persistence PR3",
+    "tldr": "enforce the shard write",
+    "prompt": "the full self-contained spawn_task prompt",
+    "cwd": "C:/Users/brown/Git/dev-env",
+    "spawned": "2026-07-22",
+}
+
+
+def _tile_bytes(**over):
+    entry = dict(_TILE_OK)
+    entry.update(over)
+    return json.dumps(entry).encode("utf-8")
+
+
+def test_classify_tile_shard():
+    p = "C:/Users/brown/Git/engineering-journal/sessions/dev-env/tiles/870.json"
+    assert classify_shard_path(p) == "tile"
+
+
+def test_classify_tile_shard_backslash_form():
+    p = r"C:\Users\brown\Git\engineering-journal\sessions\dev-env\tiles\870.json"
+    assert classify_shard_path(p) == "tile"
+
+
+def test_classify_tile_shard_in_journal_worktree():
+    p = ("C:/Users/brown/Git/engineering-journal/.claude/worktrees/funny-agnesi-9a3219/"
+         "sessions/meta/tiles/12.json")
+    assert classify_shard_path(p) == "tile"
+
+
+def test_classify_tile_outside_journal_is_none():
+    # A `tiles/<N>.json` under any non-journal repo must not be validated as a shard --
+    # the journal-component requirement is what keeps this hook off unrelated files.
+    assert classify_shard_path("C:/Users/brown/Git/dev-env/sessions/x/tiles/1.json") is None
+
+
+def test_validate_tile_healthy():
+    assert validate_shard_bytes(_tile_bytes(), "tile", "870", num_from_name=870) == []
+
+
+def test_validate_tile_missing_fields():
+    raw = json.dumps({"issue": 870, "url": _TILE_OK["url"]}).encode("utf-8")
+    problems = validate_shard_bytes(raw, "tile", "870", num_from_name=870)
+    assert problems == ["missing title, tldr, prompt, cwd, spawned"], problems
+
+
+def test_validate_tile_missing_prompt_only():
+    # `prompt` is the field whose loss is total: the issue survives without it, but the
+    # exact re-spawn -- the entire point of the shard -- does not.
+    entry = dict(_TILE_OK)
+    del entry["prompt"]
+    problems = validate_shard_bytes(json.dumps(entry).encode("utf-8"), "tile", "870",
+                                    num_from_name=870)
+    assert problems == ["missing prompt"], problems
+
+
+def test_validate_tile_issue_field_disagrees_with_filename():
+    # reconcile-pending-tiles.py skips a disagreeing shard as corrupt, so it would never
+    # be pruned -- flagging it at write time is the only cheap moment to fix it.
+    problems = validate_shard_bytes(_tile_bytes(issue=999), "tile", "870", num_from_name=870)
+    assert len(problems) == 1, problems
+    assert "does not match embedded issue=999" in problems[0]
+    assert "skips this shard as corrupt" in problems[0]
+
+
+def test_validate_tile_non_numeric_filename():
+    problems = validate_shard_bytes(_tile_bytes(), "tile", "index", num_from_name=None)
+    assert any("non-numeric filename 'index.json'" in p for p in problems), problems
+    assert any("the filename IS the issue key" in p for p in problems), problems
+
+
+def test_validate_tile_stub_is_optional():
+    # `stub` is deliberately NOT required (ADR-118): the tiling rule fires the moment a
+    # follow-up is identified, while stub triggers are PR-open/PR-merge/report -- so a
+    # session that tiles something in passing legitimately writes no stub.
+    assert validate_shard_bytes(_tile_bytes(), "tile", "870", num_from_name=870) == []
+    assert validate_shard_bytes(
+        _tile_bytes(stub="sessions/dev-env/2026-07-22_143749.stub.md"),
+        "tile", "870", num_from_name=870) == []
+
+
+def test_validate_tile_utf8_bom_and_missing_field_both_reported():
+    entry = dict(_TILE_OK)
+    del entry["cwd"]
+    raw = b"\xef\xbb\xbf" + json.dumps(entry).encode("utf-8")
+    problems = validate_shard_bytes(raw, "tile", "870", num_from_name=870)
+    assert len(problems) == 2, problems
+    assert any("missing cwd" in p for p in problems), problems
+
+
+def test_validate_tile_not_a_json_object():
+    assert validate_shard_bytes(b"[1,2]", "tile", "870", num_from_name=870) == ["not a JSON object"]
+
+
+def test_extract_candidate_tokens_finds_tile_paths():
+    cmd = ('git add sessions/dev-env/tiles/870.json '
+           'sessions/dev-env/2026-07-22_143749.manifest.jsonl '
+           'sessions/dev-env/open-prs/884.json')
+    tokens = extract_candidate_tokens(cmd)
+    assert "sessions/dev-env/tiles/870.json" in tokens, tokens
+    assert "sessions/dev-env/open-prs/884.json" in tokens, tokens
+    assert any(t.endswith(".manifest.jsonl") for t in tokens), tokens
+
+
+def test_collect_problems_flags_a_real_tile_shard_on_disk():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = os.path.join(tmp, "engineering-journal", "sessions", "dev-env", "tiles")
+        os.makedirs(d)
+        path = os.path.join(d, "870.json").replace("\\", "/")
+        with open(path, "wb") as f:
+            f.write(_tile_bytes(issue=999))
+        results = collect_problems([path])
+        assert len(results) == 1, results
+        assert "does not match embedded issue=999" in results[0][1][0]
+
+
+def test_format_advisory_documents_the_tile_schema():
+    text = format_advisory([("x/tiles/1.json", ["missing prompt"])])
+    assert "tile schema:" in text
+    assert '"prompt"' in text and '"spawned"' in text
+    # The serializer warning is the one that prevents a silently-corrupt payload.
+    assert "never echo" in text
+    assert text.isascii(), "advisory rides exit-2 stderr, which is cp1252-decoded on Windows"
 
 
 # ---------------------------------------------------------------------------

@@ -208,3 +208,37 @@ rather than a relaxation of the `== "github.com"` requirement.
 
 The current-state record for all of this is
 [`docs/REFERENCE.md` → Tile shards](../REFERENCE.md#tile-shards-sessionsprojecttilesissue-numberjson).
+
+## Amendment 2 (2026-07-22, dev-env#870) — the shard trigger is session-global, not per-tile
+
+The Follow-ups section above specifies "a fifth `stop-tile-enumeration-gate.py` trigger for a
+`spawn_task` call with **no corresponding shard write**." The implementation cannot honour
+"corresponding" and does not try; it fires only when a tile was spawned and **no** tile-shard
+write is evidenced anywhere in the session. Two independent reasons, both discovered while
+building it:
+
+1. **A spawn cannot be matched to a shard.** `spawn_task`'s tool input carries `title`,
+   `tldr`, `prompt`, and `cwd` — no issue number. The shard filename *is* the issue number.
+   There is nothing in the transcript to join them on, so per-spawn correspondence is not
+   merely expensive to compute but undetermined.
+2. **Counting instead (N spawns ⇒ N shard paths) breaks on the documented recipe.** The write
+   recipe pipes the prompt through a JSON serializer, and a session with several tiles
+   naturally writes *one* script that emits all of them. That is not hypothetical: the session
+   that shipped `reconcile-pending-tiles.py` wrote three shards from a single `py -3 <script>`
+   call whose command text contained no `tiles/` path at all — the paths appeared only in the
+   script's stdout. A counting gate would have blocked that session for work it did correctly.
+
+The same observation forced the detector to scan **tool output**, not just tool inputs. Evidence
+is accepted from a `Write`/`Edit` `file_path`, a Bash/PowerShell `command`, or Bash output.
+
+Over-matching is the deliberate failure direction throughout — a stray `tiles/12.json` mention
+that is not a real write merely means the trigger does not fire, whereas a missed real write is a
+false block on a compliant session. This mirrors the session-global bar every other trigger in
+that hook already uses (ADR-088's accepted limitation), and it still catches the failure the
+enforcement phase exists to prevent: the *total* skip, where a chip is spawned and its payload is
+never persisted at all.
+
+The write-time half needed no such compromise: `journal-shard-write-advisory.py` validates a tile
+shard's actual on-disk bytes, so it checks the full field set and flags a filename/`issue`
+disagreement directly — including the consequence, since `reconcile-pending-tiles.py` treats such
+a shard as corrupt and will never prune it.

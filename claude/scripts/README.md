@@ -73,7 +73,7 @@ invocation instead.
 | `reconcile-open-prs.py` | UserPromptSubmit | Removes open-PR shards/legacy entries for PRs now merged/closed; surfaces survivors + any uncommitted shard changes as session context. |
 | `reconcile-pending-tiles.py` | UserPromptSubmit | Removes tile shards whose paired issue is closed; surfaces the surviving pending tiles as a compact index so a chip lost to an app restart can be re-spawned. Validates each shard's `url` before it reaches `gh --repo`; one `gh` call per repo, not per shard. |
 | `stub-push-archive-reminder.py` | PostToolUse (Bash/PowerShell) | After a clean journal stub push with no unresolved open PR, writes the sentinel `journal-stop-check.py` consumes to prompt archiving. |
-| `journal-shard-write-advisory.py` | PostToolUse (Write/Edit/Bash) | Validates a manifest or open-PR shard's on-disk bytes against the schema right after it's written (missing fields, BOMs, filename mismatches). |
+| `journal-shard-write-advisory.py` | PostToolUse (Write/Edit/Bash) | Validates a manifest, open-PR, or tile shard's on-disk bytes against the schema right after it's written (missing fields, BOMs, filename mismatches). |
 | `journal-stop-check.py` | Stop | Blocks the stop (exit 2) on the stub-push sentinel so Claude actually archives the session; also non-blocking stale-draft/unmerged-branch advisories. |
 | `stop-journal-stub-checkpoint.py` | Stop | Blocks the stop when a report/analysis/verification session did substantive work but leaves no journal stub, no PR, and isn't a `/review` session. |
 | `pre-tool-use-journal-compose-force-guard.py` | PreToolUse (Bash) | Mechanically blocks a same-day `/journal-compose` git operation unless a fresh `--force` marker already exists. |
@@ -105,7 +105,7 @@ invocation instead.
 | `post-pr-merge-reclaim.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` | Spawns detached `node_modules`/`.turbo` reclamation from now-idle worktrees. |
 | `post-tool-use-cwd-track.py` | PostToolUse (Bash/PowerShell), every call | Records `{repo_root, branch, cwd}` to a per-session state file, feeding the four drift checks above. |
 | `usage-snapshot.py` | PostToolUse (Bash/PowerShell), `gh pr merge` | Emits a weekly/5-hour usage snapshot + top-5 costliest exchanges after every merge. |
-| `stop-tile-enumeration-gate.py` | Stop | Blocks the stop when a merged PR, a dangling issue, or an untabled tile spawn has no recorded follow-up enumeration. |
+| `stop-tile-enumeration-gate.py` | Stop | Blocks the stop when a merged PR, a dangling issue, an untabled tile spawn, or a tile spawned without its shard has no recorded follow-up enumeration. |
 | `new-branch.sh` | `new-branch <name>` (shell function) | Creates a branch rooted at `origin/main`; snapshots the pre-existing-failure baseline when opted in. |
 | `baseline-tests.sh` | `baseline-tests <snapshot\|diff\|gc>` | Captures/diffs/garbage-collects pre-existing test failure baselines for the fix-on-touch policy (ADR-030). |
 | `merge-ready.sh` | `bash merge-ready.sh [owner/repo ...]` | Lists, per repo, open PRs that are green + mergeable + waiting on nothing vs. still open but not ready; read-only, defaults to `brownm09/lifting-logbook`. |

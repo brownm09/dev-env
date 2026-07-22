@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code Stop hook — state-keyed tile-enumeration gate (ADR-088, extended ADR-092, ADR-094 addendum, ADR-097 per-trigger sentinels).
+"""Claude Code Stop hook — state-keyed tile-enumeration gate (ADR-088, extended ADR-092, ADR-094 addendum, ADR-097 per-trigger sentinels, ADR-118 shard trigger).
 
 The command-keyed ``post-merge-tile-checkpoint.py`` (ADR-060) fires on a
 ``gh pr merge`` *you run*, but is BLIND to a PR that reaches merged state some
@@ -10,7 +10,7 @@ PR #700 incident that motivated the ADR-046 2026-07-05 forcing-function
 refinement (dev-env#595).
 
 This hook is STATE-keyed instead: at every Stop it scans the just-ended session
-transcript for FOUR independent triggers, each requiring the same recorded
+transcript for FIVE independent triggers, each requiring the same recorded
 tile-enumeration artifact before the stop is allowed:
 
 1. **Merged PR** (ADR-088): a PR reached MERGED state this session (by any
@@ -31,6 +31,22 @@ tile-enumeration artifact before the stop is allowed:
    ``enumeration_recorded`` for triggers 1/2), so a merge/issue trigger can
    be *resolved* by the very spawn that leaves trigger 3 still *unsatisfied*
    — the table is a stricter, independent bar than "an enumeration happened".
+
+3b. **Tile spawned without its shard** (ADR-118, dev-env#870): a ``spawn_task``
+   tile was spawned this session but nothing evidences a write of its shard
+   ``sessions/<project>/tiles/<issue-number>.json``. Numbered here because it
+   is trigger 3's sibling — both key on the same spawn, and both are stricter,
+   independent bars than "an enumeration happened" — but it is
+   ``_TRIGGER_SHARD`` in code and evaluated fifth. The two guard different
+   losses: the table is what tells the USER a tile exists; the shard is what
+   lets the TILE be re-spawned once the chip dies, which it does on every app
+   restart with no API to re-create it. The paired issue survives either way,
+   so what is actually lost is the one-click restart the tile existed to
+   provide — in exactly the crash case where restarting by hand costs most.
+   Blocking, like 1-3: whether a path was written is objectively verifiable.
+   Session-global rather than per-tile — see ``evaluate_tile_shard``'s
+   docstring for why per-spawn correspondence is not detectable and why
+   counting breaks on the documented serializer recipe.
 
 4. **Deferral-question anti-pattern** (new ADR, dev-env#772): a PR merged or
    an issue was created this session, and the assistant's OWN final response
@@ -122,20 +138,21 @@ Stdin JSON shape (Stop):
   {"session_id": "...", "transcript_path": "/abs/path.jsonl",
    "stop_hook_active": false, ...}
 
-Exit 0 — no merged-state PR, no dangling created issue, and no un-tabled
-         spawned tile this session (triggers 1-3); enumeration/table already
-         recorded, a "skip tiles" override present, that trigger already
-         fired (its own per-trigger sentinel), stop_hook_active set, or any
-         error (fail-open). A deferral-question hit (trigger 4) with none of
-         triggers 1-3 firing still exits 0, but carries a systemMessage
-         advisory on stdout (see below).
+Exit 0 — no merged-state PR, no dangling created issue, and no spawned tile
+         missing its table or its shard this session (triggers 1-3b);
+         enumeration/table/shard already recorded, a "skip tiles" override
+         present, that trigger already fired (its own per-trigger sentinel),
+         stop_hook_active set, or any error (fail-open). A deferral-question
+         hit (trigger 4) with none of triggers 1-3b firing still exits 0, but
+         carries a systemMessage advisory on stdout (see below).
 Exit 2 — a PR merged and/or a created issue remains unresolved and/or a tile
-         was spawned with no table this session (triggers 1-3); blocking
-         reminder(s) on stderr. Trigger 4 never contributes to this exit code
-         — when any of 1-3 also fire, trigger 4's advisory is skipped this
-         turn in favor of the blocking reminder (there is only one exit code
-         per invocation, and the harder enforcement wins; a persisting
-         deferral-question condition can still surface on a later Stop).
+         was spawned with no table and/or with no shard write this session
+         (triggers 1-3b); blocking reminder(s) on stderr. Trigger 4 never
+         contributes to this exit code — when any blocking trigger also fires,
+         trigger 4's advisory is skipped this turn in favor of the blocking
+         reminder (there is only one exit code per invocation, and the harder
+         enforcement wins; a persisting deferral-question condition can still
+         surface on a later Stop).
 """
 from __future__ import annotations
 
@@ -180,7 +197,8 @@ _TRIGGER_PR = "pr-"
 _TRIGGER_ISSUE = "issue-"
 _TRIGGER_TABLE = "table-"
 _TRIGGER_DEFER = "defer-"
-_TRIGGERS = (_TRIGGER_PR, _TRIGGER_ISSUE, _TRIGGER_TABLE, _TRIGGER_DEFER)
+_TRIGGER_SHARD = "shard-"
+_TRIGGERS = (_TRIGGER_PR, _TRIGGER_ISSUE, _TRIGGER_TABLE, _TRIGGER_DEFER, _TRIGGER_SHARD)
 
 # --- command-shape detection (anchored via split_top_level, not raw substring) --
 # Each of these is matched against the lstripped FIRST LINE of a top-level
@@ -267,6 +285,16 @@ _SPAWN_TASK_SUBSTRING = "spawn_task"
 # line, which this mirrors.
 _TABLE_MARKER_RE = re.compile(r"^#{1,6}\s*tiles\s+spawned\s+this\s+session",
                               re.IGNORECASE | re.MULTILINE)
+
+# --- tile-shard write detection (ADR-118 enforcement, dev-env#870) -------------
+# A tile shard is `sessions/<project>/tiles/<issue-number>.json`. This matches the
+# `tiles/<N>.json` tail only -- deliberately NOT anchored to `sessions/<project>/`,
+# and deliberately permissive about surrounding characters -- because this pattern
+# is used to find EVIDENCE THAT THE WRITE HAPPENED, where over-matching is the safe
+# direction (an extra match means the trigger does not fire) and under-matching is
+# the dangerous one (a false block on a session that did write its shard). It is
+# matched against tool inputs AND tool OUTPUT; see `tile_shard_write_present`.
+_TILE_SHARD_PATH_RE = re.compile(r"\btiles[/\\]\d+\.json\b", re.ASCII)
 
 # --- deferral-question detection (new ADR, dev-env#772) ------------------------
 # A deliberately narrow, bounded set of phrasings for "asked the user a
@@ -760,6 +788,83 @@ def evaluate_tile_table(records: list) -> tuple:
     return True, False
 
 
+def tile_shard_write_present(records: list) -> bool:
+    """True iff this session evidences a tile-shard write (ADR-118, dev-env#870).
+
+    Three places are scanned, and all three are needed:
+
+    1. **A ``Write``/``Edit`` ``file_path``** — the write recipe explicitly offers the
+       ``Write`` tool as an equally acceptable alternative to the shell serializer.
+    2. **A Bash/PowerShell ``command``** — the ``py -3 -c '...json.dump(...)'`` form names
+       the shard path inside the command text.
+    3. **Bash tool ``output``** — the load-bearing one, and the reason this is not just an
+       input scan. The documented recipe writes the payload through a *serializer script*,
+       and a session with several tiles naturally writes one script that emits all of them
+       (observed in the very session that shipped the reader: three shards written by one
+       ``py -3 <script>`` invocation whose command text contained no ``tiles/`` path at
+       all — only the script's own path). Scanning inputs alone would have blocked that
+       session for a write it had correctly performed.
+
+    Over-matching is deliberately preferred here: a stray ``tiles/12.json`` mention that is
+    not a real write merely means the trigger does not fire, whereas a missed real write is
+    a false block. Same reasoning as the permissive ``_TILE_SHARD_PATH_RE``.
+    """
+    for rec in records:
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        for item in _content_items(rec):
+            if not isinstance(item, dict) or item.get("type") != "tool_use":
+                continue
+            inp = item.get("input")
+            if not isinstance(inp, dict):
+                continue
+            for key in ("file_path", "command"):
+                value = inp.get(key)
+                if isinstance(value, str) and _TILE_SHARD_PATH_RE.search(value):
+                    return True
+
+    for _command, output in iter_bash_calls(records):
+        if output and _TILE_SHARD_PATH_RE.search(output):
+            return True
+    return False
+
+
+def evaluate_tile_shard(records: list) -> tuple:
+    """Return ``(fire, resolved)`` for the tile-spawned-without-a-shard trigger
+    (ADR-118 enforcement, dev-env#870) — a FIFTH independent sibling.
+
+    ``fire`` — True iff a tile was spawned this session and neither a tile-shard write nor
+    a skip override is present.
+    ``resolved`` — True whenever a tile was spawned and the shard write (or skip override)
+    is present. A session that spawned no tile returns ``(False, False)`` so a tile spawned
+    later is still caught.
+
+    Shares ``session_spawned_tiles`` with triggers 1/2/3, so "was a tile spawned" cannot
+    drift between them. Like trigger 3 (the table), a spawned tile does NOT satisfy this
+    trigger by itself — the shard is a separate, stricter bar, and the two guard different
+    losses: the table is what tells the *user* a tile exists, the shard is what lets the
+    *tile* be re-spawned after the chip dies.
+
+    **Session-global, not per-tile.** ADR-118 describes this as "a ``spawn_task`` call with
+    no corresponding shard write", but per-tile correspondence is not reliably detectable:
+    ``spawn_task``'s input carries no issue number (only title/tldr/prompt/cwd), so a spawn
+    cannot be matched to the shard filename that preserves it. Counting instead — N spawns
+    must produce N shard paths — fails on the documented serializer-script recipe, where one
+    Bash call legitimately writes several shards. So this fires only on the total skip (a
+    tile spawned, no shard write evidenced anywhere), matching the session-global bar every
+    other trigger here already uses. See ADR-118 Amendment 2.
+
+    Blocking (exit 2), unlike trigger 4: whether a path was written is an objectively
+    verifiable fact, not a natural-language judgment, so a fired trigger is actionable
+    rather than a maybe-false alarm.
+    """
+    if not session_spawned_tiles(records):
+        return False, False
+    if skip_override(records) or tile_shard_write_present(records):
+        return False, True
+    return True, False
+
+
 def deferral_question_present(records: list) -> bool:
     """True iff an assistant TEXT item this session matches one of the bounded
     ``_DEFERRAL_QUESTION_RES`` phrasings (new ADR, dev-env#772) — the
@@ -882,6 +987,26 @@ def format_table_reminder() -> str:
         "(columns: Tile | Issue | Status | Next) before ending the turn. Only an "
         "explicit \"skip tiles\" instruction anywhere in this session exempts "
         "this checkpoint."
+    )
+
+
+def format_shard_reminder() -> str:
+    """The exit-2 stderr message for the tile-spawned-without-a-shard trigger
+    (ADR-118 enforcement, dev-env#870). ASCII-only, same cp1252 constraint as the
+    other ``format_*_reminder`` functions."""
+    return (
+        "[tile-enumeration-gate] One or more spawn_task tiles were spawned this "
+        "session, but no tile-shard write was found. A chip does not survive an app "
+        "restart and there is no API to re-create one, so the shard "
+        "sessions/<project>/tiles/<issue-number>.json IS the durable payload -- without "
+        "it the paired issue survives but the one-click restart does not (ADR-118). "
+        "Write one shard per tile now, filed under the tile's TARGET project (from its "
+        "cwd), not the spawning session's. Required fields: issue, url, title, tldr, "
+        "prompt, cwd, spawned. Build it with a JSON serializer or the Write tool -- never "
+        "echo, since `prompt` is free prose that corrupts the shard or escapes into the "
+        "shell when interpolated. Recipe: docs/REFERENCE.md -> Tile shards. Only an "
+        "explicit \"skip tiles\" instruction anywhere in this session exempts this "
+        "checkpoint."
     )
 
 
@@ -1016,6 +1141,7 @@ def main() -> None:
     if ((already_done[_TRIGGER_PR] or "merged" not in lower)
             and (already_done[_TRIGGER_ISSUE] or not _ISSUE_CREATE_STMT_RE.search(text))
             and (already_done[_TRIGGER_TABLE] or _SPAWN_TASK_SUBSTRING not in lower)
+            and (already_done[_TRIGGER_SHARD] or _SPAWN_TASK_SUBSTRING not in lower)
             and (already_done[_TRIGGER_DEFER]
                  or not (has_merge_or_issue_signal
                          and any(s in lower for s in _DEFER_PREFILTER_SUBSTRINGS)))):
@@ -1039,6 +1165,9 @@ def main() -> None:
         fire_table, resolved_table = (
             (False, False) if already_done[_TRIGGER_TABLE] else evaluate_tile_table(records)
         )
+        fire_shard, resolved_shard = (
+            (False, False) if already_done[_TRIGGER_SHARD] else evaluate_tile_shard(records)
+        )
         fire_defer, resolved_defer = (
             (False, False) if already_done[_TRIGGER_DEFER] else evaluate_deferral(records)
         )
@@ -1061,6 +1190,7 @@ def main() -> None:
         (_TRIGGER_PR, fire_pr is not None, resolved_pr),
         (_TRIGGER_ISSUE, fire_issue is not None, resolved_issue),
         (_TRIGGER_TABLE, fire_table, resolved_table),
+        (_TRIGGER_SHARD, fire_shard, resolved_shard),
         (_TRIGGER_DEFER, False, resolved_defer),
     ):
         if fired or resolved:
@@ -1073,6 +1203,8 @@ def main() -> None:
         messages.append(format_issue_reminder(fire_issue))
     if fire_table:
         messages.append(format_table_reminder())
+    if fire_shard:
+        messages.append(format_shard_reminder())
 
     if messages:
         sys.stderr.write("\n\n".join(messages) + "\n")
