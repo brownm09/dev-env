@@ -82,7 +82,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_journal_compose_force_resolve.py` | `journal-compose-force-resolve.py` | CLI glue that writes the today-guard's `--force` marker to disk. |
 | `test_journal_draft_worktree_guard.py` | `pre-tool-use-journal-draft-worktree-guard.py` | Blocks isolating the `draft/YYYY-MM-DD` stub workflow into its own worktree — it must stay on the shared canonical. |
 | `test_journal_onboard_check.py` | `journal-onboard-check.py` | One-time per-session onboarding nudge for a project with no journal home yet. |
-| `test_journal_shard_write_advisory.py` | `journal-shard-write-advisory.py` | Write-time PostToolUse validation of manifest/open-PR shards against the schema (BOMs, missing fields) as they're written. |
+| `test_journal_shard_write_advisory.py` | `journal-shard-write-advisory.py` | Write-time PostToolUse validation of manifest/open-PR/tile shards against the schema (BOMs, missing fields, filename-vs-embedded-number mismatches) as they're written. |
 | `test_journal_stop_check.py` | `journal-stop-check.py` | Stop-hook archive reminder plus stale-draft/unmerged-branch advisories at session end. |
 | `test_post_compact.py` | `post-compact.py` | Reads and unions open-PR shards + legacy `open-prs.jsonl` at PostCompact time. |
 | `test_pre_tool_use_journal_compose_force_guard.py` | `pre-tool-use-journal-compose-force-guard.py` | Mechanically blocks a same-day `/journal-compose` git operation unless a fresh `--force` marker exists. |
@@ -109,7 +109,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_pre_merge_message_check.py` | `pre-merge-message-check.py` | Surfaces any queued user message before a merge proceeds. |
 | `test_pre_merge_numbering_check.py` | `pre-merge-numbering-check.py` | Blocks a merge that would collide CLAUDE.md Testing-item numbers or ADR numbers with `origin/main`. |
 | `test_pre_pr_create_check.py` | `pre-pr-create-check.py` | Pre-PR checklist (testing, suppression, baseline, doc-reconciliation) plus branch/drift display. |
-| `test_stop_tile_enumeration_gate.py` | `stop-tile-enumeration-gate.py` | Stop-hook gate: blocks ending a session with a merged PR, a dangling issue, or an untabled tile spawn unless the follow-up enumeration ran. |
+| `test_stop_tile_enumeration_gate.py` | `stop-tile-enumeration-gate.py` | Stop-hook gate: blocks ending a session with a merged PR, a dangling issue, an untabled tile spawn, or a tile spawned without its shard, unless the follow-up enumeration ran. |
 
 ### Worktrees & disk management
 

@@ -23,9 +23,21 @@ read-only if it happens to name a real file — over-matching is harmless here, 
 those hooks where an unanchored match would misfire *action* on text that was never a
 real command.
 
+Three shard kinds are validated: manifest shards, open-PR shards, and — since ADR-118's
+enforcement phase (dev-env#870) — **tile shards** `sessions/<project>/tiles/<issue>.json`.
+The tile kind is the one whose write is otherwise wholly unverified: a manifest or open-PR
+shard is written by a session that is also doing PR bookkeeping, while a tile shard is
+written immediately after a `spawn_task` call whose payload it exists to preserve. If it is
+malformed, the failure is silent *and* delayed — `iter_numeric_shards` skips an unparseable
+shard without a word, so the loss surfaces only when someone needs the payload back after a
+crash, which is exactly when it cannot be reconstructed.
+
 Schema validation itself is shared with `validate-manifest.py` via `_journal_schema.py`
-(never duplicated) — see that module's docstring. `_journal_shards.shard_pr_number` is
-reused for the open-PR shard's numeric-filename check.
+(never duplicated) — see that module's docstring; the tile kind uses its
+`missing_tile_fields` / `TILE_REQUIRED_FIELDS`, not a third copy.
+`_journal_shards.shard_number` supplies the numeric-filename check for **both** the open-PR
+and tile kinds (it was `shard_pr_number` when open-PR was the only numeric kind; the generic
+name is the honest one now that two kinds share it — the two are the same function).
 
 The Bash trigger also fires for the PowerShell tool (dev-env#763): registered
 under both the Bash and PowerShell PostToolUse matchers in settings.json (the
@@ -58,9 +70,10 @@ try:
         malformed_manifest_fields,
         missing_open_pr_fields,
         missing_required_fields,
+        missing_tile_fields,
         parse_manifest_text,
     )
-    from _journal_shards import shard_pr_number
+    from _journal_shards import shard_number
 except Exception:
     # Module-level import failure would otherwise crash before main()'s own
     # try/except is ever reached, escaping the safe-exit guard entirely (an
@@ -79,6 +92,8 @@ JOURNAL_FALLBACK = Path.home() / "Git" / "engineering-journal"
 # [A-Za-z0-9_] since journal paths are always ASCII.
 _MANIFEST_TOKEN_RE = re.compile(r"[\w./\\:~-]+\.manifest\.jsonl\b", re.ASCII)
 _OPEN_PR_TOKEN_RE = re.compile(r"[\w./\\:~-]*open-prs[/\\][\w.-]+\.json\b", re.ASCII)
+# Tile shards (ADR-118). Same shape as the open-PR token regex, one directory name over.
+_TILE_TOKEN_RE = re.compile(r"[\w./\\:~-]*tiles[/\\][\w.-]+\.json\b", re.ASCII)
 _DIR_ARG_RE = re.compile(r"(?:\bcd\s+|\bgit\s+-C\s+|--git-dir[= ]\s*)(\"[^\"]+\"|'[^']+'|[^\s;&|]+)")
 
 
@@ -127,6 +142,8 @@ def classify_shard_path(path: str) -> str | None:
         return "manifest"
     if len(parts) >= 2 and parts[-2] == "open-prs" and norm.endswith(".json"):
         return "open-pr"
+    if len(parts) >= 2 and parts[-2] == "tiles" and norm.endswith(".json"):
+        return "tile"
     return None
 
 
@@ -148,7 +165,7 @@ def extract_candidate_tokens(command: str) -> list[str]:
         return []
     tokens = []
     seen = set()
-    for pattern in (_MANIFEST_TOKEN_RE, _OPEN_PR_TOKEN_RE):
+    for pattern in (_MANIFEST_TOKEN_RE, _OPEN_PR_TOKEN_RE, _TILE_TOKEN_RE):
         for match in pattern.findall(command):
             if match not in seen:
                 seen.add(match)
@@ -224,14 +241,15 @@ def candidate_paths(tool_name: str, tool_input: dict, cwd: str, isfile=os.path.i
     return []
 
 
-def validate_shard_bytes(raw: bytes, kind: str, stem: str, pr_from_name: int | None = None) -> list[str]:
+def validate_shard_bytes(raw: bytes, kind: str, stem: str, num_from_name: int | None = None) -> list[str]:
     """Validate a shard file's raw bytes against its schema.
 
-    ``kind`` is ``"manifest"`` or ``"open-pr"`` (from `classify_shard_path`). ``stem`` is
-    the filename stem (no extension) used only for message text. ``pr_from_name`` is the
-    result of `_journal_shards.shard_pr_number` against the real path — ``None`` means the
-    filename stem is not a plain non-negative integer (not a valid open-PR shard name);
-    only consulted when ``kind == "open-pr"``.
+    ``kind`` is ``"manifest"``, ``"open-pr"``, or ``"tile"`` (from `classify_shard_path`).
+    ``stem`` is the filename stem (no extension) used only for message text.
+    ``num_from_name`` is the result of `_journal_shards.shard_number` against the real path
+    — ``None`` means the filename stem is not a plain non-negative integer (not a valid
+    numeric shard name); consulted for the two numeric kinds (``"open-pr"``, ``"tile"``) and
+    ignored for ``"manifest"``, whose filename is a timestamp.
 
     Returns human-readable problem strings in the order found; empty when the shard is
     healthy. A decode problem (e.g. a BOM) does not short-circuit field validation — the
@@ -248,10 +266,15 @@ def validate_shard_bytes(raw: bytes, kind: str, stem: str, pr_from_name: int | N
     # regardless of whether the content is also empty or malformed, and it's the more
     # important diagnosis (every reader enumerates open-PR shards by filename) — an
     # empty-but-numeric-stem file shouldn't hide a non-numeric-stem problem or vice versa.
-    if kind == "open-pr" and pr_from_name is None:
+    if kind == "open-pr" and num_from_name is None:
         problems.append(
             f"non-numeric filename '{stem}.json' - invisible to every open-PR reader "
             "(reconcile/post-compact/compose)"
+        )
+    if kind == "tile" and num_from_name is None:
+        problems.append(
+            f"non-numeric filename '{stem}.json' - invisible to every tile reader "
+            "(reconcile-pending-tiles/post-compact); the filename IS the issue key"
         )
 
     if not text.strip():
@@ -269,7 +292,7 @@ def validate_shard_bytes(raw: bytes, kind: str, stem: str, pr_from_name: int | N
             problems.extend(malformed_manifest_fields(entry))
         return problems
 
-    # kind == "open-pr"
+    # kind == "open-pr" or "tile" — both are a single JSON object in a <N>.json file.
     try:
         entry = json.loads(text.strip())
     except json.JSONDecodeError:
@@ -278,10 +301,26 @@ def validate_shard_bytes(raw: bytes, kind: str, stem: str, pr_from_name: int | N
     if not isinstance(entry, dict):
         problems.append("not a JSON object")
         return problems
+
+    if kind == "tile":
+        missing = missing_tile_fields(entry)
+        if missing:
+            problems.append(f"missing {', '.join(missing)}")
+        # The filename is the authoritative issue key (ADR-118), so a disagreeing `issue`
+        # field is not a cosmetic mismatch: reconcile-pending-tiles.py treats it as corrupt
+        # and refuses to reconcile the shard at all, which silently exempts that tile from
+        # pruning forever. Flag it at write time, where it is still one keystroke to fix.
+        if num_from_name is not None and "issue" in entry and entry["issue"] != num_from_name:
+            problems.append(
+                f"filename stem '{stem}' does not match embedded issue={entry['issue']!r} "
+                "- reconcile-pending-tiles skips this shard as corrupt"
+            )
+        return problems
+
     missing = missing_open_pr_fields(entry)
     if missing:
         problems.append(f"missing {', '.join(missing)}")
-    if pr_from_name is not None and "pr" in entry and entry["pr"] != pr_from_name:
+    if num_from_name is not None and "pr" in entry and entry["pr"] != num_from_name:
         problems.append(f"filename stem '{stem}' does not match embedded pr={entry['pr']!r}")
     return problems
 
@@ -311,8 +350,8 @@ def collect_problems(paths: list[str]) -> list[tuple[str, list[str]]]:
             continue
 
         stem = Path(path).stem
-        pr_from_name = shard_pr_number(Path(path)) if kind == "open-pr" else None
-        problems = validate_shard_bytes(raw, kind, stem, pr_from_name)
+        num_from_name = shard_number(Path(path)) if kind in ("open-pr", "tile") else None
+        problems = validate_shard_bytes(raw, kind, stem, num_from_name)
         if problems:
             results.append((path, problems))
     return results
@@ -345,6 +384,15 @@ def format_advisory(problems: list[tuple[str, list[str]]]) -> str:
     lines.append(
         '  open-pr schema:  {"pr":N,"url":"https://github.com/<owner>/<repo>/pull/N",'
         '"topic":"<H2>","stub":"YYYY-MM-DD_HHMMSS.stub.md","opened":"YYYY-MM-DD"}'
+    )
+    lines.append(
+        '  tile schema:     {"issue":N,"url":"https://github.com/<owner>/<repo>/issues/N",'
+        '"title":"<chip label>","tldr":"<tooltip>","prompt":"<full spawn_task prompt>",'
+        '"cwd":"<target repo path>","spawned":"YYYY-MM-DD"}  (stub optional, project-qualified)'
+    )
+    lines.append(
+        "Build a tile shard with a JSON serializer, never echo - `prompt` is free prose, so "
+        "interpolating it corrupts the shard or escapes into the shell."
     )
     lines.append(
         "A manifest re-created after a compose consumed the original must carry the "

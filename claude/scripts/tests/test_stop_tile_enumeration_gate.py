@@ -98,6 +98,27 @@ def _asst_spawn_other_namespace(tid="s1"):
          "input": {"title": "Follow-up"}}]}}
 
 
+_TILE_SHARD = "sessions/dev-env/tiles/870.json"
+
+
+def _asst_write(path, tid="w1"):
+    return {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Write", "id": tid, "input": {"file_path": path}}]}}
+
+
+def _asst_shard_write(tid="ts1"):
+    """A tile-shard write, the artifact trigger 3b (ADR-118, dev-env#870) requires.
+
+    Defined here rather than beside that trigger's own tests because a spawned tile now
+    obliges a shard write, so every *fully-compliant* fixture in this file needs one --
+    including the module-level `_MERGED_DEFERRAL_QUESTION_OTHERWISE_RESOLVED` built above
+    those tests. Adding trigger 3b turned several previously-passing e2e fixtures red
+    exactly as intended: they spawned a tile and wrote no shard, which is now the
+    violation. They were fixed by making the session compliant, never by weakening the
+    assertion."""
+    return _asst_bash(tid, f"git add {_TILE_SHARD}")
+
+
 def _user_str(text):
     return {"type": "user", "message": {"content": text}}
 
@@ -1091,12 +1112,13 @@ def test_e2e_merged_with_enum_allows():
     # table_trigger_still_fires for the isolated interaction this covers).
     records = _MERGED_NO_ENUM + [
         _asst_spawn(),
+        _asst_shard_write(),
         _asst_text("### Tiles spawned this session\n| Tile | Issue | Status | Next |\n"),
     ]
     with tempfile.TemporaryDirectory() as home:
         rc, out, err = _run_hook(records, home)
     assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
-    return "e2e merged + spawn_task tile + table -> exit 0 (allowed)"
+    return "e2e merged + spawn_task tile + shard + table -> exit 0 (allowed)"
 
 
 def test_e2e_no_merge_allows():
@@ -1145,12 +1167,13 @@ def test_e2e_dangling_issue_with_enum_allows():
     # session also needs the tile-table heading.
     records = _ISSUE_CREATED_NO_ENUM + [
         _asst_spawn(),
+        _asst_shard_write(),
         _asst_text("### Tiles spawned this session\n| Tile | Issue | Status | Next |\n"),
     ]
     with tempfile.TemporaryDirectory() as home:
         rc, out, err = _run_hook(records, home)
     assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
-    return "e2e dangling issue + spawn_task tile + table -> exit 0 (allowed)"
+    return "e2e dangling issue + spawn_task tile + shard + table -> exit 0 (allowed)"
 
 
 def test_e2e_issue_resolved_via_merge_allows():
@@ -1222,12 +1245,15 @@ def test_e2e_spawn_no_table_blocks_on_stderr():
 
 
 def test_e2e_spawn_with_table_allows():
+    # The shard write is required alongside the table since trigger 3b (ADR-118,
+    # dev-env#870): a spawned tile must leave BOTH artifacts to reach exit 0.
     records = _SPAWNED_NO_TABLE + [
+        _asst_shard_write(),
         _asst_text(_TABLE_HEADING + "\n| Tile | Issue | Status | Next |\n")]
     with tempfile.TemporaryDirectory() as home:
         rc, out, err = _run_hook(records, home)
     assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
-    return "e2e tile spawned + table heading -> exit 0 (allowed)"
+    return "e2e tile spawned + table heading + shard write -> exit 0 (allowed)"
 
 
 def test_e2e_spawn_with_skip_allows():
@@ -1334,13 +1360,16 @@ def test_e2e_partial_session_only_sets_the_fired_triggers_sentinel():
     return "merge-only session -> ONLY the pr- sentinel is set; issue-/table- stay open"
 
 
-def test_e2e_fully_compliant_session_sets_all_three_sentinels_and_stays_allowed():
-    # A session where all three conditions are resolved in one turn (the spawn
-    # resolves triggers 1/2 via enumeration_recorded; the table heading
-    # resolves trigger 3) sets ALL THREE sentinels, and a second Stop with the
-    # same transcript stays allowed (stable, no spurious re-fire).
+def test_e2e_fully_compliant_session_sets_all_blocking_sentinels_and_stays_allowed():
+    # A session where every blocking condition is resolved in one turn (the spawn
+    # resolves triggers 1/2 via enumeration_recorded; the table heading resolves
+    # trigger 3; the shard write resolves trigger 3b) sets all four of those
+    # sentinels, and a second Stop with the same transcript stays allowed (stable,
+    # no spurious re-fire). Trigger 4's sentinel is deliberately NOT asserted here:
+    # it is advisory and its FIRED mark is only set at emission.
     records = _MERGED_NO_ENUM + _ISSUE_CREATED_NO_ENUM + [
         _asst_spawn(),
+        _asst_shard_write(),
         _asst_text(_TABLE_HEADING + "\n| Tile | Issue | Status | Next |\n"),
     ]
     with tempfile.TemporaryDirectory() as home:
@@ -1348,11 +1377,13 @@ def test_e2e_fully_compliant_session_sets_all_three_sentinels_and_stays_allowed(
         pr_set = _sentinel_file(home, gate._TRIGGER_PR, "sess-full").exists()
         issue_set = _sentinel_file(home, gate._TRIGGER_ISSUE, "sess-full").exists()
         table_set = _sentinel_file(home, gate._TRIGGER_TABLE, "sess-full").exists()
+        shard_set = _sentinel_file(home, gate._TRIGGER_SHARD, "sess-full").exists()
         rc2, out2, err2 = _run_hook(records, home, session_id="sess-full")
     assert rc1 == 0, f"expected exit 0 (fully resolved), got {rc1} (stderr={err1!r})"
-    assert pr_set and issue_set and table_set, "all three sentinels must be set once fully resolved"
+    assert pr_set and issue_set and table_set and shard_set, \
+        "all four blocking sentinels must be set once fully resolved"
     assert rc2 == 0, f"second Stop expected exit 0 (stable), got {rc2} (stderr={err2!r})"
-    return ("fully-compliant session -> all three per-trigger sentinels set; "
+    return ("fully-compliant session -> all four blocking per-trigger sentinels set; "
             "a later Stop with the same transcript stays allowed")
 
 
@@ -1409,6 +1440,7 @@ _MERGED_DEFERRAL_QUESTION = [
 # which is not what these tests are isolating.
 _MERGED_DEFERRAL_QUESTION_OTHERWISE_RESOLVED = _MERGED_DEFERRAL_QUESTION + [
     _asst_spawn(),
+    _asst_shard_write(),
     _asst_text("### Tiles spawned this session\n| Tile | Issue | Status | Next |\n"
                "| other follow-up | #761 | open | click the chip |\n"),
 ]
@@ -1577,9 +1609,10 @@ def test_e2e_blocking_trigger_takes_precedence_over_deferral_advisory():
 
 
 def test_e2e_no_deferral_phrase_no_systemmessage():
-    # Cleanly resolved (spawn + table heading), no deferral phrase anywhere.
+    # Cleanly resolved (spawn + shard + table heading), no deferral phrase anywhere.
     records = _MERGED_NO_ENUM + [
         _asst_spawn(),
+        _asst_shard_write(),
         _asst_text("### Tiles spawned this session\n| Tile | Issue | Status | Next |\n"),
     ]
     with tempfile.TemporaryDirectory() as home:
@@ -1603,6 +1636,7 @@ def test_e2e_deferral_should_i_phrasing_after_issue_create():
         _asst_bash("i2", "gh issue close 768"),
         _tool_result("i2", "Closed issue #768"),
         _asst_spawn(),
+        _asst_shard_write(),
         _asst_text("### Tiles spawned this session\n| Tile | Issue | Status | Next |\n"),
     ]
     with tempfile.TemporaryDirectory() as home:
@@ -1661,6 +1695,121 @@ def test_e2e_deferral_advisory_resurfaces_after_blocking_trigger_resolves():
     return ("e2e: a blocking trigger co-firing with the deferral trigger does NOT permanently "
             "consume trigger 4's fire -- the advisory resurfaces once the blocking trigger "
             "resolves on a later Stop")
+
+
+# ---------------------------------------------------------------------------
+# trigger 3b: tile spawned without its shard (ADR-118, dev-env#870)
+# ---------------------------------------------------------------------------
+
+# A tile spawned with no shard write anywhere -- the state trigger 3b exists to catch.
+_SPAWNED_NO_SHARD = [
+    _asst_spawn("s1"),
+    _asst_text("### Tiles spawned this session\n\n| Tile | Issue |\n"),
+]
+
+
+def test_tile_shard_write_present_via_write_tool():
+    # The write recipe explicitly offers the Write tool as an equal alternative to the
+    # shell serializer, so a Write file_path must count as evidence.
+    assert gate.tile_shard_write_present([_asst_write(
+        "C:/Users/brown/Git/engineering-journal/" + _TILE_SHARD)])
+    return "a Write tool_use naming a tiles/<N>.json path -> shard write present"
+
+
+def test_tile_shard_write_present_via_bash_command():
+    assert gate.tile_shard_write_present([_asst_bash("t1", f"git add {_TILE_SHARD}")])
+    return "a Bash command naming a tiles/<N>.json path -> shard write present"
+
+
+def test_tile_shard_write_present_via_bash_output_only():
+    # THE load-bearing case. The documented recipe writes shards through a serializer
+    # SCRIPT, and a multi-tile session naturally writes one script that emits all of
+    # them -- so the command text names only the script, and the shard paths appear
+    # solely in its OUTPUT. Observed live in the session that shipped the reader: three
+    # shards written by one `py -3 <script>` call whose command contained no tiles/ path
+    # at all. An input-only scan would have blocked that session for a write it did
+    # correctly perform.
+    records = [
+        _asst_bash("t1", "py -3 C:/Users/brown/scratch/write_tile_shards.py"),
+        _tool_result("t1", r"wrote C:\Users\brown\Git\engineering-journal\sessions"
+                           r"\dev-env\tiles\870.json  (4321 chars of prompt)"),
+    ]
+    assert gate.tile_shard_write_present(records)
+    return "a shard path appearing only in Bash OUTPUT still counts (serializer-script recipe)"
+
+
+def test_tile_shard_write_present_false_without_evidence():
+    assert not gate.tile_shard_write_present(_SPAWNED_NO_SHARD)
+    return "a spawn with no tiles/<N>.json anywhere -> no shard write present"
+
+
+def test_tile_shard_write_present_ignores_non_numeric_and_other_dirs():
+    # `tiles/index.json` is not a shard (the filename IS the issue key), and an
+    # open-prs path must not be mistaken for one.
+    records = [
+        _asst_bash("t1", "git add sessions/dev-env/tiles/index.json"),
+        _asst_bash("t2", "git add sessions/dev-env/open-prs/884.json"),
+    ]
+    assert not gate.tile_shard_write_present(records)
+    return "non-numeric tiles/ filenames and open-prs/ paths are not shard-write evidence"
+
+
+def test_evaluate_tile_shard_fires_without_shard():
+    fire, resolved = gate.evaluate_tile_shard(_SPAWNED_NO_SHARD)
+    assert fire is True and resolved is False
+    return "tile spawned, no shard write -> fires"
+
+
+def test_evaluate_tile_shard_resolved_with_shard():
+    records = _SPAWNED_NO_SHARD + [_asst_bash("t9", f"git add {_TILE_SHARD}")]
+    fire, resolved = gate.evaluate_tile_shard(records)
+    assert fire is False and resolved is True
+    return "tile spawned + shard written -> resolved, sentinel set"
+
+
+def test_evaluate_tile_shard_resolved_with_skip_override():
+    records = _SPAWNED_NO_SHARD + [_user_str("skip tiles for this one")]
+    fire, resolved = gate.evaluate_tile_shard(records)
+    assert fire is False and resolved is True
+    return "an explicit 'skip tiles' user override waives the shard trigger"
+
+
+def test_evaluate_tile_shard_noop_without_spawn():
+    fire, resolved = gate.evaluate_tile_shard(_MERGED_NO_ENUM)
+    assert fire is False and resolved is False
+    return "no spawn this session -> (False, False), so a later spawn is still caught"
+
+
+def test_shard_and_table_triggers_are_independent():
+    # A session that spawns a tile and emits the table but writes NO shard must resolve
+    # trigger 3 while trigger 3b still fires -- they guard different losses (the table
+    # tells the user a tile exists; the shard is what lets the tile be re-spawned).
+    fire_table, resolved_table = gate.evaluate_tile_table(_SPAWNED_NO_SHARD)
+    fire_shard, resolved_shard = gate.evaluate_tile_shard(_SPAWNED_NO_SHARD)
+    assert (fire_table, resolved_table) == (False, True), "table present -> trigger 3 resolved"
+    assert (fire_shard, resolved_shard) == (True, False), "shard absent -> trigger 3b fires"
+    return "table and shard are independent bars on the same spawn (3 resolves, 3b fires)"
+
+
+def test_shard_trigger_not_satisfied_by_enumeration_text_alone():
+    # Mirrors the trigger-3 asymmetry: prescribed enumeration TEXT satisfies triggers
+    # 1/2, but must not by itself satisfy the shard bar -- only a real write does.
+    records = [_asst_spawn("s1"),
+               _asst_text("### Tiles spawned this session\n\nFollow-ups considered: "
+                          "one item -> tiled (#870)")]
+    fire, _resolved = gate.evaluate_tile_shard(records)
+    assert fire is True
+    return "enumeration text alone does not satisfy the shard trigger -- only a write does"
+
+
+def test_format_shard_reminder_is_ascii_and_actionable():
+    text = gate.format_shard_reminder()
+    assert text.isascii(), "exit-2 stderr is cp1252-decoded on Windows"
+    assert "tiles/<issue-number>.json" in text
+    assert "TARGET project" in text, "filing under the wrong project is the common mistake"
+    assert "never" in text and "echo" in text, "must warn against interpolating the prompt"
+    assert "skip tiles" in text
+    return "the shard reminder is ASCII, names the path, the target-project rule, and the escape hatch"
 
 
 def main():
@@ -1762,6 +1911,18 @@ def main():
         ("session_spawned_tiles: false without spawn", test_session_spawned_tiles_false_without_spawn),
         ("session_spawned_tiles: detects other namespace", test_session_spawned_tiles_detects_other_namespace),
         ("enumeration_recorded: delegates to session_spawned_tiles", test_enumeration_recorded_delegates_to_session_spawned_tiles),
+        ("shard write present: via Write tool", test_tile_shard_write_present_via_write_tool),
+        ("shard write present: via Bash command", test_tile_shard_write_present_via_bash_command),
+        ("shard write present: via Bash OUTPUT only (serializer recipe)", test_tile_shard_write_present_via_bash_output_only),
+        ("shard write present: false without evidence", test_tile_shard_write_present_false_without_evidence),
+        ("shard write present: ignores non-numeric / open-prs paths", test_tile_shard_write_present_ignores_non_numeric_and_other_dirs),
+        ("evaluate_tile_shard: fires without shard", test_evaluate_tile_shard_fires_without_shard),
+        ("evaluate_tile_shard: resolved with shard", test_evaluate_tile_shard_resolved_with_shard),
+        ("evaluate_tile_shard: resolved with skip override", test_evaluate_tile_shard_resolved_with_skip_override),
+        ("evaluate_tile_shard: no-op without spawn", test_evaluate_tile_shard_noop_without_spawn),
+        ("shard vs table triggers are independent", test_shard_and_table_triggers_are_independent),
+        ("shard trigger not satisfied by enumeration text", test_shard_trigger_not_satisfied_by_enumeration_text_alone),
+        ("format_shard_reminder: ASCII + actionable", test_format_shard_reminder_is_ascii_and_actionable),
         ("table_marker_present: true on heading", test_table_marker_present_true_on_heading),
         ("table_marker_present: case/level insensitive", test_table_marker_present_case_and_heading_level_insensitive),
         ("table_marker_present: false without heading", test_table_marker_present_false_without_heading),
@@ -1785,7 +1946,7 @@ def main():
         # --- per-trigger sentinel independence (ADR-097, dev-env#677) ---
         ("e2e dev-env#677: later trigger still fires after sibling sentinel set", test_e2e_later_trigger_still_fires_after_sibling_sentinel_set),
         ("e2e partial session only sets the fired trigger's sentinel", test_e2e_partial_session_only_sets_the_fired_triggers_sentinel),
-        ("e2e fully-compliant session sets all three sentinels, stays allowed", test_e2e_fully_compliant_session_sets_all_three_sentinels_and_stays_allowed),
+        ("e2e fully-compliant session sets all blocking sentinels, stays allowed", test_e2e_fully_compliant_session_sets_all_blocking_sentinels_and_stays_allowed),
         ("e2e stale 'merged' text does not block a later distinct trigger", test_e2e_stale_merged_text_does_not_block_a_later_distinct_trigger),
         # --- deferral-question trigger (new ADR, dev-env#772) ---
         ("deferral_question: detects 'let me know if you want me to'", test_deferral_question_detected_let_me_know),

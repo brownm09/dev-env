@@ -62,9 +62,14 @@ def shard_number(path: Path) -> int | None:
 def shard_pr_number(path: Path) -> int | None:
     """``shard_number`` under its original open-PR-specific name.
 
-    Retained because ``journal-shard-write-advisory.py`` imports it by this name to
-    cross-check a shard's ``pr`` field against its filename. A thin delegation, so there is
-    still exactly one implementation of the stem parse.
+    Introduced when open-PR shards were the only numeric kind, and imported under this name
+    by ``journal-shard-write-advisory.py`` to cross-check a shard's ``pr`` field against its
+    filename. That hook moved to the generic ``shard_number`` once ADR-118's enforcement
+    phase (dev-env#870) made it validate *tile* shards too and the same call site began
+    serving both kinds — so this name currently has **no production importer**, only its own
+    test. Kept rather than deleted because it is a published helper and a thin delegation
+    (there is still exactly one implementation of the stem parse); if a future change wants
+    it gone, delete it here and in ``tests/test_journal_shards.py`` together.
     """
     return shard_number(path)
 
