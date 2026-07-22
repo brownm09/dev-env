@@ -190,7 +190,8 @@ repeated, documented GraphQL exhaustion (dev-env#769, again during PR #872, and 
 this reader's own implementation session — measured at `graphql 0/5000` while REST `core`
 sat at `4999/5000`). The hook fails safe there (every tile unresolved, every shard kept, the
 message says so), so this is degradation rather than defect; moving the lookup to the REST
-`core` bucket is dev-env#882.
+`core` bucket is dev-env#882. **→ Done; this paragraph is superseded by Amendment 3** (the
+batching argument above it stands unchanged — only the transport moved).
 
 **Two checks are added to the `url` validation the Decision section specifies.** The three
 listed above (`netloc == "github.com"`, the owner/repo character class, issue number from the
@@ -242,3 +243,62 @@ The write-time half needed no such compromise: `journal-shard-write-advisory.py`
 shard's actual on-disk bytes, so it checks the full field set and flags a filename/`issue`
 disagreement directly — including the consequence, since `reconcile-pending-tiles.py` treats such
 a shard as corrupt and will never prune it.
+
+## Amendment 3 (2026-07-22, dev-env#882) — the lookup moves to REST; two hazards it introduces
+
+Amendment 1 flagged its own transport as a known weakness and named this as the follow-up:
+`gh issue list` is a GraphQL call, and this repo has repeated, *measured* GraphQL exhaustion —
+dev-env#769/#773 (project-board operations), again during PR #872, and again during the reader's
+own implementation session at `graphql 0/5000` while REST `core` sat at `4999/5000`. An exhausted
+bucket failed every lookup, so no shard was ever pruned and the pending-tile index filled with
+already-finished tiles. The hook handled that safely — unresolved means *kept*, never unlinked,
+and the message said so — so it was a degradation rather than a defect, but a total one, and it
+landed on precisely the work the hook exists to support.
+
+**`fetch_repo_issue_states` now reads `GET /repos/{owner}/{repo}/issues` over REST**, superseding
+Amendment 1's transport paragraph (its batching argument stands unchanged — this is the same one
+lookup per repo, on a different bucket). `core` is 5000/hr and near-untouched here, and it is
+*not* what Projects v2 contends for: those operations are GraphQL-only with no REST surface at all
+(dev-env#769), so taking this hook off the shared bucket helps both.
+
+**REST-only, with no GraphQL fallback.** A fallback would add a second untested failure path and
+double worst-case latency inside a hook that stalls the session's first prompt, to defend against
+a `core` outage that has never been observed — and a `core` failure almost always means auth or
+network is down, which GraphQL would not survive either. The conservative contract is unchanged
+either way: any failure on any path still keeps the shard.
+
+**Two REST-specific hazards, both silent, both deliberately relocated into pure code.** The
+transport function is an untested subprocess boundary by this repo's fixture-only convention, so
+leaving either rule inside it would have made both untestable — exactly the kind of bug a naive
+test passes straight through. Both now live in a pure `issue_states_from_rows`:
+
+- **REST models a pull request as an issue.** `GET /issues` returns both, distinguished only by a
+  `pull_request` key; `gh issue list` filtered them server-side, which is why the original reader
+  needed no such check. Issues and PRs share **one** number sequence per repo, so the hazard is
+  not a collision between two live objects (that cannot happen): it is a shard whose number
+  happens to name a PR, which without the filter resolves to that PR's state and is unlinked on a
+  closed one. Key *presence* classifies, never its value — so if the payload projection ever
+  changes shape, the failure direction is everything-unresolved-and-kept, not a mis-prune.
+- **REST returns `state` lowercase** (`open`/`closed`) where GraphQL returned uppercase, and
+  `should_remove_tile` compares `"CLOSED"` without case-folding. The predicate stays strict and
+  the boundary normalises, rather than the reverse: a case-folding predicate would delete the one
+  cheap regression pin that catches normalisation being dropped. Getting this wrong leaves the
+  hook **inert** rather than fixed — fail-safe in direction, but a complete loss of pruning that
+  nothing else reports. The test therefore runs raw REST rows all the way to the `unlink`, since
+  a per-function assertion still passes when the normalisation is gone.
+
+A third, smaller pure helper (`should_stop_paging`) bounds the walk: REST caps `per_page` at 100
+where the GraphQL call took a single `--limit 200`, so pagination is now explicit. It stops on a
+short page, on every requested number being resolved, or on a row below the lowest requested
+number — the normal case is one page, a pending tile's issue being recent by construction. This is
+why `lookup_states` now passes each repo's requested numbers to `fetch`. Per-page timeout and the
+lookup budget are balanced so `MAX_ISSUE_PAGES * GH_CALL_TIMEOUT == LOOKUP_BUDGET_SECONDS`, which
+makes one hanging repo exhaust the budget exactly and needs no bookkeeping inside the page loop —
+strictly better than the previous 15s pairing, where a 15s hang left elapsed 15 < 20 and a second
+repo's 15s call still started.
+
+**One security note, in the improving direction.** ADR-118's `url` validation exists because
+`gh --repo` accepts a `HOST/OWNER/REPO` form, making an unvalidated shard `url` a
+credential-redirect primitive. Interpolating the validated repo into a REST *path* retires that
+surface — `repos/<owner>/<repo>/issues` cannot name a host. Every check in `repo_from_issue_url`
+stays regardless: it is still how the repo is derived, and defence in depth is free here.

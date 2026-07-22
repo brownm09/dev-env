@@ -2438,14 +2438,16 @@ For a one-line navigational map of the test directory, see
     ```bash
     bash claude/scripts/tests/check-remote-read-hygiene.sh
 80. **reconcile-pending-tiles test** — required when changing
-    `claude/scripts/reconcile-pending-tiles.py` (dev-env#869,
-    [ADR-118](adr/118-tile-persistence-shards.md)). Pins the UserPromptSubmit hook that
-    re-surfaces `spawn_task` tiles whose chips did not survive an app restart. Pure offline
-    fixtures — the live `gh` boundary (`fetch_repo_issue_states`) is untested per this
-    repo's fixture-only convention, but everything *around* it is, via `lookup_states`'
-    injectable `fetch`/`clock`.
+    `claude/scripts/reconcile-pending-tiles.py` (dev-env#869 and dev-env#882,
+    [ADR-118](adr/118-tile-persistence-shards.md) + its Amendments 1 and 3). Pins the
+    UserPromptSubmit hook that re-surfaces `spawn_task` tiles whose chips did not survive an
+    app restart. Pure offline fixtures — the live `gh` boundary (`fetch_repo_issue_states`)
+    is untested per this repo's fixture-only convention, but everything *around* it is:
+    `lookup_states`' injectable `fetch`/`clock`, plus the two pure helpers the REST migration
+    deliberately factored out of the subprocess call so its hazards stay coverable
+    (`issue_states_from_rows`, `should_stop_paging`).
 
-    Three properties carry the real risk and get the most coverage:
+    Four properties carry the real risk and get the most coverage:
 
     **(1) URL validation gates a destructive path.** Unlike its `reconcile-open-prs.py`
     model, this reconciler's remove branch `unlink`s the shard — so a mis-resolved `--repo`
@@ -2478,7 +2480,44 @@ For a one-line navigational map of the test directory, see
     (never `CLOSED` — absence must not delete a live tile's payload); a non-dict fetch
     return degrades to unresolved rather than raising; the wall-clock budget stops further
     fetches (so a hanging `gh` degrades instead of letting the hook be killed mid-flight and
-    lose the whole index); and an empty plan issues zero subprocess calls.
+    lose the whole index); and an empty plan issues zero subprocess calls. Since dev-env#882
+    the fetch also receives each repo's requested numbers — pinned, because dropping that
+    argument breaks nothing visible: the fetch would just walk its full page cap on every
+    repo, every session, silently.
+
+    **(4) The REST transport's two silent hazards** (dev-env#882). Moving the lookup off
+    GraphQL onto the `core` bucket introduced two failure modes that a naive test passes
+    straight through, which is why both rules live in the pure `issue_states_from_rows`
+    rather than in the `--jq` payload projection or the untested subprocess call.
+
+    *PR rows.* REST models a pull request as an issue, so `GET /issues` returns both,
+    distinguished only by a `pull_request` key — the GraphQL predecessor filtered them
+    server-side and needed no such check. Issues and PRs share **one** number sequence per
+    repo, so the hazard is not a collision between two live objects: it is a shard whose
+    number names a PR, which without the filter resolves to that PR's state and is unlinked
+    on a closed one. Pinned three ways: a full REST-shaped row (`pull_request` as an object,
+    exactly what the API returns) is dropped and its number left *absent* rather than
+    resolved; the `--jq`-projected `pull_request: true` shape classifies identically, so the
+    projection can never quietly become classification logic living in an untested jq string;
+    and `pull_request: null` still counts as a PR, because keying on *presence* means a future
+    projection change degrades to everything-unresolved-and-kept rather than to a mis-prune.
+
+    *State case.* REST answers lowercase `"open"`/`"closed"` where GraphQL answered uppercase,
+    and `should_remove_tile` compares `"CLOSED"` without case-folding. Skipping normalization
+    leaves the hook **inert** rather than fixed — fail-safe in direction, but a total loss of
+    pruning that nothing reports. `test_rest_closed_row_prunes_end_to_end` therefore runs raw
+    REST rows all the way through `lookup_states` → `reconcile_tiles` → `unlink`, because a
+    per-function assertion still passes when normalization is dropped; only the full chain
+    goes red. The existing `should_remove_tile("closed") is False` case is now the paired
+    regression pin: it is what keeps the predicate strict so the boundary must normalize.
+
+    *Pagination.* `should_stop_paging` ends the per-repo walk on any of four rules — a short
+    or unusable page, nothing requested, every requested number resolved, or a row below
+    `min(wanted)` (REST `GET /issues` is created-desc and GitHub assigns numbers in creation
+    order, so crossing that floor means every later page is older still). The floor test reads
+    raw rows, PRs included, since they share the sequence. Both wrong directions are bounded
+    and safe and the tests say so: stopping late costs one extra page, stopping early costs a
+    kept shard.
 
     Beyond those: the conservative keep/remove contract (`CLOSED` removes; `OPEN`, `None`,
     unknown, and lowercase `closed` all keep), the ADR-056 no-clobber guarantee inherited

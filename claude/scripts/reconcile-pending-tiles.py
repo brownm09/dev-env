@@ -39,14 +39,20 @@ model, each load-bearing:
    failed check **skips and keeps** the shard rather than unlinking it. See
    `repo_from_issue_url` and ADR-118's "The reader must validate `url`" paragraph.
 
-3. **One `gh` call per REPO, not per shard.** Shards accumulate un-pruned across the whole
-   dormant window, so the first prompt after this hook lands faces every tile ever written.
-   A per-shard `gh issue view` would pay N sequential subprocess spawns there — and this
-   repo has documented history of GraphQL quota exhaustion disabling `gh` mid-session
-   (dev-env#769, hit again during PR #872). `lookup_states` therefore issues a single
-   `gh issue list --state all --json number,state` per distinct repo, so cost scales with
-   repo count rather than shard count. This supersedes ADR-118's Consequences note, which
-   assumed one `gh issue view` per pending tile.
+3. **One lookup per REPO, not per shard — over REST, not GraphQL.** Two separate costs are
+   avoided here. *Shape:* shards accumulate un-pruned between reconciliations, so a per-shard
+   `gh issue view` would pay N sequential subprocess spawns; `lookup_states` instead issues one
+   paged lookup per distinct repo, so cost scales with repo count rather than shard count. This
+   supersedes ADR-118's Consequences note, which assumed one `gh issue view` per pending tile.
+   *Transport:* `gh issue list` is a GraphQL call, and this repo has repeated, measured GraphQL
+   exhaustion (dev-env#769/#773, again during PR #872, and again during this hook's own
+   implementation session — `graphql 0/5000` while REST `core` sat at `4999/5000`). An exhausted
+   bucket failed every lookup, so nothing was ever pruned. `fetch_repo_issue_states` therefore
+   reads `GET /repos/{owner}/{repo}/issues` over REST, whose `core` bucket is 5000/hr and
+   near-untouched — and which is *not* what Projects v2 operations contend for, since those have
+   no REST alternative at all. REST-only, with no GraphQL fallback: one code path, and a `core`
+   failure almost always means auth/network is down, which GraphQL would not survive either.
+   See dev-env#882 and ADR-118 Amendment 3.
 
 Conservative on every uncertainty, mirroring `should_remove`: only a confirmed CLOSED
 unlinks. OPEN, an unknown state, a `gh` failure, an issue outside the lookup window, a
@@ -86,21 +92,31 @@ SENTINEL_PREFIX = "pending-tiles-reconciled-"
 # all the pending tiles", which is exactly the wrong thing to tell Claude.
 MAX_SHOWN = 10
 
-# Per-repo issue-list page budget. `gh issue list` returns newest-first, so this covers a
-# long window of recent issues in one or two internal pages (~1-2s per repo) without
-# fetching a repo's entire history. A shard whose issue falls outside the window resolves
-# to None -> kept and counted as unresolved, never silently dropped.
-ISSUE_LIST_LIMIT = 200
+# REST page size (100 is the GitHub maximum) and the per-repo page cap. `GET /issues` returns
+# newest-first, and `fetch_repo_issue_states` stops as soon as every requested number is resolved
+# or it has paged past them — so the cap only binds when a tile's issue is far older than the
+# newest ~200 issue/PR numbers, which a pending tile is not, by construction. A shard whose issue
+# falls outside the paged window resolves to None -> kept and counted as unresolved, never
+# silently dropped. Note the window is narrower in *issue* terms than the row count suggests,
+# because REST models PRs as issues and those rows consume the page too (see
+# `issue_states_from_rows`).
+ISSUE_PAGE_SIZE = 100
+MAX_ISSUE_PAGES = 2
 
-# Per-`gh`-call timeout, and the total wall-clock budget for all lookups. Both are sized
-# against the fact that this runs on UserPromptSubmit, so every second spent here is a second
-# the user's first prompt of the session is stalled. Batching makes the realistic cost ~1-2s
-# per repo with tiles (usually one or two), so the budget only binds when `gh` is hanging —
-# and stopping there degrades to "some tiles unresolved, all kept, and said so" rather than
-# letting the hook be killed mid-flight and lose the whole index, prunes included.
-# Kept at/below `reconcile-open-prs.py`'s 30s settings timeout, which does strictly more
-# sequential `gh` work; a larger budget here would be slower than the unbatched precedent.
-GH_CALL_TIMEOUT = 15
+# Per-HTTP-page timeout, and the total wall-clock budget for all lookups. Both are sized against
+# the fact that this runs on UserPromptSubmit, so every second spent here is a second the user's
+# first prompt of the session is stalled. Batching plus early exit makes the realistic cost one
+# page (~0.5-1s) per repo with tiles, so the budget only binds when `gh` is hanging — and stopping
+# there degrades to "some tiles unresolved, all kept, and said so" rather than letting the hook be
+# killed mid-flight and lose the whole index, prunes included.
+#
+# The two are deliberately balanced so the worst case needs no extra bookkeeping inside the page
+# loop: MAX_ISSUE_PAGES * GH_CALL_TIMEOUT == LOOKUP_BUDGET_SECONDS, so one hanging repo exhausts
+# the budget exactly and `lookup_states` skips every remaining repo. Strictly better than the
+# pre-REST 15s single-call pairing, where a 15s hang left elapsed 15 < 20 and a second repo's 15s
+# call still started (~30s worst case). Still at/below `reconcile-open-prs.py`'s 30s settings
+# timeout, which does strictly more sequential `gh` work.
+GH_CALL_TIMEOUT = 10
 LOOKUP_BUDGET_SECONDS = 20.0
 
 # Titles are truncated in the index only; the shard keeps the full value.
@@ -190,8 +206,94 @@ def should_remove_tile(state) -> bool:
     Closing the issue is the tile's completion signal (ADR-118). OPEN, an unknown state, or
     None (a `gh` failure, or an issue outside the lookup window) is conservative — keep.
     Mirrors `reconcile-open-prs.py`'s `should_remove`, minus MERGED (issues never merge).
+
+    Deliberately case-sensitive. The state vocabulary is normalised once, at the transport
+    boundary (`issue_states_from_rows`), so relaxing this to a case-fold would remove the
+    regression pin that catches that normalisation being dropped — which is precisely the
+    failure the REST migration could reintroduce, and which is silent: REST answers "closed",
+    this returns False for every tile, and the hook goes inert while still looking healthy.
     """
     return state == "CLOSED"
+
+
+def issue_states_from_rows(rows) -> dict[int, str]:
+    """Parsed REST `GET /issues` rows -> `{issue_number: STATE}`.
+
+    Pure, and deliberately so: this is where both REST-specific hazards live, and both are the
+    kind that pass a naive test. `fetch_repo_issue_states` is an untested subprocess boundary
+    (this repo's fixture-only convention), so parsing here is what makes them coverable at all.
+
+    **Pull requests are dropped.** GitHub REST models a PR as an issue, so `GET /issues` returns
+    both, distinguished only by a `pull_request` key; the GraphQL predecessor (`gh issue list`)
+    filtered them server-side, which is why the original reader needed no such check. Issues and
+    PRs share ONE number sequence per repo, so this is not a collision between two live objects:
+    the hazard is a shard whose number happens to name a PR, which without this filter would
+    resolve to that PR's state and be unlinked on a merged/closed one. A dropped row is simply
+    absent, so such a shard resolves to None -> kept.
+
+    *Presence* of the key is the test, never its value — a row carrying `pull_request: null` is
+    still treated as a PR. If the projection in `fetch_repo_issue_states` ever changes shape, that
+    direction degrades to "everything unresolved, everything kept" rather than to a mis-prune.
+
+    **`state` is upper-cased.** REST returns "open"/"closed" where `gh issue list` returned
+    "OPEN"/"CLOSED", and `should_remove_tile` compares against "CLOSED" without case-folding.
+    Skipping this would leave the hook *inert* rather than fixed — fail-safe in direction, but a
+    total, unreported loss of pruning.
+
+    Malformed input degrades to omission, never to a spurious state: a non-list, a non-dict row, a
+    missing or non-string `state`, and a JSON `true` masquerading as issue #1 (`isinstance(True,
+    int)` is True) are all skipped.
+    """
+    states: dict[int, str] = {}
+    if not isinstance(rows, list):
+        return states
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        if "pull_request" in item:
+            continue
+        number, state = item.get("number"), item.get("state")
+        if isinstance(number, int) and not isinstance(number, bool) and isinstance(state, str):
+            states[number] = state.upper()
+    return states
+
+
+def should_stop_paging(rows, resolved, wanted, page_size: int = ISSUE_PAGE_SIZE) -> bool:
+    """True when another page of `GET /issues` cannot usefully change the result.
+
+    Any of four independent reasons ends the walk:
+
+      - the page came back short (or unusable), so it was the last one;
+      - nothing was requested, so one page is already more than enough;
+      - every requested number is resolved — the common case, satisfied by page 1, since a
+        pending tile's issue is recent by construction;
+      - the page carries a number below the lowest one requested. REST `GET /issues` defaults to
+        `sort=created&direction=desc` and GitHub assigns numbers in creation order, so crossing
+        that floor means every remaining page is older than anything wanted.
+
+    The floor check reads *raw* rows, PRs included: they share the number sequence, so a PR below
+    the floor proves the same thing an issue would, and they are exactly what makes the paged
+    window narrower in issue terms than its row count.
+
+    A transferred issue can break the created/number correspondence and stop the walk early; it
+    then resolves to None -> kept, the same fail-safe as an issue outside the window. Both wrong
+    directions are bounded and safe: stopping late costs one extra page, stopping early costs a
+    kept shard.
+    """
+    if not isinstance(rows, list) or len(rows) < page_size:
+        return True
+    if not wanted:
+        return True
+    if set(wanted) <= set(resolved):
+        return True
+    floor = min(wanted)
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        number = item.get("number")
+        if isinstance(number, int) and not isinstance(number, bool) and number < floor:
+            return True
+    return False
 
 
 def project_dirs(journal_repo: Path) -> list[Path]:
@@ -284,6 +386,10 @@ def lookup_states(by_repo: dict[str, list[int]], fetch=None, budget: float = LOO
     issue the fetch simply did not return (older than the page window, transferred, or
     deleted): absence is never read as "closed".
 
+    The repo's requested numbers are handed to `fetch` as well as used to index its result:
+    knowing what it is looking for is what lets the REST transport stop after the first page
+    instead of walking its whole cap (`should_stop_paging`).
+
     `fetch` and `clock` are injectable so the batching, budget, and None-fallback logic
     unit-test offline; the default `fetch` is the live `gh` boundary.
     """
@@ -294,7 +400,7 @@ def lookup_states(by_repo: dict[str, list[int]], fetch=None, budget: float = LOO
     for repo, numbers in by_repo.items():
         repo_states = None
         if clock() - started < budget:
-            repo_states = fetch(repo)
+            repo_states = fetch(repo, numbers)
         if not isinstance(repo_states, dict):
             repo_states = {}
         for number in numbers:
@@ -418,48 +524,70 @@ def format_message(pending: list[dict], removed: list[dict], skipped: list[dict]
 # --- network boundary (not unit-tested; repo avoids subprocess mocks) ---------
 
 
-def fetch_repo_issue_states(repo: str, limit: int = ISSUE_LIST_LIMIT,
+# jq projection applied by `gh api`, for payload size only — NEVER for classification. It
+# preserves the *presence* of `pull_request` rather than deciding what it means, so
+# `issue_states_from_rows` applies one identical rule to both this shape and a full unprojected
+# REST row (where `pull_request` is an object), and the filter stays testable against real API
+# output. Worth the filter: a full row is ~9 KB, this is ~40 B — ~225x less over a wire that is
+# stalling the user's first prompt of the session. The `[...]` wrapper keeps each page a single
+# `json.loads`-able array.
+_ISSUE_PROJECTION = (
+    '[.[] | if has("pull_request") then {number, state, pull_request: true} '
+    'else {number, state} end]'
+)
+
+
+def fetch_repo_issue_states(repo: str, numbers=(), page_size: int = ISSUE_PAGE_SIZE,
+                            max_pages: int = MAX_ISSUE_PAGES,
                             timeout: int = GH_CALL_TIMEOUT) -> dict[int, str] | None:
-    """ONE `gh issue list` for *repo* -> `{issue_number: state}`; None on any failure.
+    """REST `GET /repos/<repo>/issues` for *repo* -> `{issue_number: STATE}`; None if no page read.
 
-    The batched counterpart of `reconcile-open-prs.py`'s per-item `gh pr view`. Only
-    well-formed `{"number": int, "state": str}` rows are kept, so a schema change degrades
-    to "unresolved, keep" rather than to a spurious CLOSED.
+    The batched counterpart of `reconcile-open-prs.py`'s per-item `gh pr view`, on the REST `core`
+    bucket rather than GraphQL — see the module docstring's point 3 for why the transport moved
+    (dev-env#882, ADR-118 Amendment 3).
 
-    `gh issue list` is a GraphQL call, so an exhausted GraphQL bucket fails every lookup
-    and nothing is pruned that session (every tile is kept and counted as unresolved — a
-    degradation, not a defect). That exhaustion is recurrent and was measured live during
-    this hook's own implementation, with REST fully available; moving to the REST `core`
-    bucket is dev-env#882.
+    Interpolating *repo* into a REST **path** is strictly safer than the `--repo` flag it replaces:
+    `gh --repo` accepts a `HOST/OWNER/REPO` form, which is the credential-redirect primitive
+    `repo_from_issue_url` exists to block, while `repos/<owner>/<repo>/issues` cannot name a host
+    at all. That validation stays regardless — it is still how *repo* is derived, and defence in
+    depth costs nothing here.
 
-    Not unit-tested — subprocess boundary, matching `check_pr_state`'s convention; the
-    batching and failure handling around it are tested through `lookup_states`' injectable
-    `fetch`.
+    Pagination is bounded and stops early (`should_stop_paging`): the normal case is one page,
+    because a pending tile's issue is recent by construction. On any page failure the walk stops
+    and whatever was already collected is returned — a partial result can only ever *omit* a
+    number, never mis-resolve one, and an omitted number is None -> kept. None is returned only
+    when not even the first page was read, preserving the previous all-or-nothing failure signal
+    (`lookup_states` treats both identically anyway).
+
+    Not unit-tested — subprocess boundary, matching `check_pr_state`'s convention. Everything
+    around it is: row parsing through `issue_states_from_rows`, the stop rule through
+    `should_stop_paging`, and the batching/budget/None-fallback through `lookup_states`'
+    injectable `fetch`.
     """
-    try:
-        result = subprocess.run(
-            ["gh", "issue", "list", "--repo", repo, "--state", "all",
-             "--json", "number,state", "--limit", str(limit)],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        if result.returncode != 0:
-            return None
-        data = json.loads(result.stdout)
-    except Exception:
-        return None
-    if not isinstance(data, list):
-        return None
+    wanted = {n for n in numbers if isinstance(n, int) and not isinstance(n, bool)}
     states: dict[int, str] = {}
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        number, state = item.get("number"), item.get("state")
-        # `isinstance(True, int)` is True, so exclude bool explicitly rather than let a
-        # JSON `true` masquerade as issue #1.
-        if isinstance(number, int) and not isinstance(number, bool) and isinstance(state, str):
-            states[number] = state
+    read_a_page = False
+    for page in range(1, max_pages + 1):
+        try:
+            result = subprocess.run(
+                ["gh", "api",
+                 f"repos/{repo}/issues?state=all&per_page={page_size}&page={page}",
+                 "--jq", _ISSUE_PROJECTION],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0:
+                break
+            rows = json.loads(result.stdout)
+        except Exception:
+            break
+        read_a_page = True
+        states.update(issue_states_from_rows(rows))
+        if should_stop_paging(rows, states, wanted, page_size):
+            break
+    if not read_a_page:
+        return None
     return states
 
 
