@@ -49,6 +49,7 @@ production code.
 | `test_winsubp.py`, `test_pyw_stdio.py` | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning hook applies; the latter probes real `pyw -3` stdio behavior end-to-end. |
 | `test_worktree_canon.py` | `_worktree_canon.py` | Shared worktree-path-to-canonical-root regex/resolution, used by the project-board hook pair and the two PreToolUse worktree guards. |
 | `test_worktree_liveness.py` | `_worktree_liveness.py` | Active-session liveness check that stops prune/reclaim routines from severing a worktree with a live Claude Code session in it. |
+| `test_worktree_recovery.py` | `_worktree_recovery.py` | Orphaned-worktree recovery recipe: renders it (destructive step kept out of the numbered sequence), pins `docs/REFERENCE.md`'s runbook to it by equality over runnable lines, and blocks the dev-env#751-disproven `worktree add --force`/`-f` form from every live surface. |
 | `test_worktree_topology.py` | `_worktree_topology.py` | Worktree-on-`main` squat detection/diagnosis and park-target decisions shared by prune, sync, and the journal-canonical guard. |
 | — | `_hook_wiring.py` | Not itself a test. Parses `claude/settings.json` into wired hooks/events/timeouts once, shared by the four structural gates below. |
 

@@ -415,9 +415,43 @@ so this is a robustness hardening pass with no test-count change.
 
 ---
 
+## Addendum (2026-07-22): the block message's recovery recipe was wrong, and is now single-sourced (dev-env#862)
+
+### Problem
+
+The 2026-06-06 addendum above specifies that a non-live worktree exits 2 "with a `{"reason": ...}` message
+naming the worktree and cwd and giving the recovery recipe `git worktree add --force <worktree_root>
+<branch>`. That recipe does not work.
+
+[dev-env#751](https://github.com/brownm09/dev-env/issues/751) established this in July and corrected the
+`docs/REFERENCE.md` runbook — but not this hook's inline message, which is the surface that actually
+matters: the guard blocks `Write`/`Edit`/`NotebookEdit` from the orphaned cwd, so the blocked session has
+nothing else to act on. The disproven recipe stayed live here for another six weeks and was hit again on
+2026-07-22 (career-playbook #823 / PR #826).
+
+### Extended decision
+
+The recipe moves out of this hook entirely into `claude/scripts/_worktree_recovery.py`, and the hook
+renders it. The corrected sequence leads with `git worktree repair` (non-destructive — it preserves
+uncommitted work, which the old re-create-the-worktree recipe silently discarded), then `prune` → plain
+`add`, and empties the directory *in place* only if `add` reports `already exists`. `--force` is dropped:
+git dies on a non-empty target before it ever consults the flag.
+
+Full rationale, the throwaway-fixture evidence table (including that `worktree repair` **exits 1 while
+succeeding**), and the parity gate that keeps the hook message and the runbook from drifting again:
+**[ADR-116](116-single-source-worktree-recovery-recipe.md)**. The recipe text quoted in the 2026-06-06
+addendum is left in place as a historical record of what was believed then — ADR-116 supersedes it.
+
+Nothing else about this hook changes: the liveness signals, the block placement before path-scoping, the
+exit-2-on-stderr channel (dev-env#469), and the fail-**open**-on-crash direction are all untouched.
+
+---
+
 ## References
 
 - `claude/scripts/pre-tool-use-worktree-path-check.py` — implementation
+- `claude/scripts/_worktree_recovery.py` — the single-sourced recovery recipe (ADR-116, dev-env#862)
+- `claude/scripts/tests/test_worktree_recovery.py` — recipe unit tests + runbook-parity gate (Testing item 78)
 - `claude/scripts/tests/test_worktree_path_check.py` — self-test (addendum)
 - `claude/settings.json` — hook wiring
 - `brownm09/career-playbook#276` — downstream symptom tracker (original)

@@ -59,6 +59,16 @@ Port all three rules into their instruction homes and record the bundle here.
    `git worktree add --force .claude/worktrees/<name> <branch>` → `npm install`. Complements ADR-024's
    orphan-liveness guard with the recovery procedure.
 
+   > **Correction (2026-07-22, [ADR-116](116-single-source-worktree-recovery-recipe.md) /
+   > [dev-env#862](https://github.com/brownm09/dev-env/issues/862)):** the sequence quoted above is
+   > superseded and must not be followed as written. `git worktree add --force` does nothing for a
+   > non-empty target directory ([dev-env#751](https://github.com/brownm09/dev-env/issues/751)), and the
+   > opening `git -C <canonical> checkout main` is now hard-blocked by ADR-071's canonical-mutate guard
+   > (`prune` frees the branch anyway). The live sequence — `worktree repair` first, since it preserves
+   > uncommitted work, then `prune` → plain `add`, emptying the directory in place only if needed — is
+   > single-sourced in `claude/scripts/_worktree_recovery.py` and rendered into both the runbook and the
+   > guard hook's block message.
+
 The two memory `feedback_*` rules and the `project_worktree_deregistration` note are deleted once these
 edits land on `main`, and issues #434/#435/#436 are closed by the porting PR.
 

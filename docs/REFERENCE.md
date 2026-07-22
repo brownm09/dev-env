@@ -201,6 +201,8 @@ The hook advisory/block emitter is `claude/scripts/_hookout.py` — the analogue
 
 The `gh`-command target resolver is `claude/scripts/_repo_target.py` — one pure module for extracting the `owner/repo` (and PR/issue number) a `gh pr merge`/`gh pr create`/`gh issue create`/`gh issue close` command targets, converged from five hooks that had drifted into three distinct `--repo`/`-R` regex shapes (a sixth, `post-tool-use.py`, joined in dev-env#838). It exposes `repo_from_flag(text)` (the `--repo`/`-R` flag in both `=` and space forms, strict GitHub slug — also normalizing a full-URL / `github.com/` host-prefixed value down to the bare `owner/repo`, dev-env#838 — standalone-token lookbehind, masking `mask_quoted_spans` internally), `merge_args(command)`/`create_args(command)`/`issue_create_args(command)` (the quote-aware statement-bounded argument region, so a chained sibling command's flag can't leak in), `repo_from_pr_url`/`pr_number_from_pr_url`/`iter_pr_urls` and `issue_number_from_issue_url`/`iter_issue_urls` (URL parsing — the caller decides masking, since a bare quoted URL must stay matchable where a prose-flag decoy must not), and `positional_number(text)` (the bare positional integer, decoy-safe). Consumed by `post-pr-merge-project.py`, `pr-merge-reminder.py`, `posttooluse-inert-advisory.py`, `post-pr-merge-pull.py`, `stop-tile-enumeration-gate.py`, and `post-tool-use.py` (its `extract_repo_flag` cross-repo sibling-config lookup, dev-env#838); cd-chain/`-C` resolution stays in `_hookio.effective_merge_dir` (ADR-067), reused not re-implemented. This ends the per-site ADR-050 amendment treadmill (Amendments 14/15/17/18/19/20/21) for the repo-flag/URL/number concern. See [ADR-111](adr/111-shared-repo-target-resolution.md).
 
+The orphaned-worktree recovery recipe is `claude/scripts/_worktree_recovery.py` — one pure, ASCII-only definition of *how to un-orphan a worktree*, exposed as `RECOVERY_STEPS` (ordered `RecoveryStep(command, note)` pairs using `<canonical>` / `<orphan>` / `<branch>` placeholders), `recovery_commands(orphan_root, canonical_root)`, and `recovery_recipe(orphan_root, canonical_root)` (the formatted block a blocking hook embeds in its reason). Consumed by `pre-tool-use-worktree-path-check.py`'s orphan block message, and pinned against the [Worktree deregistration recovery](#worktree-deregistration-recovery-lost-git-link-routes-git-to-main) runbook by `tests/test_worktree_recovery.py` — which also fails the build if the dev-env#751-disproven `worktree add --force` form reappears in any emittable string literal (comments and docstrings explaining *why* it fails are exempt; `docs/adr/` is exempt as a historical record). It exists because those two surfaces were hand-maintained copies that drifted: dev-env#751 corrected the runbook and left the hook message alone, so the disproven recipe stayed on the one surface a blocked session actually reads for another six weeks (dev-env#862). The current sequence — `worktree repair` first (non-destructive, preserves uncommitted work, and exits 1 whether or not it succeeded, which is why the `rev-parse` verification is a separate mandatory step), then `prune` → plain `add`, then a salvage copy and empty-in-place *only* if `add` reports `already exists` — was re-derived from a throwaway-fixture matrix rather than inherited. The destructive step is rendered outside the numbered sequence and flagged `destructive`/`conditional` in the data, so a reader working top-to-bottom never reaches it by default. See [ADR-116](adr/116-single-source-worktree-recovery-recipe.md).
+
 #### Machine-local permissions
 
 The `permissions.allow` block in `claude/settings.json` contains paths with a hardcoded Windows username (`C:/Users/brown/...`). These rules are functionally correct on this machine but must be updated manually when bootstrapping dev-env on a new machine or account. If scratch-dir writes or edits start prompting for permission after a re-bootstrap, update the username in every `allow` entry.
@@ -260,7 +262,7 @@ Fires before matched tool calls. Matcher values are set per entry in `settings.j
 
 | Script | Trigger condition | What it does |
 |--------|------------------|-------------|
-| `pre-tool-use-worktree-path-check.py` | Session `cwd` is inside a Claude-managed worktree — either the nested `.claude/worktrees/<name>` (`EnterWorktree`) convention or the sibling-directory `<repo>-worktrees/<name>` convention reached via manual `git worktree add` (dev-env#760/ADR-024 addendum) — and either (a) the worktree is **orphaned** — its `.git` link is missing or `git rev-parse --show-toplevel` does not resolve to the worktree root — or (b) `file_path`/`notebook_path` is absolute and starts with the canonical repo root | **Blocks** the tool call (exit 2). For an orphaned worktree, the message names the worktree + cwd and gives the recovery recipe `git worktree add --force <worktree_root> <branch>` (covers all writes from the orphan, not just canonical-root paths). Otherwise the message names the attempted path, the active worktree root, and the corrected path. No-op when the session is not in a worktree, or (for case b) when the path already targets the worktree root, or (for case c) when the path targets another worktree under the same canonical root (e.g., a compose session writing to `compose-YYYY-MM-DD` from within a different EJ worktree — dev-env#750). The path-shape regex is now only a cheap PRE-FILTER: once matched, `git worktree list --porcelain` confirms (or corrects) the candidate canonical/worktree roots before anything is enforced, so a repo whose own root directory name literally ends in `-worktrees` (e.g. `some-repo-worktrees`) no longer has every subdirectory misclassified as a worktree name (dev-env#774 gap (b), ADR-024 addendum; falls back to the regex + liveness check only when git itself can't answer). The liveness check runs one `git worktree list` (previously `git rev-parse`) per file write in a worktree, short-circuited when the `.git` link is already missing. **Bypass for intentional canonical edits:** use `Bash` with `node -e`, `sed`, or `python3` — the hook only covers the three file tools, not `Bash`. [ADR-024](adr/024-worktree-path-guard-hook.md) |
+| `pre-tool-use-worktree-path-check.py` | Session `cwd` is inside a Claude-managed worktree — either the nested `.claude/worktrees/<name>` (`EnterWorktree`) convention or the sibling-directory `<repo>-worktrees/<name>` convention reached via manual `git worktree add` (dev-env#760/ADR-024 addendum) — and either (a) the worktree is **orphaned** — its `.git` link is missing or `git rev-parse --show-toplevel` does not resolve to the worktree root — or (b) `file_path`/`notebook_path` is absolute and starts with the canonical repo root | **Blocks** the tool call (exit 2). For an orphaned worktree, the message names the worktree + cwd and renders the recovery recipe from `_worktree_recovery.RECOVERY_STEPS` — the same definition the [Worktree deregistration recovery](#worktree-deregistration-recovery-lost-git-link-routes-git-to-main) runbook is pinned against, so the message a blocked session reads and the runbook cannot drift apart (dev-env#862, [ADR-116](adr/116-single-source-worktree-recovery-recipe.md); before that this row, the hook, and the runbook were three hand-maintained copies, and the hook kept the `--force` recipe dev-env#751 had already disproven). Covers all writes from the orphan, not just canonical-root paths. Otherwise the message names the attempted path, the active worktree root, and the corrected path. No-op when the session is not in a worktree, or (for case b) when the path already targets the worktree root, or (for case c) when the path targets another worktree under the same canonical root (e.g., a compose session writing to `compose-YYYY-MM-DD` from within a different EJ worktree — dev-env#750). The path-shape regex is now only a cheap PRE-FILTER: once matched, `git worktree list --porcelain` confirms (or corrects) the candidate canonical/worktree roots before anything is enforced, so a repo whose own root directory name literally ends in `-worktrees` (e.g. `some-repo-worktrees`) no longer has every subdirectory misclassified as a worktree name (dev-env#774 gap (b), ADR-024 addendum; falls back to the regex + liveness check only when git itself can't answer). The liveness check runs one `git worktree list` (previously `git rev-parse`) per file write in a worktree, short-circuited when the `.git` link is already missing. **Bypass for intentional canonical edits:** use `Bash` with `node -e`, `sed`, or `python3` — the hook only covers the three file tools, not `Bash`. [ADR-024](adr/024-worktree-path-guard-hook.md) |
 
 ---
 
@@ -1074,29 +1076,90 @@ branch on **main**. Mid-session the harness surfaces it as
 `PreToolUse:Edit hook error: [...worktree-path-check.py]: No stderr output` — the session's own cwd
 worktree is orphaned, which blocks **every** Edit (the hook keys off session cwd, not the target path).
 
-**Recovery** (validated 2026-06-04; `--force` caveat corrected 2026-07-13 — dev-env#751):
+**Recovery** (validated 2026-06-04; `--force` caveat corrected 2026-07-13 — dev-env#751; recipe
+re-derived from a throwaway-fixture matrix and single-sourced 2026-07-22 — dev-env#862).
+
+The block below is **pinned to `claude/scripts/_worktree_recovery.py`'s `RECOVERY_STEPS`** — the same
+definition `pre-tool-use-worktree-path-check.py` renders into its block message, so a stuck session and
+this runbook can never again disagree. `claude/scripts/tests/test_worktree_recovery.py` fails if they
+drift. **Edit the module, not this block.** [ADR-116](adr/116-single-source-worktree-recovery-recipe.md)
+
+Run **steps 1–4 in order** and stop as soon as the worktree is live again. The last two commands
+are a **conditional trailer**, not part of the sequence — run them only if step 4 fails:
 
 ```bash
-git -C <main-repo-path> checkout main                # frees the branch
-git -C <main-repo-path> worktree prune               # drop stale admin entries
+# 1. Non-destructive and preserves uncommitted work, so always try it first.
+#    Do NOT judge it by its exit code or its message: it exits 1 and prints
+#    `error: unable to locate repository; .git file broken` BOTH when it succeeds and
+#    when it cannot help. Step 2 is the only reliable signal.
+git -C "<canonical>" worktree repair "<orphan>"
 
-# If .claude/worktrees/<name> still exists on disk, `worktree add` fails with
-# `fatal: '.claude/worktrees/<name>' already exists` — `--force` overrides only the
-# "branch already checked out elsewhere" safeguard, NOT a pre-existing non-empty target
-# directory (confirmed live, git 2.37.1.windows.1). Inspect before removing: confirm
-# there is no `.git` file/link inside (i.e. it is not a live registered worktree) and no
-# valuable uncommitted content, then clear it.
-ls -la <main-repo-path>/.claude/worktrees/<name>     # confirm: no .git link, no real content
-rm -rf <main-repo-path>/.claude/worktrees/<name>     # only once the above is confirmed safe
+# 2. Verification, not a fix — and the real decision point. Prints <orphan> -> recovered,
+#    you are done. ANYTHING ELSE -> still orphaned, continue: that includes the canonical
+#    root, and includes `fatal: not a git repository` (what a sibling-convention orphan
+#    prints, since it sits outside any repo for git to walk up to).
+git -C "<orphan>" rev-parse --show-toplevel
 
-git -C <main-repo-path> worktree add --force .claude/worktrees/<name> <feature-branch>   # --force: branch-checked-out-elsewhere safeguard only
+# 3. Drop the stale registration, else step 4 fails with
+#    `missing but already registered worktree`.
+git -C "<canonical>" worktree prune
+
+# 4. Plain add — NOT --force/-f (see "Why not --force" below).
+git -C "<canonical>" worktree add "<orphan>" <branch>
+
+# --- Conditional trailer: ONLY if step 4 died with `already exists`. Not part of the
+#     sequence above. Run both, then repeat step 4. ---
+
+# 5. Capture BEFORE emptying. Step 1 cannot recover the shape where BOTH the `.git` link
+#    and the admin dir are gone — at this point the orphan's uncommitted work exists
+#    nowhere else. (PowerShell: Copy-Item -Recurse <orphan> <orphan>.salvage)
+cp -r "<orphan>" "<orphan>.salvage"
+
+# 6. Git Bash. IRREVERSIBLE. Empties the directory IN PLACE, then repeat step 4.
+#    In PowerShell `find` is find.exe (the text-search tool) and fails with
+#    `FIND: Parameter format not correct` — use
+#    `Get-ChildItem -Force <orphan> | Remove-Item -Recurse -Force` instead.
+find "<orphan>" -mindepth 1 -delete
+
 npm install                                          # from the recreated worktree, no cd
 ```
 
+`<branch>` is typically `claude/<worktree-name>`; confirm with `git branch -a`.
+
+**Why not `--force`, and why not `rm -rf`** (all verified against git 2.37.1.windows.1 on throwaway
+fixtures, dev-env#862 — the earlier guidance was wrong on both counts):
+
+- **`git worktree add --force` (or `-f`) does not help with a leftover directory.** git checks
+  `file_exists(path) && !is_empty_dir(path)` and dies `fatal: '<path>' already exists` **before** it
+  ever consults the flag; it overrides only the *stale-registration* and
+  *branch-checked-out-elsewhere* safeguards. It genuinely does fix the narrow case of an **empty**
+  directory that is still registered — which is why the original recipe looked right — but that is the
+  one case `worktree prune` already handles. Emptying the directory (step 6) is the real fix, and then
+  a plain `add` suffices.
+- **`rm -rf <orphan>` is the wrong removal.** The orphan is typically the blocked session's *own cwd* —
+  the shell cwd resets back to it between Bash calls — and a held handle fails with
+  `Device or resource busy`, which cannot be worked around from inside the session that needs it.
+  Emptying in place (`find … -mindepth 1 -delete`) leaves the directory itself in place, so it works
+  whether or not the directory can be removed, and keeps the shell's cwd valid.
+- **Step 1 does not always save you, which is why step 5 exists.** `worktree repair` can only relink
+  when one side of the link survived. When *both* the `.git` link and
+  `<canonical>/.git/worktrees/<name>/` are gone, it cannot help — and then step 6 destroys uncommitted
+  work that exists nowhere else. Capture it first. (This restores, in a form that works when the orphan
+  is your own cwd, the inspect-before-you-delete gate the pre-2026-07-22 runbook had.)
+- **Step 1's exit code tells you nothing.** It exits 1 whether it succeeded or not, and the
+  both-sides-gone failure prints the *same* `.git file broken` message as the success case. Step 2 is
+  the only reliable signal — do not skip it.
+- **No `git checkout main` step.** The old recipe opened with `git -C <main-repo-path> checkout main`
+  "to free the branch". `worktree prune` already frees it, and that command is now hard-blocked by
+  `pre-tool-use-canonical-mutate-guard.py` ([ADR-071](adr/071-canonical-checkout-mutate-guard-hook.md))
+  — a `-C` redirect of a mutating verb at a canonical root. `worktree repair` / `prune` / `add` are
+  **not** blocked, so the sequence above needs no `ALLOW_CANONICAL_MUTATE=1` override.
+
 **Root cause.** Disk pressure from many worktrees each carrying a full monorepo `node_modules`
 (dev-env#306). Complements the orphan-liveness guard of
-[ADR-024](adr/024-worktree-path-guard-hook.md) with the recovery procedure; decision:
-[ADR-066](adr/066-worktree-session-safety-rules.md).
+[ADR-024](adr/024-worktree-path-guard-hook.md) with the recovery procedure; decisions:
+[ADR-066](adr/066-worktree-session-safety-rules.md),
+[ADR-116](adr/116-single-source-worktree-recovery-recipe.md).
 
 ### Concurrent-session HEAD thrashing in a canonical (non-worktree) checkout
 

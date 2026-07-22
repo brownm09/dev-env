@@ -67,8 +67,42 @@ def _load_module():
 
 wpc = _load_module()
 
+# The orphan block message is rendered from this module rather than written inline in
+# the hook (dev-env#862, ADR-116). Asserting against it — instead of re-hardcoding the
+# command text here, as this file did with the dev-env#751-disproven
+# `git worktree add --force` string — means a change to the recipe cannot leave these
+# acceptance tests pinning a recipe the hook no longer emits.
+import _worktree_recovery  # noqa: E402
+
+wr = _worktree_recovery
+
 _WT = "C:/Users/brown/Git/dev-env/.claude/worktrees/hardcore-williams-9df32f"
 _CANON = "C:/Users/brown/Git/dev-env"
+
+
+def _assert_orphan_recovery_recipe(reason: str, orphan: str, canonical: str) -> None:
+    """Pin the orphan block reason: it names the orphan condition and carries every
+    canonical recovery command, in order, for THESE paths.
+
+    Also pins the absence of `worktree add --force` — the form dev-env#751 disproved
+    and dev-env#862 found still live in this very message. git dies
+    `fatal: '<path>' already exists` on a non-empty target before it ever consults
+    `--force`, so re-emitting it would send a blocked session back down a dead end.
+    """
+    if "orphaned" not in reason:
+        raise AssertionError(f"block reason missing orphan text: {reason!r}")
+    cursor = -1
+    for command in wr.recovery_commands(orphan, canonical):
+        found = reason.find(command, cursor + 1)
+        if found == -1:
+            raise AssertionError(
+                f"block reason missing (or misordering) recovery command {command!r}: {reason!r}"
+            )
+        cursor = found
+    if "worktree add --force" in reason:
+        raise AssertionError(
+            f"block reason reintroduced the disproven --force recipe: {reason!r}"
+        )
 
 
 def _init_throwaway_repo(root: Path) -> None:
@@ -210,8 +244,7 @@ def test_main_blocks_edit_from_orphaned_worktree() -> str:
             reason = json.loads(proc.stderr).get("reason", "")
         except json.JSONDecodeError:
             raise AssertionError(f"stderr was not JSON: {proc.stderr!r}")
-        if "orphaned" not in reason or "git worktree add --force" not in reason:
-            raise AssertionError(f"block reason missing orphan/recovery text: {reason!r}")
+        _assert_orphan_recovery_recipe(reason, str(orphan), tmp)
     return "Edit from orphaned worktree cwd blocked (exit 2) with recovery recipe, reason on stderr"
 
 
@@ -373,8 +406,7 @@ def test_main_blocks_edit_from_orphaned_sibling_directory_worktree() -> str:
             reason = json.loads(proc.stderr).get("reason", "")
         except json.JSONDecodeError:
             raise AssertionError(f"stderr was not JSON: {proc.stderr!r}")
-        if "orphaned" not in reason or "git worktree add --force" not in reason:
-            raise AssertionError(f"block reason missing orphan/recovery text: {reason!r}")
+        _assert_orphan_recovery_recipe(reason, str(orphan), str(Path(tmp) / "canon-repo"))
     return "Edit from orphaned sibling-directory-convention worktree blocked (exit 2, dev-env#760)"
 
 
