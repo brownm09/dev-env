@@ -53,7 +53,7 @@ the item). A one-line navigational map of the test directory is
 17. **worktree-liveness guard test** — required when changing `claude/scripts/_worktree_liveness.py` or the prune/reclaim scripts' use of it. Run: `py -3 claude/scripts/tests/test_worktree_liveness.py`
 18. **posttooluse-inert-advisory test** — required when changing `claude/scripts/posttooluse-inert-advisory.py`. Run: `py -3 claude/scripts/tests/test_posttooluse_inert_advisory.py`
 19. **reconcile-open-prs test** — required when changing `claude/scripts/reconcile-open-prs.py`. Run: `py -3 claude/scripts/tests/test_reconcile_open_prs.py`
-20. **post-compact open-PR reader test** — required when changing `claude/scripts/post-compact.py`. Run: `py -3 claude/scripts/tests/test_post_compact.py`
+20. **post-compact open-PR + pending-tile reader test** — required when changing `claude/scripts/post-compact.py`. Run: `py -3 claude/scripts/tests/test_post_compact.py`
 21. **journal-shards shared-reader test** — required when changing `claude/scripts/_journal_shards.py`. Run: `py -3 claude/scripts/tests/test_journal_shards.py`
 22. **worktree-topology test** — required when changing `claude/scripts/_worktree_topology.py` or the squat-detection paths in `prune-merged-worktrees.py` / `post-pr-merge-pull.py` / `dev-env-sync.py` / `journal-canonical-guard.py`. Run: `py -3 claude/scripts/tests/test_worktree_topology.py`
 23. **post-merge-tile-checkpoint test** — required when changing `claude/scripts/post-merge-tile-checkpoint.py`. Run: `py -3 claude/scripts/tests/test_post_merge_tile_checkpoint.py`
@@ -113,6 +113,7 @@ the item). A one-line navigational map of the test directory is
 77. **experiment-verdict-gate test** — required when changing `claude/scripts/stop-experiment-verdict-gate.py`. Run: `py -3 claude/scripts/tests/test_stop_experiment_verdict_gate.py`
 78. **worktree-recovery recipe + runbook-parity gate** — required when changing `claude/scripts/_worktree_recovery.py`, the orphan block message in `claude/scripts/pre-tool-use-worktree-path-check.py`, or the `docs/REFERENCE.md` "Worktree deregistration recovery" runbook. Run: `py -3 claude/scripts/tests/test_worktree_recovery.py`
 79. **remote-read hygiene lint** — required when adding or changing anything under `claude/` that reads a file from a remote ref; flags a `git show <ref>:<path>` paired with `2>/dev/null` (the dev-env#602 / #877 MSYS-mangling false-absent class, ADR-120). Run: `bash claude/scripts/tests/check-remote-read-hygiene.sh`
+80. **reconcile-pending-tiles test** — required when changing `claude/scripts/reconcile-pending-tiles.py`. Run: `py -3 claude/scripts/tests/test_reconcile_pending_tiles.py`
 
 ## Observability
 

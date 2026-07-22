@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **76 files** at the top level (42 wired Claude Code hooks, 14 shared `_foo.py` modules,
+scripts: **79 files** at the top level (44 wired Claude Code hooks, 15 shared `_foo.py` modules,
 20 utility/setup scripts across `.py`/`.sh`/`.ps1`) with no per-file index until now
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)).
 
@@ -44,7 +44,7 @@ the one place all 14 are listed together. Each has its own test file in
 | `_hookutil.py` | Sentinel-file helpers, transcript-locate, transcript-record readers, and `record_heartbeat()` (called first-thing by every wired hook's `main()`). | Most Stop/UserPromptSubmit hooks |
 | `_journal_compose_force.py` | Marker read/write/freshness helpers behind `/journal-compose`'s mechanical `--force` enforcement. | `journal-compose-force-resolve.py` (writer), `pre-tool-use-journal-compose-force-guard.py` (reader) |
 | `_journal_schema.py` | Shared manifest/open-PR/tile shard schema + validation (`missing_required_fields`, `missing_tile_fields`, `parse_manifest_text`, `decode_shard_bytes`). | `validate-manifest.py`, `journal-shard-write-advisory.py`, `stub-push-archive-reminder.py` (tile exports dormant until #869) |
-| `_journal_shards.py` | Shared numeric-shard + legacy `open-prs.jsonl` reader (`iter_numeric_shards`, with `iter_pr_shards` / `iter_tile_shards` as named delegations; `read_legacy_entries`). | `reconcile-open-prs.py`, `post-compact.py` (`iter_tile_shards` dormant until #869) |
+| `_journal_shards.py` | Shared numeric-shard + legacy `open-prs.jsonl` reader (`iter_numeric_shards`, with `iter_pr_shards` / `iter_tile_shards` as named delegations; `read_legacy_entries`). | `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, `post-compact.py` |
 | `_repo_scan.py` | Shared `find_git_repos()` directory-scan helper for every `--scan-dir` mode. | `prune-merged-worktrees.py`, `reclaim-worktree-disk.py`, `reconcile-project-board.py` |
 | `_repo_target.py` | Shared `--repo` (incl. host-prefixed/URL forms) / PR-URL / issue-URL / positional-number resolver for `gh` commands — ends the per-hook ADR-050 amendment treadmill. | `post-pr-merge-project.py`, `pr-merge-reminder.py`, `posttooluse-inert-advisory.py`, `post-pr-merge-pull.py`, `stop-tile-enumeration-gate.py`, `post-tool-use.py` |
 | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning script must `import`. | ~20 subprocess-using scripts |
@@ -71,13 +71,14 @@ invocation instead.
 | `new-day-journal-check.py` | UserPromptSubmit | Warns once if stale `draft/*` branches exist on `origin/engineering-journal`. |
 | `journal-onboard-check.py` | UserPromptSubmit | Warns once per session when the active project has no `sessions/<project>/` home in engineering-journal yet. |
 | `reconcile-open-prs.py` | UserPromptSubmit | Removes open-PR shards/legacy entries for PRs now merged/closed; surfaces survivors + any uncommitted shard changes as session context. |
+| `reconcile-pending-tiles.py` | UserPromptSubmit | Removes tile shards whose paired issue is closed; surfaces the surviving pending tiles as a compact index so a chip lost to an app restart can be re-spawned. Validates each shard's `url` before it reaches `gh --repo`; one `gh` call per repo, not per shard. |
 | `stub-push-archive-reminder.py` | PostToolUse (Bash/PowerShell) | After a clean journal stub push with no unresolved open PR, writes the sentinel `journal-stop-check.py` consumes to prompt archiving. |
 | `journal-shard-write-advisory.py` | PostToolUse (Write/Edit/Bash) | Validates a manifest or open-PR shard's on-disk bytes against the schema right after it's written (missing fields, BOMs, filename mismatches). |
 | `journal-stop-check.py` | Stop | Blocks the stop (exit 2) on the stub-push sentinel so Claude actually archives the session; also non-blocking stale-draft/unmerged-branch advisories. |
 | `stop-journal-stub-checkpoint.py` | Stop | Blocks the stop when a report/analysis/verification session did substantive work but leaves no journal stub, no PR, and isn't a `/review` session. |
 | `pre-tool-use-journal-compose-force-guard.py` | PreToolUse (Bash) | Mechanically blocks a same-day `/journal-compose` git operation unless a fresh `--force` marker already exists. |
 | `pre-tool-use-journal-draft-worktree-guard.py` | PreToolUse (Bash) | Blocks isolating the shared `draft/YYYY-MM-DD` branch into its own worktree anywhere except the engineering-journal canonical. |
-| `post-compact.py` | PostCompact | Emits the compaction status line; on manual `/compact`, also reminds Claude to `/review` each open PR from the project's open-PR records. |
+| `post-compact.py` | PostCompact | Emits the compaction status line; on manual `/compact`, also reminds Claude to `/review` each open PR from the project's open-PR records, and lists any pending tile shards (read-only — never prunes). |
 | `check-journal-compose-liveness.py` | `git status --porcelain \| py -3 check-journal-compose-liveness.py YYYY-MM-DD` | Detects an in-flight session still writing stubs for the date `/journal-compose` is about to merge. |
 | `journal-compose-force-resolve.py` | `py -3 journal-compose-force-resolve.py "$ARGUMENTS"` (first Bash action of `/journal-compose` Step 0.6) | Mechanically resolves `--force` from the literal, harness-substituted invocation text and records it to today's marker file. |
 | `journal-compose-with-retry.sh` | Windows Task Scheduler (replaces the nightly routine) | Retries `/journal-compose <yesterday>` up to 3 times on failure, 5 minutes apart. |

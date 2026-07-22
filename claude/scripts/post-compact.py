@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """PostCompact hook — on a manual /compact, emit a {"systemMessage"} status toast
-(compaction done + context size) and, when open PRs exist, append the /review
-directive so Claude auto-invokes /review. Auto-compaction stays silent.
+(compaction done + context size), append the /review directive when open PRs exist
+so Claude auto-invokes /review, and list any pending tile shards (ADR-118).
+Auto-compaction stays silent.
+
+Compaction is the second boundary at which tile context is lost — the first is a
+session start / app restart, handled by reconcile-pending-tiles.py. Both read the
+same `sessions/<project>/tiles/<issue-number>.json` shards through the same shared
+`_journal_shards` reader, exactly as the two hooks already share the open-PR shard
+read. This path is read-only: it never reconciles against GitHub and never unlinks
+a shard (see `read_tile_entries`).
 
 Routes its one exit-0 output through _hookout.emit_advisory(audience="user") — the
 systemMessage channel PostCompact delivers to the user on exit 0. The prior
@@ -15,9 +23,13 @@ from pathlib import Path
 
 import _hookout
 import _hookutil
-from _journal_shards import iter_pr_shards, read_legacy_entries
+from _journal_shards import iter_pr_shards, iter_tile_shards, read_legacy_entries, shard_number
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+
+# Pending tiles listed after a /compact before truncating. Matches
+# reconcile-pending-tiles.py's cap; the true total is always stated alongside.
+MAX_TILES_SHOWN = 10
 
 
 def get_journal_project() -> str | None:
@@ -64,11 +76,76 @@ def read_open_pr_entries(project_dir: Path) -> list[dict]:
     return entries
 
 
+def read_tile_entries(project_dir: Path) -> list[dict]:
+    """The pending tile shards `tiles/<issue-number>.json` for one project (ADR-118).
+
+    Compaction is the other boundary where tile context is lost: the pending-tile index
+    that `reconcile-pending-tiles.py` surfaces at session start is exactly the kind of
+    turn-1 context a `/compact` drops, and the workflow prompts `/compact` right after a PR
+    is opened — the moment follow-up tiles have just been spawned. So the same shards are
+    re-read here.
+
+    Pure filesystem read, no network — deliberately unlike the UserPromptSubmit reader,
+    which reconciles against live GitHub state. This hook has never made a network call and
+    a `/compact` should stay fast, so shards are listed as-is; a tile whose issue has since
+    closed is pruned by the next session-start reconcile, not here. Nothing is unlinked on
+    this path.
+
+    Enumeration/parse is delegated to the shared `_journal_shards` reader (ADR-057), so the
+    numeric-filename filtering, numeric sort, and malformed-shard tolerance match the
+    reconciler exactly. Unit-tested in tests/test_post_compact.py.
+
+    The issue number comes from the **filename** (`shard_number`), never from the `issue`
+    field — the same rule `reconcile-pending-tiles.py` follows, and what ADR-118 designates
+    authoritative. Preferring the field here would make the two readers of the same shard
+    disagree whenever they differ: a shard named `7.json` carrying `"issue": 8` would be
+    listed as #8 by this hook while the reconciler skipped it as corrupt, so the user would
+    see a tile number that nothing else on disk or on GitHub corresponds to. That is exactly
+    the two-readers-drift ADR-057 extracted this shared module to prevent.
+    """
+    entries: list[dict] = []
+    for shard, entry in iter_tile_shards(project_dir / "tiles"):
+        issue = shard_number(shard)
+        if issue is None:
+            continue  # unreachable via iter_tile_shards (numeric stems only) — defensive
+        entries.append({**entry, "issue": issue})
+    return entries
+
+
+def format_pending_tiles(entries: list[dict], max_shown: int = MAX_TILES_SHOWN) -> str:
+    """Render the pending-tile block, or "" when there are none.
+
+    States the true total even when the list is capped — the same no-silent-truncation
+    rule the session-start reader follows.
+    """
+    if not entries:
+        return ""
+    lines = [
+        f"Pending tiles ({len(entries)}) -- spawn_task chips do not survive an app restart; "
+        "these shards are the durable payload (ADR-118). Check list_sessions for a matching "
+        "title/branch before re-spawning any of them."
+    ]
+    for entry in entries[:max_shown]:
+        title = str(entry.get("title") or "(no title)")
+        lines.append(f"  #{entry['issue']} \"{title}\"")
+    if len(entries) > max_shown:
+        lines.append(f"  ... and {len(entries) - max_shown} more not shown "
+                     f"({max_shown} of {len(entries)} listed).")
+    return "\n".join(lines)
+
+
 def load_open_prs() -> list[dict]:
     project = get_journal_project()
     if not project:
         return []
     return read_open_pr_entries(JOURNAL_REPO / "sessions" / project)
+
+
+def load_pending_tiles() -> list[dict]:
+    project = get_journal_project()
+    if not project:
+        return []
+    return read_tile_entries(JOURNAL_REPO / "sessions" / project)
 
 
 def main():
@@ -116,6 +193,11 @@ def main():
             )
         lines.append("")       # blank line separates the status from the /review directive
         lines.append(review)
+
+    tiles = format_pending_tiles(load_pending_tiles())
+    if tiles:
+        lines.append("")       # blank line separates the tile index from what precedes it
+        lines.append(tiles)
 
     # audience="user" -> {"systemMessage": ...} on exit 0, the one channel
     # PostCompact delivers to the user. emit_advisory json.dumps(ensure_ascii=True)
