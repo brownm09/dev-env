@@ -2562,4 +2562,8 @@ For a one-line navigational map of the test directory, see
 
     ```bash
     py -3 claude/scripts/tests/test_reconcile_pending_tiles.py
+81. **new-day-journal-check day-rollover test** — required when changing `claude/scripts/new-day-journal-check.py` (ADR-119). Pins the two pure helpers behind the day-rollover check: `branch_date` (parses `draft/<date>`, including the documented `-recovery` and other suffixed forms that exist on the remote today; returns None for `main`, feature branches, and malformed/unpadded dates, so no false rollover fires) and `mismatched_stub_paths` (deliberately one-sided — only a stub dated *after* the branch is the rollover failure; older-dated stubs are branch-lineage artifacts already covered by `stale_draft_artifacts`/`unmerged_draft_branches`, and including them buried the 6 real hits under 27 unrelated ones on the first live run). Also pins that non-convention filenames — the ones compose's own glob would not match either — are ignored, and that a branch on its own date reports nothing. The git-reading helpers (`canonical_current_branch`, `branch_stub_paths`) and `day_rollover_message` are subprocess boundaries, left untested per this repo's fixture-only convention.
+
+    ```bash
+    py -3 claude/scripts/tests/test_new_day_journal_check.py
     ```

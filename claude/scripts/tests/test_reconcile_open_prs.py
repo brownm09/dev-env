@@ -56,6 +56,9 @@ project_dirs = mod.project_dirs
 reconcile_shard_dir = mod.reconcile_shard_dir
 reconcile_file = mod.reconcile_file
 find_dirty_open_pr_paths = mod.find_dirty_open_pr_paths
+classify_dirty_open_pr_paths = mod.classify_dirty_open_pr_paths
+shard_pr_number_from_path = mod.shard_pr_number_from_path
+classify_deletions = mod.classify_deletions
 
 URL_386 = "https://github.com/brownm09/dev-env/pull/386"
 URL_387 = "https://github.com/brownm09/dev-env/pull/387"
@@ -264,6 +267,128 @@ def test_find_dirty_open_pr_paths_empty_and_short_lines() -> str:
     return "empty input and malformed/short porcelain lines handled without error"
 
 
+# --- deletion classification (ADR-119, dev-env#866) --------------------------
+
+
+def test_classify_dirty_splits_deletions_from_in_flight() -> str:
+    lines = [
+        " D sessions/lifting-logbook/open-prs/853.json",   # unstaged delete
+        "D  sessions/lifting-logbook/open-prs/856.json",   # staged delete
+        "?? sessions/dev-env/open-prs/999.json",           # concurrent session, untracked
+        " M sessions/dev-env/open-prs/770.json",           # concurrent session, modified
+        "R  a/b.json -> sessions/dev-env/open-prs/1.json",  # rename destination
+        " M sessions/dev-env/2026-07-05_090000.stub.md",   # not an open-PR path
+    ]
+    got = classify_dirty_open_pr_paths(lines)
+    assert got["deleted"] == [
+        "sessions/lifting-logbook/open-prs/853.json",
+        "sessions/lifting-logbook/open-prs/856.json",
+    ], f"both porcelain columns count as a delete; got {got['deleted']}"
+    assert got["other"] == [
+        "sessions/dev-env/open-prs/999.json",
+        "sessions/dev-env/open-prs/770.json",
+        "sessions/dev-env/open-prs/1.json",
+    ], f"added/modified/renamed stay hands-off; got {got['other']}"
+    return "deletions split from a concurrent session's in-flight shards (the ADR-056 clobber)"
+
+
+def test_classify_dirty_preserves_backcompat_flat_view() -> str:
+    lines = [
+        " D sessions/dev-env/open-prs/567.json",
+        " M sessions/lifting-logbook/open-prs.jsonl",
+        "?? sessions/dev-env/open-prs/999.json",
+    ]
+    flat = find_dirty_open_pr_paths(lines)
+    assert flat == [
+        "sessions/dev-env/open-prs/567.json",
+        "sessions/lifting-logbook/open-prs.jsonl",
+        "sessions/dev-env/open-prs/999.json",
+    ], f"flat view keeps git status order across classes; got {flat}"
+    c = classify_dirty_open_pr_paths(lines)
+    assert sorted(c["deleted"] + c["other"]) == sorted(flat), "classifier covers the same set"
+    return "the unclassified view still preserves git-status order; classifier partitions the same set"
+
+
+def test_shard_pr_number_from_path() -> str:
+    assert shard_pr_number_from_path("sessions/dev-env/open-prs/853.json") == 853
+    assert shard_pr_number_from_path("sessions/x/open-prs.jsonl") is None, "legacy file has no single PR"
+    assert shard_pr_number_from_path("sessions/x/open-prs/abc.json") is None, "non-numeric stem"
+    assert shard_pr_number_from_path("sessions/x/open-prs/12.txt") is None, "non-json"
+    return "PR number parsed from a shard path; legacy/non-numeric/non-json yield None"
+
+
+def _fixed_url(mapping):
+    return lambda path: mapping.get(path)
+
+
+def _fixed_state(mapping):
+    return lambda pr, repo: mapping.get(pr)
+
+
+def test_classify_deletions_buckets_by_confirmed_state() -> str:
+    paths = [
+        "sessions/dev-env/open-prs/853.json",
+        "sessions/dev-env/open-prs/900.json",
+        "sessions/dev-env/open-prs/901.json",
+        "sessions/dev-env/open-prs.jsonl",
+    ]
+    got = classify_deletions(
+        paths,
+        url_fn=_fixed_url({
+            "sessions/dev-env/open-prs/853.json": "https://github.com/brownm09/dev-env/pull/853",
+            "sessions/dev-env/open-prs/900.json": "https://github.com/brownm09/dev-env/pull/900",
+            "sessions/dev-env/open-prs/901.json": "https://github.com/brownm09/dev-env/pull/901",
+        }),
+        state_fn=_fixed_state({853: "MERGED", 900: "OPEN", 901: None}),
+    )
+    assert got["merged"] == ["sessions/dev-env/open-prs/853.json"], got["merged"]
+    assert got["open"] == ["sessions/dev-env/open-prs/900.json"], got["open"]
+    assert got["unverified"] == [
+        "sessions/dev-env/open-prs/901.json",   # gh returned nothing (e.g. rate-limited)
+        "sessions/dev-env/open-prs.jsonl",      # legacy file, no single PR to confirm
+    ], got["unverified"]
+    assert got["skipped"] == []
+    return "only a confirmed MERGED/CLOSED deletion is cleared for commit; OPEN and unresolved are not"
+
+
+def test_classify_deletions_unresolvable_url_is_unverified() -> str:
+    got = classify_deletions(
+        ["sessions/dev-env/open-prs/853.json"],
+        url_fn=_fixed_url({}),                       # git show failed / shard not at HEAD
+        state_fn=_fixed_state({853: "MERGED"}),      # never consulted
+    )
+    assert got["unverified"] == ["sessions/dev-env/open-prs/853.json"], got
+    assert got["merged"] == [], "no URL means no repo means nothing to confirm against"
+    return "a shard whose committed URL cannot be read is unverified, never assumed merged"
+
+
+def test_classify_deletions_reports_rather_than_drops_beyond_cap() -> str:
+    paths = [f"sessions/dev-env/open-prs/{n}.json" for n in (1, 2, 3)]
+    urls = {p: f"https://github.com/brownm09/dev-env/pull/{i + 1}" for i, p in enumerate(paths)}
+    got = classify_deletions(
+        paths,
+        url_fn=_fixed_url(urls),
+        state_fn=_fixed_state({1: "MERGED", 2: "MERGED", 3: "MERGED"}),
+        max_probes=2,
+    )
+    assert got["merged"] == paths[:2], got["merged"]
+    assert got["skipped"] == paths[2:], "over-cap entries are surfaced, not silently dropped"
+    return "the probe cap surfaces what it skipped, so a capped run never reads as full coverage"
+
+
+def test_classify_deletions_legacy_path_costs_no_probe() -> str:
+    paths = ["sessions/dev-env/open-prs.jsonl", "sessions/dev-env/open-prs/853.json"]
+    got = classify_deletions(
+        paths,
+        url_fn=_fixed_url({"sessions/dev-env/open-prs/853.json": "https://github.com/brownm09/dev-env/pull/853"}),
+        state_fn=_fixed_state({853: "MERGED"}),
+        max_probes=1,
+    )
+    assert got["merged"] == ["sessions/dev-env/open-prs/853.json"], got
+    assert got["skipped"] == [], "the legacy path consumed no probe, so the shard still got one"
+    return "a no-PR-number path does not consume the probe budget"
+
+
 def main() -> int:
     tests = [
         ("should_remove predicate", test_should_remove),
@@ -281,6 +406,13 @@ def main() -> int:
         ("dirty open-PR paths normalize backslashes", test_find_dirty_open_pr_paths_normalizes_backslashes),
         ("dirty open-PR paths handle renames (review finding, PR #581)", test_find_dirty_open_pr_paths_handles_renames),
         ("dirty open-PR paths handle empty/short lines", test_find_dirty_open_pr_paths_empty_and_short_lines),
+        ("deletions split from concurrent in-flight shards (ADR-119)", test_classify_dirty_splits_deletions_from_in_flight),
+        ("unclassified view keeps git-status order (back-compat)", test_classify_dirty_preserves_backcompat_flat_view),
+        ("PR number parsed from shard path", test_shard_pr_number_from_path),
+        ("deletions bucketed by confirmed PR state", test_classify_deletions_buckets_by_confirmed_state),
+        ("unresolvable shard URL -> unverified, never assumed merged", test_classify_deletions_unresolvable_url_is_unverified),
+        ("probe cap surfaces what it skipped", test_classify_deletions_reports_rather_than_drops_beyond_cap),
+        ("legacy open-prs.jsonl path costs no probe", test_classify_deletions_legacy_path_costs_no_probe),
     ]
     failed = 0
     for name, fn in tests:

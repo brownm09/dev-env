@@ -84,9 +84,10 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_journal_onboard_check.py` | `journal-onboard-check.py` | One-time per-session onboarding nudge for a project with no journal home yet. |
 | `test_journal_shard_write_advisory.py` | `journal-shard-write-advisory.py` | Write-time PostToolUse validation of manifest/open-PR/tile shards against the schema (BOMs, missing fields, filename-vs-embedded-number mismatches) as they're written. |
 | `test_journal_stop_check.py` | `journal-stop-check.py` | Stop-hook archive reminder plus stale-draft/unmerged-branch advisories at session end. |
+| `test_new_day_journal_check.py` | `new-day-journal-check.py` | Day-rollover detection: the canonical resting on a draft branch dated other than today, and stubs dated *after* their branch. |
 | `test_post_compact.py` | `post-compact.py` | Reads and unions open-PR shards + legacy `open-prs.jsonl` at PostCompact time. |
 | `test_pre_tool_use_journal_compose_force_guard.py` | `pre-tool-use-journal-compose-force-guard.py` | Mechanically blocks a same-day `/journal-compose` git operation unless a fresh `--force` marker exists. |
-| `test_reconcile_open_prs.py` | `reconcile-open-prs.py` | Reconciles open-PR shards against live GitHub state (removes shards for merged/closed PRs). |
+| `test_reconcile_open_prs.py` | `reconcile-open-prs.py` | Reconciles open-PR shards against live GitHub state (removes shards for merged/closed PRs) and classifies uncommitted shard changes into commit-safe deletions vs. a concurrent session's in-flight shards. |
 | `test_reconcile_pending_tiles.py` | `reconcile-pending-tiles.py` | Reconciles tile shards against live issue state; URL validation in front of the unlink, filename-authoritative issue numbers, one paged REST read per repo, and the REST transport's two silent hazards (PR rows dropped, `state` upper-cased). |
 | `test_stop_journal_stub_checkpoint.py` | `stop-journal-stub-checkpoint.py` | Stop-hook checkpoint: a report/analysis/verification session that did substantive work must leave a stub. |
 | `test_stub_push_archive_reminder.py` | `stub-push-archive-reminder.py` | Push-error guard plus unresolved-open-PR detection behind the "archive the branch" reminder after a journal push. |
