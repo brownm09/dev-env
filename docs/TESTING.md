@@ -2715,3 +2715,19 @@ For a one-line navigational map of the test directory, see
     ```bash
     bash claude/scripts/tests/test-journal-compose-replay.sh
     ```
+
+84. **README index-parity gate** — required when changing `claude/scripts/tests/test_readme_index_parity.py`, or when adding/removing/renaming any file in `claude/scripts/tests/` or `claude/scripts/` ([ADR-122](adr/122-directory-index-readme-parity-gate.md), dev-env#901). Pure offline file parse — no subprocess, network, or git. The directory<->README analogue of item 76 (`test_testing_index_parity.py`, which gates `CLAUDE.md` <-> `docs/TESTING.md`): here the two hand-maintained per-file indexes `claude/scripts/tests/README.md` (dev-env#822) and `claude/scripts/README.md` (dev-env#830) are checked against the directories they claim to index. Neither directory's tooling reads its README — `run-hook-tests.py` discovers tests by glob and Claude Code loads scripts by their `settings.json` wiring — so a file with no row still works and the index rots invisibly; by the time the gate was written both had drifted (missing rows, plus header counts that were stale and, in `claude/scripts/README.md`, self-contradicting: it stated both "79 files" and "76 files" for the same 82-file set).
+
+    Five checks per indexed directory, table-driven over a per-directory `DirSpec` (directory, README, first-column exemptions, header count sentences):
+
+    1. **Row coverage** — every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`, subdirectories, and the exemption set) appears in some table's **first** column. First column, not "mentioned anywhere": a prose cross-reference is not an index entry. A first cell may legitimately name two files (a shared module's paired tests, e.g. ``` `test_winsubp.py`, `test_pyw_stdio.py` ```) — both count.
+    2. **No orphan rows** — every first-column filename exists on disk, catching a rename or delete that updated the file but not its row.
+    3. **Exemptions are real and indexed** — each exempt file both exists and appears *somewhere* in the README, so an exemption can never silently hide a file's deletion. The only current exemption is `_hook_wiring.py` in `claude/scripts/tests/`, which is deliberately indexed in the **second** column (with a `—` first cell) because it is test-support infrastructure, not a test.
+    4. **Header counts** — the header's stated file counts equal the live directory counts (`claude/scripts/tests/`: `test_*.py`, bash-gate, and total; `claude/scripts/`: top-level total).
+    5. **Section counts** — every `### Title (N)` heading's N equals that section's first-column row count. Only `claude/scripts/README.md` numbers its sections; the check is a no-op where no `(N)` headings exist (as in `claude/scripts/tests/README.md`).
+
+    Fail-closed by construction: check 4 searches for each count sentence by regex, and a sentence reworded past its pattern fails with "could not find the ... count sentence" rather than passing on a count it can no longer see — the correct direction for a gate whose whole job is catching silent drift. This is why the two headers are worded so the numbers parse without depending on an em-dash. Verified during authoring that an injected unindexed test file trips checks 1 and 4 together (missing row + both stale counts), exit 1.
+
+    ```bash
+    py -3 claude/scripts/tests/test_readme_index_parity.py
+    ```
