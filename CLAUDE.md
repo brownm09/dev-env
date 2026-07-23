@@ -115,6 +115,7 @@ the item). A one-line navigational map of the test directory is
 79. **remote-read hygiene lint** — required when adding or changing anything under `claude/` that reads a file from a remote ref; flags a `git show <ref>:<path>` paired with `2>/dev/null` (the dev-env#602 / #877 MSYS-mangling false-absent class, ADR-120). Run: `bash claude/scripts/tests/check-remote-read-hygiene.sh`
 80. **reconcile-pending-tiles test** — required when changing `claude/scripts/reconcile-pending-tiles.py`. Run: `py -3 claude/scripts/tests/test_reconcile_pending_tiles.py`
 81. **new-day-journal-check day-rollover test** — required when changing `claude/scripts/new-day-journal-check.py`. Run: `py -3 claude/scripts/tests/test_new_day_journal_check.py`
+82. **composed-output stray-terminal-scan test** — required when changing `claude/scripts/_composed_output_scan.py` or `claude/scripts/validate-composed-output.py`. Run: `py -3 claude/scripts/tests/test_composed_output_scan.py`
 
 ## Observability
 
