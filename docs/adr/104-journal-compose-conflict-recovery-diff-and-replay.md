@@ -246,7 +246,7 @@ bash embedded in a markdown skill.
 
 Both copies now call one script; the pathspecs remain the only difference. It follows the
 extraction precedent this same skill already set with `journal-compose-force-resolve.py` (Step
-0.6), and is covered by `## Testing` item 82 —
+0.6), and is covered by `## Testing` item 83 —
 `claude/scripts/tests/test-journal-compose-replay.sh`, which drives the real script against
 fixture repos with no network and no `gh`.
 
@@ -324,5 +324,5 @@ exist, and the real invocation never sets it.
 - [ADR-120](120-review-skill-absence-checks-over-api.md) — the MSYS `<ref>:<path>` mangle, and
   why a suppressed `fatal:` reads as an empty file.
 - `claude/scripts/journal-compose-replay.sh`,
-  `claude/scripts/tests/test-journal-compose-replay.sh` (`## Testing` item 82),
+  `claude/scripts/tests/test-journal-compose-replay.sh` (`## Testing` item 83),
   `claude/skills/journal-compose/SKILL.md` → Step 10.5, Step 11.
