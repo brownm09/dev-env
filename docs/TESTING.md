@@ -423,12 +423,23 @@ For a one-line navigational map of the test directory, see
     job. Covered: pass-through within budget, short-circuit to `None` once spent, and the
     end-to-end consequence that an exhausted budget keeps **every** shard even against an
     all-MERGED oracle. `test_work_budget_cannot_outrun_the_hook_timeout` asserts
-    `WORK_BUDGET_SECONDS + max(GH_CALL_TIMEOUT, GIT_CALL_TIMEOUT) <= HOOK_TIMEOUT_SECONDS` as an
-    invariant rather than a comment (the `/review` finding on dev-env#886, applied here).
+    `WORK_BUDGET_SECONDS + max(GH_CALL_TIMEOUT, GIT_CALL_TIMEOUT) + NONLOOKUP_RESERVE_SECONDS
+    <= HOOK_TIMEOUT_SECONDS` as an invariant rather than a comment (the `/review` finding on
+    dev-env#886, applied here) — the reserve is a *term*, not the leftover, because the hook's
+    ungated local work (heartbeat, sentinel sweep, stdin read) otherwise made the assertion
+    claim more coverage than it had, and a second assertion pins the reserve above zero so it
+    cannot be neutralised back into a leftover.
 
-    All four new guards were **mutation-checked** — dropping `.upper()`, collapsing MERGED into
-    CLOSED, stripping the merge signals from the projection, and raising `WORK_BUDGET_SECONDS`
-    past the hook timeout each turn their named test red.
+    **Unresolved count** (`counting_state_fn`, `/review` finding on PR #897) — a spent budget
+    makes step 5's keep-on-unresolved apply to *every remaining* PR at once, and those are then
+    listed under `Open PRs:` indistinguishably from confirmed-open ones, so a merged PR can read
+    as outstanding work. Covered: only `None` lookups are counted (resolved ones pass through
+    untouched), and the count equals the number of survivors GitHub never confirmed — with a
+    malformed shard, which takes no lookup, explicitly excluded so it cannot inflate the figure.
+
+    All four structural/invariant guards were **mutation-checked** — dropping `.upper()`,
+    collapsing MERGED into CLOSED, stripping the merge signals from the projection, and raising
+    `WORK_BUDGET_SECONDS` past the hook timeout each turn their named test red.
 
     The live REST boundary (`check_pr_state`) and the git boundaries
     (`dirty_open_pr_status_lines`, `committed_shard_identity`, `merge_in_progress`,

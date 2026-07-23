@@ -214,7 +214,20 @@ flight is capped by its own timeout, so the hook cannot exceed
 `WORK_BUDGET_SECONDS + max(per-call timeout)`. That relation is asserted by a test rather than
 left in a comment — the `/review` finding on dev-env#886, applied to its sibling.
 
-Exceeding the budget degrades to "unresolved, kept, and said so", which the step-5 contract
-already treats as keep. **Step 5 is unchanged and remains the invariant every new path converges
-on:** a 404, a non-zero exit, a timeout, malformed JSON, a junk row, and a spent budget all
-yield `None` → keep. No path added here can drop an entry.
+The reserve for the hook's *ungated* work (heartbeat, the shared-scratch sentinel sweep, the
+stdin read, message assembly) is a term in that inequality rather than whatever happens to be
+left over — otherwise the assertion claims more coverage than it has, which matters because a
+kill here is unrecoverable: `mark_done()` has already fired, so the session never retries.
+
+**Step 6 gains an unresolved count, because the budget makes step 5's degradation systematic.**
+Step 5 keeps an unresolved entry, and step 6 then lists it under `Open PRs:` — historically
+indistinguishable from a GitHub-confirmed open PR. That was tolerable while the unresolved case
+was sporadic (an individual `gh` failure); a spent budget makes it happen to *every remaining*
+tracked PR at once, so a merged PR could silently read as outstanding work in the context
+injected on the first prompt of every session. The message now states how many of the PRs it
+listed were never actually confirmed — mirroring `reconcile-pending-tiles.py`, whose equivalent
+count exists so "a truncated or partial reconciliation is never reported as a clean one".
+
+**Step 5 is otherwise unchanged and remains the invariant every new path converges on:** a 404, a
+non-zero exit, a timeout, malformed JSON, a junk row, and a spent budget all yield `None` → keep.
+No path added here can drop an entry.

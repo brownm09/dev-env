@@ -46,6 +46,12 @@ that stops N sequential lookups from exhausting the 30s settings.json timeout an
 the hook killed before it prints the `Open PRs:` line that is its original ADR-018 job — and
 the constant invariant that makes that bound true, as an assertion rather than a comment.
 
+And `counting_state_fn` (/review finding on PR #897): the budget makes keep-on-unresolved
+*systematic* rather than sporadic, so every remaining PR can be listed under `Open PRs:`
+without GitHub ever confirming it, and a merged PR reads as outstanding work. The count that
+qualifies that line is pinned both in isolation and against what it must equal — the number of
+survivors never confirmed, with a malformed shard (which takes no lookup) excluded.
+
 The reconcilers take an injectable `state_fn(pr, repo) -> state` so the unlink/keep
 logic runs offline; the live REST boundary (`check_pr_state`) and the git boundaries
 (`dirty_open_pr_status_lines`, `committed_shard_identity`, `merge_in_progress`,
@@ -81,6 +87,7 @@ should_remove = mod.should_remove
 pr_state_from_row = mod.pr_state_from_row
 WorkBudget = mod.WorkBudget
 budgeted_state_fn = mod.budgeted_state_fn
+counting_state_fn = mod.counting_state_fn
 repo_from_url = mod.repo_from_url
 entry_repo_and_pr = mod.entry_repo_and_pr
 project_dirs = mod.project_dirs
@@ -582,16 +589,16 @@ def test_rest_rows_prune_end_to_end() -> str:
     # pruning anything — fail-safe in direction, total in effect, reported nowhere. Only a
     # chain that runs raw REST rows all the way to the `unlink` goes red when that happens.
     # The merged/closed split is asserted here too, on the states the message text renders.
-    URL_888 = "https://github.com/brownm09/dev-env/pull/888"
+    url = "https://github.com/brownm09/dev-env/pull/{n}".format
     rows = {886: _rest_pr(886, "closed"),                                    # merged
             887: {"number": 887, "state": "closed", "merged": False,
                   "merged_at": None},                                        # closed, unmerged
             888: _rest_pr(888, "open")}                                      # open
     with tempfile.TemporaryDirectory() as root:
         shard_dir = Path(root) / "open-prs"
-        _write_shard(shard_dir, 886, "https://github.com/brownm09/dev-env/pull/886")
-        _write_shard(shard_dir, 887, "https://github.com/brownm09/dev-env/pull/887")
-        survivor = _write_shard(shard_dir, 888, URL_888)
+        _write_shard(shard_dir, 886, url(n=886))
+        _write_shard(shard_dir, 887, url(n=887))
+        survivor = _write_shard(shard_dir, 888, url(n=888))
         survivor_bytes = survivor.read_bytes()
 
         surviving, removed = reconcile_shard_dir(
@@ -604,13 +611,13 @@ def test_rest_rows_prune_end_to_end() -> str:
         assert survivor.read_bytes() == survivor_bytes, \
             "survivor must be byte-identical (per-file unlink, never a rewrite — ADR-056)"
         assert [e["pr"] for e in surviving] == [888]
-        assert sorted(removed, key=lambda t: t[0]["pr"]) == sorted(
-            [({"pr": 886, "url": "https://github.com/brownm09/dev-env/pull/886",
-               "topic": "PR 886", "stub": "s.stub.md", "opened": "2026-06-22"}, "MERGED"),
-             ({"pr": 887, "url": "https://github.com/brownm09/dev-env/pull/887",
-               "topic": "PR 887", "stub": "s.stub.md", "opened": "2026-06-22"}, "CLOSED")],
-            key=lambda t: t[0]["pr"]), \
-            "the reported states must stay MERGED vs CLOSED, not collapse to one value"
+        # Built from the shared `_entry` fixture, not hand-written dicts: a future field added
+        # to the tracking-shard schema (ADR-119 just added `pr` cross-checking) would otherwise
+        # break this test for a reason unrelated to the transport it pins. (/review finding.)
+        assert sorted(removed, key=lambda t: t[0]["pr"]) == [
+            (_entry(886, url(n=886)), "MERGED"),
+            (_entry(887, url(n=887)), "CLOSED"),
+        ], "the reported states must stay MERGED vs CLOSED, not collapse to one value"
     return 'raw REST rows -> unlink: lowercase "closed" prunes, and MERGED/CLOSED stay distinct'
 
 
@@ -657,6 +664,38 @@ def test_budget_exhaustion_keeps_every_shard() -> str:
     return "budget exhaustion keeps every shard, even against an all-MERGED oracle"
 
 
+def test_counting_state_fn_counts_only_unresolved() -> str:
+    tally = {"unresolved": 0}
+    states = {1: "MERGED", 2: None, 3: "OPEN", 4: None}
+    counted = counting_state_fn(lambda pr, repo: states[pr], tally)
+    got = [counted(pr, "o/r") for pr in (1, 2, 3, 4)]
+    assert got == ["MERGED", None, "OPEN", None], "the state must pass through unchanged"
+    assert tally["unresolved"] == 2, f"only the None lookups count, got {tally}"
+    return "unresolved lookups are counted; resolved ones pass through untouched"
+
+
+def test_unresolved_count_equals_unconfirmed_survivors() -> str:
+    # The count exists to qualify the `Open PRs:` line, so what it must equal is the number of
+    # entries listed there WITHOUT GitHub having confirmed them. A malformed entry takes no
+    # lookup and is reported separately, so it must not inflate the figure.
+    with tempfile.TemporaryDirectory() as root:
+        shard_dir = Path(root) / "open-prs"
+        _write_shard(shard_dir, 386, URL_386)          # resolves OPEN -> confirmed
+        _write_shard(shard_dir, 387, URL_387)          # resolves None -> unconfirmed survivor
+        (shard_dir / "99.json").write_text(json.dumps({"topic": "x"}), encoding="utf-8")  # no lookup
+
+        tally = {"unresolved": 0}
+        state_fn = counting_state_fn(
+            lambda pr, repo: "OPEN" if pr == 386 else None, tally)
+        surviving, removed = reconcile_shard_dir(shard_dir, state_fn=state_fn)
+
+        assert [e["pr"] for e in surviving] == [386, 387], "both survive (None is kept)"
+        assert removed == []
+        assert tally["unresolved"] == 1, \
+            f"exactly the one unconfirmed survivor, not the malformed shard, got {tally}"
+    return "the unresolved count equals the survivors GitHub never confirmed (malformed excluded)"
+
+
 def test_work_budget_cannot_outrun_the_hook_timeout() -> str:
     # `WorkBudget` gates the START of every lookup and nothing caps their sum otherwise, so
     # the hook's true ceiling is WORK_BUDGET_SECONDS + one in-flight call's own timeout.
@@ -666,15 +705,25 @@ def test_work_budget_cannot_outrun_the_hook_timeout() -> str:
     # reintroduce the kill this exists to prevent. Nothing else goes red: the symptom is a
     # hook that occasionally emits nothing, in a session nobody is timing.
     # (The /review finding on dev-env#886, applied to its sibling.)
-    worst_case = mod.WORK_BUDGET_SECONDS + max(mod.GH_CALL_TIMEOUT, mod.GIT_CALL_TIMEOUT)
+    #
+    # NONLOOKUP_RESERVE_SECONDS is a TERM here, not the leftover: the hook also does ungated
+    # local work (heartbeat, the shared-scratch sentinel sweep, the stdin read, message
+    # assembly). Leaving that implicit let the assertion claim more coverage than it had —
+    # and a kill is unrecoverable, since mark_done() fires before any of this. (/review on #897.)
+    worst_case = (mod.WORK_BUDGET_SECONDS
+                  + max(mod.GH_CALL_TIMEOUT, mod.GIT_CALL_TIMEOUT)
+                  + mod.NONLOOKUP_RESERVE_SECONDS)
     assert worst_case <= mod.HOOK_TIMEOUT_SECONDS, (
         f"the hook can run {worst_case}s against a {mod.HOOK_TIMEOUT_SECONDS}s settings.json "
         f"timeout — either lower WORK_BUDGET_SECONDS ({mod.WORK_BUDGET_SECONDS}) / "
-        f"GH_CALL_TIMEOUT ({mod.GH_CALL_TIMEOUT}) / GIT_CALL_TIMEOUT ({mod.GIT_CALL_TIMEOUT}), "
-        "or raise the declared timeout in claude/settings.json to match"
+        f"GH_CALL_TIMEOUT ({mod.GH_CALL_TIMEOUT}) / GIT_CALL_TIMEOUT ({mod.GIT_CALL_TIMEOUT}) / "
+        f"NONLOOKUP_RESERVE_SECONDS ({mod.NONLOOKUP_RESERVE_SECONDS}), or raise the declared "
+        "timeout in claude/settings.json to match"
     )
-    return ("WORK_BUDGET_SECONDS + max(per-call timeout) stays within HOOK_TIMEOUT_SECONDS "
-            "(invariant, not a comment)")
+    assert mod.NONLOOKUP_RESERVE_SECONDS > 0, \
+        "the reserve must be a real allowance, not a zeroed-out term that re-hides the gap"
+    return ("WORK_BUDGET_SECONDS + max(per-call timeout) + NONLOOKUP_RESERVE_SECONDS stays "
+            "within HOOK_TIMEOUT_SECONDS (invariant, not a comment)")
 
 
 def main() -> int:
@@ -714,6 +763,8 @@ def main() -> int:
         ("budget: lookups pass through within budget", test_budgeted_state_fn_passes_through_within_budget),
         ("budget: short-circuits to None once spent", test_budgeted_state_fn_short_circuits_once_spent),
         ("budget: exhaustion keeps every shard", test_budget_exhaustion_keeps_every_shard),
+        ("budget: unresolved lookups counted", test_counting_state_fn_counts_only_unresolved),
+        ("budget: count equals unconfirmed survivors", test_unresolved_count_equals_unconfirmed_survivors),
         ("budget stays within the hook timeout", test_work_budget_cannot_outrun_the_hook_timeout),
     ]
     failed = 0

@@ -132,16 +132,25 @@ PROBE_DEADLINE_SECONDS = 8.0
 # `WorkBudget` gates the start of every lookup, so the arithmetic needs no per-segment
 # bookkeeping and stays true however many segments are added later: no subprocess ever
 # *starts* after WORK_BUDGET_SECONDS, and any one already in flight is capped by its own
-# timeout. Hence the whole hook cannot exceed WORK_BUDGET_SECONDS + max(per-call timeout),
-# which `test_work_budget_cannot_outrun_the_hook_timeout` pins as an assertion rather than
-# leaving in this comment — the /review finding on dev-env#886, applied to its sibling.
+# timeout. `test_work_budget_cannot_outrun_the_hook_timeout` pins the resulting inequality as
+# an assertion rather than leaving it in this comment — the /review finding on dev-env#886,
+# applied to its sibling.
 #
-# Exceeding the budget degrades to "unresolved, kept, and said so", which `should_remove`
-# already treats as keep — never to a mis-prune.
+# NONLOOKUP_RESERVE_SECONDS is part of that inequality rather than an unstated remainder: the
+# hook also does work no budget gates — `record_heartbeat`, `cleanup_stale_sentinels` (a scan
+# of a shared scratch directory that accumulates indefinitely), the stdin read, and message
+# assembly. Leaving that as whatever happened to be left over made the assertion claim more
+# than it covered, which matters because a kill here is unrecoverable: `mark_done()` has
+# already fired, so the session never retries. (/review finding on this PR.)
+#
+# Exceeding the budget degrades to "unresolved, kept, and said so" — kept because
+# `should_remove` treats None as keep, and *said so* via the unresolved count in the emitted
+# message, so a partial reconciliation is never reported as a clean one. Never a mis-prune.
 HOOK_TIMEOUT_SECONDS = 30      # mirrors this hook's `timeout` in claude/settings.json
 GH_CALL_TIMEOUT = 8            # one REST lookup; was 15 per path, twice over, under ADR-119
 GIT_CALL_TIMEOUT = 5           # local git plumbing — measured at ~0.07s
-WORK_BUDGET_SECONDS = 20.0
+NONLOOKUP_RESERVE_SECONDS = 5  # heartbeat + sentinel sweep + stdin read + message assembly
+WORK_BUDGET_SECONDS = 15.0
 
 
 def already_ran(session_id: str) -> bool:
@@ -223,7 +232,10 @@ def pr_state_from_row(row) -> str | None:
     if state != "CLOSED":
         return state
     # Only a closed PR can be a merged one; check the merge signal before settling on CLOSED.
-    if row.get("merged") is True or isinstance(row.get("merged_at"), str):
+    # `merged_at` is tested for truthiness, not merely for being a str: GitHub returns either
+    # null or an ISO timestamp, so an empty string is anomalous and should not read as a merge.
+    merged_at = row.get("merged_at")
+    if row.get("merged") is True or (isinstance(merged_at, str) and merged_at):
         return "MERGED"
     return "CLOSED"
 
@@ -257,6 +269,33 @@ def budgeted_state_fn(state_fn, budget: WorkBudget):
         if budget.spent():
             return None
         return state_fn(pr_number, repo)
+    return call
+
+
+def counting_state_fn(state_fn, tally: dict):
+    """Wrap `state_fn(pr, repo)` so every unresolved lookup increments `tally['unresolved']`.
+
+    An unresolved lookup (`None`) always *keeps* its entry, so the count is exactly the number
+    of tracked PRs reported as surviving without GitHub having confirmed it. Surfacing it is
+    what makes the "and said so" half of the conservative contract real: the `Open PRs:` line
+    is injected into Claude's context on the first prompt of every session and drives real
+    decisions (which PR to `/review`, whether work is outstanding), so listing an unconfirmed
+    PR indistinguishably from a confirmed-open one lets a merged PR read as outstanding work.
+
+    Before the lookup budget existed this was sporadic — an individual `gh` failure. A spent
+    budget makes it *systematic*: every remaining PR resolves to None at once. Mirrors
+    `reconcile-pending-tiles.py`'s unresolved count, whose stated purpose is that "a truncated
+    or partial reconciliation is never reported as a clean one". (/review finding on this PR.)
+
+    Deliberately wrapped around the reconcile loop's lookups only — the deletion probes have
+    their own `unverified` bucket, and folding them in here would inflate a count the
+    `Open PRs:` line is supposed to qualify.
+    """
+    def call(pr_number, repo):
+        state = state_fn(pr_number, repo)
+        if state is None:
+            tally["unresolved"] = tally.get("unresolved", 0) + 1
+        return state
     return call
 
 
@@ -699,7 +738,13 @@ def main() -> None:
     # shards across N projects cannot collectively exhaust the hook's settings.json timeout
     # and get it killed before it prints anything (dev-env#888).
     budget = WorkBudget()
-    state_fn = budgeted_state_fn(check_pr_state, budget)
+    gated = budgeted_state_fn(check_pr_state, budget)
+    # The reconcile loop's lookups are additionally counted, so the `Open PRs:` line can say
+    # how many of the PRs it lists were never actually confirmed. The deletion probes below
+    # reuse `gated` directly — they report unconfirmed paths through their own `unverified`
+    # bucket, and counting them here would inflate a figure that qualifies a different line.
+    tally: dict = {"unresolved": 0}
+    state_fn = counting_state_fn(gated, tally)
 
     for project_dir in project_dirs(JOURNAL_REPO):
         project = project_dir.name
@@ -741,6 +786,12 @@ def main() -> None:
         )
     if all_surviving:
         parts.append("Open PRs: " + ", ".join(all_surviving))
+    if tally["unresolved"]:
+        parts.append(
+            f"{tally['unresolved']} of those could not be resolved against GitHub (gh failure, "
+            f"or the {WORK_BUDGET_SECONDS:g}s lookup budget spent) — kept unchanged and listed "
+            "above as open, so that list may include already-merged PRs."
+        )
 
     # Two separate try blocks: a failure in the fragile probing must not also discard the
     # cheap, reliable hands-off warning derived from `git status` alone.
