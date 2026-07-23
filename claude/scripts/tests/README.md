@@ -44,7 +44,7 @@ production code.
 | `test_hookutil.py` | `_hookutil.py` | Sentinel-file, transcript-locate, transcript-record-reader, and heartbeat-recording helpers shared across Stop/PostToolUse hooks. |
 | `test_journal_compose_force.py` | `_journal_compose_force.py` | Marker read/write/freshness helpers behind the journal-compose today-guard's mechanical `--force` enforcement. |
 | `test_journal_schema.py` | `_journal_schema.py` | Shared manifest/open-PR/tile shard schema and validation helpers, used by the write-time advisory hook and the pre-compose validator. |
-| `test_journal_shards.py` | `_journal_shards.py` | Shared numeric-shard (open-PR + tile) and legacy `open-prs.jsonl` reader used by `reconcile-open-prs.py` and `post-compact.py`. |
+| `test_journal_shards.py` | `_journal_shards.py` | Shared numeric-shard (open-PR + tile) and legacy `open-prs.jsonl` reader, plus `project_dirs` — the `sessions/<project>/` walk that precedes both — used by `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, and `post-compact.py`. |
 | `test_repo_scan.py` | `_repo_scan.py` | Shared `find_git_repos()` directory-scan helper used by every `--scan-dir` mode across the worktree/board scripts. |
 | `test_repo_target.py` | `_repo_target.py` | Shared `--repo`/PR-URL/issue-URL/positional-number resolver — ends the per-hook ADR-050 amendment treadmill for this concern. |
 | `test_winsubp.py`, `test_pyw_stdio.py` | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning hook applies; the latter probes real `pyw -3` stdio behavior end-to-end. |

@@ -81,8 +81,9 @@ from urllib.parse import urlparse
 # iter_tile_shards / shard_number are the shared numeric-shard readers (ADR-057, generalised
 # by ADR-118). iter_tile_shards owns the numeric-filename filtering, tolerant parse, and
 # numeric sort, and materialises its list before returning — so unlinking shards while
-# iterating its result is safe.
-from _journal_shards import iter_tile_shards, shard_number
+# iterating its result is safe. project_dirs is the sessions/<project>/ walk that precedes
+# them; this file held the third copy of it until dev-env#881 hoisted it into the module.
+from _journal_shards import iter_tile_shards, project_dirs, shard_number
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SENTINEL_PREFIX = "pending-tiles-reconciled-"
@@ -294,20 +295,6 @@ def should_stop_paging(rows, resolved, wanted, page_size: int = ISSUE_PAGE_SIZE)
         if isinstance(number, int) and not isinstance(number, bool) and number < floor:
             return True
     return False
-
-
-def project_dirs(journal_repo: Path) -> list[Path]:
-    """Every `sessions/<project>/` directory, sorted; [] if sessions/ is absent.
-
-    A local copy of `reconcile-open-prs.py`'s helper rather than a shared import: that
-    script is a hyphenated module (not importable by name) and is concurrently modified by
-    an in-flight PR, so hoisting the helper into `_journal_shards.py` and migrating both
-    callers is deferred to its own change (dev-env#881) to avoid a merge conflict.
-    """
-    sessions = journal_repo / "sessions"
-    if not sessions.is_dir():
-        return []
-    return sorted(p for p in sessions.iterdir() if p.is_dir())
 
 
 def make_tile(project: str, shard: Path, entry: dict) -> dict:

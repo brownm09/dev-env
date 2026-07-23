@@ -107,8 +107,9 @@ from urllib.parse import urlparse
 
 # iter_pr_shards / read_legacy_entries are the shared open-PR readers (ADR-057), also used
 # by post-compact.py. iter_pr_shards owns the numeric-filename filtering, so the reconcile
-# loop no longer needs shard_pr_number directly.
-from _journal_shards import iter_pr_shards, read_legacy_entries, shard_pr_number
+# loop no longer needs shard_pr_number directly. project_dirs is the sessions/<project>/
+# walk that precedes them, shared for the same anti-drift reason (dev-env#881).
+from _journal_shards import iter_pr_shards, project_dirs, read_legacy_entries, shard_pr_number
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SENTINEL_PREFIX = "open-prs-reconciled-"
@@ -306,14 +307,6 @@ def entry_repo_and_pr(entry: dict) -> tuple[str | None, int | None]:
     if not isinstance(pr_number, int):
         pr_number = None
     return repo, pr_number
-
-
-def project_dirs(journal_repo: Path) -> list[Path]:
-    """Every `sessions/<project>/` directory, sorted; [] if sessions/ is absent."""
-    sessions = journal_repo / "sessions"
-    if not sessions.is_dir():
-        return []
-    return sorted(p for p in sessions.iterdir() if p.is_dir())
 
 
 def parse_open_pr_status_line(line: str) -> tuple[str, str] | None:

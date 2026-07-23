@@ -83,6 +83,8 @@ assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)  # safe: main() is guarded by __main__
 
+import _journal_shards  # noqa: E402  -- for the shared-helper identity pin below
+
 should_remove = mod.should_remove
 pr_state_from_row = mod.pr_state_from_row
 WorkBudget = mod.WorkBudget
@@ -143,17 +145,14 @@ def test_entry_repo_and_pr() -> str:
     return "entry -> (repo, pr); missing/typo fields resolve to None safely"
 
 
-def test_project_dirs() -> str:
-    with tempfile.TemporaryDirectory() as root:
-        rootp = Path(root)
-        (rootp / "sessions" / "dev-env").mkdir(parents=True)
-        (rootp / "sessions" / "career-playbook").mkdir(parents=True)
-        (rootp / "sessions" / "note.txt").write_text("x", encoding="utf-8")  # not a dir
-        got = [p.name for p in project_dirs(rootp)]
-        assert got == ["career-playbook", "dev-env"], f"sorted project dirs, got {got}"
-    with tempfile.TemporaryDirectory() as root2:
-        assert project_dirs(Path(root2)) == [], "no sessions/ -> []"
-    return "project_dirs lists sorted sessions/<project>/ dirs; [] when absent"
+def test_project_dirs_is_shared_helper() -> str:
+    # Anti-drift pin (ADR-057, dev-env#881). Behaviour is pinned once in
+    # tests/test_journal_shards.py; what matters *here* is that this hook resolves to that
+    # one implementation and not a reintroduced local copy — the exact shape that already
+    # drifted between this file and reconcile-pending-tiles.py once (lexical vs numeric sort).
+    assert project_dirs is _journal_shards.project_dirs, \
+        "reconcile-open-prs.py re-defined project_dirs locally instead of importing the shared one"
+    return "project_dirs is _journal_shards' shared helper, not a local copy"
 
 
 # --- per-PR shard reconciliation (the ADR-056 structural guarantee) ----------
@@ -731,7 +730,7 @@ def main() -> int:
         ("should_remove predicate", test_should_remove),
         ("repo_from_url extraction", test_repo_from_url),
         ("entry_repo_and_pr resolution", test_entry_repo_and_pr),
-        ("project_dirs discovery", test_project_dirs),
+        ("project_dirs is the shared helper", test_project_dirs_is_shared_helper),
         ("shard removal leaves others byte-identical (ADR-056 guarantee)", test_shard_removes_only_merged_leaves_others_intact),
         ("empty open-prs/ dir cleaned up", test_shard_dir_removed_when_emptied),
         ("malformed/non-numeric shards left in place", test_shard_malformed_and_nonnumeric_left_in_place),
