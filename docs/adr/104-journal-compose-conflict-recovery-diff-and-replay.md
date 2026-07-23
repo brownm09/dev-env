@@ -1,8 +1,8 @@
 # ADR-104 — Diff-and-Replay Conflict Recovery in journal-compose Step 10.5
 
 **Date:** 2026-07-12
-**Status:** Accepted
-**Tags:** journal, composition, skill, git, merge-tree, conflict-recovery, diff-and-replay, correction, adr-080, adr-082, adr-056
+**Status:** Accepted (amended 2026-07-23 — see Amendment 1)
+**Tags:** journal, composition, skill, git, merge-tree, conflict-recovery, diff-and-replay, three-way-merge, both-sides-changed, data-loss, silent-failure, shared-script, testing, crlf, msys, correction, adr-056, adr-080, adr-082, adr-119, adr-120
 
 ---
 
@@ -174,3 +174,155 @@ robust reconstruction.
 - [ADR-056](056-per-session-sharding-journal-companion-files.md) — the per-session/per-PR shard
   scheme whose deletions (Step 9.5's reconciliation) this mechanism now replays generically.
 - `claude/skills/journal-compose/SKILL.md` → Step 9.5, Step 10.5.
+
+---
+
+## Amendment 1 (2026-07-23) — partition the replay by whether `origin/main` also changed the path (dev-env#890)
+
+### What the original decision got wrong
+
+The **Trade-offs / limits** section above already named this, and named it precisely:
+
+> An `A`/`M` status always takes `$PREV`'s content wholesale via `git checkout "$PREV" --
+> <path>` — it does not attempt to reconcile against whatever `origin/main` independently
+> holds at that path (most relevant for the shared top-level `README.md` …) … for any path
+> both sides touched, `$PREV` simply wins.
+
+It was recorded as an accepted limit on the grounds that the superseded allowlist did the same
+thing. That reasoning holds for *parity* but not for *exposure*: the allowlist replayed three
+known paths, while diff-and-replay replays **every** changed path — so generalizing the
+mechanism also generalized its one unsafe case, from a corner to the default.
+
+**Incident (dev-env#890, 2026-07-21).** The compose remediating #874 hit `CONFLICT_LINES > 0`,
+and the conflict was 6 READMEs: `origin/main` had advanced by the 2026-07-20 compose
+([engineering-journal PR #181](https://github.com/brownm09/engineering-journal/pull/181)), which
+had edited the same README sections. Applied as written, the replay would have discarded that
+day's entry rows and Progress Summary updates across all 6 files — and the result would have
+been a *clean-looking* commit with no conflict, no warning, and nothing in the PR body to
+suggest a published journal had just been reverted. The paths were excluded by hand and
+re-applied onto `origin/main`'s versions instead
+([PR #182](https://github.com/brownm09/engineering-journal/pull/182)).
+
+The replay is right for paths only the draft branch touched — composed journals, stubs, shards,
+the common case. It is wrong exactly for the paths that caused the conflict in the first place.
+
+### Decision
+
+Classify every path before replaying it, with one predicate:
+
+```bash
+main_touched() { [ -n "$(git -C "$WT" diff --name-only "$MERGE_BASE" origin/main -- "$1")" ]; }
+```
+
+- **Uncontested** (`main_touched` false) — replay wholesale, exactly as before. Unchanged for
+  the overwhelming majority of paths.
+- **Contested `M`** — 3-way merge against `$MERGE_BASE`. A clean merge is kept and reported as
+  `AUTO_MERGED`; a conflict leaves `origin/main`'s content on disk untouched and reports the
+  path as `MANUAL_RECONCILE`.
+- **Contested `A`** — an add/add has no common ancestor to merge against, so no merge is
+  attempted: `MANUAL_RECONCILE`.
+- **Contested `D`** — a delete/modify. The draft branch dropped a file `origin/main` edited;
+  blind-deleting it is the same silent loss in another shape. `MANUAL_RECONCILE`.
+- **`D` where `origin/main` also deleted it** — a clean no-op, not a conflict.
+
+Any non-empty `MANUAL_RECONCILE` exits **2**, and Step 10.5's prose makes the commit conditional
+on exit 0. The mechanism fails closed: the failure it guards against is a commit that looks
+clean, so "stop before committing" is the only safe default.
+
+The same predicate fixes a second, latent instance of the identical bug. The shard-integrity
+restore (dev-env#787) resurrected any open-PR shard present on `$PREV` but absent from the
+recovery branch — including one `origin/main` had *deliberately deleted* because a concurrent
+session verified that PR merged. Those are now reported as `SHARD_RESTORE_SKIPPED` instead
+([ADR-119](119-day-rollover-draft-branch-and-orphaned-shard-deletions.md) is the same
+resurrection failure at branch scale).
+
+### The mechanism moves out of SKILL.md into `claude/scripts/journal-compose-replay.sh`
+
+Step 10.5 carries the replay **twice** — a single-project and a multi-project copy that differ
+only in their pathspec list and must be kept in sync by hand. Adding ~40 lines of classification
+and 3-way-merge plumbing to both would have tripled the drift surface, and this ADR's own
+Trade-offs section closes by conceding that no test exists for the mechanism *because* it is
+bash embedded in a markdown skill.
+
+Both copies now call one script; the pathspecs remain the only difference. It follows the
+extraction precedent this same skill already set with `journal-compose-force-resolve.py` (Step
+0.6), and is covered by `## Testing` item 83 —
+`claude/scripts/tests/test-journal-compose-replay.sh`, which drives the real script against
+fixture repos with no network and no `gh`.
+
+The script derives `MERGE_BASE` from `$PREV` itself rather than inheriting it. That also closes
+a latent gap: SKILL.md's push-failure rule routes a pre-push merged-draft-branch rejection
+straight to the recovery block and says to *skip the merge-tree probe*, which is the only place
+the skill computes `$MERGE_BASE` — so on that route it was unset.
+
+### Two implementation traps the extraction surfaced
+
+Both were caught by the new test on its first run, and neither is visible in review of a
+markdown snippet — which is itself part of the argument for extracting the mechanism.
+
+1. **Never merge a blob against a work-tree file.** `git show` emits stored content (LF); the
+   checked-out file carries whatever the smudge filter produced, which under the `core.autocrlf`
+   this machine runs is CRLF. Mixing the two makes *every* line differ, so a trivially disjoint
+   merge conflicts. All three sides are read as blobs — `origin/main`'s included, which is also
+   the authoritative content, since the recovery branch was just cut from it and nothing has
+   touched the path yet. The test sets `core.autocrlf true` on every fixture, on every platform,
+   so this stays pinned rather than being a Windows-only accident.
+2. **`MSYS_NO_PATHCONV=1` is all-or-nothing per command.** It is required to protect the
+   `<ref>:<path>` argument ([ADR-120](120-review-skill-absence-checks-over-api.md),
+   dev-env#602/#877) — but applied to `git -C "$WT" show …` it equally stops `-C`'s own path
+   from being translated, and git then cannot find the repo at all (`fatal: cannot change to
+   '/tmp/…'`). The guard is scoped inside a subshell that `cd`s instead — `cd` is a bash builtin
+   and needs no translation — so the ref argument is protected without changing how git locates
+   the repo. stderr is deliberately not suppressed, per the same ADR.
+
+### Consequences
+
+**Positive:**
+- The failure this step could produce that was worst *because* it was silent — a clean commit
+  reverting a published journal — now cannot happen without an explicit human decision.
+- One implementation instead of two hand-synced copies, and the first real test coverage of a
+  path that only executes during conflict recovery (i.e. rarely, and under time pressure).
+- `BOTH_CHANGED` lands in the Step 11 PR body beside `RECONCILED_SHARDS`, so a both-sides
+  reconciliation is visible on the PR even when it merged cleanly.
+
+**Trade-offs / limits:**
+- A clean auto-merge is still a machine decision, not a reviewed one. It is reported rather than
+  silent, which is the mitigation; the alternative (stop on *every* contested path) would make
+  hand-reconciliation of the shared `README.md` mandatory on nearly every recovery run.
+- Exit 2 means the recovery is no longer fully mechanical: someone must reconcile before the
+  commit. That is the point — but a conflict-recovery compose can now stop midway, where
+  previously it always ran to completion (incorrectly).
+- The caller-side half of the contract — that Step 10.5 actually honors exit 2 before
+  committing — is prose in the skill, not code, and stays unenforced. Same limit this ADR
+  already accepted for bash embedded in a markdown skill.
+- `git diff --name-status` output is still not `-z`-delimited: a path containing a tab or
+  newline would break the parse. Unchanged, pre-existing, and impossible for this skill's own
+  filenames.
+
+**Superseded:** the note above about `.compose-diff-plan.txt` living inside `$WT` ("planning
+state internal to this recovery step … never staged or committed"). The plan is now read into a
+bash array, so no scratch file is written into the compose worktree at all; the per-path temps
+the 3-way merge needs hold file *content* rather than a path list, and live in the scratch
+directory per the global CLAUDE.md convention. Where that fixed path does not exist — every CI
+run, which executes as a different user — the script makes its own `mktemp -d` and the `EXIT`
+trap `rmdir`s it, so the fallback cannot leak a directory per invocation on the one path that
+always takes it. `JOURNAL_COMPOSE_REPLAY_SCRATCH` overrides the scratch root; it exists solely so
+that fallback branch is reachable from the test suite on a machine where the fixed path *does*
+exist, and the real invocation never sets it.
+
+### References
+
+- Issue: [dev-env#890](https://github.com/brownm09/dev-env/issues/890) — this amendment.
+- Incident artifacts: engineering-journal
+  [PR #181](https://github.com/brownm09/engineering-journal/pull/181) (the 2026-07-20 compose
+  whose work would have been reverted) and
+  [PR #182](https://github.com/brownm09/engineering-journal/pull/182) (the hand-reconciled result).
+- [git-merge-file documentation](https://git-scm.com/docs/git-merge-file) — `-p`, and the
+  conflict-count exit status.
+- [ADR-119](119-day-rollover-draft-branch-and-orphaned-shard-deletions.md) — shard resurrection,
+  the same class the `SHARD_RESTORE_SKIPPED` guard closes at file scope.
+- [ADR-120](120-review-skill-absence-checks-over-api.md) — the MSYS `<ref>:<path>` mangle, and
+  why a suppressed `fatal:` reads as an empty file.
+- `claude/scripts/journal-compose-replay.sh`,
+  `claude/scripts/tests/test-journal-compose-replay.sh` (`## Testing` item 83),
+  `claude/skills/journal-compose/SKILL.md` → Step 10.5, Step 11.

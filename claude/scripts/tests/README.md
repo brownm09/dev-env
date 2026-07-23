@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 71 `test_*.py` files, 10 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 82 files with no per-file index until now
+This directory holds the dev-env hook/script test suite: 71 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 83 files with no per-file index until now
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)).
 
 **Not the only test directory.** `claude/hooks/tests/` is a second, much smaller test directory
@@ -16,8 +16,8 @@ per-file detail — what each test pins, what's deliberately out of scope, incid
 the numbering of the index in the root [`CLAUDE.md`](../../../CLAUDE.md) → `## Testing`) and the
 linked ADRs in [`docs/adr/INDEX.md`](../../../docs/adr/INDEX.md).
 [`docs/REFERENCE.md`'s "Script verification suite"](../../../docs/REFERENCE.md#script-verification-suite)
-table covers a curated ~9-file subset with invocation strings and longer descriptions; this file
-covers 76, one line each.
+table covers a curated ~10-file subset with invocation strings and longer descriptions; this file
+covers 77, one line each.
 
 **Running tests.** Every `test_*.py` runs as `py -3 claude/scripts/tests/<file>` from the repo
 root; every `*.sh` runs as `bash claude/scripts/tests/<file>`. To run everything at once:
@@ -154,6 +154,7 @@ Scripts invoked directly (by a person or a skill), not wired as Claude Code hook
 |---|---|---|
 | `test-baseline-tests-gc.sh` | `baseline-tests.sh` | Branch-existence-based cleanup (`gc`) of stale pre-existing-test-failure baseline snapshots. |
 | `test-get-project-item.sh` | `get-project-item.sh` | Execution smoke test (not just `bash -n`) resolving an issue number to a project item ID. |
+| `test-journal-compose-replay.sh` | `journal-compose-replay.sh` | Drives `/journal-compose` Step 10.5's conflict-recovery replay against throwaway fixture repos: uncontested paths replay wholesale, contested ones 3-way merge or stop with exit 2. |
 | `test-merge-stale-pr.sh` | `merge-stale-pr.sh` | Drives the stale-journal-PR remediation script against throwaway fixture repos with `gh` stubbed. |
 | `test-setup-link-loop.sh` | `setup.sh` | Drives the extracted `link_claude_windows`/`link_claude_unix` functions against a throwaway `$HOME`. |
 

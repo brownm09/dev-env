@@ -1436,7 +1436,9 @@ each line, rewrite the file with only the still-open entries (or delete it if no
 
 Carry `RECONCILED_SHARDS` forward — it goes into the Step 11 PR body. On the Step 10.5
 conflict-recovery path, these deletions are picked up automatically by that step's
-diff-and-replay against `$MERGE_BASE`..`$PREV` — no manual re-application needed.
+diff-and-replay against `$MERGE_BASE`..`$PREV` — no manual re-application needed. (The one
+exception is a path `origin/main` independently *modified* after the draft branch deleted it;
+that is reported as `MANUAL_RECONCILE` rather than blind-deleted — see Step 10.5.)
 
 ## Step 10 — Commit
 
@@ -1474,7 +1476,9 @@ A rejected push follows the Step 0.6 push-failure rule — except a rejection fr
 hook's merged-draft-branch block, which means the draft branch already has a merged PR from a
 prior day (the #147-morning/#150-evening shape). This commit already succeeded, so skip Step
 10.5's merge-tree probe entirely and jump directly to its `CONFLICT_LINES > 0` recovery block
-below, exactly as if a conflict had been detected.
+below, exactly as if a conflict had been detected. (Skipping the probe used to leave
+`$MERGE_BASE` — which the probe is the only place to compute — unset on this route;
+`journal-compose-replay.sh` now derives it from `$PREV` itself, so the jump is safe.)
 
 **Before proceeding to Step 11**, run Step 10.5 to check whether the draft branch can be
 cleanly merged into main. Do not skip this check — a conflicting draft branch requires a
@@ -1528,20 +1532,6 @@ draft branch as the PR head. Set `PR_HEAD=$SOURCE_BRANCH`.
 **If `CONFLICT_LINES` > 0** — conflicts detected. Recover via a clean compose branch:
 
 ```bash
-# restore_missing_shards is defined here (and again in the multi-project block below) so
-# it is in scope for this subprocess. Restores any open-PR shard from sessions/ that
-# existed on $PREV but is absent from the recovery branch (dev-env#787); reads $WT and
-# $PREV from the calling scope.
-restore_missing_shards() {
-  SHARD_CHECK_LOG=""
-  while IFS= read -r SHARD_PATH; do
-    [ -e "$WT/$SHARD_PATH" ] && continue
-    git -C "$WT" checkout "$PREV" -- "$SHARD_PATH" 2>/dev/null && \
-      SHARD_CHECK_LOG="${SHARD_CHECK_LOG:+$SHARD_CHECK_LOG }$SHARD_PATH"
-  done < <(git -C "$WT" ls-tree -r "$PREV" --name-only -- sessions/ | grep -E '/open-prs/[0-9]+\.json$')
-  [ -n "$SHARD_CHECK_LOG" ] && echo "SHARD_INTEGRITY_RESTORED=$SHARD_CHECK_LOG"
-}
-
 # Capture the compose worktree's current (detached) HEAD before switching it onto a new
 # branch — this is the commit Step 10 just pushed. The worktree is detached, so there is no
 # guarantee a local branch named $SOURCE_BRANCH exists to check out FROM; the worktree's
@@ -1551,31 +1541,20 @@ PREV=$(git -C "$WT" rev-parse HEAD)
 # 1. Move the compose worktree onto a clean branch from origin/main
 git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
 
-# 2. Diff-and-replay: reconcile against everything the draft branch actually changed —
-#    added, modified, OR deleted — since it diverged from main ($MERGE_BASE, already computed
-#    by the conflict probe above), instead of a hand-maintained allowlist of known file classes
-#    that has to be updated by hand every time a new file class is introduced (dev-env#684 only
-#    patched the open-PR-shard case; this generalizes it — dev-env#742). One mechanism now
-#    covers the composed journal, both READMEs, open-PR shards/legacy files, every deletion
-#    Step 9.5's reconciliation made, and any other file class (e.g. sessions/<project>/reports/)
-#    with no per-class code required here. --no-renames keeps the status column to plain A/M/D
-#    — a rename surfaces as a D of the old path plus an A of the new one, which the replay loop
-#    below already handles correctly without special-casing R.
-git -C "$WT" diff --no-renames --name-status "$MERGE_BASE" "$PREV" -- \
-    "sessions/<project>/" README.md > "$WT/.compose-diff-plan.txt"
-while IFS=$'\t' read -r STATUS FILEPATH; do
-  case "$STATUS" in
-    A|M) git -C "$WT" checkout "$PREV" -- "$FILEPATH" ;;
-    D)   [ -e "$WT/$FILEPATH" ] && git -C "$WT" rm --quiet -- "$FILEPATH" ;;
-    *)   echo "WARNING: unhandled diff status '$STATUS' for $FILEPATH — inspect manually" ;;
-  esac
-done < "$WT/.compose-diff-plan.txt"
-rm -f "$WT/.compose-diff-plan.txt"
+# 2. Diff-and-replay everything the draft branch actually changed — added, modified, OR
+#    deleted — since it diverged from main, plus the open-PR shard-integrity restore
+#    (dev-env#787). The script partitions every path by whether origin/main ALSO changed it,
+#    so a path only the draft branch touched replays wholesale while a contested one is
+#    3-way-merged or stopped on, never blind-overwritten (dev-env#890). Pathspecs are the
+#    only difference between this and the multi-project block below — the logic lives in one
+#    tested script so the two cannot drift. ADR-104 + Amendment 1.
+bash C:/Users/brown/.claude/scripts/journal-compose-replay.sh "$WT" "$PREV" \
+     "sessions/<project>/" README.md
+REPLAY_RC=$?
+[ "$REPLAY_RC" -eq 0 ] || \
+  echo "STOP: reconcile the MANUAL_RECONCILE paths listed above before running step 3"
 
-# 2b. Restore any open-PR shards from other projects missing from the recovery branch (dev-env#787).
-restore_missing_shards
-
-# 3. Commit and push
+# 3. Commit and push — run this ONLY when REPLAY_RC is 0 (see the exit-code rule below)
 git -C "$WT" commit -m \
   "[docs] Add YYYY-MM-DD journal: <slug> (compose branch — draft had conflicts)"
 git -C "$WT" push -u origin compose/YYYY-MM-DD
@@ -1583,6 +1562,30 @@ git -C "$WT" push -u origin compose/YYYY-MM-DD
 # 4. Delete the remote source branch so the stale-branch hook does not fire on it
 git -C "$WT" push origin --delete "$SOURCE_BRANCH" || true
 ```
+
+The script prints six `KEY=value` lines — `REPLAY_SAFE`, `BOTH_CHANGED`, `AUTO_MERGED`,
+`MANUAL_RECONCILE`, `SHARD_INTEGRITY_RESTORED`, `SHARD_RESTORE_SKIPPED`. Carry
+`BOTH_CHANGED` forward the way `RECONCILED_SHARDS` already is; it goes in the Step 11 PR body.
+
+**Exit-code rule — do not commit until this is 0.**
+
+- **`0`** — every path resolved mechanically. Proceed to step 3 above.
+- **`2`** — one or more paths in `MANUAL_RECONCILE` are ones `origin/main` *also* changed since
+  the merge base, and the 3-way merge could not resolve them. **Stop.** Those paths still hold
+  `origin/main`'s content on disk (never a half-merged file, never conflict markers).
+  Reconcile each by hand — read `origin/main`'s version, re-apply the day's composed additions
+  *on top of it* rather than replacing it, `git -C "$WT" add` the result — and only then run
+  step 3. This is the shape the 2026-07-21 compose hit: `origin/main` had advanced by the
+  2026-07-20 compose (engineering-journal [PR #181](https://github.com/brownm09/engineering-journal/pull/181)),
+  which had edited the same 6 README sections, and a blind replay would have silently reverted
+  the previous day's entry rows and Progress Summary updates
+  ([PR #182](https://github.com/brownm09/engineering-journal/pull/182) is the hand-reconciled result).
+- **`1`** — usage or precondition error (bad worktree, `origin/main` not fetched, `$PREV` not a
+  commit). Fix and re-run; nothing has been changed.
+
+A non-empty `SHARD_RESTORE_SKIPPED` is not an error: those are open-PR shards `origin/main`
+deleted since the merge base — a concurrent session verified those PRs merged, so restoring
+them would resurrect stale records (ADR-119's shard-resurrection failure).
 
 Set `PR_HEAD=compose/YYYY-MM-DD`.
 
@@ -1603,39 +1606,20 @@ together on a single `compose/YYYY-MM-DD` branch before opening the combined PR.
 for two projects `meta` and `lifting-logbook`:
 
 ```bash
-# restore_missing_shards is defined here (and in the single-project block above) so it is
-# in scope for this subprocess. See the single-project block for the full explanation.
-restore_missing_shards() {
-  SHARD_CHECK_LOG=""
-  while IFS= read -r SHARD_PATH; do
-    [ -e "$WT/$SHARD_PATH" ] && continue
-    git -C "$WT" checkout "$PREV" -- "$SHARD_PATH" 2>/dev/null && \
-      SHARD_CHECK_LOG="${SHARD_CHECK_LOG:+$SHARD_CHECK_LOG }$SHARD_PATH"
-  done < <(git -C "$WT" ls-tree -r "$PREV" --name-only -- sessions/ | grep -E '/open-prs/[0-9]+\.json$')
-  [ -n "$SHARD_CHECK_LOG" ] && echo "SHARD_INTEGRITY_RESTORED=$SHARD_CHECK_LOG"
-}
-
 PREV=$(git -C "$WT" rev-parse HEAD)
 git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
 
-# Diff-and-replay across all composed projects' directories plus the top-level README — the
-# same generalized mechanism as the single-project case above, just scoped to every project
-# touched this run instead of one. Replaces the old per-file-class checkout plus manual
-# per-project shard re-removal.
-git -C "$WT" diff --no-renames --name-status "$MERGE_BASE" "$PREV" -- \
-    sessions/meta/ sessions/lifting-logbook/ README.md > "$WT/.compose-diff-plan.txt"
-while IFS=$'\t' read -r STATUS FILEPATH; do
-  case "$STATUS" in
-    A|M) git -C "$WT" checkout "$PREV" -- "$FILEPATH" ;;
-    D)   [ -e "$WT/$FILEPATH" ] && git -C "$WT" rm --quiet -- "$FILEPATH" ;;
-    *)   echo "WARNING: unhandled diff status '$STATUS' for $FILEPATH — inspect manually" ;;
-  esac
-done < "$WT/.compose-diff-plan.txt"
-rm -f "$WT/.compose-diff-plan.txt"
+# Same script, same exit-code rule as the single-project block above — the only difference is
+# the pathspec list, which here names every project composed this run plus the top-level
+# README. Both READMEs and the shared top-level one are exactly the paths a concurrent
+# compose is most likely to have touched on main, so the both-sides partition matters most here.
+bash C:/Users/brown/.claude/scripts/journal-compose-replay.sh "$WT" "$PREV" \
+     sessions/meta/ sessions/lifting-logbook/ README.md
+REPLAY_RC=$?
+[ "$REPLAY_RC" -eq 0 ] || \
+  echo "STOP: reconcile the MANUAL_RECONCILE paths listed above before committing"
 
-# Restore any open-PR shards missing from the recovery branch (dev-env#787).
-restore_missing_shards
-
+# Run the commit ONLY when REPLAY_RC is 0; on 2, reconcile MANUAL_RECONCILE by hand first.
 git -C "$WT" commit -m \
   "[docs] Add YYYY-MM-DD journals: <slug-a>, <slug-b> (compose branch — draft had conflicts)"
 git -C "$WT" push -u origin compose/YYYY-MM-DD
@@ -1662,6 +1646,8 @@ gh pr create \
 End-of-day journal: <one-line topic summary>.
 
 Open-PR shards reconciled (verified merged/closed via gh before removal): <RECONCILED_SHARDS or "none">.
+
+Paths both branches changed (3-way merged or hand-reconciled, never overwritten): <BOTH_CHANGED or "none">.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
