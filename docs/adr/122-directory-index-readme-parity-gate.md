@@ -43,7 +43,7 @@ auto-discovered by `run-hook-tests.py`, that checks each indexed directory again
 table-driven over a per-directory `DirSpec` (directory, README, first-column exemptions, header count
 sentences), so the same code covers both READMEs and any future one is one list entry.
 
-Five checks per directory:
+Six checks per directory:
 
 1. **Row coverage** — every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`,
    subdirectories, and the exemption set) appears in some table's **first** column. First column, not
@@ -53,12 +53,21 @@ Five checks per directory:
    file but not its row).
 3. **Exemptions are real and indexed** — each exempt file both exists and appears *somewhere* in the
    README, so an exemption can never silently hide a deletion.
-4. **Header counts** — the header's stated file counts equal the live directory counts.
-5. **Section counts** — every `### Title (N)` heading's N equals that section's first-column row count.
+4. **Header counts** — each header count sentence occurs **exactly once** and equals the live directory
+   count. Exactly-once, not first-match: a stray second copy of a count phrase would otherwise let drift
+   hide in the duplicate.
+5. **Section counts** — every `### Title (N)` heading's N equals that section's first-column entry
+   count, **and** the number of numbered headings matches a per-directory expectation, so a heading
+   reworded past the `(N)` form cannot silently drop out of gating.
+6. **Component completeness** — where a header breaks its total into components (the tests README's
+   "N `test_*.py`, N bash gates, one module"), every indexable file matches a declared component or is
+   an exemption, so a file of a new kind cannot make the components silently fail to sum to the gated
+   total.
 
-The gate is **fail-closed**: check 4 finds each count sentence by regex, and a sentence reworded past
-its pattern fails with "could not find the … count sentence" rather than passing on a count it can no
-longer see — the correct direction for a gate whose whole job is catching silent drift.
+The gate is **fail-closed** throughout: a count sentence reworded past its regex fails check 4 (zero
+matches), a duplicated count fails it too (more than one), and a numbered heading that loses its `(N)`
+fails check 5's heading-count assertion — none of them pass on a count the gate can no longer see, the
+correct direction for a gate whose whole job is catching silent drift.
 
 **The instances are fixed in the same PR** (three missing rows added, `docs/REFERENCE.md` and the
 scripts-README cross-references de-numbered, the two headers reworded, the mislabeled section corrected)
@@ -101,8 +110,12 @@ number against `origin/main` at merge.
   class dev-env#822 and dev-env#830 opened but could not enforce. The failure names the offending files
   and the corrected counts, so the fix is mechanical.
 - The gate is **not** a proof of global consistency: it checks first-column coverage, orphan rows,
-  header counts, and `(N)` section counts — not the accuracy of any row's prose description, and not the
-  `## Shared support modules` section which carries no `(N)`.
+  header counts, `(N)` section counts, and component completeness — not the accuracy of any row's prose
+  description, and not the `## Shared support modules` section which carries no `(N)`. It also does not
+  strip fenced ` ``` ` code blocks: a future README that placed a `| `-prefixed, backticked-filename
+  line inside a fence could be mis-parsed as a table row. Both READMEs contain zero code fences today,
+  so this is a latent-only gap, recorded rather than pre-solved — the same call ADR-116 and ADR-121 made
+  for their own markdown scanners until fence-blindness actually bit them.
 - Adding a genuinely new indexed directory means one `DirSpec` entry plus its header count regex; the
   header must be worded so its numbers parse without depending on an em-dash (the reason both headers
   were reworded here).
