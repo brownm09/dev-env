@@ -1073,6 +1073,23 @@ For a one-line navigational map of the test directory, see
     disagrees with the embedded `issue`, whose message names what actually happens
     (`reconcile-pending-tiles.py` treats the shard as corrupt and will never prune it).
 
+    **`cwd` shape** (dev-env#904, [ADR-081](adr/081-write-time-journal-shard-validation-hook.md)
+    Amendment 2) is the tile check that presence validation could not make. The shape logic itself
+    is item 41's to pin; what this item covers is its *wiring into the hook* and the end-to-end
+    path: the live corruption value flagged through `validate_shard_bytes`; a relative `cwd`
+    flagged; a correctly-escaped backslash path staying healthy (the deliberate non-flag — it is a
+    valid value, and firing on it would make the advisory noise on every command that merely names
+    such a shard); a corrupt `cwd` and a missing `prompt` **both** reported, since presence and
+    shape are separate passes that must not mask each other; a real on-disk fixture carrying the
+    corrupt bytes driven through `collect_problems`; and `format_advisory` prescribing forward
+    slashes. One negative pin guards the schema boundary —
+    `test_open_pr_shard_is_not_subject_to_the_cwd_check` fixes that an open-PR shard carrying a
+    stray `cwd` is *not* validated against a tile-only rule. The corrupt fixture (`_CORRUPT_CWD`)
+    is written as an explicit `\b` escape rather than pasted, and
+    `test_corrupt_cwd_fixture_is_the_real_shape` asserts its exact codepoints — otherwise a
+    reformat or a copy-paste through an editor could silently "fix" the fixture and leave every
+    test below it passing against a value that no longer reproduces the bug.
+
     ```bash
     py -3 claude/scripts/tests/test_journal_shard_write_advisory.py
     ```
@@ -1117,6 +1134,44 @@ For a one-line navigational map of the test directory, see
     its project (`sessions/<project>/…stub.md`) rather than the open-PR shard's bare filename — a tile
     shard is filed under its **target** project, so the spawning session's stub can live under a
     different one and a bare filename would not resolve. Both gaps were found in this PR's own `/review`.
+
+    `malformed_tile_fields()` (dev-env#904,
+    [ADR-081](adr/081-write-time-journal-shard-validation-hook.md) Amendment 2) is the second
+    shape checker in this module, alongside `malformed_manifest_fields()` — same contract, same
+    reason: a *present* field whose value defeats its purpose passes every presence check. It
+    validates `cwd`, the one required tile field that is a filesystem path. Pinned: the live
+    corruption shape (`C:Users<U+0008>rownGitdev-env` — `C:\Users\brown\Git\dev-env` through a
+    double-quoted `node -e` string literal, which eats `\U`/`\G` and turns `\b` into U+0008),
+    reported as a control-character problem naming the codepoint, the cause, and the fix; a wrong
+    type; empty and whitespace-only values; a relative path; a bare word with no separator at all
+    (the issue's own "unambiguously corrupt" bar); a bare `C:` drive with no separator; a
+    single-backslash `\Users\…` root, which is *drive-relative* rather than absolute; and — all
+    accepted — a POSIX absolute root (the schema is not Windows-only) and a **UNC** root in both
+    slash forms.
+
+    The UNC and surrounding-whitespace pins came from this PR's own `/review` and both guard the
+    same rule in opposite directions. `test_tile_unc_cwd_accepted_both_slash_forms` fixes that
+    `\\wsl$\Ubuntu\…` — a valid absolute Windows path — is **not** flagged, which the first draft
+    got wrong; `test_tile_single_backslash_root_still_flagged` is its regression pin, since
+    widening the pattern for UNC must not also admit a drive-relative path.
+    `test_tile_surrounding_whitespace_flagged_both_sides` fixes an asymmetry the start-anchored
+    regex created: leading whitespace was reported as "not an absolute path" (misleading) and
+    trailing whitespace passed entirely, though Windows silently strips trailing spaces from path
+    components, so both compare unequal to the path they resolve to.
+
+    Three pins fix judgment calls rather than mechanics. `test_tile_control_character_reported_alone_not_also_as_relative`
+    fixes that the corrupt value — which is *also* non-absolute — yields one problem, not two
+    restatements of the same defect. `test_tile_backslash_cwd_is_valid_and_not_flagged` and
+    `test_tile_nonexistent_but_well_formed_cwd_is_not_flagged` fix the two deliberate non-flags:
+    a correctly-escaped Windows path is a *correct* value (only the escaping layer it must survive
+    is fragile, so forward slashes are a docs rule — REFERENCE.md → Tile shards — not a validation
+    one, and flagging it would turn an advisory into a nag on healthy shards), and existence is
+    never checked because this module is import-only/offline and shards are read on machines other
+    than the one that wrote them. `test_tile_absent_cwd_not_double_reported` holds the shared
+    contract with `malformed_manifest_fields`: an absent field is the presence checker's to report,
+    so one omission never produces two problem lines. Message text is `.isascii()`-pinned (it rides
+    the hook's exit-2 stderr, cp1252-decoded on Windows) and the echoed value is length-bounded so
+    one pathological shard cannot flood stderr with its own contents.
 
     ```bash
     py -3 claude/scripts/tests/test_journal_schema.py

@@ -19,6 +19,11 @@ Cases pinned:
   a stray ``task_id`` not masking a real omission, a missing subset in schema order,
   non-dict/empty entries, and — the copy-paste guard — that the tile and open-PR schemas
   are not interchangeable despite sharing ``url``/``stub`` and a numeric filename layout.
+- ``malformed_tile_fields`` (dev-env#904, ADR-081 Amendment 2): the live corruption shape
+  (``C:Users<U+0008>rownGitdev-env``, a backslash Windows path through a double-quoted
+  ``node -e`` string literal), plus a wrong type, an empty/whitespace value, a relative
+  path, and the deliberate non-flags — a valid backslash path, and a path that simply does
+  not exist on this machine.
 - ``decode_shard_bytes``: plain UTF-8, a UTF-8 BOM (text returned past the BOM, named
   problem), UTF-16 LE/BE BOMs, invalid UTF-8, and empty bytes.
 - ``has_unresolved_open_pr`` (dev-env#651, ADR-091 Amendment 1): a `prs_opened` PR number
@@ -41,6 +46,7 @@ missing_required_fields = mod.missing_required_fields
 missing_open_pr_fields = mod.missing_open_pr_fields
 missing_tile_fields = mod.missing_tile_fields
 malformed_manifest_fields = mod.malformed_manifest_fields
+malformed_tile_fields = mod.malformed_tile_fields
 has_unresolved_open_pr = mod.has_unresolved_open_pr
 find_entries_missing_fields = mod.find_entries_missing_fields
 parse_manifest_text = mod.parse_manifest_text
@@ -206,6 +212,167 @@ def test_tile_and_open_pr_schemas_are_distinct():
     # /`stub` keys while silently ignoring `prompt`/`cwd`. Pin that they are not interchangeable.
     assert missing_tile_fields(_valid_open_pr_entry()) != []
     assert missing_open_pr_fields(_valid_tile_entry()) != []
+
+
+# ---------------------------------------------------------------------------
+# malformed_tile_fields — `cwd` plausibility (dev-env#904, ADR-081 Amendment 2)
+# ---------------------------------------------------------------------------
+
+# The exact value found live in sessions/dev-env/tiles/{898,899,900}.json. Written as an
+# explicit escape rather than pasted so the corruption survives this file being reformatted:
+# `C:\Users\brown\Git\dev-env` through a double-quoted `node -e` string literal loses `\U`
+# and `\G` and turns `\b` into U+0008.
+_CORRUPT_CWD = "C:Users\brownGitdev-env"
+
+
+def test_corrupt_cwd_fixture_is_the_real_shape():
+    # Guards the fixture itself: if a future edit "helpfully" fixes the escape, every test
+    # below would silently stop exercising the class it was written for.
+    assert _CORRUPT_CWD == "C:Users" + chr(0x08) + "rownGitdev-env"
+    assert "\\" not in _CORRUPT_CWD and "/" not in _CORRUPT_CWD
+
+
+def test_tile_healthy_cwd_is_not_flagged():
+    assert malformed_tile_fields(_valid_tile_entry()) == []
+
+
+def test_tile_corrupt_cwd_flagged_as_control_character():
+    problems = malformed_tile_fields(_valid_tile_entry(cwd=_CORRUPT_CWD))
+    assert len(problems) == 1, problems
+    # Names the codepoint and the cause, so the fix is readable off the message alone.
+    assert "U+0008" in problems[0], problems
+    assert "node -e" in problems[0], problems
+    assert "forward slashes" in problems[0], problems
+
+
+def test_tile_control_character_reported_alone_not_also_as_relative():
+    # The corrupt value is *also* non-absolute, but restating one defect twice makes the
+    # real diagnosis harder to read — the control character is the cause, so it wins.
+    problems = malformed_tile_fields(_valid_tile_entry(cwd=_CORRUPT_CWD))
+    assert not any("not an absolute path" in p for p in problems), problems
+
+
+def test_tile_control_character_flagged_even_when_path_is_absolute():
+    # A mangled path can keep a valid-looking drive root; the absolute-path check alone
+    # would pass it.
+    problems = malformed_tile_fields(_valid_tile_entry(cwd="C:/Users/brown/Git/de\bv-env"))
+    assert len(problems) == 1, problems
+    assert "U+0008" in problems[0], problems
+
+
+def test_tile_relative_cwd_flagged():
+    problems = malformed_tile_fields(_valid_tile_entry(cwd="Git/dev-env"))
+    assert len(problems) == 1, problems
+    assert "not an absolute path" in problems[0], problems
+
+
+def test_tile_bare_word_cwd_flagged():
+    # "A value with no separator at all is unambiguously corrupt" — the issue's own bar.
+    problems = malformed_tile_fields(_valid_tile_entry(cwd="dev-env"))
+    assert len(problems) == 1, problems
+    assert "no path separator" in problems[0], problems
+
+
+def test_tile_unc_cwd_accepted_both_slash_forms():
+    # Found by this PR's own /review. A UNC path is a *valid* absolute Windows path, so
+    # flagging it would fire on a correct value — exactly what this checker's stated rule
+    # forbids. `\\wsl$\...` is plausible on this Windows/WSL setup, and the backslash form
+    # was the one being rejected (the forward-slash form passed only incidentally, via the
+    # POSIX-absolute alternative).
+    assert malformed_tile_fields(_valid_tile_entry(cwd=r"\\wsl$\Ubuntu\home\brown\repo")) == []
+    assert malformed_tile_fields(_valid_tile_entry(cwd=r"\\server\share\repo")) == []
+    assert malformed_tile_fields(_valid_tile_entry(cwd="//wsl$/Ubuntu/home/brown/repo")) == []
+
+
+def test_tile_single_backslash_root_still_flagged():
+    # The regression pin for the fix above: `\Users\brown\...` is *drive-relative*, not
+    # absolute (it resolves against the current drive), so widening the pattern for UNC must
+    # not also admit it.
+    problems = malformed_tile_fields(_valid_tile_entry(cwd=r"\Users\brown\Git\dev-env"))
+    assert len(problems) == 1, problems
+    assert "not an absolute path" in problems[0], problems
+
+
+def test_tile_bare_drive_letter_flagged():
+    # "C:" names the current directory on drive C:, not the drive root — no separator, so it
+    # cannot be a repo root.
+    problems = malformed_tile_fields(_valid_tile_entry(cwd="C:"))
+    assert len(problems) == 1, problems
+    assert "not an absolute path" in problems[0], problems
+
+
+def test_tile_surrounding_whitespace_flagged_both_sides():
+    # Also from this PR's /review: the absolute-path regex is start-anchored, so leading
+    # whitespace was reported with the misleading "not an absolute path" while *trailing*
+    # whitespace passed entirely. Both are quoting artifacts, and Windows silently strips
+    # trailing spaces from path components — so the two values compare unequal to the real
+    # path while resolving to it.
+    for value in ("  C:/Users/brown/Git/dev-env", "C:/Users/brown/Git/dev-env  "):
+        problems = malformed_tile_fields(_valid_tile_entry(cwd=value))
+        assert len(problems) == 1, (value, problems)
+        assert "leading or trailing whitespace" in problems[0], (value, problems)
+
+
+def test_tile_posix_absolute_cwd_accepted():
+    # The journal is read on Windows today, but the schema is not Windows-only and a POSIX
+    # root must not be reported as corrupt.
+    assert malformed_tile_fields(_valid_tile_entry(cwd="/home/brown/git/dev-env")) == []
+
+
+def test_tile_backslash_cwd_is_valid_and_not_flagged():
+    # Deliberate non-flag: a correctly-escaped Windows path is a *correct* value. Only the
+    # escaping layer it must survive is fragile, and that is a docs rule (REFERENCE.md ->
+    # Tile shards), not a validation one. Flagging it would fire this advisory on healthy
+    # shards every time one is merely named in a command.
+    assert malformed_tile_fields(_valid_tile_entry(cwd=r"C:\Users\brown\Git\dev-env")) == []
+
+
+def test_tile_nonexistent_but_well_formed_cwd_is_not_flagged():
+    # Deliberate non-flag: shards are read on machines other than the one that wrote them,
+    # and this module is import-only/offline. Plausibility is the bar, not existence.
+    assert malformed_tile_fields(_valid_tile_entry(cwd="D:/no/such/directory/anywhere")) == []
+
+
+def test_tile_non_string_cwd_flagged_by_type():
+    problems = malformed_tile_fields(_valid_tile_entry(cwd=["C:/Users/brown/Git/dev-env"]))
+    assert len(problems) == 1, problems
+    assert "must be a string path, got list" in problems[0], problems
+
+
+def test_tile_empty_and_whitespace_cwd_flagged():
+    for value in ("", "   "):
+        problems = malformed_tile_fields(_valid_tile_entry(cwd=value))
+        assert len(problems) == 1, (value, problems)
+        assert "empty" in problems[0], (value, problems)
+
+
+def test_tile_absent_cwd_not_double_reported():
+    # missing_tile_fields already reports it; this must stay silent so one omission does
+    # not produce two problem lines (matches malformed_manifest_fields' contract).
+    entry = _valid_tile_entry()
+    del entry["cwd"]
+    assert malformed_tile_fields(entry) == []
+    assert missing_tile_fields(entry) == ["cwd"]
+
+
+def test_tile_malformed_on_non_dict_is_empty():
+    assert malformed_tile_fields(None) == []
+    assert malformed_tile_fields(["not", "a", "dict"]) == []
+
+
+def test_tile_malformed_messages_are_ascii():
+    # These ride the hook's exit-2 stderr, which is cp1252-decoded on Windows.
+    for cwd in (_CORRUPT_CWD, "dev-env", "", 17):
+        for problem in malformed_tile_fields(_valid_tile_entry(cwd=cwd)):
+            assert problem.isascii(), (cwd, problem)
+
+
+def test_tile_long_corrupt_cwd_echo_is_bounded():
+    # One pathological shard must not flood stderr with its own contents.
+    problems = malformed_tile_fields(_valid_tile_entry(cwd="x" * 5000))
+    assert len(problems) == 1, problems
+    assert len(problems[0]) < 400, len(problems[0])
+    assert "..." in problems[0], problems
 
 
 # ---------------------------------------------------------------------------

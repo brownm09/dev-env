@@ -83,7 +83,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_journal_compose_force_resolve.py` | `journal-compose-force-resolve.py` | CLI glue that writes the today-guard's `--force` marker to disk. |
 | `test_journal_draft_worktree_guard.py` | `pre-tool-use-journal-draft-worktree-guard.py` | Blocks isolating the `draft/YYYY-MM-DD` stub workflow into its own worktree — it must stay on the shared canonical. |
 | `test_journal_onboard_check.py` | `journal-onboard-check.py` | One-time per-session onboarding nudge for a project with no journal home yet. |
-| `test_journal_shard_write_advisory.py` | `journal-shard-write-advisory.py` | Write-time PostToolUse validation of manifest/open-PR/tile shards against the schema (BOMs, missing fields, filename-vs-embedded-number mismatches) as they're written. |
+| `test_journal_shard_write_advisory.py` | `journal-shard-write-advisory.py` | Write-time PostToolUse validation of manifest/open-PR/tile shards against the schema (BOMs, missing fields, filename-vs-embedded-number mismatches, tile `cwd` path shape) as they're written. |
 | `test_journal_stop_check.py` | `journal-stop-check.py` | Stop-hook archive reminder plus stale-draft/unmerged-branch advisories at session end. |
 | `test_new_day_journal_check.py` | `new-day-journal-check.py` | Day-rollover detection: the canonical resting on a draft branch dated other than today, and stubs dated *after* their branch. |
 | `test_post_compact.py` | `post-compact.py` | Reads and unions open-PR shards + legacy `open-prs.jsonl` at PostCompact time. |

@@ -302,3 +302,54 @@ repo's 15s call still started.
 credential-redirect primitive. Interpolating the validated repo into a REST *path* retires that
 surface — `repos/<owner>/<repo>/issues` cannot name a host. Every check in `repo_from_issue_url`
 stays regardless: it is still how the repo is derived, and defence in depth is free here.
+
+---
+
+## Amendment 4 (2026-07-23, dev-env#904) — the write recipe must prescribe `cwd`'s slash direction
+
+**Closes:** [dev-env#904](https://github.com/brownm09/dev-env/issues/904)
+
+Three tile shards written on 2026-07-23 (`sessions/dev-env/tiles/{898,899,900}.json`) carried
+`"cwd": "C:Users<U+0008>rownGitdev-env"` — a value naming no directory. The full incident, the
+validation layer added in response, and the two deliberate non-flags are in
+[ADR-081](081-write-time-journal-shard-validation-hook.md) Amendment 2. What belongs *here* is
+what it revealed about this ADR's own write recipe.
+
+**The recipe guarded the wrong field.** The Decision section's rule is *"build the JSON with a
+serializer, never `echo`"*, and it is justified entirely by `prompt`: free prose, so interpolating
+it produces invalid JSON or escapes into the shell. That reasoning is correct and stays. But it
+made `prompt` look like *the* hazardous field, when `cwd` is the other free-form one — and the
+only one that is a Windows path. Switching from `echo` to a serializer satisfies the rule as
+written while still corrupting `cwd`, because the hazard `cwd` faces is not shell *word* splitting
+but the **string-literal layer of whatever language the serializer is written in**:
+
+```
+node -e "…JSON.stringify({cwd: "C:\Users\brown\Git\dev-env"})…"
+                                    ^^      ^^      ^^
+                          JS literal eats \U and \G, turns \b into U+0008
+->  C:Users<U+0008>rownGitdev-env
+```
+
+The documented `py -3 -c` form never produced this — Python's literal parser *raises* on `\U`
+rather than silently dropping it — so following the recipe exactly was already sufficient. Nothing
+said so, and the global CLAUDE.md's `node -e` JSON idiom (the standing workaround for `jq` being
+unavailable) actively points the other way. Two independent sessions reached for `node -e` and
+produced the identical value on the same day.
+
+**Amended rule.** `cwd` is written with **forward slashes** — `C:/Users/brown/Git/dev-env`, the
+form the schema example in `docs/REFERENCE.md` already used. This is not a style preference: a
+forward-slash path is valid on Windows, valid in JSON, and contains no character that any of the
+escaping layers between a command line and `JSON.stringify` will consume, so it removes the
+failure mode instead of validating for it. `docs/REFERENCE.md` -> Tile shards now states this
+where the recipe lives, and generalises the never-`echo` warning from "`prompt` is prose" to
+"no field crosses a shell-quoting boundary" — which is what the heredoc-fed `py -3 -c` form was
+always for.
+
+**Why the shard's payload is the thing at stake.** This ADR's premise is that the paired issue is
+the *anchor* and the shard is the *payload* — the issue survives a crash, but only the shard makes
+the re-spawn **exact**. `cwd` is one of the four `spawn_task` arguments that "exact" is made of,
+and it is the one that decides *which repo the work happens in*. A corrupt `cwd` therefore does
+not degrade the payload, it voids it: the re-spawn either fails outright or silently lands
+somewhere else. Nothing downstream would ever have reported this — `reconcile-pending-tiles.py`
+reads `url` and the filename, never `cwd`, and no compose-time gate reads tile shards at all —
+which is why the validation half of the fix had to live in the write-time hook.
