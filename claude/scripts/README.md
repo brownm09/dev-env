@@ -64,7 +64,7 @@ utility scripts that serve the same workflow area — mirroring
 **Event** names the hook registration(s) from `settings.json`; utility scripts show their
 invocation instead.
 
-### Engineering journal & stub workflow (17)
+### Engineering journal & stub workflow (18)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -83,6 +83,7 @@ invocation instead.
 | `check-journal-compose-liveness.py` | `git status --porcelain \| py -3 check-journal-compose-liveness.py YYYY-MM-DD` | Detects an in-flight session still writing stubs for the date `/journal-compose` is about to merge. |
 | `journal-compose-force-resolve.py` | `py -3 journal-compose-force-resolve.py "$ARGUMENTS"` (first Bash action of `/journal-compose` Step 0.6) | Mechanically resolves `--force` from the literal, harness-substituted invocation text and records it to today's marker file. |
 | `journal-compose-with-retry.sh` | Windows Task Scheduler (replaces the nightly routine) | Retries `/journal-compose <yesterday>` up to 3 times on failure, 5 minutes apart. |
+| `journal-compose-replay.sh` | `bash journal-compose-replay.sh <WT> <PREV> <pathspec>...` (`/journal-compose` Step 10.5 conflict recovery) | Replays the draft branch's adds/modifies/deletes onto the clean compose branch, partitioned by whether `origin/main` also changed each path — contested paths are 3-way merged or stopped on, never overwritten. |
 | `reconcile-late-stubs.py` | `py -3 reconcile-late-stubs.py <draft/YYYY-MM-DD>` | Moves stubs pushed to an already-merged draft branch onto the earliest unmerged (or today's) branch, then deletes the stale source branch. |
 | `validate-manifest.py` | `py -3 validate-manifest.py <manifest-path> ...` | Pre-compose validator (`/journal-compose` Step 0.7): every manifest entry has all five required fields. |
 | `validate-composed-output.py` | `py -3 validate-composed-output.py <markdown-path> ...` | Pre-commit scanner (`/journal-compose` Step 8b): composed files contain no stray terminal output. Fence- and code-span-aware; advisory (reports, never edits). [ADR-121](../../docs/adr/121-composed-output-stray-terminal-scan.md) |

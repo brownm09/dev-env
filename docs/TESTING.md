@@ -2643,3 +2643,18 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_composed_output_scan.py
     ```
+
+83. **journal-compose-replay conflict-recovery test** — required when changing `claude/scripts/journal-compose-replay.sh` or the Step 10.5 recovery block in `claude/skills/journal-compose/SKILL.md` ([ADR-104](adr/104-journal-compose-conflict-recovery-diff-and-replay.md) + Amendment 1, dev-env#890). Drives the **real** script against throwaway fixture repos (`mktemp -d`, `git update-ref refs/remotes/origin/main` standing in for a remote) — no network, no auth, no `gh`.
+
+    Two fixtures split on the script's contract. **Fixture A** (exit 0) covers the mechanical paths: an `M` and an `A` that only the draft branch touched replay from `$PREV`; a `D` main left alone is removed; a `D` both sides made is a clean no-op; an open-PR shard main never had is restored (the dev-env#787 case); and a `README.md` both sides changed in *disjoint* regions is 3-way merged with **both** edits surviving. **Fixture B** (exit 2) covers the contested paths, each asserted to leave `origin/main`'s content intact on disk: an overlapping `M` (the literal dev-env#890 shape — two composes inserting a row at the same entry-table head), an add/add with no common ancestor to merge against, a delete/modify, and a shard `origin/main` deleted, which must be reported as `SHARD_RESTORE_SKIPPED` rather than resurrected ([ADR-119](adr/119-day-rollover-draft-branch-and-orphaned-shard-deletions.md)). **Fixture C** pins that every precondition failure exits 1, never 0 or 2.
+
+    Two assertions exist specifically because they caught real bugs during authoring, and both are invisible to a markdown-only fix:
+
+    - **Conflict markers never reach the work tree.** Both fixtures grep the whole tree for `^<<<<<<<`/`^>>>>>>>`. `merge-file -p` writes to stdout precisely so a conflicting merge leaves the on-disk file untouched.
+    - **`core.autocrlf true` is set on every fixture, on every platform.** `git show` emits the stored LF blob while the checked-out file is CRLF, so a merge mixing work-tree content with blob content sees *every* line as changed and a trivially disjoint merge conflicts. The script reads all three sides as blobs; this config is what lets the test tell the difference. The same run surfaced that `MSYS_NO_PATHCONV=1` is all-or-nothing per command — applied to `git -C "$WT" show`, it also stops `-C`'s path from being translated and git cannot find the repo — hence the `cd`-subshell form in `show_blob`.
+
+    Deliberate scope gap: the caller-side contract (that Step 10.5 actually stops on exit 2 before committing) is prose in the skill, not code, so it is unenforced here — the same limit ADR-104 already accepted for bash embedded in a markdown skill.
+
+    ```bash
+    bash claude/scripts/tests/test-journal-compose-replay.sh
+    ```
