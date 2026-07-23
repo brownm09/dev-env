@@ -60,6 +60,16 @@ stamp + top 3–5 cross-project priorities aggregated from manifest `priorities`
 
 **Constraint:** must run in a dedicated session with no prior task work. If other tasks were handled before invocation, the skill refuses with an error message.
 
+**Multi-project mode:** when the day's stubs span more than one project directory, the skill fans
+out one Haiku composer subagent per project — all inside the single shared compose worktree — then
+runs the README/commit/PR work once. Each subagent's `.draft-compose.lock` is **project-scoped**:
+it checks only `sessions/<project>/.draft-compose.lock` and never globs, because every lock inside
+that worktree belongs to the same run. A peer's lock is the expected signal that the fan-out is
+working, and its own project's lock means it is a re-spawn taking over from a failed predecessor —
+neither is a concurrency abort ([ADR-082 Addendum](adr/082-journal-compose-worktree-isolation.md),
+dev-env#889). Step 0.6's cross-project lock glob is the separate, still-unqualified guard against a
+genuinely concurrent *invocation*.
+
 **Source library:** greps `~/.claude/skills/sources.md` before spawning any research subagent (zero-cost cache hit path). A new source found on a cache miss is queued via `queue-source-library-entry` into a dedicated dev-env worktree (`chore/research-sources-queue`), not written to `~/.claude/skills/sources.md` directly — that path is a junction onto the canonical dev-env checkout, unaffected by this skill's own engineering-journal worktree isolation, and writing through it from Section 11's nightly, unattended runs left the canonical dirty and blocked every session's sync hook on this machine ([ADR-102](adr/102-source-library-writes-through-worktree.md)).
 
 **Date argument:** defaults to today. Pass `YYYY-MM-DD` to compose a specific day's stubs, or the
