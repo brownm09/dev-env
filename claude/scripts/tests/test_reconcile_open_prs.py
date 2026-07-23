@@ -55,7 +55,12 @@ entry_repo_and_pr = mod.entry_repo_and_pr
 project_dirs = mod.project_dirs
 reconcile_shard_dir = mod.reconcile_shard_dir
 reconcile_file = mod.reconcile_file
-find_dirty_open_pr_paths = mod.find_dirty_open_pr_paths
+classify_dirty_open_pr_paths = mod.classify_dirty_open_pr_paths
+parse_open_pr_status_line = mod.parse_open_pr_status_line
+shard_pr_number_from_path = mod.shard_pr_number_from_path
+classify_deletions = mod.classify_deletions
+safe_for_command = mod.safe_for_command
+cap = mod.cap
 
 URL_386 = "https://github.com/brownm09/dev-env/pull/386"
 URL_387 = "https://github.com/brownm09/dev-env/pull/387"
@@ -218,10 +223,10 @@ def test_legacy_non_object_line_dropped_on_rewrite() -> str:
     return "a non-object legacy line no longer freezes cleanup — dropped on the rewrite (ADR-057)"
 
 
-# --- dirty open-PR path detection (dev-env#578) ------------------------------
+# --- dirty open-PR path classification (dev-env#578, ADR-119) ----------------
 
 
-def test_find_dirty_open_pr_paths_filters_to_open_pr_shape() -> str:
+def test_parse_filters_to_open_pr_shape() -> str:
     lines = [
         " D sessions/dev-env/open-prs/567.json",
         " M sessions/lifting-logbook/open-prs.jsonl",
@@ -229,7 +234,7 @@ def test_find_dirty_open_pr_paths_filters_to_open_pr_shape() -> str:
         " M sessions/dev-env/2026-07-05_090000.stub.md",
         "M  claude/scripts/reconcile-open-prs.py",
     ]
-    got = find_dirty_open_pr_paths(lines)
+    got = [parse_open_pr_status_line(x)[1] for x in lines if parse_open_pr_status_line(x)]
     assert got == [
         "sessions/dev-env/open-prs/567.json",
         "sessions/lifting-logbook/open-prs.jsonl",
@@ -238,19 +243,19 @@ def test_find_dirty_open_pr_paths_filters_to_open_pr_shape() -> str:
     return "shard (any status) and legacy-file paths kept; unrelated stub/script paths dropped"
 
 
-def test_find_dirty_open_pr_paths_normalizes_backslashes() -> str:
-    lines = [r" D sessions\dev-env\open-prs\567.json"]
-    assert find_dirty_open_pr_paths(lines) == ["sessions/dev-env/open-prs/567.json"]
+def test_parse_normalizes_backslashes() -> str:
+    got = parse_open_pr_status_line(r" D sessions\dev-env\open-prs\567.json")
+    assert got == (" D", "sessions/dev-env/open-prs/567.json"), got
     return "backslash-separated porcelain paths normalized to forward slashes"
 
 
-def test_find_dirty_open_pr_paths_handles_renames() -> str:
+def test_parse_handles_renames() -> str:
     lines = [
         "R  sessions/dev-env/open-prs/567.json -> sessions/dev-env/open-prs/568.json",
         "R  docs/old-name.md -> sessions/lifting-logbook/open-prs/700.json",
         "R  sessions/dev-env/open-prs/1.json -> docs/unrelated.md",
     ]
-    got = find_dirty_open_pr_paths(lines)
+    got = [parse_open_pr_status_line(x)[1] for x in lines if parse_open_pr_status_line(x)]
     assert got == [
         "sessions/dev-env/open-prs/568.json",
         "sessions/lifting-logbook/open-prs/700.json",
@@ -258,10 +263,204 @@ def test_find_dirty_open_pr_paths_handles_renames() -> str:
     return "rename lines ('old -> new') keep only the destination path, matched against its shape"
 
 
-def test_find_dirty_open_pr_paths_empty_and_short_lines() -> str:
-    assert find_dirty_open_pr_paths([]) == [], "no status lines -> []"
-    assert find_dirty_open_pr_paths(["", "M", " M"]) == [], "lines shorter than 'XY p' are skipped, not crashed on"
-    return "empty input and malformed/short porcelain lines handled without error"
+def test_parse_empty_and_short_lines() -> str:
+    assert parse_open_pr_status_line("") is None
+    assert parse_open_pr_status_line("M") is None
+    assert parse_open_pr_status_line(" M") is None, "lines shorter than 'XY p' are skipped"
+    return "empty and malformed/short porcelain lines handled without error"
+
+
+def test_only_exact_delete_codes_count_as_deletions() -> str:
+    """The load-bearing guarantee of ADR-119: a `D` ANYWHERE in the two-char porcelain field
+    is not a deletion. `AD`/`RD` are a concurrent session's STAGED shard — the class the
+    explicit-pathspec rule exists to keep out of your commit — and `DD`/`DU`/`UD` are merge
+    conflicts, where a recommended `git add` silently resolves the conflict and the
+    following partial commit fails outright. Regression-pins the dev-env#873 review fix."""
+    base = "sessions/dev-env/open-prs/1.json"
+    deleting = [" D", "D "]
+    not_deleting = ["AD", "RD", "MD", "CD", "TD", "DD", "DU", "UD", "AU", "UA", "AA", "UU",
+                    "??", " M", "M ", "R ", "A "]
+    for code in deleting:
+        got = classify_dirty_open_pr_paths([f"{code} {base}"])
+        assert got["deleted"] == [base] and got["other"] == [], f"{code!r} should be a deletion: {got}"
+    for code in not_deleting:
+        got = classify_dirty_open_pr_paths([f"{code} {base}"])
+        assert got["deleted"] == [] and got["other"] == [base], \
+            f"{code!r} must NOT be treated as a deletion (got {got})"
+    return "only exact ' D'/'D ' are deletions; AD/RD (staged, concurrent) and DD/DU/UD (conflict) are not"
+
+
+def test_classify_dirty_preserves_status_order() -> str:
+    lines = [
+        " D sessions/lifting-logbook/open-prs/853.json",
+        "?? sessions/dev-env/open-prs/999.json",
+        "D  sessions/lifting-logbook/open-prs/856.json",
+        " M sessions/dev-env/open-prs/770.json",
+    ]
+    got = classify_dirty_open_pr_paths(lines)
+    assert got["deleted"] == [
+        "sessions/lifting-logbook/open-prs/853.json",
+        "sessions/lifting-logbook/open-prs/856.json",
+    ], got["deleted"]
+    assert got["other"] == [
+        "sessions/dev-env/open-prs/999.json",
+        "sessions/dev-env/open-prs/770.json",
+    ], got["other"]
+    return "both buckets preserve git status order; staged and unstaged deletes both counted"
+
+
+# --- deletion classification (ADR-119, dev-env#866) --------------------------
+
+
+def test_shard_pr_number_from_path() -> str:
+    assert shard_pr_number_from_path("sessions/dev-env/open-prs/853.json") == 853
+    assert shard_pr_number_from_path("sessions/x/open-prs.jsonl") is None, "legacy file has no single PR"
+    assert shard_pr_number_from_path("sessions/x/open-prs/abc.json") is None, "non-numeric stem"
+    assert shard_pr_number_from_path("sessions/x/open-prs/12.txt") is None, "non-json"
+    return "PR number parsed via the shared _journal_shards reader; legacy/non-numeric yield None"
+
+
+def _ident(mapping):
+    """url_fn stub: path -> (url, embedded_pr)."""
+    return lambda path: mapping.get(path)
+
+
+def _fixed_state(mapping):
+    return lambda pr, repo: mapping.get(pr)
+
+
+DE = "https://github.com/brownm09/dev-env/pull/"
+
+
+def test_classify_deletions_buckets_by_confirmed_state() -> str:
+    paths = [
+        "sessions/dev-env/open-prs/853.json",
+        "sessions/dev-env/open-prs/900.json",
+        "sessions/dev-env/open-prs/901.json",
+        "sessions/dev-env/open-prs.jsonl",
+    ]
+    got = classify_deletions(
+        paths,
+        url_fn=_ident({
+            "sessions/dev-env/open-prs/853.json": (DE + "853", 853),
+            "sessions/dev-env/open-prs/900.json": (DE + "900", 900),
+            "sessions/dev-env/open-prs/901.json": (DE + "901", 901),
+        }),
+        state_fn=_fixed_state({853: "MERGED", 900: "OPEN", 901: None}),
+    )
+    assert got["merged"] == ["sessions/dev-env/open-prs/853.json"], got["merged"]
+    assert got["open"] == ["sessions/dev-env/open-prs/900.json"], got["open"]
+    assert got["unverified"] == [
+        "sessions/dev-env/open-prs/901.json",   # gh returned nothing (e.g. rate-limited)
+        "sessions/dev-env/open-prs.jsonl",      # legacy file, no single PR to confirm
+    ], got["unverified"]
+    assert got["skipped"] == []
+    return "only a confirmed MERGED/CLOSED deletion is cleared for commit; OPEN and unresolved are not"
+
+
+def test_classify_deletions_filename_pr_mismatch_is_unverified() -> str:
+    """A shard whose embedded `pr` disagrees with its filename stem must never be trusted:
+    journal-shard-write-advisory.py only *advises* on that mismatch, so such shards land on
+    disk, and trusting the filename alone would query the wrong PR. Here the file is named
+    900.json but carries PR 853's identity; 853 is MERGED and 900 is OPEN, so a naive
+    implementation reports an OPEN PR's record as safe to commit."""
+    got = classify_deletions(
+        ["sessions/dev-env/open-prs/900.json"],
+        url_fn=_ident({"sessions/dev-env/open-prs/900.json": (DE + "853", 853)}),
+        state_fn=_fixed_state({853: "MERGED", 900: "OPEN"}),
+    )
+    assert got["merged"] == [], "a filename/pr mismatch must never reach `merged`"
+    assert got["unverified"] == ["sessions/dev-env/open-prs/900.json"], got
+    return "filename stem vs embedded pr mismatch routes to unverified, not merged"
+
+
+def test_classify_deletions_unresolvable_identity_is_unverified() -> str:
+    got = classify_deletions(
+        ["sessions/dev-env/open-prs/853.json"],
+        url_fn=_ident({}),                       # git show failed / shard not at HEAD
+        state_fn=_fixed_state({853: "MERGED"}),  # never consulted
+    )
+    assert got["unverified"] == ["sessions/dev-env/open-prs/853.json"], got
+    assert got["merged"] == [], "no identity means nothing to confirm against"
+    return "a shard whose committed identity cannot be read is unverified, never assumed merged"
+
+
+def test_classify_deletions_reports_rather_than_drops_beyond_cap() -> str:
+    paths = [f"sessions/dev-env/open-prs/{n}.json" for n in (1, 2, 3)]
+    got = classify_deletions(
+        paths,
+        url_fn=_ident({p: (DE + str(i + 1), i + 1) for i, p in enumerate(paths)}),
+        state_fn=_fixed_state({1: "MERGED", 2: "MERGED", 3: "MERGED"}),
+        max_probes=2,
+    )
+    assert got["merged"] == paths[:2], got["merged"]
+    assert got["skipped"] == paths[2:], "over-cap entries are surfaced, not silently dropped"
+    return "the probe cap surfaces what it skipped, so a capped run never reads as full coverage"
+
+
+def test_classify_deletions_deadline_stops_probing() -> str:
+    """The count cap alone cannot bound latency (N probes x two 15s timeouts >> the hook's
+    30s budget), so a wall-clock deadline is the real guard. Pinned via an injected
+    deadline_fn that expires after the first probe."""
+    paths = [f"sessions/dev-env/open-prs/{n}.json" for n in (1, 2, 3)]
+    calls = {"n": 0}
+
+    def expiring():
+        calls["n"] += 1
+        return calls["n"] > 1  # fresh for the first check, expired thereafter
+
+    got = classify_deletions(
+        paths,
+        url_fn=_ident({p: (DE + str(i + 1), i + 1) for i, p in enumerate(paths)}),
+        state_fn=_fixed_state({1: "MERGED", 2: "MERGED", 3: "MERGED"}),
+        deadline_fn=expiring,
+    )
+    assert got["merged"] == paths[:1], got["merged"]
+    assert got["skipped"] == paths[1:], "past the deadline, the remainder is reported as skipped"
+    return "an expired wall-clock deadline stops probing and reports the remainder as skipped"
+
+
+def test_classify_deletions_legacy_path_costs_no_probe() -> str:
+    paths = ["sessions/dev-env/open-prs.jsonl", "sessions/dev-env/open-prs/853.json"]
+    got = classify_deletions(
+        paths,
+        url_fn=_ident({"sessions/dev-env/open-prs/853.json": (DE + "853", 853)}),
+        state_fn=_fixed_state({853: "MERGED"}),
+        max_probes=1,
+    )
+    assert got["merged"] == ["sessions/dev-env/open-prs/853.json"], got
+    assert got["skipped"] == [], "the legacy path consumed no probe, so the shard still got one"
+    return "a no-PR-number path does not consume the probe budget"
+
+
+# --- command-safety and message bounding (dev-env#873 review) ----------------
+
+
+def test_safe_for_command_rejects_shell_metacharacters() -> str:
+    """`git status --porcelain` does not quote a path containing `;`, and such a path still
+    satisfies the reporting shape check — so the ready-to-run command must be gated on a
+    stricter allowlist or the emitted text carries a second command."""
+    assert safe_for_command(["sessions/dev-env/open-prs/1.json"]) is True
+    for bad in [
+        "sessions/dev-env;id/open-prs/1.json",
+        "sessions/dev-env/open-prs/1.json; id",
+        "sessions/dev env/open-prs/1.json",
+        "sessions/$(id)/open-prs/1.json",
+        "../sessions/dev-env/open-prs/1.json",
+    ]:
+        assert safe_for_command([bad]) is False, f"{bad!r} must not be command-safe"
+    assert safe_for_command(["sessions/a/open-prs/1.json", "sessions/b;x/open-prs/2.json"]) is False, \
+        "one unsafe path taints the whole batch"
+    return "only plain sessions/<project>/open-prs/<N>.json is interpolated into a shell command"
+
+
+def test_cap_bounds_message_lists() -> str:
+    paths = [f"sessions/p/open-prs/{n}.json" for n in range(1, 9)]
+    got = cap(paths)
+    assert got.count(",") == 4 and got.endswith("(+3 more)"), got
+    assert cap(paths[:2]) == "sessions/p/open-prs/1.json, sessions/p/open-prs/2.json"
+    assert cap([]) == "", "empty list renders empty, not '(+-5 more)'"
+    return "path lists in the systemMessage are bounded with an honest (+N more) count"
 
 
 def main() -> int:
@@ -277,10 +476,21 @@ def main() -> int:
         ("legacy file drops only merged", test_legacy_file_drops_only_merged),
         ("legacy file deleted when empty", test_legacy_file_deleted_when_empty),
         ("legacy non-object line dropped on rewrite (ADR-057)", test_legacy_non_object_line_dropped_on_rewrite),
-        ("dirty open-PR paths filtered from git status (dev-env#578)", test_find_dirty_open_pr_paths_filters_to_open_pr_shape),
-        ("dirty open-PR paths normalize backslashes", test_find_dirty_open_pr_paths_normalizes_backslashes),
-        ("dirty open-PR paths handle renames (review finding, PR #581)", test_find_dirty_open_pr_paths_handles_renames),
-        ("dirty open-PR paths handle empty/short lines", test_find_dirty_open_pr_paths_empty_and_short_lines),
+        ("open-PR paths filtered from git status (dev-env#578)", test_parse_filters_to_open_pr_shape),
+        ("porcelain paths normalize backslashes", test_parse_normalizes_backslashes),
+        ("rename lines keep the destination (review finding, PR #581)", test_parse_handles_renames),
+        ("empty/short porcelain lines handled", test_parse_empty_and_short_lines),
+        ("ONLY exact ' D'/'D ' count as deletions (ADR-119)", test_only_exact_delete_codes_count_as_deletions),
+        ("both buckets preserve git-status order", test_classify_dirty_preserves_status_order),
+        ("PR number parsed via the shared reader", test_shard_pr_number_from_path),
+        ("deletions bucketed by confirmed PR state", test_classify_deletions_buckets_by_confirmed_state),
+        ("filename/embedded-pr mismatch -> unverified", test_classify_deletions_filename_pr_mismatch_is_unverified),
+        ("unresolvable identity -> unverified, never assumed merged", test_classify_deletions_unresolvable_identity_is_unverified),
+        ("probe cap surfaces what it skipped", test_classify_deletions_reports_rather_than_drops_beyond_cap),
+        ("wall-clock deadline stops probing", test_classify_deletions_deadline_stops_probing),
+        ("legacy open-prs.jsonl path costs no probe", test_classify_deletions_legacy_path_costs_no_probe),
+        ("ready-to-run command rejects shell metacharacters", test_safe_for_command_rejects_shell_metacharacters),
+        ("message path lists are bounded", test_cap_bounds_message_lists),
     ]
     failed = 0
     for name, fn in tests:

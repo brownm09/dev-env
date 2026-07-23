@@ -68,9 +68,9 @@ invocation instead.
 | Script | Event / Invocation | Purpose |
 |---|---|---|
 | `journal-canonical-guard.py` | UserPromptSubmit | Corrects the engineering-journal canonical checkout when it's hijacked onto a detached HEAD or a stray `claude/*` branch; leaves legitimate branches (e.g. `draft/YYYY-MM-DD`) alone. |
-| `new-day-journal-check.py` | UserPromptSubmit | Warns once if stale `draft/*` branches exist on `origin/engineering-journal`. |
+| `new-day-journal-check.py` | UserPromptSubmit | Warns about stale `draft/*` branches on `origin/engineering-journal`, and about a day rollover with the canonical still on an older draft branch (ADR-119; the only check that also runs in worktree sessions). |
 | `journal-onboard-check.py` | UserPromptSubmit | Warns once per session when the active project has no `sessions/<project>/` home in engineering-journal yet. |
-| `reconcile-open-prs.py` | UserPromptSubmit | Removes open-PR shards/legacy entries for PRs now merged/closed; surfaces survivors + any uncommitted shard changes as session context. |
+| `reconcile-open-prs.py` | UserPromptSubmit | Removes open-PR shards/legacy entries for PRs now merged/closed; surfaces survivors + any uncommitted shard changes, classified into confirmed-merged deletions / in-flight / unverified / skipped (ADR-119), as session context. |
 | `reconcile-pending-tiles.py` | UserPromptSubmit | Removes tile shards whose paired issue is closed; surfaces the surviving pending tiles as a compact index so a chip lost to an app restart can be re-spawned. Validates each shard's `url` before it reaches `gh`; one paged REST read per repo, not per shard, on the `core` bucket so a GraphQL outage does not stop all pruning (dev-env#882). |
 | `stub-push-archive-reminder.py` | PostToolUse (Bash/PowerShell) | After a clean journal stub push with no unresolved open PR, writes the sentinel `journal-stop-check.py` consumes to prompt archiving. |
 | `journal-shard-write-advisory.py` | PostToolUse (Write/Edit/Bash) | Validates a manifest, open-PR, or tile shard's on-disk bytes against the schema right after it's written (missing fields, BOMs, filename mismatches). |

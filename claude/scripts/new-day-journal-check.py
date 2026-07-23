@@ -2,17 +2,33 @@
 """
 UserPromptSubmit hook: detect stale journal work in engineering-journal.
 
-Two checks:
+Four checks:
 1. *_draft.md files from a previous calendar day still on disk (composed but
    branch not yet deleted, or composition never ran).
-2. Remote draft/* branches that have not been merged into main (composition ran
-   and draft file was deleted, but the PR was never opened/merged).
+2. Remote draft/* branches with no composed journal file on main — never
+   composed, or composed but the PR was never opened/merged.
+3. Remote draft/* branches already merged but since resurrected by a later push.
+4. Day rollover (ADR-119, dev-env#866): the canonical checkout sitting on a
+   draft/<D> branch whose date is not today, plus any already-date-mismatched
+   stubs on it (filename date != branch date). Every discovery path keys on
+   BOTH halves — /journal-compose resolves SOURCE_BRANCH=draft/<DATE> and globs
+   sessions/*/<DATE>_*.stub.md on that branch, and daily-journal-compose gates
+   on `show-ref --verify refs/remotes/origin/draft/${DATE} || exit 0` — so a
+   stub written onto a branch named for another day is composed by nothing and
+   reported by nothing, silently. ADR-119 records the census of stubs this had
+   already stranded on origin/main at the time it was written.
 
-Exit 0 always — never block the user's prompt.
+Check 4 is the only one that also runs in Claude-managed worktree sessions:
+those write stubs into the canonical via `git -C`, so they are exactly who
+needs the warning, whereas checks 1-3 concern the canonical's own housekeeping
+and would be noise there.
+
+Exit 0 always — never block the user's prompt (advisory hook, fails open).
 Stdout is injected as context Claude sees before processing the user's message.
 """
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+import functools
 import glob
 import json
 import os
@@ -28,6 +44,11 @@ JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SCRATCH = Path.home() / ".claude" / "scratch"
 TODAY = date.today().strftime("%Y-%m-%d")
 FLAG_MAX_AGE_HOURS = 24
+# How long a check's sentinel suppresses a re-run within the same session. Not "once per
+# session": a day rollover can begin mid-session, so the checks must re-arm — but re-running
+# them on every prompt costs a git spawn (and, for checks 1-3, a network `git ls-remote`) per
+# prompt for a condition that is almost always false. (dev-env#873 review)
+RECHECK_MINUTES = 30
 
 
 def cleanup_stale_flags() -> None:
@@ -50,6 +71,10 @@ def cleanup_stale_flags() -> None:
         pass
 
 
+# Memoized: this reader is called from more than one check with identical inputs;
+# without the cache the same git (and for remote_draft_dates, NETWORK) call runs
+# twice per hook fire. Process-lifetime cache, so no staleness within a run.
+@functools.lru_cache(maxsize=1)
 def composed_project_dates_on_main() -> set[tuple[str, str]]:
     """Return (project, YYYY-MM-DD) pairs that have a composed file on origin/main.
 
@@ -118,6 +143,10 @@ def stale_draft_artifacts() -> list[str]:
     return stale
 
 
+# Memoized: this reader is called from more than one check with identical inputs;
+# without the cache the same git (and for remote_draft_dates, NETWORK) call runs
+# twice per hook fire. Process-lifetime cache, so no staleness within a run.
+@functools.lru_cache(maxsize=1)
 def composed_dates_on_main() -> set[str]:
     """Return YYYY-MM-DD dates that have a composed journal file on origin/main.
 
@@ -151,6 +180,10 @@ def composed_dates_on_main() -> set[str]:
         return set()
 
 
+# Memoized: this reader is called from more than one check with identical inputs;
+# without the cache the same git (and for remote_draft_dates, NETWORK) call runs
+# twice per hook fire. Process-lifetime cache, so no staleness within a run.
+@functools.lru_cache(maxsize=1)
 def remote_draft_dates() -> set[str]:
     """Return YYYY-MM-DD date strings for all remote draft/* branches."""
     try:
@@ -165,7 +198,14 @@ def remote_draft_dates() -> set[str]:
         for line in result.stdout.splitlines():
             if "\t" in line:
                 ref = line.split("\t", 1)[1].strip()
-                dates.add(ref.replace("refs/heads/draft/", ""))
+                # Parse through branch_date so a suffixed branch (draft/2026-05-09-late,
+                # draft/2026-07-03-lifting-logbook-late — 6 of 33 live branches) yields its
+                # bare date. Previously the whole suffixed string was treated as the date, so
+                # it could never match composed_dates_on_main()'s bare dates and every such
+                # branch was reported as unmerged forever. (dev-env#873 review)
+                parsed = branch_date(ref.replace("refs/heads/", ""))
+                if parsed:
+                    dates.add(parsed)
         return dates
     except Exception:
         return set()
@@ -212,6 +252,261 @@ def resurrected_draft_branches() -> list[str]:
     )
 
 
+def branch_date(branch: str) -> str | None:
+    """`YYYY-MM-DD` from a `draft/<date>[-suffix]` branch name, else None.
+
+    Accepts the `-recovery` / other suffixed forms the compose skill documents, since a
+    stub written onto `draft/2026-07-21-recovery` is just as date-mismatched as one on the
+    plain branch. Pure string parse — unit-tested."""
+    if not branch.startswith("draft/"):
+        return None
+    rest = branch[len("draft/"):]
+    candidate = rest[:10]
+    if len(candidate) == 10 and candidate[4] == "-" and candidate[7] == "-":
+        head, mid, tail = candidate[:4], candidate[5:7], candidate[8:10]
+        if head.isdigit() and mid.isdigit() and tail.isdigit():
+            return candidate
+    return None
+
+
+def _is_iso_date(text: str) -> bool:
+    """True for exactly `YYYY-MM-DD`. Single definition shared by `branch_date` and
+    `mismatched_stub_paths` — they previously disagreed, the latter checking only for `-`
+    at positions 4 and 7, so `abcd-fg-ij_010101.stub.md` passed and then compared
+    lexicographically greater than any real date. (dev-env#873 review)"""
+    if len(text) != 10 or text[4] != "-" or text[7] != "-":
+        return False
+    return text[:4].isdigit() and text[5:7].isdigit() and text[8:10].isdigit()
+
+
+def mismatched_stub_paths(tree_paths: list[str], expected_date: str) -> list[str]:
+    """Stub paths on a `draft/<expected_date>` branch dated *after* that date.
+
+    `tree_paths` is `git ls-tree -r --name-only <branch> sessions/` output. Only
+    convention-named `YYYY-MM-DD_HHMMSS.stub.md` files are considered — anything else is
+    invisible to compose's own glob and so is not a mismatch this check can speak to.
+
+    Deliberately one-sided: only a *newer*-dated stub is the day-rollover failure this
+    check exists for (a later day's work written onto an older branch, which compose will
+    never discover). Stubs dated *before* the branch are branch-lineage artifacts carried
+    forward from `main` — a different and far older population that `stale_draft_artifacts`
+    and `unmerged_draft_branches` already speak to, and including them here buried the six
+    real hits under 27 unrelated ones on the first live run. ISO dates compare correctly
+    as strings. Pure string filter — unit-tested."""
+    out = []
+    for path in tree_paths:
+        name = path.rsplit("/", 1)[-1]
+        if not name.endswith(".stub.md") or len(name) < 11 or name[10] != "_":
+            continue
+        date_prefix = name[:10]
+        if not _is_iso_date(date_prefix):
+            continue
+        if date_prefix > expected_date:
+            out.append(path)
+    return sorted(out)
+
+
+def summarize_by_project(paths: list[str]) -> str:
+    """`N stub(s) across M project(s): career-playbook 2, dev-env 5, lifting-logbook 2`.
+
+    A raw `paths[:5]` slice of a path-sorted list hid whole projects behind `(+N more)` —
+    measured on the real draft/2026-07-21, both lifting-logbook entries were invisible — and
+    the project spread is exactly what determines the remediation's scope. (dev-env#873 review)"""
+    counts: dict[str, int] = {}
+    for path in paths:
+        parts = path.split("/")
+        project = parts[1] if len(parts) > 2 and parts[0] == "sessions" else "?"
+        counts[project] = counts.get(project, 0) + 1
+    breakdown = ", ".join(f"{proj} {n}" for proj, n in sorted(counts.items()))
+    return f"{len(paths)} stub(s) across {len(counts)} project(s): {breakdown}"
+
+
+def canonical_current_branch() -> str | None:
+    """The branch the shared canonical checkout currently holds; None on any failure
+    (missing repo, detached HEAD, git not on PATH). Subprocess boundary — not unit-tested,
+    matching this file's convention for the other git readers."""
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=JOURNAL_REPO,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def branch_exists(branch: str) -> bool:
+    """True when `branch` exists locally in the canonical. Subprocess boundary."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+            cwd=JOURNAL_REPO,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def canonical_is_dirty() -> bool:
+    """True when the canonical has uncommitted `sessions/` changes. Subprocess boundary."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--", "sessions"],
+            cwd=JOURNAL_REPO,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return False
+        return bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+def branch_stub_paths(branch: str) -> list[str]:
+    """`sessions/` paths committed on `branch` in the canonical. Reads the LOCAL branch ref
+    deliberately: this asks what the canonical actually holds right now, including commits
+    a session has made but not yet pushed — the state the rollover warning is about.
+    Subprocess boundary — not unit-tested."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", branch, "sessions/"],
+            cwd=JOURNAL_REPO,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+        return result.stdout.splitlines()
+    except Exception:
+        return []
+
+
+def format_day_rollover(
+    branch: str,
+    tree_paths: list[str],
+    today: str,
+    today_branch_exists: bool,
+    canonical_dirty: bool,
+) -> str | None:
+    """Build the day-rollover advisory, or None when there is nothing to say.
+
+    Pure: every input is passed in, so the fire/don't-fire decision, the recommended command,
+    and the mismatch summary are all unit-testable. The subprocess reads live in
+    `day_rollover_message()` below. (dev-env#873 review — the previous version hard-wired its
+    git calls and so could not be tested at all, inconsistent with `classify_deletions` in the
+    sibling hook and with `test_journal_canonical_guard.py`'s fixture-repo precedent.)"""
+    bdate = branch_date(branch)
+    if not bdate or bdate == today:
+        return None
+
+    ej = JOURNAL_REPO.as_posix()
+    # Idempotent by construction: `checkout -b` fails when the branch already exists, and it
+    # fails AFTER `checkout main` has already moved the shared canonical — parking it on main
+    # for every other session. Pick the command that matches reality instead.
+    if today_branch_exists:
+        cut = f"git -C {ej} checkout draft/{today} && git -C {ej} pull --ff-only"
+    else:
+        cut = (
+            f"git -C {ej} checkout main && git -C {ej} pull && "
+            f"git -C {ej} checkout -b draft/{today}"
+        )
+
+    msg = (
+        f"[journal-hook] Day rollover — the engineering-journal canonical is on {branch}, "
+        f"but today is {today}. Do NOT write today's stub onto {branch}: /journal-compose "
+        f"resolves its source branch from the date (draft/<DATE>) and the nightly routine "
+        f"exits silently when that branch is missing, so a stub whose filename date does "
+        f"not match its branch date is composed by nothing and reported by nothing. Move to "
+        f"today's branch first: {cut}. Several unmerged draft branches coexisting is normal "
+        f"- they are independent per-day units, not a reason to reuse one. Do this BEFORE "
+        f"committing any open-PR shard deletion: a deletion is durable only once its "
+        f"carrying branch merges to main, so one committed on {branch} is invisible to "
+        f"draft/{today}."
+    )
+
+    if canonical_dirty:
+        # journal-canonical-guard.py refuses to switch a dirty canonical for exactly this
+        # reason; two hooks in the same domain must not give opposite advice.
+        msg += (
+            f" CAUTION: the canonical has uncommitted changes right now - they belong to "
+            f"concurrent sessions. Check `git -C {ej} status --porcelain` and let them settle "
+            f"(or commit only your own files with an explicit pathspec) before switching."
+        )
+
+    mismatched = mismatched_stub_paths(tree_paths, bdate)
+    if mismatched:
+        msg += (
+            f" ALREADY DATE-MISMATCHED on {branch}: {summarize_by_project(mismatched)}, all "
+            f"dated after {bdate}. Newest: {', '.join(sorted(mismatched)[-3:])}. Repair "
+            f"additively (never rewrite that shared branch's history) and tile the "
+            f"remediation, per claude/CLAUDE.md -> Stub file workflow -> Date-mismatched stub."
+        )
+    return msg
+
+
+def day_rollover_message() -> str | None:
+    """Subprocess wrapper around `format_day_rollover`. Reads the canonical's branch first and
+    returns early when there is no rollover, so the more expensive tree read and the two extra
+    probes only happen in the rare firing case."""
+    branch = canonical_current_branch()
+    if not branch:
+        return None
+    bdate = branch_date(branch)
+    if not bdate or bdate == TODAY:
+        return None
+    return format_day_rollover(
+        branch,
+        branch_stub_paths(branch),
+        TODAY,
+        branch_exists(f"draft/{TODAY}"),
+        canonical_is_dirty(),
+    )
+
+
+def emit(messages: list[str]) -> None:
+    """Print the accumulated systemMessage, if any. Flag bookkeeping is the caller's job —
+    the two checks are gated by separate sentinels, so `emit` must not own either."""
+    if not messages:
+        return
+    print(json.dumps({"systemMessage": " ".join(messages)}))
+
+
+def flag_fresh(path: Path) -> bool:
+    """True when `path` exists and is younger than RECHECK_MINUTES.
+
+    Age-based rather than mere-existence, so a check re-arms during a long session (a day
+    rollover can begin mid-session) without paying its git spawns on *every* prompt. The
+    previous "write the flag only when something was emitted" rule meant the common quiet
+    run wrote no flag and re-ran everything each prompt — measured at 1.74s per prompt for
+    the full check set, and a new 130ms tax on worktree sessions that used to exit before any
+    subprocess at all. (dev-env#873 review)"""
+    try:
+        return (time.time() - path.stat().st_mtime) < RECHECK_MINUTES * 60
+    except Exception:
+        return False
+
+
+def touch_flag(path: Path) -> None:
+    """Re-arm a check's sentinel. Written whether or not the check found anything — that is
+    the point: a quiet run must also suppress the next prompt's spawn."""
+    try:
+        SCRATCH.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    except Exception:
+        pass
+
+
 def main() -> None:
     _hookutil.record_heartbeat("new-day-journal-check")
     raw = ""
@@ -222,23 +517,46 @@ def main() -> None:
     hook_data = json.loads(raw) if raw else {}
     session_id = hook_data.get("session_id", "")
 
-    # Suppress in Claude-managed worktree sessions — journal warnings are only
-    # actionable in main-checkout sessions. Skipping cleanup_stale_flags() is
-    # intentional: worktree sessions don't write sentinel flags.
+    # Checks 1-3 stay suppressed in Claude-managed worktree sessions — they concern the
+    # canonical's own housekeeping and are only actionable from a main-checkout session.
+    # Check 4 (day rollover) is NOT suppressed: worktree sessions write journal stubs into
+    # the canonical via `git -C` just like any other session, so they are exactly who needs
+    # to be told which draft branch to cut (ADR-119, dev-env#866 — the session that hit
+    # this was itself a worktree session and saw nothing). Because worktree sessions can
+    # now emit, they can now write a flag, so cleanup_stale_flags() must run for them too.
+    in_worktree = False
     cwd = hook_data.get("cwd", "")
     if cwd:
         _parts = Path(cwd).parts
-        if ".claude" in _parts and "worktrees" in _parts:
-            sys.exit(0)
+        in_worktree = ".claude" in _parts and "worktrees" in _parts
 
     cleanup_stale_flags()
 
-    if session_id:
-        flag_path = SCRATCH / f"journal_hook_{session_id}.flag"
-        if flag_path.exists():
-            sys.exit(0)
+    # Two sentinels, deliberately separate. Check 4 runs in worktree sessions where checks
+    # 1-3 do not, so a shared flag would let a worktree session's rollover emission suppress
+    # checks 1-3 for the rest of that session — including after the cwd later leaves the
+    # worktree, which is exactly when they become actionable. (dev-env#873 review)
+    rollover_flag = SCRATCH / f"journal_hook_rollover_{session_id}.flag" if session_id else None
+    canonical_flag = SCRATCH / f"journal_hook_{session_id}.flag" if session_id else None
 
     messages = []
+
+    if rollover_flag is None or not flag_fresh(rollover_flag):
+        rollover = day_rollover_message()
+        if rollover:
+            messages.append(rollover)
+        if rollover_flag is not None:
+            touch_flag(rollover_flag)
+
+    if in_worktree:
+        emit(messages)
+        sys.exit(0)
+
+    if canonical_flag is not None and flag_fresh(canonical_flag):
+        emit(messages)
+        sys.exit(0)
+    if canonical_flag is not None:
+        touch_flag(canonical_flag)
 
     stale = stale_draft_artifacts()
     if stale:
@@ -254,10 +572,15 @@ def main() -> None:
     unmerged = unmerged_draft_branches()
     if unmerged:
         dates_str = ", ".join(unmerged)
+        # Wording tracks the predicate exactly: unmerged_draft_branches() returns dates with
+        # NO composed file on main, which covers two states the old text conflated (it
+        # asserted "these branches have composed journal files", the opposite of the filter).
+        # /journal-compose handles both — it skips a project already composed for that date.
         messages.append(
-            f"[journal-hook] Unmerged draft branch(es) detected: {dates_str}\n"
-            f"These branches have composed journal files but no PR was opened or merged into main.\n"
-            f"Remind the user that draft/{unmerged[0]} (and any others listed) still need a PR to main."
+            f"[journal-hook] Draft branch(es) with no composed journal on main: {dates_str}\n"
+            f"Each was either never composed, or composed but never merged via a PR.\n"
+            f"Suggest running /journal-compose {unmerged[0]} (and any others listed) in a "
+            f"dedicated session; it skips any project already composed for that date."
         )
 
     resurrected = resurrected_draft_branches()
@@ -269,14 +592,7 @@ def main() -> None:
             f"Run: py -3 ~/.claude/scripts/reconcile-late-stubs.py draft/{resurrected[0]}"
         )
 
-    if messages:
-        print(json.dumps({"systemMessage": " ".join(messages)}))
-        if session_id:
-            try:
-                (SCRATCH / f"journal_hook_{session_id}.flag").touch()
-            except Exception:
-                pass
-
+    emit(messages)
     sys.exit(0)
 
 
