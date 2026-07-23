@@ -17,6 +17,27 @@ to empty as its PRs merge, and new PRs are tracked only as shards. The shard enu
 and legacy-line parsing are delegated to the shared `_journal_shards` reader (ADR-057),
 which `post-compact.py` imports too, so the two hooks cannot drift on the shard semantics.
 
+**State is resolved over REST `core` only — never GraphQL** (dev-env#888, ADR-018 Amendment
+1). `gh pr view --json state` is a GraphQL call, and this repo has repeated, *measured*
+GraphQL exhaustion (dev-env#769/#773, PR #872, and `reconcile-pending-tiles.py`'s own
+implementation session at `graphql 0/5000` while REST `core` sat at `4999/5000`). An
+exhausted bucket failed every lookup, and since an unresolved state is conservatively
+*kept*, nothing was ever pruned — safe, but a total and unreported loss of this hook's only
+job, on the same bucket Projects v2 operations contend for with no REST alternative at all.
+
+ADR-119 first addressed that with a GraphQL-then-REST *fallback*. Amendment 1 replaces it
+with REST-only, which is strictly better on every axis that motivated the fallback: the
+contended bucket is never touched rather than merely retried past, a hanging lookup costs
+one timeout instead of two (the fallback doubled worst-case latency at exactly the moment
+things were already degraded), and there is one code path rather than a rarely-exercised
+second one. A `core` failure almost always means auth or network is down, which GraphQL
+would not survive either. Mirrors `reconcile-pending-tiles.py` (dev-env#882, ADR-118
+Amendment 3), which made the same move for tile shards and reached the same conclusion.
+
+Unlike that reconciler, this one does **not** batch: see `check_pr_state` for why a
+per-repo paged walk is actively wrong here, and `pr_state_from_row` for the two REST
+hazards — a lowercase `state`, and MERGED not being a REST `state` at all.
+
 Unlinking/rewriting happens directly in the canonical checkout's working tree and this
 hook never commits. That is NOT a "the next stub commit will add it" convenience — ADR-018
 claimed that, but it stopped being true once ADR-056 moved stub commits to an explicit
@@ -93,13 +114,43 @@ JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SENTINEL_PREFIX = "open-prs-reconciled-"
 
 # Probing is bounded by BOTH a wall clock and a count, because the count alone cannot bound
-# latency: this hook's declared `timeout` in settings.json is 30s, and that budget already
-# funds one `gh pr view` per tracked shard in the reconcile loop above *before* any probing
-# starts. The deadline is the real guard (a count of N still permits N × the per-call
+# latency. The deadline is the real guard (a count of N still permits N × the per-call
 # timeouts); the count is a secondary runaway backstop. Anything past either limit is
 # reported as `skipped` rather than silently dropped. See ADR-119.
 MAX_DELETION_PROBES = 10
 PROBE_DEADLINE_SECONDS = 8.0
+
+# One wall clock shared by EVERY `gh`/`git` subprocess this hook spawns, plus a ceiling on
+# any single one. ADR-119's comment here noted that the 30s settings.json budget "already
+# funds one `gh pr view` per tracked shard in the reconcile loop *before* any probing
+# starts" — correct, and the reason that loop needed a bound of its own: nothing capped its
+# total, so N sequential lookups could exhaust the hook's whole timeout and get it killed
+# mid-flight, losing the entire systemMessage including the `Open PRs:` line that is this
+# hook's original ADR-018 job. (Under ADR-119's fallback the per-PR worst case was two
+# timeouts, 30s, so a *single* hanging shard could do it.)
+#
+# `WorkBudget` gates the start of every lookup, so the arithmetic needs no per-segment
+# bookkeeping and stays true however many segments are added later: no subprocess ever
+# *starts* after WORK_BUDGET_SECONDS, and any one already in flight is capped by its own
+# timeout. `test_work_budget_cannot_outrun_the_hook_timeout` pins the resulting inequality as
+# an assertion rather than leaving it in this comment — the /review finding on dev-env#886,
+# applied to its sibling.
+#
+# NONLOOKUP_RESERVE_SECONDS is part of that inequality rather than an unstated remainder: the
+# hook also does work no budget gates — `record_heartbeat`, `cleanup_stale_sentinels` (a scan
+# of a shared scratch directory that accumulates indefinitely), the stdin read, and message
+# assembly. Leaving that as whatever happened to be left over made the assertion claim more
+# than it covered, which matters because a kill here is unrecoverable: `mark_done()` has
+# already fired, so the session never retries. (/review finding on this PR.)
+#
+# Exceeding the budget degrades to "unresolved, kept, and said so" — kept because
+# `should_remove` treats None as keep, and *said so* via the unresolved count in the emitted
+# message, so a partial reconciliation is never reported as a clean one. Never a mis-prune.
+HOOK_TIMEOUT_SECONDS = 30      # mirrors this hook's `timeout` in claude/settings.json
+GH_CALL_TIMEOUT = 8            # one REST lookup; was 15 per path, twice over, under ADR-119
+GIT_CALL_TIMEOUT = 5           # local git plumbing — measured at ~0.07s
+NONLOOKUP_RESERVE_SECONDS = 5  # heartbeat + sentinel sweep + stdin read + message assembly
+WORK_BUDGET_SECONDS = 15.0
 
 
 def already_ran(session_id: str) -> bool:
@@ -131,8 +182,121 @@ def repo_from_url(url: str) -> str | None:
 
 def should_remove(state: str | None) -> bool:
     """A tracked PR is removed only when GitHub confirms it MERGED or CLOSED.
-    OPEN, an unknown state, or None (a gh failure) is conservative — keep it."""
+    OPEN, an unknown state, or None (a gh failure) is conservative — keep it.
+
+    Deliberately case-sensitive. The state vocabulary is normalised once, at the transport
+    boundary (`pr_state_from_row`), so relaxing this to a case-fold would delete the one
+    cheap regression pin that catches that normalisation being dropped — which is precisely
+    the failure the REST migration could reintroduce, and which is silent: REST answers
+    "closed", this returns False for every PR, and the hook goes inert while still looking
+    healthy. (dev-env#888)"""
     return state in ("MERGED", "CLOSED")
+
+
+def pr_state_from_row(row) -> str | None:
+    """A REST pull-request object -> 'OPEN' | 'MERGED' | 'CLOSED'; None if unusable.
+
+    Pure, and deliberately so: this is where both REST-specific hazards live, and both are
+    the kind that pass a naive test. `check_pr_state` is an untested subprocess boundary
+    (this repo's fixture-only convention), so parsing here is what makes them coverable at
+    all — the same split `reconcile-pending-tiles.py` uses for `issue_states_from_rows`.
+
+    **MERGED is not a REST `state`.** The GraphQL predecessor (`gh pr view --json state`)
+    returned MERGED as a distinct value; REST returns `state: "closed"` plus a *separate*
+    merge signal. A naive port collapses merged into closed, silently retiring a value this
+    module documents and `classify_deletions` buckets on. It would not change what gets
+    pruned (`should_remove` accepts both) — which is exactly why it would go unnoticed,
+    while every "removed stale entries" line silently mislabelled merges as closures.
+
+    **The merge signal differs by endpoint.** `GET /pulls/{n}` carries a `merged` boolean;
+    the `GET /pulls` *list* endpoint (the `pull-request-simple` schema) omits `merged`
+    entirely and carries only `merged_at` — verified live against both. Honouring either
+    signal keeps this helper correct for both shapes, so a future move to a list-based batch
+    cannot quietly start reporting every merged PR as CLOSED.
+
+    **`state` is upper-cased.** REST answers "open"/"closed" where GraphQL answered
+    "OPEN"/"CLOSED", and `should_remove` compares uppercase without case-folding. Skipping
+    this leaves the hook *inert* rather than fixed — fail-safe in direction, but a total,
+    unreported loss of pruning.
+
+    An unrecognised `state` passes through upper-cased, preserving `should_remove`'s
+    "unknown -> keep" contract. Malformed input (non-dict, missing or non-string `state`)
+    degrades to None -> keep, never to a spurious CLOSED.
+    """
+    if not isinstance(row, dict):
+        return None
+    state = row.get("state")
+    if not isinstance(state, str) or not state:
+        return None
+    state = state.upper()
+    if state != "CLOSED":
+        return state
+    # Only a closed PR can be a merged one; check the merge signal before settling on CLOSED.
+    # `merged_at` is tested for truthiness, not merely for being a str: GitHub returns either
+    # null or an ISO timestamp, so an empty string is anomalous and should not read as a merge.
+    merged_at = row.get("merged_at")
+    if row.get("merged") is True or (isinstance(merged_at, str) and merged_at):
+        return "MERGED"
+    return "CLOSED"
+
+
+class WorkBudget:
+    """One wall clock shared by every `gh`/`git` lookup this hook makes (see the constants).
+
+    `clock` is injectable so the gating logic unit-tests offline without sleeping.
+    """
+
+    def __init__(self, budget: float = WORK_BUDGET_SECONDS, clock=time.monotonic) -> None:
+        self._clock = clock
+        self._deadline = clock() + budget
+
+    def spent(self) -> bool:
+        return self._clock() >= self._deadline
+
+
+def budgeted_state_fn(state_fn, budget: WorkBudget):
+    """Wrap `state_fn(pr, repo)` so it stops issuing lookups once *budget* is spent.
+
+    Returns a callable with the identical `(pr_number, repo) -> state | None` signature, so
+    every existing call site — `reconcile_shard_dir`, `reconcile_file`, and
+    `classify_deletions` — is unchanged and a future one is covered by construction.
+
+    A short-circuited lookup returns None, which `should_remove` already keeps and which
+    `classify_deletions` already routes to `unverified`. So the degradation is the same
+    conservative one a `gh` failure produces, and both are reported rather than silent.
+    """
+    def call(pr_number, repo):
+        if budget.spent():
+            return None
+        return state_fn(pr_number, repo)
+    return call
+
+
+def counting_state_fn(state_fn, tally: dict):
+    """Wrap `state_fn(pr, repo)` so every unresolved lookup increments `tally['unresolved']`.
+
+    An unresolved lookup (`None`) always *keeps* its entry, so the count is exactly the number
+    of tracked PRs reported as surviving without GitHub having confirmed it. Surfacing it is
+    what makes the "and said so" half of the conservative contract real: the `Open PRs:` line
+    is injected into Claude's context on the first prompt of every session and drives real
+    decisions (which PR to `/review`, whether work is outstanding), so listing an unconfirmed
+    PR indistinguishably from a confirmed-open one lets a merged PR read as outstanding work.
+
+    Before the lookup budget existed this was sporadic — an individual `gh` failure. A spent
+    budget makes it *systematic*: every remaining PR resolves to None at once. Mirrors
+    `reconcile-pending-tiles.py`'s unresolved count, whose stated purpose is that "a truncated
+    or partial reconciliation is never reported as a clean one". (/review finding on this PR.)
+
+    Deliberately wrapped around the reconcile loop's lookups only — the deletion probes have
+    their own `unverified` bucket, and folding them in here would inflate a count the
+    `Open PRs:` line is supposed to qualify.
+    """
+    def call(pr_number, repo):
+        state = state_fn(pr_number, repo)
+        if state is None:
+            tally["unresolved"] = tally.get("unresolved", 0) + 1
+        return state
+    return call
 
 
 def entry_repo_and_pr(entry: dict) -> tuple[str | None, int | None]:
@@ -397,62 +561,60 @@ def reconcile_shard_dir(shard_dir: Path, state_fn=None) -> tuple[list[dict], lis
 # --- network / git boundary (not unit-tested; repo avoids subprocess/urllib mocks) --
 
 
+# jq projection applied by `gh api`, for payload size only — NEVER for classification. It
+# carries the fields `pr_state_from_row` classifies on and decides nothing itself, so the
+# rule stays in pure, testable code (the ADR-118 Amendment 3 discipline). Worth the filter:
+# a full PR object is ~26 KB, this is ~81 B — ~327x less over a wire that is stalling the
+# user's first prompt of the session. Both merge signals are carried deliberately; dropping
+# either is the natural-looking simplification `test_pr_projection_preserves_merge_signals`
+# exists to catch.
+_PR_PROJECTION = "{number, state, merged, merged_at}"
+
+
 def check_pr_state(pr_number: int, repo: str) -> str | None:
-    """Return 'OPEN', 'MERGED', or 'CLOSED'; None on any failure.
+    """Return 'OPEN', 'MERGED', or 'CLOSED'; None on any failure. REST `core` only.
 
-    Tries `gh pr view` (GraphQL) first, then falls back to the REST endpoint. GraphQL and
-    REST draw on **separate** rate-limit budgets, and GraphQL is the one that empties first
-    in this environment (60+ concurrent worktrees share it; it sat at 0/5000 for hours while
-    REST held ~4990 during dev-env#866). Without the fallback, every deletion lands in
-    `unverified` exactly when the documented rate-limit hazard is live — i.e. the orphan
-    cleanup this hook exists for fails precisely when it is most needed. (dev-env#873 review)
+    See the module docstring for why the transport is REST-only rather than ADR-119's
+    GraphQL-then-REST fallback (dev-env#888, ADR-018 Amendment 1).
+
+    **`/pulls/{n}`, not `/issues/{n}`.** REST models issues and pull requests in one number
+    space per repo, distinguishing them only by a `pull_request` key on the issues
+    representation. Reading `/issues/{n}` would answer a plausible `state` for a number that
+    names a plain *issue*, and we would believe it. `/pulls/{n}` cannot: it returns only
+    pull requests, so an issue number 404s -> non-zero exit -> None -> keep. The hazard is
+    structurally absent rather than filtered, which is why no `pull_request` check appears
+    here (its sibling `reconcile-pending-tiles.py` needs one; it reads `/issues`).
+
+    **One lookup per PR — deliberately not batched.** `reconcile-pending-tiles.py` batches a
+    paged `GET /issues` per *repo* and stops early once every requested number is resolved,
+    which is sound there because a pending tile's issue is recent by construction. Tracked
+    open-PR shards are the opposite: lingering *is* the failure ADR-018 exists to fix, so
+    the oldest shard is both the most stale and the least reachable. Measured at authoring
+    time — a live `sessions/dev-env/open-prs/178.json` tracked a PR merged 2026-05-05, while
+    page 2 of `GET /pulls?state=all&per_page=100` bottomed out at #406; at that reconciler's
+    2-page cap the shard most needing a prune would resolve to None forever. The batch would
+    have saved 4 subprocess spawns (7 tracked shards across 3 repos) and cost the hook its
+    purpose. Total time is bounded by `WorkBudget` instead, which does not trade correctness
+    for it.
+
+    Interpolating *repo* into a REST **path** is also strictly safer than the `--repo` flag
+    it replaces: `gh --repo` accepts a `HOST/OWNER/REPO` form, while `repos/<owner>/<repo>/
+    pulls/<n>` cannot name a host at all.
+
+    Not unit-tested — subprocess boundary, matching this module's convention. Everything
+    around it is: classification through `pr_state_from_row`, gating through
+    `budgeted_state_fn`, and the projection through a structural test.
     """
-    state = _pr_state_graphql(pr_number, repo)
-    if state is not None:
-        return state
-    return _pr_state_rest(pr_number, repo)
-
-
-def _pr_state_graphql(pr_number: int, repo: str) -> str | None:
     try:
         result = subprocess.run(
-            ["gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "state"],
+            ["gh", "api", f"repos/{repo}/pulls/{pr_number}", "--jq", _PR_PROJECTION],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=GH_CALL_TIMEOUT,
         )
         if result.returncode != 0:
             return None
-        data = json.loads(result.stdout)
-        return data.get("state")
-    except Exception:
-        return None
-
-
-def _pr_state_rest(pr_number: int, repo: str) -> str | None:
-    """REST equivalent of the above. REST reports `merged` separately from `state`, which is
-    only 'open'/'closed' — a merged PR is `{"state":"closed","merged":true}`, so the merged
-    check must come first or every merged PR would read as CLOSED."""
-    try:
-        result = subprocess.run(
-            ["gh", "api", f"repos/{repo}/pulls/{pr_number}", "--jq", ".state, .merged"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if result.returncode != 0:
-            return None
-        lines = result.stdout.split()
-        if len(lines) < 2:
-            return None
-        rest_state, merged = lines[0].strip().lower(), lines[1].strip().lower()
-        if merged == "true":
-            return "MERGED"
-        if rest_state == "closed":
-            return "CLOSED"
-        if rest_state == "open":
-            return "OPEN"
-        return None
+        return pr_state_from_row(json.loads(result.stdout))
     except Exception:
         return None
 
@@ -463,16 +625,16 @@ def committed_shard_identity(journal_repo: Path, path: str) -> tuple[str, int | 
     Read from git rather than disk because the file being classified is precisely one that
     is *deleted* in the working tree — there is nothing left to read there. Returns the
     embedded `pr` alongside the URL so the caller can cross-check it against the filename
-    (see `classify_deletions`). `timeout=5`: this is a purely local `git show`, measured at
-    ~0.07s — the previous 15s was copied from the network path and doubled the worst-case
-    probe cost for no benefit. Not unit-tested: subprocess boundary, matching
+    (see `classify_deletions`). `GIT_CALL_TIMEOUT`: this is a purely local `git show`,
+    measured at ~0.07s — the original 15s was copied from the network path and doubled the
+    worst-case probe cost for no benefit. Not unit-tested: subprocess boundary, matching
     `check_pr_state`'s convention."""
     try:
         result = subprocess.run(
             ["git", "-C", str(journal_repo), "show", f"HEAD:{path}"],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=GIT_CALL_TIMEOUT,
         )
         if result.returncode != 0:
             return None
@@ -501,7 +663,7 @@ def merge_in_progress(journal_repo: Path) -> bool:
             ["git", "-C", str(journal_repo), "rev-parse", "--git-dir"],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=GIT_CALL_TIMEOUT,
         )
         if result.returncode != 0:
             return False
@@ -525,7 +687,7 @@ def current_branch(journal_repo: Path) -> str | None:
             ["git", "-C", str(journal_repo), "branch", "--show-current"],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=GIT_CALL_TIMEOUT,
         )
         if result.returncode != 0:
             return None
@@ -543,7 +705,7 @@ def dirty_open_pr_status_lines(journal_repo: Path) -> list[str]:
             ["git", "-C", str(journal_repo), "status", "--porcelain", "--", "sessions"],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=GIT_CALL_TIMEOUT,
         )
         if result.returncode != 0:
             return []
@@ -572,12 +734,24 @@ def main() -> None:
     all_surviving: list[str] = []
     all_removed: list[str] = []
 
+    # One clock for every lookup below, reconcile loop and probe block alike, so N tracked
+    # shards across N projects cannot collectively exhaust the hook's settings.json timeout
+    # and get it killed before it prints anything (dev-env#888).
+    budget = WorkBudget()
+    gated = budgeted_state_fn(check_pr_state, budget)
+    # The reconcile loop's lookups are additionally counted, so the `Open PRs:` line can say
+    # how many of the PRs it lists were never actually confirmed. The deletion probes below
+    # reuse `gated` directly — they report unconfirmed paths through their own `unverified`
+    # bucket, and counting them here would inflate a figure that qualifies a different line.
+    tally: dict = {"unresolved": 0}
+    state_fn = counting_state_fn(gated, tally)
+
     for project_dir in project_dirs(JOURNAL_REPO):
         project = project_dir.name
 
         # Current format: per-PR shards.
         try:
-            surviving, removed = reconcile_shard_dir(project_dir / "open-prs")
+            surviving, removed = reconcile_shard_dir(project_dir / "open-prs", state_fn=state_fn)
         except Exception:
             surviving, removed = [], []
 
@@ -585,7 +759,7 @@ def main() -> None:
         legacy = project_dir / "open-prs.jsonl"
         if legacy.exists():
             try:
-                s2, r2 = reconcile_file(legacy)
+                s2, r2 = reconcile_file(legacy, state_fn=state_fn)
             except Exception:
                 s2, r2 = [], []
             surviving = surviving + s2
@@ -612,6 +786,12 @@ def main() -> None:
         )
     if all_surviving:
         parts.append("Open PRs: " + ", ".join(all_surviving))
+    if tally["unresolved"]:
+        parts.append(
+            f"{tally['unresolved']} of those could not be resolved against GitHub (gh failure, "
+            f"or the {WORK_BUDGET_SECONDS:g}s lookup budget spent) — kept unchanged and listed "
+            "above as open, so that list may include already-merged PRs."
+        )
 
     # Two separate try blocks: a failure in the fragile probing must not also discard the
     # cheap, reliable hands-off warning derived from `git status` alone.
@@ -627,8 +807,13 @@ def main() -> None:
             deletions = classify_deletions(
                 dirty["deleted"],
                 url_fn=lambda p: committed_shard_identity(JOURNAL_REPO, p),
-                state_fn=check_pr_state,
-                deadline_fn=lambda: time.monotonic() - probe_start > PROBE_DEADLINE_SECONDS,
+                state_fn=state_fn,
+                # Whichever fires first: ADR-119's own probe-block deadline (so a slow probe
+                # block still cannot eat the rest of the hook) or the hook-wide budget the
+                # reconcile loop has already drawn on. Additive — neither guarantee is lost.
+                deadline_fn=lambda: (
+                    time.monotonic() - probe_start > PROBE_DEADLINE_SECONDS or budget.spent()
+                ),
             )
         elif dirty["deleted"]:
             parts.append(
@@ -686,7 +871,8 @@ def main() -> None:
     if deletions["skipped"]:
         parts.append(
             f"{len(deletions['skipped'])} further deleted open-PR shard(s) not probed (budget: "
-            f"{MAX_DELETION_PROBES} probes / {PROBE_DEADLINE_SECONDS:g}s): "
+            f"{MAX_DELETION_PROBES} probes / {PROBE_DEADLINE_SECONDS:g}s probing, or the "
+            f"{WORK_BUDGET_SECONDS:g}s hook-wide lookup budget already spent): "
             + cap(deletions["skipped"])
             + "."
         )
