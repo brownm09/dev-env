@@ -160,7 +160,7 @@ schema — a new drift source of its own.
 
 ---
 
-## Amendment — 2026-07-17: `tokens` field type validation (`malformed_manifest_fields`)
+## Amendment 1 — 2026-07-17: `tokens` field type validation (`malformed_manifest_fields`)
 
 **Closes:** [dev-env#824](https://github.com/brownm09/dev-env/issues/824)
 
@@ -187,3 +187,66 @@ to `malformed_manifest_fields` without touching the presence-check logic.
   inside the manifest-entry loop in `validate_shard_bytes`.
 - `validate-manifest.py` — `type_errors` list accumulated per entry; reported as a separate
   "Entries with malformed field values:" section in the FAIL output.
+
+---
+
+## Amendment 2 — 2026-07-23: `cwd` path-plausibility validation (`malformed_tile_fields`)
+
+**Closes:** [dev-env#904](https://github.com/brownm09/dev-env/issues/904)
+
+**Incident.** Three tile shards written on 2026-07-23 — `sessions/dev-env/tiles/{898,899,900}.json`
+— carried `"cwd": "C:Users<U+0008>rownGitdev-env"`. That value names no directory. Every check the
+hook then performed reported the shards healthy: the files existed, parsed as JSON objects, had
+numeric filenames matching their embedded `issue`, and carried all seven `TILE_REQUIRED_FIELDS`.
+
+This is a strictly worse failure than Amendment 1's. ADR-118's premise is that the shard is the
+durable **payload** that lets a lost `spawn_task` chip be re-spawned *exactly* after a crash or
+app restart (the paired issue is the anchor; the shard is the payload). A `cwd` naming no
+directory means the re-spawn fails or lands in the wrong repo — so for those tiles the payload
+was **already lost**, silently, with no gate anywhere downstream that would ever notice.
+`malformed_manifest_fields` had a compose-time backstop; this has none.
+
+**Root cause — the second escaping layer, on the one field nobody guarded.** ADR-118's write
+recipe says *"build the JSON with a serializer, never `echo`"*, and justifies it entirely by
+`prompt`: free prose, so interpolation corrupts the shard or escapes into the shell. `cwd` is the
+*other* free-form field and the only one that is a Windows path, and the guidance never mentions
+it. A serializer invoked as `node -e "…"` from bash puts a JS string literal between the path and
+`JSON.stringify`, which eats `\U` and `\G` and turns `\b` into U+0008:
+
+```
+C:\Users\brown\Git\dev-env   ->   C:Users<U+0008>rownGitdev-env
+```
+
+Two properties made this a recipe defect rather than one session's slip: at least two independent
+sessions produced the identical value on the same day, and the failure is **silent in JS
+specifically** — Python's literal parser raises on `\U`, which is why the `py -3 -c` form in the
+documented recipe never produced it. Following the documented recipe was sufficient to avoid the
+bug; nothing said so, and the ambient `node -e` habit (the `jq`-unavailable JSON idiom in the
+global CLAUDE.md) pointed the other way.
+
+**Design decision — same split as Amendment 1.** A new `malformed_tile_fields(entry)` in
+`_journal_schema.py`, called after `missing_tile_fields` and returning `[]` when `cwd` is absent,
+so the two never double-report. It flags: a non-string value, an empty/whitespace value, any
+control character (reported *alone*, since it names the cause and the fix), and a value that is
+not absolute — a drive-letter root (`C:/…`, `C:\…`) or POSIX absolute (`/…`).
+
+**Two deliberate non-flags**, both narrowing the check to unambiguous corruption:
+
+- **A correctly-escaped backslash path** (`C:\Users\brown\Git\dev-env`) is a *correct* value on
+  Windows; only the escaping layer it must survive is fragile. Flagging it would fire this
+  advisory on healthy shards every time one is merely named in a command, turning an advisory
+  into a nag. The forward-slash prescription is therefore a **documentation** rule (ADR-118
+  Amendment 4), not a validation one — layer 2 removes the failure mode, layer 1 only catches it.
+- **Whether the directory exists.** `_journal_schema.py` is import-only and unit-tests offline,
+  and shards are read on machines other than the one that wrote them, where a correct path
+  legitimately resolves to nothing. Plausibility is the honest bar; a value with no path
+  separator at all is corrupt regardless of host.
+
+**Wiring.** `journal-shard-write-advisory.py` only —
+`problems.extend(malformed_tile_fields(entry))` in `validate_shard_bytes`'s `kind == "tile"`
+branch. Unlike Amendment 1 there is no second consumer: `validate-manifest.py` validates manifest
+shards, and no compose-time gate reads tile shards at all. That asymmetry *is* the argument for
+catching this at write time — the write-time hook is the only gate this class will ever pass
+through. Its advisory text also gained a forward-slash prescription, and the tile schema template
+it prints now shows a concrete `C:/Users/brown/Git/<target-repo>` rather than the placeholder
+`<target repo path>` that left slash direction unstated.

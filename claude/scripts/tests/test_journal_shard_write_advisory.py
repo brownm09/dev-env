@@ -593,6 +593,84 @@ def test_collect_problems_flags_a_real_tile_shard_on_disk():
         assert "does not match embedded issue=999" in results[0][1][0]
 
 
+# --- `cwd` plausibility (dev-env#904, ADR-081 Amendment 2) -----------------
+
+# The exact value found live in sessions/dev-env/tiles/{898,899,900}.json: the path
+# `C:\Users\brown\Git\dev-env` through a double-quoted `node -e` string literal, which eats
+# `\U` and `\G` and turns `\b` into U+0008. Written as an escape, not pasted, so a reformat
+# cannot silently "fix" the fixture out from under the tests.
+_CORRUPT_CWD = "C:Users\brownGitdev-env"
+
+
+def test_corrupt_cwd_fixture_is_the_real_shape():
+    assert _CORRUPT_CWD == "C:Users" + chr(0x08) + "rownGitdev-env"
+
+
+def test_validate_tile_corrupt_cwd_flagged():
+    # The regression this whole change exists for: before it, this shard was reported
+    # healthy -- it exists, parses, and carries all seven required fields -- while its
+    # payload was already unusable.
+    problems = validate_shard_bytes(_tile_bytes(cwd=_CORRUPT_CWD), "tile", "870",
+                                    num_from_name=870)
+    assert len(problems) == 1, problems
+    assert "U+0008" in problems[0], problems
+    assert "forward slashes" in problems[0], problems
+
+
+def test_validate_tile_relative_cwd_flagged():
+    problems = validate_shard_bytes(_tile_bytes(cwd="Git/dev-env"), "tile", "870",
+                                    num_from_name=870)
+    assert len(problems) == 1, problems
+    assert "not an absolute path" in problems[0], problems
+
+
+def test_validate_tile_backslash_cwd_stays_healthy():
+    # A correctly-escaped Windows path is a correct value -- the advisory must not fire on
+    # it, or every healthy backslash shard becomes noise on each command that names it.
+    assert validate_shard_bytes(_tile_bytes(cwd=r"C:\Users\brown\Git\dev-env"), "tile",
+                                "870", num_from_name=870) == []
+
+
+def test_validate_tile_corrupt_cwd_and_missing_field_both_reported():
+    # Independent defects must not mask each other: the presence check and the shape check
+    # are separate passes over the same entry.
+    entry = dict(_TILE_OK)
+    entry["cwd"] = _CORRUPT_CWD
+    del entry["prompt"]
+    problems = validate_shard_bytes(json.dumps(entry).encode("utf-8"), "tile", "870",
+                                    num_from_name=870)
+    assert len(problems) == 2, problems
+    assert any("missing prompt" in p for p in problems), problems
+    assert any("U+0008" in p for p in problems), problems
+
+
+def test_collect_problems_flags_a_real_corrupt_cwd_shard_on_disk():
+    # End-to-end through the impure path, with the on-disk bytes a `node -e` write produces.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = os.path.join(tmp, "engineering-journal", "sessions", "dev-env", "tiles")
+        os.makedirs(d)
+        path = os.path.join(d, "899.json").replace("\\", "/")
+        with open(path, "wb") as f:
+            f.write(_tile_bytes(issue=899, cwd=_CORRUPT_CWD))
+        results = collect_problems([path])
+        assert len(results) == 1, results
+        assert "U+0008" in results[0][1][0], results
+
+
+def test_open_pr_shard_is_not_subject_to_the_cwd_check():
+    # `cwd` is a tile-only field. An open-PR shard that happens to carry one must not be
+    # validated against a schema it does not belong to.
+    raw = json.dumps(_valid_open_pr_entry(cwd=_CORRUPT_CWD)).encode("utf-8")
+    assert validate_shard_bytes(raw, "open-pr", "147", num_from_name=147) == []
+
+
+def test_format_advisory_prescribes_forward_slashes_for_cwd():
+    text = format_advisory([("x/tiles/1.json", ["missing prompt"])])
+    assert "FORWARD slashes" in text
+    assert "node -e" in text
+    assert text.isascii(), "advisory rides exit-2 stderr, which is cp1252-decoded on Windows"
+
+
 def test_format_advisory_documents_the_tile_schema():
     text = format_advisory([("x/tiles/1.json", ["missing prompt"])])
     assert "tile schema:" in text

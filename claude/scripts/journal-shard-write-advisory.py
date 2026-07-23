@@ -32,9 +32,18 @@ malformed, the failure is silent *and* delayed — `iter_numeric_shards` skips a
 shard without a word, so the loss surfaces only when someone needs the payload back after a
 crash, which is exactly when it cannot be reconstructed.
 
+For the tile kind, field *presence* alone turned out to be too weak a bar: `cwd` is the one
+required field that is a filesystem path, and a Windows path written through a
+double-quoted `node -e "..."` serializer crosses a JS string literal that eats its
+backslashes (`C:\\Users\\brown\\...` -> `C:Users<U+0008>rown...`). The result names no
+directory, so the exact re-spawn the shard exists to enable is already lost — while the file
+exists, parses, and carries all seven fields, i.e. looks healthy to every other check here.
+`malformed_tile_fields` closes that gap at the moment of the write (dev-env#904, ADR-081
+Amendment 1).
+
 Schema validation itself is shared with `validate-manifest.py` via `_journal_schema.py`
 (never duplicated) — see that module's docstring; the tile kind uses its
-`missing_tile_fields` / `TILE_REQUIRED_FIELDS`, not a third copy.
+`missing_tile_fields` / `malformed_tile_fields` / `TILE_REQUIRED_FIELDS`, not a third copy.
 `_journal_shards.shard_number` supplies the numeric-filename check for **both** the open-PR
 and tile kinds (it was `shard_pr_number` when open-PR was the only numeric kind; the generic
 name is the honest one now that two kinds share it — the two are the same function).
@@ -68,6 +77,7 @@ try:
     from _journal_schema import (
         decode_shard_bytes,
         malformed_manifest_fields,
+        malformed_tile_fields,
         missing_open_pr_fields,
         missing_required_fields,
         missing_tile_fields,
@@ -306,6 +316,11 @@ def validate_shard_bytes(raw: bytes, kind: str, stem: str, num_from_name: int | 
         missing = missing_tile_fields(entry)
         if missing:
             problems.append(f"missing {', '.join(missing)}")
+        # Presence is not enough for `cwd`: a shell/JS escaping layer can mangle a Windows
+        # path into something that names no directory while the shard still parses and
+        # carries all seven fields, so every other check here calls it healthy and the
+        # payload is silently already lost (dev-env#904). See `malformed_tile_fields`.
+        problems.extend(malformed_tile_fields(entry))
         # The filename is the authoritative issue key (ADR-118), so a disagreeing `issue`
         # field is not a cosmetic mismatch: reconcile-pending-tiles.py treats it as corrupt
         # and refuses to reconcile the shard at all, which silently exempts that tile from
@@ -388,11 +403,17 @@ def format_advisory(problems: list[tuple[str, list[str]]]) -> str:
     lines.append(
         '  tile schema:     {"issue":N,"url":"https://github.com/<owner>/<repo>/issues/N",'
         '"title":"<chip label>","tldr":"<tooltip>","prompt":"<full spawn_task prompt>",'
-        '"cwd":"<target repo path>","spawned":"YYYY-MM-DD"}  (stub optional, project-qualified)'
+        '"cwd":"C:/Users/brown/Git/<target-repo>","spawned":"YYYY-MM-DD"}  '
+        '(stub optional, project-qualified)'
     )
     lines.append(
         "Build a tile shard with a JSON serializer, never echo - `prompt` is free prose, so "
         "interpolating it corrupts the shard or escapes into the shell."
+    )
+    lines.append(
+        "Write `cwd` with FORWARD slashes (C:/Users/.../repo): a backslash path crossing a "
+        "double-quoted `node -e` string literal silently becomes C:Users<U+0008>rown... "
+        "Prefer the heredoc-fed `py -3 -c` recipe so no field crosses a shell quote at all."
     )
     lines.append(
         "A manifest re-created after a compose consumed the original must carry the "
