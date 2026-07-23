@@ -10,19 +10,47 @@ another PR's file.** These tests pin that — `reconcile_shard_dir` unlinks only
 merged shard and leaves the surviving shard byte-identical — plus the pure helpers,
 and confirm the legacy `open-prs.jsonl` path still drains.
 
-Also exercises `find_dirty_open_pr_paths` (dev-env#578): the pure `git status --porcelain`
-line filter that surfaces any currently-uncommitted `sessions/*/open-prs*` change (this
-session's own fresh unlinks, or a prior session's never-committed ones) so the hook's
-systemMessage can hand Claude a ready-to-use pathspec — restoring ADR-018's "picked up by
-the next commit" guarantee in a form compatible with ADR-056's sharded shape, after ADR-082
-removed the last thing (`/journal-compose`'s old bulk `git add -u`) still catching these
-opportunistically. Pins the porcelain `XY <path>` slicing, the shard/legacy-file shape
-filter (unrelated paths ignored), and backslash-path normalization.
+Also exercises `parse_open_pr_status_line` / `classify_dirty_open_pr_paths` (dev-env#578,
+dev-env#866): the pure `git status --porcelain` line filter that surfaces any
+currently-uncommitted `sessions/*/open-prs*` change (this session's own fresh unlinks, or a
+prior session's never-committed ones) so the hook's systemMessage can hand Claude a
+ready-to-use pathspec — restoring ADR-018's "picked up by the next commit" guarantee in a
+form compatible with ADR-056's sharded shape, after ADR-082 removed the last thing
+(`/journal-compose`'s old bulk `git add -u`) still catching these opportunistically. Pins
+the porcelain `XY <path>` slicing, the shard/legacy-file shape filter (unrelated paths
+ignored), backslash-path normalization, and the exact-delete-code rule — plus
+`classify_deletions`' merged/open/unverified/skipped bucketing (ADR-119).
+
+**The REST transport's two silent hazards** (dev-env#888, ADR-018 Amendment 1). The lookup
+now reads `GET /repos/{o}/{r}/pulls/{n}` on the `core` bucket — REST-only, replacing
+ADR-119's GraphQL-then-REST fallback — which introduces two failure modes a naive test
+passes straight through, so both are pinned on `pr_state_from_row`, the pure helper that
+exists precisely to make them coverable:
+
+  - **MERGED is not a REST `state`.** GraphQL returned MERGED as a distinct value; REST
+    returns `state: "closed"` plus a *separate* merge signal — a `merged` boolean on
+    `GET /pulls/{n}`, and only `merged_at` on the `GET /pulls` list shape (both verified
+    live). Collapsing merged into closed would not change what gets pruned, since
+    `should_remove` accepts both — which is exactly why it would go unnoticed.
+  - **State case.** REST answers lowercase `"closed"` where `should_remove` compares
+    `"CLOSED"`, so without normalization the hook goes *inert* — fail-safe in direction,
+    total in effect, and reported nowhere.
+
+The case pin runs raw REST rows all the way to the `unlink`, because that is the only level
+at which dropping normalization actually fails. `_PR_PROJECTION` gets a structural gate: it
+cannot be executed offline (gh owns the jq), so without one it would be covered by nothing
+but a comment.
+
+Also pinned: `WorkBudget` / `budgeted_state_fn` (dev-env#888) — the hook-wide wall clock
+that stops N sequential lookups from exhausting the 30s settings.json timeout and getting
+the hook killed before it prints the `Open PRs:` line that is its original ADR-018 job — and
+the constant invariant that makes that bound true, as an assertion rather than a comment.
 
 The reconcilers take an injectable `state_fn(pr, repo) -> state` so the unlink/keep
-logic runs offline; the live `gh pr view` boundary (`check_pr_state`) and the
-`git status --porcelain` boundary (`dirty_open_pr_status_lines`) are not tested,
-matching the repo's fixture-only / no-subprocess-mock convention.
+logic runs offline; the live REST boundary (`check_pr_state`) and the git boundaries
+(`dirty_open_pr_status_lines`, `committed_shard_identity`, `merge_in_progress`,
+`current_branch`) are not tested, matching the repo's fixture-only / no-subprocess-mock
+convention.
 
 Usage:
     py -3 claude/scripts/tests/test_reconcile_open_prs.py
@@ -50,6 +78,9 @@ mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)  # safe: main() is guarded by __main__
 
 should_remove = mod.should_remove
+pr_state_from_row = mod.pr_state_from_row
+WorkBudget = mod.WorkBudget
+budgeted_state_fn = mod.budgeted_state_fn
 repo_from_url = mod.repo_from_url
 entry_repo_and_pr = mod.entry_repo_and_pr
 project_dirs = mod.project_dirs
@@ -463,6 +494,189 @@ def test_cap_bounds_message_lists() -> str:
     return "path lists in the systemMessage are bounded with an honest (+N more) count"
 
 
+# --- REST transport: state case and merged-vs-closed (dev-env#888) -----------
+
+
+def _rest_pr(number, state="open", **over):
+    """A row shaped as `GET /pulls/{n}` actually returns it — lowercase state, `merged` bool.
+
+    Verified live at authoring time against brownm09/dev-env#886 (merged) and #410 (open):
+    `{"merged":true,"merged_at":"2026-07-22T22:33:23Z","number":886,"state":"closed"}`.
+    """
+    row = {"number": number, "state": state, "merged": state == "closed",
+           "merged_at": "2026-07-22T22:33:23Z" if state == "closed" else None}
+    row.update(over)
+    return row
+
+
+def test_pr_state_from_row_uppercases_state() -> str:
+    assert pr_state_from_row(_rest_pr(410, "open")) == "OPEN"
+    assert pr_state_from_row({"number": 1, "state": "closed", "merged": False}) == "CLOSED"
+    assert should_remove(pr_state_from_row(_rest_pr(410, "open"))) is False
+    assert should_remove(pr_state_from_row({"number": 1, "state": "closed", "merged": False})) is True, \
+        "the normalized values must satisfy should_remove's case-sensitive contract"
+    return 'REST "open"/"closed" are upper-cased into the vocabulary should_remove expects'
+
+
+def test_pr_state_from_row_distinguishes_merged_from_closed() -> str:
+    # MERGED is not a REST `state`: both arrive as state="closed" and differ only in the
+    # merge signal. Collapsing them would NOT change what gets pruned (should_remove accepts
+    # both), which is exactly why the regression would go unnoticed — while every "removed
+    # stale entries" line mislabelled a merge as a closure, and classify_deletions lost the
+    # distinction it buckets on.
+    merged = {"number": 886, "state": "closed", "merged": True, "merged_at": "2026-07-22T22:33:23Z"}
+    closed = {"number": 887, "state": "closed", "merged": False, "merged_at": None}
+    assert pr_state_from_row(merged) == "MERGED", "a merged PR must not read as CLOSED"
+    assert pr_state_from_row(closed) == "CLOSED", "a closed-unmerged PR must not read as MERGED"
+    assert should_remove("MERGED") is True and should_remove("CLOSED") is True, \
+        "both still prune — which is why only this assertion catches the collapse"
+    return "state=closed + merged distinguishes MERGED from CLOSED (no REST `state` does)"
+
+
+def test_pr_state_from_row_detects_merge_from_merged_at_alone() -> str:
+    # The `GET /pulls` LIST endpoint (pull-request-simple) omits `merged` ENTIRELY and
+    # carries only `merged_at` — verified live. Honouring either signal keeps this helper
+    # correct for both shapes, so a future move to a list-based batch cannot quietly start
+    # reporting every merged PR as CLOSED.
+    list_shape = {"number": 886, "state": "closed", "merged_at": "2026-07-22T22:33:23Z"}
+    assert "merged" not in list_shape, "fixture must reproduce the list shape's missing key"
+    assert pr_state_from_row(list_shape) == "MERGED"
+    assert pr_state_from_row({"number": 887, "state": "closed", "merged_at": None}) == "CLOSED"
+    return "merge is detected from `merged_at` alone when the `merged` key is absent (list shape)"
+
+
+def test_pr_state_from_row_tolerates_junk() -> str:
+    for junk in [None, [], "row", 42, {}, {"state": None}, {"state": 7}, {"state": ""}]:
+        assert pr_state_from_row(junk) is None, f"must degrade to None (-> keep): {junk!r}"
+        assert should_remove(pr_state_from_row(junk)) is False
+    assert pr_state_from_row({"number": 1, "state": "draft"}) == "DRAFT", \
+        "an unrecognised state passes through upper-cased -> should_remove keeps it"
+    assert should_remove("DRAFT") is False
+    return "malformed rows degrade to None (kept), never to a spurious CLOSED"
+
+
+def test_pr_projection_preserves_merge_signals() -> str:
+    # `_PR_PROJECTION` decides what SHAPE reaches pr_state_from_row, and it cannot be
+    # executed offline (gh owns the jq), so without this gate it is the one piece of the
+    # transport covered by nothing but a comment. The dangerous edit is the natural-looking
+    # simplification to `{number, state}` — dropping the merge signals as redundant, since
+    # `state` is "what we classify on". That makes EVERY merged PR arrive indistinguishable
+    # from a closed one, with every other test in this file still green.
+    #
+    # Structural: pin the properties that make the projection safe, not its exact spelling.
+    proj = mod._PR_PROJECTION
+    for field in ("state", "merged", "merged_at"):
+        assert field in proj, (
+            f"the projection must carry `{field}` — without it pr_state_from_row cannot "
+            "distinguish a merged PR from a closed one"
+        )
+    assert "select(" not in proj, \
+        ("the projection must not classify: that belongs in pr_state_from_row, where it is "
+         "testable, not in an unexecutable jq string")
+    return "the jq projection carries state + BOTH merge signals, and classifies nothing itself"
+
+
+def test_rest_rows_prune_end_to_end() -> str:
+    # The inertness caveat, pinned at the only level that catches it. If `.upper()` is ever
+    # dropped, every per-function test above still passes while the hook silently stops
+    # pruning anything — fail-safe in direction, total in effect, reported nowhere. Only a
+    # chain that runs raw REST rows all the way to the `unlink` goes red when that happens.
+    # The merged/closed split is asserted here too, on the states the message text renders.
+    URL_888 = "https://github.com/brownm09/dev-env/pull/888"
+    rows = {886: _rest_pr(886, "closed"),                                    # merged
+            887: {"number": 887, "state": "closed", "merged": False,
+                  "merged_at": None},                                        # closed, unmerged
+            888: _rest_pr(888, "open")}                                      # open
+    with tempfile.TemporaryDirectory() as root:
+        shard_dir = Path(root) / "open-prs"
+        _write_shard(shard_dir, 886, "https://github.com/brownm09/dev-env/pull/886")
+        _write_shard(shard_dir, 887, "https://github.com/brownm09/dev-env/pull/887")
+        survivor = _write_shard(shard_dir, 888, URL_888)
+        survivor_bytes = survivor.read_bytes()
+
+        surviving, removed = reconcile_shard_dir(
+            shard_dir, state_fn=lambda pr, repo: pr_state_from_row(rows[pr]))
+
+        assert not (shard_dir / "886.json").exists(), \
+            'a REST lowercase "closed" must actually unlink the shard'
+        assert not (shard_dir / "887.json").exists(), "a closed-unmerged PR is pruned too"
+        assert survivor.exists(), "the open shard must survive"
+        assert survivor.read_bytes() == survivor_bytes, \
+            "survivor must be byte-identical (per-file unlink, never a rewrite — ADR-056)"
+        assert [e["pr"] for e in surviving] == [888]
+        assert sorted(removed, key=lambda t: t[0]["pr"]) == sorted(
+            [({"pr": 886, "url": "https://github.com/brownm09/dev-env/pull/886",
+               "topic": "PR 886", "stub": "s.stub.md", "opened": "2026-06-22"}, "MERGED"),
+             ({"pr": 887, "url": "https://github.com/brownm09/dev-env/pull/887",
+               "topic": "PR 887", "stub": "s.stub.md", "opened": "2026-06-22"}, "CLOSED")],
+            key=lambda t: t[0]["pr"]), \
+            "the reported states must stay MERGED vs CLOSED, not collapse to one value"
+    return 'raw REST rows -> unlink: lowercase "closed" prunes, and MERGED/CLOSED stay distinct'
+
+
+# --- hook-wide lookup budget (dev-env#888) -----------------------------------
+
+
+def test_budgeted_state_fn_passes_through_within_budget() -> str:
+    calls = []
+    ticks = iter([0.0, 0.0, 1.0, 2.0])
+    budget = WorkBudget(budget=10.0, clock=lambda: next(ticks))
+    gated = budgeted_state_fn(lambda pr, repo: calls.append(pr) or "MERGED", budget)
+    assert gated(1, "o/r") == "MERGED" and gated(2, "o/r") == "MERGED"
+    assert calls == [1, 2], f"lookups inside the budget must all run, got {calls}"
+    return "within budget, every lookup reaches the wrapped state_fn unchanged"
+
+
+def test_budgeted_state_fn_short_circuits_once_spent() -> str:
+    # A slow/hanging gh must degrade to "unresolved, all kept" rather than let the hook be
+    # killed at its settings.json timeout — which would lose the whole systemMessage,
+    # including the `Open PRs:` line that is this hook's original ADR-018 job.
+    calls = []
+    ticks = iter([0.0, 0.0, 99.0, 99.0])
+    budget = WorkBudget(budget=10.0, clock=lambda: next(ticks))
+    gated = budgeted_state_fn(lambda pr, repo: calls.append(pr) or "MERGED", budget)
+    assert gated(1, "o/r") == "MERGED", "the first lookup is inside the budget"
+    assert gated(2, "o/r") is None, "past the budget the lookup must not be issued"
+    assert calls == [1], f"the over-budget lookup must not spawn a subprocess, got {calls}"
+    assert should_remove(None) is False, "and None is conservatively KEPT, never pruned"
+    return "a spent budget short-circuits to None -> kept, never a mis-prune"
+
+
+def test_budget_exhaustion_keeps_every_shard() -> str:
+    # The load-bearing consequence, end-to-end: an exhausted budget must leave every shard on
+    # disk even when the underlying oracle would say MERGED for all of them.
+    with tempfile.TemporaryDirectory() as root:
+        shard_dir = Path(root) / "open-prs"
+        a = _write_shard(shard_dir, 386, URL_386)
+        b = _write_shard(shard_dir, 387, URL_387)
+        budget = WorkBudget(budget=0.0, clock=lambda: 0.0)  # spent from the first check
+        surviving, removed = reconcile_shard_dir(
+            shard_dir, state_fn=budgeted_state_fn(lambda pr, repo: "MERGED", budget))
+        assert a.exists() and b.exists(), "no shard may be unlinked once the budget is spent"
+        assert removed == [] and [e["pr"] for e in surviving] == [386, 387]
+    return "budget exhaustion keeps every shard, even against an all-MERGED oracle"
+
+
+def test_work_budget_cannot_outrun_the_hook_timeout() -> str:
+    # `WorkBudget` gates the START of every lookup and nothing caps their sum otherwise, so
+    # the hook's true ceiling is WORK_BUDGET_SECONDS + one in-flight call's own timeout.
+    # That arithmetic is what makes the bound true however many lookup segments are added
+    # later — and until now it would have lived only in a comment. Raising a timeout or the
+    # budget (plausible: a slow network makes GH_CALL_TIMEOUT look stingy) would silently
+    # reintroduce the kill this exists to prevent. Nothing else goes red: the symptom is a
+    # hook that occasionally emits nothing, in a session nobody is timing.
+    # (The /review finding on dev-env#886, applied to its sibling.)
+    worst_case = mod.WORK_BUDGET_SECONDS + max(mod.GH_CALL_TIMEOUT, mod.GIT_CALL_TIMEOUT)
+    assert worst_case <= mod.HOOK_TIMEOUT_SECONDS, (
+        f"the hook can run {worst_case}s against a {mod.HOOK_TIMEOUT_SECONDS}s settings.json "
+        f"timeout — either lower WORK_BUDGET_SECONDS ({mod.WORK_BUDGET_SECONDS}) / "
+        f"GH_CALL_TIMEOUT ({mod.GH_CALL_TIMEOUT}) / GIT_CALL_TIMEOUT ({mod.GIT_CALL_TIMEOUT}), "
+        "or raise the declared timeout in claude/settings.json to match"
+    )
+    return ("WORK_BUDGET_SECONDS + max(per-call timeout) stays within HOOK_TIMEOUT_SECONDS "
+            "(invariant, not a comment)")
+
+
 def main() -> int:
     tests = [
         ("should_remove predicate", test_should_remove),
@@ -491,6 +705,16 @@ def main() -> int:
         ("legacy open-prs.jsonl path costs no probe", test_classify_deletions_legacy_path_costs_no_probe),
         ("ready-to-run command rejects shell metacharacters", test_safe_for_command_rejects_shell_metacharacters),
         ("message path lists are bounded", test_cap_bounds_message_lists),
+        ("REST: state upper-cased", test_pr_state_from_row_uppercases_state),
+        ("REST: MERGED distinguished from CLOSED", test_pr_state_from_row_distinguishes_merged_from_closed),
+        ("REST: merge detected from merged_at alone (list shape)", test_pr_state_from_row_detects_merge_from_merged_at_alone),
+        ("REST: malformed rows -> None, never CLOSED", test_pr_state_from_row_tolerates_junk),
+        ("REST: jq projection preserves both merge signals", test_pr_projection_preserves_merge_signals),
+        ("REST: raw rows prune end-to-end, MERGED/CLOSED distinct", test_rest_rows_prune_end_to_end),
+        ("budget: lookups pass through within budget", test_budgeted_state_fn_passes_through_within_budget),
+        ("budget: short-circuits to None once spent", test_budgeted_state_fn_short_circuits_once_spent),
+        ("budget: exhaustion keeps every shard", test_budget_exhaustion_keeps_every_shard),
+        ("budget stays within the hook timeout", test_work_budget_cannot_outrun_the_hook_timeout),
     ]
     failed = 0
     for name, fn in tests:

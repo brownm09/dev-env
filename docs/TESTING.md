@@ -399,10 +399,40 @@ For a one-line navigational map of the test directory, see
     kept while unrelated paths (stub files, script edits) are dropped, backslash-to-forward-slash
     path normalization, rename lines (`old -> new`) resolving to just the destination path (review
     finding on PR #581 — nothing in this hook renames a shard, but a rename from elsewhere no longer
-    produces an unaddable combined string), and graceful handling of empty/short input. The live
-    `gh pr view` boundary (`check_pr_state`) and the `git status --porcelain` boundary
-    (`dirty_open_pr_status_lines`) are
-    not covered (the repo avoids subprocess mocks).
+    produces an unaddable combined string), and graceful handling of empty/short input.
+
+    **REST transport** (dev-env#888, [ADR-018 Amendment 1](adr/018-reconcile-open-prs-hook.md)) —
+    state is resolved by one `gh api repos/<owner>/<repo>/pulls/<n>` read on the `core` bucket,
+    REST-only, replacing ADR-119's GraphQL-then-REST fallback. Two hazards that a naive
+    per-function test passes straight through are pinned on the pure `pr_state_from_row`:
+    **(a) MERGED is not a REST `state`** — REST returns `state: "closed"` plus a separate
+    `merged` boolean (`GET /pulls/{n}`) or, on the `GET /pulls` list shape, only `merged_at`;
+    both signals are honoured, and both are covered, because collapsing merged into closed
+    would *not* change what gets pruned (`should_remove` accepts both) and so would go
+    unnoticed. **(b) `state` is lowercase** — `should_remove` is deliberately case-sensitive,
+    so dropping the `.upper()` leaves the hook *inert* rather than fixed, fail-safe in
+    direction but total in effect. The case pin runs **raw REST rows all the way to the
+    `unlink`** (`test_rest_rows_prune_end_to_end`), because that is the only level at which the
+    omission actually fails. `_PR_PROJECTION` gets a structural gate (carries `state` +
+    **both** merge signals, contains no `select(`) since gh owns the jq and it cannot be
+    executed offline.
+
+    **Hook-wide lookup budget** (dev-env#888) — `WorkBudget` / `budgeted_state_fn` gate the
+    start of every lookup so N sequential ones cannot exhaust the 30s `settings.json` timeout
+    and get the hook killed before printing the `Open PRs:` line that is its original ADR-018
+    job. Covered: pass-through within budget, short-circuit to `None` once spent, and the
+    end-to-end consequence that an exhausted budget keeps **every** shard even against an
+    all-MERGED oracle. `test_work_budget_cannot_outrun_the_hook_timeout` asserts
+    `WORK_BUDGET_SECONDS + max(GH_CALL_TIMEOUT, GIT_CALL_TIMEOUT) <= HOOK_TIMEOUT_SECONDS` as an
+    invariant rather than a comment (the `/review` finding on dev-env#886, applied here).
+
+    All four new guards were **mutation-checked** — dropping `.upper()`, collapsing MERGED into
+    CLOSED, stripping the merge signals from the projection, and raising `WORK_BUDGET_SECONDS`
+    past the hook timeout each turn their named test red.
+
+    The live REST boundary (`check_pr_state`) and the git boundaries
+    (`dirty_open_pr_status_lines`, `committed_shard_identity`, `merge_in_progress`,
+    `current_branch`) are not covered (the repo avoids subprocess mocks).
 
     ```bash
     py -3 claude/scripts/tests/test_reconcile_open_prs.py
