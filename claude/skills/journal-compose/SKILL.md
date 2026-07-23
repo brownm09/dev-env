@@ -375,6 +375,25 @@ fi
 - **`LOCK_STALE`:** Warn the user ("Stale compose lock (${AGE}s old) — overriding."), then continue.
 - **No lock:** Continue.
 
+**Scope — this check is project-scoped, and so is the abort above.** `.draft-compose.lock` gates
+one project's compose, not the whole worktree. Check exactly the one path above; never glob
+`$WT/sessions/*/.draft-compose.lock` here. Two deliberate consequences:
+
+- **Multi-project mode overrides the `LOCK_ACTIVE` abort entirely**
+  <!-- mirrors the Step 1 override block in the Phase 1 subagent prompt template — keep the invariant identical in both copies. -->
+  — the abort above applies to the single-project flow only, where the only lock that can exist
+  *is* yours. Every lock inside a run's compose worktree belongs to that run (Step 0.6 creates
+  the worktree fresh and the lock is untracked), so for a composer subagent a fresh lock under
+  *another* project is a peer subagent working (never a reason to stop) and one under its *own*
+  project is its re-spawned predecessor's (take it over). The Phase 1 template states the full
+  rule inline, because that is the copy a subagent actually reads — a 2026-07-21 subagent
+  followed this step's delegation literally, saw a peer's `lifting-logbook` lock, and refused to
+  compose dev-env ([dev-env#889](https://github.com/brownm09/dev-env/issues/889)).
+- **Step 0.6's cross-project glob is a different check and stays unqualified.** It runs *before*
+  `worktree add`, so any lock it finds necessarily belongs to a **different compose invocation** —
+  it asks "is this worktree in use?", not "is this project in use?" Do not narrow it to match
+  this step.
+
 Create the lock:
 ```bash
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WT/sessions/<project>/.draft-compose.lock"
@@ -420,7 +439,25 @@ Step 0.5 — Plan-then-optimize (required). Before any tool call, write out:
 Step 1 — Acquire compose lock for this project using this project-scoped path, rooted at the
   compose worktree root given above:
   <worktree-root>/sessions/<project>/.draft-compose.lock
-  Follow the lock check/create procedure in SKILL.md Step 1 ("Acquire the compose lock").
+  Follow the lock check/create procedure in SKILL.md Step 1 ("Acquire the compose lock"), with
+  the multi-project overrides below — they REPLACE that step's abort behavior entirely.
+  <!-- mirrors the "Scope" note in the main flow's Step 1 — keep the invariant identical in both copies. -->
+
+  **Every `.draft-compose.lock` inside this compose worktree belongs to THIS run.** Step 0.6
+  created the worktree fresh moments ago (aborting outright if any other compose invocation
+  still held a pre-existing one), and the lock file is untracked and never committed — so a
+  newly created compose worktree starts with zero lock files. Two consequences, both absolute:
+
+    - A lock under ANOTHER project's directory is a peer subagent in this same run, doing its
+      job. It is the expected signal that the fan-out is working — never a reason to stop, to
+      warn, or to wait. Do NOT glob <worktree-root>/sessions/*/.draft-compose.lock, and do not
+      read, report, or act on any lock outside your own project directory.
+    - A lock under YOUR OWN project's directory means you are the re-spawn of a failed subagent
+      in this same run (the Phase 2 coordinator re-spawns a failed subagent once). Overwrite it,
+      continue, and add LOCK_TAKEOVER=<age>s to your final report.
+
+  You never abort on a lock. The only lock you check, create, or mention is the project-scoped
+  path given above.
 
 Step 1b — Read this day's manifest for a session overview (topics, token data) before reading
   individual stubs. Per ADR-056 each session has its own shard `YYYY-MM-DD_HHMMSS.manifest.jsonl`
@@ -487,6 +524,8 @@ When done, report exactly this structure:
   SOURCE_LINES=<m>
   FIDELITY=<n/m>
   STRUCTURE=<ok | missing:<list>>
+  LOCK_TAKEOVER=<age>s    <- optional; include ONLY if Step 1 took over your own project's
+                             lock from a failed predecessor. Omit the line entirely otherwise.
   STATUS=done
 ```
 

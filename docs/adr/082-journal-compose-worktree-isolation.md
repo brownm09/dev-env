@@ -331,6 +331,57 @@ See [dev-env#578](https://github.com/brownm09/dev-env/issues/578) and
 
 ---
 
+## Addendum (2026-07-23): the compose lock is project-scoped — a peer's lock never gates a subagent
+
+Decision §1 above states the lock rule in **worktree** terms: "a lock file inside it younger than
+10 minutes means another compose is genuinely active (abort)." That is correct for **Step 0.6**,
+which runs *before* `worktree add` and is therefore asking "is another *invocation* using this
+worktree?" It is wrong for **Step 1**, whose lock is per project — and it was read as a
+worktree-wide rule by a multi-project composer subagent.
+
+**2026-07-21 incident** (a 5-project compose run while remediating
+[dev-env#874](https://github.com/brownm09/dev-env/issues/874)): the `dev-env` composer subagent
+refused to compose, reporting *"a concurrent compose for 2026-07-21 is currently active
+(lifting-logbook lock age: 20s)"*. That lock had been written seconds earlier by a **peer subagent
+in the same run** — precisely the expected signal that the fan-out was working. Recovery cost a
+full re-dispatch of the subagent carrying a hand-written correction.
+
+Root cause: Phase 1's subagent prompt template delegated the whole procedure in one line —
+"Follow the lock check/create procedure in SKILL.md Step 1" — and Step 1 is written for the
+single-project flow, where the only lock that can exist *is* yours. Nothing in either place said
+that locks outside your own project directory are irrelevant.
+
+**The invariant, now stated in both copies:**
+
+> Every `.draft-compose.lock` inside a run's compose worktree belongs to **that run**.
+
+It follows from two facts already established by this ADR: Step 0.6 creates the worktree fresh
+from `refs/remotes/origin/<branch>` (aborting if any other invocation still holds a pre-existing
+one), and the lock file is untracked and never committed — so a newly created compose worktree
+starts with zero lock files. A subagent's Step 1 is therefore a single-path check:
+
+- a lock under **another** project = a peer subagent in this run — never a reason to stop, warn,
+  or wait; do not glob `sessions/*/.draft-compose.lock`;
+- a lock under its **own** project = its re-spawned predecessor in this run (Phase 2 re-spawns a
+  failed subagent once) — take it over and report `LOCK_TAKEOVER=<age>s`, never abort.
+
+That second case was a **latent trap on the documented recovery path itself**, found while tracing
+the first: a re-spawned subagent would find its dead predecessor's under-600s lock and abort as
+`LOCK_ACTIVE`, so the one remedy Phase 2 prescribes for a failed subagent could not run. Both
+halves share the one root cause and are fixed by the one invariant.
+
+**Step 0.6's cross-project glob is deliberately not narrowed.** It answers a different question at
+a moment when any lock it sees necessarily belongs to a different invocation; narrowing it to
+match Step 1 would delete the only genuine concurrent-compose guard. Both edited sites say so
+explicitly, so the next reader doesn't "fix" it.
+
+**Where the rule lives.** The full invariant is inline in the Phase 1 template — the copy a
+subagent actually has in context, and whose one-line delegation is what failed — with a scoped
+note plus a `<!-- keep in sync -->` marker in Step 1 for readers of the single-project flow.
+Restating it only behind the delegation would have reproduced the original defect.
+
+---
+
 ## References
 
 - `claude/skills/journal-compose/SKILL.md` — Step 0.6, 9.5, 6.5/6.6, and the Phase 2 coordinator
@@ -340,6 +391,8 @@ See [dev-env#578](https://github.com/brownm09/dev-env/issues/578) and
   gaps, plus the 2026-07-03 incident comment)
 - [dev-env#578](https://github.com/brownm09/dev-env/issues/578) — Addendum (2026-07-05): resolves
   the `reconcile-open-prs.py` follow-up this ADR's Consequences section flagged
+- [dev-env#889](https://github.com/brownm09/dev-env/issues/889) — Addendum (2026-07-23): the
+  compose lock is project-scoped; a multi-project subagent aborted on a peer's lock
 - [ADR-018](018-reconcile-open-prs-hook.md) — `reconcile-open-prs.py`'s founding ADR; the
   Addendum traces the causal chain from here through ADR-056 to this ADR
 - engineering-journal [PR #147](https://github.com/brownm09/engineering-journal/pull/147),
