@@ -1144,8 +1144,20 @@ For a one-line navigational map of the test directory, see
     double-quoted `node -e` string literal, which eats `\U`/`\G` and turns `\b` into U+0008),
     reported as a control-character problem naming the codepoint, the cause, and the fix; a wrong
     type; empty and whitespace-only values; a relative path; a bare word with no separator at all
-    (the issue's own "unambiguously corrupt" bar); and a POSIX absolute root accepted, since the
-    schema is not Windows-only.
+    (the issue's own "unambiguously corrupt" bar); a bare `C:` drive with no separator; a
+    single-backslash `\Users\…` root, which is *drive-relative* rather than absolute; and — all
+    accepted — a POSIX absolute root (the schema is not Windows-only) and a **UNC** root in both
+    slash forms.
+
+    The UNC and surrounding-whitespace pins came from this PR's own `/review` and both guard the
+    same rule in opposite directions. `test_tile_unc_cwd_accepted_both_slash_forms` fixes that
+    `\\wsl$\Ubuntu\…` — a valid absolute Windows path — is **not** flagged, which the first draft
+    got wrong; `test_tile_single_backslash_root_still_flagged` is its regression pin, since
+    widening the pattern for UNC must not also admit a drive-relative path.
+    `test_tile_surrounding_whitespace_flagged_both_sides` fixes an asymmetry the start-anchored
+    regex created: leading whitespace was reported as "not an absolute path" (misleading) and
+    trailing whitespace passed entirely, though Windows silently strips trailing spaces from path
+    components, so both compare unequal to the path they resolve to.
 
     Three pins fix judgment calls rather than mechanics. `test_tile_control_character_reported_alone_not_also_as_relative`
     fixes that the corrupt value — which is *also* non-absolute — yields one problem, not two

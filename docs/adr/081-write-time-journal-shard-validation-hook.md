@@ -226,9 +226,20 @@ global CLAUDE.md) pointed the other way.
 
 **Design decision — same split as Amendment 1.** A new `malformed_tile_fields(entry)` in
 `_journal_schema.py`, called after `missing_tile_fields` and returning `[]` when `cwd` is absent,
-so the two never double-report. It flags: a non-string value, an empty/whitespace value, any
-control character (reported *alone*, since it names the cause and the fix), and a value that is
-not absolute — a drive-letter root (`C:/…`, `C:\…`) or POSIX absolute (`/…`).
+so the two never double-report. It flags: a non-string value, an empty value, any control
+character (reported *alone*, since it names the cause and the fix), surrounding whitespace, and a
+value that is not absolute — a drive-letter root (`C:/…`, `C:\…`), a UNC root (`\\host\share`,
+`//host/share`), or POSIX absolute (`/…`).
+
+The UNC alternative and the whitespace check both came out of this PR's own `/review`, and both
+are corrections in the *same* direction — toward the non-flag rule below. The first draft rejected
+`\\wsl$\Ubuntu\…`, a valid absolute Windows path, as corrupt; the pattern now requires two
+separators followed by a non-separator, which admits UNC while still rejecting a single-backslash
+`\Users\brown\…` (drive-relative, not absolute — a genuine finding, and pinned as such). The
+whitespace check exists because the absolute-path regex is start-anchored: leading whitespace was
+reported with the misleading "not an absolute path" and *trailing* whitespace passed entirely,
+even though Windows silently strips trailing spaces from path components, so both values compare
+unequal to the path they resolve to.
 
 **Two deliberate non-flags**, both narrowing the check to unambiguous corruption:
 

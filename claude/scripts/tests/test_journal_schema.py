@@ -273,6 +273,46 @@ def test_tile_bare_word_cwd_flagged():
     assert "no path separator" in problems[0], problems
 
 
+def test_tile_unc_cwd_accepted_both_slash_forms():
+    # Found by this PR's own /review. A UNC path is a *valid* absolute Windows path, so
+    # flagging it would fire on a correct value — exactly what this checker's stated rule
+    # forbids. `\\wsl$\...` is plausible on this Windows/WSL setup, and the backslash form
+    # was the one being rejected (the forward-slash form passed only incidentally, via the
+    # POSIX-absolute alternative).
+    assert malformed_tile_fields(_valid_tile_entry(cwd=r"\\wsl$\Ubuntu\home\brown\repo")) == []
+    assert malformed_tile_fields(_valid_tile_entry(cwd=r"\\server\share\repo")) == []
+    assert malformed_tile_fields(_valid_tile_entry(cwd="//wsl$/Ubuntu/home/brown/repo")) == []
+
+
+def test_tile_single_backslash_root_still_flagged():
+    # The regression pin for the fix above: `\Users\brown\...` is *drive-relative*, not
+    # absolute (it resolves against the current drive), so widening the pattern for UNC must
+    # not also admit it.
+    problems = malformed_tile_fields(_valid_tile_entry(cwd=r"\Users\brown\Git\dev-env"))
+    assert len(problems) == 1, problems
+    assert "not an absolute path" in problems[0], problems
+
+
+def test_tile_bare_drive_letter_flagged():
+    # "C:" names the current directory on drive C:, not the drive root — no separator, so it
+    # cannot be a repo root.
+    problems = malformed_tile_fields(_valid_tile_entry(cwd="C:"))
+    assert len(problems) == 1, problems
+    assert "not an absolute path" in problems[0], problems
+
+
+def test_tile_surrounding_whitespace_flagged_both_sides():
+    # Also from this PR's /review: the absolute-path regex is start-anchored, so leading
+    # whitespace was reported with the misleading "not an absolute path" while *trailing*
+    # whitespace passed entirely. Both are quoting artifacts, and Windows silently strips
+    # trailing spaces from path components — so the two values compare unequal to the real
+    # path while resolving to it.
+    for value in ("  C:/Users/brown/Git/dev-env", "C:/Users/brown/Git/dev-env  "):
+        problems = malformed_tile_fields(_valid_tile_entry(cwd=value))
+        assert len(problems) == 1, (value, problems)
+        assert "leading or trailing whitespace" in problems[0], (value, problems)
+
+
 def test_tile_posix_absolute_cwd_accepted():
     # The journal is read on Windows today, but the schema is not Windows-only and a POSIX
     # root must not be reported as corrupt.

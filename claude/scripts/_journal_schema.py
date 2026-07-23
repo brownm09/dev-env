@@ -74,9 +74,16 @@ TILE_REQUIRED_FIELDS = ("issue", "url", "title", "tldr", "prompt", "cwd", "spawn
 # Sub-keys required inside the `tokens` dict value (dev-env #824).
 TOKENS_REQUIRED_KEYS = ("input", "output", "cost")
 
-# An absolute path: a drive-letter root (`C:/...` or `C:\...`) or POSIX absolute (`/...`).
-# Used only to judge a tile shard's `cwd` (dev-env#904) — see `malformed_tile_fields`.
-_ABSOLUTE_PATH_RE = re.compile(r"^(?:[A-Za-z]:[/\\]|/)")
+# An absolute path: a drive-letter root (`C:/...`, `C:\...`), a UNC root (`\\host\share`,
+# `//host/share`), or POSIX absolute (`/...`). Used only to judge a tile shard's `cwd`
+# (dev-env#904) — see `malformed_tile_fields`.
+#
+# The UNC alternative requires two separators followed by a non-separator, which admits
+# `\\wsl$\Ubuntu\...` (plausible on this Windows/WSL setup) while still rejecting a
+# single-backslash `\Users\brown\...` — that is *drive-relative*, not absolute, and stays a
+# genuine finding. Without it, a valid UNC path was reported as corrupt, contradicting this
+# module's own rule that a correct value must never be flagged.
+_ABSOLUTE_PATH_RE = re.compile(r"^(?:[A-Za-z]:[/\\]|[/\\]{2}[^/\\]|/)")
 
 # Longest `cwd` echoed back in a problem message. A real repo root is far shorter; this
 # only bounds a pathologically long corrupt value so one bad shard can't flood stderr.
@@ -142,8 +149,9 @@ def malformed_tile_fields(entry: object) -> list[str]:
     """Return descriptions of present-but-malformed fields in a tile shard entry.
 
     Currently validates only ``cwd``: it must be a non-empty string holding an *absolute*
-    path — a drive-letter root (``C:/...``, ``C:\\...``) or POSIX absolute (``/...``) — and
-    must contain no control characters. Mirrors ``malformed_manifest_fields``: returns
+    path — a drive-letter root (``C:/...``, ``C:\\...``), a UNC root (``\\\\host\\share``),
+    or POSIX absolute (``/...``) — carrying no control characters and no surrounding
+    whitespace. Mirrors ``malformed_manifest_fields``: returns
     ``[]`` for a non-dict entry and when ``cwd`` is absent (both already caught by
     ``missing_tile_fields``) so nothing is double-reported.
 
@@ -193,6 +201,17 @@ def malformed_tile_fields(entry: object) -> list[str]:
             f"cwd: contains control character(s) {names} - escape corruption, not a path "
             "(a backslash Windows path through a double-quoted `node -e` string literal "
             "yields exactly this); rewrite it with forward slashes, e.g. C:/Users/.../repo"
+        ]
+
+    if value != value.strip():
+        # Reported on its own rather than falling through to the absolute-path branch, which
+        # would flag a leading-whitespace value with the misleading "not an absolute path"
+        # and miss a trailing-whitespace one entirely (the regex is anchored at the start).
+        # Windows also silently strips trailing spaces from path components, so " C:/x" and
+        # "C:/x " are both corruption signals that compare unequal to the real path.
+        return [
+            "cwd: has leading or trailing whitespace - a path never does; this is a "
+            "quoting or interpolation artifact"
         ]
 
     if not _ABSOLUTE_PATH_RE.match(value):
