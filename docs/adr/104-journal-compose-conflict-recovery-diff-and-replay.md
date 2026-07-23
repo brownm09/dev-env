@@ -303,8 +303,12 @@ markdown snippet — which is itself part of the argument for extracting the mec
 state internal to this recovery step … never staged or committed"). The plan is now read into a
 bash array, so no scratch file is written into the compose worktree at all; the per-path temps
 the 3-way merge needs hold file *content* rather than a path list, and live in the scratch
-directory per the global CLAUDE.md convention (falling back to `mktemp -d` where that fixed path
-does not exist, e.g. CI).
+directory per the global CLAUDE.md convention. Where that fixed path does not exist — every CI
+run, which executes as a different user — the script makes its own `mktemp -d` and the `EXIT`
+trap `rmdir`s it, so the fallback cannot leak a directory per invocation on the one path that
+always takes it. `JOURNAL_COMPOSE_REPLAY_SCRATCH` overrides the scratch root; it exists solely so
+that fallback branch is reachable from the test suite on a machine where the fixed path *does*
+exist, and the real invocation never sets it.
 
 ### References
 
