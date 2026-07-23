@@ -1,8 +1,9 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 71 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 83 files with no per-file index until now
-([dev-env#822](https://github.com/brownm09/dev-env/issues/822)).
+This directory holds the dev-env hook/script test suite: 72 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 84 files total, indexed per file below
+([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
+row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
 **Not the only test directory.** `claude/hooks/tests/` is a second, much smaller test directory
 that `run-hook-tests.py` (below) also discovers and runs — e.g. `test-pre-push-lockfile.sh` lives
@@ -17,7 +18,7 @@ the numbering of the index in the root [`CLAUDE.md`](../../../CLAUDE.md) → `##
 linked ADRs in [`docs/adr/INDEX.md`](../../../docs/adr/INDEX.md).
 [`docs/REFERENCE.md`'s "Script verification suite"](../../../docs/REFERENCE.md#script-verification-suite)
 table covers a curated ~10-file subset with invocation strings and longer descriptions; this file
-covers 77, one line each.
+covers all of them, one line each.
 
 **Running tests.** Every `test_*.py` runs as `py -3 claude/scripts/tests/<file>` from the repo
 root; every `*.sh` runs as `bash claude/scripts/tests/<file>`. To run everything at once:
@@ -68,6 +69,8 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_run_hook_tests.py` | `run-hook-tests.py` | Tests the pure discovery/classification helpers behind the test-suite runner itself — the engine behind `py -3 claude/scripts/run-hook-tests.py` and the `hook-tests` CI workflow. |
 | `test_settings_hook_wiring.py` | `claude/settings.json` | Lint: every `(event, matcher, hook)` entry resolves to a real script and carries a timeout at or above its budget floor. |
 | `test_testing_index_parity.py` | `CLAUDE.md` + `docs/TESTING.md` | Asserts the `## Testing` index and `docs/TESTING.md` carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule). |
+| `test_readme_index_parity.py` | this README + `claude/scripts/README.md` | Asserts every file in each indexed directory has a README first-column row (and every row a real file), and that header/section counts match the live directory — the drift `run-hook-tests.py`'s glob discovery never surfaces (dev-env#901). |
+| `check-remote-read-hygiene.sh` | all `claude/**` | Lints for a `git show <ref>:<path>` paired with `2>/dev/null` — the MSYS path-mangling false-absent class where git's swallowed `fatal:` reads as "file absent" (dev-env#602/#877, ADR-120). |
 | `check-script-path-hygiene.sh` | all `claude/scripts/*.sh`, `claude/hooks/*` | Lints for a `$HOME`-rooted scratch path piped to `node` (Git Bash vs. Node-on-Windows path-resolution mismatch, dev-env#334). |
 | `run-pylint-unreachable.sh` | all `claude/scripts/*.py` and `claude/scripts/tests/*.py` | Runs pylint's `unreachable` (W0101) check alone — dead-code-after-return/raise, independent of type annotations. |
 | `run-shellcheck.sh` | all repo shell scripts | Shellcheck at `--severity=error`, blocking; self-skips if shellcheck isn't installed locally. |
@@ -143,6 +146,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_pre_bash_drift_check.py` | `pre-bash-drift-check.py` | Elapsed-time-gated repo/branch drift check on every Bash call, not just the three merge-adjacent checkpoints. |
 | `test_session_mode_prompt.py` | `session-mode-prompt.py` | One-time per-session reminder of the active permission mode. |
 | `test_session_mode_report.py` | `session-mode-report.py` | On-demand report (not a hook) auditing which sessions started outside `plan` mode. |
+| `test_stop_experiment_verdict_gate.py` | `stop-experiment-verdict-gate.py` | Stop-hook backstop for the experiment-verdict half of the Experimental Rigor protocol: blocks the stop when an assistant message states a process-experiment conclusion with no `/experiment-audit` run and no skip override (ADR-115). |
 | `test_token_tracker.py` | `token-tracker.py` | Per-session token/cost aggregation and the once-per-session locate-failure advisory. |
 | `test_usage_snapshot.py` | `usage-snapshot.py` | OAuth-token expiry classification plus the merge-confirmation predicate for the post-tool-use usage snapshot. |
 

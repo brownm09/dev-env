@@ -1,15 +1,16 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **79 files** at the top level (44 wired Claude Code hooks, 15 shared `_foo.py` modules,
-20 utility/setup scripts across `.py`/`.sh`/`.ps1`) with no per-file index until now
-([dev-env#830](https://github.com/brownm09/dev-env/issues/830)).
+scripts: **82 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
+([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
+per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
 
 **Not `claude/scripts/tests/`.** That subdirectory has its own index —
 [`claude/scripts/tests/README.md`](tests/README.md)
-([dev-env#822](https://github.com/brownm09/dev-env/issues/822)) — covering the 75 test files
-(`test_*.py`, bash gates, and the shared `_hook_wiring.py`). This README covers only the 76
-files directly in `claude/scripts/`; `__pycache__/` is a gitignored build artifact, not content.
+([dev-env#822](https://github.com/brownm09/dev-env/issues/822)) — covering the test files there
+(`test_*.py`, bash gates, and the shared `_hook_wiring.py`). This README covers only the files
+directly in `claude/scripts/`; `__pycache__/` is a gitignored build artifact, not content.
 
 **This file is a navigational map, not the authoritative behavioral description.** For exhaustive
 trigger conditions, decision tables, and incident history, see
@@ -64,7 +65,7 @@ utility scripts that serve the same workflow area — mirroring
 **Event** names the hook registration(s) from `settings.json`; utility scripts show their
 invocation instead.
 
-### Engineering journal & stub workflow (18)
+### Engineering journal & stub workflow (20)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -134,7 +135,7 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (15)
+### Session state, reliability & token tracking (16)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -145,6 +146,7 @@ invocation instead.
 | `hook-liveness-check.py` | UserPromptSubmit | Warns when a wired hook's heartbeat has gone stale (hasn't recorded in its expected cadence). |
 | `awake-blocker.py` | UserPromptSubmit / Stop / Notification | Holds a Windows system-sleep lock via a detached watcher while Claude is processing. |
 | `memory-write-advisory.py` | PostToolUse (Write) | Reminds Claude to pair a durable memory write with an immortalization issue when none is linked. |
+| `stop-experiment-verdict-gate.py` | Stop | Blocks the stop when an assistant message states a process-experiment conclusion with no `/experiment-audit` run and no skip override (the verdict half of the Experimental Rigor protocol, ADR-115). |
 | `posttooluse-inert-advisory.py` | Stop | Safety net for background/SDK sessions where PostToolUse hooks never fired despite a `gh issue/pr create`/`merge`. |
 | `token-tracker.py` | Stop | Aggregates session token usage to `scratch/token-sessions.jsonl`. |
 | `token-report.py` | `py -3 token-report.py [--date\|--days\|--project\|--latest\|--show-subagents]` | Generates markdown/JSON token usage reports from the token-tracker log. |

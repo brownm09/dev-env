@@ -117,6 +117,7 @@ the item). A one-line navigational map of the test directory is
 81. **new-day-journal-check day-rollover test** — required when changing `claude/scripts/new-day-journal-check.py`. Run: `py -3 claude/scripts/tests/test_new_day_journal_check.py`
 82. **composed-output stray-terminal-scan test** — required when changing `claude/scripts/_composed_output_scan.py` or `claude/scripts/validate-composed-output.py`. Run: `py -3 claude/scripts/tests/test_composed_output_scan.py`
 83. **journal-compose-replay conflict-recovery test** — required when changing `claude/scripts/journal-compose-replay.sh` or the Step 10.5 recovery block in `claude/skills/journal-compose/SKILL.md`. Run: `bash claude/scripts/tests/test-journal-compose-replay.sh`
+84. **README index-parity gate** — required when changing `claude/scripts/tests/test_readme_index_parity.py`, or when adding/removing/renaming any file in `claude/scripts/tests/` or `claude/scripts/` (it gates each directory's README against the directory: row coverage, orphan rows, header counts, section `(N)` counts). Run: `py -3 claude/scripts/tests/test_readme_index_parity.py`
 
 ## Observability
 
