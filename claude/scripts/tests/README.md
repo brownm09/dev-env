@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 69 `test_*.py` files, 10 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 80 files with no per-file index until now
+This directory holds the dev-env hook/script test suite: 71 `test_*.py` files, 10 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 82 files with no per-file index until now
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)).
 
 **Not the only test directory.** `claude/hooks/tests/` is a second, much smaller test directory
@@ -17,7 +17,7 @@ the numbering of the index in the root [`CLAUDE.md`](../../../CLAUDE.md) → `##
 linked ADRs in [`docs/adr/INDEX.md`](../../../docs/adr/INDEX.md).
 [`docs/REFERENCE.md`'s "Script verification suite"](../../../docs/REFERENCE.md#script-verification-suite)
 table covers a curated ~9-file subset with invocation strings and longer descriptions; this file
-covers all 75, one line each.
+covers 76, one line each.
 
 **Running tests.** Every `test_*.py` runs as `py -3 claude/scripts/tests/<file>` from the repo
 root; every `*.sh` runs as `bash claude/scripts/tests/<file>`. To run everything at once:
@@ -38,6 +38,7 @@ production code.
 | Test file | Covers | Purpose |
 |---|---|---|
 | `test_bash_state.py` | `_bash_state.py` | Per-session repo/branch state file plus the drift-warning formatter shared by the four commit/PR-create/merge/every-Bash-call checkpoint hooks. |
+| `test_composed_output_scan.py` | `_composed_output_scan.py` | Fence- and code-span-aware detection of stray terminal output in composed journal markdown, behind `/journal-compose` Step 8b. |
 | `test_hookio.py` | `_hookio.py` | Shared PostToolUse command-output reader, merge-marker detection, and the `scan_top_level` command-shape parser five PostToolUse hooks import. |
 | `test_hookout.py` | `_hookout.py` | The shared hook advisory/block emitter — one encoding of the stdout/stderr/exit-code channel table every hook should route through. |
 | `test_hookutil.py` | `_hookutil.py` | Sentinel-file, transcript-locate, transcript-record-reader, and heartbeat-recording helpers shared across Stop/PostToolUse hooks. |
