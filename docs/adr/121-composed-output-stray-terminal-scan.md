@@ -120,6 +120,14 @@ written.
 - False positives are possible by construction (unbalanced backticks disable span detection, which
   is deliberately the over-reporting direction for an advisory gate). The remedy — fence it — is
   cheap and improves the document.
+- **One known false-positive class is accepted rather than fixed:** a nested markdown list inside a
+  Progress Summary is indented, and trips `progress-summary-indent`. It has zero instances across
+  the corpus and Step 7's template specifies a "2–3 sentence narrative" rather than a list, so it is
+  unrealized today. Exempting lines beginning `-`/`*`/`N.` was rejected because the indent check
+  exists precisely to catch pasted text carrying *no* known signature — the exemption would trade a
+  measured-zero false positive for an unmeasured false negative in the one check aimed at the
+  unknown case. Pinned by a named test so the behaviour is a decision, and is the first thing to
+  revisit if it ever fires in practice.
 - The gate is skill-invoked, not a hook: it fires only during `/journal-compose`. It does not
   retroactively scan the historical corpus, and it does not run on hand-edited journal files.
 - Validated against the real corpus rather than fixtures alone: **431 markdown files** across all

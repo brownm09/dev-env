@@ -297,6 +297,23 @@ def test_tab_indent_is_caught():
     ]
 
 
+def test_nested_list_in_progress_summary_is_a_known_false_positive():
+    # Documented limitation, not an oversight: a nested markdown list is indented and so
+    # trips the indent check. Zero instances exist across the 431-file corpus, and Step 7's
+    # template specifies a narrative rather than a list. Left unexempted because this check
+    # exists to catch pasted text carrying no known signature — exempting `-`/`*`/`N.` would
+    # trade a measured-zero false positive for an unmeasured false negative. If this ever
+    # starts firing in practice, THIS test is the thing to revisit first.
+    text = "## Progress Summary\n\n- top item\n    - nested item\n"
+    assert _lines_of_kind(scan_text(text), "progress-summary-indent") == [4]
+
+
+def test_crlf_line_endings_are_handled():
+    # Composed files are written on Windows; a stray \r must not defeat the indent match.
+    text = "## Progress Summary\r\n\r\n    indented\r\n"
+    assert _lines_of_kind(scan_text(text), "progress-summary-indent") == [3]
+
+
 def test_a_second_progress_summary_section_reopens_the_check():
     text = (
         "## Progress Summary\n\nclean\n\n## Entries\n\n| a | b |\n\n"

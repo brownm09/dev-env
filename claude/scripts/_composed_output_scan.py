@@ -31,6 +31,17 @@ Two complementary checks, both deliberately narrow:
     prose and is never indented -- a scan of all 10 ``sessions/*/README.md`` in
     engineering-journal found exactly two such lines, both being this bug.
 
+    **Known limitation, accepted deliberately:** a *nested markdown list* inside a Progress
+    Summary is indented, and so trips this check. Zero instances exist across the whole
+    corpus (431 files), and the skill's Step 7 template specifies a "2-3 sentence narrative"
+    rather than a list, so this is unrealized in practice. It is left unexempted because the
+    indent check exists precisely to catch pasted text carrying *no* known signature --
+    exempting lines that start with ``-``/``*``/``N.`` would trade a measured-zero false
+    positive for an unmeasured false negative in the one check designed for the unknown case.
+    The remedy when it does fire is trivial (fence the block, or reword), and the gate is
+    advisory. Pinned by ``test_nested_list_in_progress_summary_is_a_known_false_positive``
+    so the behavior is a decision rather than an accident.
+
 Both are *advisory*: this module reports regions, and never edits. The corruption was
 self-concealing -- the paste ate the middle of a sentence and welded a surviving prose
 fragment (``" pattern that auto-closes open PRs. ADR count now at 101+."``) onto the tail of
