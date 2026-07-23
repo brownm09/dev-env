@@ -75,6 +75,8 @@ assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)  # safe: main() is guarded by __main__
 
+import _journal_shards  # noqa: E402  -- for the shared-helper identity pin below
+
 repo_from_issue_url = mod.repo_from_issue_url
 should_remove_tile = mod.should_remove_tile
 issue_states_from_rows = mod.issue_states_from_rows
@@ -271,17 +273,15 @@ def test_unresolved_state_keeps_shard() -> str:
 # --- shard discovery ----------------------------------------------------------
 
 
-def test_project_dirs() -> str:
-    with tempfile.TemporaryDirectory() as root:
-        rootp = Path(root)
-        (rootp / "sessions" / "dev-env").mkdir(parents=True)
-        (rootp / "sessions" / "career-playbook").mkdir(parents=True)
-        (rootp / "sessions" / "note.txt").write_text("x", encoding="utf-8")
-        got = [p.name for p in project_dirs(rootp)]
-        assert got == ["career-playbook", "dev-env"], f"sorted project dirs, got {got}"
-    with tempfile.TemporaryDirectory() as root2:
-        assert project_dirs(Path(root2)) == [], "no sessions/ -> []"
-    return "project_dirs lists sorted sessions/<project>/ dirs; [] when absent"
+def test_project_dirs_is_shared_helper() -> str:
+    # Anti-drift pin (ADR-057, dev-env#881). Behaviour is pinned once in
+    # tests/test_journal_shards.py; what matters *here* is that this hook resolves to that
+    # one implementation and not a reintroduced local copy — this file is where the third
+    # copy was born (deferred to avoid conflicting with an in-flight PR), so it is exactly
+    # the place a future copy-paste would land again.
+    assert project_dirs is _journal_shards.project_dirs, \
+        "reconcile-pending-tiles.py re-defined project_dirs locally instead of importing the shared one"
+    return "project_dirs is _journal_shards' shared helper, not a local copy"
 
 
 def test_load_tiles_across_projects_and_tolerates_junk() -> str:
@@ -783,7 +783,7 @@ def main() -> int:
         ("should_remove_tile predicate", test_should_remove_tile),
         ("closed unlinked, survivor byte-identical", test_removes_only_closed_and_leaves_survivor_byte_identical),
         ("unresolved state keeps the shard", test_unresolved_state_keeps_shard),
-        ("project_dirs discovery", test_project_dirs),
+        ("project_dirs is the shared helper", test_project_dirs_is_shared_helper),
         ("load_tiles across projects, junk tolerated", test_load_tiles_across_projects_and_tolerates_junk),
         ("load_tiles with missing dirs", test_load_tiles_missing_dirs),
         ("group_numbers_by_repo dedups/excludes skipped", test_group_numbers_by_repo_dedups_and_excludes_skipped),

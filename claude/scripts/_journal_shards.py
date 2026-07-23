@@ -28,6 +28,12 @@ lives in ``iter_numeric_shards``; ``iter_pr_shards`` and ``iter_tile_shards`` ar
 delegations to it (three public names, one implementation). Adding the tile kind by *copying* the PR reader would have recreated
 precisely the two-divergent-copies bug this module was extracted to end.
 
+Both reconcile hooks reach those shards the same way — walk every ``sessions/<project>/``
+directory, then read the shard kind they care about inside it — so ``project_dirs`` (that walk)
+lives here too, one level above the readers. It arrived as a third copy-paste pair: the tile
+reader duplicated ``reconcile-open-prs.py``'s helper rather than conflict with an in-flight PR,
+and the note recording that deferral was deleted along with both copies (dev-env#881).
+
 Imported the same way as ``_winsubp`` / ``_hookio`` / ``_worktree_liveness``: a sibling
 module in ``scripts/`` that the ``pyw -3`` hook launcher (which puts the script's own
 directory on ``sys.path``) and the test harness (``sys.path.insert(0, scripts_dir)``) both
@@ -42,6 +48,23 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
+
+def project_dirs(journal_repo: Path) -> list[Path]:
+    """Every ``sessions/<project>/`` directory under ``journal_repo``, sorted; ``[]`` if absent.
+
+    The enumeration one level *above* the shard readers: both reconcile hooks
+    (``reconcile-open-prs.py``, ``reconcile-pending-tiles.py``) walk every project directory and
+    then read the shard kind they care about inside it, so the walk is shared here rather than
+    copied per hook — the same anti-drift reason the readers below are (ADR-057, dev-env#881).
+
+    Non-directory entries under ``sessions/`` (a stray ``note.txt``) are excluded, and a missing
+    ``sessions/`` yields ``[]``, so callers may invoke it unconditionally.
+    """
+    sessions = journal_repo / "sessions"
+    if not sessions.is_dir():
+        return []
+    return sorted(p for p in sessions.iterdir() if p.is_dir())
 
 
 def shard_number(path: Path) -> int | None:

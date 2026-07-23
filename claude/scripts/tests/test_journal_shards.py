@@ -15,6 +15,11 @@ numeric layout, so the reader generalised to `iter_numeric_shards` with `iter_pr
 is the load-bearing pin there: it fails if anyone re-specialises an entry point and
 reintroduces the very drift this module was extracted to end.
 
+dev-env#881 hoisted `project_dirs` — the walk over `sessions/<project>/` that both reconcile
+hooks run *before* reading either shard kind — into this module after it had been copy-pasted a
+third time. Its behaviour is pinned here; each hook's own test keeps a one-line identity pin
+that the hook still resolves to this copy rather than a reintroduced local one.
+
 Usage:
     py -3 claude/scripts/tests/test_journal_shards.py
 
@@ -35,6 +40,7 @@ from _journal_shards import (  # noqa: E402
     iter_numeric_shards,
     iter_pr_shards,
     iter_tile_shards,
+    project_dirs,
     read_legacy_entries,
     shard_number,
     shard_pr_number,
@@ -73,6 +79,36 @@ def _write_tile_shard(shard_dir: Path, issue, entry=None):
     p = shard_dir / f"{issue}.json"
     p.write_text(json.dumps(_tile_entry(issue) if entry is None else entry), encoding="utf-8")
     return p
+
+
+# --- project_dirs (the walk one level above the readers) ---------------------
+
+
+def test_project_dirs() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        rootp = Path(root)
+        (rootp / "sessions" / "dev-env").mkdir(parents=True)
+        (rootp / "sessions" / "career-playbook").mkdir(parents=True)
+        (rootp / "sessions" / "note.txt").write_text("x", encoding="utf-8")  # not a dir
+        got = [p.name for p in project_dirs(rootp)]
+        assert got == ["career-playbook", "dev-env"], f"sorted project dirs, got {got}"
+    with tempfile.TemporaryDirectory() as root2:
+        assert project_dirs(Path(root2)) == [], "no sessions/ -> []"
+    return "project_dirs lists sorted sessions/<project>/ dirs; [] when absent"
+
+
+def test_project_dirs_returns_paths_under_sessions() -> str:
+    # The callers join a shard-kind subdirectory onto each returned path
+    # (`<project>/open-prs`, `<project>/tiles`), so what is returned must be the project
+    # directory itself, not a bare name — a `[p.name for p in ...]` assertion alone would
+    # pass for a helper that returned strings and break both hooks.
+    with tempfile.TemporaryDirectory() as root:
+        rootp = Path(root)
+        (rootp / "sessions" / "dev-env" / "tiles").mkdir(parents=True)
+        got = project_dirs(rootp)
+        assert got == [rootp / "sessions" / "dev-env"], f"full paths under sessions/, got {got}"
+        assert (got[0] / "tiles").is_dir(), "returned path joins to a real shard dir"
+    return "project_dirs returns full Paths that join to a shard dir, not bare names"
 
 
 # --- shard_pr_number ---------------------------------------------------------
@@ -301,6 +337,8 @@ def test_legacy_non_utf8_file() -> str:
 
 def main() -> int:
     tests = [
+        ("project_dirs discovery", test_project_dirs),
+        ("project_dirs returns joinable paths", test_project_dirs_returns_paths_under_sessions),
         ("shard_pr_number parsing", test_shard_pr_number),
         ("iter yields (path, entry)", test_iter_returns_path_and_entry),
         ("iter numeric sort", test_iter_numeric_sort),

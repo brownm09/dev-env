@@ -445,6 +445,13 @@ For a one-line navigational map of the test directory, see
     (`dirty_open_pr_status_lines`, `committed_shard_identity`, `merge_in_progress`,
     `current_branch`) are not covered (the repo avoids subprocess mocks).
 
+    `project_dirs` is no longer *behaviourally* tested here — dev-env#881 hoisted it into
+    `_journal_shards.py` and its behaviour is pinned once in item 21. What remains is a one-line
+    identity pin (`project_dirs is _journal_shards.project_dirs`) asserting this hook still resolves
+    to that shared helper rather than a reintroduced local copy. That is the failure mode worth
+    guarding: this file and `reconcile-pending-tiles.py` are the exact pair whose duplicated shard
+    logic already drifted once (lexical vs. numeric sort), which is why ADR-057 exists.
+
     ```bash
     py -3 claude/scripts/tests/test_reconcile_open_prs.py
     ```
@@ -511,6 +518,17 @@ For a one-line navigational map of the test directory, see
     asserted `[n for _p, n in base] and len(base) == 2`, whose first conjunct was vacuous (`n` binds the
     entry dict, and non-emptiness is already implied by the length check) and which never checked identity
     at all; caught in this PR's own `/review`.
+
+    dev-env#881 moved `project_dirs` — "every `sessions/<project>/` directory, sorted; `[]` if
+    `sessions/` is absent", the walk both reconcile hooks run *before* reading either shard kind —
+    into the module, so its behaviour is pinned here: sorted project dirs, a non-directory entry
+    under `sessions/` excluded, and a missing `sessions/` yielding `[]` (callers invoke it
+    unconditionally). A second case pins that it returns full `Path`s *under* `sessions/`, not bare
+    names: both callers join a shard-kind subdirectory onto each result (`<project>/open-prs`,
+    `<project>/tiles`), so the `[p.name for p in ...]` assertion alone would pass for a helper that
+    returned strings and broke both hooks. It had been copy-pasted a third time (the tile reader
+    duplicated `reconcile-open-prs.py`'s copy rather than conflict with an in-flight PR) — the same
+    two-divergent-copies shape, in the same pair of files, that ADR-057 exists for.
 
     ```bash
     py -3 claude/scripts/tests/test_journal_shards.py
@@ -2600,6 +2618,13 @@ For a one-line navigational map of the test directory, see
     Structural compliance (heartbeat, safe-exit fail-open, output-contract channel, settings
     wiring) rides the shared gates — items 61/62/63/68 — which auto-discover the hook from
     `claude/settings.json`; no registry edit was needed to bring it under them.
+
+    `project_dirs` is no longer *behaviourally* tested here — dev-env#881 hoisted it into
+    `_journal_shards.py` and its behaviour is pinned once in item 21. What remains is a one-line
+    identity pin (`project_dirs is _journal_shards.project_dirs`) asserting this hook still resolves
+    to that shared helper. This file is where the third copy was born: the tile reader duplicated
+    `reconcile-open-prs.py`'s helper rather than conflict with in-flight PR #873, with a docstring
+    note deferring the hoist — so it is exactly where a future copy-paste would land again.
 
     ```bash
     py -3 claude/scripts/tests/test_reconcile_pending_tiles.py
