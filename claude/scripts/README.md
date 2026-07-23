@@ -38,6 +38,7 @@ the one place all 14 are listed together. Each has its own test file in
 | Module | Purpose | Consumers |
 |---|---|---|
 | `_bash_state.py` | Per-session repo/branch state file, plus the shared drift-warning formatter and elapsed-time gate. | `post-tool-use-cwd-track.py` (writer); `pre-commit-branch-check.py`, `pre-pr-create-check.py`, `pre-merge-branch-check.py`, `pre-bash-drift-check.py` (readers) |
+| `_composed_output_scan.py` | Fence- and code-span-aware scanner for stray terminal output in composed journal markdown (`scan_text`, `find_signature_hits`, `strip_code_spans`). | `validate-composed-output.py` |
 | `_gh_project.py` | `gh project item-add` subprocess wrapper (`add_to_project`), UTF-8-safe. | `post-tool-use.py`, `reconcile-project-board.py` |
 | `_hookio.py` | PostToolUse command-output reader (`read_command_output`), merge-marker detection, the `scan_top_level`/`is_help_only` command-shape parsers. | 5 PostToolUse hooks + `pr-merge-reminder.py` |
 | `_hookout.py` | Shared advisory/block emitter — one encoding of the stdout/stderr/exit-code channel table every hook should route through (`emit_advisory`, `emit_block`, `ascii_sanitize`). | `journal-stop-check.py`, `posttooluse-inert-advisory.py`, `token-tracker.py`, `dev-env-sync.py`, others mid-migration |
@@ -84,6 +85,7 @@ invocation instead.
 | `journal-compose-with-retry.sh` | Windows Task Scheduler (replaces the nightly routine) | Retries `/journal-compose <yesterday>` up to 3 times on failure, 5 minutes apart. |
 | `reconcile-late-stubs.py` | `py -3 reconcile-late-stubs.py <draft/YYYY-MM-DD>` | Moves stubs pushed to an already-merged draft branch onto the earliest unmerged (or today's) branch, then deletes the stale source branch. |
 | `validate-manifest.py` | `py -3 validate-manifest.py <manifest-path> ...` | Pre-compose validator (`/journal-compose` Step 0.7): every manifest entry has all five required fields. |
+| `validate-composed-output.py` | `py -3 validate-composed-output.py <markdown-path> ...` | Pre-commit scanner (`/journal-compose` Step 8b): composed files contain no stray terminal output. Fence- and code-span-aware; advisory (reports, never edits). [ADR-121](../../docs/adr/121-composed-output-stray-terminal-scan.md) |
 | `merge-stale-pr.sh` | `bash merge-stale-pr.sh <PR-URL>` | Remediates a stale engineering-journal draft PR: checks out, warns on a missing journal file, deletes orphaned drafts, rebases, squash-merges. |
 
 ### PR / merge workflow (19)

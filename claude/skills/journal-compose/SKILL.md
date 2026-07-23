@@ -1326,6 +1326,50 @@ gh issue edit <N> --repo <owner/repo> --add-label start-here
 ```
 The label is auto-created on first use. Remove it when the issue is no longer top-priority.
 
+## Step 8b — Scan composed output for stray terminal output
+
+Every file this compose writes now exists — the journal entry (Step 6), the folder README
+(Step 7), and the top-level README (Steps 8/8a). Scan them all before Step 9 deletes the
+stubs, so a hit can still be reconciled against the sources that produced it:
+
+```bash
+py -3 C:/Users/brown/.claude/scripts/validate-composed-output.py \
+  "$WT"/sessions/<project>/YYYY-MM-DD-<slug>.md \
+  "$WT"/sessions/<project>/README.md \
+  "$WT"/README.md
+```
+
+In multi-project mode, pass every project's journal entry and folder README in the same
+invocation (absent paths are skipped, so an unmatched glob is harmless).
+
+- **Exit 0:** No stray terminal output — proceed to Step 9.
+- **Exit 1:** Read every region the script prints. It reports `file:line`, which check fired,
+  and the full offending line. **Do not delete a flagged block on sight**, and do not
+  auto-"clean" it — see the warning below. For each hit:
+  - **Stray output** → remove it *and* restore whatever prose it overwrote. The stubs still
+    exist (Step 9 has not run), so diff the region against its source stub to recover the
+    original wording.
+  - **Intentional documentation** (a journal entry quoting a git error, which is legitimate
+    and common) → wrap it in a code fence or an inline code span. Both are exempt from the
+    check, and both are how it should have been written anyway.
+
+  Re-run until exit 0, then proceed to Step 9.
+
+**Why this is advisory and never auto-corrects.** The 2026-07-11 compose spliced a `git rebase`
+usage message mid-paragraph into `sessions/dev-env/README.md`'s Progress Summary and it survived
+~8 later compose passes and 11 days (engineering-journal#183). The paste was *self-concealing*:
+it ate the middle of a sentence and welded a surviving real fragment — `" pattern that
+auto-closes open PRs. ADR count now at 101+."` — onto the tail of a `git branch
+--set-upstream-to` line. Deleting the machine-looking block would have silently dropped
+content. That same compose also mis-attributed an issue number elsewhere in the file
+(engineering-journal#185), so treat a hit as a signal to re-read the *whole* composed file,
+not just the flagged lines.
+
+This does **not** overlap Step 6.5's structural assertion (dev-env#467): that one checks
+*headings*, and only on journal *entries*, so mid-paragraph body text in a README passes it
+cleanly. See [ADR-121](https://github.com/brownm09/dev-env/blob/main/docs/adr/121-composed-output-stray-terminal-scan.md)
+(dev-env #894).
+
 ## Step 9 — Delete stub files and release lock
 
 Delete all stubs and this day's manifest for the date and release the compose lock. Delete the
