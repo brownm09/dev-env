@@ -236,6 +236,17 @@ git -C "$WT" update-ref refs/remotes/origin/main HEAD
 bash "$SCRIPT" "$WT" "not-a-commit" "sessions/" >/dev/null 2>&1
 eq "bad \$PREV exits 1" "$?" "1"
 
+# The scratch-dir fallback: when the fixed scratch path does not exist (which is
+# the case on CI, running as a different user), the script makes its own temp dir
+# and the EXIT trap must remove it rather than leaking one per run. TMPDIR is
+# pointed at a private dir so `mktemp -d` lands inside it and the assertion is
+# deterministic rather than a racy count of the shared temp root.
+PRIVATE=$(mktemp -d) || exit 1
+TMPDIRS+=("$PRIVATE")
+TMPDIR="$PRIVATE" JOURNAL_COMPOSE_REPLAY_SCRATCH="$PRIVATE/no-such-dir" \
+  bash "$SCRIPT" "$WT" HEAD "sessions/" >/dev/null 2>&1
+eq "fallback scratch dir is removed, not leaked" "$(ls -A "$PRIVATE" | wc -l)" "0"
+
 echo
 echo "----------------------------------------"
 echo "passed: $PASS   failed: $FAIL"

@@ -1551,8 +1551,10 @@ git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
 bash C:/Users/brown/.claude/scripts/journal-compose-replay.sh "$WT" "$PREV" \
      "sessions/<project>/" README.md
 REPLAY_RC=$?
+[ "$REPLAY_RC" -eq 0 ] || \
+  echo "STOP: reconcile the MANUAL_RECONCILE paths listed above before running step 3"
 
-# 3. Commit and push — ONLY once REPLAY_RC is 0 (see the exit-code rule below)
+# 3. Commit and push — run this ONLY when REPLAY_RC is 0 (see the exit-code rule below)
 git -C "$WT" commit -m \
   "[docs] Add YYYY-MM-DD journal: <slug> (compose branch — draft had conflicts)"
 git -C "$WT" push -u origin compose/YYYY-MM-DD
@@ -1614,8 +1616,10 @@ git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
 bash C:/Users/brown/.claude/scripts/journal-compose-replay.sh "$WT" "$PREV" \
      sessions/meta/ sessions/lifting-logbook/ README.md
 REPLAY_RC=$?
+[ "$REPLAY_RC" -eq 0 ] || \
+  echo "STOP: reconcile the MANUAL_RECONCILE paths listed above before committing"
 
-# Commit ONLY when REPLAY_RC is 0; on 2, reconcile MANUAL_RECONCILE by hand first.
+# Run the commit ONLY when REPLAY_RC is 0; on 2, reconcile MANUAL_RECONCILE by hand first.
 git -C "$WT" commit -m \
   "[docs] Add YYYY-MM-DD journals: <slug-a>, <slug-b> (compose branch — draft had conflicts)"
 git -C "$WT" push -u origin compose/YYYY-MM-DD

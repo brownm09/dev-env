@@ -40,7 +40,10 @@
 #   0  every path resolved mechanically -- caller may commit
 #   2  manual reconciliation required (MANUAL_RECONCILE lists the paths) -- the
 #      caller MUST NOT commit until those paths are reconciled by hand
-#   1  usage or precondition error
+#   1  usage or precondition error (nothing was changed), OR a git/cp failure
+#      partway through the replay, in which case the tree is partially replayed.
+#      That is harmless -- the recovery branch is disposable and nothing has been
+#      pushed -- but re-cut it rather than committing what is there.
 #
 # Run: bash claude/scripts/journal-compose-replay.sh <WT> <PREV> <pathspec>...
 
@@ -78,14 +81,27 @@ MERGE_BASE=$(git -C "$WT" merge-base "$PREV" origin/main)
 
 # Scratch dir per the global CLAUDE.md convention (never a project working tree).
 # CI runs as a different user, where that fixed path does not exist -- fall back to
-# a private temp dir so the same script is exercised by the test suite unchanged.
-SCRATCH="C:/Users/brown/.claude/scratch"
-[ -d "$SCRATCH" ] || SCRATCH=$(mktemp -d) || exit 1
+# a private temp dir, which the EXIT trap then removes along with the files in it.
+# JOURNAL_COMPOSE_REPLAY_SCRATCH exists so the fallback branch below is reachable
+# from the test suite on any machine; the real invocation never sets it.
+SCRATCH="${JOURNAL_COMPOSE_REPLAY_SCRATCH:-C:/Users/brown/.claude/scratch}"
+SCRATCH_IS_OURS=""
+if [ ! -d "$SCRATCH" ]; then
+  SCRATCH=$(mktemp -d) || exit 1
+  SCRATCH_IS_OURS=1   # we created it, so the trap must remove it too
+fi
 BASE_TMP="$SCRATCH/compose-replay-base-$$"
 PREV_TMP="$SCRATCH/compose-replay-prev-$$"
 MAIN_TMP="$SCRATCH/compose-replay-main-$$"
 MERGED_TMP="$SCRATCH/compose-replay-merged-$$"
-trap 'rm -f "$BASE_TMP" "$PREV_TMP" "$MAIN_TMP" "$MERGED_TMP"' EXIT
+cleanup() {
+  rm -f "$BASE_TMP" "$PREV_TMP" "$MAIN_TMP" "$MERGED_TMP"
+  # rmdir, not rm -rf: it removes the dir only if our four files were all that
+  # was in it, so a surprise cannot be deleted silently.
+  [ -n "$SCRATCH_IS_OURS" ] && rmdir "$SCRATCH" 2>/dev/null
+  return 0
+}
+trap cleanup EXIT
 
 # Did origin/main also change $1 since the two branches diverged? Non-empty output
 # means yes -- the path is contested and must never be blind-overwritten.

@@ -2653,6 +2653,8 @@ For a one-line navigational map of the test directory, see
     - **Conflict markers never reach the work tree.** Both fixtures grep the whole tree for `^<<<<<<<`/`^>>>>>>>`. `merge-file -p` writes to stdout precisely so a conflicting merge leaves the on-disk file untouched.
     - **`core.autocrlf true` is set on every fixture, on every platform.** `git show` emits the stored LF blob while the checked-out file is CRLF, so a merge mixing work-tree content with blob content sees *every* line as changed and a trivially disjoint merge conflicts. The script reads all three sides as blobs; this config is what lets the test tell the difference. The same run surfaced that `MSYS_NO_PATHCONV=1` is all-or-nothing per command — applied to `git -C "$WT" show`, it also stops `-C`'s path from being translated and git cannot find the repo — hence the `cd`-subshell form in `show_blob`.
 
+    Fixture C also pins that the scratch-dir **fallback** cleans up after itself. When the fixed scratch path is absent — which is the case on CI, running as a different user — the script creates its own temp dir, and the `EXIT` trap must `rmdir` it rather than leaking one per run. `JOURNAL_COMPOSE_REPLAY_SCRATCH` exists solely to make that branch reachable from a machine where the fixed path *does* exist; `TMPDIR` is pointed at a private directory so the assertion is deterministic rather than a racy count of the shared temp root.
+
     Deliberate scope gap: the caller-side contract (that Step 10.5 actually stops on exit 2 before committing) is prose in the skill, not code, so it is unenforced here — the same limit ADR-104 already accepted for bash embedded in a markdown skill.
 
     ```bash
