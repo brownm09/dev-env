@@ -355,10 +355,15 @@ that locks outside your own project directory are irrelevant.
 
 > Every `.draft-compose.lock` inside a run's compose worktree belongs to **that run**.
 
-It follows from two facts already established by this ADR: Step 0.6 creates the worktree fresh
-from `refs/remotes/origin/<branch>` (aborting if any other invocation still holds a pre-existing
-one), and the lock file is untracked and never committed — so a newly created compose worktree
-starts with zero lock files. A subagent's Step 1 is therefore a single-path check:
+It follows from two facts that were already true before this fix — neither is newly asserted by
+it. The first is established by this ADR: Step 0.6 creates the worktree fresh from
+`refs/remotes/origin/<branch>`, aborting if any other invocation still holds a pre-existing one.
+The second is established by the skill, not by this ADR — SKILL.md Step 9's "Lock file hygiene"
+rule makes `.draft-compose.lock` ephemeral and never committed, verified live rather than taken
+on the prose's word (`git -C …/engineering-journal ls-files --error-unmatch
+'*.draft-compose.lock'` exits 1; that repo's `.gitignore` holds only `.claude/worktrees/`, so the
+lock is untracked-but-not-ignored). Together they mean a newly created compose worktree starts
+with zero lock files. A subagent's Step 1 is therefore a single-path check:
 
 - a lock under **another** project = a peer subagent in this run — never a reason to stop, warn,
   or wait; do not glob `sessions/*/.draft-compose.lock`;

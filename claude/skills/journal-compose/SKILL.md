@@ -350,7 +350,10 @@ as in the old single-file workflow — read it once in Step 2).
 
 If stubs span multiple project directories (e.g., both `sessions/lifting-logbook/` and
 `sessions/meta/`), use **Multi-project mode** (see section below) — do NOT compose projects
-sequentially in this session. Proceed directly to that section instead of Step 2.
+sequentially in this session. Skip the lock step below and proceed directly to that section
+instead of Step 2: in multi-project mode locks are entirely subagent-owned (each Phase 1
+subagent acquires its own project's lock; Phase 2 Step 9 releases it per project), so this
+coordinator never holds one and has no single `<project>` to acquire it for.
 
 **Acquire the compose lock:**
 
@@ -533,8 +536,8 @@ When done, report exactly this structure:
 
 ### Phase 2 — Serial coordinator (this session)
 
-After all subagents complete, collect `OUTPUT_FILE`, `SLUG`, `META_TRIGGERS`, and `STRUCTURE`
-from each.
+After all subagents complete, collect `OUTPUT_FILE`, `SLUG`, `META_TRIGGERS`, `STRUCTURE`, and
+`LOCK_TAKEOVER` (present only when a subagent took over a failed predecessor's lock) from each.
 
 **Error check first:** If any subagent did not return `STATUS=done`, **or** returned
 `STRUCTURE=missing:<list>`, stop immediately and report which project(s) failed — and, for a
@@ -577,7 +580,9 @@ git -C "$WT" push origin "HEAD:refs/heads/$SOURCE_BRANCH"
 ```
 
 Open one PR covering all projects (Step 11). List each composed journal in the PR body, plus
-the combined `RECONCILED_SHARDS` list from every project's Step 9.5.
+the combined `RECONCILED_SHARDS` list from every project's Step 9.5, plus any `LOCK_TAKEOVER`
+reported in Phase 1 — a takeover means that project's subagent died and was re-spawned mid-run,
+which is worth recording alongside the shard list rather than dropping.
 
 After completing Phase 2, skip to the end — do not re-run Steps 2–9 individually.
 
