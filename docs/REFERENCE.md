@@ -966,9 +966,35 @@ child is never left pointing at a branch you're about to delete:
 
 Simplest alternative: don't stack when the two changes can ship as independent PRs off `main`.
 
+**Two different outcomes depending on whether Prevention step 1 was followed.** The
+unrecoverable-orphan case above happens specifically when the parent is merged with
+`--delete-branch` (or the branch is otherwise deleted while the child still points at it as its
+base) *before* the child is retargeted. If Prevention step 1 was followed instead — parent merged
+with plain `--squash`, no `--delete-branch` — the child PR is **not** auto-closed; it stays open,
+and GitHub auto-retargets its base to `main` on its own once the parent branch is later deleted (by
+a separate `gh api -X DELETE .../git/refs/heads/<branch>` call, or by a repo's own
+auto-delete-branch-on-merge setting). The child still goes `CONFLICTING`/`DIRTY` at that point —
+same 3-way-merge symptom as the orphan case, since `main` now carries the parent's squashed content
+while the child branch still carries the parent's original commits underneath its own — but
+recovery is much simpler, because the PR object itself was never lost:
+
+```bash
+git fetch origin main
+git rebase origin/main   # no --onto, no SHA-hunting needed
+```
+
+Git's patch-id matching recognizes the parent's now-squashed commits as content-identical to what's
+already on `main` (`dropping <sha> ... -- patch contents already upstream`) and drops them on its
+own, leaving only the child's own commit(s) — no need to locate `<parent-tip-SHA>` by hand. Fetch
+again and force-push with `--force-with-lease` (see the bare-`--force` runbook below for why the
+fetch has to come first), and the *same* PR goes back to `CLEAN`/`MERGEABLE` — no new PR needed,
+unlike the orphan case above.
+
 Motivating incident: career-playbook [#587](https://github.com/brownm09/career-playbook/pull/587)
 (Step 4.7) / [#591](https://github.com/brownm09/career-playbook/pull/591) (Step 4.8, which superseded
-the orphaned #588).
+the orphaned #588) for the orphan case; career-playbook [#923](https://github.com/brownm09/career-playbook/pull/923)
+stacked on parent [#878](https://github.com/brownm09/career-playbook/pull/878) (2026-07-27) for the
+survives-and-simple-rebase case — full incident trace: [dev-env#457](https://github.com/brownm09/dev-env/issues/457).
 
 ### Bare `--force` after rebase auto-closes any open PR on the target branch
 
