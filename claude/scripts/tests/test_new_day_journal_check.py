@@ -24,15 +24,21 @@ The git-reading helpers (`canonical_current_branch`, `branch_stub_paths`,
 stubbing the module's own check functions and redirecting SCRATCH — no git, no network.
 
 Check 5 (stale-canonical self-healing, ADR-119 Amendment 1 / dev-env#911) gets the same
-pure-function coverage (`format_stale_canonical_recovery`), PLUS — unlike every other check
-in this file — a set of real-repo end-to-end tests. Check 5 is the one check whose action
-mutates the canonical (`git checkout main`) rather than only printing advice, so proving the
-single most important safety property ("a dirty tree is never auto-touched") requires
-actually asserting on a real repo's branch after the call, not just on a returned string.
-Those tests drive the real `stale_canonical_recovery_message()` against a disposable
-throwaway git repo, borrowing the init-a-real-repo fixture technique from this repo's closest
-analog for a mutating journal hook, `test_journal_canonical_guard.py` — the only other test
-file in this family that asserts on real post-call git state.
+pure-function coverage (`stale_canonical_recovery_decision` — named `_decision`, not
+`format_*`, because unlike `format_day_rollover` a non-None return here ALSO authorizes the
+actual checkout, not just advisory text), PLUS — unlike every other check in this file — a
+set of real-repo end-to-end tests. Check 5 is the one check whose action mutates the
+canonical (`git checkout main`) rather than only printing advice, so proving the single most
+important safety property ("a dirty tree is never auto-touched") requires actually asserting
+on a real repo's branch after the call, not just on a returned string. Those tests drive the
+real `stale_canonical_recovery_message()` against a disposable throwaway git repo, borrowing
+the init-a-real-repo fixture technique from this repo's closest analog for a mutating journal
+hook, `test_journal_canonical_guard.py` — the only other test file in this family that
+asserts on real post-call git state. One of the four (`test_stale_recovery_noop_when_just_checked_out`)
+pins a real bug PR #912's own review caught: idle time must be measured from the last time
+HEAD moved (checkout OR commit), never from the stale branch's own tip-commit time, or a
+session that just legitimately checked the branch out finds idle_minutes already past
+threshold at the instant of checkout — see `canonical_head_idle_minutes`'s docstring.
 
 Usage:
     py -3 claude/scripts/tests/test_new_day_journal_check.py
@@ -68,7 +74,7 @@ branch_date = mod.branch_date
 mismatched_stub_paths = mod.mismatched_stub_paths
 format_day_rollover = mod.format_day_rollover
 summarize_by_project = mod.summarize_by_project
-format_stale_canonical_recovery = mod.format_stale_canonical_recovery
+stale_canonical_recovery_decision = mod.stale_canonical_recovery_decision
 
 
 def test_branch_date_parses_plain_and_suffixed() -> str:
@@ -227,36 +233,36 @@ def test_mismatched_stub_paths_requires_digits_not_just_separators() -> str:
     return "non-digit date-shaped filenames are rejected, matching branch_date's strictness"
 
 
-# --- format_stale_canonical_recovery: pure decision + formatting (dev-env#911) -----------
+# --- stale_canonical_recovery_decision: pure decision + formatting (dev-env#911) ---------
 
 
-def test_format_stale_canonical_recovery_silent_cases() -> str:
-    assert format_stale_canonical_recovery("draft/2026-07-22", "2026-07-22", False, 999) is None, \
+def test_stale_canonical_recovery_decision_silent_cases() -> str:
+    assert stale_canonical_recovery_decision("draft/2026-07-22", "2026-07-22", False, 999) is None, \
         "today's own branch must never fire, no matter how idle"
-    assert format_stale_canonical_recovery("main", "2026-07-22", False, 999) is None, \
+    assert stale_canonical_recovery_decision("main", "2026-07-22", False, 999) is None, \
         "a non-draft branch must never fire"
-    assert format_stale_canonical_recovery("draft/2026-07-21", "2026-07-22", True, 999) is None, \
+    assert stale_canonical_recovery_decision("draft/2026-07-21", "2026-07-22", True, 999) is None, \
         "a dirty tree must never fire, no matter how idle"
-    assert format_stale_canonical_recovery("draft/2026-07-21", "2026-07-22", False, 5) is None, \
+    assert stale_canonical_recovery_decision("draft/2026-07-21", "2026-07-22", False, 5) is None, \
         "under the idle threshold (15min) must not fire"
-    assert format_stale_canonical_recovery("draft/2026-07-21", "2026-07-22", False, None) is None, \
+    assert stale_canonical_recovery_decision("draft/2026-07-21", "2026-07-22", False, None) is None, \
         "unknown idle time must not fire (fails toward inaction, never toward acting)"
     return "silent on: today's branch, non-draft branch, dirty tree, under-threshold idle, unknown idle"
 
 
-def test_format_stale_canonical_recovery_dirty_short_circuits_before_idle() -> str:
+def test_stale_canonical_recovery_decision_dirty_short_circuits_before_idle() -> str:
     """Regression pin for the single most important safety property (dev-env#911): dirty
     must be checked BEFORE idle_minutes is even consulted, so a dirty+unknown-idle or a
     dirty+enormously-idle branch is silent either way -- the ordering must not silently drift
     so that some future edit lets an absent idle reading coincidentally short-circuit ahead of
     the dirty check instead of the dirty check owning that job unconditionally."""
-    assert format_stale_canonical_recovery("draft/2026-07-21", "2026-07-22", True, None) is None
-    assert format_stale_canonical_recovery("draft/2026-07-21", "2026-07-22", True, 999999) is None
+    assert stale_canonical_recovery_decision("draft/2026-07-21", "2026-07-22", True, None) is None
+    assert stale_canonical_recovery_decision("draft/2026-07-21", "2026-07-22", True, 999999) is None
     return "dirty is silent regardless of idle_minutes being absent or enormous"
 
 
-def test_format_stale_canonical_recovery_fires_when_clean_and_idle() -> str:
-    msg = format_stale_canonical_recovery("draft/2026-07-21", "2026-07-22", False, 15)
+def test_stale_canonical_recovery_decision_fires_when_clean_and_idle() -> str:
+    msg = stale_canonical_recovery_decision("draft/2026-07-21", "2026-07-22", False, 15)
     assert msg is not None, "exactly at the 15min threshold must fire (not-less-than, not strictly-greater)"
     assert "draft/2026-07-21" in msg, msg
     assert "restored to main" in msg, msg
@@ -265,11 +271,11 @@ def test_format_stale_canonical_recovery_fires_when_clean_and_idle() -> str:
     return "clean + idle >= threshold fires, naming the branch, the restore, and the idle minutes"
 
 
-def test_format_stale_canonical_recovery_suffixed_branch_matches_today() -> str:
+def test_stale_canonical_recovery_decision_suffixed_branch_matches_today() -> str:
     """branch_date() parses through documented suffix forms (e.g. -recovery); reusing it here
     means a suffixed branch whose DATE is today is treated as current, exactly like check 4's
     own semantics -- the two checks must agree on what "today's branch" means."""
-    assert format_stale_canonical_recovery("draft/2026-07-22-recovery", "2026-07-22", False, 999) is None
+    assert stale_canonical_recovery_decision("draft/2026-07-22-recovery", "2026-07-22", False, 999) is None
     return "a suffixed branch dated today is treated as today's branch, same as format_day_rollover"
 
 
@@ -492,6 +498,34 @@ def test_stale_recovery_noop_when_recently_committed() -> str:
     return "stale + clean but recently committed (<15min) -> no message, no checkout"
 
 
+def test_stale_recovery_noop_when_just_checked_out() -> str:
+    """THE regression pin for the bug PR #912's own review caught: idle time must be measured
+    from the last time HEAD moved (checkout OR commit), never from the stale branch's own
+    tip-commit time. A naive tip-commit-time signal would already read as "idle" the INSTANT
+    a session checks the branch out, since a genuinely stale branch's last real commit is, by
+    construction, already old -- giving a legitimate in-flight checkout ZERO of the headroom
+    STALE_CANONICAL_IDLE_MINUTES is meant to provide, and exposing it to exactly the
+    collision dev-env#911 is about."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "engineering-journal"
+        root.mkdir()
+        _init_canonical_fixture(root)
+        # The branch's own tip commit is VERY old -- this alone would satisfy a (buggy)
+        # tip-commit-time idle check immediately, with no checkout-time protection at all.
+        _checkout_draft_branch(root, FAKE_STALE_DATE, minutes_ago=1000)
+        _run_git(root, "checkout", "-q", "main")
+        # Simulate a session legitimately (and freshly) checking the stale branch back out
+        # right now -- e.g. to commit an orphaned shard deletion per ADR-119 decision 3 --
+        # with no new commit yet.
+        _run_git(root, "checkout", "-q", f"draft/{FAKE_STALE_DATE}")
+        result = _stale_recovery_against(root)
+        assert result is None, \
+            f"a just-checked-out branch must not be touched, even if its OWN tip commit is ancient; got {result!r}"
+        assert _current_branch(root) == f"draft/{FAKE_STALE_DATE}", \
+            f"checkout must NOT happen right after a fresh legitimate checkout; got {_current_branch(root)!r}"
+    return "stale branch with an ancient tip commit, but JUST checked out -> no message, no checkout"
+
+
 def test_stale_recovery_restores_when_clean_and_idle() -> str:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "engineering-journal"
@@ -525,13 +559,14 @@ def main() -> int:
         ("worktree emission does not suppress checks 1-3", test_main_worktree_emission_does_not_suppress_canonical_checks),
         ("rollover re-suppresses within the recheck window", test_main_rollover_resuppresses_within_the_recheck_window),
         ("a quiet run still arms the sentinel", test_main_quiet_run_still_arms_the_sentinel),
-        ("stale-recovery: silent cases (today/non-draft/dirty/under-threshold/unknown-idle)", test_format_stale_canonical_recovery_silent_cases),
-        ("stale-recovery: dirty short-circuits before idle is consulted", test_format_stale_canonical_recovery_dirty_short_circuits_before_idle),
-        ("stale-recovery: fires when clean and idle >= threshold", test_format_stale_canonical_recovery_fires_when_clean_and_idle),
-        ("stale-recovery: suffixed branch dated today is not stale", test_format_stale_canonical_recovery_suffixed_branch_matches_today),
+        ("stale-recovery: silent cases (today/non-draft/dirty/under-threshold/unknown-idle)", test_stale_canonical_recovery_decision_silent_cases),
+        ("stale-recovery: dirty short-circuits before idle is consulted", test_stale_canonical_recovery_decision_dirty_short_circuits_before_idle),
+        ("stale-recovery: fires when clean and idle >= threshold", test_stale_canonical_recovery_decision_fires_when_clean_and_idle),
+        ("stale-recovery: suffixed branch dated today is not stale", test_stale_canonical_recovery_decision_suffixed_branch_matches_today),
         ("stale-recovery (real repo): today's branch never touched", test_stale_recovery_noop_on_todays_branch),
         ("stale-recovery (real repo): dirty tree -> checkout does NOT happen", test_stale_recovery_noop_when_dirty),
         ("stale-recovery (real repo): recent commit (<15min) -> no-op", test_stale_recovery_noop_when_recently_committed),
+        ("stale-recovery (real repo): just checked out (ancient tip commit) -> no-op", test_stale_recovery_noop_when_just_checked_out),
         ("stale-recovery (real repo): clean + idle -> auto-restores to main", test_stale_recovery_restores_when_clean_and_idle),
     ]
     failed = 0
