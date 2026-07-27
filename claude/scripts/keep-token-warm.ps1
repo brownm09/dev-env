@@ -24,8 +24,16 @@
     No elevation, no new console window (ADR-041): launched hidden/non-interactive by the
     scheduled task; logs to Documents\LOGS instead of keeping a window open.
 
+    Under the MSIX Claude desktop app, a claude.exe subprocess is unauthenticated (OAuth
+    lives in the OS keychain instead), so this refresh can never succeed there. Before
+    spawning the real refresh call, the script probes `claude auth status --json`; an
+    exact loggedIn:false response is that dead-end signature, and the run exits early with
+    a logged "desktop-app: nothing to refresh" instead of spawning a doomed CLI call
+    (dev-env #917, ADR-124 -- mirrors usage-snapshot.py's cli_auth_status probe).
+
 .NOTES
-    Registered by register-keep-token-warm.ps1. Related: dev-env #359, ADR-043, PR #357 (#355).
+    Registered by register-keep-token-warm.ps1. Related: dev-env #359, ADR-043, PR #357
+    (#355); dev-env #917, ADR-124 (desktop-app dead-end probe).
 #>
 [CmdletBinding()]
 param(
@@ -75,6 +83,45 @@ function Format-State($s) {
     return "mtime=$m expiry=$e"
 }
 
+# --- CLI auth probe (dev-env#917, mirrors usage-snapshot.py's cli_auth_status/parse_auth_status,
+# ADR-124) -----------------------------------------------------------------
+# Under the MSIX desktop app, OAuth lives in the OS keychain and this same claude.exe run
+# as a subprocess is unauthenticated, so the refresh below would be as futile as the
+# usage-snapshot hook's own on-demand refresh (ADR-124). `auth status --json` reporting
+# loggedIn:false is the precise signature; only an exact JSON `false` counts as the
+# dead-end -- any error, timeout, or unparseable output falls through to the normal
+# refresh attempt unchanged, mirroring parse_auth_status()'s strict semantics.
+function Test-DesktopAppDeadEnd {
+    param(
+        [string]$ClaudeExe,
+        [int]$TimeoutSeconds = 8
+    )
+    if (-not $ClaudeExe) { return $false }
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $ClaudeExe
+        $psi.Arguments = 'auth status --json'
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $proc.StandardInput.Close()
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        [void]$proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $proc.Kill() } catch { }
+            return $false
+        }
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $data = $stdout | ConvertFrom-Json -ErrorAction Stop
+        return ($data.loggedIn -is [bool]) -and ($data.loggedIn -eq $false)
+    } catch {
+        return $false
+    }
+}
+
 # --- resolve claude.exe (dynamic, newest version — mirrors ~/bin/claude) ---
 function Resolve-ClaudeExe {
     $base = Join-Path $env:LOCALAPPDATA 'Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code'
@@ -99,6 +146,11 @@ $claudeExe = Resolve-ClaudeExe
 
 if (-not $claudeExe) {
     Write-Log ("ERROR claude.exe not found | before: {0}" -f (Format-State $before))
+    exit 0
+}
+
+if (Test-DesktopAppDeadEnd -ClaudeExe $claudeExe) {
+    Write-Log ("desktop-app: nothing to refresh | before: {0}" -f (Format-State $before))
     exit 0
 }
 

@@ -154,7 +154,7 @@ invocation instead.
 | `session-mode-report.py` | `py -3 session-mode-report.py [--since\|--interactive-only\|--non-plan-only\|--log]` | Reports which sessions started outside `plan` mode, from the session-mode-prompt hook's log. |
 | `run-hook-tests.py` | `py -3 run-hook-tests.py [--list] [--timeout N]` | Discovers and runs the whole hook/script test suite; engine behind the `hook-tests` CI workflow. |
 | `register-keep-token-warm.ps1` | `powershell -File register-keep-token-warm.ps1 [-IntervalHours N] [-Unregister]` | Per-machine, run-once: registers the scheduled task that keeps the OAuth token fresh. |
-| `keep-token-warm.ps1` | Scheduled-task payload (not run by hand) | Triggers a CLI OAuth-token refresh every few hours so `usage-snapshot.py` rarely needs an on-demand refresh. |
+| `keep-token-warm.ps1` | Scheduled-task payload (not run by hand) | Triggers a CLI OAuth-token refresh every few hours so `usage-snapshot.py` rarely needs an on-demand refresh — unless a desktop-app auth-status probe detects the refresh would be futile, in which case it exits early instead. |
 
 ---
 

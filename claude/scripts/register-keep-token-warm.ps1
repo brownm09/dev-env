@@ -17,12 +17,21 @@
     Limited run level does not require elevation. If Register-ScheduledTask returns an
     access-denied error on your machine, open an elevated PowerShell yourself and re-run.
 
+    Under the MSIX Claude desktop app this task's refresh is permanently futile (OAuth
+    lives in the OS keychain, unreachable to a claude.exe subprocess) -- keep-token-warm.ps1
+    now detects and skips that dead-end itself (dev-env #917, ADR-124), and machines that
+    no longer need the task at all should -Unregister it (dev-env #917, ADR-043 addendum).
+
 .PARAMETER IntervalHours
     Repetition interval in hours (default 4). The access token TTL is ~8h; a 4h cadence
     bounds how long a lapsed token can persist before a run refreshes it.
 
 .PARAMETER Unregister
-    Remove the task instead of creating it.
+    Remove the task instead of creating it. First backs up the live task definition to
+    Documents\LOGS\ClaudeKeepTokenWarmBackup.xml (write-if-absent, ADR-079) and verifies
+    removal by read-back afterward. Restoring is simply re-running this script with no
+    switches -- the task carries no state beyond what this script's own registration logic
+    defines, so re-registering deterministically reconstructs the backed-up definition.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File register-keep-token-warm.ps1
@@ -40,14 +49,43 @@ $ErrorActionPreference = 'Stop'
 $TaskName = 'ClaudeKeepTokenWarm'
 # Durable junction path (tracks dev-env main), NOT the ephemeral worktree path.
 $PayloadPath = Join-Path $env:USERPROFILE '.claude\scripts\keep-token-warm.ps1'
+# Write-if-absent anchor (ADR-079): captures the task definition the first time it is
+# ever unregistered, so the pristine original always survives no matter how many times
+# -Unregister runs afterward.
+$BackupPath = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'LOGS\ClaudeKeepTokenWarmBackup.xml'
 
 if ($Unregister) {
-    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-        Write-Host "Removed scheduled task '$TaskName'."
-    } else {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $task) {
         Write-Host "No scheduled task '$TaskName' to remove."
+        return
     }
+
+    # Back up before mutating (ADR-079): capture the live definition first and refuse to
+    # proceed if it can't be captured. Write-if-absent so a later -Unregister run (e.g.
+    # after a re-registration) never overwrites the original pristine capture. Checked as
+    # "exists AND non-empty", not presence alone -- a zero-byte leftover from an earlier
+    # run that was interrupted mid-write (disk full, killed process) must not be mistaken
+    # for a completed backup on a later retry, which would silently skip re-capturing it.
+    if (-not ((Test-Path $BackupPath) -and (Get-Item $BackupPath).Length -gt 0)) {
+        $backupDir = Split-Path $BackupPath -Parent
+        if (-not (Test-Path $backupDir)) { New-Item -ItemType Directory -Path $backupDir -Force | Out-Null }
+        try {
+            Export-ScheduledTask -TaskName $TaskName -ErrorAction Stop |
+                Out-File -FilePath $BackupPath -Encoding utf8 -ErrorAction Stop
+        } catch {
+            throw "Failed to back up '$TaskName' to $BackupPath before unregistering -- refusing to proceed without a restorable backup (ADR-079). $_"
+        }
+        if (-not (Test-Path $BackupPath) -or (Get-Item $BackupPath).Length -eq 0) {
+            throw "Backup at $BackupPath is missing or empty after export -- refusing to proceed (ADR-079)."
+        }
+    }
+
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        throw "Unregister-ScheduledTask completed but '$TaskName' is still present at read-back."
+    }
+    Write-Host "Removed scheduled task '$TaskName' (definition backed up to $BackupPath)."
     return
 }
 
