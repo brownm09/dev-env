@@ -38,6 +38,7 @@ is the first green CI run on the PR that adds it.
 """
 from __future__ import annotations
 
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import argparse
 import re
 import shutil
