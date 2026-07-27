@@ -1,11 +1,11 @@
 # ADR-043 — Keep-Warm Scheduled Task for OAuth Token Freshness
 
-**Date:** 2026-06-15
+**Date:** 2026-06-15 (amended 2026-07-27)
 **Status:** Accepted
 **Closes:** [dev-env#359](https://github.com/brownm09/dev-env/issues/359)
 **Supersedes:** [dev-env#356](https://github.com/brownm09/dev-env/issues/356) (self-healing refresh — not built)
-**Tags:** hooks, windows, scheduled-task, oauth, token-refresh, usage-snapshot, automation
-**Related:** [ADR-041](041-no-terminal-spawn-in-windows-scripts.md), [ADR-027](027-userpromptsubmit-blocking-hook-conventions.md), [ADR-031](031-auto-merge-disabled.md)
+**Tags:** hooks, windows, scheduled-task, oauth, token-refresh, usage-snapshot, automation, desktop-app, msix, backup-restore, adr-124
+**Related:** [ADR-041](041-no-terminal-spawn-in-windows-scripts.md), [ADR-027](027-userpromptsubmit-blocking-hook-conventions.md), [ADR-031](031-auto-merge-disabled.md), [ADR-124](124-usage-snapshot-desktop-app-keychain-deadend.md), [ADR-079](079-backup-restore-convention.md)
 
 ---
 
@@ -131,3 +131,57 @@ does for the user's manual refresh, sidestepping the rotation/race risk that gat
 - [Claude Code Authentication](https://code.claude.com/docs/en/authentication.md) — `setup-token` / `CLAUDE_CODE_OAUTH_TOKEN` (the rejected long-lived-token path).
 - OAuth 2.0 refresh-token grant + rotation — [RFC 6749 §6](https://datatracker.ietf.org/doc/html/rfc6749#section-6).
 - Microsoft Learn — [`Register-ScheduledTask`](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/register-scheduledtask) and [`New-ScheduledTaskTrigger`](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/new-scheduledtasktrigger) (repetition with no `-RepetitionDuration` repeats indefinitely; `[TimeSpan]::MaxValue` is rejected as out-of-range).
+
+---
+
+## Addendum (2026-07-27) — Inert under the MSIX desktop app; keep-warm self-gates, `-Unregister` now backs up first (dev-env#917, ADR-124)
+
+[ADR-124](124-usage-snapshot-desktop-app-keychain-deadend.md) established that under the MSIX
+Claude desktop app, OAuth lives in the OS keychain and is injected in-process to the desktop
+app's own sessions — a `claude.exe` invoked as a **subprocess** (this task's exact context) is
+unauthenticated and reports `loggedIn:false`. That makes every run of `keep-token-warm.ps1` on
+such a machine permanently futile: the CLI it invokes can refresh nothing, so the task spends a
+subprocess every 4 hours writing `no-change` to its log, indefinitely. ADR-124 fixed the
+**hook** side of this (`usage-snapshot.py` skips its own on-demand refresh with an accurate
+advisory) but deliberately left the **scheduled task** itself alone, filing the task-side fix as
+[dev-env#917](https://github.com/brownm09/dev-env/issues/917) to keep that PR scoped.
+
+**What changed:**
+
+1. **`keep-token-warm.ps1` now self-gates.** A new `Test-DesktopAppDeadEnd` helper mirrors
+   `usage-snapshot.py`'s `cli_auth_status`/`parse_auth_status` pair: it runs `<claude.exe> auth
+   status --json` (an 8s timeout) against the already-resolved `$claudeExe` and treats an exact
+   JSON `loggedIn: false` as the dead-end signature — nothing else (a parse failure, a timeout,
+   `loggedIn: true`, or a missing field) is ever treated as the dead-end, so the change is a
+   no-op on npm-CLI installs. On the dead-end signature the script exits early with a logged
+   `desktop-app: nothing to refresh` line instead of spawning the doomed `claude -p ok` call —
+   the same "probe before the expensive futile work" shape ADR-124 used, just in PowerShell
+   instead of Python, reusing this script's own existing `Resolve-ClaudeExe` rather than
+   duplicating a second MSIX-detection routine.
+
+2. **`register-keep-token-warm.ps1 -Unregister` now follows the back-up-before-mutate
+   convention ([ADR-079](079-backup-restore-convention.md)).** Before calling
+   `Unregister-ScheduledTask`, it exports the live task definition to
+   `Documents\LOGS\ClaudeKeepTokenWarmBackup.xml` — write-if-absent, so the first pristine
+   capture is never overwritten by a later run — and refuses to proceed if the export fails or
+   produces an empty file. Removal is then verified by read-back (`Get-ScheduledTask` must
+   report the task gone afterward). No separate `-Restore` switch was added: the task carries
+   no state beyond what this script's own registration logic defines (its only tunable is
+   `-IntervalHours`, applied identically every time), so re-running the script with no switches
+   already **is** the idempotent restore path — it deterministically reconstructs the exact
+   definition the backup captured, without needing to re-import the XML.
+
+**Why gate the task's own payload instead of relying solely on unregistering it everywhere.**
+Per-machine registration is manual by design (see Consequences, above) — a machine that
+migrates to the desktop app later, or one whose registration this addendum's author doesn't
+control, would otherwise keep running the futile task until someone remembers to unregister it
+by hand. The self-gate makes the *task's own payload* cheap and honest (a fast, logged skip)
+regardless of whether anyone has unregistered it on that particular machine, while `-Unregister`
+remains the complete, reversible fix for a machine that no longer needs the task registered at
+all.
+
+**Status:** both scripts committed. Any machine that no longer needs the task registered (e.g.
+one that has fully migrated to the desktop app) should run `-Unregister` to remove it via the
+now-backup-safe path; the task's self-gate (item 1) keeps it harmless in the meantime even on
+machines where it stays registered. See
+[dev-env#917](https://github.com/brownm09/dev-env/issues/917) for the full follow-up discussion.
