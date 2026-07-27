@@ -183,6 +183,24 @@ gh pr create --head <branch> --base main --title "..." \
 
 Motivating incident: [win11-init-tools PR #46](https://github.com/brownm09/win11-init-tools/pull/46) — PR #34 was auto-closed and replaced. Full runbook: [`docs/REFERENCE.md` → Git Workflow Runbooks](../docs/REFERENCE.md#git-workflow-runbooks).
 
+### Squash-merging a stacked PR's base leaves the child `CONFLICTING` — a plain rebase fixes it
+
+**Pattern:** When a child PR's base is another (still-open) PR's branch and that parent gets squash-merged, the child's diff goes `CONFLICTING`/`DIRTY` the moment the parent's branch is deleted (whether via an explicit `gh api -X DELETE .../git/refs/heads/<branch>` call or a repo's own auto-delete-on-merge setting) — `main` now carries the parent's **squashed** content, while the child branch still carries the parent's **original, unsquashed** commits underneath its own, so a 3-way merge sees the parent's changes on both sides at once. GitHub auto-retargets the child's `baseRefName` to the repo's default branch when its old base branch disappears, but retargeting alone doesn't fix the diff.
+
+**This is the recoverable case, not the orphan case** [`docs/REFERENCE.md` → Stacked PR squash-merge sequencing](../docs/REFERENCE.md#git-workflow-runbooks) already documents: if the parent was merged *without* `--delete-branch` (that runbook's Prevention step 1), the child PR is never auto-closed, so no new PR is needed — the fix is just a rebase.
+
+**Symptom:** `gh pr view <child> --json mergeable,mergeStateStatus` reports `"mergeable":"CONFLICTING"`, `"mergeStateStatus":"DIRTY"` right after the parent merges, even though the child's own file changes don't actually overlap the parent's.
+
+**Fix:**
+```bash
+git fetch origin main
+git rebase origin/main   # no --onto, no SHA-hunting — patch-id matching drops the
+                         # now-squashed parent commits on its own ("patch contents already upstream")
+git fetch origin && git push --force-with-lease   # fetch first — see the bare-`--force` runbook above
+```
+
+Motivating incident: career-playbook [#923](https://github.com/brownm09/career-playbook/pull/923), stacked on parent [#878](https://github.com/brownm09/career-playbook/pull/878), 2026-07-27 — full detail: [dev-env#457](https://github.com/brownm09/dev-env/issues/457).
+
 ---
 
 ## Dev-Env & Project Boards
