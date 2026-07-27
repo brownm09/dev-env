@@ -63,8 +63,11 @@ if ($Unregister) {
 
     # Back up before mutating (ADR-079): capture the live definition first and refuse to
     # proceed if it can't be captured. Write-if-absent so a later -Unregister run (e.g.
-    # after a re-registration) never overwrites the original pristine capture.
-    if (-not (Test-Path $BackupPath)) {
+    # after a re-registration) never overwrites the original pristine capture. Checked as
+    # "exists AND non-empty", not presence alone -- a zero-byte leftover from an earlier
+    # run that was interrupted mid-write (disk full, killed process) must not be mistaken
+    # for a completed backup on a later retry, which would silently skip re-capturing it.
+    if (-not ((Test-Path $BackupPath) -and (Get-Item $BackupPath).Length -gt 0)) {
         $backupDir = Split-Path $BackupPath -Parent
         if (-not (Test-Path $backupDir)) { New-Item -ItemType Directory -Path $backupDir -Force | Out-Null }
         try {
