@@ -71,6 +71,20 @@ identically against the *unmodified* credentials file too — see dev-env#825);
 the tests below therefore pin the function's own retry/fallback contract
 rather than an end-to-end live refresh.
 
+dev-env#915: the machine has since migrated from the npm CLI to the MSIX Claude
+desktop app, which keeps OAuth in the OS keychain and never writes a readable
+`.credentials.json` — so the orphan file is blanked (accessToken ""), a CLI
+subprocess reports `loggedIn:false`, and both the file read and
+`keep-token-warm.ps1`'s refresh are permanently futile (setup-token is 403 at the
+usage endpoint, ADR-043). `main()`'s branch A now probes `claude auth status`
+(`cli_auth_status` -> `resolve_claude_exe` + pure `parse_auth_status`) and, on the
+`out` signature, skips the doomed refresh and emits an accurate advisory naming
+dev-env#915 (ADR-124). The tests below pin the blank-string token entry into branch
+A, the pure `parse_auth_status` classification (only an explicit boolean False is a
+dead-end), and — via injected `exe_fn`/`run_fn`, matching the `attempt_token_refresh`
+fake-injection style — that `cli_auth_status` degrades to None (no spawn) off MSIX
+and on subprocess error, and classifies "out" on the desktop-app signature.
+
 The live network call (`fetch_usage`) is intentionally not tested — the repo
 avoids urllib mocks, consistent with the other script tests.
 
@@ -102,6 +116,8 @@ classify_token = usage_snapshot.classify_token
 snapshot_action = usage_snapshot.snapshot_action
 attempt_token_refresh = usage_snapshot.attempt_token_refresh
 get_access_token = usage_snapshot.get_access_token
+parse_auth_status = usage_snapshot.parse_auth_status
+cli_auth_status = usage_snapshot.cli_auth_status
 merge_confirmed = usage_snapshot.merge_confirmed
 status_label = usage_snapshot.status_label
 format_snapshot = usage_snapshot.format_snapshot
@@ -281,6 +297,77 @@ def test_missing_token_refresh_recovery_then_classifies_ok() -> str:
     assert state == "ok", f"expected ok after recovery, got {state}"
     assert advisory == "", advisory
     return "recovered token classifies as ok -> main() would proceed to fetch, not block (dev-env#819 happy path)"
+
+
+def test_get_access_token_blank_string_token() -> str:
+    # dev-env#915: the MSIX desktop app leaves a well-formed but *blanked* creds
+    # file (accessToken == "", expiresAt == 0). get_access_token returns ("", 0) --
+    # NOT None (empty string is not a KeyError) -- and "" is falsy, so main()'s
+    # `if not token:` branch A fires (the same branch #819 added the refresh to).
+    # Prior tests only used None / missing-key fixtures; pin the blank-string case.
+    token, expires_at_ms = get_access_token(
+        {"claudeAiOauth": {"accessToken": "", "expiresAt": 0}}
+    )
+    assert token == "", f"expected empty string, got {token!r}"
+    assert expires_at_ms == 0, expires_at_ms
+    assert not token, "blank accessToken must be falsy so branch A fires"
+    return "blanked creds (accessToken='') -> ('', 0), falsy -> branch A (dev-env#915)"
+
+
+def test_parse_auth_status_classifies_states() -> str:
+    # dev-env#915: `claude auth status --json` classification. loggedIn:false as a
+    # subprocess is the MSIX desktop-app dead-end signature ("out"). Malformed,
+    # field-less, or non-boolean output must NOT be treated as a dead-end (None) --
+    # only an explicit boolean False skips the snapshot.
+    cases = [
+        ('{"loggedIn": false, "authMethod": "none"}', "out"),
+        ('{"loggedIn": true}', "in"),
+        ("{}", None),                     # no loggedIn field -> unknown
+        ("not json at all", None),        # unparseable
+        ("[1, 2, 3]", None),              # valid JSON but not an object
+        ('{"loggedIn": "false"}', None),  # present but non-boolean -> unknown
+        ("", None),                       # empty stdout
+    ]
+    for stdout, expected in cases:
+        got = parse_auth_status(stdout)
+        assert got == expected, f"parse_auth_status({stdout!r}) -> {got!r}, expected {expected!r}"
+    return "parse_auth_status: false->out, true->in, malformed/field-less/non-bool->None (dev-env#915)"
+
+
+def test_cli_auth_status_no_exe_returns_none_without_spawning() -> str:
+    # dev-env#915: on a non-MSIX install (npm CLI) resolve_claude_exe() finds no
+    # packaged .exe -> cli_auth_status returns None WITHOUT spawning a subprocess,
+    # so the caller falls through to the legacy refresh path unchanged (and pays no
+    # subprocess cost on installs the dead-end can't apply to).
+    def run_fn(*a, **k):
+        raise AssertionError("subprocess must not run when no exe resolves")
+
+    got = cli_auth_status(exe_fn=lambda: None, run_fn=run_fn)
+    assert got is None, f"expected None, got {got!r}"
+    return "no packaged exe -> None, no subprocess spawned (npm-install degradation, dev-env#915)"
+
+
+def test_cli_auth_status_out_when_subprocess_reports_logged_out() -> str:
+    # dev-env#915: with a resolvable exe and an injected runner returning the
+    # desktop-app signature, cli_auth_status classifies "out" -> main() skips the
+    # ~35s refresh and emits the accurate advisory.
+    class FakeProc:
+        stdout = '{"loggedIn": false, "authMethod": "none"}'
+
+    got = cli_auth_status(exe_fn=lambda: "C:/fake/claude.exe", run_fn=lambda *a, **k: FakeProc())
+    assert got == "out", f"expected out, got {got!r}"
+    return "resolvable exe + loggedIn:false subprocess -> 'out' (dev-env#915)"
+
+
+def test_cli_auth_status_none_on_subprocess_error() -> str:
+    # A subprocess failure/timeout must degrade to None (legacy behavior), never
+    # crash the hook -- the probe is best-effort like refresh_token_now.
+    def boom(*a, **k):
+        raise TimeoutError("simulated timeout")
+
+    got = cli_auth_status(exe_fn=lambda: "C:/fake/claude.exe", run_fn=boom)
+    assert got is None, f"expected None on subprocess error, got {got!r}"
+    return "subprocess error -> None (degrades to legacy, dev-env#915)"
 
 
 def test_merge_confirmed_true_for_worktree_merge_despite_nonzero_exit() -> str:
@@ -480,6 +567,17 @@ def main() -> int:
             "recovered token classifies ok -> proceeds to fetch (dev-env#819 happy path)",
             test_missing_token_refresh_recovery_then_classifies_ok,
         ),
+        ("blanked creds accessToken='' falls to branch A (dev-env#915)", test_get_access_token_blank_string_token),
+        ("parse_auth_status classifies in/out/None (dev-env#915)", test_parse_auth_status_classifies_states),
+        (
+            "cli_auth_status: no packaged exe -> None, no spawn (dev-env#915)",
+            test_cli_auth_status_no_exe_returns_none_without_spawning,
+        ),
+        (
+            "cli_auth_status: loggedIn:false subprocess -> out (dev-env#915)",
+            test_cli_auth_status_out_when_subprocess_reports_logged_out,
+        ),
+        ("cli_auth_status: subprocess error -> None (dev-env#915)", test_cli_auth_status_none_on_subprocess_error),
         (
             "worktree-merge output confirms despite non-zero exit",
             test_merge_confirmed_true_for_worktree_merge_despite_nonzero_exit,
