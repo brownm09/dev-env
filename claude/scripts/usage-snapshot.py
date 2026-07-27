@@ -33,10 +33,16 @@ Exit 2  — snapshot emitted via stderr, OR a missing/unparseable token whose
           API was unreachable after one retry (advisory — #302). Both a
           missing/unparseable token and an expired one are first refreshed on
           demand via the CLI (keep-token-warm.ps1); a still-valid "expiring"
-          token proceeds to fetch.
+          token proceeds to fetch. Exception: when a CLI *subprocess* is itself
+          unauthenticated (the MSIX desktop-app configuration — OAuth lives in the
+          OS keychain, no readable .credentials.json exists, so both the refresh
+          and an interactive re-auth are futile), the missing-token branch detects
+          it via a `claude auth status` probe and emits an accurate advisory naming
+          dev-env#915 *without* the doomed ~35s refresh (ADR-124).
 """
 import _winsubp  # noqa: F401  -- patches subprocess to suppress console windows
 import json
+import os
 import re
 import subprocess
 import sys
@@ -112,6 +118,101 @@ def get_access_token(creds: dict) -> tuple[str | None, int]:
         return oauth["accessToken"], int(oauth.get("expiresAt", 0))
     except (KeyError, TypeError, ValueError):
         return None, 0
+
+
+# --- CLI auth probe (dev-env#915) ---
+#
+# Under the MSIX Claude desktop app the bundled CLI, run as a *subprocess* (this
+# hook's and keep-token-warm.ps1's context), is unauthenticated: OAuth lives in the
+# OS keychain and is injected in-process to child sessions, and no readable
+# .credentials.json is ever written. So a blank/missing token there can be neither
+# read nor refreshed (keep-token-warm.ps1 invokes that same unauthenticated CLI),
+# and "run claude interactively" cannot help. `claude auth status --json` reporting
+# loggedIn:false is the precise signature; on it we skip the ~35s refresh and emit
+# an accurate advisory instead. On any other install (npm CLI with a real token
+# file) the packaged .exe is absent, the probe returns None, and the legacy
+# refresh-then-advise path runs unchanged.
+
+# MSIX package family for the Claude desktop app; mirrors keep-token-warm.ps1's
+# Resolve-ClaudeExe so both resolve the same bundled binary.
+_MSIX_CLAUDE_CODE_REL = "Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code"
+
+
+def resolve_claude_exe() -> str | None:
+    """Path to the newest packaged claude.exe, or None if the MSIX layout is absent.
+
+    Returns the real .exe (not the ~/bin PATH shim) so subprocess can exec it
+    directly without the .cmd/PATHEXT indirection. Deliberately no PATH fallback:
+    this probe exists only to detect the desktop-app dead-end (dev-env#915); on an
+    npm-CLI install the packaged .exe is absent and None routes the caller to the
+    legacy refresh path.
+    """
+    local = os.environ.get("LOCALAPPDATA", "")
+    if not local:
+        return None
+    base = Path(local) / _MSIX_CLAUDE_CODE_REL
+    try:
+        exes = list(base.glob("*/claude.exe"))
+    except OSError:
+        return None
+    if not exes:
+        return None
+
+    def _ver(p: Path) -> tuple:
+        try:
+            return tuple(int(x) for x in p.parent.name.split("."))
+        except ValueError:
+            return (0,)
+
+    return str(max(exes, key=_ver))
+
+
+def parse_auth_status(stdout: str) -> str | None:
+    """Classify `claude auth status --json` output (pure; offline-testable).
+
+    "in"   -> loggedIn is exactly True,
+    "out"  -> loggedIn is exactly False (the desktop-app dead-end signature),
+    None   -> unparseable, not an object, or loggedIn missing / non-boolean -- never
+              treat malformed output as a dead-end (that would wrongly skip a
+              snapshot the legacy refresh path might still recover).
+    """
+    try:
+        data = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    logged_in = data.get("loggedIn")
+    if logged_in is True:
+        return "in"
+    if logged_in is False:
+        return "out"
+    return None
+
+
+def cli_auth_status(timeout: int = 8, exe_fn=resolve_claude_exe, run_fn=None) -> str | None:
+    """Whether a CLI *subprocess* here can authenticate (dev-env#915).
+
+    "out" is the MSIX desktop-app signature (loggedIn:false as a subprocess) — the
+    file read and keep-token-warm.ps1's refresh are both permanently futile. "in"
+    means a refresh can plausibly help (npm-CLI world). None means unknown -> the
+    caller keeps its legacy behavior. exe_fn/run_fn are dependency-injected for
+    offline testing, mirroring attempt_token_refresh's fake-injection pattern.
+    """
+    exe = exe_fn()
+    if not exe:
+        return None
+    runner = run_fn or subprocess.run
+    try:
+        proc = runner(
+            [exe, "auth", "status", "--json"],
+            timeout=timeout,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    return parse_auth_status(getattr(proc, "stdout", "") or "")
 
 
 # --- usage API ---
@@ -510,10 +611,27 @@ def main() -> None:
     if not token:
         # Creds file exists but holds no usable token (missing/malformed oauth
         # substructure) — surface it rather than failing silently (creds-file-absent
-        # is handled silently above). Attempt an on-demand refresh first, mirroring
-        # the expired-token branch below: the CLI's refresh path can repair a
-        # locally corrupted/missing token field, not just refresh an already-valid
-        # one (dev-env#819).
+        # is handled silently above).
+        #
+        # Before paying for a ~35s keep-warm refresh (and before advising an
+        # interactive re-auth), check whether a CLI *subprocess* can even
+        # authenticate here. Under the MSIX Claude desktop app it cannot: OAuth is in
+        # the OS keychain, no readable .credentials.json is ever written, so neither
+        # this read nor keep-token-warm.ps1's refresh can produce one and setup-token
+        # is 403 at the usage endpoint (dev-env#915, ADR-043/044/124). `claude auth
+        # status` reporting loggedIn:false is that exact signature — skip straight to
+        # an accurate advisory rather than a doomed refresh. emit_block() exits(2).
+        if cli_auth_status() == "out":
+            _hookout.emit_block(
+                "[usage-snapshot] Skipped: the Claude desktop app keeps OAuth in the "
+                "OS keychain, so no readable token file exists and a CLI refresh "
+                "cannot create one (dev-env#915). Post-merge usage snapshots are "
+                "unavailable in this configuration."
+            )
+        # Otherwise (npm-CLI world, or an unknown probe result): attempt an on-demand
+        # refresh, mirroring the expired-token branch below — the CLI's refresh path
+        # can repair a locally corrupted/missing token field, not just refresh an
+        # already-valid one (dev-env#819).
         token, expires_at_ms, creds = attempt_token_refresh(creds, token, expires_at_ms)
         if not token:
             _hookout.emit_block(
