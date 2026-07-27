@@ -23,6 +23,23 @@ The git-reading helpers (`canonical_current_branch`, `branch_stub_paths`,
 `format_day_rollover` is pure, and `main()`'s worktree gating is driven end-to-end by
 stubbing the module's own check functions and redirecting SCRATCH — no git, no network.
 
+Check 5 (stale-canonical self-healing, ADR-119 Amendment 1 / dev-env#911) gets the same
+pure-function coverage (`stale_canonical_recovery_decision` — named `_decision`, not
+`format_*`, because unlike `format_day_rollover` a non-None return here ALSO authorizes the
+actual checkout, not just advisory text), PLUS — unlike every other check in this file — a
+set of real-repo end-to-end tests. Check 5 is the one check whose action mutates the
+canonical (`git checkout main`) rather than only printing advice, so proving the single most
+important safety property ("a dirty tree is never auto-touched") requires actually asserting
+on a real repo's branch after the call, not just on a returned string. Those tests drive the
+real `stale_canonical_recovery_message()` against a disposable throwaway git repo, borrowing
+the init-a-real-repo fixture technique from this repo's closest analog for a mutating journal
+hook, `test_journal_canonical_guard.py` — the only other test file in this family that
+asserts on real post-call git state. One of the four (`test_stale_recovery_noop_when_just_checked_out`)
+pins a real bug PR #912's own review caught: idle time must be measured from the last time
+HEAD moved (checkout OR commit), never from the stale branch's own tip-commit time, or a
+session that just legitimately checked the branch out finds idle_minutes already past
+threshold at the instant of checkout — see `canonical_head_idle_minutes`'s docstring.
+
 Usage:
     py -3 claude/scripts/tests/test_new_day_journal_check.py
 
@@ -33,8 +50,11 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -54,6 +74,7 @@ branch_date = mod.branch_date
 mismatched_stub_paths = mod.mismatched_stub_paths
 format_day_rollover = mod.format_day_rollover
 summarize_by_project = mod.summarize_by_project
+stale_canonical_recovery_decision = mod.stale_canonical_recovery_decision
 
 
 def test_branch_date_parses_plain_and_suffixed() -> str:
@@ -212,6 +233,52 @@ def test_mismatched_stub_paths_requires_digits_not_just_separators() -> str:
     return "non-digit date-shaped filenames are rejected, matching branch_date's strictness"
 
 
+# --- stale_canonical_recovery_decision: pure decision + formatting (dev-env#911) ---------
+
+
+def test_stale_canonical_recovery_decision_silent_cases() -> str:
+    assert stale_canonical_recovery_decision("draft/2026-07-22", "2026-07-22", False, 999) is None, \
+        "today's own branch must never fire, no matter how idle"
+    assert stale_canonical_recovery_decision("main", "2026-07-22", False, 999) is None, \
+        "a non-draft branch must never fire"
+    assert stale_canonical_recovery_decision("draft/2026-07-21", "2026-07-22", True, 999) is None, \
+        "a dirty tree must never fire, no matter how idle"
+    assert stale_canonical_recovery_decision("draft/2026-07-21", "2026-07-22", False, 5) is None, \
+        "under the idle threshold (15min) must not fire"
+    assert stale_canonical_recovery_decision("draft/2026-07-21", "2026-07-22", False, None) is None, \
+        "unknown idle time must not fire (fails toward inaction, never toward acting)"
+    return "silent on: today's branch, non-draft branch, dirty tree, under-threshold idle, unknown idle"
+
+
+def test_stale_canonical_recovery_decision_dirty_short_circuits_before_idle() -> str:
+    """Regression pin for the single most important safety property (dev-env#911): dirty
+    must be checked BEFORE idle_minutes is even consulted, so a dirty+unknown-idle or a
+    dirty+enormously-idle branch is silent either way -- the ordering must not silently drift
+    so that some future edit lets an absent idle reading coincidentally short-circuit ahead of
+    the dirty check instead of the dirty check owning that job unconditionally."""
+    assert stale_canonical_recovery_decision("draft/2026-07-21", "2026-07-22", True, None) is None
+    assert stale_canonical_recovery_decision("draft/2026-07-21", "2026-07-22", True, 999999) is None
+    return "dirty is silent regardless of idle_minutes being absent or enormous"
+
+
+def test_stale_canonical_recovery_decision_fires_when_clean_and_idle() -> str:
+    msg = stale_canonical_recovery_decision("draft/2026-07-21", "2026-07-22", False, 15)
+    assert msg is not None, "exactly at the 15min threshold must fire (not-less-than, not strictly-greater)"
+    assert "draft/2026-07-21" in msg, msg
+    assert "restored to main" in msg, msg
+    assert "15min" in msg, msg
+    assert "dev-env#911" in msg, msg
+    return "clean + idle >= threshold fires, naming the branch, the restore, and the idle minutes"
+
+
+def test_stale_canonical_recovery_decision_suffixed_branch_matches_today() -> str:
+    """branch_date() parses through documented suffix forms (e.g. -recovery); reusing it here
+    means a suffixed branch whose DATE is today is treated as current, exactly like check 4's
+    own semantics -- the two checks must agree on what "today's branch" means."""
+    assert stale_canonical_recovery_decision("draft/2026-07-22-recovery", "2026-07-22", False, 999) is None
+    return "a suffixed branch dated today is treated as today's branch, same as format_day_rollover"
+
+
 # --- end-to-end main() gating (dev-env#873 review) ---------------------------
 # The worktree branching had ZERO coverage: a future edit hoisting the in_worktree
 # early-return above the rollover check, or restoring the old blanket sys.exit(0), would
@@ -309,6 +376,170 @@ def test_main_quiet_run_still_arms_the_sentinel() -> str:
     return "a quiet run arms its sentinel instead of re-running the check on the next prompt"
 
 
+# --- Check 5: stale-canonical self-healing — real-repo end-to-end tests (dev-env#911) -----
+# Unlike every other check in this file, check 5's action is a REAL git mutation
+# (`git checkout main`), not just advisory text. The pure tests above prove the decision
+# logic; they cannot prove the wrapper actually leaves a dirty repo untouched. These four
+# tests drive the real `stale_canonical_recovery_message()` against a disposable throwaway
+# git repo and assert on the repo's ACTUAL branch afterward — borrowing the init-a-real-repo
+# fixture technique from `test_journal_canonical_guard.py`'s `_init_throwaway_repo`, this
+# repo's only other test file that asserts on real post-call git state for a mutating
+# journal hook.
+
+# Synthetic, wall-clock-independent dates (never a real "today") so these tests stay
+# deterministic regardless of which real date they happen to run on.
+FAKE_TODAY = "2099-01-01"
+FAKE_STALE_DATE = "2098-06-15"
+
+
+def _run_git(root: Path, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=True, capture_output=True, text=True, env=env,
+    )
+
+
+def _init_canonical_fixture(root: Path) -> None:
+    """Minimal real git repo at `root`, branch `main`, one empty commit. Mirrors
+    test_journal_canonical_guard.py's `_init_throwaway_repo` fixture helper exactly (same
+    target repo family, same convention) -- `-c init.templateDir= -c core.hooksPath=`
+    neutralizes any global template/hooks directory the developer's machine has configured."""
+    subprocess.run(
+        ["git", "-c", "init.templateDir=", "-c", "core.hooksPath=", "init", "-q", str(root)],
+        check=True, capture_output=True,
+    )
+    _run_git(root, "config", "user.email", "test@example.com")
+    _run_git(root, "config", "user.name", "Test")
+    _run_git(root, "commit", "--allow-empty", "-q", "-m", "init")
+    _run_git(root, "branch", "-M", "main")
+
+
+def _checkout_draft_branch(root: Path, date_str: str, minutes_ago: float) -> None:
+    """Create and check out `draft/<date_str>` with one commit, backdated `minutes_ago`
+    minutes via GIT_AUTHOR_DATE/GIT_COMMITTER_DATE so canonical_branch_idle_minutes() can be
+    exercised against a real repo without sleeping in the test."""
+    _run_git(root, "checkout", "-q", "-b", f"draft/{date_str}")
+    env = dict(os.environ)
+    commit_epoch = int(time.time() - minutes_ago * 60)
+    env["GIT_AUTHOR_DATE"] = f"{commit_epoch} +0000"
+    env["GIT_COMMITTER_DATE"] = f"{commit_epoch} +0000"
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "--allow-empty", "-q", "-m", f"draft: {date_str} session 1"],
+        check=True, capture_output=True, text=True, env=env,
+    )
+
+
+def _make_dirty(root: Path) -> None:
+    """Stage an uncommitted change. Staged (not left untracked) so `git status --porcelain`
+    shows it regardless of the ambient `status.showUntrackedFiles` config -- same caution
+    test_journal_canonical_guard.py's dirty-canonical fixture documents."""
+    (root / "dirty.txt").write_text("uncommitted", encoding="utf-8")
+    _run_git(root, "add", "dirty.txt")
+
+
+def _current_branch(root: Path) -> str:
+    return _run_git(root, "branch", "--show-current").stdout.strip()
+
+
+def _stale_recovery_against(root: Path):
+    """Call the real stale_canonical_recovery_message() with mod.JOURNAL_REPO/mod.TODAY
+    patched to this fixture, restoring both afterward regardless of outcome -- same
+    direct-module-attribute-patching style _run_main() above already uses for mod.SCRATCH."""
+    orig_repo, orig_today = mod.JOURNAL_REPO, mod.TODAY
+    mod.JOURNAL_REPO, mod.TODAY = root, FAKE_TODAY
+    try:
+        return mod.stale_canonical_recovery_message()
+    finally:
+        mod.JOURNAL_REPO, mod.TODAY = orig_repo, orig_today
+
+
+def test_stale_recovery_noop_on_todays_branch() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "engineering-journal"
+        root.mkdir()
+        _init_canonical_fixture(root)
+        _checkout_draft_branch(root, FAKE_TODAY, minutes_ago=20)  # idle, but it IS today
+        result = _stale_recovery_against(root)
+        assert result is None, f"today's branch must never be touched; got {result!r}"
+        assert _current_branch(root) == f"draft/{FAKE_TODAY}", \
+            f"branch must be unchanged; got {_current_branch(root)!r}"
+    return "on today's own draft branch, no message and no checkout, regardless of idle time"
+
+
+def test_stale_recovery_noop_when_dirty() -> str:
+    """THE core safety-property proof (dev-env#911): a stale, sufficiently idle branch with
+    an uncommitted change must NEVER be auto-checked-out, no matter how safe the idle time
+    alone would otherwise make it look."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "engineering-journal"
+        root.mkdir()
+        _init_canonical_fixture(root)
+        _checkout_draft_branch(root, FAKE_STALE_DATE, minutes_ago=60)  # plenty idle
+        _make_dirty(root)
+        result = _stale_recovery_against(root)
+        assert result is None, f"a dirty tree must never be auto-touched; got {result!r}"
+        assert _current_branch(root) == f"draft/{FAKE_STALE_DATE}", \
+            f"checkout must NOT happen on a dirty tree; got {_current_branch(root)!r}"
+        status = _run_git(root, "status", "--porcelain").stdout
+        assert "dirty.txt" in status, "the uncommitted change itself must also be untouched"
+    return "stale + idle + DIRTY -> no message, no checkout: the single most important safety property"
+
+
+def test_stale_recovery_noop_when_recently_committed() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "engineering-journal"
+        root.mkdir()
+        _init_canonical_fixture(root)
+        _checkout_draft_branch(root, FAKE_STALE_DATE, minutes_ago=2)  # well under the 15min bar
+        result = _stale_recovery_against(root)
+        assert result is None, f"a recent (in-flight) hop must not be touched; got {result!r}"
+        assert _current_branch(root) == f"draft/{FAKE_STALE_DATE}", \
+            f"branch must be unchanged; got {_current_branch(root)!r}"
+    return "stale + clean but recently committed (<15min) -> no message, no checkout"
+
+
+def test_stale_recovery_noop_when_just_checked_out() -> str:
+    """THE regression pin for the bug PR #912's own review caught: idle time must be measured
+    from the last time HEAD moved (checkout OR commit), never from the stale branch's own
+    tip-commit time. A naive tip-commit-time signal would already read as "idle" the INSTANT
+    a session checks the branch out, since a genuinely stale branch's last real commit is, by
+    construction, already old -- giving a legitimate in-flight checkout ZERO of the headroom
+    STALE_CANONICAL_IDLE_MINUTES is meant to provide, and exposing it to exactly the
+    collision dev-env#911 is about."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "engineering-journal"
+        root.mkdir()
+        _init_canonical_fixture(root)
+        # The branch's own tip commit is VERY old -- this alone would satisfy a (buggy)
+        # tip-commit-time idle check immediately, with no checkout-time protection at all.
+        _checkout_draft_branch(root, FAKE_STALE_DATE, minutes_ago=1000)
+        _run_git(root, "checkout", "-q", "main")
+        # Simulate a session legitimately (and freshly) checking the stale branch back out
+        # right now -- e.g. to commit an orphaned shard deletion per ADR-119 decision 3 --
+        # with no new commit yet.
+        _run_git(root, "checkout", "-q", f"draft/{FAKE_STALE_DATE}")
+        result = _stale_recovery_against(root)
+        assert result is None, \
+            f"a just-checked-out branch must not be touched, even if its OWN tip commit is ancient; got {result!r}"
+        assert _current_branch(root) == f"draft/{FAKE_STALE_DATE}", \
+            f"checkout must NOT happen right after a fresh legitimate checkout; got {_current_branch(root)!r}"
+    return "stale branch with an ancient tip commit, but JUST checked out -> no message, no checkout"
+
+
+def test_stale_recovery_restores_when_clean_and_idle() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "engineering-journal"
+        root.mkdir()
+        _init_canonical_fixture(root)
+        _checkout_draft_branch(root, FAKE_STALE_DATE, minutes_ago=20)
+        result = _stale_recovery_against(root)
+        assert result and f"draft/{FAKE_STALE_DATE}" in result, f"expected a recovery message; got {result!r}"
+        assert "restored to main" in result, result
+        assert _current_branch(root) == "main", \
+            f"the canonical must actually be back on main; got {_current_branch(root)!r}"
+    return "stale + clean + idle >=15min -> auto-restored to main, confirmed against the real repo"
+
+
 def main() -> int:
     tests = [
         ("branch_date parses plain and suffixed draft branches", test_branch_date_parses_plain_and_suffixed),
@@ -328,6 +559,15 @@ def main() -> int:
         ("worktree emission does not suppress checks 1-3", test_main_worktree_emission_does_not_suppress_canonical_checks),
         ("rollover re-suppresses within the recheck window", test_main_rollover_resuppresses_within_the_recheck_window),
         ("a quiet run still arms the sentinel", test_main_quiet_run_still_arms_the_sentinel),
+        ("stale-recovery: silent cases (today/non-draft/dirty/under-threshold/unknown-idle)", test_stale_canonical_recovery_decision_silent_cases),
+        ("stale-recovery: dirty short-circuits before idle is consulted", test_stale_canonical_recovery_decision_dirty_short_circuits_before_idle),
+        ("stale-recovery: fires when clean and idle >= threshold", test_stale_canonical_recovery_decision_fires_when_clean_and_idle),
+        ("stale-recovery: suffixed branch dated today is not stale", test_stale_canonical_recovery_decision_suffixed_branch_matches_today),
+        ("stale-recovery (real repo): today's branch never touched", test_stale_recovery_noop_on_todays_branch),
+        ("stale-recovery (real repo): dirty tree -> checkout does NOT happen", test_stale_recovery_noop_when_dirty),
+        ("stale-recovery (real repo): recent commit (<15min) -> no-op", test_stale_recovery_noop_when_recently_committed),
+        ("stale-recovery (real repo): just checked out (ancient tip commit) -> no-op", test_stale_recovery_noop_when_just_checked_out),
+        ("stale-recovery (real repo): clean + idle -> auto-restores to main", test_stale_recovery_restores_when_clean_and_idle),
     ]
     failed = 0
     for name, fn in tests:
@@ -339,6 +579,14 @@ def main() -> int:
             failed += 1
             print(f"FAIL: {name}")
             print(f"      {exc}")
+        except Exception as exc:  # noqa: BLE001 -- the real-repo tests spawn git subprocesses
+            # (check=True) that can raise CalledProcessError on unexpected fixture failure;
+            # without this, an uncaught non-AssertionError exception would abort main()'s
+            # loop entirely (killing every subsequent test) instead of reporting one clean
+            # FAIL line, matching test_journal_canonical_guard.py's more defensive pattern
+            # for the same real-subprocess-fixture test style.
+            failed += 1
+            print(f"ERROR: {name}: {type(exc).__name__}: {exc}")
     print(f"\nTests: {len(tests) - failed} passed, 0 skipped, {failed} failed")
     return 1 if failed else 0
 
