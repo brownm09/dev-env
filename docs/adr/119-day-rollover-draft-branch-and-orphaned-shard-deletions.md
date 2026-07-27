@@ -1,8 +1,8 @@
 # ADR-119: Day Rollover Cuts a Fresh Draft Branch; Orphaned Open-PR Shard Deletions Are Surfaced, Not Auto-Committed
 
-**Date:** 2026-07-22
+**Date:** 2026-07-22 (amended 2026-07-26)
 **Status:** Accepted
-**Tags:** journal, stubs, draft-branch, day-rollover, open-prs, sharding, hooks, UserPromptSubmit, new-day-journal-check, reconcile-open-prs, canonical-checkout, silent-failure, data-loss, global-rule, adr-017, adr-056, adr-082, adr-084
+**Tags:** journal, stubs, draft-branch, day-rollover, open-prs, sharding, hooks, UserPromptSubmit, new-day-journal-check, reconcile-open-prs, canonical-checkout, silent-failure, data-loss, global-rule, self-healing, stale-canonical, auto-recovery, concurrency, toctou, adr-017, adr-056, adr-082, adr-084, adr-071, adr-093
 
 ## Context
 
@@ -119,3 +119,42 @@ A fifth finding concerns detection rather than the decision: the day-rollover ch
 - [Git — `git-status` porcelain format](https://git-scm.com/docs/git-status#_short_format) — the `XY <path>` status columns the classifier reads
 - [Git — `git-worktree`](https://git-scm.com/docs/git-worktree) — one-worktree-per-branch, why the canonical is shared rather than isolated
 - [GitHub — REST vs GraphQL rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api) — independent budgets; why `gh pr view --json` can fail while REST is healthy
+
+## Amendment 1 (2026-07-26, dev-env#911) — Stale-canonical self-healing: auto-restore to `main` after a bounded idle window
+
+### The gap
+
+Decision 1 above ("day rollover: always cut `draft/<today>` from `main`") assumes every session reliably completes that ordinary rollover. In practice, two concurrent sessions can still collide on the canonical's single shared HEAD — nothing serializes them. [dev-env#911](https://github.com/brownm09/dev-env/issues/911) documents two live incidents (2026-07-25 and 2026-07-26) with an identical shape: a session correctly cuts `draft/<today>` from `main`, commits its first stub, and within 9-11 seconds a *different*, concurrent session checks the canonical out to an unrelated, much older `draft/<D>` branch — almost certainly to commit an orphaned open-PR shard deletion per this ADR's own decision 3 ("yours to commit immediately... whether or not it writes a stub"). The loser of that race leaves the canonical stranded on the old branch. One incident recovered in ~6 minutes (a concurrent session's own `git stash push` intervened); the other left the canonical stranded for **~32 hours**, blocking every session's documented "first session of the day" `git checkout main` step in the meantime, and very nearly cost the fresh `draft/2026-07-25` branch's own ref (recovered from the reflog only because it stayed reachable).
+
+Root cause is architectural, not a bug in any one hook: the Stub file workflow requires every session to operate directly on one shared canonical checkout via `-C`, by design (this is what lets concurrent sessions reach the same checkout instead of racing for worktrees). Decision 2's date-mismatch detector already gave the canonical-on-a-stale-branch *state* a name and a manual repair procedure, but nothing bounded how long that state could silently persist before a human happened to notice.
+
+A real fix — a coordination lock serializing canonical-branch hops — was considered and explicitly deferred: it is a new primitive with its own failure modes (stale locks on crash, contention, retry semantics) that deserves its own design pass, not a rider on this amendment. This amendment instead bounds the **blast radius** of the un-fixed collision: not preventing it, but ensuring it cannot silently persist for hours.
+
+### The fix
+
+A fifth check in `new-day-journal-check.py` (the same `UserPromptSubmit` hook Decision 2 already extended for the date-mismatch detector): `stale_canonical_recovery_message()`. It fires only when **all** of the following hold, checked in this order:
+
+1. The canonical's current branch is `draft/<D>` and `D` is not today (reusing `branch_date()`, so a suffixed form like `draft/<D>-recovery` is judged by the same semantics Decision 2 already established).
+2. The **entire** working tree is clean — not just `sessions/`, unlike the sessions/-scoped `canonical_is_dirty()` this hook already uses for the day-rollover CAUTION text. A real `git checkout` can silently carry uncommitted changes on any tracked file across branches when they don't conflict with the target, so a narrower gate would miss exactly the concurrent-session collision this check exists to bound.
+3. The branch's last commit is at least `STALE_CANONICAL_IDLE_MINUTES` (15) old. Idle time is measured from the last COMMIT, not from when the branch was last checked out — deliberately conservative in the safe direction, since this can only under-count how recently a session started working on the branch, never over-count. 15 minutes is chosen with real headroom: the observed legitimate hops (checkout the old branch, commit, checkout away) took 9 seconds to 6 minutes; the incident this check exists to bound left the canonical stranded ~32 hours.
+
+Only when all three hold does the check perform an actual `git checkout main` — the one mutating action in this otherwise entirely advisory hook. Immediately before that checkout, a final re-read of the current branch and dirty state narrows the residual TOCTOU window (mirroring `journal-canonical-guard.py`'s identical precaution for its own auto-checkout of this same shared canonical): if either changed since the first read, the check silently stands down rather than acting on stale information. A failed or errored checkout is caught and reported inline, never raised — this hook's existing fail-open contract (exit 0 always) applies to check 5 exactly as it does to checks 1-4.
+
+The restore target is always `main`, never a specific `draft/*` branch — `main` is always safe to be on, and any subsequent session's ordinary "first session of the day" procedure moves it to `draft/<today>` from there, per Decision 1.
+
+Check 5 shares check 4's sentinel (rather than a third of its own) and runs in Claude-managed worktree sessions exactly like check 4 does, for the identical reason: worktree sessions write stubs into the canonical via `git -C` just like any other session, so they are exactly who benefits from the auto-recovery. Check 5 runs first in `main()`'s check order specifically so that when it fires, check 4's own subsequent (deliberately unmemoized) read of the current branch naturally observes the post-restore state and stays silent, rather than immediately reporting a stale-branch warning about a problem check 5 just fixed.
+
+### Why this is an amendment, not a new ADR
+
+Same file, same hook, same shared canonical, same underlying hazard class this ADR's decision 1 and 2 already govern (the canonical stranded on a non-today `draft/*` branch) — only a new, bounded, self-healing response layered on top of the detection this ADR already introduced. This mirrors [ADR-071 Amendment 1](071-canonical-checkout-mutate-guard-hook.md)'s own justification for extending an already-shipped hook's coverage rather than re-litigating the original decision.
+
+### Consequences (amendment)
+
+**Positive.** A collision that used to require a human to notice a stalled canonical (observed: up to ~32 hours) now self-heals within `STALE_CANONICAL_IDLE_MINUTES` of the losing session's last commit, with no coordination primitive required. Checks 4 and 5 together mean the canonical is never silently stranded for long: check 5 fixes the common case automatically, and check 4 keeps reporting whenever check 5's stricter gate (clean + sufficiently idle) does not apply — most importantly, a genuinely dirty stale branch, which is never auto-touched and instead surfaces via check 4's existing advisory exactly as before this amendment.
+
+**Negative / accepted.** The collision itself is still possible — this amendment bounds it, it does not prevent it (that remains a candidate for a future coordination-lock design, deliberately out of scope here). Idle-since-last-commit is an imperfect proxy for "is anyone actively using this branch right now"; a session that checks out a stale branch and takes longer than 15 minutes before its first commit is, in principle, exposed to having that branch yanked back to `main` out from under it mid-work — accepted because (a) the dirty-tree gate means no uncommitted work is ever lost even if this fires, at worst the session's next `git status`/`git branch` shows a surprising `main` instead of the branch it expected, and (b) the documented ADR-119 decision-3 workflow this risk is downstream of is "commit the deletion immediately," i.e. the legitimate window this could interrupt is meant to be seconds, not 15+ minutes, by the workflow's own design.
+
+### References (amendment)
+
+- [dev-env#911](https://github.com/brownm09/dev-env/issues/911) — the originating investigation (both 2026-07-25 and 2026-07-26 incidents, reflog forensics, root-cause analysis, and the three candidate fix directions this amendment picks from)
+- `journal-canonical-guard.py` — the sibling hook whose final-re-check-before-mutating pattern this amendment's TOCTOU narrowing mirrors

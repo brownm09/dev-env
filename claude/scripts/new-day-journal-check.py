@@ -2,7 +2,7 @@
 """
 UserPromptSubmit hook: detect stale journal work in engineering-journal.
 
-Four checks:
+Five checks:
 1. *_draft.md files from a previous calendar day still on disk (composed but
    branch not yet deleted, or composition never ran).
 2. Remote draft/* branches with no composed journal file on main — never
@@ -17,11 +17,24 @@ Four checks:
    stub written onto a branch named for another day is composed by nothing and
    reported by nothing, silently. ADR-119 records the census of stubs this had
    already stranded on origin/main at the time it was written.
+5. Stale-canonical self-healing (ADR-119 Amendment 1, dev-env#911): two
+   concurrent sessions can collide on the canonical's shared HEAD with no
+   coordination mechanism (a locking primitive was explicitly ruled out of this
+   fix's scope) — one doing ordinary day-rollover, another hopping to an old
+   draft/<D> branch to commit an orphaned shard deletion (ADR-119 decision 3),
+   for example. The loser can strand the canonical on that old branch for
+   hours. When the current branch is a non-today draft/<D>, the FULL working
+   tree is clean, and its last commit is at least STALE_CANONICAL_IDLE_MINUTES
+   old, this check auto-restores the canonical to main. UNLIKE every other
+   check in this hook, this one MUTATES the canonical (a real `git checkout
+   main`) instead of only printing advice — the dirty-tree gate is what makes
+   that safe; see `format_stale_canonical_recovery`.
 
-Check 4 is the only one that also runs in Claude-managed worktree sessions:
-those write stubs into the canonical via `git -C`, so they are exactly who
-needs the warning, whereas checks 1-3 concern the canonical's own housekeeping
-and would be noise there.
+Checks 4 and 5 are the only ones that also run in Claude-managed worktree
+sessions: those write stubs into the canonical via `git -C`, so they are
+exactly who needs the warning (and who benefits from the auto-recovery),
+whereas checks 1-3 concern the canonical's own housekeeping and would be
+noise there.
 
 Exit 0 always — never block the user's prompt (advisory hook, fails open).
 Stdout is injected as context Claude sees before processing the user's message.
@@ -49,6 +62,12 @@ FLAG_MAX_AGE_HOURS = 24
 # them on every prompt costs a git spawn (and, for checks 1-3, a network `git ls-remote`) per
 # prompt for a condition that is almost always false. (dev-env#873 review)
 RECHECK_MINUTES = 30
+# Check 5 (stale-canonical self-healing, dev-env#911): a branch is eligible for auto-restore
+# only once its last commit is at least this old. The observed legitimate hops (checkout a
+# stale branch -> commit -> checkout away) took 9 seconds to 6 minutes; the incident this
+# check exists to bound left the canonical stranded ~32 hours. 15 minutes gives real
+# in-flight work comfortable headroom while still bounding worst-case staleness.
+STALE_CANONICAL_IDLE_MINUTES = 15
 
 
 def cleanup_stale_flags() -> None:
@@ -324,7 +343,17 @@ def summarize_by_project(paths: list[str]) -> str:
 def canonical_current_branch() -> str | None:
     """The branch the shared canonical checkout currently holds; None on any failure
     (missing repo, detached HEAD, git not on PATH). Subprocess boundary — not unit-tested,
-    matching this file's convention for the other git readers."""
+    matching this file's convention for the other git readers.
+
+    Deliberately NOT memoized despite being called from two checks (day_rollover_message and
+    stale_canonical_recovery_message): unlike the @lru_cache'd readers above (which are pure
+    reads of state nothing in this process touches), check 5 can itself MUTATE this exact
+    value via `git checkout main` between the two calls. Caching would make check 4's
+    subsequent read return the pre-restore branch, firing a stale "you're on a stale branch"
+    message about a problem check 5 just fixed one line earlier. The extra subprocess spawn
+    only happens on the rare already-on-a-stale-branch path, matching this file's existing
+    "expensive reads only in the rare firing case" design.
+    """
     try:
         result = subprocess.run(
             ["git", "branch", "--show-current"],
@@ -474,6 +503,160 @@ def day_rollover_message() -> str | None:
     )
 
 
+# --- Check 5: stale-canonical self-healing (ADR-119 Amendment 1, dev-env#911) -------------
+
+
+def canonical_full_tree_dirty() -> bool:
+    """True when the canonical has ANY uncommitted change, anywhere in the working tree —
+    not just `sessions/`. Subprocess boundary.
+
+    Deliberately broader than `canonical_is_dirty()` (sessions/-scoped, sufficient for that
+    function's advisory-only CAUTION text). The stale-canonical auto-restore below performs a
+    REAL `git checkout`, which can silently carry uncommitted changes on any tracked file
+    across branches when they don't conflict with the target branch — a sessions/-only gate
+    would miss exactly the concurrent-session collision this check exists to bound
+    (dev-env#911).
+
+    Fails toward "dirty" — the OPPOSITE direction from `canonical_is_dirty()` (which fails
+    toward "not dirty", fine for a CAUTION string nobody acts on). An unreadable status must
+    never be treated as safe to auto-checkout.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=JOURNAL_REPO,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return True
+        return bool(result.stdout.strip())
+    except Exception:
+        return True
+
+
+def canonical_branch_idle_minutes(branch: str) -> float | None:
+    """Minutes since `branch`'s tip commit in the canonical, or None on any failure. The
+    caller treats None the same as "not idle enough" — never as "idle" — so an unreadable
+    commit timestamp fails toward inaction. Subprocess boundary."""
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%ct", branch],
+            cwd=JOURNAL_REPO,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        commit_epoch = float(result.stdout.strip())
+        return (time.time() - commit_epoch) / 60
+    except Exception:
+        return None
+
+
+def format_stale_canonical_recovery(
+    branch: str,
+    today: str,
+    dirty: bool,
+    idle_minutes: float | None,
+) -> str | None:
+    """Build the stale-canonical auto-restore advisory, or None when nothing should happen.
+
+    Pure decision + formatting, mirroring `format_day_rollover`'s contract: every input is
+    passed in, so the fire-or-stay-silent decision is unit-testable without a subprocess.
+    Unlike `format_day_rollover` (which always fires once on any non-today draft branch,
+    dirty or not), a non-None return here means BOTH "print this" AND "go ahead and restore"
+    — the caller (`stale_canonical_recovery_message`) performs the actual checkout only when
+    this returns non-None. This function itself never touches git or the filesystem.
+
+    dev-env#911: two concurrent sessions can collide on the shared canonical's HEAD with no
+    coordination mechanism (a new locking primitive was explicitly ruled out of this fix's
+    scope). This bounds how long the resulting stranded state can persist undetected, rather
+    than preventing the collision itself.
+
+    The dirty check is unconditional and checked before idle time, deliberately: a dirty tree
+    is never auto-touched regardless of how idle it looks, full stop. This is the single most
+    important safety property of this check — getting it wrong risks discarding a concurrent
+    session's uncommitted work, exactly the class of harm dev-env#911 was raised to prevent.
+
+    idle_minutes is measured from the branch's last COMMIT, not from when it was last checked
+    out, so it can only UNDER-count how recently a session started working on it (a session
+    that just checked the branch out but hasn't committed yet looks exactly as idle as one
+    abandoned hours ago) — never over-count. See STALE_CANONICAL_IDLE_MINUTES for why 15
+    minutes gives real in-flight work comfortable headroom.
+    """
+    bdate = branch_date(branch)
+    if not bdate or bdate == today:
+        return None
+    if dirty:
+        return None
+    if idle_minutes is None or idle_minutes < STALE_CANONICAL_IDLE_MINUTES:
+        return None
+    return (
+        f"[journal-hook] Canonical recovery — the engineering-journal canonical was "
+        f"stranded on {branch} ({idle_minutes:.0f}min since its last commit, clean tree) "
+        f"with no coordination mechanism to prevent this (dev-env#911) — restored to main. "
+        f"Any session's normal first-session-of-the-day procedure will move it to "
+        f"draft/{today} from here."
+    )
+
+
+def stale_canonical_recovery_message() -> str | None:
+    """Subprocess wrapper around `format_stale_canonical_recovery`: reads the canonical's
+    branch/dirty/idle state and, only when the pure decision says to, performs the actual
+    `git checkout main`.
+
+    This is the one check in this hook whose action is NOT read-only — every other check here
+    only ever prints advice. A failed (or aborted) checkout must never crash or block the
+    hook, matching this file's fail-open contract: caught and reported inline, never raised.
+    """
+    branch = canonical_current_branch()
+    if not branch:
+        return None
+    bdate = branch_date(branch)
+    if not bdate or bdate == TODAY:
+        return None
+    dirty = canonical_full_tree_dirty()
+    idle_minutes = canonical_branch_idle_minutes(branch)
+    message = format_stale_canonical_recovery(branch, TODAY, dirty, idle_minutes)
+    if not message:
+        return None
+
+    # Final, cheap re-check immediately before the mutation itself, narrowing the residual
+    # TOCTOU window to a single subprocess pair — mirrors journal-canonical-guard.py's
+    # identical precaution for its own auto-checkout of this same shared canonical. Acting on
+    # the first read alone risks yanking a branch a concurrent session started legitimate
+    # work on in the interim (e.g. the ADR-119 decision-3 "commit an orphaned shard deletion
+    # immediately" hop this whole check exists downstream of).
+    if canonical_current_branch() != branch or canonical_full_tree_dirty():
+        return None  # situation already changed since the first read — leave it alone
+
+    try:
+        result = subprocess.run(
+            ["git", "checkout", "main"],
+            cwd=JOURNAL_REPO,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            return (
+                f"[journal-hook] Canonical recovery: {branch} looks stranded "
+                f"({idle_minutes:.0f}min idle, clean tree) but `git checkout main` failed: "
+                f"{result.stderr.strip()}. Switch it back manually: "
+                f"git -C {JOURNAL_REPO.as_posix()} checkout main"
+            )
+    except Exception:
+        return (
+            f"[journal-hook] Canonical recovery: {branch} looks stranded "
+            f"({idle_minutes:.0f}min idle, clean tree) but the checkout could not be run. "
+            f"Switch it back manually: git -C {JOURNAL_REPO.as_posix()} checkout main"
+        )
+    return message
+
+
 def emit(messages: list[str]) -> None:
     """Print the accumulated systemMessage, if any. Flag bookkeeping is the caller's job —
     the two checks are gated by separate sentinels, so `emit` must not own either."""
@@ -532,16 +715,27 @@ def main() -> None:
 
     cleanup_stale_flags()
 
-    # Two sentinels, deliberately separate. Check 4 runs in worktree sessions where checks
-    # 1-3 do not, so a shared flag would let a worktree session's rollover emission suppress
-    # checks 1-3 for the rest of that session — including after the cwd later leaves the
-    # worktree, which is exactly when they become actionable. (dev-env#873 review)
+    # Two sentinels, deliberately separate. Check 4 (and check 5, its self-healing sibling —
+    # see the module docstring) runs in worktree sessions where checks 1-3 do not, so a
+    # shared flag would let a worktree session's rollover emission suppress checks 1-3 for
+    # the rest of that session — including after the cwd later leaves the worktree, which is
+    # exactly when they become actionable. (dev-env#873 review)
+    #
+    # Check 5 deliberately shares check 4's sentinel rather than getting a third of its own:
+    # both key off the same canonical-branch state and are always evaluated together. Check 5
+    # runs FIRST specifically so that when it fires (mutating the branch), check 4's own
+    # fresh, unmemoized read of canonical_current_branch() naturally observes the post-restore
+    # state and stays silent — no special-casing needed, and no risk of a "you're on a stale
+    # branch" message immediately after that same branch was just auto-restored. (dev-env#911)
     rollover_flag = SCRATCH / f"journal_hook_rollover_{session_id}.flag" if session_id else None
     canonical_flag = SCRATCH / f"journal_hook_{session_id}.flag" if session_id else None
 
     messages = []
 
     if rollover_flag is None or not flag_fresh(rollover_flag):
+        recovery = stale_canonical_recovery_message()
+        if recovery:
+            messages.append(recovery)
         rollover = day_rollover_message()
         if rollover:
             messages.append(rollover)
