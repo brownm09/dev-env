@@ -271,10 +271,12 @@ was amended into the commit. Full account: [dev-env#927](https://github.com/brow
 
 **Fix:** `claude/CLAUDE.md` → Engineering Journal → Stub file workflow now states, immediately after
 the existing explicit-pathspec rule: include the **old** path in the commit pathspec for any rename
-(even though `git add` on that same old path would itself fail, since it no longer exists on disk —
-the two commands take different path lists for one rename); and, generally, confirm `git status
---short` is empty after **any** explicit-pathspec commit, in this checkout or any other — a leftover
-line is the part of the change that did not get committed. The CLI Scripting Checklist's absence-claim
+(after `git mv` specifically, `git add` on that same old path fails outright, since `git mv` already
+staged the removal atomically and left nothing for a subsequent `git add` to act on — `git add` and
+`git commit` take different path lists for one rename); and, generally, confirm `git status --short`
+is empty after **any** explicit-pathspec commit, in this checkout or any other — a leftover `D `/`M `
+line (letter in the first column: staged, uncommitted) is the part of the change that did not get
+committed. The CLI Scripting Checklist's absence-claim
 item (item 5) also gains a cross-reference, since the two traps are easy to conflate but distinct: item
 5 is about wrongly concluding something is *absent*; this is about wrongly concluding your own commit
 is *complete*.
