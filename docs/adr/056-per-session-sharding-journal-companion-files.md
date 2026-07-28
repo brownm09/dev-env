@@ -242,3 +242,43 @@ fixed at the time.
 **Status:** this is a refinement of the 2026-06-30 addendum, not a reversal — ADR-056's Decision and
 Consequences stand unchanged. Tracked in [dev-env#480](https://github.com/brownm09/dev-env/issues/480) /
 [PR #486](https://github.com/brownm09/dev-env/pull/486).
+
+---
+
+## Addendum (2026-07-28) — A rename needs both paths in the commit pathspec
+
+This incident has nothing to do with journal sharding or concurrency — but the 2026-07-01 "Extended to
+propose, nightly-research, and merge-stale-pr.sh" addendum already established that ADR-056's addenda
+are the tracked home for the *explicit-pathspec-commit discipline* generally, not just its
+journal-specific motivating case. This addendum is the same move again: the 2026-06-30 and 2026-07-01
+addenda close the commit's *sweeping-in* failure mode (a bare or under-scoped pathspec absorbing a
+concurrent session's already-staged files); this one documents the opposite-direction failure the same
+discipline can produce — a pathspec that **drops** part of the intended change.
+
+`git mv` (or an equivalent manual rename) stages a delete at the old path and an add at the new one —
+two separate index entries for one logical change. A `git commit -- <paths>` pathspec naming only the
+**new** path commits the add and leaves the delete staged: `HEAD` keeps the old file even though the
+working tree does not, and `git status --short` afterwards shows one lone `D` line that reads like
+leftover noise rather than the unfinished half of the commit.
+
+**Incident:** career-playbook PR #955, 2026-07-28. A calibration artifact was renamed out of a
+newly-reserved derived-artifact namespace via `git mv`, then committed with a pathspec listing the new
+path plus two other files from the same calibration run — but not the old path.
+`bash scripts/validate.sh` and `bash scripts/verify_calibration.sh` both exited 0 locally (106
+artifacts, old path gone from the working tree); CI, which checks out the commit, failed (107
+artifacts, old path still present in `HEAD`). Red at `49c5df1`, green at `6145e4b` once the deletion
+was amended into the commit. Full account: [dev-env#927](https://github.com/brownm09/dev-env/issues/927).
+
+**Fix:** `claude/CLAUDE.md` → Engineering Journal → Stub file workflow now states, immediately after
+the existing explicit-pathspec rule: include the **old** path in the commit pathspec for any rename
+(even though `git add` on that same old path would itself fail, since it no longer exists on disk —
+the two commands take different path lists for one rename); and, generally, confirm `git status
+--short` is empty after **any** explicit-pathspec commit, in this checkout or any other — a leftover
+line is the part of the change that did not get committed. The CLI Scripting Checklist's absence-claim
+item (item 5) also gains a cross-reference, since the two traps are easy to conflate but distinct: item
+5 is about wrongly concluding something is *absent*; this is about wrongly concluding your own commit
+is *complete*.
+
+**Status:** this is a scope extension of the pathspec-commit discipline, covering a failure mode
+opposite in direction to the one the 2026-06-30/07-01 addenda fixed — ADR-056's Decision and
+Consequences stand unchanged. Tracked in [dev-env#927](https://github.com/brownm09/dev-env/issues/927).
