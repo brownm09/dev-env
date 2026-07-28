@@ -151,7 +151,13 @@ ensemble plan (e.g. min-of-3 lenses).
 9. **Judging protocol.** Record scorer identity; drafter ≠ scorer; fresh context per scored artifact
    (no judge scores both arms in one context after seeing labels/prior scores); strip labels;
    randomize order; log residual identifiability (a style tell that unblinds an arm) as a threat
-   rather than papering over it.
+   rather than papering over it. **Verify identity before recording it — never inherit or assume:**
+   the drafter/orchestrator's model is this round's own system-prompt-declared identity (the "You are
+   powered by..." line), read fresh — never copied forward from a prior round's template, never
+   assumed from role-naming or convention; the scorer's model is the actual `model` parameter passed
+   at each subagent's spawn time, not a role label or an assumed name. A claimed cross-model split
+   names both models as verified facts with their source stated (system prompt for the
+   drafter/orchestrator, spawn parameter for the scorer) — never inherited framing.
 10. **Decision rule.** Win bar; aggregation function (median / win-rate) fixed; **n (inputs) and k
     (generations per input per arm) fixed — no optional stopping**; discard criteria (technical
     failures only, all logged); the outcome map (which results → supported / refuted / inconclusive);
@@ -229,6 +235,23 @@ load-bearing threat forces `inconclusive — confounded by <Tn>`.
 | T10 | Criterion substitution / surrogate endpoint       | ... | ... |
 ```
 
+**T9 (judge contamination / dependence)** covers a scorer that shares context, incentive, or actual
+model identity with the drafter — it can then resolve rubric ambiguity the same way the drafter
+would, inflating apparent agreement without it reflecting genuine rubric clarity to an independent
+reader. This includes a narrower, easy-to-miss case: an identity claim recorded in field 9 that was
+never checked against its actual source. **An unverified identity claim is treated as same-model
+until verified** — score it as if the independence it claims does not exist. FLAG whenever the
+verdict leans on a claimed identity-dependent protection (a Rule-10-style drafter ≠ scorer split, or
+equivalent) that was not checked against its source (system prompt for the drafter/orchestrator, the
+spawn `model` parameter for the scorer) before the pre-registration froze; per the Gate-4 preamble
+above, this is load-bearing and forces `inconclusive — confounded by T9`. (A later audit that
+*discovers* the claim was actively false and undisclosed gets Gate 1's stronger remedy — void, not
+merely inconclusive; T9 is the check a normal verdict pass makes before reaching that point.) The
+motivating incident: a frozen pre-registration claimed "orchestrator = Opus ≠ scorer = Sonnet,"
+copied from a prior round's framing where it had been true; the orchestrating session was actually
+Sonnet, the same model as all 9 scorer subagents, silently defeating the protection the claim was
+supposed to provide. This gate did not catch it — a later, separate `/review` pass did.
+
 **T10 (criterion substitution)** is the "wrong-yardstick" threat and is distinct from T3: a criterion
 can be perfectly fair and independent yet still be the wrong *construct* — the verdict decided on a
 measurable proxy or a SECONDARY / mechanism criterion instead of the field-1 primary construct.
@@ -290,7 +313,9 @@ verdict + scope on the tracking issue (and close it if the decision resolves it)
   pre-registration; it does not regenerate arms.
 - **Project cross-references** (career-playbook): its calibration harness already encodes
   *no-single-model-emulation* (drafter ≠ scorer) and *scorer-identity-recorded* — incorporate those
-  by reference in fields 7/9 rather than duplicating them.
+  by reference in field 9 rather than duplicating them, including its verification requirement
+  (identity read from source — system prompt / spawn parameter — never inherited or assumed; see
+  Step D5 field 9 and threat T9).
 - Residual limitations (small-sample calibration is discrimination-in-principle not a measured
   false-positive rate; the owner remains an unblinded final judge over time; rubric outcomes are not
   market outcomes) are documented in [ADR-115](../../../docs/adr/115-experimental-rigor-protocol.md)
