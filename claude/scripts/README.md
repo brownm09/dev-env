@@ -139,7 +139,7 @@ invocation instead.
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
-| `pre-tool-use-nested-agent-background-guard.py` | PreToolUse (Agent) | **Smoke-test stage (observation-only, dev-env#935):** logs `tool_name`/`agent_id`/`agent_type`/whether `run_in_background` was set for every `Agent`-tool spawn; always exits 0. Confirms the hook fires for nested spawns before the follow-up PR replaces this body with real enforcement (blocking a nested spawn that omits `run_in_background` entirely). |
+| `pre-tool-use-nested-agent-background-guard.py` | PreToolUse (Agent) | Blocks a nested `Agent`-tool spawn (`agent_id` present) that omits `run_in_background` entirely — the exact failure signature behind career-playbook's ADR-090 orphaned-subagent stalls. Any explicit value (`true` or `false`) passes through untouched, and a top-level spawn is untouched entirely. See [ADR-126](../../docs/adr/126-nested-agent-spawn-background-guard.md). |
 | `session-mode-prompt.py` | UserPromptSubmit | One-time per-session reminder of the active permission mode (plan/bypass/auto). |
 | `dev-env-sync.py` | UserPromptSubmit | Fast-forward pulls dev-env to `origin/main`; auto-returns a clean canonical to `main` or warns; escalates a persistent pull failure. |
 | `turn-count-hook.py` | UserPromptSubmit | Warns when session context token/turn count exceeds threshold. |
