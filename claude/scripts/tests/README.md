@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 72 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 84 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 73 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 85 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -144,6 +144,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_memory_write_advisory.py` | `memory-write-advisory.py` | Flags a durable memory write that has no paired immortalization issue. |
 | `test_posttooluse_inert_advisory.py` | `posttooluse-inert-advisory.py` | Stop-hook safety net: detects a background/SDK-launched session where PostToolUse hooks never fired at all. |
 | `test_pre_bash_drift_check.py` | `pre-bash-drift-check.py` | Elapsed-time-gated repo/branch drift check on every Bash call, not just the three merge-adjacent checkpoints. |
+| `test_pre_tool_use_nested_agent_background_guard.py` | `pre-tool-use-nested-agent-background-guard.py` | Blocks a nested `Agent`-tool spawn that omits `run_in_background` entirely; an explicit value or a top-level spawn passes through untouched (ADR-126). |
 | `test_session_mode_prompt.py` | `session-mode-prompt.py` | One-time per-session reminder of the active permission mode. |
 | `test_session_mode_report.py` | `session-mode-report.py` | On-demand report (not a hook) auditing which sessions started outside `plan` mode. |
 | `test_stop_experiment_verdict_gate.py` | `stop-experiment-verdict-gate.py` | Stop-hook backstop for the experiment-verdict half of the Experimental Rigor protocol: blocks the stop when an assistant message states a process-experiment conclusion with no `/experiment-audit` run and no skip override (ADR-115). |
