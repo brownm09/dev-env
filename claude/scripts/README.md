@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **82 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **83 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -135,10 +135,11 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (16)
+### Session state, reliability & token tracking (17)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
+| `pre-tool-use-nested-agent-background-guard.py` | PreToolUse (Agent) | **Smoke-test stage (observation-only, dev-env#935):** logs `tool_name`/`agent_id`/`agent_type`/whether `run_in_background` was set for every `Agent`-tool spawn; always exits 0. Confirms the hook fires for nested spawns before the follow-up PR replaces this body with real enforcement (blocking a nested spawn that omits `run_in_background` entirely). |
 | `session-mode-prompt.py` | UserPromptSubmit | One-time per-session reminder of the active permission mode (plan/bypass/auto). |
 | `dev-env-sync.py` | UserPromptSubmit | Fast-forward pulls dev-env to `origin/main`; auto-returns a clean canonical to `main` or warns; escalates a persistent pull failure. |
 | `turn-count-hook.py` | UserPromptSubmit | Warns when session context token/turn count exceeds threshold. |
