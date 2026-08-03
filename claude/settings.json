@@ -187,6 +187,16 @@
             "timeout": 30
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-nested-agent-background-guard.py",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
