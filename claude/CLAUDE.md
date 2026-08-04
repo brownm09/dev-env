@@ -203,6 +203,48 @@ git fetch origin && git push --force-with-lease   # fetch first — see the bare
 
 Motivating incident: career-playbook [#923](https://github.com/brownm09/career-playbook/pull/923), stacked on parent [#878](https://github.com/brownm09/career-playbook/pull/878), 2026-07-27 — full detail: [dev-env#457](https://github.com/brownm09/dev-env/issues/457).
 
+### `.gitattributes` eol retrofit: `git checkout`/`checkout-index` silently no-ops on already-existing files
+
+**Pattern:** Adding `.gitattributes` (e.g. `* text=auto eol=lf`) to normalize line endings *after*
+files are already checked out with the wrong ending (classically: Windows `core.autocrlf=true`
+producing CRLF) does not, by itself, fix the working tree. The obvious remediation — `git add
+.gitattributes`, `git add --renormalize .`, then `git checkout HEAD -- <path>` or `git
+checkout-index -f -a` — silently does **nothing** to files that already exist on disk, even with
+`-f`/`--force`. No error, no warning: `git check-attr` correctly reports the new `eol: lf`
+attribute is in effect, and `git diff`/`git status` report clean (git re-applies the clean filter
+before comparing, so it can't see the working-tree bytes are wrong) — but the file's actual bytes
+on disk never change.
+
+**Symptom:** A byte-level check (e.g. counting CRLF vs bare-LF) shows a file is still CRLF after
+running `git checkout`/`checkout-index -f -a`, despite `git check-attr eol -- <path>` correctly
+reporting `eol: lf` and `git diff` showing no pending changes.
+
+**Fix:** Delete the tracked files first, then re-checkout — this bypasses whatever existing-file
+fast path is skipping the smudge-filter rewrite. **Run only on a clean working tree** — this
+discards uncommitted edits to tracked files with no recovery path (it is not a `git stash`-style
+operation), so the guard below refuses to proceed on a dirty tree rather than silently deleting
+unstaged work:
+```bash
+git diff --quiet && git diff --cached --quiet || { echo "Uncommitted changes present — commit or stash first" >&2; exit 1; }
+git ls-files -z | xargs -0 rm -f --
+git checkout-index -f -a
+```
+Verify with a byte-level scan (not `git diff`, which won't detect it):
+```bash
+node -e "
+const fs=require('fs');
+const b=fs.readFileSync('<path>');
+let crlf=0,lf=0;
+for(let i=0;i<b.length;i++){ if(b[i]===10){ if(b[i-1]===13) crlf++; else lf++; } }
+console.log('CRLF:',crlf,'bare-LF:',lf);
+"
+```
+The most reliable end-to-end validation is a genuine fresh `git clone` of the branch into a
+scratch directory — that exercises the real "new checkout" path this fix is meant to guarantee,
+rather than re-checking this one already-patched working tree.
+
+Motivating incident: [cover-letter-runtime#7](https://github.com/brownm09/cover-letter-runtime/issues/7) / [PR #10](https://github.com/brownm09/cover-letter-runtime/pull/10), git 2.37.1.windows.1 — full detail: [dev-env#944](https://github.com/brownm09/dev-env/issues/944).
+
 ---
 
 ## Dev-Env & Project Boards
