@@ -220,8 +220,12 @@ running `git checkout`/`checkout-index -f -a`, despite `git check-attr eol -- <p
 reporting `eol: lf` and `git diff` showing no pending changes.
 
 **Fix:** Delete the tracked files first, then re-checkout — this bypasses whatever existing-file
-fast path is skipping the smudge-filter rewrite:
+fast path is skipping the smudge-filter rewrite. **Run only on a clean working tree** — this
+discards uncommitted edits to tracked files with no recovery path (it is not a `git stash`-style
+operation), so the guard below refuses to proceed on a dirty tree rather than silently deleting
+unstaged work:
 ```bash
+git diff --quiet && git diff --cached --quiet || { echo "Uncommitted changes present — commit or stash first" >&2; exit 1; }
 git ls-files -z | xargs -0 rm -f --
 git checkout-index -f -a
 ```
