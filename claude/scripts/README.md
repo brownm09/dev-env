@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **83 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **85 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -135,11 +135,12 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (17)
+### Session state, reliability & token tracking (19)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
 | `pre-tool-use-nested-agent-background-guard.py` | PreToolUse (Agent) | Blocks a nested `Agent`-tool spawn (`agent_id` present) that omits `run_in_background` entirely — the exact failure signature behind career-playbook's ADR-090 orphaned-subagent stalls. Any explicit value (`true` or `false`) passes through untouched, and a top-level spawn is untouched entirely. See [ADR-126](../../docs/adr/126-nested-agent-spawn-background-guard.md). |
+| `pre-tool-use-skill-file-size-guard.py` | PreToolUse (Write/Edit) | Blocks a Write/Edit that would leave a `SKILL.md` file over a configurable byte ceiling (default 256KB). See [ADR-127](../../docs/adr/127-skill-file-size-guard.md). |
 | `session-mode-prompt.py` | UserPromptSubmit | One-time per-session reminder of the active permission mode (plan/bypass/auto). |
 | `dev-env-sync.py` | UserPromptSubmit | Fast-forward pulls dev-env to `origin/main`; auto-returns a clean canonical to `main` or warns; escalates a persistent pull failure. |
 | `turn-count-hook.py` | UserPromptSubmit | Warns when session context token/turn count exceeds threshold. |
@@ -147,6 +148,7 @@ invocation instead.
 | `hook-liveness-check.py` | UserPromptSubmit | Warns when a wired hook's heartbeat has gone stale (hasn't recorded in its expected cadence). |
 | `awake-blocker.py` | UserPromptSubmit / Stop / Notification | Holds a Windows system-sleep lock via a detached watcher while Claude is processing. |
 | `memory-write-advisory.py` | PostToolUse (Write) | Reminds Claude to pair a durable memory write with an immortalization issue when none is linked. |
+| `skill-file-size-advisory.py` | PostToolUse (Write/Edit) | Non-blocking nudge when a `SKILL.md` write/edit lands at/above a lower watermark (default 200KB), ahead of the hard-block guard's ceiling. See [ADR-127](../../docs/adr/127-skill-file-size-guard.md). |
 | `stop-experiment-verdict-gate.py` | Stop | Blocks the stop when an assistant message states a process-experiment conclusion with no `/experiment-audit` run and no skip override (the verdict half of the Experimental Rigor protocol, ADR-115). |
 | `posttooluse-inert-advisory.py` | Stop | Safety net for background/SDK sessions where PostToolUse hooks never fired despite a `gh issue/pr create`/`merge`. |
 | `token-tracker.py` | Stop | Aggregates session token usage to `scratch/token-sessions.jsonl`. |

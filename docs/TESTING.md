@@ -2734,3 +2734,21 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_readme_index_parity.py
     ```
+
+85. **skill-file-size-guard test** — required when changing `claude/scripts/pre-tool-use-skill-file-size-guard.py` ([ADR-127](adr/127-skill-file-size-guard.md), dev-env#939). Two layers: pure-function tests against the imported module (`_is_skill_md` case-insensitive basename matching, `resulting_write_size` UTF-8 byte counting vs. char counting, `resulting_edit_size`'s substitution logic, `load_limit_bytes`'s config fallback matrix), plus subprocess end-to-end tests driving the real hook over stdin.
+
+    Notable pins: the boundary is strictly greater-than — `test_write_at_exactly_limit_bytes_passes` and `test_write_one_byte_over_limit_blocks` both exercise the exact edge, since a limit is a ceiling a file may legitimately reach, not a value that itself blocks. `test_resulting_edit_size_preserves_crlf_bytes` pins the `newline=""` fix on the Edit-path file read: without it, Python's universal-newline translation would silently collapse `\r\n` → `\n` on read, undercounting a non-LF-normalized file's true resulting byte size (dev-env's own skills are LF-forced via `.gitattributes`, but this hook is global and also reads other projects' `SKILL.md` files that may not enforce LF) — the test writes real `\r\n` bytes to a fixture and compares against a byte-level (not text-level) expected substitution. `test_resulting_edit_size_old_string_not_found_returns_none` and `test_edit_nonexistent_file_fails_open` pin the fail-open contract for the two cases where the real Edit tool would independently refuse the call anyway, so a wrong size estimate here can never cause an incorrect write. `test_edit_that_shrinks_below_limit_passes` starts from a fixture file already *over* the limit (simulating one that predates the guard) and confirms a shrinking edit is never blocked.
+
+    Scope gap: `Bash`-based writes to a `SKILL.md` (redirects, heredocs, `cp`/`tee`) are not covered — same deferral `pre-tool-use-worktree-path-check.py` ([ADR-024](adr/024-worktree-path-guard-hook.md)) documents for itself.
+
+    ```bash
+    py -3 claude/scripts/tests/test_skill_file_size_guard.py
+    ```
+
+86. **skill-file-size-advisory test** — required when changing `claude/scripts/skill-file-size-advisory.py` ([ADR-127](adr/127-skill-file-size-guard.md), dev-env#939). Same two-layer shape as item 85, but every Layer-2 test writes a real on-disk fixture file rather than relying on `tool_input` content, since this `PostToolUse` hook always `os.path.getsize()`s the file *after* the write/edit already landed — there is no "resulting size" to estimate.
+
+    Notable pins: the warn threshold is inclusive (`>=`) — `test_file_exactly_at_warn_threshold_advises` and `test_file_one_byte_under_warn_threshold_silent` pin the boundary in the opposite direction from item 85's guard hook, since a watermark is a "you're here or past it" signal rather than a ceiling. `test_bash_tool_name_not_matched` pins that this hook is deliberately **not** wired to the `Bash` matcher, unlike its neighbor `journal-shard-write-advisory.py` — a `SKILL.md` read/cat via Bash must not trigger it. `test_load_bytes_config_independent_override` confirms `skill_file_size_warn_bytes` and `skill_file_size_limit_bytes` fall back to their own defaults independently, so configuring one never silently moves the other.
+
+    ```bash
+    py -3 claude/scripts/tests/test_skill_file_size_advisory.py
+    ```
