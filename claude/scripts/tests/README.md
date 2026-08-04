@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 73 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 85 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 76 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 88 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -48,6 +48,7 @@ production code.
 | `test_journal_shards.py` | `_journal_shards.py` | Shared numeric-shard (open-PR + tile) and legacy `open-prs.jsonl` reader, plus `project_dirs` — the `sessions/<project>/` walk that precedes both — used by `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, and `post-compact.py`. |
 | `test_repo_scan.py` | `_repo_scan.py` | Shared `find_git_repos()` directory-scan helper used by every `--scan-dir` mode across the worktree/board scripts. |
 | `test_repo_target.py` | `_repo_target.py` | Shared `--repo`/PR-URL/issue-URL/positional-number resolver — ends the per-hook ADR-050 amendment treadmill for this concern. |
+| `test_skill_file_size.py` | `_skill_file_size.py` | Shared `SKILL.md` basename match and `.claude/hook-config.json` loader (`(warn_bytes, limit_bytes)`, one fallback contract) used by both size-guard hooks (ADR-127). |
 | `test_winsubp.py`, `test_pyw_stdio.py` | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning hook applies; the latter probes real `pyw -3` stdio behavior end-to-end. |
 | `test_worktree_canon.py` | `_worktree_canon.py` | Shared worktree-path-to-canonical-root regex/resolution, used by the project-board hook pair and the two PreToolUse worktree guards. |
 | `test_worktree_liveness.py` | `_worktree_liveness.py` | Active-session liveness check that stops prune/reclaim routines from severing a worktree with a live Claude Code session in it. |
@@ -147,6 +148,8 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_pre_tool_use_nested_agent_background_guard.py` | `pre-tool-use-nested-agent-background-guard.py` | Blocks a nested `Agent`-tool spawn that omits `run_in_background` entirely; an explicit value or a top-level spawn passes through untouched (ADR-126). |
 | `test_session_mode_prompt.py` | `session-mode-prompt.py` | One-time per-session reminder of the active permission mode. |
 | `test_session_mode_report.py` | `session-mode-report.py` | On-demand report (not a hook) auditing which sessions started outside `plan` mode. |
+| `test_skill_file_size_advisory.py` | `skill-file-size-advisory.py` | Non-blocking nudge when a `SKILL.md` write/edit lands at/above a lower watermark, ahead of the hard-block guard's ceiling (ADR-127). |
+| `test_skill_file_size_guard.py` | `pre-tool-use-skill-file-size-guard.py` | Blocks a Write/Edit that would leave a `SKILL.md` file over a configurable byte ceiling; an exactly-at-limit size and an Edit that shrinks an already-oversized file both pass (ADR-127). |
 | `test_stop_experiment_verdict_gate.py` | `stop-experiment-verdict-gate.py` | Stop-hook backstop for the experiment-verdict half of the Experimental Rigor protocol: blocks the stop when an assistant message states a process-experiment conclusion with no `/experiment-audit` run and no skip override (ADR-115). |
 | `test_token_tracker.py` | `token-tracker.py` | Per-session token/cost aggregation and the once-per-session locate-failure advisory. |
 | `test_usage_snapshot.py` | `usage-snapshot.py` | OAuth-token expiry classification plus the merge-confirmation predicate for the post-tool-use usage snapshot. |
