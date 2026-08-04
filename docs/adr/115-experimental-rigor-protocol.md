@@ -1,10 +1,10 @@
 # ADR-115 — Experimental Rigor Protocol: Tiered Pre-Registration and Verdict Gating for Process Experiments
 
-**Date:** 2026-07-21
+**Date:** 2026-07-21 (amended 2026-07-27)
 **Status:** Accepted
 **Closes:** [dev-env#860](https://github.com/brownm09/dev-env/issues/860)
-**Tags:** workflow, experiments, calibration, pre-registration, verdict, rigor, skills, claude-md, pass-3, hooks, stop, global-rule, career-playbook, claude-behavior, adr-042, adr-089, adr-100, adr-109, adr-114
-**Related:** [ADR-042](042-plan-risk-dimension-audit-checklist.md), [ADR-089](089-privilege-restricted-test-defaults.md), [ADR-100](100-stop-journal-stub-checkpoint-hook.md), [ADR-109](109-tile-gate-deferral-question-trigger.md), [ADR-103](103-shared-hookout-emitter.md), [ADR-114](114-slim-testing-section-index.md)
+**Tags:** workflow, experiments, calibration, pre-registration, verdict, rigor, skills, claude-md, pass-3, hooks, stop, global-rule, career-playbook, claude-behavior, model-identity, adr-003, adr-042, adr-089, adr-100, adr-109, adr-114
+**Related:** [ADR-042](042-plan-risk-dimension-audit-checklist.md), [ADR-089](089-privilege-restricted-test-defaults.md), [ADR-100](100-stop-journal-stub-checkpoint-hook.md), [ADR-109](109-tile-gate-deferral-question-trigger.md), [ADR-103](103-shared-hookout-emitter.md), [ADR-114](114-slim-testing-section-index.md), [ADR-003](003-config-in-version-control.md)
 
 ---
 
@@ -66,6 +66,55 @@ Ship a cross-repo experimental-rigor protocol in four coordinated artifacts.
 - **Per-repo skill copies** — rejected: the `claude/skills/` junction already distributes one skill globally.
 - **Mandatory per-project `## Experiments` section everywhere (N/A when absent)** — rejected in favor of optional/advisory: most repos run no experiments, and forcing an N/A line into every project CLAUDE.md is churn for no signal. The skill asks for and proposes the section on demand.
 
+## Amendment (2026-07-27) — verify model identity before recording it (field 9), and elaborate T9
+
+**Finding.** Design mode's Step D5 field 9 ("Judging protocol") recorded drafter/orchestrator and
+scorer model identity but never instructed *verifying* either against its actual source before
+freezing it into the pre-registration — and Gate 4's T9 ("Judge contamination / dependence")
+threat-sweep row carried no elaboration at all (unlike its neighbor T10), so nothing prompted a
+verdict-mode check on whether a recorded identity claim had ever actually been checked. Both gaps
+are the same failure shape as this ADR's own motivating incident (Context, above) — an unchecked
+claim about the experiment's design that the verdict leaned on — recurring in a field the original
+protocol didn't cover: model identity.
+
+**Incident ([career-playbook#938](https://github.com/brownm09/career-playbook/issues/938) Round 2,
+[PR#945](https://github.com/brownm09/career-playbook/pull/945), merged).** A frozen pre-registration
+claimed "orchestrator = Opus ≠ scorer = Sonnet" — a cross-model design satisfying the project's
+calibration Rule 10 (author ≠ scorer) — copied from Round 1's framing (true then) without checking
+the current round's actual identity. The orchestrating session was actually Sonnet 5, the same model
+as all 9 scorer subagents (each spawned with `model: "sonnet"`), silently defeating the exact
+protection Rule 10 exists to provide. `/experiment-audit` did not catch it; a later, separate
+`/review` pass on PR#945 did, quoting the false T9 row and invoking this skill's own Gate 1 rule
+(an auditor-discovered, author-undisclosed deviation voids the verdict). Recovery cost a diagnostic
+9-read re-run, a rubric fix, a 10-read confirmatory batch, and a verdict rewrite across 6 files
+rescoping an unqualified "CALIBRATED" to "CALIBRATED FOR SONNET SCORERS." Full writeup: career-
+playbook `calibration/gtd-coverage-instrument-810/notes-round2-crossmodel.md` (`main`).
+
+**Fix (`claude/skills/experiment-audit/SKILL.md`).** Step D5 field 9 now requires model identity be
+read from its actual source before recording — drafter/orchestrator from the current session's own
+system-prompt-declared identity, scorer from the actual `model` parameter at subagent-spawn time —
+never inherited from a prior round's template or assumed from role-naming; a claimed cross-model
+split must name both models as verified facts with their source stated. Gate 4's T9 gained a full
+elaboration paragraph: an unverified identity claim is treated as same-model until verified — scored
+as if the independence it claims does not exist — and FLAGged whenever the verdict leans on that
+claimed independence, forcing `inconclusive — confounded by T9` under this skill's existing
+load-bearing-FLAG rule (Step V4 preamble). The Notes cross-reference to career-playbook's calibration
+harness ("fields 7/9," a pre-existing ambiguity the issue's own wording inherited) now points to
+field 9 only — field 7 (instrument calibration) is unrelated to model identity.
+
+**Distinct from the ADR-003 mechanism.** [ADR-003](003-config-in-version-control.md)'s 2026-07-10
+amendment addresses a related but different failure — *retrospective* verification of which model
+ran a scheduled task, confirmed only by replaying each run's transcript after the fact. This fix is
+*live self-verification*: the acting session reads its own system-prompt-declared identity before
+writing it down, at design time, not after the fact. Same "don't trust an assumed identity" spirit,
+different moment, different mechanism.
+
+**Verification.** None live yet — unlike ADR-003's transcript-replay confirmation, there is no
+mechanical check behind this fix (consistent with this ADR's own Alternatives-considered stance that
+the *design* half of the protocol is enforced by session behavior, not a hook): it is a self-report
+instruction, verifiable only the next time a Tier-1 design claims a cross-model split and a
+`/review` or `/experiment-audit verdict` pass checks whether field 9 actually named its sources.
+
 ## References
 
 - career-playbook incident: issues #806 / #809 / #811 (the confounded spike and its corrected re-test design).
@@ -74,3 +123,9 @@ Ship a cross-repo experimental-rigor protocol in four coordinated artifacts.
 - [ADR-100](100-stop-journal-stub-checkpoint-hook.md) — the intent + absence-of-artifact + sentinel Stop-hook pattern the verdict gate is modeled on.
 - [ADR-109](109-tile-gate-deferral-question-trigger.md) — the bounded natural-language trigger + advisory-vs-blocking reasoning.
 - [ADR-103](103-shared-hookout-emitter.md) — the Stop-event output contract (exit 2 + stderr is the only model-visible channel).
+- [dev-env#924](https://github.com/brownm09/dev-env/issues/924) — model-identity verification gap in
+  Step D5 field 9 / Gate 4 T9 (2026-07-27 amendment); incident: career-playbook
+  [#938](https://github.com/brownm09/career-playbook/issues/938) Round 2 /
+  [PR#945](https://github.com/brownm09/career-playbook/pull/945).
+- [ADR-003](003-config-in-version-control.md) — the retrospective (transcript-replay)
+  model-verification precedent this amendment's live self-verification contrasts with.
