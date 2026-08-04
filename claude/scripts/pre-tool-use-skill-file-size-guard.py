@@ -29,17 +29,27 @@ Decision:
        - Edit: PreToolUse fires BEFORE the edit executes, and Edit's
          tool_input carries only `old_string`/`new_string`/`replace_all` --
          not the resulting content. Read the current on-disk file and apply
-         the same substitution. Fail OPEN (exit 0) if the file can't be read,
-         `old_string` is empty, or `old_string` isn't found in the current
-         content -- in the last case the real Edit tool independently fails
-         with "string not found", so no write happens regardless of what
-         this hook decided.
+         the same substitution, on a line-ending-normalized copy: the real
+         Edit tool matches `old_string` against file content with line
+         endings normalized to `\n` (a model-authored `old_string` is always
+         `\n`, even against a CRLF file), then writes `new_string` back
+         converted to the file's own line ending. Fail OPEN (exit 0) if the
+         file can't be read, `old_string` is empty, `old_string` isn't found
+         in the (normalized) current content, or `old_string` occurs more
+         than once with `replace_all` not set -- in each case the real Edit
+         tool independently refuses the call itself (not found / not
+         unique), so no write happens regardless of what this hook decided.
   5. Load the configured limit from `.claude/hook-config.json` in the
-     session's `cwd` (`skill_file_size_limit_bytes`, default 262144).
-  6. If size > limit (strictly greater-than -- exactly-at-limit passes):
-     block via `_hookout.emit_block()`, naming the size, the limit, and the
-     remediation (split into a reference file the SKILL.md links to --
-     Anthropic's own progressive-disclosure pattern).
+     session's `cwd` (`skill_file_size_limit_bytes`, default 262144), shared
+     with skill-file-size-advisory.py via `_skill_file_size.py`.
+  6. Block only when the edit would make the file GROW past the limit:
+     `size > limit and size > current_on_disk_size` (0 for a not-yet-existing
+     file). A file that's already over the limit can still be shrunk one
+     edit at a time -- blocking every edit that doesn't single-handedly land
+     under the ceiling would make an oversized file impossible to fix
+     incrementally, defeating the block message's own recommended
+     remediation. Strictly-greater-than the limit blocks -- exactly at the
+     limit passes.
 
 Fail direction: FAILS OPEN (REFERENCE.md authoring rule 5) -- this is a size
 sanity-check, not a critical control point; a crash here must not block every
@@ -64,9 +74,9 @@ import sys
 
 import _hookout
 import _hookutil
+import _skill_file_size
 
-CONFIG_FILE = ".claude/hook-config.json"
-DEFAULT_LIMIT_BYTES = 262144  # 256 KiB -- keep in sync with skill-file-size-advisory.py
+DEFAULT_LIMIT_BYTES = _skill_file_size.DEFAULT_LIMIT_BYTES  # re-exported for tests/back-compat
 
 BLOCK_MESSAGE = """[skill-file-size-guard] BLOCKED: this {tool_name} would leave {file_path} at {size} bytes, over the {limit} byte SKILL.md guard threshold.
 
@@ -76,21 +86,23 @@ Override the threshold for this project via "skill_file_size_limit_bytes" in .cl
 
 
 def _is_skill_md(file_path: str) -> bool:
-    return os.path.basename(file_path).lower() == "skill.md"
+    return _skill_file_size.is_skill_md(file_path)
 
 
 def load_limit_bytes(cwd: str) -> int:
-    """Configured hard limit in bytes, falling back to DEFAULT_LIMIT_BYTES on
-    any read/parse/type problem or a non-positive configured value -- never
-    raises."""
-    path = os.path.join(cwd or "", CONFIG_FILE)
+    """Configured hard limit in bytes -- see `_skill_file_size.load_config()`
+    for the fallback contract (never raises)."""
+    _, limit = _skill_file_size.load_config(cwd)
+    return limit
+
+
+def current_file_size(file_path: str) -> int:
+    """Bytes the file currently occupies on disk, or 0 if it doesn't exist
+    yet (every byte of a brand-new file counts as growth)."""
     try:
-        with open(path, encoding="utf-8") as f:
-            config = json.load(f)
-        limit = int(config.get("skill_file_size_limit_bytes", DEFAULT_LIMIT_BYTES))
-    except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError, TypeError):
-        return DEFAULT_LIMIT_BYTES
-    return limit if limit > 0 else DEFAULT_LIMIT_BYTES
+        return os.path.getsize(file_path)
+    except OSError:
+        return 0
 
 
 def resulting_write_size(tool_input: dict) -> int:
@@ -103,9 +115,11 @@ def resulting_edit_size(file_path: str, tool_input: dict):
     """Bytes the file would be after an Edit, or None -> caller fails open.
 
     None covers: unreadable file (missing / OS error / undecodable as utf-8),
-    an empty old_string, or old_string not present in the current content --
-    all cases where either there is nothing to reason about, or the real Edit
-    tool will independently refuse the call on its own.
+    an empty old_string, old_string not present in the (line-ending-
+    normalized) current content, or old_string occurring more than once with
+    replace_all not set -- all cases where either there is nothing to reason
+    about, or the real Edit tool will independently refuse the call itself
+    (not found / not unique).
     """
     old_string = tool_input.get("old_string", "")
     new_string = tool_input.get("new_string", "")
@@ -113,22 +127,37 @@ def resulting_edit_size(file_path: str, tool_input: dict):
     if not old_string:
         return None
     try:
-        # newline="" preserves CRLF bytes literally on read -- without it,
-        # universal-newline translation silently collapses \r\n -> \n, which
-        # would UNDER-count the resulting size on a non-LF-normalized file.
-        # dev-env's own skills are LF-forced via .gitattributes, but this
-        # hook is global and also reads other projects' SKILL.md files.
+        # newline="" preserves CRLF bytes literally on read -- needed below
+        # to detect the file's line-ending convention and reproduce it in
+        # the result; dev-env's own skills are LF-forced via .gitattributes,
+        # but this hook is global and also reads other projects' files.
         with open(file_path, encoding="utf-8", newline="") as f:
             current = f.read()
     except (FileNotFoundError, OSError, UnicodeDecodeError):
         return None
-    if old_string not in current:
+
+    # The real Edit tool matches old_string against file content with line
+    # endings normalized to \n, then writes new_string back converted to the
+    # file's own line ending. Replicate both halves -- matching only the
+    # comparison on \n while measuring new_string's raw bytes would still
+    # undercount a CRLF file's true resulting size by one byte per inserted
+    # line.
+    is_crlf = "\r\n" in current
+    current_n = current.replace("\r\n", "\n")
+    old_string_n = old_string.replace("\r\n", "\n")
+    new_string_n = new_string.replace("\r\n", "\n")
+
+    if old_string_n not in current_n:
         return None  # real Edit tool independently fails with "not found"
-    updated = (
-        current.replace(old_string, new_string)
+    if not replace_all and current_n.count(old_string_n) > 1:
+        return None  # real Edit tool independently fails with "not unique"
+
+    updated_n = (
+        current_n.replace(old_string_n, new_string_n)
         if replace_all
-        else current.replace(old_string, new_string, 1)
+        else current_n.replace(old_string_n, new_string_n, 1)
     )
+    updated = updated_n.replace("\n", "\r\n") if is_crlf else updated_n
     return len(updated.encode("utf-8"))
 
 
@@ -160,10 +189,14 @@ def main() -> None:
     else:
         size = resulting_edit_size(file_path, tool_input)
         if size is None:
-            sys.exit(0)  # fail open: unreadable file / old_string not found
+            sys.exit(0)  # fail open: unreadable file / old_string not found or not unique
 
     limit = load_limit_bytes(data.get("cwd", ""))
-    if size > limit:  # strictly greater-than: exactly-at-limit passes
+    # Block only on growth past the limit -- an edit that shrinks an
+    # already-oversized file (but doesn't single-handedly land under the
+    # ceiling) must still be allowed, or an oversized SKILL.md becomes
+    # impossible to trim incrementally.
+    if size > limit and size > current_file_size(file_path):
         _hookout.emit_block(BLOCK_MESSAGE.format(
             tool_name=tool_name, file_path=file_path, size=size, limit=limit))
     sys.exit(0)

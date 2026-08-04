@@ -120,6 +120,7 @@ the item). A one-line navigational map of the test directory is
 84. **README index-parity gate** — required when changing `claude/scripts/tests/test_readme_index_parity.py`, or when adding/removing/renaming any file in `claude/scripts/tests/` or `claude/scripts/` (it gates each directory's README against the directory: row coverage, orphan rows, header counts, section `(N)` counts). Run: `py -3 claude/scripts/tests/test_readme_index_parity.py`
 85. **skill-file-size-guard test** — required when changing `claude/scripts/pre-tool-use-skill-file-size-guard.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size_guard.py`
 86. **skill-file-size-advisory test** — required when changing `claude/scripts/skill-file-size-advisory.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size_advisory.py`
+87. **`_skill_file_size` shared-module test** — required when changing `claude/scripts/_skill_file_size.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size.py`
 
 ## Observability
 

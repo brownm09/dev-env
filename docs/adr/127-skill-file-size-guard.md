@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-04
 **Status:** Accepted
-**Tags:** hooks, pre-tool-use, post-tool-use, skills, file-size, write, edit, global-rule, hookout
+**Tags:** hooks, pre-tool-use, post-tool-use, skills, file-size, write, edit, global-rule, hookout, crlf, sentinel-dedup
 
 ---
 
@@ -64,7 +64,7 @@ Same deferral `pre-tool-use-worktree-path-check.py` (ADR-024) already documents 
 
 ### No retroactive enforcement
 
-Both hooks fire only on new `Write`/`Edit` calls. A `SKILL.md` that predates the guard and already exceeds either threshold is untouched until it's next written or edited — at which point the guard hook still lets it *shrink* (an edit that reduces size below the limit is allowed even starting from an already-oversized file; see `test_edit_that_shrinks_below_limit_passes`).
+Both hooks fire only on new `Write`/`Edit` calls. A `SKILL.md` that predates the guard and already exceeds either threshold is untouched until it's next written or edited — at which point the guard blocks only on **growth past the limit**: `resulting_size > limit AND resulting_size > current_on_disk_size`. An edit that shrinks an already-oversized file is always allowed, even when the result is still over the limit (see `test_edit_shrinks_but_stays_over_limit_passes`) — otherwise an oversized file could only ever be fixed in one single edit that happens to land the whole file under the ceiling in one step, defeating the block message's own recommended remediation of trimming content out incrementally. Growing an already-oversized file further still blocks (`test_edit_grows_already_oversized_file_still_blocks`).
 
 ---
 
@@ -72,10 +72,28 @@ Both hooks fire only on new `Write`/`Edit` calls. A `SKILL.md` that predates the
 
 - Any `Write`/`Edit` targeting a file named `SKILL.md` (case-insensitive), in any project, that would leave it over 256KB (default, configurable) is now blocked with a clear remediation message instead of silently landing.
 - A `SKILL.md` crossing 200KB (default, configurable) gets a non-blocking heads-up before ever reaching the hard ceiling.
-- No-op cost for every other file: one cheap basename comparison, no I/O, before either hook does any real work.
+- No-op cost for every other file is one process spawn plus the ADR-106 heartbeat write (a tmp-file write + `os.replace`, unconditionally the first statement of `main()`); the guard's own logic beyond that short-circuits on a single basename comparison with no further I/O.
 - Coverage gap: `Bash`-based writes to a `SKILL.md` are not covered (same deferral as ADR-024).
-- No change to any existing hook, script, or shared module — both new hooks are pure additions that only import already-shared `_hookout`/`_hookutil`.
-- Covered by `claude/scripts/tests/test_skill_file_size_guard.py` and `claude/scripts/tests/test_skill_file_size_advisory.py` (Testing items 85/86).
+- No change to any existing hook, script, or shared module — both new hooks are pure additions that only import already-shared `_hookout`/`_hookutil`, plus the new `_skill_file_size.py` module both of them share with each other.
+- Covered by `claude/scripts/tests/test_skill_file_size_guard.py`, `claude/scripts/tests/test_skill_file_size_advisory.py`, and `claude/scripts/tests/test_skill_file_size.py` (Testing items 85/86/87).
+
+---
+
+## Addendum (2026-08-04): /review-found correctness fixes
+
+`/review` on the PR that introduced this ADR (dev-env#940) surfaced four blocking findings, verified end-to-end against the real hook scripts and real `SKILL.md` files on the author's machine before being fixed in the same PR:
+
+1. **CRLF comparison bypassed the guard entirely.** `resulting_edit_size()` compared `old_string` (always `\n`-delimited, since a model never authors literal `\r\n`) against the file's raw on-disk bytes. Against a real CRLF file, a multi-line `old_string` was never found, so the function returned `None` (fail open) regardless of how large the edit would make the file — silently disabling enforcement. Confirmed live: 145 of 507 real `SKILL.md` files on the author's machine are CRLF, and 19 already exceed 262,144 bytes. **Fix:** compare and substitute on a copy of both `current` and `old_string`/`new_string` normalized to `\n`, then re-apply the file's own line ending (`\r\n` if the original had any) when measuring the final byte count — matching the real `Edit` tool's own normalize-then-reapply behavior, confirmed by direct experiment against the real tool.
+2. **Non-dict `.claude/hook-config.json` root disabled the guard.** A syntactically valid but non-dict config root (an array, string, or number) made `config.get(...)` raise `AttributeError`, uncaught by either loader's except tuple, propagating past `main()` to the outer fail-open handler — the "never raises" docstring claim was false. **Fix:** both loaders (now the single shared `_skill_file_size.load_config()`) check `isinstance(config, dict)` before calling `.get()`.
+3. **The predicate blocked legitimate shrinking edits.** `size > limit` alone blocked *any* edit landing over the limit, including one that reduced an already-oversized file's size but didn't single-handedly cross under the ceiling — see the revised "No retroactive enforcement" judgment call above.
+4. **`resulting_edit_size()` didn't account for the real `Edit` tool's uniqueness requirement.** When `old_string` occurs more than once and `replace_all` isn't set, the real tool refuses to run at all; the hook previously estimated a first-occurrence-only size anyway, which couldn't cause an oversized write (the real tool independently refuses either way) but could produce a misleading "BLOCKED: would leave X at N bytes" message for an edit that was never going to apply. **Fix:** treat non-unique + `replace_all=False` as another fail-open case, alongside not-found and empty `old_string`.
+
+Two non-blocking findings were also addressed:
+
+- **Duplicated basename-match and config-loading logic** between the two hook files (held in sync only by a prose comment) was extracted into a shared `claude/scripts/_skill_file_size.py`, matching this repo's `_hookout.py`/`_hookutil.py`/`_journal_schema.py` convention of one shared module per piece of cross-hook logic. Each hook keeps its own public function names (`_is_skill_md`, `load_limit_bytes`, `load_bytes_config`) as thin wrappers over the shared implementation, so neither hook's own interface changed.
+- **The advisory hook re-fired on every edit** to an already-over-watermark file, including during a multi-edit session actively trying to fix it. **Fix:** gated to one nudge per session per file via a `_hookutil.sentinel_path()` marker keyed on `session_id` plus a hash of `file_path`; a payload with no `session_id` skips dedup and always advises, matching this repo's "a payload we can't dedupe we don't block" convention (`posttooluse-inert-advisory.py`).
+
+**Why the advisory stays a separate `PostToolUse` hook** (raised as a performance question during review, since the guard already computes an exact resulting size to make its own block decision): the guard's number is a *pre-write prediction*, derived from the guard's own CRLF/uniqueness handling above; the advisory's number is the *actual* post-write on-disk size via `os.path.getsize()`. Collapsing them would mean the watermark check no longer reflects what Claude Code's own write path (encoding, atomicity, a concurrent modification) actually put on disk. The second `pyw -3` process this costs is paid only on a `SKILL.md` Write/Edit — a narrow, infrequent trigger, not every tool call.
 
 ---
 
@@ -83,7 +101,8 @@ Both hooks fire only on new `Write`/`Edit` calls. A `SKILL.md` that predates the
 
 - `claude/scripts/pre-tool-use-skill-file-size-guard.py` — hard-block implementation
 - `claude/scripts/skill-file-size-advisory.py` — advisory implementation
-- `claude/scripts/tests/test_skill_file_size_guard.py`, `claude/scripts/tests/test_skill_file_size_advisory.py` — self-tests
+- `claude/scripts/_skill_file_size.py` — shared basename-match + config-loading module (Addendum)
+- `claude/scripts/tests/test_skill_file_size_guard.py`, `claude/scripts/tests/test_skill_file_size_advisory.py`, `claude/scripts/tests/test_skill_file_size.py` — self-tests
 - `claude/settings.json` — hook wiring
 - [ADR-024](024-worktree-path-guard-hook.md) — the closest architectural precedent (`PreToolUse` guard on `Write`/`Edit`/`NotebookEdit`), including its Bash-scope deferral this ADR mirrors
 - [ADR-103](103-shared-hookout-emitter.md) — the `_hookout` emitter and its per-event channel contract this ADR relies on for both the block and the advisory

@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 75 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 87 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 76 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 88 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -48,6 +48,7 @@ production code.
 | `test_journal_shards.py` | `_journal_shards.py` | Shared numeric-shard (open-PR + tile) and legacy `open-prs.jsonl` reader, plus `project_dirs` — the `sessions/<project>/` walk that precedes both — used by `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, and `post-compact.py`. |
 | `test_repo_scan.py` | `_repo_scan.py` | Shared `find_git_repos()` directory-scan helper used by every `--scan-dir` mode across the worktree/board scripts. |
 | `test_repo_target.py` | `_repo_target.py` | Shared `--repo`/PR-URL/issue-URL/positional-number resolver — ends the per-hook ADR-050 amendment treadmill for this concern. |
+| `test_skill_file_size.py` | `_skill_file_size.py` | Shared `SKILL.md` basename match and `.claude/hook-config.json` loader (`(warn_bytes, limit_bytes)`, one fallback contract) used by both size-guard hooks (ADR-127). |
 | `test_winsubp.py`, `test_pyw_stdio.py` | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning hook applies; the latter probes real `pyw -3` stdio behavior end-to-end. |
 | `test_worktree_canon.py` | `_worktree_canon.py` | Shared worktree-path-to-canonical-root regex/resolution, used by the project-board hook pair and the two PreToolUse worktree guards. |
 | `test_worktree_liveness.py` | `_worktree_liveness.py` | Active-session liveness check that stops prune/reclaim routines from severing a worktree with a live Claude Code session in it. |

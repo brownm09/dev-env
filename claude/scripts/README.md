@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **85 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **86 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -33,7 +33,7 @@ exercises these scripts: `py -3 claude/scripts/run-hook-tests.py`.
 `_foo.py` files — imported by other scripts, never directly invoked or wired as a hook
 themselves. None of these get their own row in `docs/REFERENCE.md`'s Hooks/Utilities tables
 (they're described in prose paragraphs at the top of the Hooks section instead); this table is
-the one place all 14 are listed together. Each has its own test file in
+the one place all 15 are listed together. Each has its own test file in
 [`tests/README.md`](tests/README.md) → Shared support modules.
 
 | Module | Purpose | Consumers |
@@ -49,6 +49,7 @@ the one place all 14 are listed together. Each has its own test file in
 | `_journal_shards.py` | Shared numeric-shard + legacy `open-prs.jsonl` reader (`iter_numeric_shards`, with `iter_pr_shards` / `iter_tile_shards` as named delegations; `read_legacy_entries`), plus `project_dirs` — the `sessions/<project>/` walk both reconcile hooks run before reading either shard kind. | `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, `post-compact.py` |
 | `_repo_scan.py` | Shared `find_git_repos()` directory-scan helper for every `--scan-dir` mode. | `prune-merged-worktrees.py`, `reclaim-worktree-disk.py`, `reconcile-project-board.py` |
 | `_repo_target.py` | Shared `--repo` (incl. host-prefixed/URL forms) / PR-URL / issue-URL / positional-number resolver for `gh` commands — ends the per-hook ADR-050 amendment treadmill. | `post-pr-merge-project.py`, `pr-merge-reminder.py`, `posttooluse-inert-advisory.py`, `post-pr-merge-pull.py`, `stop-tile-enumeration-gate.py`, `post-tool-use.py` |
+| `_skill_file_size.py` | Shared `SKILL.md` basename match (`is_skill_md`) and `.claude/hook-config.json` loader (`load_config` — returns `(warn_bytes, limit_bytes)`, one shared fallback contract for both fields). | `pre-tool-use-skill-file-size-guard.py`, `skill-file-size-advisory.py` |
 | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning script must `import`. | ~20 subprocess-using scripts |
 | `_worktree_canon.py` | Shared worktree-path-to-canonical-root regex/resolution (`canonical_root_from_worktree`, `is_worktree_path`). | `post-tool-use.py`, `reconcile-project-board.py`, `pre-tool-use-canonical-mutate-guard.py`, `pre-tool-use-worktree-path-check.py`, `usage-snapshot.py` |
 | `_worktree_liveness.py` | Active-session liveness check — stops prune/reclaim from severing a worktree with a live Claude session in it. | `prune-merged-worktrees.py`, `reclaim-worktree-disk.py` |
