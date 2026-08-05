@@ -245,6 +245,8 @@ rather than re-checking this one already-patched working tree.
 
 Motivating incident: [cover-letter-runtime#7](https://github.com/brownm09/cover-letter-runtime/issues/7) / [PR #10](https://github.com/brownm09/cover-letter-runtime/pull/10), git 2.37.1.windows.1 — full detail: [dev-env#944](https://github.com/brownm09/dev-env/issues/944).
 
+Also observed on a **freshly created** `git worktree add`/`EnterWorktree` checkout (not just a retrofit onto an old one) — see [cover-letter-runtime#14](https://github.com/brownm09/cover-letter-runtime/issues/14) / [PR #21](https://github.com/brownm09/cover-letter-runtime/pull/21). The detection/fix recipe is identical; only the trigger differs. Root cause there is believed to be an intermittent checkout-order race in that machine's git build (`2.37.1.windows.1`), not proven to a git source-line citation — ruled out: Claude Code's own hook system, MCP tools, native git hooks, dev-env's own worktree-creation scripts, and git's parallel-checkout feature.
+
 ---
 
 ## Dev-Env & Project Boards
