@@ -42,6 +42,21 @@ removes), that a survivor shard is left byte-identical (the ADR-056 no-clobber g
 inherited), the race-tolerant empty-dir cleanup, and that the emitted message never
 truncates silently.
 
+5. **Deletion-advisory classification (dev-env#958, dev-env#950, ADR-118 Amendment 5).**
+   A tile shard's `unlink()` above is a raw filesystem delete, never git-committed, so an
+   orphaned deletion can sit uncommitted in the shared canonical indefinitely.
+   `test_classify_tile_deletions_*` pins the same ADR-119 four-bucket model
+   `reconcile-open-prs.py` uses for open-PR shards, adapted for tiles' single terminal
+   state (an issue closes; it does not merge) and its one genuine departure: state
+   re-confirmation is per-item (`check_issue_state`), never folded into the batched
+   `fetch_repo_issue_states` above, because an orphaned deletion's issue has no "recent by
+   construction" guarantee the way a pending tile's does.
+   `test_classify_tile_deletions_rejects_crafted_host_in_committed_url` specifically pins
+   that `repo` is derived through the strict `repo_from_issue_url`, not a naive URL split
+   -- a naive port of the open-PR model (which reads its `url` live off a shard's own
+   validated `url` field, not committed history) would regress that protection here,
+   where the URL comes from `git show HEAD:<path>` instead.
+
 `fetch_repo_issue_states` (the live `gh` boundary) is not tested -- subprocess boundary,
 matching `reconcile-open-prs.py`'s `check_pr_state` convention and this repo's fixture-only
 rule. The batching, budget, and failure handling *around* it are tested through
@@ -90,6 +105,13 @@ reconcile_tiles = mod.reconcile_tiles
 prune_empty_tile_dirs = mod.prune_empty_tile_dirs
 tile_index_line = mod.tile_index_line
 format_message = mod.format_message
+parse_tile_status_line = mod.parse_tile_status_line
+classify_dirty_tile_paths = mod.classify_dirty_tile_paths
+shard_issue_number_from_path = mod.shard_issue_number_from_path
+classify_tile_deletions = mod.classify_tile_deletions
+safe_for_command = mod.safe_for_command
+cap = mod.cap
+format_deletion_message = mod.format_deletion_message
 
 REPO = "brownm09/dev-env"
 URL = "https://github.com/brownm09/dev-env/issues/{n}"
@@ -771,6 +793,390 @@ def test_hook_call_site_uses_model_audience_on_userpromptsubmit() -> str:
     return "the single call site passes a literal 'UserPromptSubmit' with audience='model'"
 
 
+# --- deletion advisory: git-status parsing (dev-env#958, dev-env#950) --------
+
+
+def test_parse_tile_status_line_filters_to_tile_shape() -> str:
+    assert parse_tile_status_line(" D sessions/dev-env/tiles/869.json") == \
+        (" D", "sessions/dev-env/tiles/869.json")
+    assert parse_tile_status_line(" M sessions/dev-env/open-prs/1.json") is None, \
+        "an open-prs path must not match the tiles shape"
+    assert parse_tile_status_line("?? sessions/dev-env/2026-07-22_010203.stub.md") is None
+    assert parse_tile_status_line(" M claude/scripts/reconcile-pending-tiles.py") is None
+    return "only /tiles/ paths (any status) pass; stub/script/open-prs paths dropped"
+
+
+def test_parse_tile_status_line_normalizes_backslashes() -> str:
+    got = parse_tile_status_line(r" D sessions\career-playbook\tiles\1164.json")
+    assert got == (" D", "sessions/career-playbook/tiles/1164.json"), got
+    return "backslash-separated porcelain paths normalized to forward slashes"
+
+
+def test_parse_tile_status_line_handles_renames() -> str:
+    lines = [
+        "R  sessions/dev-env/tiles/1.json -> sessions/dev-env/tiles/2.json",
+        "R  docs/old-name.md -> sessions/career-playbook/tiles/700.json",
+        "R  sessions/dev-env/tiles/1.json -> docs/unrelated.md",
+    ]
+    got = [parse_tile_status_line(x)[1] for x in lines if parse_tile_status_line(x)]
+    assert got == [
+        "sessions/dev-env/tiles/2.json",
+        "sessions/career-playbook/tiles/700.json",
+    ], f"expected only destination paths landing in tiles shape, got {got}"
+    return "rename lines ('old -> new') keep only the destination path, matched against its shape"
+
+
+def test_parse_tile_status_line_empty_and_short_lines() -> str:
+    assert parse_tile_status_line("") is None
+    assert parse_tile_status_line("M") is None
+    assert parse_tile_status_line(" M") is None, "lines shorter than 'XY p' are skipped"
+    return "empty and malformed/short porcelain lines handled without error"
+
+
+def test_only_exact_delete_codes_count_as_tile_deletions() -> str:
+    """Mirrors the ADR-119 guarantee for open-PR shards: a `D` anywhere in the two-char
+    porcelain field is not a deletion. `AD`/`RD` are a concurrent session's STAGED shard --
+    the class the explicit-pathspec rule exists to keep out of your commit -- and
+    `DD`/`DU`/`UD` are merge conflicts, where a recommended `git add` silently resolves
+    the conflict and the following partial commit fails outright."""
+    base = "sessions/dev-env/tiles/1.json"
+    deleting = [" D", "D "]
+    not_deleting = ["AD", "RD", "MD", "CD", "TD", "DD", "DU", "UD", "AU", "UA", "AA", "UU",
+                    "??", " M", "M ", "R ", "A "]
+    for code in deleting:
+        got = classify_dirty_tile_paths([f"{code} {base}"])
+        assert got["deleted"] == [base] and got["other"] == [], f"{code!r} should be a deletion: {got}"
+    for code in not_deleting:
+        got = classify_dirty_tile_paths([f"{code} {base}"])
+        assert got["deleted"] == [] and got["other"] == [base], \
+            f"{code!r} must NOT be treated as a deletion (got {got})"
+    return "only exact ' D'/'D ' are deletions; AD/RD (staged, concurrent) and DD/DU/UD (conflict) are not"
+
+
+def test_classify_dirty_tile_paths_preserves_status_order() -> str:
+    lines = [
+        " D sessions/career-playbook/tiles/853.json",
+        "?? sessions/dev-env/tiles/999.json",
+        "D  sessions/career-playbook/tiles/856.json",
+        " M sessions/dev-env/tiles/770.json",
+    ]
+    got = classify_dirty_tile_paths(lines)
+    assert got["deleted"] == [
+        "sessions/career-playbook/tiles/853.json",
+        "sessions/career-playbook/tiles/856.json",
+    ], got["deleted"]
+    assert got["other"] == [
+        "sessions/dev-env/tiles/999.json",
+        "sessions/dev-env/tiles/770.json",
+    ], got["other"]
+    return "both buckets preserve git status order; staged and unstaged deletes both counted"
+
+
+def test_shard_issue_number_from_path() -> str:
+    assert shard_issue_number_from_path("sessions/dev-env/tiles/853.json") == 853
+    assert shard_issue_number_from_path("sessions/x/tiles/abc.json") is None, "non-numeric stem"
+    assert shard_issue_number_from_path("sessions/x/tiles/12.txt") is None, "non-json"
+    return "numeric stem parses via the shared shard_number reader; non-numeric/non-json yield None"
+
+
+# --- deletion advisory: state confirmation (ADR-118 Amendment 5) -------------
+
+
+def _tile_ident(mapping):
+    """identity_fn stub: path -> (url, embedded_issue)."""
+    return lambda path: mapping.get(path)
+
+
+def _fixed_issue_state(mapping):
+    return lambda issue, repo: mapping.get(issue)
+
+
+CP_ISSUE_URL = "https://github.com/brownm09/career-playbook/issues/"
+
+
+def test_classify_tile_deletions_buckets_by_confirmed_state() -> str:
+    paths = [
+        "sessions/career-playbook/tiles/853.json",
+        "sessions/career-playbook/tiles/900.json",
+        "sessions/career-playbook/tiles/901.json",
+    ]
+    got = classify_tile_deletions(
+        paths,
+        identity_fn=_tile_ident({
+            "sessions/career-playbook/tiles/853.json": (CP_ISSUE_URL + "853", 853),
+            "sessions/career-playbook/tiles/900.json": (CP_ISSUE_URL + "900", 900),
+            "sessions/career-playbook/tiles/901.json": (CP_ISSUE_URL + "901", 901),
+        }),
+        state_fn=_fixed_issue_state({853: "CLOSED", 900: "OPEN", 901: None}),
+    )
+    assert got["closed"] == ["sessions/career-playbook/tiles/853.json"], got["closed"]
+    assert got["open"] == ["sessions/career-playbook/tiles/900.json"], got["open"]
+    assert got["unverified"] == ["sessions/career-playbook/tiles/901.json"], got["unverified"]
+    assert got["skipped"] == []
+    return "only a confirmed CLOSED deletion is cleared for commit; OPEN and unresolved are not"
+
+
+def test_classify_tile_deletions_missing_issue_field_is_not_a_mismatch() -> str:
+    """`make_tile` already trusts the filename when the shard's `issue` field is simply
+    absent -- a stricter rule here would treat every shard written before that field
+    existed as unverified for no reason. Only a PRESENT and DISAGREEING field is a
+    mismatch (dev-env#958 design note, a deliberate narrowing of the open-PR model's
+    stricter no-isinstance-guard check)."""
+    got = classify_tile_deletions(
+        ["sessions/career-playbook/tiles/900.json"],
+        identity_fn=_tile_ident({
+            "sessions/career-playbook/tiles/900.json": (CP_ISSUE_URL + "900", None),
+        }),
+        state_fn=_fixed_issue_state({900: "CLOSED"}),
+    )
+    assert got["closed"] == ["sessions/career-playbook/tiles/900.json"], \
+        f"a missing embedded issue field must not block classification: {got}"
+    return "a missing embedded `issue` field is not itself a mismatch (matches make_tile's tolerance)"
+
+
+def test_classify_tile_deletions_issue_field_mismatch_is_unverified() -> str:
+    """The file is named 900.json but carries issue 853's identity; 853 is CLOSED and 900
+    is OPEN, so a naive implementation would report an OPEN issue's record as safe to
+    commit."""
+    got = classify_tile_deletions(
+        ["sessions/career-playbook/tiles/900.json"],
+        identity_fn=_tile_ident({
+            "sessions/career-playbook/tiles/900.json": (CP_ISSUE_URL + "853", 853),
+        }),
+        state_fn=_fixed_issue_state({853: "CLOSED", 900: "OPEN"}),
+    )
+    assert got["closed"] == [], "a filename/issue mismatch must never reach `closed`"
+    assert got["unverified"] == ["sessions/career-playbook/tiles/900.json"], got
+    return "filename stem vs embedded issue mismatch routes to unverified, not closed"
+
+
+def test_classify_tile_deletions_unresolvable_identity_is_unverified() -> str:
+    got = classify_tile_deletions(
+        ["sessions/career-playbook/tiles/853.json"],
+        identity_fn=_tile_ident({}),                   # git show failed / shard not at HEAD
+        state_fn=_fixed_issue_state({853: "CLOSED"}),  # never consulted
+    )
+    assert got["unverified"] == ["sessions/career-playbook/tiles/853.json"], got
+    assert got["closed"] == [], "no identity means nothing to confirm against"
+    return "a shard whose committed identity cannot be read is unverified, never assumed closed"
+
+
+def test_classify_tile_deletions_rejects_crafted_host_in_committed_url() -> str:
+    """`classify_tile_deletions` must derive `repo` through the strict `repo_from_issue_url`
+    (github.com-only, conservative owner/repo charset) -- never a raw URL split. A naive
+    port of the open-PR model's looser `repo_from_url` would let a committed shard's
+    crafted `url` aim a real GitHub lookup, and potentially a recommended commit, at the
+    wrong repository -- and unlike the primary loop (which reads a live, already-validated
+    shard field), this path reads `url` straight from `git show HEAD:<path>`, un-vetted."""
+    for bad_url in [
+        "https://evil.com/brownm09/career-playbook/issues/853",
+        "ssh://github.com/brownm09/career-playbook/issues/853",
+        "https://github.com/../../etc/issues/853",
+    ]:
+        got = classify_tile_deletions(
+            ["sessions/career-playbook/tiles/853.json"],
+            identity_fn=_tile_ident({
+                "sessions/career-playbook/tiles/853.json": (bad_url, 853),
+            }),
+            state_fn=_fixed_issue_state({853: "CLOSED"}),
+        )
+        assert got["closed"] == [], f"a crafted/foreign url must never reach `closed`: {bad_url}"
+        assert got["unverified"] == ["sessions/career-playbook/tiles/853.json"], \
+            f"a crafted/foreign url must route to unverified: {bad_url}"
+    return ("repo is derived via the strict repo_from_issue_url, never a raw split -- a "
+            "foreign/crafted host is unverified, not closed")
+
+
+def test_classify_tile_deletions_reports_rather_than_drops_beyond_cap() -> str:
+    paths = [f"sessions/career-playbook/tiles/{n}.json" for n in (1, 2, 3)]
+    got = classify_tile_deletions(
+        paths,
+        identity_fn=_tile_ident({p: (CP_ISSUE_URL + str(i + 1), i + 1) for i, p in enumerate(paths)}),
+        state_fn=_fixed_issue_state({1: "CLOSED", 2: "CLOSED", 3: "CLOSED"}),
+        max_probes=2,
+    )
+    assert got["closed"] == paths[:2], got["closed"]
+    assert got["skipped"] == paths[2:], "over-cap entries are surfaced, not silently dropped"
+    return "the probe cap surfaces what it skipped, so a capped run never reads as full coverage"
+
+
+def test_classify_tile_deletions_deadline_stops_probing() -> str:
+    """The count cap alone cannot bound latency, so a wall-clock deadline is the real
+    guard. Pinned via an injected deadline_fn that expires after the first probe."""
+    paths = [f"sessions/career-playbook/tiles/{n}.json" for n in (1, 2, 3)]
+    calls = {"n": 0}
+
+    def expiring():
+        calls["n"] += 1
+        return calls["n"] > 1  # fresh for the first check, expired thereafter
+
+    got = classify_tile_deletions(
+        paths,
+        identity_fn=_tile_ident({p: (CP_ISSUE_URL + str(i + 1), i + 1) for i, p in enumerate(paths)}),
+        state_fn=_fixed_issue_state({1: "CLOSED", 2: "CLOSED", 3: "CLOSED"}),
+        deadline_fn=expiring,
+    )
+    assert got["closed"] == paths[:1], got["closed"]
+    assert got["skipped"] == paths[1:], "past the deadline, the remainder is reported as skipped"
+    return "an expired wall-clock deadline stops probing and reports the remainder as skipped"
+
+
+def test_classify_tile_deletions_malformed_path_costs_no_probe() -> str:
+    paths = ["sessions/career-playbook/tiles/abc.json", "sessions/career-playbook/tiles/853.json"]
+    got = classify_tile_deletions(
+        paths,
+        identity_fn=_tile_ident({
+            "sessions/career-playbook/tiles/853.json": (CP_ISSUE_URL + "853", 853),
+        }),
+        state_fn=_fixed_issue_state({853: "CLOSED"}),
+        max_probes=1,
+    )
+    assert got["closed"] == ["sessions/career-playbook/tiles/853.json"], got
+    assert got["skipped"] == [], "the unenumerable path consumed no probe, so the real shard still got one"
+    assert got["unverified"] == ["sessions/career-playbook/tiles/abc.json"]
+    return "a non-numeric-stem path does not consume the probe budget"
+
+
+# --- deletion advisory: command safety and message bounding ------------------
+
+
+def test_safe_for_command_rejects_shell_metacharacters() -> str:
+    """`git status --porcelain` does not quote a path containing `;`, and such a path
+    still satisfies the reporting shape check -- so the ready-to-run command must be
+    gated on a stricter allowlist or the emitted text carries a second command."""
+    assert safe_for_command(["sessions/career-playbook/tiles/1.json"]) is True
+    for bad in [
+        "sessions/career-playbook;id/tiles/1.json",
+        "sessions/career-playbook/tiles/1.json; id",
+        "sessions/career playbook/tiles/1.json",
+        "sessions/$(id)/tiles/1.json",
+        "../sessions/career-playbook/tiles/1.json",
+    ]:
+        assert safe_for_command([bad]) is False, f"{bad!r} must not be command-safe"
+    assert safe_for_command(["sessions/a/tiles/1.json", "sessions/b;x/tiles/2.json"]) is False, \
+        "one unsafe path taints the whole batch"
+    return "only plain sessions/<project>/tiles/<N>.json is interpolated into a shell command"
+
+
+def test_cap_bounds_message_lists() -> str:
+    paths = [f"sessions/p/tiles/{n}.json" for n in range(1, 9)]
+    got = cap(paths)
+    assert got.count(",") == 4 and got.endswith("(+3 more)"), got
+    assert cap(paths[:2]) == "sessions/p/tiles/1.json, sessions/p/tiles/2.json"
+    assert cap([]) == "", "empty list renders empty, not '(+-5 more)'"
+    return "path lists in the advisory are bounded with an honest (+N more) count"
+
+
+# --- deletion advisory: message formatting -----------------------------------
+
+
+_EMPTY_DELETIONS = {"closed": [], "open": [], "unverified": [], "skipped": []}
+
+
+def test_format_deletion_message_closed_bucket_emits_ready_to_run_command() -> str:
+    deletions = {**_EMPTY_DELETIONS, "closed": ["sessions/career-playbook/tiles/1164.json"]}
+    msg = format_deletion_message({"deleted": [], "other": []}, deletions, "draft/2026-08-07")
+    assert "add -- 'sessions/career-playbook/tiles/1164.json'" in msg, msg
+    assert 'commit -m "journal: close tile shards for closed issues" -- ' in msg, msg
+    assert "draft/2026-08-07" in msg
+    return "a confirmed-closed deletion emits a ready-to-run git add/commit pair naming the branch"
+
+
+def test_format_deletion_message_unsafe_path_falls_back_to_manual_inspection() -> str:
+    deletions = {**_EMPTY_DELETIONS, "closed": ["sessions/p;x/tiles/1.json"]}
+    msg = format_deletion_message({"deleted": [], "other": []}, deletions, "draft/2026-08-07")
+    assert "Inspect manually" in msg
+    assert "journal: close tile shards" not in msg, \
+        "an unsafe path must never reach a ready-to-run command"
+    return "an unsafe path in the closed bucket falls back to manual inspection, no command emitted"
+
+
+def test_format_deletion_message_open_bucket_warns_never_recommends() -> str:
+    deletions = {**_EMPTY_DELETIONS, "open": ["sessions/career-playbook/tiles/900.json"]}
+    msg = format_deletion_message({"deleted": [], "other": []}, deletions, None)
+    assert "WARNING" in msg and "still OPEN" in msg
+    assert "journal: close tile shards" not in msg
+    assert "git checkout HEAD --" in msg
+    return "an OPEN-issue deletion is flagged with a restore hint, never recommended for commit"
+
+
+def test_format_deletion_message_unverified_bucket_never_recommends() -> str:
+    deletions = {**_EMPTY_DELETIONS, "unverified": ["sessions/career-playbook/tiles/901.json"]}
+    msg = format_deletion_message({"deleted": [], "other": []}, deletions, None)
+    assert "could not be confirmed" in msg and "Do not commit blind" in msg
+    assert "journal: close tile shards" not in msg
+    return "an unresolvable deletion is reported but never recommended for commit"
+
+
+def test_format_deletion_message_skipped_bucket_states_budget() -> str:
+    deletions = {**_EMPTY_DELETIONS, "skipped": ["sessions/career-playbook/tiles/902.json"]}
+    msg = format_deletion_message({"deleted": [], "other": []}, deletions, None)
+    assert "not probed" in msg
+    assert str(mod.MAX_TILE_DELETION_PROBES) in msg
+    return "the skipped bucket names the probe/deadline budget, not just a bare count"
+
+
+def test_format_deletion_message_other_bucket_is_hands_off_regardless_of_merge() -> str:
+    dirty = {"deleted": ["sessions/career-playbook/tiles/1.json"],
+             "other": ["sessions/career-playbook/tiles/2.json"]}
+    msg_normal = format_deletion_message(dirty, _EMPTY_DELETIONS, None, mid_merge=False)
+    msg_merge = format_deletion_message(dirty, _EMPTY_DELETIONS, None, mid_merge=True)
+    for msg in (msg_normal, msg_merge):
+        assert "tiles/2.json" in msg and "Leave these alone" in msg, msg
+        assert "never add another session's shard" in msg
+    return "the hands-off 'other' report needs no git mutation, so it survives mid-merge suppression too"
+
+
+def test_format_deletion_message_mid_merge_suppresses_bucket_text() -> str:
+    dirty = {"deleted": ["sessions/career-playbook/tiles/1.json"], "other": []}
+    deletions = {**_EMPTY_DELETIONS, "closed": ["sessions/career-playbook/tiles/1.json"]}
+    msg = format_deletion_message(dirty, deletions, "draft/2026-08-07", mid_merge=True)
+    assert "mid-merge" in msg and "MERGE_HEAD" in msg
+    assert "journal: close tile shards" not in msg, \
+        "stale deletions data must not leak a commit recommendation mid-merge"
+    return "mid_merge=True suppresses all deletions-bucket text, even if deletions carries stale data"
+
+
+def test_format_deletion_message_empty_when_nothing_to_report() -> str:
+    msg = format_deletion_message({"deleted": [], "other": []}, _EMPTY_DELETIONS, None)
+    assert msg == "", "nothing dirty, nothing classified -> emit nothing"
+    return "an empty reconciliation emits no deletion-advisory text at all"
+
+
+def test_format_deletion_message_is_ascii() -> str:
+    dirty = {"deleted": ["sessions/career-playbook/tiles/1.json"],
+             "other": ["sessions/career-playbook/tiles/2.json"]}
+    deletions = {
+        "closed": ["sessions/career-playbook/tiles/1.json"],
+        "open": ["sessions/career-playbook/tiles/3.json"],
+        "unverified": ["sessions/career-playbook/tiles/4.json"],
+        "skipped": ["sessions/career-playbook/tiles/5.json"],
+    }
+    msg = format_deletion_message(dirty, deletions, "draft/2026-08-07")
+    assert msg.isascii(), "message must be ASCII-only"
+    return "the rendered deletion-advisory message is ASCII-only (cp1252-safe on the raw-stream path)"
+
+
+def test_tile_deletion_probe_budget_documented_against_hook_timeout() -> str:
+    """Unlike `reconcile-open-prs.py`'s deletion probe (which adds a fresh deadline on top
+    of a budget that itself carries real reserve), this hook's LOOKUP_BUDGET_SECONDS +
+    GH_CALL_TIMEOUT already equals HOOK_TIMEOUT_SECONDS exactly -- zero pre-existing slack
+    -- because the budget is checked before each page fetch STARTS, so a fetch already in
+    flight when the budget expires still completes on its own GH_CALL_TIMEOUT ceiling. The
+    deletion-probe deadline in main() is therefore deliberately non-additive: it borrows
+    from LOOKUP_BUDGET_SECONDS rather than extending it. This test documents that
+    zero-slack condition as a live assertion rather than a comment that could silently go
+    stale."""
+    worst_case = mod.LOOKUP_BUDGET_SECONDS + mod.GH_CALL_TIMEOUT
+    assert worst_case == mod.HOOK_TIMEOUT_SECONDS, (
+        f"LOOKUP_BUDGET_SECONDS({mod.LOOKUP_BUDGET_SECONDS}) + GH_CALL_TIMEOUT({mod.GH_CALL_TIMEOUT}) "
+        f"no longer equals HOOK_TIMEOUT_SECONDS({mod.HOOK_TIMEOUT_SECONDS}) -- re-check whether the "
+        "deletion-probe deadline in main() is still correctly non-additive, or whether real "
+        "slack now exists and the deadline could safely add its own budget instead of borrowing"
+    )
+    return "documents the zero-pre-existing-slack condition the non-additive probe deadline relies on"
+
+
 def main() -> int:
     tests = [
         ("url validation accepts github.com", test_repo_from_issue_url_accepts_github),
@@ -817,6 +1223,34 @@ def main() -> int:
         ("message is ASCII-only", test_format_message_is_ascii),
         ("exit-0 stdout is the model channel (ADR-098)", test_emits_model_visible_stdout_at_exit_zero),
         ("call site uses literal event + model audience", test_hook_call_site_uses_model_audience_on_userpromptsubmit),
+        # --- deletion advisory (dev-env#958, dev-env#950, ADR-118 Amendment 5) ---
+        ("tile status line filters to tiles shape", test_parse_tile_status_line_filters_to_tile_shape),
+        ("tile status line normalizes backslashes", test_parse_tile_status_line_normalizes_backslashes),
+        ("tile status line handles renames", test_parse_tile_status_line_handles_renames),
+        ("tile status line empty/short lines", test_parse_tile_status_line_empty_and_short_lines),
+        ("only exact delete codes count as tile deletions", test_only_exact_delete_codes_count_as_tile_deletions),
+        ("classify_dirty_tile_paths preserves order", test_classify_dirty_tile_paths_preserves_status_order),
+        ("shard_issue_number_from_path", test_shard_issue_number_from_path),
+        ("tile deletions bucket by confirmed state", test_classify_tile_deletions_buckets_by_confirmed_state),
+        ("missing issue field is not a mismatch", test_classify_tile_deletions_missing_issue_field_is_not_a_mismatch),
+        ("issue field mismatch -> unverified", test_classify_tile_deletions_issue_field_mismatch_is_unverified),
+        ("unresolvable identity -> unverified", test_classify_tile_deletions_unresolvable_identity_is_unverified),
+        ("crafted/foreign host in committed url -> unverified", test_classify_tile_deletions_rejects_crafted_host_in_committed_url),
+        ("over-cap deletions reported, not dropped", test_classify_tile_deletions_reports_rather_than_drops_beyond_cap),
+        ("expired deadline stops probing", test_classify_tile_deletions_deadline_stops_probing),
+        ("malformed path costs no probe", test_classify_tile_deletions_malformed_path_costs_no_probe),
+        ("safe_for_command rejects shell metacharacters", test_safe_for_command_rejects_shell_metacharacters),
+        ("cap bounds message lists", test_cap_bounds_message_lists),
+        ("closed bucket emits ready-to-run command", test_format_deletion_message_closed_bucket_emits_ready_to_run_command),
+        ("unsafe path falls back to manual inspection", test_format_deletion_message_unsafe_path_falls_back_to_manual_inspection),
+        ("open bucket warns, never recommends", test_format_deletion_message_open_bucket_warns_never_recommends),
+        ("unverified bucket never recommends", test_format_deletion_message_unverified_bucket_never_recommends),
+        ("skipped bucket states the budget", test_format_deletion_message_skipped_bucket_states_budget),
+        ("'other' bucket is hands-off regardless of merge", test_format_deletion_message_other_bucket_is_hands_off_regardless_of_merge),
+        ("mid-merge suppresses deletions-bucket text", test_format_deletion_message_mid_merge_suppresses_bucket_text),
+        ("nothing to report -> empty deletion message", test_format_deletion_message_empty_when_nothing_to_report),
+        ("deletion message is ASCII-only", test_format_deletion_message_is_ascii),
+        ("probe budget documented against hook timeout", test_tile_deletion_probe_budget_documented_against_hook_timeout),
     ]
     failed = 0
     for name, fn in tests:

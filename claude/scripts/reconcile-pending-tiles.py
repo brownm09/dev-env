@@ -59,11 +59,45 @@ unlinks. OPEN, an unknown state, a `gh` failure, an issue outside the lookup win
 failed URL validation, and a filename/`issue`-field disagreement all **keep** the shard.
 Losing a payload is unrecoverable; keeping a stale one costs a line of index text.
 
+Since dev-env#958/#950 (ADR-118 Amendment 5), this hook also restores the "picked up by
+the next commit" guarantee ADR-018 promised for open-PR shards, in the shape ADR-119
+actually built: a scoped `git status --porcelain` over `sessions/*/tiles/*` surfaces any
+tile-shard path already deleted from the working tree but not yet committed (this
+session's own fresh unlinks above, or a prior session's never-committed ones — a session
+that spawns no tile writes no stub, so these do not self-clear).
+
+Those paths are reported in four classes, never as one list, mirroring
+`reconcile-open-prs.py`'s ADR-119 model exactly (see that module's docstring for the full
+rationale — porcelain codes, mid-merge suppression, the hook-never-commits contract — all
+reused unchanged here):
+
+  - **Deletions whose issue is confirmed CLOSED** — safe for whichever session finds it to
+    commit, because ADR-118 made each shard a disjoint per-issue file. Reported with a
+    ready-to-run explicit-pathspec `add`/`commit` pair.
+  - **Deletions for a still-OPEN issue** — an anomaly; flagged, never recommended.
+  - **Deletions whose identity or state could not be confirmed** — `git show`/`gh` failed,
+    or the shard's embedded `issue` disagrees with its filename stem.
+  - **Everything else** (added/modified/untracked/renamed/unmerged) — a concurrent
+    session's in-flight shard; reported as hands-off.
+
+One deliberate departure from the open-PR model: issue-state re-confirmation is **one `gh
+api repos/<repo>/issues/<n>` call per deletion candidate, never batched** through
+`fetch_repo_issue_states` below. That batch is a *recency-windowed* view (2 pages / 100
+issues, newest-created-first) — sound for the primary loop because a pending tile's issue
+is recent by construction, but not for an orphaned deletion: while a deletion sits
+uncommitted, the repo keeps creating issues, and every one created pushes an
+already-resolved issue one position deeper in that window. A deletion candidate
+resolvable via the batch at the moment of its original unlink can silently fall outside
+it by the time this pass re-confirms it — resolving to "unverified" forever for exactly
+the oldest, most-needing-cleanup orphans. See `check_issue_state`.
+
 Always exits 0 — never blocks.
 
 Stdout: one JSON line whose `additionalContext` carries the pending-tile index, any
-prunes, and an explicit count of anything unresolved or skipped — so a truncated or
-partial reconciliation is never reported as a clean one.
+prunes, an explicit count of anything unresolved or skipped, and the classified dirty
+tile-shard deletions sitting uncommitted in the canonical checkout — so a truncated or
+partial reconciliation is never reported as a clean one, and Claude has an actionable,
+correctly-scoped pathspec for the deletions it may safely commit.
 """
 from __future__ import annotations
 
@@ -129,6 +163,40 @@ MAX_TITLE_CHARS = 60
 _OWNER_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
 _GITHUB_HOST = "github.com"
+
+# --- deletion advisory constants (dev-env#958, dev-env#950, ADR-118 Amendment 5) -----
+
+# A staged (`D `) or unstaged (` D`) delete, and nothing else. Exact-match set, never a
+# `"D" in status` substring test: the two-char porcelain field puts a `D` in codes that are
+# NOT post-closure bookkeeping — `AD`/`RD` (a concurrent session's *staged* shard) and the
+# unmerged `DD`/`DU`/`UD`, where a recommended `git add` would silently resolve a conflict.
+# Mirrors `reconcile-open-prs.py`'s `DELETED_STATUS_CODES` (dev-env#873).
+DELETED_STATUS_CODES = frozenset({" D", "D "})
+
+# A shard path safe to interpolate into a ready-to-run shell command — anchored, and
+# deliberately narrower than the shape check used for reporting. Mirrors
+# `reconcile-open-prs.py`'s `SAFE_SHARD_PATH_RE`.
+SAFE_TILE_PATH_RE = re.compile(r"^sessions/[A-Za-z0-9._-]+/tiles/\d+\.json$")
+
+# Probing is bounded by BOTH a wall clock and a count, because the count alone cannot bound
+# latency. The deadline is the real guard; the count is a secondary runaway backstop.
+# Anything past either limit is reported as `skipped`, never silently dropped.
+MAX_TILE_DELETION_PROBES = 10
+TILE_PROBE_DEADLINE_SECONDS = 5.0
+
+# Local git plumbing only (show / status / branch / rev-parse) — measured at ~0.07s on
+# `reconcile-open-prs.py`'s identical calls, hence the small timeout. `HOOK_TIMEOUT_SECONDS`
+# names what was previously only a `claude/settings.json` comment; it earns a constant here
+# because the deletion-probe deadline is deliberately NON-additive to `LOOKUP_BUDGET_SECONDS`
+# (see `main()`) rather than stacked on top of it: `LOOKUP_BUDGET_SECONDS(20) +
+# GH_CALL_TIMEOUT(10)` already equals `HOOK_TIMEOUT_SECONDS(30)` exactly, with zero
+# pre-existing slack, because the budget is checked before each page fetch *starts*
+# (gate-the-start, not preempt-in-flight) — a fetch already running when the budget expires
+# still completes on its own `GH_CALL_TIMEOUT` ceiling. Adding a probe phase on top of that
+# would risk the hook's own settings.json timeout, so the probe deadline borrows from the
+# existing budget instead of extending it.
+GIT_CALL_TIMEOUT = 5
+HOOK_TIMEOUT_SECONDS = 30  # mirrors this hook's `timeout` in claude/settings.json
 
 
 def already_ran(session_id: str) -> bool:
@@ -508,6 +576,236 @@ def format_message(pending: list[dict], removed: list[dict], skipped: list[dict]
     return "\n".join(parts)
 
 
+# --- deletion advisory (dev-env#958, dev-env#950, ADR-118 Amendment 5) --------
+
+
+def parse_tile_status_line(line: str) -> tuple[str, str] | None:
+    """`(status, path)` for a porcelain line naming a `sessions/*/tiles/*` path, else None.
+
+    Porcelain format is `XY <path>` (2 status chars + space + path), or `XY <old> -> <new>`
+    for a rename — nothing in this hook renames a shard, but a rename from elsewhere is
+    handled by keeping just the `<new>` half, the only one that's a real, addable path
+    today. Mirrors `reconcile-open-prs.py`'s `parse_open_pr_status_line`, minus the
+    legacy-single-file branch: tile shards have no legacy `.jsonl` equivalent.
+    """
+    if len(line) < 4:
+        return None
+    status = line[:2]
+    path = line[3:].strip().replace("\\", "/")
+    if " -> " in path:
+        path = path.split(" -> ", 1)[1]
+    if "/tiles/" in path:
+        return status, path
+    return None
+
+
+def classify_dirty_tile_paths(status_lines: list[str]) -> dict[str, list[str]]:
+    """Split dirty tile paths into `deleted` vs `other`, preserving `git status` order.
+
+    A *deletion* (exactly `D ` or ` D` — see `DELETED_STATUS_CODES`) is post-closure
+    bookkeeping over a disjoint per-issue file (ADR-118), so it is safe for whichever
+    session finds it to commit once the issue is confirmed closed. Everything else —
+    added, modified, untracked, renamed, or any unmerged/conflicted code — is a
+    *concurrent* session's in-flight shard or a conflict, and must never be folded into
+    this session's pathspec. Pure string filter; the closure confirmation is a separate
+    step (`classify_tile_deletions`). Mirrors `classify_dirty_open_pr_paths`.
+    """
+    out: dict[str, list[str]] = {"deleted": [], "other": []}
+    for line in status_lines:
+        parsed = parse_tile_status_line(line)
+        if parsed is None:
+            continue
+        status, path = parsed
+        out["deleted" if status in DELETED_STATUS_CODES else "other"].append(path)
+    return out
+
+
+def shard_issue_number_from_path(path: str) -> int | None:
+    """Issue number from a `.../tiles/<N>.json` path; None for a non-numeric stem.
+
+    String-taking adapter over the shared `shard_number` reader, mirroring
+    `reconcile-open-prs.py`'s `shard_pr_number_from_path` — a raw path from `git status`
+    needs its own `.json`-suffix gate, since the shared reader's other callers apply it via
+    `iter_tile_shards`'s glob first.
+    """
+    if not path.endswith(".json"):
+        return None
+    return shard_number(Path(path))
+
+
+def classify_tile_deletions(
+    deleted_paths: list[str],
+    identity_fn,
+    state_fn,
+    max_probes: int = MAX_TILE_DELETION_PROBES,
+    deadline_fn=None,
+) -> dict[str, list[str]]:
+    """Confirm each deleted shard's issue state and bucket the paths accordingly.
+
+    The working-tree copy is gone (that *is* the state being classified), so the shard's
+    identity comes from HEAD via `identity_fn(path) -> (url, issue) | None`, and the state
+    from `state_fn(issue, repo) -> 'OPEN'|'CLOSED'|None`. Both are injected so this stays
+    offline-testable, matching `classify_deletions`.
+
+    `repo` is derived from the recovered `url` via the same strict `repo_from_issue_url`
+    the primary loop above uses — never a raw split — since a mis-resolved repo here would
+    aim a real GitHub lookup, and potentially a recommended commit, at the wrong repository
+    (the exact credential-redirect hazard `repo_from_issue_url`'s docstring describes).
+
+    The shard's *embedded* `issue` field is cross-checked against its filename stem, but a
+    *missing* field is not itself a mismatch: `make_tile` already extends that same
+    tolerance to on-disk shards (trust the filename when nothing contradicts it), and a
+    stricter rule here would treat every shard written before that field existed as
+    unverified for no reason. Only a *present and disagreeing* `issue` field routes to
+    unverified — the disagreement itself is what makes the shard untrustworthy, not the
+    field's absence.
+
+    `deadline_fn() -> bool` returns True once the probe budget is spent; probing stops and
+    the remainder is reported as `skipped`. Injected (default: never expired) so tests stay
+    pure.
+
+    Buckets: `closed` (confirmed closed — safe to commit), `open` (a live record was
+    deleted — anomaly), `unverified` (identity or state unresolvable, or a filename/`issue`
+    mismatch — never recommended), and `skipped` (past the count or time budget, reported
+    rather than silently dropped, so a capped run never reads as full coverage). Mirrors
+    `classify_deletions`, renamed for tiles' single terminal state (an issue closes; it
+    does not merge).
+    """
+    out: dict[str, list[str]] = {"closed": [], "open": [], "unverified": [], "skipped": []}
+    probes = 0
+    for path in deleted_paths:
+        issue = shard_issue_number_from_path(path)
+        if issue is None:
+            # An unenumerable name — no single issue to confirm, so it can't be
+            # auto-cleared for commit. Costs no probe.
+            out["unverified"].append(path)
+            continue
+        if probes >= max_probes or (deadline_fn is not None and deadline_fn()):
+            out["skipped"].append(path)
+            continue
+        probes += 1
+        resolved = identity_fn(path)
+        url, embedded_issue = resolved if resolved else (None, None)
+        repo = repo_from_issue_url(url) if url else None
+        if not repo or (isinstance(embedded_issue, int) and embedded_issue != issue):
+            # No resolvable repo, or the shard's own `issue` disagrees with its filename —
+            # in either case we do not know which issue this record belongs to. A missing
+            # embedded `issue` is NOT treated as a mismatch (see docstring above).
+            out["unverified"].append(path)
+            continue
+        state = state_fn(issue, repo)
+        if should_remove_tile(state):
+            out["closed"].append(path)
+        elif state == "OPEN":
+            out["open"].append(path)
+        else:
+            out["unverified"].append(path)
+    return out
+
+
+def safe_for_command(paths: list[str]) -> bool:
+    """True when every path is safe to interpolate into a ready-to-run shell command."""
+    return all(SAFE_TILE_PATH_RE.match(p) for p in paths)
+
+
+def cap(paths: list[str], limit: int = 5) -> str:
+    """Render a path list for the advisory, bounded. `(+N more)` keeps the count honest —
+    the message is injected into Claude's context on the first prompt of every session, so
+    an unbounded list is a cost paid every session. Mirrors `reconcile-open-prs.py`'s `cap`.
+    """
+    shown = ", ".join(paths[:limit])
+    return shown + (f" (+{len(paths) - limit} more)" if len(paths) > limit else "")
+
+
+def format_deletion_message(
+    dirty: dict, deletions: dict, branch: str | None, mid_merge: bool = False
+) -> str:
+    """Render the deletion-advisory text, or "" when there is nothing worth saying.
+
+    A single pure formatter for every case (all four `deletions` buckets, the hands-off
+    `other` class, and the mid-merge suppression) — matches this file's own `format_message`
+    convention rather than `reconcile-open-prs.py`'s inline-in-`main()` shape, so every
+    branch stays independently unit-testable.
+
+    Mid-merge suppresses only the deletion-*classification* text (closed/open/unverified/
+    skipped), since that is the part a partial `git commit` or a conflict-resolving `git
+    add` would make unsafe — `dirty["other"]` needs no git mutation to report and is still
+    surfaced, mirroring `reconcile-open-prs.py`'s `main()`, which reports `dirty["other"]`
+    unconditionally regardless of merge state.
+    """
+    parts: list[str] = []
+
+    if mid_merge:
+        parts.append(
+            "Deleted tile shard path(s) present, but the canonical is mid-merge "
+            "(MERGE_HEAD exists), where a partial `git commit -- <pathspec>` cannot run "
+            "and `git add` would silently resolve a conflict. Not classifying or "
+            "recommending anything: finish or abort the merge first. Paths: "
+            + cap(dirty["deleted"])
+        )
+    else:
+        if deletions["closed"]:
+            if not safe_for_command(deletions["closed"]):
+                parts.append(
+                    "Uncommitted tile shard DELETIONS with confirmed closed issues, but "
+                    "at least one path is not a plain sessions/<project>/tiles/<N>.json -- "
+                    "not emitting a ready-to-run command. Inspect manually: "
+                    + cap(deletions["closed"])
+                )
+            else:
+                paths = " ".join(f"'{p}'" for p in deletions["closed"])
+                where = f"git -C {JOURNAL_REPO.as_posix()}"
+                parts.append(
+                    "Uncommitted tile shard DELETIONS in the canonical checkout whose "
+                    "issues are confirmed closed (this session's own unlinks, or an "
+                    "earlier session's never-committed ones -- a session that spawns no "
+                    "tile writes no stub, so these do not self-clear). Commit them with "
+                    "this exact pathspec, whether or not you write a stub (safe: each "
+                    "shard is a disjoint per-issue file, ADR-118). The canonical is "
+                    f"currently on '{branch or 'DETACHED'}' -- commit only if that is "
+                    "today's draft branch; if a day rollover is also being reported, cut "
+                    "the new branch FIRST, then commit there (a deletion is durable only "
+                    f"once its carrying branch merges to main). {where} add -- {paths} "
+                    f'&& {where} commit -m "journal: close tile shards for closed '
+                    f'issues" -- {paths}'
+                )
+        if deletions["open"]:
+            parts.append(
+                "WARNING -- deleted tile shard(s) for an issue that is still OPEN: "
+                + cap(deletions["open"])
+                + ". Do NOT commit these; restore with `git checkout HEAD -- <path>` "
+                "(works for both a staged and an unstaged delete, unlike `git checkout "
+                "-- <path>`), or investigate."
+            )
+        if deletions["unverified"]:
+            parts.append(
+                "Deleted tile shard(s) whose issue identity or state could not be "
+                "confirmed (gh/git unavailable, or a filename/embedded-issue mismatch): "
+                + cap(deletions["unverified"])
+                + ". Do not commit blind -- re-check state first."
+            )
+        if deletions["skipped"]:
+            parts.append(
+                f"{len(deletions['skipped'])} further deleted tile shard(s) not probed "
+                f"(budget: {MAX_TILE_DELETION_PROBES} probes / "
+                f"{TILE_PROBE_DEADLINE_SECONDS:g}s probing, or the "
+                f"{LOOKUP_BUDGET_SECONDS:g}s hook-wide lookup budget already spent): "
+                + cap(deletions["skipped"])
+                + "."
+            )
+
+    if dirty["other"]:
+        parts.append(
+            "In-flight or conflicted tile shard changes from a concurrent session (added, "
+            "modified, renamed, or unmerged -- not a plain delete): "
+            + cap(dirty["other"])
+            + ". Leave these alone -- never add another session's shard to your pathspec "
+            "(ADR-118)."
+        )
+
+    return "\n".join(parts)
+
+
 # --- network boundary (not unit-tested; repo avoids subprocess mocks) ---------
 
 
@@ -521,6 +819,14 @@ def format_message(pending: list[dict], removed: list[dict], skipped: list[dict]
 _ISSUE_PROJECTION = (
     '[.[] | if has("pull_request") then {number, state, pull_request: true} '
     'else {number, state} end]'
+)
+
+# The single-issue-GET counterpart of `_ISSUE_PROJECTION`, for the deletion-probe path
+# (`check_issue_state`): same shape, no `[.[] | ...]` wrapper since `repos/<repo>/issues/<n>`
+# returns one object, not a page. Kept as a projection (not a `select`) for the identical
+# reason as its list sibling — classification stays in `issue_states_from_rows`, testable.
+_ISSUE_ITEM_PROJECTION = (
+    'if has("pull_request") then {number, state, pull_request: true} else {number, state} end'
 )
 
 
@@ -578,6 +884,135 @@ def fetch_repo_issue_states(repo: str, numbers=(), page_size: int = ISSUE_PAGE_S
     return states
 
 
+def check_issue_state(issue_number: int, repo: str) -> str | None:
+    """Return 'OPEN' or 'CLOSED' for one issue; None on any failure. One REST call.
+
+    Deliberately per-item, never batched through `fetch_repo_issue_states` above: see the
+    module docstring's "One deliberate departure" paragraph for why an orphaned deletion's
+    issue has no "recent by construction" guarantee the way a pending tile's does, so the
+    batched fetch's recency window can silently lose it.
+
+    Reuses the already-tested `issue_states_from_rows([row])` so PR-row-filtering and
+    state-casing hazards are handled in exactly one place for both the batched and per-item
+    paths, rather than a second, drift-prone copy. Not unit-tested: subprocess boundary,
+    matching `fetch_repo_issue_states`'s convention.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo}/issues/{issue_number}",
+             "--jq", _ISSUE_ITEM_PROJECTION],
+            capture_output=True,
+            text=True,
+            timeout=GH_CALL_TIMEOUT,
+        )
+        if result.returncode != 0:
+            return None
+        row = json.loads(result.stdout)
+    except Exception:
+        return None
+    return issue_states_from_rows([row]).get(issue_number)
+
+
+def committed_shard_identity(journal_repo: Path, path: str) -> tuple[str, int | None] | None:
+    """`(url, issue)` from a shard as committed at HEAD; None on any failure.
+
+    Read from git rather than disk because the file being classified is precisely one that
+    is *deleted* in the working tree — there is nothing left to read there. Returns the
+    embedded `issue` alongside the URL so the caller can cross-check it against the
+    filename (see `classify_tile_deletions`). Mirrors `reconcile-open-prs.py`'s
+    `committed_shard_identity`, reading the tile schema's `issue` field rather than
+    open-PR's `pr`. Not unit-tested: subprocess boundary, matching `check_issue_state`'s
+    convention.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(journal_repo), "show", f"HEAD:{path}"],
+            capture_output=True,
+            text=True,
+            timeout=GIT_CALL_TIMEOUT,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+        if not isinstance(data, dict):
+            return None
+        url = data.get("url")
+        issue = data.get("issue")
+        if not isinstance(url, str):
+            return None
+        return url, issue if isinstance(issue, int) else None
+    except Exception:
+        return None
+
+
+def merge_in_progress(journal_repo: Path) -> bool:
+    """True when the canonical is mid-merge (`.git/MERGE_HEAD` present).
+
+    During a merge, `git commit -- <pathspec>` fails outright (cannot do a partial commit
+    during a merge), so every deletion recommendation this hook emits would be unrunnable —
+    and the `git add` half would silently resolve a conflict on the way. Suppress the whole
+    deletion advisory instead. Handles a linked worktree, where `.git` is a file, by asking
+    git for the real git dir. Mirrors `reconcile-open-prs.py`'s `merge_in_progress` exactly.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(journal_repo), "rev-parse", "--git-dir"],
+            capture_output=True,
+            text=True,
+            timeout=GIT_CALL_TIMEOUT,
+        )
+        if result.returncode != 0:
+            return False
+        git_dir = Path(result.stdout.strip())
+        if not git_dir.is_absolute():
+            git_dir = journal_repo / git_dir
+        return (git_dir / "MERGE_HEAD").exists()
+    except Exception:
+        return False
+
+
+def current_branch(journal_repo: Path) -> str | None:
+    """The branch the canonical currently holds; None on failure or detached HEAD.
+
+    Used to gate the commit recommendation: ADR-119 lists "would commit onto whatever
+    branch the canonical happens to hold" as a reason the *hook* must not commit, so
+    delegating the commit to Claude has to carry that guard along with it rather than drop
+    it. Mirrors `reconcile-open-prs.py`'s `current_branch`.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(journal_repo), "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            timeout=GIT_CALL_TIMEOUT,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def dirty_tile_status_lines(journal_repo: Path) -> list[str]:
+    """`git status --porcelain -- sessions` in the canonical checkout; [] on any failure
+    (missing repo, git not on PATH, timeout). Not unit-tested — subprocess boundary,
+    matching `check_issue_state`'s convention. Mirrors `reconcile-open-prs.py`'s
+    `dirty_open_pr_status_lines`.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(journal_repo), "status", "--porcelain", "--", "sessions"],
+            capture_output=True,
+            text=True,
+            timeout=GIT_CALL_TIMEOUT,
+        )
+        if result.returncode != 0:
+            return []
+        return result.stdout.splitlines()
+    except Exception:
+        return []
+
+
 def main() -> None:
     _hookutil.record_heartbeat("reconcile-pending-tiles")
     _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
@@ -602,24 +1037,69 @@ def main() -> None:
     except Exception:
         tiles = []
 
+    lookup_started = time.monotonic()
     states = lookup_states(group_numbers_by_repo(tiles))
     pending, removed, skipped = reconcile_tiles(tiles, states)
     prune_empty_tile_dirs(removed)
 
     mark_done(session_id)
 
+    # Build the primary pending-tile message FIRST, before any of the newer, more
+    # failure-prone deletion-advisory logic below. This hook's original job is the
+    # "Pending tiles:" index; a crash or a timeout kill inside the new logic must not take
+    # that with it, especially since mark_done() has already fired and the session will
+    # never retry (dev-env#958, mirroring reconcile-open-prs.py's identical ordering note).
     unresolved = sum(
         1 for tile in pending if states.get((tile["repo"], tile["issue"])) is None
     )
     message = format_message(pending, removed, skipped, unresolved)
-    if not message:
+
+    # Two separate try blocks: a failure in the fragile probing must not also discard the
+    # cheap, reliable hands-off warning derived from `git status` alone. Mirrors
+    # `reconcile-open-prs.py`'s identical split.
+    try:
+        dirty = classify_dirty_tile_paths(dirty_tile_status_lines(JOURNAL_REPO))
+    except Exception:
+        dirty = {"deleted": [], "other": []}
+
+    deletions: dict[str, list[str]] = {"closed": [], "open": [], "unverified": [], "skipped": []}
+    mid_merge = False
+    try:
+        if dirty["deleted"]:
+            mid_merge = merge_in_progress(JOURNAL_REPO)
+            if not mid_merge:
+                probe_start = time.monotonic()
+                deletions = classify_tile_deletions(
+                    dirty["deleted"],
+                    identity_fn=lambda p: committed_shard_identity(JOURNAL_REPO, p),
+                    state_fn=check_issue_state,
+                    # Non-additive: whichever fires first, this probe's own small
+                    # deadline or the hook-wide lookup budget the primary loop above
+                    # already drew on. NOT additive to that budget — there is zero
+                    # pre-existing slack once LOOKUP_BUDGET_SECONDS + GH_CALL_TIMEOUT is
+                    # accounted for (see the GIT_CALL_TIMEOUT/HOOK_TIMEOUT_SECONDS
+                    # comment), so this deadline borrows from that budget rather than
+                    # extending it.
+                    deadline_fn=lambda: (
+                        time.monotonic() - probe_start > TILE_PROBE_DEADLINE_SECONDS
+                        or time.monotonic() - lookup_started > LOOKUP_BUDGET_SECONDS
+                    ),
+                )
+    except Exception:
+        pass
+
+    branch = current_branch(JOURNAL_REPO) if deletions["closed"] else None
+    deletion_message = format_deletion_message(dirty, deletions, branch, mid_merge=mid_merge)
+
+    full_message = "\n".join(p for p in (message, deletion_message) if p)
+    if not full_message:
         return
 
     # audience="model" -> {"hookSpecificOutput": {"additionalContext": ...}} on stdout at
     # exit 0, the channel UserPromptSubmit delivers to Claude. NOT stderr (invisible at
     # exit 0 here) and NOT systemMessage (the user toast) — the index exists for Claude to
     # act on. The event is a hardcoded literal, per _hookout's migration note.
-    _hookout.emit_advisory("UserPromptSubmit", message, audience="model")
+    _hookout.emit_advisory("UserPromptSubmit", full_message, audience="model")
 
 
 if __name__ == "__main__":

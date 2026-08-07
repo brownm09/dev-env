@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-22 (amended 2026-07-26)
 **Status:** Accepted
-**Tags:** journal, stubs, draft-branch, day-rollover, open-prs, sharding, hooks, UserPromptSubmit, new-day-journal-check, reconcile-open-prs, canonical-checkout, silent-failure, data-loss, global-rule, self-healing, stale-canonical, auto-recovery, concurrency, toctou, adr-017, adr-056, adr-082, adr-084, adr-071, adr-093
+**Tags:** journal, stubs, draft-branch, day-rollover, open-prs, sharding, hooks, UserPromptSubmit, new-day-journal-check, reconcile-open-prs, canonical-checkout, silent-failure, data-loss, global-rule, self-healing, stale-canonical, auto-recovery, concurrency, toctou, adr-017, adr-056, adr-082, adr-084, adr-071, adr-093, tiles, adr-118
 
 ## Context
 
@@ -116,6 +116,7 @@ A fifth finding concerns detection rather than the decision: the day-rollover ch
 - [ADR-082](082-journal-compose-worktree-isolation.md) — compose worktree isolation; removed the last mechanism that opportunistically committed a stray unlink
 - [ADR-084](084-nightly-compose-targets-yesterday.md) — the nightly routine's date selection
 - [ADR-113](113-cross-session-handoff-tiles.md) — cross-session hand-offs are tiles (the remediation-capture step)
+- [ADR-118](118-tile-persistence-shards.md) Amendment 5 (2026-08-07) — decision 3's classification model (exact porcelain-code deletions, `git show HEAD:<path>` identity recovery, mid-merge suppression, hook-never-commits rationale) reapplied unchanged to tile shards, one artifact type over; see that amendment for what is genuinely tile-specific rather than repeated here
 - [Git — `git-status` porcelain format](https://git-scm.com/docs/git-status#_short_format) — the `XY <path>` status columns the classifier reads
 - [Git — `git-worktree`](https://git-scm.com/docs/git-worktree) — one-worktree-per-branch, why the canonical is shared rather than isolated
 - [GitHub — REST vs GraphQL rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api) — independent budgets; why `gh pr view --json` can fail while REST is healthy
