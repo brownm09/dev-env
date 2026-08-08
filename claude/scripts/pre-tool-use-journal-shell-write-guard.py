@@ -1,131 +1,49 @@
 #!/usr/bin/env python3
 """Claude Code PreToolUse hook -- blocks a Bash/PowerShell command that would
-write content to an engineering-journal content file via a shell mechanism
-(heredoc, `echo`/redirect, or a PowerShell content-write cmdlet) instead of
-the Write/Edit tool.
+write content to an engineering-journal content file (stub `.md`, manifest
+`.jsonl`, open-PR `.json`, tile `.json`) via a shell mechanism (redirect,
+heredoc, `tee`/`Tee-Object`, a `node -e`/`py -c` serializer, or a PowerShell
+content-write cmdlet) instead of the Write/Edit tool. All four file kinds
+carry prose or a path field that routinely breaks shell quoting, either
+failing the write outright or silently corrupting the file -- see ADR-129
+and dev-env#961/#904 for the full incident history and rationale this
+docstring does not repeat; `journal-shard-write-advisory.py` (PostToolUse)
+remains the complementary schema check on an already-written file, not a
+replacement for blocking the write attempt itself.
 
-Problem: all four engineering-journal content-file kinds --
-  1. the stub `.md` (100% free-form prose -- session summaries)
-  2. the manifest `.jsonl` shard (a free-text `topic` field)
-  3. the open-PR `.json` shard (free-text `topic`/path fields)
-  4. the tile `.json` shard (a free-text `prompt` field, a `cwd` path field)
--- carry prose or paths that routinely contain apostrophes, quotes,
-backticks, `$`, and markdown code fences. A Bash/PowerShell heredoc,
-`echo`/redirect, or content-write cmdlet targeting one of these paths has
-the shell (or a serializer's own string-literal layer -- see dev-env#904)
-parse that content before it reaches disk: an apostrophe closes a
-single-quoted string early, a `$`/backtick gets interpreted, a nested `"`
-breaks a double-quoted string, a code fence collides with a heredoc
-delimiter. This either fails the write outright (wasting a turn) or --
-worse -- silently corrupts the file.
-
-This has already recurred once from under-generalizing the fix: dev-env#904
-found a tile shard's `cwd` field corrupted by a `node -e` serializer's own
-string-literal layer eating \\U/\\G/\\b -- fixed by a forward-slash prescription
-plus write-time schema validation (ADR-118 Amendment 4), NOT by removing the
-shell step. ADR-118 Amendment 4 says plainly the prior rule "guarded the
-wrong field." The documented recipes for three of the four kinds WERE
-THEMSELVES the anti-pattern: docs/REFERENCE.md's manifest and open-PR shard
-sections showed `echo '{...}' > file`; the tile section showed a "safer"
-quoted-heredoc / `py -3 -c` serializer, still shell-based; and the stub `.md`
-had no documented creation mechanism at all. See ADR-129 and dev-env#961.
-
-This hook removes the shell step mechanically rather than relying on a
-fourth documentation-only fix: `journal-shard-write-advisory.py`
-(PostToolUse) validates a shard's schema AFTER it is written -- useful, but
-it cannot stop the wasted turn or a silent corruption before it happens, and
-it has no schema at all for the prose-only stub `.md`. This hook blocks the
-shell-based WRITE ATTEMPT itself, for all four file kinds, before any
-content is ever parsed by a shell. Complementary, not a replacement.
-
-Detection (cheapest checks first -- no filesystem or subprocess work at all,
-unlike the two sibling hooks below, since "is this command's target path
-SHAPED like one of the four journal content files, and is it being
-shell-written-to?" is answerable from the command text alone, regardless of
-which repo/cwd issued it):
-  1. Read stdin JSON. Fail open (exit 0) on anything unparseable, or a
-     tool_name that is neither `Bash` nor `PowerShell`.
-  2. Split the command into logical segments via the shared
-     `_hookio.split_top_level(cmd, split_pipe=True)` engine -- `split_pipe`
-     matters here specifically because a PowerShell `Tee-Object` invocation
-     is idiomatically reached via a pipe (`... | Tee-Object -FilePath
-     <path>`), and pipe-splitting isolates it onto its own segment so a
-     segment-scoped scan sees it.
-  3. For each segment, examine only its own first physical line
-     (`segment.split("\n", 1)[0]`) -- same convention as both sibling hooks'
-     `_first_line()`: a heredoc/here-string BODY is opaque data, never
-     additional invocation syntax, but a redirect operator or cmdlet name on
-     the SAME line as a heredoc OPENER (`cat <<'EOF' > path/to/x.stub.md`)
-     is real invocation syntax and must be visible.
-  4. On that first line, locate a content-write mechanism: a genuine (not
-     inside a quote) Bash `>`/`>>` redirect, or a PowerShell `Out-File` /
-     `Set-Content` / `Add-Content` / `Tee-Object` / `New-Item ... -Value`
-     invocation.
-  5. Classify the mechanism's target path against the four journal
-     content-file shapes: `*.stub.md`, `*.manifest.jsonl`,
-     `open-prs/<digits>.json`, `tiles/<digits>.json`.
-  6. If the `ALLOW_JOURNAL_SHELL_WRITE=1` override token appears as a
-     genuine leading prefix on the command or one of its split-out segments
-     (never a mere substring, e.g. inside a commit message argument), exit 0
-     -- a deliberate, visible human override.
-  7. Otherwise, block (exit 2) via `_hookout.emit_block`, naming the matched
-     command/target and the Write/Edit-tool remedy.
-
-Load-bearing implementation subtlety: masking quoted spans on an ALREADY
-first-line-truncated string needs its own small helper
-(`_mask_first_line_quotes`), not a direct call to `_hookio.mask_quoted_spans`.
-That function's heredoc-opener handling (`_find_heredoc_end`) assumes a real
-multi-line body + terminator may still follow in the string it's given --
-never true once a segment has already been truncated to its own first line.
-Fed such a string directly, `_find_heredoc_end` runs off the end of the
-string looking for the declaration line's terminating newline, consuming
-everything after the heredoc opener -- INCLUDING a same-line redirect target,
-which is exactly what this hook needs to see. `_mask_first_line_quotes`
-neutralizes `<<` (same-length, `<<` -> `<#`) before masking so the
-heredoc-opener branch never fires on this input shape at all; this is safe
-because a genuine `<<` inside a quote was never treated as an opener by
-`_opaque_spans` in the first place. See the regression test
-`test_find_bash_redirect_targets_heredoc_declaration_line` in this hook's
-test file -- the single most important case in that suite.
-
-Path-shape matching is intentionally lexical only (no `sessions/` or
-`engineering-journal` path-component requirement, unlike
-`journal-shard-write-advisory.py`'s path classifier, which can afford that
-check because it resolves against a real on-disk file first). This hook has
-no on-disk resolution step to lean on, and the four shapes -- `*.stub.md`,
-`*.manifest.jsonl`, a numeric-named file under `open-prs/`, a numeric-named
-file under `tiles/` -- are already distinctive enough that requiring more
-would risk under-matching a relative-path invocation issued with cwd already
-inside `sessions/<project>/`.
-
-Also fires for the PowerShell tool: registered under both the Bash and
-PowerShell PreToolUse matchers in settings.json, mirroring both sibling
-hooks -- load-bearing here specifically, since PowerShell's own `>`/`>>`
-redirect operators and the five named cmdlets are a PowerShell tool_name
-concern in the first place, not merely "PowerShell as an alternate way to
-run a Bash-shaped command."
-
-No `_winsubp` import: this hook spawns no subprocess at all (unlike
-`pre-tool-use-canonical-mutate-guard.py` / `pre-tool-use-journal-draft-worktree-guard.py`,
-which shell out to `git` to resolve worktree/repo context) -- matches the
-precedent of `pre-tool-use-skill-file-size-guard.py`, the only other
-PreToolUse hook with no subprocess work and no `_winsubp` import.
-
-Emits via `_hookout.emit_block` (ADR-103) -- the current convention for a
-NEW PreToolUse hook, confirmed against `pre-tool-use-skill-file-size-guard.py`
-(the most recently added PreToolUse hook as of this writing). The two older
-sibling hooks named above hand-roll `sys.stderr.write(json.dumps(...))`
-instead; that pattern predates the `_hookout` migration (ADR-103) and is
-allowlisted in `test_hook_output_contract.py` as a known pre-migration
-offender -- a NEW hook must not join that allowlist.
-
-Fail-open (exit 0) throughout, matching every sibling hook's contract -- not
-one of the two specially-designated fail-closed gates
-(`pre-auto-merge-checkpoint-gate.py`, `pre-tool-use-journal-compose-force-guard.py`).
-A missed block here leaves today's status quo (a corruption risk
-`journal-shard-write-advisory.py` still catches after the fact for three of
-the four kinds); a crash must never additionally block an unrelated Bash/
-PowerShell call.
+Detection contract (see each function below for its own mechanism -- this
+is the aggregate, not a restatement):
+  - `find_bash_redirect_targets` -- a genuine `>`/`>>` on a segment's first
+    physical line. Applies to both tool_name values (PowerShell supports
+    `>` natively too).
+  - `find_tee_targets` -- a `tee [-a] <path>` invocation. Gated on
+    tool_name == "Bash".
+  - `find_serializer_journal_mentions` -- a `node -e`/`py -c` segment
+    MENTIONING a journal-shaped path anywhere in its full text (not just
+    the first line) -- coarser by design; see its own docstring.
+  - `find_powershell_write_targets` -- one of five named cmdlets, anchored
+    to segment-start. Gated on tool_name == "PowerShell".
+  - Every match above is additionally filtered through
+    `_target_is_genuinely_journal` (a `sessions/` path component in the
+    target, or *cwd* resolving under the engineering-journal checkout)
+    before being reported, and through `_might_write_journal_content` (a
+    cheap pre-filter) before any of the above runs at all.
+  - `_is_overridden` -- a genuine `ALLOW_JOURNAL_SHELL_WRITE=1` Bash prefix
+    (scoped to its own segment) or `$env:ALLOW_JOURNAL_SHELL_WRITE=1`
+    PowerShell statement (applies forward, matching real PowerShell
+    semantics) exempts a match; `main()` blocks on the first match that
+    isn't.
+  - Blocks (exit 2) via `_hookout.emit_block` (ADR-103's current
+    convention -- NOT this hook's two closest structural siblings'
+    hand-rolled `sys.stderr.write(json.dumps(...))`, a pre-`_hookout`
+    -migration pattern a new hook must not join). Fails open (exit 0)
+    everywhere else, including on any internal exception -- not one of the
+    two specially fail-closed gates in this repo
+    (`pre-auto-merge-checkpoint-gate.py`,
+    `pre-tool-use-journal-compose-force-guard.py`). No `_winsubp` import:
+    unlike its git-context-resolving siblings, this hook spawns no
+    subprocess at all -- every question it answers comes from the command
+    text alone.
 
 Stdin JSON shape (PreToolUse):
   {
@@ -171,7 +89,10 @@ _KIND_LABELS = {
 def journal_path_kind(token):
     """Classify *token* (a raw command-line word, possibly quoted) against
     the four journal content-file path shapes. Returns the kind name, or
-    None if it doesn't match any of them."""
+    None if it doesn't match any of them. Purely lexical/shape-based --
+    see `_target_is_genuinely_journal` for the additional sessions/-or-cwd
+    check `find_journal_shell_writes` applies on top of this before a
+    shape match is treated as a genuine hazard."""
     t = token.strip()
     if len(t) >= 2 and t[0] == t[-1] and t[0] in ("'", '"'):
         t = t[1:-1]
@@ -179,6 +100,37 @@ def journal_path_kind(token):
         if pattern.search(t):
             return kind
     return None
+
+
+_SESSIONS_COMPONENT_RE = re.compile(r"(?:^|[/\\])sessions(?:[/\\]|$)", re.IGNORECASE)
+_ENGINEERING_JOURNAL_CWD_RE = re.compile(r"(?:^|[/\\])engineering-journal(?:[/\\]|$)", re.IGNORECASE)
+
+
+def _target_is_genuinely_journal(target, cwd):
+    """A target already classified as journal-shaped by `journal_path_kind`
+    still needs one more check before it's treated as a genuine hazard:
+    all four path shapes are lexically distinctive but not UNIQUE to the
+    engineering journal -- `*.manifest.jsonl` is an established ML/data
+    convention outside this repo, and `tiles/<digits>.json` is a plausible
+    game-asset-pipeline output. Blocking on shape alone false-blocked an
+    entirely unrelated repo's command, e.g. `python gen.py >
+    data/train.manifest.jsonl` -- verified live, dev-env#962 review.
+
+    Requiring a `sessions/` path component in the target itself covers the
+    common case, where the target already names its `sessions/<project>/`
+    directory. A target issued as a bare relative path (cwd already inside
+    `sessions/<project>/`) has no such component, so this also accepts a
+    *cwd* that itself resolves under the engineering-journal checkout --
+    exactly the case `journal_path_kind`'s own docstring/ADR-129 cite as
+    the reason path matching stays lexical rather than requiring a
+    `sessions/` prefix outright. Lexical only, no filesystem access --
+    consistent with this hook's whole no-I/O design; a *cwd* that merely
+    LOOKS like the engineering-journal checkout (rather than genuinely
+    being it) is treated the same as the real thing, which only widens
+    the allowed set, never narrows the blocked one."""
+    if _SESSIONS_COMPONENT_RE.search(target):
+        return True
+    return bool(cwd) and bool(_ENGINEERING_JOURNAL_CWD_RE.search(cwd))
 
 
 # --- Segment-local helpers -------------------------------------------------
@@ -192,6 +144,84 @@ def _first_line(segment):
 _HEREDOC_MARKER_RE = re.compile(r"<<")
 
 
+def _neutralize_unquoted_escaped_quotes(line):
+    """Neutralize a backslash-escaped quote (`\\'` or `\\"`) exactly where
+    real Bash treats it as a literal character rather than a quote
+    boundary -- i.e. everywhere EXCEPT while already inside an open
+    single-quoted span, where backslash has no special meaning at all and
+    any bare `'` genuinely closes the span. A blind, context-free
+    substitution gets this backwards for that one case: neutralizing a
+    `\\'` immediately before a span's real closing quote (e.g. a
+    single-quoted Windows path ending in a literal backslash, `'C:\\dir\\'`)
+    would prevent that quote from closing the span at all, masking away
+    everything after it -- INCLUDING a real redirect target. (An earlier
+    version of this function used exactly that blind substitution; it
+    fixed the target case but silently regressed this one -- caught only
+    by directly re-testing the pre-fix behavior, not by inspection.)
+
+    This walker tracks just enough of `_hookio._opaque_spans`'s three
+    quote-relevant states to make the context-dependent call correctly
+    (unquoted and `$()`-subshell content are folded into one 'top' bucket,
+    since backslash-escape semantics for a quote character are identical
+    in both):
+      - 'top' (unquoted, or inside a subshell): `\\'`/`\\"` is a literal
+        escaped character in real Bash and must not open a span --
+        NEUTRALIZE. This is the actual reported hazard, e.g.
+        `echo Claude\\'s > ...` -- the standard Bash workaround for
+        embedding an apostrophe in unquoted prose.
+      - inside `'...'`: no escape processing exists at all; any bare `'`
+        closes the span regardless of what precedes it -- NEVER touch it.
+      - inside `"..."`: `\\"` legitimately escapes a literal embedded
+        double-quote without closing the span (real Bash behavior) --
+        NEUTRALIZE, to prevent the false close. A bare `'` here is inert
+        literal content either way and never toggles single-quote state.
+
+    See `test_find_bash_redirect_targets_escaped_apostrophe_in_prose` (the
+    fix), `test_find_bash_redirect_targets_canonical_apostrophe_idiom`, and
+    `test_find_bash_redirect_targets_trailing_backslash_before_close_quote_not_regressed`
+    (the regression this state-awareness avoids). Length-preserving (every
+    branch emits exactly as many characters as it consumes), so offsets
+    stay aligned with the original text -- the same invariant `<<`
+    neutralization below relies on."""
+    out = []
+    state = "top"  # "top" (unquoted + subshell), "single", or "double"
+    i = 0
+    n = len(line)
+    while i < n:
+        c = line[i]
+        if state == "single":
+            out.append(c)
+            if c == "'":
+                state = "top"
+            i += 1
+            continue
+        if state == "double":
+            if c == "\\" and i + 1 < n:
+                nxt = line[i + 1]
+                out.append("\\")
+                out.append("#" if nxt in ("'", '"') else nxt)
+                i += 2
+                continue
+            out.append(c)
+            if c == '"':
+                state = "top"
+            i += 1
+            continue
+        # state == "top"
+        if c == "\\" and i + 1 < n and line[i + 1] in ("'", '"'):
+            out.append("\\")
+            out.append("#")
+            i += 2
+            continue
+        out.append(c)
+        if c == "'":
+            state = "single"
+        elif c == '"':
+            state = "double"
+        i += 1
+    return "".join(out)
+
+
 def _mask_first_line_quotes(first_line):
     """Quote-mask an ALREADY first-line-truncated string without
     mis-triggering `_hookio`'s heredoc-opener handling, which assumes a real
@@ -202,8 +232,12 @@ def _mask_first_line_quotes(first_line):
     unterminated heredoc declaration. Neutralizing `<<` (same length, so
     offsets stay aligned with the original) before masking sidesteps this;
     a genuine `<<` inside a quote was never treated as an opener by
-    `_opaque_spans` in the first place, so this neutralization is safe."""
-    return mask_quoted_spans(_HEREDOC_MARKER_RE.sub("<#", first_line))
+    `_opaque_spans` in the first place, so this neutralization is safe.
+    Also neutralizes a backslash-escaped quote where real Bash would --
+    see `_neutralize_unquoted_escaped_quotes`."""
+    neutralized = _HEREDOC_MARKER_RE.sub("<#", first_line)
+    neutralized = _neutralize_unquoted_escaped_quotes(neutralized)
+    return mask_quoted_spans(neutralized)
 
 
 def _next_token(text):
@@ -231,10 +265,19 @@ def _next_token(text):
 _REDIRECT_OP_RE = re.compile(r"(?<!>)(>{1,2})(?!>)")
 
 
-def find_bash_redirect_targets(first_line):
+def find_bash_redirect_targets(first_line, masked=None):
     """Return [(operator, target), ...] for every genuine (non-quoted)
-    '>'/'>>' redirect on *first_line*, in original-command order."""
-    masked = _mask_first_line_quotes(first_line)
+    '>'/'>>' redirect on *first_line*, in original-command order.
+
+    *masked* -- the already-computed `_mask_first_line_quotes(first_line)`
+    -- lets `find_journal_shell_writes` compute the mask once per segment
+    and share it with `find_powershell_write_targets`'s New-Item check,
+    rather than each detector recomputing it independently (measured
+    ~35% of detector time as pure duplicate work before this sharing).
+    Computed here if not supplied, so a direct/standalone call (tests,
+    the REPL) needs no change."""
+    if masked is None:
+        masked = _mask_first_line_quotes(first_line)
     out = []
     for m in _REDIRECT_OP_RE.finditer(masked):
         target = _next_token(first_line[m.end():])
@@ -243,104 +286,425 @@ def find_bash_redirect_targets(first_line):
     return out
 
 
-# --- PowerShell cmdlet detection --------------------------------------------
+# --- tee + retired-serializer-invocation detection --------------------------
+#
+# Two shapes the redirect/cmdlet detectors above cannot see at all:
+#
+# 1. Bash `tee [-a] <path>` -- the direct Bash equivalent of PowerShell's
+#    `Tee-Object` (already detected above), but `tee` itself was missing
+#    entirely from the original design.
+# 2. A `node -e "..."` / `py -3 -c '...'` / `python[3] -c '...'` serializer
+#    invocation -- the literal retired recipe ADR-129 replaces, and the
+#    exact shape of the dev-env#904 incident that motivated this whole
+#    hook (`node -e "...fs.writeFileSync('sessions/.../tiles/961.json'...)"`
+#    corrupted a tile shard's `cwd` field). Every detector above only ever
+#    inspects a segment's first physical line, by design (a heredoc/here
+#    -string BODY must never be mistaken for invocation syntax) -- but
+#    these recipes place their hazardous path argument on a LATER physical
+#    line, inside the -e/-c script text itself, which is real DATA to a
+#    shell (an opaque string argument), not more shell syntax. Detecting
+#    it needs its own, deliberately coarser mechanism: scan the interpreter
+#    invocation's FULL segment text (every physical line) for any mention
+#    of a journal-shaped path, rather than pinpointing one exact write
+#    target the way the redirect/cmdlet detectors do -- this hook cannot
+#    parse arbitrary JS/Python to confirm a mention is really a write
+#    call's argument. Verified live, dev-env#962 review: without this, the
+#    exact recipes this PR's own documentation retires were not blocked.
 
-_PS_WRITE_CMDLET_RE = re.compile(r"(?i)(?<![\w-])(Out-File|Set-Content|Add-Content|Tee-Object)(?![\w-])")
-_PS_NEW_ITEM_RE = re.compile(r"(?i)(?<![\w-])New-Item(?![\w-])")
-_PS_VALUE_FLAG_RE = re.compile(r"(?i)(?<![\w-])-Value(?![\w-])")
+_TEE_RE = re.compile(r"(?i)^tee(?![\w-])")
 
 
-def _tokenize_line(line):
-    """POSIX-ish tokenization with a naive whitespace-split fallback --
-    mirrors both sibling hooks' `_tokenize()` convention (the documented
-    POSIX-vs-PowerShell shlex quoting gap, dev-env#620 follow-up: a
-    PowerShell here-string opener like the trailing `@'` of a `-Value @'`
-    invocation is an unterminated POSIX quote to `shlex`, which raises)."""
+def _tokenize_posix(line):
+    """POSIX-mode tokenization for a genuinely Bash-context command --
+    unlike `_tokenize_line` (PowerShell-appropriate, deliberately avoids
+    POSIX backslash-escape processing), `tee` is Bash-only and backslash
+    genuinely means escape there. Falls back to a naive whitespace split
+    on an unterminated-quote `ValueError`, matching every other
+    tokenizer's convention in this module."""
     try:
         return shlex.split(line, posix=True)
     except ValueError:
         return line.split()
 
 
-def find_powershell_write_targets(first_line):
-    """Return [(cmdlet, target, kind), ...] for every journal-path-shaped
-    target on *first_line* following a genuine PowerShell content-write
-    cmdlet. `New-Item` counts only alongside a `-Value` flag (bare `New-Item
-    -ItemType Directory ...` is scaffolding, not a content-write). The
-    token immediately after `-Value` is never itself treated as a target --
-    it's the payload, not a path (mirrors `_hookio.mask_prose_flag_values`'s
-    "a flag's own value isn't the thing being matched" technique)."""
-    masked = _mask_first_line_quotes(first_line)
-    is_write = bool(_PS_WRITE_CMDLET_RE.search(masked))
-    is_new_item_with_value = bool(_PS_NEW_ITEM_RE.search(masked)) and bool(_PS_VALUE_FLAG_RE.search(masked))
-    if not is_write and not is_new_item_with_value:
+def find_tee_targets(first_line):
+    """Return [(target, kind)] -- at most one entry -- for a genuine Bash
+    `tee [-a] <path> [<path> ...]` invocation anchored at the START of
+    *first_line*. `tee` can name more than one output file; every
+    non-flag token is checked, not just the first, so `tee other.txt
+    sessions/.../x.stub.md` is still caught regardless of argument
+    order."""
+    tokens = _tokenize_posix(first_line)
+    if not tokens or not _TEE_RE.match(tokens[0]):
         return []
-    tokens = _tokenize_line(first_line)
-    cmdlet = next(
-        (t for t in tokens if _PS_WRITE_CMDLET_RE.fullmatch(t) or _PS_NEW_ITEM_RE.fullmatch(t)),
-        None,
-    )
-    if cmdlet is None:
-        return []
-    out = []
-    skip_next = False
-    for tok in tokens:
-        if skip_next:
-            skip_next = False
-            continue
-        if tok.lower() == "-value":
-            skip_next = True
+    for tok in tokens[1:]:
+        if tok.startswith("-"):
             continue
         kind = journal_path_kind(tok)
         if kind:
-            out.append((cmdlet, tok, kind))
-    return out
+            return [(tok, kind)]
+    return []
+
+
+# `py(?:thon)?(?:3(?:\.\d+)?)?` matches py / python / py3 / python3 /
+# python3.11; the optional `(?:\s+-\d[\w.]*)?` group separately matches
+# this repo's own `py -3 -c` convention (a SEPARATE `-3` version flag
+# before `-c`, not fused into the interpreter name the way "py3" is).
+_SERIALIZER_INTERPRETER_RE = re.compile(
+    r"(?i)^(node\s+-e|py(?:thon)?(?:3(?:\.\d+)?)?(?:\s+-\d[\w.]*)?\s+-c)(?![\w-])"
+)
+# Any run of non-whitespace, non-quote, non-paren/comma/semicolon
+# characters -- deliberately loose, since this only needs to isolate
+# candidate WORDS to test against journal_path_kind(), not tokenize the
+# interpreter's own script syntax (which could be JS or Python).
+_SERIALIZER_WORD_RE = re.compile(r"[^\s\"'(),;]+")
+
+
+def find_serializer_journal_mentions(segment):
+    """Return [(interpreter, word, kind)] -- at most one entry -- for a
+    `node -e`/`py -3 -c`/`python[3] -c` segment that MENTIONS a
+    journal-shaped path anywhere in its full text (every physical line,
+    not just the first). Deliberately coarser than the redirect/cmdlet
+    detectors: it flags any journal-shaped mention rather than confirming
+    the mention is really a write call's argument, since parsing
+    arbitrary JS/Python is out of scope here. This is an intentional,
+    documented tradeoff -- these recipes are fully retired per ADR-129,
+    dev-env#904's own incident was exactly this shape, and the cost of a
+    false positive is only an inconvenient block (with the override token
+    still available), not a missed hazard."""
+    m = _SERIALIZER_INTERPRETER_RE.match(_first_line(segment).lstrip())
+    if not m:
+        return []
+    for word in _SERIALIZER_WORD_RE.findall(segment):
+        kind = journal_path_kind(word)
+        if kind:
+            return [(m.group(1), word, kind)]
+    return []
+
+
+# --- PowerShell cmdlet detection --------------------------------------------
+
+_PS_WRITE_CMDLET_RE = re.compile(r"(?i)(?<![\w-])(Out-File|Set-Content|Add-Content|Tee-Object)(?![\w-])")
+_PS_NEW_ITEM_RE = re.compile(r"(?i)(?<![\w-])New-Item(?![\w-])")
+_PS_VALUE_FLAG_RE = re.compile(r"(?i)(?<![\w-])-Value(?![\w-])")
+_PS_PATH_FLAG_RE = re.compile(r"(?i)^-(Path|LiteralPath|FilePath)$")
+
+
+def _tokenize_line(line):
+    """PowerShell-appropriate tokenization: groups quoted multi-word values
+    into single tokens the same way `shlex.split(posix=True)` does, but
+    without POSIX backslash-escape processing -- PowerShell uses backtick
+    (`` ` ``) as its escape character, not backslash, so `posix=True`
+    silently eats every backslash in an unquoted Windows path
+    (`sessions\\dev-env\\tiles\\961.json` -> `sessionsdev-envtiles961.json`,
+    destroying it before `journal_path_kind()` ever sees it -- verified
+    live, dev-env#962 review). `posix=False` leaves surrounding quote
+    characters attached to a token instead of stripping them (e.g. a
+    single-quoted value token comes back as `'...'`, not `...`) --
+    harmless here, since `journal_path_kind()` already strips one matching
+    leading/trailing quote pair before testing the four path shapes, and
+    this function no longer inspects a `-Value` payload's *content* at all
+    (see `find_powershell_write_targets`). Falls back to a naive
+    whitespace split on the rare unterminated-quote `ValueError`, mirroring
+    both sibling hooks' `_tokenize()` convention (dev-env#620 follow-up: a
+    PowerShell here-string opener like a `-Value @'` invocation's trailing
+    `@'` is an unterminated quote to `shlex` either way)."""
+    try:
+        return shlex.split(line, posix=False)
+    except ValueError:
+        return line.split()
+
+
+def find_powershell_write_targets(first_line, masked=None):
+    """Return [(cmdlet, target, kind), ...] -- at most one entry -- for a
+    genuine PowerShell content-write invocation anchored at the START of
+    *first_line* (its first token, after tokenizing).
+
+    *masked* -- an already-computed `_mask_first_line_quotes(first_line)`
+    -- lets the New-Item `-Value`-flag check below reuse
+    `find_bash_redirect_targets`'s mask instead of recomputing it (see
+    that function's docstring). Computed here if not supplied.
+
+    Anchoring to
+    segment-start (rather than searching the whole line for a cmdlet-name
+    substring) is what makes tool_name gating in `find_journal_shell_writes`
+    fully effective: a Bash command whose argument merely CONTAINS a
+    cmdlet-shaped word (`rg Add-Content sessions/.../tiles/961.json`, a
+    grep pattern) is never PowerShell to begin with, but an unanchored
+    search would still misdetect it as one if this function were ever
+    called on Bash input -- verified live, dev-env#962 review. `New-Item`
+    counts only alongside a `-Value` flag (bare `New-Item -ItemType
+    Directory ...` is scaffolding, not a content-write).
+
+    Target selection is restricted to the cmdlet's actual BOUND path
+    argument: the value of a `-Path`/`-LiteralPath`/`-FilePath` flag if one
+    is present anywhere in the invocation, else the first positional
+    (non-flag) argument after the cmdlet. This is a deliberate heuristic,
+    not full PowerShell parameter-binding -- it does not handle every
+    legal reordering of named parameters, but it removes the prior
+    design's real bug: treating ANY journal-shaped token anywhere on the
+    line as a target, which false-blocked a quoted log message merely
+    mentioning a path (`Set-Content log.txt "wrote .../tiles/54.json"`)
+    and a legitimate read inside a `-Value` sub-expression
+    (`Set-Content -Path backup.json -Value (Get-Content .../tiles/961.json
+    -Raw)`) -- both verified live, dev-env#962 review. Because target
+    selection no longer scans `-Value`'s own payload at all, the previous
+    single-token "skip the word right after -Value" guard is no longer
+    needed as a separate step -- it falls out of only ever consulting the
+    bound path argument."""
+    tokens = _tokenize_line(first_line)
+    if not tokens:
+        return []
+    cmdlet_token = tokens[0]
+    is_write_cmdlet = bool(_PS_WRITE_CMDLET_RE.fullmatch(cmdlet_token))
+    is_new_item = bool(_PS_NEW_ITEM_RE.fullmatch(cmdlet_token))
+    if is_new_item:
+        if masked is None:
+            masked = _mask_first_line_quotes(first_line)
+        if not _PS_VALUE_FLAG_RE.search(masked):
+            return []
+    elif not is_write_cmdlet:
+        return []
+
+    rest = tokens[1:]
+    target = None
+    for idx, tok in enumerate(rest):
+        if _PS_PATH_FLAG_RE.match(tok) and idx + 1 < len(rest):
+            target = rest[idx + 1]
+            break
+    if target is None:
+        skip_next = False
+        for tok in rest:
+            if skip_next:
+                skip_next = False
+                continue
+            if tok.startswith("-"):
+                skip_next = True
+                continue
+            target = tok
+            break
+    if target is None:
+        return []
+
+    kind = journal_path_kind(target)
+    if not kind:
+        return []
+    return [(cmdlet_token, target, kind)]
 
 
 # --- Top-level combination --------------------------------------------------
 
-OVERRIDE_TOKEN = "ALLOW_JOURNAL_SHELL_WRITE=1"
+OVERRIDE_VAR_NAME = "ALLOW_JOURNAL_SHELL_WRITE"
+OVERRIDE_TOKEN = OVERRIDE_VAR_NAME + "=1"
+
+# Cheap, NECESSARY-but-not-sufficient pre-filter -- see _might_write_journal_content.
+# Deliberately plain `in` checks, NOT a compiled regex: a first attempt using
+# a regex with lookaround word-boundary assertions (to avoid "py" matching
+# inside "copy"/"empty") measured SLOWER than the full detection walk it was
+# meant to short-circuit (~11.7ms vs ~6.5ms on a 100k-char no-match command --
+# Python's `re` doesn't optimize an alternation-of-lookarounds into a fast
+# literal scan the way a plain substring search is). Plain `in` checks
+# against one `.lower()` call measured ~0.28ms on the same input -- roughly
+# 23x faster than the full walk, not the false-precision word-boundary
+# version. Verified live, dev-env#962 review -- benchmark before trusting a
+# regex "should be fast" intuition.
+_PREFILTER_MARKERS = ("tee", "node", "py", "out-file", "set-content", "add-content", "new-item")
 
 
-def find_journal_shell_writes(cmd, segments=None):
+def _might_write_journal_content(cmd):
+    """True iff *cmd* contains at least one lexical marker every detector
+    in this module structurally requires: a `>` character (bash-redirect),
+    the substring `tee` (bash-tee), `node`/`py` (covers `python`/`py3`/
+    `python3` too, since they all contain `py`) (serializer-mention), or
+    one of the five PowerShell cmdlet names. False means NO detector below
+    can possibly match, so the full `split_top_level` + per-segment
+    quote-masking walk is safely skippable entirely -- every branch this
+    rules out is also ruled out, more expensively but identically, by the
+    real detectors, so this can never cause a missed block. Deliberately
+    NOT word-boundary-anchored (so "py" also matches inside "copy"/
+    "empty"): a false-positive "maybe" here only costs doing the full,
+    always-correct walk on an input that turns out to have no real match
+    -- no worse than this filter not existing at all for that one input --
+    while an anchored regex measured slower than the thing it's meant to
+    speed up (see the module-level comment above). This only saves the
+    overwhelmingly common case (a Bash/PowerShell call using none of these
+    constructs at all) from paying the full walk's cost on every single
+    tool call fleet-wide."""
+    if ">" in cmd:
+        return True
+    lowered = cmd.lower()
+    return any(marker in lowered for marker in _PREFILTER_MARKERS)
+
+
+def _segments_or_whole(cmd, segments=None):
+    """`split_top_level(cmd, split_pipe=True)` with a fallback for one shape
+    that function's own docstring calls out as deliberate: "If *command*
+    ends with an unterminated quote/subshell/heredoc, the trailing
+    (malformed) segment is dropped rather than returned." Its single-quote
+    state has no escape-awareness (correctly matching real Bash, where
+    backslash means nothing inside real single quotes) -- so a backslash
+    -escaped apostrophe in UNQUOTED prose (`echo Claude\\'s > ...`, the
+    standard Bash workaround this hook's own docstring names as the exact
+    motivating hazard) opens a single-quote span at the bare `'` and never
+    finds a closing one, dropping the ENTIRE command as "unterminated" even
+    though it's well-formed, executable Bash. `split_top_level` is a
+    heavily-tested shared primitive (~30 tests, several other hook callers)
+    -- deliberately not touched here (see its own module comment on why
+    `mask_quoted_spans` was written as an independent walker rather than
+    risk perturbing it). Falling back to the whole raw command as one
+    opaque segment when segmentation returns nothing is strictly safer
+    than losing the command (and the hazard) entirely: `_first_line()`
+    still truncates it to one physical line downstream, so the only cost
+    is that a command sharing this exact shape AND a real `&&`/`;`/`|`
+    boundary is seen as one segment instead of several -- narrower than
+    the miss this avoids, and only relevant if the redirect/cmdlet lands
+    on a different top-level statement than the escaped quote."""
+    if segments is not None:
+        return segments
+    out = split_top_level(cmd, split_pipe=True)
+    if not out and cmd.strip():
+        return [cmd]
+    return out
+
+
+def find_journal_shell_writes(cmd, tool_name, cwd=None, segments=None):
     """Return every shell-based journal-content-file write detected across
     *cmd*'s top-level segments, as a list of dicts:
-    {"segment", "mechanism", "operator_or_cmdlet", "target", "kind"}."""
-    if segments is None:
-        segments = split_top_level(cmd, split_pipe=True)
+    {"segment", "mechanism", "operator_or_cmdlet", "target", "kind"}.
+
+    *tool_name* gates the PowerShell-cmdlet detector: it only ever runs
+    when *tool_name* is "PowerShell". A Bash command whose argument merely
+    CONTAINS a cmdlet-shaped word (`rg Add-Content sessions/.../tiles/961.json`,
+    a grep pattern) is not itself a PowerShell invocation, and running
+    that detector against Bash input misdetected it as one -- verified
+    live, dev-env#962 review. The Bash-redirect detector is NOT gated the
+    same way: PowerShell natively supports `>`/`>>` as aliases for
+    `Out-File`/`Out-File -Append`, so it applies for both tool_name
+    values.
+
+    *cwd* feeds `_target_is_genuinely_journal`'s sessions/-or-cwd check --
+    every shape match is filtered through it before being reported, so a
+    same-shaped file in an unrelated repo (no `sessions/` component in its
+    own path, and a *cwd* that isn't the engineering-journal checkout)
+    never reaches the caller as a match at all.
+
+    The `tee` detector is gated on *tool_name* == "Bash", symmetric with
+    the PowerShell-cmdlet gate above (`tee` is Bash's own equivalent of
+    `Tee-Object`). The serializer-mention detector (`node -e`/`py -3 -c`)
+    is NOT gated by tool_name -- either shell can launch an external
+    interpreter the same way `>`/`>>` redirection works from both.
+
+    Each returned dict also carries `"segment_index"` -- the position of
+    its segment within *segments* -- so `_is_overridden` can scope an
+    override check to the segment (and, for the PowerShell `$env:` form,
+    the segments up to and including it) that actually produced the
+    match, rather than the whole command.
+
+    The quote-mask for each segment's first line is computed exactly
+    once here and shared with both `find_bash_redirect_targets` (always
+    needed) and `find_powershell_write_targets`'s New-Item check (needed
+    only sometimes), rather than each detector recomputing it
+    independently -- measured ~35% of detector time as pure duplicate
+    work before this sharing, dev-env#962 review."""
+    segments = _segments_or_whole(cmd, segments)
     out = []
-    for seg in segments:
+    for idx, seg in enumerate(segments):
         line = _first_line(seg)
-        for op, target in find_bash_redirect_targets(line):
+        masked = _mask_first_line_quotes(line)
+        for op, target in find_bash_redirect_targets(line, masked=masked):
             kind = journal_path_kind(target)
-            if kind:
+            if kind and _target_is_genuinely_journal(target, cwd):
                 out.append({
                     "segment": seg.strip(),
+                    "segment_index": idx,
                     "mechanism": "bash-redirect",
                     "operator_or_cmdlet": op,
                     "target": target,
                     "kind": kind,
                 })
-        for cmdlet, target, kind in find_powershell_write_targets(line):
-            out.append({
-                "segment": seg.strip(),
-                "mechanism": "powershell-cmdlet",
-                "operator_or_cmdlet": cmdlet,
-                "target": target,
-                "kind": kind,
-            })
+        if tool_name == "Bash":
+            for target, kind in find_tee_targets(line):
+                if _target_is_genuinely_journal(target, cwd):
+                    out.append({
+                        "segment": seg.strip(),
+                        "segment_index": idx,
+                        "mechanism": "bash-tee",
+                        "operator_or_cmdlet": "tee",
+                        "target": target,
+                        "kind": kind,
+                    })
+        for interpreter, word, kind in find_serializer_journal_mentions(seg):
+            if _target_is_genuinely_journal(word, cwd):
+                out.append({
+                    "segment": seg.strip(),
+                    "segment_index": idx,
+                    "mechanism": "serializer-invocation",
+                    "operator_or_cmdlet": interpreter,
+                    "target": word,
+                    "kind": kind,
+                })
+        if tool_name == "PowerShell":
+            for cmdlet, target, kind in find_powershell_write_targets(line, masked=masked):
+                if _target_is_genuinely_journal(target, cwd):
+                    out.append({
+                        "segment": seg.strip(),
+                        "segment_index": idx,
+                        "mechanism": "powershell-cmdlet",
+                        "operator_or_cmdlet": cmdlet,
+                        "target": target,
+                        "kind": kind,
+                    })
     return out
 
 
-def _has_override(cmd, segments=None):
-    """True iff OVERRIDE_TOKEN appears as a genuine leading prefix on one of
-    *cmd*'s top-level segments -- never a mere substring (e.g. mentioned
-    inside a commit message argument)."""
-    if segments is None:
-        segments = split_top_level(cmd, split_pipe=True)
-    for seg in segments:
-        stripped = seg.strip()
-        if stripped == OVERRIDE_TOKEN or stripped.startswith(OVERRIDE_TOKEN + " "):
+def _segment_has_bash_override(segment):
+    """True iff OVERRIDE_TOKEN appears as a genuine leading prefix on
+    *segment* itself -- never a mere substring (e.g. mentioned inside a
+    commit message argument). Mirrors real Bash `VAR=1 cmd` semantics:
+    the assignment applies only to the single statement it prefixes, so
+    this is checked against the ONE segment a match was found in, not the
+    whole command -- an override on an unrelated earlier `&&`/`;`/`|`
+    segment must not exempt a later, different segment's hazard.
+    Verified live, dev-env#962 review:
+    `ALLOW_JOURNAL_SHELL_WRITE=1 echo a > ok.txt && echo b > sessions/.../x.stub.md`
+    used to bypass the block on the SECOND, unrelated segment."""
+    stripped = segment.strip()
+    return stripped == OVERRIDE_TOKEN or stripped.startswith(OVERRIDE_TOKEN + " ")
+
+
+_PS_OVERRIDE_RE = re.compile(r"(?i)^\$env:" + re.escape(OVERRIDE_VAR_NAME) + r"\s*=\s*'?1'?\s*$")
+
+
+def _segment_is_ps_override_statement(segment):
+    """True iff *segment*, stripped, is a standalone PowerShell
+    `$env:ALLOW_JOURNAL_SHELL_WRITE=1` (or `='1'`) assignment. The
+    documented override token has no PowerShell equivalent at all --
+    verified live, dev-env#962 review -- yet 5 of the 6 mechanisms this
+    hook detects are PowerShell-exclusive, leaving no working escape
+    hatch for most of what it blocks."""
+    return bool(_PS_OVERRIDE_RE.match(segment.strip()))
+
+
+def _is_overridden(segments, segment_index):
+    """True iff the match found at `segments[segment_index]` is
+    overridden: either that segment itself carries the Bash `VAR=1`
+    prefix (real Bash scopes this to the one statement it prefixes, so
+    only the matched segment itself counts), OR any segment AT OR BEFORE
+    `segment_index` is a standalone PowerShell `$env:...=1` assignment
+    statement. The two forms are deliberately NOT symmetric: a
+    PowerShell `$env:` assignment is its own statement that sets the
+    variable for the rest of the script (real PowerShell semantics, not
+    scoped to one following command the way Bash's prefix is) -- so a
+    `$env:ALLOW_JOURNAL_SHELL_WRITE=1; Out-File sessions/...` two
+    -statement command genuinely IS overridden by real PowerShell rules,
+    and checking only the matched segment itself would incorrectly
+    reject that override (the assignment and the write are always
+    different segments once split on `;`, since `$env:X=1 Out-File ...`
+    with no separator is not valid PowerShell syntax to begin with)."""
+    if _segment_has_bash_override(segments[segment_index]):
+        return True
+    for seg in segments[: segment_index + 1]:
+        if _segment_is_ps_override_statement(seg):
             return True
     return False
 
@@ -360,12 +724,18 @@ Use a file tool instead:
 
 See claude/CLAUDE.md -> Engineering Journal -> Stub file workflow, docs/REFERENCE.md -> Engineering Journal Internals, and ADR-129.
 
-Genuine exception? Prefix the command with {override}."""
+Genuine exception? Bash: prefix the command with {override}
+                    PowerShell: precede it with its own statement, $env:{override_var}=1"""
 
 
 def _mechanism_desc(match):
-    if match["mechanism"] == "bash-redirect":
+    mechanism = match["mechanism"]
+    if mechanism == "bash-redirect":
         return "a `{}` redirect".format(match["operator_or_cmdlet"])
+    if mechanism == "bash-tee":
+        return "a `tee` invocation"
+    if mechanism == "serializer-invocation":
+        return "a `{}` serializer invocation mentioning it".format(match["operator_or_cmdlet"])
     return "the `{}` cmdlet".format(match["operator_or_cmdlet"])
 
 
@@ -376,6 +746,7 @@ def _build_block_message(match):
         target=match["target"],
         segment=match["segment"],
         override=OVERRIDE_TOKEN,
+        override_var=OVERRIDE_VAR_NAME,
     )
 
 
@@ -393,7 +764,8 @@ def main():
     if not isinstance(data, dict):
         sys.exit(0)
 
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    tool_name = data.get("tool_name")
+    if tool_name not in ("Bash", "PowerShell"):
         sys.exit(0)
 
     tool_input = data.get("tool_input")
@@ -402,15 +774,29 @@ def main():
     cmd = tool_input.get("command", "")
     if not cmd or not isinstance(cmd, str):
         sys.exit(0)
+    if not _might_write_journal_content(cmd):
+        sys.exit(0)
+    cwd = data.get("cwd")
+    if not isinstance(cwd, str):
+        cwd = None
 
-    segments = split_top_level(cmd, split_pipe=True)
-    matches = find_journal_shell_writes(cmd, segments)
+    segments = _segments_or_whole(cmd)
+    matches = find_journal_shell_writes(cmd, tool_name, cwd=cwd, segments=segments)
     if not matches:
         sys.exit(0)
-    if _has_override(cmd, segments):
+    # Per-segment override scoping (see _is_overridden) means different
+    # matches can have different override status -- e.g. an override on
+    # segment 0 exempts only segment 0's hazard, not an unrelated one
+    # found in segment 1. Block on the first match that is NOT overridden;
+    # only exit 0 if every match found is genuinely overridden.
+    blocking_match = next(
+        (m for m in matches if not _is_overridden(segments, m["segment_index"])),
+        None,
+    )
+    if blocking_match is None:
         sys.exit(0)
 
-    _hookout.emit_block(_build_block_message(matches[0]))
+    _hookout.emit_block(_build_block_message(blocking_match))
 
 
 if __name__ == "__main__":

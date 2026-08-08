@@ -407,13 +407,17 @@ def format_advisory(problems: list[tuple[str, list[str]]]) -> str:
         '(stub optional, project-qualified)'
     )
     lines.append(
-        "Build a tile shard with a JSON serializer, never echo - `prompt` is free prose, so "
-        "interpolating it corrupts the shard or escapes into the shell."
+        "Rewrite the shard with the Write tool - never echo/a shell redirect/heredoc/serializer "
+        "script, mechanically blocked for this path shape by pre-tool-use-journal-shell-write-guard.py "
+        "(ADR-129). `prompt` is free prose, so interpolating it into a command line corrupts the "
+        "shard or escapes into the shell; the Write tool's content parameter crosses no shell or "
+        "string-literal boundary at all."
     )
     lines.append(
-        "Write `cwd` with FORWARD slashes (C:/Users/.../repo): a backslash path crossing a "
-        "double-quoted `node -e` string literal silently becomes C:Users<U+0008>rown... "
-        "Prefer the heredoc-fed `py -3 -c` recipe so no field crosses a shell quote at all."
+        "Write `cwd` with FORWARD slashes (C:/Users/.../repo) regardless: historically, a backslash "
+        "path crossing a double-quoted `node -e` string literal silently became "
+        "C:Users<U+0008>rown... (dev-env#904) -- a defense-in-depth pin now, not the primary fix, "
+        "since the Write tool has removed the shell/serializer-string-literal mechanism that caused it."
     )
     lines.append(
         "A manifest re-created after a compose consumed the original must carry the "

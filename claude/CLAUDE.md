@@ -720,7 +720,10 @@ operational artifacts (compose lock files, log file timestamps).
    (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals)
    and [ADR-129](../docs/adr/129-journal-shell-write-guard.md))
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
-6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` — one JSON object (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
+6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` **with the
+   Write tool** (never a shell heredoc/`echo`/redirect — same mandate as step 4,
+   [ADR-129](../docs/adr/129-journal-shell-write-guard.md)) — one JSON object (see
+   [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json sessions/<project>/tiles/<issue-number>.json`, `git commit -m "draft: YYYY-MM-DD session 1" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json sessions/<project>/tiles/<issue-number>.json`, `git push -u origin draft/YYYY-MM-DD`
    *(include `sessions/<project>/open-prs/<N>.json` — the exact shard file(s) this session itself
    created or removed, never the bare `open-prs/` directory — in both the `git add` and the `git commit`
@@ -746,7 +749,10 @@ operational artifacts (compose lock files, log file timestamps).
    heredoc/`echo`/redirect — see step 4 of "First session of the day" above,
    [ADR-129](../docs/adr/129-journal-shell-write-guard.md)) with the current session block
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
-6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` — one JSON object (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
+6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` **with the
+   Write tool** (never a shell heredoc/`echo`/redirect — same mandate as step 4,
+   [ADR-129](../docs/adr/129-journal-shell-write-guard.md)) — one JSON object (see
+   [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json sessions/<project>/tiles/<issue-number>.json`, `git commit -m "draft: YYYY-MM-DD session N" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json sessions/<project>/tiles/<issue-number>.json`, `git push`
    *(include `sessions/<project>/open-prs/<N>.json` — the exact shard file(s) this session itself
    created or removed, never the bare `open-prs/` directory — in both the `git add` and the `git commit`
