@@ -266,6 +266,7 @@ Fires before matched tool calls. Matcher values are set per entry in `settings.j
 | `pre-merge-numbering-check.py` | Command contains `gh pr merge` (excluding a `--help`/`-h`-only invocation, `is_merge_help_only`, dev-env#557), `cwd` (or its `cd`-chain target, via `effective_merge_dir()`) resolves to the dev-env repo | Runs `git fetch origin main`, then reads the merge-base / branch-`HEAD` / `origin/main` snapshots of `CLAUDE.md`'s Testing section and `docs/adr/INDEX.md`'s ADR table. A number this branch newly introduces (absent at the merge-base) that `origin/main` has also claimed since the branch point **blocks the merge (exit 2)**, naming both colliding lines and the rebase-and-renumber fix. A non-colliding sequencing gap is advisory only (`systemMessage`, exit 0). No-op in every non-dev-env repo. Fails open on any git/network/parse error. (ADR-074) |
 | `pre-tool-use-canonical-mutate-guard.py` | `cwd` resolves to a canonical (non-worktree) git checkout root — or a `-C`/`--git-dir`/`--work-tree` flag redirects the invocation at such a root from elsewhere, e.g. from a worktree (dev-env#576, ADR-071 Amendment 2) — and the command contains a git-mutating segment (`checkout`, `switch`, `commit`, `merge`, `rebase`, `reset`, `cherry-pick`, `revert`, `stash pop`/`apply`, `branch -d`/`-D`, or `pull` without `--ff-only`) or a `gh pr merge` invocation carrying `-d`/`--delete-branch` (dev-env#558, ADR-071 Amendment 1 — same harm model reached through a `gh` invocation instead of a `git` verb; a bare `gh pr merge` stays unblocked, since it merges only remotely via the GitHub API) | **Blocks the command (exit 2)** — two Claude Code sessions sharing one canonical checkout can otherwise collide (one session's `checkout`/`commit`/`reset` silently thrashes HEAD out from under the other; see dev-env#453). The block keys off the resolved *target* root (cwd's, or the `-C`/`--git-dir`/`--work-tree` redirect target), not cwd alone; the engineering-journal checkout is a **permanent** redirect-target carve-out, not pending dev-env#346 (corrected dev-env#747/ADR-105 — #346 is a narrower, unrelated `biweekly-retro`-specific issue). No-op for an *ambient* (non-redirect) command from a confirmed-LIVE `.claude/worktrees/<name>` (`EnterWorktree`) or `<repo>-worktrees/<name>` (sibling-directory, manual `git worktree add`, dev-env#760/ADR-071 Amendment 5) cwd (ADR-024 covers that surface) or when git can't resolve a toplevel (fails open) — a worktree-shaped cwd that isn't actually a live, registered worktree (e.g. an orphaned directory whose `.git` link is missing) is no longer exempted on shape alone and falls through to the same canonical-root resolution an ordinary cwd gets (dev-env#749, ADR-071 Amendment 3). The same applies to an already-*resolved* target root (cwd's, or a redirect target's): it is exempted only when `git worktree list --porcelain` confirms it a LINKED (non-canonical) entry of its own repository, not merely because its path string looks worktree-shaped — an independently-cloned canonical checkout that happens to sit at a worktree-shaped path is no longer wrongly exempted (dev-env#774, ADR-071 Amendment 6; falls back to the old shape check only when git itself can't answer). Segments come from the shared `_hookio.split_top_level` engine (quote/subshell/heredoc-aware, dev-env#511/ADR-050 Amendment 7), so a quoted `&&`/`\|` or a heredoc body line (bare, or fed through a `$(cat <<'MARKER' ... MARKER)` command substitution) that merely *starts with* a mutating verb does not false-trigger (dev-env#481, generalized). Bypass with a genuine leading `ALLOW_CANONICAL_MUTATE=1` prefix. Has a behavioral self-test: `py -3 claude/scripts/tests/test_canonical_mutate_guard.py`. [ADR-071](adr/071-canonical-checkout-mutate-guard-hook.md) |
 | `pre-tool-use-journal-draft-worktree-guard.py` | The command contains a top-level `git worktree add <path> ... <branch>` where `<branch>` matches `draft/YYYY-MM-DD` (or its `-recovery` suffix), from ANY cwd — or a `checkout`/`switch` of such a branch, ambient or via a `-C`/`--git-dir`/`--work-tree` redirect, whose resolved target is NOT the engineering-journal canonical | **Blocks the command (exit 2)** — git allows a branch checked out in only one worktree at a time, so either shape locks the shared `draft/YYYY-MM-DD` branch to a throwaway worktree and blocks the canonical (and every other concurrent stub-writing session) from reaching it, confirmed live twice on 2026-07-12 (dev-env#747). The inverse-direction sibling of `pre-tool-use-canonical-mutate-guard.py` above: that hook blocks a mutation targeting a canonical; this one blocks a checkout of one specific shared branch targeting anywhere BUT the canonical. `git checkout <branch> -- <path>` (a file restore, not a branch switch) is exempt; `worktree add -b <newbranch> ... draft/YYYY-MM-DD` (the draft branch used only as a commit-ish startpoint for a differently-named new branch) is exempt. Deliberately duplicates (not imports) the sibling hook's git-redirect-parsing helpers — see that hook's own bug history (ADR-071 Amendment 2, five fixes) and ADR-105's Judgment calls for why. Bypass with a genuine leading `ALLOW_JOURNAL_DRAFT_WORKTREE=1` prefix. Has a behavioral self-test: `py -3 claude/scripts/tests/test_journal_draft_worktree_guard.py`. [ADR-105](adr/105-draft-branch-worktree-squat-guard.md) |
+| `pre-tool-use-journal-shell-write-guard.py` | A top-level Bash/PowerShell segment's first physical line carries a genuine (non-quoted) `>`/`>>` redirect, or a PowerShell `Out-File`/`Set-Content`/`Add-Content`/`Tee-Object`/`New-Item ... -Value` invocation, whose target path is shaped like a journal content file (`*.stub.md`, `*.manifest.jsonl`, `open-prs/<digits>.json`, `tiles/<digits>.json`) | **Blocks the command (exit 2)** — every one of the four file kinds carries free prose or a path field that routinely breaks shell quoting (apostrophes, quotes, backticks, `$`, markdown code fences), either failing the write outright or silently corrupting the file (dev-env#904). Names the matched command/target and instructs the Write tool (create) or Edit tool (a targeted update) instead. `git add`/`commit -m "..." -- <path>`/`push` referencing these paths, `rm`/`Remove-Item` deleting a shard (the documented deletion mechanism), plain reads, directory-only scaffolding (`mkdir -p`, `New-Item -ItemType Directory` with no `-Value`), and a heredoc body merely mentioning a filename as prose are all unaffected — only a genuine redirect/cmdlet on the invoking line is ever inspected. A same-line heredoc opener (`cat <<'EOF' > path/to/x.stub.md`) is still detected: quote-masking neutralizes `<<` first so `_hookio`'s heredoc-opener handling doesn't consume the rest of the line as an unterminated declaration. Bypass with a genuine leading `ALLOW_JOURNAL_SHELL_WRITE=1` prefix. No subprocess/git work — pure text detection, no `_winsubp` needed. Has a behavioral self-test: `py -3 claude/scripts/tests/test_journal_shell_write_guard.py`. [ADR-129](adr/129-journal-shell-write-guard.md) |
 | `pre-tool-use-journal-compose-force-guard.py` | The command is a git `worktree`/`commit`/`push` invocation whose non-message tokens (a `-m`/`--message`/`-F`/`--file` flag's *value* is excluded from the scan, so a commit message merely mentioning "draft/2026-07-09" as prose can't false-trigger) reference a `draft/<today>` or `compose[-/]<today>` target — "today" is this process's own `datetime.date.today()`, never anything the command claims — **and** the command or cwd identifies a compose worktree context (`compose[-/]<today>` in the resolved cwd path or in a non-message scan token, via `_is_compose_op`); plain stub-write pushes that reference only `draft/<today>` pass through unchanged (dev-env#728) | **Blocks the command (exit 2)** unless a fresh, `force == true` marker exists for today — written only by `journal-compose-force-resolve.py`, run as the literal first Bash action of `/journal-compose` Step 0.6 with the harness-substituted `$ARGUMENTS` text (before any of the agent's own reasoning about the invocation's intent). Mechanical enforcement of the `/journal-compose` today-guard (ADR-017): a 2026-07-08 scheduled-task transcript showed an agent reasoning its way past the guard's *prose* without ever running or reading it (dev-env#631). Every past-day compose (the nightly routine's normal path, ADR-084) and every other git/gh command never reaches the trigger condition at all. Deliberately **fails closed** on a missing/corrupt/stale marker (a reversal of this hook family's usual fail-open convention — justified by this hook's narrow, already-rare trigger) and ships with **no override token** (recovery is re-running the resolve script, never a bypass). Freshness window is a generous 4 hours (`MAX_MARKER_AGE_SECONDS`), covering a realistic multi-project compose with subagent research. `journal-compose-force-resolve.py` also sweeps markers from earlier calendar dates (`_journal_compose_force.cleanup_stale_markers`, 30-day default) on each invocation — safe because a marker is only ever consulted on the same real day it's written (dev-env#768) — including a second sweep for any orphaned atomic-write `.tmp` a rare `os.replace` failure in `write_marker` could otherwise leave behind uncleaned (dev-env#806, mirroring the identical `record_heartbeat` `.tmp` sweep described above). Has pure command-classification tests plus a behavioral self-test: `py -3 claude/scripts/tests/test_pre_tool_use_journal_compose_force_guard.py`. [ADR-096](adr/096-journal-compose-mechanical-force-guard.md) |
 | `disk-space-check.py` (PreToolUse) | Every Bash call | Re-checks free `C:` space before each Bash call, not just once per prompt — closes the gap where a long tool-call-only stretch (e.g. an `npm install` mid-turn) could exhaust disk with no intervening prompt to re-trigger the `UserPromptSubmit` registration of this same script. Same thresholds, same messages, same detached-reclaim spawn, and the same per-session marker-file gate as the `UserPromptSubmit` entry (see the UserPromptSubmit table above) — whichever entry fires first for a session covers the other. `shutil.disk_usage()` is a syscall, not a subprocess spawn, so this adds negligible overhead to every Bash call. [ADR-087](adr/087-pretooluse-disk-space-check.md) |
 | `pre-bash-drift-check.py` | Every Bash call, gated by elapsed time (not command content) | A fourth cwd/branch drift checkpoint alongside `pre-commit-branch-check.py`/`pre-pr-create-check.py`/`pre-merge-branch-check.py` (dev-env#682): those three only compare recorded vs. current repo/branch state at `git commit`/`gh pr create`/`gh pr merge`, missing a drift affecting any other Bash command. This hook runs the same `_bash_state.py`-backed comparison on every Bash call, but only pays the `git rev-parse --show-toplevel --abbrev-ref HEAD` subprocess once at least 60s (`MIN_GAP_SECONDS`) have elapsed since the last recorded call — a cheap file-mtime stat (`state_age_seconds()`) gates it otherwise, so back-to-back calls never spawn a subprocess. Targets the gap-shaped trigger observed after long background `Agent` calls specifically. Advisory only (`systemMessage`, exit 0), same reasoning as the other three: can't distinguish a legitimate `EnterWorktree`/`cd` from a silent revert. [ADR-101](adr/101-bash-drift-check-every-call.md) |
@@ -1540,10 +1541,13 @@ so a schema change updates one module instead of two gates drifting apart ([ADR-
 being open ([ADR-091](adr/091-journal-stop-check-archive-reminder-blocking.md) Amendment 1) — a third
 consumer of this module, alongside the two schema gates above.
 
-```bash
-echo '{"stub":"sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"input":N,"output":N,"cost":N},"prs_opened":[],"prs_closed":[]}' \
-  > "C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl"
-```
+Write the shard with the **Write tool** — never `echo`/a heredoc/redirect, the anti-pattern
+`pre-tool-use-journal-shell-write-guard.py` mechanically blocks for this path shape
+([ADR-129](adr/129-journal-shell-write-guard.md)):
+
+- **Path:** `C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl`
+- **Content** (the file's entire, one-line content):
+  `{"stub":"sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 heading>","tokens":{"input":N,"output":N,"cost":N},"prs_opened":[],"prs_closed":[]}`
 
 - `prs_opened` / `prs_closed`: PR numbers opened / reviewed-or-merged this session (e.g., `[54]`); empty array if none.
   A PR number in `prs_opened` not also in `prs_closed` is read as still-open by
@@ -1557,17 +1561,11 @@ echo '{"stub":"sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md","topic":"<H2 headin
 
 **Updating after a merge (no shared-file edit).** Setting `prs_closed:[N]` after a same-session merge
 rewrites **this session's own shard** — a single-object file no other session touches — so there is no
-concurrency hazard and no surgical-edit dance. Read the shard, mutate the field, write it back:
-
-```bash
-node -e "
-  const fs = require('fs');
-  const path = 'C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl';
-  const o = JSON.parse(fs.readFileSync(path,'utf8'));
-  o.prs_closed = [<PR_NUMBER>];
-  fs.writeFileSync(path, JSON.stringify(o) + '\n');
-"
-```
+concurrency hazard and no surgical-edit dance. Use the **Edit tool** — replace the current
+`"prs_closed":[...]` value with `"prs_closed":[<PR_NUMBER>]` in place. (Every write to this path now
+goes through the Write/Edit tool uniformly across all four journal content-file kinds, mechanically
+enforced by `pre-tool-use-journal-shell-write-guard.py`; the `node -e` recipe this section used to
+prescribe is retired — see [ADR-129](adr/129-journal-shell-write-guard.md).)
 
 **Legacy per-day manifest (`YYYY-MM-DD.manifest.jsonl`).** Days written before ADR-056 used a single
 per-day file with one JSON line per session. Readers (`/journal-compose`, the Start-here dashboard
@@ -1599,12 +1597,12 @@ list lives in `OPEN_PR_REQUIRED_FIELDS` in `claude/scripts/_journal_schema.py` (
 `stub` is the filename that opened the PR — used to cross-reference the opening session when a PR spans
 multiple days.
 
-**When a session opens PR #N:** write the shard, commit it alongside the stub:
+**When a session opens PR #N:** write the shard with the **Write tool** — never `echo`/a
+heredoc/redirect ([ADR-129](adr/129-journal-shell-write-guard.md)) — then commit it alongside the stub:
 
-```bash
-echo '{"pr":<N>,"url":"<url>","topic":"<H2 heading from stub>","stub":"YYYY-MM-DD_HHMMSS.stub.md","opened":"YYYY-MM-DD"}' \
-  > "C:/Users/brown/Git/engineering-journal/sessions/<project>/open-prs/<N>.json"
-```
+- **Path:** `C:/Users/brown/Git/engineering-journal/sessions/<project>/open-prs/<N>.json`
+- **Content** (the file's entire content):
+  `{"pr":<N>,"url":"<url>","topic":"<H2 heading from stub>","stub":"YYYY-MM-DD_HHMMSS.stub.md","opened":"YYYY-MM-DD"}`
 
 **When a session merges/closes PR #N:** delete its shard. This is a per-PR `rm` that cannot touch any
 other PR's record — even when a *different* session or the `reconcile-open-prs.py` hook does the
@@ -1674,41 +1672,42 @@ one would save a value that is dead exactly when the shard is needed — this is
 **When a session spawns a tile:** write the shard immediately after the `spawn_task` call, and commit it
 alongside the stub (explicit per-file pathspec, never the bare `tiles/` directory).
 
-**Do not build this JSON with `echo`.** Unlike every other shard, `prompt` holds free prose — the whole
-`spawn_task` prompt — so string-interpolating it into `echo '{...}'` breaks in three ways, two of them
-silent: a `"` or a Windows `\` path produces invalid JSON that `iter_numeric_shards` skips without a
-word (the payload is lost precisely when a restart needs it), and an apostrophe closes the shell's
-single-quoted string, making any following metacharacters executable — tile prompts routinely quote
-text Claude did not author (issue bodies, `gh` output, error text). Serialize instead, passing the
-prose through a **quoted** heredoc so the shell never parses it:
+**Do not build this JSON with `echo` (or any other shell redirect/heredoc).** Unlike every other shard,
+`prompt` holds free prose — the whole `spawn_task` prompt — so string-interpolating it into
+`echo '{...}'` breaks in three ways, two of them silent: a `"` or a Windows `\` path produces invalid
+JSON that `iter_numeric_shards` skips without a word (the payload is lost precisely when a restart
+needs it), and an apostrophe closes the shell's single-quoted string, making any following
+metacharacters executable — tile prompts routinely quote text Claude did not author (issue bodies, `gh`
+output, error text). Write it with the **Write tool** — the single method for this file (and the other
+three journal content-file kinds), mechanically enforced by `pre-tool-use-journal-shell-write-guard.py`
+([ADR-129](adr/129-journal-shell-write-guard.md)); the shell/heredoc recipe this section used to
+prescribe is retired.
+
+`tiles/` still needs to exist first — it exists for no project until its first tile, and the reconciler
+deletes it again whenever a project's last shard is pruned, so the missing-directory case recurs, it is
+not a one-time bootstrap:
 
 ```bash
 mkdir -p "C:/Users/brown/Git/engineering-journal/sessions/<project>/tiles"
-py -3 -c '
-import json, sys
-prompt = sys.stdin.read().rstrip("\n")
-json.dump({"issue": <N>, "url": "<issue-url>", "title": "<chip label>",
-           "tldr": "<tooltip>", "prompt": prompt, "cwd": "<target repo path>",
-           "stub": "sessions/<spawning-project>/YYYY-MM-DD_HHMMSS.stub.md",
-           "spawned": "YYYY-MM-DD"},
-          open(r"C:/Users/brown/Git/engineering-journal/sessions/<project>/tiles/<N>.json", "w"),
-          ensure_ascii=False)
-' <<'TILE_PROMPT_EOF'
-<the full self-contained spawn_task prompt, verbatim, any characters, any number of lines>
-TILE_PROMPT_EOF
 ```
 
-The `mkdir -p` is required, not defensive: `tiles/` exists for no project until its first tile, and the
-reconciler deletes it again whenever a project's last shard is pruned — so the missing-directory case
-recurs, it is not a one-time bootstrap.
+(or PowerShell `New-Item -ItemType Directory -Force "C:/Users/brown/Git/engineering-journal/sessions/<project>/tiles"`)
+— this creates no content, so it stays a legitimate shell step, outside the new guard's scope. Then
+write `sessions/<project>/tiles/<N>.json` with the Write tool, with this content:
 
-Writing the file with the `Write` tool is equally acceptable and avoids the shell entirely; the
-constraint is only that the payload must never be interpolated into a command line.
+```json
+{"issue": <N>, "url": "<issue-url>", "title": "<chip label>", "tldr": "<tooltip>", "prompt": "<the full self-contained spawn_task prompt, verbatim>", "cwd": "<target repo path>", "stub": "sessions/<spawning-project>/YYYY-MM-DD_HHMMSS.stub.md", "spawned": "YYYY-MM-DD"}
+```
 
-**"Use a serializer" is not by itself enough — mind the serializer's own string literals.** The rule
-above is usually read as being about `prompt`, and about the *shell*. Both readings are too narrow.
-Every field also has to survive the string-literal layer of whatever language the serializer is
-written in, and that layer is where the `node -e "…"` form silently destroys `cwd`:
+The Write tool takes this content as a parameter, with no shell interpretation at all — the payload
+never crosses a command-line boundary, so none of the three `echo` failure modes above can occur, and
+none of the serializer-string-literal hazard the next section describes can occur either.
+
+**"Use a serializer" was not by itself enough — mind the serializer's own string literals.** This is
+now historical context: the rule above used to be read as being about `prompt`, and about the *shell*.
+Both readings were too narrow. Every field also has to survive the string-literal layer of whatever
+language a serializer is written in, and that layer is where the `node -e "…"` form silently destroyed
+`cwd`:
 
 ```
 node -e "…JSON.stringify({cwd: "C:\Users\brown\Git\dev-env"})…"
@@ -1720,10 +1719,11 @@ node -e "…JSON.stringify({cwd: "C:\Users\brown\Git\dev-env"})…"
 Nothing downstream reports this: the shard exists, parses, keeps its numeric filename, and satisfies
 every presence check, so it reads as healthy while the payload it exists to preserve is already gone.
 Three shards were live in this state on 2026-07-23 (dev-env#904), written by two independent sessions.
-The `py -3 -c` form above never produced it — Python's literal parser *raises* on `\U` instead of
-dropping it — which is the second reason to prefer it over `node -e` here, alongside the quoted
-heredoc keeping `prompt` out of the shell's hands entirely. Writing `cwd` with forward slashes (see
-the schema notes above) removes the hazard regardless of serializer.
+The Write tool removes this hazard entirely, alongside the shell-quoting hazard above — its `content`
+parameter is never passed through any string-literal layer (JS, Python, or otherwise) at all, so there
+is no serializer left to mis-escape `cwd`. Writing `cwd` with forward slashes (see the schema notes
+above) remains good practice regardless — a defense-in-depth pin, not the primary fix now that the
+Write tool has removed the mechanism that caused the corruption in the first place.
 
 **When the tile's work completes:** closing the paired issue is the signal. `reconcile-pending-tiles.py`
 unlinks the shard of any tile whose issue it finds `CLOSED` at session start, and removes the `tiles/`
@@ -1811,6 +1811,15 @@ open." A tile whose work already started but whose issue is open will be re-surf
 duplicate chip the user dismisses.
 
 ### Stub structure
+
+**Creation mechanism: the Write tool, always.** A stub is 100% free-form prose — session summaries
+routinely contain apostrophes, quotes, backticks, `$`, and markdown code fences — so a shell
+heredoc/`echo`/redirect is exactly the wrong tool: quoting breaks on this content, either failing the
+write outright or (worse) silently corrupting an already-written file. Create the file with the
+**Write tool**; for a same-session in-place update, use the **Edit tool**. Mechanically enforced by
+`pre-tool-use-journal-shell-write-guard.py`, which blocks a Bash/PowerShell content-write (`>`/`>>`
+redirect, or a PowerShell `Out-File`/`Set-Content`/`Add-Content`/`Tee-Object`/`New-Item -Value`)
+targeting a `*.stub.md` path — see [ADR-129](adr/129-journal-shell-write-guard.md).
 
 Each stub file contains exactly one session block — the filename's `HHMMSS` component is what
 delimits sessions (ADR-056 per-session sharding), so no header marker is needed for that job. The

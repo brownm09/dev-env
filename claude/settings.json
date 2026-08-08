@@ -78,6 +78,11 @@
           },
           {
             "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-journal-shell-write-guard.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-journal-compose-force-guard.py",
             "timeout": 10
           },
@@ -140,6 +145,11 @@
             "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-journal-draft-worktree-guard.py",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/scripts/pre-tool-use-journal-shell-write-guard.py",
+            "timeout": 10
           },
           {
             "type": "command",

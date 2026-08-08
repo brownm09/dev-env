@@ -632,21 +632,30 @@ the stub isolation above extends to them and **no session ever writes a file ano
 writes**:
 
 - **Manifest:** each session writes its own shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl`
-  (one JSON object, paired 1:1 with the stub). Setting `prs_closed:[N]` after a merge edits *this
-  session's own shard* — never a file another session touches. A shard **re-created after a compose
-  has consumed the original** (e.g. late PR-merge bookkeeping) must carry the **full five-field set**
-  (`stub`, `topic`, `tokens`, `prs_opened`, `prs_closed`) — never just the field being updated; the
+  (one JSON object, paired 1:1 with the stub) **with the Write tool**; a later same-session rewrite
+  (e.g. setting `prs_closed:[N]`) uses the **Edit tool** — never a shell heredoc/`echo`/redirect,
+  mechanically blocked by `pre-tool-use-journal-shell-write-guard.py`
+  ([ADR-129](../docs/adr/129-journal-shell-write-guard.md)). Setting `prs_closed:[N]` after a merge
+  edits *this session's own shard* — never a file another session touches. A shard **re-created after a
+  compose has consumed the original** (e.g. late PR-merge bookkeeping) must carry the **full five-field
+  set** (`stub`, `topic`, `tokens`, `prs_opened`, `prs_closed`) — never just the field being updated; the
   `journal-shard-write-advisory.py` hook flags violations (and BOMs) at write time (dev-env #556,
   [ADR-081](../docs/adr/081-write-time-journal-shard-validation-hook.md)).
 - **Open PRs:** each open PR is its own shard `sessions/<project>/open-prs/<N>.json`. Opening PR #N
-  writes `<N>.json`; merging/closing it **deletes** that file — a per-PR delete that cannot touch any
-  other PR's record, even when a *different* session or the `reconcile-open-prs.py` hook does the removal.
+  writes `<N>.json` **with the Write tool** (never a shell heredoc/`echo`/redirect —
+  [ADR-129](../docs/adr/129-journal-shell-write-guard.md)); merging/closing it **deletes** that file
+  (`rm`/`Remove-Item` — a deletion, not a content-write, stays outside that guard's scope) — a per-PR
+  delete that cannot touch any other PR's record, even when a *different* session or the
+  `reconcile-open-prs.py` hook does the removal.
 - **Tiles:** each spawned tile is its own shard `sessions/<project>/tiles/<issue-number>.json`, keyed by
   the tile's paired GitHub issue and filed under the tile's **target** project (from its `cwd`), not the
   spawning session's. **Write it immediately after each `spawn_task` call** — the payload is what lets a
   lost chip be re-spawned *exactly* after a crash or app restart, which the chip itself cannot survive
-  (ADR-094); closing the paired issue is the completion signal. Build the JSON with a serializer, never
-  `echo` — `prompt` is free prose, so interpolating it corrupts the shard or escapes into the shell.
+  (ADR-094); closing the paired issue is the completion signal. **Write it with the Write tool** — the
+  general rule for all four journal content-file kinds (stub, manifest, open-PR, tile), mechanically
+  enforced by `pre-tool-use-journal-shell-write-guard.py` rather than restated per-kind here (`prompt` is
+  free prose and `cwd` is the one required field that is a path — see
+  [ADR-129](../docs/adr/129-journal-shell-write-guard.md)).
   Schema, the write recipe, and current phase:
   [REFERENCE → Tile shards](../docs/REFERENCE.md#tile-shards-sessionsprojecttilesissue-numberjson);
   rationale, and why a headless process *cannot* respawn tiles instead, in [ADR-118](../docs/adr/118-tile-persistence-shards.md).
@@ -706,7 +715,10 @@ operational artifacts (compose lock files, log file timestamps).
    git -C C:/Users/brown/Git/engineering-journal rev-parse origin/main
    ```
 3. Read the open-PR records (`sessions/<project>/open-prs/*.json` shards, plus any legacy `open-prs.jsonl`) if present — include their PR list as session context before starting work (the `reconcile-open-prs.py` hook also surfaces this at session start).
-4. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
+4. Create `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` **with the Write tool** — never a shell
+   heredoc/`echo`/redirect; mechanically blocked by `pre-tool-use-journal-shell-write-guard.py`
+   (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals)
+   and [ADR-129](../docs/adr/129-journal-shell-write-guard.md))
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
 6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` — one JSON object (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json sessions/<project>/tiles/<issue-number>.json`, `git commit -m "draft: YYYY-MM-DD session 1" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json sessions/<project>/tiles/<issue-number>.json`, `git push -u origin draft/YYYY-MM-DD`
@@ -730,7 +742,9 @@ operational artifacts (compose lock files, log file timestamps).
    ```bash
    ls C:/Users/brown/Git/engineering-journal/sessions/<project>/YYYY-MM-DD_*.stub.md | sort | tail -1
    ```
-4. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` with the current session block
+4. Create a new `sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md` **with the Write tool** (never a shell
+   heredoc/`echo`/redirect — see step 4 of "First session of the day" above,
+   [ADR-129](../docs/adr/129-journal-shell-write-guard.md)) with the current session block
 5. Add a `<!-- tokens: input=N output=N cost≈$N -->` comment at the end of the session block
 6. Write this session's manifest shard `sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl` — one JSON object (see [REFERENCE → Engineering Journal Internals](../docs/REFERENCE.md#engineering-journal-internals))
 7. `git add sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json sessions/<project>/tiles/<issue-number>.json`, `git commit -m "draft: YYYY-MM-DD session N" -- sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md sessions/<project>/YYYY-MM-DD_HHMMSS.manifest.jsonl sessions/<project>/open-prs/<N>.json sessions/<project>/tiles/<issue-number>.json`, `git push`
