@@ -184,9 +184,13 @@ Enforces experimental rigor for a **process experiment** — a comparative claim
 
 ## Hooks
 
-For a one-line-per-file index of all 76 files directly in `claude/scripts/` — wired hooks, shared
+For a one-line-per-file index of the files directly in `claude/scripts/` — wired hooks, shared
 `_foo.py` modules, and utility scripts, grouped by workflow domain — see
-[`claude/scripts/README.md`](../claude/scripts/README.md)
+[`claude/scripts/README.md`](../claude/scripts/README.md), which carries the gated, authoritative
+file count itself so this sentence can't drift out of sync with it by restating a second,
+differently-scoped number (`docs/REFERENCE.md`'s prior count here covered `.py` files only,
+while the README's covers `.py`/`.sh`/`.ps1` — two correct-for-their-own-definition numbers that
+nonetheless read as contradictory side by side; dev-env#966 review finding)
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The tables below remain the
 authoritative per-hook behavioral description; that index is a navigational map only.
 
@@ -224,6 +228,21 @@ The `permissions.allow` block in `claude/settings.json` contains paths with a ha
 | Entry | Scope | Rationale |
 |---|---|---|
 | `Edit(C:/Users/brown/Git/**)` | All files in all local repos | Covers skill and config edits across career-playbook, lifting-logbook, dev-env, etc. without per-file prompts. Intentionally broad — includes `.env` and credential files — accepted tradeoff on a single-user personal machine. |
+
+---
+
+### SessionStart
+
+Registered with `"matcher": "startup|resume"` — the two sources where "is this checkout
+stale" is a meaningful question. Deliberately does **not** match `clear`/`compact`: `/compact`
+is a routine mid-session operation (triggered by context growth, not elapsed time), and
+synchronously blocking it on a remote `git fetch` was found disproportionate to the staleness
+risk, and widened the window for the concurrency check below to false-match this same
+session's own just-written transcript (dev-env#966 review finding).
+
+| Script | What it does |
+|--------|-------------|
+| `session-start-sync.py` | Generalizes `dev-env-sync.py`'s fetch -> compare -> fast-forward mechanic to any repo a session starts in, resolved dynamically from the session's own `cwd` rather than a hardcoded path. Resolves the repo root (`git rev-parse --show-toplevel`) and its **canonical** root (`_worktree_canon.canonical_repo_root`, so a worktree session's opt-out and the dev-env exclusion both resolve correctly even though `.claude/` is commonly gitignored per-worktree); skips every dev-env checkout — canonical or worktree — (already covered more thoroughly by `dev-env-sync.py`'s topology auto-correction + persistent-failure escalation) and any repo whose canonical `.claude/hook-config.json` sets `"session_start_sync_disabled": true`; then `git fetch origin --quiet` (all remote-tracking branches, not just the default — also fixes a wrong-branch-pull-scattered-files class of incident, not only default-branch staleness). Classifies the checkout as canonical/sole vs. a linked worktree (compares resolved path *value* against `canonical_worktree()`'s own path — not the `find_worktree_by_path` identity shortcut that module's own docstring disclaims as caller-reliable), resolves the repo's actual default branch (`git symbolic-ref --short refs/remotes/origin/HEAD`, stripping the `origin/` prefix that `--short` retains — verified live that this command's output is `origin/main`, not `main` — falling back to `"main"` when unset), and compares HEAD against its own upstream if tracked, else `origin/<default-branch>` (the fallback is what covers a detached HEAD, which has no upstream by definition; a not-yet-pushed local branch gets a correspondingly softer advisory wording, since that case is expected rebase distance, not staleness). Already up to date, or strictly ahead, -> silent exit (don't spam the healthy path); an unmeasurable drift count (a `git rev-list` failure) warns rather than exiting silently, since a failed measurement must never read as "confirmed up to date." Otherwise **auto-fast-forwards** (`git merge --ff-only <the same ref the comparison measured>` — not a separately hardcoded `origin/<default-branch>`, which could silently diverge from what was actually measured whenever the branch's real upstream isn't literally that ref) only when the checkout is canonical/sole, on exactly its own default branch, a true fast-forward (zero local-only commits, where an unmeasurable count is treated the same as a positive one), a clean *tracked* working tree (untracked files never block a fast-forward and are not counted as dirty), and no other session's transcript — checked against both the repo root and the session's own `cwd`, and against nested subagent transcripts too, not just top-level ones — active in the last 5 minutes (`_worktree_liveness.worktree_session_is_live`, extended with an `exclude_session_id` parameter so this hook does not see itself, or its own subagents, as "live"; skipped entirely when no `session_id` is available, defaulting to "no concurrency detected" rather than letting a parsing failure silently disable auto-fix). A successful merge re-reads `HEAD` afterward and reports the actual result, flagging a mismatch against the pre-merge measurement explicitly (a concurrent-process race) rather than reporting the pre-merge value as confirmed. Any single ineligible condition instead emits a **loud advisory** naming the repo, branch, how far behind, and precisely why it was not auto-fixed. Every one of the ~12 git subprocess calls in one firing shares a single time budget (a `time.monotonic()` deadline computed once, under this hook's own `claude/settings.json` timeout) rather than each independently claiming up to 15s, and a resolved ref is validated against a conservative name pattern before being used as a command argument (defense in depth — a leading-dash ref is format-valid to git and would otherwise be parsed as an option). All advisories go through `_hookout.emit_advisory("SessionStart", ..., audience="both")` — `SessionStart` is one of the three events whose exit-0 stdout is model-visible (`STDOUT_MODEL_VISIBLE_EVENTS`), and `audience="both"` also surfaces a `systemMessage` toast to the user. Fails open unconditionally on every subprocess failure (not a git repo, a failed fetch, a failed rev-parse, an exhausted time budget) — this is a drift *detector*, not a gate. The first hook in this repo to use the `SessionStart` event: every prior "fires early in a session" hook (`dev-env-sync.py`, `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, `journal-onboard-check.py`) instead rides `UserPromptSubmit` with a once-per-session sentinel — `SessionStart` was chosen deliberately for the semantic fit and because it also fires natively on `resume`, not only a brand-new session. [ADR-130](adr/130-session-start-fetch-ff-only-or-warn.md) |
 
 ---
 
@@ -391,6 +410,7 @@ bash claude/hooks/tests/test-pre-push-lockfile.sh
 | `test_command` | string | `npx jest --json --silent` | `baseline-tests.sh` — shell command emitting Jest `--json` stdout. Override when `npm test` wraps Jest through turbo/lerna and does not pass `--json` through. |
 | `skill_file_size_limit_bytes` | integer | `262144` | `pre-tool-use-skill-file-size-guard.py` — hard-block byte ceiling for a `SKILL.md` Write/Edit; also read (advisory-only) by `skill-file-size-advisory.py` to show "N% of the hard limit" |
 | `skill_file_size_warn_bytes` | integer | `204800` | `skill-file-size-advisory.py` — lower watermark for the non-blocking nudge, independent of `skill_file_size_limit_bytes` |
+| `session_start_sync_disabled` | boolean | `false` | `session-start-sync.py` — per-project opt-out from the session-start fetch/fast-forward-or-warn drift check (ADR-130). Read from the checkout's **canonical** root's `.claude/hook-config.json` (via `_worktree_canon.canonical_repo_root`), not a worktree's own copy — `.claude/` is commonly gitignored, so a worktree checkout usually has no copy of this file to read at all. |
 
 ---
 

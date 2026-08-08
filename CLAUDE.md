@@ -122,6 +122,7 @@ the item). A one-line navigational map of the test directory is
 86. **skill-file-size-advisory test** — required when changing `claude/scripts/skill-file-size-advisory.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size_advisory.py`
 87. **`_skill_file_size` shared-module test** — required when changing `claude/scripts/_skill_file_size.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size.py`
 88. **journal-shell-write-guard test** — required when changing `claude/scripts/pre-tool-use-journal-shell-write-guard.py`. Run: `py -3 claude/scripts/tests/test_journal_shell_write_guard.py`
+89. **session-start-sync test** — required when changing `claude/scripts/session-start-sync.py` or `claude/scripts/_worktree_liveness.py`. Run: `py -3 claude/scripts/tests/test_session_start_sync.py` + `py -3 claude/scripts/tests/test_worktree_liveness.py`
 
 ## Observability
 
