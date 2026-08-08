@@ -101,6 +101,7 @@ shard_pr_number_from_path = mod.shard_pr_number_from_path
 classify_deletions = mod.classify_deletions
 safe_for_command = mod.safe_for_command
 cap = mod.cap
+_safe_branch_label = mod._safe_branch_label
 
 URL_386 = "https://github.com/brownm09/dev-env/pull/386"
 URL_387 = "https://github.com/brownm09/dev-env/pull/387"
@@ -500,6 +501,39 @@ def test_cap_bounds_message_lists() -> str:
     return "path lists in the systemMessage are bounded with an honest (+N more) count"
 
 
+def test_safe_for_command_rejects_non_ascii_digits_and_trailing_newline() -> str:
+    """`SAFE_SHARD_PATH_RE` is anchored with `[0-9]+` and `\\Z`, not `\\d+` and `$`: `\\d`
+    also matches non-ASCII digit characters that `int()` (and so `shard_pr_number`) accepts
+    too, and `$` tolerates one trailing newline that `\\Z` does not. (dev-env#958 review)"""
+    assert safe_for_command(["sessions/dev-env/open-prs/123.json"]) is True
+    non_ascii_digit_path = "sessions/dev-env/open-prs/١٢٣.json"  # Arabic-indic 123
+    assert int("١٢٣") == 123, "sanity: Python's int() accepts these as digits"
+    assert safe_for_command([non_ascii_digit_path]) is False, \
+        "a non-ASCII-digit stem must not be treated as command-safe"
+    assert safe_for_command(["sessions/dev-env/open-prs/123.json\n"]) is False, \
+        "a trailing newline must not sneak a path past the check (\\Z, not $)"
+    return "ASCII-digit-only, fully-anchored regex rejects non-ASCII digits and a trailing newline"
+
+
+def test_safe_branch_label_passes_through_safe_names() -> str:
+    for branch in ["draft/2026-08-07", "main", "feat/foo-bar_123"]:
+        assert _safe_branch_label(branch) == branch, branch
+    return "an ordinary branch name is interpolated unchanged"
+
+
+def test_safe_branch_label_rejects_shell_metacharacters() -> str:
+    for bad in ["draft/2026-08-07; rm -rf /", "$(id)", "`id`", "branch with spaces", "a&&b"]:
+        got = _safe_branch_label(bad)
+        assert got != bad, f"unsafe branch name must not pass through unchanged: {bad!r}"
+        assert "UNSAFE-BRANCH-NAME" in got, got
+    return "a branch name with shell metacharacters is replaced with a fixed placeholder"
+
+
+def test_safe_branch_label_none_is_detached() -> str:
+    assert _safe_branch_label(None) == "DETACHED"
+    return "None (detached HEAD, or current_branch() itself failed) renders as DETACHED"
+
+
 # --- REST transport: state case and merged-vs-closed (dev-env#888) -----------
 
 
@@ -753,6 +787,10 @@ def main() -> int:
         ("legacy open-prs.jsonl path costs no probe", test_classify_deletions_legacy_path_costs_no_probe),
         ("ready-to-run command rejects shell metacharacters", test_safe_for_command_rejects_shell_metacharacters),
         ("message path lists are bounded", test_cap_bounds_message_lists),
+        ("safe_for_command rejects non-ASCII digits/trailing newline", test_safe_for_command_rejects_non_ascii_digits_and_trailing_newline),
+        ("_safe_branch_label passes through safe names", test_safe_branch_label_passes_through_safe_names),
+        ("_safe_branch_label rejects shell metacharacters", test_safe_branch_label_rejects_shell_metacharacters),
+        ("_safe_branch_label: None is DETACHED", test_safe_branch_label_none_is_detached),
         ("REST: state upper-cased", test_pr_state_from_row_uppercases_state),
         ("REST: MERGED distinguished from CLOSED", test_pr_state_from_row_distinguishes_merged_from_closed),
         ("REST: merge detected from merged_at alone (list shape)", test_pr_state_from_row_detects_merge_from_merged_at_alone),

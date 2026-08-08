@@ -2554,8 +2554,9 @@ For a one-line navigational map of the test directory, see
     ```
 
 80. **reconcile-pending-tiles test** — required when changing
-    `claude/scripts/reconcile-pending-tiles.py` (dev-env#869 and dev-env#882,
-    [ADR-118](adr/118-tile-persistence-shards.md) + its Amendments 1 and 3). Pins the
+    `claude/scripts/reconcile-pending-tiles.py` (dev-env#869, dev-env#882, dev-env#958,
+    dev-env#950, [ADR-118](adr/118-tile-persistence-shards.md) + its Amendments 1, 3, and
+    5). Pins the
     UserPromptSubmit hook that re-surfaces `spawn_task` tiles whose chips did not survive an
     app restart. Pure offline fixtures — the live `gh` boundary (`fetch_repo_issue_states`)
     is untested per this repo's fixture-only convention, but everything *around* it is:
@@ -2661,6 +2662,75 @@ For a one-line navigational map of the test directory, see
     non-numeric-named / non-object shards are skipped and **never deleted**), race-tolerant
     `rmdir` (a shard written after the unlink survives the cleanup), and that pruning is
     scoped to dirs this run emptied so an unrelated empty `tiles/` is untouched.
+
+    **(5) Orphaned-deletion classification** (dev-env#958, dev-env#950,
+    [ADR-118](adr/118-tile-persistence-shards.md) Amendment 5). A tile shard's `unlink()`
+    above is a raw filesystem delete, never git-committed, so an orphaned deletion can sit
+    uncommitted in the shared canonical indefinitely — the same failure shape
+    [ADR-119](adr/119-day-rollover-draft-branch-and-orphaned-shard-deletions.md) §3 already
+    solved for open-PR shards, mirrored here with two genuinely tile-specific departures.
+    Pinned: the exact-porcelain-code deletion filter (only ` D`/`D ` count; `AD`/`RD`/
+    `DD`/`DU`/`UD` land in the hands-off `other` bucket, never `deleted`), rename handling
+    (keep only the destination path) and backslash normalization; that `classify_tile_deletions`
+    buckets by confirmed state into `closed`/`open`/`unverified`/`skipped` (renamed from the
+    open-PR model's `merged`/`open`/`unverified`/`skipped`, since an issue closes rather than
+    merges); a filename/embedded-`issue` mismatch routes to `unverified` while a *missing*
+    embedded `issue` field does **not** (a deliberate, narrower departure from the open-PR
+    model's stricter check, matching `make_tile`'s existing on-disk tolerance); the probe
+    count/deadline budget reports rather than drops what it could not reach; and — the
+    security-relevant pin with no open-PR analog —
+    `test_classify_tile_deletions_rejects_crafted_host_in_committed_url`, which proves `repo`
+    is derived through the same strict `repo_from_issue_url` the primary loop uses, never a
+    raw URL split, since this path reads `url` from `git show HEAD:<path>` (committed
+    history) rather than a live, already-validated shard field.
+
+    The second departure: state re-confirmation for a deletion candidate is **one
+    `gh api repos/<repo>/issues/<n>` call per candidate**, deliberately never folded into the
+    batched `fetch_repo_issue_states` property (3) above pins. That batch is a
+    recency-windowed view (bounded pages, newest-created-first) — sound for a *pending*
+    tile's issue, which is recent by construction, but not for an orphaned deletion, which by
+    definition already survived at least one uncommitted session: while it sits uncommitted
+    the repo keeps creating issues, and every one created pushes an already-resolved issue
+    one position deeper into that window until it silently falls outside it. A dedicated
+    single-item lookup has no such decay. `check_issue_state` reuses the already-tested
+    `issue_states_from_rows([row])` rather than a second parsing implementation, so it is not
+    independently pinned; its correctness rides entirely on that shared function's own
+    coverage in (4) above.
+
+    `format_deletion_message` gets the same single-pure-formatter treatment `format_message`
+    already has (rather than `reconcile-open-prs.py`'s untested inline-in-`main()` shape):
+    every bucket, the unsafe-path fallback to manual inspection, the OPEN-issue warning with
+    its `git checkout HEAD --` restore hint, the hands-off `other` report, and the
+    mid-merge case are each independently pinned. One property specific to this file's
+    design: mid-merge suppresses only the deletions-bucket text (closed/open/unverified/
+    skipped) — the hands-off `other` report needs no git mutation to be safe, and is asserted
+    to survive mid-merge suppression identically to the normal case, mirroring
+    `reconcile-open-prs.py`'s own `main()`, which reports its `other` bucket unconditionally
+    regardless of merge state.
+
+    A dedicated test documents, as a live assertion rather than a comment, that the primary
+    loop's realistic worst case — `LOOKUP_BUDGET_SECONDS + MAX_ISSUE_PAGES * GH_CALL_TIMEOUT`,
+    not `LOOKUP_BUDGET_SECONDS + GH_CALL_TIMEOUT` alone — already **exceeds**
+    `HOOK_TIMEOUT_SECONDS`, because `lookup_states` only gates the *start* of each repo's
+    fetch, so a repo whose fetch starts just under the budget can still run its own full
+    per-repo worst case on top of what earlier repos already consumed. (An earlier version of
+    this test asserted the opposite — a false exact-equality claim that directly contradicted
+    this same file's pre-existing `test_page_budget_cannot_outrun_the_lookup_budget`; both of
+    `/review`'s independent subagents caught the contradiction, confirmed by direct
+    execution before the fix landed.) Given that there is no fixed slack to safely assume,
+    `deletion_advisory_time_remains` gates the *entire* deletion-advisory pass — not just
+    probing — on actual elapsed time against `HOOK_TIMEOUT_SECONDS`, and is pinned directly
+    at its boundary conditions (comfortably inside the floor, exactly at it, and past it).
+    `partition_known_closed` is pinned separately: a deletion matching this run's own
+    `reconcile_tiles` output is pre-seeded into the `closed` bucket without a probe, and an
+    empty `removed[]` sends every deletion to probing as before. `safe_for_command` gained a
+    test for the tightened `SAFE_TILE_PATH_RE` (`[0-9]+\Z`, not `\d+$`): a non-ASCII digit
+    stem (which Python's `int()` — and so `shard_number` — would otherwise accept) and a
+    trailing newline are both now rejected. `_safe_branch_label` (mirrored in
+    `reconcile-open-prs.py`) is pinned to pass a safe branch name through unchanged, replace
+    an unsafe one (shell metacharacters, spaces) with a fixed placeholder, and render `None`
+    as `DETACHED` — and `format_deletion_message` is pinned to route the branch parameter
+    through it and to single-quote the `git -C` target path.
 
     Two output-contract tests close the [ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md)
     loop, which is the failure mode that would make this whole feature silently inert: one

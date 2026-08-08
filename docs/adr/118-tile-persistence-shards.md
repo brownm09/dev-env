@@ -2,7 +2,7 @@
 
 Date: 2026-07-22
 Status: Accepted
-Tags: tiles, spawn-task, persistence, shards, journal, hooks, UserPromptSubmit, crash-recovery, mcp, foreground-ui, claude-facing, adr-046, adr-053, adr-056, adr-057, adr-094, adr-098
+Tags: tiles, spawn-task, persistence, shards, journal, hooks, UserPromptSubmit, crash-recovery, mcp, foreground-ui, claude-facing, adr-046, adr-053, adr-056, adr-057, adr-094, adr-098, deletion-advisory, git-status, adr-119
 
 ## Context
 
@@ -353,3 +353,144 @@ not degrade the payload, it voids it: the re-spawn either fails outright or sile
 somewhere else. Nothing downstream would ever have reported this — `reconcile-pending-tiles.py`
 reads `url` and the filename, never `cwd`, and no compose-time gate reads tile shards at all —
 which is why the validation half of the fix had to live in the write-time hook.
+
+---
+
+## Amendment 5 (2026-08-07, dev-env#958, dev-env#950) — orphaned shard deletions are surfaced and committed, mirroring ADR-119
+
+**Closes:** [dev-env#958](https://github.com/brownm09/dev-env/issues/958),
+[dev-env#950](https://github.com/brownm09/dev-env/issues/950)
+
+**The gap.** The Decision section above says the reader "`unlink`s shards whose issue is
+`CLOSED`" — a raw filesystem delete, never a git operation. Nothing before this amendment ever
+committed that deletion. Verified live on 2026-08-07: three career-playbook tile shards
+(`#1164`, `#1165`, `#1185`) sat as unstaged ` D` deletions in the shared engineering-journal
+canonical, all paired issues independently confirmed `CLOSED`, one of them still uncommitted
+roughly fifteen hours after its issue closed. The identical problem was already solved for a
+*different* shard type — open-PR shards — by [ADR-119](119-day-rollover-draft-branch-and-orphaned-shard-deletions.md)
+§3, whose reasoning transfers unchanged: every later session re-triages the same dirty paths, the
+deletion is one `git restore` away from resurrecting a finished tile, and the committed branch
+keeps listing the tile as pending until a compose reconciles it — which is exactly what inflated
+the session-start "pending tiles" count this reader emits (84 pending, with a footnote that 14
+could not be resolved, on the day this gap was found).
+
+The gap was not just missing code; it was a genuinely ambiguous rule. dev-env#950, open since
+2026-08-06, records two concurrent sessions reading `claude/CLAUDE.md`'s open-PR-shard commit
+exemption on the *same day* and reaching *opposite* conclusions about whether it covered tile
+shards — one left a set of tile-shard deletions alone as "not mine", the other independently
+verified closure via `gh issue view` and committed them, both defensible readings of text that
+only ever discussed open-PR shards. This amendment removes the ambiguity by extending the rule
+explicitly, in `claude/CLAUDE.md`, rather than leaving each session to re-derive it.
+
+**The decision.** `reconcile-pending-tiles.py` gains the identical four-bucket classification
+model ADR-119 §3 already defined for open-PR shards: a `git status --porcelain -- sessions` scan
+splits dirty tile paths into `deleted` (exact ` D`/`D ` porcelain codes only, never a
+`"D" in status` substring test — that also matches `AD`/`RD`/`DD`/`DU`/`UD`, which are a
+concurrent session's staged shard or a merge conflict, not post-closure bookkeeping) and `other`
+(hands-off, a concurrent session's in-flight shard); each deletion's committed identity is
+recovered via `git show HEAD:<path>` (the file is gone from the working tree) and its issue
+re-confirmed live; the whole pass is suppressed while the canonical is mid-merge, where a partial
+`git commit` cannot run and `git add` would silently resolve a conflict; and the hook never
+commits — it is an advisory `UserPromptSubmit` hook that must fail open, it runs in a checkout
+whose git index every concurrent session shares, and it would be committing onto whatever branch
+the canonical happens to hold. None of that rationale is re-derived here; see ADR-119 §3 for the
+full argument.
+
+Two points are genuinely tile-specific, not a mechanical restatement of ADR-119:
+
+1. **Bucket rename: `merged` -> `closed`.** An issue does not merge; it closes. This mirrors
+   `should_remove_tile`'s own departure from `should_remove` (drop `MERGED`, since issues never
+   have it).
+2. **State re-confirmation is one `gh api repos/<repo>/issues/<n>` call per deletion candidate —
+   deliberately never folded into the batched `fetch_repo_issue_states` the primary loop above
+   uses.** That batch is a *recency-windowed* view: at most `MAX_ISSUE_PAGES` pages of
+   `ISSUE_PAGE_SIZE` issues, sorted newest-created-first, stopping early once every wanted number
+   resolves or the walk crosses the lowest wanted number. That design is sound for the primary
+   loop because a *pending* tile's issue is recent by construction (Amendment 3's own reasoning).
+   An *orphaned deletion* has no such guarantee: by definition it already survived at least one
+   session without its commit landing, and while it sits uncommitted the repo keeps creating new
+   issues — every one created pushes an already-resolved issue one position deeper into that
+   window. Measured live at authoring time: career-playbook's issue numbers advanced from `#1164`
+   to `#1185` in about fifteen hours, the same window one of the live orphaned deletions had
+   already been sitting uncommitted. A deletion candidate resolvable via the batch at the moment
+   of its original unlink can therefore silently fall outside it by the time this pass
+   re-confirms it — resolving to `unverified` forever for exactly the oldest, most-needing-cleanup
+   orphans, the identical trap `check_pr_state`'s docstring already names as the reason
+   `reconcile-open-prs.py`'s own primary loop is per-item rather than batched. A dedicated
+   single-item lookup has no such decay; its cost is bounded by `MAX_TILE_DELETION_PROBES` (10)
+   regardless, and the live count on the day this was found was 3.
+
+A third, smaller departure from `classify_deletions`: a shard's embedded `issue` field that is
+simply **absent** is not treated as a mismatch, only one that is *present and disagreeing* with
+the filename is. This matches `make_tile`'s own existing tolerance for on-disk shards (trust the
+filename when nothing contradicts it) — the open-PR model's stricter no-`isinstance`-guard check
+would otherwise treat every shard written before this amendment as unverified for no reason.
+
+**Accepted budget tightness, not silently absorbed — corrected during `/review` (2026-08-08).**
+The primary loop's own worst case is **not** `LOOKUP_BUDGET_SECONDS(20) + GH_CALL_TIMEOUT(10)`, and
+an earlier draft of this amendment (and of the test that pinned it) asserted that equality against
+`HOOK_TIMEOUT_SECONDS(30)` incorrectly. `lookup_states` only gates the **start** of each repo's
+fetch against the budget (gate-the-start, not preempt-in-flight) — it does not re-check elapsed
+time once a fetch is already running — so a repo whose fetch starts a moment before the budget
+expires can still run its own full `MAX_ISSUE_PAGES * GH_CALL_TIMEOUT` (20s) to completion on top
+of whatever earlier repos already consumed. The realistic worst case is therefore
+`LOOKUP_BUDGET_SECONDS + MAX_ISSUE_PAGES * GH_CALL_TIMEOUT` (40s), which already **exceeds**
+`HOOK_TIMEOUT_SECONDS` (30s) on its own, before this amendment's code ever runs — a pre-existing
+condition this amendment did not introduce, only mis-stated in its first draft.
+`/review`'s two independent subagents both caught the contradiction against this same test file's
+pre-existing `test_page_budget_cannot_outrun_the_lookup_budget` (whose own worst-case definition is
+`MAX_ISSUE_PAGES * GH_CALL_TIMEOUT`, not `+ GH_CALL_TIMEOUT` alone), which was verified directly
+before the fix landed.
+
+Given that, there is no fixed, positive slack the deletion-advisory pass can ever safely assume
+exists to "borrow" from — the non-additive design in the first draft was solving for a slack that
+was never actually there. The corrected design instead reacts to **actual elapsed time**:
+`deletion_advisory_time_remains(elapsed_since_lookup)` gates the *entire* deletion-advisory pass
+(not just probing) on whether at least `DELETION_ADVISORY_MIN_REMAINING_SECONDS` (10s — two
+`GIT_CALL_TIMEOUT` calls' worth: the `git status` scan, plus `git branch --show-current` if there
+is a closed bucket to recommend committing) plausibly remains against `HOOK_TIMEOUT_SECONDS`, given
+how long the primary lookup already took. Below that floor, the whole pass — including the cheap
+`git status` scan — is skipped rather than starting git plumbing with nowhere left to finish; only
+the already-built primary pending-tile message is emitted. Once inside the pass, per-item probing
+still carries its own local `TILE_PROBE_DEADLINE_SECONDS` (5.0s) deadline, now independent of
+`LOOKUP_BUDGET_SECONDS` (a primary-loop-only constant that bears no fixed relationship to how much
+of `HOOK_TIMEOUT_SECONDS` is actually left by the time probing starts). A non-blocking follow-up
+still tracks widening `LOOKUP_BUDGET_SECONDS`/`GH_CALL_TIMEOUT` for real headroom in the primary
+loop itself, which remains a larger, separately-reviewable change to already-shipped, tested
+constants and out of scope here.
+
+**Additional hardening from the same `/review` pass.** Three more findings from the two
+subagents were folded into this amendment rather than filed separately, since each was a small,
+mechanical, well-understood fix to code this amendment itself introduced:
+
+- **Pre-seeding this session's own unlinks.** `partition_known_closed` splits a run's dirty
+  deletions into ones `reconcile_tiles` already confirmed `CLOSED` moments earlier in the very
+  same process (the common case: an issue closes, the primary loop unlinks its shard, and the
+  same run's `git status` scan then finds it dirty) and genuine cross-session orphans that still
+  need a live probe — the former are pre-seeded into the `closed` bucket directly, so probe budget
+  goes only to shards this session does not already know the answer for.
+- **Exception-safety around the probing call and the final message assembly.** The original draft
+  wrapped the probing call in a bare `except Exception: pass`, which on failure left `deletions`
+  entirely empty — silently dropping every detected deletion from the report rather than
+  surfacing them as `unverified`. It also left `current_branch`/`format_deletion_message` unguarded
+  after the probing block, risking the already-built primary pending-tile `message` if either
+  raised (since `emit_advisory` can only be called once). Both are now caught explicitly: a
+  probing failure routes the not-yet-classified paths to `unverified`, and the branch-lookup /
+  formatting step has its own `try`/`except` defaulting to an empty deletion-advisory section.
+- **Regex tightening and prose-injection guards.** `SAFE_TILE_PATH_RE` (and its
+  `reconcile-open-prs.py` sibling, `SAFE_SHARD_PATH_RE`) used `\d+` and a bare `$` anchor; `\d`
+  also matches non-ASCII digit characters that Python's `int()` — and so `shard_number` — accepts,
+  and `$` tolerates one trailing newline. Both now use `[0-9]+` and `\Z`. Separately, the ready-
+  to-run advisory command interpolated the live `git branch --show-current` output and the fixed
+  `JOURNAL_REPO` path directly into prose; a new `_safe_branch_label` helper (mirrored in both
+  files) replaces an unsafe branch name with a fixed placeholder before interpolation, and the
+  `git -C` target path is now single-quoted.
+
+**The CLAUDE.md rule.** A new bullet in `claude/CLAUDE.md`'s Engineering Journal → Stub file
+workflow section, immediately after the open-PR shard exemption, states plainly that the
+exemption **does** extend to tile shards and why — resolving dev-env#950's ambiguity by making the
+scope explicit rather than leaving it to be re-derived per session.
+
+**References:** dev-env#958, dev-env#950, [ADR-119](119-day-rollover-draft-branch-and-orphaned-shard-deletions.md)
+§3 (the classification model reused unchanged), [ADR-056](056-per-session-sharding-journal-companion-files.md)
+(the disjoint-per-file guarantee this reuses, one artifact type over).
