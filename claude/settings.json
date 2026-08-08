@@ -496,7 +496,7 @@
       }
     ]
   },
-  "effortLevel": "medium",
+  "effortLevel": "max",
   "tui": "fullscreen",
   "theme": "dark",
   "agentPushNotifEnabled": true,

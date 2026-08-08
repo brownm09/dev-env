@@ -716,7 +716,7 @@ The active defaults in `claude/settings.json`:
 |-----|-------|--------|
 | `model` | `claude-sonnet-4-6` | Default model for all session phases. See [ADR-025](adr/025-default-plan-mode.md). |
 | `permissions.defaultMode` | `plan` | **Fresh local CLI sessions** start in plan mode — no edits until the user approves a plan; override per-session with Shift+Tab. **This does not apply to Desktop/web-app or spawn-task / SDK-launched sessions:** the platform starts those in `bypassPermissions` with a startup flag that overrides `defaultMode` *by design*, so they begin off-plan regardless of this setting — `settings.json` has no lever over it, and restarting does not change it. This is expected, not a broken hook; the `session-mode-prompt` hook and `session-mode-report.py` (above) audit it. To start such a session in plan, Shift+Tab at the first prompt. See [ADR-025](adr/025-default-plan-mode.md). |
-| `effortLevel` | `medium` | Applies to all model tiers. Increase to `high` or `xhigh` for intelligence-sensitive sessions (e.g., full cover letter workflow). |
+| `effortLevel` | `max` | Applies to all model tiers. Lower to `low`/`medium`/`high`/`xhigh` per-session for lighter-weight tasks. |
 | `agentPushNotifEnabled` | `true` | Fires a push notification when an agent session completes. |
 | `inputNeededNotifEnabled` | `true` | Fires a push notification when an agent session is blocked waiting on user input (e.g., a permission prompt or a question). |
 
