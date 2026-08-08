@@ -216,21 +216,28 @@ def _create_shard_step(output: str) -> str:
 
     When *output* contains the PR URL printed by gh pr create, includes the
     parsed PR number and URL so the session doesn't have to look them up.
+
+    Instructs the Write tool, never a shell echo/redirect: ADR-129
+    (pre-tool-use-journal-shell-write-guard.py) mechanically blocks a
+    shell-based write to this exact path shape, and an echo'd instruction
+    here would tell Claude to do the very thing that hook exists to stop.
     """
     pr_url_match = re.search(r"https://github\.com/\S+/pull/(\d+)", output)
     if pr_url_match:
         pr_url = pr_url_match.group(0)
         pr_number = pr_url_match.group(1)
         return (
-            f"\n  3a. Write the open-PR shard for PR #{pr_number}:\n"
-            f'       echo \'{{"pr":{pr_number},"url":"{pr_url}",'
+            f"\n  3a. Write the open-PR shard with the Write tool (never echo/a redirect --"
+            f" ADR-129) for PR #{pr_number}:\n"
+            f"       Path: sessions/<project>/open-prs/{pr_number}.json\n"
+            f'       Content: {{"pr":{pr_number},"url":"{pr_url}",'
             '"topic":"<H2 heading from stub>","stub":"YYYY-MM-DD_HHMMSS.stub.md",'
-            '"opened":"YYYY-MM-DD"}\''
-            f"\n         > sessions/<project>/open-prs/{pr_number}.json\n"
-            "  3b. Stage it alongside the stub: git add sessions/<project>/open-prs/"
+            '"opened":"YYYY-MM-DD"}'
+            "\n  3b. Stage it alongside the stub: git add sessions/<project>/open-prs/"
         )
     return (
-        "\n  3a. Write the open-PR shard: sessions/<project>/open-prs/<N>.json\n"
+        "\n  3a. Write the open-PR shard with the Write tool (never echo/a redirect --"
+        " ADR-129): sessions/<project>/open-prs/<N>.json\n"
         "       Fields: pr (int), url, topic (H2 from stub), stub (filename),"
         " opened (YYYY-MM-DD)\n"
         "  3b. Stage it alongside the stub: git add sessions/<project>/open-prs/"
