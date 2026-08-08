@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 76 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 88 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 77 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 89 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -88,6 +88,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_journal_draft_worktree_guard.py` | `pre-tool-use-journal-draft-worktree-guard.py` | Blocks isolating the `draft/YYYY-MM-DD` stub workflow into its own worktree — it must stay on the shared canonical. |
 | `test_journal_onboard_check.py` | `journal-onboard-check.py` | One-time per-session onboarding nudge for a project with no journal home yet. |
 | `test_journal_shard_write_advisory.py` | `journal-shard-write-advisory.py` | Write-time PostToolUse validation of manifest/open-PR/tile shards against the schema (BOMs, missing fields, filename-vs-embedded-number mismatches, tile `cwd` path shape) as they're written. |
+| `test_journal_shell_write_guard.py` | `pre-tool-use-journal-shell-write-guard.py` | Blocks a shell-based content-write (redirect/heredoc/PowerShell write cmdlet) targeting a stub/manifest/open-PR/tile path shape — pins the heredoc-declaration-line masking fix as the critical regression case. |
 | `test_journal_stop_check.py` | `journal-stop-check.py` | Stop-hook archive reminder plus stale-draft/unmerged-branch advisories at session end. |
 | `test_new_day_journal_check.py` | `new-day-journal-check.py` | Day-rollover detection: the canonical resting on a draft branch dated other than today, and stubs dated *after* their branch. |
 | `test_post_compact.py` | `post-compact.py` | Reads and unions open-PR shards + legacy `open-prs.jsonl` at PostCompact time. |

@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **86 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **87 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -60,13 +60,13 @@ the one place all 15 are listed together. Each has its own test file in
 
 ## Wired hooks & their domain utilities
 
-The 42 scripts Claude Code invokes automatically via `claude/settings.json`, grouped with the
+The 43 scripts Claude Code invokes automatically via `claude/settings.json`, grouped with the
 utility scripts that serve the same workflow area — mirroring
 [`tests/README.md`](tests/README.md)'s domain grouping so the two indexes read the same way.
 **Event** names the hook registration(s) from `settings.json`; utility scripts show their
 invocation instead.
 
-### Engineering journal & stub workflow (20)
+### Engineering journal & stub workflow (21)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -81,6 +81,7 @@ invocation instead.
 | `stop-journal-stub-checkpoint.py` | Stop | Blocks the stop when a report/analysis/verification session did substantive work but leaves no journal stub, no PR, and isn't a `/review` session. |
 | `pre-tool-use-journal-compose-force-guard.py` | PreToolUse (Bash) | Mechanically blocks a same-day `/journal-compose` git operation unless a fresh `--force` marker already exists. |
 | `pre-tool-use-journal-draft-worktree-guard.py` | PreToolUse (Bash) | Blocks isolating the shared `draft/YYYY-MM-DD` branch into its own worktree anywhere except the engineering-journal canonical. |
+| `pre-tool-use-journal-shell-write-guard.py` | PreToolUse (Bash/PowerShell) | Blocks a shell-based content-write (redirect, heredoc, or a PowerShell write cmdlet) targeting a stub/manifest/open-PR/tile path shape — use the Write/Edit tool instead. |
 | `post-compact.py` | PostCompact | Emits the compaction status line; on manual `/compact`, also reminds Claude to `/review` each open PR from the project's open-PR records, and lists any pending tile shards (read-only — never prunes). |
 | `check-journal-compose-liveness.py` | `git status --porcelain \| py -3 check-journal-compose-liveness.py YYYY-MM-DD` | Detects an in-flight session still writing stubs for the date `/journal-compose` is about to merge. |
 | `journal-compose-force-resolve.py` | `py -3 journal-compose-force-resolve.py "$ARGUMENTS"` (first Bash action of `/journal-compose` Step 0.6) | Mechanically resolves `--force` from the literal, harness-substituted invocation text and records it to today's marker file. |
