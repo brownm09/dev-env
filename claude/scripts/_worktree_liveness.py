@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Detect whether a git worktree has a live Claude Code session.
+"""Detect whether a git worktree (or, for a third caller, a canonical checkout) has a live
+Claude Code session.
 
 Claude Code writes each session's transcript to
 
@@ -21,10 +22,26 @@ An out-of-process routine (it runs in its own worktree) cannot see another workt
 session via ``os.getcwd()`` / ``--protect-cwd``; the transcript mtime is the only signal
 that crosses that boundary. See ADR-051.
 
+**Third caller, different fail direction (dev-env#966 / ADR-130).**
+``session-start-sync.py`` calls ``worktree_session_is_live()`` too, but *in-process* (as
+one of the sessions that could match) and against a **canonical repo root**, not
+necessarily a worktree path — this is why ``exclude_session_id`` exists (see
+``newest_jsonl_mtime``'s docstring). The fail direction this function documents as "safe"
+is caller-dependent: for prune/reclaim, ``False`` (not live) means "go ahead and clean up,"
+so a missing/unmatched transcript dir erring toward ``False`` only risks under-protecting an
+idle worktree — the existing behavior. For ``session-start-sync.py``, ``False`` means "no
+other session — go ahead and auto-mutate a shared canonical checkout," the opposite
+polarity; a canonical's basename can never satisfy ``transcript_dirs_for``'s suffix-fallback
+match (``-worktrees-<basename>``), so an absent exact-slug dir there returns ``False`` with
+no signal that the check was actually inconclusive rather than genuinely negative. Callers
+in this in-process, gate-not-skip position should treat that ambiguity as a known limitation,
+not as confirmation.
+
 This module is import-only (no ``_winsubp``, no subprocess, no ``main()``) so its helpers
 unit-test offline. It is **policy-free** — each caller passes its own window constant
 (removal severs the session ⇒ a long window; stripping ``node_modules`` is self-healing
-⇒ a short window that keeps disk reclamation aggressive).
+⇒ a short window that keeps disk reclamation aggressive; ``session-start-sync.py`` uses a
+much shorter window still — see its own module docstring).
 """
 import os
 import time
@@ -116,17 +133,26 @@ def newest_jsonl_mtime(
     ``.jsonl``.
 
     ``exclude_session_id``, when given, skips any ``*.jsonl`` whose filename stem (the session
-    UUID -- see the module docstring's transcript-path convention) equals it. Lets a caller
-    running *as* one of the sessions that would otherwise match (e.g. a hook asking "is some
-    OTHER session live in my own checkout") exclude its own transcript instead of always
-    reading itself as live (dev-env#966 / ADR-130). The existing callers
-    (prune-merged-worktrees.py, reclaim-worktree-disk.py) run out-of-process, so this gap never
-    mattered to them; the default ``None`` preserves their behavior exactly.
+    UUID -- see the module docstring's transcript-path convention) equals it, OR that lives
+    under a directory component named exactly ``exclude_session_id`` (a subagent transcript,
+    ``<session-uuid>/subagents/<subagent-uuid>.jsonl`` -- its own stem is the *subagent's* id,
+    never the session id, so a stem-only match misses it even though the recursive ``rglob``
+    above exists specifically to find it; a session's own subagent activity must exclude the
+    same as the session's own top-level transcript, or a hook re-firing mid-session after
+    spawning a subagent would read its own subagent as a foreign concurrent session --
+    dev-env#966 review finding). Lets a caller running *as* one of the sessions that would
+    otherwise match (e.g. a hook asking "is some OTHER session live in my own checkout")
+    exclude its own transcript (and its own subagents') instead of always reading itself as
+    live (dev-env#966 / ADR-130). The existing callers (prune-merged-worktrees.py,
+    reclaim-worktree-disk.py) run out-of-process, so this gap never mattered to them; the
+    default ``None`` preserves their behavior exactly.
     """
     newest: "float | None" = None
     try:
         for p in Path(transcript_dir).rglob("*.jsonl"):
-            if exclude_session_id is not None and p.stem == exclude_session_id:
+            if exclude_session_id is not None and (
+                p.stem == exclude_session_id or exclude_session_id in p.parts
+            ):
                 continue
             try:
                 m = p.stat().st_mtime

@@ -194,6 +194,29 @@ def test_newest_jsonl_mtime_excludes_matching_session_id() -> str:
     return "the excluded session_id's .jsonl is skipped even when it is the newest"
 
 
+def test_newest_jsonl_mtime_excludes_nested_subagent_transcript() -> str:
+    # dev-env#966 review finding: a subagent transcript's own filename stem is the
+    # SUBAGENT's uuid, never the session id -- a stem-only exclusion filter misses it even
+    # though the recursive rglob exists specifically to find nested subagent activity.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        session_id = "66666666-6666-6666-6666-666666666666"
+        subagent = d / session_id / "subagents" / "77777777-7777-7777-7777-777777777777.jsonl"
+        subagent.parent.mkdir(parents=True)
+        subagent.write_text("{}")
+        os.utime(subagent, (9_000.0, 9_000.0))  # newest, but must still be excluded
+        other = d / "88888888-8888-8888-8888-888888888888.jsonl"
+        other.write_text("{}")
+        os.utime(other, (5_000.0, 5_000.0))
+        got = wl.newest_jsonl_mtime(d, exclude_session_id=session_id)
+        if got != 5_000.0:
+            raise AssertionError(
+                f"expected 5000.0 (the non-excluded file); nested subagent transcript under "
+                f"the excluded session's own directory must also be excluded, got {got}"
+            )
+    return "a nested <session-id>/subagents/*.jsonl is excluded too, not just a top-level stem match"
+
+
 def test_newest_jsonl_mtime_exclude_none_preserves_behavior() -> str:
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -346,6 +369,7 @@ def main() -> int:
         ("newest_jsonl_mtime recurses + ignores non-jsonl", test_newest_jsonl_mtime_recurses_and_ignores_nonjsonl),
         ("newest_jsonl_mtime empty -> None", test_newest_jsonl_mtime_empty_returns_none),
         ("newest_jsonl_mtime excludes matching session_id", test_newest_jsonl_mtime_excludes_matching_session_id),
+        ("newest_jsonl_mtime excludes nested subagent transcript", test_newest_jsonl_mtime_excludes_nested_subagent_transcript),
         ("newest_jsonl_mtime exclude=None preserves behavior", test_newest_jsonl_mtime_exclude_none_preserves_behavior),
         ("session live when recent", test_session_is_live_when_recent),
         ("session stale outside window", test_session_is_stale_outside_window),
