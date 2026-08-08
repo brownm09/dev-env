@@ -2706,13 +2706,31 @@ For a one-line navigational map of the test directory, see
     skipped) — the hands-off `other` report needs no git mutation to be safe, and is asserted
     to survive mid-merge suppression identically to the normal case, mirroring
     `reconcile-open-prs.py`'s own `main()`, which reports its `other` bucket unconditionally
-    regardless of merge state. A dedicated test also documents, as a live assertion rather
-    than a comment, that `LOOKUP_BUDGET_SECONDS + GH_CALL_TIMEOUT` already equals
-    `HOOK_TIMEOUT_SECONDS` exactly for the pre-existing primary loop alone — zero pre-existing
-    slack — which is why the deletion-probe deadline in `main()` is deliberately
-    **non-additive** (it borrows from that budget rather than extending it) rather than
-    copying `reconcile-open-prs.py`'s pattern of adding a fresh deadline on top of a budget
-    that carries real reserve.
+    regardless of merge state.
+
+    A dedicated test documents, as a live assertion rather than a comment, that the primary
+    loop's realistic worst case — `LOOKUP_BUDGET_SECONDS + MAX_ISSUE_PAGES * GH_CALL_TIMEOUT`,
+    not `LOOKUP_BUDGET_SECONDS + GH_CALL_TIMEOUT` alone — already **exceeds**
+    `HOOK_TIMEOUT_SECONDS`, because `lookup_states` only gates the *start* of each repo's
+    fetch, so a repo whose fetch starts just under the budget can still run its own full
+    per-repo worst case on top of what earlier repos already consumed. (An earlier version of
+    this test asserted the opposite — a false exact-equality claim that directly contradicted
+    this same file's pre-existing `test_page_budget_cannot_outrun_the_lookup_budget`; both of
+    `/review`'s independent subagents caught the contradiction, confirmed by direct
+    execution before the fix landed.) Given that there is no fixed slack to safely assume,
+    `deletion_advisory_time_remains` gates the *entire* deletion-advisory pass — not just
+    probing — on actual elapsed time against `HOOK_TIMEOUT_SECONDS`, and is pinned directly
+    at its boundary conditions (comfortably inside the floor, exactly at it, and past it).
+    `partition_known_closed` is pinned separately: a deletion matching this run's own
+    `reconcile_tiles` output is pre-seeded into the `closed` bucket without a probe, and an
+    empty `removed[]` sends every deletion to probing as before. `safe_for_command` gained a
+    test for the tightened `SAFE_TILE_PATH_RE` (`[0-9]+\Z`, not `\d+$`): a non-ASCII digit
+    stem (which Python's `int()` — and so `shard_number` — would otherwise accept) and a
+    trailing newline are both now rejected. `_safe_branch_label` (mirrored in
+    `reconcile-open-prs.py`) is pinned to pass a safe branch name through unchanged, replace
+    an unsafe one (shell metacharacters, spaces) with a fixed placeholder, and render `None`
+    as `DETACHED` — and `format_deletion_message` is pinned to route the branch parameter
+    through it and to single-quote the `git -C` target path.
 
     Two output-contract tests close the [ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md)
     loop, which is the failure mode that would make this whole feature silently inert: one

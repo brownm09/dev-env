@@ -91,6 +91,26 @@ resolvable via the batch at the moment of its original unlink can silently fall 
 it by the time this pass re-confirms it — resolving to "unverified" forever for exactly
 the oldest, most-needing-cleanup orphans. See `check_issue_state`.
 
+**This session's own fresh unlinks are pre-seeded as closed, never re-probed**
+(`partition_known_closed`). `reconcile_tiles` above already confirmed CLOSED for every
+tile it just unlinked, so re-deriving that over `git show` + `gh api` would waste probe
+budget the genuine cross-session orphans need — and since a session's own unlinks are the
+common case (an issue closes, the primary loop unlinks it, and the very same run then
+finds it in `git status`), skipping the redundant work matters in practice, not just in
+theory.
+
+**The whole deletion-advisory pass is skipped once too little of `HOOK_TIMEOUT_SECONDS`
+plausibly remains** (`deletion_advisory_time_remains`), rather than assuming any fixed
+amount of slack. The primary loop's own real worst case is *not* `LOOKUP_BUDGET_SECONDS +
+GH_CALL_TIMEOUT`: `fetch_repo_issue_states` carries no deadline of its own once a repo's
+fetch has started (`lookup_states` gates only between repos), so one repo already past the
+gate can run for the full `MAX_ISSUE_PAGES * GH_CALL_TIMEOUT` — which already exceeds
+`HOOK_TIMEOUT_SECONDS` on its own (an earlier draft of this paragraph, and of the test
+that pinned it, used the wrong term here and asserted a "zero slack" equality that
+disagreed with `test_page_budget_cannot_outrun_the_lookup_budget` in the same test file;
+/review caught the contradiction). There is no fixed budget left to "borrow" from safely,
+so this pass reacts to actual elapsed time instead of assuming a number.
+
 Always exits 0 — never blocks.
 
 Stdout: one JSON line whose `additionalContext` carries the pending-tile index, any
@@ -168,15 +188,18 @@ _GITHUB_HOST = "github.com"
 
 # A staged (`D `) or unstaged (` D`) delete, and nothing else. Exact-match set, never a
 # `"D" in status` substring test: the two-char porcelain field puts a `D` in codes that are
-# NOT post-closure bookkeeping — `AD`/`RD` (a concurrent session's *staged* shard) and the
-# unmerged `DD`/`DU`/`UD`, where a recommended `git add` would silently resolve a conflict.
-# Mirrors `reconcile-open-prs.py`'s `DELETED_STATUS_CODES` (dev-env#873).
+# NOT post-closure bookkeeping — `AD`/`RD`/`MD`/`CD`/`TD` (a concurrent session's own staged
+# or modified shard) and the unmerged `DD`/`DU`/`UD`, where a recommended `git add` would
+# silently resolve a conflict. Mirrors `reconcile-open-prs.py`'s `DELETED_STATUS_CODES`
+# (dev-env#873).
 DELETED_STATUS_CODES = frozenset({" D", "D "})
 
-# A shard path safe to interpolate into a ready-to-run shell command — anchored, and
-# deliberately narrower than the shape check used for reporting. Mirrors
-# `reconcile-open-prs.py`'s `SAFE_SHARD_PATH_RE`.
-SAFE_TILE_PATH_RE = re.compile(r"^sessions/[A-Za-z0-9._-]+/tiles/\d+\.json$")
+# A shard path safe to interpolate into a ready-to-run shell command — anchored at both ends
+# (`\Z`, not `$`, so a trailing newline cannot sneak a path past the check) and ASCII-digit-
+# only (`[0-9]+`, not `\d`, which also accepts non-ASCII digit characters that `int()` — and
+# so `shard_number` — would parse too). Deliberately narrower than the shape check used for
+# reporting. Mirrors `reconcile-open-prs.py`'s `SAFE_SHARD_PATH_RE`.
+SAFE_TILE_PATH_RE = re.compile(r"^sessions/[A-Za-z0-9._-]+/tiles/[0-9]+\.json\Z")
 
 # Probing is bounded by BOTH a wall clock and a count, because the count alone cannot bound
 # latency. The deadline is the real guard; the count is a secondary runaway backstop.
@@ -185,18 +208,42 @@ MAX_TILE_DELETION_PROBES = 10
 TILE_PROBE_DEADLINE_SECONDS = 5.0
 
 # Local git plumbing only (show / status / branch / rev-parse) — measured at ~0.07s on
-# `reconcile-open-prs.py`'s identical calls, hence the small timeout. `HOOK_TIMEOUT_SECONDS`
-# names what was previously only a `claude/settings.json` comment; it earns a constant here
-# because the deletion-probe deadline is deliberately NON-additive to `LOOKUP_BUDGET_SECONDS`
-# (see `main()`) rather than stacked on top of it: `LOOKUP_BUDGET_SECONDS(20) +
-# GH_CALL_TIMEOUT(10)` already equals `HOOK_TIMEOUT_SECONDS(30)` exactly, with zero
-# pre-existing slack, because the budget is checked before each page fetch *starts*
-# (gate-the-start, not preempt-in-flight) — a fetch already running when the budget expires
-# still completes on its own `GH_CALL_TIMEOUT` ceiling. Adding a probe phase on top of that
-# would risk the hook's own settings.json timeout, so the probe deadline borrows from the
-# existing budget instead of extending it.
+# `reconcile-open-prs.py`'s identical calls, hence the small timeout.
 GIT_CALL_TIMEOUT = 5
+
+# Single-issue REST GET (`repos/<repo>/issues/<n>`), for the deletion-probe path only —
+# kept distinct from, and tighter than, the batched lookup's per-PAGE `GH_CALL_TIMEOUT`
+# below. A single-object GET is a much lighter call than a paged list, so there is no reason
+# to grant it the same allowance, and a smaller timeout bounds each probe's own worst case
+# tighter.
+GH_ITEM_CALL_TIMEOUT = 5
+
+# `HOOK_TIMEOUT_SECONDS` names what was previously only a `claude/settings.json` comment.
+# The primary lookup loop's OWN worst case is NOT `LOOKUP_BUDGET_SECONDS + GH_CALL_TIMEOUT`:
+# `lookup_states` only gates the *start* of each repo's fetch against the budget
+# (gate-the-start, not preempt-in-flight), so a repo whose fetch starts a moment before the
+# budget expires can still run its own full `MAX_ISSUE_PAGES * GH_CALL_TIMEOUT` (20s) to
+# completion — pushing the realistic worst case to `LOOKUP_BUDGET_SECONDS + MAX_ISSUE_PAGES *
+# GH_CALL_TIMEOUT` (40s), which already exceeds `HOOK_TIMEOUT_SECONDS` (30s) on its own, with
+# the process's own external timeout the only thing that ultimately stops it (see
+# `test_page_budget_cannot_outrun_the_lookup_budget`). There is therefore no fixed,
+# pre-existing slack the deletion-advisory pass below can safely assume and "borrow" from —
+# it instead reacts to how much of HOOK_TIMEOUT_SECONDS actually remains once the primary
+# loop returns (`deletion_advisory_time_remains`), rather than adding a fixed deadline on top
+# of an assumed budget. (An earlier draft of this comment, and of the test that pinned it,
+# asserted the wrong equality here; /review caught the contradiction against
+# `test_page_budget_cannot_outrun_the_lookup_budget` in the same test file.)
 HOOK_TIMEOUT_SECONDS = 30  # mirrors this hook's `timeout` in claude/settings.json
+
+# Minimum slack against HOOK_TIMEOUT_SECONDS required before the deletion-advisory pass is
+# even attempted, once the primary lookup above has already run. Covers the pass's fixed
+# git-plumbing overhead — one `git status` scan, always, plus one `git branch
+# --show-current`, only when there is a closed bucket to recommend committing — at
+# GIT_CALL_TIMEOUT each. Deliberately excludes per-item probe cost (git show + gh api),
+# which is bounded separately and locally once probing is under way (see `main()`'s
+# `deadline_fn`). Below this floor, skip the whole pass rather than start git plumbing that
+# has nowhere left to finish.
+DELETION_ADVISORY_MIN_REMAINING_SECONDS = 2 * GIT_CALL_TIMEOUT
 
 
 def already_ran(session_id: str) -> bool:
@@ -717,6 +764,75 @@ def cap(paths: list[str], limit: int = 5) -> str:
     return shown + (f" (+{len(paths) - limit} more)" if len(paths) > limit else "")
 
 
+def deletion_advisory_time_remains(
+    elapsed_since_lookup: float,
+    hook_timeout: float = HOOK_TIMEOUT_SECONDS,
+    min_remaining: float = DELETION_ADVISORY_MIN_REMAINING_SECONDS,
+) -> bool:
+    """True when enough of `hook_timeout` plausibly remains, given `elapsed_since_lookup`
+    seconds already spent in the primary lookup loop, to attempt the deletion-advisory pass
+    at all.
+
+    Reacts to actual elapsed time rather than assuming a fixed, pre-existing slack — see the
+    HOOK_TIMEOUT_SECONDS comment for why the primary loop's own worst case can already exceed
+    `hook_timeout` on its own, leaving nothing fixed to safely "borrow" from. A `False` here
+    skips the WHOLE deletion-advisory pass in `main()` — both the `git status` scan and any
+    probing — because reporting only the already-built primary pending-tile message is
+    strictly better than starting git plumbing that has nowhere left to finish before the
+    hook's own external timeout kills the process mid-flight, losing that primary message
+    too.
+    """
+    return (hook_timeout - elapsed_since_lookup) >= min_remaining
+
+
+def partition_known_closed(deleted_paths: list[str], removed: list[dict]) -> tuple[list[str], list[str]]:
+    """Split `deleted_paths` into `(needs_probing, pre_confirmed_closed)`.
+
+    `removed` is this session's own primary-loop unlink list (`reconcile_tiles`'s second
+    return value) — each already confirmed CLOSED by the batched lookup above, in this same
+    run. When one of those fresh unlinks shows up in this same run's `git status` scan (the
+    common case: an issue closes, the primary loop unlinks its shard, and the very same run's
+    deletion-advisory pass then finds that path dirty), re-deriving what this session already
+    knows over `git show HEAD:<path>` plus a fresh `gh api` call would waste probe budget the
+    genuine cross-session orphans need, for a fact already established with certainty moments
+    earlier in the same process.
+
+    Matching is by shard path, built from each `removed` record the same way `shard_rel_path`
+    does — a plain set-membership test, not a second identity resolution.
+    """
+    pre_confirmed = {shard_rel_path(tile) for tile in removed}
+    needs_probe = [p for p in deleted_paths if p not in pre_confirmed]
+    already_closed = [p for p in deleted_paths if p in pre_confirmed]
+    return needs_probe, already_closed
+
+
+# A branch name safe to interpolate, unquoted, into the ready-to-run advisory command's
+# prose (the `git -C ... commit` recommendation names the current branch for the "only
+# commit if this is today's draft branch" caveat). `current_branch` reads this from live
+# `git branch --show-current` output, which is refspec-constrained but NOT shell-metachar-
+# constrained — git's own ref-naming rules permit `~^:?*[\`, spaces, and other characters a
+# shell parses specially (`git-check-ref-format`(1)). Conservative allowlist, mirroring
+# `_OWNER_REPO_RE`'s posture: fail closed to a placeholder rather than interpolate anything
+# surprising into text a session may copy-paste and run verbatim.
+_SAFE_BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def _safe_branch_label(branch: str | None) -> str:
+    """`branch` if safe to interpolate into advisory prose, else a placeholder.
+
+    `None` (detached HEAD, or `current_branch` itself failed) renders as `DETACHED`,
+    matching this module's pre-existing wording. A non-None branch that fails the safe-
+    character check renders as a distinct placeholder rather than being interpolated
+    unsafely, or silently mislabeled as `DETACHED` — which would be factually wrong and
+    could mask a real branch-name anomaly worth a human's attention.
+    """
+    if branch is None:
+        return "DETACHED"
+    if _SAFE_BRANCH_RE.match(branch):
+        return branch
+    return "UNSAFE-BRANCH-NAME (verify manually)"
+
+
 def format_deletion_message(
     dirty: dict, deletions: dict, branch: str | None, mid_merge: bool = False
 ) -> str:
@@ -754,7 +870,7 @@ def format_deletion_message(
                 )
             else:
                 paths = " ".join(f"'{p}'" for p in deletions["closed"])
-                where = f"git -C {JOURNAL_REPO.as_posix()}"
+                where = f"git -C '{JOURNAL_REPO.as_posix()}'"
                 parts.append(
                     "Uncommitted tile shard DELETIONS in the canonical checkout whose "
                     "issues are confirmed closed (this session's own unlinks, or an "
@@ -762,10 +878,10 @@ def format_deletion_message(
                     "tile writes no stub, so these do not self-clear). Commit them with "
                     "this exact pathspec, whether or not you write a stub (safe: each "
                     "shard is a disjoint per-issue file, ADR-118). The canonical is "
-                    f"currently on '{branch or 'DETACHED'}' -- commit only if that is "
-                    "today's draft branch; if a day rollover is also being reported, cut "
-                    "the new branch FIRST, then commit there (a deletion is durable only "
-                    f"once its carrying branch merges to main). {where} add -- {paths} "
+                    f"currently on '{_safe_branch_label(branch)}' -- commit only if that "
+                    "is today's draft branch; if a day rollover is also being reported, "
+                    "cut the new branch FIRST, then commit there (a deletion is durable "
+                    f"only once its carrying branch merges to main). {where} add -- {paths} "
                     f'&& {where} commit -m "journal: close tile shards for closed '
                     f'issues" -- {paths}'
                 )
@@ -903,7 +1019,7 @@ def check_issue_state(issue_number: int, repo: str) -> str | None:
              "--jq", _ISSUE_ITEM_PROJECTION],
             capture_output=True,
             text=True,
-            timeout=GH_CALL_TIMEOUT,
+            timeout=GH_ITEM_CALL_TIMEOUT,
         )
         if result.returncode != 0:
             return None
@@ -1054,42 +1170,64 @@ def main() -> None:
     )
     message = format_message(pending, removed, skipped, unresolved)
 
-    # Two separate try blocks: a failure in the fragile probing must not also discard the
-    # cheap, reliable hands-off warning derived from `git status` alone. Mirrors
-    # `reconcile-open-prs.py`'s identical split.
-    try:
-        dirty = classify_dirty_tile_paths(dirty_tile_status_lines(JOURNAL_REPO))
-    except Exception:
-        dirty = {"deleted": [], "other": []}
+    # The whole deletion-advisory pass below is gated on actual elapsed time, not attempted
+    # unconditionally: see deletion_advisory_time_remains / the HOOK_TIMEOUT_SECONDS comment
+    # for why no fixed slack can be safely assumed to exist at this point.
+    deletion_message = ""
+    if deletion_advisory_time_remains(time.monotonic() - lookup_started):
+        # Two separate try blocks: a failure in the fragile probing must not also discard
+        # the cheap, reliable hands-off warning derived from `git status` alone. Mirrors
+        # `reconcile-open-prs.py`'s identical split.
+        try:
+            dirty = classify_dirty_tile_paths(dirty_tile_status_lines(JOURNAL_REPO))
+        except Exception:
+            dirty = {"deleted": [], "other": []}
 
-    deletions: dict[str, list[str]] = {"closed": [], "open": [], "unverified": [], "skipped": []}
-    mid_merge = False
-    try:
-        if dirty["deleted"]:
-            mid_merge = merge_in_progress(JOURNAL_REPO)
-            if not mid_merge:
-                probe_start = time.monotonic()
-                deletions = classify_tile_deletions(
-                    dirty["deleted"],
-                    identity_fn=lambda p: committed_shard_identity(JOURNAL_REPO, p),
-                    state_fn=check_issue_state,
-                    # Non-additive: whichever fires first, this probe's own small
-                    # deadline or the hook-wide lookup budget the primary loop above
-                    # already drew on. NOT additive to that budget — there is zero
-                    # pre-existing slack once LOOKUP_BUDGET_SECONDS + GH_CALL_TIMEOUT is
-                    # accounted for (see the GIT_CALL_TIMEOUT/HOOK_TIMEOUT_SECONDS
-                    # comment), so this deadline borrows from that budget rather than
-                    # extending it.
-                    deadline_fn=lambda: (
-                        time.monotonic() - probe_start > TILE_PROBE_DEADLINE_SECONDS
-                        or time.monotonic() - lookup_started > LOOKUP_BUDGET_SECONDS
-                    ),
-                )
-    except Exception:
-        pass
+        deletions: dict[str, list[str]] = {"closed": [], "open": [], "unverified": [], "skipped": []}
+        mid_merge = False
+        try:
+            if dirty["deleted"]:
+                mid_merge = merge_in_progress(JOURNAL_REPO)
+                if not mid_merge:
+                    # Skip re-probing this session's own fresh unlinks -- reconcile_tiles
+                    # above already confirmed CLOSED for each of them moments ago.
+                    to_probe, pre_confirmed_closed = partition_known_closed(dirty["deleted"], removed)
+                    deletions["closed"] = list(pre_confirmed_closed)
+                    probe_start = time.monotonic()
+                    try:
+                        probed = classify_tile_deletions(
+                            to_probe,
+                            identity_fn=lambda p: committed_shard_identity(JOURNAL_REPO, p),
+                            state_fn=check_issue_state,
+                            # Local probe-phase deadline: either its own small budget, or
+                            # close enough to HOOK_TIMEOUT_SECONDS that the trailing
+                            # current_branch() call below still has room to run. NOT tied
+                            # to LOOKUP_BUDGET_SECONDS -- that constant belongs to the
+                            # primary lookup above and bears no fixed relationship to how
+                            # much of HOOK_TIMEOUT_SECONDS is actually left once probing
+                            # starts (see the HOOK_TIMEOUT_SECONDS comment).
+                            deadline_fn=lambda: (
+                                time.monotonic() - probe_start > TILE_PROBE_DEADLINE_SECONDS
+                                or (time.monotonic() - lookup_started)
+                                > HOOK_TIMEOUT_SECONDS - GIT_CALL_TIMEOUT
+                            ),
+                        )
+                        for key in ("closed", "open", "unverified", "skipped"):
+                            deletions[key].extend(probed.get(key, []))
+                    except Exception:
+                        # Classification itself failed part-way through -- route what was
+                        # about to be probed to unverified rather than silently dropping it
+                        # (the pre-confirmed-closed paths above are unaffected: they never
+                        # depended on this call succeeding).
+                        deletions["unverified"].extend(to_probe)
+        except Exception:
+            pass
 
-    branch = current_branch(JOURNAL_REPO) if deletions["closed"] else None
-    deletion_message = format_deletion_message(dirty, deletions, branch, mid_merge=mid_merge)
+        try:
+            branch = current_branch(JOURNAL_REPO) if deletions["closed"] else None
+            deletion_message = format_deletion_message(dirty, deletions, branch, mid_merge=mid_merge)
+        except Exception:
+            deletion_message = ""
 
     full_message = "\n".join(p for p in (message, deletion_message) if p)
     if not full_message:

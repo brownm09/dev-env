@@ -426,21 +426,65 @@ the filename is. This matches `make_tile`'s own existing tolerance for on-disk s
 filename when nothing contradicts it) — the open-PR model's stricter no-`isinstance`-guard check
 would otherwise treat every shard written before this amendment as unverified for no reason.
 
-**Accepted budget tightness, not silently absorbed.** `LOOKUP_BUDGET_SECONDS(20) +
-GH_CALL_TIMEOUT(10)` already equals `HOOK_TIMEOUT_SECONDS(30)` exactly for the primary loop alone,
-*before* this amendment — the budget is checked before each page fetch **starts** (gate-the-start,
-not preempt-in-flight), so a fetch already in flight when the budget expires still completes on
-its own `GH_CALL_TIMEOUT` ceiling, and that overrun already consumes the hook's entire declared
-timeout in the worst case. There is no slack to add a probe phase on top of that without risking
-the hook's own `claude/settings.json` timeout. The deletion-probe deadline is therefore
-deliberately **non-additive**: it fires on whichever comes first, its own small
-`TILE_PROBE_DEADLINE_SECONDS` (5.0s) or the primary lookup's `LOOKUP_BUDGET_SECONDS` already having
-elapsed — borrowing from the existing budget rather than extending it. This is recorded as an
-accepted, live-tested condition (`test_tile_deletion_probe_budget_documented_against_hook_timeout`
-pins the equality as an assertion, not a comment that could go stale) rather than fixed in this
-amendment; a non-blocking follow-up tracks widening `LOOKUP_BUDGET_SECONDS`/`GH_CALL_TIMEOUT` for
-real headroom, which is a larger, separately-reviewable change to already-shipped, tested
+**Accepted budget tightness, not silently absorbed — corrected during `/review` (2026-08-08).**
+The primary loop's own worst case is **not** `LOOKUP_BUDGET_SECONDS(20) + GH_CALL_TIMEOUT(10)`, and
+an earlier draft of this amendment (and of the test that pinned it) asserted that equality against
+`HOOK_TIMEOUT_SECONDS(30)` incorrectly. `lookup_states` only gates the **start** of each repo's
+fetch against the budget (gate-the-start, not preempt-in-flight) — it does not re-check elapsed
+time once a fetch is already running — so a repo whose fetch starts a moment before the budget
+expires can still run its own full `MAX_ISSUE_PAGES * GH_CALL_TIMEOUT` (20s) to completion on top
+of whatever earlier repos already consumed. The realistic worst case is therefore
+`LOOKUP_BUDGET_SECONDS + MAX_ISSUE_PAGES * GH_CALL_TIMEOUT` (40s), which already **exceeds**
+`HOOK_TIMEOUT_SECONDS` (30s) on its own, before this amendment's code ever runs — a pre-existing
+condition this amendment did not introduce, only mis-stated in its first draft.
+`/review`'s two independent subagents both caught the contradiction against this same test file's
+pre-existing `test_page_budget_cannot_outrun_the_lookup_budget` (whose own worst-case definition is
+`MAX_ISSUE_PAGES * GH_CALL_TIMEOUT`, not `+ GH_CALL_TIMEOUT` alone), which was verified directly
+before the fix landed.
+
+Given that, there is no fixed, positive slack the deletion-advisory pass can ever safely assume
+exists to "borrow" from — the non-additive design in the first draft was solving for a slack that
+was never actually there. The corrected design instead reacts to **actual elapsed time**:
+`deletion_advisory_time_remains(elapsed_since_lookup)` gates the *entire* deletion-advisory pass
+(not just probing) on whether at least `DELETION_ADVISORY_MIN_REMAINING_SECONDS` (10s — two
+`GIT_CALL_TIMEOUT` calls' worth: the `git status` scan, plus `git branch --show-current` if there
+is a closed bucket to recommend committing) plausibly remains against `HOOK_TIMEOUT_SECONDS`, given
+how long the primary lookup already took. Below that floor, the whole pass — including the cheap
+`git status` scan — is skipped rather than starting git plumbing with nowhere left to finish; only
+the already-built primary pending-tile message is emitted. Once inside the pass, per-item probing
+still carries its own local `TILE_PROBE_DEADLINE_SECONDS` (5.0s) deadline, now independent of
+`LOOKUP_BUDGET_SECONDS` (a primary-loop-only constant that bears no fixed relationship to how much
+of `HOOK_TIMEOUT_SECONDS` is actually left by the time probing starts). A non-blocking follow-up
+still tracks widening `LOOKUP_BUDGET_SECONDS`/`GH_CALL_TIMEOUT` for real headroom in the primary
+loop itself, which remains a larger, separately-reviewable change to already-shipped, tested
 constants and out of scope here.
+
+**Additional hardening from the same `/review` pass.** Three more findings from the two
+subagents were folded into this amendment rather than filed separately, since each was a small,
+mechanical, well-understood fix to code this amendment itself introduced:
+
+- **Pre-seeding this session's own unlinks.** `partition_known_closed` splits a run's dirty
+  deletions into ones `reconcile_tiles` already confirmed `CLOSED` moments earlier in the very
+  same process (the common case: an issue closes, the primary loop unlinks its shard, and the
+  same run's `git status` scan then finds it dirty) and genuine cross-session orphans that still
+  need a live probe — the former are pre-seeded into the `closed` bucket directly, so probe budget
+  goes only to shards this session does not already know the answer for.
+- **Exception-safety around the probing call and the final message assembly.** The original draft
+  wrapped the probing call in a bare `except Exception: pass`, which on failure left `deletions`
+  entirely empty — silently dropping every detected deletion from the report rather than
+  surfacing them as `unverified`. It also left `current_branch`/`format_deletion_message` unguarded
+  after the probing block, risking the already-built primary pending-tile `message` if either
+  raised (since `emit_advisory` can only be called once). Both are now caught explicitly: a
+  probing failure routes the not-yet-classified paths to `unverified`, and the branch-lookup /
+  formatting step has its own `try`/`except` defaulting to an empty deletion-advisory section.
+- **Regex tightening and prose-injection guards.** `SAFE_TILE_PATH_RE` (and its
+  `reconcile-open-prs.py` sibling, `SAFE_SHARD_PATH_RE`) used `\d+` and a bare `$` anchor; `\d`
+  also matches non-ASCII digit characters that Python's `int()` — and so `shard_number` — accepts,
+  and `$` tolerates one trailing newline. Both now use `[0-9]+` and `\Z`. Separately, the ready-
+  to-run advisory command interpolated the live `git branch --show-current` output and the fixed
+  `JOURNAL_REPO` path directly into prose; a new `_safe_branch_label` helper (mirrored in both
+  files) replaces an unsafe branch name with a fixed placeholder before interpolation, and the
+  `git -C` target path is now single-quoted.
 
 **The CLAUDE.md rule.** A new bullet in `claude/CLAUDE.md`'s Engineering Journal → Stub file
 workflow section, immediately after the open-PR shard exemption, states plainly that the

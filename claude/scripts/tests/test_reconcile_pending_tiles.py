@@ -112,6 +112,10 @@ classify_tile_deletions = mod.classify_tile_deletions
 safe_for_command = mod.safe_for_command
 cap = mod.cap
 format_deletion_message = mod.format_deletion_message
+deletion_advisory_time_remains = mod.deletion_advisory_time_remains
+partition_known_closed = mod.partition_known_closed
+_safe_branch_label = mod._safe_branch_label
+shard_rel_path = mod.shard_rel_path
 
 REPO = "brownm09/dev-env"
 URL = "https://github.com/brownm09/dev-env/issues/{n}"
@@ -1158,23 +1162,133 @@ def test_format_deletion_message_is_ascii() -> str:
 
 
 def test_tile_deletion_probe_budget_documented_against_hook_timeout() -> str:
-    """Unlike `reconcile-open-prs.py`'s deletion probe (which adds a fresh deadline on top
-    of a budget that itself carries real reserve), this hook's LOOKUP_BUDGET_SECONDS +
-    GH_CALL_TIMEOUT already equals HOOK_TIMEOUT_SECONDS exactly -- zero pre-existing slack
-    -- because the budget is checked before each page fetch STARTS, so a fetch already in
-    flight when the budget expires still completes on its own GH_CALL_TIMEOUT ceiling. The
-    deletion-probe deadline in main() is therefore deliberately non-additive: it borrows
-    from LOOKUP_BUDGET_SECONDS rather than extending it. This test documents that
-    zero-slack condition as a live assertion rather than a comment that could silently go
-    stale."""
-    worst_case = mod.LOOKUP_BUDGET_SECONDS + mod.GH_CALL_TIMEOUT
-    assert worst_case == mod.HOOK_TIMEOUT_SECONDS, (
-        f"LOOKUP_BUDGET_SECONDS({mod.LOOKUP_BUDGET_SECONDS}) + GH_CALL_TIMEOUT({mod.GH_CALL_TIMEOUT}) "
-        f"no longer equals HOOK_TIMEOUT_SECONDS({mod.HOOK_TIMEOUT_SECONDS}) -- re-check whether the "
-        "deletion-probe deadline in main() is still correctly non-additive, or whether real "
-        "slack now exists and the deadline could safely add its own budget instead of borrowing"
+    """The primary lookup loop's own worst case is NOT `LOOKUP_BUDGET_SECONDS +
+    GH_CALL_TIMEOUT` -- `lookup_states` only gates the *start* of each repo's fetch, so a
+    repo whose fetch starts a moment before the budget expires can still run its own full
+    `MAX_ISSUE_PAGES * GH_CALL_TIMEOUT` to completion, on top of whatever the budget already
+    let earlier repos consume. The realistic worst case is therefore
+    `LOOKUP_BUDGET_SECONDS + MAX_ISSUE_PAGES * GH_CALL_TIMEOUT`, which this test pins as
+    ALREADY EXCEEDING HOOK_TIMEOUT_SECONDS -- i.e. there is no fixed, positive slack the
+    deletion-advisory pass could ever safely assume exists. (An earlier draft of this test
+    asserted the opposite -- a false `LOOKUP_BUDGET_SECONDS + GH_CALL_TIMEOUT ==
+    HOOK_TIMEOUT_SECONDS` equality -- which directly contradicted
+    test_page_budget_cannot_outrun_the_lookup_budget's own worst-case definition in this
+    same file; /review caught the contradiction.) This is exactly why
+    deletion_advisory_time_remains reacts to actual elapsed time instead."""
+    worst_case = mod.LOOKUP_BUDGET_SECONDS + mod.MAX_ISSUE_PAGES * mod.GH_CALL_TIMEOUT
+    assert worst_case > mod.HOOK_TIMEOUT_SECONDS, (
+        f"LOOKUP_BUDGET_SECONDS({mod.LOOKUP_BUDGET_SECONDS}) + MAX_ISSUE_PAGES({mod.MAX_ISSUE_PAGES}) "
+        f"* GH_CALL_TIMEOUT({mod.GH_CALL_TIMEOUT}) = {worst_case}, no longer exceeding "
+        f"HOOK_TIMEOUT_SECONDS({mod.HOOK_TIMEOUT_SECONDS}) -- if genuine slack now exists, "
+        "deletion_advisory_time_remains's docs/rationale should be revisited"
     )
-    return "documents the zero-pre-existing-slack condition the non-additive probe deadline relies on"
+    return "the primary loop's realistic worst case already exceeds HOOK_TIMEOUT_SECONDS -- no fixed slack to borrow"
+
+
+def test_deletion_advisory_time_remains() -> str:
+    assert deletion_advisory_time_remains(0.0, hook_timeout=30.0, min_remaining=10.0) is True
+    assert deletion_advisory_time_remains(19.99, hook_timeout=30.0, min_remaining=10.0) is True, \
+        "exactly at the floor (30 - 19.99 = 10.01 >= 10) -- still True"
+    assert deletion_advisory_time_remains(20.0, hook_timeout=30.0, min_remaining=10.0) is True, \
+        "exactly AT the floor (30 - 20 = 10 >= 10) -- boundary is inclusive"
+    assert deletion_advisory_time_remains(20.01, hook_timeout=30.0, min_remaining=10.0) is False, \
+        "just under the floor (30 - 20.01 = 9.99 < 10) -- False"
+    assert deletion_advisory_time_remains(30.0, hook_timeout=30.0, min_remaining=10.0) is False, \
+        "no time left at all -- False"
+    assert deletion_advisory_time_remains(40.0, hook_timeout=30.0, min_remaining=10.0) is False, \
+        "already past hook_timeout (negative remaining) -- False, not a crash"
+    return "gates on actual elapsed-vs-hook_timeout margin, inclusive at the exact floor"
+
+
+def test_partition_known_closed_skips_this_sessions_own_unlinks() -> str:
+    removed = [
+        make_tile("dev-env", Path("x/tiles/1.json"), _entry(1)),
+        make_tile("career-playbook", Path("x/tiles/2.json"), _entry(2)),
+    ]
+    orphan_path = "sessions/career-playbook/tiles/999.json"  # a genuine cross-session orphan
+    deleted_paths = [shard_rel_path(t) for t in removed] + [orphan_path]
+
+    to_probe, pre_confirmed = partition_known_closed(deleted_paths, removed)
+    assert to_probe == [orphan_path], to_probe
+    assert sorted(pre_confirmed) == sorted(shard_rel_path(t) for t in removed), pre_confirmed
+    return "a deletion matching this session's own removed[] is pre-confirmed closed, never re-probed"
+
+
+def test_partition_known_closed_empty_removed_probes_everything() -> str:
+    deleted_paths = ["sessions/dev-env/tiles/1.json"]
+    to_probe, pre_confirmed = partition_known_closed(deleted_paths, [])
+    assert to_probe == deleted_paths and pre_confirmed == [], \
+        "with no fresh unlinks this run, every deletion still needs probing"
+    return "an empty removed[] pre-confirms nothing -- every deletion needs probing"
+
+
+def test_classify_tile_deletions_propagates_injected_function_exceptions() -> str:
+    """`classify_tile_deletions` does not itself guard against a failing identity_fn/
+    state_fn -- the caller (main()) is responsible for that, so it can route the paths that
+    were mid-classification to `unverified` rather than silently losing them. This pins
+    that the function does NOT swallow the exception on its own, which would make main()'s
+    own except-block dead code."""
+    def boom(*_a, **_kw):
+        raise RuntimeError("gh unavailable")
+
+    try:
+        classify_tile_deletions(
+            ["sessions/career-playbook/tiles/1.json"],
+            identity_fn=boom,
+            state_fn=_fixed_issue_state({}),
+        )
+        raise AssertionError("expected classify_tile_deletions to propagate the exception")
+    except RuntimeError:
+        pass
+    return "an injected identity_fn/state_fn failure propagates -- the caller must catch it"
+
+
+def test_safe_for_command_rejects_non_ascii_digits_and_trailing_newline() -> str:
+    """`SAFE_TILE_PATH_RE` is anchored with `[0-9]+` and `\\Z`, not `\\d+` and `$`: `\\d`
+    also matches non-ASCII digit characters that `int()` (and so `shard_number`) accepts
+    too, and `$` tolerates one trailing newline that `\\Z` does not."""
+    assert safe_for_command(["sessions/dev-env/tiles/123.json"]) is True
+    non_ascii_digit_path = "sessions/dev-env/tiles/١٢٣.json"  # Arabic-indic 123
+    assert int("١٢٣") == 123, "sanity: Python's int() accepts these as digits"
+    assert safe_for_command([non_ascii_digit_path]) is False, \
+        "a non-ASCII-digit stem must not be treated as command-safe"
+    assert safe_for_command(["sessions/dev-env/tiles/123.json\n"]) is False, \
+        "a trailing newline must not sneak a path past the check (\\Z, not $)"
+    return "ASCII-digit-only, fully-anchored regex rejects non-ASCII digits and a trailing newline"
+
+
+def test_safe_branch_label_passes_through_safe_names() -> str:
+    for branch in ["draft/2026-08-07", "main", "feat/foo-bar_123", "claude/vigilant-poincare-03c269"]:
+        assert _safe_branch_label(branch) == branch, branch
+    return "an ordinary branch name is interpolated unchanged"
+
+
+def test_safe_branch_label_rejects_shell_metacharacters() -> str:
+    for bad in ["draft/2026-08-07; rm -rf /", "$(id)", "`id`", "branch with spaces", "a&&b"]:
+        got = _safe_branch_label(bad)
+        assert got != bad, f"unsafe branch name must not pass through unchanged: {bad!r}"
+        assert "UNSAFE-BRANCH-NAME" in got, got
+    return "a branch name with shell metacharacters is replaced with a fixed placeholder"
+
+
+def test_safe_branch_label_none_is_detached() -> str:
+    assert _safe_branch_label(None) == "DETACHED"
+    return "None (detached HEAD, or current_branch() itself failed) renders as DETACHED"
+
+
+def test_format_deletion_message_sanitizes_unsafe_branch_name() -> str:
+    deletions = {**_EMPTY_DELETIONS, "closed": ["sessions/career-playbook/tiles/1164.json"]}
+    msg = format_deletion_message({"deleted": [], "other": []}, deletions, "$(id); evil")
+    assert "$(id); evil" not in msg, "an unsafe branch name must never reach the emitted text"
+    assert "UNSAFE-BRANCH-NAME" in msg
+    return "format_deletion_message routes the branch name through _safe_branch_label"
+
+
+def test_format_deletion_message_quotes_journal_repo_path() -> str:
+    deletions = {**_EMPTY_DELETIONS, "closed": ["sessions/career-playbook/tiles/1164.json"]}
+    msg = format_deletion_message({"deleted": [], "other": []}, deletions, "draft/2026-08-07")
+    assert f"git -C '{mod.JOURNAL_REPO.as_posix()}'" in msg, msg
+    return "the git -C target path is single-quoted in the emitted ready-to-run command"
 
 
 def main() -> int:
@@ -1251,6 +1365,16 @@ def main() -> int:
         ("nothing to report -> empty deletion message", test_format_deletion_message_empty_when_nothing_to_report),
         ("deletion message is ASCII-only", test_format_deletion_message_is_ascii),
         ("probe budget documented against hook timeout", test_tile_deletion_probe_budget_documented_against_hook_timeout),
+        ("deletion_advisory_time_remains gates on actual elapsed time", test_deletion_advisory_time_remains),
+        ("partition_known_closed skips this session's own unlinks", test_partition_known_closed_skips_this_sessions_own_unlinks),
+        ("partition_known_closed: empty removed[] probes everything", test_partition_known_closed_empty_removed_probes_everything),
+        ("classify_tile_deletions propagates injected exceptions", test_classify_tile_deletions_propagates_injected_function_exceptions),
+        ("safe_for_command rejects non-ASCII digits/trailing newline", test_safe_for_command_rejects_non_ascii_digits_and_trailing_newline),
+        ("_safe_branch_label passes through safe names", test_safe_branch_label_passes_through_safe_names),
+        ("_safe_branch_label rejects shell metacharacters", test_safe_branch_label_rejects_shell_metacharacters),
+        ("_safe_branch_label: None is DETACHED", test_safe_branch_label_none_is_detached),
+        ("format_deletion_message sanitizes unsafe branch name", test_format_deletion_message_sanitizes_unsafe_branch_name),
+        ("format_deletion_message quotes the journal repo path", test_format_deletion_message_quotes_journal_repo_path),
     ]
     failed = 0
     for name, fn in tests:

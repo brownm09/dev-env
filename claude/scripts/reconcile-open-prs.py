@@ -343,9 +343,12 @@ DELETED_STATUS_CODES = frozenset({" D", "D "})
 # A shard path safe to interpolate into a ready-to-run shell command. `git status
 # --porcelain` does not quote a path containing `;` (it quotes only paths with spaces or
 # control chars), and such a path still satisfies the `/open-prs/` shape check — so without
-# this the emitted "run this exact command" text could carry a second command. Anchored, and
-# deliberately narrower than the shape check used for *reporting*. (dev-env#873 review)
-SAFE_SHARD_PATH_RE = re.compile(r"^sessions/[A-Za-z0-9._-]+/open-prs/\d+\.json$")
+# this the emitted "run this exact command" text could carry a second command. Anchored at
+# both ends (`\Z`, not `$`, so a trailing newline cannot sneak a path past the check) and
+# ASCII-digit-only (`[0-9]+`, not `\d`, which also accepts non-ASCII digit characters
+# `int()` — and so `shard_pr_number` — would parse too). Deliberately narrower than the
+# shape check used for *reporting*. (dev-env#873 review, dev-env#958 tightening)
+SAFE_SHARD_PATH_RE = re.compile(r"^sessions/[A-Za-z0-9._-]+/open-prs/[0-9]+\.json\Z")
 
 
 def classify_dirty_open_pr_paths(status_lines: list[str]) -> dict[str, list[str]]:
@@ -455,6 +458,34 @@ def cap(paths: list[str], limit: int = 5) -> str:
     by every session; `(+N more)` keeps the count honest. (dev-env#873 review)"""
     shown = ", ".join(paths[:limit])
     return shown + (f" (+{len(paths) - limit} more)" if len(paths) > limit else "")
+
+
+# A branch name safe to interpolate, unquoted, into the ready-to-run advisory command's
+# prose (the `git -C ... commit` recommendation names the current branch for the "only
+# commit if this is today's draft branch" caveat). `current_branch` reads this from live
+# `git branch --show-current` output, which is refspec-constrained but NOT shell-metachar-
+# constrained — git's own ref-naming rules permit `~^:?*[\`, spaces, and other characters a
+# shell parses specially (`git-check-ref-format`(1)). Conservative allowlist: fail closed to
+# a placeholder rather than interpolate anything surprising into text a session may
+# copy-paste and run verbatim. (dev-env#958 review)
+_SAFE_BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def _safe_branch_label(branch: str | None) -> str:
+    """`branch` if safe to interpolate into advisory prose, else a placeholder.
+
+    `None` (detached HEAD, or `current_branch` itself failed) renders as `DETACHED`,
+    matching this module's pre-existing wording. A non-None branch that fails the safe-
+    character check renders as a distinct placeholder rather than being interpolated
+    unsafely, or silently mislabeled as `DETACHED` — which would be factually wrong and
+    could mask a real branch-name anomaly worth a human's attention. Mirrors
+    `reconcile-pending-tiles.py`'s `_safe_branch_label`.
+    """
+    if branch is None:
+        return "DETACHED"
+    if _SAFE_BRANCH_RE.match(branch):
+        return branch
+    return "UNSAFE-BRANCH-NAME (verify manually)"
 
 
 # --- legacy single-file path -------------------------------------------------
@@ -832,17 +863,17 @@ def main() -> None:
             )
         else:
             paths = " ".join(f"'{p}'" for p in deletions["merged"])
-            where = f"git -C {JOURNAL_REPO.as_posix()}"
+            where = f"git -C '{JOURNAL_REPO.as_posix()}'"
             parts.append(
                 "Uncommitted open-PR shard DELETIONS in the canonical checkout whose PRs are "
                 "confirmed merged/closed (this session's own unlinks, or an earlier session's "
                 "never-committed ones — a session that opens no PR writes no stub, so these do "
                 "not self-clear). Commit them with this exact pathspec, whether or not you "
                 "write a stub (safe: each shard is a disjoint per-PR file, ADR-056). The "
-                f"canonical is currently on '{branch or 'DETACHED'}' — commit only if that is "
-                "today's draft branch; if a day rollover is also being reported, cut the new "
-                "branch FIRST, then commit there (a deletion is durable only once its carrying "
-                f"branch merges to main). {where} add -- {paths} && "
+                f"canonical is currently on '{_safe_branch_label(branch)}' — commit only if "
+                "that is today's draft branch; if a day rollover is also being reported, cut "
+                "the new branch FIRST, then commit there (a deletion is durable only once its "
+                f"carrying branch merges to main). {where} add -- {paths} && "
                 f'{where} commit -m "journal: close merged open-pr shards" -- {paths}'
             )
     if deletions["open"]:
