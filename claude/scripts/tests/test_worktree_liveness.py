@@ -176,11 +176,55 @@ def test_newest_jsonl_mtime_empty_returns_none() -> str:
     return "directory with no .jsonl -> None"
 
 
+def test_newest_jsonl_mtime_excludes_matching_session_id() -> str:
+    # dev-env#966 / ADR-130: session-start-sync.py runs AS one of the sessions that would
+    # otherwise match, so it must be able to exclude its own transcript when asking "is some
+    # OTHER session live here."
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        excluded = d / "11111111-1111-1111-1111-111111111111.jsonl"
+        excluded.write_text("{}")
+        os.utime(excluded, (9_000.0, 9_000.0))  # newest of the two, but excluded
+        other = d / "22222222-2222-2222-2222-222222222222.jsonl"
+        other.write_text("{}")
+        os.utime(other, (5_000.0, 5_000.0))
+        got = wl.newest_jsonl_mtime(d, exclude_session_id="11111111-1111-1111-1111-111111111111")
+        if got != 5_000.0:
+            raise AssertionError(f"expected 5000.0 (the non-excluded file), got {got}")
+    return "the excluded session_id's .jsonl is skipped even when it is the newest"
+
+
+def test_newest_jsonl_mtime_exclude_none_preserves_behavior() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        f = d / "session.jsonl"
+        f.write_text("{}")
+        os.utime(f, (5_000.0, 5_000.0))
+        got_default = wl.newest_jsonl_mtime(d)
+        got_explicit_none = wl.newest_jsonl_mtime(d, exclude_session_id=None)
+        if got_default != 5_000.0 or got_explicit_none != 5_000.0:
+            raise AssertionError(
+                f"omitted vs explicit None must both be 5000.0: {got_default}, {got_explicit_none}"
+            )
+    return "omitting exclude_session_id and passing None explicitly are identical (regression safety)"
+
+
 def _make_session(root: Path, worktree: str, mtime: float) -> None:
     slug = wl.encode_project_slug(worktree)
     sd = root / slug
     sd.mkdir(parents=True)
     f = sd / "11111111-2222-3333-4444-555555555555.jsonl"
+    f.write_text("{}")
+    os.utime(f, (mtime, mtime))
+
+
+def _make_session_file(root: Path, worktree: str, session_id: str, mtime: float) -> None:
+    """Like `_make_session`, but with a caller-chosen `session_id` filename -- needed to test
+    `exclude_session_id`, which the fixed-UUID `_make_session` helper can't exercise."""
+    slug = wl.encode_project_slug(worktree)
+    sd = root / slug
+    sd.mkdir(parents=True, exist_ok=True)
+    f = sd / f"{session_id}.jsonl"
     f.write_text("{}")
     os.utime(f, (mtime, mtime))
 
@@ -216,6 +260,40 @@ def test_session_not_live_without_transcript() -> str:
         if got:
             raise AssertionError("a worktree with no transcript dir must not read as live")
     return "no transcript dir -> not live (eligible; fail-safe preserves cleanup)"
+
+
+def test_session_is_live_excludes_own_session_id() -> str:
+    # dev-env#966 / ADR-130: a hook running AS the only session present must be able to
+    # exclude its own transcript, or it would always read itself as live.
+    now = 1_000_000.0
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        wt = "C:/Users/brown/Git/dev-env/.claude/worktrees/self-check-ddd444"
+        my_session = "33333333-3333-3333-3333-333333333333"
+        _make_session_file(root, wt, my_session, now - 5)  # 5s ago -- would read as live
+        live = wl.worktree_session_is_live(
+            wt, projects_root=root, window_seconds=3600, now=now, exclude_session_id=my_session,
+        )
+        if live:
+            raise AssertionError("excluding the only session present must not read as live")
+    return "excluding the sole session's own transcript -> not live (asking 'is another session here')"
+
+
+def test_session_is_live_still_detects_other_session_when_excluding_self() -> str:
+    now = 1_000_000.0
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        wt = "C:/Users/brown/Git/dev-env/.claude/worktrees/two-sessions-eee555"
+        my_session = "44444444-4444-4444-4444-444444444444"
+        other_session = "55555555-5555-5555-5555-555555555555"
+        _make_session_file(root, wt, my_session, now - 5)     # my own, recent
+        _make_session_file(root, wt, other_session, now - 10)  # a genuinely different session, also recent
+        live = wl.worktree_session_is_live(
+            wt, projects_root=root, window_seconds=3600, now=now, exclude_session_id=my_session,
+        )
+        if not live:
+            raise AssertionError("a second, non-excluded recent session must still read as live")
+    return "excluding own session_id still detects a genuinely different concurrent session"
 
 
 def test_parse_liveness_window_seconds() -> str:
@@ -267,9 +345,13 @@ def main() -> int:
         ("fallback takes newest across matches", test_fallback_takes_newest_across_matches),
         ("newest_jsonl_mtime recurses + ignores non-jsonl", test_newest_jsonl_mtime_recurses_and_ignores_nonjsonl),
         ("newest_jsonl_mtime empty -> None", test_newest_jsonl_mtime_empty_returns_none),
+        ("newest_jsonl_mtime excludes matching session_id", test_newest_jsonl_mtime_excludes_matching_session_id),
+        ("newest_jsonl_mtime exclude=None preserves behavior", test_newest_jsonl_mtime_exclude_none_preserves_behavior),
         ("session live when recent", test_session_is_live_when_recent),
         ("session stale outside window", test_session_is_stale_outside_window),
         ("session not live without transcript", test_session_not_live_without_transcript),
+        ("session_is_live excludes own session_id", test_session_is_live_excludes_own_session_id),
+        ("session_is_live still detects other session when excluding self", test_session_is_live_still_detects_other_session_when_excluding_self),
         ("parse --liveness-window-min (default/valid/error)", test_parse_liveness_window_seconds),
         ("prune=24h / reclaim=6h default windows", test_script_default_windows),
     ]

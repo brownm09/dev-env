@@ -2838,3 +2838,50 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_journal_shell_write_guard.py
     ```
+
+89. **session-start-sync test** — required when changing `claude/scripts/session-start-sync.py`
+    or `claude/scripts/_worktree_liveness.py`. Two files, since the hook's auto-fix eligibility
+    depends on the shared liveness check this PR also extended.
+
+    `test_session_start_sync.py` exercises every pure decision/formatting helper offline (no
+    subprocess, no network, no git): `resolve_default_branch` (success, `origin/HEAD` unset ->
+    `"main"` fallback, blank stdout -> fallback, a non-`main` default passed through unchanged);
+    `is_canonical_checkout` (worktree-list entry 0 matches, a linked worktree does not, an empty
+    or undeterminable worktree list fails safe to `False`); `resolve_compare_ref` (a tracked
+    branch's own upstream wins, a detached/untracked branch falls back to
+    `origin/<default-branch>`, and the fallback itself respects a non-`main` default);
+    `can_autofix`'s full truth table (the all-true baseline, plus one case per individually
+    flipped condition — not-canonical, off-default-branch, ahead>0, dirty, concurrent-session —
+    each alone forcing `False`); `classify_block_reason`'s fixed precedence (not-canonical >
+    off-default-branch, naming detached HEAD specifically > diverged, naming the ahead-count >
+    dirty tree > concurrent session), including a multi-failure tie-break case pinning that
+    diverged beats dirty when both apply simultaneously; all three message formatters
+    (`[session-start-sync]` tag, repo/branch/SHA-truncation/pluralization content, the
+    divergence clause only appearing when `ahead_count > 0`, and `format_autofix_failure`'s
+    reuse of `_hookout.ascii_sanitize` on echoed git stderr, pinned against an em-dash
+    regression case); and `load_disable_flag` (missing key, explicit `true`/`false`, a non-bool
+    value, and non-dict input — all fail safe to "enabled" except a literal `True`). The
+    file-I/O helper `_read_hook_config_json` is exercised against
+    `tempfile.TemporaryDirectory()` rather than the real `.claude/hook-config.json` (valid JSON
+    round-trips, a missing file and malformed/non-dict JSON all degrade to `{}`, never
+    raising). `main()`'s own subprocess orchestration — the fetch/compare/pull sequence itself —
+    is deliberately not covered here, matching the established pure-helper convention for this
+    class of hook (`dev-env-sync.py` / item 56, `pre-bash-drift-check.py` / item 59);
+    `_resolve_path` is likewise not directly tested, a thin filesystem-state-dependent wrapper
+    mirroring `_worktree_topology`'s own private `_norm` (also exercised only via its callers,
+    not in isolation).
+
+    `test_worktree_liveness.py` (already covered by item 17; this entry adds no new item number
+    for it, only new cases) gains 4 cases for the new `exclude_session_id` parameter on
+    `newest_jsonl_mtime`/`worktree_session_is_live`: the excluded session's transcript is
+    skipped even when it is the newest; a genuinely different, non-excluded concurrent session
+    is still detected as live; and — regression safety for the two pre-existing callers
+    (`prune-merged-worktrees.py`, `reclaim-worktree-disk.py`) — omitting the parameter and
+    passing `None` explicitly both preserve prior behavior exactly.
+
+    ([ADR-130](adr/130-session-start-fetch-ff-only-or-warn.md); dev-env#966)
+
+    ```bash
+    py -3 claude/scripts/tests/test_session_start_sync.py
+    py -3 claude/scripts/tests/test_worktree_liveness.py
+    ```

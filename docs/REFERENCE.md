@@ -184,7 +184,7 @@ Enforces experimental rigor for a **process experiment** — a comparative claim
 
 ## Hooks
 
-For a one-line-per-file index of all 76 files directly in `claude/scripts/` — wired hooks, shared
+For a one-line-per-file index of all 79 files directly in `claude/scripts/` — wired hooks, shared
 `_foo.py` modules, and utility scripts, grouped by workflow domain — see
 [`claude/scripts/README.md`](../claude/scripts/README.md)
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The tables below remain the
@@ -224,6 +224,17 @@ The `permissions.allow` block in `claude/settings.json` contains paths with a ha
 | Entry | Scope | Rationale |
 |---|---|---|
 | `Edit(C:/Users/brown/Git/**)` | All files in all local repos | Covers skill and config edits across career-playbook, lifting-logbook, dev-env, etc. without per-file prompts. Intentionally broad — includes `.env` and credential files — accepted tradeoff on a single-user personal machine. |
+
+---
+
+### SessionStart
+
+Fires once per session start (matcher-independent here — this repo's one entry registers with
+no matcher, so it fires on every source: startup, resume, clear, and compact).
+
+| Script | What it does |
+|--------|-------------|
+| `session-start-sync.py` | Generalizes `dev-env-sync.py`'s fetch -> compare -> `pull --ff-only` mechanic to any repo a session starts in, resolved dynamically from the session's own `cwd` rather than a hardcoded path. Resolves the repo root (`git rev-parse --show-toplevel`), skips dev-env's own canonical (already covered more thoroughly by `dev-env-sync.py`'s topology auto-correction + persistent-failure escalation) and any repo whose `.claude/hook-config.json` sets `"session_start_sync_disabled": true`, then `git fetch origin --quiet` (all remote-tracking branches, not just the default — also fixes a wrong-branch-pull-scattered-files class of incident, not only default-branch staleness). Classifies the checkout as canonical/sole vs. a linked worktree (`_worktree_topology.find_worktree_by_path` against `canonical_worktree`'s result, by identity), resolves the repo's actual default branch (`git symbolic-ref --short refs/remotes/origin/HEAD`, falling back to `"main"`), and compares HEAD against its own upstream if tracked, else `origin/<default-branch>` (the fallback is what covers a detached HEAD, which has no upstream by definition). Already up to date, or strictly ahead, -> silent exit (don't spam the healthy path). Otherwise **auto-fast-forwards** (`git pull --ff-only`) only when the checkout is canonical/sole, on exactly its own default branch, a true fast-forward (zero local-only commits), a clean working tree, and no other session's transcript active in this exact checkout in the last 5 minutes (`_worktree_liveness.worktree_session_is_live`, extended with a new `exclude_session_id` parameter — this hook runs *as* one of the sessions that would otherwise always match, so it must be able to ask "is some *other* session here"); any single failing condition instead emits a **loud advisory** naming the repo, branch, how far behind, and precisely why it was not auto-fixed. All advisories go through `_hookout.emit_advisory("SessionStart", ..., audience="both")` — `SessionStart` is one of the three events whose exit-0 stdout is model-visible (`STDOUT_MODEL_VISIBLE_EVENTS`), and `audience="both"` also surfaces a `systemMessage` toast to the user. Fails open unconditionally on every subprocess failure (not a git repo, a failed fetch, a failed rev-parse) — this is a drift *detector*, not a gate. The first hook in this repo to use the `SessionStart` event: every prior "fires early in a session" hook (`dev-env-sync.py`, `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, `journal-onboard-check.py`) instead rides `UserPromptSubmit` with a once-per-session sentinel — `SessionStart` was chosen deliberately for the semantic fit and because it also fires natively on resume/clear/compact, not only a brand-new session. [ADR-130](adr/130-session-start-fetch-ff-only-or-warn.md) |
 
 ---
 
@@ -391,6 +402,7 @@ bash claude/hooks/tests/test-pre-push-lockfile.sh
 | `test_command` | string | `npx jest --json --silent` | `baseline-tests.sh` — shell command emitting Jest `--json` stdout. Override when `npm test` wraps Jest through turbo/lerna and does not pass `--json` through. |
 | `skill_file_size_limit_bytes` | integer | `262144` | `pre-tool-use-skill-file-size-guard.py` — hard-block byte ceiling for a `SKILL.md` Write/Edit; also read (advisory-only) by `skill-file-size-advisory.py` to show "N% of the hard limit" |
 | `skill_file_size_warn_bytes` | integer | `204800` | `skill-file-size-advisory.py` — lower watermark for the non-blocking nudge, independent of `skill_file_size_limit_bytes` |
+| `session_start_sync_disabled` | boolean | `false` | `session-start-sync.py` — per-project opt-out from the session-start fetch/fast-forward-or-warn drift check (ADR-130). Read from the target repo's own `.claude/hook-config.json`, not the session's original cwd's. |
 
 ---
 

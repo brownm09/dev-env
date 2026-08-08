@@ -104,16 +104,30 @@ def transcript_dirs_for(
     return matches
 
 
-def newest_jsonl_mtime(transcript_dir: "str | os.PathLike[str]") -> "float | None":
+def newest_jsonl_mtime(
+    transcript_dir: "str | os.PathLike[str]",
+    *,
+    exclude_session_id: "str | None" = None,
+) -> "float | None":
     """Newest mtime (epoch secs) among ``*.jsonl`` under ``transcript_dir``, recursively.
 
     Recursive so a quiet top-level transcript with an active ``<uuid>/subagents/*.jsonl``
     still reads as live. Returns ``None`` when the dir is absent or holds no readable
     ``.jsonl``.
+
+    ``exclude_session_id``, when given, skips any ``*.jsonl`` whose filename stem (the session
+    UUID -- see the module docstring's transcript-path convention) equals it. Lets a caller
+    running *as* one of the sessions that would otherwise match (e.g. a hook asking "is some
+    OTHER session live in my own checkout") exclude its own transcript instead of always
+    reading itself as live (dev-env#966 / ADR-130). The existing callers
+    (prune-merged-worktrees.py, reclaim-worktree-disk.py) run out-of-process, so this gap never
+    mattered to them; the default ``None`` preserves their behavior exactly.
     """
     newest: "float | None" = None
     try:
         for p in Path(transcript_dir).rglob("*.jsonl"):
+            if exclude_session_id is not None and p.stem == exclude_session_id:
+                continue
             try:
                 m = p.stat().st_mtime
             except OSError:
@@ -164,6 +178,7 @@ def worktree_session_is_live(
     window_seconds: float,
     projects_root: "str | os.PathLike[str] | None" = None,
     now: "float | None" = None,
+    exclude_session_id: "str | None" = None,
 ) -> bool:
     """True when ``worktree_path`` has transcript activity within ``window_seconds``.
 
@@ -173,11 +188,15 @@ def worktree_session_is_live(
     genuinely-idle worktrees, so cleanup of abandoned worktrees keeps working. Only
     recently-active worktrees gain protection. ``window_seconds`` is required (each caller
     owns its policy); ``now`` / ``projects_root`` are injectable for offline tests.
+
+    ``exclude_session_id`` is threaded through to ``newest_jsonl_mtime`` on every candidate
+    dir — see that function's docstring. Defaults to ``None`` (no exclusion), preserving prior
+    behavior for the existing prune/reclaim callers exactly.
     """
     root = Path(projects_root) if projects_root is not None else default_projects_root()
     newest: "float | None" = None
     for tdir in transcript_dirs_for(worktree_path, root):
-        mtime = newest_jsonl_mtime(tdir)
+        mtime = newest_jsonl_mtime(tdir, exclude_session_id=exclude_session_id)
         if mtime is not None and (newest is None or mtime > newest):
             newest = mtime
     if newest is None:

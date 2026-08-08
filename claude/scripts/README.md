@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **87 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **88 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -52,7 +52,7 @@ the one place all 15 are listed together. Each has its own test file in
 | `_skill_file_size.py` | Shared `SKILL.md` basename match (`is_skill_md`) and `.claude/hook-config.json` loader (`load_config` — returns `(warn_bytes, limit_bytes)`, one shared fallback contract for both fields). | `pre-tool-use-skill-file-size-guard.py`, `skill-file-size-advisory.py` |
 | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning script must `import`. | ~20 subprocess-using scripts |
 | `_worktree_canon.py` | Shared worktree-path-to-canonical-root regex/resolution (`canonical_root_from_worktree`, `is_worktree_path`). | `post-tool-use.py`, `reconcile-project-board.py`, `pre-tool-use-canonical-mutate-guard.py`, `pre-tool-use-worktree-path-check.py`, `usage-snapshot.py` |
-| `_worktree_liveness.py` | Active-session liveness check — stops prune/reclaim from severing a worktree with a live Claude session in it. | `prune-merged-worktrees.py`, `reclaim-worktree-disk.py` |
+| `_worktree_liveness.py` | Active-session liveness check — stops prune/reclaim from severing a worktree with a live Claude session in it. Also exposes an `exclude_session_id` param so a hook running *as* one of the candidate sessions can ask "is some other session here" instead of always matching itself (ADR-130). | `prune-merged-worktrees.py`, `reclaim-worktree-disk.py`, `session-start-sync.py` |
 | `_worktree_recovery.py` | Single-sourced orphaned-worktree recovery recipe (`RECOVERY_STEPS`, `recovery_recipe`) — the block message a stuck session reads, pinned against the `docs/REFERENCE.md` runbook so the two can't drift ([ADR-116](../../docs/adr/116-single-source-worktree-recovery-recipe.md)). | `pre-tool-use-worktree-path-check.py` |
 | `_worktree_topology.py` | Worktree-on-`main` squat detection/diagnosis and park-target decisions. | `prune-merged-worktrees.py`, `post-pr-merge-pull.py`, `dev-env-sync.py`, `journal-canonical-guard.py` |
 
@@ -60,7 +60,7 @@ the one place all 15 are listed together. Each has its own test file in
 
 ## Wired hooks & their domain utilities
 
-The 43 scripts Claude Code invokes automatically via `claude/settings.json`, grouped with the
+The 44 scripts Claude Code invokes automatically via `claude/settings.json`, grouped with the
 utility scripts that serve the same workflow area — mirroring
 [`tests/README.md`](tests/README.md)'s domain grouping so the two indexes read the same way.
 **Event** names the hook registration(s) from `settings.json`; utility scripts show their
@@ -137,7 +137,7 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (19)
+### Session state, reliability & token tracking (20)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -145,6 +145,7 @@ invocation instead.
 | `pre-tool-use-skill-file-size-guard.py` | PreToolUse (Write/Edit) | Blocks a Write/Edit that would leave a `SKILL.md` file over a configurable byte ceiling (default 256KB). See [ADR-127](../../docs/adr/127-skill-file-size-guard.md). |
 | `session-mode-prompt.py` | UserPromptSubmit | One-time per-session reminder of the active permission mode (plan/bypass/auto). |
 | `dev-env-sync.py` | UserPromptSubmit | Fast-forward pulls dev-env to `origin/main`; auto-returns a clean canonical to `main` or warns; escalates a persistent pull failure. |
+| `session-start-sync.py` | SessionStart | Generalizes `dev-env-sync.py`'s fetch/ff-only-or-warn mechanic to any repo a session starts in (any other repo — dev-env's own canonical stays covered by `dev-env-sync.py`); auto-fast-forwards only a canonical/sole checkout on its own default branch, clean and ff-safe, with no other session active there recently, else emits a loud advisory naming why not. [ADR-130](../../docs/adr/130-session-start-fetch-ff-only-or-warn.md) |
 | `turn-count-hook.py` | UserPromptSubmit | Warns when session context token/turn count exceeds threshold. |
 | `idle-refresher.py` | UserPromptSubmit | After a long idle gap, injects a cue to open the reply with a refresher of prior state. |
 | `hook-liveness-check.py` | UserPromptSubmit | Warns when a wired hook's heartbeat has gone stale (hasn't recorded in its expected cadence). |
