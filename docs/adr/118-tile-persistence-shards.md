@@ -2,7 +2,7 @@
 
 Date: 2026-07-22
 Status: Accepted
-Tags: tiles, spawn-task, persistence, shards, journal, hooks, UserPromptSubmit, crash-recovery, mcp, foreground-ui, claude-facing, adr-046, adr-053, adr-056, adr-057, adr-094, adr-098, deletion-advisory, git-status, adr-119
+Tags: tiles, spawn-task, persistence, shards, journal, hooks, UserPromptSubmit, crash-recovery, mcp, foreground-ui, claude-facing, adr-046, adr-053, adr-056, adr-057, adr-094, adr-098, deletion-advisory, git-status, adr-119, adr-131, retro-chain
 
 ## Context
 
@@ -494,3 +494,48 @@ scope explicit rather than leaving it to be re-derived per session.
 **References:** dev-env#958, dev-env#950, [ADR-119](119-day-rollover-draft-branch-and-orphaned-shard-deletions.md)
 §3 (the classification model reused unchanged), [ADR-056](056-per-session-sharding-journal-companion-files.md)
 (the disjoint-per-file guarantee this reuses, one artifact type over).
+
+---
+
+## Amendment 6 (2026-08-09, dev-env#967) — optional `chain` field for retro-chain tiles
+
+**Related:** [ADR-131](131-retro-chain-idempotent-refill.md), [dev-env#967](https://github.com/brownm09/dev-env/issues/967)
+
+[ADR-131](131-retro-chain-idempotent-refill.md) builds a self-healing mechanism on top of this ADR's
+shard model: a tile spawned as one link in a `retro-action` backlog-burn-down chain needs to be
+recognizable as such, both by a human reading the shard and by `retro-chain-status.py`'s own
+classification (which locates a repo's newest chain shard to decide whether its chain is still
+alive). This amendment formalizes the field those tiles carry.
+
+**The field.** An optional `chain` object, present only on a tile shard spawned by
+`retro-chain-refill` or by a session following a CHAIN block another such tile carried forward:
+
+```json
+{"queue_issue": "https://github.com/brownm09/dev-env/issues/963", "seeded_by": "biweekly-retro 2026-08-08"}
+```
+
+`queue_issue` is the URL of the `retro-action`-labeled queue issue this link's item came from —
+letting a human, or `retro-chain-status.py` itself, trace a chain link back to its source without
+re-deriving it from `prompt` text. `seeded_by` is a free-text label naming which caller and which run
+produced the link (`biweekly-retro <date>` or `retro-chain-backstop <date>`, per ADR-131's Decision
+section) — the provenance trail ADR-131's own idempotency argument depends on being auditable after
+the fact.
+
+**Deliberately not added to `TILE_REQUIRED_FIELDS`.** The overwhelming majority of tile shards,
+including every shard written before this amendment and most written after it, are not part of any
+chain — an ordinary follow-up tile has no queue issue to reference and no chain to belong to. Adding
+`chain` to the required set would make every non-chain shard newly invalid against
+`missing_tile_fields`, for a field that is meaningless outside the one mechanism that populates it.
+This mirrors this ADR's own precedent for `stub` (optional, for the parallel reason that not every
+tile-spawning session writes one) rather than the precedent for the seven fields that make an exact
+re-spawn possible, which really are universal.
+
+**No new validation added in this amendment.** `_journal_schema.py` already has a precedent for
+validating a present-but-malformed optional field's *shape*, not just its presence
+(`malformed_tile_fields`'s `cwd` check, Amendment 4 above) — a natural extension would check that a
+present `chain` is a dict with a string `queue_issue`. Left for a follow-up rather than bundled here,
+matching this ADR's own established pattern of validation arriving reactively, after a real incident,
+rather than preemptively for a field with none yet.
+
+**References:** [ADR-131](131-retro-chain-idempotent-refill.md) — the mechanism this field supports;
+[dev-env#967](https://github.com/brownm09/dev-env/issues/967) — tracking issue.
