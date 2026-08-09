@@ -11,9 +11,12 @@ Three properties carry real risk and get the most coverage here:
 1. **URL validation gates a destructive path.** The remove branch `unlink`s the shard, so a
    mis-resolved `--repo` that answers CLOSED destroys a payload that cannot be
    reconstructed -- and `gh --repo` accepts a `HOST/OWNER/REPO` form, so an unvalidated URL
-   is a redirect primitive. `test_repo_from_issue_url_*` pins the host check, the
-   owner/repo character class, and that every rejection routes to skip-and-keep rather than
-   to an unlink. This is stricter than the `reconcile-open-prs.py` precedent by design.
+   is a redirect primitive. `repo_from_issue_url`'s own behavior (the host check, the
+   owner/repo character class, non-string/garbage rejection) is `_gh_issue_state.py`'s to pin
+   (dev-env#967, ADR-131 extracted it there) -- what this file pins is that every rejection,
+   whatever `repo_from_issue_url` decides, routes to skip-and-keep rather than to an unlink
+   (`test_invalid_url_shard_is_skipped_never_unlinked`). This is stricter than the
+   `reconcile-open-prs.py` precedent by design.
 
 2. **The issue number comes from the FILENAME, never the URL** -- so even a URL that passes
    validation cannot redirect the lookup to a different issue. Pinned directly, plus the
@@ -28,14 +31,17 @@ Three properties carry real risk and get the most coverage here:
 
 4. **The REST transport's two silent hazards** (dev-env#882, ADR-118 Amendment 3). Moving the
    lookup off GraphQL onto the `core` bucket introduced two failure modes that a naive test
-   passes straight through, so both are pinned on `issue_states_from_rows`, the pure helper
-   that exists precisely to make them coverable. *PR rows:* REST models a pull request as an
-   issue, so a shard whose number names a PR would resolve to that PR's state and be unlinked
-   on a closed one -- the GraphQL predecessor filtered server-side and needed no such check.
-   *State case:* REST answers lowercase `"closed"` where `should_remove_tile` compares
-   `"CLOSED"`, so without normalization the hook goes *inert* -- fail-safe in direction, total
-   in effect, and reported nowhere. The case pin runs raw REST rows all the way to the
-   `unlink`, because that is the only level at which dropping normalization actually fails.
+   passes straight through: *PR rows* (REST models a pull request as an issue, so a shard
+   whose number names a PR would resolve to that PR's state and be unlinked on a closed one
+   -- the GraphQL predecessor filtered server-side and needed no such check) and *state case*
+   (REST answers lowercase `"closed"` where `should_remove_tile` compares `"CLOSED"`, so
+   without normalization the hook goes *inert* -- fail-safe in direction, total in effect, and
+   reported nowhere). `issue_states_from_rows`'s own behavior against both hazards, and the
+   jq projection's structural safety, are pinned once in `_gh_issue_state.py`'s own test file
+   (dev-env#967, ADR-131 extracted the function there too) -- `test_rest_closed_row_prunes_end_to_end`
+   is what stays here, because it is the only level at which dropping normalization actually
+   fails: it runs raw REST rows all the way to the `unlink`, so a regression that leaves every
+   per-function test elsewhere green still goes red here.
 
 Also pinned: the conservative keep-on-uncertainty contract (only a confirmed CLOSED
 removes), that a survivor shard is left byte-identical (the ADR-056 no-clobber guarantee,
@@ -152,49 +158,14 @@ def _journal(root: Path, project="dev-env") -> Path:
 
 
 # --- URL validation: the guard in front of a destructive path ----------------
-
-
-def test_repo_from_issue_url_accepts_github() -> str:
-    assert repo_from_issue_url(URL.format(n=869)) == REPO
-    assert repo_from_issue_url("https://github.com/o/r") == "o/r", "no trailing path needed"
-    assert repo_from_issue_url("https://github.com/o/r/issues/1?x=y#z") == "o/r"
-    assert repo_from_issue_url("https://GitHub.COM/o/r/issues/1") == "o/r", \
-        "host compare is case-insensitive (RFC 3986 s3.2.2 normalization, not a relaxation)"
-    return "well-formed github.com issue URLs resolve to owner/repo"
-
-
-def test_repo_from_issue_url_rejects_foreign_and_crafted_hosts() -> str:
-    # `gh --repo` accepts HOST/OWNER/REPO, so a non-github host is a credential-redirect
-    # primitive, not a cosmetic problem.
-    for bad in [
-        "https://evil.com/o/r/issues/1",
-        "https://github.com.evil.com/o/r/issues/1",
-        "https://user@github.com/o/r/issues/1",   # userinfo -> netloc != github.com
-        "https://github.com:8080/o/r/issues/1",   # port -> netloc != github.com
-        "https://raw.githubusercontent.com/o/r",
-        "ssh://github.com/o/r",                   # non-http scheme still carries a netloc
-    ]:
-        assert repo_from_issue_url(bad) is None, f"must reject foreign/crafted host: {bad}"
-    return "any netloc that is not exactly github.com is rejected (incl. userinfo, port, subdomain)"
-
-
-def test_repo_from_issue_url_rejects_bad_owner_repo_chars() -> str:
-    for bad in [
-        "https://github.com/o r/repo",        # space
-        "https://github.com/o;rm -rf/repo",    # shell metacharacters
-        "https://github.com/o/re:po",          # colon -> could read as HOST/OWNER/REPO
-        "https://github.com/../../etc/passwd",
-        "https://github.com/o",                # only one path segment
-        "https://github.com/",                 # no segments
-    ]:
-        assert repo_from_issue_url(bad) is None, f"must reject: {bad}"
-    return "owner/repo must match ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$; anything else rejected"
-
-
-def test_repo_from_issue_url_rejects_non_strings_and_garbage() -> str:
-    for bad in [None, "", 42, [], {}, "not a url", "github.com/o/r"]:
-        assert repo_from_issue_url(bad) is None, f"must reject: {bad!r}"
-    return "None/non-str/empty/scheme-less input returns None rather than raising"
+#
+# `repo_from_issue_url`'s own behavior (host check, owner/repo character class, non-string/
+# garbage rejection) is pinned once, in `_gh_issue_state.py`'s own test file
+# (tests/test_gh_issue_state.py) -- this file no longer duplicates that coverage (dev-env#967
+# /review found 13 tests re-created here near-identically after the extraction; see the
+# identity pin below, `test_gh_issue_state_names_are_the_shared_helpers`, which is what now
+# guards against this hook silently drifting from that single implementation). What stays here
+# is hook-specific: the consequence of a validation failure inside THIS hook's own logic.
 
 
 def test_invalid_url_shard_is_skipped_never_unlinked() -> str:
@@ -482,73 +453,12 @@ def _rest_pr(number, state="closed"):
             "pull_request": {"url": f"https://api.github.com/repos/o/r/pulls/{number}"}}
 
 
-def test_issue_states_from_rows_drops_pull_requests() -> str:
-    # REST /issues returns PRs too. Issues and PRs share ONE number sequence per repo, so this is
-    # not a collision between two live objects -- the hazard is a shard whose number names a PR,
-    # which without the filter resolves to that PR's state and gets unlinked on a closed one.
-    rows = [_rest_pr(885), _rest_pr(884), _rest_issue(883), _rest_issue(882)]
-    got = issue_states_from_rows(rows)
-    assert got == {883: "OPEN", 882: "OPEN"}, f"only issue rows survive, got {got}"
-    for pr in (885, 884):
-        assert pr not in got, f"PR #{pr} must be absent (-> None -> kept), not resolved"
-    assert should_remove_tile(got.get(885)) is False, \
-        "a shard numbered like a closed PR must resolve to unresolved-and-kept, never removed"
-    return "PR rows are dropped, so a shard naming a PR resolves to None (kept), not to its state"
-
-
-def test_issue_states_from_rows_filters_projected_pr_shape_identically() -> str:
-    # `fetch_repo_issue_states` asks gh for a projection that keeps `pull_request` as a bare
-    # `true` instead of the full object, purely to shrink the payload. The Python rule keys on the
-    # key's PRESENCE, so both shapes must classify the same -- otherwise the projection silently
-    # becomes classification logic living in an untested jq string.
-    full = issue_states_from_rows([_rest_pr(885), _rest_issue(883)])
-    projected = issue_states_from_rows([
-        {"number": 885, "state": "closed", "pull_request": True},
-        {"number": 883, "state": "open"},
-    ])
-    assert full == projected == {883: "OPEN"}, f"{full} != {projected}"
-    return "the projected `pull_request: true` shape and a full REST row classify identically"
-
-
-def test_issue_states_from_rows_treats_pull_request_key_presence_not_truthiness() -> str:
-    # If the projection ever emits an explicit null for issues, presence-based filtering drops
-    # every row -> everything unresolved -> everything kept. That is the safe direction, and it is
-    # the reason the rule is presence rather than truthiness; pinned so it stays that way.
-    got = issue_states_from_rows([{"number": 883, "state": "open", "pull_request": None}])
-    assert got == {}, f"a null `pull_request` still marks a PR row, got {got}"
-    return "presence of `pull_request` classifies, not its value -- degrades to kept, not mispruned"
-
-
-def test_issue_projection_preserves_the_pull_request_marker() -> str:
-    # `_ISSUE_PROJECTION` decides what SHAPE reaches issue_states_from_rows, and it cannot be
-    # executed offline (gh owns the jq), so without this gate it is the one piece of the transport
-    # covered by nothing but a comment. The dangerous edit is the natural-looking simplification
-    # `[.[] | {number, state}]` -- dropping the marker as redundant, since Python does the
-    # filtering anyway. That makes PR rows arrive INDISTINGUISHABLE from issues, so a shard
-    # numbered like a closed PR is resolved and unlinked: the exact mis-prune this PR exists to
-    # prevent, with every other test in this file still green.
-    #
-    # Structural, in the same spirit as the AST scan of the emit_advisory call site below: pin the
-    # properties that make the projection safe, not its exact spelling.
-    proj = mod._ISSUE_PROJECTION
-    assert 'has("pull_request")' in proj, \
-        "the projection must DETECT the PR marker"
-    assert proj.count("pull_request") >= 2, \
-        "the marker must be detected AND re-emitted -- one occurrence cannot round-trip it"
-    assert "select(" not in proj, \
-        ("the projection must not filter rows: classification belongs in "
-         "issue_states_from_rows, where it is testable, not in an unexecutable jq string")
-    for field in ("number", "state"):
-        assert field in proj, f"the projection must carry `{field}` through"
-    return "the jq projection detects and re-emits `pull_request`, and never filters rows itself"
-
-
-def test_issue_states_from_rows_uppercases_state() -> str:
-    got = issue_states_from_rows([_rest_issue(1, "open"), _rest_issue(2, "closed")])
-    assert got == {1: "OPEN", 2: "CLOSED"}, f"REST lowercase must be normalized, got {got}"
-    assert should_remove_tile(got[2]) is True and should_remove_tile(got[1]) is False, \
-        "the normalized values must satisfy should_remove_tile's case-sensitive contract"
-    return 'REST "open"/"closed" are upper-cased into the vocabulary should_remove_tile expects'
+# `issue_states_from_rows`'s own behavior (PR-row dropping, both raw and projected shapes,
+# presence-vs-truthiness, state upper-casing) and `_ISSUE_PROJECTION`'s structural safety are
+# pinned once, in `_gh_issue_state.py`'s own test file -- not duplicated here (see the note
+# above the URL-validation section). `test_rest_closed_row_prunes_end_to_end` below stays: it
+# is a hook-specific end-to-end check (raw REST rows all the way through to the actual
+# `unlink`), not a re-test of `issue_states_from_rows` in isolation.
 
 
 def test_rest_closed_row_prunes_end_to_end() -> str:
@@ -573,28 +483,13 @@ def test_rest_closed_row_prunes_end_to_end() -> str:
     return 'raw REST rows -> unlink: a lowercase "closed" prunes end-to-end (the inertness caveat)'
 
 
-def test_issue_states_from_rows_tolerates_junk() -> str:
-    for junk in [None, {}, "rows", 42]:
-        assert issue_states_from_rows(junk) == {}, f"non-list input must yield {{}}: {junk!r}"
-    got = issue_states_from_rows([
-        "not a dict",
-        None,
-        {"number": 1},                                # no state
-        {"number": 2, "state": 7},                    # non-string state
-        {"state": "open"},                            # no number
-        {"number": "3", "state": "open"},             # string number
-        {"number": True, "state": "closed"},          # isinstance(True, int) is True
-        _rest_issue(9, "open"),                       # the one good row
-    ])
-    assert got == {9: "OPEN"}, f"only the well-formed row survives, got {got}"
-    return "malformed rows degrade to omission (-> unresolved -> kept), never to a spurious CLOSED"
-
-
 # --- REST transport: bounded, early-exit pagination --------------------------
-
-
-def _page(numbers, state="open"):
-    return [_rest_issue(n, state) for n in numbers]
+#
+# `should_stop_paging`'s own behavior (short/unusable page, everything-wanted-resolved,
+# crossing the lowest wanted number) is pinned once, in `_gh_issue_state.py`'s own test file --
+# not duplicated here. `test_page_budget_cannot_outrun_the_lookup_budget` below stays: it is a
+# hook-specific invariant between this hook's own `LOOKUP_BUDGET_SECONDS` and the imported
+# pagination constants, not a re-test of `should_stop_paging` in isolation.
 
 
 def test_page_budget_cannot_outrun_the_lookup_budget() -> str:
@@ -614,38 +509,6 @@ def test_page_budget_cannot_outrun_the_lookup_budget() -> str:
         "or give the page loop its own deadline"
     )
     return "MAX_ISSUE_PAGES * GH_CALL_TIMEOUT stays within LOOKUP_BUDGET_SECONDS (invariant, not a comment)"
-
-
-def test_should_stop_paging_stops_on_short_or_unusable_page() -> str:
-    assert should_stop_paging(_page(range(200, 195, -1)), {}, {150}, page_size=100) is True
-    for junk in [None, "rows", {}]:
-        assert should_stop_paging(junk, {}, {150}, page_size=100) is True, \
-            f"an unusable page ends the walk rather than looping: {junk!r}"
-    return "a short page is the last page; an unusable one ends the walk instead of looping"
-
-
-def test_should_stop_paging_stops_when_everything_wanted_is_resolved() -> str:
-    full = _page(range(200, 100, -1))
-    assert len(full) == 100, "fixture must be a full page or the short-page rule masks this one"
-    assert should_stop_paging(full, {150: "OPEN", 160: "OPEN"}, {150, 160}, page_size=100) is True
-    assert should_stop_paging(full, {150: "OPEN"}, {150, 99}, page_size=100) is False, \
-        "one number still missing and the floor not yet crossed -> another page is worth fetching"
-    assert should_stop_paging(full, {}, set(), page_size=100) is True, \
-        "nothing requested -> one page is already more than enough"
-    return "the walk stops once every requested number resolves (page 1, in the normal case)"
-
-
-def test_should_stop_paging_stops_after_crossing_the_lowest_wanted_number() -> str:
-    # REST /issues is created-desc and numbers are assigned in creation order, so a row below the
-    # lowest wanted number proves every later page is older still. #105 here is a PR, so it never
-    # reaches `resolved` -- exactly the case that would otherwise page to the cap for nothing.
-    full = _page(range(200, 101, -1)) + [_rest_pr(101)]
-    assert len(full) == 100
-    assert should_stop_paging(full, {150: "OPEN"}, {150, 105}, page_size=100) is True, \
-        "row #101 is below the floor of 105 -> stop; #105 stays unresolved -> kept"
-    assert should_stop_paging(full, {150: "OPEN"}, {150, 100}, page_size=100) is False, \
-        "floor 100 is not crossed by this page -> keep paging"
-    return "crossing min(wanted) ends the walk; the unfound number resolves to None (kept)"
 
 
 # --- directory cleanup --------------------------------------------------------
@@ -1316,10 +1179,6 @@ def test_format_deletion_message_quotes_journal_repo_path() -> str:
 
 def main() -> int:
     tests = [
-        ("url validation accepts github.com", test_repo_from_issue_url_accepts_github),
-        ("url validation rejects foreign/crafted hosts", test_repo_from_issue_url_rejects_foreign_and_crafted_hosts),
-        ("url validation rejects bad owner/repo chars", test_repo_from_issue_url_rejects_bad_owner_repo_chars),
-        ("url validation rejects non-strings/garbage", test_repo_from_issue_url_rejects_non_strings_and_garbage),
         ("invalid url -> skip-and-keep, never unlink", test_invalid_url_shard_is_skipped_never_unlinked),
         ("issue number from filename, not url", test_issue_number_taken_from_filename_not_url),
         ("issue field disagreeing with filename skipped", test_issue_field_disagreeing_with_filename_is_skipped),
@@ -1338,17 +1197,8 @@ def main() -> int:
         ("wall-clock budget stops further fetches", test_lookup_states_budget_stops_further_fetches),
         ("empty plan makes no calls", test_lookup_states_empty_plan_makes_no_calls),
         ("fetch receives the requested numbers", test_lookup_states_passes_requested_numbers_to_fetch),
-        ("REST: PR rows dropped", test_issue_states_from_rows_drops_pull_requests),
-        ("REST: projected PR shape filtered alike", test_issue_states_from_rows_filters_projected_pr_shape_identically),
-        ("REST: pull_request presence, not truthiness", test_issue_states_from_rows_treats_pull_request_key_presence_not_truthiness),
-        ("REST: jq projection preserves the PR marker", test_issue_projection_preserves_the_pull_request_marker),
-        ("REST: state upper-cased", test_issue_states_from_rows_uppercases_state),
         ('REST: lowercase "closed" prunes end-to-end', test_rest_closed_row_prunes_end_to_end),
-        ("REST: malformed rows omitted, never CLOSED", test_issue_states_from_rows_tolerates_junk),
         ("page budget stays within the lookup budget", test_page_budget_cannot_outrun_the_lookup_budget),
-        ("paging stops on a short/unusable page", test_should_stop_paging_stops_on_short_or_unusable_page),
-        ("paging stops once wanted is resolved", test_should_stop_paging_stops_when_everything_wanted_is_resolved),
-        ("paging stops after crossing min(wanted)", test_should_stop_paging_stops_after_crossing_the_lowest_wanted_number),
         ("emptied tiles/ dir pruned, others kept", test_prune_removes_emptied_tiles_dir_only),
         ("rmdir is race-tolerant", test_prune_leaves_dir_when_a_shard_reappears),
         ("no removals -> nothing pruned", test_prune_with_no_removals_touches_nothing),

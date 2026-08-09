@@ -27,10 +27,16 @@ unvalidated to ``gh --repo`` — which accepts a ``HOST/OWNER/REPO`` form, makin
 unvalidated URL segment a credential-redirect primitive, not a cosmetic risk. See that
 function's own docstring for the four required checks.
 
-This module is import-only in the sense that it has no ``main()`` and no ``_winsubp`` —
-but it DOES perform two subprocess calls (``fetch_repo_issue_states``, ``check_issue_state``),
-both wrapping ``gh api`` against the REST Issues endpoint
-(https://docs.github.com/en/rest/issues/issues). Those two are the untested subprocess
+This module is import-only in the sense that it has no ``main()`` — but unlike a purely
+offline module (``_journal_shards.py``, ``_journal_schema.py``, ``_worktree_canon.py``), it
+DOES perform two subprocess calls (``fetch_repo_issue_states``, ``check_issue_state``), both
+wrapping ``gh api`` against the REST Issues endpoint
+(https://docs.github.com/en/rest/issues/issues). It therefore imports ``_winsubp`` itself,
+matching this repo's own convention for every other subprocess-spawning shared module
+(``_hookio.py``, ``_bash_state.py``) and the global Hook Safety rule that subprocess-spawning
+code import it — rather than relying on each of this module's own callers to have imported it
+first, an invisible cross-module contract that both of today's two consumers happen to honor
+but a future third one could easily miss. The two subprocess calls are the untested subprocess
 boundary, matching this repo's fixture-only convention; every pure function around them
 (``repo_from_issue_url``, ``issue_states_from_rows``, ``should_stop_paging``,
 ``issue_number_from_url``, ``is_closed``) unit-tests offline
@@ -38,6 +44,7 @@ boundary, matching this repo's fixture-only convention; every pure function arou
 """
 from __future__ import annotations
 
+import _winsubp  # noqa: F401  -- suppress console windows + default UTF-8 decoding on Windows
 import json
 import re
 import subprocess

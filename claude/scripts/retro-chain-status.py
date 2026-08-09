@@ -64,13 +64,21 @@ of:
   - `ALL_TILED` -- a queue issue with unchecked items was found, but every unchecked item's
     inline issue reference already has a shard on disk (already tiled or in flight).
   - `AMBIGUOUS` -- a queue issue with unchecked items was found, but an untagged (non-chain)
-    shard was spawned in this project on or after the queue's creation date -- it may
-    already cover the top item. The classifier does not guess; report for a session's own
-    judgment (and a `list_sessions` cross-check) rather than risk a duplicate spawn.
-  - `NEEDS_REFILL` -- the current actionable item: `item_text`, and `candidate_issue`
-    (an int, or `null` if the item cited no inline `#NNN`) plus `candidate_valid` (whether
-    that candidate resolved to an OPEN, non-PR issue -- `null` when there was no candidate
-    to check).
+    shard was spawned on or after the reference point below -- it may already cover the top
+    item. The classifier does not guess; report for a session's own judgment (and a
+    `list_sessions` cross-check) rather than risk a duplicate spawn. The reference point is the
+    most recent chain-tagged shard's own `spawned` date when one exists (even a CLOSED one --
+    the last confirmed chain activity), or the queue issue's creation date only when this
+    project has never had a chain shard for this queue at all. Narrower than "the queue's
+    creation date" unconditionally: a queue issue lives for roughly two weeks between biweekly
+    runs, and scoping every check to that whole window would flag routine, unrelated tile
+    activity as ambiguous for nearly the queue's entire life.
+  - `NEEDS_REFILL` -- the current actionable item: `item_text`, and `candidate_issue` (an
+    int, or `null` if the item cited no inline `#NNN`). This script does **not** validate
+    `candidate_issue` (resolve it to an OPEN, non-PR issue) -- the caller must do that live,
+    at mutation time, regardless of what this classification found: classification and
+    mutation happen at different moments, and this repo's state moves fast enough between
+    them that a stale validity check would be actively misleading, not merely redundant.
   - `ERROR` -- the `--repo` value failed shape validation, or an unexpected exception was
     raised while processing this repo; `error` names what happened.
 
@@ -88,15 +96,30 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
-from _journal_shards import iter_tile_shards, project_dirs, shard_number  # noqa: F401 -- project_dirs kept for parity/future use
+from _journal_shards import iter_tile_shards, shard_number
 from _gh_issue_state import (
     GH_CALL_TIMEOUT,
     check_issue_state,
+    is_closed,
     repo_from_issue_url,
 )
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+
+# The status vocabulary, defined once so code, tests, and callers can never drift apart on the
+# literal strings (found already drifted once within this same PR -- an early draft of
+# ADR-131 described this as "a five-way decision table" after the implementation had already
+# grown to seven statuses; see the module docstring above for what each one means).
+STATUS_ALIVE = "ALIVE"
+STATUS_UNRESOLVED = "UNRESOLVED"
+STATUS_NO_QUEUE_FOUND = "NO_QUEUE_FOUND"
+STATUS_QUEUE_EXHAUSTED = "QUEUE_EXHAUSTED"
+STATUS_ALL_TILED = "ALL_TILED"
+STATUS_AMBIGUOUS = "AMBIGUOUS"
+STATUS_NEEDS_REFILL = "NEEDS_REFILL"
+STATUS_ERROR = "ERROR"
 
 # Unique substring of the CHAIN block's header line, confirmed present verbatim in every
 # 2026-08-08 seeded tile's `prompt` field. Some historical shards predate the `chain` field
@@ -104,40 +127,58 @@ JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 # still recognizes them as chain tiles.
 CHAIN_BLOCK_SIGNATURE = "CHAIN (do this before you finish"
 
-# A real markdown checklist line: optional leading whitespace, a dash, a checkbox, then the
-# item text. Deliberately does not match an "Escalations" bullet (`- **bold** ...`), which
-# carries no `[ ]`/`[x]` at all -- confirmed against the real dev-env#963 body during design.
-_CHECKLIST_RE = re.compile(r"^[ \t]*-\s\[([ xX])\]\s+(.*)$")
+# The CHAIN block's actual header line, anchored to the start of a line -- deliberately
+# stricter than a bare `CHAIN_BLOCK_SIGNATURE in prompt` substring test, which would also
+# match a tile that merely quotes or discusses the block in ordinary prose (e.g. a follow-up
+# tile about this very mechanism). re.MULTILINE makes `^` match after any `\n`, not only at
+# the start of the whole string.
+_CHAIN_BLOCK_HEADER_RE = re.compile(r"^===\s*CHAIN\s*\(do this before you finish", re.MULTILINE)
+
+# A real markdown checklist line: optional leading whitespace, a GFM list marker (`-`, `*`, or
+# `+` -- all three are valid task-list bullets), a checkbox, then the item text. Deliberately
+# does not match an "Escalations" bullet (`- **bold** ...`), which carries no `[ ]`/`[x]` at
+# all -- confirmed against the real dev-env#963 body during design.
+_CHECKLIST_RE = re.compile(r"^[ \t]*[-*+][ \t]+\[([ xX])\][ \t]+(.*)$")
 
 _FENCE_RE = re.compile(r"^[ \t]*```")
 
-# A bare `#NNN` reference -- not preceded by a word character, `/`, `-`, or similar, so
-# `dev-env#945`-style cross-repo mentions are excluded (a real false positive found in the
-# live dev-env#963 body during design; the char immediately before `#` there is `v`, which
-# `\w` correctly rejects).
-_BARE_ISSUE_REF_RE = re.compile(r"(?<!\w)#(\d+)\b")
+# A bare `#NNN` reference -- not preceded by a word character (so `dev-env#945`-style
+# cross-repo mentions are excluded -- a real false positive found in the live dev-env#963 body
+# during design; the char immediately before `#` there is `v`, which `\w` correctly rejects)
+# or `[` (so the visible text of a markdown link, `[#945](url)`, is excluded too -- `[` is not
+# a word character, so without this the lookbehind alone would still match it).
+_BARE_ISSUE_REF_RE = re.compile(r"(?<![\w\[])#(\d+)\b")
 
 
 # --- pure helpers (unit-tested in tests/test_retro_chain_status.py) -----------
 
 
 def parse_checklist(body) -> list[tuple[bool, str]]:
-    """Every `- [ ]`/`- [x]` line in *body*, as `(checked, text)`, in document order.
+    """Every `- [ ]`/`- [x]` (or `*`/`+`) line in *body*, as `(checked, text)`, in document
+    order.
 
     Lines inside fenced code blocks (```` ``` ````) are skipped -- a checklist-shaped line
     quoted inside an example would otherwise be misread as a real item, mirroring
     `_composed_output_scan.py`'s fence-awareness (ADR-121), this repo's own precedent for
-    exactly this class of bug. A non-string *body* yields `[]` rather than raising.
+    exactly this class of bug. Fence-skipping only activates when the body's fence markers
+    balance (an even count) -- an unterminated fence (a stray ```` ``` ```` in prose, a
+    truncated body) makes it impossible to tell which lines were meant to be "inside," so
+    fence-awareness is disabled entirely for that body rather than silently discarding every
+    checklist item after the unterminated marker. A non-string *body* yields `[]` rather than
+    raising.
     """
     if not isinstance(body, str):
         return []
+    lines = body.splitlines()
+    fence_count = sum(1 for line in lines if _FENCE_RE.match(line))
+    fence_aware = fence_count % 2 == 0
     items: list[tuple[bool, str]] = []
     in_fence = False
-    for line in body.splitlines():
-        if _FENCE_RE.match(line):
+    for line in lines:
+        if fence_aware and _FENCE_RE.match(line):
             in_fence = not in_fence
             continue
-        if in_fence:
+        if fence_aware and in_fence:
             continue
         m = _CHECKLIST_RE.match(line)
         if m:
@@ -214,28 +255,44 @@ def is_chain_shard(entry) -> bool:
     """True if *entry* is recognizably a link in the chain mechanism.
 
     Two independent signals, either sufficient: a valid `chain` field (ADR-118 Amendment 6,
-    going forward), or the CHAIN block's signature text inside `prompt` (present in every
-    2026-08-08 shard, which predates the `chain` field). Checking both means a historical
-    shard missing the newer field is still recognized correctly.
+    going forward), or the CHAIN block's header line, anchored to the start of a line, inside
+    `prompt` (present in every 2026-08-08 shard, which predates the `chain` field). The header
+    match is deliberately anchored rather than a bare substring test -- an unanchored match
+    would also fire on a tile that merely quotes or discusses the block in ordinary prose (for
+    example, a follow-up tile about this very mechanism), misclassifying an unrelated tile as a
+    live chain link. Checking both signals means a historical shard missing the newer field is
+    still recognized correctly.
     """
     if chain_field(entry) is not None:
         return True
     prompt = entry.get("prompt") if isinstance(entry, dict) else None
-    return isinstance(prompt, str) and CHAIN_BLOCK_SIGNATURE in prompt
+    return isinstance(prompt, str) and bool(_CHAIN_BLOCK_HEADER_RE.search(prompt))
 
 
 def newest_chain_shard(numbered_entries) -> dict | None:
-    """The chain-tagged shard with the highest issue number, as `{"issue": N, "entry": {...}}`.
+    """The chain-tagged shard that was spawned most recently, as
+    `{"issue": N, "entry": {...}}`.
 
-    *numbered_entries* is `[(issue_number, entry), ...]`. Issue numbers increase over time
-    within a repo, so the highest-numbered chain shard is the most recently spawned link --
-    an adequate recency proxy, since shards carry no finer-grained spawn timestamp than a
-    date. Returns `None` if no entry is chain-tagged.
+    *numbered_entries* is `[(issue_number, entry), ...]`. Keyed by each shard's own `spawned`
+    date (a `TILE_REQUIRED_FIELDS` member, ADR-118) -- tie-broken by issue number -- rather
+    than issue number alone. Issue number is not a safe recency proxy here: per ADR-131, four
+    of six chained repos anchor a chain link on a *pre-existing* issue, which is frequently
+    lower-numbered than the link before it, so "the chain shard with the highest issue number"
+    can pick a stale, superseded link over the genuinely newest one. A shard whose `spawned`
+    is missing or malformed (defensive -- ADR-118 requires it) sorts as the earliest possible
+    value so it never wins a tie against a shard that has one. Returns `None` if no entry is
+    chain-tagged.
     """
     chained = [(n, e) for n, e in numbered_entries if is_chain_shard(e)]
     if not chained:
         return None
-    n, e = max(chained, key=lambda pair: pair[0])
+
+    def _recency_key(pair: tuple[int, dict]) -> tuple[str, int]:
+        n, e = pair
+        spawned = e.get("spawned") if isinstance(e, dict) else None
+        return (spawned if isinstance(spawned, str) else "", n)
+
+    n, e = max(chained, key=_recency_key)
     return {"issue": n, "entry": e}
 
 
@@ -267,37 +324,58 @@ def classify_repo_status(
     """
     if chain_candidate is not None:
         if chain_issue_state == "OPEN":
-            return {"status": "ALIVE", "chain_issue": chain_candidate["issue"], "notes": []}
+            return {"status": STATUS_ALIVE, "chain_issue": chain_candidate["issue"], "notes": []}
         if chain_issue_state is None:
             return {
-                "status": "UNRESOLVED",
+                "status": STATUS_UNRESOLVED,
                 "chain_issue": chain_candidate["issue"],
                 "notes": ["could not confirm this chain tile's issue state -- not refilling this round"],
+            }
+        if not is_closed(chain_issue_state):
+            # An unrecognized state -- neither OPEN, unconfirmable (None), nor a value
+            # `_gh_issue_state.is_closed` recognizes as closed. Treat the same as UNRESOLVED
+            # rather than assuming CLOSED: guessing wrong in the "still alive" direction risks
+            # the duplicate spawn this whole mechanism exists to prevent.
+            return {
+                "status": STATUS_UNRESOLVED,
+                "chain_issue": chain_candidate["issue"],
+                "notes": [f"chain issue state {chain_issue_state!r} not recognized -- not refilling this round"],
             }
         # else: CLOSED -- the most recent link finished; fall through to look for the next one.
 
     queue = find_queue_issue(open_labeled_issues)
     if queue is None:
-        return {"status": "NO_QUEUE_FOUND", "notes": []}
+        return {"status": STATUS_NO_QUEUE_FOUND, "notes": []}
 
     items = parse_checklist(queue.get("body"))
     unchecked = [text for checked, text in items if not checked]
     if not unchecked:
-        return {"status": "QUEUE_EXHAUSTED", "queue_issue": queue.get("number"), "notes": []}
+        return {"status": STATUS_QUEUE_EXHAUSTED, "queue_issue": queue.get("number"), "notes": []}
 
     queue_created = str(queue.get("created_at") or "")
     queue_created_date = queue_created[:10]  # "YYYY-MM-DD" prefix of the ISO-8601 timestamp
+    # The AMBIGUOUS reference point: the most recent chain-tagged shard's own `spawned` date
+    # when one exists (even a CLOSED one -- it's still the last confirmed chain activity), or
+    # the queue's creation date only when this project has never had a chain shard for this
+    # queue at all. A queue issue lives roughly two weeks between biweekly runs; scoping every
+    # check to that whole window (as opposed to since the chain last actually moved) would flag
+    # routine, unrelated tile activity as ambiguous for nearly the queue's entire life.
+    window_start = queue_created_date
+    if chain_candidate is not None:
+        chain_spawned = chain_candidate["entry"].get("spawned")
+        if isinstance(chain_spawned, str) and chain_spawned:
+            window_start = chain_spawned
     same_window = sorted({
         n for n, spawned in other_shard_dates
-        if isinstance(spawned, str) and spawned >= queue_created_date
+        if isinstance(spawned, str) and spawned >= window_start
     })
     if same_window:
         return {
-            "status": "AMBIGUOUS",
+            "status": STATUS_AMBIGUOUS,
             "queue_issue": queue.get("number"),
             "notes": [
-                f"untagged shard(s) for issue(s) {same_window} spawned on/after this queue's "
-                "creation date -- may already cover the top item; not guessing"
+                f"untagged shard(s) for issue(s) {same_window} spawned on/after "
+                f"{window_start} -- may already cover the top item; not guessing"
             ],
         }
 
@@ -307,7 +385,7 @@ def classify_repo_status(
         if candidate is not None and candidate in known_shard_issues:
             continue  # already tiled at this exact issue number -- try the next item
         return {
-            "status": "NEEDS_REFILL",
+            "status": STATUS_NEEDS_REFILL,
             "queue_issue": queue.get("number"),
             "item_text": text,
             "candidate_issue": candidate,
@@ -315,7 +393,7 @@ def classify_repo_status(
         }
 
     return {
-        "status": "ALL_TILED",
+        "status": STATUS_ALL_TILED,
         "queue_issue": queue.get("number"),
         "notes": ["every unchecked item already has a shard at its referenced issue number"],
     }
@@ -331,27 +409,30 @@ def fetch_open_labeled_issues(repo: str, label: str, per_page: int = 100, max_pa
     the first page was read; a later page's failure returns whatever was already collected
     -- a partial list can only omit a candidate queue issue, never fabricate one.
 
-    Pull requests are excluded **server-side by the jq projection itself**
-    (`if has("pull_request") then empty else ... end` drops the row entirely), unlike
-    `_gh_issue_state.issue_states_from_rows`'s marker-preserving shape -- this call only
-    ever needs real issues, never needs to distinguish "resolved to a PR" from "never
-    existed" the way a destructive-unlink decision would.
+    The jq projection marks each row `is_pr` (mirroring `_gh_issue_state.issue_states_from_rows`'s
+    marker-preserving shape) rather than dropping PR rows server-side -- dropping them server-side
+    would shrink a full raw page below *per_page* whenever it happened to contain a labeled PR,
+    and the short-page-stop check below would then wrongly conclude it had reached the last page.
+    PR rows are filtered out in Python, after the raw page length has already been used for the
+    stop decision.
+
+    *label* is URL-encoded (`urllib.parse.quote`) before being interpolated into the query
+    string -- a label containing a space or `&` would otherwise silently change the query
+    rather than erroring.
 
     Not unit-tested -- subprocess boundary, matching `_gh_issue_state.fetch_repo_issue_states`'s
     convention. Everything that consumes this call's output (`find_queue_issue`,
     `is_queue_body`, `parse_checklist`) is fully covered offline.
     """
-    projection = (
-        '[.[] | if has("pull_request") then empty else '
-        '{number, title, body, created_at} end]'
-    )
+    projection = '[.[] | {number, title, body, created_at, is_pr: has("pull_request")}]'
     issues: list[dict] = []
     read_a_page = False
+    encoded_label = quote(label, safe="")
     for page in range(1, max_pages + 1):
         try:
             result = subprocess.run(
                 ["gh", "api",
-                 f"repos/{repo}/issues?labels={label}&state=open&per_page={per_page}&page={page}",
+                 f"repos/{repo}/issues?labels={encoded_label}&state=open&per_page={per_page}&page={page}",
                  "--jq", projection],
                 capture_output=True,
                 text=True,
@@ -365,8 +446,13 @@ def fetch_open_labeled_issues(repo: str, label: str, per_page: int = 100, max_pa
         if not isinstance(rows, list):
             break
         read_a_page = True
-        issues.extend(r for r in rows if isinstance(r, dict))
-        if len(rows) < per_page:
+        raw_page_len = len(rows)
+        issues.extend(
+            {"number": r.get("number"), "title": r.get("title"),
+             "body": r.get("body"), "created_at": r.get("created_at")}
+            for r in rows if isinstance(r, dict) and not r.get("is_pr")
+        )
+        if raw_page_len < per_page:
             break
     if not read_a_page:
         return None
@@ -379,9 +465,12 @@ def classify_one_repo(repo: str, journal_repo: Path) -> dict:
     """
     validated = repo_from_issue_url(f"https://github.com/{repo}")
     if validated is None:
-        return {"status": "ERROR", "error": f"not a valid owner/repo: {repo!r}"}
+        return {"status": STATUS_ERROR, "error": f"not a valid owner/repo: {repo!r}"}
 
-    project = repo.split("/")[-1]
+    # Derived from `validated`, not the raw `repo` argument -- `repo_from_issue_url` only
+    # validates the first two path segments and silently drops the rest, so an extra segment
+    # (`owner/name/..`) would otherwise reach the filesystem path unvalidated.
+    project = validated.split("/")[1]
     shards = iter_tile_shards(journal_repo / "sessions" / project / "tiles")
     numbered: list[tuple[int, dict]] = []
     for path, entry in shards:
@@ -401,19 +490,16 @@ def classify_one_repo(repo: str, journal_repo: Path) -> dict:
 
     open_issues = fetch_open_labeled_issues(validated, "retro-action")
     if open_issues is None:
-        open_issues = []
+        # A total transport failure (auth, network, rate limit -- see
+        # `fetch_open_labeled_issues`'s docstring), not "this repo genuinely has no queue
+        # issue." Reporting it as `NO_QUEUE_FOUND` would make a `gh` outage indistinguishable
+        # from a definitively empty backlog, and both callers take no action on
+        # `NO_QUEUE_FOUND` -- so the outage would silently look like a clean run.
+        return {"status": STATUS_ERROR, "error": "could not fetch open retro-action issues (gh failure)"}
 
-    result = classify_repo_status(
+    return classify_repo_status(
         chain_candidate, chain_state, open_issues, known_shard_issues, other_shard_dates,
     )
-
-    if result.get("status") == "NEEDS_REFILL":
-        candidate = result.get("candidate_issue")
-        result["candidate_valid"] = (
-            check_issue_state(candidate, validated) == "OPEN" if candidate is not None else None
-        )
-
-    return result
 
 
 def main() -> int:
@@ -437,7 +523,7 @@ def main() -> int:
         try:
             output[repo] = classify_one_repo(repo, args.journal_repo)
         except Exception as e:  # noqa: BLE001 -- never let one repo abort the batch
-            output[repo] = {"status": "ERROR", "error": f"{type(e).__name__}: {e}"}
+            output[repo] = {"status": STATUS_ERROR, "error": f"{type(e).__name__}: {e}"}
 
     print(json.dumps(output, indent=2))
     return 0

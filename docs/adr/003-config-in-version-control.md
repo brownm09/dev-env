@@ -85,14 +85,19 @@ registered routines (`nightly-cover-letters`, `biweekly-retro`, `nightly-researc
 `reconcile-project-board`) for the same gap was out of scope for dev-env#597 and has **not** been
 done as part of this amendment — flagged as follow-up work, not resolved here.
 
-**Addendum (2026-08-09, dev-env#967):** `biweekly-retro` now carries the self-referencing pattern
-(a canonical-file read at run time, embedded fallback when unreachable), added as an opportunistic
-side effect of wiring its new Step 6.5 chain-refill call (see
+**Addendum (2026-08-09, dev-env#967):** `biweekly-retro`'s **canonical** file now carries the
+self-referencing pattern (a canonical-file read at run time, embedded fallback when unreachable),
+added as an opportunistic side effect of wiring its new Step 6.5 chain-refill call (see
 [ADR-131](131-retro-chain-idempotent-refill.md)) — note its step number may not literally be "0.5"
 there, since that routine already has an unrelated Step 0.5 (the biweekly parity gate); consult
-the routine's own SKILL.md for its actual numbering. `nightly-cover-letters`, `nightly-research`,
-and `reconcile-project-board` remain pending — this closes one of the four routines this amendment
-flagged, not the whole audit.
+the routine's own SKILL.md for its actual numbering. **The live scheduled-task copy does not pick
+this up automatically** — per this file's own core rule above, editing the canonical never updates
+`~/.claude/scheduled-tasks/biweekly-retro/SKILL.md`; that requires a separate
+`update_scheduled_task` call, deliberately not performed by dev-env#967's own PR (a session-only
+mutating action requiring explicit sign-off — see that PR's "Not included in this PR" section), so
+Step 6.5 does not execute live until that follow-up runs. `nightly-cover-letters`,
+`nightly-research`, and `reconcile-project-board` remain pending — this closes one of the four
+routines this amendment flagged, not the whole audit.
 
 ---
 

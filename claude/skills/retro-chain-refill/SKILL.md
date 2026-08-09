@@ -58,7 +58,13 @@ lists is future cleanup, not part of this change.
 
 ### Step 1 -- Classify every repo
 
+Run once, redirected straight into a scratch temp file (per the global no-`jq` convention) -- do
+**not** also run the bare form first; that would run the full six-repo classification twice, at
+~2x the `gh` calls and latency, and risks two snapshots that legitimately disagree given how fast
+this repo's state moves:
+
 ```bash
+TMPFILE="C:/Users/brown/.claude/scratch/retro_chain_status_$$.json"
 py -3 C:/Users/brown/.claude/scripts/retro-chain-status.py \
     --repo brownm09/career-playbook \
     --repo brownm09/dev-env \
@@ -66,7 +72,8 @@ py -3 C:/Users/brown/.claude/scripts/retro-chain-status.py \
     --repo brownm09/win11-init-tools \
     --repo brownm09/gas-lifting-logbook \
     --repo merickvaughn/lifting-logbook \
-    --journal-repo C:/Users/brown/Git/engineering-journal
+    --journal-repo C:/Users/brown/Git/engineering-journal \
+    > "$TMPFILE"
 ```
 
 (Substitute the `repos` parameter's subset for the `--repo` flags above when supplied.) The script
@@ -76,23 +83,25 @@ Step 0 -- the junction always reflects whatever commit the canonical dev-env wor
 on `main` (the standing "canonical dev-env worktree must stay on `main`" invariant), which is the
 same reasoning `claude/CLAUDE.md`'s own `merge-stale-pr.sh` reference already relies on.
 
-Parse the JSON with `node -e` against a scratch temp file, per the global no-`jq` convention:
-
-```bash
-TMPFILE="C:/Users/brown/.claude/scratch/retro_chain_status_$$.json"
-py -3 C:/Users/brown/.claude/scripts/retro-chain-status.py --repo ... --journal-repo ... > "$TMPFILE"
-```
-
-then read `$TMPFILE` with `node -e` for the per-repo objects. The script exits 0 always; a per-repo
-failure lands in that repo's own `errors` field rather than aborting the batch -- carry every such
-repo into Step 5's summary as "could not classify -- \<error text\>," with **no** action taken, never
-silently dropped.
+Read `$TMPFILE` with `node -e` for the per-repo objects. The script exits 0 always; a per-repo
+failure lands as `{"status": "ERROR", "error": "<text>"}` on that repo's own entry (singular
+`error`, nested under `status`, not a top-level `errors` field) rather than aborting the batch --
+carry every such repo into Step 5's summary as "could not classify -- \<error text\>," with **no**
+action taken, never silently dropped.
 
 ### Step 2 -- Triage each repo's classification
 
 For each repo's `status`:
 
-- **`ALIVE` / `QUEUE_EXHAUSTED` / `NO_QUEUE_FOUND`** -- record the status, take no action.
+- **`ALIVE` / `QUEUE_EXHAUSTED` / `NO_QUEUE_FOUND` / `ALL_TILED`** -- record the status, take no
+  action. `ALL_TILED` means every unchecked item's inline issue reference already has a shard on
+  disk (already tiled or in flight) -- nothing to refill until one of those items' shard resolves.
+- **`UNRESOLVED`** -- record the status and the script's `notes` (why the chain issue's state
+  couldn't be confirmed). **Never spawn** for an `UNRESOLVED` repo -- the chain may still be alive;
+  this is the same "don't guess" principle as `AMBIGUOUS` below, applied to a `gh`-failure gap
+  instead of a same-window-shard gap.
+- **`ERROR`** -- record the status and the script's `error` text (see Step 1). No action -- carry
+  it into Step 5's summary exactly like `UNRESOLVED`/`AMBIGUOUS` rather than silently dropping it.
 - **`AMBIGUOUS`** -- record the status and the script's `notes` (which same-window shard triggered
   it) for human review. **Never spawn** for an `AMBIGUOUS` repo -- this is a deliberate "don't guess"
   outcome, not a temporary gap.
@@ -105,6 +114,8 @@ For each repo's `status`:
   already documents elsewhere, with the same honest limitation: it reduces, but does not eliminate,
   a false positive). Only a repo that survives both the script's classification and this cross-check
   proceeds to Step 3.
+- **Any other status** -- treat like `ERROR`: record it, take no action, carry it into Step 5's
+  summary. Never silently drop an unrecognized status.
 
 ### Step 3 -- Refill each still-`NEEDS_REFILL` repo
 
@@ -113,11 +124,11 @@ unchecked-item list:
 
 1. **Resolve the anchor.** If the item's text names a candidate issue inline (e.g. `#NN`), verify it
    live -- `gh issue view <N> --repo <owner>/<repo>` -- resolves to an issue in this repo that is
-   **open** and **not a pull request**. Never trust a script-reported `candidate_valid` hint (if
-   present) as a substitute for this live check: classification and mutation happen at different
-   moments, and this repo's state moves fast enough between them that a fresh check is required
-   regardless (`merickvaughn/lifting-logbook`'s currently-cited anchor `#814` is exactly this failure
-   -- an already-merged pull request, not an issue). If no candidate exists, or the candidate fails
+   **open** and **not a pull request**. `retro-chain-status.py` does not itself validate
+   `candidate_issue`, by design: classification and mutation happen at different moments, and this
+   repo's state moves fast enough between them that only a fresh, live check here is trustworthy
+   (`merickvaughn/lifting-logbook`'s currently-cited anchor `#814` is exactly this failure -- an
+   already-merged pull request, not an issue). If no candidate exists, or the candidate fails
    verification, file a fresh issue in `<owner>/<repo>` labeled `retro-action` and use it as the
    anchor -- the same convention `biweekly-retro`'s own Step 6 already uses for queue issues.
 2. **Re-check for a shard collision immediately before writing.** After the anchor issue number `N`

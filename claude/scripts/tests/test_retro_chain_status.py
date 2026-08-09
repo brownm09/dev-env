@@ -20,15 +20,22 @@ incident or a concretely-identified failure mode found while designing this mech
    pins the negative lookbehind that correctly excludes it while still matching a standalone
    `(#814)` or `#817`.
 
-3. **`classify_repo_status`'s five-way (really seven-way) decision table must route every
-   input combination to exactly the right outcome**, including two boundary pairs that are
-   easy to conflate: QUEUE_EXHAUSTED (no unchecked items at all) vs. ALL_TILED (unchecked
-   items exist, but every one already has a shard at its cited issue) -- and NO_QUEUE_FOUND
-   vs. a chain shard that resolved CLOSED with no queue issue behind it at all. Also pinned:
-   the item-skip-and-continue walk (an item whose candidate is already tiled is skipped in
-   favor of the next unchecked item, mirroring the CHAIN block's own "skip if already tiled"
-   step), and that AMBIGUOUS is scoped to same-*or-later* shards only (an older, unrelated
-   tile must never suppress a genuine refill).
+3. **`classify_repo_status`'s seven-way decision table must route every input combination to
+   exactly the right outcome**, including two boundary pairs that are easy to conflate:
+   QUEUE_EXHAUSTED (no unchecked items at all) vs. ALL_TILED (unchecked items exist, but
+   every one already has a shard at its cited issue) -- and NO_QUEUE_FOUND vs. a chain shard
+   that resolved CLOSED with no queue issue behind it at all. Also pinned: the
+   item-skip-and-continue walk (an item whose candidate is already tiled is skipped in favor
+   of the next unchecked item, mirroring the CHAIN block's own "skip if already tiled" step);
+   that AMBIGUOUS is scoped to the most recent chain-tagged shard's own `spawned` date (not
+   the queue's much-earlier creation date -- a dev-env#967 /review finding: the queue lives
+   ~2 weeks between biweekly runs, so the unfixed window flagged nearly all routine tile
+   activity as ambiguous); that an unrecognized chain-issue state is treated as UNRESOLVED,
+   never assumed CLOSED (another /review finding -- an unqualified `else` previously risked a
+   duplicate spawn against a chain that might still be alive); and that `newest_chain_shard`
+   picks by each shard's own `spawned` date, not issue number (issue number is not a safe
+   recency proxy once a repo reuses a pre-existing, lower-numbered issue as a later link's
+   anchor -- exactly what ADR-131 documents most chained repos actually do).
 
 `fetch_open_labeled_issues` (the live `gh` boundary) is not tested here -- subprocess
 boundary, matching this repo's fixture-only convention. Everything that consumes its output
@@ -135,6 +142,29 @@ def test_parse_checklist_tolerates_non_string_and_empty() -> str:
     return "a non-string, empty, or checklist-free body yields []"
 
 
+def test_parse_checklist_accepts_asterisk_and_plus_bullets() -> str:
+    body = "* [ ] asterisk item\n+ [x] plus item\n- [ ] dash item\n"
+    items = parse_checklist(body)
+    texts = [text for _checked, text in items]
+    assert texts == ["asterisk item", "plus item", "dash item"], texts
+    return "all three GFM task-list bullet markers (-, *, +) are recognized, not just -"
+
+
+def test_parse_checklist_unterminated_fence_disables_fence_awareness_rather_than_truncating() -> str:
+    # An odd number of fence markers makes it impossible to tell which lines were meant to be
+    # "inside" -- silently discarding everything after the stray fence would drop real
+    # checklist items from a queue body that merely has a formatting mistake.
+    body = (
+        "- [ ] item before the stray fence\n"
+        "```\n"
+        "- [ ] item after an unterminated fence\n"
+    )
+    items = parse_checklist(body)
+    texts = [text for _checked, text in items]
+    assert texts == ["item before the stray fence", "item after an unterminated fence"], texts
+    return "an unterminated fence disables fence-awareness for the whole body, rather than truncating the tail"
+
+
 def test_is_queue_body() -> str:
     assert is_queue_body(DEV_ENV_963_BODY) is True
     assert is_queue_body("Just a single work item, no checklist.") is False
@@ -197,6 +227,15 @@ def test_extract_bare_issue_refs_tolerates_non_string() -> str:
     return "a non-string input yields [] rather than raising"
 
 
+def test_extract_bare_issue_refs_excludes_markdown_link_text() -> str:
+    # The visible text of a markdown link, `[#945](url)`, must not be read as a bare
+    # same-repo reference -- `[` is not a word character, so the word-char-only lookbehind
+    # alone would still match it.
+    text = "See [#945](https://github.com/brownm09/dev-env/issues/945) for background."
+    assert extract_bare_issue_refs(text) == [], extract_bare_issue_refs(text)
+    return "a markdown link's visible #NNN text is excluded, not just a word-char-prefixed one"
+
+
 # --- chain_field / is_chain_shard: two independent recognition signals -------
 
 
@@ -229,13 +268,54 @@ def test_is_chain_shard_recognizes_chain_field_or_signature() -> str:
     return "either signal (chain field or CHAIN block signature in prompt) recognizes a chain shard"
 
 
-def test_newest_chain_shard_picks_highest_issue_number() -> str:
-    chain_entry = {"chain": {"queue_issue": QUEUE_URL, "seeded_by": "x"}}
+def test_is_chain_shard_signature_match_requires_line_start() -> str:
+    # dev-env#967 /review finding: a bare substring test would also fire on a tile that
+    # merely quotes or discusses the block in ordinary prose (e.g. a follow-up tile about
+    # this very mechanism) -- not a hypothetical, since this PR's own items-3/4 follow-ups
+    # are exactly such tiles. The real block always starts a line with `=== CHAIN (...`.
+    quoted_in_prose = {
+        "prompt": (
+            "This follow-up is about the CHAIN (do this before you finish...) block "
+            "mentioned in dev-env#967 -- it is not itself a chain link."
+        )
+    }
+    assert is_chain_shard(quoted_in_prose) is False, \
+        "a mid-sentence mention of the signature text must not be read as a real chain link"
+    return "the signature match is anchored to the block's actual line-start header, not a bare substring"
+
+
+def test_newest_chain_shard_picks_most_recently_spawned() -> str:
+    # dev-env#967 /review finding: issue number is NOT a safe recency proxy -- ADR-131's own
+    # Context states several repos anchor a chain link on a pre-existing, often
+    # lower-numbered issue, so a newer link can carry a lower number than an older one.
+    older_link = {"chain": {"queue_issue": QUEUE_URL, "seeded_by": "x"}, "spawned": "2026-07-01"}
+    newer_link = {"chain": {"queue_issue": QUEUE_URL, "seeded_by": "x"}, "spawned": "2026-08-05"}
     ordinary_entry = {"prompt": "unrelated"}
-    numbered = [(966, chain_entry), (970, chain_entry), (955, ordinary_entry), (1000, ordinary_entry)]
+    numbered = [(966, older_link), (700, newer_link), (955, ordinary_entry), (1000, ordinary_entry)]
     got = newest_chain_shard(numbered)
-    assert got == {"issue": 970, "entry": chain_entry}, got
-    return "the highest-numbered CHAIN-tagged shard wins; untagged shards (even higher-numbered) are ignored"
+    assert got == {"issue": 700, "entry": newer_link}, got
+    return (
+        "the CHAIN-tagged shard with the LATEST spawned date wins, even carrying a lower "
+        "issue number than an older link; untagged shards (even higher-numbered) are ignored"
+    )
+
+
+def test_newest_chain_shard_ties_on_spawned_date_break_by_issue_number() -> str:
+    same_day_low = {"chain": {"queue_issue": QUEUE_URL, "seeded_by": "x"}, "spawned": "2026-08-08"}
+    same_day_high = {"chain": {"queue_issue": QUEUE_URL, "seeded_by": "x"}, "spawned": "2026-08-08"}
+    numbered = [(966, same_day_low), (970, same_day_high)]
+    got = newest_chain_shard(numbered)
+    assert got == {"issue": 970, "entry": same_day_high}, got
+    return "when spawned dates tie, the higher issue number breaks the tie"
+
+
+def test_newest_chain_shard_missing_spawned_sorts_earliest() -> str:
+    missing_spawned = {"chain": {"queue_issue": QUEUE_URL, "seeded_by": "x"}}  # no "spawned" key
+    has_spawned = {"chain": {"queue_issue": QUEUE_URL, "seeded_by": "x"}, "spawned": "2026-01-01"}
+    numbered = [(999, missing_spawned), (500, has_spawned)]
+    got = newest_chain_shard(numbered)
+    assert got == {"issue": 500, "entry": has_spawned}, got
+    return "a shard missing `spawned` (defensive -- ADR-118 requires it) never wins over one that has it"
 
 
 def test_newest_chain_shard_none_when_no_chain_tagged_entries() -> str:
@@ -261,6 +341,16 @@ def test_classify_unresolved_when_chain_state_unknown() -> str:
     got = classify_repo_status(CHAIN_CANDIDATE, None, [QUEUE_ISSUE], set(), [])
     assert got["status"] == "UNRESOLVED" and got["chain_issue"] == 970, got
     return "a chain-tagged shard whose state could not be confirmed -> UNRESOLVED, not refilled this round"
+
+
+def test_classify_unresolved_when_chain_state_is_unrecognized() -> str:
+    # Neither OPEN, unconfirmable (None), nor a value `_gh_issue_state.is_closed` recognizes
+    # as closed -- dev-env#967 /review finding: an earlier version fell through an
+    # unqualified `else` and treated this the same as a confirmed CLOSED, risking a duplicate
+    # spawn against a chain that might still be alive.
+    got = classify_repo_status(CHAIN_CANDIDATE, "MERGED", [QUEUE_ISSUE], set(), [])
+    assert got["status"] == "UNRESOLVED" and got["chain_issue"] == 970, got
+    return "an unrecognized chain-issue state (neither OPEN, None, nor CLOSED) -> UNRESOLVED, not assumed dead"
 
 
 def test_classify_no_queue_found_when_chain_closed_and_no_queue() -> str:
@@ -337,6 +427,34 @@ def test_classify_ambiguous_ignores_older_untagged_shards() -> str:
     return "an untagged shard from before the queue's creation date does not trigger AMBIGUOUS"
 
 
+def test_classify_ambiguous_window_uses_chain_candidates_spawned_date_not_queue_creation() -> str:
+    # The actual dev-env#967 /review bug: a queue issue lives ~2 weeks between biweekly runs
+    # (QUEUE_ISSUE here was created 2026-08-08), so scoping AMBIGUOUS to "on/after the queue's
+    # creation date" unconditionally flags routine, unrelated tile activity across that whole
+    # window. The correct reference point, once a chain has existed for this queue, is the
+    # last time the chain itself actually moved -- here, a link spawned a week later.
+    closed_chain = {"issue": 970, "entry": {
+        "chain": {"queue_issue": QUEUE_URL, "seeded_by": "x"}, "spawned": "2026-08-15",
+    }}
+    # Spawned after the queue's creation (08-08) but BEFORE the chain's own last move (08-15):
+    # under the pre-fix logic this would wrongly flag AMBIGUOUS; under the fix it does not,
+    # because it predates the actual current gap.
+    got_before_chain_moved = classify_repo_status(
+        closed_chain, "CLOSED", [QUEUE_ISSUE], set(), [(500, "2026-08-10")])
+    assert got_before_chain_moved["status"] == "NEEDS_REFILL", got_before_chain_moved
+
+    # Spawned AFTER the chain's own last move -> genuinely ambiguous.
+    got_after_chain_moved = classify_repo_status(
+        closed_chain, "CLOSED", [QUEUE_ISSUE], set(), [(999, "2026-08-16")])
+    assert got_after_chain_moved["status"] == "AMBIGUOUS", got_after_chain_moved
+    assert "2026-08-15" in got_after_chain_moved["notes"][0], got_after_chain_moved
+    return (
+        "once a chain-tagged shard exists for this queue, AMBIGUOUS is scoped to shards "
+        "spawned on/after THAT shard's own spawned date, not the queue's much-earlier "
+        "creation date"
+    )
+
+
 def test_classify_chain_closed_falls_through_to_next_item() -> str:
     # A CLOSED chain candidate must fall all the way through to the same NEEDS_REFILL logic
     # as chain_candidate=None -- confirms the "finished chain" and "no chain" paths converge.
@@ -353,6 +471,8 @@ def main() -> int:
         ("parse_checklist tracks checked state", test_parse_checklist_tracks_checked_state),
         ("parse_checklist skips fenced code blocks", test_parse_checklist_skips_fenced_code_blocks),
         ("parse_checklist tolerates non-string/empty", test_parse_checklist_tolerates_non_string_and_empty),
+        ("parse_checklist accepts */+  bullets, not just -", test_parse_checklist_accepts_asterisk_and_plus_bullets),
+        ("parse_checklist: unterminated fence disables fence-awareness", test_parse_checklist_unterminated_fence_disables_fence_awareness_rather_than_truncating),
         ("is_queue_body", test_is_queue_body),
         ("find_queue_issue picks newest queue-shaped issue", test_find_queue_issue_picks_newest_queue_shaped_issue),
         ("find_queue_issue none when no queue-shaped issue", test_find_queue_issue_none_when_no_queue_shaped_issue),
@@ -360,13 +480,18 @@ def main() -> int:
         ("extract_bare_issue_refs matches bare and parenthesized", test_extract_bare_issue_refs_matches_bare_and_parenthesized),
         ("extract_bare_issue_refs dedupes, preserves order", test_extract_bare_issue_refs_dedupes_and_preserves_order),
         ("extract_bare_issue_refs tolerates non-string", test_extract_bare_issue_refs_tolerates_non_string),
+        ("extract_bare_issue_refs excludes markdown link text", test_extract_bare_issue_refs_excludes_markdown_link_text),
         ("chain_field accepts well-formed entry", test_chain_field_accepts_well_formed_entry),
         ("chain_field rejects malformed or absent", test_chain_field_rejects_malformed_or_absent),
         ("is_chain_shard recognizes chain field or signature", test_is_chain_shard_recognizes_chain_field_or_signature),
-        ("newest_chain_shard picks highest issue number", test_newest_chain_shard_picks_highest_issue_number),
+        ("is_chain_shard signature match requires line start", test_is_chain_shard_signature_match_requires_line_start),
+        ("newest_chain_shard picks most recently spawned", test_newest_chain_shard_picks_most_recently_spawned),
+        ("newest_chain_shard ties on spawned date, breaks by issue number", test_newest_chain_shard_ties_on_spawned_date_break_by_issue_number),
+        ("newest_chain_shard missing spawned sorts earliest", test_newest_chain_shard_missing_spawned_sorts_earliest),
         ("newest_chain_shard none when no chain-tagged entries", test_newest_chain_shard_none_when_no_chain_tagged_entries),
         ("classify: ALIVE when chain confirmed open", test_classify_alive_when_chain_confirmed_open),
         ("classify: UNRESOLVED when chain state unknown", test_classify_unresolved_when_chain_state_unknown),
+        ("classify: UNRESOLVED when chain state is unrecognized", test_classify_unresolved_when_chain_state_is_unrecognized),
         ("classify: NO_QUEUE_FOUND when chain closed, no queue", test_classify_no_queue_found_when_chain_closed_and_no_queue),
         ("classify: NO_QUEUE_FOUND when never had a chain", test_classify_no_queue_found_when_never_had_a_chain),
         ("classify: QUEUE_EXHAUSTED when all items checked", test_classify_queue_exhausted_when_all_items_checked),
@@ -375,6 +500,7 @@ def main() -> int:
         ("classify: ALL_TILED when every candidate already has a shard", test_classify_all_tiled_when_every_candidate_already_has_a_shard),
         ("classify: AMBIGUOUS when a recent untagged shard exists", test_classify_ambiguous_when_recent_untagged_shard_exists),
         ("classify: AMBIGUOUS ignores older untagged shards", test_classify_ambiguous_ignores_older_untagged_shards),
+        ("classify: AMBIGUOUS window uses chain's spawned date, not queue creation", test_classify_ambiguous_window_uses_chain_candidates_spawned_date_not_queue_creation),
         ("classify: CLOSED chain falls through like no chain", test_classify_chain_closed_falls_through_to_next_item),
     ]
     failed = 0

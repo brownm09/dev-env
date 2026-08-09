@@ -72,16 +72,24 @@ re-spawn a tile. So the *mutating* half of this mechanism can only ever be prose
 follows, never a script; what a script **can** do safely is the *read-only* half — answering "is this
 repo's chain alive, and if not, what is next" — which is exactly the part worth making deterministic
 and unit-tested rather than re-derived in judgment-driven prose on every invocation.
-`retro-chain-status.py`'s `classify_repo_status` is that answer, expressed as a five-way decision
-table:
+`retro-chain-status.py`'s `classify_repo_status` is that answer, expressed as a seven-way decision
+table — wider than this design's original five-way framing; `UNRESOLVED` and `ALL_TILED` were both
+distinctions found necessary during implementation and hardened further during `/review` (see the
+Decision subsections below for why each exists):
 
 | Condition | Status |
 |---|---|
-| Newest chain shard exists, its issue is live `OPEN` | **ALIVE** — no refill |
+| Most recently-spawned chain-tagged shard exists, its issue is live `OPEN` | **ALIVE** — no refill |
+| A chain-tagged shard exists but its issue's live state could not be confirmed (a `gh` failure), or resolved to a state that is neither `OPEN` nor a recognized `CLOSED` value | **UNRESOLVED** — conservative, do not refill this round |
 | No live chain shard, no queue issue found | **NO_QUEUE_FOUND** |
 | No live chain shard, queue issue found, no unchecked items | **QUEUE_EXHAUSTED** |
-| No live chain shard, queue found, unchecked items exist, but an untagged shard was spawned on/after the queue's `createdAt` | **AMBIGUOUS** — don't guess, report for human review |
+| No live chain shard, queue found, unchecked items exist, but every one's inline issue reference already has a shard on disk | **ALL_TILED** |
+| No live chain shard, queue found, unchecked items exist, but an untagged shard was spawned on/after the reference point (the most recent chain-tagged shard's own `spawned` date, or the queue's `createdAt` only when this project has never had a chain shard for this queue at all) | **AMBIGUOUS** — don't guess, report for human review |
 | No live chain shard, queue found, unchecked items exist, no same-window untagged shard | **NEEDS_REFILL** |
+
+A total transport failure while fetching open `retro-action`-labeled issues (auth, network, rate
+limit) is **not** folded into `NO_QUEUE_FOUND` — it reports `ERROR` instead, so a `gh` outage during
+a scheduled run cannot silently masquerade as "this repo definitively has no backlog."
 
 Both callers — the new `retro-chain-backstop` daily routine and `biweekly-retro`'s new Step 6.5 — act
 on this identical classification through the shared `retro-chain-refill` skill, rather than each
@@ -124,18 +132,43 @@ pull request, and issues and pull requests share one number sequence per repo, s
 exist" check would have passed it. Absent a valid candidate, `retro-chain-refill` files a fresh issue
 instead, labeled `retro-action`, exactly as `biweekly-retro` already does for the queue issue itself.
 
-### `AMBIGUOUS` is scoped to same-window shards, not "any open shard ever"
+### `AMBIGUOUS` is scoped to shards since the chain last actually moved, not "any open shard ever" —
+### and not "since the queue issue was created" either
 
-An untagged tile shard for the same repo, spawned in or after the queue issue's own `createdAt`
-window, produces `AMBIGUOUS` rather than `NEEDS_REFILL` — reported for human review, never guessed.
-Scoping the comparison to that window (rather than any open shard the repo has ever accumulated) is
-deliberate: a repo with dozens of ordinary, unrelated tiles would otherwise report `AMBIGUOUS`
-permanently. The accepted, honestly-documented limitation is the mirror case — a same-day unrelated
-tile can still trigger a false `AMBIGUOUS` — accepted because over-flagging costs a few seconds of
-human or session judgment, while under-flagging risks a duplicate spawn on top of a chain link that
-was actually still alive. Between those two costs, this repo's existing conventions consistently
-prefer the cheaper mistake (see, e.g., every "skip-and-keep" failure direction in
-[ADR-118](118-tile-persistence-shards.md)), and this decision follows the same preference.
+An untagged tile shard for the same repo, spawned on or after a reference point, produces
+`AMBIGUOUS` rather than `NEEDS_REFILL` — reported for human review, never guessed. The reference
+point is the most recent chain-tagged shard's own `spawned` date when one exists (even a `CLOSED`
+one — it is still the last confirmed chain activity), or the queue issue's `createdAt` only when
+this project has never had a chain shard for this queue at all.
+
+An earlier version of this design scoped the window unconditionally to the queue issue's
+`createdAt` — caught during `/review` as a real defect, not merely a documentation gap: a queue
+issue lives roughly two weeks between biweekly runs, so that version flagged essentially all
+routine, unrelated tile activity across the *entire* two-week window as ambiguous, live-confirmed
+against dev-env's own tile shards (two untagged shards already sitting inside that window on the
+day this was found). Anchoring to the chain's own last movement instead narrows the window to only
+the period since the current gap actually opened.
+
+Scoping the comparison to a window at all (rather than any open shard the repo has ever
+accumulated) remains deliberate: a repo with dozens of ordinary, unrelated tiles would otherwise
+report `AMBIGUOUS` permanently. The accepted, honestly-documented residual limitation is the mirror
+case — an unrelated tile spawned after the chain's last move can still trigger a false `AMBIGUOUS`
+— accepted because over-flagging costs a few seconds of human or session judgment, while
+under-flagging risks a duplicate spawn on top of a chain link that was actually still alive.
+Between those two costs, this repo's existing conventions consistently prefer the cheaper mistake
+(see, e.g., every "skip-and-keep" failure direction in [ADR-118](118-tile-persistence-shards.md)),
+and this decision follows the same preference.
+
+### `newest_chain_shard` picks by spawn date, not issue number
+
+The most recently-spawned chain-tagged shard is identified by each shard's own `spawned` date
+(tie-broken by issue number), not by the highest issue number alone. An earlier version used issue
+number as the sole recency proxy, reasoning that issue numbers increase monotonically over time —
+true in general, but invalidated by this very design's own Context section above: four of six
+chained repos anchor a link on a *pre-existing*, often lower-numbered issue, so a genuinely newer
+link can carry a lower number than the one before it. Caught during `/review`: picking the wrong
+shard as "current" can either duplicate-spawn on top of a chain that is actually still alive, or
+report a live chain as dead.
 
 ### The mutating skill, not the routines directly, owns the refill logic and the repo table
 
@@ -208,10 +241,19 @@ why it is deliberately **not** added to `TILE_REQUIRED_FIELDS`.
 
 ## Consequences
 
-- A repo's chain can no longer die permanently on a dismissed chip, a compacted session, an early
-  exit, or an API failure: `retro-chain-backstop` re-checks every tracked repo once daily, and
-  `biweekly-retro`'s own Step 6.5 re-checks the same six repos on every biweekly run, both through the
-  identical, idempotent classification.
+- Once both live copies below are registered (see the next bullet), a repo's chain can no longer die
+  permanently on a dismissed chip, a compacted session, an early exit, or an API failure:
+  `retro-chain-backstop` re-checks every tracked repo once daily, and `biweekly-retro`'s own Step 6.5
+  re-checks the same six repos on every biweekly run, both through the identical, idempotent
+  classification.
+- **This PR ships the mechanism but not its activation.** Per this repo's own Routines note in
+  `CLAUDE.md`, editing a canonical `claude/routines/*/SKILL.md` file does not update the live
+  scheduled-task copy at `~/.claude/scheduled-tasks/` — that requires a separate
+  `create_scheduled_task` / `update_scheduled_task` call, a session-only mutating action this PR
+  deliberately does not perform (see its own PR-body "Not included in this PR" section). Until that
+  follow-up runs, `retro-chain-backstop` is not registered at all and `biweekly-retro`'s live copy does
+  not yet execute Step 6.5 — the mechanism above describes the design's steady state, not this PR's
+  immediate post-merge state.
 - `biweekly-retro` gains a new external dependency at run time: it must be able to reach
   `~/.claude/scripts/retro-chain-status.py` (the live junction to this repo's `claude/scripts/`,
   current as of whatever commit the canonical dev-env worktree currently holds on `main`) and the

@@ -38,14 +38,33 @@ next biweekly run notices. This routine is the daily backstop that catches it sa
 
 **Steps:**
 
-0. Sync the engineering-journal working tree. Read `~/.claude/skills/sync-routine-worktree/SKILL.md`
-   and execute its Behavior section end-to-end with these parameters:
-   - `REPO` = `C:/Users/brown/Git/engineering-journal`
-   - `VERIFY_FILE` = `sessions/meta/README.md`
-   - `PREFIX` = `retro-chain-backstop`
+0. Bring the engineering-journal working tree current -- a plain fetch + fast-forward-only pull,
+   **never** `sync-routine-worktree`. That skill's own documented branch-class logic
+   (`~/.claude/skills/sync-routine-worktree/SKILL.md`) `rebase`s (or `reset --hard`s) any branch
+   that isn't `main` onto `origin/main` -- correct for a routine's own isolated worktree, but the
+   engineering-journal path here is the **shared canonical checkout**, which normally sits on
+   `draft/YYYY-MM-DD`, a branch every concurrent session commits stub/manifest/tile-shard shards
+   to throughout the day (see `claude/CLAUDE.md` -> Engineering Journal -> Stub file workflow).
+   Rebasing it risks rewriting a concurrent session's already-pushed work out from under it, or
+   (the documented-safer failure) aborting outright on any dirty working tree -- silently
+   disabling this backstop on exactly the busy days it exists for. `daily-journal-compose` dropped
+   this identical call for this identical reason; this routine follows that precedent rather than
+   repeating the mistake. `--ff-only` is the same conservative, non-rewriting idiom
+   `session-start-sync.py` (ADR-130) already established for this class of shared-checkout
+   freshness problem elsewhere in this repo:
 
-   On **SUCCESS**, continue. On **ABORT**, exit cleanly -- the push notification has already been
-   sent; do not check any repo, do not spawn any tile.
+   ```bash
+   git -C C:/Users/brown/Git/engineering-journal fetch origin --quiet
+   git -C C:/Users/brown/Git/engineering-journal pull --ff-only --quiet
+   ```
+
+   Step 1's classify pass reads tile shards directly from this working tree, so a stale checkout
+   would read stale shard data; a fast-forward-only pull can only ever advance the branch to its
+   own already-pushed upstream, never rewrite it, and safely no-ops if the branch has diverged or
+   the tree is dirty -- in either case it fails non-destructively rather than silently succeeding
+   against stale data. On failure (either command), push-notify `retro-chain-backstop: could not
+   fast-forward engineering-journal to its upstream -- manual investigation required` and exit; do
+   not check any repo, do not spawn any tile.
 
 1. Refill any dead chain. Set `RUN_DATE=$(date +%Y-%m-%d)`, then read
    `~/.claude/skills/retro-chain-refill/SKILL.md` and execute its Behavior section end-to-end with

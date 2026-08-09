@@ -231,12 +231,16 @@ TILE_PROBE_DEADLINE_SECONDS = 5.0
 # `reconcile-open-prs.py`'s identical calls, hence the small timeout.
 GIT_CALL_TIMEOUT = 5
 
-# Single-issue REST GET (`repos/<repo>/issues/<n>`), for the deletion-probe path only —
-# kept distinct from, and tighter than, the batched lookup's per-PAGE `GH_CALL_TIMEOUT`
-# below. A single-object GET is a much lighter call than a paged list, so there is no reason
-# to grant it the same allowance, and a smaller timeout bounds each probe's own worst case
-# tighter.
-GH_ITEM_CALL_TIMEOUT = 5
+# `GH_ITEM_CALL_TIMEOUT` (imported above from `_gh_issue_state.py`) is the single-issue REST
+# GET timeout (`repos/<repo>/issues/<n>`), used by `check_issue_state` for the deletion-probe
+# path here — kept distinct from, and tighter than, the batched lookup's per-PAGE
+# `GH_CALL_TIMEOUT` below, since a single-object GET is a much lighter call than a paged list
+# and a smaller timeout bounds each probe's own worst case tighter. This file previously
+# re-defined its own local copy of this constant here, shadowing the import above — inert
+# only because the two values happened to match, and undetected by the identity-pin test
+# (which covers other names, not this one). Deleted rather than re-pinned: a single owned
+# constant in `_gh_issue_state.py` is simpler than two copies plus a test keeping them in
+# sync.
 
 # `HOOK_TIMEOUT_SECONDS` names what was previously only a `claude/settings.json` comment.
 # The primary lookup loop's OWN worst case is NOT `LOOKUP_BUDGET_SECONDS + GH_CALL_TIMEOUT`:
