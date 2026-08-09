@@ -256,6 +256,30 @@ Adding dev-env issues to the project board is left to the user (the routine runs
 
 ---
 
+## Step 6.5 — Chain refill (dev-env#967)
+
+Read `~/.claude/skills/retro-chain-refill/SKILL.md` and execute its Behavior section end-to-end
+with these parameters:
+
+- `seeded_by` = `biweekly-retro ${RUN_DATE}`
+- `repos` = (omit — use the standard six-repo table in that skill)
+
+This step is both the seeding step this routine has never had (dev-env#967 item 0 — without it, a
+repo whose current chain has already died gets no successor until the next `retro-chain-backstop`
+daily run, up to 24h later) and inherently conditional (item 2 — a repo the skill's own script
+classifies `ALIVE` is recorded and left alone, never double-seeded). The same shared classification
+that makes `retro-chain-backstop` idempotent makes this insertion idempotent too, for free, because
+both callers act on the identical `retro-chain-status.py` decision table rather than each re-deriving
+their own liveness check — see [ADR-131](../../../docs/adr/131-retro-chain-idempotent-refill.md).
+Running this immediately after Step 6 (rather than before it) is deliberate: Step 6 may itself just
+have filed a fresh `retro-action` queue issue for a repo that previously had none, and the
+chain-refill classification should see that issue if this run is what created it.
+
+Fold this step's returned per-repo summary into Step 7's push notification below rather than sending
+a second, separate notification.
+
+---
+
 ## Step 7 — Report
 
 Send a push notification summarizing the run:
@@ -264,6 +288,7 @@ Send a push notification summarizing the run:
 biweekly-retro ${RUN_DATE} complete — <N> projects, <K> journals analyzed.
 Process:product ≈ <ratio>. Top items: <2–3 headline improvements>.
 Report PR: <url>   Issues filed: <repo#N, repo#N, ...>
+Chain refill (dev-env#967): <A> alive, <R> refilled, <M> ambiguous — see Step 6.5 summary.
 ```
 
 Clean up any scratch files this run created.
@@ -285,6 +310,28 @@ Clean up any scratch files this run created.
   analysis over breadth. The scheduler chooses the model; do the synthesis thoroughly regardless.
 - **App-open caveat:** scheduled tasks run while the Claude app is open; if it was closed when the
   task was due, the run happens on next launch.
+
+---
+
+> **Dual-copy registration caveat.** This file is the **canonical, version-controlled** definition
+> (`dev-env/claude/routines/biweekly-retro/`, surfaced at `~/.claude/routines/biweekly-retro/` via
+> the directory junction). The scheduler reads a **separate** live copy at
+> `~/.claude/scheduled-tasks/biweekly-retro/SKILL.md`, materialized by the `create_scheduled_task`
+> MCP tool — the two do **not** auto-sync. Per the convention
+> [ADR-003's amendment](../../../docs/adr/003-config-in-version-control.md) establishes (already
+> applied to `weekly-memory-audit`/`prune-stale-worktrees`/`reclaim-worktree-disk`, and — as of the
+> Step 6.5 addition above — needed here too, so that change actually takes effect live), the live
+> copy reads this canonical file at run time and defers to it when present, falling back to an
+> embedded copy only when it is missing or unreadable. In this routine's own step numbering, that
+> canonical read-through runs immediately after Step 0's sync and before Step 0.5's biweekly parity
+> gate — **not** as a literal "Step 0.5" heading, since that number is already taken by the parity
+> gate in this file; the live copy's self-reference is a run-time behavior of the live prompt, not a
+> renumbered step in this canonical document. This routine carried **no** dual-copy caveat at all
+> before this PR — the first time either convention (dual-copy documentation, or the self-referencing
+> read-through) has been applied here; see the
+> [2026-07-06 amendment](../../../docs/adr/003-config-in-version-control.md)'s note that a full
+> sweep of `nightly-research`/`reconcile-project-board` for the same gap remained pending (still
+> pending after this PR — out of scope here). See dev-env#344.
 
 ---
 

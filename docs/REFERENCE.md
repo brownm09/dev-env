@@ -181,6 +181,44 @@ Enforces experimental rigor for a **process experiment** — a comparative claim
 
 ---
 
+### retro-chain-refill
+
+**Invocation is indirect** — modeled on `sync-routine-worktree` as a reusable building block, this
+skill is invoked from `biweekly-retro`'s Step 6.5 and from the standalone `retro-chain-backstop`
+routine, not typically run directly by a user.
+
+The shared mutating step for the retro-action chained-tile backlog burn-down mechanism
+(dev-env#967): checks whether each configured repo's chain is alive and, when not, refills it.
+
+**How it works:** runs `retro-chain-status.py` (Utilities below) for the caller-supplied repo list
+and parses its per-repo classification (ALIVE / UNRESOLVED / NO_QUEUE_FOUND / QUEUE_EXHAUSTED /
+ALL_TILED / AMBIGUOUS / NEEDS_REFILL). A NEEDS_REFILL repo is cross-checked against `list_sessions` (title/branch/cwd
+match) before acting — a session already working it reclassifies as ALIVE rather than being
+double-seeded. For each repo still NEEDS_REFILL: resolves the anchor issue, verifying any inline
+`#NNN` reference already named in the queue item is OPEN and not a pull request before reusing it
+(closes the `merickvaughn/lifting-logbook#814` failure mode — an already-merged PR cited as if it
+were the live anchor) or filing a new `retro-action`-labeled issue otherwise; `spawn_task`s a tile
+carrying the updated CHAIN block; and writes its shard with a `chain` field
+(`{"queue_issue": "<url>", "seeded_by": "<caller-supplied label>"}`, see [Tile shards](#tile-shards-sessionsprojecttilesissue-numberjson))
+before committing it directly to today's `draft/YYYY-MM-DD` branch in the engineering-journal
+**canonical** checkout via `git -C` — never a dedicated worktree, the same disjoint-per-issue-file
+exemption an ordinary stub/manifest/open-PR/tile shard write already gets.
+
+**Owns the canonical 6-repo participant list** (career-playbook, dev-env, cover-letter-runtime,
+win11-init-tools, gas-lifting-logbook, `merickvaughn/lifting-logbook`) — this is the one place that
+list lives; deliberately not unified with `biweekly-retro`'s own, separately-maintained 8-repo
+issue-routing list in its Step 6, since issue routing and chain participation are different
+concerns.
+
+**AMBIGUOUS is a deliberate, documented limitation, not a bug:** an untagged shard spawned on or
+after the queue issue's `createdAt` blocks an automatic refill and reports the repo for human
+review instead of guessing — over-flagging costs a few seconds of review, while under-flagging
+risks a duplicate spawn.
+
+See [ADR-131](adr/131-retro-chain-idempotent-refill.md).
+
+---
+
 
 ## Hooks
 
@@ -528,6 +566,13 @@ retrospective in a fixed **v2 structure**: **§1** global cross-repo readout (+ 
 cleanly with a push notification; a single project's subagent failure degrades to a partial report
 rather than aborting the run.
 
+**Step 6.5 — chain refill (dev-env#967).** Immediately after Step 6 finishes filing/updating this
+run's `retro-action` queue issues, invokes the shared `retro-chain-refill` skill against the
+standard 6-repo participant list (`seeded_by="biweekly-retro <run-date>"`) — the same liveness
+check the daily `retro-chain-backstop` routine uses, so a repo whose chain is already alive is
+classified ALIVE and skipped rather than double-seeded. See
+[ADR-131](adr/131-retro-chain-idempotent-refill.md).
+
 **Origin:** dev-env#343; cadence and 4-week window chosen by the user 2026-06-09.
 
 ---
@@ -612,6 +657,38 @@ user 2026-06-30. [ADR-069](adr/069-weekly-memory-audit-routine.md)
 
 ---
 
+### retro-chain-backstop
+
+**Schedule:** `0 21 * * *` — 21:00 **local** time, daily.
+
+Self-healing daily backstop for the retro-action chained-tile backlog burn-down mechanism
+(dev-env#967). The mechanism is otherwise entirely prompt-carried (each tile's CHAIN block spawns
+the next link itself) and breaks silently and permanently on a dismissed chip, a compacted
+session, an early exit, an API failure, or the item being finished by hand outside the tile — this
+routine is what makes a break same-day-recoverable instead of permanent.
+
+Runs `sync-routine-worktree` as Step 0 (`REPO=engineering-journal`,
+`VERIFY_FILE=sessions/meta/README.md`), then invokes the `retro-chain-refill` skill against the
+standard 6-repo participant list (`seeded_by="retro-chain-backstop <date>"`). Chosen for 21:00
+local rather than the crowded 4–7am block three other routines already occupy (which has its own
+documented reliability history — see the 2026-07-10 Amendment above), and gives same-day repair
+latency for a chain that breaks mid-day, at identical "daily" cost.
+
+**Outputs:** a push notification summarizing the per-repo status and any action taken (issue
+filed, tile spawned, shard committed) — no committed report file. This routine's output *is* the
+filed issues/tiles/shards, matching `reconcile-project-board`'s report-via-notification shape
+rather than `biweekly-retro`'s PR'd-report shape.
+
+**Dual-copy registration caveat:** the live task copy is written by `create_scheduled_task` /
+`update_scheduled_task` into the separate, non-synced `~/.claude/scheduled-tasks/` directory (see
+the Routines intro above) and does not auto-sync from the canonical. The live prompt reads its own
+canonical `claude/routines/retro-chain-backstop/SKILL.md` at run time and falls back to an
+embedded copy when unreachable — the same self-healing pattern `weekly-memory-audit` uses.
+
+**Origin:** dev-env#967. [ADR-131](adr/131-retro-chain-idempotent-refill.md)
+
+---
+
 ## Utilities
 
 On-demand scripts — not wired to any event. Run manually or from other scripts. See
@@ -639,6 +716,7 @@ hooks and shared modules that serve the same workflow, rather than split across 
 | `check-journal-compose-liveness.py` | `git -C C:/Users/brown/Git/engineering-journal status --porcelain \| py -3 check-journal-compose-liveness.py YYYY-MM-DD` | Detects an in-flight session that may still be writing engineering-journal stubs for the date journal-compose is about to merge. Reads `git status --porcelain` output from stdin (stays pure I/O; the caller runs git) and exits 1 if any changed path is a stub/manifest shard (`YYYY-MM-DD_HHMMSS.stub.md` / `.manifest.jsonl`) for the given date, 0 otherwise; exits 2 on a malformed date argument. Called from `journal-compose-with-retry.sh` (primary, before each retry attempt) and `journal-compose/SKILL.md` Step 0.6 (defense-in-depth for manual invocations). [ADR-086](adr/086-journal-compose-liveness-guard.md) |
 | `journal-compose-replay.sh` | `bash journal-compose-replay.sh <worktree> <prev-commit> <pathspec> [<pathspec> ...]` | The Step 10.5 conflict-recovery replay for `/journal-compose`, invoked once the compose worktree has been switched onto a fresh `compose/YYYY-MM-DD` branch cut from `origin/main`. Replays everything the draft branch added/modified/deleted since the merge base (which it derives from `<prev-commit>` itself, so the pre-push-rejection route that skips the merge-tree probe still works), and owns the open-PR shard-integrity restore. Every path is first partitioned by whether `origin/main` **also** changed it: uncontested paths replay wholesale from `<prev-commit>`; a contested one is 3-way merged from blobs (never the work-tree file — mixing blob LF with a CRLF checkout makes every line look changed) and, if that conflicts, left holding `origin/main`'s content and reported for manual reconciliation. Prints `REPLAY_SAFE` / `BOTH_CHANGED` / `AUTO_MERGED` / `MANUAL_RECONCILE` / `SHARD_INTEGRITY_RESTORED` / `SHARD_RESTORE_SKIPPED`. Exit 0 — all resolved, caller may commit; exit 2 — manual reconciliation required, **do not commit**; exit 1 — usage/precondition error, or a git failure partway through (the tree is then partially replayed; re-cut the disposable recovery branch rather than committing it). Temp files go to the scratch dir, falling back to a self-removing `mktemp -d` where that path is absent (`JOURNAL_COMPOSE_REPLAY_SCRATCH` overrides the root — test-only). [ADR-104](adr/104-journal-compose-conflict-recovery-diff-and-replay.md) (+ Amendment 1) |
 | `run-hook-tests.py` | `py -3 run-hook-tests.py [--list] [--timeout N]` | Discovers and runs the whole hook/script test suite — every `test_*.py` plus every bash `*.sh` gate across the two test directories (`claude/scripts/tests/` and `claude/hooks/tests/`) — reporting pass/fail/skip and exiting non-zero iff any failed. A zero-Python-test discovery (broken `REPO_ROOT`/glob) is a loud failure, never a silent green. `--list` prints what would run without running it; `--timeout` overrides the 300 s per-test cap. Runner-skips only `test_pyw_stdio.py` (a real-`pyw` Windows-subsystem stdio probe a non-interactive runner can't host — run it locally) and passes each bash gate's own `SKIP:` self-exit (no shellcheck, unauthenticated gh) through as non-failing. The engine behind the `hook-tests` CI workflow (`.github/workflows/hook-tests.yml`, `windows-latest`, `pull_request`). See Script verification suite below. [ADR-103](adr/103-shared-hookout-emitter.md) |
+| `retro-chain-status.py` | `py -3 retro-chain-status.py --repo <owner/repo> [--repo <owner/repo> ...] [--journal-repo PATH]` | Read-only, per-repo classifier for the retro-action chained-tile backlog (dev-env#967): reports one of `ALIVE` / `UNRESOLVED` / `NO_QUEUE_FOUND` / `QUEUE_EXHAUSTED` / `ALL_TILED` / `AMBIGUOUS` / `NEEDS_REFILL` per repo. Never mutates anything; a per-repo failure lands in that repo's own `{"status": "ERROR", "error": "..."}` entry rather than aborting the batch. Identifies the queue issue **structurally** (the open, `retro-action`-labeled issue whose body contains real `- [ ]` checklist lines, not an "Escalations" bullet) rather than by "newest labeled issue," since a repo can carry several open queue issues at once (career-playbook: five). Flags AMBIGUOUS rather than guessing when an untagged shard was spawned on/after the queue issue's `createdAt`. Engine behind the `retro-chain-refill` skill. [ADR-131](adr/131-retro-chain-idempotent-refill.md) |
 
 `prune-merged-worktrees.py`, `reclaim-worktree-disk.py`, and `reconcile-project-board.py` above all discover repos for their `--scan-dir` mode via the shared `find_git_repos()` helper in `claude/scripts/_repo_scan.py` — a non-invoked library module (like `_hookio.py` / `_worktree_liveness.py` / `_journal_shards.py` / `_hookutil.py` / `_hookout.py` / `_repo_target.py`, none of which get their own table row) extracted from three near-identical copies. [ADR-072](adr/072-shared-repo-scan-module.md)
 
@@ -1685,6 +1763,19 @@ would force it to invent a value. When present, `stub` must be **project-qualifi
 (`sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md`, the manifest convention) rather than the open-PR
 shard's bare filename — a tile shard is filed under its *target* project, so the spawning session's stub
 may live under a different one and a bare filename would not resolve.
+
+**`chain` is an optional field** — `{"queue_issue": "<url>", "seeded_by": "<string>"}` — present only
+when the tile is one link in the retro-action chained-tile backlog burn-down mechanism (dev-env#967,
+[ADR-131](adr/131-retro-chain-idempotent-refill.md)). `queue_issue` is the `retro-action` queue issue
+this tile's work item was pulled from; `seeded_by` is a free-form label identifying what spawned this
+link (a routine name + date, e.g. `retro-chain-backstop 2026-08-15`, or a human session, e.g.
+`biweekly-retro 2026-08-09`). `retro-chain-status.py`'s classifier reads this field — alongside the
+tile's own paired issue number and `spawned` date — to tell a live chain link apart from an ordinary,
+unrelated tile shard when deciding whether a repo's chain needs a refill (`retro-chain-status.py`'s
+AMBIGUOUS classification is exactly the "can't tell" case this field exists to narrow — see Utilities
+below). Not added to `TILE_REQUIRED_FIELDS`: most shards, including every historical one written
+before this field existed, are not chain tiles at all. See
+[ADR-118](adr/118-tile-persistence-shards.md) Amendment 6.
 
 **`task_id` is deliberately not stored.** Chip IDs do not survive an app restart (ADR-094), so persisting
 one would save a value that is dead exactly when the shard is needed — this is ADR-094's rejected

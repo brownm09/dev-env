@@ -2914,3 +2914,80 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_session_start_sync.py
     py -3 claude/scripts/tests/test_worktree_liveness.py
     ```
+
+90. **`_gh_issue_state` shared-module test** — required when changing
+    `claude/scripts/_gh_issue_state.py` (dev-env#967, [ADR-131](adr/131-retro-chain-idempotent-refill.md)).
+    Direct pure-function coverage of the generic GitHub issue/PR REST state helpers extracted from
+    `claude/scripts/reconcile-pending-tiles.py` (a behavior-preserving move, not a rewrite — item
+    80's already-hardened logic is reused rather than re-derived): `repo_from_issue_url` (strict
+    `https://github.com/<owner>/<repo>` validation, including the same foreign-host and dot-segment
+    rejection cases item 80 pins), `issue_states_from_rows` (the REST-conflates-PRs-with-issues
+    filter and the lowercase-`state` normalization — both already-hard-won fixes from #882),
+    `should_stop_paging`, and `is_closed` (case-sensitive, `"CLOSED"`-only — the paired regression
+    pin that catches the `issue_states_from_rows` upper-casing being dropped, since `None`/`"OPEN"`/
+    an unrecognized state all read the same, silently-inert `False`), plus the associated
+    regex/constants. Also pins the one function new to this module, `issue_number_from_url(url) ->
+    int | None` (parses the trailing `/issues/<N>` or `/pull/<N>` segment — needed because, unlike a
+    tile shard's own filename-derived identity, a *referenced* queue issue has no independent
+    filename to source its number from): both path shapes, and a non-issue/PR URL returning `None`.
+    `fetch_repo_issue_states` and `check_issue_state` both stay untested — both are subprocess
+    boundaries (`gh api` calls), matching the existing fixture-only convention (item 80).
+
+    `test_reconcile_pending_tiles.py` (item 80) carries the paired identity-pin assertion
+    (`test_gh_issue_state_names_are_the_shared_helpers`, checking `repo_from_issue_url`,
+    `issue_states_from_rows`, `should_stop_paging`, `fetch_repo_issue_states`, `check_issue_state`,
+    and `_ISSUE_PROJECTION` all still resolve to this module's objects), mirroring item 21's
+    `project_dirs is _journal_shards.project_dirs` pin — so a future accidental re-duplication of
+    these functions back into `reconcile-pending-tiles.py` (the exact two-divergent-copies shape
+    ADR-057 already exists for) fails loudly rather than silently drifting.
+
+    ```bash
+    py -3 claude/scripts/tests/test_gh_issue_state.py
+    ```
+
+91. **retro-chain-status test** — required when changing `claude/scripts/retro-chain-status.py`
+    (dev-env#967, [ADR-131](adr/131-retro-chain-idempotent-refill.md)). Exercises the pure per-repo
+    classifier offline (no network, no `gh`, no live GitHub state): `parse_checklist` (every
+    `- [ ]`/`- [x]` line in document order, skipping fenced code blocks; the literal dev-env#963
+    issue body is pinned as a fixture, confirming an "Escalations" `- **bold**` bullet never matches
+    — checkbox syntax alone is sufficient, no heading-based scoping needed); `is_queue_body` (a
+    non-empty checklist is the structural signal that tells a queue issue apart from a single-item
+    anchor issue); `find_queue_issue` (newest-first by `created_at` among open, `retro-action`-labeled
+    issues, first one passing `is_queue_body` — handles a repo with several open queue issues at
+    once, e.g. career-playbook's five); `extract_bare_issue_refs` (bare `#NNN` only, via a
+    `(?<!\w)#(\d+)\b` lookbehind; the literal phrase containing `dev-env#945` is pinned as the "must
+    not extract 945" regression case — a real false positive found in dev-env#963's own body, so the
+    lookbehind is load-bearing, not decorative); `chain_field` (a shard's `chain` field, if present
+    and its `queue_issue` passes `_gh_issue_state.repo_from_issue_url`); and `is_chain_shard` /
+    `newest_chain_shard` (recognizes a chain link via either a valid `chain` field or, for shards
+    predating that field, the CHAIN block's own signature text inside `prompt`; picks the
+    highest-numbered chain-tagged shard as the recency proxy, since shards carry no finer-grained
+    spawn timestamp than a date). `classify_repo_status`'s outcomes are pinned directly against the
+    decision table — a richer set than this mechanism's original 5-status framing in dev-env#967,
+    widened during implementation: ALIVE (a chain candidate whose issue state resolved `OPEN`),
+    UNRESOLVED (a chain candidate whose issue state could not be confirmed — conservative: never
+    refill rather than risk a duplicate spawn against a chain that might still be alive),
+    NO_QUEUE_FOUND, QUEUE_EXHAUSTED (queue found, no unchecked items), ALL_TILED (queue found,
+    unchecked items exist, but every one's inline issue reference already has a shard on disk),
+    AMBIGUOUS (an untagged shard spawned on/after the queue's `created_at` — scoped to same-or-later
+    shards only, a deliberate, documented limitation: a same-day unrelated tile can still trigger a
+    false AMBIGUOUS, accepted because over-flagging costs a few seconds of review while
+    under-flagging risks a duplicate spawn), and NEEDS_REFILL (the first unchecked item whose
+    candidate issue, if any, doesn't already collide with an existing shard) — plus the
+    QUEUE_EXHAUSTED-vs-NO_QUEUE_FOUND boundary pinned directly. The `candidate_valid` field
+    `classify_one_repo` adds to a `NEEDS_REFILL` result (whether the item's inline `#NNN` resolved to
+    an `OPEN`, non-PR issue) is exercised one layer above the pure `classify_repo_status` itself,
+    which only ever sees a raw `candidate_issue` number, never validates it. Two fixtures pinned as
+    real, previously-observed text (matching this repo's existing convention of pinning actual
+    incidents, e.g. ADR-121's stray-terminal-scan fixture): the literal dev-env#963 body (confirms
+    escalations never match the checklist parser), and the literal phrase containing `dev-env#945` as
+    the "must not extract 945" regression case for `extract_bare_issue_refs`. The script's own CLI
+    wrapper (`classify_one_repo`, `main()`) never mutates anything and exits 0 always, with a
+    per-repo failure landing in that repo's own `{"status": "ERROR", "error": "..."}` entry rather
+    than aborting the batch (mirrors `reconcile-project-board.py`'s per-repo isolation, item 29) —
+    the live `gh`/subprocess boundary (`fetch_open_labeled_issues`) is not covered here, matching
+    this repo's fixture-only convention.
+
+    ```bash
+    py -3 claude/scripts/tests/test_retro_chain_status.py
+    ```

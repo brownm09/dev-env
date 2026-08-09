@@ -91,6 +91,7 @@ mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)  # safe: main() is guarded by __main__
 
 import _journal_shards  # noqa: E402  -- for the shared-helper identity pin below
+import _gh_issue_state  # noqa: E402  -- for the shared-helper identity pin below (dev-env#967)
 
 repo_from_issue_url = mod.repo_from_issue_url
 should_remove_tile = mod.should_remove_tile
@@ -308,6 +309,28 @@ def test_project_dirs_is_shared_helper() -> str:
     assert project_dirs is _journal_shards.project_dirs, \
         "reconcile-pending-tiles.py re-defined project_dirs locally instead of importing the shared one"
     return "project_dirs is _journal_shards' shared helper, not a local copy"
+
+
+def test_gh_issue_state_names_are_the_shared_helpers() -> str:
+    # The identical anti-drift pin as test_project_dirs_is_shared_helper, for the REST
+    # issue/PR state transport extracted into _gh_issue_state.py (dev-env#967, ADR-131).
+    # This file is exactly where a future copy-paste would land a second, un-hardened copy
+    # of the two REST hazards (PR-row filtering, state-case normalization) that
+    # _gh_issue_state.py's own tests already pin once -- this test only needs to confirm
+    # this hook still resolves every moved name to that single implementation.
+    pairs = [
+        ("repo_from_issue_url", repo_from_issue_url, _gh_issue_state.repo_from_issue_url),
+        ("issue_states_from_rows", issue_states_from_rows, _gh_issue_state.issue_states_from_rows),
+        ("should_stop_paging", should_stop_paging, _gh_issue_state.should_stop_paging),
+        ("fetch_repo_issue_states", mod.fetch_repo_issue_states, _gh_issue_state.fetch_repo_issue_states),
+        ("check_issue_state", mod.check_issue_state, _gh_issue_state.check_issue_state),
+        ("_ISSUE_PROJECTION", mod._ISSUE_PROJECTION, _gh_issue_state._ISSUE_PROJECTION),
+    ]
+    for name, hook_value, shared_value in pairs:
+        assert hook_value is shared_value or hook_value == shared_value, \
+            f"reconcile-pending-tiles.py's {name} no longer matches _gh_issue_state's -- " \
+            "re-import it instead of re-defining it locally"
+    return "every moved REST-transport name still resolves to _gh_issue_state's single implementation"
 
 
 def test_load_tiles_across_projects_and_tolerates_junk() -> str:
@@ -1304,6 +1327,7 @@ def main() -> int:
         ("closed unlinked, survivor byte-identical", test_removes_only_closed_and_leaves_survivor_byte_identical),
         ("unresolved state keeps the shard", test_unresolved_state_keeps_shard),
         ("project_dirs is the shared helper", test_project_dirs_is_shared_helper),
+        ("_gh_issue_state names are the shared helpers", test_gh_issue_state_names_are_the_shared_helpers),
         ("load_tiles across projects, junk tolerated", test_load_tiles_across_projects_and_tolerates_junk),
         ("load_tiles with missing dirs", test_load_tiles_missing_dirs),
         ("group_numbers_by_repo dedups/excludes skipped", test_group_numbers_by_repo_dedups_and_excludes_skipped),

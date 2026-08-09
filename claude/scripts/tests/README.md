@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 78 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 90 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 80 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 92 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -40,6 +40,7 @@ production code.
 |---|---|---|
 | `test_bash_state.py` | `_bash_state.py` | Per-session repo/branch state file plus the drift-warning formatter shared by the four commit/PR-create/merge/every-Bash-call checkpoint hooks. |
 | `test_composed_output_scan.py` | `_composed_output_scan.py` | Fence- and code-span-aware detection of stray terminal output in composed journal markdown, behind `/journal-compose` Step 8b. |
+| `test_gh_issue_state.py` | `_gh_issue_state.py` | Shared GitHub issue/PR REST state helpers (URL validation, PR-vs-issue filtering, `state` case normalization, paged-lookup stop condition) extracted from `reconcile-pending-tiles.py` for reuse by `retro-chain-status.py`. |
 | `test_hookio.py` | `_hookio.py` | Shared PostToolUse command-output reader, merge-marker detection, and the `scan_top_level` command-shape parser five PostToolUse hooks import. |
 | `test_hookout.py` | `_hookout.py` | The shared hook advisory/block emitter — one encoding of the stdout/stderr/exit-code channel table every hook should route through. |
 | `test_hookutil.py` | `_hookutil.py` | Sentinel-file, transcript-locate, transcript-record-reader, and heartbeat-recording helpers shared across Stop/PostToolUse hooks. |
@@ -95,6 +96,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_pre_tool_use_journal_compose_force_guard.py` | `pre-tool-use-journal-compose-force-guard.py` | Mechanically blocks a same-day `/journal-compose` git operation unless a fresh `--force` marker exists. |
 | `test_reconcile_open_prs.py` | `reconcile-open-prs.py` | Reconciles open-PR shards against live GitHub state (removes shards for merged/closed PRs) and classifies uncommitted shard changes into commit-safe deletions vs. a concurrent session's in-flight shards. Also the REST transport's two silent hazards (`state` upper-cased; MERGED recovered from the separate `merged`/`merged_at` signal, pinned end-to-end through the `unlink`), the jq projection's structural gate, and the lookup budget + its unresolved count. |
 | `test_reconcile_pending_tiles.py` | `reconcile-pending-tiles.py` | Reconciles tile shards against live issue state; URL validation in front of the unlink, filename-authoritative issue numbers, one paged REST read per repo, and the REST transport's two silent hazards (PR rows dropped, `state` upper-cased). Also covers the orphaned-deletion advisory (dev-env#958): exact porcelain-code classification, per-item re-confirmation, and the ready-to-run commit recommendation. |
+| `test_retro_chain_status.py` | `retro-chain-status.py` | Read-only per-repo classifier for the retro-action chained-tile backlog: reports ALIVE/UNRESOLVED/NO_QUEUE_FOUND/QUEUE_EXHAUSTED/ALL_TILED/AMBIGUOUS/NEEDS_REFILL from tile-shard + queue-issue-checklist state; never mutates anything, invoked by the `retro-chain-refill` skill. |
 | `test_stop_journal_stub_checkpoint.py` | `stop-journal-stub-checkpoint.py` | Stop-hook checkpoint: a report/analysis/verification session that did substantive work must leave a stub. |
 | `test_stub_push_archive_reminder.py` | `stub-push-archive-reminder.py` | Push-error guard plus unresolved-open-PR detection behind the "archive the branch" reminder after a journal push. |
 | `test_validate_manifest.py` | `validate-manifest.py` | Pre-compose validator: every manifest shard/legacy entry has all five required fields. |
