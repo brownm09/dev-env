@@ -1,6 +1,6 @@
 # ADR-024: PreToolUse Hook to Block Canonical-Root Writes from Worktrees
 
-**Date:** 2026-05-23 (amended 2026-06-06, 2026-07-14, 2026-07-14, 2026-07-14)
+**Date:** 2026-05-23 (amended 2026-06-06, 2026-07-14, 2026-07-14, 2026-07-14, 2026-08-15)
 **Status:** Accepted
 **Tags:** hooks, worktrees, pre-tool-use, file-safety, write, edit, orphaned-worktree, worktree-membership
 
@@ -447,6 +447,93 @@ exit-2-on-stderr channel (dev-env#469), and the fail-**open**-on-crash direction
 
 ---
 
+## Addendum (2026-08-15): engineering-journal canonical-root carve-out (dev-env#750, reopened)
+
+### Problem
+
+The 2026-07-14 sibling-worktree carve-out above (step 5a) only exempts a write whose TARGET path
+itself matches the worktree-shaped regex — i.e., the target is *another worktree* under the same
+canonical root. It does not exempt a write whose target is the **bare canonical root itself**, with
+no worktree segment anywhere in the path.
+
+That bare-canonical-root shape is not an edge case — it is the primary, documented write pattern of
+the engineering-journal (EJ) Stub file workflow (`claude/CLAUDE.md` → Engineering Journal → "Never
+create a dedicated worktree to write a stub — always operate directly on the canonical via `-C`"):
+every Write/Edit to a stub, manifest shard, open-PR shard, or tile shard targets
+`C:/Users/brown/Git/engineering-journal/sessions/<project>/<file>` directly, with no worktree
+segment in the path. When the session's own primary repo happens to be an EJ worktree (a
+`spawn_task` tile working in a different project still writes its journal stub via `-C` per the
+Stub file workflow's own cross-repo rule), this hook still blocks that write as "escaping to
+canonical root" — the exact scenario dev-env#750 originally reported and that PR #756 (the sibling-
+worktree addendum above) did not actually fix, since it only covers a differently-shaped target.
+
+Reproduced again 2026-08-15 from worktree `elegant-matsumoto-22c80c`, prompting the issue's
+reopening.
+
+### Extended decision
+
+Insert a new step immediately after the canonical/worktree/file path normalization, before step 5
+(the escape-scoping check):
+
+**4a. If the session's own resolved `canonical_root` exactly matches the configured
+engineering-journal path → exit 0 (no-op), regardless of the write target.**
+
+Implementation: a module-level `_JOURNAL_ROOT` constant, computed once via this file's own
+`_normalize()` helper against `os.environ.get("WORKTREE_PATH_CHECK_JOURNAL_PATH",
+"C:/Users/brown/Git/engineering-journal")`. `main()` compares `canonical_norm == _JOURNAL_ROOT`
+right after computing `canonical_norm`/`worktree_norm`/`file_norm`, before the step-5 in-scope
+check.
+
+This directly mirrors `pre-tool-use-canonical-mutate-guard.py`'s existing, permanent
+`_REDIRECT_TARGET_ALLOWLIST` carve-out for the same repo — that hook already exempts a Bash-level
+`git -C <journal>` redirect targeting this exact path, for this exact reason (ADR-071). This
+addendum brings the file-tool hook into parity with the Bash-tool hook.
+
+### Judgment calls (addendum)
+
+**Additive to, not a replacement for, the sibling-worktree carve-out.** The 2026-07-14 addendum's
+step 5a still matters for a session whose canonical root is a *different* repo entirely (e.g. a
+dev-env worktree writing into an EJ sibling worktree's own isolated tree) — a case this new,
+narrower, exact-canonical-root check does not cover, since it only fires when the *session's own*
+canonical root is the journal. Both carve-outs coexist; neither subsumes the other.
+
+**Matched by exact resolved canonical root, not basename** (same reasoning as
+`_REDIRECT_TARGET_ALLOWLIST`'s dev-env#576/PR#584 review-finding hardening): a canonical checkout
+that merely happens to be named `engineering-journal` at some other path must not be wrongly
+exempted. Pinned by `test_main_blocks_write_to_samename_repo_outside_journal_carveout_path`.
+
+**Reuse this file's own `_normalize()` rather than duplicate the mutate-guard's separate
+normalization.** `_REDIRECT_TARGET_ALLOWLIST` normalizes via `.replace("\\","/").rstrip("/").lower()`
+directly; this hook already has `_normalize()` (`os.path.normcase(os.path.normpath(...))`) computing
+`canonical_norm`/`worktree_norm`/`file_norm` throughout `main()`, so `_JOURNAL_ROOT` uses the same
+helper for internal consistency rather than introducing a second normalization scheme in the same
+file.
+
+**No basename-level exemption, no shared cross-file module.** At least four other hooks already
+compare a resolved path against the EJ canonical path this same way — each with its own
+module-level constant and its own env-var override, rather than a shared module:
+`pre-tool-use-canonical-mutate-guard.py`'s `_REDIRECT_TARGET_ALLOWLIST` /
+`CANONICAL_MUTATE_GUARD_JOURNAL_PATH`, `journal-canonical-guard.py`'s `JOURNAL_REPO` /
+`JOURNAL_CANONICAL_GUARD_REPO_PATH`, and `pre-tool-use-journal-draft-worktree-guard.py`'s
+`JOURNAL_REPO` / `JOURNAL_DRAFT_WORKTREE_GUARD_REPO_PATH`. This addendum's `_JOURNAL_ROOT` /
+`WORKTREE_PATH_CHECK_JOURNAL_PATH` follows the same pattern rather than introducing a shared module
+this codebase has consistently declined to extract for this (see ADR-105's "Judgment calls" for the
+same duplicate-over-shared-module reasoning applied to a different pair of hooks' git-parsing
+logic). This keeps each hook's test suite able to redirect its own carve-out at a disposable temp
+dir independently of the others.
+
+### Consequences (addendum)
+
+- `test_main_allows_write_to_engineering_journal_canonical_root` and
+  `test_main_blocks_write_to_samename_repo_outside_journal_carveout_path` added to
+  `claude/scripts/tests/test_worktree_path_check.py` — 14 tests grows to 16.
+- No performance impact: one additional exact-string comparison against an already-normalized path,
+  computed once at import time.
+- `docs/REFERENCE.md`'s hook-table row and `README.md`'s two hook-description mentions extended
+  with a "(for case d)" / equivalent clause alongside the existing sibling-worktree mention.
+
+---
+
 ## References
 
 - `claude/scripts/pre-tool-use-worktree-path-check.py` — implementation
@@ -457,9 +544,14 @@ exit-2-on-stderr channel (dev-env#469), and the fail-**open**-on-crash direction
 - `brownm09/career-playbook#276` — downstream symptom tracker (original)
 - `brownm09/dev-env#328` — orphaned-worktree hardening (addendum)
 - `brownm09/dev-env#469` — stdout→stderr block-reason fix (both sites), `_block()` helper introduced
-- `brownm09/dev-env#750` — sibling-worktree carve-out (addendum)
+- `brownm09/dev-env#750` — sibling-worktree carve-out (2026-07-14 addendum); reopened 2026-08-15
+  when the sibling-worktree carve-out proved not to cover the bare-canonical-root write shape,
+  fixed by the 2026-08-15 addendum above
 - `brownm09/dev-env#760` — sibling-directory worktree convention recognition (this addendum)
 - `brownm09/dev-env#774` — git-worktree-list-based confirmation, gap (b) (this addendum)
+- [ADR-071](071-canonical-checkout-mutate-guard-hook.md) — the sibling `pre-tool-use-canonical-
+  mutate-guard.py` hook's own permanent `_REDIRECT_TARGET_ALLOWLIST` engineering-journal carve-out
+  (dev-env#576, corrected dev-env#747), the precedent the 2026-08-15 addendum above mirrors
 - [ADR-071](071-canonical-checkout-mutate-guard-hook.md) Amendment 5 — the same gap and fix in the
   sibling `pre-tool-use-canonical-mutate-guard.py` hook, fixed in the same PR
 - [ADR-071](071-canonical-checkout-mutate-guard-hook.md) Amendment 6 — the sibling hook's own gap (a) fix,

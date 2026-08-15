@@ -101,6 +101,16 @@ def _normalize(path: str) -> str:
     return os.path.normcase(os.path.normpath(path))
 
 
+# PERMANENT carve-out (dev-env#750, reopened): mirrors pre-tool-use-canonical-mutate-
+# guard.py's _REDIRECT_TARGET_ALLOWLIST (ADR-071) for the same repo -- see main()'s
+# call site below for the full rationale. Overridable via WORKTREE_PATH_CHECK_JOURNAL_PATH
+# solely so tests can point this at a disposable temp dir instead of the developer's
+# real engineering-journal checkout.
+_JOURNAL_ROOT = _normalize(
+    os.environ.get("WORKTREE_PATH_CHECK_JOURNAL_PATH", "C:/Users/brown/Git/engineering-journal")
+)
+
+
 def _resolve_git_toplevel(cwd: str):
     """Return git's worktree top-level for `cwd`, or None if git can't resolve it.
 
@@ -344,6 +354,19 @@ def main() -> None:
     canonical_norm = _normalize(canonical_root)
     worktree_norm = _normalize(worktree_root)
     file_norm = _normalize(file_path)
+
+    # Engineering-journal canonical-root carve-out (dev-env#750, reopened): the Stub file
+    # workflow's own documented pattern is to write directly to the EJ canonical via `-C`
+    # on every PR open/merge, even from a session whose own primary repo is itself an EJ
+    # worktree (claude/CLAUDE.md -> Engineering Journal -> Stub file workflow -> "Never
+    # create a dedicated worktree to write a stub"). PR #756 only exempted a WRITE TARGET
+    # that itself looked worktree-shaped (the sibling-worktree carve-out below); it left
+    # the far more common bare-canonical-root write (no worktree segment in the target
+    # path at all -- the actual Stub-file-workflow write shape) still falling through to
+    # the final block. Matched by exact resolved canonical root, not basename, for the
+    # same reason given in the mutate-guard's own carve-out (dev-env#576/PR#584).
+    if canonical_norm == _JOURNAL_ROOT:
+        sys.exit(0)
 
     # Must start with canonical root (with separator) to be in-scope.
     if not (file_norm == canonical_norm or file_norm.startswith(canonical_norm + os.sep)):
