@@ -196,6 +196,7 @@ import sys
 from _hookio import is_absolute_path, split_top_level
 from _worktree_topology import find_worktree_by_path, parse_worktree_porcelain
 import _hookutil
+import _journal_canon
 import _worktree_canon
 
 # The worktree-path regexes this hook needs are single-sourced in
@@ -278,11 +279,12 @@ _GIT_REDIRECT_FLAGS = ("-C", "--git-dir", "--work-tree")
 # so the end-to-end test suite can point this at a disposable temp directory
 # instead of the developer's actual engineering-journal checkout — a test
 # must never create or resolve toplevel-detection against the real one.
+# Constant + normalization now single-sourced in _journal_canon.py (dev-env#982,
+# ADR-133) — three other hooks duplicated this identical pattern.
 _REDIRECT_TARGET_ALLOWLIST = frozenset({
-    os.environ.get("CANONICAL_MUTATE_GUARD_JOURNAL_PATH", "C:/Users/brown/Git/engineering-journal")
-    .replace("\\", "/")
-    .rstrip("/")
-    .lower()
+    _journal_canon.normalize_journal_path(
+        _journal_canon.resolve_journal_path("CANONICAL_MUTATE_GUARD_JOURNAL_PATH")
+    )
 })
 
 # `cd <path>` at the start of a segment (after stripping leading env-var
@@ -876,7 +878,7 @@ def _is_allowlisted_root(root: str) -> bool:
     exempt any canonical checkout anywhere on disk that happens to share that
     directory name (review finding on dev-env#576/PR#584).
     """
-    normalized = root.replace("\\", "/").rstrip("/").lower()
+    normalized = _journal_canon.normalize_journal_path(root)
     return normalized in _REDIRECT_TARGET_ALLOWLIST
 
 

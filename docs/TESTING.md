@@ -3010,3 +3010,28 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_retro_chain_status.py
     ```
+
+92. **journal-canon shared-module test** — required when changing `claude/scripts/_journal_canon.py`
+    (dev-env#982, [ADR-133](adr/133-shared-journal-canon-module.md)). Exercises the pure
+    `resolve_journal_path()` / `normalize_journal_path()` helpers offline (no I/O, no subprocess):
+    default resolution when the env var is unset, an explicit `default` override, env-var override
+    under two of the four hooks' real env-var names (`CANONICAL_MUTATE_GUARD_JOURNAL_PATH`,
+    `WORKTREE_PATH_CHECK_JOURNAL_PATH`), and that `resolve_journal_path()` returns the value verbatim
+    (no case/separator normalization — needed by `journal-canonical-guard.py`, which interpolates it
+    into printed advisory text and a subprocess `cwd=`). `normalize_journal_path()` is pinned for
+    case-insensitivity, trailing-slash and mixed-separator agreement, and `.`/`..`/double-separator
+    collapsing — a capability the legacy `.replace("\\","/").rstrip("/").lower()` scheme two of the
+    four hooks used did not have. An equivalence test reconstructs both legacy normalization schemes
+    inline and pins agreement with the new shared scheme across a set of real-world
+    (git-resolved-toplevel-shaped) inputs; a separate test pins the one found divergence — empty/None
+    input (`"" -> ""` under the legacy scheme vs. `"" -> "."` under the new one, since
+    `os.path.normpath("")` is `"."`) — as a documented, provably-unreachable-in-production boundary
+    rather than a silent trap, matching `_worktree_canon.py`'s own precedent (item 35 above). All four
+    consumer hooks' own existing test suites (`test_canonical_mutate_guard.py`,
+    `test_journal_canonical_guard.py`, `test_journal_draft_worktree_guard.py`,
+    `test_worktree_path_check.py`) required zero edits for this extraction — confirmed by running each
+    after the refactor, not just by tracing call sites.
+
+    ```bash
+    py -3 claude/scripts/tests/test_journal_canon.py
+    ```

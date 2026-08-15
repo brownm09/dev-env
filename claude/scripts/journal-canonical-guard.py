@@ -40,6 +40,7 @@ import sys
 from pathlib import Path
 
 import _hookutil
+import _journal_canon
 from _worktree_topology import (
     DETACHED,
     canonical_sync_action,
@@ -52,9 +53,11 @@ from _worktree_topology import (
 # Overridable via JOURNAL_CANONICAL_GUARD_REPO_PATH solely so a test can point this at a
 # disposable temp directory instead of the developer's actual engineering-journal checkout —
 # mirrors pre-tool-use-canonical-mutate-guard.py's CANONICAL_MUTATE_GUARD_JOURNAL_PATH.
-JOURNAL_REPO = Path(
-    os.environ.get("JOURNAL_CANONICAL_GUARD_REPO_PATH", str(Path.home() / "Git" / "engineering-journal"))
-)
+# Constant + env-var-override resolution now single-sourced in _journal_canon.py
+# (dev-env#982, ADR-133) — three other hooks duplicated this identical pattern. The
+# former default, `Path.home() / "Git" / "engineering-journal"`, is a verified no-op
+# equivalent to _journal_canon.DEFAULT_JOURNAL_PATH on this machine.
+JOURNAL_REPO = Path(_journal_canon.resolve_journal_path("JOURNAL_CANONICAL_GUARD_REPO_PATH"))
 
 
 def run(args: list[str], **kwargs) -> subprocess.CompletedProcess:

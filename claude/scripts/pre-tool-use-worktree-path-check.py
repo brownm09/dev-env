@@ -72,6 +72,7 @@ import subprocess
 import sys
 
 import _hookutil
+import _journal_canon
 import _worktree_canon
 import _worktree_recovery
 from _worktree_topology import find_worktree_by_path, parse_worktree_porcelain
@@ -106,8 +107,12 @@ def _normalize(path: str) -> str:
 # call site below for the full rationale. Overridable via WORKTREE_PATH_CHECK_JOURNAL_PATH
 # solely so tests can point this at a disposable temp dir instead of the developer's
 # real engineering-journal checkout.
+# Env-var-override resolution now single-sourced in _journal_canon.py (dev-env#982,
+# ADR-133) — three other hooks duplicated this identical pattern. Normalization stays
+# this file's own local `_normalize()` (used for other, non-journal comparisons too;
+# algorithmically identical to `_journal_canon.normalize_journal_path`).
 _JOURNAL_ROOT = _normalize(
-    os.environ.get("WORKTREE_PATH_CHECK_JOURNAL_PATH", "C:/Users/brown/Git/engineering-journal")
+    _journal_canon.resolve_journal_path("WORKTREE_PATH_CHECK_JOURNAL_PATH")
 )
 
 
