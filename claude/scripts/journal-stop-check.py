@@ -5,16 +5,22 @@ and (non-blocking) remind the user of stale journal work at session end.
 
 Check 1 — stub-push sentinel (CLAUDE-facing, BLOCKING via exit 2 + stderr):
   If stub-push-archive-reminder.py wrote a sentinel flag (meaning a stub was
-  pushed to engineering-journal this session), consume the flag and emit the
-  archive instruction on STDERR with exit 2. The reminder asks CLAUDE to call
-  the ccd_session_mgmt__archive_session MCP tool — an action only Claude can
+  pushed to engineering-journal THIS session -- the sentinel is scoped to the
+  pushing session's own session_id, dev-env#980, ADR-091 Amendment 2), consume
+  the flag and emit the archive instruction on STDERR with exit 2. Only a Stop
+  event whose own session_id matches the sentinel's ever consumes it -- prior
+  to the fix, a single global sentinel let any concurrent session's Stop
+  consume it, producing both false-positive archive instructions (a session
+  that never pushed) and missed reminders (the actual pushing session's own
+  Stop losing the race). The reminder asks CLAUDE to call the
+  ccd_session_mgmt__archive_session MCP tool — an action only Claude can
   take — so it must reach Claude's context. A Stop hook's exit-0 stdout does
   NOT (only UserPromptSubmit / UserPromptExpansion / SessionStart get exit-0
   stdout added to context), so the former stdout emission was invisible to
   Claude and the intended session-archiving silently never happened. Exit 2 +
   stderr is the channel that reaches Claude (ADR-091; same failure class
-  ADR-088's tile gate fixed). Fires at most once (the sentinel is consumed on
-  read) and honors the stop_hook_active loop guard.
+  ADR-088's tile gate fixed). Fires at most once per session (the sentinel is
+  consumed on read) and honors the stop_hook_active loop guard.
 
 Checks 2–3 (user-facing, NON-blocking — exit 0, systemMessage):
 1. Stale *_draft.md / *.stub.md files from before today
@@ -37,13 +43,24 @@ import _hookutil
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import date
 from pathlib import Path
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
-SENTINEL = Path.home() / ".claude" / "scratch" / "stub-pushed.flag"
+# Must match stub-push-archive-reminder.py's SENTINEL_PREFIX -- per-session
+# sentinel (dev-env#980, ADR-091 Amendment 2), duplicated as a literal in
+# both files like JOURNAL_REPO already is rather than shared via import.
+SENTINEL_PREFIX = "stub-pushed-"
+# session_id is trusted harness-generated input (a UUID -- see token-tracker.py's
+# comment on the same field) on every other _hookutil.sentinel_path caller, but
+# this hook's operation is a DELETE (not the exists()/write_text("") every other
+# caller performs), so an unsanitized session_id here would let a crafted value
+# escape ~/.claude/scratch via embedded path separators (dev-env#980 review
+# finding). Treat anything outside this class the same as a missing session_id.
+_SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 TODAY = date.today().strftime("%Y-%m-%d")
 
 
@@ -63,17 +80,36 @@ def archive_reminder_message() -> str:
     )
 
 
-def consume_stub_pushed_sentinel(sentinel: Path = SENTINEL) -> str | None:
-    """Return the archive reminder if the stub-push sentinel exists, else None.
+def consume_stub_pushed_sentinel(
+    session_id: str = "", sentinel: Path | None = None, scratch: Path | None = None
+) -> str | None:
+    """Return the archive reminder if THIS session's stub-push sentinel exists, else None.
 
     Deletes the sentinel before returning so the reminder fires only once — this
     consume-on-read is the primary one-shot guard for the exit-2 archive block.
-    Any I/O failure is swallowed — the sentinel check is best-effort. The
-    *sentinel* parameter is injected by the tests; production always uses SENTINEL.
+    Any I/O failure is swallowed — the sentinel check is best-effort.
+
+    *sentinel*, when given (the tests' fixture-injection path), is used as-is.
+    Otherwise the path is derived from *session_id* via
+    `_hookutil.sentinel_path(SENTINEL_PREFIX, session_id, scratch=scratch)` --
+    production always takes this branch with *scratch* left at its default
+    (~/.claude/scratch); tests pass *scratch* directly instead of
+    monkeypatching `_hookutil.SCRATCH`. A *session_id* that is falsy OR does
+    not match `_SAFE_SESSION_ID` (see the module-level comment) returns None
+    immediately without touching the filesystem, with no explicit *sentinel*
+    override: computing a path from an empty or unsanitized id would degrade
+    to a shared/attacker-influenced path, resurrecting the dev-env#980
+    cross-session bug in miniature (ADR-091 Amendment 2).
     """
     try:
-        if sentinel.exists():
-            sentinel.unlink()
+        if sentinel is not None:
+            path = sentinel
+        elif session_id and _SAFE_SESSION_ID.match(session_id):
+            path = _hookutil.sentinel_path(SENTINEL_PREFIX, session_id, scratch=scratch)
+        else:
+            return None
+        if path.exists():
+            path.unlink()
             return archive_reminder_message()
     except Exception:
         pass
@@ -210,6 +246,20 @@ def parse_stop_hook_active(raw: str) -> bool:
         return False
 
 
+def parse_session_id(raw: str) -> str:
+    """Return the Stop payload's session_id, or "" on empty/malformed/non-dict
+    stdin or a missing field. Never raises -- mirrors parse_stop_hook_active's
+    tolerant-parsing shape as an independent sibling reader of the same raw
+    string (dev-env#980, ADR-091 Amendment 2).
+    """
+    if not raw:
+        return ""
+    try:
+        return str(json.loads(raw).get("session_id") or "")
+    except Exception:
+        return ""
+
+
 def main() -> None:
     _hookutil.record_heartbeat("journal-stop-check")
     try:
@@ -217,6 +267,14 @@ def main() -> None:
     except Exception:
         raw = ""
     stop_hook_active = parse_stop_hook_active(raw)
+    session_id = parse_session_id(raw)
+
+    # Garbage-collect stale per-session sentinels (dev-env#980, ADR-091 Amendment
+    # 2 review finding). stub-push-archive-reminder.py only sweeps on its own
+    # (rare) success path -- this hook fires on every Stop, so it's the more
+    # reliable backstop for orphaned sentinels from a crashed/never-Stopped
+    # session. Best-effort; swallows its own errors, never raises.
+    _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
     # Check 1 — stub-push sentinel (CLAUDE-facing archive instruction, BLOCKING).
     # A stub was pushed this session, so Claude must archive it by calling the
@@ -229,7 +287,7 @@ def main() -> None:
     # continuation from a prior block never consumes the flag without delivering
     # it; the consume-on-read then makes the block one-shot (no Stop-loop risk).
     if not stop_hook_active:
-        reminder = consume_stub_pushed_sentinel()
+        reminder = consume_stub_pushed_sentinel(session_id)
         if reminder:
             sys.stderr.write(f"[journal-stop-hook] {reminder}\n")
             sys.exit(2)
