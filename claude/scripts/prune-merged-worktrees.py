@@ -79,6 +79,7 @@ from pathlib import Path
 from _repo_scan import find_git_repos
 from _worktree_liveness import parse_liveness_window_seconds, worktree_session_is_live
 from _worktree_topology import (
+    DETACHED,
     DRAFT_BRANCH_RE,
     main_squatter,
     non_canonical_worktrees_matching,
@@ -154,6 +155,21 @@ def is_merged(branch: str, gh_repo: str, repo: str) -> bool:
     if r.returncode == 0 and r.stdout.strip() not in ("", "[]"):
         return True
     return False
+
+
+def resolve_detached_head(path: str, repo: str) -> "str | None":
+    """Resolve a detached-HEAD worktree's actual checked-out commit SHA.
+
+    A detached worktree's HEAD is not a shared ref (unlike refs/heads/*, which live in the
+    repo's shared .git dir) -- it exists only as that worktree's own HEAD file, so it must be
+    resolved with cwd set to the worktree's own path, not the canonical repo's. Returns None
+    on any git failure so the caller can fail safe (dev-env#979).
+    """
+    r = run(["git", "rev-parse", "HEAD"], cwd=path)
+    sha = r.stdout.strip()
+    if r.returncode != 0 or not sha:
+        return None
+    return sha
 
 
 def is_dirty(path: str) -> bool:
@@ -399,8 +415,20 @@ def prune_one(
             skipped.append((path, f"branch '{branch}' not in {BRANCH_PREFIX}* prefix"))
             continue
 
-        if not is_merged(branch, gh_repo, repo):
-            if not (ephemeral_patterns and files_are_all_ephemeral(diff_files(branch, repo), ephemeral_patterns)):
+        # A detached-HEAD worktree has no branch ref -- is_merged()/diff_files() need an
+        # actual commit to compare against origin/main, not the DETACHED sentinel, which is
+        # not a resolvable git ref anywhere (dev-env#979). Resolve it once here and use the
+        # resolved SHA in place of `branch` for both merge-status checks below; `branch`
+        # itself is left untouched for display/prefix purposes elsewhere in the loop.
+        merge_ref = branch
+        if branch == DETACHED:
+            merge_ref = resolve_detached_head(path, repo)
+            if merge_ref is None:
+                skipped.append((path, "not merged into origin/main (detached HEAD, commit unresolvable)"))
+                continue
+
+        if not is_merged(merge_ref, gh_repo, repo):
+            if not (ephemeral_patterns and files_are_all_ephemeral(diff_files(merge_ref, repo), ephemeral_patterns)):
                 skipped.append((path, "not merged into origin/main"))
                 continue
 

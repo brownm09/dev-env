@@ -35,6 +35,17 @@ passed the "park and remove" test). Two further tests cover `git worktree remove
 must still count the item as pruned (the branch was freed independently of the removal)
 while also flagging it skipped for manual retry.
 
+Also covers the dev-env#979 detached-HEAD merge-check fix: resolve_detached_head() and the
+prune_one() loop's substitution of a resolved commit SHA for the un-resolvable DETACHED
+sentinel before calling is_merged()/diff_files(). Three cases: the detached commit IS an
+ancestor of origin/main (pruned), is NOT (skipped, not force-pruned), and `git rev-parse
+HEAD` itself fails (fails safe, skipped with a distinct reason, no crash). The dispatch
+helper (`_make_dispatch_detached`) distinguishes `git rev-parse HEAD` calls by their `cwd`
+kwarg — only the detached worktree's own path resolves to a SHA — which is the actual
+regression guard: a fix that resolved HEAD against the repo's cwd instead of the specific
+worktree's own path would silently substitute the wrong commit and this would surface as a
+wrong prune/skip verdict rather than passing silently.
+
 Pure-helper tests follow the pattern of test_reclaim_worktree_disk.py and
 test_worktree_topology.py; the load_ephemeral_patterns tests use a real
 tempfile.TemporaryDirectory() rather than mocking open(), matching this codebase's
@@ -115,7 +126,7 @@ def _dispatch(args, **_kwargs):
         return _ok(_PORCELAIN)
     if args[1:3] == ["status", "--porcelain"]:  # is_dirty → not dirty
         return _ok("")
-    if args[1:3] == ["merge-base"]:          # is_merged → merged (returncode 0)
+    if args[1:3] == ["merge-base", "--is-ancestor"]:  # is_merged → merged (returncode 0)
         return _ok()
     if args[1:3] == ["worktree", "remove"]:  # the slow operation → timeout
         raise subprocess.TimeoutExpired(cmd=args, timeout=300)
@@ -134,7 +145,7 @@ def _dispatch_named(args, **_kwargs):
         return _ok(_PORCELAIN_NAMED)
     if args[1:3] == ["status", "--porcelain"]:  # is_dirty → not dirty
         return _ok("")
-    if args[1:3] == ["merge-base"]:          # is_merged → merged (returncode 0)
+    if args[1:3] == ["merge-base", "--is-ancestor"]:  # is_merged → merged (returncode 0)
         return _ok()
     if args[1:3] == ["worktree", "remove"]:  # succeeds (no timeout here)
         return _ok()
@@ -351,6 +362,124 @@ def test_timeout_skips_worktree_and_continues() -> str:
     return "TimeoutExpired caught: pruned=0, skipped=2, fetch_failed=False — loop continued"
 
 
+# --- dev-env#979: detached-HEAD merge-check fix ----------------------------------------
+
+# Fake worktree porcelain: one primary on main, one secondary worktree in detached-HEAD
+# state (a `detached` line, no `branch` line) -- exercises parse_worktree_porcelain()'s
+# existing DETACHED branch.
+_PORCELAIN_DETACHED = (
+    "worktree /FAKE_PRIMARY_PRUNE_DET\n"
+    "HEAD abc123\n"
+    "branch refs/heads/main\n"
+    "\n"
+    "worktree /FAKE_WORKTREE_PRUNE_DET\n"
+    "HEAD 789abc\n"
+    "detached\n"
+    "\n"
+)
+
+# The prune loop resolves each worktree's path via str(Path(wt["path"]).resolve()) before
+# ever calling run() with it as cwd -- match that here so the dispatch's cwd comparison
+# below lines up with what the script actually passes.
+_DETACHED_WORKTREE_PATH = str(Path("/FAKE_WORKTREE_PRUNE_DET").resolve())
+_DETACHED_SHA = "789abcdef0123456789abcdef0123456789abcd"
+
+
+def _make_dispatch_detached(merge_base_ok: bool, rev_parse_ok: bool = True):
+    """Build a subprocess.run side_effect for the detached-HEAD merge-check tests
+    (dev-env#979).
+
+    Distinguishes `git rev-parse HEAD` calls by their `cwd` kwarg -- the actual regression
+    guard: a fix that resolved HEAD against the repo's cwd instead of the worktree's own
+    path would silently substitute the WRONG commit (the primary's, not the detached
+    worktree's). Only a rev-parse issued with cwd == _DETACHED_WORKTREE_PATH gets a real
+    SHA back; any other cwd (or rev_parse_ok=False) gets a failure, so a cwd mistake in the
+    fix would surface as a wrong prune/skip verdict rather than passing silently.
+    """
+    def _dispatch(args, **kwargs):
+        cwd = kwargs.get("cwd")
+        if args[1:2] == ["remote"]:                # git remote get-url origin
+            return _ok("git@github.com:brownm09/dev-env.git\n")
+        if args[1:3] == ["fetch", "origin"]:        # git fetch origin main
+            return _ok()
+        if args[1:3] == ["worktree", "list"]:       # git worktree list --porcelain
+            return _ok(_PORCELAIN_DETACHED)
+        if args[1:3] == ["rev-parse", "HEAD"]:      # resolve_detached_head
+            if rev_parse_ok and cwd == _DETACHED_WORKTREE_PATH:
+                return _ok(f"{_DETACHED_SHA}\n")
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="fatal: not a git repository")
+        if args[1:3] == ["status", "--porcelain"]:  # is_dirty -> not dirty
+            return _ok("")
+        if args[1:3] == ["merge-base", "--is-ancestor"]:  # is_merged: ancestor check
+            return _ok() if merge_base_ok else types.SimpleNamespace(returncode=1, stdout="", stderr="")
+        if args[1:3] == ["pr", "list"]:             # is_merged: gh pr list fallback
+            return _ok("[]\n")
+        if args[1:3] == ["worktree", "remove"]:     # succeeds
+            return _ok()
+        if args[1:3] == ["branch", "-d"]:           # git branch -d <branch>
+            return _ok()
+        return _ok()
+    return _dispatch
+
+
+def test_detached_head_merged_commit_pruned() -> str:
+    """A detached-HEAD worktree whose actual checked-out commit IS an ancestor of
+    origin/main must be pruned -- previously it was always reported "not merged" because
+    the DETACHED sentinel ("<detached>") was fed straight into is_merged() as if it were a
+    resolvable ref (dev-env#979). Requires --include-named since the sentinel never starts
+    with claude/ -- that prefix gate is orthogonal to this bug and stays exercised as-is.
+    """
+    with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=True)):
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                    repo="/FAKE_REPO_DETACHED",
+                    dry_run=False,
+                    liveness_window_seconds=86400,
+                    include_named=True,
+                )
+    assert pruned_count == 1, f"expected 1 pruned (detached commit is merged), got {pruned_count}"
+    assert skipped_count == 1, f"expected 1 skipped (primary only), got {skipped_count}"
+    assert not fetch_failed, "fetch should not be marked failed"
+    return "detached HEAD, commit IS ancestor of origin/main: resolved via worktree-scoped rev-parse and pruned"
+
+
+def test_detached_head_unmerged_commit_skipped() -> str:
+    """A detached-HEAD worktree whose commit is NOT an ancestor of origin/main (and has no
+    matching merged PR) is still correctly skipped -- proving the fix doesn't over-correct
+    into pruning everything detached (dev-env#979)."""
+    with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=False)):
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                    repo="/FAKE_REPO_DETACHED",
+                    dry_run=False,
+                    liveness_window_seconds=86400,
+                    include_named=True,
+                )
+    assert pruned_count == 0, f"expected 0 pruned (detached commit is not merged), got {pruned_count}"
+    assert skipped_count == 2, f"expected 2 skipped (primary + not-merged detached), got {skipped_count}"
+    return "detached HEAD, commit is NOT merged: correctly skipped, not force-pruned"
+
+
+def test_detached_head_rev_parse_failure_skipped() -> str:
+    """When the detached worktree's own `git rev-parse HEAD` itself fails (e.g. a corrupted
+    worktree), the fix must fail safe -- skip with a distinct reason -- rather than crash or
+    silently fall through to a misleading generic message (dev-env#979)."""
+    with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=True, rev_parse_ok=False)):
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                    repo="/FAKE_REPO_DETACHED",
+                    dry_run=False,
+                    liveness_window_seconds=86400,
+                    include_named=True,
+                )
+    assert pruned_count == 0, f"expected 0 pruned (commit unresolvable), got {pruned_count}"
+    assert skipped_count == 2, f"expected 2 skipped (primary + unresolvable), got {skipped_count}"
+    return "detached HEAD, rev-parse HEAD itself fails: fails safe (skipped, reason distinct), no crash"
+
+
 # --- files_are_all_ephemeral (pure) ---------------------------------------------------
 
 def test_files_are_all_ephemeral_matches() -> str:
@@ -474,6 +603,9 @@ def main() -> int:
         ("--include-named unset: named branch still skipped (default unchanged)", test_named_branch_skipped_by_default),
         ("--include-named set: named branch now pruned", test_named_branch_pruned_with_include_named),
         ("git worktree remove timeout: skip-and-continue, not abort", test_timeout_skips_worktree_and_continues),
+        ("detached HEAD: commit IS merged -> pruned via resolved SHA", test_detached_head_merged_commit_pruned),
+        ("detached HEAD: commit NOT merged -> still correctly skipped", test_detached_head_unmerged_commit_skipped),
+        ("detached HEAD: rev-parse HEAD fails -> fails safe, skipped", test_detached_head_rev_parse_failure_skipped),
         ("draft-branch squat: idle+clean+fully-pushed -> park+remove (remove actually invoked)", test_draft_branch_squat_park_and_remove),
         ("draft-branch squat: dirty -> park-only (remove NEVER invoked), contents preserved", test_draft_branch_squat_park_only_when_dirty),
         ("draft-branch squat: park+remove degrades gracefully when remove fails", test_draft_branch_squat_park_and_remove_when_remove_fails),
