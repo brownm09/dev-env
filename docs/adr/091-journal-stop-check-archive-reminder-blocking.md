@@ -2,8 +2,8 @@
 
 **Date:** 2026-07-08
 **Status:** Accepted
-**Amended:** 2026-07-09 (one amendment — see Amendment section below)
-**Tags:** hooks, stop, journal, archive, session-archiving, exit-code, stderr, claude-facing, adr-021, adr-088, false-positive, manifest, open-prs
+**Amended:** 2026-07-09, 2026-08-15 (two amendments — see Amendment sections below)
+**Tags:** hooks, stop, journal, archive, session-archiving, exit-code, stderr, claude-facing, adr-021, adr-088, false-positive, manifest, open-prs, session-scoping, sentinel, adr-064, cross-session
 
 ---
 
@@ -225,3 +225,71 @@ re-finding in a different guise.
 this amendment closes. [dev-env#601](https://github.com/brownm09/dev-env/issues/601) — a
 distinct, unrelated investigation into an automated commit/push/PR-open mechanism,
 cross-referenced only (not the same bug).
+
+## Amendment 2 (2026-08-15) — scope the sentinel to the pushing session's own session_id (dev-env#980)
+
+This ADR's Consequences section previously stated "the sentinel-file contract
+(`stub-pushed.flag`, consumed once) is unchanged." That contract is exactly what this
+amendment changes: the single, global `~/.claude/scratch/stub-pushed.flag` file is not
+scoped to any session, so it lets ANY concurrent session's Stop consume it, not only the
+session that actually pushed the stub.
+
+**Symptom.** Reproduced 2026-08-15: a `daily-journal-compose-local` scheduled run did only
+read-only git operations against engineering-journal, yet its Stop event fired the
+Claude-facing archive instruction — the actual push that armed the sentinel came from a
+different, concurrent dev-env session (`draft: 2026-08-15 dev-env reconcile-project-board
+session`). Two distinct failure directions follow from the same missing scoping:
+
+- **False positive** — a session that never touched engineering-journal is told to archive
+  itself (destroying its own worktree) because an unrelated session's push armed the shared
+  flag.
+- **Missed reminder** — consume-on-read means whichever session's Stop fires first globally
+  eats the flag; the session that actually did the push can lose that race and never see its
+  own reminder.
+
+**Root cause.** Neither `stub-push-archive-reminder.py` (PostToolUse) nor
+`journal-stop-check.py` (Stop) read the `session_id` field their own stdin JSON payload
+already carries (every hook event includes it), even though the codebase already has a
+directly-reusable convention for exactly this need: `_hookutil.sentinel_path(prefix,
+session_id)` (ADR-064), used by several other per-session one-shot sentinels. This pair of
+hooks used a plain, unscoped path instead — a gap that predates ADR-064 in this file, not a
+regression it introduced.
+
+**Fix.** Both hooks now read `session_id` from their payload:
+
+- `stub-push-archive-reminder.py` writes to
+  `_hookutil.sentinel_path(SENTINEL_PREFIX, session_id)` (`SENTINEL_PREFIX = "stub-pushed-"`,
+  so the file becomes `stub-pushed-<session_id>.flag`) instead of the old global
+  `stub-pushed.flag`. It also calls `_hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)`
+  first, garbage-collecting any per-session flag older than 30 days — needed now that a
+  crashed or otherwise never-Stopped session's flag has no other cleanup path (the old global
+  file was a single, perpetually-reused path with no such accumulation risk).
+- `journal-stop-check.py`'s `consume_stub_pushed_sentinel` now takes `session_id` and derives
+  the same per-session path via `_hookutil.sentinel_path`; a Stop event only ever consumes
+  the sentinel matching its own `session_id`.
+- **Missing `session_id` — forgo, never fall back to a shared path.** If either hook's
+  payload lacks a `session_id` (an anomalous session), the writer skips writing any sentinel
+  and the reader's `consume_stub_pushed_sentinel` returns `None` without touching the
+  filesystem — deliberately chosen over a synthetic-fallback-id (the pattern some other
+  `_hookutil.sentinel_path` callers use for a missing `session_id`), since a fallback here
+  would just reintroduce a narrower version of the identical collision this amendment fixes:
+  multiple anomalous sessions could still collide on the same fallback id.
+
+**Coverage.** `test_journal_stop_check.py` gains: `parse_session_id()` pure tests (mirroring
+the existing `parse_stop_hook_active()` set); `consume_stub_pushed_sentinel` tests for the
+derive-from-`session_id` path and the empty-`session_id`-returns-`None`-untouched path; and
+the direct dev-env#980 regression coverage —
+`test_e2e_cross_session_sentinel_not_consumed` (session A's sentinel, session B's Stop -> no
+block, A's flag left intact) and `test_e2e_no_session_id_never_blocks`. All three existing
+e2e tests were updated to plant/consume under a consistent `session_id` matching the payload.
+`test_stub_push_archive_reminder.py` gains one e2e test for the writer-side guard
+(`test_no_session_id_exits_clean_without_writing_sentinel`) — the one `main()` behavior this
+fix touches that's testable without a git-repo fixture, since the guard fires before any git
+call.
+
+**References:** [dev-env#980](https://github.com/brownm09/dev-env/issues/980) — the issue
+this amendment closes. [dev-env#651](https://github.com/brownm09/dev-env/issues/651) /
+Amendment 1 (above) and [dev-env#666](https://github.com/brownm09/dev-env/issues/666) are
+related but distinct bugs on the same file, not touched by this amendment.
+[ADR-064](064-shared-hookutil-sentinel-transcript-locate.md) — the `sentinel_path` /
+`cleanup_stale_sentinels` convention this amendment adopts.

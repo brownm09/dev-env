@@ -19,10 +19,14 @@ Fires on every Bash tool call. Most calls are skipped quickly:
      review/merge still needs.
 
 When all five conditions are met, writes a sentinel file to the scratch
-directory. The Stop hook (journal-stop-check.py) reads and clears the
-sentinel and issues the archive reminder on stderr with exit 2 — the channel
-that reaches Claude for a Stop hook (exit-0 stdout is NOT added to Claude's
-context for Stop, so the reminder must block the stop to be seen; ADR-091).
+directory, scoped to this session's own session_id (dev-env#980, ADR-091
+Amendment 2 -- a session-id-less shared sentinel let any concurrent session's
+Stop consume it, producing both false-positive and missed-reminder archive
+instructions). The Stop hook (journal-stop-check.py) reads and clears the
+SAME-session sentinel and issues the archive reminder on stderr with exit 2 —
+the channel that reaches Claude for a Stop hook (exit-0 stdout is NOT added to
+Claude's context for Stop, so the reminder must block the stop to be seen;
+ADR-091).
 
 Exit 0 on every code path — never blocks.
 
@@ -30,6 +34,7 @@ Stdin JSON shape (PostToolUse):
   {
     "hook_event_name": "PostToolUse",
     "tool_name": "Bash",
+    "session_id": "...",
     "tool_input": {"command": "...", ...},
     "tool_response": {"stdout": "...", "stderr": "..."}  # NOT "output" — ADR-049
   }
@@ -46,7 +51,11 @@ import _hookutil
 from _journal_schema import decode_shard_bytes, has_unresolved_open_pr, parse_manifest_text
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
-SENTINEL = Path.home() / ".claude" / "scratch" / "stub-pushed.flag"
+# Per-session sentinel (dev-env#980, ADR-091 Amendment 2) -- the file is
+# named f"{SENTINEL_PREFIX}{session_id}.flag" via _hookutil.sentinel_path, so
+# each session's push arms only its OWN sentinel. Prior to this fix, a single
+# global "stub-pushed.flag" let any concurrent session's Stop consume it.
+SENTINEL_PREFIX = "stub-pushed-"
 
 # Anchored top-level match — identical to pr-merge-reminder.py's
 # _check_push_stmt / is_git_push_command (ADR-050 Amendment 5 and this
@@ -232,6 +241,14 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
+    # A sentinel that can't be scoped to a session must never fall back to a
+    # shared path -- that's exactly the dev-env#980 bug. Forgo rather than
+    # use a synthetic fallback id (mirrors posttooluse-inert-advisory.py's
+    # "forgo the advisory in an anomalous session" choice).
+    session_id = str(data.get("session_id") or "")
+    if not session_id:
+        sys.exit(0)
+
     command = (data.get("tool_input") or {}).get("command", "")
     output = read_command_output(data)
 
@@ -259,10 +276,14 @@ def main() -> None:
     if head_commit_has_unresolved_pr(JOURNAL_REPO, files):
         sys.exit(0)
 
-    # Write sentinel — the Stop hook will consume it and issue the reminder
+    # Write sentinel, scoped to this session -- the Stop hook of the SAME
+    # session will consume it and issue the reminder (dev-env#980: a global
+    # sentinel previously let any session's Stop consume it).
     try:
-        SENTINEL.parent.mkdir(parents=True, exist_ok=True)
-        SENTINEL.write_text("1")
+        _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
+        sentinel = _hookutil.sentinel_path(SENTINEL_PREFIX, session_id)
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text("1")
     except Exception:
         pass
 

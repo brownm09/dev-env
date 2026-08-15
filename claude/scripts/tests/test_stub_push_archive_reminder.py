@@ -36,6 +36,17 @@ now lives only in the new `head_commit_files()`, which (like the old
 `head_commit_has_unresolved_pr` (the new gate that stops the sentinel from
 arming while a same-session PR is still open) are tested below.
 
+dev-env#980 (ADR-091 Amendment 2) scopes the sentinel to the pushing
+session's own session_id via `_hookutil.sentinel_path`, rather than a single
+shared `stub-pushed.flag` any concurrent session's Stop could consume. The
+`main()` guard added for this ("no session_id -> bail before doing any git
+work or writing a sentinel") fires immediately after the JSON payload parses,
+before any of the git-dependent checks above -- so it's the one main()
+behavior this file CAN exercise end-to-end without a git fixture, via the
+single e2e test below (isolating HOME/USERPROFILE like
+test_journal_stop_check.py's own subprocess layer). The rest of main() stays
+untested here per the existing git-fixture-avoidance convention above.
+
 Usage:
     py -3 claude/scripts/tests/test_stub_push_archive_reminder.py
 
@@ -44,6 +55,8 @@ Exit 0 = all pass.
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -342,6 +355,40 @@ def test_no_unresolved_pr_when_manifest_has_utf8_bom() -> str:
     return "a UTF-8-BOM-prefixed but resolved manifest decodes past the BOM and reads correctly -> not unresolved"
 
 
+# ---------------------------------------------------------------------------
+# e2e: main()'s no-session_id guard (dev-env#980, ADR-091 Amendment 2) -- the
+# only main() behavior testable here without a git-repo fixture, since it
+# bails before any git call.
+# ---------------------------------------------------------------------------
+
+def _py_cmd():
+    import shutil
+    return ["py", "-3"] if shutil.which("py") else ["python3"]
+
+
+def test_no_session_id_exits_clean_without_writing_sentinel() -> str:
+    with tempfile.TemporaryDirectory() as home:
+        payload = json.dumps({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "cd ~/Git/engineering-journal && git push"},
+            "tool_response": {"stdout": "", "stderr": ""},
+            # session_id deliberately omitted
+        })
+        env = dict(os.environ)
+        env["HOME"] = home
+        env["USERPROFILE"] = home  # Path.home() honors USERPROFILE on Windows
+        proc = subprocess.run(
+            _py_cmd() + [str(SCRIPT)], input=payload,
+            capture_output=True, text=True, env=env,
+        )
+        scratch = Path(home) / ".claude" / "scratch"
+        sentinels = list(scratch.glob("stub-pushed-*.flag")) if scratch.exists() else []
+    assert proc.returncode == 0, f"expected exit 0, got {proc.returncode} (stderr={proc.stderr!r})"
+    assert not sentinels, f"no session_id must never write a sentinel, found: {sentinels}"
+    return "e2e no session_id -> exit 0, no sentinel written (bails before any git work, dev-env#980)"
+
+
 def main() -> int:
     tests = [
         ("clean push has no error", test_clean_push_no_error),
@@ -375,6 +422,7 @@ def main() -> int:
         ("deleted stub path skipped, not flagged (dev-env#651)", test_unresolved_pr_skips_deleted_stub_path),
         ("conservative when manifest empty (dev-env#651 /review)", test_unresolved_pr_conservative_when_manifest_empty),
         ("UTF-8 BOM manifest still reads correctly (dev-env#651 /review)", test_no_unresolved_pr_when_manifest_has_utf8_bom),
+        ("e2e no session_id -> exit 0, no sentinel written (dev-env#980)", test_no_session_id_exits_clean_without_writing_sentinel),
     ]
     failed = 0
     for name, fn in tests:

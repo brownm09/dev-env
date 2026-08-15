@@ -13,7 +13,15 @@ exit-0 stdout is invisible (transcript-only), so the former print() surfaced
 nothing (ADR-103, dev-env#740). They point at work for a later, dedicated session
 and must not block.
 
-Two layers, mirroring this repo's hook-test convention:
+The stub-push sentinel is scoped to the pushing session's own session_id
+(dev-env#980, ADR-091 Amendment 2): a global sentinel previously let any
+concurrent session's Stop consume it, producing both false-positive archive
+instructions and missed reminders. `consume_stub_pushed_sentinel(session_id,
+sentinel=...)` and the behavioral `_run_hook`/`_sentinel_path` fixtures below
+were updated accordingly; see test_e2e_cross_session_sentinel_not_consumed and
+test_e2e_no_session_id_never_blocks for the direct regression coverage.
+
+Three layers, mirroring this repo's hook-test convention:
 
   * Pure / fixture-helper tests exercise the changed surface offline:
     - archive_reminder_message(): ASCII / cp1252-encodable (so the exit-2 stderr
@@ -22,24 +30,33 @@ Two layers, mirroring this repo's hook-test convention:
     - parse_stop_hook_active(): True only when the payload sets the flag; False on
       false / missing / empty / malformed / non-dict stdin (never suppresses a
       genuine first Stop).
-    - consume_stub_pushed_sentinel(sentinel=tmp): a present flag yields the
-      reminder and is deleted (the consume-on-read one-shot guard); a second read
-      yields None; an absent flag yields None.
+    - parse_session_id(): the payload's session_id, or "" on missing/empty/
+      malformed/non-dict stdin (dev-env#980).
+    - consume_stub_pushed_sentinel(session_id, sentinel=tmp): an explicit
+      sentinel override behaves as before (present -> reminder + delete; second
+      read -> None; absent -> None). Without an override, the path is derived
+      from session_id; a falsy session_id with no override returns None without
+      touching the filesystem.
 
   * A behavioral layer drives the real hook end-to-end over stdin via subprocess,
-    with HOME/USERPROFILE pointed at a temp dir so SENTINEL resolves under the tmp
-    scratch (isolated from the real ~/.claude/scratch):
-    - flag present + stop_hook_active=false -> exit 2, reminder on stderr, EMPTY
-      stdout (Claude Code shows a Stop hook's stderr on exit 2, not stdout), and
-      the flag is consumed.
+    with HOME/USERPROFILE pointed at a temp dir so the per-session sentinel
+    resolves under the tmp scratch (isolated from the real ~/.claude/scratch):
+    - flag present (own session_id) + stop_hook_active=false -> exit 2, reminder
+      on stderr, EMPTY stdout (Claude Code shows a Stop hook's stderr on exit 2,
+      not stdout), and the flag is consumed.
     - no flag -> exit 0 (advisory path; the git advisory calls fail closed against
       the nonexistent tmp journal repo, so output is empty).
     - no flag + a planted stale (uncomposed, pre-today) stub in the tmp journal repo
       -> exit 0 with the Checks 2-3 advisory delivered as a `{"systemMessage": ...}`
       JSON object on STDOUT and empty stderr (the re-pin of the corrected channel:
       systemMessage, not the former invisible plain-stdout print -- dev-env#740).
-    - flag present + stop_hook_active=true -> exit 0 (loop guard: no re-block) and
-      the flag is PRESERVED (not consumed without delivery).
+    - flag present (own session_id) + stop_hook_active=true -> exit 0 (loop guard:
+      no re-block) and the flag is PRESERVED (not consumed without delivery).
+    - flag present under a DIFFERENT session_id than the one in the payload ->
+      exit 0 (no block) and that other session's flag is left untouched
+      (dev-env#980's actual regression case).
+    - flag present but the payload carries no session_id at all -> exit 0 (no
+      block), regardless of what flags exist on disk.
 
 main()'s advisory branches (stale drafts / unmerged branches / orphan cleanup) run
 subprocess git against the journal repo and are not unit-tested here (pure-helper
@@ -66,6 +83,7 @@ SCRIPT = REPO_ROOT / "claude" / "scripts" / "journal-stop-check.py"
 
 # The script imports _winsubp (sibling in scripts/); make it resolvable.
 sys.path.insert(0, str(SCRIPT.parent))
+import _hookutil  # noqa: E402  -- needs the sys.path.insert above
 
 _spec = importlib.util.spec_from_file_location("journal_stop_check", SCRIPT)
 assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
@@ -113,33 +131,90 @@ def test_parse_stop_hook_active_empty_and_malformed():
     return "empty / malformed / non-dict stdin -> False (never suppresses a genuine first Stop)"
 
 
-# --- fixture: consume_stub_pushed_sentinel(sentinel=tmp) -----------------------
+# --- pure: parse_session_id() (dev-env#980) -------------------------------------
+
+def test_parse_session_id_present():
+    assert jsc.parse_session_id(json.dumps({"session_id": "abc-123"})) == "abc-123"
+    return "session_id present -> returned"
+
+
+def test_parse_session_id_missing():
+    assert jsc.parse_session_id(json.dumps({"stop_hook_active": False})) == ""
+    return "session_id absent -> ''"
+
+
+def test_parse_session_id_empty_and_malformed():
+    assert jsc.parse_session_id("") == ""
+    assert jsc.parse_session_id("not json{") == ""
+    assert jsc.parse_session_id("[]") == ""  # non-dict JSON -> .get raises -> ""
+    return "empty / malformed / non-dict stdin -> '' (never raises)"
+
+
+# --- fixture: consume_stub_pushed_sentinel(session_id, sentinel=tmp) -----------
 
 def test_consume_present_returns_and_deletes():
     with tempfile.TemporaryDirectory() as d:
-        flag = Path(d) / "stub-pushed.flag"
+        flag = Path(d) / "stub-pushed-s1.flag"
         flag.write_text("1")
-        msg = jsc.consume_stub_pushed_sentinel(sentinel=flag)
+        msg = jsc.consume_stub_pushed_sentinel(session_id="s1", sentinel=flag)
         assert msg == jsc.archive_reminder_message()
         assert not flag.exists(), "sentinel must be consumed (deleted) on read"
-    return "present flag -> reminder returned + flag deleted (one-shot)"
+    return "present flag (explicit sentinel override) -> reminder returned + flag deleted (one-shot)"
 
 
 def test_consume_is_one_shot():
     with tempfile.TemporaryDirectory() as d:
-        flag = Path(d) / "stub-pushed.flag"
+        flag = Path(d) / "stub-pushed-s1.flag"
         flag.write_text("1")
-        first = jsc.consume_stub_pushed_sentinel(sentinel=flag)
-        second = jsc.consume_stub_pushed_sentinel(sentinel=flag)
+        first = jsc.consume_stub_pushed_sentinel(session_id="s1", sentinel=flag)
+        second = jsc.consume_stub_pushed_sentinel(session_id="s1", sentinel=flag)
         assert first is not None and second is None
     return "second read after consume -> None (block fires at most once)"
 
 
 def test_consume_absent_returns_none():
     with tempfile.TemporaryDirectory() as d:
-        flag = Path(d) / "stub-pushed.flag"  # never created
-        assert jsc.consume_stub_pushed_sentinel(sentinel=flag) is None
+        flag = Path(d) / "stub-pushed-s1.flag"  # never created
+        assert jsc.consume_stub_pushed_sentinel(session_id="s1", sentinel=flag) is None
     return "absent flag -> None"
+
+
+def test_consume_derives_path_from_session_id():
+    with tempfile.TemporaryDirectory() as d:
+        scratch = Path(d)
+        derived = _hookutil.sentinel_path(jsc.SENTINEL_PREFIX, "s1", scratch=scratch)
+        derived.parent.mkdir(parents=True, exist_ok=True)
+        derived.write_text("1")
+        # No explicit sentinel override -- must derive the same path itself.
+        # Point _hookutil's SCRATCH-relative default at our tmp dir by passing
+        # the same session_id and monkeypatching _hookutil.SCRATCH for this call.
+        original_scratch = _hookutil.SCRATCH
+        _hookutil.SCRATCH = scratch
+        try:
+            msg = jsc.consume_stub_pushed_sentinel(session_id="s1")
+        finally:
+            _hookutil.SCRATCH = original_scratch
+        assert msg == jsc.archive_reminder_message()
+        assert not derived.exists()
+    return "no sentinel override -> path derived from session_id via _hookutil.sentinel_path"
+
+
+def test_consume_empty_session_id_no_override_returns_none_without_touching_disk():
+    with tempfile.TemporaryDirectory() as d:
+        scratch = Path(d)
+        # Plant a file at what an empty-session_id path WOULD resolve to, to
+        # prove it is never even looked at.
+        degenerate = scratch / f"{jsc.SENTINEL_PREFIX}.flag"
+        degenerate.write_text("1")
+        original_scratch = _hookutil.SCRATCH
+        _hookutil.SCRATCH = scratch
+        try:
+            result = jsc.consume_stub_pushed_sentinel(session_id="")
+        finally:
+            _hookutil.SCRATCH = original_scratch
+        assert result is None
+        assert degenerate.exists(), "a falsy session_id must never touch any file, degenerate or not"
+    return "falsy session_id + no override -> None, filesystem untouched (dev-env#980 guard)"
 
 
 # --- behavioral: real hook over stdin via subprocess (HOME-isolated sentinel) --
@@ -148,18 +223,30 @@ def _py_cmd():
     return ["py", "-3"] if shutil.which("py") else ["python3"]
 
 
-def _sentinel_path(home):
-    return Path(home) / ".claude" / "scratch" / "stub-pushed.flag"
+def _sentinel_path(home, session_id):
+    return Path(home) / ".claude" / "scratch" / f"stub-pushed-{session_id}.flag"
 
 
-def _run_hook(home, *, flag_present, stop_hook_active):
-    """Drive the real hook once. Returns (exit_code, stdout, stderr)."""
+def _run_hook(home, *, flag_present, stop_hook_active, session_id="s1", flag_session_id=None,
+              include_session_id=True):
+    """Drive the real hook once. Returns (exit_code, stdout, stderr).
+
+    *session_id* is the id sent in the Stop payload (the "current session").
+    *flag_session_id* -- the id whose sentinel gets planted when flag_present
+    -- defaults to *session_id* (same-session, the common case); pass a
+    different value to simulate another session's still-armed sentinel
+    (dev-env#980). *include_session_id=False* omits session_id from the
+    payload entirely.
+    """
     home = Path(home)
     if flag_present:
-        sentinel = _sentinel_path(home)
+        sentinel = _sentinel_path(home, flag_session_id if flag_session_id is not None else session_id)
         sentinel.parent.mkdir(parents=True, exist_ok=True)
         sentinel.write_text("1")
-    payload = json.dumps({"stop_hook_active": stop_hook_active, "hook_event_name": "Stop"})
+    payload_dict = {"stop_hook_active": stop_hook_active, "hook_event_name": "Stop"}
+    if include_session_id:
+        payload_dict["session_id"] = session_id
+    payload = json.dumps(payload_dict)
     env = dict(os.environ)
     env["HOME"] = str(home)
     env["USERPROFILE"] = str(home)  # Path.home() honors USERPROFILE on Windows
@@ -172,13 +259,13 @@ def _run_hook(home, *, flag_present, stop_hook_active):
 
 def test_e2e_flag_blocks_on_stderr_and_consumes():
     with tempfile.TemporaryDirectory() as home:
-        rc, out, err = _run_hook(home, flag_present=True, stop_hook_active=False)
-        consumed = not _sentinel_path(home).exists()
+        rc, out, err = _run_hook(home, flag_present=True, stop_hook_active=False, session_id="s1")
+        consumed = not _sentinel_path(home, "s1").exists()
     assert rc == 2, f"expected exit 2, got {rc} (stderr={err!r})"
     assert "[journal-stop-hook]" in err and "ccd_session_mgmt__archive_session" in err, err
     assert out.strip() == "", f"stdout must be empty on exit 2, got {out!r}"
     assert consumed, "sentinel must be consumed on the blocking run"
-    return "e2e flag + not-continuation -> exit 2, reminder on stderr, empty stdout, flag consumed"
+    return "e2e own-session flag + not-continuation -> exit 2, reminder on stderr, empty stdout, flag consumed"
 
 
 def test_e2e_no_flag_allows():
@@ -188,13 +275,40 @@ def test_e2e_no_flag_allows():
     return "e2e no flag -> exit 0 (advisory path, fail-closed against the tmp journal repo)"
 
 
+def test_e2e_cross_session_sentinel_not_consumed():
+    # The dev-env#980 regression: session A's push armed a sentinel; a
+    # DIFFERENT session's Stop (session B) must not consume it or block.
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(
+            home, flag_present=True, stop_hook_active=False,
+            session_id="session-B", flag_session_id="session-A",
+        )
+        a_flag_survives = _sentinel_path(home, "session-A").exists()
+    assert rc == 0, f"expected exit 0 (no cross-session block), got {rc} (stderr={err!r})"
+    assert "ccd_session_mgmt__archive_session" not in err, err
+    assert a_flag_survives, "session A's sentinel must be untouched by session B's Stop"
+    return "e2e session A's flag + session B's Stop -> exit 0, no block, A's flag left intact (dev-env#980)"
+
+
+def test_e2e_no_session_id_never_blocks():
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(
+            home, flag_present=True, stop_hook_active=False,
+            flag_session_id="session-A", include_session_id=False,
+        )
+        a_flag_survives = _sentinel_path(home, "session-A").exists()
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    assert a_flag_survives, "no session_id in the payload -> no flag may be touched"
+    return "e2e payload with no session_id -> exit 0 regardless of what flags exist on disk"
+
+
 def test_e2e_stop_hook_active_allows_and_preserves_flag():
     with tempfile.TemporaryDirectory() as home:
-        rc, out, err = _run_hook(home, flag_present=True, stop_hook_active=True)
-        preserved = _sentinel_path(home).exists()
+        rc, out, err = _run_hook(home, flag_present=True, stop_hook_active=True, session_id="s1")
+        preserved = _sentinel_path(home, "s1").exists()
     assert rc == 0, f"expected exit 0 with stop_hook_active, got {rc} (stderr={err!r})"
     assert preserved, "flag must be preserved (not consumed) on a continuation so it can still deliver later"
-    return "e2e flag + stop_hook_active=true -> exit 0 (loop guard), flag preserved"
+    return "e2e own-session flag + stop_hook_active=true -> exit 0 (loop guard), flag preserved"
 
 
 def test_e2e_stale_advisory_is_systemmessage():
@@ -229,11 +343,18 @@ def main():
         ("parse stop_hook_active false", test_parse_stop_hook_active_false),
         ("parse stop_hook_active missing", test_parse_stop_hook_active_missing),
         ("parse stop_hook_active empty/malformed", test_parse_stop_hook_active_empty_and_malformed),
+        ("parse session_id present (dev-env#980)", test_parse_session_id_present),
+        ("parse session_id missing (dev-env#980)", test_parse_session_id_missing),
+        ("parse session_id empty/malformed (dev-env#980)", test_parse_session_id_empty_and_malformed),
         ("consume present returns + deletes", test_consume_present_returns_and_deletes),
         ("consume is one-shot", test_consume_is_one_shot),
         ("consume absent -> None", test_consume_absent_returns_none),
+        ("consume derives path from session_id (dev-env#980)", test_consume_derives_path_from_session_id),
+        ("consume empty session_id -> None, disk untouched (dev-env#980)", test_consume_empty_session_id_no_override_returns_none_without_touching_disk),
         ("e2e flag blocks on stderr + consumes", test_e2e_flag_blocks_on_stderr_and_consumes),
         ("e2e no flag allows", test_e2e_no_flag_allows),
+        ("e2e cross-session sentinel not consumed (dev-env#980)", test_e2e_cross_session_sentinel_not_consumed),
+        ("e2e no session_id never blocks (dev-env#980)", test_e2e_no_session_id_never_blocks),
         ("e2e stale advisory is a systemMessage", test_e2e_stale_advisory_is_systemmessage),
         ("e2e stop_hook_active allows + preserves flag", test_e2e_stop_hook_active_allows_and_preserves_flag),
     ]
