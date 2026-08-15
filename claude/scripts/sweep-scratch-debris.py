@@ -82,6 +82,7 @@ KNOWN_PATTERNS: list[tuple[str, str]] = [
     ("journal-stub-checkpoint-", ".flag"),         # stop-journal-stub-checkpoint.py (self-cleans; backlog only)
     ("token-tracker-locate-fail-", ".flag"),       # token-tracker.py (self-cleans; backlog only)
     ("journal-compose-force-", ".json"),           # journal-compose-force-resolve.py
+    ("stub-pushed-", ".flag"),                     # stub-push-archive-reminder.py / journal-stop-check.py (self-cleans; backlog only)
 ]
 
 

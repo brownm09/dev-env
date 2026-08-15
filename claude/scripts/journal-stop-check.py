@@ -43,6 +43,7 @@ import _hookutil
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import date
@@ -53,6 +54,13 @@ JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 # sentinel (dev-env#980, ADR-091 Amendment 2), duplicated as a literal in
 # both files like JOURNAL_REPO already is rather than shared via import.
 SENTINEL_PREFIX = "stub-pushed-"
+# session_id is trusted harness-generated input (a UUID -- see token-tracker.py's
+# comment on the same field) on every other _hookutil.sentinel_path caller, but
+# this hook's operation is a DELETE (not the exists()/write_text("") every other
+# caller performs), so an unsanitized session_id here would let a crafted value
+# escape ~/.claude/scratch via embedded path separators (dev-env#980 review
+# finding). Treat anything outside this class the same as a missing session_id.
+_SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 TODAY = date.today().strftime("%Y-%m-%d")
 
 
@@ -72,7 +80,9 @@ def archive_reminder_message() -> str:
     )
 
 
-def consume_stub_pushed_sentinel(session_id: str = "", sentinel: Path | None = None) -> str | None:
+def consume_stub_pushed_sentinel(
+    session_id: str = "", sentinel: Path | None = None, scratch: Path | None = None
+) -> str | None:
     """Return the archive reminder if THIS session's stub-push sentinel exists, else None.
 
     Deletes the sentinel before returning so the reminder fires only once — this
@@ -81,17 +91,21 @@ def consume_stub_pushed_sentinel(session_id: str = "", sentinel: Path | None = N
 
     *sentinel*, when given (the tests' fixture-injection path), is used as-is.
     Otherwise the path is derived from *session_id* via
-    `_hookutil.sentinel_path(SENTINEL_PREFIX, session_id)` -- production always
-    takes this branch. A falsy *session_id* with no explicit *sentinel* returns
-    None immediately without touching the filesystem: computing a path from an
-    empty id would degrade to a shared `stub-pushed-.flag`, resurrecting the
-    dev-env#980 cross-session bug in miniature (ADR-091 Amendment 2).
+    `_hookutil.sentinel_path(SENTINEL_PREFIX, session_id, scratch=scratch)` --
+    production always takes this branch with *scratch* left at its default
+    (~/.claude/scratch); tests pass *scratch* directly instead of
+    monkeypatching `_hookutil.SCRATCH`. A *session_id* that is falsy OR does
+    not match `_SAFE_SESSION_ID` (see the module-level comment) returns None
+    immediately without touching the filesystem, with no explicit *sentinel*
+    override: computing a path from an empty or unsanitized id would degrade
+    to a shared/attacker-influenced path, resurrecting the dev-env#980
+    cross-session bug in miniature (ADR-091 Amendment 2).
     """
     try:
         if sentinel is not None:
             path = sentinel
-        elif session_id:
-            path = _hookutil.sentinel_path(SENTINEL_PREFIX, session_id)
+        elif session_id and _SAFE_SESSION_ID.match(session_id):
+            path = _hookutil.sentinel_path(SENTINEL_PREFIX, session_id, scratch=scratch)
         else:
             return None
         if path.exists():
@@ -254,6 +268,13 @@ def main() -> None:
         raw = ""
     stop_hook_active = parse_stop_hook_active(raw)
     session_id = parse_session_id(raw)
+
+    # Garbage-collect stale per-session sentinels (dev-env#980, ADR-091 Amendment
+    # 2 review finding). stub-push-archive-reminder.py only sweeps on its own
+    # (rare) success path -- this hook fires on every Stop, so it's the more
+    # reliable backstop for orphaned sentinels from a crashed/never-Stopped
+    # session. Best-effort; swallows its own errors, never raises.
+    _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
     # Check 1 — stub-push sentinel (CLAUDE-facing archive instruction, BLOCKING).
     # A stub was pushed this session, so Claude must archive it by calling the

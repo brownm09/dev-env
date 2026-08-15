@@ -263,10 +263,17 @@ regression it introduced.
   `stub-pushed.flag`. It also calls `_hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)`
   first, garbage-collecting any per-session flag older than 30 days — needed now that a
   crashed or otherwise never-Stopped session's flag has no other cleanup path (the old global
-  file was a single, perpetually-reused path with no such accumulation risk).
+  file was a single, perpetually-reused path with no such accumulation risk). It also
+  opportunistically `unlink(missing_ok=True)`s the legacy global path once, since
+  `cleanup_stale_sentinels`'s prefix glob (`stub-pushed-*.flag`) never matches the old
+  non-hyphenated filename — an in-flight legacy flag would otherwise sit in scratch
+  unmatched by anything, forever (`/review` finding).
 - `journal-stop-check.py`'s `consume_stub_pushed_sentinel` now takes `session_id` and derives
   the same per-session path via `_hookutil.sentinel_path`; a Stop event only ever consumes
-  the sentinel matching its own `session_id`.
+  the sentinel matching its own `session_id`. It also now calls
+  `_hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)` on every Stop — the more reliable of
+  the two cleanup call sites, since this hook fires far more often than the writer's own
+  (rare) success path (`/review` finding).
 - **Missing `session_id` — forgo, never fall back to a shared path.** If either hook's
   payload lacks a `session_id` (an anomalous session), the writer skips writing any sentinel
   and the reader's `consume_stub_pushed_sentinel` returns `None` without touching the
@@ -274,18 +281,56 @@ regression it introduced.
   `_hookutil.sentinel_path` callers use for a missing `session_id`), since a fallback here
   would just reintroduce a narrower version of the identical collision this amendment fixes:
   multiple anomalous sessions could still collide on the same fallback id.
+- **Unsanitized `session_id` in a path a Stop hook `unlink()`s — a `/review` finding.**
+  `session_id` is trusted harness-generated input (a UUID) on every other
+  `_hookutil.sentinel_path` caller, all of which only `.exists()`/`.write_text()` their own
+  file, but this hook's operation is a *delete*, and this PR converts the path from a fixed
+  constant into a payload-derived one. Both hooks now reject a `session_id` containing
+  anything outside `^[A-Za-z0-9_-]+$` (`_SAFE_SESSION_ID`) the same way they treat a missing
+  one — forgo rather than compute a path from it — closing the (mitigated-but-real, since
+  `session_id` is trusted input, not the reason it should stay unguarded) path-traversal
+  surface a crafted value could otherwise open via embedded `../` separators.
+- **`SENTINEL_PREFIX` duplication has no automated drift guard — a `/review` finding
+  (mutation-verified: a divergent literal in one file leaves the whole suite green while
+  silently and totally killing the archive-reminder mechanism, with no error anywhere).**
+  A cross-module test in `test_journal_stop_check.py` now asserts
+  `journal_stop_check.SENTINEL_PREFIX == stub_push_archive_reminder.SENTINEL_PREFIX`.
+- The new per-session sentinel family is registered in `sweep-scratch-debris.py`'s
+  `KNOWN_PATTERNS` (`("stub-pushed-", ".flag")`) — omitted in the original diff (`/review`
+  finding); every other self-cleaning per-session `.flag` family is listed there as the
+  manual backlog-clearing utility's registry.
+- `docs/REFERENCE.md`'s Hooks-table rows for both scripts, and `docs/TESTING.md` items 16
+  and 50, are updated in the same PR to describe the per-session filename, the
+  `_SAFE_SESSION_ID` guard, and the new coverage below (`/review` findings — both were
+  initially left describing the pre-fix global-sentinel behavior).
 
 **Coverage.** `test_journal_stop_check.py` gains: `parse_session_id()` pure tests (mirroring
-the existing `parse_stop_hook_active()` set); `consume_stub_pushed_sentinel` tests for the
-derive-from-`session_id` path and the empty-`session_id`-returns-`None`-untouched path; and
-the direct dev-env#980 regression coverage —
+the existing `parse_stop_hook_active()` set); `_SAFE_SESSION_ID` accept/reject tests;
+`consume_stub_pushed_sentinel` tests for the derive-from-`session_id` path (via the new
+injectable `scratch` param, not a monkeypatch of `_hookutil.SCRATCH`), the
+empty-`session_id`-returns-`None`-untouched path, and the unsafe-`session_id` path; the
+cross-module `SENTINEL_PREFIX` parity test; and the direct dev-env#980 regression coverage —
 `test_e2e_cross_session_sentinel_not_consumed` (session A's sentinel, session B's Stop -> no
 block, A's flag left intact) and `test_e2e_no_session_id_never_blocks`. All three existing
 e2e tests were updated to plant/consume under a consistent `session_id` matching the payload.
-`test_stub_push_archive_reminder.py` gains one e2e test for the writer-side guard
-(`test_no_session_id_exits_clean_without_writing_sentinel`) — the one `main()` behavior this
-fix touches that's testable without a git-repo fixture, since the guard fires before any git
-call.
+The three fixture-injection tests that pass an explicit `sentinel` override no longer also
+pass a `session_id` alongside it — that argument was dead in those tests (the `sentinel`
+branch short-circuits before `session_id` is read), a `/review` finding.
+
+`test_stub_push_archive_reminder.py` gains two e2e tests for the writer-side guard, built on
+a new `_init_journal_fixture()` helper (a minimal, real, git-committed engineering-journal
+repo — an empty root commit, then a real commit adding one resolved stub+manifest pair; two
+commits because `head_commit_files()`'s `git diff-tree HEAD` returns nothing for a repo's
+very first, parentless commit, `/review`-caught during implementation):
+`test_session_id_present_writes_sentinel_positive_control` (a valid `session_id` against the
+fixture writes a sentinel — proves the fixture genuinely reaches the write step) and
+`test_no_session_id_exits_clean_without_writing_sentinel` (the SAME fixture, no `session_id`
+in the payload -> no sentinel anywhere in scratch). An earlier version of the negative test
+used no git fixture at all and passed even with the guard deleted, since a nonexistent
+`JOURNAL_REPO` already produced the identical "exit 0, no sentinel" outcome on its own,
+independent of the guard — caught by `/review` via mutation testing (deleting the guard left
+the test green) and confirmed fixed the same way (the rebuilt test fails when the guard is
+mutated away; the positive control still passes).
 
 **References:** [dev-env#980](https://github.com/brownm09/dev-env/issues/980) — the issue
 this amendment closes. [dev-env#651](https://github.com/brownm09/dev-env/issues/651) /

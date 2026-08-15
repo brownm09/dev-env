@@ -41,11 +41,18 @@ session's own session_id via `_hookutil.sentinel_path`, rather than a single
 shared `stub-pushed.flag` any concurrent session's Stop could consume. The
 `main()` guard added for this ("no session_id -> bail before doing any git
 work or writing a sentinel") fires immediately after the JSON payload parses,
-before any of the git-dependent checks above -- so it's the one main()
-behavior this file CAN exercise end-to-end without a git fixture, via the
-single e2e test below (isolating HOME/USERPROFILE like
-test_journal_stop_check.py's own subprocess layer). The rest of main() stays
-untested here per the existing git-fixture-avoidance convention above.
+before any of the git-dependent checks above. A first version of the e2e test
+for this guard pointed HOME at a temp dir with no real engineering-journal
+git repo and asserted "exit 0, no sentinel" -- which passed even with the
+guard deleted, because `head_commit_files()` fails closed against a
+nonexistent JOURNAL_REPO on its own (a /review finding on this PR). The two
+e2e tests below fix that: `_init_journal_fixture()` builds a minimal, real,
+committed engineering-journal repo (one resolved stub+manifest pair) so
+`main()` can reach the sentinel-write step; a *positive control*
+(`test_session_id_present_writes_sentinel_positive_control`) proves the
+fixture is genuinely discriminating by confirming a sentinel IS written when
+session_id is present, and the negative test then isolates session_id as the
+one varying input for the no-sentinel-written outcome.
 
 Usage:
     py -3 claude/scripts/tests/test_stub_push_archive_reminder.py
@@ -356,9 +363,10 @@ def test_no_unresolved_pr_when_manifest_has_utf8_bom() -> str:
 
 
 # ---------------------------------------------------------------------------
-# e2e: main()'s no-session_id guard (dev-env#980, ADR-091 Amendment 2) -- the
-# only main() behavior testable here without a git-repo fixture, since it
-# bails before any git call.
+# e2e: main()'s no-session_id guard (dev-env#980, ADR-091 Amendment 2), against
+# a real, minimal, committed engineering-journal fixture so main() can reach
+# the sentinel-write step -- and a positive control proving the fixture
+# actually does so, before trusting the negative (no-session_id) result.
 # ---------------------------------------------------------------------------
 
 def _py_cmd():
@@ -366,27 +374,91 @@ def _py_cmd():
     return ["py", "-3"] if shutil.which("py") else ["python3"]
 
 
+def _init_journal_fixture(home: Path) -> None:
+    """Create a minimal, git-committed engineering-journal fixture at
+    <home>/Git/engineering-journal: one stub + its paired, ALREADY-RESOLVED
+    manifest (prs_opened == prs_closed), committed together. This lets
+    main() clear every gate before the sentinel-write step (push detected,
+    engineering-journal referenced, no push error, HEAD touches a .stub.md,
+    no unresolved open PR) regardless of session_id -- isolating session_id
+    as the one varying input between the positive and negative tests below.
+
+    Uses TWO commits (an empty root, then the real one) because
+    head_commit_files() runs `git diff-tree --no-commit-id -r --name-only
+    HEAD` with no `--root` flag -- against a repo's very first (parentless)
+    commit that returns empty stdout regardless of what the commit touched,
+    which would make the positive-control test below fail for a reason
+    unrelated to session_id."""
+    repo = home / "Git" / "engineering-journal"
+    stub_rel = "sessions/dev-env/2020-01-01_000000.stub.md"
+    manifest_rel = "sessions/dev-env/2020-01-01_000000.manifest.jsonl"
+    (repo / "sessions" / "dev-env").mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "root"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+    (repo / stub_rel).write_text("# stub\n", encoding="utf-8")
+    (repo / manifest_rel).write_text(
+        json.dumps({"stub": "x", "topic": "t", "tokens": {}, "prs_opened": [1], "prs_closed": [1]}),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fixture"], cwd=repo, check=True, capture_output=True, text=True)
+
+
+def _run_writer_hook(home: Path, *, session_id: str | None):
+    """Drive the real hook once against a `cd ~/Git/engineering-journal &&
+    git push` payload. *session_id* omitted entirely from the payload when
+    None (mirrors journal-stop-check.py's test convention)."""
+    payload_dict = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "cd ~/Git/engineering-journal && git push"},
+        "tool_response": {"stdout": "", "stderr": ""},
+    }
+    if session_id is not None:
+        payload_dict["session_id"] = session_id
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)  # Path.home() honors USERPROFILE on Windows
+    return subprocess.run(
+        _py_cmd() + [str(SCRIPT)], input=json.dumps(payload_dict),
+        capture_output=True, text=True, env=env,
+    )
+
+
+def test_session_id_present_writes_sentinel_positive_control() -> str:
+    with tempfile.TemporaryDirectory() as home_str:
+        home = Path(home_str)
+        _init_journal_fixture(home)
+        proc = _run_writer_hook(home, session_id="s1")
+        sentinel_written = (home / ".claude" / "scratch" / f"{spar.SENTINEL_PREFIX}s1.flag").exists()
+    assert proc.returncode == 0, f"expected exit 0, got {proc.returncode} (stderr={proc.stderr!r})"
+    assert sentinel_written, (
+        "positive control: a valid session_id against the resolved fixture must write a "
+        "sentinel -- proves the fixture genuinely reaches the write step, so the negative "
+        "test below actually isolates session_id as the cause (dev-env#980 /review finding)"
+    )
+    return "e2e session_id present + resolved fixture -> exit 0, sentinel WRITTEN (positive control)"
+
+
 def test_no_session_id_exits_clean_without_writing_sentinel() -> str:
-    with tempfile.TemporaryDirectory() as home:
-        payload = json.dumps({
-            "hook_event_name": "PostToolUse",
-            "tool_name": "Bash",
-            "tool_input": {"command": "cd ~/Git/engineering-journal && git push"},
-            "tool_response": {"stdout": "", "stderr": ""},
-            # session_id deliberately omitted
-        })
-        env = dict(os.environ)
-        env["HOME"] = home
-        env["USERPROFILE"] = home  # Path.home() honors USERPROFILE on Windows
-        proc = subprocess.run(
-            _py_cmd() + [str(SCRIPT)], input=payload,
-            capture_output=True, text=True, env=env,
-        )
-        scratch = Path(home) / ".claude" / "scratch"
-        sentinels = list(scratch.glob("stub-pushed-*.flag")) if scratch.exists() else []
+    with tempfile.TemporaryDirectory() as home_str:
+        home = Path(home_str)
+        _init_journal_fixture(home)  # SAME fixture as the positive control above --
+        # the only difference below is the missing session_id.
+        proc = _run_writer_hook(home, session_id=None)
+        scratch = home / ".claude" / "scratch"
+        sentinels = list(scratch.glob(f"{spar.SENTINEL_PREFIX}*.flag")) if scratch.exists() else []
     assert proc.returncode == 0, f"expected exit 0, got {proc.returncode} (stderr={proc.stderr!r})"
     assert not sentinels, f"no session_id must never write a sentinel, found: {sentinels}"
-    return "e2e no session_id -> exit 0, no sentinel written (bails before any git work, dev-env#980)"
+    return "e2e no session_id + SAME resolved fixture as the positive control -> exit 0, no sentinel (dev-env#980)"
 
 
 def main() -> int:
@@ -422,6 +494,7 @@ def main() -> int:
         ("deleted stub path skipped, not flagged (dev-env#651)", test_unresolved_pr_skips_deleted_stub_path),
         ("conservative when manifest empty (dev-env#651 /review)", test_unresolved_pr_conservative_when_manifest_empty),
         ("UTF-8 BOM manifest still reads correctly (dev-env#651 /review)", test_no_unresolved_pr_when_manifest_has_utf8_bom),
+        ("e2e session_id present -> sentinel written (positive control, dev-env#980)", test_session_id_present_writes_sentinel_positive_control),
         ("e2e no session_id -> exit 0, no sentinel written (dev-env#980)", test_no_session_id_exits_clean_without_writing_sentinel),
     ]
     failed = 0

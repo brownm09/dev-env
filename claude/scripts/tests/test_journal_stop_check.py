@@ -90,6 +90,40 @@ assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 jsc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(jsc)  # safe: main() is guarded by __main__
 
+# stub-push-archive-reminder.py -- loaded too, only for the cross-file
+# SENTINEL_PREFIX parity test below (dev-env#980 review finding: nothing
+# previously caught the two literals drifting apart, which would silently
+# and completely kill the archive-reminder mechanism this PR fixes).
+_WRITER_SCRIPT = REPO_ROOT / "claude" / "scripts" / "stub-push-archive-reminder.py"
+_writer_spec = importlib.util.spec_from_file_location("stub_push_archive_reminder", _WRITER_SCRIPT)
+assert _writer_spec and _writer_spec.loader, f"cannot load module spec from {_WRITER_SCRIPT}"
+spar = importlib.util.module_from_spec(_writer_spec)
+_writer_spec.loader.exec_module(spar)  # safe: main() is guarded by __main__
+
+
+def test_sentinel_prefix_matches_writer_module():
+    assert jsc.SENTINEL_PREFIX == spar.SENTINEL_PREFIX, (
+        f"journal-stop-check.py's SENTINEL_PREFIX ({jsc.SENTINEL_PREFIX!r}) must match "
+        f"stub-push-archive-reminder.py's ({spar.SENTINEL_PREFIX!r}) or the reader can never "
+        f"find a sentinel the writer wrote -- a silent, total failure of the whole mechanism "
+        f"(dev-env#980 review finding)"
+    )
+    return "reader and writer SENTINEL_PREFIX literals match (guards against silent drift)"
+
+
+# --- pure: _SAFE_SESSION_ID (dev-env#980 review finding: unsanitized session_id
+# in a filesystem path this hook unlink()'s) -------------------------------------
+
+def test_safe_session_id_accepts_uuid_shape():
+    assert jsc._SAFE_SESSION_ID.match("a1b2c3d4-e5f6-4789-a012-3456789abcde")
+    return "a real UUID-shaped session_id matches"
+
+
+def test_safe_session_id_rejects_path_traversal():
+    for bad in ("../../etc/passwd", "a/b", "a\\b", "a b", "a.b", ""):
+        assert not jsc._SAFE_SESSION_ID.match(bad), f"{bad!r} must not match"
+    return "path separators, whitespace, dots, and empty string are all rejected"
+
 
 # --- pure: archive_reminder_message() ------------------------------------------
 
@@ -150,13 +184,18 @@ def test_parse_session_id_empty_and_malformed():
     return "empty / malformed / non-dict stdin -> '' (never raises)"
 
 
-# --- fixture: consume_stub_pushed_sentinel(session_id, sentinel=tmp) -----------
+# --- fixture: consume_stub_pushed_sentinel(session_id, sentinel=tmp, scratch=tmp) --
+# The *sentinel* override path (explicit fixture injection) and the
+# *session_id*-derives-a-path production path are exercised separately --
+# passing session_id alongside an explicit sentinel override would be dead
+# (the sentinel branch short-circuits before session_id is ever read), so
+# the override tests below omit it (dev-env#980 review finding).
 
 def test_consume_present_returns_and_deletes():
     with tempfile.TemporaryDirectory() as d:
         flag = Path(d) / "stub-pushed-s1.flag"
         flag.write_text("1")
-        msg = jsc.consume_stub_pushed_sentinel(session_id="s1", sentinel=flag)
+        msg = jsc.consume_stub_pushed_sentinel(sentinel=flag)
         assert msg == jsc.archive_reminder_message()
         assert not flag.exists(), "sentinel must be consumed (deleted) on read"
     return "present flag (explicit sentinel override) -> reminder returned + flag deleted (one-shot)"
@@ -166,8 +205,8 @@ def test_consume_is_one_shot():
     with tempfile.TemporaryDirectory() as d:
         flag = Path(d) / "stub-pushed-s1.flag"
         flag.write_text("1")
-        first = jsc.consume_stub_pushed_sentinel(session_id="s1", sentinel=flag)
-        second = jsc.consume_stub_pushed_sentinel(session_id="s1", sentinel=flag)
+        first = jsc.consume_stub_pushed_sentinel(sentinel=flag)
+        second = jsc.consume_stub_pushed_sentinel(sentinel=flag)
         assert first is not None and second is None
     return "second read after consume -> None (block fires at most once)"
 
@@ -175,7 +214,7 @@ def test_consume_is_one_shot():
 def test_consume_absent_returns_none():
     with tempfile.TemporaryDirectory() as d:
         flag = Path(d) / "stub-pushed-s1.flag"  # never created
-        assert jsc.consume_stub_pushed_sentinel(session_id="s1", sentinel=flag) is None
+        assert jsc.consume_stub_pushed_sentinel(sentinel=flag) is None
     return "absent flag -> None"
 
 
@@ -185,18 +224,13 @@ def test_consume_derives_path_from_session_id():
         derived = _hookutil.sentinel_path(jsc.SENTINEL_PREFIX, "s1", scratch=scratch)
         derived.parent.mkdir(parents=True, exist_ok=True)
         derived.write_text("1")
-        # No explicit sentinel override -- must derive the same path itself.
-        # Point _hookutil's SCRATCH-relative default at our tmp dir by passing
-        # the same session_id and monkeypatching _hookutil.SCRATCH for this call.
-        original_scratch = _hookutil.SCRATCH
-        _hookutil.SCRATCH = scratch
-        try:
-            msg = jsc.consume_stub_pushed_sentinel(session_id="s1")
-        finally:
-            _hookutil.SCRATCH = original_scratch
+        # No explicit sentinel override -- must derive the same path itself,
+        # via the injectable *scratch* param (not a monkeypatch of
+        # _hookutil.SCRATCH -- dev-env#980 review finding).
+        msg = jsc.consume_stub_pushed_sentinel(session_id="s1", scratch=scratch)
         assert msg == jsc.archive_reminder_message()
         assert not derived.exists()
-    return "no sentinel override -> path derived from session_id via _hookutil.sentinel_path"
+    return "no sentinel override -> path derived from session_id via _hookutil.sentinel_path(scratch=...)"
 
 
 def test_consume_empty_session_id_no_override_returns_none_without_touching_disk():
@@ -206,15 +240,18 @@ def test_consume_empty_session_id_no_override_returns_none_without_touching_disk
         # prove it is never even looked at.
         degenerate = scratch / f"{jsc.SENTINEL_PREFIX}.flag"
         degenerate.write_text("1")
-        original_scratch = _hookutil.SCRATCH
-        _hookutil.SCRATCH = scratch
-        try:
-            result = jsc.consume_stub_pushed_sentinel(session_id="")
-        finally:
-            _hookutil.SCRATCH = original_scratch
+        result = jsc.consume_stub_pushed_sentinel(session_id="", scratch=scratch)
         assert result is None
         assert degenerate.exists(), "a falsy session_id must never touch any file, degenerate or not"
     return "falsy session_id + no override -> None, filesystem untouched (dev-env#980 guard)"
+
+
+def test_consume_unsafe_session_id_no_override_returns_none_without_touching_disk():
+    with tempfile.TemporaryDirectory() as d:
+        scratch = Path(d)
+        result = jsc.consume_stub_pushed_sentinel(session_id="../escape", scratch=scratch)
+        assert result is None
+    return "session_id outside _SAFE_SESSION_ID + no override -> None (dev-env#980 review finding)"
 
 
 # --- behavioral: real hook over stdin via subprocess (HOME-isolated sentinel) --
@@ -343,6 +380,9 @@ def main():
         ("parse stop_hook_active false", test_parse_stop_hook_active_false),
         ("parse stop_hook_active missing", test_parse_stop_hook_active_missing),
         ("parse stop_hook_active empty/malformed", test_parse_stop_hook_active_empty_and_malformed),
+        ("SENTINEL_PREFIX matches writer module (dev-env#980)", test_sentinel_prefix_matches_writer_module),
+        ("_SAFE_SESSION_ID accepts UUID shape (dev-env#980)", test_safe_session_id_accepts_uuid_shape),
+        ("_SAFE_SESSION_ID rejects path traversal (dev-env#980)", test_safe_session_id_rejects_path_traversal),
         ("parse session_id present (dev-env#980)", test_parse_session_id_present),
         ("parse session_id missing (dev-env#980)", test_parse_session_id_missing),
         ("parse session_id empty/malformed (dev-env#980)", test_parse_session_id_empty_and_malformed),
@@ -351,6 +391,7 @@ def main():
         ("consume absent -> None", test_consume_absent_returns_none),
         ("consume derives path from session_id (dev-env#980)", test_consume_derives_path_from_session_id),
         ("consume empty session_id -> None, disk untouched (dev-env#980)", test_consume_empty_session_id_no_override_returns_none_without_touching_disk),
+        ("consume unsafe session_id -> None, disk untouched (dev-env#980)", test_consume_unsafe_session_id_no_override_returns_none_without_touching_disk),
         ("e2e flag blocks on stderr + consumes", test_e2e_flag_blocks_on_stderr_and_consumes),
         ("e2e no flag allows", test_e2e_no_flag_allows),
         ("e2e cross-session sentinel not consumed (dev-env#980)", test_e2e_cross_session_sentinel_not_consumed),

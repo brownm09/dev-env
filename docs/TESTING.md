@@ -325,7 +325,20 @@ For a one-line navigational map of the test directory, see
     diff) is pinned directly; a still-live stub with no manifest yet, an unreadable manifest, or an
     unparseable line all conservatively block; and a `.stub.md` path this commit deleted (no longer on disk)
     is skipped rather than treated as missing. Reuses `_journal_schema.parse_manifest_text` / the new
-    `has_unresolved_open_pr()` (item 41) rather than re-parsing manifests locally.
+    `has_unresolved_open_pr()` (item 41) rather than re-parsing manifests locally. A behavioral layer
+    (dev-env#980, [ADR-091](adr/091-journal-stop-check-archive-reminder-blocking.md) Amendment 2) drives
+    the real hook end-to-end via subprocess against a minimal, git-committed engineering-journal fixture
+    built by `_init_journal_fixture()` (an empty root commit, then a real commit adding one stub + its
+    already-resolved paired manifest — two commits because `head_commit_files()`'s `git diff-tree HEAD`
+    returns nothing for a repo's very first, parentless commit regardless of what it touched, which would
+    otherwise make the test pass for a reason unrelated to what it claims to cover): a positive control
+    (`test_session_id_present_writes_sentinel_positive_control`) confirms a valid `session_id` against the
+    fixture writes `stub-pushed-<session_id>.flag`, proving the fixture genuinely reaches the write step;
+    the paired negative test then runs the SAME fixture with no `session_id` in the payload at all and
+    asserts no sentinel is written anywhere in scratch — isolating `session_id` as the one varying input
+    (an earlier version of this test used no git fixture and passed even with the guard deleted, since a
+    nonexistent `JOURNAL_REPO` already produced the same "exit 0, no sentinel" outcome on its own; a
+    /review finding on the PR that introduced it).
 
     ```bash
     py -3 claude/scripts/tests/test_stub_push_archive_reminder.py
@@ -1551,28 +1564,41 @@ For a one-line navigational map of the test directory, see
     ```
 
 50. **journal-stop-check test** — required when changing `claude/scripts/journal-stop-check.py`.
-    Two layers, mirroring this hook family's split ([ADR-091](adr/091-journal-stop-check-archive-reminder-blocking.md);
-    dev-env#622). Pure/fixture-helper tests exercise the changed surface offline: `archive_reminder_message()`
+    Three layers, mirroring this hook family's split ([ADR-091](adr/091-journal-stop-check-archive-reminder-blocking.md);
+    dev-env#622, dev-env#980). Pure/fixture-helper tests exercise the changed surface offline: `archive_reminder_message()`
     is ASCII/cp1252-encodable (so the exit-2 stderr text cannot vanish under Claude Code's cp1252
     hook-output pipe on Windows — mirroring items 18/40) and names the `ccd_session_mgmt__archive_session`
     MCP tool + the `list_sessions` lookup; `parse_stop_hook_active()` returns True only when the payload
     sets the flag and False on false / missing / empty / malformed / non-dict stdin (so a parse hiccup
-    never suppresses a genuine first Stop); and `consume_stub_pushed_sentinel(sentinel=tmp)` returns the
-    reminder and deletes a present flag (the consume-on-read one-shot guard for the exit-2 block), returns
-    None on a second read, and None on an absent flag. A behavioral layer drives the real hook end-to-end
-    over stdin via subprocess with HOME/USERPROFILE pointed at a temp dir (SENTINEL isolated from the real
-    `~/.claude/scratch`, mirroring item 48): a present flag + `stop_hook_active:false` blocks the stop
-    (exit 2, reminder on **stderr**, **empty stdout** — Claude Code shows a Stop hook's stderr on exit 2,
-    not stdout) and consumes the flag; no flag exits 0 (advisory path, fail-closed against the tmp journal
-    repo); a no-flag run with a *planted* stale (uncomposed, pre-today) stub in the tmp journal repo
-    delivers the Checks 2-3 advisory as a `{"systemMessage": ...}` JSON object on **stdout** (exit 0) with
-    empty stderr — the re-pin of the corrected non-blocking channel (dev-env#740,
-    [ADR-103](adr/103-shared-hookout-emitter.md): a Stop hook's exit-0 stdout is invisible, so the
-    former plain-`print()` surfaced nothing, and Checks 2-3 now ride the `_hookout` systemMessage channel);
-    a present flag + `stop_hook_active:true` exits 0 (loop guard, no re-block) and **preserves** the
-    flag (never consumed without delivery). `main()`'s advisory branches (stale-draft / unmerged-branch /
-    orphan cleanup) shell out to git and are not separately unit-tested (pure-helper convention) — the
-    end-to-end runs exercise their fail-closed path and, with the planted stub, the systemMessage delivery.
+    never suppresses a genuine first Stop); `parse_session_id()` mirrors that same tolerant-parsing shape
+    for the payload's `session_id` field (dev-env#980, ADR-091 Amendment 2); and
+    `consume_stub_pushed_sentinel(session_id, sentinel=tmp, scratch=tmp)` returns the reminder and deletes
+    a present flag (the consume-on-read one-shot guard for the exit-2 block) when an explicit `sentinel`
+    override is given, returns None on a second read, and None on an absent flag — with no override,
+    the sentinel path is derived from `session_id` via the injectable `scratch` param (not a monkeypatch
+    of `_hookutil.SCRATCH`), and a falsy or `_SAFE_SESSION_ID`-rejected `session_id` (anything outside
+    `[A-Za-z0-9_-]`, guarding the path-traversal surface a session_id-derived `unlink()` target otherwise
+    opens — dev-env#980 review finding) returns None without touching the filesystem. A cross-module
+    parity test asserts this file's `SENTINEL_PREFIX` literal equals `stub-push-archive-reminder.py`'s —
+    nothing else would catch the two drifting apart, which would silently and totally kill the archive
+    mechanism (dev-env#980 review finding). A behavioral layer drives the real hook end-to-end over stdin
+    via subprocess with HOME/USERPROFILE pointed at a temp dir (the per-session sentinel isolated from
+    the real `~/.claude/scratch`, mirroring item 48): a present flag under the payload's OWN `session_id` +
+    `stop_hook_active:false` blocks the stop (exit 2, reminder on **stderr**, **empty stdout** — Claude
+    Code shows a Stop hook's stderr on exit 2, not stdout) and consumes the flag; no flag exits 0
+    (advisory path, fail-closed against the tmp journal repo); a no-flag run with a *planted* stale
+    (uncomposed, pre-today) stub in the tmp journal repo delivers the Checks 2-3 advisory as a
+    `{"systemMessage": ...}` JSON object on **stdout** (exit 0) with empty stderr — the re-pin of the
+    corrected non-blocking channel (dev-env#740, [ADR-103](adr/103-shared-hookout-emitter.md): a Stop
+    hook's exit-0 stdout is invisible, so the former plain-`print()` surfaced nothing, and Checks 2-3 now
+    ride the `_hookout` systemMessage channel); a present flag under the OWN session_id +
+    `stop_hook_active:true` exits 0 (loop guard, no re-block) and **preserves** the flag (never consumed
+    without delivery); a flag planted under a DIFFERENT session_id than the payload's own -> exit 0, no
+    block, the other session's flag left untouched (the direct dev-env#980 regression case); and a
+    payload carrying no `session_id` at all -> exit 0 regardless of what flags exist on disk. `main()`'s
+    advisory branches (stale-draft / unmerged-branch / orphan cleanup) shell out to git and are not
+    separately unit-tested (pure-helper convention) — the end-to-end runs exercise their fail-closed path
+    and, with the planted stub, the systemMessage delivery.
 
     ```bash
     py -3 claude/scripts/tests/test_journal_stop_check.py
