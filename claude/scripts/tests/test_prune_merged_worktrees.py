@@ -428,16 +428,20 @@ def test_detached_head_merged_commit_pruned() -> str:
     the DETACHED sentinel ("<detached>") was fed straight into is_merged() as if it were a
     resolvable ref (dev-env#979). Requires --include-named since the sentinel never starts
     with claude/ -- that prefix gate is orthogonal to this bug and stays exercised as-is.
+    Path.exists is patched True -- the fake worktree path doesn't exist on the real
+    filesystem, and this test is about the resolved-SHA merge check, not the existence
+    guard (see test_detached_head_missing_worktree_path_skipped for that).
     """
     with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=True)):
-        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
-            with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                pruned_count, skipped_count, fetch_failed = prune.prune_one(
-                    repo="/FAKE_REPO_DETACHED",
-                    dry_run=False,
-                    liveness_window_seconds=86400,
-                    include_named=True,
-                )
+        with unittest.mock.patch("pathlib.Path.exists", return_value=True):
+            with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+                with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                        repo="/FAKE_REPO_DETACHED",
+                        dry_run=False,
+                        liveness_window_seconds=86400,
+                        include_named=True,
+                    )
     assert pruned_count == 1, f"expected 1 pruned (detached commit is merged), got {pruned_count}"
     assert skipped_count == 1, f"expected 1 skipped (primary only), got {skipped_count}"
     assert not fetch_failed, "fetch should not be marked failed"
@@ -447,19 +451,23 @@ def test_detached_head_merged_commit_pruned() -> str:
 def test_detached_head_unmerged_commit_skipped() -> str:
     """A detached-HEAD worktree whose commit is NOT an ancestor of origin/main (and has no
     matching merged PR) is still correctly skipped -- proving the fix doesn't over-correct
-    into pruning everything detached (dev-env#979)."""
+    into pruning everything detached (dev-env#979). Also proves the gh pr list fallback is
+    actually skipped for a resolved SHA (skip_pr_fallback=True): the dispatch's ["pr", "list"]
+    branch would return a non-empty match here if it were ever called, so a pass here means
+    is_merged() genuinely never issued that call for the detached path."""
     with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=False)):
-        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
-            with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                pruned_count, skipped_count, fetch_failed = prune.prune_one(
-                    repo="/FAKE_REPO_DETACHED",
-                    dry_run=False,
-                    liveness_window_seconds=86400,
-                    include_named=True,
-                )
+        with unittest.mock.patch("pathlib.Path.exists", return_value=True):
+            with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+                with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                        repo="/FAKE_REPO_DETACHED",
+                        dry_run=False,
+                        liveness_window_seconds=86400,
+                        include_named=True,
+                    )
     assert pruned_count == 0, f"expected 0 pruned (detached commit is not merged), got {pruned_count}"
     assert skipped_count == 2, f"expected 2 skipped (primary + not-merged detached), got {skipped_count}"
-    return "detached HEAD, commit is NOT merged: correctly skipped, not force-pruned"
+    return "detached HEAD, commit is NOT merged: correctly skipped, not force-pruned, gh pr list fallback skipped"
 
 
 def test_detached_head_rev_parse_failure_skipped() -> str:
@@ -467,17 +475,49 @@ def test_detached_head_rev_parse_failure_skipped() -> str:
     worktree), the fix must fail safe -- skip with a distinct reason -- rather than crash or
     silently fall through to a misleading generic message (dev-env#979)."""
     with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=True, rev_parse_ok=False)):
-        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
-            with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                pruned_count, skipped_count, fetch_failed = prune.prune_one(
-                    repo="/FAKE_REPO_DETACHED",
-                    dry_run=False,
-                    liveness_window_seconds=86400,
-                    include_named=True,
-                )
+        with unittest.mock.patch("pathlib.Path.exists", return_value=True):
+            with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+                with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                        repo="/FAKE_REPO_DETACHED",
+                        dry_run=False,
+                        liveness_window_seconds=86400,
+                        include_named=True,
+                    )
     assert pruned_count == 0, f"expected 0 pruned (commit unresolvable), got {pruned_count}"
     assert skipped_count == 2, f"expected 2 skipped (primary + unresolvable), got {skipped_count}"
     return "detached HEAD, rev-parse HEAD itself fails: fails safe (skipped, reason distinct), no crash"
+
+
+def test_detached_head_missing_worktree_path_skipped() -> str:
+    """Regression coverage for a review finding: a detached worktree still REGISTERED via
+    `git worktree list` but whose directory was deleted or moved outside `git worktree
+    remove`/`prune` (an "orphaned" worktree) must be skipped gracefully, not crash the scan.
+    Before the fix, resolve_detached_head() ran `git rev-parse HEAD` with cwd set to the
+    worktree's own (now-missing) path with no existence check first -- subprocess.run raises
+    FileNotFoundError when cwd doesn't exist, which is NOT caught anywhere in prune_one() or
+    main()'s --scan-dir loop, so it would have aborted the scan for every remaining repo, not
+    just this one (dev-env#979). Path.exists=False here simulates exactly that: if the guard
+    were missing, subprocess.run would never even be reached for the rev-parse call because
+    resolve_detached_head() returns None first -- proven by NOT installing a rev-parse-HEAD
+    dispatch branch at all in this test's mock (any attempt to actually run git here would
+    fall through to the dispatch's default _ok(), which would silently return a bogus SHA and
+    mask the very crash this test exists to catch -- so instead this test's real assertion is
+    that prune_one() returns normally at all, without exceptions escaping this call).
+    """
+    with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=True)):
+        with unittest.mock.patch("pathlib.Path.exists", return_value=False):
+            with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+                with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                        repo="/FAKE_REPO_DETACHED",
+                        dry_run=False,
+                        liveness_window_seconds=86400,
+                        include_named=True,
+                    )
+    assert pruned_count == 0, f"expected 0 pruned (missing worktree path), got {pruned_count}"
+    assert skipped_count == 2, f"expected 2 skipped (primary + missing-path detached), got {skipped_count}"
+    return "detached HEAD, worktree path no longer exists on disk: fails safe (skipped), no FileNotFoundError escapes prune_one()"
 
 
 # --- files_are_all_ephemeral (pure) ---------------------------------------------------
@@ -606,6 +646,7 @@ def main() -> int:
         ("detached HEAD: commit IS merged -> pruned via resolved SHA", test_detached_head_merged_commit_pruned),
         ("detached HEAD: commit NOT merged -> still correctly skipped", test_detached_head_unmerged_commit_skipped),
         ("detached HEAD: rev-parse HEAD fails -> fails safe, skipped", test_detached_head_rev_parse_failure_skipped),
+        ("detached HEAD: worktree path missing on disk -> fails safe, no crash", test_detached_head_missing_worktree_path_skipped),
         ("draft-branch squat: idle+clean+fully-pushed -> park+remove (remove actually invoked)", test_draft_branch_squat_park_and_remove),
         ("draft-branch squat: dirty -> park-only (remove NEVER invoked), contents preserved", test_draft_branch_squat_park_only_when_dirty),
         ("draft-branch squat: park+remove degrades gracefully when remove fails", test_draft_branch_squat_park_and_remove_when_remove_fails),
