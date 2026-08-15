@@ -509,7 +509,7 @@ directly; this hook already has `_normalize()` (`os.path.normcase(os.path.normpa
 helper for internal consistency rather than introducing a second normalization scheme in the same
 file.
 
-**No basename-level exemption, no shared cross-file module.** At least four other hooks already
+**No basename-level exemption, no shared cross-file module.** Three other hooks already
 compare a resolved path against the EJ canonical path this same way — each with its own
 module-level constant and its own env-var override, rather than a shared module:
 `pre-tool-use-canonical-mutate-guard.py`'s `_REDIRECT_TARGET_ALLOWLIST` /
@@ -527,8 +527,8 @@ dir independently of the others.
 - `test_main_allows_write_to_engineering_journal_canonical_root` and
   `test_main_blocks_write_to_samename_repo_outside_journal_carveout_path` added to
   `claude/scripts/tests/test_worktree_path_check.py` — 14 tests grows to 16.
-- No performance impact: one additional exact-string comparison against an already-normalized path,
-  computed once at import time.
+- No performance impact: one additional O(1) string comparison per invocation, against a constant
+  (`_JOURNAL_ROOT`) computed once at import time.
 - `docs/REFERENCE.md`'s hook-table row and `README.md`'s two hook-description mentions extended
   with a "(for case d)" / equivalent clause alongside the existing sibling-worktree mention.
 
