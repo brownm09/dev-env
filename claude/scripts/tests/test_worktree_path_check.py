@@ -44,6 +44,7 @@ Exit 0 = all pass.
 """
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -205,13 +206,25 @@ def test_worktree_is_live_rejects_git_directory() -> str:
     return "a real .git directory (not file) at a worktree-shaped path is correctly not-live (dev-env#760)"
 
 
-def _run_hook(payload: dict) -> subprocess.CompletedProcess:
+def _run_hook(payload: dict, env_overrides: dict = None) -> subprocess.CompletedProcess:
+    """Run the real hook over stdin. `env_overrides`, when given, merges onto
+    a copy of the current environment (rather than replacing it wholesale) so
+    a test can redirect e.g. WORKTREE_PATH_CHECK_JOURNAL_PATH at a disposable
+    temp dir without losing PATH/other inherited variables the subprocess
+    needs (to find `git`, etc.). Mirrors test_canonical_mutate_guard.py's
+    identical helper.
+    """
+    env = None
+    if env_overrides:
+        env = dict(os.environ)
+        env.update(env_overrides)
     return subprocess.run(
         [sys.executable, str(MODULE_PATH)],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
         timeout=30,
+        env=env,
     )
 
 
@@ -345,6 +358,88 @@ def test_main_allows_write_to_sibling_worktree() -> str:
                 f"reason={stderr_msg!r}"
             )
     return "Write to sibling worktree under same canonical root is allowed (exit 0)"
+
+
+def test_main_allows_write_to_engineering_journal_canonical_root() -> str:
+    """dev-env#750, reopened: a Write targeting the BARE engineering-journal canonical
+    root (no worktree segment anywhere in the target path) is allowed, when issued from
+    a session whose own primary repo is itself an EJ worktree.
+
+    This is the primary Stub file workflow write shape (claude/CLAUDE.md -> Engineering
+    Journal -> "Never create a dedicated worktree to write a stub -- always operate
+    directly on the canonical via -C") and is distinct from
+    test_main_allows_write_to_sibling_worktree above: that test's write TARGET itself
+    looks worktree-shaped (a different worktree under the same canonical root); this
+    test's write target is the canonical root directly -- the case PR #756's carve-out
+    never covered, which is why the issue was reopened.
+
+    WORKTREE_PATH_CHECK_JOURNAL_PATH redirects the hook's journal-carveout constant at a
+    disposable temp dir instead of the developer's real engineering-journal checkout --
+    this test must never touch that real checkout.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        canonical_root = Path(tmp) / "ej-canon"
+        worktree_root = canonical_root / ".claude" / "worktrees" / "some-worktree"
+        worktree_root.mkdir(parents=True)
+        (worktree_root / ".git").write_text("not a real gitdir link")
+        # Bare canonical-root target -- no worktree segment anywhere in this path.
+        target_file = canonical_root / "sessions" / "dev-env" / "2026-08-15_120000.stub.md"
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(target_file)},
+            "cwd": str(worktree_root),
+        }
+        proc = _run_hook(payload, env_overrides={"WORKTREE_PATH_CHECK_JOURNAL_PATH": str(canonical_root)})
+        if proc.returncode != 0:
+            stderr_msg = ""
+            try:
+                stderr_msg = json.loads(proc.stderr).get("reason", proc.stderr)
+            except json.JSONDecodeError:
+                stderr_msg = proc.stderr
+            raise AssertionError(
+                f"expected exit 0 (bare EJ-canonical-root write allowed), got {proc.returncode}. "
+                f"reason={stderr_msg!r}"
+            )
+    return "Write to the bare engineering-journal canonical root is allowed (exit 0, dev-env#750 reopened)"
+
+
+def test_main_blocks_write_to_samename_repo_outside_journal_carveout_path() -> str:
+    """dev-env#750, reopened / dev-env#576/PR#584 review-finding precedent: a canonical
+    root that merely happens to be NAMED the same as the configured carve-out path, but
+    lives somewhere else, is NOT exempt -- only the one path
+    WORKTREE_PATH_CHECK_JOURNAL_PATH names is. Pins the exact-path (not basename) match,
+    mirroring test_canonical_mutate_guard.py's
+    test_main_blocks_redirect_into_samename_repo_outside_carveout_path.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        canonical_root = Path(tmp) / "engineering-journal"  # same basename, NOT the configured carve-out path
+        worktree_root = canonical_root / ".claude" / "worktrees" / "some-worktree"
+        worktree_root.mkdir(parents=True)
+        (worktree_root / ".git").write_text("not a real gitdir link")
+        escaping_path = canonical_root / "sessions" / "dev-env" / "2026-08-15_120000.stub.md"
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(escaping_path)},
+            "cwd": str(worktree_root),
+        }
+        # Deliberately configure the carve-out path to somewhere else entirely so
+        # `canonical_root` (same basename, different path) is provably not it.
+        other_path = Path(tmp) / "actual-carveout-target"
+        proc = _run_hook(payload, env_overrides={"WORKTREE_PATH_CHECK_JOURNAL_PATH": str(other_path)})
+        if proc.returncode != 2:
+            raise AssertionError(
+                f"expected exit 2 (same-basename repo at a different path must NOT be exempt), "
+                f"got {proc.returncode}. stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+        try:
+            reason = json.loads(proc.stderr).get("reason", "")
+        except json.JSONDecodeError:
+            raise AssertionError(f"stderr was not JSON: {proc.stderr!r}")
+        if "canonical repo root" not in reason or "Corrected" not in reason:
+            raise AssertionError(f"block reason missing expected markers: {reason!r}")
+    return "same-basename-but-wrong-path repo is correctly NOT journal-carveout-exempt (dev-env#750 reopened)"
 
 
 def test_main_blocks_write_escaping_to_canonical_root_sibling_directory_convention() -> str:
@@ -573,6 +668,8 @@ def main() -> int:
         ("main() blocks Edit from orphaned worktree", test_main_blocks_edit_from_orphaned_worktree),
         ("main() blocks Write escaping to canonical root", test_main_blocks_write_escaping_to_canonical_root),
         ("main() allows Write to sibling worktree", test_main_allows_write_to_sibling_worktree),
+        ("main() allows Write to bare engineering-journal canonical root (dev-env#750 reopened)", test_main_allows_write_to_engineering_journal_canonical_root),
+        ("main() blocks Write to same-basename repo outside journal carve-out path (dev-env#750 reopened)", test_main_blocks_write_to_samename_repo_outside_journal_carveout_path),
         ("main() blocks Write escaping to canonical root, sibling-directory convention (dev-env#760)", test_main_blocks_write_escaping_to_canonical_root_sibling_directory_convention),
         ("main() blocks Edit from orphaned sibling-directory worktree (dev-env#760)", test_main_blocks_edit_from_orphaned_sibling_directory_worktree),
         ("main() allows Write to nested worktree inside a sibling-directory worktree (dev-env#760 review finding)", test_main_allows_write_to_nested_worktree_inside_sibling_directory_worktree),
