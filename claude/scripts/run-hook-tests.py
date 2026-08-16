@@ -218,6 +218,20 @@ def _run_one(path: Path, bash_bin, timeout: int):
         if exc.stderr:
             partial += exc.stderr if isinstance(exc.stderr, str) else exc.stderr.decode("utf-8", "replace")
         return "fail", elapsed, f"TIMEOUT after {timeout}s\n{partial}"
+    except OSError as exc:
+        # dev-env#994 / PR review: a severe manifestation of the exact Windows
+        # resource contention run_with_retries exists to absorb is a spawn-time
+        # OSError (e.g. WinError 1450 "Insufficient system resources") rather
+        # than a slow-but-successful run -- subprocess.run() can raise this
+        # BEFORE returning a CompletedProcess at all. Left uncaught, this
+        # exception would propagate through run_with_retries' run_one() call
+        # and crash main() entirely (past the top-level KeyboardInterrupt-only
+        # guard), aborting the whole suite instead of failing (and letting
+        # run_with_retries retry) just this one file. Converting it to a
+        # normal "fail" status is what makes it retriable like any other
+        # failure -- the retry mechanism's whole point.
+        elapsed = time.monotonic() - start
+        return "fail", elapsed, f"OSError launching subprocess: {exc}"
 
 
 def run_with_retries(run_one, max_retries: int, on_attempt=None):

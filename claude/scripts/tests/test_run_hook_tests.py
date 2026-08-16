@@ -194,6 +194,19 @@ def test_run_one_skips_without_shelling_out_when_bash_missing():
     assert output.startswith("SKIP:"), output
 
 
+def test_run_one_converts_oserror_to_fail():
+    # dev-env#994 / PR review: an OSError at subprocess-spawn time (e.g. Windows
+    # WinError 1450 "Insufficient system resources" under CI resource
+    # contention) must convert to a normal "fail" status, not propagate and
+    # crash the runner -- that's what makes it retriable by run_with_retries
+    # instead of aborting the whole suite. A nonexistent bash_bin triggers a
+    # real OSError (FileNotFoundError) at spawn time with no mocking needed.
+    bogus_bash = str(Path(os.sep) / "no" / "such" / "bash-binary-xyz")
+    status, seconds, output = mod._run_one(Path("dummy_test.sh"), bogus_bash, 5)
+    assert status == "fail", (status, output)
+    assert "OSError" in output, output
+
+
 # ---------------------------------------------------------------------------
 # run_with_retries (dev-env#994, ADR-134)
 # ---------------------------------------------------------------------------

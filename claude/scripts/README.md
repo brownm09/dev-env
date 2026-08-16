@@ -161,7 +161,7 @@ invocation instead.
 | `token-report.py` | `py -3 token-report.py [--date\|--days\|--project\|--latest\|--show-subagents]` | Generates markdown/JSON token usage reports from the token-tracker log. |
 | `backfill-tokens.py` | `py -3 backfill-tokens.py` | Backfills token data for sessions predating the token-tracker hook; idempotent on `session_id`. |
 | `session-mode-report.py` | `py -3 session-mode-report.py [--since\|--interactive-only\|--non-plan-only\|--log]` | Reports which sessions started outside `plan` mode, from the session-mode-prompt hook's log. |
-| `run-hook-tests.py` | `py -3 run-hook-tests.py [--list] [--timeout N]` | Discovers and runs the whole hook/script test suite; engine behind the `hook-tests` CI workflow. |
+| `run-hook-tests.py` | `py -3 run-hook-tests.py [--list] [--timeout N] [--max-retries N]` | Discovers and runs the whole hook/script test suite; engine behind the `hook-tests` CI workflow. `--max-retries` (default 2) visibly re-runs a failing file before counting it a final failure, absorbing transient CI flakiness without masking a real regression (dev-env#994, [ADR-134](../../docs/adr/134-run-hook-tests-retry-mechanism.md)). |
 | `register-keep-token-warm.ps1` | `powershell -File register-keep-token-warm.ps1 [-IntervalHours N] [-Unregister]` | Per-machine, run-once: registers the scheduled task that keeps the OAuth token fresh. |
 | `keep-token-warm.ps1` | Scheduled-task payload (not run by hand) | Triggers a CLI OAuth-token refresh every few hours so `usage-snapshot.py` rarely needs an on-demand refresh — unless a desktop-app auth-status probe detects the refresh would be futile, in which case it exits early instead. |
 
