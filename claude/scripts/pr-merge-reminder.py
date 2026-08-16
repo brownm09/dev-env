@@ -376,13 +376,25 @@ def _build_messages(
             " && git push"
         )
 
-    if is_push and not (is_create or is_merge) and create_push_ok:
+    if is_push and not (is_create or is_merge or is_rest_merge_command(command)) and create_push_ok:
         # Scope the open-PR lookup to the repo the push actually targets: a
         # `cd <other-repo> && git push` must not fire the session cwd's reminder
         # (issue #442 / ADR-065).  Engineering-journal pushes route into the
         # _open_pr_for_cwd EJ skip once their real target dir is used.  The
         # reminder fires on every qualifying push (each carries new journalable
         # content); scoping — not dedup — is what removes the #442 cross-repo noise.
+        #
+        # `is_rest_merge_command(command)` (dev-env#986, dev-env#991) is
+        # included alongside is_create/is_merge for the identical reason: a
+        # chained `gh api -X PUT .../pulls/<N>/merge && git push` is BOTH a
+        # REST merge and a push in one command -- without this, merge_ok
+        # (fired via the REST OR-branch above) would produce the merge
+        # reminder while this suppression missed it (is_merge stays False
+        # for the REST shape), producing a duplicate push reminder for the
+        # same event. Checked unconditionally on command shape (like
+        # is_merge itself), not gated on the marker -- a REST call attempted
+        # but not yet confirmed should suppress the push reminder the same
+        # way an unconfirmed `gh pr merge` already does via is_merge alone.
         push_dir = _effective_push_dir(command, cwd)
         pr = _open_pr_for_cwd(push_dir)
         if pr:

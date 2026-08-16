@@ -906,6 +906,29 @@ def test_build_messages_rest_merge_without_marker_no_message() -> str:
     return "REST merge call without \"merged\":true -> no message"
 
 
+def test_build_messages_rest_merge_chained_push_no_duplicate_reminder() -> str:
+    # A REST merge chained with a push in the same command is both a merge
+    # (fires via the REST OR-branch) and, textually, a push -- without the
+    # is_rest_merge_command(command) addition to the push-suppression check,
+    # this would ALSO fire a duplicate push reminder for the same event
+    # (mirrors the pre-existing is_create/is_merge suppression).
+    messages = _build_messages(
+        command=(
+            "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash "
+            "&& git push"
+        ),
+        cwd="/session/cwd",
+        exit_code=0,
+        output='{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}',
+        is_create=False,
+        is_merge=False,
+        is_push=True,
+    )
+    assert len(messages) == 1, f"expected only the merge reminder, got {messages!r}"
+    assert "gh pr merge detected" in messages[0]
+    return "REST merge chained with push -> only the merge reminder fires, no duplicate push reminder (dev-env#986/#991)"
+
+
 def test_build_messages_rest_merge_get_method_not_matched() -> str:
     # gh api's default verb is GET; GitHub's own documented read-only "check
     # if a pull request has been merged" endpoint shares the identical path
@@ -992,6 +1015,7 @@ def main() -> int:
         ("build_messages: live_confirmed omitted -> unchanged", test_build_messages_live_confirmed_default_none_unchanged),
         ("build_messages: REST merge fallback + \"merged\":true -> fires (dev-env#986/#991)", test_build_messages_rest_merge_with_marker_fires),
         ("build_messages: REST merge fallback without marker -> no message", test_build_messages_rest_merge_without_marker_no_message),
+        ("build_messages: REST merge chained with push -> no duplicate reminder (dev-env#986/#991)", test_build_messages_rest_merge_chained_push_no_duplicate_reminder),
         ("build_messages: REST merge GET (no PUT) -> no message (dev-env#986/#991)", test_build_messages_rest_merge_get_method_not_matched),
     ]
     failed = 0
