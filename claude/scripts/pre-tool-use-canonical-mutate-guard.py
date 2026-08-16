@@ -771,7 +771,13 @@ def _memoized_toplevel(path: str, cache: dict):
 
 
 def _normalize_path(path: str) -> str:
-    return os.path.normcase(os.path.normpath(path))
+    """Worktree-liveness path-identity comparison (`_is_live_worktree()` below) --
+    unrelated to, but algorithmically identical to, `_journal_canon.normalize_journal_path()`.
+    Delegates rather than re-implementing, so the two independent hand-written copies this
+    file used to carry can't drift apart (dev-env#982 review). Kept as a locally-named thin
+    wrapper, not inlined away, since this file's own liveness call sites reference it by
+    this name and it predates the journal-canon extraction."""
+    return _journal_canon.normalize_journal_path(path)
 
 
 def _worktree_root_from_cwd(cwd: str):
@@ -873,10 +879,14 @@ def _is_allowlisted_root(root: str) -> bool:
     redirect-target carve-out — currently only the engineering-journal
     canonical checkout. See `_REDIRECT_TARGET_ALLOWLIST`.
 
-    Matches the whole normalized path (`/` separators, no trailing slash,
-    lowercased), not just the last path segment — a basename-only match would
-    exempt any canonical checkout anywhere on disk that happens to share that
-    directory name (review finding on dev-env#576/PR#584).
+    Matches the whole path normalized via `_journal_canon.normalize_journal_path()`
+    (`os.path.normcase(os.path.normpath(...))` — platform-native separators, lowercased
+    on Windows), not just the last path segment — a basename-only match would exempt any
+    canonical checkout anywhere on disk that happens to share that directory name (review
+    finding on dev-env#576/PR#584). Contract corrected dev-env#982 review: previously
+    described as "`/` separators" here, which stopped being true once the shared
+    normalization (backslash-preserving on Windows) replaced the old
+    `.replace("\\","/")`-based scheme.
     """
     normalized = _journal_canon.normalize_journal_path(root)
     return normalized in _REDIRECT_TARGET_ALLOWLIST

@@ -2,23 +2,29 @@
 """Unit tests for _journal_canon.py (dev-env#982 / ADR-133).
 
 Pins: default resolution, env-var override (using two of the four real hook env-var
-names), the normalization scheme's case/separator/trailing-slash/dot-segment behavior,
-its equivalence with the two legacy ad hoc schemes for every real-world (git-resolved)
-input shape, and the one documented, provably-unreachable-in-production divergence on
-empty input.
+names) including an explicitly-empty override falling back to the default, the
+normalization scheme's case/separator/trailing-slash/dot-segment behavior (Windows-only
+by construction -- guarded with `os.name == "nt"` assertions, since `os.path.normcase`
+is the identity function on POSIX), its agreement with the REAL delegating wrappers in
+`pre-tool-use-canonical-mutate-guard.py` and `pre-tool-use-worktree-path-check.py` (loaded
+and called directly, not reimplemented in this file), and the one documented,
+provably-unreachable-in-production divergence from the retired legacy scheme on empty
+input.
 
 Usage:
     py -3 claude/scripts/tests/test_journal_canon.py
 
 Exit 0 = all pass.
 """
+import importlib.util
 import os
 import sys
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO_ROOT / "claude" / "scripts"))
+SCRIPTS_DIR = REPO_ROOT / "claude" / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIR))
 
 import _journal_canon  # noqa: E402
 
@@ -27,6 +33,21 @@ resolve_journal_path = _journal_canon.resolve_journal_path
 normalize_journal_path = _journal_canon.normalize_journal_path
 
 UNSET_ENV_VAR = "_JOURNAL_CANON_TEST_UNSET_VAR_XYZ"
+
+
+def _load_hook_module(filename: str, module_name: str):
+    """Load a hyphenated hook script as an importable module -- same technique
+    `test_canonical_mutate_guard.py` / `test_worktree_path_check.py` use for their own
+    hooks. Used here so the cross-implementation equivalence test below actually exercises
+    the REAL hook code (dev-env#982 review), not a reimplementation of it."""
+    spec = importlib.util.spec_from_file_location(module_name, SCRIPTS_DIR / filename)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_cmg = _load_hook_module("pre-tool-use-canonical-mutate-guard.py", "journal_canon_test_cmg")
+_wpc = _load_hook_module("pre-tool-use-worktree-path-check.py", "journal_canon_test_wpc")
 
 
 def _with_env(var: str, value: str, fn):
@@ -71,6 +92,16 @@ def test_resolve_journal_path_env_override_real_var_names() -> str:
     return "resolve_journal_path honors an env override under two of the real hook var names"
 
 
+def test_resolve_journal_path_empty_env_var_falls_back_to_default() -> str:
+    # dev-env#982 review: an env var explicitly set to "" must be treated as unset, not as
+    # an override to "" -- two of the four consumers feed this straight into a blocking
+    # guard's exemption allowlist, where an empty override would otherwise normalize to a
+    # degenerate but non-empty "." entry.
+    got = _with_env(UNSET_ENV_VAR, "", lambda: resolve_journal_path(UNSET_ENV_VAR))
+    assert got == DEFAULT_JOURNAL_PATH, f"expected fallback to default, got {got!r}"
+    return "resolve_journal_path treats an explicitly-empty env var as unset, not as an override"
+
+
 def test_resolve_journal_path_is_unnormalized() -> str:
     # journal-canonical-guard.py needs the RAW value (proper case, its own separators) for
     # cwd=/is_dir()/printed messages -- resolve_journal_path must never touch casing/seps.
@@ -88,6 +119,11 @@ def test_resolve_journal_path_is_unnormalized() -> str:
 
 
 def test_normalize_journal_path_case_insensitive() -> str:
+    # os.path.normcase is a Windows-specific case-fold; on POSIX it's the identity
+    # function and this assertion would fail. This repo's CLAUDE.md declares Windows 11 as
+    # the only supported platform and CI runs windows-latest exclusively, so this is a
+    # documented precondition, not an unstated one (dev-env#982 review).
+    assert os.name == "nt", "normcase case-insensitivity is Windows-specific; see docstring"
     assert normalize_journal_path("C:/Users/Brown/Git/Engineering-Journal") == normalize_journal_path(
         "C:/Users/brown/Git/engineering-journal"
     )
@@ -102,6 +138,9 @@ def test_normalize_journal_path_trailing_slash() -> str:
 
 
 def test_normalize_journal_path_mixed_separators() -> str:
+    # os.path.normcase also folds "/" to "\\" only on Windows (identity on POSIX) --
+    # same documented precondition as the case-insensitivity test above.
+    assert os.name == "nt", "normcase separator-folding is Windows-specific; see docstring"
     assert normalize_journal_path("C:/Users/brown/Git/engineering-journal") == normalize_journal_path(
         r"C:\Users\brown\Git\engineering-journal"
     )
@@ -119,16 +158,10 @@ def test_normalize_journal_path_collapses_dot_and_double_sep() -> str:
     return "normalize_journal_path collapses repeated separators and '.'/'..' segments"
 
 
-def test_normalize_journal_path_equivalence_with_legacy_schemes_for_real_world_inputs() -> str:
-    # Reconstruct BOTH legacy schemes exactly as they appeared in the hooks that had one,
-    # and pin agreement for every real-world (git-resolved-toplevel-shaped) input --
-    # forward-slash, backslash, trailing-slash, mixed-case. dev-env#982 stress test.
-    def legacy_replace_scheme(path: str) -> str:
-        return (path or "").replace("\\", "/").rstrip("/").lower()
-
-    def legacy_worktree_path_check_normalize(path: str) -> str:
-        return os.path.normcase(os.path.normpath(path))
-
+def test_normalize_journal_path_internally_consistent_for_real_world_inputs() -> str:
+    # Every one of these representations of the same real-world path must normalize to
+    # the SAME value -- a compound check the pairwise case/trailing-slash/separator tests
+    # above don't exercise together. dev-env#982 stress test.
     real_world_inputs = [
         "C:/Users/brown/Git/engineering-journal",
         r"C:\Users\brown\Git\engineering-journal",
@@ -136,28 +169,46 @@ def test_normalize_journal_path_equivalence_with_legacy_schemes_for_real_world_i
         "C:/Users/Brown/Git/Engineering-Journal",
         r"C:\Users\Brown\Git\Engineering-Journal\\",
     ]
+    values = {normalize_journal_path(p) for p in real_world_inputs}
+    assert len(values) == 1, f"normalize_journal_path disagrees within itself: {values!r}"
+    return "normalize_journal_path collapses every real-world representation to one value"
 
-    # Every input above must be treated as equivalent to every other input under EACH
-    # scheme on its own -- i.e. no input here is distinguished from another by one scheme
-    # but not the other.
-    new_values = {normalize_journal_path(p) for p in real_world_inputs}
-    old_replace_values = {legacy_replace_scheme(p) for p in real_world_inputs}
-    assert len(new_values) == 1, f"new scheme disagrees within itself: {new_values!r}"
-    assert len(old_replace_values) == 1, f"legacy .replace scheme disagrees within itself: {old_replace_values!r}"
 
-    # The new shared scheme is byte-identical to worktree-path-check.py's own pre-existing
-    # local _normalize() (same algorithm) for every one of these inputs.
+def test_normalize_journal_path_matches_real_hook_delegates() -> str:
+    # dev-env#982 review: the equivalence claim that matters is that the REAL hook code
+    # (not a reimplementation of it in this test file) stays byte-identical to this shared
+    # function. pre-tool-use-canonical-mutate-guard.py's `_normalize_path()` and
+    # pre-tool-use-worktree-path-check.py's `_normalize()` both DELEGATE to
+    # normalize_journal_path() (dev-env#982 review) rather than carrying their own copies --
+    # this test loads and calls the actual hook modules, so it fails immediately if either
+    # ever stops delegating and reimplements independently (even identically), not just if
+    # the reimplementation drifts.
+    real_world_inputs = [
+        "C:/Users/brown/Git/engineering-journal",
+        r"C:\Users\brown\Git\engineering-journal",
+        "C:/Users/brown/Git/engineering-journal/",
+        "C:/Users/Brown/Git/Engineering-Journal",
+        r"C:\Users\Brown\Git\Engineering-Journal\\",
+        "C:/Users/brown/Git//engineering-journal",
+        "C:/Users/brown/Git/foo/../engineering-journal",
+    ]
     for path in real_world_inputs:
-        new = normalize_journal_path(path)
-        old_wpc = legacy_worktree_path_check_normalize(path)
-        assert new == old_wpc, (
-            f"new scheme must be byte-identical to worktree-path-check's own legacy "
-            f"_normalize() (same algorithm) for {path!r}: new={new!r} old_wpc={old_wpc!r}"
+        shared = normalize_journal_path(path)
+        cmg_val = _cmg._normalize_path(path)
+        wpc_val = _wpc._normalize(path)
+        assert cmg_val == shared, (
+            f"pre-tool-use-canonical-mutate-guard.py's _normalize_path({path!r}) = "
+            f"{cmg_val!r}, expected it to delegate to normalize_journal_path = {shared!r}"
+        )
+        assert wpc_val == shared, (
+            f"pre-tool-use-worktree-path-check.py's _normalize({path!r}) = {wpc_val!r}, "
+            f"expected it to delegate to normalize_journal_path = {shared!r}"
         )
     return (
-        "normalize_journal_path agrees with both legacy schemes' own internal "
-        "equivalence classes for every real-world git-resolved-toplevel-shaped input; "
-        "byte-identical to pre-tool-use-worktree-path-check.py's own legacy _normalize()"
+        "pre-tool-use-canonical-mutate-guard.py's _normalize_path() and "
+        "pre-tool-use-worktree-path-check.py's _normalize() both genuinely delegate to "
+        "normalize_journal_path() -- verified against the real hook modules, not a "
+        "reimplementation"
     )
 
 
@@ -206,12 +257,20 @@ def main() -> int:
             test_normalize_journal_path_collapses_dot_and_double_sep,
         ),
         (
-            "normalize_journal_path: equivalence with both legacy schemes (real-world inputs)",
-            test_normalize_journal_path_equivalence_with_legacy_schemes_for_real_world_inputs,
+            "normalize_journal_path: internally consistent across real-world inputs",
+            test_normalize_journal_path_internally_consistent_for_real_world_inputs,
+        ),
+        (
+            "normalize_journal_path: matches the real hook modules' delegating wrappers",
+            test_normalize_journal_path_matches_real_hook_delegates,
         ),
         (
             "normalize_journal_path: pinned empty/None-input divergence from legacy scheme",
             test_normalize_journal_path_pins_empty_input_divergence,
+        ),
+        (
+            "resolve_journal_path: empty env var falls back to default",
+            test_resolve_journal_path_empty_env_var_falls_back_to_default,
         ),
     ]
     failed = 0

@@ -34,7 +34,6 @@ Exit 0 always — never block the user's prompt.
 """
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -78,8 +77,19 @@ def main() -> None:
     except Exception:
         pass
 
-    # Guard: repo must exist at the expected path.
+    # Guard: repo must exist at the expected path. Advisory, not silent (dev-env#982
+    # review): JOURNAL_REPO's default is this machine's hardcoded engineering-journal
+    # path (DEFAULT_JOURNAL_PATH) -- on any machine/identity where that path doesn't
+    # exist, this hook's entire hijack-detection purpose is inert, and a bare exit(0)
+    # here was indistinguishable from "canonical is healthy." Printed once per prompt
+    # (this hook's existing per-invocation cadence, no new sentinel), stdout per this
+    # hook's established ADR-099 advisory channel.
     if not JOURNAL_REPO.is_dir():
+        print(
+            f"[journal-canonical-guard] NOTE: engineering-journal canonical not found at "
+            f"'{JOURNAL_REPO}' -- hijack detection is inert until it exists there. Override "
+            "with JOURNAL_CANONICAL_GUARD_REPO_PATH if the checkout lives elsewhere."
+        )
         sys.exit(0)
 
     # Cheap first read (no worktree-list/status calls) so the common healthy path — on main,

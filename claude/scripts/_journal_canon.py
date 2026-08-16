@@ -18,8 +18,18 @@ override, and (in three of the four) its own copy of a normalize-for-comparison 
   - `pre-tool-use-worktree-path-check.py`'s `_JOURNAL_ROOT` (str) /
     `WORKTREE_PATH_CHECK_JOURNAL_PATH` -- normalized via that file's own general-purpose
     `_normalize()` helper, which is ALSO used for unrelated worktree-path comparisons in
-    the same file and stays local (not extracted here) -- only the `_JOURNAL_ROOT`
-    constant's construction moves.
+    the same file (`worktree_norm`, `file_norm`, `_worktree_is_live`,
+    `_resolve_worktree_scope`) and stays as a locally-named wrapper for those call sites --
+    but its body now delegates to `normalize_journal_path()` below (dev-env#982 review),
+    so there is exactly one algorithm, not a second copy.
+
+`pre-tool-use-canonical-mutate-guard.py` also has its own long-standing, unrelated
+`_normalize_path()` helper (worktree-liveness comparisons, `_is_live_worktree()` --
+predates this extraction and is out of scope for it) that happens to implement the
+identical `os.path.normcase(os.path.normpath(...))` algorithm. Its body now delegates to
+`normalize_journal_path()` too (dev-env#982 review), for the same reason: two hand-written
+copies of one algorithm drift silently, and this one backs a blocking guard's exemption
+list just as directly as `_is_allowlisted_root()` does.
 
 This module single-sources the two orthogonal halves of that pattern:
 
@@ -29,7 +39,11 @@ This module single-sources the two orthogonal halves of that pattern:
     style) for a subprocess `cwd=`, `Path.is_dir()`, and printed advisory text --
     normalizing it there would degrade message readability (backslash-and-lowercase a
     path a human reads) for a purely cosmetic reason, since Windows path APIs are already
-    case/separator-insensitive.
+    case/separator-insensitive. An explicitly-empty env-var override (`VAR=""`) is treated
+    as "not set" and falls back to `default` rather than resolving to `""` -- this value
+    backs a blocking security exemption list in two of the four consumers, so a degenerate
+    override should not silently produce a degenerate (and, post-normalization, non-empty:
+    `"." `) allowlist entry (dev-env#982 review).
   - `normalize_journal_path(path)` -- the one canonical normalization for EQUALITY
     COMPARISON only, `os.path.normcase(os.path.normpath(path or ""))`. Chosen over the
     `.replace("\\","/").rstrip("/").lower()` scheme two of the four hooks used
@@ -38,14 +52,24 @@ This module single-sources the two orthogonal halves of that pattern:
     `"Git/foo/../engineering-journal"` are left uncollapsed by the manual scheme, which
     would falsely mismatch a git-resolved toplevel containing either shape -- never
     observed in practice since `git rev-parse --show-toplevel` never emits them, but a
-    latent correctness gap the manual scheme carried). Identical, byte-for-byte, to
-    `pre-tool-use-worktree-path-check.py`'s own pre-existing local `_normalize()` -- that
-    file's construction-site call is swapped for this shared one, but its OTHER,
-    non-journal uses of its local helper are untouched. The two schemes disagree only on
-    empty-string input -- `"" -> ""` (old) vs. `"" -> "."` (new, since
-    `os.path.normpath("")` is `"."`) -- and every existing call site across all four hooks
-    provably never passes an empty string here: `root`/candidate values always come from
-    `git rev-parse --show-toplevel`'s `strip() or None` contract, gated behind an
+    latent correctness gap the manual scheme carried). This is now the ONE implementation
+    of the algorithm in the repo -- `pre-tool-use-worktree-path-check.py`'s `_normalize()`
+    and `pre-tool-use-canonical-mutate-guard.py`'s `_normalize_path()` both delegate to it
+    (dev-env#982 review) rather than carrying their own byte-identical copies.
+
+    CAUTION for any future caller: the lexical `..`/`.` collapsing is only sound when
+    `path` is already a git-resolved, filesystem-real toplevel (`git rev-parse
+    --show-toplevel`'s output, which is what every current call site passes) -- it does
+    NOT resolve through symlinks or junctions the way `os.path.realpath()` would. A raw,
+    command-string-derived path containing `..` could lexically collapse into the journal
+    allowlist entry without actually being that directory. Not exploitable today (traced:
+    every caller passes an already git-resolved path), but do not repurpose this function
+    for a raw, unresolved path without switching to `os.path.realpath()` first.
+
+    The two schemes disagree only on empty-string input -- `"" -> ""` (old) vs. `"" -> "."`
+    (new, since `os.path.normpath("")` is `"."`) -- and every existing call site across all
+    four hooks provably never passes an empty string here: `root`/candidate values always
+    come from `git rev-parse --show-toplevel`'s `strip() or None` contract, gated behind an
     `if root and ...` / `if root is None: continue` check before ever reaching the
     comparison, and no test overrides any of the four env vars to the empty string. See
     `test_journal_canon.py`'s `test_normalize_journal_path_pins_empty_input_divergence`.
@@ -95,11 +119,17 @@ def resolve_journal_path(env_var: str, default: str = DEFAULT_JOURNAL_PATH) -> s
     EQUALITY COMPARISON (`pre-tool-use-canonical-mutate-guard.py`,
     `pre-tool-use-journal-draft-worktree-guard.py`, `pre-tool-use-worktree-path-check.py`)
     pass this straight into `normalize_journal_path()`.
+
+    An env var explicitly set to the empty string is treated the same as unset (falls back
+    to `default`), not as an override to `""` -- `os.environ.get(env_var) or default`,
+    not `os.environ.get(env_var, default)`. Two of the four consumers feed this straight
+    into a blocking guard's exemption allowlist; a degenerate empty override should not
+    silently produce a degenerate allowlist entry (dev-env#982 review).
     """
-    return os.environ.get(env_var, default)
+    return os.environ.get(env_var) or default
 
 
-def normalize_journal_path(path: str) -> str:
+def normalize_journal_path(path: str | None) -> str:
     """The one canonical normalization for EQUALITY COMPARISON purposes only:
     `os.path.normcase(os.path.normpath(path or ""))`.
 
@@ -107,11 +137,14 @@ def normalize_journal_path(path: str) -> str:
     `resolve_journal_path()`'s output) and comparison time (normalizing the candidate root
     being checked against it) by `pre-tool-use-canonical-mutate-guard.py`'s
     `_is_allowlisted_root()` and `pre-tool-use-journal-draft-worktree-guard.py`'s
-    `_is_journal_canonical()`. `pre-tool-use-worktree-path-check.py` uses this only at
-    construction time for its `_JOURNAL_ROOT` constant -- its comparison-time
-    normalization stays its own pre-existing, byte-identical local `_normalize()` helper,
-    since that helper also serves unrelated non-journal comparisons in the same file and
-    is out of scope for this extraction.
+    `_is_journal_canonical()`. `pre-tool-use-worktree-path-check.py` also delegates its
+    local `_normalize()` to this function at both construction and comparison time --
+    `_normalize()` stays as a locally-named wrapper (not inlined away) because it is also
+    called from four other, non-journal call sites in that file (`worktree_norm`,
+    `file_norm`, `_worktree_is_live`, `_resolve_worktree_scope`), which are out of scope for
+    this extraction. `pre-tool-use-canonical-mutate-guard.py`'s own unrelated
+    `_normalize_path()` (worktree-liveness comparisons) delegates the same way, for the
+    same reason its call sites keep their own local name.
 
     NEVER called with an empty/None `path` by any of the four hooks' actual call sites
     today (see module docstring) -- the `path or ""` guard exists so this degrades safely

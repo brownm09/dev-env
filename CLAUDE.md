@@ -125,7 +125,7 @@ the item). A one-line navigational map of the test directory is
 89. **session-start-sync test** — required when changing `claude/scripts/session-start-sync.py` or `claude/scripts/_worktree_liveness.py`. Run: `py -3 claude/scripts/tests/test_session_start_sync.py` + `py -3 claude/scripts/tests/test_worktree_liveness.py`
 90. **`_gh_issue_state` shared-module test** — required when changing `claude/scripts/_gh_issue_state.py`. Run: `py -3 claude/scripts/tests/test_gh_issue_state.py`
 91. **retro-chain-status test** — required when changing `claude/scripts/retro-chain-status.py`. Run: `py -3 claude/scripts/tests/test_retro_chain_status.py`
-92. **journal-canon shared-module test** — required when changing `claude/scripts/_journal_canon.py`. Run: `py -3 claude/scripts/tests/test_journal_canon.py`
+92. **journal-canon shared-module test** — required when changing `claude/scripts/_journal_canon.py` or the four hooks that delegate to it (`pre-tool-use-canonical-mutate-guard.py`, `journal-canonical-guard.py`, `pre-tool-use-journal-draft-worktree-guard.py`, `pre-tool-use-worktree-path-check.py`) — the module's own ADR-133 safety claim is that all four consumer suites stay green across a change to it, so re-run them together with its own suite. Run: `py -3 claude/scripts/tests/test_journal_canon.py` + `py -3 claude/scripts/tests/test_canonical_mutate_guard.py` + `py -3 claude/scripts/tests/test_journal_canonical_guard.py` + `py -3 claude/scripts/tests/test_journal_draft_worktree_guard.py` + `py -3 claude/scripts/tests/test_worktree_path_check.py`
 
 ## Observability
 

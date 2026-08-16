@@ -33,7 +33,7 @@ exercises these scripts: `py -3 claude/scripts/run-hook-tests.py`.
 `_foo.py` files — imported by other scripts, never directly invoked or wired as a hook
 themselves. None of these get their own row in `docs/REFERENCE.md`'s Hooks/Utilities tables
 (they're described in prose paragraphs at the top of the Hooks section instead); this table is
-the one place all 18 are listed together. Each has its own test file in
+the one place all 19 are listed together. Each has its own test file in
 [`tests/README.md`](tests/README.md) → Shared support modules.
 
 | Module | Purpose | Consumers |

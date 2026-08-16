@@ -58,12 +58,14 @@ Continues this repo's shared-module line: `_hookio` (ADR-050) → `_worktree_liv
      normalization, `os.path.normcase(os.path.normpath(path or ""))`. Consumed at both
      construction time (building a hook's own constant) and comparison time (normalizing
      the candidate) by the two hooks that do direct equality comparison
-     (`pre-tool-use-canonical-mutate-guard.py`, `pre-tool-use-journal-draft-worktree-guard.py`);
-     consumed only at construction time by `pre-tool-use-worktree-path-check.py`, whose
-     own comparison-time normalization stays its pre-existing, byte-identical local
-     `_normalize()` — that helper also serves unrelated non-journal comparisons in the
-     same file (`worktree_norm`, `file_norm`, `_worktree_is_live`,
-     `_resolve_worktree_scope`) and is out of scope for this extraction.
+     (`pre-tool-use-canonical-mutate-guard.py`, `pre-tool-use-journal-draft-worktree-guard.py`).
+     `pre-tool-use-worktree-path-check.py` consumes it through its own locally-named
+     `_normalize()` wrapper, which delegates to this function (see the Amendment below —
+     the original version of this decision left that wrapper as a second, independent
+     copy of the algorithm; the /review round converted it to a genuine delegation). The
+     wrapper stays local, not inlined away, since it also serves unrelated non-journal
+     comparisons in the same file (`worktree_norm`, `file_norm`, `_worktree_is_live`,
+     `_resolve_worktree_scope`).
 
 2. **Normalization choice: `os.path.normcase(os.path.normpath(path or ""))`, not the
    `.replace("\\","/").rstrip("/").lower()` scheme two hooks used.** Chosen over the
@@ -106,10 +108,11 @@ Continues this repo's shared-module line: `_hookio` (ADR-050) → `_worktree_liv
    precedent of preserving each caller's own contract (there: divergent no-match return
    shapes) rather than forcing convergence onto one name/shape.
 
-5. `pre-tool-use-worktree-path-check.py`'s general-purpose `_normalize()` helper is
-   **explicitly not touched or extracted** — only its `_JOURNAL_ROOT` construction site
-   changes to call `_journal_canon.resolve_journal_path()`; the helper's other four call
-   sites in that file, and the comparison in `main()`, are untouched.
+5. `pre-tool-use-worktree-path-check.py`'s general-purpose `_normalize()` helper keeps its
+   name and all five of its call sites (`_JOURNAL_ROOT` construction, `worktree_norm`,
+   `file_norm`, `_worktree_is_live`, `_resolve_worktree_scope`) — only its *body* now
+   delegates to `_journal_canon.normalize_journal_path()` instead of carrying its own copy
+   of the algorithm (see Amendment below).
 
 6. All four existing hook test suites (`test_canonical_mutate_guard.py`,
    `test_journal_canonical_guard.py`, `test_journal_draft_worktree_guard.py`,
@@ -117,7 +120,11 @@ Continues this repo's shared-module line: `_hookio` (ADR-050) → `_worktree_liv
    after the refactor, not just by tracing. Every journal-carveout test in these files
    either asserts only a boolean end-to-end outcome against fixtures that normalize
    identically under both schemes, or overrides the env var to a disposable temp dir and
-   never exercises the default/normalization directly.
+   never exercises the default/normalization directly. (The `/review` round in the
+   Amendment below changed this hook's own runtime behavior on a missing repo path — a
+   test-affecting fix, not an artifact of the extraction itself — and updated
+   `test_journal_canonical_guard.py`'s one test that asserted the old silent contract to
+   match; see Amendment item 3.)
 
 ## Considered alternatives
 
@@ -144,16 +151,105 @@ Continues this repo's shared-module line: `_hookio` (ADR-050) → `_worktree_liv
   Utilities-table row, matching the established convention for `_worktree_canon.py`/
   `_gh_project.py`/`_repo_scan.py` (a prose paragraph near the consumer hooks' entries
   instead).
-- One new test file (`test_journal_canon.py`, 11 cases) pinning the normalization choice,
-  its equivalence with both legacy schemes on real-world inputs, and the documented
-  empty-input divergence.
-- Zero edits to any of the four existing hook test files — verified by running all four
-  suites unchanged after the refactor (87 + 6 + 27 + 16 tests, all passing).
+- One new test file (`test_journal_canon.py`) pinning the normalization choice, its
+  internal consistency across real-world inputs, its agreement with the real delegating
+  hook wrappers, and the documented empty-input divergence (see Amendment below for the
+  review-round additions).
+- Zero edits to any of the four existing hook test files from the original extraction —
+  verified by running all four suites unchanged after the refactor (87 + 6 + 27 + 16 tests,
+  all passing). The `/review` round (Amendment below) updated one test in
+  `test_journal_canonical_guard.py` to match an intentional behavior fix (still 6 tests,
+  same count, one renamed) — a fix to this PR's own new behavior, not a gap in the
+  original extraction.
 - One intentional, verified-no-op behavior convergence:
   `journal-canonical-guard.py`'s default source.
 - `docs/adr/INDEX.md`, `claude/scripts/README.md`, `claude/scripts/tests/README.md`,
   `docs/REFERENCE.md`, `CLAUDE.md`'s `## Testing` index, and `docs/TESTING.md` all gain a
   reference to this module/test in the same PR (doc-reconciliation checkpoint).
+
+## Amendment — 2026-08-15 (`/review` on PR #985)
+
+Two independent review passes (correctness/security, reliability/maintainability) on
+[PR #985](https://github.com/brownm09/dev-env/pull/985) surfaced real gaps in the original
+version of this decision, all fixed in the same PR before merge:
+
+1. **`pre-tool-use-worktree-path-check.py`'s `_normalize()` and
+   `pre-tool-use-canonical-mutate-guard.py`'s unrelated, pre-existing `_normalize_path()`
+   (a worktree-liveness helper) both now DELEGATE to `normalize_journal_path()`** instead
+   of carrying their own byte-identical copies of the algorithm. Decision items 1 and 5
+   above described the worktree-path-check case as a deliberate non-extraction; that was
+   only half right — leaving two hand-written copies of one algorithm alive in the repo
+   (one of them entirely undocumented in this ADR, since `_normalize_path()` predates and
+   is unrelated to this extraction's stated scope) meant a future edit to either could
+   silently diverge from the shared function while both guards it backs kept passing their
+   own tests. Both wrappers keep their local names (they still serve other, non-journal
+   call sites in their own files) but their bodies are now one line: a call into
+   `_journal_canon.normalize_journal_path()`. `test_journal_canon.py` gained a test that
+   loads the real hook modules (not a reimplementation) and asserts this delegation holds.
+2. **`resolve_journal_path()` now treats an explicitly-empty env-var override as unset**
+   (`os.environ.get(env_var) or default`, not `os.environ.get(env_var, default)`). An
+   empty override previously resolved to `""`, which `normalize_journal_path("")` turns
+   into `"."` — a degenerate but non-empty allowlist entry in the two consumers
+   (`pre-tool-use-canonical-mutate-guard.py`, `pre-tool-use-journal-draft-worktree-guard.py`)
+   that feed this value into a blocking guard's exemption list. Not exploitable via any
+   real call site today (same reasoning as the empty-input divergence in Decision item 2),
+   but this value backs a security-relevant exemption, so the safety margin is now
+   mechanical rather than resting solely on "no test happens to set it empty."
+3. **`journal-canonical-guard.py`'s `not JOURNAL_REPO.is_dir()` guard now prints a one-line
+   stdout advisory before exiting 0**, instead of a bare silent `sys.exit(0)`. Decision
+   item 3's default-harmonization is unchanged (still the shared `DEFAULT_JOURNAL_PATH`
+   literal) — but review correctly identified that a machine/identity where that path
+   doesn't exist previously made this hook's entire hijack-detection purpose silently
+   inert, indistinguishable from "canonical is healthy." The fix makes that state
+   observable via this hook's own established ADR-099 stdout-advisory channel rather than
+   reverting the harmonization. This is the one place Decision item 6's "zero edits to the
+   four existing hook test suites" claim needed a correction: `test_journal_canonical_guard.py`'s
+   `test_noop_when_repo_path_missing` asserted the old silent contract byte-for-byte
+   (`stdout.strip() or stderr.strip()` both required empty) and was updated (renamed to
+   `test_advisory_when_repo_path_missing`) to assert the new one instead — the "zero edits"
+   claim was true of the *original extraction*, not of this fix, which deliberately changes
+   this hook's runtime behavior.
+4. **`journal-canonical-guard.py`'s now-dead `import os`** (its only `os.environ.get(...)`
+   call was removed by the original extraction) is deleted.
+5. **`_is_allowlisted_root()`'s docstring** in `pre-tool-use-canonical-mutate-guard.py`
+   described the normalized-path contract as "`/` separators... lowercased" — true of the
+   retired `.replace("\\","/").rstrip("/").lower()` scheme, no longer true of
+   `os.path.normcase(os.path.normpath(...))` (platform-native, i.e. backslash-preserving
+   on Windows). Corrected to describe the actual contract.
+6. **`normalize_journal_path()`'s type annotation** changed from `path: str` to
+   `path: str | None` — the function's own pinned contract (`normalize_journal_path(None)
+   == "."`) always required `None` to be an accepted input; the annotation just hadn't
+   said so.
+7. **`test_journal_canon.py`'s cross-scheme equivalence test was tautological** — it
+   defined `legacy_worktree_path_check_normalize()` as `os.path.normcase(os.path.normpath(path))`
+   inline (an exact reimplementation of the function under test) and asserted agreement
+   against it, which cannot fail for any non-empty input regardless of what the real
+   `_normalize()` does. Replaced with a test that loads and calls the real hook modules
+   (item 1 above). A second, genuinely dead assertion (`assert len(old_replace_values) ==
+   1`, self-checking a scheme with no production callers left after this extraction) was
+   removed at the same time.
+8. **Two `normalize_journal_path()` tests relied on unstated, Windows-only `os.path.normcase`
+   semantics** (case-insensitivity and separator-folding are both no-ops on POSIX). Each
+   now asserts `os.name == "nt"` as an explicit precondition rather than silently assuming
+   it — consistent with this repo's Windows-only CLAUDE.md declaration and CI matrix, so
+   not a behavior change, just a stated one.
+9. **`claude/scripts/README.md`'s "this table is the one place all 18 are listed together"**
+   was stale the moment this PR's own 19th row (`_journal_canon.py`) landed — corrected to
+   19. Not caught by `test_readme_index_parity.py`, which gates the file-count sentence and
+   `(N)`-suffixed section headings but not this un-suffixed prose sentence.
+10. **`CLAUDE.md`/`docs/TESTING.md` Testing item 92** now names, and requires re-running,
+    all four consumer hooks' own test suites alongside `test_journal_canon.py`'s — matching
+    the pattern other multi-consumer shared-module items in the same index already use
+    (e.g. item 89), and reflecting that two of the four consumers now call into this module
+    at normalization time (item 1 above), not just at module-load time for a constant.
+
+`normalize_journal_path()`'s docstring also gained an explicit caution (not a behavior
+change): its lexical `.`/`..` collapsing is sound only for an already git-resolved input —
+every current call site's actual input shape — and would NOT be safe for a raw,
+command-string-derived path without switching to `os.path.realpath()` first, since lexical
+`..` collapsing doesn't resolve through symlinks/junctions. Traced and confirmed
+unexploitable today (same reasoning as Decision item 2's empty-input divergence); recorded
+so a future caller doesn't repurpose this function outside the shape it was built for.
 
 ## References
 
