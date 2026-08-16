@@ -183,13 +183,13 @@ def main():
             pr_ref = f"#{pr['pr']} — {pr['url']}" if pr.get("url") else f"#{pr['pr']}"
             review = (
                 f"Open PR: {pr_ref}\n"
-                f"Per CLAUDE.md workflow: invoke /review {pr.get('url', '')} --post-comment now."
+                f"Per CLAUDE.md workflow: invoke /review {pr.get('url', '')} now."
             )
         else:
             pr_list = ", ".join(f"#{p['pr']} {p.get('url', '')}" for p in prs)
             review = (
                 f"Open PRs: {pr_list}\n"
-                "Per CLAUDE.md workflow: invoke /review on the relevant PR --post-comment now."
+                "Per CLAUDE.md workflow: invoke /review on the relevant PR now."
             )
         lines.append("")       # blank line separates the status from the /review directive
         lines.append(review)

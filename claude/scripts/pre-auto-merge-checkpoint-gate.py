@@ -312,7 +312,7 @@ def main() -> None:
             f"[auto-merge-gate] BLOCKED: PR #{num} has no single comment carrying both the "
             f"`review-findings` and `premerge-checkpoints` markers together.\n\n"
             f"To proceed:\n"
-            f"  1. Run `/review <PR-URL> --post-comment` (emits both markers together), or\n"
+            f"  1. Run `/review <PR-URL>` (emits both markers together), or\n"
             f"  2. Drop --auto and run a plain `gh pr merge` after CI is green.\n"
         )
 
@@ -334,7 +334,7 @@ def main() -> None:
             f"[auto-merge-gate] BLOCKED: PR #{num}'s premerge-checkpoints marker is incomplete "
             f"(adr_warrant={adr_warrant!r}, doc_reconciliation={doc_reconciliation!r}).\n\n"
             f"To proceed: resolve the gap (write the missing ADR, or add the missing "
-            f"README/REFERENCE.md update) and re-run `/review <PR-URL> --post-comment`, or drop "
+            f"README/REFERENCE.md update) and re-run `/review <PR-URL>`, or drop "
             f"--auto.\n"
         )
 
@@ -363,7 +363,7 @@ def main() -> None:
             f"[auto-merge-gate] BLOCKED: PR #{num}'s qualifying review comment "
             f"({comment_created_at}) predates its current head commit ({head_committed_at}) -- "
             f"the review is stale.\n\n"
-            f"To proceed: re-run `/review <PR-URL> --post-comment` against the current head, or "
+            f"To proceed: re-run `/review <PR-URL>` against the current head, or "
             f"drop --auto.\n"
         )
 
