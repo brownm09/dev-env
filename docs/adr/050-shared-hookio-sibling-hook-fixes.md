@@ -2043,3 +2043,56 @@ tightening scope without checking why the looser version was looser can silently
 false negatives the stricter version was trying to prevent. Adversarial review (independent verification
 against the live code, not just re-reading the diff) is what caught this before merge rather than after
 a second silent-failure incident.
+
+## Amendment 24 (2026-08-16) — converging `stop-tile-enumeration-gate.py`'s own REST-merge trio onto the shared primitives (dev-env#992)
+
+**The follow-up, actioned.** Amendment 23 left `stop-tile-enumeration-gate.py`'s own
+`_GH_API_STMT_RE`/`_PULLS_MERGE_PATH_RE`/`_MERGED_TRUE_RE` trio deliberately unconverged with this
+module's `is_rest_merge_command`/`output_has_rest_merge_marker`, reasoning that the Stop hook's `has_api`
+check (any `gh api` verb, no method-flag requirement) might be a deliberate, lower-stakes design choice
+rather than an oversight, and that auditing it properly was out of scope for a PR about the five
+PostToolUse hooks. [dev-env#992](https://github.com/brownm09/dev-env/issues/992) is that audit.
+
+**Finding: the looser check was never actually exploitable, so tightening it costs nothing.**
+GitHub's read-only "check if a pull request has been merged" endpoint
+(`GET /repos/{owner}/{repo}/pulls/{pull_number}/merge`) returns `204 No Content` when merged and `404`
+when not — it never returns the `{"sha":...,"merged":true,"message":...}` body a *successful PUT merge*
+response uniquely carries. `gh api`'s default verb is GET, so the scenario Amendment 23's PUT-flag
+requirement exists to close for the five PostToolUse hooks (a harmless status-check GET satisfying a
+verb-only predicate) was, for THIS hook, already structurally impossible to trigger via that GET
+endpoint — `_MERGED_TRUE_RE` would never match a genuine GET response body regardless of the verb check.
+The only way `has_api` + `_MERGED_TRUE_RE` could have false-positived was a chained command where an
+unrelated top-level `gh api` GET/DELETE/etc. call coincidentally shared the transcript with SOME other
+source of literal `"merged":true` text and a `/pulls/N/merge` path — already an accepted, documented
+residual gap of the whole-command path search (`_PULLS_MERGE_PATH_RE`'s own comment, both here and in
+this file), not a gap the method-flag check would have closed by itself. In short: this was not a
+deliberate lower-stakes design tradeoff, it was slack nobody had exploited yet — indistinguishable from
+oversight until traced this precisely, and worth closing so the drift doesn't get rediscovered as
+"unexplained duplication" a third time.
+
+**The fix.** `stop-tile-enumeration-gate.py` now imports `is_rest_merge_command` and
+`output_has_rest_merge_marker` from `_hookio` and calls them directly in `session_merged_prs`:
+`if is_rest_merge_command(command) and output_has_rest_merge_marker(output):`. Its own
+`_GH_API_STMT_RE` and `_MERGED_TRUE_RE` are deleted. `_PULLS_MERGE_PATH_RE` stays — it is NOT a candidate
+for the same convergence, because `_hookio`'s own `_PULLS_MERGE_PATH_RE` is deliberately non-capturing
+(nothing in that module reads the PR number out of it), while this hook needs the captured `(\d+)` to
+know which PR to add to its merged-PR set. `is_rest_merge_command` already performs its own internal
+(non-capturing) path search as part of confirming a genuine invocation; the local capturing regex now
+runs a second time, purely for extraction, only after that gate has already passed — a small, accepted
+duplication of *search*, not of *policy*, mirroring how several other callers in this file family keep a
+capturing local regex alongside a shared non-capturing gate rather than force one signature to serve
+both jobs.
+
+**Verification.** `test_gh_api_merge_detected` (`claude/scripts/tests/test_stop_tile_enumeration_gate.py`)
+already used `-X PUT` in its fixture, so the tightened check changes no existing test's expected outcome
+— `test_hookio.py` (122 tests) passes unchanged. A new regression test,
+`test_gh_api_get_no_put_flag_not_merged`, was added to pin the negative case at this file's own
+integration level: a `gh api .../pulls/N/merge` call with no method flag must not add a PR to
+`session_merged_prs`'s merged set, even against a synthetic `"merged":true` output (the real GET
+endpoint never returns that body). Before this PR, only `_hookio`'s own primitive-level test
+(`test_is_rest_merge_command_get_method_not_matched`) covered this case — no test in
+`stop-tile-enumeration-gate.py`'s own suite pinned it at the caller, confirming the looser check was
+never load-bearing for any *previously* pinned behavior, while closing the gap for future changes to
+this file. Full suite: 153 tests (up from 152), all passing.
+
+See [docs/TESTING.md](../TESTING.md) item 48 for the corresponding test-index update.

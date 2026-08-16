@@ -153,6 +153,23 @@ def test_gh_api_merge_detected():
     return "gh api .../pulls/42/merge + \"merged\":true -> merged {42}"
 
 
+def test_gh_api_get_no_put_flag_not_merged():
+    # dev-env#992: session_merged_prs now gates the REST-merge branch on
+    # _hookio.is_rest_merge_command (requires a same-segment -X PUT/--method PUT
+    # flag), not the old bare has_api verb-only check. A gh api call to the
+    # identical .../pulls/N/merge path with NO method flag -- gh's default verb
+    # is GET, which is GitHub's own documented read-only "check if merged"
+    # endpoint -- must not be treated as a completed merge, even if the output
+    # happens to contain "merged":true (the real GET endpoint never returns
+    # this body -- 204/404 only -- so this is a synthetic worst-case output,
+    # not a realistic one; the test still pins that the METHOD check, not just
+    # the output shape, is what gates this branch).
+    calls = [("gh api repos/brownm09/dev-env/pulls/42/merge",
+              '{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}')]
+    assert gate.session_merged_prs(calls) == set()
+    return "gh api .../pulls/42/merge with NO -X PUT flag -> not merged (dev-env#992)"
+
+
 def test_auto_merge_correlated_detected():
     # Enqueue --auto (no marker), then observe MERGED via gh pr view -> auto-merge.
     calls = [
@@ -1816,6 +1833,7 @@ def main():
     tests = [
         ("direct merge marker detected", test_direct_merge_marker_detected),
         ("gh api merge detected", test_gh_api_merge_detected),
+        ("gh api GET (no -X PUT) not merged", test_gh_api_get_no_put_flag_not_merged),
         ("auto-merge correlated detected", test_auto_merge_correlated_detected),
         ("observed-MERGED not-acted-on ignored", test_observed_merged_not_acted_on_ignored),
         ("--auto enqueue alone not merged", test_auto_flag_enqueue_alone_not_merged),
