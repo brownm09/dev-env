@@ -39,6 +39,25 @@ Exit 2  — snapshot emitted via stderr, OR a missing/unparseable token whose
           and an interactive re-auth are futile), the missing-token branch detects
           it via a `claude auth status` probe and emits an accurate advisory naming
           dev-env#915 *without* the doomed ~35s refresh (ADR-124).
+
+Merge-decision trace (dev-env#474 follow-up): dev-env#489/#496 both established
+live that gh's success marker does not reliably survive to `tool_response` on a
+worktree-merge exit-1 (a suspected gh-side stdout buffering/flush race, not a
+bug in this hook's own regex), which is why the `confirm_merge_via_gh` live
+fallback exists. But two later live reproductions (dev-env#474 comment thread,
+PR #954 on 2026-08-07 and PR #988 on 2026-08-16) both saw NO snapshot appear,
+and neither prior investigation captured which branch of the fallback logic
+actually ran at that exact moment — both required a human to be present,
+instrumented, at the moment of a real worktree-merge failure. `resolve_merge()`
+now makes every branch of that decision (marker matched, REST marker matched,
+not a merge shape, `--help`-only, no-confirm-needed, `gh pr view` confirmed,
+`gh pr view` unconfirmed) an explicit, single return value that `main()` both
+acts on and appends to a small best-effort JSONL trace
+(`C:/Users/brown/.claude/scratch/usage-snapshot-merge-trace.log`) for every
+merge-shaped command, confirmed or not — so the next occurrence has a permanent
+record instead of requiring another live-instrumented reproduction. The trace
+write can never affect control flow (wrapped, exceptions swallowed), matching
+this hook's existing safe-exit-guard contract.
 """
 import _winsubp  # noqa: F401  -- patches subprocess to suppress console windows
 import json
@@ -73,6 +92,8 @@ PROJECTS_ROOT = Path("C:/Users/brown/.claude/projects")
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 BETA_HEADER = "oauth-2025-04-20"
 KEEP_WARM_PS1 = "C:/Users/brown/.claude/scripts/keep-token-warm.ps1"
+MERGE_TRACE_PATH = "C:/Users/brown/.claude/scratch/usage-snapshot-merge-trace.log"
+MERGE_TRACE_MAX_LINES = 500
 
 # --- merge detection (command-shape scan; success confirmed via _hookio's
 # output marker — mirrors post-pr-merge-project.py) ---
@@ -111,6 +132,107 @@ def merge_confirmed(command: str, output: str) -> bool:
     if scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output):
         return True
     return is_rest_merge_command(command) and output_has_rest_merge_marker(output)
+
+
+def resolve_merge(
+    command: str,
+    output: str,
+    exit_code: int,
+    cwd: str,
+    confirm_fn=confirm_merge_via_gh,
+) -> dict:
+    """Resolve whether *command* is a confirmed merge, and by which decision path.
+
+    Returns a dict with:
+      "is_merge_shaped": bool -- command matches a `gh pr merge` or REST-merge
+                                  shape at all (worth tracing even when unconfirmed)
+      "confirmed": bool       -- True iff main() should proceed to emit a snapshot
+      "reason": str           -- one of "marker", "rest_marker", "not_merge_shape",
+                                  "help_only", "no_confirm_needed", "gh_view_confirmed",
+                                  "gh_view_unconfirmed"
+
+    "marker" vs "rest_marker" is a best-effort re-classification for the trace, not a
+    strict decomposition of merge_confirmed()'s own `or` -- in the practically-never-seen
+    case where a single command's output satisfies BOTH the `gh pr merge` marker and the
+    REST "merged":true marker at once, this reports "rest_marker" even if
+    merge_confirmed()'s short-circuit actually matched via the `gh pr merge` branch first.
+    Not worth branching on (two distinct merge mechanisms succeeding in one Bash call is
+    unrealistic), but the trace's `reason` field should be read as "which shape look
+    confirmed", not "which internal branch fired", in that edge case.
+
+    Mirrors main()'s pre-existing branch order exactly (marker check, then
+    `gh pr merge`-shape check, then `--help`-only guard, then the
+    `should_confirm_via_gh` cost gate, then the live `gh pr view` fallback) so
+    this is a pure refactor of that control flow, not a behavior change -- see
+    test_resolve_merge_* below and test_merge_confirmed_* above (unchanged) for
+    the shared fixtures. `confirm_fn` is dependency-injected (mirroring
+    `attempt_token_refresh`'s I/O-fake pattern) so the live-network branch is
+    testable offline.
+
+    Exists so `main()` can trace every branch of this decision as one explicit
+    value instead of the decision being implicit in which of several
+    `sys.exit(0)` call sites fired -- see this module's own docstring for why
+    (dev-env#474's still-open forensic question).
+    """
+    if merge_confirmed(command, output):
+        is_rest = is_rest_merge_command(command) and output_has_rest_merge_marker(output)
+        return {"is_merge_shaped": True, "confirmed": True, "reason": "rest_marker" if is_rest else "marker"}
+
+    if not scan_top_level(command, _check_merge_stmt):
+        # Not a `gh pr merge` shape at all -- still worth tracing when it IS an
+        # (unconfirmed) REST-merge shape, since that's a distinct, informative
+        # outcome ("REST call ran but printed no merged:true").
+        return {
+            "is_merge_shaped": is_rest_merge_command(command),
+            "confirmed": False,
+            "reason": "not_merge_shape",
+        }
+
+    # `gh pr merge --help` (or any other non-mutating gh pr merge invocation
+    # that prints no marker) can categorically never attempt a real merge —
+    # treat it exactly like "not a merge command at all" rather than paying
+    # a live gh pr view confirmation that resolves against cwd's current
+    # branch and can misattribute an unrelated already-merged PR (dev-env#557).
+    if is_merge_help_only(command):
+        return {"is_merge_shaped": True, "confirmed": False, "reason": "help_only"}
+
+    if not should_confirm_via_gh(exit_code, output):
+        return {"is_merge_shaped": True, "confirmed": False, "reason": "no_confirm_needed"}
+
+    # No PR number to extract here: merge_confirmed() already ruled out "not a
+    # merge command" above, so its False result means the marker itself is
+    # missing from `output` — and merge_pr_number_from_output() scans that same
+    # `output` for the identical marker regex, so it would always return None
+    # too. `gh pr view` with no number infers the PR from cwd's checked-out
+    # branch instead (matching the other five hooks' identical fallback call).
+    confirmed_pr = confirm_fn(None, "", effective_merge_dir(command, cwd))
+    reason = "gh_view_confirmed" if confirmed_pr is not None else "gh_view_unconfirmed"
+    return {"is_merge_shaped": True, "confirmed": confirmed_pr is not None, "reason": reason}
+
+
+def _log_merge_trace(entry: dict, path: str = MERGE_TRACE_PATH, max_lines: int = MERGE_TRACE_MAX_LINES) -> None:
+    """Best-effort append of one merge-decision trace line, capped to the most
+    recent *max_lines* entries. Never raises.
+
+    Merges are infrequent, so an uncapped append (mirroring session-mode-prompt.py's
+    own uncapped `_log`) would take years to matter in practice -- but this trace
+    exists specifically so a future occurrence of dev-env#474's question can be
+    answered from history, so a deliberate cap (rather than accepting unbounded
+    growth) keeps that history bounded without ever needing a separate cleanup pass.
+    500 lines is generous for a low-frequency event while keeping the read-modify-write
+    below cheap. An observability aid must never become a new way to break the hook --
+    any I/O failure here (including an unreadable pre-existing file) is swallowed.
+    """
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+        lines.append(json.dumps(entry, sort_keys=True))
+        if len(lines) > max_lines:
+            lines = lines[-max_lines:]
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:
+        pass
 
 
 # --- credentials ---
@@ -591,28 +713,20 @@ def main() -> None:
     command = data.get("tool_input", {}).get("command", "")
     output = read_command_output(data)
     cwd = data.get("cwd", "")
+    exit_code = data.get("tool_response", {}).get("exitCode", -1)
 
-    if not merge_confirmed(command, output):
-        if not scan_top_level(command, _check_merge_stmt):
-            sys.exit(0)
-        # `gh pr merge --help` (or any other non-mutating gh pr merge invocation
-        # that prints no marker) can categorically never attempt a real merge —
-        # treat it exactly like "not a merge command at all" rather than paying
-        # a live gh pr view confirmation that resolves against cwd's current
-        # branch and can misattribute an unrelated already-merged PR (dev-env#557).
-        if is_merge_help_only(command):
-            sys.exit(0)
-        exit_code = data.get("tool_response", {}).get("exitCode", -1)
-        if not should_confirm_via_gh(exit_code, output):
-            sys.exit(0)
-        # No PR number to extract here: merge_confirmed() already ruled out "not a
-        # merge command" above, so its False result means the marker itself is
-        # missing from `output` — and merge_pr_number_from_output() scans that same
-        # `output` for the identical marker regex, so it would always return None
-        # too. `gh pr view` with no number infers the PR from cwd's checked-out
-        # branch instead (matching the other five hooks' identical fallback call).
-        if confirm_merge_via_gh(None, "", effective_merge_dir(command, cwd)) is None:
-            sys.exit(0)
+    resolution = resolve_merge(command, output, exit_code, cwd)
+    if resolution["is_merge_shaped"]:
+        _log_merge_trace(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "cwd": cwd,
+                "exit_code": exit_code,
+                **resolution,
+            }
+        )
+    if not resolution["confirmed"]:
+        sys.exit(0)
 
     creds = load_credentials()
     if not creds:

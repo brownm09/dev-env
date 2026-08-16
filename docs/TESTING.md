@@ -97,8 +97,21 @@ For a one-line navigational map of the test directory, see
    marker — or the REST path text sitting only inside a quoted string — is not
    ([dev-env#986](https://github.com/brownm09/dev-env/issues/986); a `gh pr merge` outage, e.g. a
    GitHub GraphQL rate-limit exhaustion, bypasses `gh pr merge` entirely and never prints gh's own
-   success marker, so this hook previously silently dropped the snapshot on every REST-only merge). The
-   live usage API call is not covered (the repo avoids urllib mocks).
+   success marker, so this hook previously silently dropped the snapshot on every REST-only merge).
+   Also pins `resolve_merge()` — the pure decision function that replaced the inline branching in
+   `main()` and makes each branch's outcome (`"marker"`, `"rest_marker"`, `"not_merge_shape"`,
+   `"help_only"`, `"no_confirm_needed"`, `"gh_view_confirmed"`, `"gh_view_unconfirmed"`) an explicit,
+   traced return value — covering all seven `reason`s, including the two live-`gh pr view` outcomes via
+   an injected `confirm_fn` (mirroring `attempt_token_refresh`'s fake-injection style) so the network
+   call is never exercised, and that `no_confirm_needed` never pays that call at all. Added because two
+   live reproductions after the original dev-env#474 fix landed (PR #954 on 2026-08-07, PR #988 on
+   2026-08-16) both saw no snapshot appear with no way to tell which fallback branch actually ran; every
+   merge-shaped invocation is now appended as one line to a best-effort JSONL trace
+   (`C:/Users/brown/.claude/scratch/usage-snapshot-merge-trace.log` via `_log_merge_trace`) so the next
+   occurrence has a permanent record. `_log_merge_trace` is pinned for its append/create-dirs,
+   never-raise-on-write-failure, and 500-line cap (a `/review` finding on PR #998 — an uncapped trace
+   grows forever) contract (real tempfile I/O, no network). The live usage API call is not covered (the
+   repo avoids urllib mocks).
 
    ```bash
    py -3 claude/scripts/tests/test_usage_snapshot.py
