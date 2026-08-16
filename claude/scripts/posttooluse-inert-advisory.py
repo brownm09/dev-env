@@ -80,8 +80,15 @@ from _hookutil import iter_bash_calls, load_records, _result_text  # noqa: F401
 # args-region bounding, and PR-URL extraction (all quote-aware) now come from
 # the shared _repo_target module (ADR-111), one implementation across the five
 # sibling hooks that each used to carry a near-copy.
-from _hookio import mask_prose_flag_values
-from _repo_target import iter_pr_urls, merge_args, positional_number, repo_from_flag
+from _hookio import is_rest_merge_command, mask_prose_flag_values, output_has_rest_merge_marker
+from _repo_target import (
+    iter_pr_urls,
+    merge_args,
+    positional_number,
+    pr_number_from_rest_merge_path,
+    repo_from_flag,
+    repo_from_rest_merge_path,
+)
 
 SENTINEL_PREFIX = "posttooluse-inert-resolved-"
 
@@ -177,10 +184,37 @@ def _devenv_merge_pr(command: str, cwd: str) -> str | None:
     and the dev-env PR-URL check (`_devenv_pr_url_number`) runs against a
     `mask_prose_flag_values` copy (dev-env#634, Amendment 17), so a prose-flag
     URL decoy can't self-identify while a bare dev-env URL still does.
+
+    Also recognizes the two-step REST merge fallback (`gh api -X PUT
+    repos/<owner>/<repo>/pulls/<N>/merge`, dev-env#986, dev-env#991), used
+    when `gh pr merge` itself is unavailable (e.g. a GitHub GraphQL
+    rate-limit outage). `merge_args` returns None for that shape (no `gh pr
+    merge` text is present), so this branch is checked FIRST and is
+    independently gated on `is_rest_merge_command` — mirroring
+    `post-pr-merge-project.py`'s `resolve_command_repo`/
+    `resolve_command_pr_number` (ADR-050 Amendment 23) — so REST-path-shaped
+    text elsewhere in an unrelated command (e.g. inside a decoy `--subject`
+    value on an ordinary `gh pr merge`, which `merge_args` would still have
+    matched and returned non-None for) can never reach this branch and
+    hijack resolution. Repo identity: the REST path's own `repos/<owner>/<repo>/`
+    segment self-identifies when it resolved to a real slug (not gh's
+    unresolved `{owner}`/`{repo}` templating placeholder, which
+    `repo_from_rest_merge_path` correctly returns `None` for — see that
+    function's own docstring); otherwise falls back to `_is_devenv_cwd`, the
+    same fallback the bare-positional-number `gh pr merge` case already
+    uses. PR number: the REST path's own `.../pulls/<N>/merge` segment (no
+    templating ambiguity there — always a literal digit).
     """
     args = merge_args(command)
     if args is None:
-        return None
+        if not is_rest_merge_command(command):
+            return None
+        rest_repo = repo_from_rest_merge_path(command)
+        is_devenv = (rest_repo == DEVENV_REPO) if rest_repo is not None else _is_devenv_cwd(cwd)
+        if not is_devenv:
+            return None
+        num = pr_number_from_rest_merge_path(command)
+        return str(num) if num is not None else None
     if _AUTO_FLAG_RE.search(args):
         return None
 
@@ -208,7 +242,16 @@ def detect_board_actions(calls: list[tuple[str, str, str]]) -> list[dict]:
     carries a dev-env issue/PR URL (a successful create → board add expected).
     A *merge* counts when the command is a completed `gh pr merge` naming a dev-env
     PR (see `_devenv_merge_pr`: not a queued `--auto`, not another `--repo`) and the
-    output shows no hard merge failure (Done-move + usage snapshot expected).
+    output shows no hard merge failure (Done-move + usage snapshot expected). The
+    two-step REST merge fallback (`gh api -X PUT .../pulls/<N>/merge`, dev-env#986,
+    dev-env#991) counts too, gated on `output_has_rest_merge_marker` instead of the
+    absence-of-hard-failure-text check the `gh pr merge` branch uses — REST's own
+    `"merged":true` response field is a stronger positive-confirmation signal than
+    hoping a REST-specific failure happens to match `_HARD_MERGE_FAIL_RE`'s
+    `gh pr merge`-oriented phrasing ("not mergeable", "merge conflict"), and (unlike
+    gh's own "Squashed and merged" success line, which lives on stderr and does not
+    reliably survive to this transcript-derived `output` — see this module's own
+    top-of-file comment) `gh api`'s JSON response body is ordinary stdout.
     """
     actions: list[dict] = []
     for command, output, cwd in calls:
@@ -221,6 +264,10 @@ def detect_board_actions(calls: list[tuple[str, str, str]]) -> list[dict]:
         if _MERGE_RE.search(command):
             pr = _devenv_merge_pr(command, cwd)
             if pr and not _HARD_MERGE_FAIL_RE.search(output):
+                actions.append({"action": "merge", "label": f"PR #{pr}"})
+        elif is_rest_merge_command(command) and output_has_rest_merge_marker(output):
+            pr = _devenv_merge_pr(command, cwd)
+            if pr:
                 actions.append({"action": "merge", "label": f"PR #{pr}"})
     return actions
 

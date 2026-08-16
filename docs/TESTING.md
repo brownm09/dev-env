@@ -442,7 +442,19 @@ For a one-line navigational map of the test directory, see
     ordering). The remaining `main()` I/O beyond those end-to-end runs is not separately unit-tested
     (pure-helper convention). Also (dev-env#831) pins that `_devenv_merge_pr` resolves a multi-line
     `gh pr merge` whose `--repo`/PR-number is on a continued line, via the shared
-    `_repo_target.merge_args` backslash-newline line-continuation strip.
+    `_repo_target.merge_args` backslash-newline line-continuation strip. Also exercises the two-step REST
+    merge fallback (`gh api -X PUT .../pulls/<N>/merge`, dev-env#986, dev-env#991,
+    [ADR-050 Amendment 23](adr/050-shared-hookio-sibling-hook-fixes.md)): `detect_board_actions` counts a
+    REST merge only when `is_rest_merge_command` AND `output_has_rest_merge_marker` both hold (a stronger
+    positive-confirmation gate than the `gh pr merge` branch's absence-of-hard-failure-text check, since
+    `gh api`'s JSON response is ordinary stdout rather than the stderr-only success line the `gh pr merge`
+    branch works around), ignores a read-only GET and a REST path naming a non-dev-env repo, and falls
+    back to cwd-based dev-env detection for the unquoted `{owner}`/`{repo}` placeholder form (mirroring the
+    bare-positional-number `gh pr merge` case); `_devenv_merge_pr`'s own REST branch (gated on
+    `args is None`, checked BEFORE the `--auto`/flag/positional-number logic) resolves the same
+    repo/PR-number/placeholder shapes directly, and a REST-path-shaped decoy inside an ordinary
+    `gh pr merge` command's `--subject` value is confirmed to never reach that branch at all (`merge_args`
+    is non-None there, mirroring ADR-050 Amendment 23's decoy-hijack fix for the five sibling hooks).
 
     ```bash
     py -3 claude/scripts/tests/test_posttooluse_inert_advisory.py
@@ -815,7 +827,22 @@ For a one-line navigational map of the test directory, see
     ([ADR-050 Amendment 22](adr/050-shared-hookio-sibling-hook-fixes.md); dev-env#732), and this suite's
     relative-push-dir assertion is version-agnostic accordingly (`os.path.isabs` on a driveless
     `\base\sub\repo` is `False` on Python 3.13+, which would otherwise break the assertion independently of the
-    fix).
+    fix). Also exercises the two-step REST merge fallback (`gh api -X PUT .../pulls/<N>/merge`,
+    dev-env#986, dev-env#991, [ADR-050 Amendment 23](adr/050-shared-hookio-sibling-hook-fixes.md)):
+    `_build_messages` fires the merge reminder from the REST OR-branch alone (`is_merge` stays False for
+    this shape — `is_pr_merge_command` never matches `gh api`) when `output_has_rest_merge_marker` finds
+    `"merged":true`, stays silent without the marker, and stays silent for a read-only GET (`gh api`'s
+    default verb, sharing GitHub's identical "check if merged" path); `main()`'s top-level gate admits the
+    REST shape too, since none of `is_create`/`is_merge`/`is_push` match it on their own; and
+    `_effective_merge_repo` uses cwd directly for a REST-only command instead of `effective_merge_dir`
+    (which has no cd-chain convention for this shape and would wrongly read a `cd` occurring AFTER the
+    REST call as governing it) — including the unquoted `{owner}`/`{repo}` placeholder form, a
+    documented, expected shape of this command; and (a `/review` finding on the implementing PR) the
+    push-suppression check (`is_push and not (is_create or is_merge or is_rest_merge_command(command))`)
+    no longer fires a duplicate push reminder when a REST merge is chained with a `git push` in the same
+    command — `is_merge` alone stays False for the REST shape, so without the addition the suppression
+    check missed it even though `merge_ok` (and the merge reminder) fired correctly via the REST
+    OR-branch.
 
     ```bash
     py -3 claude/scripts/tests/test_pr_merge_reminder.py

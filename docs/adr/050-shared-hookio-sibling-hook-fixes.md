@@ -2044,6 +2044,48 @@ false negatives the stricter version was trying to prevent. Adversarial review (
 against the live code, not just re-reading the diff) is what caught this before merge rather than after
 a second silent-failure incident.
 
+**Addendum (2026-08-16, dev-env#991) — the two filed-not-extended hooks now extended too.**
+`pr-merge-reminder.py` and `posttooluse-inert-advisory.py` — the two hooks this amendment's own text
+above explicitly named as "filed, not silently deferred" — now recognize the REST merge fallback as
+well, using the identical `is_rest_merge_command`/`output_has_rest_merge_marker` primitives this
+amendment introduced. No new primitive was needed; each fix is a small OR-extension to the hook's own
+existing detection logic, following this amendment's established pattern:
+
+- `pr-merge-reminder.py`: `main()`'s top-level gate widens to admit the REST shape (none of
+  `is_create`/`is_merge`/`is_push` match a REST-only command on their own, so without this the reminder
+  never reaches `_build_messages` at all); `_build_messages`'s `merge_ok` computation gains the REST
+  OR-branch alongside the existing `is_merge`/marker check — deliberately **not** wired into the
+  `live_confirmed` live-`gh pr view` fallback, which stays scoped to the original `gh pr merge` shape
+  only, matching this amendment's own scope decision for the five hooks; and `_effective_merge_repo`
+  gains the same cwd-instead-of-`effective_merge_dir` guard `post-pr-merge-project.py` already uses for
+  this shape (no established cd-chain convention exists for a REST-only command, so trusting
+  `effective_merge_dir`'s whole-command cd-chain search risks reading a `cd` occurring AFTER the REST
+  call as governing it). A follow-up `/review` finding also caught that the push-suppression check
+  (`is_push and not (is_create or is_merge)`) needed the identical `is_rest_merge_command(command)`
+  addition — without it, a chained `gh api -X PUT .../pulls/<N>/merge && git push` fired both the new
+  REST merge reminder AND a duplicate push reminder for the same event, since `is_merge` (the original
+  `gh pr merge` text-shape flag the suppression check relies on) stays `False` for the REST shape.
+- `posttooluse-inert-advisory.py`: `detect_board_actions` gains a REST branch gated on
+  `is_rest_merge_command(command) AND output_has_rest_merge_marker(output)` — a stronger
+  positive-confirmation requirement than the `gh pr merge` branch's own absence-of-hard-failure-text
+  check, justified because `gh api`'s JSON response body is ordinary stdout (unlike gh's own "Squashed
+  and merged" success line, which lives on stderr and does not reliably survive to this hook's
+  transcript-derived `output` — the reason the `gh pr merge` branch cannot use a marker-based check to
+  begin with). `_devenv_merge_pr` gains its own REST branch, checked when `merge_args(command)` returns
+  `None` (no `gh pr merge` shape is present) and itself gated on `is_rest_merge_command` — the same
+  decoy-hijack guard this amendment's corrected design established for the five hooks' extractor call
+  sites, here confirmed directly: a REST-path-shaped decoy inside an ordinary `gh pr merge` command's
+  `--subject` value never reaches the REST branch at all, since `merge_args` is non-`None` for that
+  command and the function takes its normal (unaffected) path instead.
+
+Both hooks' own test suites gained the same case shapes this amendment's "Coverage" paragraph
+established for the five hooks: a positive REST-merge case, a negative (no `"merged":true`) case, a
+GET-method-not-matched case, an `{owner}`/`{repo}` placeholder case, a chained-with-push
+no-duplicate-reminder case (the `/review`-found fix above), and — for `posttooluse-inert-advisory.py`,
+which does its own repo/PR-number resolution — a decoy-hijack-prevention case pinning that a
+REST-path-shaped `--subject` value on an ordinary `gh pr merge` command cannot hijack
+`_devenv_merge_pr`'s resolution. See [dev-env#991](https://github.com/brownm09/dev-env/issues/991).
+
 ## Amendment 24 (2026-08-16) — converging `stop-tile-enumeration-gate.py`'s own REST-merge trio onto the shared primitives (dev-env#992)
 
 **The follow-up, actioned.** Amendment 23 left `stop-tile-enumeration-gate.py`'s own

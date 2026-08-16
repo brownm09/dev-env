@@ -286,6 +286,113 @@ def test_detect_merge_chained_url_not_hijacked() -> str:
     return "chained `&& echo .../pull/999` does not hijack the merged PR number"
 
 
+# ---------------------------------------------------------------------------
+# detect_board_actions / _devenv_merge_pr — REST merge fallback shape
+# (dev-env#986, dev-env#991)
+# ---------------------------------------------------------------------------
+
+def test_detect_merge_rest_fallback_fires() -> str:
+    calls = [(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        '{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}',
+        DEVENV_CWD,
+    )]
+    actions = detect_board_actions(calls)
+    assert actions == [{"action": "merge", "label": "PR #42"}], actions
+    return "REST merge fallback + \"merged\":true -> merge action (dev-env#986/#991)"
+
+
+def test_detect_merge_rest_fallback_without_marker_ignored() -> str:
+    calls = [(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        '{"message":"Merge already in progress"}',
+        DEVENV_CWD,
+    )]
+    assert detect_board_actions(calls) == []
+    return "REST merge call without \"merged\":true -> no action"
+
+
+def test_detect_merge_rest_get_method_ignored() -> str:
+    # gh api's default verb is GET; GitHub's own documented read-only "check
+    # if a pull request has been merged" endpoint shares the identical path.
+    calls = [(
+        "gh api repos/brownm09/dev-env/pulls/42/merge",
+        '{"merged":true}',
+        DEVENV_CWD,
+    )]
+    assert detect_board_actions(calls) == []
+    return "gh api GET (read-only merge-check) -> no action (dev-env#986/#991)"
+
+
+def test_detect_merge_rest_other_repo_ignored() -> str:
+    calls = [(
+        "gh api -X PUT repos/brownm09/lifting-logbook/pulls/42/merge -f merge_method=squash",
+        '{"merged":true}',
+        DEVENV_CWD,
+    )]
+    assert detect_board_actions(calls) == []
+    return "REST merge naming a non-dev-env repo explicitly -> no action"
+
+
+def test_detect_merge_rest_placeholder_uses_cwd_fallback() -> str:
+    # gh api's own {owner}/{repo} URL templating (unquoted) -- repo_from_rest_
+    # merge_path correctly returns None for the placeholder form, so identity
+    # falls back to cwd-based dev-env detection (the same fallback the bare
+    # positional `gh pr merge <N>` case already uses).
+    calls = [(
+        "gh api -X PUT repos/{owner}/{repo}/pulls/42/merge -f merge_method=squash",
+        '{"merged":true}',
+        DEVENV_CWD,
+    )]
+    actions = detect_board_actions(calls)
+    assert actions == [{"action": "merge", "label": "PR #42"}], actions
+    return "REST merge with {owner}/{repo} placeholder + dev-env cwd -> merge action"
+
+
+def test_detect_merge_rest_placeholder_other_cwd_ignored() -> str:
+    calls = [(
+        "gh api -X PUT repos/{owner}/{repo}/pulls/42/merge -f merge_method=squash",
+        '{"merged":true}',
+        "C:/Users/brown/Git/lifting-logbook",
+    )]
+    assert detect_board_actions(calls) == []
+    return "REST merge with {owner}/{repo} placeholder + non-dev-env cwd -> no action"
+
+
+def test_devenv_merge_pr_rest_direct() -> str:
+    assert _devenv_merge_pr(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash", "/other",
+    ) == "42"
+    assert _devenv_merge_pr(
+        "gh api -X PUT repos/brownm09/lifting-logbook/pulls/42/merge -f merge_method=squash",
+        DEVENV_CWD,
+    ) is None
+    # GET (no PUT flag) is not a genuine merge invocation at all.
+    assert _devenv_merge_pr("gh api repos/brownm09/dev-env/pulls/42/merge", DEVENV_CWD) is None
+    # {owner}/{repo} placeholder -> falls back to cwd-based dev-env detection.
+    assert _devenv_merge_pr(
+        "gh api -X PUT repos/{owner}/{repo}/pulls/42/merge -f merge_method=squash", DEVENV_CWD,
+    ) == "42"
+    assert _devenv_merge_pr(
+        "gh api -X PUT repos/{owner}/{repo}/pulls/42/merge -f merge_method=squash", "/other",
+    ) is None
+    return "_devenv_merge_pr: REST merge fallback shape resolves repo/PR-number/placeholder correctly (dev-env#986/#991)"
+
+
+def test_devenv_merge_pr_rest_decoy_not_hijacked() -> str:
+    # A REST-path-shaped decoy inside an ORDINARY gh pr merge command's
+    # --subject value must not hijack resolution -- merge_args(command) is
+    # non-None here (a genuine `gh pr merge` shape is present), so the REST
+    # branch (gated on `args is None`) is never reached; the real
+    # invocation's own positional number resolves as usual, mirroring
+    # ADR-050 Amendment 23's decoy-hijack fix for the five sibling hooks.
+    assert _devenv_merge_pr(
+        'gh pr merge 42 --squash --subject "fix: handle repos/other/repo/pulls/9/merge path"',
+        DEVENV_CWD,
+    ) == "42"
+    return "_devenv_merge_pr: REST-path-shaped --subject decoy on an ordinary gh pr merge does not hijack (dev-env#986/#991)"
+
+
 def test_devenv_merge_pr_direct() -> str:
     assert _devenv_merge_pr(f"gh pr merge {DEVENV_PR_URL} --squash", DEVENV_CWD) == "241"
     assert _devenv_merge_pr("gh pr merge 390 --squash", DEVENV_CWD) == "390"
@@ -593,6 +700,14 @@ def main() -> int:
         ("detect: merge --auto ignored", test_detect_merge_auto_ignored),
         ("detect: merge --repo other ignored (no URL hijack)", test_detect_merge_explicit_other_repo_ignored),
         ("detect: merge chained URL not hijacked", test_detect_merge_chained_url_not_hijacked),
+        ("detect: REST merge fallback fires (dev-env#986/#991)", test_detect_merge_rest_fallback_fires),
+        ("detect: REST merge fallback without marker ignored", test_detect_merge_rest_fallback_without_marker_ignored),
+        ("detect: REST merge GET (no PUT) ignored (dev-env#986/#991)", test_detect_merge_rest_get_method_ignored),
+        ("detect: REST merge naming a non-dev-env repo ignored", test_detect_merge_rest_other_repo_ignored),
+        ("detect: REST merge {owner}/{repo} placeholder + dev-env cwd fires", test_detect_merge_rest_placeholder_uses_cwd_fallback),
+        ("detect: REST merge {owner}/{repo} placeholder + other cwd ignored", test_detect_merge_rest_placeholder_other_cwd_ignored),
+        ("_devenv_merge_pr: REST merge fallback direct cases (dev-env#986/#991)", test_devenv_merge_pr_rest_direct),
+        ("_devenv_merge_pr: REST-path decoy on ordinary gh pr merge not hijacked", test_devenv_merge_pr_rest_decoy_not_hijacked),
         ("_devenv_merge_pr direct cases", test_devenv_merge_pr_direct),
         ("_devenv_merge_pr: repo/number after quoted separator not dropped (dev-env#660)", test_devenv_merge_pr_repo_after_quoted_separator_not_dropped),
         ("detect: unrelated command ignored", test_detect_unrelated_command_ignored),
