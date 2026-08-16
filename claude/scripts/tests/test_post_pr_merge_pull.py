@@ -119,6 +119,24 @@ def test_help_invocation_no_marker_ignored() -> str:
     return "gh pr merge --help (exit 0, no marker) -> no-op (dev-env#485)"
 
 
+def test_rest_merge_fallback_with_marker_pulls() -> str:
+    # dev-env#986: the two-step REST merge fallback bypasses `gh pr merge`
+    # entirely (e.g. during a GitHub GraphQL rate-limit outage).
+    assert is_successful_merge(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        '{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}',
+    )
+    return "REST merge fallback + \"merged\":true -> pull (dev-env#986)"
+
+
+def test_rest_merge_fallback_without_marker_ignored() -> str:
+    assert not is_successful_merge(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        '{"message":"Merge already in progress"}',
+    )
+    return "REST merge call without \"merged\":true -> no-op"
+
+
 # ---------------------------------------------------------------------------
 # command-shape anchoring (dev-env#529, ADR-050 Amendment 9)
 #
@@ -168,6 +186,32 @@ def test_extract_repo_from_url_in_command() -> str:
     )
     assert repo == "brownm09/dev-env", f"got {repo!r}"
     return "GitHub PR URL in command -> correct owner/repo regardless of cwd"
+
+
+def test_extract_repo_rest_merge_path() -> str:
+    repo = extract_repo(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        "/Git/lifting-logbook",
+    )
+    assert repo == "brownm09/dev-env", f"got {repo!r}"
+    return "REST merge fallback path -> correct owner/repo regardless of cwd (dev-env#986)"
+
+
+def test_extract_repo_rest_decoy_in_subject_not_hijacked() -> str:
+    # dev-env#986 review finding: repo_from_rest_merge_path was called
+    # unconditionally on the raw command, so a --subject value shaped like a
+    # REST merge path could hijack resolution even for an ordinary gh pr
+    # merge command that named no repo of its own. Gated behind
+    # is_rest_merge_command(command) now (False here -- no genuine top-level
+    # `gh api` invocation is present), so this falls through to the
+    # git-remote subprocess fallback instead of the decoy -- proven with a
+    # cwd that has no git repo, so that fallback (uncovered by this suite
+    # per its own doc comment above) fails cleanly and returns None rather
+    # than the decoy "other/repo".
+    cmd = 'gh pr merge 42 --squash --subject "fix: handle repos/other/repo/pulls/9/merge path"'
+    repo = extract_repo(cmd, "C:/Users/brown/.claude/scratch/nonexistent-dir-for-dev-env-986-test")
+    assert repo != "other/repo", f"decoy repo leaked through: {repo!r}"
+    return "REST-path-shaped decoy inside --subject on a real gh pr merge -> not hijacked (dev-env#986)"
 
 
 def test_extract_repo_from_url_other_repo() -> str:
@@ -428,6 +472,10 @@ def main() -> int:
         ("'gh pr merge' text in heredoc body ignored (dev-env#529)", test_merge_text_in_heredoc_body_not_matched),
         ("'gh pr merge' text in double quotes ignored (dev-env#529)", test_merge_text_inside_double_quotes_not_matched),
         ("'gh pr merge' text in $() subshell ignored (dev-env#529)", test_merge_text_inside_subshell_not_matched),
+        ("REST merge fallback + \"merged\":true -> pulls (dev-env#986)", test_rest_merge_fallback_with_marker_pulls),
+        ("REST merge fallback without marker ignored (dev-env#986)", test_rest_merge_fallback_without_marker_ignored),
+        ("extract_repo: REST merge fallback path -> owner/repo (dev-env#986)", test_extract_repo_rest_merge_path),
+        ("extract_repo: REST-path decoy in --subject not hijacked (dev-env#986)", test_extract_repo_rest_decoy_in_subject_not_hijacked),
         ("extract_repo: GitHub URL in command -> owner/repo", test_extract_repo_from_url_in_command),
         ("extract_repo: URL for different repo", test_extract_repo_from_url_other_repo),
         ("extract_repo: --repo flag beats URL", test_extract_repo_repo_flag_takes_precedence),

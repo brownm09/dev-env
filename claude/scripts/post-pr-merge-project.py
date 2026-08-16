@@ -44,9 +44,11 @@ from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
     is_merge_help_only,
+    is_rest_merge_command,
     mask_prose_flag_values,
     merge_pr_number_from_output,
     output_has_merge_marker,
+    output_has_rest_merge_marker,
     read_command_output,
     scan_top_level,
     should_confirm_via_gh,
@@ -56,8 +58,10 @@ from _repo_target import (
     merge_args,
     positional_number,
     pr_number_from_pr_url,
+    pr_number_from_rest_merge_path,
     repo_from_flag,
     repo_from_pr_url,
+    repo_from_rest_merge_path,
 )
 
 CONFIG_FILE = ".claude/hook-config.json"
@@ -84,7 +88,7 @@ def load_config(cwd: str) -> dict | None:
         return None
 
 
-def merge_succeeded(output: str) -> bool:
+def merge_succeeded(command: str, output: str) -> bool:
     """Return True only if the output confirms a completed merge.
 
     Gated on gh's merge success markers (not the exit code): a queued `--auto`
@@ -93,8 +97,29 @@ def merge_succeeded(output: str) -> bool:
     Marker-only is deliberately stricter than the exit-0-OR-marker check in
     post-pr-merge-{pull,reclaim}.py — moving an issue to Done on a not-yet-merged
     `--auto` would be wrong, whereas a premature pull/reclaim is harmless. (#380)
+
+    Also recognizes the two-step REST merge fallback (`gh api -X PUT
+    .../pulls/<N>/merge`, dev-env#986): a `gh pr merge` outage (e.g. a GitHub
+    GraphQL rate-limit exhaustion) has a documented REST-only merge path that
+    bypasses `gh pr merge` entirely and never prints gh's own success marker,
+    so it needs its own success signal (the REST response body's
+    `"merged":true`) — same marker-only strictness as above, just for a
+    different command shape.
+
+    The first branch requires the `gh pr merge` command shape too (not
+    `output_has_merge_marker` alone) — a review finding (dev-env#986)
+    caught the omission: without it, a compound command satisfying only
+    the *REST*-command-shape half of `main()`'s widened gate could have
+    an unrelated chained invocation's own gh-pr-merge marker text in its
+    combined output wrongly attributed to this call. Matches the same
+    `scan_top_level(...) and output_has_merge_marker(...)` pairing already
+    used by the four sibling hooks' own OR-extension (`usage-snapshot.py`,
+    `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`,
+    `post-merge-tile-checkpoint.py`).
     """
-    return output_has_merge_marker(output)
+    if scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output):
+        return True
+    return is_rest_merge_command(command) and output_has_rest_merge_marker(output)
 
 
 def extract_pr_number_from_command(command: str) -> int | None:
@@ -217,6 +242,55 @@ def extract_pr_number(output: str) -> int | None:
     return merge_pr_number_from_output(output)
 
 
+def resolve_command_repo(command: str) -> str | None:
+    """The explicit repo target named in *command*, or ``None``.
+
+    Prefers `extract_repo_from_command`'s `gh pr merge` resolution (--repo
+    flag, then a PR URL); falls back to the two-step REST merge fallback's
+    own `repos/<owner>/<repo>/pulls/<N>/merge` path (dev-env#986), which
+    always names its target repo explicitly. Split out from main() so this
+    combination is independently testable (mirrors post-pr-merge-pull.py's
+    format_pull_message/plan_advisory extraction pattern).
+
+    The REST-path fallback is gated behind `is_rest_merge_command(command)` —
+    a review finding (dev-env#986) caught that calling
+    `repo_from_rest_merge_path` unconditionally on the raw command (with no
+    `is_rest_merge_command` gate, unlike `merge_succeeded`'s own REST branch)
+    let a `--subject`/`--body` decoy shaped like a REST merge path hijack
+    resolution even on an ordinary `gh pr merge` command that named no repo
+    of its own — e.g. `gh pr merge 42 --squash --subject "fix:
+    repos/other/repo/pulls/9/merge"` would have silently resolved to
+    "other/repo" instead of falling back to cwd's own config.
+    """
+    repo = extract_repo_from_command(command)
+    if repo is not None:
+        return repo
+    if not is_rest_merge_command(command):
+        return None
+    return repo_from_rest_merge_path(command)
+
+
+def resolve_command_pr_number(command: str, output: str) -> int | None:
+    """The merged PR number, or ``None``.
+
+    Prefers the command's own explicit number (`extract_pr_number_from_command`
+    — a positional number or PR URL), then the REST merge fallback's own
+    `.../pulls/<N>/merge` path (dev-env#986, gated behind
+    `is_rest_merge_command(command)` for the identical decoy-hijack reason
+    documented on `resolve_command_repo` above), then falls back to the
+    output's success marker (`extract_pr_number`). Split out from main() for
+    the same testability reason as `resolve_command_repo`.
+    """
+    num = extract_pr_number_from_command(command)
+    if num is not None:
+        return num
+    if is_rest_merge_command(command):
+        num = pr_number_from_rest_merge_path(command)
+        if num is not None:
+            return num
+    return extract_pr_number(output)
+
+
 def get_pr_body(pr_number: int, repo: str) -> str | None:
     try:
         result = subprocess.run(
@@ -295,7 +369,11 @@ def main() -> None:
         sys.exit(0)
 
     command = data.get("tool_input", {}).get("command", "")
-    if not scan_top_level(command, _check_merge_stmt):
+    # Widened to also admit the two-step REST merge fallback's own command
+    # shape (`gh api -X PUT .../pulls/<N>/merge`, dev-env#986) — the original
+    # gate only recognized `gh pr merge`, so a REST-only merge exited here
+    # before ever reaching the marker check below.
+    if not (scan_top_level(command, _check_merge_stmt) or is_rest_merge_command(command)):
         sys.exit(0)
 
     output = read_command_output(data)
@@ -307,7 +385,20 @@ def main() -> None:
     # extending the dev-env#559 URL-case guard below to the cd-chain case).
     # Reuses `_hookio.effective_merge_dir` (ADR-067), as its two sibling
     # merge-triggered hooks already do.
-    merge_dir = effective_merge_dir(command, cwd)
+    #
+    # `effective_merge_dir` only knows how to bound a cd-chain search at a
+    # literal `gh pr merge` token (ADR-067); for a REST-only command it finds
+    # no such token and falls back to treating the ENTIRE command as the
+    # search region — so a `cd` occurring AFTER the REST merge (e.g. `gh api
+    # ... && cd other-repo && npm test`) would be wrongly read as governing
+    # the merge, resolving to the wrong repo's config (dev-env#986 review
+    # finding). No established cd-chain convention exists for the REST shape,
+    # so skip the resolver entirely there and use cwd directly rather than
+    # risk a wrong-repo config resolution.
+    if scan_top_level(command, _check_merge_stmt):
+        merge_dir = effective_merge_dir(command, cwd)
+    else:
+        merge_dir = cwd
 
     config = load_config(merge_dir)
     if config is None:
@@ -326,7 +417,7 @@ def main() -> None:
     # flag, silently resolved to cwd's repo and fetched the wrong PR's body).
     # A bare `gh pr merge --squash --delete-branch` names no repo — keep
     # config's, unchanged from pre-#559 behavior.
-    command_repo = extract_repo_from_command(command)
+    command_repo = resolve_command_repo(command)
     if command_repo is not None and command_repo.lower() != repo.lower():
         # cwd's config (project_number/project_node_id/status_field_id/
         # done_option_id below) is scoped to `repo`, not the repo actually
@@ -342,9 +433,7 @@ def main() -> None:
 
     # Prefer the PR number named in the command; fall back to gh's success marker
     # for the bare `gh pr merge --squash --delete-branch` form (#380).
-    pr_number = extract_pr_number_from_command(command)
-    if pr_number is None:
-        pr_number = extract_pr_number(output)
+    pr_number = resolve_command_pr_number(command, output)
 
     # Confirm an actual merge (not a queued --auto or a failed merge). The
     # success marker is printed even from a worktree, where gh exits non-zero on
@@ -353,7 +442,21 @@ def main() -> None:
     # captured output when it exits abruptly right after that same local-cleanup
     # failure (dev-env#489) — a missed move-to-Done has no other backstop, so
     # confirm via a live `gh pr view` call rather than silently giving up.
-    if not merge_succeeded(output):
+    if not merge_succeeded(command, output):
+        # The live `gh pr view` confirmation fallback below is scoped to the
+        # `gh pr merge` command shape only — matching the four sibling hooks'
+        # identical re-check inside their own "not confirmed" branch. A REST
+        # merge that failed to print a clean "merged":true (dev-env#986) falls
+        # through here rather than reaching that fallback: it is GraphQL-backed
+        # and would be a guaranteed-failing subprocess during the exact outage
+        # that motivates the REST path in the first place, and (per dev-env#557
+        # below) risks misattributing an unrelated already-merged PR when no PR
+        # number could be resolved from the REST path (a review finding —
+        # without this re-check the widened top-level gate above let a failed
+        # REST command reach this fallback, contradicting this hook's own
+        # documented scope decision in ADR-050 Amendment 23).
+        if not scan_top_level(command, _check_merge_stmt):
+            sys.exit(0)
         # `gh pr merge --help` (or any other non-mutating gh pr merge invocation
         # that prints no marker) can categorically never attempt a real merge —
         # treat it exactly like "not a merge command at all" rather than paying

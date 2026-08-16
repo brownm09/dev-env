@@ -91,7 +91,13 @@ For a one-line navigational map of the test directory, see
    emoji and `≤` were ASCII-ified (OVER/NEAR/OK tokens, `<=`) and all four emissions moved onto
    `_hookout.emit_block` (exit-2 stderr, `ascii_sanitize` backstop + exit-code-safe `finally`), so a
    cp1252 encode crash can no longer flip exit 2→0 and silently drop the snapshot (the #670 pattern);
-   `status_label`/`format_snapshot` were previously unexercised. The
+   `status_label`/`format_snapshot` were previously unexercised. Also pins that `merge_confirmed`
+   now recognizes the two-step REST merge fallback (`gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge`
+   whose response body carries `"merged":true`) as a confirmed merge, and that a REST call without that
+   marker — or the REST path text sitting only inside a quoted string — is not
+   ([dev-env#986](https://github.com/brownm09/dev-env/issues/986); a `gh pr merge` outage, e.g. a
+   GitHub GraphQL rate-limit exhaustion, bypasses `gh pr merge` entirely and never prints gh's own
+   success marker, so this hook previously silently dropped the snapshot on every REST-only merge). The
    live usage API call is not covered (the repo avoids urllib mocks).
 
    ```bash
@@ -120,7 +126,11 @@ For a one-line navigational map of the test directory, see
     constant (content + `.isascii()`): the post-merge status now emits via
     `_hookout.emit_advisory(audience="user")` (a systemMessage toast) rather than a raw exit-0 stderr
     print (invisible on PostToolUse); the channel itself is enforced by the output-contract gate
-    (item 61). The detached reclaim spawn is not covered (it shells out).
+    (item 61). Also pins that `is_successful_merge` now recognizes the two-step REST merge fallback
+    (`gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge` + `"merged":true`) as a trigger, and that the
+    same call without that marker does not
+    ([dev-env#986](https://github.com/brownm09/dev-env/issues/986)). The detached reclaim spawn is not
+    covered (it shells out).
 
     ```bash
     py -3 claude/scripts/tests/test_post_pr_merge_reclaim.py
@@ -224,7 +234,24 @@ For a one-line navigational map of the test directory, see
     strip: pins that a backslash+LF continuation is joined, a bare newline and a backslash+CRLF are
     both left intact (the LF-only rule — bash does not treat backslash+CRLF as a continuation), a
     lone backslash is untouched, multiple continuations all join, and a realistic multi-line
-    `gh pr merge` collapses to one logical line with `--repo` preserved.
+    `gh pr merge` collapses to one logical line with `--repo` preserved. Also (dev-env#986,
+    ADR-050 Amendment 23) exercises `is_rest_merge_command(command)` / `output_has_rest_merge_marker(output)`
+    — the two-step REST merge fallback (`gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge` +
+    `"merged":true`) recognition shared by all five PostToolUse merge-consequence hooks: a top-level
+    `gh api` statement carrying a same-segment PUT/`-X PUT`/`--method PUT` flag, paired with a
+    whole-command search for the `.../pulls/<N>/merge` path (deliberately **not** segment-scoped,
+    unlike the verb+method check — see the module's own comment for why: `gh api`'s documented
+    `{owner}`/`{repo}` URL templating, https://cli.github.com/manual/gh_api, and a backslash-line-
+    continued invocation both fragment a genuine top-level segment via `split_top_level`'s own
+    unconditional `{`/newline statement-splitting, so an earlier same-segment-only design produced a
+    false negative on both — the documented, expected form of this exact command). Pins: the quoted
+    and unquoted `{owner}`/`{repo}` placeholder forms both detect; a line-continued invocation
+    detects; a read-only `gh api repos/.../pulls/N/merge` with no PUT flag (gh's default verb is GET,
+    and this is GitHub's own documented "Check if a pull request has been merged" endpoint sharing
+    the identical path) does **not** false-positive; `-X PUT`/`--method PUT`/`--method=PUT`/`-XPUT`/
+    `gh.exe` are all recognized; a PUT flag in an unrelated chained statement does not leak in; and
+    the REST path/heredoc/quoted-string decoy cases mirror this module's existing `scan_top_level`
+    decoy convention.
 
     ```bash
     py -3 claude/scripts/tests/test_hookio.py
@@ -265,7 +292,13 @@ For a one-line navigational map of the test directory, see
     [ADR-067](adr/067-scope-merge-keyed-hooks-to-target-repo.md)). Also (dev-env#831) pins that
     both extractors resolve a `--repo` / PR-number sitting on a continued line of a multi-line
     `gh pr merge` — the shared `_repo_target.merge_args` now strips backslash-newline
-    line-continuations (via `_hookio.strip_line_continuations`) before bounding the args region.
+    line-continuations (via `_hookio.strip_line_continuations`) before bounding the args region. Also
+    (dev-env#986) pins `merge_succeeded()`'s (now `merge_succeeded(command, output)`) recognition of the
+    two-step REST merge fallback, and the new `resolve_command_repo()` / `resolve_command_pr_number()`
+    combinators: a `gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge` command with `"merged":true` in
+    its output resolves both the repo and PR number from the REST path itself, preferring the ordinary
+    `gh pr merge`-shaped extraction first and falling back to the output's success marker for the PR
+    number only when neither command shape names one.
 
     ```bash
     py -3 claude/scripts/tests/test_post_pr_merge_project.py
@@ -283,7 +316,11 @@ For a one-line navigational map of the test directory, see
     [ADR-058 amendment](adr/058-worktree-squatting-main-detection-correction.md)); a feature branch
     (or squatting worktree) checked out gets the original fetch-into-ref, unchanged. Also exercises the
     pure-string resolution paths of `extract_repo()`'s `--repo`/`-R` flag check (`-R` shorthand added in
-    dev-env#616) and its GitHub-URL parse. Also (PR5 of dev-env#717,
+    dev-env#616) and its GitHub-URL parse. Also (dev-env#986) pins that `is_successful_merge`
+    recognizes the two-step REST merge fallback (`gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge` +
+    `"merged":true`) and that `extract_repo()` resolves the merged repo directly from that same REST
+    path — checked before the cd-chain/git-remote fallbacks, since the REST path always names its target
+    repo explicitly. Also (PR5 of dev-env#717,
     [dev-env#736](https://github.com/brownm09/dev-env/issues/736)) exercises the pure message builders
     `format_pull_message()` (success / already-up-to-date / git-fail / timeout / exception) and
     `format_park_message()` (parked / checkout-raised / branch-already-exists), plus the `plan_advisory()`
@@ -594,7 +631,9 @@ For a one-line navigational map of the test directory, see
     heredoc body, a quoted argument, or a `$()` subshell (dev-env#529 — the command-shape
     check is `scan_top_level`-anchored, not a raw substring test) does not
     ([ADR-060](adr/060-post-merge-tile-checkpoint-hook.md);
-    [ADR-050 Amendment 9](adr/050-shared-hookio-sibling-hook-fixes.md)).
+    [ADR-050 Amendment 9](adr/050-shared-hookio-sibling-hook-fixes.md)). Also (dev-env#986) pins that
+    the two-step REST merge fallback (`gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge` +
+    `"merged":true`) also triggers the reminder, while the same call without that marker does not.
 
     ```bash
     py -3 claude/scripts/tests/test_post_merge_tile_checkpoint.py
@@ -2471,7 +2510,17 @@ For a one-line navigational map of the test directory, see
     non-capturing host prefix that folds in `post-tool-use.py`'s former `_REPO_HOST_PREFIX_RE` and
     fixes the same latent `github.com/owner` mis-capture in the other five), and `issue_create_args`
     — the `gh issue create` counterpart of `create_args` — with basic, chained-sibling-not-leaked,
-    and continuation cases.
+    and continuation cases. Also (dev-env#986, ADR-050 Amendment 23) pins `repo_from_rest_merge_path`
+    / `pr_number_from_rest_merge_path` — the two-step REST merge fallback's `repos/<owner>/<repo>/pulls/<N>/merge`
+    path, deliberately split into two INDEPENDENT regexes rather than one combined capture: `gh api`'s
+    own documented `{owner}`/`{repo}` URL templating (https://cli.github.com/manual/gh_api) means a
+    genuine invocation can carry the literal placeholder text, which this module has no way to resolve
+    without a network round-trip, so `repo_from_rest_merge_path` correctly returns `None` for that
+    shape rather than the literal placeholder string — while `pr_number_from_rest_merge_path`, which
+    has no such templating to worry about, still resolves the PR number independently of whether the
+    repo half is a real slug or a placeholder (the original combined-regex design lost both on this
+    exact shape, a review finding: detection succeeded but PR-number extraction silently failed right
+    alongside the repo). Also pins non-confusion with a `/pull/N` web URL ("pulls" vs. "pull").
 
     ```bash
     py -3 claude/scripts/tests/test_repo_target.py

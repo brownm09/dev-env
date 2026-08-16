@@ -548,6 +548,125 @@ def scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# REST merge fallback detection (dev-env#986, ADR-050 Amendment 23)
+#
+# `gh pr merge` has a documented two-step REST fallback for when the `gh pr
+# merge` subcommand itself is unavailable (e.g. during a GitHub GraphQL
+# rate-limit outage — the REST merge endpoint is a plain REST call and
+# unaffected): `gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge`. This
+# shape is textually unrelated to `gh pr merge`, so none of this module's
+# `_MERGE_MARKER_RE`/`output_has_merge_marker` family (keyed on gh's own
+# "Squashed and merged pull request #N" success line, which a REST-only call
+# never prints) recognizes it — a merge that goes through this path silently
+# skips every `post-pr-merge-*`/`usage-snapshot`/`post-merge-tile-checkpoint`
+# hook (dev-env#986; discovered live during PR #984, 2026-08-15).
+#
+# `stop-tile-enumeration-gate.py` (a Stop hook) already recognizes this exact
+# shape for its own purpose (session-merged-PR enumeration) via its own
+# `_GH_API_STMT_RE`/`_PULLS_MERGE_PATH_RE`/`_MERGED_TRUE_RE` trio, matched
+# against the whole raw command string — including its `/pulls/<N>/merge`
+# path search, which is NOT scoped to the segment carrying the `gh api` verb.
+# An earlier version of this module's own predicate scoped BOTH the verb and
+# the path to the same segment, reasoning that was strictly safer — but
+# review (dev-env#986) found it was strictly narrower instead: `gh api`'s own
+# documented `{owner}`/`{repo}` URL templating
+# (https://cli.github.com/manual/gh_api) — the form this repo's own runbooks
+# and this very ADR write the command in — means a genuine, unquoted
+# invocation contains a bare `{`, which `split_top_level` treats as an
+# unconditional top-level statement separator (the PowerShell
+# `if ($?) { B }` / bash brace-group carve-out), fragmenting the invocation
+# across segments so no single segment ever carries both the verb and the
+# path. The same false-negative hits a backslash-line-continued invocation
+# (`split_top_level` splits on bare `\n`, by design — see its own docstring).
+# `is_rest_merge_command` below now matches `stop-tile-enumeration-gate.py`'s
+# shape exactly for the path search (whole-command, not segment-scoped) while
+# ADDING a same-segment method-flag requirement that hook's `has_api` check
+# doesn't have (`_GH_API_PUT_FLAG_RE` below) — needed here because a false
+# positive in *this* module immediately triggers a Done-move / fast-forward /
+# disk-reclaim / tile-checkpoint side effect, not a passive PR-number
+# addition to a Stop-hook's already-merged set. See `_PULLS_MERGE_PATH_RE`'s
+# own comment below for the residual gap this whole-command search accepts.
+#
+# The three call sites in `_repo_target.py` that extract a repo/PR-number
+# from this same REST path are gated behind `is_rest_merge_command(command)`
+# first (dev-env#986 review finding) — those extractors search the raw
+# command unmasked/unbounded, so calling them unconditionally let a
+# `--subject`/`--body` decoy on an ordinary `gh pr merge` command hijack repo
+# and PR-number resolution even though no genuine REST merge was present.
+#
+# dev-env#900 (the PreToolUse-side sibling gap, still open) covers the four
+# *pre-merge* gates, which match on command text alone (the command hasn't
+# run yet, so they have no output to check) — this module's own
+# `is_rest_merge_command` is reusable there too, should that fix land later.
+# ---------------------------------------------------------------------------
+
+_GH_API_STMT_RE = re.compile(r"gh(?:\.exe)?\s+api\b", re.IGNORECASE)
+# The PUT/-XPUT method flag — required so a read-only `gh api
+# repos/.../pulls/<N>/merge` (gh's documented, genuinely harmless "Check if a
+# pull request has been merged" GET endpoint, which shares the identical path
+# shape and gh api's default verb is GET) never satisfies this predicate
+# (dev-env#986 review finding). Scoped to the SAME top-level segment as the
+# `gh api` verb in `_check_gh_api_put_stmt` below — not searched over the
+# whole command — so an unrelated `-X PUT` elsewhere in a chained command
+# can't leak in.
+_GH_API_PUT_FLAG_RE = re.compile(r"(?:-X|--method)(?:=|\s+)PUT\b|-XPUT\b", re.IGNORECASE)
+# Deliberately non-capturing (nothing here reads a capture group — the actual
+# PR number is extracted separately by `_repo_target.pr_number_from_rest_merge_path`,
+# dev-env#986 review finding) and searched against the WHOLE raw command, not
+# a single segment — see this section's own module comment above for why
+# (the `{owner}`/`{repo}` templating / line-continuation false-negative this
+# fixes). Accepted residual gap: two independent REST-merge invocations
+# chained in one command resolve to whichever's path text a naive `.search()`
+# finds first, not necessarily the one that produced the real `"merged":true`
+# in the output — not fixed here, since two genuinely distinct REST PR
+# merges chained in a single Bash call is a vanishingly unrealistic shape,
+# unlike the `{owner}`/`{repo}` case, which is the documented, expected form
+# of this exact command.
+_PULLS_MERGE_PATH_RE = re.compile(r"/pulls/\d+/merge\b")
+_MERGED_TRUE_RE = re.compile(r'"merged"\s*:\s*true')
+
+
+def _check_gh_api_put_stmt(token: str) -> bool:
+    token = token.lstrip()
+    if not _GH_API_STMT_RE.match(token):
+        return False
+    return bool(_GH_API_PUT_FLAG_RE.search(token))
+
+
+def is_rest_merge_command(command: str) -> bool:
+    """True iff *command* contains a top-level `gh api` statement carrying a
+    PUT/`-X PUT` method flag (excluding gh's read-only "check if merged" GET
+    variant of the identical path) AND the raw command contains a
+    `.../pulls/<N>/merge` REST path anywhere — the documented two-step merge
+    fallback (dev-env#986). The verb+method check is segment-scoped
+    (`scan_top_level`, so a decoy mentioned only inside a heredoc body or
+    quoted string doesn't count as an invocation); the path search itself is
+    not segment-scoped — see `_PULLS_MERGE_PATH_RE`'s own comment above for
+    why, and the residual gap that acceptance carries.
+    """
+    if not scan_top_level(command, _check_gh_api_put_stmt):
+        return False
+    return bool(_PULLS_MERGE_PATH_RE.search(command))
+
+
+def output_has_rest_merge_marker(output: str) -> bool:
+    """True iff *output* contains the REST merge endpoint's success field.
+
+    GitHub's `PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge` returns
+    `{"sha":...,"merged":true,"message":"Pull Request successfully merged"}`
+    on success. `gh api` does report a non-zero exit code on HTTP failure,
+    available to callers via `tool_response.exitCode` the same as every other
+    predicate in this module — this function checks the response *body*
+    alone, not the exit code, purely for consistency with
+    `output_has_merge_marker`'s own marker-only strictness (see that
+    function's docstring for the shared rationale: a queued `--auto`/failure
+    case must never look like a completed merge), not because the exit code
+    is unavailable.
+    """
+    return bool(_MERGED_TRUE_RE.search(output))
+
+
+# ---------------------------------------------------------------------------
 # mask_quoted_spans  (dev-env#626, ADR-050 Amendment 15)
 #
 # The _REPO_FLAG_RE family (post-pr-merge-project.py, pr-merge-reminder.py,

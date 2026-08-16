@@ -53,7 +53,9 @@ from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
     is_merge_help_only,
+    is_rest_merge_command,
     output_has_merge_marker,
+    output_has_rest_merge_marker,
     read_command_output,
     scan_top_level,
     should_confirm_via_gh,
@@ -92,10 +94,14 @@ def is_successful_merge(command: str, output: str) -> bool:
     argument, or a `$()` subshell no longer counts as an invocation — matching
     the pattern already used in usage-snapshot.py / pr-merge-reminder.py /
     post-pr-merge-project.py (dev-env#529, ADR-050 Amendment 9).
+
+    Also recognizes the two-step REST merge fallback (`gh api -X PUT
+    .../pulls/<N>/merge`, dev-env#986) — see usage-snapshot.py's
+    merge_confirmed() for the full rationale.
     """
-    if not scan_top_level(command, _check_merge_stmt):
-        return False
-    return output_has_merge_marker(output)
+    if scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output):
+        return True
+    return is_rest_merge_command(command) and output_has_rest_merge_marker(output)
 
 
 def _spawn_reclaim(protect_cwd: str) -> bool:

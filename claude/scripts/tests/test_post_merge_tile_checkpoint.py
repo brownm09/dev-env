@@ -103,6 +103,24 @@ def test_help_invocation_no_marker_ignored() -> str:
     return "gh pr merge --help (exit 0, no marker) -> no-op (dev-env#485)"
 
 
+def test_rest_merge_fallback_with_marker_fires() -> str:
+    # dev-env#986: the two-step REST merge fallback bypasses `gh pr merge`
+    # entirely (e.g. during a GitHub GraphQL rate-limit outage).
+    assert is_successful_merge(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        '{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}',
+    )
+    return "REST merge fallback + \"merged\":true -> fires (dev-env#986)"
+
+
+def test_rest_merge_fallback_without_marker_ignored() -> str:
+    assert not is_successful_merge(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        '{"message":"Merge already in progress"}',
+    )
+    return "REST merge call without \"merged\":true -> no-op"
+
+
 # ---------------------------------------------------------------------------
 # command-shape anchoring (dev-env#529, ADR-050 Amendment 9)
 #
@@ -166,6 +184,8 @@ def main() -> int:
         ("failed merge with no marker ignored", test_failed_merge_no_marker_ignored),
         ("non-merge commands ignored", test_non_merge_commands_ignored),
         ("gh pr merge --help (no marker) ignored (dev-env#485)", test_help_invocation_no_marker_ignored),
+        ("REST merge fallback + \"merged\":true -> fires (dev-env#986)", test_rest_merge_fallback_with_marker_fires),
+        ("REST merge fallback without marker ignored (dev-env#986)", test_rest_merge_fallback_without_marker_ignored),
         ("'gh pr merge' text in heredoc body ignored (dev-env#529)", test_merge_text_in_heredoc_body_not_matched),
         ("'gh pr merge' text in double quotes ignored (dev-env#529)", test_merge_text_inside_double_quotes_not_matched),
         ("'gh pr merge' text in $() subshell ignored (dev-env#529)", test_merge_text_inside_subshell_not_matched),
