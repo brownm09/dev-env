@@ -1437,6 +1437,23 @@ For a one-line navigational map of the test directory, see
     aliased) and wraps the last in a thin 2-tuple adapter (it never needs `cwd`), so
     `session_merged_prs` and these tests are unchanged by that extraction.
 
+    **REST-merge detection now converges on `_hookio`'s shared primitives (dev-env#992, ADR-050
+    Amendment 24).** `session_merged_prs`'s `gh api .../pulls/N/merge` branch used to gate on its
+    own local `_GH_API_STMT_RE` (any `gh api` verb, no method-flag check) and `_MERGED_TRUE_RE`;
+    ADR-050 Amendment 23 deliberately left this unconverged with `_hookio.is_rest_merge_command`/
+    `output_has_rest_merge_marker` (which additionally require a same-segment `-X PUT`/`--method
+    PUT` flag) as a named follow-up rather than a snap judgment. The audit found the looser check
+    had no offsetting benefit — GitHub's read-only "check if merged" GET variant of the same path
+    returns 204/404, never the `"merged":true` body the PUT response uniquely carries — so
+    `session_merged_prs` now calls `is_rest_merge_command(command) and
+    output_has_rest_merge_marker(output)` directly; its own `_GH_API_STMT_RE`/`_MERGED_TRUE_RE` are
+    deleted. `_PULLS_MERGE_PATH_RE` stays local and capturing (`_hookio`'s own copy is deliberately
+    non-capturing, since nothing there needs the PR number) — it now runs only to extract the
+    number after `is_rest_merge_command` has already confirmed a genuine invocation.
+    `test_gh_api_merge_detected`'s fixture already used `-X PUT`, so this tightening changed no
+    test's expected outcome — confirmed by re-running the full suite (152 passed) both before and
+    after the change landed no diff in pass count.
+
     The dangling-created-issue trigger (ADR-092) adds its own pure-helper coverage, fully independent
     of the merged-PR path above: `session_created_issues` (issue-number/repo extraction from a
     `gh issue create`'s output URL; that `gh issue create --help` yields nothing, since `--help`

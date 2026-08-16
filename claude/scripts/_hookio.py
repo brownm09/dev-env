@@ -561,7 +561,7 @@ def scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
 # skips every `post-pr-merge-*`/`usage-snapshot`/`post-merge-tile-checkpoint`
 # hook (dev-env#986; discovered live during PR #984, 2026-08-15).
 #
-# `stop-tile-enumeration-gate.py` (a Stop hook) already recognizes this exact
+# `stop-tile-enumeration-gate.py` (a Stop hook) already recognized this exact
 # shape for its own purpose (session-merged-PR enumeration) via its own
 # `_GH_API_STMT_RE`/`_PULLS_MERGE_PATH_RE`/`_MERGED_TRUE_RE` trio, matched
 # against the whole raw command string — including its `/pulls/<N>/merge`
@@ -578,14 +578,26 @@ def scan_top_level(command: str, check_fn: Callable[[str], bool]) -> bool:
 # across segments so no single segment ever carries both the verb and the
 # path. The same false-negative hits a backslash-line-continued invocation
 # (`split_top_level` splits on bare `\n`, by design — see its own docstring).
-# `is_rest_merge_command` below now matches `stop-tile-enumeration-gate.py`'s
+# `is_rest_merge_command` below matches `stop-tile-enumeration-gate.py`'s
 # shape exactly for the path search (whole-command, not segment-scoped) while
 # ADDING a same-segment method-flag requirement that hook's `has_api` check
-# doesn't have (`_GH_API_PUT_FLAG_RE` below) — needed here because a false
-# positive in *this* module immediately triggers a Done-move / fast-forward /
-# disk-reclaim / tile-checkpoint side effect, not a passive PR-number
-# addition to a Stop-hook's already-merged set. See `_PULLS_MERGE_PATH_RE`'s
-# own comment below for the residual gap this whole-command search accepts.
+# didn't originally have (`_GH_API_PUT_FLAG_RE` below) — needed here because a
+# false positive in *this* module immediately triggers a Done-move /
+# fast-forward / disk-reclaim / tile-checkpoint side effect, not a passive
+# PR-number addition to a Stop-hook's already-merged set. See
+# `_PULLS_MERGE_PATH_RE`'s own comment below for the residual gap this
+# whole-command search accepts.
+#
+# UPDATE (dev-env#992, ADR-050 Amendment 24): `stop-tile-enumeration-gate.py`
+# now imports `is_rest_merge_command`/`output_has_rest_merge_marker` directly
+# and its own `_GH_API_STMT_RE`/`_MERGED_TRUE_RE` are gone — the audit found
+# the method-flag requirement cost that hook nothing (GitHub's read-only
+# GET "check if merged" variant of this path never returns the `"merged":true`
+# body a PUT response uniquely carries, so the looser check was never actually
+# exploitable via that endpoint). Its own `_PULLS_MERGE_PATH_RE` stays local
+# and capturing — this module's copy stays non-capturing since nothing here
+# reads the PR number out of it — and now runs only to extract the number
+# after `is_rest_merge_command` has already confirmed a genuine invocation.
 #
 # The three call sites in `_repo_target.py` that extract a repo/PR-number
 # from this same REST path are gated behind `is_rest_merge_command(command)`

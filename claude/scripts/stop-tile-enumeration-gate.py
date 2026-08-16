@@ -164,9 +164,11 @@ import sys
 from pathlib import Path
 
 from _hookio import (
+    is_rest_merge_command,
     mask_prose_flag_values,
     merge_pr_number_from_output,
     output_has_merge_marker,
+    output_has_rest_merge_marker,
     split_top_level,
 )
 from _hookutil import (
@@ -207,7 +209,21 @@ _TRIGGERS = (_TRIGGER_PR, _TRIGGER_ISSUE, _TRIGGER_TABLE, _TRIGGER_DEFER, _TRIGG
 _MERGE_STMT_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+merge\b", re.IGNORECASE)
 _PR_CREATE_STMT_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+create\b", re.IGNORECASE)
 _PR_VIEW_STMT_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+(?:view|checks)\b", re.IGNORECASE)
-_GH_API_STMT_RE = re.compile(r"gh(?:\.exe)?\s+api\b", re.IGNORECASE)
+# The `gh api` verb + PUT-method-flag check and the `"merged":true` output check
+# (formerly this file's own `_GH_API_STMT_RE`/`_MERGED_TRUE_RE`) now come from
+# `_hookio.is_rest_merge_command`/`output_has_rest_merge_marker` (dev-env#992,
+# ADR-050 Amendment 23's own "deliberately still NOT fully converged" note,
+# revisited here as its named follow-up). That amendment left this file's looser
+# `has_api` check (any `gh api` verb, no method-flag requirement) unconverged on
+# the theory that a false positive here is low-stakes -- a passive PR-number
+# addition to a Stop hook's already-merged set, not a state-changing side effect.
+# On audit, tightening turned out to have no offsetting cost: GitHub's read-only
+# "check if merged" GET variant of this same path returns 204/404, never a
+# `"merged":true` JSON body (that shape is unique to the PUT merge response), so
+# the untightened check was never actually exploitable via a genuine GET call --
+# the PUT-flag requirement only removes slack, not real coverage. Converging
+# closes the drift instead of leaving it to be rediscovered as "unexplained
+# duplication" a second time.
 
 # Strip the `gh pr <verb>` prefix so the positional PR arg can be read.
 _STRIP_VERB_RE = re.compile(r"\s*gh(?:\.exe)?\s+pr\s+\w+\b(.*)", re.IGNORECASE | re.DOTALL)
@@ -241,8 +257,15 @@ _CLOSES_KEYWORD_RE = re.compile(
 )
 
 # --- merged-state signals in command output ------------------------------------
+# `_PULLS_MERGE_PATH_RE` stays local rather than importing `_hookio`'s own
+# `_PULLS_MERGE_PATH_RE` (dev-env#992): that module's copy is deliberately
+# non-capturing (nothing there reads the PR number out of it -- see its own
+# comment), while this file needs the captured `(\d+)` to know WHICH PR merged.
+# The "is this actually a REST merge" gate itself (verb + PUT flag + a bare,
+# non-capturing path search) now comes from `is_rest_merge_command` (imported
+# above); this regex runs only after that gate already passed, purely to pull
+# the number out for `directly.add(int(pm.group(1)))` below.
 _PULLS_MERGE_PATH_RE = re.compile(r"/pulls/(\d+)/merge\b")     # gh api PUT target
-_MERGED_TRUE_RE = re.compile(r'"merged"\s*:\s*true')          # gh api merge result
 _MERGED_STATE_RE = re.compile(r'"state"\s*:\s*"MERGED"')      # gh pr view state
 _OUTPUT_NUMBER_RE = re.compile(r'"number"\s*:\s*(\d+)')       # gh pr view number
 
@@ -444,7 +467,6 @@ def session_merged_prs(calls: list) -> set:
         merge_firsts = [f for f in firsts if _MERGE_STMT_RE.match(f)]
         view_firsts = [f for f in firsts if _PR_VIEW_STMT_RE.match(f)]
         has_create = any(_PR_CREATE_STMT_RE.match(f) for f in firsts)
-        has_api = any(_GH_API_STMT_RE.match(f) for f in firsts)
 
         # --- acted-on: created PRs (repo from the URL) + merge targets ----------
         if has_create:
@@ -465,7 +487,7 @@ def session_merged_prs(calls: list) -> set:
                         break
             if n is not None:
                 directly.add(n)
-        if has_api and _MERGED_TRUE_RE.search(output):
+        if is_rest_merge_command(command) and output_has_rest_merge_marker(output):
             pm = _PULLS_MERGE_PATH_RE.search(command)
             if pm:
                 directly.add(int(pm.group(1)))
