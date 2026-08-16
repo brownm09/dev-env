@@ -28,10 +28,12 @@ from _hookio import (  # noqa: E402
     is_absolute_path,
     is_help_only,
     is_merge_help_only,
+    is_rest_merge_command,
     mask_prose_flag_values,
     mask_quoted_spans,
     merge_pr_number_from_output,
     output_has_merge_marker,
+    output_has_rest_merge_marker,
     read_command_output,
     scan_top_level,
     should_confirm_via_gh,
@@ -1102,6 +1104,52 @@ def test_strip_line_continuations_realistic_gh_merge() -> str:
     return "a multi-line gh pr merge joins to one logical line, --repo preserved"
 
 
+# --- REST merge fallback detection (dev-env#986) --------------------------
+
+def test_is_rest_merge_command_true() -> str:
+    cmd = "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash"
+    assert is_rest_merge_command(cmd)
+    return "gh api -X PUT .../pulls/N/merge -> is_rest_merge_command True"
+
+
+def test_is_rest_merge_command_plain_gh_api_not_matched() -> str:
+    # A gh api call that isn't targeting a pulls/N/merge path (e.g. a plain
+    # read) must not be mistaken for a merge.
+    assert not is_rest_merge_command("gh api repos/brownm09/dev-env/pulls/42")
+    return "gh api .../pulls/N (no /merge) -> False"
+
+
+def test_is_rest_merge_command_not_gh_pr_merge() -> str:
+    assert not is_rest_merge_command("gh pr merge --squash --delete-branch")
+    return "gh pr merge (not gh api) -> False"
+
+
+def test_is_rest_merge_command_quoted_decoy_not_matched() -> str:
+    # scan_top_level-anchored: the REST path text sitting inside a quoted
+    # string (not a top-level `gh api` invocation) must not match.
+    cmd = 'echo "gh api -X PUT repos/o/r/pulls/1/merge"'
+    assert not is_rest_merge_command(cmd)
+    return "REST path text inside a quoted string -> not a top-level invocation"
+
+
+def test_is_rest_merge_command_heredoc_decoy_not_matched() -> str:
+    cmd = "cat <<'EOF'\ngh api -X PUT repos/o/r/pulls/1/merge\nEOF"
+    assert not is_rest_merge_command(cmd)
+    return "REST path text inside a heredoc body -> not a top-level invocation"
+
+
+def test_output_has_rest_merge_marker_true() -> str:
+    output = '{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}'
+    assert output_has_rest_merge_marker(output)
+    return '\'"merged":true\' in REST response body -> True'
+
+
+def test_output_has_rest_merge_marker_false() -> str:
+    assert not output_has_rest_merge_marker('{"message":"Merge already in progress"}')
+    assert not output_has_rest_merge_marker("")
+    return "no \"merged\":true in output -> False"
+
+
 def main() -> int:
     tests = [
         ("reads command output from stdout", test_reads_stdout),
@@ -1213,6 +1261,13 @@ def main() -> int:
         ("strip_line_continuations: lone backslash untouched", test_strip_line_continuations_lone_backslash_untouched),
         ("strip_line_continuations: multiple continuations", test_strip_line_continuations_multiple),
         ("strip_line_continuations: realistic gh merge (dev-env#831)", test_strip_line_continuations_realistic_gh_merge),
+        ("is_rest_merge_command: gh api PUT .../pulls/N/merge -> True (dev-env#986)", test_is_rest_merge_command_true),
+        ("is_rest_merge_command: plain gh api (no /merge) -> False", test_is_rest_merge_command_plain_gh_api_not_matched),
+        ("is_rest_merge_command: gh pr merge (not gh api) -> False", test_is_rest_merge_command_not_gh_pr_merge),
+        ("is_rest_merge_command: quoted decoy not matched", test_is_rest_merge_command_quoted_decoy_not_matched),
+        ("is_rest_merge_command: heredoc decoy not matched", test_is_rest_merge_command_heredoc_decoy_not_matched),
+        ("output_has_rest_merge_marker: \"merged\":true -> True", test_output_has_rest_merge_marker_true),
+        ("output_has_rest_merge_marker: absent -> False", test_output_has_rest_merge_marker_false),
     ]
     failed = 0
     for name, fn in tests:

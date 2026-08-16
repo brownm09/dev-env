@@ -66,6 +66,7 @@ Usage:
     from _repo_target import repo_from_pr_url, pr_number_from_pr_url, iter_pr_urls
     from _repo_target import iter_issue_urls, issue_number_from_issue_url
     from _repo_target import positional_number
+    from _repo_target import repo_from_rest_merge_path, pr_number_from_rest_merge_path
 
 See ADR-111 (this consolidation; ends the per-site ADR-050 amendment treadmill
 for the repo-flag concern) and ADR-050 (the amendment history it supersedes for
@@ -256,3 +257,32 @@ def positional_number(text: str) -> int | None:
     """
     m = _POS_NUM_RE.search(mask_quoted_spans(text))
     return int(m.group(1)) if m else None
+
+
+# github.com REST API path: repos/<owner>/<repo>/pulls/<N>/merge -- the
+# two-step merge fallback's PUT target (dev-env#986, ADR-050 Amendment 23).
+# Distinct from _PR_URL_RE (a github.com/.../pull/N *web* URL): this is the
+# `gh api` REST *path* argument -- no host prefix, "pulls" not "pull". See
+# _hookio.py's "REST merge fallback detection" module comment for the full
+# rationale (the companion `is_rest_merge_command` / `output_has_rest_merge_marker`
+# command-shape/output-marker primitives live there; this module owns only the
+# command-string target extraction, per this file's own docstring).
+_REST_MERGE_PATH_RE = re.compile(
+    r"repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pulls/(\d+)/merge\b"
+)
+
+
+def repo_from_rest_merge_path(command: str) -> str | None:
+    """``owner/repo`` from a `gh api .../repos/<owner>/<repo>/pulls/<N>/merge`
+    REST path in *command*, or ``None``. *command* is used as-is — the same
+    convention as `repo_from_pr_url` (dev-env#986)."""
+    m = _REST_MERGE_PATH_RE.search(command)
+    return m.group(1) if m else None
+
+
+def pr_number_from_rest_merge_path(command: str) -> int | None:
+    """The ``N`` from a `gh api .../repos/<owner>/<repo>/pulls/<N>/merge`
+    REST path in *command*, or ``None``. The REST response body carries no
+    PR number, so the command's own path is the only source (dev-env#986)."""
+    m = _REST_MERGE_PATH_RE.search(command)
+    return int(m.group(2)) if m else None

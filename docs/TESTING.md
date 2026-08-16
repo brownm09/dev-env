@@ -91,7 +91,13 @@ For a one-line navigational map of the test directory, see
    emoji and `≤` were ASCII-ified (OVER/NEAR/OK tokens, `<=`) and all four emissions moved onto
    `_hookout.emit_block` (exit-2 stderr, `ascii_sanitize` backstop + exit-code-safe `finally`), so a
    cp1252 encode crash can no longer flip exit 2→0 and silently drop the snapshot (the #670 pattern);
-   `status_label`/`format_snapshot` were previously unexercised. The
+   `status_label`/`format_snapshot` were previously unexercised. Also pins that `merge_confirmed`
+   now recognizes the two-step REST merge fallback (`gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge`
+   whose response body carries `"merged":true`) as a confirmed merge, and that a REST call without that
+   marker — or the REST path text sitting only inside a quoted string — is not
+   ([dev-env#986](https://github.com/brownm09/dev-env/issues/986); a `gh pr merge` outage, e.g. a
+   GitHub GraphQL rate-limit exhaustion, bypasses `gh pr merge` entirely and never prints gh's own
+   success marker, so this hook previously silently dropped the snapshot on every REST-only merge). The
    live usage API call is not covered (the repo avoids urllib mocks).
 
    ```bash
@@ -120,7 +126,11 @@ For a one-line navigational map of the test directory, see
     constant (content + `.isascii()`): the post-merge status now emits via
     `_hookout.emit_advisory(audience="user")` (a systemMessage toast) rather than a raw exit-0 stderr
     print (invisible on PostToolUse); the channel itself is enforced by the output-contract gate
-    (item 61). The detached reclaim spawn is not covered (it shells out).
+    (item 61). Also pins that `is_successful_merge` now recognizes the two-step REST merge fallback
+    (`gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge` + `"merged":true`) as a trigger, and that the
+    same call without that marker does not
+    ([dev-env#986](https://github.com/brownm09/dev-env/issues/986)). The detached reclaim spawn is not
+    covered (it shells out).
 
     ```bash
     py -3 claude/scripts/tests/test_post_pr_merge_reclaim.py
@@ -265,7 +275,13 @@ For a one-line navigational map of the test directory, see
     [ADR-067](adr/067-scope-merge-keyed-hooks-to-target-repo.md)). Also (dev-env#831) pins that
     both extractors resolve a `--repo` / PR-number sitting on a continued line of a multi-line
     `gh pr merge` — the shared `_repo_target.merge_args` now strips backslash-newline
-    line-continuations (via `_hookio.strip_line_continuations`) before bounding the args region.
+    line-continuations (via `_hookio.strip_line_continuations`) before bounding the args region. Also
+    (dev-env#986) pins `merge_succeeded()`'s (now `merge_succeeded(command, output)`) recognition of the
+    two-step REST merge fallback, and the new `resolve_command_repo()` / `resolve_command_pr_number()`
+    combinators: a `gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge` command with `"merged":true` in
+    its output resolves both the repo and PR number from the REST path itself, preferring the ordinary
+    `gh pr merge`-shaped extraction first and falling back to the output's success marker for the PR
+    number only when neither command shape names one.
 
     ```bash
     py -3 claude/scripts/tests/test_post_pr_merge_project.py
@@ -283,7 +299,11 @@ For a one-line navigational map of the test directory, see
     [ADR-058 amendment](adr/058-worktree-squatting-main-detection-correction.md)); a feature branch
     (or squatting worktree) checked out gets the original fetch-into-ref, unchanged. Also exercises the
     pure-string resolution paths of `extract_repo()`'s `--repo`/`-R` flag check (`-R` shorthand added in
-    dev-env#616) and its GitHub-URL parse. Also (PR5 of dev-env#717,
+    dev-env#616) and its GitHub-URL parse. Also (dev-env#986) pins that `is_successful_merge`
+    recognizes the two-step REST merge fallback (`gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge` +
+    `"merged":true`) and that `extract_repo()` resolves the merged repo directly from that same REST
+    path — checked before the cd-chain/git-remote fallbacks, since the REST path always names its target
+    repo explicitly. Also (PR5 of dev-env#717,
     [dev-env#736](https://github.com/brownm09/dev-env/issues/736)) exercises the pure message builders
     `format_pull_message()` (success / already-up-to-date / git-fail / timeout / exception) and
     `format_park_message()` (parked / checkout-raised / branch-already-exists), plus the `plan_advisory()`
@@ -594,7 +614,9 @@ For a one-line navigational map of the test directory, see
     heredoc body, a quoted argument, or a `$()` subshell (dev-env#529 — the command-shape
     check is `scan_top_level`-anchored, not a raw substring test) does not
     ([ADR-060](adr/060-post-merge-tile-checkpoint-hook.md);
-    [ADR-050 Amendment 9](adr/050-shared-hookio-sibling-hook-fixes.md)).
+    [ADR-050 Amendment 9](adr/050-shared-hookio-sibling-hook-fixes.md)). Also (dev-env#986) pins that
+    the two-step REST merge fallback (`gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge` +
+    `"merged":true`) also triggers the reminder, while the same call without that marker does not.
 
     ```bash
     py -3 claude/scripts/tests/test_post_merge_tile_checkpoint.py

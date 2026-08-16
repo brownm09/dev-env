@@ -57,7 +57,9 @@ from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
     is_merge_help_only,
+    is_rest_merge_command,
     output_has_merge_marker,
+    output_has_rest_merge_marker,
     read_command_output,
     scan_top_level,
     should_confirm_via_gh,
@@ -98,8 +100,17 @@ def merge_confirmed(command: str, output: str) -> bool:
     local-cleanup failure (dev-env#489) — main() falls back to a live
     `gh pr view` confirmation when this predicate returns False but the
     command was still a `gh pr merge` invocation (dev-env#504).
+
+    Also recognizes the two-step REST merge fallback (`gh api -X PUT
+    .../pulls/<N>/merge`, dev-env#986): a `gh pr merge` outage (e.g. a GitHub
+    GraphQL rate-limit exhaustion) has a documented REST-only merge path that
+    bypasses `gh pr merge` entirely, so it never prints gh's own success
+    marker and needs its own success signal (the REST response body's
+    `"merged":true`).
     """
-    return scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output)
+    if scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output):
+        return True
+    return is_rest_merge_command(command) and output_has_rest_merge_marker(output)
 
 
 # --- credentials ---

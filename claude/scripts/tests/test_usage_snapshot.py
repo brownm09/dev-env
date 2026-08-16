@@ -399,6 +399,29 @@ def test_merge_confirmed_false_for_non_merge_command() -> str:
     return "non-merge command -> not confirmed even if output text coincidentally matches"
 
 
+def test_merge_confirmed_true_for_rest_merge_fallback() -> str:
+    # dev-env#986: the two-step REST merge fallback (used e.g. during a
+    # GitHub GraphQL rate-limit outage) bypasses `gh pr merge` entirely.
+    command = "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash"
+    output = '{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}'
+    assert merge_confirmed(command, output) is True
+    return "REST merge fallback + \"merged\":true -> confirmed (dev-env#986)"
+
+
+def test_merge_confirmed_false_for_rest_merge_without_marker() -> str:
+    command = "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash"
+    output = '{"message":"Merge already in progress"}'
+    assert merge_confirmed(command, output) is False
+    return "REST merge call without \"merged\":true -> not confirmed"
+
+
+def test_merge_confirmed_false_for_rest_path_in_quoted_string() -> str:
+    command = 'echo "gh api -X PUT repos/o/r/pulls/1/merge"'
+    output = '{"merged":true}'
+    assert merge_confirmed(command, output) is False
+    return "REST merge path text inside a quoted string -> not a top-level invocation"
+
+
 # ---------------------------------------------------------------------------
 # is_merge_help_only composition (dev-env#557)
 # ---------------------------------------------------------------------------
@@ -584,6 +607,9 @@ def main() -> int:
         ),
         ("unconfirmed merge (no marker) is not confirmed", test_merge_confirmed_false_without_marker),
         ("non-merge command is not confirmed", test_merge_confirmed_false_for_non_merge_command),
+        ("REST merge fallback + \"merged\":true -> confirmed (dev-env#986)", test_merge_confirmed_true_for_rest_merge_fallback),
+        ("REST merge fallback without marker -> not confirmed (dev-env#986)", test_merge_confirmed_false_for_rest_merge_without_marker),
+        ("REST merge path in quoted string -> not confirmed (dev-env#986)", test_merge_confirmed_false_for_rest_path_in_quoted_string),
         ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_merge_confirmed_and_is_help_only),
         ("unresolved real merge: guard does not suppress fallback", test_unresolved_real_merge_is_not_help_only),
         (

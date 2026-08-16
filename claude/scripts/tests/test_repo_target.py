@@ -378,6 +378,34 @@ def test_merge_args_real_separator_still_bounds_after_continuation() -> str:
     return "a --repo on a continued line resolves AND a real top-level && still bounds (dev-env#831)"
 
 
+# --- REST merge fallback path (dev-env#986) --------------------------------
+
+def test_repo_from_rest_merge_path_basic() -> str:
+    cmd = "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash"
+    assert rt.repo_from_rest_merge_path(cmd) == "brownm09/dev-env"
+    return "repos/<owner>/<repo>/pulls/<N>/merge -> owner/repo (dev-env#986)"
+
+
+def test_pr_number_from_rest_merge_path_basic() -> str:
+    cmd = "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash"
+    assert rt.pr_number_from_rest_merge_path(cmd) == 42
+    return "repos/<owner>/<repo>/pulls/<N>/merge -> N (dev-env#986)"
+
+
+def test_rest_merge_path_absent_returns_none() -> str:
+    assert rt.repo_from_rest_merge_path("gh pr merge 42 --squash") is None
+    assert rt.pr_number_from_rest_merge_path("gh pr merge 42 --squash") is None
+    return "no REST merge path -> None for both"
+
+
+def test_rest_merge_path_not_confused_with_pull_web_url() -> str:
+    # "pull" (web URL) vs "pulls" (REST path) -- must not cross-match.
+    cmd = "gh pr merge https://github.com/brownm09/dev-env/pull/42 --squash"
+    assert rt.repo_from_rest_merge_path(cmd) is None
+    assert rt.pr_number_from_rest_merge_path(cmd) is None
+    return "a /pull/N web URL does not match the /pulls/N/merge REST path regex"
+
+
 def main() -> int:
     tests = [
         # repo_from_flag
@@ -434,6 +462,11 @@ def main() -> int:
         ("merge_args: PR number on a continued line (dev-env#831)", test_merge_args_pr_number_on_continued_line),
         ("create_args: --repo on a continued line (dev-env#831)", test_create_args_repo_on_continued_line),
         ("merge_args: real && still bounds after a continuation (dev-env#831)", test_merge_args_real_separator_still_bounds_after_continuation),
+        # REST merge fallback path (dev-env#986)
+        ("repo_from_rest_merge_path: basic", test_repo_from_rest_merge_path_basic),
+        ("pr_number_from_rest_merge_path: basic", test_pr_number_from_rest_merge_path_basic),
+        ("REST merge path: absent -> None", test_rest_merge_path_absent_returns_none),
+        ("REST merge path: not confused with /pull/N web URL", test_rest_merge_path_not_confused_with_pull_web_url),
     ]
     failed = 0
     for name, fn in tests:

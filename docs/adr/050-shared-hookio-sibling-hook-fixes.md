@@ -1834,3 +1834,91 @@ and a Windows-only `ntpath` change is invisible on a POSIX CI or a pinned-3.12 r
 correctness rests on a stdlib path predicate, prefer an explicit, version-independent condition at the exact
 site where the version behaviour matters over trusting the stdlib default — and pin it with a test that
 *simulates* the other version rather than trusting the interpreter you happen to run on.
+
+## Amendment 23 (2026-08-15) — recognizing the two-step REST merge fallback across the five PostToolUse merge-consequence hooks (dev-env#986)
+
+**The gap.** Every hook in this family detects "did this Bash call complete a `gh pr merge`?" purely by
+matching the command text against `gh pr merge` (`scan_top_level` + a `_check_merge_stmt`/`_MERGE_RE`
+variant) and checking the output for gh's own `"Squashed and merged pull request #N"` success line
+(`output_has_merge_marker`). None of the five hooks this ADR already converged onto that shared
+detection — `usage-snapshot.py`, `post-pr-merge-project.py`, `post-pr-merge-pull.py`,
+`post-pr-merge-reclaim.py`, `post-merge-tile-checkpoint.py` — recognized the documented two-step REST
+fallback (`gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge`), used when `gh pr merge` itself is
+unavailable — e.g. during a GitHub GraphQL rate-limit outage, since the REST merge endpoint is a plain
+REST call and unaffected by a GraphQL-specific outage. A merge that goes through the REST path silently
+skipped the usage snapshot, the linked issue's Done move, the local-`main` fast-forward, the worktree
+disk reclaim, and the tile-enumeration reminder — with no error surfaced, discovered live while merging
+PR [#984](https://github.com/brownm09/dev-env/pull/984) during exactly such an outage.
+
+**Not a new class for this ADR — the Stop-hook side already had it.** `stop-tile-enumeration-gate.py` (a
+`Stop` hook, not a PostToolUse hook, so outside this ADR's original five) already recognized this exact
+REST shape for its own purpose (session-merged-PR enumeration) via its own
+`_GH_API_STMT_RE`/`_PULLS_MERGE_PATH_RE`/`_MERGED_TRUE_RE` trio, matched against the whole raw command
+string. This amendment brings the five PostToolUse hooks to parity using the same underlying signals —
+a `gh api` statement targeting a `.../pulls/<N>/merge` path, and a `"merged":true` field in the response
+body — generalized into this file's own shared primitives rather than duplicated a sixth and seventh
+time. Distinct from `stop-tile-enumeration-gate.py`'s implementation in one respect: `is_rest_merge_command`
+requires both the `gh api` verb and the pulls-merge path to appear within the *same* `scan_top_level`
+segment (matching every other `_check_*_stmt` convention in this file), rather than searching the whole
+raw command for the path independently of which segment the `gh api` verb was found in.
+
+**The PreToolUse-side sibling gap remains open.** [dev-env#900](https://github.com/brownm09/dev-env/issues/900)
+covers the four *pre-merge* gates (`pre-merge-findings-gate.py`, `pre-merge-branch-check.py`,
+`pre-merge-numbering-check.py`, `pre-merge-message-check.py`), which match on command text alone before
+the command has run (so they have no output to check against). This amendment's `is_rest_merge_command`
+primitive is reusable there too, should that fix land later — it takes only `command`, no `output`.
+
+**Fix — two new primitives, hand-wired per caller (this ADR's own established pattern).**
+`_hookio.py` gains `is_rest_merge_command(command)` (a `gh api` statement whose own segment also matches
+`/pulls/(\d+)/merge\b`) and `output_has_rest_merge_marker(output)` (a `"merged"\s*:\s*true` search — the
+GitHub REST merge endpoint's sole success signal, since `gh api` does not surface the HTTP status code
+separately from the response body). `_repo_target.py` gains `repo_from_rest_merge_path(command)` and
+`pr_number_from_rest_merge_path(command)`, both parsing the `repos/<owner>/<repo>/pulls/<N>/merge` path
+directly — the REST response body carries no PR number, so the command's own path is the only source.
+Each of the five hooks' own existing boolean "was this a successful merge" function
+(`merge_confirmed`/`is_successful_merge`/`merge_succeeded`) gets a two-line OR extension using these
+primitives, matching this ADR's `_check_merge_stmt` duplication convention rather than introducing a new
+cross-file combinator/policy function (see Amendment 15's own "no premature parameterization" reasoning,
+which this amendment follows rather than revisits).
+
+**Scope decision — direct marker only, not the live-confirmation fallback.** Every hook in this family
+also has a secondary safety net: when the direct marker check fails, a live `gh pr view` call
+(`should_confirm_via_gh`/`confirm_merge_via_gh`) confirms the merge another way. That fallback is
+gated on the *original* `gh pr merge` command shape (`scan_top_level(command, _check_merge_stmt)`) in
+four of the five hooks (`usage-snapshot.py`, `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`,
+`post-merge-tile-checkpoint.py`) and is deliberately left ungated for the REST shape: a REST call that
+fails to print `"merged":true` clearly (a malformed or truncated response) falls through to the same
+silent exit an unrecognized command already gets today. This narrower residual gap — not a defect in
+this fix — matches the issue's own suggested scope (direct-marker recognition only).
+
+**`post-pr-merge-project.py` needed more than a boolean OR.** Its `main()` gates on
+`scan_top_level(command, _check_merge_stmt)` *before* even reading `output`, so a REST command exited
+there before ever reaching a marker check. The gate widens to
+`scan_top_level(command, _check_merge_stmt) or is_rest_merge_command(command)`. Its `merge_succeeded`
+gains a `command` parameter (was `output`-only) for the same reason the other four hooks' predicates
+already take both. Two new pure combinators, `resolve_command_repo(command)` and
+`resolve_command_pr_number(command, output)`, fold the REST-path extraction in behind the existing
+`extract_repo_from_command`/`extract_pr_number_from_command` resolution — split out of `main()` for
+independent testability, mirroring `post-pr-merge-pull.py`'s existing `format_pull_message`/
+`plan_advisory` extraction pattern in this same file family. `post-pr-merge-pull.py`'s own `extract_repo`
+gains a REST-path step ahead of its cd-chain/git-remote subprocess fallback, since the REST path always
+names its target repo explicitly — the same precedence a PR URL already gets over inferring from cwd.
+
+**Coverage.** New primitive-level cases in `test_hookio.py` (`is_rest_merge_command`,
+`output_has_rest_merge_marker` — positive, negative, quoted-decoy, and heredoc-decoy) and
+`test_repo_target.py` (`repo_from_rest_merge_path`, `pr_number_from_rest_merge_path` — including a
+`/pulls/N/merge` vs `/pull/N` web-URL non-confusion case). Each of the five hooks' own test file gains a
+positive REST-merge case, a negative (no `"merged":true`) case, and — where the hook has its own
+command-shape decoy test suite — a quoted-string decoy case; `test_post_pr_merge_project.py` and
+`test_post_pr_merge_pull.py` additionally gain cases for the new/extended repo and PR-number resolution.
+Manually verified end-to-end by piping a synthetic `PostToolUse` payload (a REST-merge command +
+`"merged":true` response) through each of the five hooks via `pyw -3 <script>.py`, confirming each now
+reaches its normal success path instead of silently exiting 0 — and confirming the negative case (no
+`"merged":true`) still exits 0 cleanly for all five.
+
+**General lesson.** A detection primitive shared across a hook family (this ADR's whole premise) still
+needs periodic re-auditing against *new* command shapes that accomplish the same underlying action a
+different way — `gh pr merge`'s REST fallback is not a hypothetical, and the Stop-hook side of this same
+family had already independently discovered and handled it before the PostToolUse side did. When one
+hook in a family gains a new detection case, checking whether its siblings need the identical extension
+is cheaper than waiting for each to be discovered separately through its own silent-failure incident.

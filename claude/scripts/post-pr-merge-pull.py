@@ -41,14 +41,16 @@ from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
     is_merge_help_only,
+    is_rest_merge_command,
     mask_prose_flag_values,
     output_has_merge_marker,
+    output_has_rest_merge_marker,
     read_command_output,
     scan_top_level,
     should_confirm_via_gh,
 )
 import _hookutil
-from _repo_target import merge_args, repo_from_flag, repo_from_pr_url
+from _repo_target import merge_args, repo_from_flag, repo_from_pr_url, repo_from_rest_merge_path
 from _worktree_topology import canonical_on_main, merge_park_target, parse_worktree_porcelain
 
 # Anchored top-level match — mirrors usage-snapshot.py / pr-merge-reminder.py /
@@ -93,9 +95,14 @@ def extract_repo(command: str, cwd: str) -> str | None:
        actual target repo — while a *bare* quoted PR URL (never preceded by
        `--subject`/`--body`) is a legitimate, already-supported shape that
        masking must not blind, and is left untouched.
-    3. ``cd <path> && gh pr merge`` chain: run git-remote on <path> so a
+    3. The two-step REST merge fallback's own path (`gh api -X PUT
+       repos/<owner>/<repo>/pulls/<N>/merge`, dev-env#986) — this command
+       shape always names its target repo explicitly in the path, so it is
+       checked before the cd-chain/git-remote fallbacks below (mirrors how a
+       PR URL is preferred over inferring from cwd).
+    4. ``cd <path> && gh pr merge`` chain: run git-remote on <path> so a
        cross-repo merge correctly identifies the other repo, not cwd's repo.
-    4. Bare fallback: git-remote on cwd (pre-ADR-067 behaviour — still correct
+    5. Bare fallback: git-remote on cwd (pre-ADR-067 behaviour — still correct
        when the merge was run directly from the target repo's cwd).
     """
     args = merge_args(command)
@@ -107,6 +114,12 @@ def extract_repo(command: str, cwd: str) -> str | None:
     url_repo = repo_from_pr_url(mask_prose_flag_values(command))
     if url_repo:
         return url_repo
+
+    # The REST merge fallback's own path always names its repo explicitly
+    # (dev-env#986) — checked before falling back to cwd/cd-chain inference.
+    rest_repo = repo_from_rest_merge_path(command)
+    if rest_repo:
+        return rest_repo
 
     # cd-chain scoping: a `cd /other/repo && gh pr merge` should query that
     # repo's remote, not cwd's (the cross-repo incident from the #442 session).
@@ -283,10 +296,14 @@ def is_successful_merge(command: str, output: str) -> bool:
     argument, or a `$()` subshell no longer counts as an invocation — matching
     the pattern already used in usage-snapshot.py / pr-merge-reminder.py /
     post-pr-merge-project.py (dev-env#529, ADR-050 Amendment 9).
+
+    Also recognizes the two-step REST merge fallback (`gh api -X PUT
+    .../pulls/<N>/merge`, dev-env#986) — see usage-snapshot.py's
+    merge_confirmed() for the full rationale.
     """
-    if not scan_top_level(command, _check_merge_stmt):
-        return False
-    return output_has_merge_marker(output)
+    if scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output):
+        return True
+    return is_rest_merge_command(command) and output_has_rest_merge_marker(output)
 
 
 def plan_advisory(status_msg: str | None, park_msg: str | None) -> tuple[bool, str] | None:

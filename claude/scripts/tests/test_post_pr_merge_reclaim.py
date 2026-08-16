@@ -94,6 +94,24 @@ def test_failed_merge_no_marker_ignored() -> str:
     return "gh pr merge failed (no success marker) -> no-op"
 
 
+def test_rest_merge_fallback_with_marker_reclaims() -> str:
+    # dev-env#986: the two-step REST merge fallback bypasses `gh pr merge`
+    # entirely (e.g. during a GitHub GraphQL rate-limit outage).
+    assert is_successful_merge(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        '{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}',
+    )
+    return "REST merge fallback + \"merged\":true -> reclaim (dev-env#986)"
+
+
+def test_rest_merge_fallback_without_marker_ignored() -> str:
+    assert not is_successful_merge(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        '{"message":"Merge already in progress"}',
+    )
+    return "REST merge call without \"merged\":true -> no-op"
+
+
 def test_help_invocation_no_marker_ignored() -> str:
     # dev-env#485 regression: `gh pr merge --help` exits 0 but prints no
     # success marker. The old exit_code==0 OR marker gate fired here; gating
@@ -183,6 +201,8 @@ def main() -> int:
         ("RECLAIM_MSG content + .isascii() (dev-env#736)", test_reclaim_msg_content_and_ascii),
         ("non-merge command ignored", test_non_merge_command_ignored),
         ("failed merge with no marker ignored", test_failed_merge_no_marker_ignored),
+        ("REST merge fallback + \"merged\":true -> reclaims (dev-env#986)", test_rest_merge_fallback_with_marker_reclaims),
+        ("REST merge fallback without marker ignored (dev-env#986)", test_rest_merge_fallback_without_marker_ignored),
         ("gh pr merge --help (no marker) ignored (dev-env#485)", test_help_invocation_no_marker_ignored),
         ("'gh pr merge' text in heredoc body ignored (dev-env#529)", test_merge_text_in_heredoc_body_not_matched),
         ("'gh pr merge' text in double quotes ignored (dev-env#529)", test_merge_text_inside_double_quotes_not_matched),

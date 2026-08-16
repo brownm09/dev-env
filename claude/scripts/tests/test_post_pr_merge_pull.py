@@ -119,6 +119,24 @@ def test_help_invocation_no_marker_ignored() -> str:
     return "gh pr merge --help (exit 0, no marker) -> no-op (dev-env#485)"
 
 
+def test_rest_merge_fallback_with_marker_pulls() -> str:
+    # dev-env#986: the two-step REST merge fallback bypasses `gh pr merge`
+    # entirely (e.g. during a GitHub GraphQL rate-limit outage).
+    assert is_successful_merge(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        '{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}',
+    )
+    return "REST merge fallback + \"merged\":true -> pull (dev-env#986)"
+
+
+def test_rest_merge_fallback_without_marker_ignored() -> str:
+    assert not is_successful_merge(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        '{"message":"Merge already in progress"}',
+    )
+    return "REST merge call without \"merged\":true -> no-op"
+
+
 # ---------------------------------------------------------------------------
 # command-shape anchoring (dev-env#529, ADR-050 Amendment 9)
 #
@@ -168,6 +186,15 @@ def test_extract_repo_from_url_in_command() -> str:
     )
     assert repo == "brownm09/dev-env", f"got {repo!r}"
     return "GitHub PR URL in command -> correct owner/repo regardless of cwd"
+
+
+def test_extract_repo_rest_merge_path() -> str:
+    repo = extract_repo(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        "/Git/lifting-logbook",
+    )
+    assert repo == "brownm09/dev-env", f"got {repo!r}"
+    return "REST merge fallback path -> correct owner/repo regardless of cwd (dev-env#986)"
 
 
 def test_extract_repo_from_url_other_repo() -> str:
@@ -428,6 +455,9 @@ def main() -> int:
         ("'gh pr merge' text in heredoc body ignored (dev-env#529)", test_merge_text_in_heredoc_body_not_matched),
         ("'gh pr merge' text in double quotes ignored (dev-env#529)", test_merge_text_inside_double_quotes_not_matched),
         ("'gh pr merge' text in $() subshell ignored (dev-env#529)", test_merge_text_inside_subshell_not_matched),
+        ("REST merge fallback + \"merged\":true -> pulls (dev-env#986)", test_rest_merge_fallback_with_marker_pulls),
+        ("REST merge fallback without marker ignored (dev-env#986)", test_rest_merge_fallback_without_marker_ignored),
+        ("extract_repo: REST merge fallback path -> owner/repo (dev-env#986)", test_extract_repo_rest_merge_path),
         ("extract_repo: GitHub URL in command -> owner/repo", test_extract_repo_from_url_in_command),
         ("extract_repo: URL for different repo", test_extract_repo_from_url_other_repo),
         ("extract_repo: --repo flag beats URL", test_extract_repo_repo_flag_takes_precedence),
