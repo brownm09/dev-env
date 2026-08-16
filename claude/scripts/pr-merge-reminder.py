@@ -40,7 +40,9 @@ from _hookio import (
     effective_merge_dir,
     is_absolute_path,
     is_merge_help_only,
+    is_rest_merge_command,
     output_has_merge_marker,
+    output_has_rest_merge_marker,
     read_command_output,
     scan_top_level,
     should_confirm_via_gh,
@@ -184,6 +186,17 @@ def _effective_merge_repo(command: str, cwd: str) -> str:
         flag_repo = repo_from_flag(args)
         if flag_repo:
             return flag_repo
+    elif is_rest_merge_command(command):
+        # No established cd-chain convention for the two-step REST merge
+        # fallback shape (`gh api -X PUT .../pulls/<N>/merge`, dev-env#986,
+        # ADR-050 Amendment 23): effective_merge_dir only knows how to bound
+        # its cd-chain search at a literal `gh pr merge` token, so for a
+        # REST-only command it finds none and falls back to searching the
+        # ENTIRE command -- a `cd` occurring AFTER the REST call would be
+        # wrongly read as governing it. Use cwd directly instead of risking
+        # that misresolution (mirrors post-pr-merge-project.py's identical
+        # guard for this exact shape).
+        return cwd
     return effective_merge_dir(command, cwd)
 
 
@@ -304,8 +317,23 @@ def _build_messages(
     its marker-only value, so every existing caller/test that omits this
     parameter is unaffected. `True`/`False` means main() did attempt it and
     authoritatively overrides `merge_ok`.
+
+    Also recognizes the two-step REST merge fallback (`gh api -X PUT
+    .../pulls/<N>/merge`, dev-env#986, dev-env#991) as an independent path to
+    `merge_ok` — a `gh pr merge` outage (e.g. a GitHub GraphQL rate-limit
+    exhaustion) never satisfies `is_merge`, so without this OR branch a merge
+    completed via the REST fallback would silently skip the journal reminder
+    below. Deliberately NOT wired into the `live_confirmed` fallback above —
+    that live `gh pr view` check stays scoped to the original `gh pr merge`
+    command shape only (ADR-050 Amendment 23's scope decision: a REST call
+    that fails to print a clean `"merged":true` falls through to the same
+    silent no-op an unrecognized command already gets, rather than paying a
+    GraphQL-backed confirmation during the exact outage that motivates the
+    REST path).
     """
     merge_ok = is_merge and _is_successful_merge_call(output)
+    if not merge_ok:
+        merge_ok = is_rest_merge_command(command) and output_has_rest_merge_marker(output)
     if live_confirmed is not None:
         merge_ok = live_confirmed
     create_push_ok = exit_code == 0 or merge_ok
@@ -402,7 +430,11 @@ def main() -> None:
     is_merge = is_pr_merge_command(command)
     is_push = is_git_push_command(command)
 
-    if not (is_create or is_merge or is_push):
+    # is_rest_merge_command (dev-env#986, dev-env#991) admits the two-step
+    # REST merge fallback shape too -- a REST-only command matches none of
+    # is_create/is_merge/is_push, so without this the gate below would exit
+    # before _build_messages ever gets a chance to fire the merge reminder.
+    if not (is_create or is_merge or is_push or is_rest_merge_command(command)):
         sys.exit(0)
 
     output = read_command_output(data)

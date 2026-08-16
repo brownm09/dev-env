@@ -498,6 +498,36 @@ def test_merge_repo_no_flag_falls_back_to_effective_merge_dir() -> str:
 
 
 # ---------------------------------------------------------------------------
+# _effective_merge_repo — REST merge fallback shape (dev-env#986, dev-env#991)
+# ---------------------------------------------------------------------------
+
+def test_merge_repo_rest_shape_uses_cwd_not_trailing_cd() -> str:
+    # No `gh pr merge` token is present, so effective_merge_dir would search
+    # the ENTIRE command for a cd-chain and wrongly treat a `cd` occurring
+    # AFTER the REST call as governing it (ADR-050 Amendment 23's documented
+    # gap). _effective_merge_repo must use cwd directly for this shape instead.
+    out = _effective_merge_repo(
+        "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash "
+        "&& cd /Git/other-repo && npm test",
+        "/session/cwd",
+    )
+    assert out == "/session/cwd", f"expected /session/cwd (not the trailing cd), got {out!r}"
+    return "REST merge + trailing cd -> cwd, not the trailing cd's target (dev-env#986/#991)"
+
+
+def test_merge_repo_rest_shape_placeholder_still_uses_cwd() -> str:
+    # gh api's own {owner}/{repo} URL templating (unquoted) is a documented,
+    # expected form of this command (ADR-050 Amendment 23) -- must resolve
+    # the same as any other REST shape, not error or fall through differently.
+    out = _effective_merge_repo(
+        "gh api -X PUT repos/{owner}/{repo}/pulls/42/merge -f merge_method=squash",
+        "/session/cwd",
+    )
+    assert out == "/session/cwd", f"got {out!r}"
+    return "REST merge with unquoted {owner}/{repo} placeholder -> cwd (dev-env#986/#991)"
+
+
+# ---------------------------------------------------------------------------
 # _effective_create_repo  (dev-env#646, ADR-050 Amendment 18)
 # ---------------------------------------------------------------------------
 
@@ -841,6 +871,60 @@ def test_build_messages_live_confirmed_default_none_unchanged() -> str:
 
 
 # ---------------------------------------------------------------------------
+# build_messages — REST merge fallback shape (dev-env#986, dev-env#991)
+# ---------------------------------------------------------------------------
+
+def test_build_messages_rest_merge_with_marker_fires() -> str:
+    # gh pr merge itself is unavailable during a GraphQL outage -- is_merge is
+    # False for this command shape (is_pr_merge_command never matches "gh
+    # api"), so merge_ok must come entirely from the REST OR-branch.
+    messages = _build_messages(
+        command="gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        cwd="/session/cwd",
+        exit_code=0,
+        output='{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}',
+        is_create=False,
+        is_merge=False,
+        is_push=False,
+    )
+    assert len(messages) == 1, f"expected one merge reminder, got {messages!r}"
+    assert "gh pr merge detected" in messages[0]
+    return "REST merge fallback + \"merged\":true -> fires (dev-env#986/#991)"
+
+
+def test_build_messages_rest_merge_without_marker_no_message() -> str:
+    messages = _build_messages(
+        command="gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
+        cwd="/session/cwd",
+        exit_code=0,
+        output='{"message":"Merge already in progress"}',
+        is_create=False,
+        is_merge=False,
+        is_push=False,
+    )
+    assert messages == [], f"REST call without \"merged\":true must not fire, got {messages!r}"
+    return "REST merge call without \"merged\":true -> no message"
+
+
+def test_build_messages_rest_merge_get_method_not_matched() -> str:
+    # gh api's default verb is GET; GitHub's own documented read-only "check
+    # if a pull request has been merged" endpoint shares the identical path
+    # shape. Must not be mistaken for a completed merge even if a chained
+    # command's output happens to carry "merged":true elsewhere.
+    messages = _build_messages(
+        command="gh api repos/brownm09/dev-env/pulls/42/merge",
+        cwd="/session/cwd",
+        exit_code=0,
+        output='{"merged":true}',
+        is_create=False,
+        is_merge=False,
+        is_push=False,
+    )
+    assert messages == [], f"GET (no PUT) must not fire, got {messages!r}"
+    return "gh api GET (read-only merge-check) -> no message (dev-env#986/#991)"
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 
@@ -884,6 +968,8 @@ def main() -> int:
         ("merge repo: '-R' inside quoted --subject not matched (dev-env#626)", test_merge_repo_dash_r_inside_quoted_subject_not_matched),
         ("merge repo: --repo flag survives alongside quoted decoy (dev-env#626)", test_merge_repo_flag_survives_alongside_quoted_decoy),
         ("merge repo: no flag -> falls back to effective_merge_dir", test_merge_repo_no_flag_falls_back_to_effective_merge_dir),
+        ("merge repo: REST shape + trailing cd -> cwd, not trailing cd (dev-env#986/#991)", test_merge_repo_rest_shape_uses_cwd_not_trailing_cd),
+        ("merge repo: REST shape with {owner}/{repo} placeholder -> cwd (dev-env#986/#991)", test_merge_repo_rest_shape_placeholder_still_uses_cwd),
         ("create repo: --repo flag overrides cwd (dev-env#646)", test_create_repo_explicit_flag_overrides_cwd),
         ("create repo: -R shorthand resolves same as --repo", test_create_repo_short_flag_form),
         ("create repo: no flag -> falls back to cwd", test_create_repo_no_flag_falls_back_to_cwd),
@@ -904,6 +990,9 @@ def main() -> int:
         ("build_messages: live_confirmed=True overrides marker-less merge (dev-env#504)", test_build_messages_live_confirmed_true_overrides_marker_less_merge),
         ("build_messages: live_confirmed=False stays unfired", test_build_messages_live_confirmed_false_stays_unfired),
         ("build_messages: live_confirmed omitted -> unchanged", test_build_messages_live_confirmed_default_none_unchanged),
+        ("build_messages: REST merge fallback + \"merged\":true -> fires (dev-env#986/#991)", test_build_messages_rest_merge_with_marker_fires),
+        ("build_messages: REST merge fallback without marker -> no message", test_build_messages_rest_merge_without_marker_no_message),
+        ("build_messages: REST merge GET (no PUT) -> no message (dev-env#986/#991)", test_build_messages_rest_merge_get_method_not_matched),
     ]
     failed = 0
     for name, fn in tests:
