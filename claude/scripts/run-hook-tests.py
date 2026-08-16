@@ -31,15 +31,28 @@ unreliable with no attached console; see the hook-reliability plan gotcha #7 and
 the test's own docstring). This is distinct from a self-skip: a runner-skip never
 launches the subprocess at all.
 
+**Retries** (``--max-retries``, default 2): a test FILE that fails is re-run,
+unmodified, up to N additional times before the suite counts it as a final
+failure. This exists to absorb transient Windows-runner resource contention
+(subprocess-spawn overhead, antivirus/indexer scanning of fresh temp files,
+cumulative load from 85+ sequential subprocess-launching test files) without
+masking a genuine code-level regression: a deterministically broken test fails
+on every retry and is still reported FAIL after exhausting them (dev-env#994,
+ADR-134). Retries are never applied to a self-skip -- ``run_with_retries`` only
+re-attempts a ``"fail"`` status, by construction, never ``"pass"``/``"skip"``.
+Every attempt is printed (a ``RETRY`` line per re-attempt); an eventual pass is
+marked ``[retried Nx]`` and never silently folded into a plain ``PASS``.
+
 Pure helpers (``discover_python_tests`` / ``discover_bash_tests`` /
-``runner_skip_reason`` / ``classify_result``) are unit-tested offline in
-``tests/test_run_hook_tests.py``; the acceptance test for the end-to-end runner
-is the first green CI run on the PR that adds it.
+``runner_skip_reason`` / ``classify_result`` / ``run_with_retries``) are
+unit-tested offline in ``tests/test_run_hook_tests.py``; the acceptance test for
+the end-to-end runner is the first green CI run on the PR that adds it.
 """
 from __future__ import annotations
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import argparse
+import functools
 import re
 import shutil
 import subprocess
@@ -78,6 +91,7 @@ SKIP_TESTS = {
 _SELF_SKIP_RE = re.compile(r"(?m)^\s*SKIP:")
 
 DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_MAX_RETRIES = 2
 
 
 def _discover(dirs, pattern, name_ok):
@@ -206,6 +220,49 @@ def _run_one(path: Path, bash_bin, timeout: int):
         return "fail", elapsed, f"TIMEOUT after {timeout}s\n{partial}"
 
 
+def run_with_retries(run_one, max_retries: int, on_attempt=None):
+    """Call ``run_one()`` up to ``1 + max_retries`` times; stop at the first
+    non-"fail" status. Returns ``(status, elapsed, output, retries_used)``.
+
+    ``run_one`` is a zero-arg callable returning the same ``(status, elapsed,
+    output)`` shape as ``_run_one`` -- a real call site passes
+    ``functools.partial(_run_one, path, bash_bin, timeout)``. Only ``"fail"``
+    is ever retried: ``"pass"`` and ``"skip"`` return immediately with
+    ``retries_used == 0`` on the very first attempt, by construction (the loop
+    only continues when the just-run attempt's status is exactly "fail") --
+    this is the mechanical guarantee that a self-skip is never re-attempted,
+    not a special case bolted on top.
+
+    ``elapsed``/``output`` in the return value are always the FINAL attempt's:
+    an eventual pass' output must not be contaminated by an earlier failed
+    attempt's, and a final fail's dumped output must be the one that actually
+    explains the final, reported failure -- not diluted by an earlier attempt.
+
+    ``retries_used`` counts additional attempts beyond the first (0 == passed
+    or skipped on the first try; N == N extra attempts were made after the
+    first, for a total of N+1 calls to ``run_one``).
+
+    ``on_attempt``, if given, is called after EVERY attempt (including the
+    first and the last) as ``on_attempt(attempt_index, status, elapsed,
+    output, is_final)`` -- 0-based ``attempt_index``, ``is_final`` True on the
+    attempt whose result this function returns. It is a pure notification
+    hook with no return value and no effect on the retry decision, so the
+    loop's control flow here stays a function of only ``run_one``'s return
+    values and ``max_retries`` -- callers that want live per-attempt output
+    (main()'s RETRY line) supply a printing callback; the unit tests pass
+    none and assert only the returned tuple.
+    """
+    attempt = 0
+    while True:
+        status, elapsed, output = run_one()
+        is_final = status != "fail" or attempt >= max_retries
+        if on_attempt is not None:
+            on_attempt(attempt, status, elapsed, output, is_final)
+        if is_final:
+            return status, elapsed, output, attempt
+        attempt += 1
+
+
 def _parse_args(argv):
     ap = argparse.ArgumentParser(
         description="Discover and run the dev-env hook/script test suite."
@@ -215,6 +272,16 @@ def _parse_args(argv):
         type=int,
         default=DEFAULT_TIMEOUT_SECONDS,
         help=f"Per-test timeout in seconds (default {DEFAULT_TIMEOUT_SECONDS}).",
+    )
+    ap.add_argument(
+        "--max-retries",
+        type=int,
+        default=DEFAULT_MAX_RETRIES,
+        help=(
+            "Re-run a failing test file up to N additional times before "
+            f"counting it as a final failure (default {DEFAULT_MAX_RETRIES}; "
+            "0 disables retries). Never applied to a self-skip."
+        ),
     )
     ap.add_argument(
         "--list",
@@ -275,29 +342,50 @@ def main(argv=None) -> int:
 
     passed = failed = skipped = 0
     failures = []
+    flaky = []               # [(name, retries_used)] -- passed only after >=1 retry
+    hard_failed_retried = []  # [(name, retries_used)] -- still failing after exhausting retries
     suite_start = time.monotonic()
 
     for p in runner_skipped:
         print(f"SKIP  {p.name:<42}  (runner: {runner_skip_reason(p)})", flush=True)
         skipped += 1
 
+    def _make_on_attempt(name):
+        def _cb(attempt_index, status, elapsed, output, is_final):
+            if is_final:
+                return
+            print(
+                f"RETRY {name:<42}  (attempt {attempt_index + 1} failed, "
+                f"{elapsed:5.1f}s; retrying)",
+                flush=True,
+            )
+        return _cb
+
     for p in to_run:
-        status, elapsed, output = _run_one(p, bash_bin, args.timeout)
+        runner = functools.partial(_run_one, p, bash_bin, args.timeout)
+        status, elapsed, output, retries_used = run_with_retries(
+            runner, args.max_retries, on_attempt=_make_on_attempt(p.name)
+        )
+        retry_suffix = f"  [retried {retries_used}x]" if retries_used else ""
         if status == "pass":
-            print(f"PASS  {p.name:<42}  ({elapsed:5.1f}s)", flush=True)
+            print(f"PASS  {p.name:<42}  ({elapsed:5.1f}s){retry_suffix}", flush=True)
             passed += 1
+            if retries_used:
+                flaky.append((p.name, retries_used))
         elif status == "skip":
             first = next((ln.strip() for ln in output.splitlines() if ln.strip()), "SKIP")
             print(f"SKIP  {p.name:<42}  (env: {first})", flush=True)
             skipped += 1
         else:  # fail
-            print(f"FAIL  {p.name:<42}  ({elapsed:5.1f}s)", flush=True)
+            print(f"FAIL  {p.name:<42}  ({elapsed:5.1f}s){retry_suffix}", flush=True)
             print("      " + "-" * 66, flush=True)
             for line in (output or "").rstrip().splitlines():
                 print(f"      | {line}", flush=True)
             print("      " + "-" * 66, flush=True)
             failed += 1
             failures.append(p.name)
+            if retries_used:
+                hard_failed_retried.append((p.name, retries_used))
 
     total = time.monotonic() - suite_start
     print("", flush=True)
@@ -306,9 +394,16 @@ def main(argv=None) -> int:
         flush=True,
     )
     # Also emit the CLAUDE.md test-integrity summary shape for PR-body use.
+    # Byte-for-byte unchanged in format from before retries existed -- counts
+    # are FINAL status only, so a flaky-but-passed file still counts as passed
+    # and a hard-failed-after-retries file still counts as failed here.
     print(f"Tests: {passed} passed, {skipped} skipped, {failed} failed ({total:.1f}s)", flush=True)
     if failures:
         print("Failed: " + ", ".join(failures), flush=True)
+    if flaky or hard_failed_retried:
+        flaky_str = ", ".join(f"{n} (x{r})" for n, r in flaky) or "none"
+        hard_str = ", ".join(f"{n} (x{r})" for n, r in hard_failed_retried) or "none"
+        print(f"Retried: flaky-passed=[{flaky_str}]  hard-failed=[{hard_str}]", flush=True)
     return 1 if failed else 0
 
 

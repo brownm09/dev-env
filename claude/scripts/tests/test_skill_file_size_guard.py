@@ -55,7 +55,7 @@ def _run_hook(payload):
         input=stdin_text,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=90,  # generous headroom under CI resource contention (dev-env#994)
     )
 
 

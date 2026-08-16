@@ -2227,6 +2227,24 @@ For a one-line navigational map of the test directory, see
     whole suite is now gated on every PR ([ADR-103](adr/103-shared-hookout-emitter.md);
     dev-env#721).
 
+    Also exercises the file-level retry helper `run_with_retries` (dev-env#994,
+    [ADR-134](adr/134-run-hook-tests-retry-mechanism.md)), added after 4 test files were found to
+    fail intermittently only under the full suite (never standalone, and never reproduced across 4
+    local full-suite runs) with no shared-state pollution mechanism found across 3 independent
+    investigative passes. Pinned via a canned zero-arg-callable mock (`_Canned`), no real subprocess
+    spawning: a fails-then-passes sequence resolves with `retries_used == 1` and the FINAL attempt's
+    `(status, elapsed, output)`, not the first's; a status that fails through the full `max_retries`
+    budget returns `status == "fail"` with `retries_used == max_retries`; `max_retries=0` makes
+    exactly one call (no retry loop entered); and a `"skip"` or `"pass"` status on the very first
+    attempt is never retried regardless of `max_retries`, pinning the mechanical guarantee that
+    `run_with_retries` can never re-attempt a self-skip. The optional `on_attempt` notification
+    callback (used by `main()` to print a live `RETRY` line per re-attempt, with no I/O inside
+    `run_with_retries` itself) is also pinned: called once per attempt with a 0-based index and
+    `is_final` true only on the attempt whose result is returned. `main`'s own retry wiring
+    (`--max-retries`, default 2, the `RETRY`/`[retried Nx]` output, and the new `Retried:` summary
+    line) is, like `main` itself, exercised end-to-end only by the first green CI run on the PR that
+    adds it — not by this offline suite.
+
     ```bash
     py -3 claude/scripts/tests/test_run_hook_tests.py
     ```

@@ -6,8 +6,10 @@ Exercises the pure helpers offline (no subprocess, no network, no disk beyond
 ``tempfile`` fixtures): ``discover_python_tests`` / ``discover_bash_tests``
 (glob + naming-convention filtering), ``runner_skip_reason`` / ``SKIP_TESTS``
 (the documented whole-file skip list), ``_command_for`` (interpreter argv, incl.
-the bash-missing and non-test-suffix cases), and ``classify_result`` (the
-pass / self-skip / fail mapping, incl. non-zero-exit winning over a SKIP marker).
+the bash-missing and non-test-suffix cases), ``classify_result`` (the
+pass / self-skip / fail mapping, incl. non-zero-exit winning over a SKIP marker),
+and ``run_with_retries`` (dev-env#994, ADR-134 -- the file-level retry helper,
+exercised with a canned zero-arg callable so no real subprocess is spawned).
 
 ``main`` / ``_run_one`` (which shell out) are not covered here -- the end-to-end
 acceptance test for the runner is the first green CI run on the PR that adds it,
@@ -190,6 +192,79 @@ def test_run_one_skips_without_shelling_out_when_bash_missing():
     assert status == "skip", status
     assert seconds == 0.0, seconds
     assert output.startswith("SKIP:"), output
+
+
+# ---------------------------------------------------------------------------
+# run_with_retries (dev-env#994, ADR-134)
+# ---------------------------------------------------------------------------
+
+class _Canned:
+    """Zero-arg callable that returns each of *results* in order, then raises
+    IndexError if called too many times -- a call-count-verifiable stand-in
+    for `functools.partial(_run_one, path, bash_bin, timeout)` with no real
+    subprocess spawning."""
+    def __init__(self, *results):
+        self._results = list(results)
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        return self._results.pop(0)
+
+
+def test_run_with_retries_pass_first_try_zero_retries_used():
+    run_one = _Canned(("pass", 0.5, "ok"))
+    status, elapsed, output, retries = mod.run_with_retries(run_one, 3)
+    assert (status, elapsed, output, retries) == ("pass", 0.5, "ok", 0)
+    assert run_one.calls == 1, run_one.calls
+
+
+def test_run_with_retries_skip_first_try_never_retried():
+    # A self-skip must never be re-attempted, regardless of max_retries.
+    run_one = _Canned(("skip", 0.0, "SKIP: bash interpreter not found on PATH"))
+    status, elapsed, output, retries = mod.run_with_retries(run_one, 5)
+    assert status == "skip" and retries == 0, (status, retries)
+    assert run_one.calls == 1, run_one.calls
+
+
+def test_run_with_retries_fails_once_then_passes():
+    run_one = _Canned(("fail", 0.2, "boom"), ("pass", 0.3, "ok"))
+    status, elapsed, output, retries = mod.run_with_retries(run_one, 2)
+    assert (status, elapsed, output, retries) == ("pass", 0.3, "ok", 1)
+    assert run_one.calls == 2, run_one.calls
+
+
+def test_run_with_retries_fails_through_max_retries():
+    run_one = _Canned(("fail", 0.1, "a"), ("fail", 0.1, "b"), ("fail", 0.1, "c"))
+    status, elapsed, output, retries = mod.run_with_retries(run_one, 2)
+    assert (status, retries) == ("fail", 2), (status, retries)
+    assert run_one.calls == 3, run_one.calls  # 1 + max_retries
+
+
+def test_run_with_retries_max_retries_zero_single_attempt():
+    run_one = _Canned(("fail", 0.1, "boom"))
+    status, elapsed, output, retries = mod.run_with_retries(run_one, 0)
+    assert (status, retries) == ("fail", 0), (status, retries)
+    assert run_one.calls == 1, run_one.calls  # no retry loop entered
+
+
+def test_run_with_retries_returns_final_attempt_output_not_first():
+    # An eventual pass' output must not be the first (failed) attempt's, and
+    # vice versa -- pins the "always the FINAL attempt's" contract.
+    run_one = _Canned(("fail", 1.0, "first attempt output"), ("pass", 2.0, "second attempt output"))
+    status, elapsed, output, retries = mod.run_with_retries(run_one, 1)
+    assert (elapsed, output) == (2.0, "second attempt output"), (elapsed, output)
+
+
+def test_run_with_retries_on_attempt_called_per_attempt_with_final_flag():
+    run_one = _Canned(("fail", 0.1, "a"), ("fail", 0.1, "b"), ("pass", 0.1, "c"))
+    seen = []
+    mod.run_with_retries(run_one, 5, on_attempt=lambda *args: seen.append(args))
+    assert [(a[0], a[1], a[4]) for a in seen] == [
+        (0, "fail", False),
+        (1, "fail", False),
+        (2, "pass", True),
+    ], seen
 
 
 # ---------------------------------------------------------------------------
