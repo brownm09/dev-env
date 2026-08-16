@@ -406,6 +406,21 @@ def test_rest_merge_path_not_confused_with_pull_web_url() -> str:
     return "a /pull/N web URL does not match the /pulls/N/merge REST path regex"
 
 
+def test_rest_merge_path_placeholder_repo_none_pr_number_resolved() -> str:
+    # dev-env#986 review finding: gh api's own documented {owner}/{repo} URL
+    # templating (https://cli.github.com/manual/gh_api) means a genuine
+    # invocation can carry the LITERAL strings {owner}/{repo} -- this module
+    # cannot know what gh would resolve them to without a network round-trip,
+    # so repo_from_rest_merge_path must return None rather than the literal
+    # placeholder text, while pr_number_from_rest_merge_path -- which has no
+    # such templating to worry about -- must still resolve the PR number.
+    # The original combined-regex design lost BOTH on this exact shape.
+    cmd = "gh api -X PUT repos/{owner}/{repo}/pulls/42/merge -f merge_method=squash"
+    assert rt.repo_from_rest_merge_path(cmd) is None, "placeholder repo -> None, not the literal '{owner}/{repo}' text"
+    assert rt.pr_number_from_rest_merge_path(cmd) == 42, "PR number still resolves independent of the repo half"
+    return "{owner}/{repo} placeholder -> repo=None, pr_number=42 (dev-env#986)"
+
+
 def main() -> int:
     tests = [
         # repo_from_flag
@@ -467,6 +482,7 @@ def main() -> int:
         ("pr_number_from_rest_merge_path: basic", test_pr_number_from_rest_merge_path_basic),
         ("REST merge path: absent -> None", test_rest_merge_path_absent_returns_none),
         ("REST merge path: not confused with /pull/N web URL", test_rest_merge_path_not_confused_with_pull_web_url),
+        ("REST merge path: {owner}/{repo} placeholder -> repo=None, pr_number resolved (dev-env#986)", test_rest_merge_path_placeholder_repo_none_pr_number_resolved),
     ]
     failed = 0
     for name, fn in tests:

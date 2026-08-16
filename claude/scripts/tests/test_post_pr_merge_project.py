@@ -460,6 +460,25 @@ def test_merge_succeeded_rest_api() -> str:
     return "gh api PUT .../pulls/N/merge + \"merged\":true -> merge_succeeded True (dev-env#986)"
 
 
+def test_merge_succeeded_rest_command_unrelated_gh_pr_merge_marker_not_confirmed() -> str:
+    # dev-env#986 review finding: merge_succeeded's first branch previously
+    # checked output_has_merge_marker(output) alone, with no command-shape
+    # condition -- harmless while main()'s gate only admitted genuine
+    # gh-pr-merge commands, but once the gate widened to also admit
+    # REST-shaped commands, a REST command whose combined output happened to
+    # carry an UNRELATED chained command's own "Squashed and merged pull
+    # request #N" text (gh's marker, not the REST "merged":true field) could
+    # be wrongly confirmed via that first branch. The first branch must
+    # require the gh-pr-merge command shape too, matching the four sibling
+    # hooks' own OR-extension.
+    cmd = "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash"
+    output = "Squashed and merged pull request #99 (an unrelated PR's marker text)"
+    assert not merge_succeeded(cmd, output), (
+        "a REST-shaped command must not be confirmed by an unrelated gh-pr-merge text marker"
+    )
+    return "REST-shaped command + unrelated gh-pr-merge text marker -> not confirmed (dev-env#986)"
+
+
 # ---------------------------------------------------------------------------
 # is_merge_help_only composition (dev-env#557)
 #
@@ -511,6 +530,24 @@ def test_resolve_command_repo_prefers_gh_pr_merge_over_rest() -> str:
 def test_resolve_command_repo_none_when_neither_shape_names_one() -> str:
     assert resolve_command_repo("gh pr merge --squash --delete-branch") is None
     return "bare gh pr merge, no REST path -> None"
+
+
+def test_resolve_command_repo_rest_decoy_in_subject_not_hijacked() -> str:
+    # dev-env#986 review finding: calling repo_from_rest_merge_path
+    # unconditionally on the raw command let a --subject value shaped like a
+    # REST merge path hijack resolution even on an ordinary gh pr merge
+    # command that named no repo of its own -- resolve_command_repo must
+    # gate the REST fallback behind is_rest_merge_command(command), which is
+    # False here (no genuine top-level `gh api` invocation is present).
+    cmd = 'gh pr merge 42 --squash --subject "fix: handle repos/other/repo/pulls/9/merge path"'
+    assert resolve_command_repo(cmd) is None, "a --subject decoy must not hijack repo resolution"
+    return "REST-path-shaped decoy inside --subject on a real gh pr merge -> None, not hijacked (dev-env#986)"
+
+
+def test_resolve_command_pr_number_rest_decoy_in_subject_not_hijacked() -> str:
+    cmd = 'gh pr merge --squash --delete-branch --subject "fix: handle repos/other/repo/pulls/9/merge path"'
+    assert resolve_command_pr_number(cmd, "") is None, "a --subject decoy must not hijack PR-number resolution"
+    return "REST-path-shaped decoy inside --subject on a real gh pr merge -> None, not hijacked (dev-env#986)"
 
 
 def test_resolve_command_pr_number_from_rest_merge_path() -> str:
@@ -623,9 +660,12 @@ def main() -> int:
         ("merge_succeeded: real markers True", test_merge_succeeded_true),
         ("merge_succeeded: excludes auto/failure", test_merge_succeeded_excludes_auto_and_failure),
         ("merge_succeeded: REST api merge marker (dev-env#986)", test_merge_succeeded_rest_api),
+        ("merge_succeeded: REST command + unrelated gh-pr-merge marker not confirmed (dev-env#986)", test_merge_succeeded_rest_command_unrelated_gh_pr_merge_marker_not_confirmed),
         ("resolve_command_repo: REST merge path (dev-env#986)", test_resolve_command_repo_from_rest_merge_path),
         ("resolve_command_repo: prefers gh pr merge --repo over REST", test_resolve_command_repo_prefers_gh_pr_merge_over_rest),
         ("resolve_command_repo: None when neither shape names one", test_resolve_command_repo_none_when_neither_shape_names_one),
+        ("resolve_command_repo: REST-path decoy in --subject not hijacked (dev-env#986)", test_resolve_command_repo_rest_decoy_in_subject_not_hijacked),
+        ("resolve_command_pr_number: REST-path decoy in --subject not hijacked (dev-env#986)", test_resolve_command_pr_number_rest_decoy_in_subject_not_hijacked),
         ("resolve_command_pr_number: REST merge path (dev-env#986)", test_resolve_command_pr_number_from_rest_merge_path),
         ("resolve_command_pr_number: prefers command over REST/output", test_resolve_command_pr_number_prefers_command_over_rest_and_output),
         ("resolve_command_pr_number: falls back to output marker", test_resolve_command_pr_number_falls_back_to_output),

@@ -1857,10 +1857,146 @@ REST shape for its own purpose (session-merged-PR enumeration) via its own
 string. This amendment brings the five PostToolUse hooks to parity using the same underlying signals —
 a `gh api` statement targeting a `.../pulls/<N>/merge` path, and a `"merged":true` field in the response
 body — generalized into this file's own shared primitives rather than duplicated a sixth and seventh
-time. Distinct from `stop-tile-enumeration-gate.py`'s implementation in one respect: `is_rest_merge_command`
-requires both the `gh api` verb and the pulls-merge path to appear within the *same* `scan_top_level`
-segment (matching every other `_check_*_stmt` convention in this file), rather than searching the whole
-raw command for the path independently of which segment the `gh api` verb was found in.
+time.
+
+**Deliberately still NOT fully converged with `stop-tile-enumeration-gate.py`'s own trio** — a maintainability
+review finding, considered and consciously not acted on. That hook's `has_api` check requires no
+method-flag precision (any `gh api` verb suffices); the primitive below requires a same-segment PUT
+flag. Converging them would either weaken this module's precision (a real correctness regression for
+these five hooks, which trigger state-changing side effects — a Done move, a fast-forward, a disk
+reclaim — where a false positive matters far more than it does for the Stop hook's passive "add a PR
+number to an already-merged set") or silently narrow `stop-tile-enumeration-gate.py`'s own established,
+tested, unrelated-to-this-PR behavior. Neither is in scope here; converging them properly (auditing
+whether that hook's own precision needs tightening too, on its own merits) is filed as a follow-up
+rather than rushed as a side effect of this fix.
+
+**Two round-trips through review — first-draft bugs, caught and fixed before merge.** The first
+implementation of `is_rest_merge_command` required BOTH the `gh api` verb and the `.../pulls/<N>/merge`
+path to appear within the *same* `scan_top_level` segment, reasoning that this was strictly *safer* than
+`stop-tile-enumeration-gate.py`'s whole-command path search (matching every other `_check_*_stmt`
+convention in this file). Two independent review passes (`/review`'s parallel correctness and
+reliability subagents, both live-verifying against the actual code) found this was strictly *narrower*
+instead — and reachably so, not a theoretical edge case:
+
+- `gh api`'s own documented `{owner}`/`{repo}` URL templating (https://cli.github.com/manual/gh_api) —
+  the exact form this repo's own runbooks, and this very amendment's first draft, wrote the command in
+  — means a genuine, *unquoted* invocation contains a bare `{`, which `split_top_level` treats as an
+  unconditional top-level statement separator (the PowerShell `if ($?) { B }` / bash brace-group
+  carve-out from Amendment 4's own history). `gh api -X PUT repos/{owner}/{repo}/pulls/42/merge` splits
+  into three segments, none of which carries both the verb and the path — so the documented, expected
+  form of this exact command went undetected by every one of the five hooks this fix exists for.
+- The same false negative hit a backslash-line-continued invocation, for the identical reason
+  (`split_top_level` splits on bare `\n` by design, per its own dev-env#836 docstring, and deliberately
+  does not join continuations).
+- The combined `_REST_MERGE_PATH_RE` regex in `_repo_target.py` compounded the placeholder gap: even
+  once detection was fixed, the *strict-slug* combined capture couldn't parse `{owner}/{repo}` at all —
+  so a quoted placeholder REST merge (where detection alone worked even before this fix, since quoting
+  keeps the invocation in one segment) was confirmed successful, yet `resolve_command_pr_number` still
+  returned `None` right alongside the unparseable repo, and `post-pr-merge-project.py`'s Done move
+  silently skipped despite the hook believing the merge was confirmed.
+- `is_rest_merge_command` was also verb-agnostic: `GET /repos/{owner}/{repo}/pulls/{pull_number}/merge`
+  is GitHub's own documented, genuinely read-only "Check if a pull request has been merged" endpoint,
+  sharing the identical path shape, and `gh api`'s default verb is GET — so a harmless status check
+  satisfied the predicate with no method check at all.
+- Most seriously, the new `_repo_target.py` extractors (`repo_from_rest_merge_path`,
+  `pr_number_from_rest_merge_path`) were called *unconditionally* on the raw, unmasked, unbounded
+  command from `post-pr-merge-project.py`'s `resolve_command_repo`/`resolve_command_pr_number` and
+  `post-pr-merge-pull.py`'s `extract_repo` — with no `is_rest_merge_command` gate, unlike every other
+  masked/bounded extractor this ADR's amendment history built (15/17/19/20/21). This was a **regression
+  on the pre-existing `gh pr merge` path**, not merely a gap in the new one: a `--subject`/`--body` value
+  shaped like a REST merge path (`gh pr merge 42 --squash --subject "fix: handle
+  repos/other/repo/pulls/9/merge path"`) could hijack repo/PR-number resolution on an *ordinary*
+  `gh pr merge` command that named no repo of its own — silently skipping a legitimate same-repo Done
+  move (the resolved repo no longer matches cwd's config) or, worse, moving the wrong issue to Done.
+- `post-pr-merge-project.py`'s widened top-level gate (needed so a REST command reaches the marker
+  check at all — see below) also, as an unintended side effect, let a REST command that *failed* its
+  own marker check fall into the live `gh pr view` confirmation fallback — directly contradicting this
+  amendment's own first-draft "Scope decision" paragraph, which claimed that fallback stayed ungated for
+  the REST shape. Two compounding problems: that fallback is GraphQL-backed, so it is a
+  guaranteed-failing subprocess during the exact rate-limit outage that motivates the REST path in the
+  first place; and when the REST path named no resolvable PR number (the placeholder case above),
+  `confirm_merge_via_gh` falls back to inferring the PR from cwd's checked-out branch — the precise
+  dev-env#557 misattribution class (an unrelated already-merged PR's issue wrongly moved to Done).
+- `merge_succeeded`'s own first branch (`output_has_merge_marker(output)`) carried no command-shape
+  condition at all — harmless before this amendment, since reaching that check already required
+  `main()`'s (then-narrower) gate to confirm a genuine `gh pr merge` shape first. Once the gate widened
+  to admit REST-shaped commands too, a REST command whose *combined output* happened to carry an
+  unrelated chained command's own `"Squashed and merged pull request #N"` text could be wrongly
+  confirmed via that branch — the four sibling hooks' own OR-extension already paired this marker check
+  with the command-shape check; `post-pr-merge-project.py`'s own version had simply omitted it.
+- `effective_merge_dir`'s cd-chain boundary is anchored on a literal `gh pr merge` token (ADR-067); for
+  a REST-only command it finds none and falls back to treating the *entire* command as the cd-chain
+  search region — so a `cd` occurring *after* the REST merge (`gh api ... && cd other-repo && npm
+  test`) would be wrongly read as governing the merge, resolving `post-pr-merge-project.py`'s config to
+  the wrong repo.
+
+**The corrected design.** `_GH_API_PUT_FLAG_RE` now requires a same-top-level-segment PUT method flag
+(`-X PUT` / `--method PUT` / `--method=PUT` / `-XPUT`, closing the GET false-positive) alongside the
+`gh api` verb check — this half stays segment-scoped, the precision the first draft was reaching for.
+`_PULLS_MERGE_PATH_RE`'s own path search is *not* segment-scoped — it runs against the whole raw
+command, matching `stop-tile-enumeration-gate.py`'s existing, accepted behavior for this exact reason
+(closing both the placeholder and line-continuation false negatives without re-deriving a
+placeholder-aware un-splitter `stop-tile-enumeration-gate.py` never needed). This reopens a narrower
+decoy surface at the primitive level in principle (two independent REST-merge invocations chained in
+one command could resolve to whichever's path text a naive `.search()` finds first) — accepted as a
+documented residual gap, since two genuinely distinct REST PR merges chained in a single Bash call is a
+vanishingly unrealistic shape, unlike `{owner}`/`{repo}`, which is the documented, expected form of this
+command. The realistic decoy surface — a `--subject`/`--body` value on an *ordinary* `gh pr merge`
+command — is closed structurally, not by the path regex's own scoping: every extractor call site
+(`resolve_command_repo`, `resolve_command_pr_number`, `post-pr-merge-pull.py`'s `extract_repo`) is now
+gated behind `is_rest_merge_command(command)` first, so the extractors never run at all unless a genuine
+top-level `gh api ... PUT` invocation is actually present — a `--subject` value is never itself a
+top-level segment starting with `gh api`, regardless of what REST-path-shaped text it contains.
+`_repo_target._REST_MERGE_REPO_RE` and `_REST_MERGE_PR_NUMBER_RE` are now independent regexes: the
+repo half stays strict-slug (correctly returning `None`, not a literal `{owner}/{repo}` string, for an
+unresolved placeholder — this module has no way to know what gh would have resolved it to without a
+`git remote`/network round-trip it doesn't make), while the PR-number half (`repos/\S+?/pulls/(\d+)/merge\b`)
+resolves independently of whether the repo half parses, since the PR number carries no such templating.
+`post-pr-merge-project.py`'s `main()` re-adds the sibling hooks' own `if not
+scan_top_level(command, _check_merge_stmt): sys.exit(0)` re-check inside its `not merge_succeeded(...)`
+branch, so a REST command that fails its own marker check exits immediately rather than reaching the
+GraphQL-backed live-confirmation fallback — restoring this amendment's original scope-decision claim to
+actual fact rather than aspiration. `merge_succeeded`'s first branch now requires
+`scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output)`, matching the four
+siblings exactly. `main()` skips `effective_merge_dir` entirely for a REST-only command (no established
+cd-chain convention exists for that shape) and uses `cwd` directly instead, rather than risk resolving
+against a `cd` that occurs after the merge.
+
+**Scope decision — direct marker only, not the live-confirmation fallback (now actually enforced, not
+just claimed).** Every hook in this family has a secondary safety net: when the direct marker check
+fails, a live `gh pr view` call (`should_confirm_via_gh`/`confirm_merge_via_gh`) confirms the merge
+another way. That fallback is gated on the *original* `gh pr merge` command shape
+(`scan_top_level(command, _check_merge_stmt)`) in all five hooks (see the corrected-design paragraph
+above for why `post-pr-merge-project.py` needed its own re-check added) and is deliberately left ungated
+for the REST shape: a REST call that fails to print `"merged":true` clearly (a malformed or truncated
+response) falls through to the same silent exit an unrecognized command already gets today. A review
+finding argued this residual gap is under-justified rather than wrong-in-principle — `gh api`'s exit
+code (unlike `gh pr merge`'s) has none of the ambiguity that keeps this family from trusting it
+elsewhere (no `--help`/queued-`--auto` variant, no local-git cleanup step that can fail despite a
+successful remote action), so `is_rest_merge_command(command) and exit_code == 0` could plausibly close
+the gap at zero marginal network cost. Declined for this PR as a scope-expansion beyond the issue's own
+stated ask (direct-marker recognition specifically); left as a candidate for a future amendment rather
+than folded in here.
+
+**Fix — two new primitives, hand-wired per caller (this ADR's own established pattern).**
+`_hookio.py` gains `is_rest_merge_command(command)` and `output_has_rest_merge_marker(output)` (see the
+corrected-design paragraph above for the exact matching rules). `_repo_target.py` gains
+`repo_from_rest_merge_path(command)` and `pr_number_from_rest_merge_path(command)`. Each of the five
+hooks' own existing boolean "was this a successful merge" function
+(`merge_confirmed`/`is_successful_merge`/`merge_succeeded`) gets a two-line OR extension using these
+primitives, matching this ADR's `_check_merge_stmt` duplication convention rather than introducing a new
+cross-file combinator/policy function (see Amendment 15's own "no premature parameterization" reasoning,
+which this amendment follows rather than revisits). `post-pr-merge-project.py`'s `main()` gate widens to
+`scan_top_level(command, _check_merge_stmt) or is_rest_merge_command(command)`; its `merge_succeeded`
+gains a `command` parameter (was `output`-only) for the same reason the other four hooks' predicates
+already take both; two new pure combinators, `resolve_command_repo(command)` and
+`resolve_command_pr_number(command, output)`, fold the (gated) REST-path extraction in behind the
+existing `extract_repo_from_command`/`extract_pr_number_from_command` resolution — split out of `main()`
+for independent testability, mirroring `post-pr-merge-pull.py`'s existing `format_pull_message`/
+`plan_advisory` extraction pattern in this same file family. `post-pr-merge-pull.py`'s own `extract_repo`
+gains a (gated) REST-path step ahead of its cd-chain/git-remote subprocess fallback, since the REST path
+always names its target repo explicitly — the same precedence a PR URL already gets over inferring from
+cwd.
 
 **The PreToolUse-side sibling gap remains open.** [dev-env#900](https://github.com/brownm09/dev-env/issues/900)
 covers the four *pre-merge* gates (`pre-merge-findings-gate.py`, `pre-merge-branch-check.py`,
@@ -1868,53 +2004,31 @@ covers the four *pre-merge* gates (`pre-merge-findings-gate.py`, `pre-merge-bran
 the command has run (so they have no output to check against). This amendment's `is_rest_merge_command`
 primitive is reusable there too, should that fix land later — it takes only `command`, no `output`.
 
-**Fix — two new primitives, hand-wired per caller (this ADR's own established pattern).**
-`_hookio.py` gains `is_rest_merge_command(command)` (a `gh api` statement whose own segment also matches
-`/pulls/(\d+)/merge\b`) and `output_has_rest_merge_marker(output)` (a `"merged"\s*:\s*true` search — the
-GitHub REST merge endpoint's sole success signal, since `gh api` does not surface the HTTP status code
-separately from the response body). `_repo_target.py` gains `repo_from_rest_merge_path(command)` and
-`pr_number_from_rest_merge_path(command)`, both parsing the `repos/<owner>/<repo>/pulls/<N>/merge` path
-directly — the REST response body carries no PR number, so the command's own path is the only source.
-Each of the five hooks' own existing boolean "was this a successful merge" function
-(`merge_confirmed`/`is_successful_merge`/`merge_succeeded`) gets a two-line OR extension using these
-primitives, matching this ADR's `_check_merge_stmt` duplication convention rather than introducing a new
-cross-file combinator/policy function (see Amendment 15's own "no premature parameterization" reasoning,
-which this amendment follows rather than revisits).
-
-**Scope decision — direct marker only, not the live-confirmation fallback.** Every hook in this family
-also has a secondary safety net: when the direct marker check fails, a live `gh pr view` call
-(`should_confirm_via_gh`/`confirm_merge_via_gh`) confirms the merge another way. That fallback is
-gated on the *original* `gh pr merge` command shape (`scan_top_level(command, _check_merge_stmt)`) in
-four of the five hooks (`usage-snapshot.py`, `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`,
-`post-merge-tile-checkpoint.py`) and is deliberately left ungated for the REST shape: a REST call that
-fails to print `"merged":true` clearly (a malformed or truncated response) falls through to the same
-silent exit an unrecognized command already gets today. This narrower residual gap — not a defect in
-this fix — matches the issue's own suggested scope (direct-marker recognition only).
-
-**`post-pr-merge-project.py` needed more than a boolean OR.** Its `main()` gates on
-`scan_top_level(command, _check_merge_stmt)` *before* even reading `output`, so a REST command exited
-there before ever reaching a marker check. The gate widens to
-`scan_top_level(command, _check_merge_stmt) or is_rest_merge_command(command)`. Its `merge_succeeded`
-gains a `command` parameter (was `output`-only) for the same reason the other four hooks' predicates
-already take both. Two new pure combinators, `resolve_command_repo(command)` and
-`resolve_command_pr_number(command, output)`, fold the REST-path extraction in behind the existing
-`extract_repo_from_command`/`extract_pr_number_from_command` resolution — split out of `main()` for
-independent testability, mirroring `post-pr-merge-pull.py`'s existing `format_pull_message`/
-`plan_advisory` extraction pattern in this same file family. `post-pr-merge-pull.py`'s own `extract_repo`
-gains a REST-path step ahead of its cd-chain/git-remote subprocess fallback, since the REST path always
-names its target repo explicitly — the same precedence a PR URL already gets over inferring from cwd.
+**Two more hooks in the same PostToolUse family, not extended — filed, not silently deferred.**
+`pr-merge-reminder.py` (the journal-stub-on-merge reminder — a `claude/CLAUDE.md`-mandated session
+boundary) and `posttooluse-inert-advisory.py` (the ADR-053 inert-hook safety net) key on the identical
+`gh pr merge` command shape and were not named in dev-env#986's own issue text, which scoped this fix to
+exactly five hooks. Extending two more hooks — each with their own test suite — was judged a genuine
+scope expansion rather than folded in silently; filed as a follow-up issue and tiled rather than left as
+an unremarked gap this amendment's own "General lesson" below would otherwise contradict.
 
 **Coverage.** New primitive-level cases in `test_hookio.py` (`is_rest_merge_command`,
-`output_has_rest_merge_marker` — positive, negative, quoted-decoy, and heredoc-decoy) and
-`test_repo_target.py` (`repo_from_rest_merge_path`, `pr_number_from_rest_merge_path` — including a
-`/pulls/N/merge` vs `/pull/N` web-URL non-confusion case). Each of the five hooks' own test file gains a
-positive REST-merge case, a negative (no `"merged":true`) case, and — where the hook has its own
-command-shape decoy test suite — a quoted-string decoy case; `test_post_pr_merge_project.py` and
-`test_post_pr_merge_pull.py` additionally gain cases for the new/extended repo and PR-number resolution.
-Manually verified end-to-end by piping a synthetic `PostToolUse` payload (a REST-merge command +
-`"merged":true` response) through each of the five hooks via `pyw -3 <script>.py`, confirming each now
-reaches its normal success path instead of silently exiting 0 — and confirming the negative case (no
-`"merged":true`) still exits 0 cleanly for all five.
+`output_has_rest_merge_marker` — positive, negative, quoted-decoy, heredoc-decoy, the unquoted and
+quoted `{owner}`/`{repo}` placeholder forms, a line-continued invocation, the GET-method-not-matched
+negative case, all four method-flag spellings, and a same-command-different-segment method-flag
+non-leak case) and `test_repo_target.py` (`repo_from_rest_merge_path`, `pr_number_from_rest_merge_path`
+— including the placeholder-form split-resolution case and a `/pulls/N/merge` vs `/pull/N` web-URL
+non-confusion case). Each of the five hooks' own test file gains a positive REST-merge case, a negative
+(no `"merged":true`) case, and — where the hook has its own command-shape decoy test suite — a
+quoted-string decoy case; `test_post_pr_merge_project.py` and `test_post_pr_merge_pull.py` additionally
+gain decoy-hijack-prevention cases (a REST-path-shaped `--subject` value on an ordinary `gh pr merge`
+command must not hijack repo/PR-number resolution) and a case pinning `merge_succeeded`'s corrected
+command-shape-gated first branch. Manually verified end-to-end against the real hooks and a real,
+currently-open PR (this very PR, #990): the unquoted `{owner}`/`{repo}` placeholder form now resolves
+`post-pr-merge-project.py` all the way through to fetching the real PR's body and parsing its `Closes`
+reference; the `--subject`-decoy command correctly resolves via the *real* `gh pr merge` path rather
+than the decoy; and a failed REST merge now exits in under 200ms (confirming it never reaches the
+network-bound live-confirmation fallback) rather than paying a multi-second `gh pr view` round-trip.
 
 **General lesson.** A detection primitive shared across a hook family (this ADR's whole premise) still
 needs periodic re-auditing against *new* command shapes that accomplish the same underlying action a
@@ -1922,3 +2036,10 @@ different way — `gh pr merge`'s REST fallback is not a hypothetical, and the S
 family had already independently discovered and handled it before the PostToolUse side did. When one
 hook in a family gains a new detection case, checking whether its siblings need the identical extension
 is cheaper than waiting for each to be discovered separately through its own silent-failure incident.
+A second, sharper lesson from this amendment's own first draft: a predicate that is *stricter* than an
+existing sibling's is not automatically *safer* — the sibling's looser whole-command search existed for
+a reason (tolerating a documented CLI templating feature and a common multi-line shell idiom), and
+tightening scope without checking why the looser version was looser can silently reintroduce exactly the
+false negatives the stricter version was trying to prevent. Adversarial review (independent verification
+against the live code, not just re-reading the diff) is what caught this before merge rather than after
+a second silent-failure incident.

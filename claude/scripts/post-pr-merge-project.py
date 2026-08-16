@@ -105,8 +105,19 @@ def merge_succeeded(command: str, output: str) -> bool:
     so it needs its own success signal (the REST response body's
     `"merged":true`) — same marker-only strictness as above, just for a
     different command shape.
+
+    The first branch requires the `gh pr merge` command shape too (not
+    `output_has_merge_marker` alone) — a review finding (dev-env#986)
+    caught the omission: without it, a compound command satisfying only
+    the *REST*-command-shape half of `main()`'s widened gate could have
+    an unrelated chained invocation's own gh-pr-merge marker text in its
+    combined output wrongly attributed to this call. Matches the same
+    `scan_top_level(...) and output_has_merge_marker(...)` pairing already
+    used by the four sibling hooks' own OR-extension (`usage-snapshot.py`,
+    `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`,
+    `post-merge-tile-checkpoint.py`).
     """
-    if output_has_merge_marker(output):
+    if scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output):
         return True
     return is_rest_merge_command(command) and output_has_rest_merge_marker(output)
 
@@ -240,10 +251,22 @@ def resolve_command_repo(command: str) -> str | None:
     always names its target repo explicitly. Split out from main() so this
     combination is independently testable (mirrors post-pr-merge-pull.py's
     format_pull_message/plan_advisory extraction pattern).
+
+    The REST-path fallback is gated behind `is_rest_merge_command(command)` —
+    a review finding (dev-env#986) caught that calling
+    `repo_from_rest_merge_path` unconditionally on the raw command (with no
+    `is_rest_merge_command` gate, unlike `merge_succeeded`'s own REST branch)
+    let a `--subject`/`--body` decoy shaped like a REST merge path hijack
+    resolution even on an ordinary `gh pr merge` command that named no repo
+    of its own — e.g. `gh pr merge 42 --squash --subject "fix:
+    repos/other/repo/pulls/9/merge"` would have silently resolved to
+    "other/repo" instead of falling back to cwd's own config.
     """
     repo = extract_repo_from_command(command)
     if repo is not None:
         return repo
+    if not is_rest_merge_command(command):
+        return None
     return repo_from_rest_merge_path(command)
 
 
@@ -252,16 +275,19 @@ def resolve_command_pr_number(command: str, output: str) -> int | None:
 
     Prefers the command's own explicit number (`extract_pr_number_from_command`
     — a positional number or PR URL), then the REST merge fallback's own
-    `.../pulls/<N>/merge` path (dev-env#986), then falls back to the output's
-    success marker (`extract_pr_number`). Split out from main() for the same
-    testability reason as `resolve_command_repo`.
+    `.../pulls/<N>/merge` path (dev-env#986, gated behind
+    `is_rest_merge_command(command)` for the identical decoy-hijack reason
+    documented on `resolve_command_repo` above), then falls back to the
+    output's success marker (`extract_pr_number`). Split out from main() for
+    the same testability reason as `resolve_command_repo`.
     """
     num = extract_pr_number_from_command(command)
     if num is not None:
         return num
-    num = pr_number_from_rest_merge_path(command)
-    if num is not None:
-        return num
+    if is_rest_merge_command(command):
+        num = pr_number_from_rest_merge_path(command)
+        if num is not None:
+            return num
     return extract_pr_number(output)
 
 
@@ -359,7 +385,20 @@ def main() -> None:
     # extending the dev-env#559 URL-case guard below to the cd-chain case).
     # Reuses `_hookio.effective_merge_dir` (ADR-067), as its two sibling
     # merge-triggered hooks already do.
-    merge_dir = effective_merge_dir(command, cwd)
+    #
+    # `effective_merge_dir` only knows how to bound a cd-chain search at a
+    # literal `gh pr merge` token (ADR-067); for a REST-only command it finds
+    # no such token and falls back to treating the ENTIRE command as the
+    # search region — so a `cd` occurring AFTER the REST merge (e.g. `gh api
+    # ... && cd other-repo && npm test`) would be wrongly read as governing
+    # the merge, resolving to the wrong repo's config (dev-env#986 review
+    # finding). No established cd-chain convention exists for the REST shape,
+    # so skip the resolver entirely there and use cwd directly rather than
+    # risk a wrong-repo config resolution.
+    if scan_top_level(command, _check_merge_stmt):
+        merge_dir = effective_merge_dir(command, cwd)
+    else:
+        merge_dir = cwd
 
     config = load_config(merge_dir)
     if config is None:
@@ -404,6 +443,20 @@ def main() -> None:
     # failure (dev-env#489) — a missed move-to-Done has no other backstop, so
     # confirm via a live `gh pr view` call rather than silently giving up.
     if not merge_succeeded(command, output):
+        # The live `gh pr view` confirmation fallback below is scoped to the
+        # `gh pr merge` command shape only — matching the four sibling hooks'
+        # identical re-check inside their own "not confirmed" branch. A REST
+        # merge that failed to print a clean "merged":true (dev-env#986) falls
+        # through here rather than reaching that fallback: it is GraphQL-backed
+        # and would be a guaranteed-failing subprocess during the exact outage
+        # that motivates the REST path in the first place, and (per dev-env#557
+        # below) risks misattributing an unrelated already-merged PR when no PR
+        # number could be resolved from the REST path (a review finding —
+        # without this re-check the widened top-level gate above let a failed
+        # REST command reach this fallback, contradicting this hook's own
+        # documented scope decision in ADR-050 Amendment 23).
+        if not scan_top_level(command, _check_merge_stmt):
+            sys.exit(0)
         # `gh pr merge --help` (or any other non-mutating gh pr merge invocation
         # that prints no marker) can categorically never attempt a real merge —
         # treat it exactly like "not a merge command at all" rather than paying

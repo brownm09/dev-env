@@ -1518,7 +1518,9 @@ terminal CLI sessions). There, file a follow-up issue instead, so the capture st
 
 **Enforcement.** Two hooks back this checkpoint. `post-merge-tile-checkpoint.py`
 ([ADR-060](adr/060-post-merge-tile-checkpoint-hook.md)) is **command-keyed** — it fires the moment a
-`gh pr merge` you run succeeds, but is blind to auto-merge and pure `gh api` merges.
+`gh pr merge` you run succeeds (as of dev-env#986, [ADR-050 Amendment 23](adr/050-shared-hookio-sibling-hook-fixes.md),
+also the two-step REST merge fallback `gh api -X PUT .../pulls/N/merge`), but is still blind to
+auto-merge, which has no command-text signature at all for a command-keyed hook to match on.
 `stop-tile-enumeration-gate.py` ([ADR-088](adr/088-state-keyed-tile-enumeration-gate.md)) is
 **state-keyed** — a Stop hook that scans the transcript and blocks the stop when a PR reached merged
 state this session by *any* path but no tile-enumeration was recorded (a bare "no follow-ups" does not

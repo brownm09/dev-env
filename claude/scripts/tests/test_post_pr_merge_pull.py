@@ -197,6 +197,23 @@ def test_extract_repo_rest_merge_path() -> str:
     return "REST merge fallback path -> correct owner/repo regardless of cwd (dev-env#986)"
 
 
+def test_extract_repo_rest_decoy_in_subject_not_hijacked() -> str:
+    # dev-env#986 review finding: repo_from_rest_merge_path was called
+    # unconditionally on the raw command, so a --subject value shaped like a
+    # REST merge path could hijack resolution even for an ordinary gh pr
+    # merge command that named no repo of its own. Gated behind
+    # is_rest_merge_command(command) now (False here -- no genuine top-level
+    # `gh api` invocation is present), so this falls through to the
+    # git-remote subprocess fallback instead of the decoy -- proven with a
+    # cwd that has no git repo, so that fallback (uncovered by this suite
+    # per its own doc comment above) fails cleanly and returns None rather
+    # than the decoy "other/repo".
+    cmd = 'gh pr merge 42 --squash --subject "fix: handle repos/other/repo/pulls/9/merge path"'
+    repo = extract_repo(cmd, "C:/Users/brown/.claude/scratch/nonexistent-dir-for-dev-env-986-test")
+    assert repo != "other/repo", f"decoy repo leaked through: {repo!r}"
+    return "REST-path-shaped decoy inside --subject on a real gh pr merge -> not hijacked (dev-env#986)"
+
+
 def test_extract_repo_from_url_other_repo() -> str:
     repo = extract_repo(
         "gh pr merge https://github.com/brownm09/lifting-logbook/pull/99 --squash",
@@ -458,6 +475,7 @@ def main() -> int:
         ("REST merge fallback + \"merged\":true -> pulls (dev-env#986)", test_rest_merge_fallback_with_marker_pulls),
         ("REST merge fallback without marker ignored (dev-env#986)", test_rest_merge_fallback_without_marker_ignored),
         ("extract_repo: REST merge fallback path -> owner/repo (dev-env#986)", test_extract_repo_rest_merge_path),
+        ("extract_repo: REST-path decoy in --subject not hijacked (dev-env#986)", test_extract_repo_rest_decoy_in_subject_not_hijacked),
         ("extract_repo: GitHub URL in command -> owner/repo", test_extract_repo_from_url_in_command),
         ("extract_repo: URL for different repo", test_extract_repo_from_url_other_repo),
         ("extract_repo: --repo flag beats URL", test_extract_repo_repo_flag_takes_precedence),

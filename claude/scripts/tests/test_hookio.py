@@ -1138,6 +1138,64 @@ def test_is_rest_merge_command_heredoc_decoy_not_matched() -> str:
     return "REST path text inside a heredoc body -> not a top-level invocation"
 
 
+def test_is_rest_merge_command_unquoted_placeholder_form() -> str:
+    # dev-env#986 review finding: gh api's own documented {owner}/{repo} URL
+    # templating (https://cli.github.com/manual/gh_api) -- the form this
+    # repo's own runbooks and ADR-050 Amendment 23 itself write the command
+    # in -- contains a bare unquoted '{', which split_top_level treats as a
+    # statement separator, fragmenting the invocation across segments. An
+    # earlier same-segment-only design missed this exact, expected shape.
+    cmd = "gh api -X PUT repos/{owner}/{repo}/pulls/42/merge -f merge_method=squash"
+    assert is_rest_merge_command(cmd), "unquoted {owner}/{repo} placeholder form must be detected"
+    return "gh api -X PUT repos/{owner}/{repo}/pulls/N/merge (unquoted) -> True (dev-env#986)"
+
+
+def test_is_rest_merge_command_quoted_placeholder_form() -> str:
+    cmd = 'gh api -X PUT "repos/{owner}/{repo}/pulls/42/merge"'
+    assert is_rest_merge_command(cmd)
+    return "gh api -X PUT \"repos/{owner}/{repo}/pulls/N/merge\" (quoted) -> True"
+
+
+def test_is_rest_merge_command_line_continuation_form() -> str:
+    # dev-env#986 review finding: split_top_level splits on a bare newline by
+    # design (its own docstring, dev-env#836) and does not join backslash-LF
+    # continuations -- a multi-line gh api invocation must still be detected
+    # via the whole-command path search, same as the placeholder form above.
+    cmd = "gh api -X PUT \\\n  repos/brownm09/dev-env/pulls/42/merge \\\n  -f merge_method=squash"
+    assert is_rest_merge_command(cmd), "a backslash-line-continued REST merge invocation must be detected"
+    return "gh api -X PUT <line-continued> .../pulls/N/merge -> True (dev-env#986)"
+
+
+def test_is_rest_merge_command_get_method_not_matched() -> str:
+    # dev-env#986 review finding: gh api's default verb is GET, and
+    # GET /repos/{owner}/{repo}/pulls/{N}/merge is GitHub's own documented,
+    # genuinely read-only "Check if a pull request has been merged" endpoint
+    # -- sharing the identical path shape as the PUT merge endpoint. Without
+    # a method-flag requirement, a harmless status check would satisfy this
+    # predicate.
+    assert not is_rest_merge_command("gh api repos/brownm09/dev-env/pulls/42/merge")
+    return "gh api repos/.../pulls/N/merge (no -X PUT, defaults to GET) -> False"
+
+
+def test_is_rest_merge_command_method_flag_forms() -> str:
+    base = "repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash"
+    assert is_rest_merge_command(f"gh api -X PUT {base}")
+    assert is_rest_merge_command(f"gh api --method PUT {base}")
+    assert is_rest_merge_command(f"gh api --method=PUT {base}")
+    assert is_rest_merge_command(f"gh api -XPUT {base}")
+    assert is_rest_merge_command(f"gh.exe api -X PUT {base}")
+    return "-X PUT / --method PUT / --method=PUT / -XPUT / gh.exe -- all recognized"
+
+
+def test_is_rest_merge_command_method_flag_in_different_segment_not_matched() -> str:
+    # The PUT-method flag must be scoped to the SAME top-level segment as the
+    # `gh api` verb -- an unrelated `-X PUT` elsewhere in a chained command
+    # must not leak in and satisfy a plain read-only `gh api .../merge`.
+    cmd = "gh api repos/o/r/pulls/42/merge && curl -X PUT https://example.com"
+    assert not is_rest_merge_command(cmd)
+    return "-X PUT in a different chained statement does not satisfy the same-segment method check"
+
+
 def test_output_has_rest_merge_marker_true() -> str:
     output = '{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}'
     assert output_has_rest_merge_marker(output)
@@ -1266,6 +1324,12 @@ def main() -> int:
         ("is_rest_merge_command: gh pr merge (not gh api) -> False", test_is_rest_merge_command_not_gh_pr_merge),
         ("is_rest_merge_command: quoted decoy not matched", test_is_rest_merge_command_quoted_decoy_not_matched),
         ("is_rest_merge_command: heredoc decoy not matched", test_is_rest_merge_command_heredoc_decoy_not_matched),
+        ("is_rest_merge_command: unquoted {owner}/{repo} placeholder (dev-env#986)", test_is_rest_merge_command_unquoted_placeholder_form),
+        ("is_rest_merge_command: quoted {owner}/{repo} placeholder", test_is_rest_merge_command_quoted_placeholder_form),
+        ("is_rest_merge_command: line-continued invocation (dev-env#986)", test_is_rest_merge_command_line_continuation_form),
+        ("is_rest_merge_command: GET method (no -X PUT) not matched (dev-env#986)", test_is_rest_merge_command_get_method_not_matched),
+        ("is_rest_merge_command: method flag forms (-X PUT / --method PUT / -XPUT)", test_is_rest_merge_command_method_flag_forms),
+        ("is_rest_merge_command: method flag in different segment not matched", test_is_rest_merge_command_method_flag_in_different_segment_not_matched),
         ("output_has_rest_merge_marker: \"merged\":true -> True", test_output_has_rest_merge_marker_true),
         ("output_has_rest_merge_marker: absent -> False", test_output_has_rest_merge_marker_false),
     ]

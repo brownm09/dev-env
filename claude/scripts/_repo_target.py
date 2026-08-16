@@ -267,22 +267,47 @@ def positional_number(text: str) -> int | None:
 # rationale (the companion `is_rest_merge_command` / `output_has_rest_merge_marker`
 # command-shape/output-marker primitives live there; this module owns only the
 # command-string target extraction, per this file's own docstring).
-_REST_MERGE_PATH_RE = re.compile(
-    r"repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pulls/(\d+)/merge\b"
+#
+# Split into two INDEPENDENT regexes rather than one combined capture
+# (dev-env#986 review finding): `gh api`'s own documented `{owner}`/`{repo}`
+# URL templating (https://cli.github.com/manual/gh_api) means a genuine
+# invocation can carry the LITERAL strings `{owner}`/`{repo}` -- this module
+# has no way to know what gh would have resolved them to without an extra
+# `git remote`/network round-trip, so `repo_from_rest_merge_path` must return
+# None for that shape rather than guess. The PR number has no such
+# templating (it is always a literal digit in any real invocation), so
+# `pr_number_from_rest_merge_path` must still resolve it independently of
+# whether the repo half is a real slug or an unresolved placeholder --
+# coupling the two into one combined regex (the original shape) silently
+# lost the PR number too whenever the repo half didn't match: for a quoted
+# `{owner}`/`{repo}` REST merge, detection (`is_rest_merge_command`)
+# correctly succeeded, but PR-number extraction returned None right along
+# with the repo, so `post-pr-merge-project.py` fell through to
+# `pr_number is None -> sys.exit(0)` and silently skipped the Done move even
+# though the hook had already confirmed the merge.
+_REST_MERGE_REPO_RE = re.compile(
+    r"repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pulls/\d+/merge\b"
 )
+_REST_MERGE_PR_NUMBER_RE = re.compile(r"repos/\S+?/pulls/(\d+)/merge\b")
 
 
 def repo_from_rest_merge_path(command: str) -> str | None:
     """``owner/repo`` from a `gh api .../repos/<owner>/<repo>/pulls/<N>/merge`
-    REST path in *command*, or ``None``. *command* is used as-is — the same
-    convention as `repo_from_pr_url` (dev-env#986)."""
-    m = _REST_MERGE_PATH_RE.search(command)
+    REST path in *command*, or ``None`` — including when the repo half is
+    gh's own unresolved `{owner}`/`{repo}` URL-templating placeholder (see
+    this module's own comment above), which does not match the strict slug
+    shape and correctly returns None rather than the literal placeholder
+    text. *command* is used as-is — the same convention as `repo_from_pr_url`
+    (dev-env#986)."""
+    m = _REST_MERGE_REPO_RE.search(command)
     return m.group(1) if m else None
 
 
 def pr_number_from_rest_merge_path(command: str) -> int | None:
-    """The ``N`` from a `gh api .../repos/<owner>/<repo>/pulls/<N>/merge`
-    REST path in *command*, or ``None``. The REST response body carries no
-    PR number, so the command's own path is the only source (dev-env#986)."""
-    m = _REST_MERGE_PATH_RE.search(command)
-    return int(m.group(2)) if m else None
+    """The ``N`` from a `gh api .../pulls/<N>/merge` REST path in *command*,
+    or ``None``. Deliberately independent of whether the repo half resolves
+    (see this module's own comment above) — the REST response body carries
+    no PR number, so the command's own path is the only source
+    (dev-env#986)."""
+    m = _REST_MERGE_PR_NUMBER_RE.search(command)
+    return int(m.group(1)) if m else None

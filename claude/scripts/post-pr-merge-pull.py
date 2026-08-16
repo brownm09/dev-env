@@ -117,9 +117,15 @@ def extract_repo(command: str, cwd: str) -> str | None:
 
     # The REST merge fallback's own path always names its repo explicitly
     # (dev-env#986) — checked before falling back to cwd/cd-chain inference.
-    rest_repo = repo_from_rest_merge_path(command)
-    if rest_repo:
-        return rest_repo
+    # Gated behind `is_rest_merge_command(command)` (review finding): calling
+    # `repo_from_rest_merge_path` unconditionally on the raw command let a
+    # `--subject`/`--body` decoy shaped like a REST merge path hijack
+    # resolution even on an ordinary `gh pr merge` command that named no
+    # repo of its own.
+    if is_rest_merge_command(command):
+        rest_repo = repo_from_rest_merge_path(command)
+        if rest_repo:
+            return rest_repo
 
     # cd-chain scoping: a `cd /other/repo && gh pr merge` should query that
     # repo's remote, not cwd's (the cross-repo incident from the #442 session).
