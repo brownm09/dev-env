@@ -2137,3 +2137,14 @@ same question for it and the other four PostToolUse merge-consequence hooks — 
 than bundled here, since `usage-snapshot.py` is the one this ADR and dev-env#474 are specifically about,
 and a single hook's trace file is enough to determine whether the underlying mechanism (not just this one
 hook's wiring of it) is the actual gap. See `docs/TESTING.md` item 8 for the extended test coverage.
+
+**Post-review fix.** `/review` on the PR implementing this amendment (#998) flagged the trace log as
+unbounded — every merge-shaped invocation appends forever with no rotation or cap, unlike other
+per-session-scoped scratch artifacts in this hook family. `_log_merge_trace` now caps to the 500 most
+recent entries (a read-modify-write instead of a pure append, still wrapped in the same
+`except Exception: pass` never-raise contract). 500 is deliberately generous — merges are infrequent, so
+the cap exists to bound history over a period of years, not to actively trim in normal operation. The
+same review also flagged that `resolve_merge()`'s `"marker"` vs `"rest_marker"` reason label is a
+best-effort re-classification, not a strict decomposition of `merge_confirmed()`'s own `or` — documented
+in `resolve_merge`'s own docstring rather than changed, since the dual-marker case it describes (one
+command's output satisfying both merge mechanisms at once) is unrealistic.

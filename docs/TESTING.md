@@ -108,11 +108,10 @@ For a one-line navigational map of the test directory, see
    2026-08-16) both saw no snapshot appear with no way to tell which fallback branch actually ran; every
    merge-shaped invocation is now appended as one line to a best-effort JSONL trace
    (`C:/Users/brown/.claude/scratch/usage-snapshot-merge-trace.log` via `_log_merge_trace`) so the next
-   occurrence has a permanent record. `_log_merge_trace` itself is pinned only for its append/create-dirs
-   and never-raise-on-write-failure contract (real tempfile I/O, no network) — matching this repo's
-   convention of not unit-testing simple append-only debug loggers beyond that (see
-   `session-mode-prompt.py`'s own untested `_log`). The live usage API call is not covered (the repo
-   avoids urllib mocks).
+   occurrence has a permanent record. `_log_merge_trace` is pinned for its append/create-dirs,
+   never-raise-on-write-failure, and 500-line cap (a `/review` finding on PR #998 — an uncapped trace
+   grows forever) contract (real tempfile I/O, no network). The live usage API call is not covered (the
+   repo avoids urllib mocks).
 
    ```bash
    py -3 claude/scripts/tests/test_usage_snapshot.py

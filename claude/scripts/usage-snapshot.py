@@ -93,6 +93,7 @@ USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 BETA_HEADER = "oauth-2025-04-20"
 KEEP_WARM_PS1 = "C:/Users/brown/.claude/scripts/keep-token-warm.ps1"
 MERGE_TRACE_PATH = "C:/Users/brown/.claude/scratch/usage-snapshot-merge-trace.log"
+MERGE_TRACE_MAX_LINES = 500
 
 # --- merge detection (command-shape scan; success confirmed via _hookio's
 # output marker — mirrors post-pr-merge-project.py) ---
@@ -150,6 +151,15 @@ def resolve_merge(
                                   "help_only", "no_confirm_needed", "gh_view_confirmed",
                                   "gh_view_unconfirmed"
 
+    "marker" vs "rest_marker" is a best-effort re-classification for the trace, not a
+    strict decomposition of merge_confirmed()'s own `or` -- in the practically-never-seen
+    case where a single command's output satisfies BOTH the `gh pr merge` marker and the
+    REST "merged":true marker at once, this reports "rest_marker" even if
+    merge_confirmed()'s short-circuit actually matched via the `gh pr merge` branch first.
+    Not worth branching on (two distinct merge mechanisms succeeding in one Bash call is
+    unrealistic), but the trace's `reason` field should be read as "which shape look
+    confirmed", not "which internal branch fired", in that edge case.
+
     Mirrors main()'s pre-existing branch order exactly (marker check, then
     `gh pr merge`-shape check, then `--help`-only guard, then the
     `should_confirm_via_gh` cost gate, then the live `gh pr view` fallback) so
@@ -200,17 +210,27 @@ def resolve_merge(
     return {"is_merge_shaped": True, "confirmed": confirmed_pr is not None, "reason": reason}
 
 
-def _log_merge_trace(entry: dict, path: str = MERGE_TRACE_PATH) -> None:
-    """Best-effort append of one merge-decision trace line. Never raises.
+def _log_merge_trace(entry: dict, path: str = MERGE_TRACE_PATH, max_lines: int = MERGE_TRACE_MAX_LINES) -> None:
+    """Best-effort append of one merge-decision trace line, capped to the most
+    recent *max_lines* entries. Never raises.
 
-    Mirrors session-mode-prompt.py's `_log` (same append-only JSON-line
-    pattern, same never-raise contract) -- an observability aid must never
-    become a new way to break the hook.
+    Merges are infrequent, so an uncapped append (mirroring session-mode-prompt.py's
+    own uncapped `_log`) would take years to matter in practice -- but this trace
+    exists specifically so a future occurrence of dev-env#474's question can be
+    answered from history, so a deliberate cap (rather than accepting unbounded
+    growth) keeps that history bounded without ever needing a separate cleanup pass.
+    500 lines is generous for a low-frequency event while keeping the read-modify-write
+    below cheap. An observability aid must never become a new way to break the hook --
+    any I/O failure here (including an unreadable pre-existing file) is swallowed.
     """
     try:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, sort_keys=True) + "\n")
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+        lines.append(json.dumps(entry, sort_keys=True))
+        if len(lines) > max_lines:
+            lines = lines[-max_lines:]
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except Exception:
         pass
 

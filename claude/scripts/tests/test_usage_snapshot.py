@@ -95,12 +95,12 @@ traced return value instead of an implicit `sys.exit(0)` call site. The tests
 below pin each `reason` branch, using an injected `confirm_fn` for the two
 live-`gh pr view` outcomes (mirroring `attempt_token_refresh`'s fake-injection
 pattern) so the network call itself is never exercised. `_log_merge_trace` is
-exercised once end-to-end against a real temp file (mirroring
-`find_session_jsonl`'s tempfile style below) to pin the append-only,
-never-raise contract; it is otherwise a thin, intentionally-untested I/O
-wrapper around the pure `resolve_merge` result, matching this repo's existing
-convention of not unit-testing simple append-only debug loggers directly (see
-session-mode-prompt.py's own untested `_log`).
+exercised end-to-end against real temp files (mirroring `find_session_jsonl`'s
+tempfile style below) to pin its append-only, never-raise, and max_lines-cap
+contract (the cap was added post-review: an uncapped trace grows forever,
+unlike session-mode-prompt.py's own uncapped `_log` this otherwise mirrors) —
+it is otherwise a thin, intentionally-lightly-tested I/O wrapper around the
+pure `resolve_merge` result.
 
 The live network call (`fetch_usage`) is intentionally not tested — the repo
 avoids urllib mocks, consistent with the other script tests.
@@ -577,6 +577,20 @@ def test_log_merge_trace_swallows_write_failure() -> str:
     return "_log_merge_trace swallows a write failure (path is a directory) without raising"
 
 
+def test_log_merge_trace_caps_to_max_lines() -> str:
+    # dev-env#474 review finding: an uncapped trace grows forever. Writing 5
+    # entries with max_lines=3 must keep only the 3 most recent.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "trace.log")
+        for i in range(5):
+            _log_merge_trace({"i": i}, path=path, max_lines=3)
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+        import json as _json
+        indices = [_json.loads(ln)["i"] for ln in lines]
+        assert indices == [2, 3, 4], indices
+    return "_log_merge_trace caps to the most recent max_lines entries, dropping the oldest"
+
+
 def test_status_label_bands_are_ascii() -> str:
     # PR5 (dev-env#736): this returned emoji outside cp1252; on the raw stderr channel
     # the print raised, flipping exit 2 -> 0 and silently dropping the whole snapshot.
@@ -757,6 +771,7 @@ def main() -> int:
         ("resolve_merge: live gh pr view finds nothing -> gh_view_unconfirmed", test_resolve_merge_gh_view_unconfirmed_reason),
         ("_log_merge_trace: appends JSON lines, creates parent dirs", test_log_merge_trace_appends_and_never_raises),
         ("_log_merge_trace: swallows write failure", test_log_merge_trace_swallows_write_failure),
+        ("_log_merge_trace: caps to max_lines, drops oldest", test_log_merge_trace_caps_to_max_lines),
         (
             "nested worktree convention still resolves (dev-env#775)",
             test_find_session_jsonl_resolves_nested_worktree_convention,
