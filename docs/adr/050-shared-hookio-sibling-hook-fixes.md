@@ -2096,3 +2096,44 @@ never load-bearing for any *previously* pinned behavior, while closing the gap f
 this file. Full suite: 153 tests (up from 152), all passing.
 
 See [docs/TESTING.md](../TESTING.md) item 48 for the corresponding test-index update.
+
+## Amendment 25 (2026-08-16) — tracing `usage-snapshot.py`'s merge-confirmation decision itself (dev-env#474 follow-up)
+
+**The still-open question Amendment 1/3/8 left unanswered.** Amendment 1 fixed dev-env#474's original
+symptom (an exit-code gate that dropped the snapshot on every worktree merge); Amendment 3 added the
+live `gh pr view` fallback for when gh's own success marker doesn't survive to `tool_response`
+(dev-env#489); Amendment 8 rolled that fallback out to `usage-snapshot.py` and its four siblings
+(dev-env#504). All three landed, tested, and correct as of 2026-07-02. But two live reproductions
+*after* all three landed — merging PR #954 on 2026-08-07 and PR #988 on 2026-08-16, both ordinary
+worktree-holds-`main` merges — still saw no `### Usage Snapshot (post-merge)` block appear. dev-env#489's
+own investigation (and its sibling dev-env#496) had already established, live, that this class of
+failure requires a human to be *present and instrumented* at the exact moment of a real worktree-merge
+failure to diagnose — there was no way, after the fact, to tell whether the marker was lost (expected,
+per dev-env#489's buffering-race hypothesis) and the `gh pr view` fallback then also failed to confirm,
+or whether some earlier branch (the `--help`-only guard, `should_confirm_via_gh`'s cost gate) incorrectly
+short-circuited before the fallback was ever attempted. Neither PR #954 nor PR #988 had that live
+instrumentation in place, so both reproductions dead-ended exactly like dev-env#496 had already warned
+they would.
+
+**The fix is observability, not new detection logic.** The decision logic in `main()` — `merge_confirmed`
+→ `scan_top_level` shape check → `is_merge_help_only` guard → `should_confirm_via_gh` cost gate → the
+live `confirm_merge_via_gh` fallback — was already correct and already covered by
+`test_merge_confirmed_*`/`test_help_command_*`. What was missing was a way to know, after the fact,
+*which* of those branches fired for a given real invocation. `resolve_merge(command, output, exit_code,
+cwd)` is a straight extraction of that existing branching into one pure function returning a `reason` of
+`"marker"` / `"rest_marker"` / `"not_merge_shape"` / `"help_only"` / `"no_confirm_needed"` /
+`"gh_view_confirmed"` / `"gh_view_unconfirmed"` — a pure refactor, not a behavior change (the existing
+`test_merge_confirmed_*` suite and the `is_merge_help_only` composition tests all pass unmodified against
+it). `main()` now appends the resolution — plus `cwd`, `exit_code`, and a timestamp — as one best-effort
+JSON line to `C:/Users/brown/.claude/scratch/usage-snapshot-merge-trace.log` (`_log_merge_trace`, wrapped
+in a bare `except Exception: pass`, matching `session-mode-prompt.py`'s own untested `_log` — an
+observability aid must never become a new way to break the hook) for **every** merge-shaped command,
+confirmed or not, so the next occurrence answers dev-env#489/#496's open question directly from the trace
+file instead of requiring another live-instrumented reproduction.
+
+**Scope.** Only `usage-snapshot.py` gained this trace in this amendment. `pr-merge-reminder.py` was also
+silent for PR #954 per the dev-env#474 comment thread, and the identical trace mechanism would answer the
+same question for it and the other four PostToolUse merge-consequence hooks — filed as a follow-up rather
+than bundled here, since `usage-snapshot.py` is the one this ADR and dev-env#474 are specifically about,
+and a single hook's trace file is enough to determine whether the underlying mechanism (not just this one
+hook's wiring of it) is the actual gap. See `docs/TESTING.md` item 8 for the extended test coverage.

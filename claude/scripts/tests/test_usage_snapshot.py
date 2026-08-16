@@ -85,6 +85,23 @@ dead-end), and — via injected `exe_fn`/`run_fn`, matching the `attempt_token_r
 fake-injection style — that `cli_auth_status` degrades to None (no spawn) off MSIX
 and on subprocess error, and classifies "out" on the desktop-app signature.
 
+dev-env#474 (follow-up): live reproductions after the original fix landed (PR
+#954 on 2026-08-07, PR #988 on 2026-08-16) both saw no snapshot appear, and
+neither investigation could tell which branch of the merge-confirmation
+fallback actually ran. `resolve_merge()` now makes every branch of that
+decision (marker matched, REST marker matched, not a merge shape, `--help`
+guard, no-confirm-needed, live `gh pr view` confirmed/unconfirmed) an explicit,
+traced return value instead of an implicit `sys.exit(0)` call site. The tests
+below pin each `reason` branch, using an injected `confirm_fn` for the two
+live-`gh pr view` outcomes (mirroring `attempt_token_refresh`'s fake-injection
+pattern) so the network call itself is never exercised. `_log_merge_trace` is
+exercised once end-to-end against a real temp file (mirroring
+`find_session_jsonl`'s tempfile style below) to pin the append-only,
+never-raise contract; it is otherwise a thin, intentionally-untested I/O
+wrapper around the pure `resolve_merge` result, matching this repo's existing
+convention of not unit-testing simple append-only debug loggers directly (see
+session-mode-prompt.py's own untested `_log`).
+
 The live network call (`fetch_usage`) is intentionally not tested — the repo
 avoids urllib mocks, consistent with the other script tests.
 
@@ -119,6 +136,8 @@ get_access_token = usage_snapshot.get_access_token
 parse_auth_status = usage_snapshot.parse_auth_status
 cli_auth_status = usage_snapshot.cli_auth_status
 merge_confirmed = usage_snapshot.merge_confirmed
+resolve_merge = usage_snapshot.resolve_merge
+_log_merge_trace = usage_snapshot._log_merge_trace
 status_label = usage_snapshot.status_label
 format_snapshot = usage_snapshot.format_snapshot
 find_session_jsonl = usage_snapshot.find_session_jsonl
@@ -445,6 +464,119 @@ def test_unresolved_real_merge_is_not_help_only() -> str:
     return "unresolved real merge (no marker, non-help) -> is_merge_help_only False (fallback unaffected)"
 
 
+# ---------------------------------------------------------------------------
+# resolve_merge / _log_merge_trace (dev-env#474 follow-up)
+# ---------------------------------------------------------------------------
+
+def test_resolve_merge_marker_reason() -> str:
+    command = "gh pr merge --squash --delete-branch"
+    output = (
+        "Squashed and merged pull request #466 (fix: correct scheduled-tasks/routines "
+        "junction topology in docs)\n"
+        "error: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'"
+    )
+    result = resolve_merge(command, output, exit_code=1, cwd="C:/repo")
+    assert result == {"is_merge_shaped": True, "confirmed": True, "reason": "marker"}, result
+    return "worktree-merge marker present -> confirmed, reason='marker'"
+
+
+def test_resolve_merge_rest_marker_reason() -> str:
+    command = "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash"
+    output = '{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}'
+    result = resolve_merge(command, output, exit_code=0, cwd="C:/repo")
+    assert result == {"is_merge_shaped": True, "confirmed": True, "reason": "rest_marker"}, result
+    return "REST merge marker present -> confirmed, reason='rest_marker' (dev-env#986)"
+
+
+def test_resolve_merge_not_merge_shape_for_unrelated_command() -> str:
+    result = resolve_merge("git push origin main", "some output", exit_code=0, cwd="C:/repo")
+    assert result == {"is_merge_shaped": False, "confirmed": False, "reason": "not_merge_shape"}, result
+    return "unrelated command -> not merge-shaped, not confirmed, not traced by main()"
+
+
+def test_resolve_merge_not_merge_shape_still_traces_unconfirmed_rest_call() -> str:
+    # A REST-merge-shaped call that ran but didn't report "merged":true (e.g. a
+    # conflict/failure response) doesn't satisfy `_check_merge_stmt` (it's not a
+    # `gh pr merge` shape), but IS still worth tracing as an informative outcome.
+    command = "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash"
+    output = '{"message":"Merge already in progress"}'
+    result = resolve_merge(command, output, exit_code=1, cwd="C:/repo")
+    assert result == {"is_merge_shaped": True, "confirmed": False, "reason": "not_merge_shape"}, result
+    return "REST call without merged:true -> unconfirmed but still traced (is_merge_shaped=True)"
+
+
+def test_resolve_merge_help_only_reason() -> str:
+    command = "gh pr merge --help"
+    output = "FLAGS\n      --admin   Use administrator privileges to merge a pull request"
+    result = resolve_merge(command, output, exit_code=0, cwd="C:/repo")
+    assert result == {"is_merge_shaped": True, "confirmed": False, "reason": "help_only"}, result
+    return "gh pr merge --help -> not confirmed, reason='help_only' (dev-env#557)"
+
+
+def test_resolve_merge_no_confirm_needed_reason() -> str:
+    # A queued --auto exits 0 with no marker -- should_confirm_via_gh is False
+    # (exit_code == 0), so no live gh pr view call is paid.
+    command = "gh pr merge --auto --squash --delete-branch"
+    output = "Pull request #466 will be automatically merged when checks pass"
+
+    def confirm_fn(*a, **k):
+        raise AssertionError("must not pay a live gh pr view call on exit 0")
+
+    result = resolve_merge(command, output, exit_code=0, cwd="C:/repo", confirm_fn=confirm_fn)
+    assert result == {"is_merge_shaped": True, "confirmed": False, "reason": "no_confirm_needed"}, result
+    return "queued --auto, exit 0 -> not confirmed, reason='no_confirm_needed', no network call paid"
+
+
+def test_resolve_merge_gh_view_confirmed_reason() -> str:
+    # The dev-env#489/#496 shape: marker lost, non-zero exit -> live gh pr view
+    # fallback is paid and confirms the merge.
+    command = "gh pr merge --squash --delete-branch"
+    output = "failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'"
+    calls = []
+
+    def confirm_fn(pr_number, repo, cwd):
+        calls.append((pr_number, repo, cwd))
+        return 954
+
+    result = resolve_merge(command, output, exit_code=1, cwd="C:/repo", confirm_fn=confirm_fn)
+    assert result == {"is_merge_shaped": True, "confirmed": True, "reason": "gh_view_confirmed"}, result
+    assert calls == [(None, "", "C:/repo")], calls
+    return "marker lost + live gh pr view confirms -> confirmed, reason='gh_view_confirmed' (dev-env#489/#496)"
+
+
+def test_resolve_merge_gh_view_unconfirmed_reason() -> str:
+    # Live gh pr view found nothing (genuinely failed merge, or the network call
+    # itself errored/timed out) -> stays unconfirmed, distinguishable in the
+    # trace from every other unconfirmed reason.
+    command = "gh pr merge --squash --delete-branch"
+    output = "failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'"
+    result = resolve_merge(command, output, exit_code=1, cwd="C:/repo", confirm_fn=lambda *a, **k: None)
+    assert result == {"is_merge_shaped": True, "confirmed": False, "reason": "gh_view_unconfirmed"}, result
+    return "marker lost + live gh pr view finds nothing -> not confirmed, reason='gh_view_unconfirmed'"
+
+
+def test_log_merge_trace_appends_and_never_raises() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "nested" / "trace.log")
+        _log_merge_trace({"reason": "marker", "confirmed": True}, path=path)
+        _log_merge_trace({"reason": "gh_view_unconfirmed", "confirmed": False}, path=path)
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 2, lines
+        import json as _json
+        assert _json.loads(lines[0])["reason"] == "marker", lines[0]
+        assert _json.loads(lines[1])["reason"] == "gh_view_unconfirmed", lines[1]
+    return "_log_merge_trace appends one JSON line per call, creating parent dirs as needed"
+
+
+def test_log_merge_trace_swallows_write_failure() -> str:
+    # An unwritable path (a directory, not a file) must not raise -- matches
+    # the never-raise contract every other best-effort I/O helper in this
+    # hook family carries.
+    with tempfile.TemporaryDirectory() as tmp:
+        _log_merge_trace({"reason": "marker"}, path=tmp)  # tmp is a directory, not a file
+    return "_log_merge_trace swallows a write failure (path is a directory) without raising"
+
+
 def test_status_label_bands_are_ascii() -> str:
     # PR5 (dev-env#736): this returned emoji outside cp1252; on the raw stderr channel
     # the print raised, flipping exit 2 -> 0 and silently dropping the whole snapshot.
@@ -612,6 +744,19 @@ def main() -> int:
         ("REST merge path in quoted string -> not confirmed (dev-env#986)", test_merge_confirmed_false_for_rest_path_in_quoted_string),
         ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_merge_confirmed_and_is_help_only),
         ("unresolved real merge: guard does not suppress fallback", test_unresolved_real_merge_is_not_help_only),
+        ("resolve_merge: marker -> confirmed", test_resolve_merge_marker_reason),
+        ("resolve_merge: REST marker -> confirmed", test_resolve_merge_rest_marker_reason),
+        ("resolve_merge: unrelated command -> not merge-shaped", test_resolve_merge_not_merge_shape_for_unrelated_command),
+        (
+            "resolve_merge: unconfirmed REST call still traced",
+            test_resolve_merge_not_merge_shape_still_traces_unconfirmed_rest_call,
+        ),
+        ("resolve_merge: --help -> help_only", test_resolve_merge_help_only_reason),
+        ("resolve_merge: queued --auto -> no_confirm_needed, no network call", test_resolve_merge_no_confirm_needed_reason),
+        ("resolve_merge: live gh pr view confirms -> gh_view_confirmed", test_resolve_merge_gh_view_confirmed_reason),
+        ("resolve_merge: live gh pr view finds nothing -> gh_view_unconfirmed", test_resolve_merge_gh_view_unconfirmed_reason),
+        ("_log_merge_trace: appends JSON lines, creates parent dirs", test_log_merge_trace_appends_and_never_raises),
+        ("_log_merge_trace: swallows write failure", test_log_merge_trace_swallows_write_failure),
         (
             "nested worktree convention still resolves (dev-env#775)",
             test_find_session_jsonl_resolves_nested_worktree_convention,
