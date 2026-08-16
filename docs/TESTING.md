@@ -1451,8 +1451,15 @@ For a one-line navigational map of the test directory, see
     non-capturing, since nothing there needs the PR number) — it now runs only to extract the
     number after `is_rest_merge_command` has already confirmed a genuine invocation.
     `test_gh_api_merge_detected`'s fixture already used `-X PUT`, so this tightening changed no
-    test's expected outcome — confirmed by re-running the full suite (152 passed) both before and
-    after the change landed no diff in pass count.
+    existing test's expected outcome. A new regression test,
+    `test_gh_api_get_no_put_flag_not_merged`, pins the negative case at THIS file's own
+    integration level (not just `_hookio`'s primitive-level
+    `test_is_rest_merge_command_get_method_not_matched`): a `gh api .../pulls/N/merge` call with
+    no `-X PUT`/`--method PUT` flag — gh's default verb is GET, GitHub's own documented read-only
+    "check if merged" endpoint — must not add a PR to `session_merged_prs`'s merged set, even
+    against a synthetic `"merged":true` output (the real GET endpoint never returns that body —
+    204/404 only — so the test pins that the METHOD check gates this branch, not just the output
+    shape).
 
     The dangling-created-issue trigger (ADR-092) adds its own pure-helper coverage, fully independent
     of the merged-PR path above: `session_created_issues` (issue-number/repo extraction from a

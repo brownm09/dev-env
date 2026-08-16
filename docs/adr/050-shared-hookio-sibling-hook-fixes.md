@@ -2084,9 +2084,15 @@ capturing local regex alongside a shared non-capturing gate rather than force on
 both jobs.
 
 **Verification.** `test_gh_api_merge_detected` (`claude/scripts/tests/test_stop_tile_enumeration_gate.py`)
-already used `-X PUT` in its fixture, so the tightened check changes no test's expected outcome — the
-full suite (152 tests) and `test_hookio.py` (122 tests) both pass unchanged. No other test in the file
-exercises a bare-GET or method-flag-less `gh api .../pulls/N/merge` shape, confirming the looser check
-was never load-bearing for any pinned behavior.
+already used `-X PUT` in its fixture, so the tightened check changes no existing test's expected outcome
+— `test_hookio.py` (122 tests) passes unchanged. A new regression test,
+`test_gh_api_get_no_put_flag_not_merged`, was added to pin the negative case at this file's own
+integration level: a `gh api .../pulls/N/merge` call with no method flag must not add a PR to
+`session_merged_prs`'s merged set, even against a synthetic `"merged":true` output (the real GET
+endpoint never returns that body). Before this PR, only `_hookio`'s own primitive-level test
+(`test_is_rest_merge_command_get_method_not_matched`) covered this case — no test in
+`stop-tile-enumeration-gate.py`'s own suite pinned it at the caller, confirming the looser check was
+never load-bearing for any *previously* pinned behavior, while closing the gap for future changes to
+this file. Full suite: 153 tests (up from 152), all passing.
 
 See [docs/TESTING.md](../TESTING.md) item 48 for the corresponding test-index update.
