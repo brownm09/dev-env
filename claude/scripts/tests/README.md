@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 80 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 92 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 81 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 93 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -44,6 +44,7 @@ production code.
 | `test_hookio.py` | `_hookio.py` | Shared PostToolUse command-output reader, merge-marker detection, and the `scan_top_level` command-shape parser five PostToolUse hooks import. |
 | `test_hookout.py` | `_hookout.py` | The shared hook advisory/block emitter — one encoding of the stdout/stderr/exit-code channel table every hook should route through. |
 | `test_hookutil.py` | `_hookutil.py` | Sentinel-file, transcript-locate, transcript-record-reader, and heartbeat-recording helpers shared across Stop/PostToolUse hooks. |
+| `test_journal_canon.py` | `_journal_canon.py` | Shared engineering-journal canonical-path resolution (env-override-or-default plus one comparison normalization) used by the four hooks that each independently duplicated this pattern. |
 | `test_journal_compose_force.py` | `_journal_compose_force.py` | Marker read/write/freshness helpers behind the journal-compose today-guard's mechanical `--force` enforcement. |
 | `test_journal_schema.py` | `_journal_schema.py` | Shared manifest/open-PR/tile shard schema and validation helpers, used by the write-time advisory hook and the pre-compose validator. |
 | `test_journal_shards.py` | `_journal_shards.py` | Shared numeric-shard (open-PR + tile) and legacy `open-prs.jsonl` reader, plus `project_dirs` — the `sessions/<project>/` walk that precedes both — used by `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, and `post-compact.py`. |

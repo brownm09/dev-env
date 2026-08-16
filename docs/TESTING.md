@@ -3036,3 +3036,42 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_retro_chain_status.py
     ```
+
+92. **journal-canon shared-module test** — required when changing `claude/scripts/_journal_canon.py`
+    or the four hooks that delegate to it (dev-env#982, [ADR-133](adr/133-shared-journal-canon-module.md)).
+    Exercises the pure `resolve_journal_path()` / `normalize_journal_path()` helpers offline (no I/O, no
+    subprocess): default resolution when the env var is unset, an explicit `default` override, env-var
+    override under two of the four hooks' real env-var names (`CANONICAL_MUTATE_GUARD_JOURNAL_PATH`,
+    `WORKTREE_PATH_CHECK_JOURNAL_PATH`) including an explicitly-empty override falling back to the
+    default (dev-env#982 review — an empty override backs a blocking guard's exemption allowlist in two
+    of the four consumers, so it must not silently resolve to a degenerate non-empty normalized value),
+    and that `resolve_journal_path()` returns the value verbatim (no case/separator normalization —
+    needed by `journal-canonical-guard.py`, which interpolates it into printed advisory text and a
+    subprocess `cwd=`). `normalize_journal_path()` is pinned for case-insensitivity and mixed-separator
+    agreement (both guarded by an explicit `os.name == "nt"` precondition assertion — `os.path.normcase`
+    is the identity function on POSIX, and this repo is Windows-only by CLAUDE.md declaration and CI
+    matrix), trailing-slash agreement, and `.`/`..`/double-separator collapsing — a capability the
+    legacy `.replace("\\","/").rstrip("/").lower()` scheme two of the four hooks used did not have. A
+    dedicated test loads the REAL `pre-tool-use-canonical-mutate-guard.py` and
+    `pre-tool-use-worktree-path-check.py` modules (not a reimplementation) and asserts their own
+    `_normalize_path()` / `_normalize()` wrappers delegate to `normalize_journal_path()` byte-for-byte —
+    both wrappers were converted from independent, byte-identical copies of the algorithm to genuine
+    delegation in dev-env#982's review round, closing a drift risk the original PR left undocumented. A
+    separate test pins the one found divergence from the retired legacy scheme — empty/None input
+    (`"" -> ""` under the legacy scheme vs. `"" -> "."` under the new one, since `os.path.normpath("")`
+    is `"."`) — as a documented, provably-unreachable-in-production boundary rather than a silent trap,
+    matching `_worktree_canon.py`'s own precedent (item 35 above). All four consumer hooks' own existing
+    test suites (`test_canonical_mutate_guard.py`, `test_journal_canonical_guard.py`,
+    `test_journal_draft_worktree_guard.py`, `test_worktree_path_check.py`) required zero edits for the
+    original extraction — confirmed by running each after the refactor, not just by tracing call sites;
+    re-run all four alongside this module's own suite on any future change, since two of them
+    (`pre-tool-use-canonical-mutate-guard.py`, `pre-tool-use-worktree-path-check.py`) now call into
+    `_journal_canon.py` at normalization time, not just at module-load time for their constants.
+
+    ```bash
+    py -3 claude/scripts/tests/test_journal_canon.py
+    py -3 claude/scripts/tests/test_canonical_mutate_guard.py
+    py -3 claude/scripts/tests/test_journal_canonical_guard.py
+    py -3 claude/scripts/tests/test_journal_draft_worktree_guard.py
+    py -3 claude/scripts/tests/test_worktree_path_check.py
+    ```

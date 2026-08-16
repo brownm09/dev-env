@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **90 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **91 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -33,7 +33,7 @@ exercises these scripts: `py -3 claude/scripts/run-hook-tests.py`.
 `_foo.py` files — imported by other scripts, never directly invoked or wired as a hook
 themselves. None of these get their own row in `docs/REFERENCE.md`'s Hooks/Utilities tables
 (they're described in prose paragraphs at the top of the Hooks section instead); this table is
-the one place all 18 are listed together. Each has its own test file in
+the one place all 19 are listed together. Each has its own test file in
 [`tests/README.md`](tests/README.md) → Shared support modules.
 
 | Module | Purpose | Consumers |
@@ -45,6 +45,7 @@ the one place all 18 are listed together. Each has its own test file in
 | `_hookio.py` | PostToolUse command-output reader (`read_command_output`), merge-marker detection, the `scan_top_level`/`is_help_only` command-shape parsers. | 5 PostToolUse hooks + `pr-merge-reminder.py` |
 | `_hookout.py` | Shared advisory/block emitter — one encoding of the stdout/stderr/exit-code channel table every hook should route through (`emit_advisory`, `emit_block`, `ascii_sanitize`). | `journal-stop-check.py`, `posttooluse-inert-advisory.py`, `token-tracker.py`, `dev-env-sync.py`, others mid-migration |
 | `_hookutil.py` | Sentinel-file helpers, transcript-locate, transcript-record readers, and `record_heartbeat()` (called first-thing by every wired hook's `main()`). | Most Stop/UserPromptSubmit hooks |
+| `_journal_canon.py` | Shared engineering-journal canonical-path resolution (`resolve_journal_path`, `normalize_journal_path`) — env-override-or-default plus one canonical comparison normalization, single-sourcing what four hooks each independently duplicated. | `pre-tool-use-canonical-mutate-guard.py`, `journal-canonical-guard.py`, `pre-tool-use-journal-draft-worktree-guard.py`, `pre-tool-use-worktree-path-check.py` |
 | `_journal_compose_force.py` | Marker read/write/freshness helpers behind `/journal-compose`'s mechanical `--force` enforcement. | `journal-compose-force-resolve.py` (writer), `pre-tool-use-journal-compose-force-guard.py` (reader) |
 | `_journal_schema.py` | Shared manifest/open-PR/tile shard schema + validation. Presence checks (`missing_required_fields`, `missing_open_pr_fields`, `missing_tile_fields`) and *shape* checks for a present-but-wrong value (`malformed_manifest_fields` — `tokens`; `malformed_tile_fields` — `cwd`), plus `parse_manifest_text` / `decode_shard_bytes`. | `validate-manifest.py`, `journal-shard-write-advisory.py`, `stub-push-archive-reminder.py` |
 | `_journal_shards.py` | Shared numeric-shard + legacy `open-prs.jsonl` reader (`iter_numeric_shards`, with `iter_pr_shards` / `iter_tile_shards` as named delegations; `read_legacy_entries`), plus `project_dirs` — the `sessions/<project>/` walk both reconcile hooks run before reading either shard kind. | `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, `post-compact.py` |

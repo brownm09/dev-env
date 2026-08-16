@@ -90,6 +90,7 @@ import sys
 
 from _hookio import is_absolute_path, split_top_level
 import _hookutil
+import _journal_canon
 
 # draft/YYYY-MM-DD, or draft/YYYY-MM-DD-recovery (docs/REFERENCE.md's
 # documented recovery-branch suffix for the draft/YYYY-MM-DD-recovery
@@ -101,11 +102,10 @@ DRAFT_BRANCH_RE = re.compile(r"^draft/\d{4}-\d{2}-\d{2}(-recovery)?$")
 # of the developer's actual engineering-journal checkout — mirrors
 # journal-canonical-guard.py's JOURNAL_CANONICAL_GUARD_REPO_PATH and
 # pre-tool-use-canonical-mutate-guard.py's CANONICAL_MUTATE_GUARD_JOURNAL_PATH.
-JOURNAL_REPO = (
-    os.environ.get("JOURNAL_DRAFT_WORKTREE_GUARD_REPO_PATH", "C:/Users/brown/Git/engineering-journal")
-    .replace("\\", "/")
-    .rstrip("/")
-    .lower()
+# Constant + normalization now single-sourced in _journal_canon.py (dev-env#982,
+# ADR-133) — three other hooks duplicated this identical pattern.
+JOURNAL_REPO = _journal_canon.normalize_journal_path(
+    _journal_canon.resolve_journal_path("JOURNAL_DRAFT_WORKTREE_GUARD_REPO_PATH")
 )
 
 # The sole override token — mirrors ALLOW_CANONICAL_MUTATE=1's convention on
@@ -229,7 +229,7 @@ def _resolve_git_toplevel(cwd: str):
 def _is_journal_canonical(root: str) -> bool:
     """True iff `root` (a resolved git toplevel) IS the engineering-journal
     canonical — the one legitimate target for a draft/YYYY-MM-DD checkout."""
-    return root.replace("\\", "/").rstrip("/").lower() == JOURNAL_REPO
+    return _journal_canon.normalize_journal_path(root) == JOURNAL_REPO
 
 
 def _worktree_add_target(tokens_after_add: list) -> list:

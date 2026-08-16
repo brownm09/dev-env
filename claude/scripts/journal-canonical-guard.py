@@ -34,12 +34,12 @@ Exit 0 always — never block the user's prompt.
 """
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 import _hookutil
+import _journal_canon
 from _worktree_topology import (
     DETACHED,
     canonical_sync_action,
@@ -52,9 +52,11 @@ from _worktree_topology import (
 # Overridable via JOURNAL_CANONICAL_GUARD_REPO_PATH solely so a test can point this at a
 # disposable temp directory instead of the developer's actual engineering-journal checkout —
 # mirrors pre-tool-use-canonical-mutate-guard.py's CANONICAL_MUTATE_GUARD_JOURNAL_PATH.
-JOURNAL_REPO = Path(
-    os.environ.get("JOURNAL_CANONICAL_GUARD_REPO_PATH", str(Path.home() / "Git" / "engineering-journal"))
-)
+# Constant + env-var-override resolution now single-sourced in _journal_canon.py
+# (dev-env#982, ADR-133) — three other hooks duplicated this identical pattern. The
+# former default, `Path.home() / "Git" / "engineering-journal"`, is a verified no-op
+# equivalent to _journal_canon.DEFAULT_JOURNAL_PATH on this machine.
+JOURNAL_REPO = Path(_journal_canon.resolve_journal_path("JOURNAL_CANONICAL_GUARD_REPO_PATH"))
 
 
 def run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -75,8 +77,19 @@ def main() -> None:
     except Exception:
         pass
 
-    # Guard: repo must exist at the expected path.
+    # Guard: repo must exist at the expected path. Advisory, not silent (dev-env#982
+    # review): JOURNAL_REPO's default is this machine's hardcoded engineering-journal
+    # path (DEFAULT_JOURNAL_PATH) -- on any machine/identity where that path doesn't
+    # exist, this hook's entire hijack-detection purpose is inert, and a bare exit(0)
+    # here was indistinguishable from "canonical is healthy." Printed once per prompt
+    # (this hook's existing per-invocation cadence, no new sentinel), stdout per this
+    # hook's established ADR-099 advisory channel.
     if not JOURNAL_REPO.is_dir():
+        print(
+            f"[journal-canonical-guard] NOTE: engineering-journal canonical not found at "
+            f"'{JOURNAL_REPO}' -- hijack detection is inert until it exists there. Override "
+            "with JOURNAL_CANONICAL_GUARD_REPO_PATH if the checkout lives elsewhere."
+        )
         sys.exit(0)
 
     # Cheap first read (no worktree-list/status calls) so the common healthy path — on main,

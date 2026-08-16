@@ -72,6 +72,7 @@ import subprocess
 import sys
 
 import _hookutil
+import _journal_canon
 import _worktree_canon
 import _worktree_recovery
 from _worktree_topology import find_worktree_by_path, parse_worktree_porcelain
@@ -98,7 +99,14 @@ _PATH_FIELD = {
 
 
 def _normalize(path: str) -> str:
-    return os.path.normcase(os.path.normpath(path))
+    """General-purpose path-identity comparison used by this file's own worktree-path
+    checks (`worktree_norm`, `file_norm`, `_worktree_is_live`, `_resolve_worktree_scope`)
+    as well as `_JOURNAL_ROOT` below. Delegates to `_journal_canon.normalize_journal_path()`
+    — algorithmically identical — rather than carrying its own copy, so this file and the
+    other engineering-journal carve-out hooks can't drift apart (dev-env#982 review). Kept
+    as a locally-named thin wrapper, not inlined away, since this file's five call sites
+    reference it by this name and four of them have nothing to do with the journal."""
+    return _journal_canon.normalize_journal_path(path)
 
 
 # PERMANENT carve-out (dev-env#750, reopened): mirrors pre-tool-use-canonical-mutate-
@@ -106,8 +114,14 @@ def _normalize(path: str) -> str:
 # call site below for the full rationale. Overridable via WORKTREE_PATH_CHECK_JOURNAL_PATH
 # solely so tests can point this at a disposable temp dir instead of the developer's
 # real engineering-journal checkout.
+# Env-var-override resolution AND normalization now single-sourced in _journal_canon.py
+# (dev-env#982, ADR-133) — three other hooks duplicated this identical pattern.
+# Construction goes through this file's own local `_normalize()` (used for other,
+# non-journal comparisons too), which itself delegates to
+# `_journal_canon.normalize_journal_path` rather than carrying a second copy of the
+# algorithm (dev-env#982 review).
 _JOURNAL_ROOT = _normalize(
-    os.environ.get("WORKTREE_PATH_CHECK_JOURNAL_PATH", "C:/Users/brown/Git/engineering-journal")
+    _journal_canon.resolve_journal_path("WORKTREE_PATH_CHECK_JOURNAL_PATH")
 )
 
 

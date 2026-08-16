@@ -84,16 +84,22 @@ def _init_throwaway_repo(root: Path) -> None:
     subprocess.run(["git", "-C", str(root), "branch", "-M", "main"], check=True, capture_output=True)
 
 
-def test_noop_when_repo_path_missing() -> str:
-    """The guard: JOURNAL_REPO must exist as a directory. A missing path is a silent no-op."""
+def test_advisory_when_repo_path_missing() -> str:
+    """The guard: JOURNAL_REPO must exist as a directory. A missing path exits 0 but is no
+    longer SILENT (dev-env#982 /review finding): a bare silent exit made this hook's entire
+    hijack-detection purpose indistinguishable from "canonical is healthy" on any
+    machine/identity where the resolved path doesn't exist. Advisory lands on stdout (this
+    hook's established ADR-099 channel), stderr stays empty."""
     with tempfile.TemporaryDirectory() as tmp:
         missing = Path(tmp) / "does-not-exist"
         proc = _run_hook({"JOURNAL_CANONICAL_GUARD_REPO_PATH": str(missing)})
         if proc.returncode != 0:
             raise AssertionError(f"expected exit 0, got {proc.returncode}")
-        if proc.stdout.strip() or proc.stderr.strip():
-            raise AssertionError(f"expected no output at all, got stdout={proc.stdout!r} stderr={proc.stderr!r}")
-    return "missing JOURNAL_REPO -> exit 0, no output"
+        if proc.stderr.strip():
+            raise AssertionError(f"expected empty stderr, got {proc.stderr!r}")
+        if "not found at" not in proc.stdout:
+            raise AssertionError(f"expected a not-found advisory on stdout, got stdout={proc.stdout!r}")
+    return "missing JOURNAL_REPO -> exit 0, not-found advisory on stdout, stderr empty"
 
 
 def test_noop_when_canonical_already_on_main() -> str:
@@ -224,7 +230,7 @@ def test_auto_return_success_message_stays_on_stdout() -> str:
 
 def main() -> int:
     tests = [
-        ("noop when repo path missing", test_noop_when_repo_path_missing),
+        ("advisory (not silent) when repo path missing", test_advisory_when_repo_path_missing),
         ("noop when canonical already on main", test_noop_when_canonical_already_on_main),
         ("noop when on legitimate non-hijacked branch (draft/YYYY-MM-DD)", test_noop_when_on_legitimate_non_hijacked_branch),
         ("warn-dirty lands on stdout, not stderr", test_warn_dirty_lands_on_stdout_not_stderr),
