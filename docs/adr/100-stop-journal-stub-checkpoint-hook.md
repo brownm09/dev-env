@@ -2,7 +2,8 @@
 
 **Date:** 2026-07-10
 **Status:** Accepted
-**Tags:** hooks, stop, journal, stubs, report-analysis, verification, transcript-scan, exit-code, stderr, advisory, adr-062, adr-088, adr-091, todowrite, taskcreate
+**Amended:** 2026-08-16, 2026-08-17 (two amendments — see Amendment sections below)
+**Tags:** hooks, stop, journal, stubs, report-analysis, verification, transcript-scan, exit-code, stderr, advisory, adr-062, adr-088, adr-091, todowrite, taskcreate, issidechain, subagent-transcripts
 
 ---
 
@@ -162,3 +163,148 @@ follow-up.
 this amendment closes. [dev-env#1002](https://github.com/brownm09/dev-env/issues/1002) /
 [PR #1009](https://github.com/brownm09/dev-env/pull/1009) — the sibling correction in
 `journal-stop-check.py` this amendment mirrors.
+
+## Amendment 2 (2026-08-17) — resolve the isSidechain scope note: filter all three functions, confirmed a defensive no-op (dev-env#1023)
+
+Amendment 1's "Scope note" (above) left open whether `substantive_tool_count()`, `wrote_stub()`,
+and `opened_or_merged_pr()`'s `_bash_commands()` helper should filter `isSidechain` records, the
+way `journal-stop-check.py`'s `pending_task_count()` / `open_background_agent_count()` already do
+(ADR-091 Amendment 3). This amendment resolves that question with live-transcript evidence rather
+than deferring it again.
+
+**The question, restated.** A subagent spawned via the `Agent` tool has its own tool calls
+recorded with `isSidechain: true`. If those records live in the *same* transcript this hook scans,
+an unfiltered scan attributes the subagent's own investigative legwork to the main session's "did
+substantive work happen" judgment — over-counting if that's wrong, but arguably *correct* counting
+if a session that delegates investigation and then reports on the findings should get credit for
+that delegated work (the "argument against filtering" dev-env#1023 itself posed).
+
+**Methodology.** Unlike ADR-091 Amendment 3's 400–600-file *sample*, this investigation scanned
+**every** transcript retained on the machine — exhaustive, not sampled, because the corpus (2,475
+`.jsonl` files, ~30MB total) was small enough to make sampling an unnecessary approximation. The
+first pass globbed `~/.claude/projects/**/*.jsonl` unscoped and found a spurious ~90% isSidechain
+rate — a methodology bug, caught before drawing any conclusion from it: `~/.claude/projects` stores
+each subagent's own conversation as a **separate file** (`<session-dir>/subagents/agent-<hash>.jsonl`),
+not inlined into the parent's transcript. Globbing `**/*.jsonl` sweeps those subagent-owned files in
+as if they were candidate main sessions, and a subagent file is trivially "isSidechain-heavy" from
+the *inside* (every record in it, including any further sub-delegation, carries `isSidechain: true`
+at the top level) — a population this hook's Stop-hook `transcript_path` never receives, since
+`_hookutil.find_transcript()` globs `**/{session_id}.jsonl` and a subagent's filename is
+`agent-<hash>.jsonl`, never `<session_id>.jsonl`. The corrected scan excludes every path under a
+`subagents/` directory, keeping only the flat `<session_id>.jsonl` files a Stop hook actually reads.
+
+**Findings — exhaustive, not sampled, machine-wide, all retained history:**
+
+- **586 main-session transcripts** (every project directory on the machine: career-playbook and
+  ~140 of its worktree sessions, cover-letter-runtime, dev-env, engineering-journal,
+  gas-lifting-logbook, lifting-logbook, win11-init-tools, and 54 `C--WINDOWS-system32` scheduled/cron
+  sessions), **245,197 total assistant/user records — zero `isSidechain: true` anywhere**, confirmed
+  both via the hook's own `report_intent()`-gated scan and an independent raw `grep` sweep. Spans the
+  machine's entire retained transcript history (oldest to newest mtime), not just recent sessions.
+- **1,889 separate subagent transcripts** (`subagents/agent-<hash>.jsonl`), **94,184 total records —
+  every single one `isSidechain: true`**, zero `isSidechain: false`. Directly inspected one pair: a
+  subagent's own file (`subagents/agent-a9f628de38db52852.jsonl`) carries the **same** `sessionId` as
+  its parent main session (for correlation) but is a **physically distinct file**; the parent's own
+  transcript contains the `Agent` tool_use call that *spawned* it (itself `isSidechain: false`, since
+  the main session is the one doing the delegating) but none of the spawned subagent's own
+  Read/Grep/Bash activity.
+- Of the **437 sessions where the hook's own `report_intent()` fires** (the actual population these
+  three functions further evaluate): **0 contain any `isSidechain` record**, so filtering changes
+  **0** `substantive_tool_count()` results, **0** `wrote_stub()` results, **0**
+  `opened_or_merged_pr()` results, and **0** `evaluate()` fire decisions, in either direction.
+
+**Consequence for the open question.** Both the "argument for filtering" (avoid over-counting a
+subagent's own legwork as the main session's effort) and the "argument against filtering" (delegated
+work a session then reports on should count) are moot on the current harness: a subagent's tool
+calls are **structurally absent** from the main transcript this hook scans, filter or no filter — the
+"argument against" was never actually implementable by leaving the functions unfiltered, because the
+delegated tool calls they'd need to see in order to grant that credit were never in the scanned data
+to begin with, before or after this fix.
+
+**Aside — the likely source of ADR-091 Amendment 3's "40%" figure.** That amendment's own
+methodology is not independently re-verifiable here (only its conclusion, quoted in Amendment 1
+above, was available to this investigation), but the *shape* of a ~40% isSidechain rate among
+"sampled `Agent` tool_use calls" is consistent with the identical `subagents/`-inclusive glob this
+amendment's own first pass mistakenly used — a subagent that itself further delegates records that
+nested `Agent` call, `isSidechain: true`, inside its own file, and an unscoped sample would pull that
+population in alongside genuine main-session `Agent` calls. This is offered as a plausible
+explanation for the discrepancy, not a re-litigation of that amendment: `journal-stop-check.py`'s own
+filtering is correct regardless of how that percentage was originally computed, for the same
+defensive reason this amendment applies filtering here (see Decision, below) — neither amendment's
+conclusion depends on the exact historical figure being exactly right.
+
+**Decision — filter `isSidechain` in all three functions, framed as defensive consistency, not a
+bug fix.** Given the findings, this is **not** a live-bug fix (no session's outcome changes) — it is
+a zero-risk consistency-and-defensiveness change:
+
+- It matches `journal-stop-check.py`'s already-reviewed convention for the identical field on the
+  identical class of transcript data, so a future reader of either hook doesn't have to wonder why
+  they diverge.
+- It closes the open question Amendment 1 explicitly deferred, rather than deferring it again with
+  no new information — dev-env#1023 asked for a decision, not a re-statement of the ambiguity.
+- It defends against a **future** harness change: if a later Claude Code version ever inlines
+  sidechain content back into the main transcript (plausibly the architecture ADR-091 Amendment 3's
+  own environment had), this hook's counters would silently start mis-attributing subagent work the
+  moment that happens, with nothing forcing a re-examination — the same "an assumption stops being
+  examined once it stops being load-bearing" pattern ADR-091 Amendment 1's own "General lesson"
+  describes for a different hook. Filtering now means that re-examination is already done.
+- The fix is 3 one-line additions (`if rec.get("isSidechain"): continue`), each a direct copy of an
+  already-reviewed pattern — near-zero implementation risk to weigh against the above.
+
+**Applied uniformly, including the two existence checks.** `substantive_tool_count()` is an
+effort-measurement question (did *this session* do the work), for which filtering is the same
+unambiguous case ADR-091 Amendment 3 already made for its own two counters. `wrote_stub()` and
+`opened_or_merged_pr()` are different in kind — existence checks (does a stub/PR already exist) —
+so filtering there carries a real, if narrow, theoretical trade-off: in a hypothetical future
+inlined-sidechain world, a subagent that wrote the stub or ran `gh pr create`/`gh pr merge` on the
+session's behalf would no longer satisfy the check, causing a false-positive re-nudge. This is
+accepted for three reasons: (1) the documented Engineering Journal workflow treats stub-writing and
+PR-open/merge as main-session bookkeeping steps, not delegated legwork, so the scenario is
+against-convention to begin with; (2) even *today*, unfiltered, these events can't be produced by a
+subagent's tool calls landing in the main transcript anyway (same structural absence as
+`substantive_tool_count()`'s case), so filtering doesn't newly create the gap — it only prepares for
+the same hypothetical future the effort-measurement case does; and (3) the cost of that false
+positive is exactly the ordinary one-dismissable-nudge cost every other false positive in this
+advisory hook already carries (see the base ADR's Consequences), not the "destroys the session"
+stakes that made `journal-stop-check.py`'s archive reminder specifically dangerous. Uniform filtering
+keeps the file internally consistent rather than filtering one function and not its siblings for a
+narrow, currently-unobservable edge case.
+
+**Alternatives considered:**
+
+- **Leave as-is, document the ambiguity (dev-env#1023's option 2).** Rejected: the investigation
+  didn't just fail to resolve the ambiguity, it dissolved it — both the over- and under-counting
+  scenarios the ambiguity was about are provably impossible on the current harness. Documenting a
+  now-resolved ambiguity as still-open would be leaving stale uncertainty on the page.
+- **Weighted / partial-credit counting for delegated work (dev-env#1023's option 3, "something in
+  between").** Rejected: adds real complexity (a new scoring dimension, more to test and reason
+  about) for zero observed benefit today, and no clean semantic case survives the findings above
+  either — a subagent's own legwork isn't gradient-attributable to the main session; it's either
+  main-session effort or it isn't, and it structurally never appears in this hook's scanned data
+  either way.
+- **Filter only `substantive_tool_count()`, leave `wrote_stub()`/`opened_or_merged_pr()`
+  unfiltered.** Considered given the existence-check asymmetry discussed above, but rejected in favor
+  of uniform filtering — the asymmetry's real-world cost is already zero today and bounded (one
+  dismissable nudge) even in the hypothetical future case, while a split policy leaves a harder
+  question for the next reader ("why does this file filter isSidechain in one function but not its
+  siblings?") than the uniform policy does.
+
+**Coverage.** `test_stop_journal_stub_checkpoint.py` gains, mirroring the real-shaped-fixture
+convention Amendment 1 established: `test_substantive_ignores_sidechain_records` and
+`test_substantive_mixed_sidechain_and_main` (isSidechain-only work counts 0; a mix counts only the
+non-isSidechain calls, regardless of isSidechain volume); `test_pr_create_sidechain_not_counted` and
+`test_pr_merge_sidechain_not_counted`; `test_wrote_stub_sidechain_write_not_counted` and
+`test_wrote_stub_sidechain_bash_not_counted`; an `evaluate()`-level regression,
+`test_evaluate_sidechain_only_work_does_not_cross_threshold` (report intent + 10 isSidechain-only
+reads + 0 main-session reads stays a no-op); and an end-to-end case,
+`test_e2e_sidechain_only_work_allows`, driving the real hook over stdin. A shared `_sidechain(rec)`
+fixture helper (returns a copy of a built record with `isSidechain: True` set) keeps every existing
+builder function and test byte-for-byte unaffected. 73 tests total (up from 65 after Amendment 1).
+
+**References:** [dev-env#1023](https://github.com/brownm09/dev-env/issues/1023) — the issue this
+amendment closes, filed as a direct follow-up from Amendment 1's own scope note.
+[dev-env#1020](https://github.com/brownm09/dev-env/issues/1020) / Amendment 1 (above) — the scope
+note this amendment resolves. [ADR-091 Amendment
+3](091-journal-stop-check-archive-reminder-blocking.md#amendment-3-2026-08-16--augment-the-reminders-text-with-an-in-flight-work-caveat-dev-env1002)
+— the sibling hook's isSidechain-filtered counters this amendment brings this hook's three functions
+into consistency with, and the likely source of the "40%" figure discussed in the Aside above.
