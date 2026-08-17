@@ -2096,8 +2096,10 @@ For a one-line navigational map of the test directory, see
     genuine user prompt; the text-item content form; and the false-positive guards — a keyword in
     assistant text, a tool_result, an `isMeta`/`isCompactSummary` record, or a `<command-name>`
     slash-command wrapper never counts); `substantive_tool_count` (counts each of the nine
-    substantive tools, ignores `TodoWrite`/`spawn_task`/text, counts parallel tool_use in one
-    record, and the 4-vs-5 threshold boundary); `opened_or_merged_pr` (anchored `gh pr create`/
+    substantive tools, ignores `TaskCreate`/`TaskUpdate`/`Agent`/`spawn_task`/text — this
+    harness's real bookkeeping/delegation tools; the original comment named the nonexistent
+    `TodoWrite`/bare `Task` instead, dev-env#1020 — counts parallel tool_use in one record, and
+    the 4-vs-5 threshold boundary); `opened_or_merged_pr` (anchored `gh pr create`/
     `merge` via the shared `_hookio.scan_top_level`, with heredoc-body / `$()`-subshell mentions, a
     `--help`-only invocation, and `gh pr checks`/`view` all excluded); `wrote_stub` (a Write/Edit
     `*.stub.md` file_path, a backslash path, a non-stub `.md` non-match, and a Bash `git add
@@ -2123,7 +2125,11 @@ For a one-line navigational map of the test directory, see
     non-fires (`analytics`, bare `deploy`) and the `check the deploy` still-fires case, the
     write-scoped stub-Bash detection (an `ls`/`cat` read of a `*.stub.md` does not count; a
     `git add`/redirect write does), the `/review-*` hyphen boundary, the non-ASCII-cwd cp1252
-    sanitization, and the empty-stdin / non-dict-payload fail-open e2e paths (64 tests total).
+    sanitization, and the empty-stdin / non-dict-payload fail-open e2e paths. dev-env#1020
+    (ADR-100 Amendment 1) rebuilt the exclusion test from real-shaped `TaskCreate`/`TaskUpdate`/
+    `Agent` tool_use records rather than a hand-built `TodoWrite` fixture, and added an
+    `evaluate()`-level regression pinning that 8 `TaskCreate` + 8 `TaskUpdate` calls plus only 3
+    real reads stays below `SUBSTANTIVE_THRESHOLD` (65 tests total).
     ([ADR-100](adr/100-stop-journal-stub-checkpoint-hook.md); dev-env#702)
 
     ```bash
