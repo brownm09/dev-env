@@ -167,7 +167,7 @@ not a ceiling, and reworded the "tile, don't ask" sentence to apply unconditiona
 - [dev-env#595](https://github.com/brownm09/dev-env/issues/595) — issue driving the 2026-07-05 forcing-function refinement (enumeration + merged-state re-key); closed by the addendum above.
 - [dev-env#615](https://github.com/brownm09/dev-env/issues/615) — the investigation whose mid-session follow-up motivated the 2026-07-08 addendum.
 - [dev-env#642](https://github.com/brownm09/dev-env/issues/642) — issue driving the 2026-07-08 addendum (checkpoints are a floor, not a ceiling); closed by the addendum above.
-- [lifting-logbook#700](https://github.com/brownm09/lifting-logbook/pull/700) — motivating incident for the 2026-07-05 addendum: auto-merge landed the PR and "no follow-ups" was asserted with no enumeration.
+- [lifting-logbook#700](https://github.com/merickvaughn/lifting-logbook/pull/700) — motivating incident for the 2026-07-05 addendum: auto-merge landed the PR and "no follow-ups" was asserted with no enumeration.
 - [ADR-012](012-post-merge-checklist-board-done-roadmap-update.md) — the post-merge checklist this extends.
 - [ADR-028](028-all-findings-merge-gate.md) — the file-and-link guidance the "genuine follow-ups" bar mirrors.
 - [ADR-038](038-durable-preferences-documented-in-repo.md) — durable preferences must be documented in the repo, not only in memory.

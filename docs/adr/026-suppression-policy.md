@@ -8,7 +8,7 @@
 
 ## Context
 
-PR [lifting-logbook#338](https://github.com/brownm09/lifting-logbook/pull/338) added six TypeScript suppressions (`!` non-null assertions, `?? null` coercions) to `apps/api/prisma/seed.ts` to satisfy the compiler under `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. The suppressions silenced the errors without changing the underlying code structure. The existing "Test before PR" rule only required that tests pass — it did not distinguish between tests passing because the code is correct and tests passing because suppressions were added.
+PR [lifting-logbook#338](https://github.com/merickvaughn/lifting-logbook/pull/338) added six TypeScript suppressions (`!` non-null assertions, `?? null` coercions) to `apps/api/prisma/seed.ts` to satisfy the compiler under `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. The suppressions silenced the errors without changing the underlying code structure. The existing "Test before PR" rule only required that tests pass — it did not distinguish between tests passing because the code is correct and tests passing because suppressions were added.
 
 Left unaddressed, suppressions accumulate and normalize. Each one makes the next feel more acceptable, eroding the value of strict TypeScript and ESLint settings over time. The pre-PR checklist had no mechanism to surface new suppressions before a PR was opened.
 
@@ -52,5 +52,5 @@ A *suppression* is defined as: `!` (non-null assertion), `?? null` to coerce awa
 
 - [TypeScript `noUncheckedIndexedAccess` — TypeScript 4.1 release notes](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-1.html#checked-indexed-accesses---nouncheckedindexedaccess)
 - [ESLint `eslint-disable` comments — ESLint documentation](https://eslint.org/docs/latest/use/configure/rules#using-configuration-comments-1)
-- [lifting-logbook#338](https://github.com/brownm09/lifting-logbook/pull/338) — the PR that prompted this ADR
-- [lifting-logbook#343](https://github.com/brownm09/lifting-logbook/issues/343) — batch issue to clean up the suppressions introduced in #338
+- [lifting-logbook#338](https://github.com/merickvaughn/lifting-logbook/pull/338) — the PR that prompted this ADR
+- [lifting-logbook#343](https://github.com/merickvaughn/lifting-logbook/issues/343) — batch issue to clean up the suppressions introduced in #338

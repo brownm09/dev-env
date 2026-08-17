@@ -15,7 +15,7 @@ That `options` map comes entirely from the cached `.claude/hook-config.json`, wi
 This drifted silently at least three times before detection:
 
 - lifting-logbook's 2026-05-08 Epic-field mutation (CLAUDE.md: "an Observability epic addition wiped assignments on all 89 project items") left `hook-config.json` serving pre-mutation IDs and a truncated option list from that point forward, discovered only when `gh issue create` for lifting-logbook#637 printed 6 stale Epic options — missing 4 real ones entirely — with IDs matching none of the live GraphQL field state ([dev-env#527](https://github.com/brownm09/dev-env/issues/527)).
-- [lifting-logbook#628](https://github.com/brownm09/lifting-logbook/pull/628) independently rediscovered and fixed the local symptom (corrected `hook-config.json`, patched lifting-logbook's own CLAUDE.md procedure to name the cache) before dev-env#527's own remediation comment found the prior art.
+- [lifting-logbook#628](https://github.com/merickvaughn/lifting-logbook/pull/628) independently rediscovered and fixed the local symptom (corrected `hook-config.json`, patched lifting-logbook's own CLAUDE.md procedure to name the cache) before dev-env#527's own remediation comment found the prior art.
 - At least one further session hit the same drift before either fix landed (dev-env#527's problem statement).
 
 Every recurrence was silent: the hook has no way to know its cached `options` map might be wrong, so a session either got a GraphQL error from a stale ID or — the sharper risk — a stale ID that happened to still validate against some other field/option, mis-tagging an item with no error at all.
@@ -55,4 +55,4 @@ Two things this ADR does **not** fix, deliberately out of scope: `.claude/propos
 - [GitHub GraphQL API reference — Objects](https://docs.github.com/en/graphql/reference/objects#projectv2singleselectfield) — `ProjectV2SingleSelectField` and its `options` field.
 - [`gh api` manual](https://cli.github.com/manual/gh_api) — `-f` variable syntax for `gh api graphql`.
 - [dev-env#527](https://github.com/brownm09/dev-env/issues/527) — the motivating issue and full incident diagnosis.
-- [lifting-logbook#628](https://github.com/brownm09/lifting-logbook/pull/628) — the prior, project-local fix this ADR generalizes and structurally supersedes for the `single_select` case.
+- [lifting-logbook#628](https://github.com/merickvaughn/lifting-logbook/pull/628) — the prior, project-local fix this ADR generalizes and structurally supersedes for the `single_select` case.

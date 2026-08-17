@@ -112,7 +112,7 @@ edits land on `main`, and issues #434/#435/#436 are closed by the porting PR.
   [#435](https://github.com/brownm09/dev-env/issues/435),
   [#436](https://github.com/brownm09/dev-env/issues/436); audit
   [#363](https://github.com/brownm09/dev-env/issues/363).
-- Incidents: lifting-logbook PRs [#485](https://github.com/brownm09/lifting-logbook/pull/485) /
-  [#492](https://github.com/brownm09/lifting-logbook/pull/492),
-  [#502](https://github.com/brownm09/lifting-logbook/pull/502); worktree orphan events 2026-06-04 /
+- Incidents: lifting-logbook PRs [#485](https://github.com/merickvaughn/lifting-logbook/pull/485) /
+  [#492](https://github.com/merickvaughn/lifting-logbook/pull/492),
+  [#502](https://github.com/merickvaughn/lifting-logbook/pull/502); worktree orphan events 2026-06-04 /
   2026-06-12.

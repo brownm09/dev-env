@@ -495,7 +495,7 @@ to that repo's branch protection. This complements the hook rather than replacin
 remains the only mechanism covering the ADR-warrant and doc-reconciliation checkpoints for the
 Claude-Code-mediated path, which a required check still cannot verify, for the reasons the
 Candidates-evaluated section already gives. This is being prototyped now, independently of any
-item-7 decision, in [lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718)
+item-7 decision, in [lifting-logbook#718](https://github.com/merickvaughn/lifting-logbook/issues/718)
 — note that repo's implementation goes further than recommended here by also making review
 mandatory (no marker = fail), which is a separate policy choice specific to that repo, not a claim
 this addendum makes generally.
@@ -531,11 +531,11 @@ edit`/`gh api PATCH`) leave no git history trail, and personal (non-org) account
 settings-change audit-log API, so the exact moment and actor can't be reconstructed after the fact.
 lifting-logbook has no `.github/settings.yml` (repo settings aren't declarative there), ruling out
 a config-as-code explanation. Circumstantial evidence ties the flip to the same work stream as
-[lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718) ("Add mandatory
+[lifting-logbook#718](https://github.com/merickvaughn/lifting-logbook/issues/718) ("Add mandatory
 Review Gate required status check," opened 2026-07-06T03:59 — exactly the item-7 decision this
 ADR's 2026-07-06 addendum above was written to anticipate): sub-issue
-[#720](https://github.com/brownm09/lifting-logbook/issues/720) and the workflow it ships
-([lifting-logbook PR #722](https://github.com/brownm09/lifting-logbook/pull/722)) were opened the
+[#720](https://github.com/merickvaughn/lifting-logbook/issues/720) and the workflow it ships
+([lifting-logbook PR #722](https://github.com/merickvaughn/lifting-logbook/pull/722)) were opened the
 same day, and a `gh pr merge --squash --auto` was run successfully in a lifting-logbook session
 that same day too — which requires `allow_auto_merge: true` at the GitHub API level regardless of
 the local hook's own checkpoint gate. This reads as **intentional-in-direction, not unnoticed
@@ -546,7 +546,7 @@ Recommendation above was explicit: pair the toggle with a required "Review Gate"
 check, specifically because the toggle alone reopens the web-UI/GitHub-triggered-merge gap this
 whole ADR exists to close only for the Claude-Code-mediated path. As of this writing, lifting-logbook
 has the toggle **on** but the paired check is **not yet in place**: `review-gate.yml` exists only
-on an open, unmerged PR ([lifting-logbook#722](https://github.com/brownm09/lifting-logbook/pull/722)) —
+on an open, unmerged PR ([lifting-logbook#722](https://github.com/merickvaughn/lifting-logbook/pull/722)) —
 not on `main` — and even once merged it still needs sub-issue 2 of #718 (the branch-protection
 mutation) before it's *required*. Until both land, a human merging via lifting-logbook's web UI, or
 GitHub's own auto-merge firing once CI goes green, bypasses all review-findings enforcement on that
@@ -562,7 +562,7 @@ repo's rollout timeline — flagged here, not resolved here. Tracked via
 **Follow-up item 7 status, updated:** no longer "not yet made for any repo." Made, in effect, for
 lifting-logbook — ahead of its own recommended safety pairing; still `false`/undecided for every
 other repo checked. Track lifting-logbook's remaining piece (making Review Gate required) via
-[lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718)/[#720](https://github.com/brownm09/lifting-logbook/issues/720)/[#722](https://github.com/brownm09/lifting-logbook/pull/722),
+[lifting-logbook#718](https://github.com/merickvaughn/lifting-logbook/issues/718)/[#720](https://github.com/merickvaughn/lifting-logbook/issues/720)/[#722](https://github.com/merickvaughn/lifting-logbook/pull/722),
 not a new dev-env-side issue.
 
 ---
@@ -571,16 +571,16 @@ not a new dev-env-side issue.
 
 The 2026-07-07 addendum above described lifting-logbook#722 as "an open, unmerged PR... not on
 `main`." That is no longer accurate as of this addendum: PR
-[lifting-logbook#722](https://github.com/brownm09/lifting-logbook/pull/722) merged 2026-07-08
+[lifting-logbook#722](https://github.com/merickvaughn/lifting-logbook/pull/722) merged 2026-07-08
 (`0d9dce4cbfbc2147276b68f58c4d8ae866632f10`). `.github/workflows/review-gate.yml` is now live on
 lifting-logbook's `main`, reporting a real `Review Gate` pass/fail commit status on every PR —
 confirmed live during the merge itself. Sub-issue
-[lifting-logbook#720](https://github.com/brownm09/lifting-logbook/issues/720) is closed.
+[lifting-logbook#720](https://github.com/merickvaughn/lifting-logbook/issues/720) is closed.
 
 **This closes the *informational* half of the gap, not the *enforcement* half.** The check is not
 yet wired into branch protection as a required status check — nothing blocks a merge today when it
 fails; it is reporting-only. `allow_auto_merge` also remains `true`. Top-level
-[lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718) stays **open** for
+[lifting-logbook#718](https://github.com/merickvaughn/lifting-logbook/issues/718) stays **open** for
 exactly this reason: its second sub-issue (the branch-protection mutation that makes Review Gate
 required) has not yet been filed. Until that lands, a human merging via lifting-logbook's web UI, or
 GitHub's own auto-merge firing on green CI, still bypasses all review-findings enforcement on that
@@ -588,7 +588,7 @@ repo — same live gap the 2026-07-07 addendum flagged, now partially, not fully
 
 No toggle was changed by this addendum. Disposition of the remaining piece is unchanged from above:
 a judgment call for whoever owns lifting-logbook's rollout timeline, tracked via
-[lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718).
+[lifting-logbook#718](https://github.com/merickvaughn/lifting-logbook/issues/718).
 
 ---
 
@@ -596,18 +596,24 @@ a judgment call for whoever owns lifting-logbook's rollout timeline, tracked via
 
 The gap the 2026-07-08 addendum above left open — "not yet wired into branch protection as a
 required status check" — is now closed. lifting-logbook
-[#757](https://github.com/brownm09/lifting-logbook/issues/757)/[#759](https://github.com/brownm09/lifting-logbook/pull/759)
+[#757](https://github.com/merickvaughn/lifting-logbook/issues/757)/[#759](https://github.com/merickvaughn/lifting-logbook/pull/759)
 (merged 2026-07-08) added `Review Gate` to `main`'s branch-protection `required_status_checks.contexts`,
 alongside the five pre-existing contexts, via a full-replacement `PATCH` preceded by a
 snapshot-before-mutate backup. Live state was independently verified by read-back immediately after
 the mutation and again after the PR merged:
 
 ```
-$ gh api repos/brownm09/lifting-logbook/branches/main/protection/required_status_checks --jq '.contexts | sort'
+$ gh api repos/merickvaughn/lifting-logbook/branches/main/protection/required_status_checks --jq '.contexts | sort'
 ["DB Integration Tests","Lint & Test","Observability Stack Smoke Test","Playwright E2E","Review Gate","Staging Integration Tests"]
 ```
 
-Top-level [lifting-logbook#718](https://github.com/brownm09/lifting-logbook/issues/718) is now
+(This addendum's commands, and the `--jq .allow_auto_merge` one further below, show
+`merickvaughn/lifting-logbook` throughout — corrected by
+[dev-env#1010](https://github.com/brownm09/dev-env/issues/1010) for the repo's later ownership
+transfer; both owner forms resolve to the same repo today via GitHub's transfer redirect, but the
+commands as originally run here may have used the then-current `brownm09/lifting-logbook`.)
+
+Top-level [lifting-logbook#718](https://github.com/merickvaughn/lifting-logbook/issues/718) is now
 **closed** — both sub-issues (#720/#722 shipping the workflow, #757/#759 making it required) are
 complete.
 
@@ -626,13 +632,13 @@ the `.github/expected-required-checks.json`/docs sync landed in the same PR but 
 different points in GitHub's evaluation (`workflow_dispatch`/`push`/`schedule` triggers always
 evaluate live `main`, which lagged the PR's own branch until merge), lifting-logbook's
 `required-checks-drift.yml` correctly fired on a manual dispatch mid-PR, filing
-[lifting-logbook#764](https://github.com/brownm09/lifting-logbook/issues/764). That's the
+[lifting-logbook#764](https://github.com/merickvaughn/lifting-logbook/issues/764). That's the
 drift-detection workflow doing exactly its documented job against a real, if self-inflicted and
 temporary, mismatch — not a bug in this ADR's design. It resolved automatically on the next
 push-triggered run once #759 merged; #764 is closed.
 
 **`allow_auto_merge` remains `true` on lifting-logbook**, unchanged by this addendum — confirmed
-still live via `gh api repos/brownm09/lifting-logbook --jq .allow_auto_merge` during this same
+still live via `gh api repos/merickvaughn/lifting-logbook --jq .allow_auto_merge` during this same
 verification pass. That toggle was never re-litigated here; it was already the accepted, if
 premature-at-the-time, state the 2026-07-07 addendum recorded, and the required-check pairing this
 addendum documents is precisely what makes it no longer premature.

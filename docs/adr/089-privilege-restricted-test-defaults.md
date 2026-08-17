@@ -8,7 +8,7 @@
 
 ## Context
 
-Root-caused a production bug in lifting-logbook ([issue #644](https://github.com/brownm09/lifting-logbook/issues/644) / [PR #645](https://github.com/brownm09/lifting-logbook/pull/645)): a NestJS global interceptor (`RlsInterceptor`) silently never established Postgres Row-Level Security context for any request, for 3+ weeks after the RLS migration landed, because it constructor-injected an `@Optional()` dependency that resolved to `null` due to a DI-instantiation-order race between globally-bound enhancers and same-module factory providers.
+Root-caused a production bug in lifting-logbook ([issue #644](https://github.com/merickvaughn/lifting-logbook/issues/644) / [PR #645](https://github.com/merickvaughn/lifting-logbook/pull/645)): a NestJS global interceptor (`RlsInterceptor`) silently never established Postgres Row-Level Security context for any request, for 3+ weeks after the RLS migration landed, because it constructor-injected an `@Optional()` dependency that resolved to `null` due to a DI-instantiation-order race between globally-bound enhancers and same-module factory providers.
 
 The bug was invisible everywhere except real production traffic:
 
@@ -64,7 +64,7 @@ No new hook or script — this is a behavioral rule for Claude to apply during t
 
 **Negative:**
 - Not mechanically enforceable the way the suppression/test-integrity grep checks are — relies on Claude actually applying the audit line during the Security dimension review, which is a judgment call, not a script. If this proves insufficient in practice, a project-specific lint/static-check could be added per-project (see Rejected Alternatives), but that's deferred until a concrete false-negative recurrence justifies the cost.
-- Retrofitting existing test suites to default to a restricted identity is real, non-trivial work per project; this ADR only mandates the rule going forward, it does not retroactively fix every project's test defaults. (lifting-logbook's own retrofit was tracked in [lifting-logbook#646](https://github.com/brownm09/lifting-logbook/issues/646) and has since merged via [PR #658](https://github.com/brownm09/lifting-logbook/pull/658) — cited here as a worked example, not outstanding work.)
+- Retrofitting existing test suites to default to a restricted identity is real, non-trivial work per project; this ADR only mandates the rule going forward, it does not retroactively fix every project's test defaults. (lifting-logbook's own retrofit was tracked in [lifting-logbook#646](https://github.com/merickvaughn/lifting-logbook/issues/646) and has since merged via [PR #658](https://github.com/merickvaughn/lifting-logbook/pull/658) — cited here as a worked example, not outstanding work.)
 
 ---
 
@@ -75,5 +75,5 @@ No new hook or script — this is a behavioral rule for Claude to apply during t
 - [ADR-042 — Plan Risk-Dimension Audit and Observability Section](042-plan-risk-dimension-audit-and-observability-section.md) — defines the Pass 3 Security dimension this ADR extends
 - [PostgreSQL docs — Row Security Policies](https://www.postgresql.org/docs/current/ddl-rowsecurity.html) — primary source: RLS enforcement does not apply to superuser or `BYPASSRLS` roles, the mechanism at the root of the motivating incident
 - [NestJS docs — Custom providers](https://docs.nestjs.com/fundamentals/custom-providers) — `useFactory` / `@Optional()` injection semantics referenced by the motivating incident
-- [lifting-logbook#644](https://github.com/brownm09/lifting-logbook/issues/644) / [lifting-logbook#645](https://github.com/brownm09/lifting-logbook/pull/645) — the motivating incident and its fix
+- [lifting-logbook#644](https://github.com/merickvaughn/lifting-logbook/issues/644) / [lifting-logbook#645](https://github.com/merickvaughn/lifting-logbook/pull/645) — the motivating incident and its fix
 - [dev-env#540](https://github.com/brownm09/dev-env/issues/540) — the issue that prompted this ADR

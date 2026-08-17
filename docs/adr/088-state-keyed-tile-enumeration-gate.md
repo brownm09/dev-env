@@ -209,5 +209,5 @@ stale-draft / unmerged-branch advisories stay exit 0.) See
 - [dev-env#612](https://github.com/brownm09/dev-env/issues/612) — documents that Stop hooks run in
   parallel, so this gate's exit 2 does not delay `awake-blocker`'s sleep-release (the PR #604 review
   question this addendum answers).
-- [lifting-logbook#700](https://github.com/brownm09/lifting-logbook/pull/700) — the auto-merge incident
+- [lifting-logbook#700](https://github.com/merickvaughn/lifting-logbook/pull/700) — the auto-merge incident
   that motivated state-keying.

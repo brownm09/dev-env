@@ -197,7 +197,7 @@ appears (no `jq` — parse with `node -e`):
 ```bash
 # R, PROJ, NAME, RULE_TEXT, SUGGESTED_HOME, MEMORY_FILE are model-filled placeholders —
 # the agent substitutes values from its Step 2/3 findings context (not shell assignments).
-# R is the FULL owner/repo slug (e.g., "brownm09/lifting-logbook") from Step 3 routing.
+# R is the FULL owner/repo slug (e.g., "merickvaughn/lifting-logbook") from Step 3 routing.
 ISSUES="$SCRATCH/memaudit_issues_${R//\//_}.json"
 gh issue list --repo "${R}" --label memory-audit --state open --limit 500 \
   --json number,title,body > "$ISSUES" 2>/dev/null
