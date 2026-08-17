@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-10
 **Status:** Accepted
-**Tags:** hooks, stop, journal, stubs, report-analysis, verification, transcript-scan, exit-code, stderr, advisory, adr-062, adr-088, adr-091
+**Tags:** hooks, stop, journal, stubs, report-analysis, verification, transcript-scan, exit-code, stderr, advisory, adr-062, adr-088, adr-091, todowrite, taskcreate
 
 ---
 
@@ -88,3 +88,74 @@ All Stop hooks run in parallel ([ADR-088 → Stop-hook parallelism](088-state-ke
 - [ADR-050](050-shared-hookio-sibling-hook-fixes.md) / [ADR-064](064-shared-hookutil-sentinel-transcript-locate.md) / [ADR-090](090-shared-transcript-readers-hookutil.md) — the shared `_hookio` / `_hookutil` modules reused
 - dev-env#702 — the report-analysis stub-enforcement gap
 - lifting-logbook PR #770 — the motivating prod-verification session (2026-07-10)
+
+## Amendment 1 (2026-08-16) — correct the substantive-tool exclusion comment to this harness's real tool names (dev-env#1020)
+
+`substantive_tool_count()`'s `_SUBSTANTIVE_TOOLS` frozenset is, and remains, a closed
+allowlist of nine tool names (`Bash`, `Read`, `Grep`, `Glob`, `Edit`, `Write`, `NotebookEdit`,
+`WebFetch`, `WebSearch`) — anything not named is already excluded by omission, so this
+amendment changes no runtime behavior. It corrects only the comment documenting *why* two
+tool families are excluded, which named tools that do not exist in this harness's real
+transcript vocabulary.
+
+**Symptom.** The comment above `_SUBSTANTIVE_TOOLS` read: "TodoWrite (bookkeeping) and
+Task/spawn_task/mcp__* (delegation) are excluded so a single delegation can't inflate the
+count past the threshold on its own."
+
+**Root cause.** Both named exclusions were stale. Per dev-env#1002's `/review` finding (this
+ADR's own [ADR-091 Amendment 3](091-journal-stop-check-archive-reminder-blocking.md#amendment-3-2026-08-16--augment-the-reminders-text-with-an-in-flight-work-caveat-dev-env1002)),
+**this harness has no `TodoWrite` tool at all** — 0 occurrences across every transcript on
+the machine, versus thousands of `TaskCreate`/`TaskUpdate` calls (the actual task-list tool).
+Confirmed independently live for this amendment (not merely cited from the sibling fix):
+`TaskCreate`/`TaskUpdate` occur in the tens per session across many sampled transcript files
+(career-playbook, lifting-logbook, dev-env); `TodoWrite` — 0. The comment's second exclusion,
+bare `"Task"` for the subagent-spawning tool, was *also* stale: 0 occurrences of `"name":
+"Task"` across every sampled project, versus the real delegation tool name, `"Agent"` (18
+occurrences in dev-env's own transcripts alone, 97 in career-playbook's). Since
+`_SUBSTANTIVE_TOOLS` is an allowlist rather than an explicit exclusion list, neither staleness
+was a functional bug — `TaskCreate`/`TaskUpdate`/`Agent` were already correctly excluded by
+never being allowlisted — but the comment's rationale was undiscoverable for the tools that
+actually appear.
+
+**Re-derivation, not a find/replace.** dev-env#1020 explicitly asked whether the fix should
+*retarget* the exclusion (keep `TaskCreate`/`TaskUpdate` uncounted, just rename the comment) or
+*re-derive* the bookkeeping-vs-substantive judgment from scratch, since `TaskCreate`/
+`TaskUpdate`'s call shape is not a 1:1 match for `TodoWrite`'s: `TodoWrite` is a single
+whole-list-replace call per update, while `TaskCreate` adds one task and `TaskUpdate` mutates
+one task's status per call — a session tracking an 8-task plan can produce 15+ such calls, an
+order of magnitude more granular than `TodoWrite` would have produced for the same plan. That
+granularity was weighed as a reason *for* counting (each call is smaller, so more of them might
+better approximate real incremental work) and rejected: `TaskCreate` calls happen *before* any
+task's real work starts (pure planning), and even `TaskUpdate("completed")` calls are, at best,
+redundant with the `Read`/`Bash`/`Edit`/`Write` calls that did the task's real work (already
+counted) — never additional signal on their own. Counting them would let planning volume alone
+cross `SUBSTANTIVE_THRESHOLD` with zero investigative work done, which is exactly the "trivial
+lookup" false-positive class `SUBSTANTIVE_THRESHOLD` exists to filter out (see Decision, point
+2, above). The exclusion stays; only its documented rationale changed.
+
+**Fix.** `_SUBSTANTIVE_TOOLS`'s membership is unchanged. The comment now names `TaskCreate`/
+`TaskUpdate` as the real, heavily-used bookkeeping tool excluded (with the live counts above)
+and `Agent`/`spawn_task`/`mcp__*` as the real delegation family excluded (bare `"Task"`
+dropped). `claude/scripts/tests/test_stop_journal_stub_checkpoint.py`'s exclusion test was
+rebuilt from real-shaped `TaskCreate`/`TaskUpdate`/`Agent` tool_use records rather than a
+hand-built `TodoWrite` fixture (mirroring `test_journal_stop_check.py`'s equivalent rebuild in
+PR #1009), and a new `evaluate()`-level test pins the specific scenario the re-derivation
+reasoned about: 8 `TaskCreate` + 8 `TaskUpdate` calls plus only 3 real reads stays below
+`SUBSTANTIVE_THRESHOLD` and does not fire.
+
+**Scope note.** This hook's `substantive_tool_count()`, `wrote_stub()`, and
+`opened_or_merged_pr()`'s `_bash_commands()` helper do not filter `isSidechain` records, unlike
+`journal-stop-check.py`'s `pending_task_count()` / `open_background_agent_count()` (fixed in
+[ADR-091 Amendment 3](091-journal-stop-check-archive-reminder-blocking.md#amendment-3-2026-08-16--augment-the-reminders-text-with-an-in-flight-work-caveat-dev-env1002)).
+Deliberately **not** fixed here: unlike the archive-reminder's in-flight-work caveat (where
+counting a finished subagent's activity as the *main* session's still-open work is unambiguously
+wrong), it is genuinely unclear whether a subagent's delegated investigative work should count
+toward *this* hook's "did substantive work happen this session" judgment — an argument exists
+that delegated investigation the session then reports on **should** count. Filed as an open
+question rather than assumed either way; see the tracking issue referenced from dev-env#1020's
+follow-up.
+
+**References:** [dev-env#1020](https://github.com/brownm09/dev-env/issues/1020) — the issue
+this amendment closes. [dev-env#1002](https://github.com/brownm09/dev-env/issues/1002) /
+[PR #1009](https://github.com/brownm09/dev-env/pull/1009) — the sibling correction in
+`journal-stop-check.py` this amendment mirrors.

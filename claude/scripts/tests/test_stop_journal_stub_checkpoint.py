@@ -232,14 +232,22 @@ def test_substantive_counts_each_tool():
     return "substantive_tool_count: counts each of the 9 substantive tools -> 9"
 
 
-def test_substantive_ignores_todowrite_and_text():
+def test_substantive_ignores_bookkeeping_delegation_and_text():
+    """Real-shaped exclusion check -- NOT a hand-built TodoWrite fixture. This
+    harness has no TodoWrite tool at all (0 occurrences across every transcript
+    on the machine, confirmed live). Its real task-list tool is TaskCreate/
+    TaskUpdate and its real subagent-spawning tool is "Agent" (bare "Task" also
+    never appears). dev-env#1020, mirroring the identical dev-env#1002
+    correction in journal-stop-check.py (ADR-091 Amendment 3)."""
     recs = [
-        _asst_tool("t1", "TodoWrite", {"todos": []}),
+        _asst_tool("t1", "TaskCreate", {"subject": "x", "description": "y", "activeForm": "x-ing"}),
+        _asst_tool("t2", "TaskUpdate", {"taskId": "1", "status": "in_progress"}),
+        _asst_tool("t3", "Agent", {"prompt": "investigate the flaky test", "subagent_type": "Explore"}),
+        _asst_tool("t4", "mcp__ccd_session__spawn_task", {"title": "x"}),
         _asst_text("some analysis text"),
-        _asst_tool("t2", "mcp__ccd_session__spawn_task", {"title": "x"}),
     ]
     assert hook.substantive_tool_count(recs) == 0
-    return "substantive_tool_count: TodoWrite / spawn_task / text not counted -> 0"
+    return "substantive_tool_count: TaskCreate/TaskUpdate/Agent/spawn_task/text not counted -> 0"
 
 
 def test_substantive_parallel_in_one_record():
@@ -455,6 +463,21 @@ def test_evaluate_intent_below_threshold_noop():
     fire, resolved = hook.evaluate(recs)
     assert fire is False and resolved is False
     return "evaluate: intent but count < 5 -> (False, False) [no-op]"
+
+
+def test_evaluate_task_bookkeeping_alone_does_not_cross_threshold():
+    """A report-intent session that creates/updates many tasks (bookkeeping) but
+    fewer than SUBSTANTIVE_THRESHOLD real investigative calls must not fire --
+    TaskCreate/TaskUpdate volume alone cannot substitute for real work
+    (dev-env#1020): 8 TaskCreate + 8 TaskUpdate calls, only 3 real reads."""
+    recs = [_user_str("verify the deploy went out cleanly")]
+    for i in range(8):
+        recs.append(_asst_tool(f"c{i}", "TaskCreate", {"subject": f"s{i}", "description": "d", "activeForm": "x-ing"}))
+        recs.append(_asst_tool(f"u{i}", "TaskUpdate", {"taskId": str(i), "status": "completed"}))
+    recs += [_asst_read(f"r{i}", f"f{i}.ts") for i in range(3)]
+    fire, resolved = hook.evaluate(recs)
+    assert fire is False and resolved is False
+    return "evaluate: 8 TaskCreate + 8 TaskUpdate + 3 reads (< 5 real calls) -> (False, False) [no-op]"
 
 
 # ---------------------------------------------------------------------------
@@ -682,7 +705,7 @@ def main():
         ("report_intent absent", test_report_intent_absent),
         # substantive_tool_count
         ("substantive counts each tool", test_substantive_counts_each_tool),
-        ("substantive ignores TodoWrite/text", test_substantive_ignores_todowrite_and_text),
+        ("substantive ignores bookkeeping/delegation/text", test_substantive_ignores_bookkeeping_delegation_and_text),
         ("substantive parallel in one record", test_substantive_parallel_in_one_record),
         ("substantive boundary 4 vs 5", test_substantive_boundary_4_and_5),
         # opened_or_merged_pr
@@ -719,6 +742,7 @@ def main():
         ("evaluate /review resolved", test_evaluate_review_resolved),
         ("evaluate no-intent no-op", test_evaluate_no_intent_noop),
         ("evaluate below-threshold no-op", test_evaluate_intent_below_threshold_noop),
+        ("evaluate task-bookkeeping volume no-op", test_evaluate_task_bookkeeping_alone_does_not_cross_threshold),
         # format_reminder / robustness
         ("reminder cp1252-encodable", test_reminder_is_cp1252_encodable),
         ("reminder includes cwd", test_reminder_includes_cwd),

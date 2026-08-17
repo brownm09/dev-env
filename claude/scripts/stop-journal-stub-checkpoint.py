@@ -175,9 +175,24 @@ _STUB_BASH_WRITE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Substantive, hands-on tools. Reads count (report sessions are read-dominated);
-# TodoWrite (bookkeeping) and Task/spawn_task/mcp__* (delegation) are excluded so
-# a single delegation can't inflate the count past the threshold on its own.
+# Substantive, hands-on tools. Reads count (report sessions are read-dominated).
+# Two families are deliberately excluded (an allowlist -- anything not named
+# below is already excluded by omission, so this frozenset's membership itself
+# never needs to change; only this comment's naming did -- dev-env#1020):
+#   - TaskCreate/TaskUpdate (bookkeeping) -- this harness's real task-list tool.
+#     It has NO TodoWrite tool at all: 0 occurrences across every transcript on
+#     the machine vs. thousands of TaskCreate/TaskUpdate calls, confirmed live
+#     the same way dev-env#1002 confirmed it for journal-stop-check.py's sibling
+#     counter (ADR-091 Amendment 3). Re-derived, not a find/replace: a session
+#     can TaskCreate/TaskUpdate a whole plan (each call is one task, unlike
+#     TodoWrite's single whole-list-replace, so the volume can be large) without
+#     touching any real content, so counting them would let planning overhead
+#     alone cross SUBSTANTIVE_THRESHOLD -- exactly the "trivial lookup" false
+#     positive this threshold exists to prevent. They stay excluded.
+#   - Agent/spawn_task/mcp__* (delegation) -- bare "Task" never appears either
+#     (confirmed live: 0 occurrences); the real subagent-spawning tool name is
+#     "Agent". Excluded so a single delegation can't inflate the count past the
+#     threshold on its own.
 _SUBSTANTIVE_TOOLS = frozenset({
     "Bash", "Read", "Grep", "Glob", "Edit", "Write",
     "NotebookEdit", "WebFetch", "WebSearch",
