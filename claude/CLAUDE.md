@@ -248,6 +248,16 @@ Motivating incident: [cover-letter-runtime#7](https://github.com/brownm09/cover-
 
 Also observed on a **freshly created** `git worktree add`/`EnterWorktree` checkout (not just a retrofit onto an old one) — see [cover-letter-runtime#14](https://github.com/brownm09/cover-letter-runtime/issues/14) / [PR #21](https://github.com/brownm09/cover-letter-runtime/pull/21). The detection/fix recipe is identical; only the trigger differs. Root cause there is believed to be an intermittent checkout-order race in that machine's git build (`2.37.1.windows.1`), not proven to a git source-line citation — ruled out: Claude Code's own hook system, MCP tools, native git hooks, dev-env's own worktree-creation scripts, and git's parallel-checkout feature.
 
+### `$`-anchored regex (grep / ripgrep / Grep tool) silently fails to match on CRLF-terminated lines
+
+**Pattern:** A `$`-anchored regex passed to `grep`, ripgrep, or the `Grep` tool requires the match to end immediately before the line terminator. On a CRLF-terminated line the `\r` sits between the anchor position and the `\n`, so `$` never matches where an LF-only mental model expects — the query returns a clean "no matches," indistinguishable from a genuine absence.
+
+**Symptom:** An end-anchored pattern (e.g. `^### Session \d+$`) returns zero matches against a file that plainly contains the text; the identical pattern with the trailing `$` dropped matches every occurrence.
+
+**Fix:** Before trusting a zero-match result from a `$`-anchored pattern as evidence of absence, re-run without the trailing `$`, or confirm the file's line-ending convention directly (a byte-level scan, or `git diff --stat` noise on an otherwise-unrelated edit, is a tell) whenever the file could plausibly be CRLF. Same CRLF root-cause family as the `.gitattributes` eol retrofit gotcha above; same "confident false negative from a clean-looking empty result" shape as the `git show <ref>:<path>` MSYS path-mangling note in the `/review` skill (CLI Scripting Checklist item 5 / [ADR-117](../docs/adr/117-absence-claims-need-absolute-paths.md)) — but a distinct trigger (a tool's own anchor semantics, not a git/shell path-conversion issue) that neither existing entry would lead a session to suspect.
+
+**Motivating incident:** [dev-env#1006](https://github.com/brownm09/dev-env/issues/1006) — confirmed live 2026-08-16 while editing an un-normalized, 100%-CRLF engineering-journal session file (fixing [engineering-journal#225](https://github.com/brownm09/engineering-journal/issues/225)): `^### Session \d+$` returned zero matches against 23 present occurrences; dropping the trailing `$` matched all 23.
+
 ---
 
 ## Dev-Env & Project Boards
