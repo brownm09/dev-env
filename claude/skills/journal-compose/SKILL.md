@@ -558,7 +558,7 @@ Handle the response as described in Step 2b before continuing.
 Then for each project in sequence:
 - **Step 7** — Update `sessions/<project>/README.md`
 - **Step 8** — Update the top-level `README.md` (one pass covering all projects)
-- **Step 9** — Delete stubs and release lock for this project
+- **Step 9** — Delete stubs, manifests, and release lock for this project
 - **Step 9.5** — Reconcile this project's open-PR shards
 
 Finally, do one combined commit and PR (**Steps 10–11**) that stages all projects' files:
@@ -1370,7 +1370,7 @@ This does **not** overlap Step 6.5's structural assertion (dev-env#467): that on
 cleanly. See [ADR-121](https://github.com/brownm09/dev-env/blob/main/docs/adr/121-composed-output-stray-terminal-scan.md)
 (dev-env #894).
 
-## Step 9 — Delete stub files and release lock
+## Step 9 — Delete stubs, manifests, and lock files
 
 Delete all stubs and this day's manifest for the date and release the compose lock. Delete the
 per-session manifest shards (ADR-056) **and** any legacy per-day manifest. **Do not** delete the
@@ -1384,6 +1384,27 @@ rm -f "$WT"/sessions/<project>/YYYY-MM-DD_*.manifest.jsonl
 rm -f "$WT"/sessions/<project>/YYYY-MM-DD.manifest.jsonl
 rm -f "$WT"/sessions/<project>/.draft-compose.lock
 ```
+
+**Verify Step 9 actually finished before proceeding — do not trust the step title alone.**
+[dev-env#1005](https://github.com/brownm09/dev-env/issues/1005) found `.manifest.jsonl` deletion
+leaking past composes silently (across both a normal multi-project compose and multiple
+recovery-pass composes) while `.stub.md` deletion never did — because a prior version of this
+step's own heading and the Multi-project mode Phase 2 checklist both named only "stub files and
+lock," so an agent reconstructing the step from its title rather than re-reading the full `rm`
+block above could plausibly reproduce the title's scope and genuinely omit the manifest deletion,
+which was never name-checked there. Re-glob for this project immediately after the `rm` block
+above and require zero matches before moving on:
+```bash
+LEFTOVER=$(ls "$WT"/sessions/<project>/YYYY-MM-DD_*.stub.md \
+              "$WT"/sessions/<project>/YYYY-MM-DD_*.manifest.jsonl \
+              "$WT"/sessions/<project>/YYYY-MM-DD.manifest.jsonl 2>/dev/null)
+[ -z "$LEFTOVER" ] && echo "STEP9_CLEAN=ok" || echo "STEP9_CLEAN=leftover:$LEFTOVER"
+```
+If `STEP9_CLEAN` reports any leftover path, re-run the matching `rm` command(s) above for exactly
+those paths, then re-run this check. **Do not proceed to Step 9.5 or Step 10 while any stub or
+manifest file remains for this date** — an incomplete Step 9 must never reach the commit.
+Multi-project mode: run this check for every project in the Phase 2 per-project loop, not once
+for the whole run — a leftover in one project must not be masked by a clean result in another.
 
 For legacy single-file compose, delete the draft file instead:
 ```bash
@@ -1696,11 +1717,12 @@ git -C "$EJ" branch -D "$SOURCE_BRANCH" 2>/dev/null || true    # may be held by 
 git -C "$EJ" branch -D compose/YYYY-MM-DD 2>/dev/null || true  # only exists after a Step 10.5 recovery
 ```
 
-**Post-merge shard-leak check** — surfaces a leak without ever mutating the canonical to fix it.
-This checks for a leak of the shards this run's Step 9.5 reconciled (and Step 10.5's
+**Post-merge cleanup-leak check** — surfaces a leak without ever mutating the canonical to fix it.
+Two checks, back to back: a leak of the shards this run's Step 9.5 reconciled (and Step 10.5's
 diff-and-replay, if the conflict-recovery path ran) — **not** a shard for the compose PR itself,
-which by design (see "Disregard the pr-merge-reminder hook's..." above) never exists in the
-first place:
+which by design (see "Disregard the pr-merge-reminder hook's..." above) never exists in the first
+place — and a leak of this run's own composed-date stub/manifest files, which Step 9's
+completion-verification gate should already have prevented (dev-env#1005):
 
 ```bash
 git -C "$EJ" fetch origin main
@@ -1708,6 +1730,18 @@ for N in <the exact PR numbers this run's Step 9.5 (and Step 10.5's diff-and-rep
           reconciled, space-separated>; do
   git -C "$EJ" ls-tree -r origin/main --name-only | grep -q "open-prs/$N.json" && \
     echo "WARNING: shard open-prs/$N.json landed back on origin/main despite reconciliation — remove it in a follow-up commit"
+done
+# Stub/manifest leak check (dev-env#1005). Step 9's own completion-verification gate should
+# already have caught an incomplete deletion before this run's commit — this is the
+# defense-in-depth backstop for a recovery flow or any other path that reached the same commit
+# without following Step 9's prose literally. Scoped to the exact paths this run's Step 9
+# deleted (not a tree-wide glob for the date): a tree-wide glob would also catch a different,
+# concurrently-written session's legitimately not-yet-composed stub in a project this run's
+# Step 1 never discovered, and falsely flag it for removal.
+for F in <the exact stub/manifest relative paths this run's Step 9 deleted, across every
+          project, space-separated>; do
+  git -C "$EJ" ls-tree -r origin/main --name-only | grep -qF -- "$F" && \
+    echo "WARNING: $F landed back on origin/main despite Step 9 (dev-env#1005 leak shape) — remove it in a follow-up commit"
 done
 ```
 
