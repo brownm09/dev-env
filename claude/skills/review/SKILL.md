@@ -136,7 +136,12 @@ routine):**
 1. From CHANGED_FILE_LIST, select files whose `changeType` is `ADDED`, `DELETED`, or `RENAMED` —
    never `MODIFIED` or `CHANGED`, which are same-path content edits, not structural changes —
    **and** whose path matches `claude/skills/**`, `claude/hooks/**`, `claude/scripts/**`, or
-   `claude/routines/**`.
+   `claude/routines/**`, **excluding any path with a `tests/` segment** (e.g.
+   `claude/scripts/tests/**`, `claude/hooks/tests/**`, both of which exist today). A test file's
+   own structural changes are governed by the separate README index-parity gate
+   (`claude/scripts/tests/README.md`/`claude/scripts/README.md`, dev-env Testing item 84 —
+   `test_readme_index_parity.py`), not this table's `README.md`/`docs/REFERENCE.md` requirement;
+   matching it here would name the wrong remedy in the finding below.
 2. If any file qualifies, check whether `README.md` or `docs/REFERENCE.md` also appears in
    CHANGED_FILE_LIST.
 3. If neither appears, record a **Documentation** blocking finding (format below) naming the

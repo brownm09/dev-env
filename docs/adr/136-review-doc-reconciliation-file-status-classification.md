@@ -57,7 +57,13 @@ call: `files` rides the same GraphQL request Step 2 already makes for `title`/`b
 
 - **Rows 1–4 (structural — add/remove/rename a skill, hook script, utility script, routine):**
   mechanical. `changeType` is `ADDED`, `DELETED`, or `RENAMED` **and** path matches one of the
-  four directories. `MODIFIED`/`CHANGED` never qualify here.
+  four directories, **excluding any path with a `tests/` segment** (`claude/scripts/tests/**`,
+  `claude/hooks/tests/**` — both exist today). A test file's own structural changes are governed
+  by the separate, already-mechanized README index-parity gate
+  (`test_readme_index_parity.py`, dev-env Testing item 84), not this table's row 1–4 requirement
+  — matching it here would point the author at the wrong remedy. Caught during this PR's own
+  `/review` pass, before merge (the same self-referential catch ADR-120 records for its own
+  404-classification bug). `MODIFIED`/`CHANGED` never qualify here regardless of directory.
 - **Rows 5–6 (content — `hook-config.json` schema change; a skill's invocation-syntax change):**
   `changeType` cannot decide these — a `MODIFIED` `SKILL.md` might be a pure logic edit or a
   frontmatter/invocation change, and only the diff content distinguishes them. For each
@@ -110,6 +116,11 @@ message, so the author knows which row applied without re-deriving it.
   alongside the GraphQL `gh pr view --json` calls Step 2b/2c already standardize on) to answer a
   question Step 2c's existing cross-tree-impact judgment already answers for the same file,
   risking two steps disagreeing about one rename instead of one step deciding it once.
+- **Leave the `tests/`-segment carve-out for a follow-up, since it's a narrower residual gap than
+  the bug this PR fixes.** Rejected — it is the same category error (over-broad path matching
+  standing in for a real classification), just on a smaller surface, and the fix is a few lines
+  directly in code this PR already rewrote; deferring it would ship a known false-positive class
+  in the same PR that exists specifically to remove one.
 
 ## References
 
