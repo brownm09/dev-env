@@ -229,6 +229,29 @@ def test_find_transcript_nested() -> str:
     return "find_transcript finds jsonl nested in a project subdirectory"
 
 
+def test_find_transcript_unsafe_session_id_returns_none_without_globbing() -> str:
+    # dev-env#1002 review finding: session_id reached the glob pattern with no
+    # sanitization of its own -- a crafted id could escape the *projects* root
+    # via "**/../...". Plant a file at the escape target to prove the unsafe id
+    # is rejected before any glob runs, not merely that this particular pattern
+    # happens not to match.
+    with tempfile.TemporaryDirectory() as root:
+        projects = Path(root) / "projects"
+        projects.mkdir()
+        escape_target = Path(root) / "escaped.jsonl"
+        escape_target.write_text("")
+        result = _hookutil.find_transcript("../escaped", projects=projects)
+        assert result is None, f"expected None, got {result}"
+    return "find_transcript rejects a session_id outside _SAFE_SESSION_ID (dev-env#1002 review finding)"
+
+
+def test_find_transcript_empty_session_id_returns_none() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        result = _hookutil.find_transcript("", projects=Path(root))
+        assert result is None, f"expected None, got {result}"
+    return "find_transcript('') -> None without touching the filesystem"
+
+
 # --- transcript-record readers (ADR-090) --------------------------------------
 
 def test_content_items_returns_list() -> str:
@@ -649,6 +672,8 @@ def main() -> int:
         ("find_transcript: found", test_find_transcript_found),
         ("find_transcript: not found -> None", test_find_transcript_not_found),
         ("find_transcript: nested dir", test_find_transcript_nested),
+        ("find_transcript: unsafe session_id rejected (dev-env#1002)", test_find_transcript_unsafe_session_id_returns_none_without_globbing),
+        ("find_transcript: empty session_id -> None (dev-env#1002)", test_find_transcript_empty_session_id_returns_none),
         ("_content_items: returns list", test_content_items_returns_list),
         ("_content_items: guards -> []", test_content_items_guards),
         ("_user_message_texts: extraction + guards (dev-env#710)", test_user_message_texts_extracts),

@@ -61,8 +61,23 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
+
+# session_id is trusted harness-generated input (a UUID) on the vast majority of
+# call sites, but find_transcript() interpolates it directly into a glob pattern
+# with no validation of its own -- a caller that skips validation (as
+# stop-experiment-verdict-gate.py does today, and as journal-stop-check.py's
+# in_flight_work_note() did before this fix, dev-env#1002 review finding) lets a
+# crafted session_id containing path separators or ".." escape the intended
+# ``projects`` root via glob traversal. journal-stop-check.py's own
+# consume_stub_pushed_sentinel() already validates against this exact pattern
+# for its own sentinel-delete path (dev-env#980 review finding) -- centralizing
+# the same check here protects every current and future find_transcript() caller
+# (token-tracker.py, posttooluse-inert-advisory.py, stop-experiment-verdict-
+# gate.py, journal-stop-check.py) instead of relying on each one to remember it.
+_SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 SCRATCH = Path.home() / ".claude" / "scratch"
 PROJECTS = Path.home() / ".claude" / "projects"
@@ -127,7 +142,14 @@ def find_transcript(session_id: str, projects: Path | None = None) -> Path | Non
 
     Searches all project directories under ``projects`` (defaults to
     ``~/.claude/projects/``).  *projects* is injectable for offline tests.
+
+    *session_id* must match ``_SAFE_SESSION_ID`` (alphanumeric, ``_``, ``-``) or
+    this returns ``None`` without touching the filesystem — a session_id with
+    embedded path separators or ``..`` would otherwise reach the glob pattern
+    unsanitized (dev-env#1002 review finding).
     """
+    if not session_id or not _SAFE_SESSION_ID.match(session_id):
+        return None
     root = projects if projects is not None else PROJECTS
     # Session ids are unique, so the first match is the answer — next() short-circuits
     # instead of materializing every JSONL under ~/.claude/projects/.
