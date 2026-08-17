@@ -108,7 +108,12 @@ actually have; the real, single toggle also happens to be the escape hatch's pre
 (enablePullRequestAutoMerge)`. `gh api repos/merickvaughn/lifting-logbook` confirmed
 `allow_auto_merge: false` at the repo-settings level. This is the deterministic, expected result
 of the Decision as literally written — not a bug — but the ADR never previously said so, so a
-session hitting this error had no way to tell from this document alone.
+session hitting this error had no way to tell from this document alone. (Owner shown as
+`merickvaughn/lifting-logbook` throughout this ADR, corrected by
+[dev-env#1010](https://github.com/brownm09/dev-env/issues/1010) for the repo's later ownership
+transfer — the commands quoted here as historically run may have originally used the
+then-current `brownm09/lifting-logbook`; both resolve to the same repo today via GitHub's
+transfer redirect.)
 
 **Consequence the Decision didn't spell out:** with the toggle off, the "Per-PR escape hatch"
 clause describes an operation that cannot be invoked in that repo, full stop — it fails at the

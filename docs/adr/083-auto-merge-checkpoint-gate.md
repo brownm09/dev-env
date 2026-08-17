@@ -607,6 +607,12 @@ $ gh api repos/merickvaughn/lifting-logbook/branches/main/protection/required_st
 ["DB Integration Tests","Lint & Test","Observability Stack Smoke Test","Playwright E2E","Review Gate","Staging Integration Tests"]
 ```
 
+(This addendum's commands, and the `--jq .allow_auto_merge` one further below, show
+`merickvaughn/lifting-logbook` throughout — corrected by
+[dev-env#1010](https://github.com/brownm09/dev-env/issues/1010) for the repo's later ownership
+transfer; both owner forms resolve to the same repo today via GitHub's transfer redirect, but the
+commands as originally run here may have used the then-current `brownm09/lifting-logbook`.)
+
 Top-level [lifting-logbook#718](https://github.com/merickvaughn/lifting-logbook/issues/718) is now
 **closed** — both sub-issues (#720/#722 shipping the workflow, #757/#759 making it required) are
 complete.
