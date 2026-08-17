@@ -108,7 +108,10 @@ ADR's own [ADR-091 Amendment 3](091-journal-stop-check-archive-reminder-blocking
 the machine, versus thousands of `TaskCreate`/`TaskUpdate` calls (the actual task-list tool).
 Confirmed independently live for this amendment (not merely cited from the sibling fix):
 `TaskCreate`/`TaskUpdate` occur in the tens per session across many sampled transcript files
-(career-playbook, lifting-logbook, dev-env); `TodoWrite` — 0. The comment's second exclusion,
+(career-playbook, lifting-logbook, dev-env). `TodoWrite` was re-checked live in lifting-logbook
+for this amendment (0 occurrences); ADR-091's own 400–600-file sample had already established 0
+occurrences repo-wide, so it was not independently re-swept across every project again here. The
+comment's second exclusion,
 bare `"Task"` for the subagent-spawning tool, was *also* stale: 0 occurrences of `"name":
 "Task"` across every sampled project, versus the real delegation tool name, `"Agent"` (18
 occurrences in dev-env's own transcripts alone, 97 in career-playbook's). Since
