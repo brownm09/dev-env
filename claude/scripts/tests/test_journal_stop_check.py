@@ -37,6 +37,12 @@ Three layers, mirroring this repo's hook-test convention:
       read -> None; absent -> None). Without an override, the path is derived
       from session_id; a falsy session_id with no override returns None without
       touching the filesystem.
+    - pending_todo_count() / open_background_agent_count() / format_in_flight_note()
+      / parse_transcript_path() / in_flight_work_note(): the in-flight-work caveat
+      (dev-env#1002, ADR-091 Amendment 3) appended to the archive reminder when the
+      session's own transcript still shows pending/in_progress TodoWrite items or an
+      unresolved backgrounded Agent call -- see the code comments for exact
+      semantics.
 
   * A behavioral layer drives the real hook end-to-end over stdin via subprocess,
     with HOME/USERPROFILE pointed at a temp dir so the per-session sentinel
@@ -57,6 +63,14 @@ Three layers, mirroring this repo's hook-test convention:
       (dev-env#980's actual regression case).
     - flag present but the payload carries no session_id at all -> exit 0 (no
       block), regardless of what flags exist on disk.
+    - flag present + a planted transcript with a pending TodoWrite item -> exit 2,
+      stderr carries both the base reminder and the todo-count caveat (dev-env#1002).
+    - flag present + a planted transcript with an unresolved backgrounded Agent call
+      -> exit 2, stderr carries the agent-count caveat (dev-env#1002).
+    - flag present + a planted transcript with a RESOLVED backgrounded Agent call
+      (a matching completion notification is present) -> exit 2, stderr is
+      byte-identical to the unmodified archive_reminder_message() text -- the
+      no-false-positive regression case (dev-env#1002).
 
 main()'s advisory branches (stale drafts / unmerged branches / orphan cleanup) run
 subprocess git against the journal repo and are not unit-tested here (pure-helper
@@ -99,6 +113,29 @@ _writer_spec = importlib.util.spec_from_file_location("stub_push_archive_reminde
 assert _writer_spec and _writer_spec.loader, f"cannot load module spec from {_WRITER_SCRIPT}"
 spar = importlib.util.module_from_spec(_writer_spec)
 _writer_spec.loader.exec_module(spar)  # safe: main() is guarded by __main__
+
+
+# --- transcript-record builders (dev-env#1002; mirrors
+# test_stop_experiment_verdict_gate.py's builder conventions) -----------------
+
+def _asst_tool(tid, name, inp):
+    return {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": name, "id": tid, "input": inp}]}}
+
+
+def _user_str(text):
+    return {"type": "user", "message": {"content": text}}
+
+
+def _agent_notification_text(tool_use_id, status="completed"):
+    return (
+        "<task-notification>\n"
+        "<task-id>agent-1</task-id>\n"
+        f"<tool-use-id>{tool_use_id}</tool-use-id>\n"
+        "<output-file>out.txt</output-file>\n"
+        f"<status>{status}</status>\n"
+        "</task-notification>"
+    )
 
 
 def test_sentinel_prefix_matches_writer_module():
@@ -184,6 +221,25 @@ def test_parse_session_id_empty_and_malformed():
     return "empty / malformed / non-dict stdin -> '' (never raises)"
 
 
+# --- pure: parse_transcript_path() (dev-env#1002) --------------------------------
+
+def test_parse_transcript_path_present():
+    assert jsc.parse_transcript_path(json.dumps({"transcript_path": "/tmp/x.jsonl"})) == "/tmp/x.jsonl"
+    return "transcript_path present -> returned"
+
+
+def test_parse_transcript_path_missing():
+    assert jsc.parse_transcript_path(json.dumps({"session_id": "s1"})) == ""
+    return "transcript_path absent -> ''"
+
+
+def test_parse_transcript_path_empty_and_malformed():
+    assert jsc.parse_transcript_path("") == ""
+    assert jsc.parse_transcript_path("not json{") == ""
+    assert jsc.parse_transcript_path("[]") == ""  # non-dict JSON -> .get raises -> ""
+    return "empty / malformed / non-dict stdin -> '' (never raises)"
+
+
 # --- fixture: consume_stub_pushed_sentinel(session_id, sentinel=tmp, scratch=tmp) --
 # The *sentinel* override path (explicit fixture injection) and the
 # *session_id*-derives-a-path production path are exercised separately --
@@ -254,6 +310,189 @@ def test_consume_unsafe_session_id_no_override_returns_none_without_touching_dis
     return "session_id outside _SAFE_SESSION_ID + no override -> None (dev-env#980 review finding)"
 
 
+# --- pure: pending_todo_count() (dev-env#1002) ----------------------------------
+
+def test_pending_todo_count_empty_records():
+    assert jsc.pending_todo_count([]) == 0
+    return "no records -> 0"
+
+
+def test_pending_todo_count_mixed_statuses():
+    todos = [
+        {"content": "a", "status": "pending"},
+        {"content": "b", "status": "in_progress"},
+        {"content": "c", "status": "completed"},
+    ]
+    recs = [_asst_tool("t1", "TodoWrite", {"todos": todos})]
+    assert jsc.pending_todo_count(recs) == 2
+    return "one TodoWrite, mixed statuses -> pending+in_progress counted, completed excluded"
+
+
+def test_pending_todo_count_second_call_wins():
+    first = [{"content": "a", "status": "pending"}, {"content": "b", "status": "pending"}]
+    second = [{"content": "c", "status": "completed"}]
+    recs = [
+        _asst_tool("t1", "TodoWrite", {"todos": first}),
+        _asst_tool("t2", "TodoWrite", {"todos": second}),
+    ]
+    assert jsc.pending_todo_count(recs) == 0
+    return "two TodoWrite calls -> only the LATEST is counted, not summed"
+
+
+def test_pending_todo_count_all_completed():
+    todos = [{"content": "a", "status": "completed"}, {"content": "b", "status": "completed"}]
+    recs = [_asst_tool("t1", "TodoWrite", {"todos": todos})]
+    assert jsc.pending_todo_count(recs) == 0
+    return "all-completed todos -> 0"
+
+
+def test_pending_todo_count_malformed_todos_field():
+    recs = [_asst_tool("t1", "TodoWrite", {"todos": "not-a-list"})]
+    assert jsc.pending_todo_count(recs) == 0
+    return "todos field present but not a list -> 0"
+
+
+def test_pending_todo_count_missing_todos_key():
+    recs = [_asst_tool("t1", "TodoWrite", {})]
+    assert jsc.pending_todo_count(recs) == 0
+    return "TodoWrite call with no todos key -> 0"
+
+
+def test_pending_todo_count_malformed_records_do_not_raise():
+    todos = [{"content": "a", "status": "pending"}]
+    recs = [None, "str", 123, [], {"type": "weird"}, _asst_tool("t1", "TodoWrite", {"todos": todos})]
+    assert jsc.pending_todo_count(recs) == 1
+    return "malformed/non-dict records mixed in -> does not raise, real call still counted"
+
+
+# --- pure: open_background_agent_count() (dev-env#1002) -------------------------
+
+def test_open_background_agent_count_no_agent_calls():
+    assert jsc.open_background_agent_count([]) == 0
+    return "no Agent calls -> 0"
+
+
+def test_open_background_agent_count_resolved():
+    recs = [
+        _asst_tool("toolu_1", "Agent", {"run_in_background": True, "prompt": "x"}),
+        _user_str(_agent_notification_text("toolu_1")),
+    ]
+    assert jsc.open_background_agent_count(recs) == 0
+    return "one backgrounded Agent call with a later matching notification -> 0 (resolved)"
+
+
+def test_open_background_agent_count_unresolved():
+    recs = [_asst_tool("toolu_1", "Agent", {"run_in_background": True, "prompt": "x"})]
+    assert jsc.open_background_agent_count(recs) == 1
+    return "one backgrounded Agent call with NO matching notification anywhere -> 1 (open)"
+
+
+def test_open_background_agent_count_foreground_call_excluded():
+    recs = [_asst_tool("toolu_1", "Agent", {"run_in_background": False, "prompt": "x"})]
+    assert jsc.open_background_agent_count(recs) == 0
+    return "run_in_background:false -> 0 regardless of notification absence (blocks the turn, cannot be in flight at Stop)"
+
+
+def test_open_background_agent_count_omitted_flag_excluded():
+    recs = [_asst_tool("toolu_1", "Agent", {"prompt": "x"})]
+    assert jsc.open_background_agent_count(recs) == 0
+    return "run_in_background omitted -> 0 (strict `is True`, not truthy)"
+
+
+def test_open_background_agent_count_two_calls_one_resolved():
+    recs = [
+        _asst_tool("toolu_1", "Agent", {"run_in_background": True, "prompt": "x"}),
+        _asst_tool("toolu_2", "Agent", {"run_in_background": True, "prompt": "y"}),
+        _user_str(_agent_notification_text("toolu_1")),
+    ]
+    assert jsc.open_background_agent_count(recs) == 1
+    return "two backgrounded calls, one resolved one not -> 1"
+
+
+# --- pure: format_in_flight_note() (dev-env#1002) --------------------------------
+
+def test_format_in_flight_note_both_zero():
+    assert jsc.format_in_flight_note(0, 0) == ""
+    return "both zero -> ''"
+
+
+def test_format_in_flight_note_todos_only():
+    note = jsc.format_in_flight_note(2, 0)
+    assert note and "2" in note and "todo" in note.lower()
+    assert note.isascii(), f"note must be ASCII, got: {note!r}"
+    note.encode("cp1252")  # must not raise
+    return "todos only -> non-empty, names the count, ASCII/cp1252-safe"
+
+
+def test_format_in_flight_note_agents_only():
+    note = jsc.format_in_flight_note(0, 1)
+    assert note and "1" in note and "agent" in note.lower()
+    assert note.isascii(), f"note must be ASCII, got: {note!r}"
+    note.encode("cp1252")
+    return "agents only -> non-empty, names the count, ASCII/cp1252-safe"
+
+
+def test_format_in_flight_note_both():
+    note = jsc.format_in_flight_note(3, 2)
+    assert "3" in note and "2" in note
+    assert "todo" in note.lower() and "agent" in note.lower()
+    assert note.isascii(), f"note must be ASCII, got: {note!r}"
+    note.encode("cp1252")
+    return "both nonzero -> names both counts, ASCII/cp1252-safe"
+
+
+def test_format_in_flight_note_names_explicit_agreement_requirement():
+    note = jsc.format_in_flight_note(1, 0)
+    assert "archive_session" in note
+    assert "explicit" in note.lower()
+    return "note names archive_session's explicit-agreement requirement (dev-env#1002)"
+
+
+# --- fixture: in_flight_work_note() (dev-env#1002) -------------------------------
+
+def test_in_flight_work_note_via_explicit_transcript_path():
+    todos = [{"content": "a", "status": "pending"}]
+    records = [_asst_tool("t1", "TodoWrite", {"todos": todos})]
+    with tempfile.TemporaryDirectory() as d:
+        tpath = Path(d) / "t.jsonl"
+        tpath.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+        note = jsc.in_flight_work_note(str(tpath), "irrelevant-session-id")
+    assert note and "1" in note and "todo" in note.lower()
+    return "explicit transcript_path resolving to a real file -> note reflects its content"
+
+
+def test_in_flight_work_note_falls_back_to_find_transcript():
+    todos = [{"content": "a", "status": "pending"}, {"content": "b", "status": "pending"}]
+    records = [_asst_tool("t1", "TodoWrite", {"todos": todos})]
+    with tempfile.TemporaryDirectory() as d:
+        projects = Path(d) / "projects"
+        session_dir = projects / "some-project"
+        session_dir.mkdir(parents=True)
+        tpath = session_dir / "sess-99.jsonl"
+        tpath.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+        # transcript_path_str absent/unresolvable -> falls back to find_transcript(session_id)
+        note = jsc.in_flight_work_note("", "sess-99", projects=projects)
+    assert note and "2" in note
+    return "empty/unresolvable transcript_path_str -> falls back to _hookutil.find_transcript(session_id, projects=...)"
+
+
+def test_in_flight_work_note_neither_resolves_returns_empty():
+    with tempfile.TemporaryDirectory() as d:
+        projects = Path(d) / "projects"  # never created
+        note = jsc.in_flight_work_note("", "no-such-session", projects=projects)
+    assert note == ""
+    return "no transcript_path and no resolvable session_id -> '' (never raises)"
+
+
+def test_in_flight_work_note_malformed_transcript_returns_empty():
+    with tempfile.TemporaryDirectory() as d:
+        tpath = Path(d) / "bad.jsonl"
+        tpath.write_text("not json at all {{{", encoding="utf-8")
+        note = jsc.in_flight_work_note(str(tpath), "irrelevant")
+    assert note == ""
+    return "unparseable transcript content -> '' (load_records drops malformed lines; no todos/agents found)"
+
+
 # --- behavioral: real hook over stdin via subprocess (HOME-isolated sentinel) --
 
 def _py_cmd():
@@ -265,7 +504,7 @@ def _sentinel_path(home, session_id):
 
 
 def _run_hook(home, *, flag_present, stop_hook_active, session_id="s1", flag_session_id=None,
-              include_session_id=True):
+              include_session_id=True, records=None):
     """Drive the real hook once. Returns (exit_code, stdout, stderr).
 
     *session_id* is the id sent in the Stop payload (the "current session").
@@ -273,7 +512,12 @@ def _run_hook(home, *, flag_present, stop_hook_active, session_id="s1", flag_ses
     -- defaults to *session_id* (same-session, the common case); pass a
     different value to simulate another session's still-armed sentinel
     (dev-env#980). *include_session_id=False* omits session_id from the
-    payload entirely.
+    payload entirely. *records* (dev-env#1002), when given, is a list of
+    transcript records written as JSONL to a tmp file under *home*, with its
+    path added to the payload as "transcript_path" -- when omitted (the
+    default), the payload carries no such key, byte-for-byte identical to
+    this helper's behavior before dev-env#1002 (every existing call site is
+    unaffected).
     """
     home = Path(home)
     if flag_present:
@@ -283,6 +527,10 @@ def _run_hook(home, *, flag_present, stop_hook_active, session_id="s1", flag_ses
     payload_dict = {"stop_hook_active": stop_hook_active, "hook_event_name": "Stop"}
     if include_session_id:
         payload_dict["session_id"] = session_id
+    if records is not None:
+        tpath = home / "transcript.jsonl"
+        tpath.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+        payload_dict["transcript_path"] = str(tpath)
     payload = json.dumps(payload_dict)
     env = dict(os.environ)
     env["HOME"] = str(home)
@@ -303,6 +551,47 @@ def test_e2e_flag_blocks_on_stderr_and_consumes():
     assert out.strip() == "", f"stdout must be empty on exit 2, got {out!r}"
     assert consumed, "sentinel must be consumed on the blocking run"
     return "e2e own-session flag + not-continuation -> exit 2, reminder on stderr, empty stdout, flag consumed"
+
+
+def test_e2e_flag_blocks_with_pending_todos_note():
+    todos = [{"content": "a", "status": "pending"}]
+    records = [_asst_tool("t1", "TodoWrite", {"todos": todos})]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(home, flag_present=True, stop_hook_active=False,
+                                  session_id="s1", records=records)
+    assert rc == 2, f"expected exit 2, got {rc} (stderr={err!r})"
+    assert "ccd_session_mgmt__archive_session" in err, err
+    assert "1" in err and "todo" in err.lower(), err
+    return "e2e flag + transcript with pending todos -> exit 2, base reminder AND todo-count phrase on stderr"
+
+
+def test_e2e_flag_blocks_with_open_agent_note():
+    records = [_asst_tool("toolu_1", "Agent", {"run_in_background": True, "prompt": "x"})]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(home, flag_present=True, stop_hook_active=False,
+                                  session_id="s1", records=records)
+    assert rc == 2, f"expected exit 2, got {rc} (stderr={err!r})"
+    assert "ccd_session_mgmt__archive_session" in err, err
+    assert "1" in err and "agent" in err.lower(), err
+    return "e2e flag + transcript with an unresolved backgrounded Agent call -> exit 2, agent-count phrase on stderr"
+
+
+def test_e2e_flag_blocks_with_resolved_agent_no_note():
+    records = [
+        _asst_tool("toolu_1", "Agent", {"run_in_background": True, "prompt": "x"}),
+        _user_str(_agent_notification_text("toolu_1")),
+    ]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(home, flag_present=True, stop_hook_active=False,
+                                  session_id="s1", records=records)
+    expected = f"[journal-stop-hook] {jsc.archive_reminder_message()}\n"
+    assert rc == 2, f"expected exit 2, got {rc} (stderr={err!r})"
+    assert err == expected, (
+        f"a RESOLVED backgrounded Agent call must produce the ORIGINAL, unmodified "
+        f"reminder with no caveat appended -- got {err!r}, expected {expected!r}"
+    )
+    return ("e2e flag + transcript with a RESOLVED backgrounded Agent call -> stderr matches the "
+            "ORIGINAL reminder exactly, no note appended (no-false-positive regression)")
 
 
 def test_e2e_no_flag_allows():
@@ -386,13 +675,41 @@ def main():
         ("parse session_id present (dev-env#980)", test_parse_session_id_present),
         ("parse session_id missing (dev-env#980)", test_parse_session_id_missing),
         ("parse session_id empty/malformed (dev-env#980)", test_parse_session_id_empty_and_malformed),
+        ("parse transcript_path present (dev-env#1002)", test_parse_transcript_path_present),
+        ("parse transcript_path missing (dev-env#1002)", test_parse_transcript_path_missing),
+        ("parse transcript_path empty/malformed (dev-env#1002)", test_parse_transcript_path_empty_and_malformed),
         ("consume present returns + deletes", test_consume_present_returns_and_deletes),
         ("consume is one-shot", test_consume_is_one_shot),
         ("consume absent -> None", test_consume_absent_returns_none),
         ("consume derives path from session_id (dev-env#980)", test_consume_derives_path_from_session_id),
         ("consume empty session_id -> None, disk untouched (dev-env#980)", test_consume_empty_session_id_no_override_returns_none_without_touching_disk),
         ("consume unsafe session_id -> None, disk untouched (dev-env#980)", test_consume_unsafe_session_id_no_override_returns_none_without_touching_disk),
+        ("pending_todo_count empty records (dev-env#1002)", test_pending_todo_count_empty_records),
+        ("pending_todo_count mixed statuses (dev-env#1002)", test_pending_todo_count_mixed_statuses),
+        ("pending_todo_count second call wins (dev-env#1002)", test_pending_todo_count_second_call_wins),
+        ("pending_todo_count all completed (dev-env#1002)", test_pending_todo_count_all_completed),
+        ("pending_todo_count malformed todos field (dev-env#1002)", test_pending_todo_count_malformed_todos_field),
+        ("pending_todo_count missing todos key (dev-env#1002)", test_pending_todo_count_missing_todos_key),
+        ("pending_todo_count malformed records do not raise (dev-env#1002)", test_pending_todo_count_malformed_records_do_not_raise),
+        ("open_background_agent_count no Agent calls (dev-env#1002)", test_open_background_agent_count_no_agent_calls),
+        ("open_background_agent_count resolved (dev-env#1002)", test_open_background_agent_count_resolved),
+        ("open_background_agent_count unresolved (dev-env#1002)", test_open_background_agent_count_unresolved),
+        ("open_background_agent_count foreground excluded (dev-env#1002)", test_open_background_agent_count_foreground_call_excluded),
+        ("open_background_agent_count omitted flag excluded (dev-env#1002)", test_open_background_agent_count_omitted_flag_excluded),
+        ("open_background_agent_count two calls one resolved (dev-env#1002)", test_open_background_agent_count_two_calls_one_resolved),
+        ("format_in_flight_note both zero (dev-env#1002)", test_format_in_flight_note_both_zero),
+        ("format_in_flight_note todos only (dev-env#1002)", test_format_in_flight_note_todos_only),
+        ("format_in_flight_note agents only (dev-env#1002)", test_format_in_flight_note_agents_only),
+        ("format_in_flight_note both (dev-env#1002)", test_format_in_flight_note_both),
+        ("format_in_flight_note names explicit agreement (dev-env#1002)", test_format_in_flight_note_names_explicit_agreement_requirement),
+        ("in_flight_work_note via explicit transcript_path (dev-env#1002)", test_in_flight_work_note_via_explicit_transcript_path),
+        ("in_flight_work_note falls back to find_transcript (dev-env#1002)", test_in_flight_work_note_falls_back_to_find_transcript),
+        ("in_flight_work_note neither resolves -> '' (dev-env#1002)", test_in_flight_work_note_neither_resolves_returns_empty),
+        ("in_flight_work_note malformed transcript -> '' (dev-env#1002)", test_in_flight_work_note_malformed_transcript_returns_empty),
         ("e2e flag blocks on stderr + consumes", test_e2e_flag_blocks_on_stderr_and_consumes),
+        ("e2e flag blocks with pending-todos note (dev-env#1002)", test_e2e_flag_blocks_with_pending_todos_note),
+        ("e2e flag blocks with open-agent note (dev-env#1002)", test_e2e_flag_blocks_with_open_agent_note),
+        ("e2e flag blocks with resolved agent, no note (dev-env#1002)", test_e2e_flag_blocks_with_resolved_agent_no_note),
         ("e2e no flag allows", test_e2e_no_flag_allows),
         ("e2e cross-session sentinel not consumed (dev-env#980)", test_e2e_cross_session_sentinel_not_consumed),
         ("e2e no session_id never blocks (dev-env#980)", test_e2e_no_session_id_never_blocks),

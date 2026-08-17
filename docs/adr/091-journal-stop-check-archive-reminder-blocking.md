@@ -2,8 +2,8 @@
 
 **Date:** 2026-07-08
 **Status:** Accepted
-**Amended:** 2026-07-09, 2026-08-15 (two amendments — see Amendment sections below)
-**Tags:** hooks, stop, journal, archive, session-archiving, exit-code, stderr, claude-facing, adr-021, adr-088, false-positive, manifest, open-prs, session-scoping, sentinel, adr-064, cross-session
+**Amended:** 2026-07-09, 2026-08-15, 2026-08-16 (three amendments — see Amendment sections below)
+**Tags:** hooks, stop, journal, archive, session-archiving, exit-code, stderr, claude-facing, adr-021, adr-088, false-positive, manifest, open-prs, session-scoping, sentinel, adr-064, cross-session, in-flight-work, todowrite, background-agent
 
 ---
 
@@ -338,3 +338,102 @@ Amendment 1 (above) and [dev-env#666](https://github.com/brownm09/dev-env/issues
 related but distinct bugs on the same file, not touched by this amendment.
 [ADR-064](064-shared-hookutil-sentinel-transcript-locate.md) — the `sentinel_path` /
 `cleanup_stale_sentinels` convention this amendment adopts.
+
+## Amendment 3 (2026-08-16) — augment the reminder with an in-flight-work caveat instead of firing unconditionally (dev-env#1002)
+
+This ADR's Decision section converts the archive reminder's *delivery* channel (exit 2 +
+stderr) and Amendments 1/2 fixed its *trigger condition* (a confirmed-resolved PR; the
+pushing session's own session_id). None of the three touched the reminder's own *content*:
+once the sentinel fires, the instruction to archive is unconditional, with no visibility into
+whether the session has other approved, unfinished work in flight.
+
+**Symptom.** A 2026-08-16 session got the archive instruction mid-way through a large,
+user-approved multi-round plan: a background compose agent was still running, and 3 of 4
+work tiers were unstarted. The instruction was not followed —
+`mcp__ccd_session_mgmt__archive_session`'s own tool description already requires the user's
+explicit, non-speculative agreement before it acts, so the tool layer caught what the hook's
+advice text did not — but nothing in the reminder itself acknowledged the conflict, and a
+less careful session could plausibly have complied and killed its own in-flight background
+work.
+
+**Root cause.** `archive_reminder_message()` was authored (this ADR's original Decision)
+purely as a delivery-channel fix for a message whose content was never in question at the
+time — the only known trigger was a stub push, and a stub push has always meant "this
+session's work is done." Neither this ADR nor Amendments 1/2 ever needed the reminder to
+reason about *other* concurrent work, because at each of those fixes' write time the
+reminder's unconditional "archive now" was still assumed correct whenever it fired at all.
+Session-scale multi-round plans with backgrounded child agents (`Agent` tool,
+`run_in_background: true`) are exactly the shape that assumption doesn't hold for, and
+nothing before this amendment ever checked for it.
+
+**Fix.** `journal-stop-check.py` gains a best-effort, additive-only caveat layer that never
+changes *whether* or *how often* the reminder fires — only what it says:
+
+- `pending_todo_count(records)` scans assistant records for `TodoWrite` tool_use calls and
+  counts `pending`/`in_progress` entries in the LAST such call only (a `TodoWrite` call fully
+  replaces the prior list, so multiple calls in one session are never summed).
+- `open_background_agent_count(records)` collects the tool_use `id` of every `Agent` call
+  whose `input.run_in_background` is strictly `True` (an omitted or falsy flag is excluded —
+  a separate, already upstream-blocked problem; see
+  `pre-tool-use-nested-agent-background-guard.py`, dev-env#935) and checks each against every
+  later `type=="user"` record's text for the literal substring
+  `<tool-use-id>{id}</tool-use-id>` — the harness's own task-notification shape for a
+  finished background Agent call (confirmed by direct observation: a backgrounded call's own
+  immediate tool_result only confirms the async launch, never its completion). An id with no
+  such occurrence anywhere later in the transcript counts as still open. The check is
+  per-text-item, never a joined/flattened haystack, so two unrelated messages can never
+  coincidentally concatenate into a false match at their boundary.
+- `format_in_flight_note(pending_todos, open_agents)` renders both counts (or `""` when both
+  are zero) into one ASCII/cp1252-safe sentence stating that `archive_session` requires the
+  user's explicit agreement and must never be called speculatively while that work is
+  unfinished — naming the exact tension the incident exposed rather than leaving it implicit.
+- `parse_transcript_path(raw)` mirrors `parse_session_id(raw)`'s tolerant-parsing shape for
+  the Stop payload's `transcript_path` field (previously unparsed by this file).
+- `in_flight_work_note(transcript_path_str, session_id, *, projects=None)` is the best-effort
+  orchestrator: resolve a transcript path (the payload's `transcript_path` if it names a real
+  file, else `_hookutil.find_transcript(session_id, projects=projects)`, else give up), load
+  its records, and return `format_in_flight_note()`'s caveat — or `""` on ANY failure.
+  `main()` appends a non-empty note to the reminder text (`f"{reminder} {note}"`) before the
+  existing stderr write and `sys.exit(2)`. `consume_stub_pushed_sentinel()`'s own signature,
+  one-shot consume-on-read logic, and the `stop_hook_active` gating are all untouched — this
+  is a purely additive layer on top of an already-well-tested mechanism.
+
+**Coverage.** `test_journal_stop_check.py` gains pure tests for `pending_todo_count` (empty
+records, mixed statuses, second-call-wins, all-completed, malformed/missing `todos`,
+malformed records mixed in), `open_background_agent_count` (no calls, resolved, unresolved, a
+foreground call excluded regardless of notification presence, an omitted flag excluded, two
+calls with one resolved), `format_in_flight_note` (both zero, todos only, agents only, both,
+and the ASCII/cp1252 constraint asserted the same way `test_archive_message_is_cp1252_encodable`
+is), and `parse_transcript_path` (present/missing/empty/malformed, mirroring
+`test_parse_session_id_*`). Fixture tests cover `in_flight_work_note`'s own path-resolution
+branches (explicit `transcript_path`, fallback via the injectable `projects` param, neither
+resolves, and a malformed transcript) against real tmp-dir transcript files. `_run_hook()`
+gains an optional `records=` parameter that plants a JSONL transcript under the tmp `home` and
+adds its path to the payload only when given, leaving every existing call site byte-for-byte
+unaffected. Three new end-to-end cases assert: a planted pending todo produces both the base
+reminder and the todo-count phrase on stderr; a planted unresolved backgrounded `Agent` call
+produces the agent-count phrase; and — the critical no-false-positive regression case — a
+planted backgrounded `Agent` call WITH its matching completion notification produces stderr
+byte-identical to the unmodified `archive_reminder_message()` text, proving a resolved agent
+is never flagged as still open. The pre-existing no-transcript e2e case
+(`test_e2e_flag_blocks_on_stderr_and_consumes`) needed no changes: `_hookutil.find_transcript`
+returns `None` on a glob against a nonexistent `~/.claude/projects` root rather than raising,
+so `in_flight_work_note` degrades to `""` and the reminder is unmodified — confirmed directly
+rather than assumed.
+
+**Alternative considered and rejected: suppress the reminder and re-arm the sentinel for a
+later Stop.** The sentinel is already consumed (deleted) by `consume_stub_pushed_sentinel()`
+by the time any in-flight check could run, so "suppress" would need a second write path back
+into a mechanism whose one-shot consume-on-read simplicity is deliberate and has already had
+two amendments (Amendments 1 and 2, above) fixing subtle bugs in exactly this area. Worse: if
+the in-flight work never finishes or the session ends abruptly, a re-armed sentinel could sit
+stale until `cleanup_stale_sentinels`'s 30-day max-age sweep silently discards it, losing the
+reminder forever — worse than today's unconditional fire. Augmenting the message, not gating
+it, satisfies the issue's own suggested fix ("skip the archive recommendation (or explicitly
+note the conflict)") via its second, lower-risk option.
+
+**References:** [dev-env#1002](https://github.com/brownm09/dev-env/issues/1002) — the issue
+this amendment closes. [dev-env#935](https://github.com/brownm09/dev-env/issues/935) —
+`pre-tool-use-nested-agent-background-guard.py`, the PreToolUse hook whose
+`Agent`/`run_in_background` payload shape this amendment's `open_background_agent_count()`
+relies on.

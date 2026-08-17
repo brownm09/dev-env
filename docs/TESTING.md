@@ -1703,6 +1703,47 @@ For a one-line navigational map of the test directory, see
     separately unit-tested (pure-helper convention) — the end-to-end runs exercise their fail-closed path
     and, with the planted stub, the systemMessage delivery.
 
+    dev-env#1002 (ADR-091 Amendment 3) adds a fourth pure-helper group and three more end-to-end cases
+    addressing the archive reminder's own blind spot: it previously fired unconditionally even when the
+    session's own transcript showed other approved, unfinished work. `pending_todo_count()` scans
+    assistant records for `TodoWrite` tool_use calls and counts `pending`/`in_progress` entries in the
+    LAST such call only (a `TodoWrite` call fully replaces the prior list, so multiple calls are never
+    summed) — 0 when no call exists or its `todos` field is missing/not a list, and never raises on
+    malformed records mixed in. `open_background_agent_count()` collects the tool_use `id` of every
+    `Agent` call whose `input.run_in_background` is strictly `True` (an omitted or falsy flag is
+    excluded — that shape is a separate, upstream-blocked problem `pre-tool-use-nested-agent-background-guard.py`
+    already covers) and, for each, checks whether the literal substring `<tool-use-id>{id}</tool-use-id>` —
+    the harness's own completion-notification shape for a finished background Agent call, confirmed by
+    direct observation — occurs in any later `type=="user"` record's text; unresolved ids are counted as
+    still open. Checked per-text-item rather than against one joined/flattened haystack, so two unrelated
+    messages can never coincidentally concatenate into a false match at their boundary. A foreground call
+    (`run_in_background` false or absent) is always 0 regardless of notification presence, since it blocks
+    the turn and cannot be in flight by the time Stop fires. `format_in_flight_note()` renders both counts
+    (or `""` when both are zero) into one ASCII/cp1252-safe sentence stating that `archive_session`
+    requires the user's explicit agreement and must never be called speculatively while that work is
+    unfinished — surfacing the exact tension dev-env#1002's incident exposed rather than leaving it
+    implicit. `parse_transcript_path()` mirrors `parse_session_id()`'s tolerant-parsing shape for the
+    payload's `transcript_path` field. `in_flight_work_note()` is the best-effort orchestrator: it
+    resolves a transcript path (the payload's `transcript_path` if it names a real file, else
+    `_hookutil.find_transcript(session_id, projects=...)`, else gives up), loads its records, and returns
+    `format_in_flight_note()`'s caveat — or `""` on ANY failure (unresolvable path, unreadable/malformed
+    transcript), so a transcript problem degrades to the pre-dev-env#1002 reminder rather than breaking
+    the block. `main()` appends a non-empty note to the reminder text (with a single space) before the
+    existing stderr write and `exit(2)` — the sentinel consume-on-read, the exit code, and the
+    `stop_hook_active` gating are all unchanged. New end-to-end cases (via `_run_hook()`'s new optional
+    `records=` parameter, which plants a JSONL file under the tmp `home` and adds its path as the
+    payload's `transcript_path` only when given — every existing call site is unaffected): a
+    flag-blocking run whose planted transcript shows only a pending todo asserts both the base reminder
+    AND the todo-count phrase on stderr; one whose transcript shows an unresolved backgrounded `Agent`
+    call asserts the agent-count phrase; and — the critical no-false-positive regression case — one whose
+    transcript shows a backgrounded `Agent` call WITH a matching completion notification asserts stderr is
+    byte-identical to the unmodified `archive_reminder_message()` text, proving a resolved agent never
+    gets flagged as still open. The existing no-transcript e2e case
+    (`test_e2e_flag_blocks_on_stderr_and_consumes`) needed no changes: `_hookutil.find_transcript` on a
+    session_id with no matching file under a nonexistent `~/.claude/projects` returns `None` (a directory
+    glob on a nonexistent path yields nothing rather than raising), so `in_flight_work_note()` returns
+    `""` and the reminder is unmodified.
+
     ```bash
     py -3 claude/scripts/tests/test_journal_stop_check.py
     ```

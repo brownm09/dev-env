@@ -22,6 +22,18 @@ Check 1 — stub-push sentinel (CLAUDE-facing, BLOCKING via exit 2 + stderr):
   ADR-088's tile gate fixed). Fires at most once per session (the sentinel is
   consumed on read) and honors the stop_hook_active loop guard.
 
+  Before firing, the reminder is best-effort AUGMENTED (never suppressed,
+  never re-fired) with an in-flight-work caveat when the session's own
+  transcript still shows pending/in_progress TodoWrite items or a
+  backgrounded Agent call with no observed completion notification: the same
+  message that instructs Claude to archive also states that
+  ccd_session_mgmt__archive_session requires the user's explicit agreement
+  and must never be called speculatively while approved work is unfinished
+  (dev-env#1002, ADR-091 Amendment 3). This never changes whether or how
+  often the reminder fires or touches the sentinel's one-shot consume-on-read
+  logic, and degrades to the original unmodified reminder on any failure to
+  resolve or parse the transcript — see in_flight_work_note().
+
 Checks 2–3 (user-facing, NON-blocking — exit 0, systemMessage):
 1. Stale *_draft.md / *.stub.md files from before today
 2. Unmerged remote draft/* branches
@@ -48,6 +60,14 @@ import subprocess
 import sys
 from datetime import date
 from pathlib import Path
+
+# Bare-name import for these two specific _hookutil helpers -- matches the
+# established convention in sibling Stop hooks (stop-tile-enumeration-gate.py,
+# stop-experiment-verdict-gate.py), which import _content_items and
+# _user_message_texts the same way while leaving sentinel_path /
+# cleanup_stale_sentinels / record_heartbeat / find_transcript / load_records
+# module-qualified (dev-env#1002).
+from _hookutil import _content_items, _user_message_texts
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 # Must match stub-push-archive-reminder.py's SENTINEL_PREFIX -- per-session
@@ -114,6 +134,166 @@ def consume_stub_pushed_sentinel(
     except Exception:
         pass
     return None
+
+
+def pending_todo_count(records: list) -> int:
+    """Return the count of pending/in_progress todos in the LAST TodoWrite
+    tool_use call found in *records* (transcript order), or 0 when no
+    TodoWrite call exists or its todos are malformed/absent.
+
+    A TodoWrite call fully replaces the prior list -- it is not additive --
+    so only the most recent call reflects current state; earlier calls are
+    superseded, never summed. Used by in_flight_work_note() to append an
+    in-flight-work caveat to the archive reminder (dev-env#1002) so the
+    instruction to archive doesn't ignore a still-open, approved TODO list.
+
+    Never raises: isinstance guards throughout, matching _content_items'
+    own defensive contract -- safe on malformed/hand-built record lists.
+    """
+    found_any = False
+    last_todos = None
+    for rec in records:
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        for item in _content_items(rec):
+            if not (
+                isinstance(item, dict)
+                and item.get("type") == "tool_use"
+                and item.get("name") == "TodoWrite"
+            ):
+                continue
+            found_any = True
+            inp = item.get("input")
+            last_todos = inp.get("todos") if isinstance(inp, dict) else None
+    if not found_any or not isinstance(last_todos, list):
+        return 0
+    return sum(
+        1
+        for t in last_todos
+        if isinstance(t, dict) and t.get("status") in ("pending", "in_progress")
+    )
+
+
+def open_background_agent_count(records: list) -> int:
+    """Return the count of backgrounded Agent tool_use calls in *records*
+    whose completion has not been observed anywhere later in the transcript.
+
+    Pass 1 collects the tool_use ``id`` of every assistant-record Agent call
+    whose ``input.run_in_background`` is strictly ``True`` (not merely
+    truthy -- an omitted or falsy flag is a separate, already upstream-
+    blocked problem; see pre-tool-use-nested-agent-background-guard.py,
+    dev-env#935 -- treating it as "backgrounded" here would be wrong). Pass 2
+    checks, for each such id, whether the literal substring
+    ``f"<tool-use-id>{tid}</tool-use-id>"`` occurs in any ``type=="user"``
+    record's text (via ``_user_message_texts``) -- the harness's own
+    task-notification delivery shape for a finished background Agent call,
+    confirmed by direct observation (dev-env#1002). A backgrounded call's
+    own immediate tool_result only confirms the async LAUNCH ("Async agent
+    launched successfully...") -- never its completion -- so
+    ``iter_bash_calls``'s tool_use/tool_result id-pairing pattern does not
+    apply here.
+
+    Deliberately a per-text-item containment check, never a joined/flattened
+    haystack: checking each text independently means two unrelated messages
+    can never coincidentally concatenate into a false substring match at
+    their boundary.
+
+    Never raises: isinstance guards throughout.
+    """
+    backgrounded_ids: set[str] = set()
+    for rec in records:
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        for item in _content_items(rec):
+            if not (
+                isinstance(item, dict)
+                and item.get("type") == "tool_use"
+                and item.get("name") == "Agent"
+            ):
+                continue
+            inp = item.get("input")
+            if isinstance(inp, dict) and inp.get("run_in_background") is True:
+                tid = item.get("id")
+                if isinstance(tid, str) and tid:
+                    backgrounded_ids.add(tid)
+    if not backgrounded_ids:
+        return 0
+
+    user_texts: list[str] = []
+    for rec in records:
+        if isinstance(rec, dict) and rec.get("type") == "user":
+            user_texts.extend(_user_message_texts(rec))
+
+    open_count = 0
+    for tid in backgrounded_ids:
+        needle = f"<tool-use-id>{tid}</tool-use-id>"
+        if not any(needle in text for text in user_texts):
+            open_count += 1
+    return open_count
+
+
+def format_in_flight_note(pending_todos: int, open_agents: int) -> str:
+    """Return an ASCII caveat naming *pending_todos* pending/in-progress
+    TodoWrite items and/or *open_agents* still-open backgrounded Agent
+    calls, or "" when both are zero.
+
+    Appended to archive_reminder_message()'s text so the same stderr message
+    that instructs Claude to archive also names any approved work still in
+    flight and states the tension explicitly (dev-env#1002).
+
+    ASCII-only, like archive_reminder_message() -- Claude Code pipes hook
+    output as cp1252 on Windows, so a non-cp1252 character here would raise
+    UnicodeEncodeError and silently drop the WHOLE combined stderr message.
+    """
+    if not pending_todos and not open_agents:
+        return ""
+    parts = []
+    if pending_todos:
+        parts.append(f"{pending_todos} pending/in-progress todo item(s)")
+    if open_agents:
+        parts.append(f"{open_agents} still-running background agent(s)")
+    joined = " and ".join(parts)
+    return (
+        f"Caution: {joined} may still be in flight. Do not archive if that "
+        "work is approved and unfinished -- archive_session requires the "
+        "user's explicit agreement and must never be called speculatively."
+    )
+
+
+def in_flight_work_note(
+    transcript_path_str: str, session_id: str, *, projects: Path | None = None
+) -> str:
+    """Best-effort in-flight-work caveat for the archive reminder (dev-env#1002).
+
+    Resolves a transcript path -- *transcript_path_str* if it names a real
+    file, else `_hookutil.find_transcript(session_id, projects=projects)`
+    when *session_id* is truthy, else gives up -- loads its records, and
+    returns `format_in_flight_note()`'s caveat, or "" on ANY failure.
+
+    *projects* overrides _hookutil.find_transcript's default search root --
+    injectable for offline tests, mirroring find_transcript's own *projects*
+    param and this file's *scratch*-param convention.
+
+    Mirrors this file's other best-effort helpers: a missing or malformed
+    transcript must never suppress or break the base archive reminder that
+    is already firing.
+    """
+    try:
+        path: Path | None = None
+        if transcript_path_str:
+            candidate = Path(transcript_path_str)
+            if candidate.is_file():
+                path = candidate
+        if path is None and session_id:
+            path = _hookutil.find_transcript(session_id, projects=projects)
+        if path is None:
+            return ""
+        records = _hookutil.load_records(path)
+        pending = pending_todo_count(records)
+        open_agents = open_background_agent_count(records)
+        return format_in_flight_note(pending, open_agents)
+    except Exception:
+        return ""
 
 
 def composed_project_dates_on_main() -> set[tuple[str, str]]:
@@ -260,6 +440,19 @@ def parse_session_id(raw: str) -> str:
         return ""
 
 
+def parse_transcript_path(raw: str) -> str:
+    """Return the Stop payload's transcript_path, or "" on empty/malformed/
+    non-dict stdin or a missing field. Never raises -- mirrors
+    parse_session_id's tolerant-parsing shape (dev-env#1002).
+    """
+    if not raw:
+        return ""
+    try:
+        return str(json.loads(raw).get("transcript_path") or "")
+    except Exception:
+        return ""
+
+
 def main() -> None:
     _hookutil.record_heartbeat("journal-stop-check")
     try:
@@ -268,6 +461,7 @@ def main() -> None:
         raw = ""
     stop_hook_active = parse_stop_hook_active(raw)
     session_id = parse_session_id(raw)
+    transcript_path_str = parse_transcript_path(raw)
 
     # Garbage-collect stale per-session sentinels (dev-env#980, ADR-091 Amendment
     # 2 review finding). stub-push-archive-reminder.py only sweeps on its own
@@ -286,9 +480,17 @@ def main() -> None:
     # class ADR-088's tile gate fixed). Gate the consume on stop_hook_active so a
     # continuation from a prior block never consumes the flag without delivering
     # it; the consume-on-read then makes the block one-shot (no Stop-loop risk).
+    #
+    # Before delivery, the reminder is best-effort augmented (never suppressed,
+    # never re-fired) with an in-flight-work caveat naming any pending
+    # TodoWrite items or open backgrounded Agent calls (dev-env#1002, ADR-091
+    # Amendment 3) -- see in_flight_work_note().
     if not stop_hook_active:
         reminder = consume_stub_pushed_sentinel(session_id)
         if reminder:
+            note = in_flight_work_note(transcript_path_str, session_id)
+            if note:
+                reminder = f"{reminder} {note}"
             sys.stderr.write(f"[journal-stop-hook] {reminder}\n")
             sys.exit(2)
 
