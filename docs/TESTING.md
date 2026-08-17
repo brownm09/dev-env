@@ -1703,6 +1703,67 @@ For a one-line navigational map of the test directory, see
     separately unit-tested (pure-helper convention) — the end-to-end runs exercise their fail-closed path
     and, with the planted stub, the systemMessage delivery.
 
+    dev-env#1002 (ADR-091 Amendment 3) adds a fourth pure-helper group and end-to-end cases addressing
+    the archive reminder's own blind spot: it previously fired unconditionally even when the session's
+    own transcript showed other approved, unfinished work. A `/review` pass on the closing PR (#1009)
+    independently verified the initial implementation against real transcript data before merge and found
+    it targeted the wrong tool name entirely and missed most real backgrounded-agent completions — see
+    ADR-091 Amendment 3's "Correction during `/review` before merge" section for the full incident; the
+    coverage below describes the corrected, shipped implementation. `pending_task_count()` scans
+    non-`isSidechain` assistant records for `TaskCreate` and `TaskUpdate` tool_use calls — NOT `TodoWrite`,
+    which does not exist in this harness at all (confirmed live: 0 occurrences across every transcript on
+    the machine). A `TaskCreate` call's assigned task id isn't in its own `input`; it's resolved via the
+    paired tool_result's `"Task #N created successfully"` text. State folds across the whole call sequence
+    (create defaults a task to `"pending"`; each `TaskUpdate` mutates one task's status by id) rather than
+    reading the last call alone, since `TaskCreate`/`TaskUpdate` don't share `TodoWrite`'s single-artifact
+    "last call replaces the list" property. Counts only `"pending"`/`"in_progress"`; never raises on
+    malformed records mixed in. `open_background_agent_count()` collects the tool_use `id` of every
+    non-`isSidechain` `Agent` call whose `input.run_in_background` is NOT explicitly `False` (`True` or
+    omitted both count — an omitted flag is the documented default for a top-level spawn per
+    `pre-tool-use-nested-agent-background-guard.py`'s own docstring, confirmed live to behave like an
+    explicit `true`, not like an explicit `false`) and, for each, checks whether the literal substring
+    `<tool-use-id>{id}</tool-use-id>` — the harness's own completion-notification shape for a finished
+    background Agent call, confirmed by direct observation — occurs anywhere in the transcript via
+    `_notification_texts()`, which scans `type=="user"` text, a `queue-operation` record's `content`, and
+    an `attachment` record's `attachment.prompt` (confirmed live: half of all real completion notifications
+    in a 600-transcript sample appear ONLY in the latter two record types, never in a `type=="user"`
+    record); unresolved ids are counted as still open. Checked per-text-item rather than against one
+    joined/flattened haystack, so two unrelated messages can never coincidentally concatenate into a false
+    match at their boundary. An explicit `run_in_background: false` call is always 0 regardless of
+    notification presence, since it blocks the turn and cannot be in flight by the time Stop fires.
+    `format_in_flight_note()` renders both counts (or `""` when both are zero) into one ASCII/cp1252-safe,
+    count-derived sentence only — the "`archive_session` requires explicit agreement, never speculative"
+    invariant lives unconditionally in `archive_reminder_message()` instead, so it survives every
+    detection-miss degrade path rather than vanishing whenever the scan comes up empty.
+    `parse_transcript_path()` mirrors `parse_session_id()`'s tolerant-parsing shape for the payload's
+    `transcript_path` field. `in_flight_work_note()` is the best-effort orchestrator: it resolves a
+    transcript path (the payload's `transcript_path` if it names a real file, else
+    `_hookutil.find_transcript(session_id, projects=...)`, else gives up — `find_transcript()` itself now
+    validates `session_id` against `[A-Za-z0-9_-]+` before the glob, closing a pre-existing unsanitized-glob
+    gap shared with `stop-experiment-verdict-gate.py`), reads its text once, skips the full parse via a
+    cheap substring pre-filter (neither `"TaskCreate"`, `"TaskUpdate"`, nor `"Agent"` present ⇒ both
+    counts are provably 0, matching every sibling Stop hook's pre-filter-then-parse pattern —
+    deliberately the tool name, not the `run_in_background` flag text, since an omitted flag counts as
+    backgrounded now but never appears as literal `run_in_background` text) when possible, and returns
+    `format_in_flight_note()`'s caveat — or `""` on ANY failure (unresolvable path,
+    unreadable/malformed transcript, a forced exception), so a transcript problem degrades to the
+    unconditional-invariant base reminder rather than breaking the block. `main()` appends a non-empty note
+    to the reminder text (with a single space) before the existing stderr write and `exit(2)` — the
+    sentinel consume-on-read, the exit code, and the `stop_hook_active` gating are all unchanged. End-to-end
+    cases (via `_run_hook()`'s optional `records=` parameter, which plants a JSONL file under the tmp `home`
+    and adds its path as the payload's `transcript_path` only when given — every existing call site is
+    unaffected) assert BYTE-EXACT stderr, not loose substring containment: a flag-blocking run whose
+    planted transcript shows only a pending task asserts stderr equals the base reminder plus the exact
+    task-count phrase; one whose transcript shows an unresolved backgrounded `Agent` call asserts the exact
+    agent-count phrase; and — the critical no-false-positive regression case — one whose transcript shows a
+    backgrounded `Agent` call WITH a matching completion notification (built from each of the `user`/
+    `queue-operation`/`attachment` record shapes) asserts stderr is byte-identical to the unmodified
+    `archive_reminder_message()` text, proving a resolved agent never gets flagged as still open. The
+    existing no-transcript e2e case (`test_e2e_flag_blocks_on_stderr_and_consumes`) needed no changes:
+    `_hookutil.find_transcript` on a session_id with no matching file under a nonexistent
+    `~/.claude/projects` returns `None` (a directory glob on a nonexistent path yields nothing rather than
+    raising), so `in_flight_work_note()` returns `""` and the reminder is unmodified.
+
     ```bash
     py -3 claude/scripts/tests/test_journal_stop_check.py
     ```
