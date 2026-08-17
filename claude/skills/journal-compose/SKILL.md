@@ -1370,7 +1370,7 @@ This does **not** overlap Step 6.5's structural assertion (dev-env#467): that on
 cleanly. See [ADR-121](https://github.com/brownm09/dev-env/blob/main/docs/adr/121-composed-output-stray-terminal-scan.md)
 (dev-env #894).
 
-## Step 9 — Delete stub, manifest, and lock files
+## Step 9 — Delete stubs, manifests, and lock files
 
 Delete all stubs and this day's manifest for the date and release the compose lock. Delete the
 per-session manifest shards (ADR-056) **and** any legacy per-day manifest. **Do not** delete the
@@ -1396,7 +1396,8 @@ which was never name-checked there. Re-glob for this project immediately after t
 above and require zero matches before moving on:
 ```bash
 LEFTOVER=$(ls "$WT"/sessions/<project>/YYYY-MM-DD_*.stub.md \
-              "$WT"/sessions/<project>/YYYY-MM-DD_*.manifest.jsonl 2>/dev/null)
+              "$WT"/sessions/<project>/YYYY-MM-DD_*.manifest.jsonl \
+              "$WT"/sessions/<project>/YYYY-MM-DD.manifest.jsonl 2>/dev/null)
 [ -z "$LEFTOVER" ] && echo "STEP9_CLEAN=ok" || echo "STEP9_CLEAN=leftover:$LEFTOVER"
 ```
 If `STEP9_CLEAN` reports any leftover path, re-run the matching `rm` command(s) above for exactly
@@ -1733,10 +1734,15 @@ done
 # Stub/manifest leak check (dev-env#1005). Step 9's own completion-verification gate should
 # already have caught an incomplete deletion before this run's commit — this is the
 # defense-in-depth backstop for a recovery flow or any other path that reached the same commit
-# without following Step 9's prose literally.
-LEAKED=$(git -C "$EJ" ls-tree -r origin/main --name-only -- sessions/ | grep "/YYYY-MM-DD_" | grep -E '\.(stub\.md|manifest\.jsonl)$')
-[ -n "$LEAKED" ] && echo "WARNING: stub/manifest file(s) for YYYY-MM-DD landed back on origin/main despite Step 9 (dev-env#1005 leak shape) — remove in a follow-up commit:
-$LEAKED"
+# without following Step 9's prose literally. Scoped to the exact paths this run's Step 9
+# deleted (not a tree-wide glob for the date): a tree-wide glob would also catch a different,
+# concurrently-written session's legitimately not-yet-composed stub in a project this run's
+# Step 1 never discovered, and falsely flag it for removal.
+for F in <the exact stub/manifest relative paths this run's Step 9 deleted, across every
+          project, space-separated>; do
+  git -C "$EJ" ls-tree -r origin/main --name-only | grep -qF -- "$F" && \
+    echo "WARNING: $F landed back on origin/main despite Step 9 (dev-env#1005 leak shape) — remove it in a follow-up commit"
+done
 ```
 
 Tell the user: "Merged: <PR-URL>. Journal published." (plus the shard-leak warning above, if any).

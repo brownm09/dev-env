@@ -90,9 +90,17 @@ of whether fix (1) alone would have been sufficient in every future case.
 
 **3. Extend the existing post-merge leak check** (renamed "Post-merge cleanup-leak check" to
 reflect the broadened scope) with a second check, run alongside the open-PR-shard one, scanning
-`origin/main` after merge for any stub/manifest file matching this run's composed date. Defense
-in depth for a leak that reaches the commit anyway — e.g. a differently-shaped recovery flow that
-doesn't follow Step 9's prose as literally as the standard flow does.
+`origin/main` after merge for the exact stub/manifest paths this run's Step 9 deleted — mirroring
+the open-PR-shard check's own "exact list this run reconciled" scoping rather than a tree-wide
+glob for the composed date. A tree-wide date glob was the first-drafted shape and was corrected
+during review: `journal-compose`'s Step 1 discovers stubs across *all* projects for the target
+date up front, but the post-merge check runs after commit and merge, at the end — a concurrent
+session pushing a new, legitimate stub for the same date in a project Step 1 never saw (because
+the push happened after discovery) would be caught by a tree-wide glob and misreported as a leak,
+with the check's own suggested remediation ("remove in a follow-up commit") pointing at deleting
+someone else's in-progress work. Defense in depth for a leak that reaches the commit anyway — e.g.
+a differently-shaped recovery flow that doesn't follow Step 9's prose as literally as the standard
+flow does.
 
 ## Consequences
 
