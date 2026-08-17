@@ -43,10 +43,16 @@ Tell the user what you parsed:
 **If PR_URL is set:**
 
 ```bash
-gh pr view "<PR_URL>" --json title,body,additions,deletions,changedFiles,baseRefName,headRefName,headRepositoryOwner,headRepository,labels
+gh pr view "<PR_URL>" --json title,body,additions,deletions,changedFiles,files,baseRefName,headRefName,headRepositoryOwner,headRepository,labels
 ```
 
 Store **PR_TITLE**, **PR_BODY**, **ADDITIONS**, **DELETIONS**, **CHANGED_FILES**, and **LABELS**.
+
+Also store **CHANGED_FILE_LIST** = `files` — an array of `{path, changeType, additions, deletions}`
+per changed file, where `changeType` is one of `ADDED` | `DELETED` | `RENAMED` | `COPIED` |
+`MODIFIED` | `CHANGED` (GitHub's `PatchStatus` enum). Step 2b classifies by this field, not by
+path alone — a file living under a given directory does not by itself mean it was added, removed,
+or renamed there; it may only have been edited in place.
 
 Also store **HEAD_OWNER** = `headRepositoryOwner.login` and **HEAD_REPO** = `headRepository.name`
 — the repo the head ref actually lives in, which Steps 2b and 2c read from. On a same-repo PR these
@@ -82,7 +88,7 @@ Accept the pasted content as **DIFF**. Set PR_TITLE="(pasted diff)", PR_BODY="",
 
 Applies to PR_URL mode only. Skip if DIFF_MODE is true.
 
-Using the changed file list from Step 2, check whether the repo has a Documentation Maintenance
+Using CHANGED_FILE_LIST from Step 2, check whether the repo has a Documentation Maintenance
 table. Read the project's `CLAUDE.md` from the PR branch — per ADR-004, always from the remote,
 never the local worktree. Read it over the API rather than with `git show <ref>:<path>`, which
 mangles on Windows and requires the ref to already be fetched into whatever repo happens to be
@@ -117,19 +123,54 @@ Run the two probes as separate commands. Do **not** chain them with `||`: that c
 first path is absent" and "the first probe failed" into one indistinguishable branch, which is
 precisely how this check used to skip the entire doc-reconciliation gate in silence (#602, #877).
 
-If the table exists (dev-env and any repo that adopts the pattern):
+If the table exists (dev-env and any repo that adopts the pattern), classify each changed file
+against the seven specific conditions in `CLAUDE.md`'s Documentation Maintenance table — not a
+blanket path glob. A file that only had its internal prose or logic modified — no structural
+change, no schema/invocation-syntax change — matches none of the seven rows and must not be
+flagged; testing path against glob alone (ignoring `changeType`) is what previously flagged it
+anyway (dev-env#1017).
 
-1. Check whether any changed path matches `claude/skills/**`, `claude/hooks/**`,
-   `claude/scripts/**`, or `claude/routines/**`.
-2. If yes, check whether `README.md` or `docs/REFERENCE.md` also appears in the changed files.
-3. If neither README.md nor docs/REFERENCE.md appears, record a **Documentation** blocking
-   finding to include in the Step 6 output:
+**Structural changes — rows 1–4 (add / remove / rename a skill, hook script, utility script, or
+routine):**
 
-   > **[documentation]** Missing reference doc update
-   > Paths under `claude/skills/`, `claude/hooks/`, `claude/scripts/`, or `claude/routines/`
-   > were changed, but neither `README.md` nor `docs/REFERENCE.md` appears in the diff.
-   > **Fix:** Per the Documentation Maintenance table in `CLAUDE.md`, update the relevant
-   > section(s) of `README.md` and/or `docs/REFERENCE.md` in this PR.
+1. From CHANGED_FILE_LIST, select files whose `changeType` is `ADDED`, `DELETED`, or `RENAMED` —
+   never `MODIFIED` or `CHANGED`, which are same-path content edits, not structural changes —
+   **and** whose path matches `claude/skills/**`, `claude/hooks/**`, `claude/scripts/**`, or
+   `claude/routines/**`.
+2. If any file qualifies, check whether `README.md` or `docs/REFERENCE.md` also appears in
+   CHANGED_FILE_LIST.
+3. If neither appears, record a **Documentation** blocking finding (format below) naming the
+   qualifying file(s) and which row applied (e.g. "new skill added", "hook script removed").
+
+**Content changes — rows 5–6 (`hook-config.json` schema change; a skill's invocation syntax or
+options change):** `changeType` alone cannot decide these — a `MODIFIED` file may be a pure
+internal-logic edit (no doc update needed) or a schema/syntax change (doc update needed), and
+only the diff content distinguishes them. For each `MODIFIED` file in CHANGED_FILE_LIST whose
+basename is `hook-config.json`, or that matches `claude/skills/**/SKILL.md`, inspect its hunks in
+DIFF:
+
+- `hook-config.json`: does the diff add, remove, or retype a top-level key? → row 5 applies.
+- `SKILL.md`: does the diff touch the YAML frontmatter `description` or `argument-hint` line, or
+  a prose line documenting invocation (e.g. an "Invoke as `/name ...`" line)? → row 6 applies.
+
+If either applies and neither `README.md` nor `docs/REFERENCE.md` appears in CHANGED_FILE_LIST,
+record a **Documentation** blocking finding naming the file and which row applied.
+
+**Renamed/moved linked files — row 7:** already covered by Step 2c's cross-tree-impact check (a
+renamed file referenced from a parent README or an unrelated doc is flagged there under "Cross-
+tree impact") — not duplicated here, so the two steps never disagree about the same file.
+
+Finding format (either class above), to include in the Step 6 output:
+
+> **[documentation]** Missing reference doc update
+> `<file(s)>` — <name the qualifying condition, e.g. "new skill added" | "hook script removed" |
+> "utility script renamed" | "routine added" | "hook-config.json schema changed" | "skill
+> invocation syntax changed">. Neither `README.md` nor `docs/REFERENCE.md` appears in the diff.
+> **Fix:** Per the Documentation Maintenance table in `CLAUDE.md`, update the relevant
+> section(s) of `README.md` and/or `docs/REFERENCE.md` in this PR.
+
+If no file qualifies under either class, note "No add/remove/rename or schema/invocation-syntax
+changes requiring a doc update — Step 2b: not applicable." and proceed.
 
 Proceed to Step 2c.
 
