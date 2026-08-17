@@ -9,7 +9,7 @@
 
 The global "Test before PR" rule in `claude/CLAUDE.md` required that *existing* tests pass before opening a PR. It asked no question about whether the change introduced *new* testable behavior that lacked tests entirely. This meant the gate could be satisfied even when a new API endpoint or frontend feature shipped with zero test coverage.
 
-The immediate incident was brownm09/lifting-logbook PR #255 (programs management page), which merged a substantial frontend feature with no Playwright or unit tests. The root cause, documented in lifting-logbook issue #265, was that no rule prompted the author or Claude to ask the coverage question.
+The immediate incident was merickvaughn/lifting-logbook PR #255 (programs management page), which merged a substantial frontend feature with no Playwright or unit tests. The root cause, documented in lifting-logbook issue #265, was that no rule prompted the author or Claude to ask the coverage question.
 
 Per-project CLAUDE.md files (e.g., lifting-logbook) can define change-type-specific coverage requirements (API endpoints → E2E test, bug fix → regression test, etc.), but they have no effect if the global gate never asks the question.
 
@@ -34,6 +34,6 @@ The deferred-with-rationale escape hatch is intentional — it allows shipping i
 
 ## References
 
-- brownm09/lifting-logbook issue #265 — full problem statement and per-change-type coverage requirements table
-- brownm09/lifting-logbook PR #255 — the triggering incident (programs management page, no tests)
+- merickvaughn/lifting-logbook issue #265 — full problem statement and per-change-type coverage requirements table
+- merickvaughn/lifting-logbook PR #255 — the triggering incident (programs management page, no tests)
 - [ADR-011](011-adr-warrant-check.md) — warrant check protocol that surfaced this ADR requirement

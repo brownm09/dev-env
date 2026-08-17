@@ -203,7 +203,7 @@ No code change — this amendment is documentation only, closing the operational
 original wirings left (they correct the squat; they didn't document how to work around one that's
 already blocking a merge). Full runbook entry:
 [docs/REFERENCE.md → Git Workflow Runbooks](../REFERENCE.md#git-workflow-runbooks). Incident:
-lifting-logbook [PR #664](https://github.com/brownm09/lifting-logbook/pull/664); dev-env#553.
+lifting-logbook [PR #664](https://github.com/merickvaughn/lifting-logbook/pull/664); dev-env#553.
 
 ## Amendment (2026-07-09) — `dev-env-sync.py` never detected a detached canonical HEAD (dev-env#619)
 

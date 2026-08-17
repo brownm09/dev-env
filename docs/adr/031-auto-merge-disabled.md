@@ -105,7 +105,7 @@ actually have; the real, single toggle also happens to be the escape hatch's pre
 
 **Observed:** lifting-logbook PR #664 (2026-07-03) — `gh pr merge 664 --squash --delete-branch
 --auto` failed immediately with `GraphQL: Auto merge is not allowed for this repository
-(enablePullRequestAutoMerge)`. `gh api repos/brownm09/lifting-logbook` confirmed
+(enablePullRequestAutoMerge)`. `gh api repos/merickvaughn/lifting-logbook` confirmed
 `allow_auto_merge: false` at the repo-settings level. This is the deterministic, expected result
 of the Decision as literally written — not a bug — but the ADR never previously said so, so a
 session hitting this error had no way to tell from this document alone.
@@ -114,7 +114,7 @@ session hitting this error had no way to tell from this document alone.
 clause describes an operation that cannot be invoked in that repo, full stop — it fails at the
 GitHub API before any in-session judgment about whether the gates have passed even comes into
 play. `allow_auto_merge: false` was confirmed for lifting-logbook this session (`gh api
-repos/brownm09/lifting-logbook`); no repo-by-repo survey was run across the rest of `brownm09/*`.
+repos/merickvaughn/lifting-logbook`); no repo-by-repo survey was run across the rest of `brownm09/*`.
 ADR-031's Decision sets the toggle-off posture as the repo-wide default with no documented
 exceptions, so absent evidence of a deliberate opt-in elsewhere, treat the escape hatch as
 **currently inert everywhere** — but a session on an unfamiliar repo should still verify rather

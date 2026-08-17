@@ -19,7 +19,7 @@ When `gh pr merge` is run with no `--repo` flag and no GitHub URL in the command
 string, `extract_repo` falls back to `git -C cwd remote get-url origin`. When the
 session cwd is a lifting-logbook worktree (e.g. a session is at
 `/Git/lifting-logbook/.claude/worktrees/fix-foo`), this infers
-`brownm09/lifting-logbook` as the merged repo and fast-forwards lifting-logbook's
+`merickvaughn/lifting-logbook` as the merged repo and fast-forwards lifting-logbook's
 `main` instead of the dev-env `main` that was actually merged. The dev-env canonical
 worktree's `main` stays stale until a manual `git -C ~/Git/dev-env pull --ff-only`.
 This incident was observed during the #442 / ADR-065 session.

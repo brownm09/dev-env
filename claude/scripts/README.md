@@ -117,7 +117,7 @@ invocation instead.
 | `stop-tile-enumeration-gate.py` | Stop | Blocks the stop when a merged PR, a dangling issue, an untabled tile spawn, or a tile spawned without its shard has no recorded follow-up enumeration. |
 | `new-branch.sh` | `new-branch <name>` (shell function) | Creates a branch rooted at `origin/main`; snapshots the pre-existing-failure baseline when opted in. |
 | `baseline-tests.sh` | `baseline-tests <snapshot\|diff\|gc>` | Captures/diffs/garbage-collects pre-existing test failure baselines for the fix-on-touch policy (ADR-030). |
-| `merge-ready.sh` | `bash merge-ready.sh [owner/repo ...]` | Lists, per repo, open PRs that are green + mergeable + waiting on nothing vs. still open but not ready; read-only, defaults to `brownm09/lifting-logbook`. |
+| `merge-ready.sh` | `bash merge-ready.sh [owner/repo ...]` | Lists, per repo, open PRs that are green + mergeable + waiting on nothing vs. still open but not ready; read-only, defaults to `merickvaughn/lifting-logbook`. |
 
 ### GitHub project board (4)
 

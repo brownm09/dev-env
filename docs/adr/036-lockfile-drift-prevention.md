@@ -21,10 +21,10 @@ lockfile, the lockfile drifts. The drift is invisible locally (where `npm instal
 the lockfile, is the common command) and only bites in CI, where `npm ci` runs against the committed
 lockfile. The result is a red `main` and a reactive recovery PR.
 
-This happened on `brownm09/lifting-logbook`: clerk-backend, clerk-shared, and react ranges drifted
+This happened on `merickvaughn/lifting-logbook`: clerk-backend, clerk-shared, and react ranges drifted
 from the committed lockfile, `main` CI went red at the `npm ci` step, and it was fixed reactively in
-[lifting-logbook#432](https://github.com/brownm09/lifting-logbook/pull/432) /
-[#433](https://github.com/brownm09/lifting-logbook/pull/433). Nothing prevented recurrence.
+[lifting-logbook#432](https://github.com/merickvaughn/lifting-logbook/pull/432) /
+[#433](https://github.com/merickvaughn/lifting-logbook/pull/433). Nothing prevented recurrence.
 
 A defense-in-depth response has four layers, two of them repo-local and two global (cross-repo):
 
@@ -36,7 +36,7 @@ A defense-in-depth response has four layers, two of them repo-local and two glob
 | 4 | **Global dependency-edit rule** | dev-env `claude/CLAUDE.md` | at authoring time (forcing function for Claude) |
 
 Layers 1 and 2 are repo-local (implemented for lifting-logbook in
-[#435](https://github.com/brownm09/lifting-logbook/issues/435)). This ADR covers the two **global**
+[#435](https://github.com/merickvaughn/lifting-logbook/issues/435)). This ADR covers the two **global**
 layers, which apply to every npm repo without per-repo wiring.
 
 ---
@@ -124,7 +124,7 @@ Layer 4 is the forcing function at authoring time; Layer 3 is the automated back
   aborts the push).
 - [Git `core.hooksPath`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath)
   — how a single global hooks directory applies across all repos (see [ADR-005](005-global-core-hooks-path.md)).
-- [lifting-logbook#523 / PR #524](https://github.com/brownm09/lifting-logbook/pull/524) — the
+- [lifting-logbook#523 / PR #524](https://github.com/merickvaughn/lifting-logbook/pull/524) — the
   precedent that scoped a Layer-2 CI sync gate to `pull_request` (see Addendum).
 
 ---
@@ -158,4 +158,4 @@ live-registry time, so any upstream in-range publish reddens `main` with no cont
 (the `EUSAGE` class). This brings Layer 2 into line with the **Layer 3** pre-push hook above, which
 already runs the drift check only when a pushed `package.json` is in the push range — i.e. only on a
 real authored change, never on registry time. Precedent: lifting-logbook
-[#523 / PR #524](https://github.com/brownm09/lifting-logbook/pull/524) (`ci.yml`).
+[#523 / PR #524](https://github.com/merickvaughn/lifting-logbook/pull/524) (`ci.yml`).

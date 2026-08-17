@@ -32,7 +32,7 @@ Add a new `## Error Message Diligence` section to `claude/CLAUDE.md`, placed bet
 
 When uncertain after the three steps, the rule requires explicit hedging ("the guard printed X; I have not yet confirmed the underlying condition") rather than restating the message as fact. Naming the anti-pattern — quoting an emitted message back as a diagnosis — makes the violation easier to recognize mid-turn. An exemption carves out local errors that are reliable by construction (syntax errors, file-not-found at a path just written, type errors with a specific symbol named).
 
-The section cites the lifting-logbook [PR #395](https://github.com/brownm09/lifting-logbook/pull/395) incident inline as the rationale.
+The section cites the lifting-logbook [PR #395](https://github.com/merickvaughn/lifting-logbook/pull/395) incident inline as the rationale.
 
 ---
 
@@ -74,5 +74,5 @@ The section cites the lifting-logbook [PR #395](https://github.com/brownm09/lift
 
 ## References
 
-- Incident: [lifting-logbook PR #395 comment thread](https://github.com/brownm09/lifting-logbook/pull/395#issuecomment-4594434736)
+- Incident: [lifting-logbook PR #395 comment thread](https://github.com/merickvaughn/lifting-logbook/pull/395#issuecomment-4594434736)
 - [GitHub Actions job dependencies](https://docs.github.com/en/actions/using-jobs/using-jobs-in-a-workflow#defining-prerequisite-jobs) — primary source for `needs:` skip semantics that produced the misleading empty output in the incident.

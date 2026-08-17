@@ -945,7 +945,7 @@ resolution) instead of the command's actual target repo.
 report `Issue #608 moved to Done` — lifting-logbook#608, not any dev-env issue.
 `extract_repo_from_command` returned `None` for the `-R`-flagged command, so `main()` fell through to
 `repo = config.get("repo", "")`, resolving cwd's own (lifting-logbook's) project-board config; from
-there `get_pr_body(611, repo="brownm09/lifting-logbook")` fetched a real, unrelated, already-merged
+there `get_pr_body(611, repo="merickvaughn/lifting-logbook")` fetched a real, unrelated, already-merged
 lifting-logbook PR that coincidentally shared the number 611, and its `Closes #608` moved that repo's
 issue. Harmless this time only because lifting-logbook#608's board item was already Done — a different
 pairing of coincidental PR numbers and issue states could have silently reverted real in-progress work
