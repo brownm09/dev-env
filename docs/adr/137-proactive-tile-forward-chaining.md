@@ -3,8 +3,8 @@
 **Date:** 2026-08-19
 **Status:** Accepted
 **Closes:** [dev-env#1026](https://github.com/brownm09/dev-env/issues/1026)
-**Tags:** tiles, spawn-task, forward-chaining, look-ahead, priority-sequencing, session-boundedness, workflow, global-rule, claude-facing, adr-046, adr-094, adr-113, adr-118, adr-123, adr-132
-**Related:** [ADR-046](046-post-merge-followup-tiles.md), [ADR-094](094-tile-tables-and-issue-per-tile.md), [ADR-113](113-cross-session-handoff-tiles.md), [ADR-118](118-tile-persistence-shards.md), [ADR-123](123-forward-link-phase-dependent-followons.md), [ADR-132](132-sequential-tile-spawning-for-dependency-chains.md), [ADR-038](038-durable-preferences-documented-in-repo.md)
+**Tags:** tiles, spawn-task, forward-chaining, look-ahead, priority-sequencing, session-boundedness, workflow, global-rule, claude-facing, adr-046, adr-059, adr-071, adr-094, adr-113, adr-118, adr-123, adr-132
+**Related:** [ADR-046](046-post-merge-followup-tiles.md), [ADR-059](059-multi-pr-issue-hierarchy.md), [ADR-071](071-canonical-checkout-mutate-guard-hook.md), [ADR-094](094-tile-tables-and-issue-per-tile.md), [ADR-113](113-cross-session-handoff-tiles.md), [ADR-118](118-tile-persistence-shards.md), [ADR-123](123-forward-link-phase-dependent-followons.md), [ADR-132](132-sequential-tile-spawning-for-dependency-chains.md), [ADR-038](038-durable-preferences-documented-in-repo.md)
 
 ---
 
@@ -82,7 +82,7 @@ after ADR-132's paragraph as the bullet's newest, most-recent extension:
 > multiple follow-ups happen to be enumerated together — that narrower same-pass,
 > hard-dependency case is [ADR-132](../docs/adr/132-sequential-tile-spawning-for-dependency-chains.md)'s.
 > ([ADR-137](../docs/adr/137-proactive-tile-forward-chaining.md), extending ADR-132's "spawn
-> only the head, chain the rest" mechanism to the no-hard-dependency case; motivating incident:
+> only the head of the chain" mechanism to the no-hard-dependency case; motivating incident:
 > cover-letter-runtime, 2026-08-18 — a tile spawned for [#93](https://github.com/brownm09/cover-letter-runtime/issues/93)+[#92](https://github.com/brownm09/cover-letter-runtime/issues/92)
 > left out an already-ranked, already-known second-priority thread ([#76](https://github.com/brownm09/cover-letter-runtime/issues/76)/[#77](https://github.com/brownm09/cover-letter-runtime/issues/77))
 > the same session had surfaced minutes earlier via `AskUserQuestion`; only a direct user
@@ -126,8 +126,9 @@ list, don't tile" exception), so a single addition suffices.
 
 ## Alternatives considered
 
-- **Rely on the existing tile-table / "merely list (don't tile) the immediate next steps"
-  carve-out** (the `## Session Summaries & Tile Tracking` section in `claude/CLAUDE.md`).
+- **Rely on the existing tile-table / "merely list (don't tile) the immediate next steps of
+  the task in progress" carve-out** (the `## Session Summaries & Tile Tracking` section in
+  `claude/CLAUDE.md`).
   Rejected — that carve-out covers immediate next steps of work already in progress *in the
   current session*; the next thread here only becomes actionable after the tile being spawned
   right now runs its own future session and merges its own PR. That is a cross-session hand-off,
@@ -135,9 +136,14 @@ list, don't tile" exception), so a single addition suffices.
   chat-list-worthy.
 - **Fold this into [ADR-132](132-sequential-tile-spawning-for-dependency-chains.md) as an
   amendment instead of a new ADR.** Considered and rejected. [ADR-071](071-canonical-checkout-mutate-guard-hook.md)'s
-  amendment litmus test — consistent across all six of its own amendments — is "same harm model,
-  same mechanism, only a previously-unrecognized surface, shape, or signal; never a change to
-  what is being decided or why." This rule fails that bar on two axes: the **trigger condition**
+  six amendments each justify themselves the same way, in their own words — e.g. Amendment 1's
+  "a previously-unrecognized command surface reaching that already-decided harm model,"
+  Amendment 4's "a previously-unrecognized *tool* surface... reaching that already-decided harm
+  model," Amendment 5's "a previously-unrecognized *shape* for a worktree cwd." Distilled, the
+  pattern is: same
+  file, same mechanism, same harm model, only a previously-unrecognized surface, shape, or signal
+  newly recognized — never a change to what is being decided or why. This rule fails that bar on
+  two axes: the **trigger condition**
   differs (ADR-132 fires only when two-or-more follow-ups are enumerated together in the same
   pass with a genuine finish-to-start dependency; this rule fires on every single tile spawn,
   unconditionally, specifically for the *no*-hard-dependency case), and the **harm model**
@@ -176,7 +182,7 @@ spawned.
 - Like its sibling tile rules, this is a behavioral convention, not mechanically enforced —
   whether a next thread is "predictably" surfaced or unblocked, and whether it's "high-priority"
   enough to name, is a judgment call, same as ADR-123's "phase-dependent" judgment and ADR-132's
-  "genuine dependency" judgment.
+  "genuine finish-to-start dependency" judgment.
 - Adds another clause to an already-dense bullet, accepted for the same reason
   ADR-113/ADR-123/ADR-132 accepted it: a single edit site is cheaper than a fragmented one.
 - A named "next issue" can go stale if its state drifts between when the spawning tile is
@@ -201,8 +207,8 @@ spawned.
   "already blocked, discoverability" case, versus this ADR's "not blocked, priority continuity"
   case.
 - [ADR-132](132-sequential-tile-spawning-for-dependency-chains.md) — sequential tile spawning
-  for same-pass, hard finish-to-start dependencies; this ADR extends its "spawn only the head,
-  chain the rest" mechanism to the no-hard-dependency, single-tile case, and composes with it
+  for same-pass, hard finish-to-start dependencies; this ADR extends its "spawn only the head
+  of the chain" mechanism to the no-hard-dependency, single-tile case, and composes with it
   rather than overlapping.
 - [ADR-071](071-canonical-checkout-mutate-guard-hook.md) — the amendment-vs-new-ADR litmus test
   this ADR's Alternatives-considered section applies.
