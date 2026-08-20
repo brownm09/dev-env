@@ -58,6 +58,22 @@ merge-shaped command, confirmed or not — so the next occurrence has a permanen
 record instead of requiring another live-instrumented reproduction. The trace
 write can never affect control flow (wrapped, exceptions swallowed), matching
 this hook's existing safe-exit-guard contract.
+
+A third occurrence (dev-env#1028, 2026-08-20, career-playbook PR #1356) hit the
+identical "no snapshot" symptom with the trace mechanism above already in
+place — and the trace log had ZERO entries for the invocation, not merely an
+unhelpful one. That's a narrower failure than anything `resolve_merge()` was
+built to diagnose: it means the crash happened *before* `resolve_merge()` was
+ever reached. `main()`'s own `command`/`exit_code` extraction, two lines
+before that call, used an unguarded inline `.get(x, {}).get(...)` chain that
+throws on a present-but-non-dict `tool_input`/`tool_response` — silently
+caught by the outermost safe-exit guard, with nothing written anywhere. Fixed
+by routing both reads through `_hookio.read_command`/`read_exit_code` (which
+extend `read_command_output`'s pre-existing "never raises" contract to these
+two fields), plus a defense-in-depth `try/except` around the `resolve_merge()`
+call itself with a new `reason: "classify_error"` trace entry — so a
+merge-shaped command can no longer vanish from the trace no matter which layer
+of this pipeline throws. See ADR-050 Amendment 26.
 """
 import _winsubp  # noqa: F401  -- patches subprocess to suppress console windows
 import json
@@ -79,7 +95,9 @@ from _hookio import (
     is_rest_merge_command,
     output_has_merge_marker,
     output_has_rest_merge_marker,
+    read_command,
     read_command_output,
+    read_exit_code,
     scan_top_level,
     should_confirm_via_gh,
 )
@@ -696,6 +714,24 @@ def format_snapshot(util_data: dict, config: dict, exchanges: list[dict]) -> str
 
 # --- main ---
 
+
+def _plausibly_merge_shaped(command: str) -> bool:
+    """Cheap, exception-resistant merge-shape check for the `classify_error`
+    fallback below (dev-env#1028) -- a pure substring test, not the real (and
+    more fragile) `scan_top_level`/`_MERGE_RE` machinery, since that may be
+    exactly what just raised. False positives here only cost one extra trace
+    line, so this is deliberately permissive -- covers both the `gh pr merge`
+    shape and the `gh api .../pulls/N/merge` REST-merge shape.
+    """
+    try:
+        lowered = command.lower()
+    except Exception:
+        return False
+    if "gh" not in lowered:
+        return False
+    return ("pr" in lowered and "merge" in lowered) or "/merge" in lowered
+
+
 def main() -> None:
     _hookutil.record_heartbeat("usage-snapshot")
     raw = sys.stdin.read().strip()
@@ -710,12 +746,35 @@ def main() -> None:
     if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
-    command = data.get("tool_input", {}).get("command", "")
+    command = read_command(data)
     output = read_command_output(data)
     cwd = data.get("cwd", "")
-    exit_code = data.get("tool_response", {}).get("exitCode", -1)
+    exit_code = read_exit_code(data, default=-1)
 
-    resolution = resolve_merge(command, output, exit_code, cwd)
+    try:
+        resolution = resolve_merge(command, output, exit_code, cwd)
+    except Exception:
+        # Defense-in-depth (dev-env#1028): a genuine gh-pr-merge-shaped command
+        # must never vanish from the trace just because something deeper in
+        # the classification pipeline (e.g. split_top_level's heredoc/here-
+        # string parser, or the live gh pr view confirm call) throws on a
+        # shape the test suite hasn't seen yet. `classify_error` is
+        # synthesized here, in main() -- it is never a value resolve_merge()
+        # itself returns, so it is not part of that function's own reason
+        # enum (see its docstring).
+        if _plausibly_merge_shaped(command):
+            _log_merge_trace(
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "cwd": cwd,
+                    "exit_code": exit_code,
+                    "is_merge_shaped": True,
+                    "confirmed": False,
+                    "reason": "classify_error",
+                }
+            )
+        sys.exit(0)
+
     if resolution["is_merge_shaped"]:
         _log_merge_trace(
             {

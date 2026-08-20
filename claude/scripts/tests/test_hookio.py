@@ -34,7 +34,9 @@ from _hookio import (  # noqa: E402
     merge_pr_number_from_output,
     output_has_merge_marker,
     output_has_rest_merge_marker,
+    read_command,
     read_command_output,
+    read_exit_code,
     scan_top_level,
     should_confirm_via_gh,
     split_top_level,
@@ -93,6 +95,74 @@ def test_old_output_read_would_have_been_empty() -> str:
     assert real_shape.get("output", "") == "", "pre-fix read must be empty on real shape"
     assert read_command_output({"tool_response": real_shape}) == URL, "fixed read recovers content"
     return "pre-fix `output` read was '' on the real payload; fixed read recovers it"
+
+
+# ---------------------------------------------------------------------------
+# read_command / read_exit_code (dev-env#1028) -- extend read_command_output's
+# "never raises" contract to the two fields usage-snapshot.py's main() (and
+# several sibling hooks) previously read via an unguarded inline
+# `.get(x, {}).get(...)` chain. That chain's `{}` default only substitutes
+# when the KEY is absent -- a present-but-None (or otherwise non-dict)
+# tool_input/tool_response passes straight through and throws AttributeError
+# on the next .get(), silently discarding the event before any trace/action.
+# ---------------------------------------------------------------------------
+
+def test_read_command_normal_dict() -> str:
+    payload = {"tool_input": {"command": "git status"}}
+    assert read_command(payload) == "git status"
+    return "normal tool_input dict -> its command string"
+
+
+def test_read_command_missing_and_malformed_tool_input() -> str:
+    assert read_command({}) == "", "missing tool_input -> ''"
+    assert read_command({"tool_input": {}}) == "", "empty tool_input -> ''"
+    assert read_command({"tool_input": None}) == "", "None tool_input -> '' (the dev-env#1028 crash shape)"
+    assert read_command({"tool_input": "x"}) == "", "non-dict (str) tool_input -> ''"
+    assert read_command({"tool_input": [1, 2]}) == "", "non-dict (list) tool_input -> ''"
+    return "missing/empty/None/non-dict tool_input all yield '' (no crash) -- was AttributeError pre-fix"
+
+
+def test_read_command_non_string_command_field() -> str:
+    assert read_command({"tool_input": {"command": 12345}}) == "", "non-string command value -> ''"
+    assert read_command({"tool_input": {}}) == "", "missing command key -> ''"
+    return "non-string / absent command field -> ''"
+
+
+def test_read_exit_code_normal_dict() -> str:
+    assert read_exit_code({"tool_response": {"exitCode": 1}}) == 1
+    assert read_exit_code({"tool_response": {"exitCode": 0}}) == 0
+    return "normal tool_response dict -> its int exitCode"
+
+
+def test_read_exit_code_missing_and_malformed_tool_response() -> str:
+    assert read_exit_code({}) == -1, "missing tool_response -> default -1"
+    assert read_exit_code({"tool_response": {}}) == -1, "empty tool_response -> default"
+    assert read_exit_code({"tool_response": None}) == -1, "None tool_response -> default (the dev-env#1028 crash shape)"
+    assert read_exit_code({"tool_response": "x"}) == -1, "non-dict (str) tool_response -> default"
+    assert read_exit_code({"tool_response": [1, 2]}) == -1, "non-dict (list) tool_response -> default"
+    return "missing/empty/None/non-dict tool_response all yield the default (no crash) -- was AttributeError pre-fix"
+
+
+def test_read_exit_code_default_is_parameterized() -> str:
+    # Sibling hooks disagree on the default today (some -1, some 0) -- the
+    # shared helper must serve both without a caller having to post-process.
+    assert read_exit_code({}, default=0) == 0
+    assert read_exit_code({"tool_response": None}, default=0) == 0
+    return "custom `default` is honored for both missing-key and None-value cases"
+
+
+def test_read_exit_code_non_coercible_exit_code_falls_back_to_default() -> str:
+    for bad in (None, [1, 2], "not-a-number", {}):
+        assert read_exit_code({"tool_response": {"exitCode": bad}}) == -1, f"exitCode={bad!r} must not raise"
+    return "non-int-coercible exitCode values (None/list/non-numeric str/dict) -> default, never raises"
+
+
+def test_read_exit_code_numeric_string_is_coerced() -> str:
+    # Real payloads always send an int; int("1") legitimately succeeds -- pin
+    # this as deliberate coercion, not accidental leniency that could mask a
+    # different-shaped bug.
+    assert read_exit_code({"tool_response": {"exitCode": "1"}}) == 1
+    return "a numeric-string exitCode is coerced via int(), not silently rejected"
 
 
 def test_merge_marker_detected() -> str:
@@ -1332,6 +1402,23 @@ def main() -> int:
         ("is_rest_merge_command: method flag in different segment not matched", test_is_rest_merge_command_method_flag_in_different_segment_not_matched),
         ("output_has_rest_merge_marker: \"merged\":true -> True", test_output_has_rest_merge_marker_true),
         ("output_has_rest_merge_marker: absent -> False", test_output_has_rest_merge_marker_false),
+        ("read_command: normal tool_input dict -> command string", test_read_command_normal_dict),
+        (
+            "read_command: missing/empty/None/non-dict tool_input -> '' (dev-env#1028)",
+            test_read_command_missing_and_malformed_tool_input,
+        ),
+        ("read_command: non-string command field -> ''", test_read_command_non_string_command_field),
+        ("read_exit_code: normal tool_response dict -> int exitCode", test_read_exit_code_normal_dict),
+        (
+            "read_exit_code: missing/empty/None/non-dict tool_response -> default (dev-env#1028)",
+            test_read_exit_code_missing_and_malformed_tool_response,
+        ),
+        ("read_exit_code: default is parameterized", test_read_exit_code_default_is_parameterized),
+        (
+            "read_exit_code: non-coercible exitCode -> default, never raises",
+            test_read_exit_code_non_coercible_exit_code_falls_back_to_default,
+        ),
+        ("read_exit_code: numeric-string exitCode is coerced", test_read_exit_code_numeric_string_is_coerced),
     ]
     failed = 0
     for name, fn in tests:

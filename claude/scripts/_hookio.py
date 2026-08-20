@@ -43,8 +43,16 @@ into ``is_help_only(command, invocation_re)`` so ``post-tool-use.py``'s
 ``gh issue create`` / ``gh pr create`` detectors — which had the identical
 ``--help`` false-positive — reuse the same segment-scan instead of a copy of it.
 
+``read_command`` / ``read_exit_code`` (dev-env#1028) extend ``read_command_output``'s
+"never raises, so a hook can call it unguarded" contract to the ``tool_input.command``
+and ``tool_response.exitCode`` reads — several hooks' ``main()`` read those two fields
+via an unguarded inline ``.get(x, {}).get(...)`` chain that crashes on a
+present-but-non-dict ``tool_input``/``tool_response``, silently, before the hook's own
+trace/action logic ever runs.
+
 Usage:
-    from _hookio import read_command_output, output_has_merge_marker
+    from _hookio import read_command, read_command_output, read_exit_code
+    from _hookio import output_has_merge_marker
     from _hookio import effective_merge_dir, scan_top_level, split_top_level
     from _hookio import is_help_only, is_merge_help_only
 
@@ -88,6 +96,47 @@ def read_command_output(data: dict) -> str:
     if parts:
         return "\n".join(parts)
     return str(tr.get("output", "") or "")
+
+
+def read_command(data: dict) -> str:
+    """Return a Bash/PowerShell command string from a PostToolUse/PreToolUse payload.
+
+    Returns ``""`` for a missing, empty, ``None``, or non-dict ``tool_input``,
+    or a non-string ``command`` field — never raises, so a hook can call it
+    unguarded. Mirrors ``read_command_output``'s contract above: several hooks'
+    ``main()`` read ``data.get("tool_input", {}).get("command", "")`` inline,
+    which only substitutes the ``{}`` default when the *key* is absent — a
+    present-but-``None`` (or otherwise non-dict) ``tool_input`` throws
+    ``AttributeError`` on the chained ``.get()``, silently before any
+    trace/action the hook was about to take (dev-env#1028).
+    """
+    ti = data.get("tool_input") or {}
+    if not isinstance(ti, dict):
+        return ""
+    cmd = ti.get("command", "")
+    return cmd if isinstance(cmd, str) else ""
+
+
+def read_exit_code(data: dict, default: int = -1) -> int:
+    """Return a Bash/PowerShell command's exit code from a PostToolUse payload.
+
+    Returns *default* for a missing, empty, ``None``, or non-dict
+    ``tool_response``, or a non-int-coercible ``exitCode`` — never raises, so
+    a hook can call it unguarded. *default* is a parameter (not hardcoded)
+    because sibling hooks disagree on it today: some default to ``-1``
+    (payload omits the field entirely on some real invocations — see this
+    module's ``should_confirm_via_gh`` docstring), others to ``0``. Mirrors
+    ``read_command_output``'s contract (dev-env#1028 — the same
+    present-but-non-dict crash class as ``read_command`` above, this time in
+    the ``exitCode`` extraction).
+    """
+    tr = data.get("tool_response") or {}
+    if not isinstance(tr, dict):
+        return default
+    try:
+        return int(tr.get("exitCode", default))
+    except (TypeError, ValueError):
+        return default
 
 
 def output_has_merge_marker(output: str) -> bool:
