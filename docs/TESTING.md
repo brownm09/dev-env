@@ -3273,3 +3273,74 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_journal_draft_worktree_guard.py
     py -3 claude/scripts/tests/test_worktree_path_check.py
     ```
+
+93. **sibling-hooks hardened-IO migration test** — required when changing any of the 13 sibling
+    hooks migrated in dev-env#1033 onto `_hookio`'s hardened `read_command`/`read_cwd`/
+    `read_exit_code` (`post-merge-tile-checkpoint.py`, `post-pr-merge-project.py`,
+    `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`, `post-tool-use.py`,
+    `pr-merge-reminder.py`, `pre-auto-merge-checkpoint-gate.py`, `pre-commit-branch-check.py`,
+    `pre-merge-branch-check.py`, `pre-merge-message-check.py`, `pre-merge-numbering-check.py`,
+    `pre-pr-create-check.py`), or `test_sibling_hooks_hardened_io.py` itself. (The 14th sibling,
+    `pre-tool-use-worktree-path-check.py`, has its own dev-env#1031 coverage folded into item 32's
+    `test_worktree_path_check.py` instead, since that file already carried a loaded-module
+    reference and a subprocess `_run_hook` helper this file would otherwise duplicate;
+    `pre-merge-findings-gate.py`'s coverage is item 118's `test_pre_merge_findings_gate.py` +
+    `test-merge-findings-gate.sh`, dev-env#1032.) Two responsibilities in one file:
+
+    **Mechanical regression test.** An AST-based scan — mirroring `test_no_crude_command_substring_checks.py`'s
+    detector/allowlist/self-test shape (item 39) — asserting no `claude/scripts/*.py` file contains
+    the unguarded `X.get("tool_input"/"tool_response", {}).get(...)` chain as a live expression
+    (`data.get("key", {})` only substitutes the `{}` default when the key is *absent*; a
+    present-but-non-dict value, most commonly `None`, passes straight through and the chained outer
+    `.get()` raises `AttributeError`). Broader than the original repo-wide grep that discovered the
+    14 dev-env#1031 sites — that grep was anchored to an assignment statement
+    (`^\s*\w+\s*=\s*data\.get(...)`) and would miss the identical bug written inline (e.g. as a
+    function argument); this detector matches the `Call` shape regardless of statement context.
+    Does not require the outer `.get()`'s key literal to be `"command"`/`"exitCode"` either —
+    `pre-tool-use-worktree-path-check.py`'s own pre-fix shape read a *computed* field name
+    (`_PATH_FIELD[tool_name]`) via the identical inner-chain pattern, and any future field read via
+    this shape is the same bug. Self-tests confirm the hardened `read_command()` implementation
+    itself does *not* trip the detector (it splits the `isinstance` guard onto its own statement
+    rather than chaining `.get()` calls inline) — the fix and the regression test must not
+    disagree about what "fixed" looks like. `_KNOWN_EXCEPTIONS` is empty (mirrors item 39's own
+    current state): this migration's whole point is that no live offense should remain.
+
+    **Malformed-payload smoke test.** Each of the 12 files (see the exclusion note above) is driven
+    end-to-end via subprocess with the dev-env#1028 payload shapes (`tool_input: null` + `cwd: null`
+    combined in one payload — safe for every file, since `command` becomes `""` via `read_command()`,
+    which fails every one of these files' own command-shape gate before any subprocess/network call
+    could fire; a bare non-dict top-level JSON list) and asserted not to crash, exiting with the
+    expected "safe" code. `read_command`/`read_cwd`/`read_exit_code`'s own correctness is already
+    exhaustively covered in `test_hookio.py` (item 13) — not re-tested per-caller here; this file only
+    proves each migrated `main()` dispatch reaches the helpers without crashing. Two deliberate
+    scope boundaries, both documented in the file's own module docstring rather than left implicit:
+
+    - `pre-auto-merge-checkpoint-gate.py` is the one file that does **not** get the
+      `isinstance(data, dict)` top-level guard the other 11 do (mirrors ADR-050 Amendment 27's
+      identical reasoning for `pre-merge-findings-gate.py`'s PreToolUse situation) — it fails
+      CLOSED on any uncaught exception (ADR-083), so a non-dict top-level payload is deliberately
+      left to crash into that handler and exit 2, preserving its stricter posture for this
+      maximally out-of-contract case. Tested as its own explicit assertion (exit 2, not 0), not
+      folded into the 12-file loop.
+    - Of the six migrated files reading `exit_code`, only `post-tool-use.py` and
+      `pr-merge-reminder.py` read it *unconditionally* (before any business-logic branch) — safe to
+      drive with a genuinely malformed `tool_response` alongside a non-matching command (`"git
+      status"`). The other four (`post-merge-tile-checkpoint.py`, `post-pr-merge-project.py`,
+      `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`) read `exit_code` only inside the
+      "marker didn't confirm the merge" fallback branch — reaching that line via a malformed
+      `tool_response` (which also empties `output`, so no marker survives) makes
+      `should_confirm_via_gh()` return `True`, which would attempt a *real* `gh pr view`
+      subprocess call. Forcing that call (or monkeypatching `confirm_merge_via_gh`, which none of
+      these four files' own test suites do — ADR-050 Amendment 3/8's no-subprocess-mocks
+      convention) is exactly the environment-dependent-assertion trap dev-env#1028's own
+      post-review CI failure warned against (an assertion that passed locally, failed in CI, for
+      reasons unrelated to the fix being tested). These four files' `tool_input:null` coverage
+      already proves the primary, most-severe crash class doesn't crash their `main()` dispatch;
+      their `exit_code` line's correctness rests on `read_exit_code`'s own exhaustive coverage plus
+      the per-file default-value verification recorded in each file's own inline migration comment
+      and ADR-050 Amendment 28 — a deliberate scope boundary, not an oversight.
+
+    ```bash
+    py -3 claude/scripts/tests/test_sibling_hooks_hardened_io.py
+    py -3 claude/scripts/tests/test_worktree_path_check.py
+    ```
