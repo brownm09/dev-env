@@ -58,6 +58,35 @@ merge-shaped command, confirmed or not — so the next occurrence has a permanen
 record instead of requiring another live-instrumented reproduction. The trace
 write can never affect control flow (wrapped, exceptions swallowed), matching
 this hook's existing safe-exit-guard contract.
+
+A third occurrence (dev-env#1028, 2026-08-20, career-playbook PR #1356) hit the
+identical "no snapshot" symptom with the trace mechanism above already in
+place — and the trace log had ZERO entries for the invocation, not merely an
+unhelpful one. That's a narrower failure than anything `resolve_merge()` was
+built to diagnose: it means the crash happened *before* `resolve_merge()` was
+ever reached. `main()`'s own `command`/`exit_code` extraction, two lines
+before that call, used an unguarded inline `.get(x, {}).get(...)` chain that
+throws on a present-but-non-dict `tool_input`/`tool_response` — silently
+caught by the outermost safe-exit guard, with nothing written anywhere. Fixed
+by routing both reads through `_hookio.read_command`/`read_exit_code` (which
+extend `read_command_output`'s pre-existing "never raises" contract to these
+two fields), plus a defense-in-depth `try/except` around the `resolve_merge()`
+call itself with a new `reason: "classify_error"` trace entry — so a
+merge-shaped command can no longer vanish from the trace no matter which layer
+of this pipeline throws.
+
+`/review` on that fix's own PR then found, by executing it against its own
+diagnosed payload, that the crash-prevention above still produced zero trace
+entries: a destroyed `command` is trivially `not_merge_shape`, so the ordinary
+trace-write guard never fires. `main()` now detects a malformed `tool_input`
+directly (`reason: "malformed_payload"`), using any merge marker still surviving
+in `output` as an independent confirmation signal since `tool_response` is
+intact in that case; `cwd` gained the identical `read_cwd()` hardening (its
+pre-fix crash landed *after* a `confirmed: true` trace entry, actively asserting
+a merge that produced no snapshot); the `classify_error` entry now records the
+exception itself; and a non-dict top-level payload is guarded before it can
+reach `data.get("tool_name")`. See ADR-050 Amendment 26 (including its
+"Post-review fix" section) for the full detail.
 """
 import _winsubp  # noqa: F401  -- patches subprocess to suppress console windows
 import json
@@ -79,7 +108,10 @@ from _hookio import (
     is_rest_merge_command,
     output_has_merge_marker,
     output_has_rest_merge_marker,
+    read_command,
     read_command_output,
+    read_cwd,
+    read_exit_code,
     scan_top_level,
     should_confirm_via_gh,
 )
@@ -696,6 +728,35 @@ def format_snapshot(util_data: dict, config: dict, exchanges: list[dict]) -> str
 
 # --- main ---
 
+
+_PLAUSIBLE_MERGE_RE = re.compile(r"\bgh\b.*\bpr\b.*\bmerge\b|/pulls/\d+/merge\b", re.IGNORECASE)
+
+
+def _plausibly_merge_shaped(command: str) -> bool:
+    """Cheap, bounded-substring merge-shape check for the `classify_error`
+    fallback below (dev-env#1028) -- not the real (and more fragile)
+    `scan_top_level`/`_MERGE_RE` machinery, since that may be exactly what
+    just raised. Word-bounded (dev-env#1028 post-review finding): an
+    unbounded substring test would match "gh"/"pr" inside an unrelated
+    command's ordinary words (e.g. `git merge origin/print-highlights`
+    contains both "gh" and "pr" as substrings, though neither is a real
+    invocation) -- and unlike the harmless false positives this function's
+    permissiveness is meant to tolerate, `_log_merge_trace` is a 500-line
+    ring buffer this hook writes to on every Bash/PowerShell call, so an
+    unbounded flood can evict a genuine merge entry the log exists to
+    preserve, in exactly the failure-correlated scenario (resolve_merge()
+    throwing on a common command shape) this fallback exists for. A false
+    negative here (an unusual REST-merge textual variant this bounded regex
+    doesn't recognize) just means that one classify_error case goes
+    untraced -- the accepted cost of this being a last-resort diagnostic
+    aid, not the primary detection path (`is_rest_merge_command` already
+    handles those variants correctly there). Relies on `read_command`'s
+    "always str" contract -- no defensive try/except beyond that, matching
+    every other caller of this module's `read_*` helpers.
+    """
+    return bool(_PLAUSIBLE_MERGE_RE.search(command))
+
+
 def main() -> None:
     _hookutil.record_heartbeat("usage-snapshot")
     raw = sys.stdin.read().strip()
@@ -707,26 +768,92 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
+    if not isinstance(data, dict):
+        # A valid-JSON-but-non-dict top-level payload (a list, string,
+        # number, or null) would otherwise crash the very next line
+        # (dev-env#1028 post-review finding). Nothing to trace: without a
+        # dict there is no tool_name to even confirm this was a
+        # Bash/PowerShell PostToolUse event in the first place.
+        sys.exit(0)
+
     if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
-    command = data.get("tool_input", {}).get("command", "")
+    command = read_command(data)
     output = read_command_output(data)
-    cwd = data.get("cwd", "")
-    exit_code = data.get("tool_response", {}).get("exitCode", -1)
+    cwd = read_cwd(data)
+    exit_code = read_exit_code(data, default=-1)
 
-    resolution = resolve_merge(command, output, exit_code, cwd)
-    if resolution["is_merge_shaped"]:
+    # dev-env#1028 post-review finding (independently confirmed, by execution,
+    # by both review passes): read_command()'s crash-prevention alone still
+    # produced ZERO trace entries for a present-but-non-dict tool_input --
+    # the exact symptom this whole fix exists to close. A destroyed `command`
+    # is "" (never merge-shaped: scan_top_level("") is always False), so
+    # resolve_merge("") always classifies not_merge_shape/is_merge_shaped=
+    # False, and the trace-write guard below never fires. Detect the
+    # malformed-input condition directly, before ever calling resolve_merge(),
+    # and trace it under its own reason -- using the merge marker in `output`
+    # (still reliable: tool_response, unlike tool_input, is intact here) as
+    # the only surviving independent signal of whether a merge happened.
+    raw_tool_input = data.get("tool_input")
+    if "tool_input" in data and not isinstance(raw_tool_input, dict):
+        confirmed = output_has_merge_marker(output) or output_has_rest_merge_marker(output)
         _log_merge_trace(
             {
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "cwd": cwd,
                 "exit_code": exit_code,
-                **resolution,
+                "is_merge_shaped": True,
+                "confirmed": confirmed,
+                "reason": "malformed_payload",
             }
         )
-    if not resolution["confirmed"]:
-        sys.exit(0)
+        if not confirmed:
+            sys.exit(0)
+        # else: `output` carries independent merge confirmation despite the
+        # lost command text -- fall through to the snapshot logic below
+        # exactly like any other confirmed merge. resolve_merge() is skipped
+        # entirely: `command` no longer carries usable information for it.
+    else:
+        try:
+            resolution = resolve_merge(command, output, exit_code, cwd)
+        except Exception as exc:
+            # Defense-in-depth (dev-env#1028): a genuine gh-pr-merge-shaped
+            # command must never vanish from the trace just because something
+            # deeper in the classification pipeline (e.g. split_top_level's
+            # heredoc/here-string parser, or the live gh pr view confirm
+            # call) throws on a shape the test suite hasn't seen yet.
+            # `classify_error` is synthesized here, in main() -- it is never
+            # a value resolve_merge() itself returns, so it is not part of
+            # that function's own reason enum (see its docstring). The
+            # exception itself is recorded (dev-env#1028 post-review
+            # finding) so a bare "classify_error" doesn't force yet another
+            # live-instrumented reproduction to learn which layer threw.
+            if _plausibly_merge_shaped(command):
+                _log_merge_trace(
+                    {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "cwd": cwd,
+                        "exit_code": exit_code,
+                        "is_merge_shaped": True,
+                        "confirmed": False,
+                        "reason": "classify_error",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+            sys.exit(0)
+
+        if resolution["is_merge_shaped"]:
+            _log_merge_trace(
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "cwd": cwd,
+                    "exit_code": exit_code,
+                    **resolution,
+                }
+            )
+        if not resolution["confirmed"]:
+            sys.exit(0)
 
     creds = load_credentials()
     if not creds:

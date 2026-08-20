@@ -105,6 +105,30 @@ pure `resolve_merge` result.
 The live network call (`fetch_usage`) is intentionally not tested — the repo
 avoids urllib mocks, consistent with the other script tests.
 
+dev-env#1028 (2026-08-20, career-playbook PR #1356): a third "no snapshot"
+occurrence, this time with the trace mechanism above already in place — and
+the trace log had ZERO entries, not merely an unhelpful one. Investigation
+confirmed `resolve_merge()`'s own classification is correct for the exact
+command/stderr text involved (the URL-argument command form, never exercised
+by any fixture above, which all use the bare `--squash --delete-branch`
+form) — the new `test_resolve_merge_worktree_holding_branch_url_argument_*`
+case below pins that directly, the same way as the existing
+`gh_view_confirmed`/`gh_view_unconfirmed` cases. The actual gap was one layer
+up: `main()`'s own `command`/`exit_code` extraction crashed (silently, caught
+only by the outermost safe-exit guard) on a present-but-non-dict
+`tool_input`/`tool_response`, before `resolve_merge()` was ever called — see
+`test_hookio.py`'s new `read_command`/`read_exit_code` coverage for the fix
+itself. The tests below add what no test in this file had before: genuine
+end-to-end coverage of `main()`'s own dispatch (stdin -> JSON parse ->
+extraction -> `resolve_merge()` -> trace write), for the three scenarios that
+don't require a live `gh pr view` call (matching this file's own
+no-subprocess-mock convention above): the `--help` shape with a malformed
+`tool_response` (the regression pin for the concrete bug, reached through
+real `main()` dispatch rather than a hand-built `resolve_merge()` call), and
+two cases pinning the new `classify_error` defense-in-depth fallback
+(triggers only for a plausibly-merge-shaped command; never fires — and never
+spams the trace — for an ordinary non-merge command).
+
 Usage:
     py -3 claude/scripts/tests/test_usage_snapshot.py
 
@@ -112,6 +136,7 @@ Exit 0 = all pass.
 """
 
 import importlib.util
+import io
 import sys
 import tempfile
 from pathlib import Path
@@ -138,6 +163,7 @@ cli_auth_status = usage_snapshot.cli_auth_status
 merge_confirmed = usage_snapshot.merge_confirmed
 resolve_merge = usage_snapshot.resolve_merge
 _log_merge_trace = usage_snapshot._log_merge_trace
+_plausibly_merge_shaped = usage_snapshot._plausibly_merge_shaped
 status_label = usage_snapshot.status_label
 format_snapshot = usage_snapshot.format_snapshot
 find_session_jsonl = usage_snapshot.find_session_jsonl
@@ -555,6 +581,31 @@ def test_resolve_merge_gh_view_unconfirmed_reason() -> str:
     return "marker lost + live gh pr view finds nothing -> not confirmed, reason='gh_view_unconfirmed'"
 
 
+def test_resolve_merge_worktree_holding_branch_url_argument_issue_1028() -> str:
+    # dev-env#1028's exact command and stderr text: the URL-argument form of
+    # `gh pr merge` (never exercised by any fixture above -- all use the bare
+    # `--squash --delete-branch` form operating on cwd's checked-out branch)
+    # combined with the worktree-holding-branch local-abort stderr, against a
+    # real-world worktree cwd (not this file's usual synthetic "C:/repo"). The
+    # literal hypothesis in the issue's own title -- that this exact text
+    # causes an early return inside resolve_merge() -- does not hold: this
+    # pins that it correctly reaches the same gh_view_* fallback every other
+    # exit-1 "marker lost" case above reaches.
+    command = 'gh pr merge "https://github.com/brownm09/career-playbook/pull/1356" --squash --delete-branch'
+    output = "failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/career-playbook'"
+    cwd = "C:/Users/brown/Git/career-playbook/.claude/worktrees/suspicious-bun-9dfa4b"
+    calls = []
+
+    def confirm_fn(pr_number, repo, resolved_cwd):
+        calls.append((pr_number, repo, resolved_cwd))
+        return 1356
+
+    result = resolve_merge(command, output, exit_code=1, cwd=cwd, confirm_fn=confirm_fn)
+    assert result == {"is_merge_shaped": True, "confirmed": True, "reason": "gh_view_confirmed"}, result
+    assert calls == [(None, "", cwd)], calls
+    return "dev-env#1028's exact URL-argument command + stderr -> gh_view_confirmed (the original hypothesis, not confirmed)"
+
+
 def test_log_merge_trace_appends_and_never_raises() -> str:
     with tempfile.TemporaryDirectory() as tmp:
         path = str(Path(tmp) / "nested" / "trace.log")
@@ -589,6 +640,278 @@ def test_log_merge_trace_caps_to_max_lines() -> str:
         indices = [_json.loads(ln)["i"] for ln in lines]
         assert indices == [2, 3, 4], indices
     return "_log_merge_trace caps to the most recent max_lines entries, dropping the oldest"
+
+
+# ---------------------------------------------------------------------------
+# main() end-to-end dispatch (dev-env#1028) -- the first tests in this file
+# that invoke main() itself rather than resolve_merge()/merge_confirmed()
+# directly. Necessary because the bug this section pins lived in main()'s own
+# stdin -> JSON -> extraction wiring, upstream of every function this file's
+# existing tests already exercise directly. Scoped to the three scenarios
+# that never reach the live gh pr view call (matching this file's own
+# no-subprocess-mock convention, noted at the top of this file) --
+# resolve_merge()'s gh_view_* branches are already pinned above via the
+# established confirm_fn-injection pattern, not re-tested here.
+# ---------------------------------------------------------------------------
+
+def _run_main_capturing_trace(payload) -> tuple:
+    """Invoke the real usage_snapshot.main() against *payload* (JSON-
+    serialized via json.dumps -- typically a dict, but any JSON-serializable
+    value works, e.g. a list for the non-dict-top-level-data test) fed over
+    stdin, with _log_merge_trace monkeypatched to capture calls instead of
+    touching the real trace file. Returns (exit_code, [trace_entry, ...]).
+    """
+    import json as _json
+
+    calls = []
+    real_stdin = usage_snapshot.sys.stdin
+    real_log_merge_trace = usage_snapshot._log_merge_trace
+    usage_snapshot.sys.stdin = io.StringIO(_json.dumps(payload))
+    usage_snapshot._log_merge_trace = lambda entry: calls.append(entry)
+    try:
+        try:
+            usage_snapshot.main()
+            exit_code = 0
+        except SystemExit as e:
+            exit_code = e.code if isinstance(e.code, int) else 1
+    finally:
+        usage_snapshot.sys.stdin = real_stdin
+        usage_snapshot._log_merge_trace = real_log_merge_trace
+    return exit_code, calls
+
+
+def test_main_help_command_with_null_tool_response_does_not_crash() -> str:
+    # dev-env#1028's actual regression pin: a present-but-None tool_response
+    # crashed main()'s pre-fix `data.get("tool_response", {}).get("exitCode",
+    # -1)` chain before resolve_merge() -- and the trace write -- was ever
+    # reached. `gh pr merge --help` is used specifically because it resolves
+    # via is_merge_help_only without ever needing a live gh pr view call, so
+    # this pins the fix through REAL main() dispatch with zero network
+    # involvement.
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "gh pr merge --help"},
+        "tool_response": None,
+        "cwd": "C:/repo",
+    }
+    exit_code, calls = _run_main_capturing_trace(payload)
+    assert exit_code == 0, exit_code
+    assert len(calls) == 1, calls
+    assert calls[0]["reason"] == "help_only", calls[0]
+    assert calls[0]["is_merge_shaped"] is True, calls[0]
+    assert calls[0]["confirmed"] is False, calls[0]
+    return "tool_response: null + gh pr merge --help -> main() does not crash, still traces (dev-env#1028 regression pin)"
+
+
+def test_main_classify_error_fallback_fires_on_resolve_merge_exception() -> str:
+    # Forces the one branch that cannot otherwise be reached: resolve_merge()
+    # itself raising. Since the real trigger (if one exists in
+    # split_top_level's parser) is not identified, this proves the safety
+    # net engages correctly when *something* unanticipated throws, rather
+    # than pinning a specific root cause.
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "gh pr merge --squash --delete-branch"},
+        "tool_response": {"exitCode": 1, "stderr": "boom"},
+        "cwd": "C:/repo",
+    }
+
+    def raising_resolve_merge(*_a, **_k):
+        raise RuntimeError("simulated classification failure")
+
+    real_resolve_merge = usage_snapshot.resolve_merge
+    usage_snapshot.resolve_merge = raising_resolve_merge
+    try:
+        exit_code, calls = _run_main_capturing_trace(payload)
+    finally:
+        usage_snapshot.resolve_merge = real_resolve_merge
+    assert exit_code == 0, exit_code
+    assert len(calls) == 1, calls
+    assert calls[0]["reason"] == "classify_error", calls[0]
+    assert calls[0]["is_merge_shaped"] is True, calls[0]
+    assert calls[0]["confirmed"] is False, calls[0]
+    # dev-env#1028 post-review finding: the exception itself must be
+    # recorded, not just the fact that *something* threw -- a bare
+    # "classify_error" with no detail would force yet another
+    # live-instrumented reproduction to learn which layer failed.
+    assert calls[0]["error"] == "RuntimeError: simulated classification failure", calls[0]
+    return "resolve_merge() raising -> classify_error fallback traces the merge-shaped command AND the exception detail"
+
+
+def test_main_classify_error_fallback_does_not_fire_for_non_merge_command() -> str:
+    # Same forced exception as above, but a genuinely non-merge command --
+    # _plausibly_merge_shaped must gate the fallback so an unrelated
+    # exception (however unlikely) doesn't spam the trace log on the
+    # overwhelming majority of non-merge Bash/PowerShell calls this global
+    # hook sees on every tool call.
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "git status"},
+        "tool_response": {"exitCode": 0, "stdout": "clean"},
+        "cwd": "C:/repo",
+    }
+
+    def raising_resolve_merge(*_a, **_k):
+        raise RuntimeError("simulated classification failure")
+
+    real_resolve_merge = usage_snapshot.resolve_merge
+    usage_snapshot.resolve_merge = raising_resolve_merge
+    try:
+        exit_code, calls = _run_main_capturing_trace(payload)
+    finally:
+        usage_snapshot.resolve_merge = real_resolve_merge
+    assert exit_code == 0, exit_code
+    assert calls == [], calls
+    return "resolve_merge() raising for a non-merge command -> classify_error fallback does not fire, no trace spam"
+
+
+# ---------------------------------------------------------------------------
+# dev-env#1028 POST-REVIEW findings (both review passes independently
+# executed the real main() against the PR's own diagnosed root-cause payload
+# and found it still produced ZERO trace entries -- the fix prevented the
+# crash but not the original symptom, because a destroyed `command` is
+# trivially not_merge_shape). These tests pin the corrected behavior.
+# ---------------------------------------------------------------------------
+
+def test_main_malformed_tool_input_with_marker_traces_and_confirms() -> str:
+    # THE critical regression case both review passes independently executed
+    # and found broken: tool_input present-but-None (dev-env#1028's actual
+    # payload shape) destroys `command`, so resolve_merge("") always
+    # classifies not_merge_shape/is_merge_shaped=False and the ordinary
+    # trace-write guard never fires -- reproducing dev-env#1028's exact
+    # symptom (zero trace entries) via a different mechanism than the
+    # original crash. main() must detect the malformed tool_input directly
+    # and, when the merge marker still survives in `output` (tool_response is
+    # intact here), treat it as confirmed and proceed toward the snapshot.
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": None,
+        "tool_response": {
+            "exitCode": 1,
+            "stdout": "Squashed and merged pull request #1356 (fix)",
+            "stderr": "failed to run git: fatal: 'main' is already checked out at 'C:/repo'",
+        },
+        "cwd": "C:/repo",
+    }
+    # "Falls through toward snapshot logic" is proven by reaching
+    # load_credentials() -- NOT by the final exit code, which also depends on
+    # unrelated, environment-specific credential-file state downstream (a
+    # real machine's actual creds file, or lack of one, differs between a
+    # dev box and a CI runner -- confirmed live: this exact assertion via
+    # `exit_code != 0` passed locally but failed in CI for precisely this
+    # reason). Monkeypatching load_credentials to a call-recording stub keeps
+    # the assertion deterministic regardless of environment.
+    load_calls = []
+    real_load_credentials = usage_snapshot.load_credentials
+    usage_snapshot.load_credentials = lambda: (load_calls.append(1), None)[1]
+    try:
+        exit_code, calls = _run_main_capturing_trace(payload)
+    finally:
+        usage_snapshot.load_credentials = real_load_credentials
+    assert len(calls) == 1, calls
+    assert calls[0]["reason"] == "malformed_payload", calls[0]
+    assert calls[0]["is_merge_shaped"] is True, calls[0]
+    assert calls[0]["confirmed"] is True, calls[0]
+    assert load_calls == [1], "confirmed via the surviving marker must fall through to load_credentials(), not bail inside the malformed_payload block"
+    return "tool_input:null + merge marker still in output -> traced as malformed_payload, confirmed=True, falls through (dev-env#1028 post-review)"
+
+
+def test_main_malformed_tool_input_without_marker_traces_unconfirmed() -> str:
+    # Same malformed tool_input, but no independent signal survives in
+    # `output` either -- must still trace (so the event is never silently
+    # invisible), but cannot claim confirmation it has no evidence for.
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": None,
+        "tool_response": {
+            "exitCode": 1,
+            "stderr": "failed to run git: fatal: 'main' is already checked out at 'C:/repo'",
+        },
+        "cwd": "C:/repo",
+    }
+    exit_code, calls = _run_main_capturing_trace(payload)
+    assert exit_code == 0, exit_code
+    assert len(calls) == 1, calls
+    assert calls[0]["reason"] == "malformed_payload", calls[0]
+    assert calls[0]["is_merge_shaped"] is True, calls[0]
+    assert calls[0]["confirmed"] is False, calls[0]
+    return "tool_input:null + no surviving marker -> traced as malformed_payload, confirmed=False, exits cleanly (dev-env#1028 post-review)"
+
+
+def test_main_cwd_none_does_not_crash_after_confirmed_trace() -> str:
+    # dev-env#1028 post-review finding: `cwd = data.get("cwd", "")` had the
+    # identical present-but-None gap as the original command/exit_code bug,
+    # except its crash landed AFTER a confirmed:true trace entry was already
+    # written (downstream, in the snapshot/session-lookup machinery) --
+    # producing a permanent record that actively asserts a merge was
+    # confirmed while no snapshot ever appeared. A marker-confirmed merge
+    # with cwd:null must not crash; read_cwd() converts None -> "".
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "gh pr merge --squash --delete-branch"},
+        "tool_response": {"exitCode": 0, "stdout": "Squashed and merged pull request #99"},
+        "cwd": None,
+    }
+    # Same environment-independence fix as the malformed-tool_input test
+    # above: "falls through without crashing" is proven by reaching
+    # load_credentials() cleanly, not by the final exit code (which depends
+    # on unrelated, environment-specific credential-file state -- this exact
+    # `exit_code != 0` assertion passed locally but failed in CI).
+    load_calls = []
+    real_load_credentials = usage_snapshot.load_credentials
+    usage_snapshot.load_credentials = lambda: (load_calls.append(1), None)[1]
+    try:
+        exit_code, calls = _run_main_capturing_trace(payload)
+    finally:
+        usage_snapshot.load_credentials = real_load_credentials
+    assert len(calls) == 1, calls
+    assert calls[0]["reason"] == "marker", calls[0]
+    assert calls[0]["confirmed"] is True, calls[0]
+    assert calls[0]["cwd"] == "", calls[0]
+    assert load_calls == [1], "confirmed merge must reach load_credentials() without crashing on cwd:null first"
+    return "cwd:null + confirmed merge -> traced correctly (cwd='') and does not crash downstream (dev-env#1028 post-review)"
+
+
+def test_main_non_dict_top_level_data_does_not_crash() -> str:
+    # dev-env#1028 post-review finding: a valid-JSON-but-non-dict top-level
+    # payload (a list, here -- _run_main_capturing_trace's own json.dumps()
+    # serializes it the same as any dict payload) crashed at
+    # `data.get("tool_name")` -- one level above every read_* helper's own
+    # guard, and the identical silent-crash class this whole fix exists to
+    # close, caught only by the outermost safe-exit guard with nothing traced.
+    exit_code, calls = _run_main_capturing_trace(["not", "an", "object"])
+    assert exit_code == 0, exit_code
+    assert calls == [], calls
+    return "non-dict top-level JSON (a list) -> main() exits cleanly, no crash, no trace (dev-env#1028 post-review)"
+
+
+def test_plausibly_merge_shaped_true_cases() -> str:
+    assert _plausibly_merge_shaped("gh pr merge --squash --delete-branch")
+    assert _plausibly_merge_shaped('gh pr merge "https://github.com/o/r/pull/1" --squash')
+    assert _plausibly_merge_shaped("GH PR MERGE --auto"), "case-insensitive"
+    assert _plausibly_merge_shaped("gh api -X PUT repos/o/r/pulls/5/merge")
+    return "gh pr merge (any case/args) and the gh api REST-merge shape -> True"
+
+
+def test_plausibly_merge_shaped_false_cases() -> str:
+    assert not _plausibly_merge_shaped("git status")
+    assert not _plausibly_merge_shaped("gh pr create --fill")
+    assert not _plausibly_merge_shaped("")
+    return "non-merge commands and empty string -> False"
+
+
+def test_plausibly_merge_shaped_word_boundaries_reject_substring_matches() -> str:
+    # dev-env#1028 post-review finding: the original unbounded substring test
+    # ("gh" in lowered and "pr" in lowered) false-positived on ordinary words
+    # containing those letters -- flooding the 500-line capped trace log in
+    # exactly the failure-correlated scenario (resolve_merge() throwing on a
+    # common command shape) this fallback exists for, risking eviction of the
+    # genuine merge entries the log exists to preserve.
+    assert not _plausibly_merge_shaped("git merge origin/print-highlights"), \
+        "'gh' inside 'highlights' and 'pr' inside 'print' must not satisfy word-bounded \\bgh\\b/\\bpr\\b"
+    assert not _plausibly_merge_shaped("echo approved and merged manually"), \
+        "'pr' inside 'approved' must not satisfy word-bounded \\bpr\\b"
+    return "unbounded substring matches ('highlights'/'print', 'approved') correctly excluded by word boundaries"
 
 
 def test_status_label_bands_are_ascii() -> str:
@@ -769,9 +1092,47 @@ def main() -> int:
         ("resolve_merge: queued --auto -> no_confirm_needed, no network call", test_resolve_merge_no_confirm_needed_reason),
         ("resolve_merge: live gh pr view confirms -> gh_view_confirmed", test_resolve_merge_gh_view_confirmed_reason),
         ("resolve_merge: live gh pr view finds nothing -> gh_view_unconfirmed", test_resolve_merge_gh_view_unconfirmed_reason),
+        (
+            "resolve_merge: dev-env#1028 exact URL-argument command + stderr -> gh_view_confirmed",
+            test_resolve_merge_worktree_holding_branch_url_argument_issue_1028,
+        ),
         ("_log_merge_trace: appends JSON lines, creates parent dirs", test_log_merge_trace_appends_and_never_raises),
         ("_log_merge_trace: swallows write failure", test_log_merge_trace_swallows_write_failure),
         ("_log_merge_trace: caps to max_lines, drops oldest", test_log_merge_trace_caps_to_max_lines),
+        (
+            "main(): --help + tool_response:null does not crash, still traces (dev-env#1028)",
+            test_main_help_command_with_null_tool_response_does_not_crash,
+        ),
+        (
+            "main(): resolve_merge() exception -> classify_error fallback traces (dev-env#1028)",
+            test_main_classify_error_fallback_fires_on_resolve_merge_exception,
+        ),
+        (
+            "main(): classify_error fallback does not fire for non-merge command (dev-env#1028)",
+            test_main_classify_error_fallback_does_not_fire_for_non_merge_command,
+        ),
+        (
+            "main(): malformed tool_input + surviving marker -> malformed_payload, confirmed, falls through (dev-env#1028 post-review)",
+            test_main_malformed_tool_input_with_marker_traces_and_confirms,
+        ),
+        (
+            "main(): malformed tool_input, no marker -> malformed_payload, unconfirmed (dev-env#1028 post-review)",
+            test_main_malformed_tool_input_without_marker_traces_unconfirmed,
+        ),
+        (
+            "main(): cwd:null does not crash after a confirmed trace (dev-env#1028 post-review)",
+            test_main_cwd_none_does_not_crash_after_confirmed_trace,
+        ),
+        (
+            "main(): non-dict top-level JSON does not crash (dev-env#1028 post-review)",
+            test_main_non_dict_top_level_data_does_not_crash,
+        ),
+        ("_plausibly_merge_shaped: gh pr merge / REST-merge shapes -> True", test_plausibly_merge_shaped_true_cases),
+        ("_plausibly_merge_shaped: non-merge commands -> False", test_plausibly_merge_shaped_false_cases),
+        (
+            "_plausibly_merge_shaped: word boundaries reject substring matches (dev-env#1028 post-review)",
+            test_plausibly_merge_shaped_word_boundaries_reject_substring_matches,
+        ),
         (
             "nested worktree convention still resolves (dev-env#775)",
             test_find_session_jsonl_resolves_nested_worktree_convention,

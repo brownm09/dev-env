@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08, 2026-07-09 (twenty-one amendments — see Amendment sections below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking, gh-create-help, prose-flag-masking, pr-create, bare-number-masking, args-boundary, truncation
+**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08, 2026-07-09, 2026-07-11, 2026-08-15, 2026-08-16, 2026-08-20 (twenty-six amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking, gh-create-help, prose-flag-masking, pr-create, bare-number-masking, args-boundary, truncation, rest-merge-fallback, gh-api, graphql-rate-limit, stop-hook-parity, stop-tile-enumeration-gate, convergence, observability, trace-logging, forensic-debugging, silent-failure, defense-in-depth, null-payload, dispatch
 
 ---
 
@@ -2190,3 +2190,133 @@ same review also flagged that `resolve_merge()`'s `"marker"` vs `"rest_marker"` 
 best-effort re-classification, not a strict decomposition of `merge_confirmed()`'s own `or` — documented
 in `resolve_merge`'s own docstring rather than changed, since the dual-marker case it describes (one
 command's output satisfying both merge mechanisms at once) is unrealistic.
+
+## Amendment 26 (2026-08-20) — hardening `main()`'s own dispatch, the blind spot Amendment 25's trace couldn't see (dev-env#1028)
+
+**The question Amendment 25 still couldn't fully answer.** Amendment 25 built `resolve_merge()` and
+`_log_merge_trace()` specifically so a future "no snapshot appeared" reproduction would answer *which
+branch fired* from the trace file instead of requiring another live-instrumented catch. dev-env#1028
+(2026-08-20, career-playbook PR #1356, the same worktree-holds-`main` local-abort shape as
+dev-env#489/#496/#954/#988) is the first real test of that promise since Amendment 25 landed — and the
+trace file had **zero entries** for the invocation, not merely an unhelpful one. That is a stronger,
+more specific failure than anything Amendment 25 was built to diagnose: it means whatever happened, it
+happened *before* `resolve_merge()` — the one function the trace was built around — was ever called.
+
+**What was investigated and ruled out.** Traced `resolve_merge()` end-to-end (every branch:
+`merge_confirmed`/`scan_top_level`/`is_merge_help_only`/`should_confirm_via_gh`/`effective_merge_dir`/
+`confirm_merge_via_gh`) against the issue's exact command (`gh pr merge "<url>" --squash
+--delete-branch` — the URL-argument form, not the bare form every existing fixture used) and exact
+stderr text. Every branch correctly classifies this shape and reaches the
+`gh_view_confirmed`/`gh_view_unconfirmed` fallback, and `main()`'s trace-write call (`if
+resolution["is_merge_shaped"]: _log_merge_trace(...)`) is unconditional on `is_merge_shaped`, evaluated
+*before* the `confirmed`-gated exit. **The literal hypothesis in dev-env#1028's own title — this stderr
+text causing an early return inside `resolve_merge()` — does not hold**, confirmed by both the existing
+`test_resolve_merge_gh_view_*` fixtures (already using near-identical "already checked out" text) and a
+fresh regression fixture against the URL-argument command form specifically.
+
+**What was found instead, by direct inspection, not reproduction.** `main()`'s own dispatch — two lines
+*before* `resolve_merge()` is ever called — never received Amendment 25's (or `read_command_output`'s
+pre-existing) defensive treatment:
+
+```python
+command = data.get("tool_input", {}).get("command", "")       # usage-snapshot.py:713 (pre-fix)
+exit_code = data.get("tool_response", {}).get("exitCode", -1) # usage-snapshot.py:716 (pre-fix)
+```
+
+`data.get("key", {})` substitutes the `{}` default only when *the key is absent* — a key present with
+value `None` (or any other non-dict) passes straight through, and the chained `.get(...)` throws
+`AttributeError`, caught only by the outermost `except Exception: sys.exit(0)` around all of `main()`
+(this hook's Hook-Safety-mandated safe-exit guard) — with nothing written anywhere. `read_command_output(data)`,
+called on the very next line (`:714`), already defends against exactly this shape — its own docstring
+states *"Returns "" for a missing, empty, None, or non-dict tool_response — never raises, so a hook can
+call it unguarded"* — but that guarantee was never extended to the `command`/`exit_code` extraction
+sitting right beside it. A repo-wide grep found the identical unguarded shape, unchanged, in six sibling
+hooks (see Follow-up below) — the same "a fix applied to one call site doesn't get audited against every
+other call site with the same shape" pattern this ADR has already named more than once (Amendments 6, 9).
+
+**Honest scope of the claim.** This is not presented as a confirmed reproduction of dev-env#1028's exact
+trigger — the raw PostToolUse JSON payload from that career-playbook session isn't available to inspect,
+so whether `tool_response`/`tool_input` genuinely arrived non-dict for that specific invocation is not
+provable after the fact (the same evidentiary limit Amendment 25's own "Context" section describes for
+dev-env#489/#496). What is provable by inspection alone: this is a real, reproducible defect, inconsistent
+with this exact module's own established convention two lines away, and it *would* produce precisely the
+observed symptom (silent, total, unrecoverable absence from the trace) for any payload shape where it
+fires.
+
+**The fix has two parts, matching the issue's own two-option ask.** dev-env#1028 asked to either (a)
+confirm and fix a specific early-return, or (b) at minimum guarantee the trace can never again be silently
+indistinguishable from "the hook didn't run." Since (a)'s specific hypothesis didn't hold, this amendment
+delivers a generalized version of (a) — the found bug's actual fix — plus (b) as unconditional
+defense-in-depth on top:
+
+1. **New `_hookio.py` helpers, `read_command(data)` and `read_exit_code(data, default=-1)`**, extending
+   `read_command_output`'s exact contract (same "never raises" guarantee, same defensive shape) to the two
+   extraction points that lacked it. `usage-snapshot.py` now calls these instead of the raw chained
+   `.get()`s. `default` is a parameter, not hardcoded, because sibling hooks disagree on it today
+   (`post-tool-use.py`/`pr-merge-reminder.py` default `exitCode` to `0`; `usage-snapshot.py` and three
+   others default to `-1`) — see Follow-up below.
+2. **`resolve_merge()`'s own call site in `main()` is wrapped in a `try`/`except`**, independent of whether
+   the concrete bug above is the only thing that could ever throw there — `split_top_level`'s ~450-line
+   heredoc/here-string/brace-group parser (Amendments 5/7 and onward) is complex enough that a
+   not-yet-identified edge case is plausible, and this amendment doesn't attempt to audit it exhaustively.
+   On exception, a new, cheap, exception-resistant substring check (`_plausibly_merge_shaped` — deliberately
+   NOT `scan_top_level`, since that may be what just raised) decides whether to still emit a trace line,
+   with a new `reason: "classify_error"` value. This value is synthesized by `main()`, not returned by
+   `resolve_merge()` itself — `resolve_merge()`'s own docstring enum is unchanged, since documenting it
+   there would misdescribe what that function returns.
+
+**Coverage.** `test_hookio.py` gains direct unit tests for `read_command`/`read_exit_code` (normal payload,
+missing key, `None` value, non-dict value, non-int-coercible `exitCode`, `default` override) — 130 tests
+total (up from 122). `test_usage_snapshot.py` gains what no prior amendment's test suite had: genuine
+end-to-end tests that pipe a full JSON payload through `usage_snapshot.main()` itself (`sys.stdin`
+monkeypatched to a fake payload, `_log_merge_trace` monkeypatched to capture calls instead of touching the
+real file, `SystemExit` caught) rather than calling `resolve_merge()` directly with hand-built strings, as
+every existing test in that file does. Scoped to the three scenarios that never reach the live `gh pr view`
+call, matching this file's own no-subprocess-mock convention (Amendment 3/8's "the repo avoids subprocess
+mocks", restated in this file's own docstring): a `gh pr merge --help` command with a `null` `tool_response`
+(the regression pin for the concrete bug — `is_merge_help_only` resolves without ever needing
+`confirm_fn`); a forced `resolve_merge()` exception pinning the new `classify_error` fallback itself; and
+the same forced exception against a non-merge command, pinning that the fallback does *not* fire (and
+therefore does not spam the trace log) for the overwhelming majority of non-merge Bash/PowerShell calls
+this global hook sees on every tool call. The dev-env#1028 exact-text scenario itself (URL-argument command
++ "already checked out" stderr, needing the `gh_view_confirmed` fallback) is pinned the same way every other
+`gh_view_*` case in this file already is: a direct `resolve_merge()` call with an injected `confirm_fn`, per
+the file's own established idiom — not forced through `main()`'s stdin dispatch, which would need either a
+real network call or a departure from that idiom. `test_usage_snapshot.py` total: 48 tests (up from 39).
+
+**Follow-up, not bundled here.** The identical unguarded `data.get("tool_input"/"tool_response",
+{}).get(...)` pattern this amendment fixes in `usage-snapshot.py` also exists, unchanged, in six sibling
+hooks: `post-merge-tile-checkpoint.py`, `post-pr-merge-project.py`, `post-pr-merge-pull.py`,
+`post-pr-merge-reclaim.py`, `post-tool-use.py`, `pr-merge-reminder.py` (confirmed via a repo-wide grep, not
+by inspecting each file individually). Migrating all six — several safety-critical (board-Done moves,
+canonical fast-forward, worktree disk reclaim) — is out of scope for dev-env#1028's own narrow report;
+tracked as a follow-up issue + tile, filed after this amendment's PR merges, now a small mechanical
+migration since `read_command`/`read_exit_code` and their tests already exist.
+
+**General lesson (continuing Amendments 1, 6, and 9's, and directly extending Amendment 25's own).**
+Amendment 25 built the trace mechanism to answer "which branch of `resolve_merge()` fired" — an implicit
+assumption that `resolve_merge()` is always *reached*. A fourth live "no snapshot" occurrence, this time
+with a trace mechanism already in place, is what surfaced that the assumption itself was the gap: an
+observability tool built to explain a decision is blind to any failure that occurs before the tool's own
+instrumentation point. The durable-mechanical-grep discipline Amendment 9 named ("grep the whole
+`claude/scripts/` tree... before declaring any... sweep complete") applies here too, one layer removed:
+`read_command_output`'s own docstring already stated its defensive guarantee in writing, in this exact
+file, for weeks before this amendment — the gap wasn't unknown-unknown, it was one
+`grep 'data.get("tool_response", {}).get('` away from being caught the same PR that hardened
+`read_command_output` first landed.
+**Post-review fix.** `/review` on the PR implementing this amendment (#1030) ran two independent passes (correctness/security; reliability/performance/maintainability) — both executed the real `main()` against this amendment's own diagnosed root-cause payload (`tool_input: None`, merge marker present in `tool_response`) rather than reasoning about it statically, and both independently found it still produced **zero trace entries** — the amendment as originally written prevented the crash but not the symptom it exists to fix. A destroyed `command` (`read_command()` correctly returns `""` for a malformed `tool_input`) is trivially `not_merge_shape` (`scan_top_level("")` is always `False`), so `resolve_merge("")` always returns `is_merge_shaped: False` and the ordinary trace-write guard (`if resolution["is_merge_shaped"]:`) never fires — reproducing dev-env#1028's exact symptom via a different mechanism than the original crash. Five findings, all fixed in the same PR before merge:
+
+1. **The load-bearing one, independently confirmed by both review passes via execution.** `main()` now detects a present-but-non-dict `tool_input` directly, *before* ever calling `resolve_merge()` (which cannot help here — the command text it would classify no longer exists), and traces it under a new `reason: "malformed_payload"`. Since `tool_response` (unlike `tool_input`) is intact in this scenario, `output_has_merge_marker(output)` / `output_has_rest_merge_marker(output)` remain a reliable independent signal of whether a merge actually happened — used as `confirmed`. When confirmed, `main()` skips `resolve_merge()` entirely and falls through to the snapshot logic below exactly like any other confirmed merge, rather than merely logging and bailing.
+2. **`cwd` had the identical unguarded-default gap**, but its crash landed *downstream* (`encode_cwd`/`find_session_jsonl`) rather than at the read site — reachable *after* a `confirmed: true` trace entry had already been written, producing a worse artifact than no record at all (a permanent claim that a merge was confirmed, with no snapshot to show for it). Fixed with a new `read_cwd()` helper in `_hookio.py`, mirroring `read_command`'s contract.
+3. **The `classify_error` trace entry discarded the exception itself**, recording only that *something* threw. `except Exception:` is now `except Exception as exc:`, and the entry gains an `"error": f"{type(exc).__name__}: {exc}"` field — matching the shape `pre-auto-merge-checkpoint-gate.py`'s own catch-all handlers already use elsewhere in this repo.
+4. **Both `read_command`/`read_exit_code`, and the pre-existing `read_command_output`, still crashed on a non-dict top-level `data`** (a list, string, or `null` — still valid JSON) — one level above the `tool_input`/`tool_response` guard, the identical silent-crash class this whole fix exists to close. All three now guard `isinstance(data, dict)` first. `main()` gained the same guard immediately after `json.loads()` succeeds, since `data.get("tool_name")` and the `cwd` read are not funneled through any of the three helpers.
+5. **`_plausibly_merge_shaped`'s unbounded substring test** (`"gh" in lowered and "pr" in lowered`) matched ordinary words merely containing those letters (`git merge origin/print-highlights` contains both "gh" — inside "highlights" — and "pr" — inside "print" — as substrings, though neither is a real invocation). Given `_log_merge_trace` is a 500-entry ring buffer this hook writes to on *every* Bash/PowerShell call, an unbounded flood in exactly the failure-correlated scenario this fallback exists for (`resolve_merge()` throwing on a common command shape) risks evicting the genuine merge entries the log exists to preserve. Tightened to a word-bounded regex (`\bgh\b.*\bpr\b.*\bmerge\b|/pulls/\d+/merge\b`); the now-provably-unreachable `try/except` around the old `command.lower()` call (given `read_command`'s "always `str`" contract) is dropped rather than kept as dead defensive code.
+
+**Also corrected, not code changes:** `read_exit_code`'s `default` parameter is now **required** (no default value) rather than defaulting to `-1` — review flagged that a convenience default would let a future drop-in migration at one of the `0`-default sibling sites (`post-tool-use.py`, `pr-merge-reminder.py`) silently flip an absent `exitCode` from `0` to `-1`, reintroducing the exact dev-env#557 misattribution bug via a migration that looks like a no-op. And the module-level docstring paragraph introducing `read_command`/`read_cwd`/`read_exit_code` was tightened — review found it read as if "several hooks" were migrated, when only `usage-snapshot.py` was; it now states the count precisely (fourteen more call sites confirmed via repo-wide grep, not migrated here) and cross-references the Follow-up section below.
+
+**Follow-up scope corrected.** The original Follow-up paragraph named six sibling hooks. Review's own repo-wide grep — re-verified independently, anchored to an actual assignment statement rather than any text match — found **fourteen**, not six: the original six (`post-merge-tile-checkpoint.py`, `post-pr-merge-project.py`, `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`, `post-tool-use.py`, `pr-merge-reminder.py`) plus eight more (`pre-auto-merge-checkpoint-gate.py`, `pre-commit-branch-check.py`, `pre-merge-branch-check.py`, `pre-merge-findings-gate.py`, `pre-merge-message-check.py`, `pre-merge-numbering-check.py`, `pre-pr-create-check.py`, `pre-tool-use-worktree-path-check.py` — the last reading a different field, `_PATH_FIELD[tool_name]`, via the identical unguarded chain shape). Independently verified: `pre-merge-findings-gate.py`'s own `__main__` guard is `except Exception: sys.exit(0)` — a malformed `tool_input` on a `gh pr merge` command silently disables the ADR-028/ADR-039 findings gate itself, a fail-open blocking-merge-gate outcome materially worse than this amendment's own lost usage snapshot. The tracking issue filed after this PR merges lists all fourteen, ranks `pre-merge-findings-gate.py` first on fail-open grounds, and — per review's own suggestion — proposes a grep-based regression test (mirroring this repo's existing `test_no_crude_command_substring_checks.py`/`check-remote-read-hygiene.sh` pattern) asserting no `claude/scripts/*.py` file contains the unguarded chain shape, so the class becomes mechanically unrepresentable rather than merely documented.
+
+**Coverage (post-review).** `test_hookio.py`: 5 new tests (non-dict-`data` guards on all four `read_*` helpers, `read_cwd`'s own coverage, and `read_exit_code`'s `default`-is-now-required contract) — 135 total (up from 130). `test_usage_snapshot.py`: 5 new tests, all executing the real `main()` end-to-end — the two `malformed_payload` scenarios (marker-confirmed and unconfirmed), `cwd: null` no longer crashing after a `confirmed: true` trace, non-dict top-level JSON, and the `_plausibly_merge_shaped` word-boundary regression case — plus an update to the existing `classify_error` test asserting the new `"error"` field — 53 total (up from 48). Every fix in this section was verified failing against the pre-fix code before being marked resolved, the same discipline the base amendment's own regression tests already followed.
+
+**General lesson (extending this amendment's own, one level further).** The base amendment's lesson was that an observability tool built to explain a decision is blind to any failure before its own instrumentation point. Review found the fix for *that* gap had a gap of the identical shape, one step removed: preventing a crash is not the same as preserving the information the crash was destroying, and the two must be verified separately — by execution, not by re-reading the diff — before either is presented as closing the loop.
+
