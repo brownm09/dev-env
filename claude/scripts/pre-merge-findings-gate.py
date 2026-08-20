@@ -60,6 +60,8 @@ import _hookout
 from _hookio import (
     is_merge_help_only,
     mask_quoted_spans,
+    read_command,
+    read_cwd,
     scan_top_level,
     strip_line_continuations,
 )
@@ -201,9 +203,37 @@ def main() -> None:
         data = json.loads(raw)
     except json.JSONDecodeError:
         sys.exit(0)
+    if not isinstance(data, dict):
+        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
+        # or null) would otherwise crash the very next line (dev-env#1031,
+        # mirroring usage-snapshot.py's dev-env#1028 post-review fix).
+        sys.exit(0)
     if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
-    command = data.get("tool_input", {}).get("command", "")
+    # dev-env#1031: read_command() never raises on a present-but-non-dict
+    # tool_input (dev-env#1028's payload shape) -- the pre-fix
+    # `data.get("tool_input", {}).get("command", "")` chain crashed here,
+    # silently converted by the outer `except Exception: sys.exit(0)` guard
+    # into "gate passed" for what could have been a genuine `gh pr merge`.
+    #
+    # Migrating to read_command() makes that exit deterministic and testable
+    # instead of an accident of exception propagation, but does NOT by
+    # itself recover merge-intent detection for a genuinely-destroyed
+    # command: a malformed tool_input still yields command="", which
+    # is_pr_merge_command("") correctly (if unhelpfully) classifies as "not a
+    # merge" -- the same fail-open OUTCOME as the pre-fix crash, just reached
+    # via explicit business logic. Unlike usage-snapshot.py's PostToolUse
+    # hook (which has tool_response.stdout/stderr as an independent
+    # post-execution confirmation signal even when tool_input is destroyed),
+    # this is a PreToolUse hook: the command has not run yet, so there is no
+    # alternative signal to fall back on once its own text is gone. Widening
+    # this gate to fail CLOSED on any malformed-tool_input Bash/PowerShell
+    # call was considered and rejected: without readable command text there
+    # is no way to scope a block to merge commands specifically, so failing
+    # closed here would block ALL Bash/PowerShell calls on the same rare
+    # payload glitch -- a materially worse regression than the narrow,
+    # documented gap this leaves open. Accepted, documented residual gap.
+    command = read_command(data)
     if not is_pr_merge_command(command):
         sys.exit(0)
     # `gh pr merge --help` (or any other non-mutating gh pr merge invocation)
@@ -213,7 +243,7 @@ def main() -> None:
     if is_merge_help_only(command):
         sys.exit(0)
 
-    cwd = data.get("cwd", "") or None
+    cwd = read_cwd(data) or None
     ref, repo = _parse_merge_target(command)
 
     view_cmd = ["gh", "pr", "view"]
