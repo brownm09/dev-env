@@ -793,16 +793,26 @@ def test_main_malformed_tool_input_with_marker_traces_and_confirms() -> str:
         },
         "cwd": "C:/repo",
     }
-    exit_code, calls = _run_main_capturing_trace(payload)
+    # "Falls through toward snapshot logic" is proven by reaching
+    # load_credentials() -- NOT by the final exit code, which also depends on
+    # unrelated, environment-specific credential-file state downstream (a
+    # real machine's actual creds file, or lack of one, differs between a
+    # dev box and a CI runner -- confirmed live: this exact assertion via
+    # `exit_code != 0` passed locally but failed in CI for precisely this
+    # reason). Monkeypatching load_credentials to a call-recording stub keeps
+    # the assertion deterministic regardless of environment.
+    load_calls = []
+    real_load_credentials = usage_snapshot.load_credentials
+    usage_snapshot.load_credentials = lambda: (load_calls.append(1), None)[1]
+    try:
+        exit_code, calls = _run_main_capturing_trace(payload)
+    finally:
+        usage_snapshot.load_credentials = real_load_credentials
     assert len(calls) == 1, calls
     assert calls[0]["reason"] == "malformed_payload", calls[0]
     assert calls[0]["is_merge_shaped"] is True, calls[0]
     assert calls[0]["confirmed"] is True, calls[0]
-    # Confirmed via the surviving marker -> main() must NOT bail at exit 0;
-    # it falls through toward the snapshot logic exactly like any other
-    # confirmed merge (exit code depends on downstream credential state, but
-    # must not be the "nothing happened" 0 a lost event would produce).
-    assert exit_code != 0, exit_code
+    assert load_calls == [1], "confirmed via the surviving marker must fall through to load_credentials(), not bail inside the malformed_payload block"
     return "tool_input:null + merge marker still in output -> traced as malformed_payload, confirmed=True, falls through (dev-env#1028 post-review)"
 
 
@@ -842,15 +852,23 @@ def test_main_cwd_none_does_not_crash_after_confirmed_trace() -> str:
         "tool_response": {"exitCode": 0, "stdout": "Squashed and merged pull request #99"},
         "cwd": None,
     }
-    exit_code, calls = _run_main_capturing_trace(payload)
+    # Same environment-independence fix as the malformed-tool_input test
+    # above: "falls through without crashing" is proven by reaching
+    # load_credentials() cleanly, not by the final exit code (which depends
+    # on unrelated, environment-specific credential-file state -- this exact
+    # `exit_code != 0` assertion passed locally but failed in CI).
+    load_calls = []
+    real_load_credentials = usage_snapshot.load_credentials
+    usage_snapshot.load_credentials = lambda: (load_calls.append(1), None)[1]
+    try:
+        exit_code, calls = _run_main_capturing_trace(payload)
+    finally:
+        usage_snapshot.load_credentials = real_load_credentials
     assert len(calls) == 1, calls
     assert calls[0]["reason"] == "marker", calls[0]
     assert calls[0]["confirmed"] is True, calls[0]
     assert calls[0]["cwd"] == "", calls[0]
-    # Must fall through toward snapshot logic without crashing -- not the
-    # bare 0 a crash caught only by the outer safe-exit guard would produce
-    # after having ALREADY written a misleading confirmed:true trace line.
-    assert exit_code != 0, exit_code
+    assert load_calls == [1], "confirmed merge must reach load_credentials() without crashing on cwd:null first"
     return "cwd:null + confirmed merge -> traced correctly (cwd='') and does not crash downstream (dev-env#1028 post-review)"
 
 
