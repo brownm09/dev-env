@@ -2320,3 +2320,59 @@ file, for weeks before this amendment — the gap wasn't unknown-unknown, it was
 
 **General lesson (extending this amendment's own, one level further).** The base amendment's lesson was that an observability tool built to explain a decision is blind to any failure before its own instrumentation point. Review found the fix for *that* gap had a gap of the identical shape, one step removed: preventing a crash is not the same as preserving the information the crash was destroying, and the two must be verified separately — by execution, not by re-reading the diff — before either is presented as closing the loop.
 
+## Amendment 27 (2026-08-20) — closing dev-env#1031 Part 1: `pre-merge-findings-gate.py`'s own fail-open crash (dev-env#1032)
+
+**Context.** Amendment 26's Follow-up section, corrected post-review, named fourteen sibling call sites carrying
+the identical unguarded `data.get("tool_input"/"tool_response", {}).get(...)` chain `usage-snapshot.py` was fixed
+onto `read_command`/`read_cwd`/`read_exit_code`. Of the fourteen, review singled out `pre-merge-findings-gate.py`
+as materially worse than the rest: it is a **blocking merge gate** (ADR-028/ADR-039 — every `/review` finding
+must be fixed-or-filed before merge), and its `__main__` guard is the same `except Exception: sys.exit(0)`
+safe-exit convention every hook in this family uses. A malformed `tool_input` there does not just lose a side
+effect (a board move, a fast-forward pull, a disk reclaim) the way it does for the other thirteen — it crashes
+the gate's own dispatch *before* it ever evaluates whether findings are disposed, and the safe-exit guard
+silently converts that crash into "gate passed." The tracking issue (dev-env#1031) filed after Amendment 26's PR
+merged ranked this file first on exactly those fail-open grounds, ahead of the other thirteen as a batch
+(dev-env#1033) — this amendment closes Part 1.
+
+**The fix.** `main()` now: (1) guards `isinstance(data, dict)` immediately after `json.loads()` succeeds, mirroring
+`usage-snapshot.py`'s own dev-env#1028 post-review fix; (2) reads `command = read_command(data)` instead of the
+raw chained `.get()`; (3) reads `cwd = read_cwd(data) or None` instead of `data.get("cwd", "") or None` — not
+itself part of the flagged grep pattern (a single, non-chained `.get()` never raises at the assignment site), but
+hardened anyway since a non-string `cwd` still crashes *downstream* (`_fetch_pr_json`'s `subprocess.run(...,
+cwd=cwd)`) exactly the way Amendment 26's post-review pass found for `usage-snapshot.py`'s own `cwd` gap.
+
+**Honest scope — what this fix does and does NOT close.** Migrating `command` onto `read_command()` makes the
+malformed-`tool_input` exit path *deterministic and testable* instead of an accident of exception propagation —
+but, unlike `usage-snapshot.py`'s Amendment 26 post-review fix, it does **not** recover merge-intent detection
+for the destroyed command. `read_command()` returns `""` for a malformed `tool_input`; `is_pr_merge_command("")`
+correctly (if unhelpfully) classifies that as "not a merge" and exits 0 — the **same fail-open outcome** as the
+pre-fix crash, reached via explicit business logic instead of an uncaught exception. The reason this file can't
+match `usage-snapshot.py`'s fix shape: `usage-snapshot.py` is a **PostToolUse** hook, so even when `tool_input` is
+destroyed, `tool_response.stdout`/`stderr` (the command's actual output) survives intact and gives
+`output_has_merge_marker`/`output_has_rest_merge_marker` an independent post-execution signal to confirm a merge
+happened. `pre-merge-findings-gate.py` is a **PreToolUse** hook — the command has not run yet, so there is no
+`tool_response` and no alternative signal once the command text itself is gone. Considered and rejected: failing
+CLOSED (blocking the tool call) on any malformed-`tool_input` Bash/PowerShell invocation. Without readable command
+text there is no way to scope a block to merge commands specifically, so failing closed here would block *every*
+Bash/PowerShell call on the same rare payload glitch, regardless of what command it carried — a materially worse,
+broader regression than the narrow, now-explicitly-documented gap this leaves open (see the inline comment at the
+`command = read_command(data)` call site for the same reasoning, kept in the code as well as here so a future
+reader hits it without needing this ADR). This residual gap is structurally identical for
+`pre-auto-merge-checkpoint-gate.py` (dev-env#1033, Part 2) — the only other PreToolUse gate among the fourteen
+that extracts `command` before deciding whether a merge is even in play.
+
+**Coverage.** `test-merge-findings-gate.sh` gains two new end-to-end cases run directly against `main()`'s stdin
+dispatch (no `MERGE_GATE_TEST_JSON` seam — if the hook did not exit before `_fetch_pr_json`, either case would
+attempt a real network call rather than cleanly returning 0): `tool_input: null` (the dev-env#1028 payload shape)
+and a non-dict top-level JSON payload (a bare list). Both assert exit 0 with no crash/hang. `read_command`'s and
+`read_cwd`'s own correctness (normal/missing/`None`/non-dict/non-string inputs) is already exhaustively covered in
+`test_hookio.py` (Amendment 26) and is not re-tested per-caller here — this file's own coverage is scoped to
+proving its `main()` dispatch reaches the helpers and doesn't crash, per `test_pre_merge_findings_gate.py`'s own
+documented pure-helper-only convention (which explicitly excludes `main()`'s stdin plumbing, covered instead by
+the shell test).
+
+**Follow-up, not bundled here.** The remaining thirteen files (all fail-open by original design — informational/
+advisory hooks whose crash loses a recoverable side effect, not a security gate) migrate in dev-env#1033, along
+with the mechanical AST-based regression test (mirroring `test_no_crude_command_substring_checks.py`) asserting no
+`claude/scripts/*.py` file contains the unguarded chain shape as a live assignment statement.
+

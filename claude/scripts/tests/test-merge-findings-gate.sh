@@ -11,6 +11,8 @@
 #   - gh failure                           -> allow  (exit 0, fail-open)
 #   - command is not `gh pr merge`         -> allow  (exit 0)
 #   - open findings, no disposition, via tool_name=PowerShell (dev-env#620) -> BLOCK (exit 2)
+#   - malformed tool_input (dev-env#1028 payload shape) -> allow (exit 0, no crash, dev-env#1031)
+#   - non-dict top-level JSON payload                   -> allow (exit 0, no crash, dev-env#1031)
 #
 # Run: bash claude/scripts/tests/test-merge-findings-gate.sh
 set -u
@@ -173,6 +175,26 @@ print(m._parse_merge_target('gh pr merge 42 \\\n  --repo brownm09/dev-env && rm 
 PYEOF
 )
 echo "$OUT" | grep -c "('42', 'brownm09/dev-env')" | grep -q "^3$" && ok "multi-line merge: --repo/number on a continued line resolves; chained && still excluded (dev-env#831)" || bad "line-continuation truncation: $OUT"
+
+echo "[11] malformed tool_input (dev-env#1028 payload shape: present but null) does not crash -- allow (dev-env#1031)"
+# The pre-fix `data.get("tool_input", {}).get("command", "")` chain raised
+# AttributeError here, silently swallowed by the outer `except Exception:
+# sys.exit(0)` guard -- this proves the same exit-0 outcome is now reached
+# via explicit, deterministic business logic (read_command -> "" ->
+# is_pr_merge_command("") is False) rather than an uncaught exception. No
+# MERGE_GATE_TEST_JSON seam set -- if the hook did not exit before
+# _fetch_pr_json, this would attempt a real network call and very likely
+# fail/hang rather than cleanly returning 0.
+STDIN='{"tool_name":"Bash","tool_input":null,"cwd":"."}'
+RC=$(printf '%s' "$STDIN" | $PY "$HOOK" >/dev/null 2>&1; echo $?)
+[ "$RC" = "0" ] && ok "tool_input:null -> exit 0, no crash" || bad "expected 0, got $RC"
+
+echo "[12] non-dict top-level JSON payload does not crash -- allow (dev-env#1031)"
+# A valid-JSON-but-non-dict top-level payload (a list here) crashed at
+# data.get("tool_name") -- one level above every read_* helper's own guard.
+STDIN='["not", "an", "object"]'
+RC=$(printf '%s' "$STDIN" | $PY "$HOOK" >/dev/null 2>&1; echo $?)
+[ "$RC" = "0" ] && ok "non-dict top-level JSON -> exit 0, no crash" || bad "expected 0, got $RC"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
