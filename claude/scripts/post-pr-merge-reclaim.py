@@ -56,7 +56,10 @@ from _hookio import (
     is_rest_merge_command,
     output_has_merge_marker,
     output_has_rest_merge_marker,
+    read_command,
     read_command_output,
+    read_cwd,
+    read_exit_code,
     scan_top_level,
     should_confirm_via_gh,
 )
@@ -143,12 +146,25 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
+    if not isinstance(data, dict):
+        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
+        # or null) would otherwise crash the very next line (dev-env#1031/
+        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
+        sys.exit(0)
+
     if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
-    command = data.get("tool_input", {}).get("command", "")
+    # dev-env#1031/#1033: read_command()/read_cwd() never raise on a
+    # present-but-non-dict tool_input/cwd (dev-env#1028's payload shape) --
+    # the pre-fix unguarded chains crashed here, silently caught by the
+    # __main__ safe-exit guard below (which loses only this disk reclaim, an
+    # advisory side effect with other backstops -- see ADR-050 Amendment 27
+    # for why pre-merge-findings-gate.py, a blocking merge gate, was fixed
+    # first and separately on fail-open severity grounds).
+    command = read_command(data)
     output = read_command_output(data)
-    cwd = data.get("cwd", "")
+    cwd = read_cwd(data)
 
     if not is_successful_merge(command, output):
         # gh's marker does not always survive to this hook's captured output
@@ -164,7 +180,7 @@ def main() -> None:
         # branch and can misattribute an unrelated already-merged PR (dev-env#557).
         if is_merge_help_only(command):
             sys.exit(0)
-        exit_code = data.get("tool_response", {}).get("exitCode", -1)
+        exit_code = read_exit_code(data, default=-1)
         if not should_confirm_via_gh(exit_code, output):
             sys.exit(0)
         if confirm_merge_via_gh(None, "", effective_merge_dir(command, cwd)) is None:

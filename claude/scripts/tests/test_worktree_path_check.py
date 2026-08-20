@@ -660,6 +660,63 @@ def test_main_blocks_write_escaping_to_real_canonical_root() -> str:
     return "Write escaping to a REAL canonical root (from a REAL registered worktree) still blocked (exit 2, dev-env#774)"
 
 
+# ---------------------------------------------------------------------------
+# dev-env#1031/#1033: read_cwd() + the local _read_tool_input_field() helper
+# -- extending _hookio's hardened-read migration to this hook's own computed
+# field-name read, which _hookio.read_command can't cover directly.
+# ---------------------------------------------------------------------------
+
+def test_read_tool_input_field_missing_and_malformed() -> str:
+    """Mirrors test_hookio.py's test_read_command_missing_and_malformed_tool_input
+    shape exactly, for _read_tool_input_field's own computed-field-name variant.
+    """
+    rtif = wpc._read_tool_input_field
+    assert rtif({}, "file_path") == "", "missing tool_input -> ''"
+    assert rtif({"tool_input": {}}, "file_path") == "", "empty tool_input -> ''"
+    assert rtif({"tool_input": None}, "file_path") == "", "None tool_input -> '' (the dev-env#1028 crash shape)"
+    assert rtif({"tool_input": "x"}, "file_path") == "", "non-dict (str) tool_input -> ''"
+    assert rtif({"tool_input": {"notebook_path": "/a/b.ipynb"}}, "file_path") == "", "wrong field present -> ''"
+    assert rtif({"tool_input": {"file_path": "/a/b.py"}}, "file_path") == "/a/b.py", "normal case"
+    assert rtif({"tool_input": {"file_path": 42}}, "file_path") == "", "non-string value -> ''"
+    for bad in (["not", "a", "dict"], "just a string", 42, None):
+        assert rtif(bad, "file_path") == "", f"non-dict data {bad!r} -> ''"
+    return "missing/empty/None/non-dict tool_input, non-dict data, and a non-string field value all yield '' (no crash)"
+
+
+def test_main_malformed_tool_input_and_cwd_does_not_crash() -> str:
+    """dev-env#1028's payload shape (tool_input present-but-null) combined with
+    a malformed cwd, driven through main() end-to-end. Pre-fix, the unguarded
+    `data.get("tool_input", {}).get(_PATH_FIELD[tool_name], "")` chain would
+    have crashed once cwd resolution got far enough to reach it; here cwd:null
+    resolves to "" via read_cwd() and fails _match_worktree() before that
+    line is even reached -- still proves read_cwd()'s own malformed-input
+    handling doesn't crash this hook's main() dispatch.
+    """
+    payload = {"tool_name": "Write", "tool_input": None, "cwd": None}
+    proc = _run_hook(payload)
+    if proc.returncode != 0:
+        raise AssertionError(f"expected exit 0, got {proc.returncode}. stderr={proc.stderr!r}")
+    return "tool_input:null + cwd:null -> exit 0, no crash (dev-env#1031)"
+
+
+def test_main_non_dict_top_level_data_does_not_crash() -> str:
+    """A valid-JSON-but-non-dict top-level payload (a list here) crashed at
+    `data.get("tool_name", "")` pre-fix -- one level above every read_*
+    helper's own guard, the identical silent-crash class this migration
+    closes across all 14 dev-env#1031 files.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(MODULE_PATH)],
+        input=json.dumps(["not", "an", "object"]),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(f"expected exit 0, got {proc.returncode}. stderr={proc.stderr!r}")
+    return "non-dict top-level JSON -> exit 0, no crash (dev-env#1031)"
+
+
 def main() -> int:
     tests = [
         ("_worktree_is_live decision table", test_worktree_is_live_decision_table),
@@ -678,6 +735,9 @@ def main() -> int:
         ("main() blocks Edit from an orphan nested in a REAL canonical repo (dev-env#774)", test_main_blocks_edit_from_orphaned_worktree_nested_in_real_canonical),
         ("main() allows Write from a REAL registered worktree (dev-env#774)", test_main_allows_write_from_real_registered_worktree),
         ("main() blocks Write escaping to a REAL canonical root (dev-env#774)", test_main_blocks_write_escaping_to_real_canonical_root),
+        ("_read_tool_input_field: missing/malformed tool_input/data (dev-env#1031)", test_read_tool_input_field_missing_and_malformed),
+        ("main(): tool_input:null + cwd:null does not crash (dev-env#1031)", test_main_malformed_tool_input_and_cwd_does_not_crash),
+        ("main(): non-dict top-level JSON does not crash (dev-env#1031)", test_main_non_dict_top_level_data_does_not_crash),
     ]
     failed = 0
     for name, fn in tests:

@@ -43,7 +43,10 @@ from _hookio import (
     is_rest_merge_command,
     output_has_merge_marker,
     output_has_rest_merge_marker,
+    read_command,
     read_command_output,
+    read_cwd,
+    read_exit_code,
     scan_top_level,
     should_confirm_via_gh,
 )
@@ -431,12 +434,36 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
+    if not isinstance(data, dict):
+        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
+        # or null) would otherwise crash the very next line (dev-env#1031/
+        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
+        sys.exit(0)
+
     if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
-    command = data.get("tool_input", {}).get("command", "")
-    cwd = data.get("cwd", "<unknown>")
-    exit_code = data.get("tool_response", {}).get("exitCode", 0)
+    # dev-env#1031/#1033: read_command()/read_exit_code() never raise on a
+    # present-but-non-dict tool_input/tool_response (dev-env#1028's payload
+    # shape) -- the pre-fix unguarded chains crashed here, silently caught by
+    # the __main__ safe-exit guard below (which loses only this reminder, an
+    # advisory side effect -- see ADR-050 Amendment 27 for why
+    # pre-merge-findings-gate.py, a blocking merge gate, was fixed first and
+    # separately on fail-open severity grounds). default=0 here (not the -1
+    # most sibling hooks use) matches this file's own pre-fix literal --
+    # verified per-file, not copy-pasted, since a wrong default would
+    # reintroduce the dev-env#557 misattribution bug (see read_exit_code's
+    # own docstring).
+    #
+    # cwd keeps its own `read_cwd(data) or "<unknown>"` form rather than the
+    # bare `read_cwd(data)` every other sibling hook uses: this file's pre-fix
+    # default was the literal string "<unknown>" (not ""), and that value is
+    # displayed verbatim in this hook's own reminder text (`f"  cwd: {cwd}\n"`
+    # below) -- falling back to "" instead would silently change what a user
+    # reading the reminder sees for a missing/malformed cwd.
+    command = read_command(data)
+    cwd = read_cwd(data) or "<unknown>"
+    exit_code = read_exit_code(data, default=0)
 
     is_create = is_pr_create_command(command)
     is_merge = is_pr_merge_command(command)

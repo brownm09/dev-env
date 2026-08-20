@@ -68,7 +68,14 @@ import subprocess
 import sys
 
 from _gh_project import add_to_project
-from _hookio import is_help_only, read_command_output, scan_top_level
+from _hookio import (
+    is_help_only,
+    read_command,
+    read_command_output,
+    read_cwd,
+    read_exit_code,
+    scan_top_level,
+)
 import _hookutil
 from _repo_target import create_args, issue_create_args, repo_from_flag
 from _worktree_canon import canonical_root_from_worktree
@@ -535,13 +542,30 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
+    if not isinstance(data, dict):
+        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
+        # or null) would otherwise crash the very next line (dev-env#1031/
+        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
+        sys.exit(0)
+
     if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
-    command = data.get("tool_input", {}).get("command", "")
+    # dev-env#1031/#1033: read_command()/read_cwd()/read_exit_code() never
+    # raise on a present-but-non-dict tool_input/cwd/tool_response
+    # (dev-env#1028's payload shape) -- the pre-fix unguarded chains crashed
+    # here, silently caught by the __main__ safe-exit guard below (which
+    # loses only this project-board add, an advisory side effect with other
+    # backstops -- see ADR-050 Amendment 27 for why pre-merge-findings-gate.py,
+    # a blocking merge gate, was fixed first and separately on fail-open
+    # severity grounds). default=0 here (not the -1 most sibling hooks use)
+    # matches this file's own pre-fix literal -- verified per-file, not
+    # copy-pasted, since a wrong default would reintroduce the dev-env#557
+    # misattribution bug (see read_exit_code's own docstring).
+    command = read_command(data)
     output = read_command_output(data)
-    exit_code = data.get("tool_response", {}).get("exitCode", 0)
-    cwd = data.get("cwd", "")
+    exit_code = read_exit_code(data, default=0)
+    cwd = read_cwd(data)
 
     is_issue_create = is_issue_create_command(command)
     is_pr_create = is_pr_create_command(command)

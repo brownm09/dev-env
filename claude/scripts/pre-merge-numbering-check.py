@@ -65,7 +65,13 @@ import re
 import subprocess
 import sys
 
-from _hookio import effective_merge_dir, is_merge_help_only, scan_top_level
+from _hookio import (
+    effective_merge_dir,
+    is_merge_help_only,
+    read_command,
+    read_cwd,
+    scan_top_level,
+)
 import _hookutil
 
 _MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
@@ -240,9 +246,20 @@ def main():
         data = json.loads(raw)
     except json.JSONDecodeError:
         sys.exit(0)
+    if not isinstance(data, dict):
+        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
+        # or null) would otherwise crash the very next line (dev-env#1031/
+        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
+        sys.exit(0)
     if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
-    command = data.get("tool_input", {}).get("command", "")
+    # dev-env#1031/#1033: read_command() never raises on a present-but-non-dict
+    # tool_input (dev-env#1028's payload shape) -- the pre-fix unguarded chain
+    # crashed here, silently caught by the __main__ safe-exit guard below
+    # (which loses only this numbering-collision check -- see ADR-050
+    # Amendment 27 for why pre-merge-findings-gate.py, a blocking merge gate,
+    # was fixed first and separately on fail-open severity grounds).
+    command = read_command(data)
     if not is_pr_merge_command(command):
         sys.exit(0)
     # `gh pr merge --help` (or any other non-mutating gh pr merge invocation)
@@ -252,7 +269,14 @@ def main():
     if is_merge_help_only(command):
         sys.exit(0)
 
-    cwd = data.get("cwd") or os.getcwd()
+    # read_cwd(data) here (not a bare data.get("cwd")) hardens against a
+    # non-string cwd the same way -- but note the pre-fix `or os.getcwd()`
+    # fallback ALREADY handled a missing/None cwd safely (`None or
+    # os.getcwd()` never raises); the only real gap it closes is a
+    # present-but-non-string-and-truthy cwd (e.g. a list), which would
+    # otherwise flow into effective_merge_dir()'s os.path.join and crash
+    # downstream instead of at this assignment.
+    cwd = read_cwd(data) or os.getcwd()
     repo_dir = effective_merge_dir(command, cwd)
 
     remote_url = _run_git(["remote", "get-url", "origin"], repo_dir)

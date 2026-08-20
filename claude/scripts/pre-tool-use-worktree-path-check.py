@@ -71,6 +71,7 @@ import os
 import subprocess
 import sys
 
+from _hookio import read_cwd
 import _hookutil
 import _journal_canon
 import _worktree_canon
@@ -96,6 +97,31 @@ _PATH_FIELD = {
     "Edit": "file_path",
     "NotebookEdit": "notebook_path",
 }
+
+
+def _read_tool_input_field(data: dict, field: str) -> str:
+    """Return tool_input[field] from a PreToolUse payload, or "" on any
+    malformed shape -- never raises (dev-env#1031/#1033).
+
+    Mirrors `_hookio.read_command`'s exact "never raises" contract
+    (isinstance(data, dict) -> isinstance(tool_input, dict) -> isinstance(
+    value, str), else "") but for a COMPUTED field name rather than the
+    literal "command" every other sibling hook in this migration reads --
+    this hook reads file_path (Write/Edit) or notebook_path (NotebookEdit),
+    selected via `_PATH_FIELD[tool_name]`. Kept as a small local wrapper
+    rather than widening `read_command`'s own signature or adding a second,
+    differently-named helper to `_hookio.py`: this is the only caller today,
+    and `_hookio.py`'s own module comment on `mask_quoted_spans` warns
+    against generalizing a heavily-tested shared primitive for a need only
+    one caller has -- if a second caller ever needs this, hoist it then.
+    """
+    if not isinstance(data, dict):
+        return ""
+    ti = data.get("tool_input") or {}
+    if not isinstance(ti, dict):
+        return ""
+    val = ti.get(field, "")
+    return val if isinstance(val, str) else ""
 
 
 def _normalize(path: str) -> str:
@@ -318,11 +344,26 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
+    if not isinstance(data, dict):
+        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
+        # or null) would otherwise crash the very next line (dev-env#1031/
+        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
+        sys.exit(0)
+
     tool_name = data.get("tool_name", "")
     if tool_name not in _PATH_FIELD:
         sys.exit(0)
 
-    cwd = data.get("cwd", "")
+    # dev-env#1031/#1033: read_cwd() never raises on a present-but-non-dict
+    # cwd (dev-env#1028's payload shape) -- the pre-fix unguarded read didn't
+    # crash at THIS line (a single, non-chained `.get()`), but a non-string
+    # cwd would crash downstream in `_match_worktree`/`_resolve_worktree_scope`
+    # (regex/path ops expecting a str). Silently caught by the __main__
+    # safe-exit guard below (which loses only this write-scope guard for that
+    # one call -- see ADR-050 Amendment 27 for why pre-merge-findings-gate.py,
+    # a blocking merge gate, was fixed first and separately on fail-open
+    # severity grounds).
+    cwd = read_cwd(data)
     m = _match_worktree(cwd)
     if not m:
         sys.exit(0)  # doesn't even look worktree-shaped — nothing to enforce, no subprocess needed
@@ -361,7 +402,15 @@ def main() -> None:
         )
         _block(reason)
 
-    file_path = data.get("tool_input", {}).get(_PATH_FIELD[tool_name], "")
+    # dev-env#1031/#1033: _read_tool_input_field() never raises on a
+    # present-but-non-dict tool_input (dev-env#1028's payload shape) -- the
+    # pre-fix `data.get("tool_input", {}).get(_PATH_FIELD[tool_name], "")`
+    # chain crashed here. Not `_hookio.read_command`: this reads a COMPUTED
+    # field name (file_path or notebook_path via `_PATH_FIELD[tool_name]`),
+    # not literally "command" -- see `_read_tool_input_field`'s own docstring
+    # for why this stays a small local wrapper rather than a `_hookio.py`
+    # change.
+    file_path = _read_tool_input_field(data, _PATH_FIELD[tool_name])
     if not file_path or not os.path.isabs(file_path):
         sys.exit(0)  # relative paths are fine
 
