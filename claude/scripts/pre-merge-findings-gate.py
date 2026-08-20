@@ -27,6 +27,18 @@ Fails OPEN: any error resolving or fetching the PR exits 0 with an advisory
 systemMessage, so a transient `gh`/network problem never wedges a legitimate
 merge. The gate is one layer; CLAUDE.md and the reviewer remain responsible.
 
+Also fails OPEN on a malformed payload (dev-env#1031/#1032): a non-dict top-level
+`data`, or a present-but-non-dict `tool_input` (dev-env#1028's payload shape),
+exits 0 via `read_command`'s "never raises" contract rather than crashing into
+the `except Exception: sys.exit(0)` safe-exit guard below. Unlike the gh/network
+case above, this is a documented, accepted residual gap, not a design choice with
+an easy alternative: once `tool_input` is destroyed there is no way to recover
+merge intent (this hook runs *before* the command executes, so there is no
+`tool_response` to fall back on the way `usage-snapshot.py`'s PostToolUse hook
+can) — see the inline comment at `command = read_command(data)` in `main()` and
+ADR-050 Amendment 27 for the full reasoning, including why failing CLOSED here
+instead was considered and rejected.
+
 Merge detection is built on `_hookio.scan_top_level` (dev-env#519), the same
 quote/subshell/heredoc-aware engine `pre-merge-numbering-check.py` and
 `pr-merge-reminder.py` already use — not a plain unanchored `re.search` over
