@@ -461,6 +461,21 @@ def main() -> None:
     # displayed verbatim in this hook's own reminder text (`f"  cwd: {cwd}\n"`
     # below) -- falling back to "" instead would silently change what a user
     # reading the reminder sees for a missing/malformed cwd.
+    #
+    # Documented, accepted trade-off (ADR-050 Amendment 28 post-review finding
+    # 6): read_exit_code() ALSO coerces a present-but-non-int-coercible
+    # exitCode (e.g. null) to `default`, not just a genuinely MISSING one --
+    # the pre-fix `.get("exitCode", default)` only substituted the default on
+    # a missing key, so a present `exitCode: null` returned the raw `None`
+    # unchanged. Because `default=0` here, a malformed-but-present exitCode
+    # now reads as "confirmed success" (0), so the dev-env#489/#504
+    # live-gh-confirmation fallback (should_confirm_via_gh, below) no longer
+    # fires for that narrow case. Accepted rather than special-cased: no
+    # observed incident for this specific sub-field malformation (narrower
+    # than dev-env#1028's own confirmed top-level shape), and the four
+    # `-1`-default sibling files are unaffected. See
+    # test_exit_code_coercion_pins_accepted_tradeoff in
+    # test_pr_merge_reminder.py for the pinned, executable proof.
     command = read_command(data)
     cwd = read_cwd(data) or "<unknown>"
     exit_code = read_exit_code(data, default=0)

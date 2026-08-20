@@ -46,7 +46,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _hookio import read_command_output, scan_top_level
+from _hookio import read_command, read_command_output, scan_top_level
 import _hookutil
 from _journal_schema import decode_shard_bytes, has_unresolved_open_pr, parse_manifest_text
 
@@ -248,6 +248,12 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
+    if not isinstance(data, dict):
+        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
+        # or null) would otherwise crash the very next line (dev-env#1031/
+        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
+        sys.exit(0)
+
     # A sentinel that can't be scoped to a session must never fall back to a
     # shared path -- that's exactly the dev-env#980 bug. Forgo rather than
     # use a synthetic fallback id (mirrors posttooluse-inert-advisory.py's
@@ -260,7 +266,12 @@ def main() -> None:
     if not session_id or not _SAFE_SESSION_ID.match(session_id):
         sys.exit(0)
 
-    command = (data.get("tool_input") or {}).get("command", "")
+    # dev-env#1031/#1033: read_command() never raises on a present-but-non-dict
+    # tool_input (dev-env#1028's payload shape). The pre-fix `(data.get(
+    # "tool_input") or {}).get("command", "")` chain only substitutes `{}`
+    # for a FALSY non-dict tool_input (None, "", 0) -- a TRUTHY non-dict
+    # value survives `or {}` unchanged and crashes on the next `.get()`.
+    command = read_command(data)
     output = read_command_output(data)
 
     # Must be a git push

@@ -1029,6 +1029,34 @@ def test_format_reminder_field_not_in_live_options_uses_cached_unlabeled() -> st
     return "field_id absent from live_options -> cached data, unlabeled (not mistaken for a failure)"
 
 
+def test_exit_code_coercion_pins_accepted_tradeoff() -> str:
+    """ADR-050 Amendment 28 post-review finding 6, pinned as an executable
+    proof rather than left as prose alone: this file's own
+    `exit_code = read_exit_code(data, default=0)` call coerces a
+    present-but-non-int-coercible exitCode (e.g. `exitCode: null`) to `0` --
+    indistinguishable, downstream, from a GENUINELY successful exitCode.
+    Pre-fix, `data.get("tool_response", {}).get("exitCode", 0)` returned the
+    raw `None` unchanged for this exact shape (the `.get(..., 0)` default
+    only substitutes on a MISSING key, not a present-but-malformed value) --
+    a real, documented, accepted behavior change specific to this file and
+    pr-merge-reminder.py (the two `default=0` sibling hooks), not shared by
+    the four `default=-1` siblings (where `None` and `-1` both equally
+    satisfy a `!= 0` check, so the boolean OUTCOME is unchanged there).
+    """
+    read_exit_code = post_tool_use.read_exit_code
+    malformed = {"tool_response": {"exitCode": None, "stdout": "", "stderr": ""}}
+    genuinely_successful = {"tool_response": {"exitCode": 0, "stdout": "", "stderr": ""}}
+    assert read_exit_code(malformed, default=0) == 0, "malformed exitCode must coerce to the default"
+    assert read_exit_code(genuinely_successful, default=0) == 0, "a real exitCode:0 payload, for comparison"
+    # The point of this pin: the two payloads above are DELIBERATELY
+    # indistinguishable through this file's own read -- this file's
+    # `if exit_code != 0: sys.exit(0)` gate (main()) cannot tell them apart,
+    # and per ADR-050 Amendment 28 that is an accepted, documented trade-off,
+    # not an oversight.
+    assert read_exit_code(malformed, default=0) == read_exit_code(genuinely_successful, default=0)
+    return "exitCode:null coerces to 0 (default=0), indistinguishable from a genuine exitCode:0 -- accepted trade-off, pinned (ADR-050 Amendment 28)"
+
+
 def main() -> int:
     tests = [
         ("reads command output from stdout", test_reads_stdout),
@@ -1122,6 +1150,7 @@ def main() -> int:
         ("format_reminder: failed live fetch falls back to cached, labeled", test_format_reminder_falls_back_to_cached_on_live_failure),
         ("format_reminder: required_fields param used directly over config", test_format_reminder_required_fields_param_used_directly_over_config),
         ("format_reminder: field absent from live_options -> cached, unlabeled", test_format_reminder_field_not_in_live_options_uses_cached_unlabeled),
+        ("exit_code coercion pins the accepted default=0 trade-off (ADR-050 Amendment 28)", test_exit_code_coercion_pins_accepted_tradeoff),
     ]
     failed = 0
     for name, fn in tests:

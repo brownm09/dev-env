@@ -88,7 +88,7 @@ import shlex
 import subprocess
 import sys
 
-from _hookio import is_absolute_path, split_top_level
+from _hookio import is_absolute_path, read_command, split_top_level
 import _hookutil
 import _journal_canon
 
@@ -440,7 +440,15 @@ def main() -> None:
     if not cwd:
         sys.exit(0)
 
-    cmd = (data.get("tool_input") or {}).get("command", "") or ""
+    # dev-env#1031/#1033: read_command() never raises on a present-but-non-dict
+    # tool_input (dev-env#1028's payload shape). The pre-fix `(data.get(
+    # "tool_input") or {}).get("command", "") or ""` chain only substitutes
+    # `{}` for a FALSY non-dict tool_input (None, "", 0) -- a TRUTHY non-dict
+    # value survives `or {}` unchanged and crashes on the next `.get()`. This
+    # file's own `isinstance(data, dict)` guard, earlier in main(), already
+    # covers the top-level-payload case; this closes the narrower
+    # tool_input-specific gap the same way.
+    cmd = read_command(data)
     if not cmd:
         sys.exit(0)
 

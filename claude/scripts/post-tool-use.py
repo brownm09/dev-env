@@ -562,6 +562,23 @@ def main() -> None:
     # matches this file's own pre-fix literal -- verified per-file, not
     # copy-pasted, since a wrong default would reintroduce the dev-env#557
     # misattribution bug (see read_exit_code's own docstring).
+    #
+    # Documented, accepted trade-off (ADR-050 Amendment 28 post-review finding
+    # 6): read_exit_code() ALSO coerces a present-but-non-int-coercible
+    # exitCode (e.g. null) to `default`, not just a genuinely MISSING one --
+    # the pre-fix `.get("exitCode", default)` only substituted the default on
+    # a missing key, so a present `exitCode: null` returned the raw `None`
+    # unchanged (crashing downstream, not silently treated as 0). Because
+    # `default=0` here, that coercion now makes a malformed-but-present
+    # exitCode indistinguishable from a genuinely successful (0) one -- the
+    # `if exit_code != 0: sys.exit(0)` gate below no longer skips for that
+    # narrow case. Accepted rather than special-cased: narrower and less
+    # confirmed than dev-env#1028's own top-level shape (no observed
+    # incident for this specific sub-field malformation), and the four
+    # `-1`-default sibling files are unaffected (both `None` and `-1` equally
+    # satisfy `!= 0`). See test_exit_code_coercion_pins_accepted_tradeoff in
+    # test_post_tool_use.py for the pinned, executable proof of this exact
+    # behavior.
     command = read_command(data)
     output = read_command_output(data)
     exit_code = read_exit_code(data, default=0)

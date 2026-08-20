@@ -661,42 +661,67 @@ def test_main_blocks_write_escaping_to_real_canonical_root() -> str:
 
 
 # ---------------------------------------------------------------------------
-# dev-env#1031/#1033: read_cwd() + the local _read_tool_input_field() helper
-# -- extending _hookio's hardened-read migration to this hook's own computed
-# field-name read, which _hookio.read_command can't cover directly.
+# dev-env#1031/#1033: read_cwd() + the shared _hookio.read_tool_input_field()
+# helper -- extending _hookio's hardened-read migration to this hook's own
+# computed field-name read, which _hookio.read_command can't cover directly.
+# read_tool_input_field's own correctness (normal/missing/None/non-dict/
+# non-string inputs) is exhaustively covered in test_hookio.py -- this file's
+# own coverage was a local wrapper's worth of duplicate tests until
+# dev-env#1033's review round hoisted the wrapper into _hookio.py as a
+# genuinely shared helper (a second caller, memory-write-advisory.py, needed
+# the identical generalization); not re-duplicated here.
+#
+# The two main()-level tests below call wpc.main() DIRECTLY rather than via
+# the subprocess-based `_run_hook` helper every OTHER main()-level test in
+# this file uses. /review on dev-env#1031/#1033's PR verified, by reverting
+# this hook's production code and re-running these exact payloads, that a
+# subprocess-based assertion on exit code ALONE cannot tell "handled
+# cleanly" from "crashed, caught by this file's own `except Exception:
+# sys.exit(0)` __main__ guard" apart -- both produce the identical exit 0.
+# That risk does NOT apply to this file's OTHER main()-level tests above
+# (they assert a SPECIFIC blocking exit 2 with a specific reason on stderr --
+# a crash produces exit 0 instead, which those assertions already catch), so
+# only these two, which assert a clean ALLOW, needed conversion. Calling
+# wpc.main() directly bypasses that safe-exit wrapper entirely: a crash now
+# propagates as an uncaught Python exception in THIS test process, which
+# this file's own test runner reports as a failure. Mirrors
+# test_usage_snapshot.py's `_run_main_capturing_trace` pattern and this same
+# file's own `wpc = _load_module()` module-loading approach.
 # ---------------------------------------------------------------------------
 
-def test_read_tool_input_field_missing_and_malformed() -> str:
-    """Mirrors test_hookio.py's test_read_command_missing_and_malformed_tool_input
-    shape exactly, for _read_tool_input_field's own computed-field-name variant.
-    """
-    rtif = wpc._read_tool_input_field
-    assert rtif({}, "file_path") == "", "missing tool_input -> ''"
-    assert rtif({"tool_input": {}}, "file_path") == "", "empty tool_input -> ''"
-    assert rtif({"tool_input": None}, "file_path") == "", "None tool_input -> '' (the dev-env#1028 crash shape)"
-    assert rtif({"tool_input": "x"}, "file_path") == "", "non-dict (str) tool_input -> ''"
-    assert rtif({"tool_input": {"notebook_path": "/a/b.ipynb"}}, "file_path") == "", "wrong field present -> ''"
-    assert rtif({"tool_input": {"file_path": "/a/b.py"}}, "file_path") == "/a/b.py", "normal case"
-    assert rtif({"tool_input": {"file_path": 42}}, "file_path") == "", "non-string value -> ''"
-    for bad in (["not", "a", "dict"], "just a string", 42, None):
-        assert rtif(bad, "file_path") == "", f"non-dict data {bad!r} -> ''"
-    return "missing/empty/None/non-dict tool_input, non-dict data, and a non-string field value all yield '' (no crash)"
+def _run_wpc_main(payload) -> int:
+    """Call the already-loaded wpc.main() directly (bypassing its __main__
+    try/except safe-exit wrapper). See the module comment above this
+    function for why this matters and what it replaces."""
+    import io as _io
+    real_stdin = wpc.sys.stdin
+    wpc.sys.stdin = _io.StringIO(json.dumps(payload))
+    try:
+        try:
+            wpc.main()
+            return 0
+        except SystemExit as e:
+            return e.code if isinstance(e.code, int) else 1
+    finally:
+        wpc.sys.stdin = real_stdin
 
 
 def test_main_malformed_tool_input_and_cwd_does_not_crash() -> str:
     """dev-env#1028's payload shape (tool_input present-but-null) combined with
-    a malformed cwd, driven through main() end-to-end. Pre-fix, the unguarded
+    a malformed cwd, driven through main() directly. Pre-fix, the unguarded
     `data.get("tool_input", {}).get(_PATH_FIELD[tool_name], "")` chain would
     have crashed once cwd resolution got far enough to reach it; here cwd:null
     resolves to "" via read_cwd() and fails _match_worktree() before that
     line is even reached -- still proves read_cwd()'s own malformed-input
-    handling doesn't crash this hook's main() dispatch.
+    handling doesn't crash this hook's main() dispatch. A crash here (the
+    pre-fix behavior) would propagate as an uncaught AttributeError, not a
+    laundered exit 0 -- verified empirically against the pre-fix blob during
+    /review on dev-env#1031/#1033.
     """
-    payload = {"tool_name": "Write", "tool_input": None, "cwd": None}
-    proc = _run_hook(payload)
-    if proc.returncode != 0:
-        raise AssertionError(f"expected exit 0, got {proc.returncode}. stderr={proc.stderr!r}")
-    return "tool_input:null + cwd:null -> exit 0, no crash (dev-env#1031)"
+    code = _run_wpc_main({"tool_name": "Write", "tool_input": None, "cwd": None})
+    if code != 0:
+        raise AssertionError(f"expected exit 0, got {code}")
+    return "tool_input:null + cwd:null -> clean SystemExit(0), no crash (dev-env#1031/#1033)"
 
 
 def test_main_non_dict_top_level_data_does_not_crash() -> str:
@@ -705,16 +730,10 @@ def test_main_non_dict_top_level_data_does_not_crash() -> str:
     helper's own guard, the identical silent-crash class this migration
     closes across all 14 dev-env#1031 files.
     """
-    proc = subprocess.run(
-        [sys.executable, str(MODULE_PATH)],
-        input=json.dumps(["not", "an", "object"]),
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if proc.returncode != 0:
-        raise AssertionError(f"expected exit 0, got {proc.returncode}. stderr={proc.stderr!r}")
-    return "non-dict top-level JSON -> exit 0, no crash (dev-env#1031)"
+    code = _run_wpc_main(["not", "an", "object"])
+    if code != 0:
+        raise AssertionError(f"expected exit 0, got {code}")
+    return "non-dict top-level JSON -> clean SystemExit(0), no crash (dev-env#1031/#1033)"
 
 
 def main() -> int:
@@ -735,24 +754,47 @@ def main() -> int:
         ("main() blocks Edit from an orphan nested in a REAL canonical repo (dev-env#774)", test_main_blocks_edit_from_orphaned_worktree_nested_in_real_canonical),
         ("main() allows Write from a REAL registered worktree (dev-env#774)", test_main_allows_write_from_real_registered_worktree),
         ("main() blocks Write escaping to a REAL canonical root (dev-env#774)", test_main_blocks_write_escaping_to_real_canonical_root),
-        ("_read_tool_input_field: missing/malformed tool_input/data (dev-env#1031)", test_read_tool_input_field_missing_and_malformed),
-        ("main(): tool_input:null + cwd:null does not crash (dev-env#1031)", test_main_malformed_tool_input_and_cwd_does_not_crash),
-        ("main(): non-dict top-level JSON does not crash (dev-env#1031)", test_main_non_dict_top_level_data_does_not_crash),
+        ("main(): tool_input:null + cwd:null does not crash (direct call, dev-env#1031/#1033)", test_main_malformed_tool_input_and_cwd_does_not_crash),
+        ("main(): non-dict top-level JSON does not crash (direct call, dev-env#1031/#1033)", test_main_non_dict_top_level_data_does_not_crash),
     ]
-    failed = 0
-    for name, fn in tests:
-        try:
-            detail = fn()
-            print(f"PASS: {name}")
-            print(f"      {detail}")
-        except AssertionError as e:
-            failed += 1
-            print(f"FAIL: {name}")
-            for line in str(e).splitlines():
-                print(f"      {line}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"ERROR: {name}: {type(e).__name__}: {e}")
+
+    # dev-env#1031/#1033 /review finding: every main()-level test in this
+    # file (both the subprocess-based ones above and the two direct-call
+    # ones just added) reaches this hook's own unconditional
+    # `_hookutil.record_heartbeat(...)` call. HOOK_HEARTBEAT_DIR_OVERRIDE
+    # (checked by record_heartbeat itself, and inherited automatically by
+    # every subprocess `_run_hook` spawns via `env=None`'s "inherit the
+    # current environment" default) redirects all of them away from the
+    # developer's real ~/.claude/scratch/hook-heartbeat/ for this file's
+    # whole run, so running this test suite never silently blinds
+    # hook-liveness-check.py's staleness detector (ADR-106).
+    import tempfile
+    heartbeat_tmp = tempfile.mkdtemp(prefix="dev_env_worktree_path_check_heartbeat_")
+    real_override = os.environ.get("HOOK_HEARTBEAT_DIR_OVERRIDE")
+    os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"] = heartbeat_tmp
+    try:
+        failed = 0
+        for name, fn in tests:
+            try:
+                detail = fn()
+                print(f"PASS: {name}")
+                print(f"      {detail}")
+            except AssertionError as e:
+                failed += 1
+                print(f"FAIL: {name}")
+                for line in str(e).splitlines():
+                    print(f"      {line}")
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                print(f"ERROR: {name}: {type(e).__name__}: {e}")
+    finally:
+        if real_override is None:
+            os.environ.pop("HOOK_HEARTBEAT_DIR_OVERRIDE", None)
+        else:
+            os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"] = real_override
+        import shutil
+        shutil.rmtree(heartbeat_tmp, ignore_errors=True)
+
     print()
     print(f"Tests: {len(tests) - failed} passed, 0 skipped, {failed} failed")
     return 1 if failed else 0

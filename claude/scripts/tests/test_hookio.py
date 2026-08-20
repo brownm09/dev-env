@@ -38,6 +38,7 @@ from _hookio import (  # noqa: E402
     read_command_output,
     read_cwd,
     read_exit_code,
+    read_tool_input_field,
     scan_top_level,
     should_confirm_via_gh,
     split_top_level,
@@ -152,6 +153,56 @@ def test_read_command_non_dict_data() -> str:
     for bad in (["not", "a", "dict"], "just a string", 42, None):
         assert read_command(bad) == "", f"non-dict data {bad!r} -> ''"
     return "non-dict top-level data (list/str/int/None) -> '', never raises"
+
+
+# ---------------------------------------------------------------------------
+# read_tool_input_field (dev-env#1031/#1033) -- the general form read_command
+# is now a thin wrapper over. Same contract, mirrored test shape, generalized
+# to an arbitrary field name (memory-write-advisory.py's "file_path"/"content",
+# pre-tool-use-worktree-path-check.py's computed _PATH_FIELD[tool_name]).
+# ---------------------------------------------------------------------------
+
+def test_read_tool_input_field_normal_dict() -> str:
+    payload = {"tool_input": {"file_path": "C:/repo/foo.py", "content": "hello"}}
+    assert read_tool_input_field(payload, "file_path") == "C:/repo/foo.py"
+    assert read_tool_input_field(payload, "content") == "hello"
+    return "normal tool_input dict -> the requested field's string value"
+
+
+def test_read_tool_input_field_missing_and_malformed_tool_input() -> str:
+    assert read_tool_input_field({}, "file_path") == "", "missing tool_input -> ''"
+    assert read_tool_input_field({"tool_input": {}}, "file_path") == "", "empty tool_input -> ''"
+    assert read_tool_input_field({"tool_input": None}, "file_path") == "", "None tool_input -> '' (the dev-env#1028 crash shape)"
+    assert read_tool_input_field({"tool_input": "x"}, "file_path") == "", "non-dict (str) tool_input -> ''"
+    assert read_tool_input_field({"tool_input": [1, 2]}, "file_path") == "", "non-dict (list) tool_input -> ''"
+    return "missing/empty/None/non-dict tool_input all yield '' (no crash)"
+
+
+def test_read_tool_input_field_non_string_and_missing_field() -> str:
+    assert read_tool_input_field({"tool_input": {"file_path": 42}}, "file_path") == "", "non-string field value -> ''"
+    assert read_tool_input_field({"tool_input": {"content": "x"}}, "file_path") == "", "requested field absent (a different one present) -> ''"
+    return "non-string / absent requested field -> ''"
+
+
+def test_read_tool_input_field_non_dict_data() -> str:
+    for bad in (["not", "a", "dict"], "just a string", 42, None):
+        assert read_tool_input_field(bad, "file_path") == "", f"non-dict data {bad!r} -> ''"
+    return "non-dict top-level data (list/str/int/None) -> '', never raises"
+
+
+def test_read_command_is_read_tool_input_field_command_wrapper() -> str:
+    # Pins the delegation relationship directly, not just "same output for
+    # these examples" -- read_command must be read_tool_input_field(data,
+    # "command"), not a parallel re-implementation the two could drift from.
+    for payload in (
+        {"tool_input": {"command": "git status"}},
+        {"tool_input": None},
+        {"tool_input": {"command": 42}},
+        ["not", "a", "dict"],
+        {},
+    ):
+        assert read_command(payload) == read_tool_input_field(payload, "command"), payload
+    return "read_command(data) == read_tool_input_field(data, 'command') for every payload shape"
 
 
 def test_read_cwd_normal_dict() -> str:
@@ -1468,6 +1519,11 @@ def main() -> int:
         ),
         ("read_command: non-string command field -> ''", test_read_command_non_string_command_field),
         ("read_command: non-dict top-level data -> '' (dev-env#1028 post-review)", test_read_command_non_dict_data),
+        ("read_tool_input_field: normal dict -> requested field's value (dev-env#1031/#1033)", test_read_tool_input_field_normal_dict),
+        ("read_tool_input_field: missing/malformed tool_input -> ''", test_read_tool_input_field_missing_and_malformed_tool_input),
+        ("read_tool_input_field: non-string/missing field -> ''", test_read_tool_input_field_non_string_and_missing_field),
+        ("read_tool_input_field: non-dict top-level data -> ''", test_read_tool_input_field_non_dict_data),
+        ("read_command delegates to read_tool_input_field(data, 'command')", test_read_command_is_read_tool_input_field_command_wrapper),
         ("read_cwd: normal dict -> cwd string", test_read_cwd_normal_dict),
         (
             "read_cwd: missing/None/non-string cwd, non-dict data -> '' (dev-env#1028 post-review)",

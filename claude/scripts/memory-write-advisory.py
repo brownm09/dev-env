@@ -33,6 +33,7 @@ import json
 import re
 import sys
 
+from _hookio import read_tool_input_field
 import _hookutil
 
 # An immortalization link anywhere in the written body suppresses the nudge.
@@ -90,11 +91,26 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
-    tool_input = data.get("tool_input", {}) or {}
+    if not isinstance(data, dict):
+        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
+        # or null) would otherwise crash the very next line (dev-env#1031/
+        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
+        sys.exit(0)
+
+    # dev-env#1031/#1033 (/review finding on PR #1035): read_tool_input_field()
+    # never raises on a present-but-non-dict tool_input (dev-env#1028's
+    # payload shape). The pre-fix `data.get("tool_input", {}) or {}` chain
+    # only substitutes `{}` for a FALSY non-dict tool_input (None, "", 0) --
+    # a TRUTHY non-dict value (e.g. a non-empty string) survives `or {}`
+    # unchanged and crashes on the next `.get()`. This hook reads TWO
+    # tool_input fields (file_path, content), not just "command" -- the
+    # motivating second caller that got `read_tool_input_field` hoisted out
+    # of `pre-tool-use-worktree-path-check.py`'s own former local copy and
+    # into `_hookio.py` as a shared helper.
     if should_advise_memory_write(
         data.get("tool_name", ""),
-        tool_input.get("file_path", ""),
-        tool_input.get("content", ""),
+        read_tool_input_field(data, "file_path"),
+        read_tool_input_field(data, "content"),
     ):
         print(ADVISORY, file=sys.stderr)
         sys.exit(2)

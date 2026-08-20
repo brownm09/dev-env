@@ -656,6 +656,77 @@ def test_record_heartbeat_default_dir_is_scratch_subdir() -> str:
     return "HEARTBEAT_DIR (the default heartbeat_dir) is SCRATCH / 'hook-heartbeat'"
 
 
+def test_record_heartbeat_env_override_takes_precedence_over_default() -> str:
+    """dev-env#1031/#1033: HOOK_HEARTBEAT_DIR_OVERRIDE must redirect a
+    record_heartbeat() call that passes NO explicit heartbeat_dir (the shape
+    every real wired hook uses: `_hookutil.record_heartbeat("<name>")`) --
+    this is the whole point of the override, so it must be pinned against
+    that exact call shape, not just the explicit-parameter one.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        override_dir = Path(tmp) / "override-heartbeat"
+        real_env = os.environ.get("HOOK_HEARTBEAT_DIR_OVERRIDE")
+        os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"] = str(override_dir)
+        try:
+            _hookutil.record_heartbeat("env-override-test")
+        finally:
+            if real_env is None:
+                del os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"]
+            else:
+                os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"] = real_env
+        assert (override_dir / "env-override-test.ts").exists(), (
+            "record_heartbeat() with no explicit heartbeat_dir must honor "
+            "HOOK_HEARTBEAT_DIR_OVERRIDE, not fall through to the real HEARTBEAT_DIR"
+        )
+        assert not (_hookutil.HEARTBEAT_DIR / "env-override-test.ts").exists(), (
+            "the real ~/.claude/scratch/hook-heartbeat/ must NOT be touched when the override is set"
+        )
+    return "HOOK_HEARTBEAT_DIR_OVERRIDE redirects a no-explicit-heartbeat_dir call away from the real HEARTBEAT_DIR"
+
+
+def test_record_heartbeat_env_override_takes_precedence_over_explicit_param() -> str:
+    """The env override wins even when a caller ALSO passes an explicit
+    heartbeat_dir -- test code that already sets the env var for a whole
+    test run must not be silently bypassed by a caller that also passes a
+    (now-stale) explicit directory.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        override_dir = Path(tmp) / "override-wins"
+        explicit_dir = Path(tmp) / "explicit-loses"
+        real_env = os.environ.get("HOOK_HEARTBEAT_DIR_OVERRIDE")
+        os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"] = str(override_dir)
+        try:
+            _hookutil.record_heartbeat("precedence-test", heartbeat_dir=explicit_dir)
+        finally:
+            if real_env is None:
+                del os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"]
+            else:
+                os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"] = real_env
+        assert (override_dir / "precedence-test.ts").exists(), "env override should win"
+        assert not explicit_dir.exists(), "explicit heartbeat_dir must not be used when the env override is set"
+    return "HOOK_HEARTBEAT_DIR_OVERRIDE takes precedence even over an explicit heartbeat_dir argument"
+
+
+def test_record_heartbeat_empty_env_override_falls_through_to_default() -> str:
+    """An explicitly-empty-string env var (as opposed to unset) must not be
+    treated as a directory path -- falls through to heartbeat_dir/HEARTBEAT_DIR
+    exactly as if the variable were unset.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        hb_dir = Path(tmp) / "hb"
+        real_env = os.environ.get("HOOK_HEARTBEAT_DIR_OVERRIDE")
+        os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"] = ""
+        try:
+            _hookutil.record_heartbeat("empty-override-test", heartbeat_dir=hb_dir)
+        finally:
+            if real_env is None:
+                del os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"]
+            else:
+                os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"] = real_env
+        assert (hb_dir / "empty-override-test.ts").exists(), "empty override string must fall through to heartbeat_dir"
+    return "an empty-string HOOK_HEARTBEAT_DIR_OVERRIDE falls through to heartbeat_dir, not treated as a real path"
+
+
 def main() -> int:
     tests = [
         ("sentinel_path: correct path with override", test_sentinel_path_returns_correct_path),
@@ -707,6 +778,9 @@ def main() -> int:
         ("record_heartbeat: no leftover tmp file", test_record_heartbeat_leaves_no_tmp_file),
         ("record_heartbeat: swallows errors when dir uncreatable", test_record_heartbeat_swallows_errors_when_dir_uncreatable),
         ("record_heartbeat: default dir is SCRATCH/hook-heartbeat", test_record_heartbeat_default_dir_is_scratch_subdir),
+        ("record_heartbeat: HOOK_HEARTBEAT_DIR_OVERRIDE beats the default (dev-env#1031/#1033)", test_record_heartbeat_env_override_takes_precedence_over_default),
+        ("record_heartbeat: HOOK_HEARTBEAT_DIR_OVERRIDE beats an explicit heartbeat_dir too", test_record_heartbeat_env_override_takes_precedence_over_explicit_param),
+        ("record_heartbeat: empty-string override falls through to heartbeat_dir", test_record_heartbeat_empty_env_override_falls_through_to_default),
     ]
     failed = 0
     for name, fn in tests:

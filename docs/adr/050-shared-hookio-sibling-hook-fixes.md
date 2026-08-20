@@ -2376,8 +2376,7 @@ advisory hooks whose crash loses a recoverable side effect, not a security gate)
 with the mechanical AST-based regression test (mirroring `test_no_crude_command_substring_checks.py`) asserting no
 `claude/scripts/*.py` file contains the unguarded chain shape as a live assignment statement.
 
-## Amendment 28 (2026-08-20) — closing dev-env#1031 Part 2: the remaining 13 sibling hooks, plus the mechanical
-regression test (dev-env#1033)
+## Amendment 28 (2026-08-20) — closing dev-env#1031 Part 2: the remaining sibling hooks, plus the mechanical regression test (dev-env#1033)
 
 **Context.** Amendment 27 closed Part 1 (`pre-merge-findings-gate.py` alone, on fail-open-blocking-gate
 severity grounds). This amendment closes Part 2: the remaining thirteen files named in Amendment 26's
@@ -2425,7 +2424,8 @@ Three deviations from that uniform pattern, each with its own reasoning recorded
    unreachable-in-production edge case (an explicitly-empty-string `cwd`, which Claude Code's hook
    contract never actually sends), documented inline rather than left as a silent behavior change.
 
-**The one deliberate asymmetry: `pre-auto-merge-checkpoint-gate.py` does NOT get the `isinstance(data,
+**The one deliberate asymmetry (first revision — REVERSED post-review; see "post-review finding 3" below
+for why): `pre-auto-merge-checkpoint-gate.py` does NOT get the `isinstance(data,
 dict)` top-level guard.** Every other file in this batch (and Part 1's `pre-merge-findings-gate.py`) gets
 this guard because they all fail OPEN on any uncaught exception — the guard changes nothing observable for
 them (a non-dict `data` already produced a caught crash → exit 0; the guard just makes that path explicit
@@ -2447,53 +2447,144 @@ same reason Amendment 27 rejected it: it would block every unrelated command on 
 glitch, a materially worse regression than the narrow gap it leaves open.
 
 **Mechanical regression test (`test_sibling_hooks_hardened_io.py`), per `/review`'s own suggestion on PR
-#1030.** An AST-based scan, mirroring `test_no_crude_command_substring_checks.py`'s detector/allowlist/
-self-test shape, asserting no `claude/scripts/*.py` file contains the unguarded chain as a live expression —
-broader than the original repo-wide grep (which was assignment-anchored and would miss the identical bug
-written inline, e.g. as a function argument) and not restricted to the literal `"command"`/`"exitCode"`
-outer keys (so a future field read via this same chain shape, not just the two fields fixed here, is still
-caught). Self-tests confirm the hardened `read_command()` implementation itself does not trip the detector
-(it splits the `isinstance` guard onto its own statement rather than chaining `.get()` calls inline) — proof
-the fix and the regression test agree on what "fixed" means, not just that they were written by the same
-change. `_KNOWN_EXCEPTIONS` is empty, mirroring `test_no_crude_command_substring_checks.py`'s own current
-state (Amendment 12): the whole point of this migration is that no live offense remains anywhere in the
-tree. Confirmed as a genuine live regression check, not a tautology: run against Part 2's own branch
-*before* rebasing onto Part 1's merged fix, it correctly flagged `pre-merge-findings-gate.py:206` as a live
-offense (Part 1's branch not yet merged into this branch's base) — proof the detector finds a real,
-currently-unfixed instance of the shape, not just an absence it was written to expect.
+#1030 — first revision.** An AST-based scan, mirroring `test_no_crude_command_substring_checks.py`'s
+detector/allowlist/self-test shape, asserting no `claude/scripts/*.py` file contains the unguarded chain as
+a live expression. `_KNOWN_EXCEPTIONS` empty; confirmed as a genuine live check, not a tautology: run
+against this PR's own branch *before* rebasing onto Part 1's merged fix, it correctly flagged
+`pre-merge-findings-gate.py:206` as a live offense — proof the detector finds a real, currently-unfixed
+instance of the shape, not just an absence it was written to expect.
 
-**Malformed-payload smoke-test coverage, scoped honestly.** Twelve of the thirteen files (excluding
-`pre-tool-use-worktree-path-check.py`, whose own coverage was added directly to its existing
-`test_worktree_path_check.py` instead, since that file already carried a loaded-module reference and a
-`_run_hook` subprocess helper this file would otherwise duplicate) are driven end-to-end via subprocess with
-`tool_input: null` + `cwd: null` (safe for all twelve — a destroyed `command` fails every file's own
-command-shape gate before any subprocess/network call) and a non-dict top-level JSON payload (asserting exit
-0 for eleven of them, exit 2 for `pre-auto-merge-checkpoint-gate.py` per its deliberate asymmetry above).
-`read_command`/`read_cwd`/`read_exit_code`'s own correctness is already exhaustively covered in
-`test_hookio.py` — not re-tested per-caller; this coverage proves only that each migrated `main()` dispatch
-reaches the helpers without crashing.
+**Malformed-payload smoke-test coverage — first revision.** Twelve of the thirteen files (excluding
+`pre-tool-use-worktree-path-check.py`, own coverage in `test_worktree_path_check.py`) driven via
+`subprocess.run([sys.executable, hook_path], ...)` with `tool_input: null` + `cwd: null` and a non-dict
+top-level payload, asserting the resulting exit code.
 
-One deliberately undertested class, documented rather than silently skipped, applying the "environment-
-independence lesson" from Amendment 26's own post-review CI fix (an assertion that passed locally and failed
-in CI because it depended on unrelated downstream state): of the six files reading `exit_code`, only
-`post-tool-use.py` and `pr-merge-reminder.py` read it *unconditionally*, safe to test with an ordinary
-non-matching command. The other four (`post-merge-tile-checkpoint.py`, `post-pr-merge-project.py`,
-`post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`) read `exit_code` only inside the "marker didn't confirm
-the merge" fallback branch — reaching that line via a malformed `tool_response` also empties `output` (no
-marker can survive), which makes `should_confirm_via_gh()` return `True` and would attempt a *real* `gh pr
-view` subprocess call. Forcing that call, or monkeypatching `confirm_merge_via_gh` (which none of these four
-files' own test suites do — Amendment 3/8's no-subprocess-mocks convention), would trade a real coverage gap
-for a flaky/networked test — exactly the trap this lesson warns against. These four files' `tool_input:null`
-coverage already proves the primary, most-severe crash class doesn't crash their `main()` dispatch; their
-`exit_code` line rests on `read_exit_code`'s own exhaustive coverage plus the per-file default-value
-verification above.
+**`/review` on this PR found both of the above had real, live gaps — corrected in the same PR before merge:**
 
-**Coverage.** `test_sibling_hooks_hardened_io.py`: 15 tests (9 detector self-tests, the repo-wide gate, 5
-smoke tests covering the malformed-payload matrix across all 13 files). `test_worktree_path_check.py`: 3 new
-tests (up from 16 to 19) — a direct unit test of `_read_tool_input_field` mirroring `test_hookio.py`'s
-`test_read_command_missing_and_malformed_tool_input` shape, plus the same `tool_input:null`/non-dict-data
-smoke-test pair the shared file runs for the other twelve. Full suite: `py -3
-claude/scripts/run-hook-tests.py` — see the PR body for the exact run.
+1. **[correctness, both review passes] The AST detector required a bare `ast.Name` receiver and matched
+   only the exact `X.get(key, {}).get(...)` chain shape.** Verified by direct execution against the live
+   implementation: the two-statement form (`ti = data.get("tool_input", {})` on one line, `ti.get(...)` on a
+   later line, no `isinstance` guard between them — the DOMINANT house style for this read elsewhere in
+   `claude/scripts/`), the subscript outer form (`data.get("tool_input", {})["command"]`), a `dict()`
+   default instead of `{}`, a non-`Name` base (`self.data.get(...)`, `payload[0].get(...)`,
+   `json.loads(raw).get(...)`), and the bare `(X.get(key) or {}).get(...)` inline `BoolOp` form were all
+   **MISS** — yet every one raises the identical `AttributeError`/`TypeError` on the exact dev-env#1028
+   `tool_input: null` payload. Fixed with two independent detector arms (see `find_inline_offenses` /
+   `find_two_statement_offenses` in the test file's own module docstring for the full design) —
+   `_KNOWN_EXCEPTIONS` is now keyed on `(filename, field, LINE NUMBER)`, not just `(filename, field)`, since
+   two distinct call sites in one file can now legitimately reuse the same field.
+2. **[correctness, both review passes] The subprocess-based smoke tests did not discriminate pre-fix from
+   post-fix behavior at all.** Verified empirically: running the PRE-FIX blobs from `3b7f9d1` (Part 1's
+   merge commit) against the exact payloads the tests sent produced the IDENTICAL exit codes the tests
+   asserted — because every hook's own `__main__` guard (`except Exception: sys.exit(0)`, or
+   `_fail_closed()` → exit 2) launders a crash into the same exit code a correct, deliberate early-return
+   also produces; an exit code observed from OUTSIDE the process cannot tell "handled cleanly" from
+   "crashed, caught by the safe-exit guard" apart. Fixed by calling each hook's `main()` DIRECTLY (loading
+   the module via `importlib.util.spec_from_file_location`, bypassing `__main__` entirely, mirroring
+   `test_usage_snapshot.py`'s own `_run_main_capturing_trace` pattern) — a pre-fix crash now propagates as
+   an uncaught Python exception IN the test process, a genuine failure. Re-verified after the fix by
+   temporarily reverting one file (`pre-merge-message-check.py`) to its pre-fix blob and confirming the
+   smoke test correctly failed with the expected `AttributeError`, then restoring it.
+3. **[correctness, one review pass] `pre-auto-merge-checkpoint-gate.py`'s deliberate NON-guard was itself
+   inconsistent, over-broad in its blast radius.** The first revision reasoned a non-dict top-level `data`
+   was "more implausible" than a malformed `tool_input` and should therefore stay fail-CLOSED (crashing into
+   `_fail_closed(...)`, exit 2) while `tool_input: null` was made fail-open (exit 0). Review found
+   PLAUSIBILITY isn't the axis that matters — CONSEQUENCE is, and it's identical for both shapes: once
+   either `data` or `tool_input` is unreadable, this hook has no way to tell whether the command it's
+   looking at was ever a `gh pr merge --auto` in the first place (no `tool_response` exists yet at
+   PreToolUse time). Crashing into `_fail_closed(...)` for the non-dict-`data` case blocked EVERY
+   Bash/PowerShell call on a rare payload glitch — an ordinary `git status`, an `npm test` — with a "the
+   --auto checkpoint gate crashed while evaluating this merge" message and remediation advice ("drop --auto
+   and run a plain `gh pr merge`") nonsensical for whatever command was actually run. That is exactly the
+   over-broad blast radius this same migration already rejects for the `tool_input` case — no principled
+   reason to treat the two non-dict shapes in opposite directions. Fixed by adding the `isinstance(data,
+   dict)` guard here too, bringing this file in line with its eleven siblings; its fail-CLOSED posture for
+   every OTHER unanticipated exception (ADR-083) is untouched.
+4. **[reliability, one review pass] Every migrated hook's `main()` calls `_hookutil.record_heartbeat(...)`
+   unconditionally, and the direct-call redesign (finding 2 above) now runs that write IN the test
+   process, against the developer's REAL `~/.claude/scratch/hook-heartbeat/`, on every test run.** A
+   heartbeat write is exactly what `hook-liveness-check.py` (ADR-106) reads to judge whether a wired hook
+   has gone silently quiet — post-tool-use.py's own months-long silent death (dev-env#377) is the motivating
+   incident behind that mechanism — so running this suite would blind that detector for up to its 7-day
+   cadence, for a growing set of hooks, on every future run. Fixed with a `HOOK_HEARTBEAT_DIR_OVERRIDE`
+   environment-variable override added to `_hookutil.record_heartbeat` itself (checked at CALL time, not
+   import time, so it applies to an already-loaded module reused across many direct calls in one test
+   process, or propagates automatically to a subprocess child via `env=None`'s inherit-environment
+   default); both `test_sibling_hooks_hardened_io.py` and `test_worktree_path_check.py` now set it for
+   their whole run.
+5. **[correctness, one review pass] The AST detector's own gap (finding 1) was not hypothetical — a
+   repo-wide re-scan with the corrected detector found FIVE MORE files (six live sites) beyond the
+   thirteen dev-env#1031 originally scoped, all using the `(data.get("tool_input") or {}).get(...)` variant
+   the original assignment-anchored grep never matched:** `memory-write-advisory.py` (two sites — reads
+   BOTH `file_path` and `content`, motivating `read_tool_input_field(data, field)`, a general form of
+   `read_command` hoisted into `_hookio.py` in this same PR, with `read_command` becoming a thin wrapper
+   over it — a second, independent caller is exactly the threshold `_hookio.py`'s own module comment on
+   premature parameterization asks for before generalizing a shared primitive), `pre-tool-use-canonical-mutate-guard.py`
+   (the SAFETY-CRITICAL canonical-mutate guard — ADR-071), `pre-tool-use-journal-compose-force-guard.py`
+   (also fail-CLOSED, ADR-096 — already had its own `isinstance(data, dict)` top-level guard, so only its
+   narrower `tool_input`-specific gap needed closing, not the finding-3 guard addition),
+   `pre-tool-use-journal-draft-worktree-guard.py`, and `stub-push-archive-reminder.py` (needed the
+   top-level guard added too, like `memory-write-advisory.py`). Given the identical bug class, an
+   already-proven-safe fix pattern (fourteen precedents by this point), and that leaving them unfixed would
+   have made this migration's OWN "no live offense remains" claim false, these five files were fixed in the
+   same PR rather than deferred — judged to be within the ~75% scope-growth guard (5 additional files
+   against the 13 already in flight, roughly 38%) and directly motivated by strengthening this PR's own
+   regression test, not an unrelated tangent. `pre-tool-use-canonical-mutate-guard.py` and
+   `pre-tool-use-journal-draft-worktree-guard.py` each already had their own `isinstance(data, dict)`
+   top-level guard (like the journal-compose-force-guard case above), so only their `cmd =
+   (data.get("tool_input") or {}).get("command", "") or ""` line needed migrating.
+6. **[correctness, one review pass, deferred rather than fixed] `read_exit_code`'s `int(...)` coercion is a
+   real, undocumented-until-now semantic change for the two `default=0` files specifically.** Pre-fix, a
+   `tool_response` present as a dict with a present-but-non-int-coercible `exitCode` (e.g. `null`) returned
+   the RAW value unchanged (`.get("exitCode", default)`'s default only substitutes on a MISSING key); `read_exit_code`
+   coerces it to `default` instead. For the four `-1`-default files this is harmless (both `None` and `-1`
+   equally satisfy a `!= 0` check downstream, so the boolean OUTCOME is unchanged); for `post-tool-use.py`
+   and `pr-merge-reminder.py` specifically (`default=0`), a malformed-but-present `exitCode` now reads as
+   "confirmed success" where it previously read as "not confirmed" — `post-tool-use.py`'s `if exit_code !=
+   0: sys.exit(0)` gate no longer skips; `pr-merge-reminder.py`'s `should_confirm_via_gh()`
+   dev-env#489/#504 live-confirmation fallback no longer fires. Narrower and less confirmed than the
+   dev-env#1028 top-level shape (no observed incident for this exact sub-field malformation, only the same
+   class of risk) — accepted as a documented, deliberately-scoped, pinned trade-off rather than building a
+   bespoke dual-default helper for an unconfirmed edge case; see each file's own inline comment and the
+   dedicated regression test pinning the current (accepted) behavior.
+
+**Two findings filed as follow-ups rather than fixed in-PR** (a genuinely separate, larger design change —
+introducing new shared `_hookio.py` control-flow abstractions — deserves its own careful review, not to be
+bolted onto an already-large migration PR):
+- `post-merge-tile-checkpoint.py`, `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`, and a near-variant
+  in `post-pr-merge-project.py` share a byte-identical 12-line merge-confirmation preamble — the same shape
+  that already produced Amendments 23 and 24 as multi-file sweeps. Filed:
+  [dev-env#1036](https://github.com/brownm09/dev-env/issues/1036) — hoist into `_hookio.py` as
+  `resolve_confirmed_merge(data) -> tuple[str, str, str] | None`.
+- The 4-line payload-prologue + its rationale comment is now copy-pasted (in slightly-adapted form) across
+  eleven files. Filed: [dev-env#1037](https://github.com/brownm09/dev-env/issues/1037) — hoist into
+  `_hookio.py` as `read_bash_payload(raw) -> dict | None`.
+
+**Coverage (post-review).** `test_sibling_hooks_hardened_io.py`: 23 tests (17 detector self-tests across
+both arms, 2 diff-helper tests, the repo-wide gate, 5 smoke tests covering the malformed-payload matrix
+across all 12 files it drives directly). `test_worktree_path_check.py`: 2 new tests (up from 16 to 18, net
+of removing the now-redundant local-wrapper unit test once `read_tool_input_field` became a shared
+`_hookio.py` helper with its own `test_hookio.py` coverage) — the same `tool_input:null`/non-dict-data
+smoke-test pair, converted to the direct-call design. `test_hookio.py`: 5 new tests for
+`read_tool_input_field` (140 total, up from 135). `test_hookutil.py`: 3 new tests for
+`HOOK_HEARTBEAT_DIR_OVERRIDE` (52 total, up from 49). `test_post_tool_use.py`: 1 new test pinning the
+`exit_code` coercion trade-off (finding 6) (92 total, up from 91). `test_pr_merge_reminder.py`: 1 new test,
+same pin, plus the direct `should_confirm_via_gh` consequence (65 total, up from 64). The five additional
+production files (finding 5) each re-ran their own existing test suite clean, with no regression for
+well-formed input: `test_memory_write_advisory.py` (11), `test_canonical_mutate_guard.py` (87),
+`test_pre_tool_use_journal_compose_force_guard.py` (59), `test_journal_draft_worktree_guard.py` (27),
+`test_stub_push_archive_reminder.py` (33). Full suite: `py -3
+claude/scripts/run-hook-tests.py` — see the PR body for the exact run and counts.
+
+**General lesson.** Every finding here traces back to the same root: a test (or a migration decision) that
+LOOKS like it verifies something can pass for reasons entirely unrelated to the thing it claims to verify —
+a detector that matches the wrong AST shape, an exit code that a crash and a fix both produce, an asymmetry
+justified by plausibility instead of consequence. None of these were caught by the test suite passing; all
+were caught by an adversarial review pass that executed the code (or reasoned about what SPECIFICALLY makes
+an assertion discriminating) rather than trusting that "tests added, tests pass" was sufficient. Directly
+extends Amendment 26's own closing lesson ("preventing a crash is not the same as preserving the information
+the crash was destroying") one level further: a regression test that cannot fail against the bug it exists
+to catch is not a regression test, whatever its pass/fail output says.
 
 **Closes dev-env#1031.** Both Part 1 (dev-env#1032, PR #1034) and Part 2 (dev-env#1033, this PR) are merged;
 the top-level tracking issue closes with this PR.

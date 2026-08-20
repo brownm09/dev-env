@@ -46,18 +46,23 @@ into ``is_help_only(command, invocation_re)`` so ``post-tool-use.py``'s
 ``read_command`` / ``read_cwd`` / ``read_exit_code`` (dev-env#1028) extend
 ``read_command_output``'s "never raises, so a hook can call it unguarded" contract to
 the ``tool_input.command``, ``cwd``, and ``tool_response.exitCode`` reads.
-``usage-snapshot.py``'s ``main()`` is migrated onto all three in the same change that
-adds them; fourteen more call sites across other hooks read the identical unguarded
-``.get(x, {}).get(...)`` shape (confirmed via repo-wide grep) and are **not** migrated
-here — tracked as a follow-up, not implied as closed by this paragraph. Note that
-``read_command`` alone only prevents the *crash* on a malformed ``tool_input`` — a
-caller also needs its own explicit check for whether the payload was readable at all,
-since an empty command can never satisfy a downstream command-shape gate either (see
-``read_command``'s own docstring, and ``usage-snapshot.py main()``'s
-``malformed_payload`` trace branch for the reference shape).
+``usage-snapshot.py``'s ``main()`` was migrated onto all three first; the dev-env#1031
+follow-up (PRs #1034/#1035) migrated fourteen more sibling call sites onto the same
+shape, plus five more found by that migration's own strengthened regression test (the
+narrower ``(data.get("tool_input") or {}).get(...)`` variant — see ``read_command``'s
+own docstring). ``read_tool_input_field(data, field)`` generalizes ``read_command`` to
+any ``tool_input`` field, not just ``"command"`` — used where a hook reads a different
+or computed field name (``memory-write-advisory.py``'s ``file_path``/``content``,
+``pre-tool-use-worktree-path-check.py``'s ``_PATH_FIELD[tool_name]``); ``read_command``
+is a thin wrapper over it. Note that these helpers alone only prevent the *crash* on a
+malformed ``tool_input`` — a caller also needs its own explicit check for whether the
+payload was readable at all, since an empty/default result can never satisfy a
+downstream shape gate either (see ``read_command``'s own docstring, and
+``usage-snapshot.py main()``'s ``malformed_payload`` trace branch for the reference
+shape).
 
 Usage:
-    from _hookio import read_command, read_command_output, read_cwd, read_exit_code
+    from _hookio import read_command, read_tool_input_field, read_command_output, read_cwd, read_exit_code
     from _hookio import output_has_merge_marker
     from _hookio import effective_merge_dir, scan_top_level, split_top_level
     from _hookio import is_help_only, is_merge_help_only
@@ -110,22 +115,59 @@ def read_command_output(data: dict) -> str:
     return str(tr.get("output", "") or "")
 
 
+def read_tool_input_field(data: dict, field: str) -> str:
+    """Return ``tool_input[field]`` from a PostToolUse/PreToolUse payload as a
+    string, or ``""`` on any malformed shape — never raises, so a hook can
+    call it unguarded.
+
+    Returns ``""`` for a non-dict *data*, or a missing, empty, ``None``, or
+    non-dict ``tool_input``, or a non-string value at *field* — the general
+    form of ``read_command``'s contract (below), generalized to whichever
+    ``tool_input`` key a caller needs (dev-env#1031/#1033): ``command`` for
+    every Bash/PowerShell-driven hook, but ``file_path``/``content`` for
+    ``memory-write-advisory.py`` and a computed field
+    (``_PATH_FIELD[tool_name]`` — ``file_path`` or ``notebook_path``) for
+    ``pre-tool-use-worktree-path-check.py``. Originally written as a small
+    LOCAL wrapper duplicated in that one file (`_read_tool_input_field`,
+    dev-env#1031 Part 2) on the reasoning that a single caller didn't
+    justify widening this shared module's surface; hoisted here once a
+    second, independent caller (`memory-write-advisory.py`, dev-env#1033
+    review) needed the identical generalization — see the ``mask_quoted_spans``
+    module comment above for why premature parameterization is avoided
+    in this file until a real second caller actually exists.
+    """
+    if not isinstance(data, dict):
+        return ""
+    ti = data.get("tool_input") or {}
+    if not isinstance(ti, dict):
+        return ""
+    val = ti.get(field, "")
+    return val if isinstance(val, str) else ""
+
+
 def read_command(data: dict) -> str:
     """Return a Bash/PowerShell command string from a PostToolUse/PreToolUse payload.
 
     Returns ``""`` for a non-dict *data*, or a missing, empty, ``None``, or
     non-dict ``tool_input``, or a non-string ``command`` field — never raises,
-    so a hook can call it unguarded. Mirrors ``read_command_output``'s
-    contract above: ``usage-snapshot.py``'s ``main()`` (the first, and so far
-    only, migrated caller) used to read
+    so a hook can call it unguarded. Thin wrapper over ``read_tool_input_field``
+    (``field="command"``) — kept as its own named function since every
+    Bash/PowerShell-driven hook in this codebase reads exactly this field, and
+    the name documents intent at each call site better than a bare
+    ``read_tool_input_field(data, "command")`` would. Mirrors
+    ``read_command_output``'s contract above: ``usage-snapshot.py``'s
+    ``main()`` (the first, and so far only, migrated caller) used to read
     ``data.get("tool_input", {}).get("command", "")`` inline, which only
     substitutes the ``{}`` default when the *key* is absent — a
     present-but-``None`` (or otherwise non-dict) ``tool_input`` throws
     ``AttributeError`` on the chained ``.get()``, silently before any
     trace/action the hook was about to take (dev-env#1028). Fourteen more call
-    sites across other hooks read the identical shape and are not migrated in
-    that same change — confirmed via repo-wide grep, tracked as a follow-up,
-    not implied as closed by this paragraph.
+    sites across other hooks read the identical shape and were migrated in the
+    dev-env#1031 follow-up (PRs #1034/#1035); five more (a narrower but
+    equally real variant, ``(data.get("tool_input") or {}).get(...)`` — the
+    ``or {}`` only substitutes on a *falsy* non-dict value, not a *truthy*
+    one) were found by that migration's own strengthened regression test and
+    fixed in the same PR.
 
     Returning ``""`` on a malformed ``tool_input`` only prevents the crash —
     it does **not**, by itself, restore trace/action visibility for whatever
@@ -137,13 +179,7 @@ def read_command(data: dict) -> str:
     all" check — see ``usage-snapshot.py main()``'s ``malformed_payload``
     trace branch for the reference shape (dev-env#1028 post-review finding).
     """
-    if not isinstance(data, dict):
-        return ""
-    ti = data.get("tool_input") or {}
-    if not isinstance(ti, dict):
-        return ""
-    cmd = ti.get("command", "")
-    return cmd if isinstance(cmd, str) else ""
+    return read_tool_input_field(data, "command")
 
 
 def read_cwd(data: dict) -> str:

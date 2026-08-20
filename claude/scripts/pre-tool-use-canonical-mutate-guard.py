@@ -193,7 +193,7 @@ import shlex
 import subprocess
 import sys
 
-from _hookio import is_absolute_path, split_top_level
+from _hookio import is_absolute_path, read_command, split_top_level
 from _worktree_topology import find_worktree_by_path, parse_worktree_porcelain
 import _hookutil
 import _journal_canon
@@ -1121,7 +1121,17 @@ def main() -> None:
     # there's an actual mutating segment to evaluate it against.
     cwd_worktree_root = _worktree_root_from_cwd(cwd)
 
-    cmd = (data.get("tool_input") or {}).get("command", "") or ""
+    # dev-env#1031/#1033: read_command() never raises on a present-but-non-dict
+    # tool_input (dev-env#1028's payload shape). The pre-fix `(data.get(
+    # "tool_input") or {}).get("command", "") or ""` chain only substitutes
+    # `{}` for a FALSY non-dict tool_input (None, "", 0) -- a TRUTHY non-dict
+    # value (e.g. a non-empty string) survives `or {}` unchanged and crashes
+    # on the next `.get()`. This file's own `isinstance(data, dict)` guard,
+    # earlier in main(), already covers the top-level-payload case; this
+    # closes the narrower tool_input-specific gap the same way, migrating
+    # onto the already-hardened, already-tested shared helper rather than
+    # hand-rolling a second isinstance check here.
+    cmd = read_command(data)
     if not cmd:
         sys.exit(0)
 
