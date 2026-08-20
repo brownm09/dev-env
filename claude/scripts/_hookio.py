@@ -43,15 +43,21 @@ into ``is_help_only(command, invocation_re)`` so ``post-tool-use.py``'s
 ``gh issue create`` / ``gh pr create`` detectors — which had the identical
 ``--help`` false-positive — reuse the same segment-scan instead of a copy of it.
 
-``read_command`` / ``read_exit_code`` (dev-env#1028) extend ``read_command_output``'s
-"never raises, so a hook can call it unguarded" contract to the ``tool_input.command``
-and ``tool_response.exitCode`` reads — several hooks' ``main()`` read those two fields
-via an unguarded inline ``.get(x, {}).get(...)`` chain that crashes on a
-present-but-non-dict ``tool_input``/``tool_response``, silently, before the hook's own
-trace/action logic ever runs.
+``read_command`` / ``read_cwd`` / ``read_exit_code`` (dev-env#1028) extend
+``read_command_output``'s "never raises, so a hook can call it unguarded" contract to
+the ``tool_input.command``, ``cwd``, and ``tool_response.exitCode`` reads.
+``usage-snapshot.py``'s ``main()`` is migrated onto all three in the same change that
+adds them; fourteen more call sites across other hooks read the identical unguarded
+``.get(x, {}).get(...)`` shape (confirmed via repo-wide grep) and are **not** migrated
+here — tracked as a follow-up, not implied as closed by this paragraph. Note that
+``read_command`` alone only prevents the *crash* on a malformed ``tool_input`` — a
+caller also needs its own explicit check for whether the payload was readable at all,
+since an empty command can never satisfy a downstream command-shape gate either (see
+``read_command``'s own docstring, and ``usage-snapshot.py main()``'s
+``malformed_payload`` trace branch for the reference shape).
 
 Usage:
-    from _hookio import read_command, read_command_output, read_exit_code
+    from _hookio import read_command, read_command_output, read_cwd, read_exit_code
     from _hookio import output_has_merge_marker
     from _hookio import effective_merge_dir, scan_top_level, split_top_level
     from _hookio import is_help_only, is_merge_help_only
@@ -86,9 +92,15 @@ def read_command_output(data: dict) -> str:
 
     Joins ``tool_response.stdout`` and ``tool_response.stderr`` with a newline,
     falling back to the legacy ``output`` key for forward/backward
-    compatibility. Returns ``""`` for a missing, empty, ``None``, or non-dict
-    ``tool_response`` — never raises, so a hook can call it unguarded.
+    compatibility. Returns ``""`` for a non-dict *data*, or a missing, empty,
+    ``None``, or non-dict ``tool_response`` — never raises, so a hook can call
+    it unguarded (dev-env#1028 post-review: the *data* guard was added after
+    `/review` found that a valid-JSON-but-non-dict top-level payload — a list,
+    string, or ``null`` — still raised on the very first ``.get()``, one level
+    above what this function originally guarded).
     """
+    if not isinstance(data, dict):
+        return ""
     tr = data.get("tool_response") or {}
     if not isinstance(tr, dict):
         return ""
@@ -101,15 +113,32 @@ def read_command_output(data: dict) -> str:
 def read_command(data: dict) -> str:
     """Return a Bash/PowerShell command string from a PostToolUse/PreToolUse payload.
 
-    Returns ``""`` for a missing, empty, ``None``, or non-dict ``tool_input``,
-    or a non-string ``command`` field — never raises, so a hook can call it
-    unguarded. Mirrors ``read_command_output``'s contract above: several hooks'
-    ``main()`` read ``data.get("tool_input", {}).get("command", "")`` inline,
-    which only substitutes the ``{}`` default when the *key* is absent — a
+    Returns ``""`` for a non-dict *data*, or a missing, empty, ``None``, or
+    non-dict ``tool_input``, or a non-string ``command`` field — never raises,
+    so a hook can call it unguarded. Mirrors ``read_command_output``'s
+    contract above: ``usage-snapshot.py``'s ``main()`` (the first, and so far
+    only, migrated caller) used to read
+    ``data.get("tool_input", {}).get("command", "")`` inline, which only
+    substitutes the ``{}`` default when the *key* is absent — a
     present-but-``None`` (or otherwise non-dict) ``tool_input`` throws
     ``AttributeError`` on the chained ``.get()``, silently before any
-    trace/action the hook was about to take (dev-env#1028).
+    trace/action the hook was about to take (dev-env#1028). Fourteen more call
+    sites across other hooks read the identical shape and are not migrated in
+    that same change — confirmed via repo-wide grep, tracked as a follow-up,
+    not implied as closed by this paragraph.
+
+    Returning ``""`` on a malformed ``tool_input`` only prevents the crash —
+    it does **not**, by itself, restore trace/action visibility for whatever
+    the destroyed command actually was: an empty string can never satisfy a
+    caller's own command-shape check (e.g. ``usage-snapshot.py``'s
+    ``scan_top_level`` gate), so a caller that only guards against the crash
+    can still silently drop the event for a different reason. A caller in
+    this position needs its own explicit "was tool_input even readable at
+    all" check — see ``usage-snapshot.py main()``'s ``malformed_payload``
+    trace branch for the reference shape (dev-env#1028 post-review finding).
     """
+    if not isinstance(data, dict):
+        return ""
     ti = data.get("tool_input") or {}
     if not isinstance(ti, dict):
         return ""
@@ -117,19 +146,50 @@ def read_command(data: dict) -> str:
     return cmd if isinstance(cmd, str) else ""
 
 
-def read_exit_code(data: dict, default: int = -1) -> int:
+def read_cwd(data: dict) -> str:
+    """Return the session cwd from a PostToolUse/PreToolUse payload.
+
+    Returns ``""`` for a non-dict *data*, or a missing, empty, ``None``, or
+    non-string ``cwd`` — never raises, so a hook can call it unguarded.
+    Mirrors ``read_command``'s contract (dev-env#1028 post-review finding):
+    ``cwd = data.get("cwd", "")`` has the identical present-but-``None`` gap
+    as the pre-fix ``command``/``exit_code`` reads, but its crash lands
+    *downstream* (e.g. ``encode_cwd``'s string ops) rather than at the read
+    site itself — which in ``usage-snapshot.py`` meant it could fire *after* a
+    ``confirmed: true`` trace entry was already written, leaving a permanent
+    record that actively asserts a merge was confirmed while no snapshot ever
+    appeared. A worse forensic artifact than no record at all.
+    """
+    if not isinstance(data, dict):
+        return ""
+    cwd = data.get("cwd", "")
+    return cwd if isinstance(cwd, str) else ""
+
+
+def read_exit_code(data: dict, default: int) -> int:
     """Return a Bash/PowerShell command's exit code from a PostToolUse payload.
 
-    Returns *default* for a missing, empty, ``None``, or non-dict
-    ``tool_response``, or a non-int-coercible ``exitCode`` — never raises, so
-    a hook can call it unguarded. *default* is a parameter (not hardcoded)
-    because sibling hooks disagree on it today: some default to ``-1``
-    (payload omits the field entirely on some real invocations — see this
-    module's ``should_confirm_via_gh`` docstring), others to ``0``. Mirrors
-    ``read_command_output``'s contract (dev-env#1028 — the same
-    present-but-non-dict crash class as ``read_command`` above, this time in
-    the ``exitCode`` extraction).
+    Returns *default* for a non-dict *data*, or a missing, empty, ``None``, or
+    non-dict ``tool_response``, or a non-int-coercible ``exitCode`` — never
+    raises, so a hook can call it unguarded.
+
+    *default* has **no** default value and is a required argument
+    (dev-env#1028 post-review finding): sibling hooks disagree on what an
+    absent ``exitCode`` should mean — ``usage-snapshot.py`` and three others
+    treat it as ``-1`` (the payload omits the field entirely on some real
+    invocations — see this module's ``should_confirm_via_gh`` docstring), but
+    ``post-tool-use.py``/``pr-merge-reminder.py`` treat it as ``0``. A
+    convenience default here (e.g. ``-1``) would let a future drop-in
+    migration at one of the ``0``-sites silently flip an absent ``exitCode``
+    from ``0`` (skip a live confirm) to ``-1`` (``-1 != 0`` — pay a live
+    ``gh pr view`` call with no PR number, resolving against *cwd*'s
+    checked-out branch) — reintroducing the exact misattribution failure
+    dev-env#557 is on record for, via a migration that looks like a no-op.
+    Forcing every caller to state its own default makes that class of
+    migration bug structurally impossible rather than merely documented.
     """
+    if not isinstance(data, dict):
+        return default
     tr = data.get("tool_response") or {}
     if not isinstance(tr, dict):
         return default

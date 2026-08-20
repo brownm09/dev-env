@@ -654,8 +654,10 @@ def test_log_merge_trace_caps_to_max_lines() -> str:
 # established confirm_fn-injection pattern, not re-tested here.
 # ---------------------------------------------------------------------------
 
-def _run_main_capturing_trace(payload: dict) -> tuple:
-    """Invoke the real usage_snapshot.main() against *payload* fed over
+def _run_main_capturing_trace(payload) -> tuple:
+    """Invoke the real usage_snapshot.main() against *payload* (JSON-
+    serialized via json.dumps -- typically a dict, but any JSON-serializable
+    value works, e.g. a list for the non-dict-top-level-data test) fed over
     stdin, with _log_merge_trace monkeypatched to capture calls instead of
     touching the real trace file. Returns (exit_code, [trace_entry, ...]).
     """
@@ -728,7 +730,12 @@ def test_main_classify_error_fallback_fires_on_resolve_merge_exception() -> str:
     assert calls[0]["reason"] == "classify_error", calls[0]
     assert calls[0]["is_merge_shaped"] is True, calls[0]
     assert calls[0]["confirmed"] is False, calls[0]
-    return "resolve_merge() raising -> classify_error fallback still traces a merge-shaped command"
+    # dev-env#1028 post-review finding: the exception itself must be
+    # recorded, not just the fact that *something* threw -- a bare
+    # "classify_error" with no detail would force yet another
+    # live-instrumented reproduction to learn which layer failed.
+    assert calls[0]["error"] == "RuntimeError: simulated classification failure", calls[0]
+    return "resolve_merge() raising -> classify_error fallback traces the merge-shaped command AND the exception detail"
 
 
 def test_main_classify_error_fallback_does_not_fire_for_non_merge_command() -> str:
@@ -758,6 +765,108 @@ def test_main_classify_error_fallback_does_not_fire_for_non_merge_command() -> s
     return "resolve_merge() raising for a non-merge command -> classify_error fallback does not fire, no trace spam"
 
 
+# ---------------------------------------------------------------------------
+# dev-env#1028 POST-REVIEW findings (both review passes independently
+# executed the real main() against the PR's own diagnosed root-cause payload
+# and found it still produced ZERO trace entries -- the fix prevented the
+# crash but not the original symptom, because a destroyed `command` is
+# trivially not_merge_shape). These tests pin the corrected behavior.
+# ---------------------------------------------------------------------------
+
+def test_main_malformed_tool_input_with_marker_traces_and_confirms() -> str:
+    # THE critical regression case both review passes independently executed
+    # and found broken: tool_input present-but-None (dev-env#1028's actual
+    # payload shape) destroys `command`, so resolve_merge("") always
+    # classifies not_merge_shape/is_merge_shaped=False and the ordinary
+    # trace-write guard never fires -- reproducing dev-env#1028's exact
+    # symptom (zero trace entries) via a different mechanism than the
+    # original crash. main() must detect the malformed tool_input directly
+    # and, when the merge marker still survives in `output` (tool_response is
+    # intact here), treat it as confirmed and proceed toward the snapshot.
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": None,
+        "tool_response": {
+            "exitCode": 1,
+            "stdout": "Squashed and merged pull request #1356 (fix)",
+            "stderr": "failed to run git: fatal: 'main' is already checked out at 'C:/repo'",
+        },
+        "cwd": "C:/repo",
+    }
+    exit_code, calls = _run_main_capturing_trace(payload)
+    assert len(calls) == 1, calls
+    assert calls[0]["reason"] == "malformed_payload", calls[0]
+    assert calls[0]["is_merge_shaped"] is True, calls[0]
+    assert calls[0]["confirmed"] is True, calls[0]
+    # Confirmed via the surviving marker -> main() must NOT bail at exit 0;
+    # it falls through toward the snapshot logic exactly like any other
+    # confirmed merge (exit code depends on downstream credential state, but
+    # must not be the "nothing happened" 0 a lost event would produce).
+    assert exit_code != 0, exit_code
+    return "tool_input:null + merge marker still in output -> traced as malformed_payload, confirmed=True, falls through (dev-env#1028 post-review)"
+
+
+def test_main_malformed_tool_input_without_marker_traces_unconfirmed() -> str:
+    # Same malformed tool_input, but no independent signal survives in
+    # `output` either -- must still trace (so the event is never silently
+    # invisible), but cannot claim confirmation it has no evidence for.
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": None,
+        "tool_response": {
+            "exitCode": 1,
+            "stderr": "failed to run git: fatal: 'main' is already checked out at 'C:/repo'",
+        },
+        "cwd": "C:/repo",
+    }
+    exit_code, calls = _run_main_capturing_trace(payload)
+    assert exit_code == 0, exit_code
+    assert len(calls) == 1, calls
+    assert calls[0]["reason"] == "malformed_payload", calls[0]
+    assert calls[0]["is_merge_shaped"] is True, calls[0]
+    assert calls[0]["confirmed"] is False, calls[0]
+    return "tool_input:null + no surviving marker -> traced as malformed_payload, confirmed=False, exits cleanly (dev-env#1028 post-review)"
+
+
+def test_main_cwd_none_does_not_crash_after_confirmed_trace() -> str:
+    # dev-env#1028 post-review finding: `cwd = data.get("cwd", "")` had the
+    # identical present-but-None gap as the original command/exit_code bug,
+    # except its crash landed AFTER a confirmed:true trace entry was already
+    # written (downstream, in the snapshot/session-lookup machinery) --
+    # producing a permanent record that actively asserts a merge was
+    # confirmed while no snapshot ever appeared. A marker-confirmed merge
+    # with cwd:null must not crash; read_cwd() converts None -> "".
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "gh pr merge --squash --delete-branch"},
+        "tool_response": {"exitCode": 0, "stdout": "Squashed and merged pull request #99"},
+        "cwd": None,
+    }
+    exit_code, calls = _run_main_capturing_trace(payload)
+    assert len(calls) == 1, calls
+    assert calls[0]["reason"] == "marker", calls[0]
+    assert calls[0]["confirmed"] is True, calls[0]
+    assert calls[0]["cwd"] == "", calls[0]
+    # Must fall through toward snapshot logic without crashing -- not the
+    # bare 0 a crash caught only by the outer safe-exit guard would produce
+    # after having ALREADY written a misleading confirmed:true trace line.
+    assert exit_code != 0, exit_code
+    return "cwd:null + confirmed merge -> traced correctly (cwd='') and does not crash downstream (dev-env#1028 post-review)"
+
+
+def test_main_non_dict_top_level_data_does_not_crash() -> str:
+    # dev-env#1028 post-review finding: a valid-JSON-but-non-dict top-level
+    # payload (a list, here -- _run_main_capturing_trace's own json.dumps()
+    # serializes it the same as any dict payload) crashed at
+    # `data.get("tool_name")` -- one level above every read_* helper's own
+    # guard, and the identical silent-crash class this whole fix exists to
+    # close, caught only by the outermost safe-exit guard with nothing traced.
+    exit_code, calls = _run_main_capturing_trace(["not", "an", "object"])
+    assert exit_code == 0, exit_code
+    assert calls == [], calls
+    return "non-dict top-level JSON (a list) -> main() exits cleanly, no crash, no trace (dev-env#1028 post-review)"
+
+
 def test_plausibly_merge_shaped_true_cases() -> str:
     assert _plausibly_merge_shaped("gh pr merge --squash --delete-branch")
     assert _plausibly_merge_shaped('gh pr merge "https://github.com/o/r/pull/1" --squash')
@@ -771,6 +880,20 @@ def test_plausibly_merge_shaped_false_cases() -> str:
     assert not _plausibly_merge_shaped("gh pr create --fill")
     assert not _plausibly_merge_shaped("")
     return "non-merge commands and empty string -> False"
+
+
+def test_plausibly_merge_shaped_word_boundaries_reject_substring_matches() -> str:
+    # dev-env#1028 post-review finding: the original unbounded substring test
+    # ("gh" in lowered and "pr" in lowered) false-positived on ordinary words
+    # containing those letters -- flooding the 500-line capped trace log in
+    # exactly the failure-correlated scenario (resolve_merge() throwing on a
+    # common command shape) this fallback exists for, risking eviction of the
+    # genuine merge entries the log exists to preserve.
+    assert not _plausibly_merge_shaped("git merge origin/print-highlights"), \
+        "'gh' inside 'highlights' and 'pr' inside 'print' must not satisfy word-bounded \\bgh\\b/\\bpr\\b"
+    assert not _plausibly_merge_shaped("echo approved and merged manually"), \
+        "'pr' inside 'approved' must not satisfy word-bounded \\bpr\\b"
+    return "unbounded substring matches ('highlights'/'print', 'approved') correctly excluded by word boundaries"
 
 
 def test_status_label_bands_are_ascii() -> str:
@@ -970,8 +1093,28 @@ def main() -> int:
             "main(): classify_error fallback does not fire for non-merge command (dev-env#1028)",
             test_main_classify_error_fallback_does_not_fire_for_non_merge_command,
         ),
+        (
+            "main(): malformed tool_input + surviving marker -> malformed_payload, confirmed, falls through (dev-env#1028 post-review)",
+            test_main_malformed_tool_input_with_marker_traces_and_confirms,
+        ),
+        (
+            "main(): malformed tool_input, no marker -> malformed_payload, unconfirmed (dev-env#1028 post-review)",
+            test_main_malformed_tool_input_without_marker_traces_unconfirmed,
+        ),
+        (
+            "main(): cwd:null does not crash after a confirmed trace (dev-env#1028 post-review)",
+            test_main_cwd_none_does_not_crash_after_confirmed_trace,
+        ),
+        (
+            "main(): non-dict top-level JSON does not crash (dev-env#1028 post-review)",
+            test_main_non_dict_top_level_data_does_not_crash,
+        ),
         ("_plausibly_merge_shaped: gh pr merge / REST-merge shapes -> True", test_plausibly_merge_shaped_true_cases),
         ("_plausibly_merge_shaped: non-merge commands -> False", test_plausibly_merge_shaped_false_cases),
+        (
+            "_plausibly_merge_shaped: word boundaries reject substring matches (dev-env#1028 post-review)",
+            test_plausibly_merge_shaped_word_boundaries_reject_substring_matches,
+        ),
         (
             "nested worktree convention still resolves (dev-env#775)",
             test_find_session_jsonl_resolves_nested_worktree_convention,

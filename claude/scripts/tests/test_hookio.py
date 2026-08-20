@@ -36,6 +36,7 @@ from _hookio import (  # noqa: E402
     output_has_rest_merge_marker,
     read_command,
     read_command_output,
+    read_cwd,
     read_exit_code,
     scan_top_level,
     should_confirm_via_gh,
@@ -88,6 +89,17 @@ def test_empty_and_malformed_payloads() -> str:
     return "missing/empty/None/non-dict tool_response all yield '' (no crash)"
 
 
+def test_read_command_output_non_dict_data() -> str:
+    # dev-env#1028 post-review finding: a valid-JSON-but-non-dict top-level
+    # payload (list/string/int/None) crashed at the FIRST `data.get(...)`
+    # inside this function -- one level above the tool_response guard above,
+    # added alongside the same guard in the new read_command/read_cwd/
+    # read_exit_code helpers this dev-env#1028 fix introduces.
+    for bad in (["not", "a", "dict"], "just a string", 42, None):
+        assert read_command_output(bad) == "", f"non-dict data {bad!r} -> ''"
+    return "non-dict top-level data (list/str/int/None) -> '', never raises"
+
+
 def test_old_output_read_would_have_been_empty() -> str:
     # Pin the root cause: the pre-fix read (`.get("output")`) on the real shape
     # is empty, which is exactly what silently broke the four sibling hooks.
@@ -98,13 +110,17 @@ def test_old_output_read_would_have_been_empty() -> str:
 
 
 # ---------------------------------------------------------------------------
-# read_command / read_exit_code (dev-env#1028) -- extend read_command_output's
-# "never raises" contract to the two fields usage-snapshot.py's main() (and
-# several sibling hooks) previously read via an unguarded inline
-# `.get(x, {}).get(...)` chain. That chain's `{}` default only substitutes
-# when the KEY is absent -- a present-but-None (or otherwise non-dict)
-# tool_input/tool_response passes straight through and throws AttributeError
-# on the next .get(), silently discarding the event before any trace/action.
+# read_command / read_cwd / read_exit_code (dev-env#1028) -- extend
+# read_command_output's "never raises" contract to three more fields
+# usage-snapshot.py's main() (and fourteen sibling call sites, not migrated
+# here) previously read via an unguarded inline `.get(x, {}).get(...)` chain.
+# That chain's `{}` default only substitutes when the KEY is absent -- a
+# present-but-None (or otherwise non-dict) tool_input/tool_response passes
+# straight through and throws AttributeError on the next .get(), silently
+# discarding the event before any trace/action. A non-dict top-level `data`
+# (a list/string/number/null -- still valid JSON) is the same class one level
+# up (dev-env#1028 post-review finding), added to all four read_* helpers
+# including the pre-existing read_command_output.
 # ---------------------------------------------------------------------------
 
 def test_read_command_normal_dict() -> str:
@@ -128,32 +144,74 @@ def test_read_command_non_string_command_field() -> str:
     return "non-string / absent command field -> ''"
 
 
+def test_read_command_non_dict_data() -> str:
+    # dev-env#1028 post-review finding: a valid-JSON-but-non-dict top-level
+    # payload (list/string/number/None) crashed at the FIRST `data.get(...)`
+    # inside these helpers -- one level above the tool_input/tool_response
+    # guard, and the exact same silent-crash class this PR exists to close.
+    for bad in (["not", "a", "dict"], "just a string", 42, None):
+        assert read_command(bad) == "", f"non-dict data {bad!r} -> ''"
+    return "non-dict top-level data (list/str/int/None) -> '', never raises"
+
+
+def test_read_cwd_normal_dict() -> str:
+    assert read_cwd({"cwd": "C:/repo"}) == "C:/repo"
+    return "normal dict -> its cwd string"
+
+
+def test_read_cwd_missing_and_malformed() -> str:
+    assert read_cwd({}) == "", "missing cwd -> ''"
+    assert read_cwd({"cwd": None}) == "", "None cwd -> '' (the dev-env#1028 post-review crash shape)"
+    assert read_cwd({"cwd": 42}) == "", "non-string (int) cwd -> ''"
+    for bad in (["not", "a", "dict"], "just a string", 42, None):
+        assert read_cwd(bad) == "", f"non-dict data {bad!r} -> ''"
+    return "missing/None/non-string cwd, and non-dict data, all yield '' (no crash)"
+
+
 def test_read_exit_code_normal_dict() -> str:
-    assert read_exit_code({"tool_response": {"exitCode": 1}}) == 1
-    assert read_exit_code({"tool_response": {"exitCode": 0}}) == 0
+    assert read_exit_code({"tool_response": {"exitCode": 1}}, default=-1) == 1
+    assert read_exit_code({"tool_response": {"exitCode": 0}}, default=-1) == 0
     return "normal tool_response dict -> its int exitCode"
 
 
 def test_read_exit_code_missing_and_malformed_tool_response() -> str:
-    assert read_exit_code({}) == -1, "missing tool_response -> default -1"
-    assert read_exit_code({"tool_response": {}}) == -1, "empty tool_response -> default"
-    assert read_exit_code({"tool_response": None}) == -1, "None tool_response -> default (the dev-env#1028 crash shape)"
-    assert read_exit_code({"tool_response": "x"}) == -1, "non-dict (str) tool_response -> default"
-    assert read_exit_code({"tool_response": [1, 2]}) == -1, "non-dict (list) tool_response -> default"
+    assert read_exit_code({}, default=-1) == -1, "missing tool_response -> default -1"
+    assert read_exit_code({"tool_response": {}}, default=-1) == -1, "empty tool_response -> default"
+    assert read_exit_code({"tool_response": None}, default=-1) == -1, "None tool_response -> default (the dev-env#1028 crash shape)"
+    assert read_exit_code({"tool_response": "x"}, default=-1) == -1, "non-dict (str) tool_response -> default"
+    assert read_exit_code({"tool_response": [1, 2]}, default=-1) == -1, "non-dict (list) tool_response -> default"
     return "missing/empty/None/non-dict tool_response all yield the default (no crash) -- was AttributeError pre-fix"
 
 
-def test_read_exit_code_default_is_parameterized() -> str:
-    # Sibling hooks disagree on the default today (some -1, some 0) -- the
-    # shared helper must serve both without a caller having to post-process.
+def test_read_exit_code_non_dict_data() -> str:
+    # Same class as test_read_command_non_dict_data, for the exit-code helper.
+    for bad in (["not", "a", "dict"], "just a string", 42, None):
+        assert read_exit_code(bad, default=-1) == -1, f"non-dict data {bad!r} -> default"
+    return "non-dict top-level data (list/str/int/None) -> default, never raises"
+
+
+def test_read_exit_code_default_is_required() -> str:
+    # dev-env#1028 post-review finding: `default` used to itself default to
+    # -1, which would let a future drop-in migration at a 0-default sibling
+    # site (post-tool-use.py, pr-merge-reminder.py) silently flip an absent
+    # exitCode from 0 to -1 -- reintroducing the exact dev-env#557
+    # misattribution bug via a migration that looks like a no-op. `default`
+    # is now a required argument -- pin that omitting it is a TypeError, not
+    # a silent -1.
+    try:
+        read_exit_code({})  # type: ignore[call-arg]
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("read_exit_code({}) without `default` must raise TypeError")
     assert read_exit_code({}, default=0) == 0
     assert read_exit_code({"tool_response": None}, default=0) == 0
-    return "custom `default` is honored for both missing-key and None-value cases"
+    return "`default` is a required argument (TypeError if omitted); honored for both missing-key and None-value cases"
 
 
 def test_read_exit_code_non_coercible_exit_code_falls_back_to_default() -> str:
     for bad in (None, [1, 2], "not-a-number", {}):
-        assert read_exit_code({"tool_response": {"exitCode": bad}}) == -1, f"exitCode={bad!r} must not raise"
+        assert read_exit_code({"tool_response": {"exitCode": bad}}, default=-1) == -1, f"exitCode={bad!r} must not raise"
     return "non-int-coercible exitCode values (None/list/non-numeric str/dict) -> default, never raises"
 
 
@@ -161,7 +219,7 @@ def test_read_exit_code_numeric_string_is_coerced() -> str:
     # Real payloads always send an int; int("1") legitimately succeeds -- pin
     # this as deliberate coercion, not accidental leniency that could mask a
     # different-shaped bug.
-    assert read_exit_code({"tool_response": {"exitCode": "1"}}) == 1
+    assert read_exit_code({"tool_response": {"exitCode": "1"}}, default=-1) == 1
     return "a numeric-string exitCode is coerced via int(), not silently rejected"
 
 
@@ -1402,18 +1460,32 @@ def main() -> int:
         ("is_rest_merge_command: method flag in different segment not matched", test_is_rest_merge_command_method_flag_in_different_segment_not_matched),
         ("output_has_rest_merge_marker: \"merged\":true -> True", test_output_has_rest_merge_marker_true),
         ("output_has_rest_merge_marker: absent -> False", test_output_has_rest_merge_marker_false),
+        ("read_command_output: non-dict top-level data -> '' (dev-env#1028 post-review)", test_read_command_output_non_dict_data),
         ("read_command: normal tool_input dict -> command string", test_read_command_normal_dict),
         (
             "read_command: missing/empty/None/non-dict tool_input -> '' (dev-env#1028)",
             test_read_command_missing_and_malformed_tool_input,
         ),
         ("read_command: non-string command field -> ''", test_read_command_non_string_command_field),
+        ("read_command: non-dict top-level data -> '' (dev-env#1028 post-review)", test_read_command_non_dict_data),
+        ("read_cwd: normal dict -> cwd string", test_read_cwd_normal_dict),
+        (
+            "read_cwd: missing/None/non-string cwd, non-dict data -> '' (dev-env#1028 post-review)",
+            test_read_cwd_missing_and_malformed,
+        ),
         ("read_exit_code: normal tool_response dict -> int exitCode", test_read_exit_code_normal_dict),
         (
             "read_exit_code: missing/empty/None/non-dict tool_response -> default (dev-env#1028)",
             test_read_exit_code_missing_and_malformed_tool_response,
         ),
-        ("read_exit_code: default is parameterized", test_read_exit_code_default_is_parameterized),
+        (
+            "read_exit_code: non-dict top-level data -> default (dev-env#1028 post-review)",
+            test_read_exit_code_non_dict_data,
+        ),
+        (
+            "read_exit_code: `default` is a required argument (dev-env#1028 post-review)",
+            test_read_exit_code_default_is_required,
+        ),
         (
             "read_exit_code: non-coercible exitCode -> default, never raises",
             test_read_exit_code_non_coercible_exit_code_falls_back_to_default,
