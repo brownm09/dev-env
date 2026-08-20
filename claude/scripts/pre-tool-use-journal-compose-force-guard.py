@@ -82,7 +82,7 @@ import re
 import shlex
 import sys
 
-from _hookio import split_top_level
+from _hookio import read_command, split_top_level
 import _hookutil
 from _journal_compose_force import is_marker_fresh, marker_path_for, read_marker
 
@@ -345,7 +345,18 @@ def main() -> None:
     if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
-    command = (data.get("tool_input") or {}).get("command", "") or ""
+    # dev-env#1031/#1033: read_command() never raises on a present-but-non-dict
+    # tool_input (dev-env#1028's payload shape). The pre-fix `(data.get(
+    # "tool_input") or {}).get("command", "") or ""` chain only substitutes
+    # `{}` for a FALSY non-dict tool_input (None, "", 0) -- a TRUTHY non-dict
+    # value (e.g. a non-empty string) survives `or {}` unchanged and crashes
+    # on the next `.get()`. This hook already fails CLOSED on any uncaught
+    # exception (`except Exception as exc: ... sys.exit(2)` below, ADR-096) --
+    # unlike pre-auto-merge-checkpoint-gate.py's identical PreToolUse
+    # situation (ADR-050 Amendment 28), the isinstance(data, dict) guard
+    # above this point already exists, so this migration only needed to
+    # close the narrower tool_input gap, not add a new top-level guard.
+    command = read_command(data)
     if not command:
         sys.exit(0)
 

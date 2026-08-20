@@ -42,6 +42,7 @@ import subprocess
 import sys
 
 import _bash_state
+from _hookio import read_command, read_cwd
 import _hookutil
 
 # The trailing `{` alternative (dev-env#620) catches PowerShell's documented
@@ -182,14 +183,27 @@ def main() -> None:
     except json.JSONDecodeError:
         sys.exit(0)
 
+    if not isinstance(data, dict):
+        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
+        # or null) would otherwise crash the very next line (dev-env#1031/
+        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
+        sys.exit(0)
+
     if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
 
-    command = data.get("tool_input", {}).get("command", "")
+    # dev-env#1031/#1033: read_command()/read_cwd() never raise on a
+    # present-but-non-dict tool_input/cwd (dev-env#1028's payload shape) --
+    # the pre-fix unguarded chains crashed here, silently caught by the
+    # __main__ safe-exit guard below (which loses only this advisory
+    # PR-create checklist -- see ADR-050 Amendment 27 for why
+    # pre-merge-findings-gate.py, a blocking merge gate, was fixed first and
+    # separately on fail-open severity grounds).
+    command = read_command(data)
     if not _GH_PR_CREATE_RE.search(command):
         sys.exit(0)
 
-    cwd = data.get("cwd", "")
+    cwd = read_cwd(data)
     session_id = data.get("session_id", "") or ""
     doc_warning = _doc_reconciliation_warning(cwd)
     baseline_line = _baseline_advisory(cwd)

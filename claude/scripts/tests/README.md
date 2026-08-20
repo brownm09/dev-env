@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 81 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 93 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 82 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 94 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -70,6 +70,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_hook_safe_exit_guard.py` | every wired hook | Structural gate: every wired hook has a top-level `try/except` in `__main__` that deterministically exits in its declared fail direction (open vs. closed). |
 | `test_no_crude_command_substring_checks.py` | all `claude/scripts/*.py` | AST gate against `if "<cli>" not in command`-shaped string checks that false-match inside heredocs/quotes/subshells — the recurring false-positive class behind many ADR-050 amendments. |
 | `test_run_hook_tests.py` | `run-hook-tests.py` | Tests the pure discovery/classification helpers behind the test-suite runner itself — the engine behind `py -3 claude/scripts/run-hook-tests.py` and the `hook-tests` CI workflow. |
+| `test_sibling_hooks_hardened_io.py` | 12 of the 13 dev-env#1031/#1033 sibling hooks | AST gate against the unguarded `X.get("tool_input"/"tool_response", {}).get(...)` chain (dev-env#1028's crash class) plus malformed-payload smoke tests driving each hook's `main()` end-to-end; `pre-tool-use-worktree-path-check.py`'s own coverage lives in `test_worktree_path_check.py` instead. |
 | `test_settings_hook_wiring.py` | `claude/settings.json` | Lint: every `(event, matcher, hook)` entry resolves to a real script and carries a timeout at or above its budget floor. |
 | `test_testing_index_parity.py` | `CLAUDE.md` + `docs/TESTING.md` | Asserts the `## Testing` index and `docs/TESTING.md` carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule). |
 | `test_readme_index_parity.py` | this README + `claude/scripts/README.md` | Asserts every file in each indexed directory has a README first-column row (and every row a real file), and that header/section counts match the live directory — the drift `run-hook-tests.py`'s glob discovery never surfaces (dev-env#901). |

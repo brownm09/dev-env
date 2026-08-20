@@ -174,8 +174,30 @@ def record_heartbeat(hook_name: str, heartbeat_dir: Path | None = None) -> None:
     writer in this module. A heartbeat write must never be the reason a hook
     fails — call this as the unconditional first statement of ``main()`` so
     it still records even if the rest of the hook body raises.
+
+    Test-only override: the ``HOOK_HEARTBEAT_DIR_OVERRIDE`` environment
+    variable, when set to a non-empty value, takes precedence over both
+    *heartbeat_dir* and the module-level ``HEARTBEAT_DIR`` default — checked
+    at CALL time, not just once at import time, so a test can set it via
+    ``os.environ`` even after this module was already imported (the common
+    case: a hook module loaded once via
+    ``importlib.util.spec_from_file_location`` and reused across many direct
+    ``main()`` calls in the same test process), or pass it through a
+    subprocess's own environment. Exists specifically so the dev-env#1031/
+    #1033 malformed-payload smoke tests (a `/review` finding on that PR) can
+    drive a real hook's real ``main()`` — including its own unconditional
+    ``record_heartbeat()`` call — without writing to the developer's actual
+    ``~/.claude/scratch/hook-heartbeat/`` and silently blinding
+    ``hook-liveness-check.py``'s staleness detector for up to its 7-day
+    cadence on every test run.
     """
-    root = heartbeat_dir if heartbeat_dir is not None else HEARTBEAT_DIR
+    override = os.environ.get("HOOK_HEARTBEAT_DIR_OVERRIDE")
+    if override:
+        root = Path(override)
+    elif heartbeat_dir is not None:
+        root = heartbeat_dir
+    else:
+        root = HEARTBEAT_DIR
     try:
         root.mkdir(parents=True, exist_ok=True)
         target = root / f"{hook_name}.ts"

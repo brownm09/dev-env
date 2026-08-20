@@ -3273,3 +3273,123 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_journal_draft_worktree_guard.py
     py -3 claude/scripts/tests/test_worktree_path_check.py
     ```
+
+93. **sibling-hooks hardened-IO migration test** — required when changing any of the 12 sibling
+    hooks covered here (`post-merge-tile-checkpoint.py`, `post-pr-merge-project.py`,
+    `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`, `post-tool-use.py`,
+    `pr-merge-reminder.py`, `pre-auto-merge-checkpoint-gate.py`, `pre-commit-branch-check.py`,
+    `pre-merge-branch-check.py`, `pre-merge-message-check.py`, `pre-merge-numbering-check.py`,
+    `pre-pr-create-check.py`), `_hookio.py`'s `read_command`/`read_tool_input_field`/`read_cwd`/
+    `read_exit_code`, or `test_sibling_hooks_hardened_io.py` itself. (`pre-tool-use-worktree-path-check.py`'s
+    own dev-env#1031 coverage lives in item 32's `test_worktree_path_check.py` instead, since that
+    file already carried a loaded-module reference this file would otherwise duplicate;
+    `pre-merge-findings-gate.py`'s coverage is item 38's `test_pre_merge_findings_gate.py` +
+    `test-merge-findings-gate.sh`, dev-env#1032.) Two responsibilities in one file, both hardened in
+    a `/review` round on the PR that introduced this item (dev-env#1033) after the first revision of
+    each was found to have real gaps — see ADR-050 Amendment 28's own "post-review" section for the
+    full incident:
+
+    **Mechanical regression test.** An AST-based scan asserting no `claude/scripts/*.py` file reads
+    `tool_input`/`tool_response` as a dict without a guard against a present-but-non-dict value.
+    TWO independent detector arms, since the first revision's single arm had real, live blind
+    spots:
+    - *Inline arm* (`find_inline_offenses`): a single expression `X.get("tool_input"/"tool_response",
+      <empty-dict-like>)` (or the `X.get(key) or <empty-dict-like>` spelling) immediately used via
+      `.get(...)`/`[...]`. `X` may be *any* expression (`self.data`, `payload[0]`,
+      `json.loads(raw)`), not just a bare name — the first revision required a bare `ast.Name`
+      receiver and silently missed all three. The empty-dict-like default may be `{}` or `dict()`;
+      the outer accessor may be `.get(...)` or `[...]` (a subscript).
+    - *Two-statement arm* (`find_two_statement_offenses`): the identical risky extraction assigned
+      to a name in one statement, used via `.get(...)`/`[...]` in a LATER statement in the same
+      block, with no intervening `isinstance(name, dict)` / None-or-falsy check on that name in
+      between. This is the dominant house style for this exact read elsewhere in
+      `claude/scripts/` — some existing call sites pair it with a guard (safe, e.g.
+      `journal-shard-write-advisory.py`), some didn't (found live and fixed in the same PR:
+      `memory-write-advisory.py`, `pre-tool-use-canonical-mutate-guard.py`,
+      `pre-tool-use-journal-compose-force-guard.py`, `pre-tool-use-journal-draft-worktree-guard.py`,
+      `stub-push-archive-reminder.py` — five more files, six sites, beyond the thirteen originally
+      scoped by dev-env#1031's own repo-wide grep, which was assignment-anchored and missed the
+      `or {}`-only-protects-falsy-not-truthy variant entirely). The guard-recognition check itself
+      (`_guards_name`) required a fix mid-development: an early version treated ANY mention of the
+      risky name inside an `if`'s test as a guard, which incorrectly read the name's OWN unguarded
+      use (nested inside the test expression's arguments) as protecting itself, silently clearing
+      the very offense it should have caught — `test_two_statement_guard_check_does_not_confuse_use_with_guard`
+      pins this regression directly.
+
+    Both arms recognize the shared risk underlying `X.get(key, {})` (substitutes only when the KEY
+    is absent) and `X.get(key) or {}` (substitutes only when the VALUE is falsy) alike: neither
+    protects a PRESENT, TRUTHY, non-dict value (a non-empty string/list/number), which survives
+    either spelling unchanged and raises on the next access. `_KNOWN_EXCEPTIONS` is keyed on
+    `(filename, field, LINE NUMBER)`, not just `(filename, field)` — a review finding on the first
+    revision: two distinct call sites in one file reusing the same field would otherwise collide
+    under a (filename, field)-only key. Self-tests confirm the hardened
+    `read_tool_input_field()` implementation itself trips neither arm. Empty as of dev-env#1033:
+    this migration's whole point is that no live offense should remain anywhere in the tree —
+    confirmed live, not just asserted: run against this PR's own branch *before* rebasing onto
+    Part 1's merged fix, it correctly flagged `pre-merge-findings-gate.py`'s still-unfixed line as a
+    genuine offense.
+
+    **Malformed-payload smoke test.** Each of the 12 files is driven via a DIRECT call to its own
+    `main()` — bypassing its `__main__` try/except safe-exit wrapper entirely — with the
+    dev-env#1028 payload shapes (`tool_input: null` + `cwd: null` combined in one payload; a bare
+    non-dict top-level JSON list), asserting a clean `SystemExit` rather than an uncaught exception.
+    NOT subprocess-based: the first revision drove each hook via `subprocess.run([sys.executable,
+    hook_path], ...)` and asserted only the exit code — `/review` verified, by reverting the
+    production fix and re-running these exact payloads, that every one of those assertions passed
+    IDENTICALLY whether or not the fix was present, because every hook's own `__main__` guard
+    (`except Exception: sys.exit(0)`, or `_fail_closed()` → exit 2) launders a crash into the SAME
+    exit code a correct, deliberate early-return also produces — an exit code observed from OUTSIDE
+    the process cannot tell "handled cleanly" from "crashed, caught by the safe-exit guard" apart.
+    Calling `main()` directly removes that safety net: a pre-fix crash now propagates as an
+    uncaught Python exception IN the test process, which the test runner reports as a genuine
+    failure — re-verified empirically after the fix (temporarily reverting one file to its pre-fix
+    blob and confirming the smoke test then fails with the expected `AttributeError`, then restoring
+    it). Mirrors `test_usage_snapshot.py`'s `_run_main_capturing_trace` pattern and
+    `test_worktree_path_check.py`'s `_load_module()` pattern; the latter's own two malformed-payload
+    tests were converted from subprocess to the identical direct-call design in the same review round.
+
+    A second review finding, orthogonal to the discrimination gap: every migrated hook's `main()`
+    calls `_hookutil.record_heartbeat(...)` unconditionally as its first statement, and — unlike the
+    old subprocess design — a direct call runs that write IN this test process, against the
+    developer's real `~/.claude/scratch/hook-heartbeat/`, on every test run; a heartbeat write is
+    exactly what `hook-liveness-check.py` (ADR-106) reads to judge whether a wired hook has gone
+    silently quiet, so this would blind that detector for up to its 7-day cadence every time this
+    suite runs. `_hookutil.record_heartbeat` gained a `HOOK_HEARTBEAT_DIR_OVERRIDE` environment-variable
+    override (checked at call time, not import time, so it applies to an already-loaded hook module)
+    — see item 27's own test additions for `_hookutil.py`'s side of this fix. This file's own
+    `main()` sets the override for its whole run (subprocess-spawned children inherit it
+    automatically via `env=None`'s default environment-inheritance); `test_worktree_path_check.py`'s
+    `main()` does the same for its own suite.
+
+    Two deliberate, honestly-documented scope boundaries remain (in the test file's own module
+    docstring, not left implicit):
+    - `pre-auto-merge-checkpoint-gate.py`'s `isinstance(data, dict)` guard was ADDED in the same
+      review round (a corrected reversal — see ADR-050 Amendment 28's own "post-review" section for
+      why an earlier asymmetric design was wrong), so it now exits 0 for non-dict data exactly like
+      its eleven siblings; pinned as its own explicit, clearly-labeled test
+      (`test_pre_auto_merge_checkpoint_gate_exits_open_on_non_dict_data`) specifically because a
+      PRIOR revision asserted the opposite (exit 2) for this exact payload, making the reversal
+      worth a dedicated regression pin rather than folding silently into the 11-file loop.
+    - Of the six migrated files reading `exit_code`, only `post-tool-use.py` and
+      `pr-merge-reminder.py` read it *unconditionally* (before any business-logic branch) — safe to
+      drive with a genuinely malformed `tool_response` alongside a non-matching command (`"git
+      status"`). The other four (`post-merge-tile-checkpoint.py`, `post-pr-merge-project.py`,
+      `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`) read `exit_code` only inside the
+      "marker didn't confirm the merge" fallback branch — reaching that line via a malformed
+      `tool_response` (which also empties `output`, so no marker survives) makes
+      `should_confirm_via_gh()` return `True`, which would attempt a *real* `gh pr view`
+      subprocess call. Forcing that call (or monkeypatching `confirm_merge_via_gh`, which none of
+      these four files' own test suites do — ADR-050 Amendment 3/8's no-subprocess-mocks
+      convention) is exactly the environment-dependent-assertion trap dev-env#1028's own
+      post-review CI failure warned against. These four files' `tool_input:null` coverage already
+      proves the primary, most-severe crash class doesn't crash their `main()` dispatch; their
+      `exit_code` line's correctness rests on `read_exit_code`'s own exhaustive coverage plus the
+      per-file default-value verification recorded in each file's own inline migration comment and
+      ADR-050 Amendment 28.
+
+    ```bash
+    py -3 claude/scripts/tests/test_sibling_hooks_hardened_io.py
+    py -3 claude/scripts/tests/test_worktree_path_check.py
+    py -3 claude/scripts/tests/test_hookio.py
+    py -3 claude/scripts/tests/test_hookutil.py
+    ```

@@ -86,7 +86,13 @@ try:
     # the _winsubp patch if the _pmfg reuse below ever changes shape. Kept INSIDE this
     # fail-closed guard (review of PR #722) so a _winsubp import failure also blocks (exit 2)
     # rather than failing open -- it was the one sibling import previously left outside it.
-    from _hookio import is_merge_help_only, mask_quoted_spans, strip_line_continuations
+    from _hookio import (
+        is_merge_help_only,
+        mask_quoted_spans,
+        read_command,
+        read_cwd,
+        strip_line_continuations,
+    )
 
     _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     _PMFG_PATH = os.path.join(_SCRIPT_DIR, "pre-merge-findings-gate.py")
@@ -268,9 +274,57 @@ def main() -> None:
         data = json.loads(raw)
     except json.JSONDecodeError:
         sys.exit(0)
+    # dev-env#1031/#1033, corrected post-review: an earlier version of this
+    # migration deliberately did NOT add this guard, reasoning that a non-dict
+    # top-level `data` was "more implausible" than a malformed `tool_input`
+    # and so should keep crashing into this file's fail-CLOSED `__main__`
+    # handler (ADR-083 Decision point 3) rather than exit 0 like the other
+    # twelve sibling hooks in this migration. Review correctly identified
+    # that reasoning as inconsistent: PLAUSIBILITY isn't the axis that
+    # matters here, CONSEQUENCE is -- and the consequence is identical for
+    # both malformed-payload shapes. Once `data` OR `tool_input` is
+    # unreadable, this hook has no way to tell whether the command it's
+    # looking at was ever a `gh pr merge --auto` in the first place (no
+    # `tool_response` exists yet at PreToolUse time to fall back on).
+    # Crashing into `_fail_closed(...)` for the non-dict-`data` case blocked
+    # EVERY Bash/PowerShell call on a rare payload glitch -- an ordinary
+    # `git status`, an `npm test` -- with a "the --auto checkpoint gate
+    # crashed while evaluating this merge" message and remediation advice
+    # ("drop --auto and run a plain `gh pr merge`") that is nonsensical for
+    # whatever command was actually run. That is exactly the over-broad
+    # blast radius this same migration already rejects for the `tool_input`
+    # case two paragraphs below -- there is no principled reason to treat
+    # the two non-dict shapes in opposite directions. Guarding here instead
+    # brings this file in line with the other twelve.
+    if not isinstance(data, dict):
+        sys.exit(0)
     if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
-    command = data.get("tool_input", {}).get("command", "")
+    # dev-env#1031/#1033: read_command() never raises on a present-but-non-dict
+    # tool_input (dev-env#1028's payload shape) -- the pre-fix
+    # `data.get("tool_input", {}).get("command", "")` chain crashed here,
+    # caught by this file's own OUTER `except Exception: _fail_closed(...)`
+    # handler (unlike every other sibling hook in this family, this one fails
+    # CLOSED on an uncaught exception -- ADR-083 Decision point 3). That means
+    # a malformed tool_input on ANY Bash/PowerShell call -- not just a `gh pr
+    # merge --auto` one -- currently blocks the call with this gate's BLOCKED
+    # message, since the crash happens before is_pr_merge_command() ever runs.
+    # Migrating to read_command() fixes that overly broad blast radius:
+    # command="" -> is_pr_merge_command("") is False -> exits 0, so an
+    # unrelated command (the overwhelming majority of what this hook sees) is
+    # no longer wedged by an unrelated payload glitch. The accepted trade-off,
+    # matching pre-merge-findings-gate.py's identical PreToolUse situation
+    # (ADR-050 Amendment 27): a malformed tool_input on a GENUINE `gh pr merge
+    # --auto` command now also exits 0 rather than failing closed, since this
+    # hook -- like its sibling -- has no tool_response yet and therefore no
+    # way to scope a block to merge commands specifically once the command
+    # text itself is destroyed. Failing closed for every malformed-tool_input
+    # Bash/PowerShell call was considered and rejected as the worse
+    # regression: it blocks unrelated commands on a rare payload glitch, not
+    # just --auto merges. This hook's fail-CLOSED posture (ADR-083) remains
+    # fully intact for every OTHER unanticipated exception -- only these two
+    # specific, now-consistently-handled malformed-payload shapes exit open.
+    command = read_command(data)
 
     if not is_pr_merge_command(command):
         sys.exit(0)
@@ -279,7 +333,7 @@ def main() -> None:
     if is_merge_help_only(command):
         sys.exit(0)
 
-    cwd = data.get("cwd", "") or None
+    cwd = read_cwd(data) or None
     ref, repo = _parse_merge_target(command)
 
     view_cmd = ["gh", "pr", "view"]

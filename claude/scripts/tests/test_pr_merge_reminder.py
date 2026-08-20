@@ -947,6 +947,40 @@ def test_build_messages_rest_merge_get_method_not_matched() -> str:
     return "gh api GET (read-only merge-check) -> no message (dev-env#986/#991)"
 
 
+def test_exit_code_coercion_pins_accepted_tradeoff() -> str:
+    """ADR-050 Amendment 28 post-review finding 6, pinned as an executable
+    proof rather than left as prose alone: this file's own
+    `exit_code = read_exit_code(data, default=0)` call coerces a
+    present-but-non-int-coercible exitCode (e.g. `exitCode: null`) to `0` --
+    indistinguishable, downstream, from a GENUINELY successful exitCode.
+    Pre-fix, `data.get("tool_response", {}).get("exitCode", 0)` returned the
+    raw `None` unchanged for this exact shape. The real consequence here:
+    `should_confirm_via_gh(exit_code, output)` (the dev-env#489/#504 live-gh
+    confirmation fallback) treats a malformed-but-present exitCode exactly
+    like a confirmed-successful one, so that fallback no longer fires for
+    this narrow case -- accepted, not fixed, per the same reasoning as
+    post-tool-use.py's identical pin in test_post_tool_use.py.
+    """
+    read_exit_code = pmr.read_exit_code
+    malformed = {"tool_response": {"exitCode": None, "stdout": "", "stderr": ""}}
+    genuinely_successful = {"tool_response": {"exitCode": 0, "stdout": "", "stderr": ""}}
+    assert read_exit_code(malformed, default=0) == 0, "malformed exitCode must coerce to the default"
+    assert read_exit_code(genuinely_successful, default=0) == 0, "a real exitCode:0 payload, for comparison"
+    assert read_exit_code(malformed, default=0) == read_exit_code(genuinely_successful, default=0)
+    # The real downstream consequence, pinned directly: should_confirm_via_gh
+    # (the dev-env#489/#504 live-gh confirmation fallback) sees the SAME
+    # exit_code=0 either way, so it does NOT fire for a malformed-but-present
+    # exitCode with no marker in output -- exactly as if the command had
+    # genuinely succeeded. A non-zero default (the four sibling files using
+    # default=-1) would fire it instead; this pin is what makes that
+    # divergence concrete rather than an abstract claim.
+    coerced_exit_code = read_exit_code(malformed, default=0)
+    assert pmr.should_confirm_via_gh(coerced_exit_code, "") is False, (
+        "a malformed exitCode coerced to 0 must NOT trigger the live-confirmation fallback"
+    )
+    return "exitCode:null coerces to 0 (default=0), indistinguishable from a genuine exitCode:0 -- accepted trade-off, pinned (ADR-050 Amendment 28)"
+
+
 # ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
@@ -1017,6 +1051,7 @@ def main() -> int:
         ("build_messages: REST merge fallback without marker -> no message", test_build_messages_rest_merge_without_marker_no_message),
         ("build_messages: REST merge chained with push -> no duplicate reminder (dev-env#986/#991)", test_build_messages_rest_merge_chained_push_no_duplicate_reminder),
         ("build_messages: REST merge GET (no PUT) -> no message (dev-env#986/#991)", test_build_messages_rest_merge_get_method_not_matched),
+        ("exit_code coercion pins the accepted default=0 trade-off (ADR-050 Amendment 28)", test_exit_code_coercion_pins_accepted_tradeoff),
     ]
     failed = 0
     for name, fn in tests:

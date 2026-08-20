@@ -33,6 +33,11 @@
 #     wants_auto_merge fell through to its fail-closed `return True` -- so the gate proceeded,
 #     hit the real `gh pr view` for a bogus PR, and BLOCKED (exit 2). This case is the end-to-end
 #     proof of the fix: exit 0 = correctly detected as a plain merge; exit 2 = the #820 regression.
+#   - malformed tool_input (dev-env#1028 payload shape: present but null) -> allow (exit 0,
+#     no crash, dev-env#1031/#1033)
+#   - non-dict top-level JSON payload -> allow (exit 0, no crash, dev-env#1031/#1033 --
+#     corrected post-review: this is the one case where exit 0 replaces a PRIOR revision's
+#     exit 2, not the other way around; see case [21]'s own comment)
 #
 # Run: bash claude/scripts/tests/test-auto-merge-checkpoint-gate.sh
 set -u
@@ -204,6 +209,25 @@ echo "[19] plain MULTI-LINE merge with backslash-newline continuations (dev-env#
 # #820 regression signal, exit 0 is the fix.
 MULTILINE_PLAIN=$'gh pr merge 999 --repo o/r --squash \\\n  --subject "docs(handoff): tiles" \\\n  --body "Closes #823."'
 RC=$(run_gate "$MULTILINE_PLAIN" "UNSET"); [ "$RC" = "0" ] && ok "exit 0 (plain multi-line merge, never reached gh)" || bad "expected 0, got $RC (the #820 misdetection regression)"
+
+echo "[20] malformed tool_input (dev-env#1028 payload shape: present but null) -> allow (dev-env#1031/#1033)"
+# command becomes "" via read_command() -> is_pr_merge_command("") is False -> exits 0
+# before ever reaching wants_auto_merge/the live gh call. No MERGE_GATE_TEST_JSON seam.
+STDIN='{"tool_name":"Bash","tool_input":null,"cwd":"."}'
+RC=$(printf '%s' "$STDIN" | $PY "$HOOK" >/dev/null 2>&1; echo $?)
+[ "$RC" = "0" ] && ok "tool_input:null -> exit 0, no crash" || bad "expected 0, got $RC"
+
+echo "[21] non-dict top-level JSON payload -> allow (dev-env#1031/#1033, corrected post-review)"
+# An earlier revision of this migration deliberately left this crashing into the
+# fail-CLOSED __main__ handler (exit 2), reasoning it was rare enough to accept the
+# broader blast radius. Review found that reasoning inconsistent with case [20]'s own
+# rejected-fail-closed rationale -- both malformed shapes destroy the same information,
+# so both now exit open. This is the one case in this file where exit 0 (not exit 2) is
+# the FIX, not a regression -- see the isinstance(data, dict) guard's own inline comment
+# in main() for the full reasoning.
+STDIN='["not", "an", "object"]'
+RC=$(printf '%s' "$STDIN" | $PY "$HOOK" >/dev/null 2>&1; echo $?)
+[ "$RC" = "0" ] && ok "non-dict top-level JSON -> exit 0, no crash (fail-open, corrected)" || bad "expected 0, got $RC"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

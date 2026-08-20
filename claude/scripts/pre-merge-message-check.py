@@ -35,7 +35,7 @@ import os
 import re
 import sys
 
-from _hookio import scan_top_level
+from _hookio import read_command, scan_top_level
 import _hookutil
 
 # Overridable so a subprocess-driven end-to-end test can point this at a
@@ -77,9 +77,20 @@ def main() -> None:
         data = json.loads(raw)
     except json.JSONDecodeError:
         sys.exit(0)
+    if not isinstance(data, dict):
+        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
+        # or null) would otherwise crash the very next line (dev-env#1031/
+        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
+        sys.exit(0)
     if data.get("tool_name") not in ("Bash", "PowerShell"):
         sys.exit(0)
-    command = data.get("tool_input", {}).get("command", "")
+    # dev-env#1031/#1033: read_command() never raises on a present-but-non-dict
+    # tool_input (dev-env#1028's payload shape) -- the pre-fix unguarded chain
+    # crashed here, silently caught by the __main__ safe-exit guard below
+    # (which loses only this queue check -- see ADR-050 Amendment 27 for why
+    # pre-merge-findings-gate.py, a blocking merge gate, was fixed first and
+    # separately on fail-open severity grounds).
+    command = read_command(data)
     if not is_pr_merge_command(command):
         sys.exit(0)
 
