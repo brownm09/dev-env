@@ -2192,6 +2192,7 @@ in `resolve_merge`'s own docstring rather than changed, since the dual-marker ca
 command's output satisfying both merge mechanisms at once) is unrealistic.
 
 ## Amendment 26 (2026-08-20) — hardening `main()`'s own dispatch, the blind spot Amendment 25's trace couldn't see (dev-env#1028)
+
 **The question Amendment 25 still couldn't fully answer.** Amendment 25 built `resolve_merge()` and
 `_log_merge_trace()` specifically so a future "no snapshot appeared" reproduction would answer *which
 branch fired* from the trace file instead of requiring another live-instrumented catch. dev-env#1028
