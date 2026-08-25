@@ -243,7 +243,7 @@ instructions that contradict it, not just adding the rule. The `cat > … <<'JSO
   keep **both** consumer suites green (`## Testing` item 94 runs them together).
 - One more pure-Python `PreToolUse` process per Bash/PowerShell call, short-circuited by the cheap
   pre-filter on the overwhelmingly common no-marker command.
-- Covered by `claude/scripts/tests/test_shell_content_write_guard.py` (Testing item 95, 43 cases,
+- Covered by `claude/scripts/tests/test_shell_content_write_guard.py` (Testing item 95, 47 cases,
   including a verbatim reproduction of each dev-env#1041 occurrence) and
   `claude/scripts/tests/test_shell_write_detect.py` (item 94, 21 cases). Item 70
   (`test_session_mode_prompt.py`) grew two cases for the bypass carve-out.
@@ -269,3 +269,45 @@ instructions that contradict it, not just adding the rule. The `cat > … <<'JSO
   under-generalization this ADR is the next level up from
 - `brownm09/dev-env#1041` — tracking issue, with all three occurrences
 - `brownm09/dev-env#961`, `#904` — the journal-scoped incidents that preceded it
+
+---
+
+## Post-review hardening (same PR, dev-env#1042)
+
+`/review` on PR #1042 surfaced three findings in the new hook, each **verified by executing the
+hook's own functions** before being reported — not accepted from inspection, the discipline ADR-129
+Amendment 1 established after several of its own findings turned out to need direct re-testing.
+All three were fixed in the same PR, with a checked-in regression test each (the suite grew 43 → 47).
+
+**Blocking, correctness:**
+
+1. **GNU sed's long form was not detected.** The in-place flag test was `^-[a-z]*i`, whose `[a-z]*`
+   cannot cross a second `-` — so `sed -i "s/a\\b/c/"` blocked while `sed --in-place "s/a\\b/c/"`
+   sailed through, an inconsistency *inside* the scope this ADR explicitly claims. Fixed with a
+   second `--in-place(=|$)` arm, factored into `_is_inplace_flag`.
+2. **A safe PowerShell here-string masked a hazardous `-Value`.**
+   `find_powershell_content_write` returned only its first candidate, and checked the here-string
+   first — so `@'…safe…'@ | Set-Content a.md; Set-Content b.md -Value "it's hazardous"` reported
+   **nothing**, while the identical `-Value` in isolation blocked correctly (both verified live).
+   One benign literal suppressing a hazardous sibling is exactly the under-match class Amendment 1
+   warned about. Fixed by returning every candidate and letting the caller block on the first
+   hazardous one.
+
+**Non-blocking, maintainability:**
+
+3. **The `<#` sentinel collides with real PowerShell syntax.** Masking rewrites a genuine unquoted
+   `<<` to `<#` — which is also a PowerShell block-comment opener, so `Get-Process > procs.txt
+   <# note … #>` parsed as a heredoc. Worth recording precisely, because the investigation did
+   **not** confirm the hypothesis it started from: no false block and no false negative could be
+   produced from it (in every reachable shape the misparsed "body" was either benign or still
+   blocked). Its only demonstrated effect was a *wrong reason string* — `cat <#tag > notes.md
+   <<'EOF'` blocked as "spans more than one line" instead of "contains an apostrophe", because the
+   misparse swallowed the rest of the segment. So it was reported as maintainability, not
+   correctness. The one-line fix — confirm the raw line carries `<<` at the matched offset, which
+   masking's length-preservation guarantees is comparable — removes the whole class and, as a
+   bonus, stops a literal `<#` from shadowing a real `<<` later on the same line.
+
+**Also fixed (performance):** the `tee` detector ran a full `shlex.split` on every Bash segment
+before checking whether the line could start with `tee` at all. Guarded with a cheap `startswith`
+match first — the same "this runs on every call fleet-wide" reasoning as the module-level
+pre-filter.

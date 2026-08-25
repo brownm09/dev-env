@@ -3446,7 +3446,7 @@ For a one-line navigational map of the test directory, see
     in both files — the guard blocks the shape, the prompt hook delivers the precedence rule that stops
     the bypass-mode instruction contradicting it — so the two suites are paired here.
 
-    43 cases in two layers, both hermetic (layer 2 spawns the real hook but touches no files or git —
+    47 cases in two layers, both hermetic (layer 2 spawns the real hook but touches no files or git —
     this hook does no filesystem or subprocess work at all). Layer 1 covers `body_hazard` / `arg_hazard`
     / `is_file_target` / the five extraction-and-detection functions / `find_content_writes` /
     `_is_overridden` / `might_write_content`; layer 2 drives `main()` over stdin, asserting exit codes
@@ -3483,6 +3483,19 @@ For a one-line navigational map of the test directory, see
     inline-literal-to-a-*file* rule does not reach it) and `test_accepted_gap_second_heredoc_on_one_line`
     (only the first heredoc opener on a line is inspected — one hazardous body is enough to block).
     Both fail loudly, with a message naming ADR-138, if the behavior changes.
+
+    **Four cases are `/review` regressions** (dev-env#1042), each pinning a defect that was verified
+    by executing the hook's own functions before it was reported, then fixed in the same PR:
+    `test_find_inplace_edit_long_form_in_place` (GNU sed's `--in-place` slipped through while `-i`
+    blocked — the flag regex `^-[a-z]*i` cannot cross a second `-`);
+    `test_powershell_safe_here_string_does_not_mask_hazardous_value` (the cmdlet detector returned
+    only its first candidate and checked the here-string first, so a *safe* here-string suppressed a
+    genuinely hazardous `-Value` downstream — the test carries the control case proving that `-Value`
+    blocks in isolation); and two for the `<#` sentinel colliding with PowerShell block-comment
+    syntax — `..._ignores_powershell_block_comment` and `..._finds_real_heredoc_past_a_literal_hash`.
+    That last pair is worth reading for what it does *not* claim: the misparse produced no false
+    block and no false negative in any reachable shape, only a wrong reason string, so it was
+    reported as maintainability rather than correctness.
 
     A PowerShell case worth calling out: `test_powershell_here_string_across_a_pipe`. The canonical form
     pipes the literal *into* the cmdlet (`@'…'@ | Set-Content f`), so pipe splitting puts the literal and

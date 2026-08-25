@@ -266,6 +266,56 @@ def test_find_inplace_edit_recognizes_flag_forms() -> str:
     return "find_inplace_edit() recognizes -i, -i.bak, and perl -pi -e; ignores non-in-place sed"
 
 
+def test_find_inplace_edit_long_form_in_place() -> str:
+    # Review regression: `[a-z]*` cannot cross a second `-`, so GNU sed's long
+    # form slipped through while `sed -i` blocked -- an inconsistency inside the
+    # same documented scope. Verified live before and after the fix.
+    for cmd in ('sed --in-place "s/a\\\\b/c/" f', 'sed --in-place=.bak "s/a\\\\b/c/" f'):
+        if scwg.find_inplace_edit(cmd) is None:
+            raise AssertionError(f"GNU sed long-form in-place edit not recognized: {cmd!r}")
+        _assert_blocks(cmd, why="an in-place edit is in scope in either spelling")
+    _assert_allows("sed --quiet 's/a/b/' f",
+                   why="a long flag that merely contains no in-place request must not match")
+    return "`sed --in-place` / `--in-place=.bak` are recognized alongside `-i` (review regression)"
+
+
+def test_powershell_safe_here_string_does_not_mask_hazardous_value() -> str:
+    # Review regression: find_powershell_content_write returned only its FIRST
+    # candidate, so a SAFE upstream here-string suppressed a genuinely hazardous
+    # -Value downstream. Verified live: this command reported nothing while the
+    # control below blocked correctly.
+    masked = "@'\nsafe body\n'@ | Set-Content a.md; Set-Content b.md -Value \"it's hazardous\""
+    m = _assert_blocks(masked, "PowerShell",
+                       why="a benign literal must not suppress a hazardous sibling")
+    if "apostrophe" not in m["reason"]:
+        raise AssertionError(f"expected the -Value apostrophe to be the reason, got {m['reason']!r}")
+    _assert_blocks("Set-Content b.md -Value \"it's hazardous\"", "PowerShell",
+                   why="control: the same -Value blocks in isolation")
+    return "a safe upstream here-string no longer masks a hazardous downstream -Value (review regression)"
+
+
+def test_extract_heredoc_literal_ignores_powershell_block_comment() -> str:
+    # Review regression: `<#` is the sentinel masking rewrites a genuine `<<`
+    # into -- and it is ALSO real PowerShell block-comment syntax, so a comment
+    # was parsed as a heredoc opener. Confirming the RAW line carries `<<` at the
+    # same offset separates them (masking is length-preserving).
+    got = scwg.extract_heredoc_literal("Get-Process > procs.txt <# note\nit's a comment #>")
+    if got is not None:
+        raise AssertionError(f"a PowerShell block comment must not parse as a heredoc, got {got!r}")
+    return "a `<#` PowerShell block comment is no longer misread as a heredoc opener"
+
+
+def test_extract_heredoc_literal_finds_real_heredoc_past_a_literal_hash() -> str:
+    # The mirror of the case above: a literal `<#` earlier on the line must not
+    # shadow a genuine `<<` later on it. Before the fix this still blocked, but
+    # reported the wrong reason ("spans more than one line" rather than the
+    # apostrophe), because the misparsed body swallowed the rest of the segment.
+    got = scwg.extract_heredoc_literal("cat <#tag > notes.md <<'EOF'\nIt's hazardous\nEOF")
+    if got != ("heredoc", "It's hazardous"):
+        raise AssertionError(f"the real heredoc body must be found past a literal `<#`, got {got!r}")
+    return "a literal `<#` no longer shadows a genuine `<<` later on the same line"
+
+
 def test_powershell_here_string_across_a_pipe() -> str:
     # The canonical form pipes the literal INTO the cmdlet, so the two land in
     # different pipeline segments -- searching only the cmdlet's own segment misses it.
@@ -545,6 +595,10 @@ def main() -> int:
         ("extract_echo_literal(): keeps lone printf arg", test_extract_echo_literal_keeps_lone_printf_argument),
         ("script_writes_a_file(): markers", test_script_writes_a_file_markers),
         ("find_inplace_edit(): flag forms", test_find_inplace_edit_recognizes_flag_forms),
+        ("find_inplace_edit(): GNU long-form --in-place", test_find_inplace_edit_long_form_in_place),
+        ("safe here-string does not mask hazardous -Value", test_powershell_safe_here_string_does_not_mask_hazardous_value),
+        ("`<#` block comment is not a heredoc opener", test_extract_heredoc_literal_ignores_powershell_block_comment),
+        ("real `<<` found past a literal `<#`", test_extract_heredoc_literal_finds_real_heredoc_past_a_literal_hash),
         ("PowerShell here-string across a pipe", test_powershell_here_string_across_a_pipe),
         ("PowerShell -Value literal", test_powershell_value_flag_literal),
         ("PowerShell detector gated on tool_name", test_powershell_detector_gated_on_tool_name),

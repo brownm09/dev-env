@@ -205,7 +205,11 @@ def find_write_destinations(line, masked, tool_name):
     plus a Bash `tee [-a] <path>` invocation's own targets. Discard sinks
     and fd duplications are filtered out by `is_file_target`."""
     out = [t for _op, t in find_redirect_targets(line, masked=masked) if is_file_target(t)]
-    if tool_name == "Bash":
+    # Cheap guard before the shlex walk: `tee` must be the segment's first token,
+    # so a line that cannot start with it never pays for tokenization. This hook
+    # runs on every Bash call fleet-wide, which is the same reason the module-level
+    # pre-filter avoids a regex (ADR-129 Amendment 1 #11).
+    if tool_name == "Bash" and _TEE_RE.match(line.lstrip()):
         tokens = tokenize_posix(line)
         if tokens and _TEE_RE.match(tokens[0]):
             out.extend(t for t in tokens[1:] if not t.startswith("-") and is_file_target(t))
@@ -231,7 +235,16 @@ def extract_heredoc_literal(segment):
     lines = segment.split("\n")
     raw_first = lines[0]
     masked = mask_first_line_quotes(raw_first)
-    idx = masked.find("<#")
+    # The `<#` sentinel is what masking rewrites a genuine, unquoted `<<` into --
+    # but `<#` is ALSO real syntax: it opens a PowerShell block comment. Confirming
+    # the RAW line carries `<<` at the same offset (masking is length-preserving,
+    # so offsets align) separates the two, and skipping past a literal `<#` means a
+    # real `<<` later on the same line is still found rather than shadowed by it.
+    idx = -1
+    for m in re.finditer(r"<#", masked):
+        if raw_first[m.start():m.start() + 2] == "<<":
+            idx = m.start()
+            break
     if idx == -1:
         return None
     rest = raw_first[idx + 2:]
@@ -335,6 +348,17 @@ def find_serializer_write(segment, has_destination):
 
 
 _INPLACE_RE = re.compile(r"(?i)^(sed|perl)$")
+# Short clustered form: -i, -i.bak, -pi, -ni. The `[a-z]*` cannot cross a second
+# `-`, so GNU sed's long form needs its own arm -- without it `sed --in-place`
+# sailed through while `sed -i` blocked, an inconsistency inside the same
+# documented scope.
+_INPLACE_SHORT_RE = re.compile(r"(?i)^-[a-z]*i")
+_INPLACE_LONG_RE = re.compile(r"(?i)^--in-place(=|$)")
+
+
+def _is_inplace_flag(flag):
+    """True iff *flag* requests an in-place edit, in either sed/perl spelling."""
+    return bool(_INPLACE_SHORT_RE.match(flag) or _INPLACE_LONG_RE.match(flag))
 
 
 def find_inplace_edit(line):
@@ -352,7 +376,7 @@ def find_inplace_edit(line):
     if not tokens or not _INPLACE_RE.match(tokens[0]):
         return None
     flags = [t for t in tokens[1:] if t.startswith("-")]
-    if not any(re.match(r"(?i)^-[a-z]*i", f) for f in flags):
+    if not any(_is_inplace_flag(f) for f in flags):
         return None
     script_token = None
     for idx, tok in enumerate(tokens[1:]):
@@ -377,8 +401,17 @@ _PS_HERESTRING_RE = re.compile(r"@(['\"])\r?\n(.*?)\r?\n\1@", re.DOTALL)
 
 
 def find_powershell_content_write(segment, upstream=None):
-    """Return (cmdlet, kind, literal) for a PowerShell content-write cmdlet
-    fed an inline literal, or None.
+    """Return EVERY inline literal feeding a PowerShell content-write cmdlet on
+    *segment*, as a list of (cmdlet, kind, literal) -- possibly empty.
+
+    Returning a list rather than the first hit is load-bearing: an upstream
+    here-string and a `-Value` on the same cmdlet are independent literals, and
+    returning only the here-string let a SAFE one mask a genuinely hazardous
+    `-Value` downstream of it (`@'...safe...'@ | Set-Content a.md;
+    Set-Content b.md -Value "it's hazardous"` reported nothing, while the same
+    `-Value` alone blocked correctly). The caller evaluates each candidate and
+    blocks on the first hazardous one, so one benign literal can no longer
+    suppress a hazardous sibling.
 
     Two literal shapes: a `-Value` argument (judged by `arg_hazard`) and a
     `@'...'@` here-string (judged by `body_hazard`, since a here-string body
@@ -398,14 +431,16 @@ def find_powershell_content_write(segment, upstream=None):
     fix for a cmdlet-shaped word appearing mid-line as an argument."""
     tokens = tokenize_powershell(first_line(segment).lstrip())
     if not tokens or not _PS_CMDLET_RE.match(tokens[0]):
-        return None
+        return []
+    out = []
     here = _PS_HERESTRING_RE.search(upstream if upstream is not None else segment)
     if here:
-        return (tokens[0], "here-string", here.group(2))
+        out.append((tokens[0], "here-string", here.group(2)))
     for idx, tok in enumerate(tokens[1:]):
         if _PS_VALUE_FLAG_RE.match(tok) and idx + 2 <= len(tokens) - 1:
-            return (tokens[0], "value", tokens[idx + 2])
-    return None
+            out.append((tokens[0], "value", tokens[idx + 2]))
+            break
+    return out
 
 
 # --- Top-level combination --------------------------------------------------
@@ -506,9 +541,8 @@ def find_content_writes(cmd, tool_name, segments=None):
                 continue
 
         if tool_name == "PowerShell":
-            ps = find_powershell_content_write(seg, upstream="\n".join(segments[: idx + 1]))
-            if ps:
-                cmdlet, kind, literal = ps
+            upstream = "\n".join(segments[: idx + 1])
+            for cmdlet, kind, literal in find_powershell_content_write(seg, upstream=upstream):
                 reason = body_hazard(literal) if kind == "here-string" else arg_hazard(literal)
                 if reason:
                     out.append({
@@ -517,6 +551,7 @@ def find_content_writes(cmd, tool_name, segments=None):
                         "target": target or "(the cmdlet's own -Path)",
                         "reason": reason,
                     })
+                    break
     return out
 
 
