@@ -1884,15 +1884,30 @@ def test_prefilter_is_a_superset_of_each_evaluator():
     # The prefilter exists to skip the transcript parse. It must never skip a
     # turn its evaluator would have fired on, so for a transcript that DOES fire
     # a trigger, that trigger's prefilter must return True.
-    ctx_for = lambda text: gate._PrefilterCtx(
-        text=text,
-        lower=text.lower(),
-        has_merge_or_issue_signal=True,
-    )
+    def ctx_for(text):
+        # Compute has_merge_or_issue_signal exactly as main() does, rather than
+        # pinning it True. The deferral prefilter is `has_merge_or_issue_signal
+        # and any(...)`, so a hardcoded True would exercise only its second
+        # half -- and a regression that dropped the issue-create term (making
+        # the deferral trigger unreachable after an issue-create-only session)
+        # would still pass. That is the exact failure class this test exists to
+        # catch, so the expression must be the real one.
+        lower = text.lower()
+        return gate._PrefilterCtx(
+            text=text,
+            lower=lower,
+            has_merge_or_issue_signal=(
+                "merged" in lower or bool(gate._ISSUE_CREATE_STMT_RE.search(text))
+            ),
+        )
     firing = {
         gate._TRIGGER_PR: _MERGED_NO_ENUM,
         gate._TRIGGER_ISSUE: _ISSUE_CREATED_NO_ENUM,
-        gate._TRIGGER_TABLE: _SPAWNED_NO_SHARD,
+        # A BARE spawn -- no table heading, no shard write -- so this fires
+        # trigger 3. _SPAWNED_NO_SHARD would not: it carries the table, which
+        # RESOLVES trigger 3 rather than firing it, silently dropping this
+        # trigger from the check (observed: "4 checked" instead of 5).
+        gate._TRIGGER_TABLE: [_asst_spawn("s1")],
         gate._TRIGGER_SHARD: _SPAWNED_NO_SHARD,
         gate._TRIGGER_DEFER: _MERGED_DEFERRAL_QUESTION,
     }
@@ -1907,7 +1922,10 @@ def test_prefilter_is_a_superset_of_each_evaluator():
             "%s: evaluator fires but prefilter would have skipped the parse" % spec.key
         )
         checked += 1
-    assert checked >= 4, "expected at least 4 firing fixtures, checked %d" % checked
+    assert checked == len(gate._TRIGGER_SPECS), (
+        "every trigger must be covered by a firing fixture; checked %d of %d"
+        % (checked, len(gate._TRIGGER_SPECS))
+    )
     return "prefilter admits every transcript its evaluator fires on (%d checked)" % checked
 
 
