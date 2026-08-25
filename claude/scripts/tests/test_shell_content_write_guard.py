@@ -30,11 +30,22 @@ the allow set (program-output redirection, a read-only `node -e`, a
 single-quoted `sed` regex, a short clean `echo`) is tested as seriously as the
 block set.
 
-Two scope boundaries are pinned as EXPLICIT accepted gaps rather than left
-silent, following ADR-129 Amendment 1 finding #9's precedent -- if either
-starts behaving differently, the test says so instead of quietly changing:
-`test_accepted_gap_heredoc_to_command_stdin` and
+Scope boundaries are pinned as EXPLICIT accepted gaps rather than left silent,
+following ADR-129 Amendment 1 finding #9's precedent -- if one starts behaving
+differently, the test says so instead of quietly changing:
+`test_accepted_gap_heredoc_to_interpreter_stdin` and
 `test_accepted_gap_second_heredoc_on_one_line`.
+
+ADR-138 Amendment 1 (dev-env#1046) NARROWED the first of those on measured
+evidence, and that loud-failure design is exactly what forced the change to be
+made on purpose. v1's gap was "any heredoc with no file destination." Replaying
+the guard over 54,330 real historical commands split that population in two:
+a heredoc feeding a content-publishing command's own prose argument
+(`gh pr create --body-file -`, `git commit -F -`) is now BLOCKED, while a
+heredoc feeding an interpreter's stdin (`py -3 - <<'PY'`) -- 87% of the
+population, and a PROGRAM rather than file content -- stays an accepted gap.
+The `test_amendment1_*` cases pin the new half, including that the allowlist
+stays closed to `gh api --input -` and cannot leak past `gh`/`git`.
 
 Usage:
     py -3 claude/scripts/tests/test_shell_content_write_guard.py
@@ -448,17 +459,122 @@ def test_powershell_env_override_applies_forward() -> str:
     return "a standalone PowerShell $env: override applies forward (real PowerShell semantics)"
 
 
-def test_accepted_gap_heredoc_to_command_stdin() -> str:
-    # ACCEPTED GAP, pinned deliberately: same hazard, but no file destination, so
-    # the inline-literal-to-a-FILE rule does not reach it. If this ever starts
-    # matching, that is a scope change to make on purpose -- not silently.
-    live = _live_matches("gh pr create --body-file - <<'EOF'\nIt's a body.\nEOF")
+def test_amendment1_blocks_heredoc_to_content_argument() -> str:
+    # SCOPE CHANGE, made deliberately (ADR-138 Amendment 1, dev-env#1046 item 2).
+    # This case was v1's first named accepted gap. Replaying the guard over 54,330
+    # real historical commands measured the class at a 1.86% shell-parse-failure
+    # rate (6.6x the 0.28% baseline), with 3 observed `unexpected EOF` failures on
+    # exactly this shape -- and showed v1 inverted the incentive, since the same
+    # body via `cat > body.md <<EOF` blocked while this, which leaves no artifact
+    # behind to inspect when it corrupts, did not.
+    match = _assert_blocks(
+        "gh pr create --body-file - <<'EOF'\nIt's a body with `backticks`.\nEOF",
+        why="a heredoc feeding a content-publishing command's own body argument",
+    )
+    if match["mechanism"] != "stdin-content-arg":
+        raise AssertionError(
+            f"expected mechanism 'stdin-content-arg', got {match['mechanism']!r}"
+        )
+    return "Amendment 1: a heredoc into `gh --body-file -` blocks as stdin-content-arg"
+
+
+def test_accepted_gap_heredoc_to_interpreter_stdin() -> str:
+    # ACCEPTED GAP, NARROWED but still pinned deliberately. Amendment 1 widened
+    # only to a closed allowlist of content-publishing commands' prose arguments;
+    # an interpreter reading a PROGRAM from stdin carries no such flag and is
+    # excluded STRUCTURALLY, not by a heuristic. Measured 1,041 of the 1,198 gap
+    # commands (86%) -- and the Write tool is the wrong remedy for a program, so
+    # widening here would be a false positive by construction, not a judgment call.
+    # If this ever starts matching, that is a scope change to make on purpose.
+    for cmd in (
+        "py -3 - <<'PY'\nimport os\nprint(os.getcwd())\nPY",
+        "python - <<'EOF'\nx = 1\nprint(x)\nEOF",
+        "py -3 << 'PYEOF'\nimport sys\nprint(sys.version)\nPYEOF",
+    ):
+        live = _live_matches(cmd)
+        if live:
+            raise AssertionError(
+                "this is a documented accepted gap (ADR-138 Amendment 1). It now "
+                f"matches as {live[0]['mechanism']} for {cmd.splitlines()[0]!r} -- "
+                "if that is intended, update ADR-138 and this test."
+            )
+    return "ACCEPTED GAP confirmed: a heredoc feeding an interpreter's stdin is not matched"
+
+
+def test_amendment1_content_arg_allowlist_stays_closed() -> str:
+    # The widening is worth only as much as its allowlist is closed. `gh api
+    # --input -` is a machine-generated JSON payload, not authored prose, and is
+    # the exact false-positive surface ADR-138 v1 named when declining to widen;
+    # `grep -F -` / `sort -F -` prove the `-F` arm cannot leak past gh/git.
+    for cmd in (
+        "gh api repos/o/r/issues --input - <<'JSON'\n{\"a\": 1}\nJSON",
+        "grep -F - patterns.txt",
+        "sort -F - <<'EOF'\na\nb\nEOF",
+    ):
+        live = _live_matches(cmd)
+        if live:
+            raise AssertionError(
+                f"allowlist leaked: {cmd.splitlines()[0]!r} matched as "
+                f"{live[0]['mechanism']} -- the widening must stay closed to gh/git "
+                "prose arguments (ADR-138 Amendment 1)."
+            )
+    return "allowlist closed: `gh api --input -`, `grep -F -`, `sort -F -` all pass"
+
+
+def test_amendment1_env_prefix_does_not_defeat_the_command_anchor() -> str:
+    # `/review` finding on this PR, verified by executing the detector rather than
+    # by inspection. The command anchor originally read the FIRST token, so a
+    # leading `VAR=value ` assignment hid the command from it entirely.
+    #
+    # The under-match was narrow; the TEST defect it caused was not. Because
+    # `ALLOW_SHELL_CONTENT_WRITE=1 gh pr create --body-file - <<EOF` never
+    # MATCHED, the override case for this mechanism passed vacuously -- it
+    # asserted "allowed" against a detector that had already missed, so it would
+    # have passed with override support entirely removed. This test pins the
+    # detector half; `..._override_exempts_content_arg` below pins the other.
+    match = _assert_blocks(
+        "FOO=1 gh pr create --body-file - <<'EOF'\nIt's prose.\nmore\nEOF",
+        why="an env-var prefix must not hide the command from the anchor",
+    )
+    if match["mechanism"] != "stdin-content-arg":
+        raise AssertionError(f"expected 'stdin-content-arg', got {match['mechanism']!r}")
+    for cmd in ("ghi pr create --body-file - <<'EOF'\na\nb\nEOF",
+                "git-lfs push --body-file - <<'EOF'\na\nb\nEOF"):
+        if _live_matches(cmd):
+            raise AssertionError(
+                f"the anchor must not match a command merely PREFIXED by gh/git: {cmd!r}")
+    return "an env-var prefix is skipped; `ghi`/`git-lfs` still do not match the anchor"
+
+
+def test_amendment1_override_exempts_content_arg_non_vacuously() -> str:
+    # The other half of the finding above. Assert BOTH that the detector matches
+    # (so the override is actually doing the work) and that the override then
+    # exempts it -- an "allowed" assertion alone cannot distinguish the two.
+    cmd = "ALLOW_SHELL_CONTENT_WRITE=1 gh pr create --body-file - <<'EOF'\nIt's prose.\nmore\nEOF"
+    segments = scwg.segments_or_whole(cmd)
+    raw = scwg.find_content_writes(cmd, "Bash", segments=segments)
+    if not raw:
+        raise AssertionError(
+            "the detector must MATCH before the override can meaningfully exempt it -- "
+            "otherwise this test passes vacuously (the defect it was written for)")
+    if _live_matches(cmd):
+        raise AssertionError("the override token must exempt a stdin-content-arg match")
+    return "override exempts a stdin-content-arg match that the detector genuinely found"
+
+
+def test_amendment1_content_arg_still_obeys_the_hazard_test() -> str:
+    # The widening changes WHERE the rule reaches, not WHAT counts as hazardous.
+    # A single-line, marker-free body passes at the detector layer, exactly as
+    # `echo done > flag.txt` does -- not by override.
+    live = _live_matches("gh pr create --body-file - <<'EOF'\nsingleline\nEOF")
     if live:
         raise AssertionError(
-            "this is a documented accepted gap (ADR-138). It now matches as "
-            f"{live[0]['mechanism']} -- if that is intended, update ADR-138 and this test."
+            "a clean single-line body must pass the hazard test, but it matched as "
+            f"{live[0]['mechanism']}"
         )
-    return "ACCEPTED GAP confirmed: a heredoc to a command's stdin (no file target) is not matched"
+    _assert_blocks("git commit -F- <<'EOF'\nfix: it's broken\nand multi-line\nEOF",
+                   why="a hazardous commit message via stdin")
+    return "hazard test unchanged: clean single-line body passes, hazardous one blocks"
 
 
 def test_accepted_gap_second_heredoc_on_one_line() -> str:
@@ -519,6 +635,53 @@ def test_main_message_names_mechanism_and_reason() -> str:
         if expected not in proc.stderr:
             raise AssertionError(f"block message must contain {expected!r}\n  got: {proc.stderr[:400]}")
     return "main(): the block message names the mechanism, command, target, and hazard reason"
+
+
+def test_main_blocks_stdin_content_arg_with_tailored_remedy() -> str:
+    # The default remedy ("New file -> Write; existing file -> Edit") names no
+    # destination for a body piped into stdin, so this mechanism carries its own.
+    # It must also say, in the block text itself, that an interpreter reading a
+    # program from stdin is NOT blocked -- otherwise the obvious over-correction
+    # is to stop using `py -3 - <<PY` too, which this rule never asked for.
+    proc = _run_hook(_payload(
+        "gh pr create --title x --body-file - <<'EOF'\nIt's prose.\nmore\nEOF"))
+    if proc.returncode != 2:
+        raise AssertionError(
+            f"expected exit 2, got {proc.returncode}\n  stderr: {proc.stderr[:400]}")
+    for expected in ("--body-file", "Write tool", "is NOT blocked"):
+        if expected not in proc.stderr:
+            raise AssertionError(
+                f"block message must contain {expected!r}\n  got: {proc.stderr[:600]}")
+    return "main(): a stdin content argument blocks with its own file-then-path remedy"
+
+
+def test_main_allows_heredoc_to_interpreter_stdin() -> str:
+    # The end-to-end half of the narrowed accepted gap: the single most common
+    # multi-line-Python idiom in this fleet (1,041 historical commands) must
+    # still reach the shell untouched.
+    for cmd in ("py -3 - <<'PY'\nimport os\nprint(os.getcwd())\nPY",
+                "python - <<'EOF'\nx = 1\nprint(x)\nEOF"):
+        proc = _run_hook(_payload(cmd))
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"{cmd.splitlines()[0]!r} must be allowed (exit 0), got "
+                f"{proc.returncode}\n  stderr: {proc.stderr[:300]}")
+    return "main(): a heredoc feeding an interpreter's stdin is still allowed end-to-end"
+
+
+def test_prefilter_admits_heredoc_with_no_redirect() -> str:
+    # `gh pr create --body-file - <<'EOF'` carries NO '>' and none of the
+    # mechanism marker words, so before Amendment 1 added '<<' to the pre-filter
+    # the new detector could never have been reached. Pinned because a pre-filter
+    # regression is silent: the hook just stops blocking.
+    cmd = "gh pr create --body-file - <<'EOF'\nIt's prose.\nmore\nEOF"
+    if ">" in cmd:
+        raise AssertionError("test fixture must not contain a redirect")
+    if not scwg.might_write_content(cmd):
+        raise AssertionError(
+            "pre-filter rejected a command the stdin-content-arg detector must see "
+            "-- '<<' is a NECESSARY marker for that detector (ADR-138 Amendment 1)")
+    return "pre-filter admits a redirect-free heredoc, so the new detector is reachable"
 
 
 def test_main_allows_program_output_and_clean_literals() -> str:
@@ -615,9 +778,17 @@ def main() -> int:
         ("journal override token also exempts", test_journal_override_token_also_exempts),
         ("override does not exempt a later segment", test_override_does_not_exempt_a_later_segment),
         ("PowerShell $env: override applies forward", test_powershell_env_override_applies_forward),
-        ("ACCEPTED GAP: heredoc to command stdin", test_accepted_gap_heredoc_to_command_stdin),
+        ("A1: blocks heredoc to a content argument", test_amendment1_blocks_heredoc_to_content_argument),
+        ("ACCEPTED GAP: heredoc to interpreter stdin", test_accepted_gap_heredoc_to_interpreter_stdin),
+        ("A1: content-arg allowlist stays closed", test_amendment1_content_arg_allowlist_stays_closed),
+        ("A1: env prefix does not defeat the anchor", test_amendment1_env_prefix_does_not_defeat_the_command_anchor),
+        ("A1: override exempts content arg (non-vacuously)", test_amendment1_override_exempts_content_arg_non_vacuously),
+        ("A1: content arg obeys the hazard test", test_amendment1_content_arg_still_obeys_the_hazard_test),
+        ("A1: pre-filter admits redirect-free heredoc", test_prefilter_admits_heredoc_with_no_redirect),
         ("ACCEPTED GAP: second heredoc on one line", test_accepted_gap_second_heredoc_on_one_line),
         ("main(): blocks each 1041 occurrence", test_main_blocks_each_1041_occurrence),
+        ("main(): stdin content arg, tailored remedy", test_main_blocks_stdin_content_arg_with_tailored_remedy),
+        ("main(): allows heredoc to interpreter stdin", test_main_allows_heredoc_to_interpreter_stdin),
         ("main(): message names mechanism and reason", test_main_message_names_mechanism_and_reason),
         ("main(): allows program output and clean literals", test_main_allows_program_output_and_clean_literals),
         ("main(): blocks PowerShell content write", test_main_blocks_powershell_content_write),

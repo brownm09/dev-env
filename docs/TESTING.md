@@ -3473,7 +3473,7 @@ For a one-line navigational map of the test directory, see
     in both files — the guard blocks the shape, the prompt hook delivers the precedence rule that stops
     the bypass-mode instruction contradicting it — so the two suites are paired here.
 
-    47 cases in two layers, both hermetic (layer 2 spawns the real hook but touches no files or git —
+    55 cases in two layers, both hermetic (layer 2 spawns the real hook but touches no files or git —
     this hook does no filesystem or subprocess work at all). Layer 1 covers `body_hazard` / `arg_hazard`
     / `is_file_target` / the five extraction-and-detection functions / `find_content_writes` /
     `_is_overridden` / `might_write_content`; layer 2 drives `main()` over stdin, asserting exit codes
@@ -3503,13 +3503,28 @@ For a one-line navigational map of the test directory, see
     the whole command), the asymmetry ADR-129 Amendment 1 finding #8 established; the PowerShell `$env:`
     form correctly applies forward instead.
 
-    **Two deliberate scope gaps are pinned as accepted, not left silent** — the Amendment 1 finding #9
+    **Deliberate scope gaps are pinned as accepted, not left silent** — the Amendment 1 finding #9
     pattern, so a future change to either is made on purpose rather than discovered later:
-    `test_accepted_gap_heredoc_to_command_stdin` (a heredoc to a command's stdin, e.g.
-    `gh pr create --body-file - <<'EOF'`, carries the same hazard but has no file destination, so the
-    inline-literal-to-a-*file* rule does not reach it) and `test_accepted_gap_second_heredoc_on_one_line`
-    (only the first heredoc opener on a line is inspected — one hazardous body is enough to block).
-    Both fail loudly, with a message naming ADR-138, if the behavior changes.
+    `test_accepted_gap_heredoc_to_interpreter_stdin` (a heredoc feeding an interpreter's stdin,
+    `py -3 - <<'PY'` — the body is a *program*, not file content, so the Write tool is the wrong
+    remedy) and `test_accepted_gap_second_heredoc_on_one_line` (only the first heredoc opener on a
+    line is inspected — one hazardous body is enough to block). Both fail loudly, with a message
+    naming ADR-138, if the behavior changes.
+
+    **That loud-failure design did its job**: [ADR-138 Amendment 1](adr/138-shell-content-write-guard.md)
+    (dev-env#1046) narrowed the first gap on measured evidence, and the rewrite is deliberately a
+    *rename*, not a deletion. v1's gap was "any heredoc with no file destination." Replaying the guard
+    over 54,330 real historical commands (item 96) split that population: a heredoc feeding a
+    content-publishing command's own prose argument (`gh pr create --body-file -`, `git commit -F -`)
+    is now blocked as `stdin-content-arg`, while the interpreter-stdin half — 86% of the population —
+    stays accepted. Five `test_amendment1_*` / `test_prefilter_*` cases pin the new half:
+    `..._blocks_heredoc_to_content_argument`, `..._content_arg_allowlist_stays_closed` (`gh api
+    --input -`, `grep -F -`, `sort -F -` must all still pass — the allowlist may not leak past
+    `gh`/`git`), `..._content_arg_still_obeys_the_hazard_test` (widening changed *where* the rule
+    reaches, not *what* counts as hazardous), `test_prefilter_admits_heredoc_with_no_redirect` (the
+    `<<` pre-filter marker — without it the new shapes, carrying no redirect and no mechanism keyword,
+    would never reach the walk, and that regression would be silent), plus two `main()` cases covering
+    the mechanism's own remedy text and the still-allowed interpreter form.
 
     **Four cases are `/review` regressions** (dev-env#1042), each pinning a defect that was verified
     by executing the hook's own functions before it was reported, then fixed in the same PR:
@@ -3533,4 +3548,45 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_shell_content_write_guard.py
     py -3 claude/scripts/tests/test_session_mode_prompt.py
+    ```
+
+96. **replay-shell-content-guard test** — required when changing
+    `claude/scripts/replay-shell-content-guard.py`
+    ([ADR-138 Amendment 1](adr/138-shell-content-write-guard.md), dev-env#1046).
+
+    The script is the *reader* half of dev-env#1046 item 1. That issue proposed an append-only block
+    log inside the hook; weighing it produced a different answer, recorded in the amendment — **the
+    record already exists**. Every Bash/PowerShell call is written to a session transcript under
+    `~/.claude/projects/<project>/<session>.jsonl` together with its `tool_result`, which is strictly
+    more than a block log could hold: a log records that a block happened, a transcript records
+    whether the command *actually failed*. So no forward log was added; only this reader.
+
+    15 cases, **fully hermetic** — every one builds a synthetic transcript tree in a temp directory
+    and passes `--scan-dir`. Nothing reads the developer's real `~/.claude/projects`, which is both a
+    correctness requirement (the real corpus changes constantly, so any assertion against it would be
+    flaky) and a privacy one (real transcripts carry live command text).
+
+    **The load-bearing case is `test_enrichment_inputs_are_computed_over_the_right_denominators`.**
+    Enrichment — the blocked set's shell-parse-failure rate divided by the corpus baseline rate — is
+    the one number that distinguishes "concentrating real failures" from "over-matching," and it is a
+    ratio of two rates over two *different* denominators. Its fixture is hand-computed to land on
+    exactly **1.0x**, deliberately not a value >1: a bug that conflated the two denominators would
+    still produce a plausible-looking number, so a fixture that "passes" by returning something large
+    would prove nothing. `test_enrichment_handles_a_zero_baseline` pins the no-divide-by-zero path.
+
+    `test_gap_excludes_amendment1_content_arguments` is the coupling test between script and hook: now
+    that `gh pr create --body-file -` is blocked, the gap report must stop counting it, or the
+    still-open gap would be overstated by double-counting commands the guard already catches.
+
+    `test_truncate_flattens_and_caps` and `test_samples_are_truncated_not_verbatim` pin the privacy
+    property — truncation is the only thing between a transcript's secrets and this tool's stdout, so
+    it is asserted directly rather than assumed from the call site.
+
+    Extraction robustness is covered for the shapes a real corpus actually contains: non-shell
+    `tool_use` blocks, malformed JSON lines, non-list `content`, non-dict `input`, and — deliberately
+    counted rather than dropped — a `tool_use` whose `tool_result` never arrived because the session
+    ended mid-turn. Dropping those would quietly understate every denominator above.
+
+    ```bash
+    py -3 claude/scripts/tests/test_replay_shell_content_guard.py
     ```

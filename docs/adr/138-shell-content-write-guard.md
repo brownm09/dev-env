@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-25
 **Status:** Accepted
-**Tags:** hooks, pre-tool-use, bash, powershell, shell-quoting, silent-corruption, prose, write-tool, edit-tool, global-rule, bypass-permissions, precedence, session-mode-prompt, shared-module, hookout, correction, adr-010, adr-024, adr-103, adr-129, adr-133
+**Tags:** hooks, pre-tool-use, bash, powershell, shell-quoting, silent-corruption, prose, write-tool, edit-tool, global-rule, bypass-permissions, precedence, session-mode-prompt, shared-module, hookout, correction, measurement, over-match, replay, transcripts, instrument-calibration, heredoc, adr-010, adr-024, adr-103, adr-106, adr-129, adr-133
 
 ---
 
@@ -186,6 +186,9 @@ Pinned by explicit tests that fail loudly if the behavior changes, following Ame
   inline-literal-to-a-*file* rule does not reach it. Widening to "any heredoc anywhere" would pull
   in `gh api --input -` and similar, and was judged not worth the false-positive surface in v1.
   Test: `test_accepted_gap_heredoc_to_command_stdin`.
+  **→ Narrowed by [Amendment 1](#amendment-1-measured-over-match-rate-and-the-stdin-heredoc-gap-dev-env1046)
+  on measured evidence: the half feeding a content-publishing command's own prose argument is now
+  in scope; the interpreter-stdin half remains an accepted gap.**
 - **Only the first heredoc opener on a line is inspected.** Two heredocs on one command line is
   vanishingly rare, and one hazardous body is enough to block.
   Test: `test_accepted_gap_second_heredoc_on_one_line`.
@@ -243,10 +246,11 @@ instructions that contradict it, not just adding the rule. The `cat > … <<'JSO
   keep **both** consumer suites green (`## Testing` item 94 runs them together).
 - One more pure-Python `PreToolUse` process per Bash/PowerShell call, short-circuited by the cheap
   pre-filter on the overwhelmingly common no-marker command.
-- Covered by `claude/scripts/tests/test_shell_content_write_guard.py` (Testing item 95, 47 cases,
-  including a verbatim reproduction of each dev-env#1041 occurrence) and
+- Covered by `claude/scripts/tests/test_shell_content_write_guard.py` (Testing item 95, 55 cases
+  after Amendment 1, including a verbatim reproduction of each dev-env#1041 occurrence) and
   `claude/scripts/tests/test_shell_write_detect.py` (item 94, 21 cases). Item 70
-  (`test_session_mode_prompt.py`) grew two cases for the bypass carve-out.
+  (`test_session_mode_prompt.py`) grew two cases for the bypass carve-out. Amendment 1 adds
+  `claude/scripts/tests/test_replay_shell_content_guard.py` (item 96, 15 cases).
 - Documentation reconciliation in the same PR: `README.md`, `claude/scripts/README.md`,
   `claude/scripts/tests/README.md`, `docs/REFERENCE.md`, `docs/TESTING.md`, and this repo's root
   `CLAUDE.md` `## Testing` index.
@@ -256,6 +260,9 @@ instructions that contradict it, not just adding the rule. The `cat > … <<'JSO
 ## References
 
 - `claude/scripts/pre-tool-use-shell-content-write-guard.py` — the guard implementation
+- `claude/scripts/replay-shell-content-guard.py` — the Amendment 1 reader: replays the guard over
+  recorded session transcripts and reports block rate, mechanism mix, override use, and the
+  failure-rate enrichment ratio
 - `claude/scripts/_shell_write_detect.py` — the shared primitives, extracted from ADR-129's guard
 - `claude/scripts/session-mode-prompt.py` — where the bypass-mode carve-out is delivered
 - `claude/CLAUDE.md` → Authoring File Content — the rule and its precedence statement
@@ -311,3 +318,202 @@ All three were fixed in the same PR, with a checked-in regression test each (the
 before checking whether the line could start with `tee` at all. Guarded with a cheap `startswith`
 match first — the same "this runs on every call fleet-wide" reasoning as the module-level
 pre-filter.
+
+---
+
+## Amendment 1: measured over-match rate, and the stdin-heredoc gap (dev-env#1046)
+
+**Date:** 2026-08-25 · **Tracking:** [dev-env#1046](https://github.com/brownm09/dev-env/issues/1046)
+
+Two follow-ups, sequenced because the second needed the first's data: *(1)* the guard leaves no
+record of what it blocks, so nobody can say whether it over-matches; *(2)* the stdin-heredoc gap
+above was left open for want of exactly that evidence.
+
+### The finding that reframed item 1: the record already existed
+
+The issue proposed an append-only block log under `scratch/`, and asked that it be weighed rather
+than assumed. Weighing it produced a different answer: **every Bash and PowerShell command Claude
+Code has ever run is already recorded**, in the session transcripts under
+`~/.claude/projects/<project>/<session>.jsonl`, together with its `tool_result`. What was missing
+was never the record — only a reader for it.
+
+That is strictly more than a hook-side log could hold, and the difference is not incidental:
+
+- A block log records *that a block happened*. A transcript records the command, **whether it
+  actually failed**, and what was done next. The one metric that distinguishes "targeting the right
+  population" from "over-matching" is a ratio needing **both** arms — blocked and unblocked — so it
+  is computable only from the transcripts, never from a log of blocks alone.
+- A log describes only the hook version live when each line was written. A replay runs the
+  **current** code over the **same** corpus, so it doubles as a regression instrument: change a
+  detector, re-run, see precisely which real commands changed classification.
+- A forward log answers nothing until months of traffic accumulate. The replay answered it the same
+  afternoon, over 54,330 unique commands spanning 2026-06-13 → 2026-08-25.
+
+So: **no forward log. Ship the reader** — `claude/scripts/replay-shell-content-guard.py`
+(`## Testing` item 96), on-demand, reading only, zero hot-path cost.
+
+One incidental correction the weighing turned up, recorded because this ADR's own cost argument
+leaned on it: the hook's docstring claimed it "touches no filesystem." Its *detection logic* does
+not, but `_hookutil.record_heartbeat` ([ADR-106](106-hook-heartbeat-liveness-ledger.md)) performs an
+unconditional tmp-file write plus `os.replace` on **every** invocation, as the first statement of
+`main()`. A log written only on a match would therefore have been *cheaper* than what the hook
+already pays unconditionally — the no-I/O objection was never the real reason to decline it, and
+saying so mattered more than winning the point. The docstring now states this precisely.
+
+### What the replay measured
+
+Corpus: 60,084 Bash/PowerShell calls, **54,330 unique**. Every figure below is reproducible from
+`replay-shell-content-guard.py --gap` — deliberately, after a `/review` finding on this PR caught
+three *different* numbers for the same quantity circulating in the code comments, the tests, and an
+earlier draft of this section, none of them re-derivable from the shipped tool. The corpus is live
+and grows every session, so a re-run returns slightly different absolute counts; the **rates** are
+what to compare.
+
+| Population | n | Shell-parse-failure rate | vs baseline |
+|---|---:|---:|---:|
+| **Baseline** — all commands | 54,330 | **0.28%** (152) | 1× |
+| **Blocked** — v1 rule (= blocked − `stdin-content-arg`) | 1,588 (2.92%) | **3.40%** (54) | **12.1×** |
+| **Blocked** — with Amendment 1 | 1,745 (3.21%) | **3.27%** (57) | **11.7×** |
+| Gap: interpreter stdin (`py -3 - <<'PY'`) — still open | 1,041 | 1.63% (17) | 5.8× |
+
+Per mechanism, as the reader now reports it:
+
+| Mechanism | n | Shell-parse-failure rate |
+|---|---:|---:|
+| `heredoc` | 996 | **5.22%** (52) |
+| `serializer` | 583 | 0.34% (2) |
+| `stdin-content-arg` (new) | 157 | **1.91%** (3) |
+| `inline-literal` | 6 | 0.00% |
+| `in-place-edit` | 3 | 0.00% |
+
+**The guard is not over-matching.** Its block set concentrates real shell-parse failures **~12×**
+over baseline, and holds 37% of every such failure in the corpus while covering 3.2% of commands.
+Sampling the blocks shows PR bodies, review comments, outreach prose, and `py -3 -c` edits of ADRs
+— the targeted class, and one sampled body already carries mojibake from a real corruption.
+
+**Read the per-mechanism column with one caveat, or it will mislead.** `serializer` sits at 0.34%,
+barely above baseline, which looks like the one arm that might be over-matching. It is an artifact
+of the deliberately strict signature (below), and the strictness is **differentially blind by
+mechanism**:
+
+- A mangled **heredoc** breaks the shell's own parse, so the shell reports it. Counted.
+- A mangled **`py -3 -c` / `node -e` script** usually does *not*. The shell hands the interpreter a
+  truncated or re-quoted string, and the error surfaces *inside* the interpreter — e.g. this real
+  blocked command, whose `'\''` quote-escape dance reached Python as
+  `SyntaxError: unmatched ']'` on `old = 'can[’\'']t|won[’\'']t'`. **Not counted**,
+  because the same error text is ambiguous for a heredoc-fed interpreter (see calibration, below).
+
+So 0.34% is a floor for that arm specifically, not an estimate — and dev-env#1041 occurrence 1
+(silent corruption: a file written, looking fine, rejected by node only when executed) produces no
+error text at all and is invisible to *every* arm of this metric. The enrichment ratio is a lower
+bound throughout. Deliberately not "fixed" by loosening the pattern: that is precisely the
+calibration error described below, and a metric that flatters the guard is worth less than one that
+under-reports it.
+
+The detector-level check is separately reassuring: the `serializer` arm fired on a script's own
+write call 595 times against just 5 redirect-only matches, so the "program output that merely
+happens to be redirected" edge is negligible rather than dominant.
+
+Two things the numbers do **not** say, stated so they are not read into them. Blocks are frequent in
+absolute terms — ~21/day fleet-wide — so this is a high-volume intervention, correct but not cheap.
+And 98% of blocks fire on *"spans more than one line"* rather than a hazard marker, exactly as
+designed (see *Alternatives rejected → blocking only on a hazard marker*); the failure-rate
+enrichment is what justifies that length rule, and it is now measured rather than asserted.
+
+`ALLOW_SHELL_CONTENT_WRITE` has been used **0** times (it shipped the same day); its ADR-129 sibling
+`ALLOW_JOURNAL_SHELL_WRITE`, **11**. Override frequency is the strongest available
+false-positive signal — a human explicitly disagreeing — and it needs no new instrumentation, so the
+reader reports it.
+
+### Item 2: widen narrowly, on the evidence
+
+The gap splits cleanly in two, and v1 had lumped them together:
+
+- **A heredoc feeding a content-publishing command's own prose argument** — `gh pr create
+  --body-file -`, `gh issue comment --body-file -`, `git commit -F -`. Authored prose crossing a
+  shell boundary, **1.91% — 6.8× baseline**, with three observed `unexpected EOF while looking for
+  matching '''` failures on exactly this shape. **Now blocked** (`stdin-content-arg`, n=157).
+- **A heredoc feeding an interpreter's stdin** — `py -3 - <<'PY'`, `python - <<'EOF'`. **1,041 of
+  the 1,198 gap commands (87%). Remains an accepted gap**, and not as a concession: that body is a
+  *program*, not file content, so "use the Write tool" is the wrong remedy, and blocking it would
+  break the most common multi-line-Python idiom in this fleet at ~15/day.
+
+The decisive argument was not the failure rate but an **inverted incentive** v1 created. The same PR
+body written as `cat > body.md <<'EOF'` blocked, while `gh pr create --body-file - <<'EOF'` passed —
+the form with *no artifact left behind to inspect* when the shell mangles it. A model that hit the
+block could "fix" it by switching to the more dangerous shape. That is not a scope boundary; it is a
+hole, and PR #1042's own commit used exactly that shape.
+
+Widening stays safe for the same structural reason the original inline-literal/program-output split
+does. The detector is anchored to a **closed allowlist** — first token `gh` or `git`, plus an
+explicit stdin content flag (`--body-file`, `--notes-file`, `--file`, `-F`). An interpreter reading a
+program from stdin carries no such flag, so the 86% majority is excluded **by construction, not by
+judgment**. `gh api --input -` stays deliberately out: a JSON payload is machine-generated, not
+authored prose, and it was the specific false-positive surface v1 named. Pinned by
+`test_amendment1_content_arg_allowlist_stays_closed`.
+
+`git commit -m "$(cat <<'EOF' … )"` — a heredoc inside a command substitution — is **still** out of
+scope. Same hazard; detecting it means reaching inside `$()`, which no detector here does. Recorded
+as a known remaining gap rather than silently left.
+
+### Instrument calibration (the part that nearly produced the opposite conclusion)
+
+The first outcome pass scored a command as "shell-mangled" on a signature set that included
+`IndentationError` and `SyntaxError: invalid syntax`. For a `py -3 - <<'PY'` heredoc those are
+almost always the *author's own Python bug* — the heredoc delivers the body verbatim — so they
+measured authoring quality, not shell mangling. That inflated the interpreter-stdin rate from 1.66%
+to 10.2% and made it look like the **highest-risk** class in the corpus, i.e. the strongest argument
+for exactly the broad widening the evidence ultimately refutes. Narrowing to errors only the shell
+itself emits reversed the ranking.
+
+Recorded because the failure mode is general and quiet: an uncalibrated instrument does not return
+an error, it returns a confident number pointing the wrong way. This is the global `## Experimental
+Rigor` rule's "instruments calibrated against known-good AND known-bad references before any arm is
+scored," met the hard way. `SHELL_FAIL_RE` carries the lesson in a comment, and the reader
+recomputes its own baseline in the same run so a future widening of that pattern cannot be compared
+against a stale figure copied from this document.
+
+### Consequences
+
+- `claude/scripts/replay-shell-content-guard.py` is the standing instrument for this question.
+  Re-run it after any detector change: `py -3 claude/scripts/replay-shell-content-guard.py --gap`.
+- **Tripwire:** enrichment falling toward ~1×, or `ALLOW_SHELL_CONTENT_WRITE` use becoming routine,
+  means the guard has started firing on ordinary traffic. Either is cause to re-scope it.
+- The hook gains one detector and one pre-filter marker (`<<` — without it the new shapes, which
+  carry no redirect and no mechanism keyword, would never reach the walk; pinned by
+  `test_prefilter_admits_heredoc_with_no_redirect`).
+- `stdin-content-arg` carries its own remedy text, because "New file → Write, existing file → Edit"
+  names no destination for a body piped into stdin. It also states in the block message that an
+  interpreter reading a program from stdin is *not* blocked — otherwise the natural over-correction
+  is to abandon `py -3 - <<'PY'` too, which this rule never asked for.
+- Suite: 47 → 55 cases; the accepted-gap test was **renamed and rewritten**, not deleted, so the
+  narrowed boundary still fails loudly if it moves again.
+
+### Post-review hardening, Amendment 1 (same PR, dev-env#1051)
+
+Three findings, each **verified by executing the hook's own functions** before being reported —
+the discipline this ADR's first post-review section established, applied to its own amendment.
+
+**Correctness — an env-var prefix defeated the command anchor.** `find_stdin_content_arg` read the
+segment's first *token*, so `FOO=1 gh pr create --body-file - <<EOF` did not match. The under-match
+is narrow; the **test** defect it caused was not. Because
+`ALLOW_SHELL_CONTENT_WRITE=1 gh pr create --body-file - <<EOF` likewise never matched, the override
+case for this mechanism asserted "allowed" against a detector that had already missed — it would
+have passed with override support removed entirely. Fixed by skipping leading `VAR=value`
+assignments (real Bash semantics), and pinned by two tests: one for the anchor, one asserting the
+detector genuinely *matches* before checking that the override exempts it.
+
+**Performance — the same mistake this ADR had already fixed once.** The new detector ran
+`shlex.split` purely to read the first word, on every Bash call fleet-wide. Measured at **23% of
+the entire segment walk** on a command that merely contains `<<`. The original post-review pass
+above had guarded the `tee` detector with a cheap `startswith` for exactly this reason; the lesson
+was not carried across to the detector added next to it. Replaced with an anchored regex — walk cost
+0.058 → 0.037 ms, detector share 23% → 1%.
+
+**Documentation — the measurement PR's own numbers were not reproducible.** Three different figures
+for one quantity (1,024/1,185 in the code comments and tests, 1,029/1,190 in this section) because
+each came from a throwaway probe script with a slightly different classifier, and none was derivable
+from the shipped reader. Fixed at the root rather than by editing the numbers: the reader now
+reports a **per-mechanism shell-fail breakdown**, so every rate quoted here can be re-derived by
+running the tool. That change is also what surfaced the `serializer`-arm blindness documented above
+— the flat corpus-wide ratio had been hiding a 15× spread between mechanisms.
