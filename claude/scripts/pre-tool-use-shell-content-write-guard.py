@@ -34,6 +34,11 @@ Detection contract (see each function for its own mechanism):
     script either contains a file-write call or is redirected to a file.
   - `find_inplace_edit` -- `sed -i` / `perl -pi -e`; the script argument is
     the literal. No separate destination needed -- the file IS the target.
+  - `find_stdin_content_arg` -- a CONTENT destination that is not a file:
+    a heredoc piped into `gh`/`git`'s own authored-prose argument
+    (`--body-file -`, `--notes-file -`, `-F -`). Added by ADR-138
+    Amendment 1 after measurement; an interpreter reading a PROGRAM from
+    stdin (`py -3 - <<'PY'`) carries no such flag and stays an accepted gap.
   - `find_powershell_content_write` -- `Set-Content`/`Add-Content`/
     `Out-File`/`Tee-Object`/`New-Item -Value` with a literal `-Value` or a
     piped `@'...'@` here-string. Gated on tool_name == "PowerShell".
@@ -48,8 +53,11 @@ Detection contract (see each function for its own mechanism):
     by this one, silently breaking a live escape hatch.
   - Blocks (exit 2) via `_hookout.emit_block` (ADR-103). Fails OPEN (exit 0)
     everywhere else, including on any internal exception. No `_winsubp`
-    import: this hook spawns no subprocess and touches no filesystem --
-    every question it answers comes from the command text alone.
+    import: this hook spawns no subprocess, and its own detection logic
+    touches no filesystem -- every question it answers comes from the
+    command text alone. (The one unconditional filesystem write is the
+    `_hookutil.record_heartbeat` call every wired hook makes, ADR-106; it
+    predates and is independent of this hook's own no-I/O property.)
 
 Wired AFTER `pre-tool-use-journal-shell-write-guard.py` in `claude/settings.json`
 so a journal-path write keeps that hook's more specific remedy message.
@@ -214,6 +222,50 @@ def find_write_destinations(line, masked, tool_name):
         if tokens and _TEE_RE.match(tokens[0]):
             out.extend(t for t in tokens[1:] if not t.startswith("-") and is_file_target(t))
     return out
+
+
+# A CONTENT destination that is not a file: a command that publishes authored
+# prose read from its own stdin. ADR-138 Amendment 1 -- v1's rule reached only
+# an inline literal bound for a *file*, so `gh pr create --body-file - <<'EOF'`
+# passed while the same body written via `cat > body.md <<'EOF'` blocked. That
+# is not a principled distinction, and it inverted the incentive: the form the
+# guard let through is the one that leaves no artifact behind to inspect when
+# the shell mangles it.
+#
+# Anchored to a closed allowlist of commands AND flags, which is what keeps
+# this from becoming the "any heredoc anywhere" widening v1 declined. An
+# interpreter reading a PROGRAM from stdin (`py -3 - <<'PY'`) carries no such
+# flag, so it is excluded STRUCTURALLY, not by a heuristic -- the same property
+# that makes the inline-literal/program-output split safe. Measured: that
+# interpreter-stdin class is 1024 of the 1185 gap commands (86%), and the Write
+# tool is the wrong remedy for a program, so it stays an accepted gap.
+_CONTENT_CMD_RE = re.compile(r"(?i)^(gh|git)$")
+# `--body-file -` / `--notes-file -` / `--file=-` (gh, git) and `-F -` / `-F-`
+# (git commit/tag/notes). Deliberately NOT `gh api --input -`: a JSON payload is
+# machine-generated, not authored prose, and pulling it in is exactly the
+# false-positive surface ADR-138 named.
+_STDIN_CONTENT_FLAG_RE = re.compile(
+    r"(?i)(?:^|\s)(?:"
+    r"(--body-file|--notes-file|--file)(?:\s*=\s*|\s+)(?:-|/dev/stdin)"
+    r"|(-F)\s*(?:-|/dev/stdin)"
+    r")(?=\s|$)"
+)
+
+
+def find_stdin_content_arg(line, masked):
+    """Return the flag (e.g. `--body-file`) when *line* routes STDIN into a
+    content-publishing command's body/message argument, else None.
+
+    Matched against the MASKED line so a `--body-file -` appearing inside a
+    quoted argument is not mistaken for a real one; masking is
+    length-preserving, so the offsets still index the raw line."""
+    tokens = tokenize_powershell(line.lstrip())
+    if not tokens or not _CONTENT_CMD_RE.match(tokens[0]):
+        return None
+    m = _STDIN_CONTENT_FLAG_RE.search(masked)
+    if not m:
+        return None
+    return m.group(1) or m.group(2)
 
 
 # --- Inline-literal extraction ----------------------------------------------
@@ -462,6 +514,10 @@ JOURNAL_OVERRIDE_TOKEN = JOURNAL_OVERRIDE_VAR_NAME + "=1"
 _PREFILTER_MARKERS = (
     "tee", "node", "py", "sed", "perl",
     "out-file", "set-content", "add-content", "tee-object", "new-item",
+    # `<<` -- required by the stdin-content-arg detector (ADR-138 Amendment 1),
+    # whose shapes (`gh pr create --body-file - <<'EOF'`) carry NO redirect and
+    # none of the markers above, so without this they never reach the walk.
+    "<<",
 )
 
 
@@ -494,6 +550,23 @@ def find_content_writes(cmd, tool_name, segments=None):
         masked = mask_first_line_quotes(line)
         targets = find_write_destinations(line, masked, tool_name)
         target = targets[0] if targets else None
+
+        # Checked BEFORE the file-destination arms: when a command carries both
+        # a stdin content flag and an unrelated redirect, the flag is the more
+        # accurate description of where the literal is actually going.
+        content_flag = find_stdin_content_arg(line, masked)
+        if content_flag:
+            heredoc = extract_heredoc_literal(seg)
+            if heredoc:
+                reason = body_hazard(heredoc[1])
+                if reason:
+                    out.append({
+                        "segment": seg.strip(), "segment_index": idx,
+                        "mechanism": "stdin-content-arg", "detail": content_flag,
+                        "target": "(stdin of {})".format(content_flag),
+                        "reason": reason,
+                    })
+                    continue
 
         if target:
             heredoc = extract_heredoc_literal(seg)
@@ -604,9 +677,7 @@ Content routed through a shell gets parsed by the shell first: an apostrophe clo
   Command  : {segment}
   Target   : {target}
 
-Use a file tool instead:
-  - New file, or replacing it wholesale -> Write tool, full content in one call.
-  - Existing file, a targeted change -> Edit tool.
+{remedy}
 
 Redirecting another program's OUTPUT (`gh ... > "$TMPFILE"`, `npm test > out.log`) is never blocked -- no literal crosses a quoting boundary there.
 
@@ -621,16 +692,33 @@ _MECHANISM_LABELS = {
     "serializer": "an inline interpreter script that writes a file",
     "in-place-edit": "an in-place edit script",
     "powershell-cmdlet": "a PowerShell content-write cmdlet",
+    "stdin-content-arg": "a heredoc body piped into a command's content argument",
+}
+
+_DEFAULT_REMEDY = """Use a file tool instead:
+  - New file, or replacing it wholesale -> Write tool, full content in one call.
+  - Existing file, a targeted change -> Edit tool."""
+
+# The default remedy ("use Write/Edit") does not name a destination for a
+# stdin-fed body, so this mechanism gets its own -- write the body to a file,
+# then pass that path in place of `-`.
+_MECHANISM_REMEDIES = {
+    "stdin-content-arg": """Write the body to a file, then pass that path instead of `-`:
+  - Write tool -> "$TMPFILE" (full content, one call), then re-run with {detail} "$TMPFILE".
+
+An interpreter reading a PROGRAM from stdin (`py -3 - <<'PY'`, `python - <<'EOF'`) is NOT blocked -- only a command's authored-prose argument is.""",
 }
 
 
 def _build_block_message(match):
+    remedy = _MECHANISM_REMEDIES.get(match["mechanism"], _DEFAULT_REMEDY)
     return BLOCK_MESSAGE.format(
         reason=match["reason"],
         mechanism=_MECHANISM_LABELS.get(match["mechanism"], match["mechanism"]),
         detail=match["detail"],
         segment=match["segment"],
         target=match["target"],
+        remedy=remedy.format(detail=match["detail"]),
         override=OVERRIDE_TOKEN,
         override_var=OVERRIDE_VAR_NAME,
     )
