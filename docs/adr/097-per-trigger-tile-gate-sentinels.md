@@ -176,6 +176,56 @@ new tests cover the fix directly:
   tracked as [dev-env#696](https://github.com/brownm09/dev-env/issues/696) for reconsideration if a
   4th trigger is ever proposed.
 
+## Amendment (2026-08-25) — the four parallel structures were collapsed after all (dev-env#696)
+
+Two sections above are superseded by [PR #1048](https://github.com/brownm09/dev-env/pull/1048),
+which closed [dev-env#696](https://github.com/brownm09/dev-env/issues/696). Read them as history:
+
+- **Limitations → "Four parallel per-trigger structures in `main()`"** no longer describes the code.
+  There were five by then (the `shard-` and `defer-` triggers landed after this ADR), and they are
+  now one `_TriggerSpec` table.
+- **Alternatives considered → "A fully generic loop over trigger descriptors"** was *deferred*, not
+  rejected on the merits, with an explicit precondition: *"reconsideration if a 4th trigger is ever
+  proposed."* That precondition was met — a **sixth** trigger
+  ([dev-env#1044](https://github.com/brownm09/dev-env/issues/1044), the unchained-merge look-ahead
+  gate) is now proposed — so the alternative was adopted.
+
+**What changed, and why the original objection no longer holds.** The deferral reasoned that the
+evaluators "don't share a return-shape convention... or a formatter signature", so a generic loop
+would need a fifth parallel element and heterogeneous dispatch — a complexity wash. dev-env#696
+itself named the way out: *normalize the shapes first, then generalize.* PR #1048 did exactly that,
+in that order:
+
+1. Every evaluator now returns the uniform `(payload, resolved)` contract, where `payload is None`
+   means "not firing". Triggers carrying nothing return `True`; the PR/issue triggers still return
+   the number their formatter needs. This removes the None-vs-bool asymmetry the Limitations section
+   called out, and with it the separate `fired`-test element.
+2. Every formatter takes exactly one payload argument, removing the signature element.
+3. Only then does the table become a plain four-field row per trigger — no heterogeneous dispatch,
+   because there is no longer any heterogeneity to dispatch on.
+
+**One mechanism genuinely changed, not just its spelling.** Decision step 4 above says "mark each
+fired-or-resolved trigger's own sentinel". That was written before the advisory (`defer-`) trigger
+existed, and once it did, `main()` had to hand-exclude it from the marking loop — otherwise a
+co-firing blocking trigger's early `sys.exit(2)` would consume the advisory's FIRED mark and
+permanently silence a condition [ADR-109](109-tile-gate-deferral-question-trigger.md) promises can
+resurface on a later Stop. That exclusion is now **derived** rather than hand-written: a spec's
+`blocking` field decides both the emission channel *and* where FIRED is marked — blocking triggers
+in the shared loop, advisory ones at the point of emission. The RESOLVED mark stays unconditional
+for every trigger. So read decision step 4 as applying to blocking triggers; advisory triggers mark
+FIRED only when they actually emit.
+
+**Unchanged by this amendment:** the sentinel *files* and their semantics (one flag per trigger,
+`SENTINEL_PREFIX` + suffix + session id), the `cleanup_stale_sentinels(SENTINEL_PREFIX)` glob, the
+all-sentinels-set fast path, and the per-trigger `already_done` gating of the pre-filter. `_TRIGGERS`
+is now derived from the table rather than hand-listed, so the sentinel set and the trigger table
+cannot drift apart — but it holds the same keys.
+
+Five structural tests pin the invariants the table exists to guarantee (dev-env `## Testing` item 48;
+detail in `docs/TESTING.md`): `_TRIGGERS` derives from the table with distinct keys, every evaluator
+returns `(None, False)` on an empty transcript, every formatter is one-arg and ASCII, exactly one
+trigger is advisory, and each pre-filter admits every transcript its own evaluator fires on.
+
 ## Alternatives considered
 
 - **A single JSON state file per session** (e.g. `{"pr": true, "issue": false, "table": true}`)

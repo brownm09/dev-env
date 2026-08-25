@@ -1007,21 +1007,21 @@ def test_evaluate_tile_table_resolved_with_marker():
     records = _SPAWNED_NO_TABLE + [
         _asst_text(_TABLE_HEADING + "\n| Tile | Issue | Status | Next |\n")]
     fire, resolved = gate.evaluate_tile_table(records)
-    assert fire is False and resolved is True
+    assert fire is None and resolved is True
     return "tile spawned + table heading present -> (False, resolved=True)"
 
 
 def test_evaluate_tile_table_resolved_with_skip():
     records = _SPAWNED_NO_TABLE + [_user_str("skip tiles")]
     fire, resolved = gate.evaluate_tile_table(records)
-    assert fire is False and resolved is True
+    assert fire is None and resolved is True
     return "tile spawned + 'skip tiles' override -> (False, resolved=True)"
 
 
 def test_evaluate_tile_table_noop_without_spawn():
     records = [_asst_bash("t1", "npm test"), _tool_result("t1", "ok")]
     fire, resolved = gate.evaluate_tile_table(records)
-    assert fire is False and resolved is False
+    assert fire is None and resolved is False
     return "no tile spawned this session -> (False, resolved=False) [stay unresolved]"
 
 
@@ -1063,7 +1063,7 @@ def test_merge_no_spawn_table_trigger_is_noop():
     fire_pr, _ = gate.evaluate(_MERGED_NO_ENUM)
     fire_table, resolved_table = gate.evaluate_tile_table(_MERGED_NO_ENUM)
     assert fire_pr == 599
-    assert fire_table is False and resolved_table is False
+    assert fire_table is None and resolved_table is False
     return "merged PR, no tile spawned -> table trigger is a no-op (nothing to table)"
 
 
@@ -1534,7 +1534,7 @@ def test_evaluate_deferral_fires_after_issue_create():
 def test_evaluate_deferral_resolved_with_skip():
     records = _MERGED_DEFERRAL_QUESTION + [_user_str("skip tiles")]
     fire, resolved = gate.evaluate_deferral(records)
-    assert fire is False and resolved is True
+    assert fire is None and resolved is True
     return "merged + deferral phrase + 'skip tiles' override -> (False, resolved=True)"
 
 
@@ -1558,13 +1558,13 @@ def test_evaluate_deferral_not_resolved_by_unrelated_enumeration():
 def test_evaluate_deferral_noop_without_merge_or_issue():
     records = [_asst_text("Should I start implementing this now?")]
     fire, resolved = gate.evaluate_deferral(records)
-    assert fire is False and resolved is False
+    assert fire is None and resolved is False
     return "deferral phrase with no merge/issue-create context -> (False, resolved=False)"
 
 
 def test_evaluate_deferral_noop_without_phrase():
     fire, resolved = gate.evaluate_deferral(_MERGED_NO_ENUM)
-    assert fire is False and resolved is False
+    assert fire is None and resolved is False
     return "merged, no deferral phrase -> (False, resolved=False)"
 
 
@@ -1780,20 +1780,20 @@ def test_evaluate_tile_shard_fires_without_shard():
 def test_evaluate_tile_shard_resolved_with_shard():
     records = _SPAWNED_NO_SHARD + [_asst_bash("t9", f"git add {_TILE_SHARD}")]
     fire, resolved = gate.evaluate_tile_shard(records)
-    assert fire is False and resolved is True
+    assert fire is None and resolved is True
     return "tile spawned + shard written -> resolved, sentinel set"
 
 
 def test_evaluate_tile_shard_resolved_with_skip_override():
     records = _SPAWNED_NO_SHARD + [_user_str("skip tiles for this one")]
     fire, resolved = gate.evaluate_tile_shard(records)
-    assert fire is False and resolved is True
+    assert fire is None and resolved is True
     return "an explicit 'skip tiles' user override waives the shard trigger"
 
 
 def test_evaluate_tile_shard_noop_without_spawn():
     fire, resolved = gate.evaluate_tile_shard(_MERGED_NO_ENUM)
-    assert fire is False and resolved is False
+    assert fire is None and resolved is False
     return "no spawn this session -> (False, False), so a later spawn is still caught"
 
 
@@ -1803,7 +1803,7 @@ def test_shard_and_table_triggers_are_independent():
     # tells the user a tile exists; the shard is what lets the tile be re-spawned).
     fire_table, resolved_table = gate.evaluate_tile_table(_SPAWNED_NO_SHARD)
     fire_shard, resolved_shard = gate.evaluate_tile_shard(_SPAWNED_NO_SHARD)
-    assert (fire_table, resolved_table) == (False, True), "table present -> trigger 3 resolved"
+    assert (fire_table, resolved_table) == (None, True), "table present -> trigger 3 resolved"
     assert (fire_shard, resolved_shard) == (True, False), "shard absent -> trigger 3b fires"
     return "table and shard are independent bars on the same spawn (3 resolves, 3b fires)"
 
@@ -1827,6 +1827,106 @@ def test_format_shard_reminder_is_ascii_and_actionable():
     assert "never" in text and "echo" in text, "must warn against interpolating the prompt"
     assert "skip tiles" in text
     return "the shard reminder is ASCII, names the path, the target-project rule, and the escape hatch"
+
+
+# --- trigger-table structural gate (dev-env#696) ------------------------------
+# These pin the invariants the _TriggerSpec table exists to guarantee. Before it,
+# a trigger's identity lived in five hand-synchronized sites and two of them
+# disagreed on shape (a (None, False) skip-default and an `is not None` fired
+# test for triggers 1/2, against (False, False) and bare truthiness for the
+# rest). Nothing failed when they drifted -- that is what these tests fix.
+
+
+def test_triggers_tuple_is_derived_from_spec_table():
+    assert gate._TRIGGERS == tuple(spec.key for spec in gate._TRIGGER_SPECS)
+    # every sentinel suffix distinct: two specs sharing one would make each
+    # silently resolve the other's condition
+    assert len(set(gate._TRIGGERS)) == len(gate._TRIGGERS)
+    expected = {
+        gate._TRIGGER_PR, gate._TRIGGER_ISSUE, gate._TRIGGER_TABLE,
+        gate._TRIGGER_SHARD, gate._TRIGGER_DEFER,
+    }
+    assert set(gate._TRIGGERS) == expected
+    return "_TRIGGERS derives from _TRIGGER_SPECS; %d distinct keys" % len(gate._TRIGGERS)
+
+
+def test_every_evaluator_honors_the_payload_contract():
+    # An empty transcript has no signal for ANY trigger, so every evaluator must
+    # report not-firing the same way: payload is None (never False, never 0).
+    for spec in gate._TRIGGER_SPECS:
+        payload, resolved = spec.evaluate([])
+        assert payload is None, "%s: no-signal payload must be None, got %r" % (spec.key, payload)
+        assert resolved is False, "%s: no-signal resolved must be False, got %r" % (spec.key, resolved)
+    return "all %d evaluators return (None, False) on an empty transcript" % len(gate._TRIGGER_SPECS)
+
+
+def test_every_formatter_takes_one_payload_and_is_ascii():
+    # Uniform (payload) -> str, so main()'s message loop can call every formatter
+    # identically. ASCII because Claude Code pipes hook output as cp1252 on
+    # Windows -- a non-ASCII char would raise and the whole message would vanish.
+    for spec in gate._TRIGGER_SPECS:
+        text = spec.formatter(599)
+        assert isinstance(text, str) and text, "%s: formatter returned %r" % (spec.key, text)
+        assert text.isascii(), "%s: formatter emitted non-ASCII" % spec.key
+    return "all %d formatters accept one payload and return ASCII" % len(gate._TRIGGER_SPECS)
+
+
+def test_exactly_one_advisory_trigger():
+    # main() delivers at most one advisory per Stop (emit_advisory is NoReturn).
+    # A second non-blocking spec would silently make that a real limitation
+    # rather than a theoretical one -- fail here so it is a deliberate decision.
+    advisory = [spec.key for spec in gate._TRIGGER_SPECS if not spec.blocking]
+    assert advisory == [gate._TRIGGER_DEFER], "expected only the deferral trigger advisory, got %r" % advisory
+    return "exactly one advisory trigger (%s); the rest block via exit 2" % gate._TRIGGER_DEFER
+
+
+def test_prefilter_is_a_superset_of_each_evaluator():
+    # The prefilter exists to skip the transcript parse. It must never skip a
+    # turn its evaluator would have fired on, so for a transcript that DOES fire
+    # a trigger, that trigger's prefilter must return True.
+    def ctx_for(text):
+        # Compute has_merge_or_issue_signal exactly as main() does, rather than
+        # pinning it True. The deferral prefilter is `has_merge_or_issue_signal
+        # and any(...)`, so a hardcoded True would exercise only its second
+        # half -- and a regression that dropped the issue-create term (making
+        # the deferral trigger unreachable after an issue-create-only session)
+        # would still pass. That is the exact failure class this test exists to
+        # catch, so the expression must be the real one.
+        lower = text.lower()
+        return gate._PrefilterCtx(
+            text=text,
+            lower=lower,
+            has_merge_or_issue_signal=(
+                "merged" in lower or bool(gate._ISSUE_CREATE_STMT_RE.search(text))
+            ),
+        )
+    firing = {
+        gate._TRIGGER_PR: _MERGED_NO_ENUM,
+        gate._TRIGGER_ISSUE: _ISSUE_CREATED_NO_ENUM,
+        # A BARE spawn -- no table heading, no shard write -- so this fires
+        # trigger 3. _SPAWNED_NO_SHARD would not: it carries the table, which
+        # RESOLVES trigger 3 rather than firing it, silently dropping this
+        # trigger from the check (observed: "4 checked" instead of 5).
+        gate._TRIGGER_TABLE: [_asst_spawn("s1")],
+        gate._TRIGGER_SHARD: _SPAWNED_NO_SHARD,
+        gate._TRIGGER_DEFER: _MERGED_DEFERRAL_QUESTION,
+    }
+    checked = 0
+    for spec in gate._TRIGGER_SPECS:
+        records = firing[spec.key]
+        payload, _resolved = spec.evaluate(records)
+        if payload is None:
+            continue  # fixture does not fire this trigger; nothing to assert
+        text = chr(10).join(json.dumps(r) for r in records)
+        assert spec.prefilter(ctx_for(text)), (
+            "%s: evaluator fires but prefilter would have skipped the parse" % spec.key
+        )
+        checked += 1
+    assert checked == len(gate._TRIGGER_SPECS), (
+        "every trigger must be covered by a firing fixture; checked %d of %d"
+        % (checked, len(gate._TRIGGER_SPECS))
+    )
+    return "prefilter admits every transcript its evaluator fires on (%d checked)" % checked
 
 
 def main():
@@ -1988,6 +2088,11 @@ def main():
         ("e2e deferral 'should i' phrasing after issue create", test_e2e_deferral_should_i_phrasing_after_issue_create),
         ("e2e deferral sentinel suppresses re-fire", test_e2e_deferral_sentinel_suppresses_refire),
         ("e2e deferral advisory resurfaces after blocking trigger resolves (regression pin)", test_e2e_deferral_advisory_resurfaces_after_blocking_trigger_resolves),
+        ("trigger table: _TRIGGERS derived from _TRIGGER_SPECS (dev-env#696)", test_triggers_tuple_is_derived_from_spec_table),
+        ("trigger table: every evaluator honors the (payload, resolved) contract (dev-env#696)", test_every_evaluator_honors_the_payload_contract),
+        ("trigger table: every formatter takes one payload, returns ASCII (dev-env#696)", test_every_formatter_takes_one_payload_and_is_ascii),
+        ("trigger table: exactly one advisory trigger (dev-env#696)", test_exactly_one_advisory_trigger),
+        ("trigger table: prefilter is a superset of each evaluator (dev-env#696)", test_prefilter_is_a_superset_of_each_evaluator),
     ]
     failed = 0
     for name, fn in tests:
