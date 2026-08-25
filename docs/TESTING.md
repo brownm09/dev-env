@@ -1417,6 +1417,33 @@ For a one-line navigational map of the test directory, see
     and the deferral-question trigger ([ADR-109](adr/109-tile-gate-deferral-question-trigger.md);
     dev-env#772).
 
+    **Trigger-table structural gate ([dev-env#696](https://github.com/brownm09/dev-env/issues/696)).**
+    Each trigger's identity used to live in five hand-synchronized sites in `main()` — the
+    `_TRIGGERS` tuple, its pre-filter clause, the evaluate block's skip-default, the
+    sentinel-marking loop's `fired` test, and the message-building block — and two of them
+    disagreed on shape: a `(None, False)` skip-default and an `is not None` fired test for
+    triggers 1/2, against `(False, False)` and bare truthiness for the rest. Nothing failed when
+    they drifted. A `_TriggerSpec` table now holds one row per trigger, and five tests pin the
+    invariants it exists to guarantee: `_TRIGGERS` **derives** from `_TRIGGER_SPECS` (with distinct
+    keys — two triggers sharing a sentinel suffix would make each silently resolve the other's
+    condition); every evaluator returns `(None, False)` on an empty transcript, so the uniform
+    `(payload, resolved)` contract cannot be half-adopted; every formatter takes exactly one
+    payload argument and returns ASCII; **exactly one** trigger is advisory, since
+    `emit_advisory` is `NoReturn` and a second non-blocking spec would silently make
+    "at most one advisory per Stop" a real limitation rather than a theoretical one; and each
+    pre-filter admits every transcript its own evaluator fires on — the pre-filter exists to skip
+    the parse, so a clause narrower than its evaluator would silently drop a real violation.
+    `blocking` now decides both the emission channel and *where* the sentinel is marked, which is
+    what makes trigger 4's formerly hand-written exclusion principled: advisory triggers mark
+    FIRED at the point of emission, so a co-firing blocking trigger's early `exit(2)` cannot
+    permanently silence a condition [ADR-109](adr/109-tile-gate-deferral-question-trigger.md)
+    promises can resurface on a later Stop (pinned separately by the pre-existing
+    `test_e2e_deferral_advisory_resurfaces_after_blocking_trigger_resolves` regression test).
+    The three evaluators whose payload changed (`evaluate_tile_table`, `evaluate_tile_shard`,
+    `evaluate_deferral`) had their **non-firing** assertions updated `is False` -> `is None`;
+    every "fires" assertion was left untouched, which is what makes the unchanged suite evidence
+    the refactor was behavior-preserving.
+
     **Trigger 3b (tile spawned without its shard).** `tile_shard_write_present` is pinned across
     all three evidence sources, and the third is the one that matters: a `Write` `file_path`, a
     Bash `command`, **and Bash tool output**. That last case has its own test with a comment
