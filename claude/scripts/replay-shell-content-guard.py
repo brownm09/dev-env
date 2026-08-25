@@ -15,7 +15,7 @@ Why a reader and not an append-only log in the hook (the shape #1046
 suggested, weighed and declined -- see ADR-138 Amendment 1):
 
   - A forward log answers nothing until months of traffic accumulate. This
-    reader answered the same question immediately over 54,101 commands.
+    reader answered the same question immediately over 54,330 commands.
   - A log can only ever describe the hook version that was live when each
     line was written. A replay re-runs the CURRENT code over the SAME corpus,
     so it doubles as a regression instrument: change a detector, re-run, see
@@ -203,6 +203,13 @@ def iter_commands(scan_dir):
 def analyze(guard, scan_dir, sample_limit=5, include_gap=False):
     stats = Counter()
     mechanisms = Counter()
+    # Per-mechanism shell-fail counts. Without this the report gives only a
+    # corpus-wide blocked-set rate, so any claim about ONE mechanism's rate (e.g.
+    # "the content-argument class runs at 1.86%") has to come from an ad-hoc script
+    # -- which is exactly how three slightly different figures for the same
+    # quantity ended up cited across this repo's own docs. Every rate the ADR
+    # quotes must be reproducible from this tool alone.
+    mechanism_failures = Counter()
     reasons = Counter()
     overrides = Counter()
     samples = {}
@@ -238,6 +245,7 @@ def analyze(guard, scan_dir, sample_limit=5, include_gap=False):
             reasons[match["reason"]] += 1
             if shell_failed:
                 stats["blocked_shellfail"] += 1
+                mechanism_failures[match["mechanism"]] += 1
             bucket = samples.setdefault(match["mechanism"], [])
             if len(bucket) < sample_limit:
                 bucket.append({
@@ -264,6 +272,7 @@ def analyze(guard, scan_dir, sample_limit=5, include_gap=False):
     return {
         "stats": dict(stats),
         "mechanisms": dict(mechanisms.most_common()),
+        "mechanism_failures": dict(mechanism_failures.most_common()),
         "reasons": dict(reasons.most_common()),
         "overrides": dict(overrides),
         "samples": samples,
@@ -294,8 +303,11 @@ def format_report(report, include_gap=False):
     lines.append("Would block")
     lines.append("  blocked            : {} ({:.2f}% of unique)".format(
         blocked, _pct(blocked, unique)))
+    failures = report.get("mechanism_failures", {})
     for mech, count in report["mechanisms"].items():
-        lines.append("    {:<20} {}".format(mech, count))
+        failed = failures.get(mech, 0)
+        lines.append("    {:<20} {:<6} shell-fail {:>5.2f}% ({}/{})".format(
+            mech, count, _pct(failed, count), failed, count))
     if report["reasons"]:
         lines.append("  by hazard reason")
         for reason, count in report["reasons"].items():

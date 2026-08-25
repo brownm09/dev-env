@@ -39,10 +39,10 @@ differently, the test says so instead of quietly changing:
 ADR-138 Amendment 1 (dev-env#1046) NARROWED the first of those on measured
 evidence, and that loud-failure design is exactly what forced the change to be
 made on purpose. v1's gap was "any heredoc with no file destination." Replaying
-the guard over 54,101 real historical commands split that population in two:
+the guard over 54,330 real historical commands split that population in two:
 a heredoc feeding a content-publishing command's own prose argument
 (`gh pr create --body-file -`, `git commit -F -`) is now BLOCKED, while a
-heredoc feeding an interpreter's stdin (`py -3 - <<'PY'`) -- 86% of the
+heredoc feeding an interpreter's stdin (`py -3 - <<'PY'`) -- 87% of the
 population, and a PROGRAM rather than file content -- stays an accepted gap.
 The `test_amendment1_*` cases pin the new half, including that the allowlist
 stays closed to `gh api --input -` and cannot leak past `gh`/`git`.
@@ -461,7 +461,7 @@ def test_powershell_env_override_applies_forward() -> str:
 
 def test_amendment1_blocks_heredoc_to_content_argument() -> str:
     # SCOPE CHANGE, made deliberately (ADR-138 Amendment 1, dev-env#1046 item 2).
-    # This case was v1's first named accepted gap. Replaying the guard over 54,101
+    # This case was v1's first named accepted gap. Replaying the guard over 54,330
     # real historical commands measured the class at a 1.86% shell-parse-failure
     # rate (6.6x the 0.28% baseline), with 3 observed `unexpected EOF` failures on
     # exactly this shape -- and showed v1 inverted the incentive, since the same
@@ -482,7 +482,7 @@ def test_accepted_gap_heredoc_to_interpreter_stdin() -> str:
     # ACCEPTED GAP, NARROWED but still pinned deliberately. Amendment 1 widened
     # only to a closed allowlist of content-publishing commands' prose arguments;
     # an interpreter reading a PROGRAM from stdin carries no such flag and is
-    # excluded STRUCTURALLY, not by a heuristic. Measured 1,024 of the 1,185 gap
+    # excluded STRUCTURALLY, not by a heuristic. Measured 1,041 of the 1,198 gap
     # commands (86%) -- and the Write tool is the wrong remedy for a program, so
     # widening here would be a false positive by construction, not a judgment call.
     # If this ever starts matching, that is a scope change to make on purpose.
@@ -519,6 +519,47 @@ def test_amendment1_content_arg_allowlist_stays_closed() -> str:
                 "prose arguments (ADR-138 Amendment 1)."
             )
     return "allowlist closed: `gh api --input -`, `grep -F -`, `sort -F -` all pass"
+
+
+def test_amendment1_env_prefix_does_not_defeat_the_command_anchor() -> str:
+    # `/review` finding on this PR, verified by executing the detector rather than
+    # by inspection. The command anchor originally read the FIRST token, so a
+    # leading `VAR=value ` assignment hid the command from it entirely.
+    #
+    # The under-match was narrow; the TEST defect it caused was not. Because
+    # `ALLOW_SHELL_CONTENT_WRITE=1 gh pr create --body-file - <<EOF` never
+    # MATCHED, the override case for this mechanism passed vacuously -- it
+    # asserted "allowed" against a detector that had already missed, so it would
+    # have passed with override support entirely removed. This test pins the
+    # detector half; `..._override_exempts_content_arg` below pins the other.
+    match = _assert_blocks(
+        "FOO=1 gh pr create --body-file - <<'EOF'\nIt's prose.\nmore\nEOF",
+        why="an env-var prefix must not hide the command from the anchor",
+    )
+    if match["mechanism"] != "stdin-content-arg":
+        raise AssertionError(f"expected 'stdin-content-arg', got {match['mechanism']!r}")
+    for cmd in ("ghi pr create --body-file - <<'EOF'\na\nb\nEOF",
+                "git-lfs push --body-file - <<'EOF'\na\nb\nEOF"):
+        if _live_matches(cmd):
+            raise AssertionError(
+                f"the anchor must not match a command merely PREFIXED by gh/git: {cmd!r}")
+    return "an env-var prefix is skipped; `ghi`/`git-lfs` still do not match the anchor"
+
+
+def test_amendment1_override_exempts_content_arg_non_vacuously() -> str:
+    # The other half of the finding above. Assert BOTH that the detector matches
+    # (so the override is actually doing the work) and that the override then
+    # exempts it -- an "allowed" assertion alone cannot distinguish the two.
+    cmd = "ALLOW_SHELL_CONTENT_WRITE=1 gh pr create --body-file - <<'EOF'\nIt's prose.\nmore\nEOF"
+    segments = scwg.segments_or_whole(cmd)
+    raw = scwg.find_content_writes(cmd, "Bash", segments=segments)
+    if not raw:
+        raise AssertionError(
+            "the detector must MATCH before the override can meaningfully exempt it -- "
+            "otherwise this test passes vacuously (the defect it was written for)")
+    if _live_matches(cmd):
+        raise AssertionError("the override token must exempt a stdin-content-arg match")
+    return "override exempts a stdin-content-arg match that the detector genuinely found"
 
 
 def test_amendment1_content_arg_still_obeys_the_hazard_test() -> str:
@@ -616,7 +657,7 @@ def test_main_blocks_stdin_content_arg_with_tailored_remedy() -> str:
 
 def test_main_allows_heredoc_to_interpreter_stdin() -> str:
     # The end-to-end half of the narrowed accepted gap: the single most common
-    # multi-line-Python idiom in this fleet (1,024 historical commands) must
+    # multi-line-Python idiom in this fleet (1,041 historical commands) must
     # still reach the shell untouched.
     for cmd in ("py -3 - <<'PY'\nimport os\nprint(os.getcwd())\nPY",
                 "python - <<'EOF'\nx = 1\nprint(x)\nEOF"):
@@ -740,6 +781,8 @@ def main() -> int:
         ("A1: blocks heredoc to a content argument", test_amendment1_blocks_heredoc_to_content_argument),
         ("ACCEPTED GAP: heredoc to interpreter stdin", test_accepted_gap_heredoc_to_interpreter_stdin),
         ("A1: content-arg allowlist stays closed", test_amendment1_content_arg_allowlist_stays_closed),
+        ("A1: env prefix does not defeat the anchor", test_amendment1_env_prefix_does_not_defeat_the_command_anchor),
+        ("A1: override exempts content arg (non-vacuously)", test_amendment1_override_exempts_content_arg_non_vacuously),
         ("A1: content arg obeys the hazard test", test_amendment1_content_arg_still_obeys_the_hazard_test),
         ("A1: pre-filter admits redirect-free heredoc", test_prefilter_admits_heredoc_with_no_redirect),
         ("ACCEPTED GAP: second heredoc on one line", test_accepted_gap_second_heredoc_on_one_line),

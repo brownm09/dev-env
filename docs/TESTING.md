@@ -3446,7 +3446,7 @@ For a one-line navigational map of the test directory, see
     in both files — the guard blocks the shape, the prompt hook delivers the precedence rule that stops
     the bypass-mode instruction contradicting it — so the two suites are paired here.
 
-    53 cases in two layers, both hermetic (layer 2 spawns the real hook but touches no files or git —
+    55 cases in two layers, both hermetic (layer 2 spawns the real hook but touches no files or git —
     this hook does no filesystem or subprocess work at all). Layer 1 covers `body_hazard` / `arg_hazard`
     / `is_file_target` / the five extraction-and-detection functions / `find_content_writes` /
     `_is_overridden` / `might_write_content`; layer 2 drives `main()` over stdin, asserting exit codes
@@ -3487,7 +3487,7 @@ For a one-line navigational map of the test directory, see
     **That loud-failure design did its job**: [ADR-138 Amendment 1](adr/138-shell-content-write-guard.md)
     (dev-env#1046) narrowed the first gap on measured evidence, and the rewrite is deliberately a
     *rename*, not a deletion. v1's gap was "any heredoc with no file destination." Replaying the guard
-    over 54,176 real historical commands (item 96) split that population: a heredoc feeding a
+    over 54,330 real historical commands (item 96) split that population: a heredoc feeding a
     content-publishing command's own prose argument (`gh pr create --body-file -`, `git commit -F -`)
     is now blocked as `stdin-content-arg`, while the interpreter-stdin half — 86% of the population —
     stays accepted. Five `test_amendment1_*` / `test_prefilter_*` cases pin the new half:

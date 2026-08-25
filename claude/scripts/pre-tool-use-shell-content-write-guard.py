@@ -237,9 +237,17 @@ def find_write_destinations(line, masked, tool_name):
 # interpreter reading a PROGRAM from stdin (`py -3 - <<'PY'`) carries no such
 # flag, so it is excluded STRUCTURALLY, not by a heuristic -- the same property
 # that makes the inline-literal/program-output split safe. Measured: that
-# interpreter-stdin class is 1024 of the 1185 gap commands (86%), and the Write
+# interpreter-stdin class is 1041 of the 1198 gap commands (87%), and the Write
 # tool is the wrong remedy for a program, so it stays an accepted gap.
-_CONTENT_CMD_RE = re.compile(r"(?i)^(gh|git)$")
+_CONTENT_CMD_RE = re.compile(r"(?i)^(gh|git)(?=\s)")
+# A leading `VAR=value ` assignment does not change which command runs -- real Bash
+# applies it to the statement and then execs the next word. Skipping past it is what
+# lets the OVERRIDE prefix reach the detector at all: without this,
+# `ALLOW_SHELL_CONTENT_WRITE=1 gh pr create --body-file - <<EOF` never matched, so
+# `_is_overridden` was never consulted for this mechanism and its override test
+# passed vacuously (it asserted "allowed" against a detector that had already
+# missed). Bounded to unquoted values, the only form either override token takes.
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+")
 # `--body-file -` / `--notes-file -` / `--file=-` (gh, git) and `-F -` / `-F-`
 # (git commit/tag/notes). Deliberately NOT `gh api --input -`: a JSON payload is
 # machine-generated, not authored prose, and pulling it in is exactly the
@@ -256,11 +264,23 @@ def find_stdin_content_arg(line, masked):
     """Return the flag (e.g. `--body-file`) when *line* routes STDIN into a
     content-publishing command's body/message argument, else None.
 
-    Matched against the MASKED line so a `--body-file -` appearing inside a
-    quoted argument is not mistaken for a real one; masking is
-    length-preserving, so the offsets still index the raw line."""
-    tokens = tokenize_powershell(line.lstrip())
-    if not tokens or not _CONTENT_CMD_RE.match(tokens[0]):
+    The command check is a cheap anchored regex on the raw line -- deliberately
+    NOT `shlex.split`, which this hook pays on every Bash call fleet-wide. That
+    is the same reasoning behind the `tee` detector's `startswith` guard (see
+    ADR-138's post-review hardening): tokenizing merely to read the first word
+    measured ~23% of the whole segment walk on a command that only happens to
+    contain `<<`. Leading `VAR=value` assignments are skipped first, matching
+    real Bash.
+
+    The flag is matched against the MASKED line so a `--body-file -` sitting
+    inside a quoted argument is not mistaken for a real one."""
+    stripped = line.lstrip()
+    while True:
+        assignment = _ENV_ASSIGN_RE.match(stripped)
+        if not assignment:
+            break
+        stripped = stripped[assignment.end():]
+    if not _CONTENT_CMD_RE.match(stripped):
         return None
     m = _STDIN_CONTENT_FLAG_RE.search(masked)
     if not m:
