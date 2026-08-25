@@ -686,16 +686,25 @@ Step 8 always emits the review to the terminal. If **POST_COMMENT=true** and **P
 also post it as a PR comment and apply the `reviewed-by-claude` label so both are always present.
 
 Write the review output to a temp file to avoid shell-quoting issues with backticks and
-special characters, then post it:
+special characters, then post it. **Write the file with the Write tool, never a heredoc** — a
+review body is exactly the prose that breaks shell quoting (backticks around identifiers,
+apostrophes, code fences), which is the shell-quoting issue this step exists to avoid; routing it
+through a heredoc reintroduces it rather than sidestepping it. `claude/CLAUDE.md` → Authoring File
+Content, [ADR-138](../../../docs/adr/138-shell-content-write-guard.md);
+`pre-tool-use-shell-content-write-guard.py` blocks the heredoc form.
+
+First pick a unique path (Bash, so `$$` still supplies the uniqueness):
 
 ```bash
-TMPFILE="C:/Users/brown/.claude/scratch/review_comment_$$.md"
-cat > "$TMPFILE" << 'REVIEW_EOF'
-<full Step 8 review output>
-REVIEW_EOF
-gh pr comment "<PR_URL>" --body-file "$TMPFILE"
+echo "C:/Users/brown/.claude/scratch/review_comment_$$.md"
+```
+
+Then **Write** the full Step 8 review output to that path, and post it:
+
+```bash
+gh pr comment "<PR_URL>" --body-file "<the path from above>"
 gh pr edit "<PR_URL>" --add-label "reviewed-by-claude"
-rm -f "$TMPFILE"
+rm -f "<the path from above>"
 ```
 
 If either `gh` command fails, report the error to the user and note that the review was

@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **91 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **93 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -51,6 +51,7 @@ the one place all 19 are listed together. Each has its own test file in
 | `_journal_shards.py` | Shared numeric-shard + legacy `open-prs.jsonl` reader (`iter_numeric_shards`, with `iter_pr_shards` / `iter_tile_shards` as named delegations; `read_legacy_entries`), plus `project_dirs` — the `sessions/<project>/` walk both reconcile hooks run before reading either shard kind. | `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, `post-compact.py` |
 | `_repo_scan.py` | Shared `find_git_repos()` directory-scan helper for every `--scan-dir` mode. | `prune-merged-worktrees.py`, `reclaim-worktree-disk.py`, `reconcile-project-board.py` |
 | `_repo_target.py` | Shared `--repo` (incl. host-prefixed/URL forms) / PR-URL / issue-URL / positional-number / REST-merge-path resolver for `gh` commands — ends the per-hook ADR-050 amendment treadmill. | `post-pr-merge-project.py`, `pr-merge-reminder.py`, `posttooluse-inert-advisory.py`, `post-pr-merge-pull.py`, `stop-tile-enumeration-gate.py`, `post-tool-use.py` |
+| `_shell_write_detect.py` | Shared shell-syntax write-detection primitives (`mask_first_line_quotes` with its load-bearing `<<` neutralization, `neutralize_unquoted_escaped_quotes`, `find_redirect_targets`, `next_token`, `first_line`, `segments_or_whole`, `tokenize_posix`, `tokenize_powershell`). Extracted from `pre-tool-use-journal-shell-write-guard.py` as a pure move so the two content-write guards share one copy of quote-state logic ADR-129 Amendment 1 already had to fix twice. Answers only "what does this command's shell syntax say", never "is that a problem". | `pre-tool-use-journal-shell-write-guard.py`, `pre-tool-use-shell-content-write-guard.py` |
 | `_skill_file_size.py` | Shared `SKILL.md` basename match (`is_skill_md`) and `.claude/hook-config.json` loader (`load_config` — returns `(warn_bytes, limit_bytes)`, one shared fallback contract for both fields). | `pre-tool-use-skill-file-size-guard.py`, `skill-file-size-advisory.py` |
 | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning script must `import`. | ~20 subprocess-using scripts |
 | `_worktree_canon.py` | Shared worktree-path-to-canonical-root regex/resolution (`canonical_root_from_worktree`, `is_worktree_path`). | `post-tool-use.py`, `reconcile-project-board.py`, `pre-tool-use-canonical-mutate-guard.py`, `pre-tool-use-worktree-path-check.py`, `usage-snapshot.py` |
@@ -62,7 +63,7 @@ the one place all 19 are listed together. Each has its own test file in
 
 ## Wired hooks & their domain utilities
 
-The 44 scripts Claude Code invokes automatically via `claude/settings.json`, grouped with the
+The 45 scripts Claude Code invokes automatically via `claude/settings.json`, grouped with the
 utility scripts that serve the same workflow area — mirroring
 [`tests/README.md`](tests/README.md)'s domain grouping so the two indexes read the same way.
 **Event** names the hook registration(s) from `settings.json`; utility scripts show their
@@ -140,10 +141,11 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (20)
+### Session state, reliability & token tracking (21)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
+| `pre-tool-use-shell-content-write-guard.py` | PreToolUse (Bash/PowerShell) | Blocks a command that writes an *inline literal* to a file when that literal is multi-line or carries an apostrophe, backtick, or backslash — the content-shaped generalization of the journal guard. Program-output redirection (`gh … > "$TMPFILE"`, `npm test > out.log`) is never matched, structurally. Bypass with `ALLOW_SHELL_CONTENT_WRITE=1`. See [ADR-138](../../docs/adr/138-shell-content-write-guard.md). |
 | `pre-tool-use-nested-agent-background-guard.py` | PreToolUse (Agent) | Blocks a nested `Agent`-tool spawn (`agent_id` present) that omits `run_in_background` entirely — the exact failure signature behind career-playbook's ADR-090 orphaned-subagent stalls. Any explicit value (`true` or `false`) passes through untouched, and a top-level spawn is untouched entirely. See [ADR-126](../../docs/adr/126-nested-agent-spawn-background-guard.md). |
 | `pre-tool-use-skill-file-size-guard.py` | PreToolUse (Write/Edit) | Blocks a Write/Edit that would leave a `SKILL.md` file over a configurable byte ceiling (default 256KB). See [ADR-127](../../docs/adr/127-skill-file-size-guard.md). |
 | `session-mode-prompt.py` | UserPromptSubmit | One-time per-session reminder of the active permission mode (plan/bypass/auto). |

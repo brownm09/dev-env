@@ -56,6 +56,25 @@ See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md), [ADR-0
 
 ---
 
+## Authoring File Content
+
+**The Write/Edit tools are the default for file *content*. The Bash tool is the default for *commands*.** These are different jobs, and the failure mode this rule exists to prevent comes from doing the first one with the second.
+
+Content routed through a shell is parsed by the shell before it ever reaches the file: an apostrophe closes a single-quoted string early, a backtick runs a command, a backslash is eaten as an escape, a markdown code fence collides with a heredoc delimiter. That either fails the write outright — one wasted turn — or, worse, silently writes something subtly different from what you intended.
+
+- **Content → Write (new file, or a wholesale replacement) or Edit (a targeted change).** Prose, markdown, source code, JSON, a PR body, a config file, a commit-message file. The Write tool takes content as a parameter with no shell interpretation at all, so none of the failure modes above can occur.
+- **Shell redirection is correct for exactly two things.** (1) **Another program's output** — `gh … --json body > "$TMPFILE"`, `npm test > out.log`, `git diff > patch` — where no literal ever crosses a quoting boundary. (2) **A single-line literal with no apostrophe, backtick, or backslash** — `echo done > flag.txt`. Anything longer or hazard-bearing goes through Write.
+- **Editing an existing file → Edit, not `sed -i` / `node -e` / `py -3 -c`.** An in-place edit script is an inline literal too, and its target is the file itself. (A `sed`/`perl` regex kept in *single* quotes is not the hazard — the shell leaves a backslash alone there; a double-quoted or unquoted one is.)
+- **"I quoted the heredoc delimiter" is not evidence of safety.** Two of the three [dev-env#1041](https://github.com/brownm09/dev-env/issues/1041) failures used the `<<'EOF'` form — the mitigation the old guidance pointed you to — and failed anyway: one collapsed `'\\'` to `'\'` so node rejected the file it had just "written," the other died on `unexpected EOF while looking for matching '''`. Do not reach for quoting as the fix; reach for Write.
+
+**Precedence over the bypass-permissions instruction.** A bypass-permissions session receives a standing instruction to work through the Bash tool and *"make file changes with `sed`, heredocs, or short scripts, rather than using the dedicated Read, Edit, or Write tools."* That instruction governs **shell work** — running commands, inspecting state, reading files, invoking tooling — where Bash genuinely is the right default and remains so. It does **not** govern **authoring file content**. For content, this section wins, in every permission mode. The two only ever looked contradictory because nobody had said which half of "file changes" each one owns; that is now stated, so there is nothing left to arbitrate. (`session-mode-prompt.py` delivers this same carve-out into bypass sessions directly, since the instruction it reconciles is injected by the harness and is not editable here.)
+
+Mechanically enforced by `pre-tool-use-shell-content-write-guard.py`, which blocks a Bash/PowerShell command that writes an inline literal to a file when that literal is multi-line or carries an apostrophe, backtick, or backslash. Program-output redirection is never matched — structurally, not heuristically. Genuine exception: prefix `ALLOW_SHELL_CONTENT_WRITE=1` (Bash) or precede with `$env:ALLOW_SHELL_CONTENT_WRITE=1` (PowerShell). See [ADR-138](../docs/adr/138-shell-content-write-guard.md).
+
+The four engineering-journal content files (`*.stub.md`, `*.manifest.jsonl`, `open-prs/<N>.json`, `tiles/<N>.json`) are the **strict special case** of this rule: they are blocked unconditionally, regardless of how short or clean the content looks, because they always carry free prose or a path field. See Engineering Journal → Stub file workflow and [ADR-129](../docs/adr/129-journal-shell-write-guard.md).
+
+---
+
 ## CLI Scripting Checklist
 
 Before writing a `gh` or other CLI automation script — or acting on what one reports:
@@ -665,7 +684,10 @@ writes**:
   general rule for all four journal content-file kinds (stub, manifest, open-PR, tile), mechanically
   enforced by `pre-tool-use-journal-shell-write-guard.py` rather than restated per-kind here (`prompt` is
   free prose and `cwd` is the one required field that is a path — see
-  [ADR-129](../docs/adr/129-journal-shell-write-guard.md)).
+  [ADR-129](../docs/adr/129-journal-shell-write-guard.md)). These four kinds are the **unconditional**
+  special case of the global `## Authoring File Content` rule above: elsewhere a short, single-line,
+  hazard-free literal may still be shell-written, but here it may not, because every one of these files
+  always carries free prose or a path field.
   Schema, the write recipe, and current phase:
   [REFERENCE → Tile shards](../docs/REFERENCE.md#tile-shards-sessionsprojecttilesissue-numberjson);
   rationale, and why a headless process *cannot* respawn tiles instead, in [ADR-118](../docs/adr/118-tile-persistence-shards.md).

@@ -2516,7 +2516,13 @@ For a one-line navigational map of the test directory, see
     >30-day-old marker from an unrelated session is swept via
     `_hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX, ext=".txt")` — the generalized `ext` parameter
     this dev-env#768 fix added (see item 27) — while a fresh marker is kept; and that an automated
-    (XML-tagged) prompt is still suppressed after adding the cleanup call. `MARKER_DIR`/`LOG_PATH`
+    (XML-tagged) prompt is still suppressed after adding the cleanup call. Two further cases cover the
+    ADR-138 bypass-mode carve-out (dev-env#1041): a `permission_mode: "bypassPermissions"` payload gets
+    the content-authoring precedence note *appended to* — never replacing — the base mode reminder, and
+    `plan`/`auto`/`default`/empty/missing all get the base reminder only. Both assert on the injected
+    `additionalContext` payload rather than importing the text constant, so a change that builds the
+    string correctly but fails to reach stdout is still caught; see also item 95, which pairs this
+    suite with the guard hook that enforces the same rule. `MARKER_DIR`/`LOG_PATH`
     were changed from a hardcoded absolute-path string to a `Path.home()`-derived one in the same fix
     (identical real-world value, but now honors HOME/USERPROFILE) — the hardcoded string had silently
     defeated this test's own HOME-redirection isolation on first write, caught while authoring this
@@ -3392,4 +3398,99 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_worktree_path_check.py
     py -3 claude/scripts/tests/test_hookio.py
     py -3 claude/scripts/tests/test_hookutil.py
+    ```
+
+94. **`_shell_write_detect` shared-module test** — required when changing
+    `claude/scripts/_shell_write_detect.py` ([ADR-138](adr/138-shell-content-write-guard.md),
+    dev-env#1041). The module holds the shell-syntax primitives extracted, as a pure move, from
+    `pre-tool-use-journal-shell-write-guard.py` so the new content-write guard could share them rather
+    than hand-copy them: `mask_first_line_quotes`, `neutralize_unquoted_escaped_quotes`, `next_token`,
+    `find_redirect_targets`, `first_line`, `segments_or_whole`, and the POSIX/PowerShell tokenizers.
+    Hand-copying was rejected because ADR-129 Amendment 1 findings #1 and #5 both landed *inside* those
+    functions — a second copy would be a second place a future fix has to remember to reach.
+
+    The 21 cases are offline and pure (no subprocess, no I/O). The two load-bearing ones are inherited
+    directly from that amendment. First, `mask_first_line_quotes` must neutralize `<<` **before**
+    masking: fed a first-line-truncated `cat <<'EOF' > f`, `_hookio`'s heredoc handling otherwise treats
+    the remainder as an unterminated declaration and masks the redirect target away with it — so the
+    single most common real-world shape of the bug becomes invisible. Second,
+    `neutralize_unquoted_escaped_quotes` must be quote-state aware rather than a blind substitution:
+    both directions are pinned, the escaped apostrophe in unquoted prose (`echo Claude\'s > f`, which
+    must be neutralized) *and* the single-quoted string ending in a literal backslash (`'C:\dir\'`,
+    which must not be, or its real closing quote never closes and everything after it — including a
+    redirect target — is masked away). Length-preservation is asserted for every shape, since the whole
+    offset-alignment scheme depends on it. `tokenize_powershell` is pinned for backslash preservation
+    (`posix=True` silently destroys a Windows path before any check sees it) and both tokenizers for
+    their whitespace-split fallback on an unterminated quote.
+
+    One test documents a *contract*, not a bug: `segments_or_whole`'s fallback is guarded on
+    `cmd.strip()`, so content-free input passes `split_top_level` through rather than getting a
+    fabricated segment. An earlier draft of that test asserted the opposite and failed — the fallback
+    only ever fires for a command `split_top_level` genuinely *dropped* (the escaped-apostrophe shape),
+    which is covered separately.
+
+    **Scope note — run the consumer suite too.** This module's safety claim is not its own suite but
+    that `test_journal_shell_write_guard.py`'s 63 cases pass **unchanged** across the extraction
+    (confirmed by running them after the refactor, not by tracing call sites). That is the same pairing
+    item 92 uses for `_journal_canon.py`, and for the same reason: a shared module's real risk is a
+    silent behavior change in a consumer, which its own tests cannot see.
+
+    ```bash
+    py -3 claude/scripts/tests/test_shell_write_detect.py
+    py -3 claude/scripts/tests/test_journal_shell_write_guard.py
+    ```
+
+95. **shell-content-write-guard test** — required when changing
+    `claude/scripts/pre-tool-use-shell-content-write-guard.py` or `claude/scripts/session-mode-prompt.py`'s
+    bypass-mode carve-out ([ADR-138](adr/138-shell-content-write-guard.md), dev-env#1041). ADR-138 lands
+    in both files — the guard blocks the shape, the prompt hook delivers the precedence rule that stops
+    the bypass-mode instruction contradicting it — so the two suites are paired here.
+
+    43 cases in two layers, both hermetic (layer 2 spawns the real hook but touches no files or git —
+    this hook does no filesystem or subprocess work at all). Layer 1 covers `body_hazard` / `arg_hazard`
+    / `is_file_target` / the five extraction-and-detection functions / `find_content_writes` /
+    `_is_overridden` / `might_write_content`; layer 2 drives `main()` over stdin, asserting exit codes
+    and plain-text `in proc.stderr` (`_hookout.emit_block` emits ASCII-sanitized text, not a JSON
+    envelope — the `test_skill_file_size_guard.py` convention, not the older `json.loads(proc.stderr)`
+    shape some pre-migration siblings use).
+
+    **The three cases that matter most** are verbatim reproductions of dev-env#1041's occurrences, since
+    the hook exists to stop exactly them: a quoted heredoc authoring a `.mjs` guard script, a `node -e`
+    file edit carrying the apostrophe in `user's`, and a quoted heredoc writing a PR body. Two of the
+    three used the **quoted** delimiter — the mitigation the pre-ADR-138 guidance recommended — which is
+    why `body_hazard` deliberately does not exempt that form, and why
+    `test_quoted_delimiter_is_not_treated_as_safe` pins the non-exemption on its own.
+
+    **The must-ALLOW set is tested as seriously as the block set**, and deliberately so: ADR-129
+    Amendment 1 found its sibling hook over-matching legitimate commands fleet-wide despite a green
+    63-case suite, and this hook runs on every Bash and PowerShell call in every repo. Pinned as
+    allowed: program-output redirection (`gh … > "$TMPFILE"`, `npm test > out.log`, `git diff > patch`,
+    `… | tee f`), short clean literals (`echo done > flag.txt`), the documented read-only `node -e` jq
+    replacement, the single-quoted `sed -i 's/a\.b/c/'` idiom, `/dev/null`, and reads, commit messages,
+    and greps that merely carry prose.
+
+    Two override tests are structural, not incidental. `test_journal_override_token_also_exempts` pins
+    that ADR-129's `ALLOW_JOURNAL_SHELL_WRITE=1` is honoured here too — without it a deliberate journal
+    override would clear hook 1 and then be blocked by hook 2, silently breaking a live escape hatch.
+    `test_override_does_not_exempt_a_later_segment` pins real Bash `VAR=1` scoping (one statement, not
+    the whole command), the asymmetry ADR-129 Amendment 1 finding #8 established; the PowerShell `$env:`
+    form correctly applies forward instead.
+
+    **Two deliberate scope gaps are pinned as accepted, not left silent** — the Amendment 1 finding #9
+    pattern, so a future change to either is made on purpose rather than discovered later:
+    `test_accepted_gap_heredoc_to_command_stdin` (a heredoc to a command's stdin, e.g.
+    `gh pr create --body-file - <<'EOF'`, carries the same hazard but has no file destination, so the
+    inline-literal-to-a-*file* rule does not reach it) and `test_accepted_gap_second_heredoc_on_one_line`
+    (only the first heredoc opener on a line is inspected — one hazardous body is enough to block).
+    Both fail loudly, with a message naming ADR-138, if the behavior changes.
+
+    A PowerShell case worth calling out: `test_powershell_here_string_across_a_pipe`. The canonical form
+    pipes the literal *into* the cmdlet (`@'…'@ | Set-Content f`), so pipe splitting puts the literal and
+    its cmdlet in different segments — the first implementation searched only the cmdlet's own segment
+    and missed the whole shape. The fix scopes the here-string search to *upstream* segments, not the
+    entire command, so a here-string in an unrelated later statement cannot be misattributed.
+
+    ```bash
+    py -3 claude/scripts/tests/test_shell_content_write_guard.py
+    py -3 claude/scripts/tests/test_session_mode_prompt.py
     ```

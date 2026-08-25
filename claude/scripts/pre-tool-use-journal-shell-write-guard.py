@@ -56,10 +56,21 @@ Stdin JSON shape (PreToolUse):
 """
 import json
 import re
-import shlex
 import sys
 
-from _hookio import mask_quoted_spans, split_top_level
+# Shell-syntax primitives shared with `pre-tool-use-shell-content-write-guard.py`
+# (ADR-138). Extracted from this file as a pure move -- imported under their
+# original private names here so every call site below, and this hook's own
+# 63-case suite, are unchanged by the extraction. `find_bash_redirect_targets`
+# keeps its original public name because that suite calls it directly.
+from _shell_write_detect import (
+    find_redirect_targets as find_bash_redirect_targets,
+    first_line as _first_line,
+    mask_first_line_quotes as _mask_first_line_quotes,
+    segments_or_whole as _segments_or_whole,
+    tokenize_posix as _tokenize_posix,
+    tokenize_powershell as _tokenize_line,
+)
 import _hookout
 import _hookutil
 
@@ -133,157 +144,15 @@ def _target_is_genuinely_journal(target, cwd):
     return bool(cwd) and bool(_ENGINEERING_JOURNAL_CWD_RE.search(cwd))
 
 
-# --- Segment-local helpers -------------------------------------------------
-
-def _first_line(segment):
-    """segment's own first physical line -- a heredoc/here-string body must
-    never be mistaken for invocation syntax. See module docstring."""
-    return segment.split("\n", 1)[0]
-
-
-_HEREDOC_MARKER_RE = re.compile(r"<<")
-
-
-def _neutralize_unquoted_escaped_quotes(line):
-    """Neutralize a backslash-escaped quote (`\\'` or `\\"`) exactly where
-    real Bash treats it as a literal character rather than a quote
-    boundary -- i.e. everywhere EXCEPT while already inside an open
-    single-quoted span, where backslash has no special meaning at all and
-    any bare `'` genuinely closes the span. A blind, context-free
-    substitution gets this backwards for that one case: neutralizing a
-    `\\'` immediately before a span's real closing quote (e.g. a
-    single-quoted Windows path ending in a literal backslash, `'C:\\dir\\'`)
-    would prevent that quote from closing the span at all, masking away
-    everything after it -- INCLUDING a real redirect target. (An earlier
-    version of this function used exactly that blind substitution; it
-    fixed the target case but silently regressed this one -- caught only
-    by directly re-testing the pre-fix behavior, not by inspection.)
-
-    This walker tracks just enough of `_hookio._opaque_spans`'s three
-    quote-relevant states to make the context-dependent call correctly
-    (unquoted and `$()`-subshell content are folded into one 'top' bucket,
-    since backslash-escape semantics for a quote character are identical
-    in both):
-      - 'top' (unquoted, or inside a subshell): `\\'`/`\\"` is a literal
-        escaped character in real Bash and must not open a span --
-        NEUTRALIZE. This is the actual reported hazard, e.g.
-        `echo Claude\\'s > ...` -- the standard Bash workaround for
-        embedding an apostrophe in unquoted prose.
-      - inside `'...'`: no escape processing exists at all; any bare `'`
-        closes the span regardless of what precedes it -- NEVER touch it.
-      - inside `"..."`: `\\"` legitimately escapes a literal embedded
-        double-quote without closing the span (real Bash behavior) --
-        NEUTRALIZE, to prevent the false close. A bare `'` here is inert
-        literal content either way and never toggles single-quote state.
-
-    See `test_find_bash_redirect_targets_escaped_apostrophe_in_prose` (the
-    fix), `test_find_bash_redirect_targets_canonical_apostrophe_idiom`, and
-    `test_find_bash_redirect_targets_trailing_backslash_before_close_quote_not_regressed`
-    (the regression this state-awareness avoids). Length-preserving (every
-    branch emits exactly as many characters as it consumes), so offsets
-    stay aligned with the original text -- the same invariant `<<`
-    neutralization below relies on."""
-    out = []
-    state = "top"  # "top" (unquoted + subshell), "single", or "double"
-    i = 0
-    n = len(line)
-    while i < n:
-        c = line[i]
-        if state == "single":
-            out.append(c)
-            if c == "'":
-                state = "top"
-            i += 1
-            continue
-        if state == "double":
-            if c == "\\" and i + 1 < n:
-                nxt = line[i + 1]
-                out.append("\\")
-                out.append("#" if nxt in ("'", '"') else nxt)
-                i += 2
-                continue
-            out.append(c)
-            if c == '"':
-                state = "top"
-            i += 1
-            continue
-        # state == "top"
-        if c == "\\" and i + 1 < n and line[i + 1] in ("'", '"'):
-            out.append("\\")
-            out.append("#")
-            i += 2
-            continue
-        out.append(c)
-        if c == "'":
-            state = "single"
-        elif c == '"':
-            state = "double"
-        i += 1
-    return "".join(out)
-
-
-def _mask_first_line_quotes(first_line):
-    """Quote-mask an ALREADY first-line-truncated string without
-    mis-triggering `_hookio`'s heredoc-opener handling, which assumes a real
-    multi-line body may still follow -- never true here. See module
-    docstring for the failure mode this avoids: fed directly, a `<<'EOF'`
-    opener with no following newline makes `_find_heredoc_end` consume the
-    rest of the string (including a same-line redirect target) as an
-    unterminated heredoc declaration. Neutralizing `<<` (same length, so
-    offsets stay aligned with the original) before masking sidesteps this;
-    a genuine `<<` inside a quote was never treated as an opener by
-    `_opaque_spans` in the first place, so this neutralization is safe.
-    Also neutralizes a backslash-escaped quote where real Bash would --
-    see `_neutralize_unquoted_escaped_quotes`."""
-    neutralized = _HEREDOC_MARKER_RE.sub("<#", first_line)
-    neutralized = _neutralize_unquoted_escaped_quotes(neutralized)
-    return mask_quoted_spans(neutralized)
-
-
-def _next_token(text):
-    """Read the next whitespace- or quote-delimited token from the start of
-    *text* (after skipping leading spaces/tabs). Used to read a redirect's
-    real target from the RAW (unmasked) line at the offset a match was found
-    in the masked line -- offsets stay aligned because masking preserves
-    string length."""
-    text = text.lstrip(" \t")
-    if not text:
-        return ""
-    if text[0] in ("'", '"'):
-        end = text.find(text[0], 1)
-        return text[1:end] if end != -1 else text[1:]
-    end = 0
-    while end < len(text) and not text[end].isspace():
-        end += 1
-    return text[:end]
-
-
-# --- Bash redirect detection ------------------------------------------------
-
-# A '>' or '>>' not immediately adjacent to another '>' (so '>>' is matched
-# once, as a 2-char operator, not twice as two single ones).
-_REDIRECT_OP_RE = re.compile(r"(?<!>)(>{1,2})(?!>)")
-
-
-def find_bash_redirect_targets(first_line, masked=None):
-    """Return [(operator, target), ...] for every genuine (non-quoted)
-    '>'/'>>' redirect on *first_line*, in original-command order.
-
-    *masked* -- the already-computed `_mask_first_line_quotes(first_line)`
-    -- lets `find_journal_shell_writes` compute the mask once per segment
-    and share it with `find_powershell_write_targets`'s New-Item check,
-    rather than each detector recomputing it independently (measured
-    ~35% of detector time as pure duplicate work before this sharing).
-    Computed here if not supplied, so a direct/standalone call (tests,
-    the REPL) needs no change."""
-    if masked is None:
-        masked = _mask_first_line_quotes(first_line)
-    out = []
-    for m in _REDIRECT_OP_RE.finditer(masked):
-        target = _next_token(first_line[m.end():])
-        if target:
-            out.append((m.group(1), target))
-    return out
+# --- Segment-local helpers --------------------------------------------------
+#
+# `_first_line`, `_neutralize_unquoted_escaped_quotes`, `_mask_first_line_quotes`,
+# `_next_token`, `find_bash_redirect_targets`, `_tokenize_posix`, `_tokenize_line`,
+# and `_segments_or_whole` now live in `_shell_write_detect.py` (imported above).
+# They were extracted as a pure move so ADR-138's sibling guard shares them
+# rather than hand-copying quote-state logic that Amendment 1 findings #1 and #5
+# already had to fix once. Their docstrings -- and the reasoning behind every
+# branch -- moved with them.
 
 
 # --- tee + retired-serializer-invocation detection --------------------------
@@ -312,19 +181,6 @@ def find_bash_redirect_targets(first_line, masked=None):
 #    exact recipes this PR's own documentation retires were not blocked.
 
 _TEE_RE = re.compile(r"(?i)^tee(?![\w-])")
-
-
-def _tokenize_posix(line):
-    """POSIX-mode tokenization for a genuinely Bash-context command --
-    unlike `_tokenize_line` (PowerShell-appropriate, deliberately avoids
-    POSIX backslash-escape processing), `tee` is Bash-only and backslash
-    genuinely means escape there. Falls back to a naive whitespace split
-    on an unterminated-quote `ValueError`, matching every other
-    tokenizer's convention in this module."""
-    try:
-        return shlex.split(line, posix=True)
-    except ValueError:
-        return line.split()
 
 
 def find_tee_targets(first_line):
@@ -388,31 +244,6 @@ _PS_WRITE_CMDLET_RE = re.compile(r"(?i)(?<![\w-])(Out-File|Set-Content|Add-Conte
 _PS_NEW_ITEM_RE = re.compile(r"(?i)(?<![\w-])New-Item(?![\w-])")
 _PS_VALUE_FLAG_RE = re.compile(r"(?i)(?<![\w-])-Value(?![\w-])")
 _PS_PATH_FLAG_RE = re.compile(r"(?i)^-(Path|LiteralPath|FilePath)$")
-
-
-def _tokenize_line(line):
-    """PowerShell-appropriate tokenization: groups quoted multi-word values
-    into single tokens the same way `shlex.split(posix=True)` does, but
-    without POSIX backslash-escape processing -- PowerShell uses backtick
-    (`` ` ``) as its escape character, not backslash, so `posix=True`
-    silently eats every backslash in an unquoted Windows path
-    (`sessions\\dev-env\\tiles\\961.json` -> `sessionsdev-envtiles961.json`,
-    destroying it before `journal_path_kind()` ever sees it -- verified
-    live, dev-env#962 review). `posix=False` leaves surrounding quote
-    characters attached to a token instead of stripping them (e.g. a
-    single-quoted value token comes back as `'...'`, not `...`) --
-    harmless here, since `journal_path_kind()` already strips one matching
-    leading/trailing quote pair before testing the four path shapes, and
-    this function no longer inspects a `-Value` payload's *content* at all
-    (see `find_powershell_write_targets`). Falls back to a naive
-    whitespace split on the rare unterminated-quote `ValueError`, mirroring
-    both sibling hooks' `_tokenize()` convention (dev-env#620 follow-up: a
-    PowerShell here-string opener like a `-Value @'` invocation's trailing
-    `@'` is an unterminated quote to `shlex` either way)."""
-    try:
-        return shlex.split(line, posix=False)
-    except ValueError:
-        return line.split()
 
 
 def find_powershell_write_targets(first_line, masked=None):
@@ -534,37 +365,6 @@ def _might_write_journal_content(cmd):
         return True
     lowered = cmd.lower()
     return any(marker in lowered for marker in _PREFILTER_MARKERS)
-
-
-def _segments_or_whole(cmd, segments=None):
-    """`split_top_level(cmd, split_pipe=True)` with a fallback for one shape
-    that function's own docstring calls out as deliberate: "If *command*
-    ends with an unterminated quote/subshell/heredoc, the trailing
-    (malformed) segment is dropped rather than returned." Its single-quote
-    state has no escape-awareness (correctly matching real Bash, where
-    backslash means nothing inside real single quotes) -- so a backslash
-    -escaped apostrophe in UNQUOTED prose (`echo Claude\\'s > ...`, the
-    standard Bash workaround this hook's own docstring names as the exact
-    motivating hazard) opens a single-quote span at the bare `'` and never
-    finds a closing one, dropping the ENTIRE command as "unterminated" even
-    though it's well-formed, executable Bash. `split_top_level` is a
-    heavily-tested shared primitive (~30 tests, several other hook callers)
-    -- deliberately not touched here (see its own module comment on why
-    `mask_quoted_spans` was written as an independent walker rather than
-    risk perturbing it). Falling back to the whole raw command as one
-    opaque segment when segmentation returns nothing is strictly safer
-    than losing the command (and the hazard) entirely: `_first_line()`
-    still truncates it to one physical line downstream, so the only cost
-    is that a command sharing this exact shape AND a real `&&`/`;`/`|`
-    boundary is seen as one segment instead of several -- narrower than
-    the miss this avoids, and only relevant if the redirect/cmdlet lands
-    on a different top-level statement than the escaped quote."""
-    if segments is not None:
-        return segments
-    out = split_top_level(cmd, split_pipe=True)
-    if not out and cmd.strip():
-        return [cmd]
-    return out
 
 
 def find_journal_shell_writes(cmd, tool_name, cwd=None, segments=None):

@@ -50,8 +50,27 @@ The pattern matches any Bash command starting with `TMPFILE=`, which is a recogn
 
 ---
 
+## Amendment (2026-08-25): the heredoc endorsement is superseded for content authoring
+
+[ADR-138](138-shell-content-write-guard.md) narrowly supersedes the *Alternatives Considered*
+reasoning above ("The Bash heredoc is more natural and idiomatic"). That judgment predates
+dev-env#1041, which recorded a quoted heredoc silently mangling a file's content and another
+failing outright — so a heredoc is no longer the recommended way to write file *content*, scratch
+or otherwise, and `pre-tool-use-shell-content-write-guard.py` now blocks the hazard-bearing form.
+
+Two things here still stand, unchanged:
+
+- **The `Bash(TMPFILE=*)` allow rule.** The canonical recipe it exists for is
+  `some-command --format json > "$TMPFILE"` — a *program's output* redirected, never an inline
+  literal — which is outside ADR-138's guard by construction and still needs its prompt exemption.
+- **The `$$`-uniqueness argument.** Generate the unique filename in Bash exactly as before; write
+  the file's *content* with the Write tool.
+
+---
+
 ## References
 
+- [ADR-138](138-shell-content-write-guard.md): supersedes the heredoc-for-content endorsement above
 - Issue #155: `fix: review skill temp file write triggers permission prompt`
 - PR #156: `fix: use Write tool for review temp file to avoid permission prompt` (initial approach; revised to allow rule in same PR)
 - ADR 003: Config Artifacts in Version Control via Symlinks (scratch path conventions)

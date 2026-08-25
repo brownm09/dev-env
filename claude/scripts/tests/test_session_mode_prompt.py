@@ -67,6 +67,57 @@ def test_creates_marker_for_new_session() -> str:
     return "first prompt of a new session writes session_mode_ack_<sid>.txt and emits context"
 
 
+def _injected_context(proc) -> str:
+    return json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+# Distinctive substring of _BYPASS_CONTENT_NOTE -- the ADR-138 carve-out that
+# resolves the bypass-mode instruction's contradiction with claude/CLAUDE.md ->
+# Authoring File Content. Deliberately asserted on the INJECTED payload rather
+# than by importing the constant, so a change that builds the text correctly but
+# fails to reach stdout is still caught.
+_BYPASS_MARKER = "Authoring File Content"
+
+
+def test_bypass_mode_gets_the_content_authoring_carve_out() -> str:
+    with tempfile.TemporaryDirectory() as home_s:
+        home = Path(home_s)
+        proc = _run_hook(
+            {"session_id": "sess-bypass-1", "prompt": "help me fix a bug",
+             "permission_mode": "bypassPermissions"},
+            home,
+        )
+        assert proc.returncode == 0, f"expected exit 0, got {proc.returncode}: {proc.stderr}"
+        ctx = _injected_context(proc)
+        assert _BYPASS_MARKER in ctx, (
+            "a bypassPermissions session must receive the content-authoring carve-out "
+            f"(ADR-138); injected context was: {ctx!r}"
+        )
+        assert "permission mode is plan / bypass / auto" in ctx, (
+            "the base session-mode reminder must still be present, not replaced"
+        )
+    return "a bypassPermissions session gets the ADR-138 carve-out appended to the base reminder"
+
+
+def test_non_bypass_modes_get_the_base_reminder_only() -> str:
+    with tempfile.TemporaryDirectory() as home_s:
+        home = Path(home_s)
+        for idx, mode in enumerate(("plan", "auto", "default", "", None)):
+            payload = {"session_id": f"sess-mode-{idx}", "prompt": "help me fix a bug"}
+            if mode is not None:
+                payload["permission_mode"] = mode
+            proc = _run_hook(payload, home)
+            assert proc.returncode == 0, f"expected exit 0 for {mode!r}, got {proc.returncode}"
+            ctx = _injected_context(proc)
+            assert _BYPASS_MARKER not in ctx, (
+                f"permission_mode={mode!r} is not bypass and must NOT get the carve-out"
+            )
+            assert "permission mode is plan / bypass / auto" in ctx, (
+                f"the base reminder must still be injected for permission_mode={mode!r}"
+            )
+    return "plan/auto/default/empty/missing permission_mode all get the base reminder only"
+
+
 def test_second_prompt_same_session_passes_through_silently() -> str:
     with tempfile.TemporaryDirectory() as home_s:
         home = Path(home_s)
@@ -121,6 +172,10 @@ def main() -> int:
         ("creates marker for a new session", test_creates_marker_for_new_session),
         ("second prompt, same session, passes through silently",
          test_second_prompt_same_session_passes_through_silently),
+        ("bypass mode gets the content-authoring carve-out",
+         test_bypass_mode_gets_the_content_authoring_carve_out),
+        ("non-bypass modes get the base reminder only",
+         test_non_bypass_modes_get_the_base_reminder_only),
         ("sweeps stale marker, keeps fresh", test_sweeps_stale_marker_keeps_fresh),
         ("automated prompt still suppressed", test_automated_prompt_still_suppressed_and_no_marker_write_needed),
     ]

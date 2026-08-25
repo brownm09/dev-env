@@ -215,6 +215,14 @@ hook exists to prevent.
   contract this hook's block emission relies on
 - [ADR-127](127-skill-file-size-guard.md) — the most recently added `PreToolUse` blocking
   hook, and the direct precedent for `_hookout.emit_block()` over a hand-rolled writer
+- [ADR-138](138-shell-content-write-guard.md) — generalizes this ADR past its path test. The same
+  failure recurred on non-journal files (a guard script, a `node -e` edit, a PR body — dev-env#1041),
+  including twice through the quoted-heredoc form this ADR's own guidance points at, so the rule is
+  now content-shaped: Write/Edit whenever the content is a hazard-bearing inline literal, anywhere.
+  ADR-138 also states the precedence over the bypass-permissions instruction, and extracted this
+  hook's quote-masking/redirect/tokenizing primitives into the shared `_shell_write_detect.py` (a
+  pure move; this hook's 63-case suite passes unchanged). The four journal kinds remain the
+  **stricter, unconditional** special case defined here.
 - `brownm09/dev-env#904` — the tile-shard `cwd` corruption incident that first exposed this
   problem class
 - `brownm09/dev-env#961` — tracking issue for this fix
