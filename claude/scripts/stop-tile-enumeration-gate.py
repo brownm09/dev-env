@@ -162,6 +162,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 from _hookio import (
     is_rest_merge_command,
@@ -200,7 +201,9 @@ _TRIGGER_ISSUE = "issue-"
 _TRIGGER_TABLE = "table-"
 _TRIGGER_DEFER = "defer-"
 _TRIGGER_SHARD = "shard-"
-_TRIGGERS = (_TRIGGER_PR, _TRIGGER_ISSUE, _TRIGGER_TABLE, _TRIGGER_DEFER, _TRIGGER_SHARD)
+# _TRIGGERS is DERIVED from _TRIGGER_SPECS (below, after the evaluators and
+# formatters it references) rather than hand-listed here, so the sentinel set
+# and the trigger table can never drift apart (dev-env#696).
 
 # --- command-shape detection (anchored via split_top_level, not raw substring) --
 # Each of these is matched against the lstripped FIRST LINE of a top-level
@@ -784,16 +787,19 @@ def evaluate_issues(records: list) -> tuple:
 
 
 def evaluate_tile_table(records: list) -> tuple:
-    """Return ``(fire, resolved)`` for the tiles-spawned-without-a-table
+    """Return ``(payload, resolved)`` for the tiles-spawned-without-a-table
     trigger (ADR-094 addendum, dev-env#656) — a THIRD fully independent
     sibling to ``evaluate()``/``evaluate_issues()``, zero impact on either.
 
-    ``fire`` — True iff a tile was spawned this session and neither the table
-    marker nor a skip override is present.
+    ``payload`` — ``True`` iff a tile was spawned this session and neither the
+    table marker nor a skip override is present; ``None`` otherwise. This
+    trigger has nothing to carry into its formatter (unlike triggers 1/2,
+    which carry a PR/issue number), so ``True`` is simply the not-``None``
+    sentinel of the shared contract — see ``_TriggerSpec`` (dev-env#696).
     ``resolved`` — True whenever a tile was spawned and the table (or skip
     override) is present, so the caller marks the sentinel and later Stops
     skip the re-scan. A session that spawned no tile at all returns
-    ``(False, False)`` (nothing to resolve) so a tile spawned later in the
+    ``(None, False)`` (nothing to resolve) so a tile spawned later in the
     session is still caught.
 
     NOTE the asymmetry with triggers 1/2: a spawned tile satisfies
@@ -804,9 +810,9 @@ def evaluate_tile_table(records: list) -> tuple:
     silently while trigger 3 still fires.
     """
     if not session_spawned_tiles(records):
-        return False, False
+        return None, False
     if skip_override(records) or table_marker_present(records):
-        return False, True
+        return None, True
     return True, False
 
 
@@ -860,13 +866,14 @@ def tile_shard_write_present(records: list) -> bool:
 
 
 def evaluate_tile_shard(records: list) -> tuple:
-    """Return ``(fire, resolved)`` for the tile-spawned-without-a-shard trigger
+    """Return ``(payload, resolved)`` for the tile-spawned-without-a-shard trigger
     (ADR-118 enforcement, dev-env#870) — a FIFTH independent sibling.
 
-    ``fire`` — True iff a tile was spawned this session and neither a tile-shard write nor
-    a skip override is present.
+    ``payload`` — ``True`` iff a tile was spawned this session and neither a tile-shard
+    write nor a skip override is present; ``None`` otherwise (the shared ``_TriggerSpec``
+    contract, dev-env#696 — this trigger carries nothing into its formatter).
     ``resolved`` — True whenever a tile was spawned and the shard write (or skip override)
-    is present. A session that spawned no tile returns ``(False, False)`` so a tile spawned
+    is present. A session that spawned no tile returns ``(None, False)`` so a tile spawned
     later is still caught.
 
     Shares ``session_spawned_tiles`` with triggers 1/2/3, so "was a tile spawned" cannot
@@ -889,9 +896,9 @@ def evaluate_tile_shard(records: list) -> tuple:
     rather than a maybe-false alarm.
     """
     if not session_spawned_tiles(records):
-        return False, False
+        return None, False
     if skip_override(records) or tile_shard_write_present(records):
-        return False, True
+        return None, True
     return True, False
 
 
@@ -915,7 +922,7 @@ def deferral_question_present(records: list) -> bool:
 
 
 def evaluate_deferral(records: list) -> tuple:
-    """Return ``(fire, resolved)`` for the deferral-question trigger (new
+    """Return ``(payload, resolved)`` for the deferral-question trigger (new
     ADR, dev-env#772) — a FOURTH fully independent sibling to
     ``evaluate()``/``evaluate_issues()``/``evaluate_tile_table()``, zero
     impact on any of the three.
@@ -927,8 +934,10 @@ def evaluate_deferral(records: list) -> tuple:
     false-positive surface bounded to sessions that already have
     follow-up-worthy activity.
 
-    ``fire`` — True iff a deferral-question phrase was used this session (in
-    a merge/issue-create context) and no skip override waives it.
+    ``payload`` — ``True`` iff a deferral-question phrase was used this
+    session (in a merge/issue-create context) and no skip override waives it;
+    ``None`` otherwise (the shared ``_TriggerSpec`` contract, dev-env#696 —
+    this trigger carries nothing into its formatter).
 
     Deliberately does NOT accept ``enumeration_recorded`` as resolution,
     unlike triggers 1-3 — this is the fix for the exact incident that
@@ -953,9 +962,9 @@ def evaluate_deferral(records: list) -> tuple:
     ``resolved`` — True whenever the phrase is present and the skip override
     waives it, so the caller marks the sentinel and later Stops skip the
     re-scan. A session with neither a merge/issue-create context nor the
-    phrase yet returns ``(False, False)`` so a later turn is still caught.
+    phrase yet returns ``(None, False)`` so a later turn is still caught.
 
-    Unlike triggers 1-3, a ``fire`` here does NOT block the stop via exit 2
+    Unlike triggers 1-3, a fired payload here does NOT block the stop via exit 2
     — see the module docstring's trigger-4 section and ``main()``'s emission
     logic: this is a natural-language pattern match, not an objectively
     verifiable fact, so it rides the advisory ``_hookout.emit_advisory``
@@ -963,11 +972,11 @@ def evaluate_deferral(records: list) -> tuple:
     """
     calls = iter_bash_calls(records)
     if not session_merged_prs(calls) and not session_created_issues(calls):
-        return False, False
+        return None, False
     if not deferral_question_present(records):
-        return False, False
+        return None, False
     if skip_override(records):
-        return False, True
+        return None, True
     return True, False
 
 
@@ -1004,7 +1013,7 @@ def format_issue_reminder(issue: int) -> str:
     )
 
 
-def format_table_reminder() -> str:
+def format_table_reminder(payload: object = None) -> str:
     """The exit-2 stderr message for the tiles-spawned-without-a-table
     trigger (ADR-094 addendum). ASCII-only, same constraint as the other
     ``format_*_reminder`` functions (Claude Code pipes hook output as
@@ -1020,7 +1029,7 @@ def format_table_reminder() -> str:
     )
 
 
-def format_shard_reminder() -> str:
+def format_shard_reminder(payload: object = None) -> str:
     """The exit-2 stderr message for the tile-spawned-without-a-shard trigger
     (ADR-118 enforcement, dev-env#870). ASCII-only, same cp1252 constraint as the
     other ``format_*_reminder`` functions."""
@@ -1040,7 +1049,7 @@ def format_shard_reminder() -> str:
     )
 
 
-def format_deferral_reminder() -> str:
+def format_deferral_reminder(payload: object = None) -> str:
     """The systemMessage text for the deferral-question trigger (new ADR,
     dev-env#772) -- advisory and USER-facing, unlike the other three
     ``format_*_reminder`` functions, which are model-facing exit-2 stderr.
@@ -1056,6 +1065,102 @@ def format_deferral_reminder() -> str:
         "directly rather than asked about. This is a heuristic text match and "
         "may be a false positive -- worth a quick look, not necessarily an error."
     )
+
+
+class _PrefilterCtx(NamedTuple):
+    """Transcript signals precomputed once and shared by every ``prefilter``.
+
+    Each spec's ``prefilter`` answers one question -- "is this trigger's signal
+    anywhere in the transcript?" -- and must be a cheap read of these fields,
+    never its own scan: the whole point of the pre-filter is to skip the parse.
+    """
+
+    text: str
+    lower: str
+    has_merge_or_issue_signal: bool
+
+
+class _TriggerSpec(NamedTuple):
+    """One row per trigger -- the single place a trigger's identity lives.
+
+    Before dev-env#696 each trigger was spread across five hand-synchronized
+    sites in ``main()``: the ``_TRIGGERS`` tuple, its pre-filter clause, the
+    evaluate block's skip-default, the sentinel-marking loop's ``fired`` test,
+    and the message-building block. Two of those carried a silent asymmetry --
+    a ``(None, False)`` skip-default for triggers 1/2 against ``(False, False)``
+    for the rest, and a matching ``is not None`` against bare-truthiness
+    ``fired`` test -- so a trigger could be added with a subtly wrong shape and
+    no test would say so. Adding a trigger is now one row here.
+
+    ``evaluate`` returns the uniform ``(payload, resolved)`` contract, where
+    ``payload is None`` means "not firing". Triggers with nothing to carry
+    return ``True``; triggers 1/2 return the PR/issue number their formatter
+    needs. ``formatter`` therefore takes exactly one argument for every trigger
+    (the three that ignore it default it to ``None``, so the no-arg call the
+    tests use still works).
+
+    ``blocking`` decides both channels at once, which is what makes trigger 4's
+    old hand-written special case principled: a blocking trigger emits exit-2
+    stderr and marks its FIRED sentinel in the shared loop, while a non-blocking
+    (advisory) one emits a ``systemMessage`` and marks FIRED only at the point
+    of emission. Marking an advisory trigger in the shared loop would set its
+    sentinel even on a turn where a co-firing blocking trigger preempts it via
+    the early ``sys.exit(2)``, permanently silencing a condition that ADR-109
+    promises "can still surface on a later Stop once the harder trigger
+    resolves". The RESOLVED mark is unconditional for every trigger -- that
+    state is stable regardless of what else fires this turn.
+    """
+
+    key: str           # sentinel suffix; one of the _TRIGGER_* constants above
+    evaluate: object   # (records) -> (payload, resolved)
+    prefilter: object  # (_PrefilterCtx) -> bool
+    formatter: object  # (payload) -> str
+    blocking: bool     # True: exit-2 stderr (model). False: systemMessage (user).
+
+
+# Order is the order blocking messages are joined into the exit-2 stderr body.
+_TRIGGER_SPECS = (
+    _TriggerSpec(
+        key=_TRIGGER_PR,
+        evaluate=evaluate,
+        prefilter=lambda c: "merged" in c.lower,
+        formatter=format_reminder,
+        blocking=True,
+    ),
+    _TriggerSpec(
+        key=_TRIGGER_ISSUE,
+        evaluate=evaluate_issues,
+        prefilter=lambda c: bool(_ISSUE_CREATE_STMT_RE.search(c.text)),
+        formatter=format_issue_reminder,
+        blocking=True,
+    ),
+    _TriggerSpec(
+        key=_TRIGGER_TABLE,
+        evaluate=evaluate_tile_table,
+        prefilter=lambda c: _SPAWN_TASK_SUBSTRING in c.lower,
+        formatter=format_table_reminder,
+        blocking=True,
+    ),
+    _TriggerSpec(
+        key=_TRIGGER_SHARD,
+        evaluate=evaluate_tile_shard,
+        prefilter=lambda c: _SPAWN_TASK_SUBSTRING in c.lower,
+        formatter=format_shard_reminder,
+        blocking=True,
+    ),
+    _TriggerSpec(
+        key=_TRIGGER_DEFER,
+        evaluate=evaluate_deferral,
+        prefilter=lambda c: (
+            c.has_merge_or_issue_signal
+            and any(sub in c.lower for sub in _DEFER_PREFILTER_SUBSTRINGS)
+        ),
+        formatter=format_deferral_reminder,
+        blocking=False,
+    ),
+)
+
+_TRIGGERS = tuple(spec.key for spec in _TRIGGER_SPECS)
 
 
 # --- I/O (thin, untested per the pure-helper convention) -----------------------
@@ -1167,14 +1272,14 @@ def main() -> None:
     # not-yet-resolved trigger's own clause is unaffected (reduces to the
     # original unconditional check).
     lower = text.lower()
-    has_merge_or_issue_signal = "merged" in lower or bool(_ISSUE_CREATE_STMT_RE.search(text))
-    if ((already_done[_TRIGGER_PR] or "merged" not in lower)
-            and (already_done[_TRIGGER_ISSUE] or not _ISSUE_CREATE_STMT_RE.search(text))
-            and (already_done[_TRIGGER_TABLE] or _SPAWN_TASK_SUBSTRING not in lower)
-            and (already_done[_TRIGGER_SHARD] or _SPAWN_TASK_SUBSTRING not in lower)
-            and (already_done[_TRIGGER_DEFER]
-                 or not (has_merge_or_issue_signal
-                         and any(s in lower for s in _DEFER_PREFILTER_SUBSTRINGS)))):
+    ctx = _PrefilterCtx(
+        text=text,
+        lower=lower,
+        has_merge_or_issue_signal=(
+            "merged" in lower or bool(_ISSUE_CREATE_STMT_RE.search(text))
+        ),
+    )
+    if all(already_done[spec.key] or not spec.prefilter(ctx) for spec in _TRIGGER_SPECS):
         sys.exit(0)
 
     # Fail-open: a parse/scan failure is a deliberate exit-0 skip, not an
@@ -1186,69 +1291,55 @@ def main() -> None:
     # re-flagged for the second, exactly as before ADR-097).
     try:
         records = _parse_records(text)
-        fire_pr, resolved_pr = (
-            (None, False) if already_done[_TRIGGER_PR] else evaluate(records)
-        )
-        fire_issue, resolved_issue = (
-            (None, False) if already_done[_TRIGGER_ISSUE] else evaluate_issues(records)
-        )
-        fire_table, resolved_table = (
-            (False, False) if already_done[_TRIGGER_TABLE] else evaluate_tile_table(records)
-        )
-        fire_shard, resolved_shard = (
-            (False, False) if already_done[_TRIGGER_SHARD] else evaluate_tile_shard(records)
-        )
-        fire_defer, resolved_defer = (
-            (False, False) if already_done[_TRIGGER_DEFER] else evaluate_deferral(records)
-        )
+        # One uniform skip-default for every trigger, now that all five share
+        # the (payload, resolved) contract -- the (None, False) vs (False,
+        # False) split this replaced was the dev-env#696 asymmetry.
+        results = {
+            spec.key: (
+                (None, False) if already_done[spec.key] else spec.evaluate(records)
+            )
+            for spec in _TRIGGER_SPECS
+        }
     except Exception:
         sys.exit(0)
 
     # Mark each trigger's own sentinel BEFORE emitting, so a re-entrant Stop
-    # cannot double-block (mirrors the original single-sentinel ordering).
-    # Trigger 4's FIRED mark is deliberately excluded here (marked only where
-    # its advisory actually emits, below) -- marking it on fire_defer alone
-    # would set its sentinel even on a turn where a co-firing blocking
-    # trigger (1-3) preempts the advisory via the early sys.exit(2) below,
-    # permanently silencing a persisting deferral-question condition for the
-    # rest of the session (review finding: this contradicted the module
-    # docstring's and ADR-109's own promise that such a condition "can still
-    # surface on a later Stop once the harder trigger resolves"). Its
-    # RESOLVED mark (skip_override present) is unaffected -- that state is
-    # genuinely stable regardless of what else fires this turn.
-    for trigger, fired, resolved in (
-        (_TRIGGER_PR, fire_pr is not None, resolved_pr),
-        (_TRIGGER_ISSUE, fire_issue is not None, resolved_issue),
-        (_TRIGGER_TABLE, fire_table, resolved_table),
-        (_TRIGGER_SHARD, fire_shard, resolved_shard),
-        (_TRIGGER_DEFER, False, resolved_defer),
-    ):
-        if fired or resolved:
-            _mark_trigger_fired(trigger, session_id)
+    # cannot double-block (mirrors the original single-sentinel ordering). An
+    # ADVISORY trigger's FIRED mark is deliberately excluded here and made at
+    # the point of emission instead -- see _TriggerSpec's docstring for why
+    # (marking it here would let a co-firing blocking trigger's early exit(2)
+    # permanently silence a condition ADR-109 promises "can still surface on a
+    # later Stop once the harder trigger resolves"). The RESOLVED mark is
+    # unconditional -- that state is stable regardless of what else fires.
+    for spec in _TRIGGER_SPECS:
+        payload, resolved = results[spec.key]
+        if (payload is not None and spec.blocking) or resolved:
+            _mark_trigger_fired(spec.key, session_id)
 
-    messages = []
-    if fire_pr is not None:
-        messages.append(format_reminder(fire_pr))
-    if fire_issue is not None:
-        messages.append(format_issue_reminder(fire_issue))
-    if fire_table:
-        messages.append(format_table_reminder())
-    if fire_shard:
-        messages.append(format_shard_reminder())
+    messages = [
+        spec.formatter(results[spec.key][0])
+        for spec in _TRIGGER_SPECS
+        if spec.blocking and results[spec.key][0] is not None
+    ]
 
     if messages:
         sys.stderr.write("\n\n".join(messages) + "\n")
         sys.exit(2)
 
-    # Trigger 4 never contributes to the blocking exit-2 path above (see the
-    # module docstring's trigger-4 section) -- only reached when none of
-    # triggers 1-3 fired, so there is no exit-code conflict with the
-    # advisory channel below (_hookout.emit_advisory always exits 0 here).
-    # Mark its FIRED sentinel HERE, at the point of actual emission, not in
-    # the shared loop above -- see that loop's comment for why.
-    if fire_defer:
-        _mark_trigger_fired(_TRIGGER_DEFER, session_id)
-        _hookout.emit_advisory("Stop", format_deferral_reminder(), audience="user")
+    # Advisory triggers never contribute to the blocking exit-2 path above (see
+    # the module docstring's trigger-4 section) -- only reached when no blocking
+    # trigger fired, so there is no exit-code conflict with the advisory channel
+    # (_hookout.emit_advisory always exits 0 here). emit_advisory is also
+    # NoReturn, so at most one advisory is delivered per Stop; with exactly one
+    # advisory trigger today that is the pre-dev-env#696 behavior unchanged, and
+    # a second one would surface on a later Stop rather than being lost, since
+    # its sentinel is only marked on the turn it actually emits.
+    for spec in _TRIGGER_SPECS:
+        payload, _resolved = results[spec.key]
+        if spec.blocking or payload is None:
+            continue
+        _mark_trigger_fired(spec.key, session_id)
+        _hookout.emit_advisory("Stop", spec.formatter(payload), audience="user")
     sys.exit(0)
 
 
