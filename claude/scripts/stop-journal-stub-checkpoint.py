@@ -29,6 +29,17 @@ when ALL of the following hold:
   4. **No journal stub written** (``wrote_stub``) — a Write/Edit to a
      ``*.stub.md`` path, or a Bash command referencing one (a pre-written stub
      staged with ``git add``/``commit``).
+
+``substantive_tool_count``, ``wrote_stub``, and ``opened_or_merged_pr`` (via
+``_bash_commands``) all skip ``isSidechain`` (subagent) records, mirroring
+``journal-stop-check.py``'s isSidechain-filtered counters (ADR-091 Amendment
+3). Per ADR-100 Amendment 2 (dev-env#1023), this is a defensive-consistency
+fix, not a bug fix: an exhaustive live scan of every main-session transcript
+on this harness found zero ``isSidechain: true`` records anywhere in a
+main-session transcript — subagent activity is recorded exclusively in a
+separate ``subagents/agent-<hash>.jsonl`` file this hook's ``transcript_path``
+never points at — so the filter is confirmed to change no current fire
+decision.
   5. **Not a ``/review`` session** (``is_review_only_session``) — review-only
      sessions are exempt (their findings live on the PR — global CLAUDE.md).
   6. **No skip override** (``skip_override``) — a genuine user "skip journal" /
@@ -208,17 +219,30 @@ _SUBSTANTIVE_TOOLS = frozenset({
 
 
 def _bash_commands(records: list) -> list:
-    """Every Bash tool_use command string in the transcript.
+    """Every Bash tool_use command string in the transcript, excluding a
+    subagent's own (``isSidechain``) Bash calls.
 
     A thin UNPAIRED walk (unlike ``_hookutil.iter_bash_calls``, which pairs each
     Bash call with its tool_result output): this hook's detection needs only the
     command text — PR-create/merge presence and stub-file references — never the
     command's output, and an unpaired walk also catches a trailing Bash call
     whose result isn't in the transcript yet at Stop time.
+
+    The ``isSidechain`` skip mirrors ``journal-stop-check.py``'s
+    ``pending_task_count`` / ``open_background_agent_count`` (ADR-091 Amendment
+    3) — see ADR-100 Amendment 2 for why this hook's three isSidechain-adjacent
+    functions (this one via ``opened_or_merged_pr``, plus
+    ``substantive_tool_count`` and ``wrote_stub``) apply the same filter despite
+    an exhaustive live-transcript check (dev-env#1023) finding zero
+    ``isSidechain: true`` records in any main-session transcript on this
+    harness — a defensive-consistency fix confirmed to change no current
+    behavior, not a response to an observed live miscount.
     """
     commands: list = []
     for rec in records:
         if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        if rec.get("isSidechain"):
             continue
         for item in _content_items(rec):
             if (
@@ -250,11 +274,23 @@ def report_intent(records: list) -> bool:
 
 def substantive_tool_count(records: list) -> int:
     """Count of assistant ``tool_use`` items whose ``name`` is a substantive
-    tool (see ``_SUBSTANTIVE_TOOLS``). Parallel tool_use items in one record
-    each count individually."""
+    tool (see ``_SUBSTANTIVE_TOOLS``), excluding a subagent's own
+    (``isSidechain``) tool calls so delegated legwork is never attributed to
+    the main session's own hands-on effort — mirroring
+    ``journal-stop-check.py``'s ``pending_task_count`` / \
+    ``open_background_agent_count`` (ADR-091 Amendment 3). See ADR-100
+    Amendment 2 (dev-env#1023): an exhaustive live-transcript check found zero
+    ``isSidechain: true`` records in any main-session transcript on this
+    harness (subagent activity lives exclusively in a separate
+    ``subagents/agent-<hash>.jsonl`` file a Stop hook never reads), so this
+    filter is confirmed to change no current behavior — it is a
+    defensive-consistency fix, not a response to an observed miscount.
+    Parallel tool_use items in one record each count individually."""
     n = 0
     for rec in records:
         if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        if rec.get("isSidechain"):
             continue
         for item in _content_items(rec):
             if (
@@ -293,9 +329,25 @@ def wrote_stub(records: list) -> bool:
     (``git add``/``git commit``, a redirect, or ``mv``/``cp``/``tee`` — NOT a
     bare read like ``ls``/``cat``, which the journal workflow itself runs to find
     the latest stub; review of PR #706). Errs toward suppression (the safe
-    advisory direction: a false "stub written" only silences the nudge)."""
+    advisory direction: a false "stub written" only silences the nudge).
+
+    Skips a subagent's own (``isSidechain``) tool calls, mirroring
+    ``substantive_tool_count`` / ``_bash_commands`` (ADR-100 Amendment 2,
+    dev-env#1023) — a defensive-consistency fix confirmed to change no current
+    behavior (see those functions' docstrings). Considered and accepted: unlike
+    ``substantive_tool_count``'s "was this the main session's own effort"
+    question, this is an existence check, so a subagent that wrote the stub on
+    the session's behalf would (in a hypothetical future harness that inlines
+    sidechain content into the main transcript) make this filtered version miss
+    a stub that genuinely exists — the cost of that false positive is the same
+    one-dismissable-nudge cost every other false positive in this advisory hook
+    already carries (see ADR-100's Consequences), and the documented Engineering
+    Journal workflow treats stub-writing as a main-session bookkeeping step, not
+    delegated legwork — so filtering here is still the right default."""
     for rec in records:
         if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        if rec.get("isSidechain"):
             continue
         for item in _content_items(rec):
             if not isinstance(item, dict) or item.get("type") != "tool_use":

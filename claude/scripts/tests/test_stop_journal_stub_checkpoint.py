@@ -114,6 +114,15 @@ def _user_compact(text):
     return {"type": "user", "isCompactSummary": True, "message": {"content": text}}
 
 
+def _sidechain(rec):
+    """Return a copy of *rec* with isSidechain: True set -- models a
+    subagent's own tool_use record for the isSidechain-exclusion tests
+    (dev-env#1023, ADR-100 Amendment 2)."""
+    out = dict(rec)
+    out["isSidechain"] = True
+    return out
+
+
 def _user_review(url):
     return _user_str(
         f"<command-name>/review</command-name>\n"
@@ -267,6 +276,27 @@ def test_substantive_boundary_4_and_5():
     return "substantive_tool_count boundary: 4 reads -> 4, 5 reads -> 5"
 
 
+def test_substantive_ignores_sidechain_records():
+    """A subagent's own tool_use calls (isSidechain: true) must not count
+    toward the main session's substantive-work total (dev-env#1023, ADR-100
+    Amendment 2) -- mirrors journal-stop-check.py's isSidechain-filtered
+    counters (ADR-091 Amendment 3)."""
+    recs = [_sidechain(_asst_read(f"t{i}", f"f{i}.ts")) for i in range(6)]
+    assert hook.substantive_tool_count(recs) == 0
+    return "substantive_tool_count: isSidechain records excluded -> 0"
+
+
+def test_substantive_mixed_sidechain_and_main():
+    """Only non-isSidechain tool_use calls count; a large volume of
+    isSidechain calls in the same transcript is ignored entirely."""
+    recs = (
+        [_asst_read(f"m{i}", f"main{i}.ts") for i in range(3)]
+        + [_sidechain(_asst_read(f"s{i}", f"sub{i}.ts")) for i in range(10)]
+    )
+    assert hook.substantive_tool_count(recs) == 3
+    return "substantive_tool_count: 3 main + 10 isSidechain reads -> 3 (isSidechain never counted)"
+
+
 # ---------------------------------------------------------------------------
 # opened_or_merged_pr
 # ---------------------------------------------------------------------------
@@ -313,6 +343,20 @@ def test_pr_absent():
     return "opened_or_merged_pr: no PR command -> False"
 
 
+def test_pr_create_sidechain_not_counted():
+    """A subagent running gh pr create (isSidechain: true) must not satisfy
+    opened_or_merged_pr() (dev-env#1023, ADR-100 Amendment 2)."""
+    recs = [_sidechain(_asst_bash("t1", "gh pr create --fill --head feat/x"))]
+    assert hook.opened_or_merged_pr(recs) is False
+    return "opened_or_merged_pr: isSidechain gh pr create -> False (excluded)"
+
+
+def test_pr_merge_sidechain_not_counted():
+    recs = [_sidechain(_asst_bash("t1", "gh pr merge 12 --squash --delete-branch"))]
+    assert hook.opened_or_merged_pr(recs) is False
+    return "opened_or_merged_pr: isSidechain gh pr merge -> False (excluded)"
+
+
 # ---------------------------------------------------------------------------
 # wrote_stub
 # ---------------------------------------------------------------------------
@@ -351,6 +395,24 @@ def test_wrote_stub_bash_no_ref():
     recs = [_asst_bash("t1", "npm test")]
     assert hook.wrote_stub(recs) is False
     return "wrote_stub: Bash with no stub reference -> False"
+
+
+def test_wrote_stub_sidechain_write_not_counted():
+    """A subagent writing the stub file (isSidechain: true) must not satisfy
+    wrote_stub() (dev-env#1023, ADR-100 Amendment 2) -- this hook's isSidechain
+    filter is applied uniformly across all three functions, including this
+    existence check; see wrote_stub()'s own docstring for the accepted
+    trade-off (a hypothetical subagent-written stub would be missed, at the
+    same one-dismissable-nudge cost as any other false positive here)."""
+    recs = [_sidechain(_asst_write("t1", "sessions/dev-env/2026-07-10_140000.stub.md"))]
+    assert hook.wrote_stub(recs) is False
+    return "wrote_stub: isSidechain Write to a *.stub.md -> False (excluded)"
+
+
+def test_wrote_stub_sidechain_bash_not_counted():
+    recs = [_sidechain(_asst_bash("t1", "git add sessions/dev-env/2026-07-10_120000.stub.md"))]
+    assert hook.wrote_stub(recs) is False
+    return "wrote_stub: isSidechain Bash git-add of a *.stub.md -> False (excluded)"
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +540,21 @@ def test_evaluate_task_bookkeeping_alone_does_not_cross_threshold():
     fire, resolved = hook.evaluate(recs)
     assert fire is False and resolved is False
     return "evaluate: 8 TaskCreate + 8 TaskUpdate + 3 reads (< 5 real calls) -> (False, False) [no-op]"
+
+
+def test_evaluate_sidechain_only_work_does_not_cross_threshold():
+    """A report-intent session whose ONLY tool activity is a subagent's
+    (isSidechain) work -- 10 isSidechain reads, 0 main-session reads -- must
+    not fire (dev-env#1023, ADR-100 Amendment 2). The delegated legwork was
+    already invisible to substantive_tool_count() before this fix (subagent
+    activity is never recorded in a main-session transcript on this harness --
+    see ADR-100 Amendment 2's live-transcript findings); this test pins that
+    the explicit isSidechain filter does not change that outcome."""
+    recs = [_user_str("Verify the production deploy went out cleanly.")]
+    recs += [_sidechain(_asst_read(f"s{i}", f"f{i}.ts")) for i in range(10)]
+    fire, resolved = hook.evaluate(recs)
+    assert fire is False and resolved is False
+    return "evaluate: report intent + 10 isSidechain-only reads (0 main-session work) -> (False, False) [no-op]"
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +685,18 @@ def test_e2e_sentinel_suppresses_refire():
     return "e2e once-per-session sentinel: first fire exit 2, second exit 0"
 
 
+def test_e2e_sidechain_only_work_allows():
+    """e2e: a report-intent session whose only tool_use activity is
+    isSidechain (a subagent's own work) does not fire (dev-env#1023, ADR-100
+    Amendment 2)."""
+    records = [_user_str("Verify the production deploy went out cleanly.")]
+    records += [_sidechain(_asst_read(f"s{i}", f"f{i}.ts")) for i in range(10)]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    return "e2e report intent + isSidechain-only work -> exit 0 (allowed)"
+
+
 # ---------------------------------------------------------------------------
 # review-of-PR-#706 fixes: narrowed keywords, write-scoped stub, /review-*
 # boundary, cwd cp1252 sanitization, and the malformed-stdin fail-open paths
@@ -708,6 +797,8 @@ def main():
         ("substantive ignores bookkeeping/delegation/text", test_substantive_ignores_bookkeeping_delegation_and_text),
         ("substantive parallel in one record", test_substantive_parallel_in_one_record),
         ("substantive boundary 4 vs 5", test_substantive_boundary_4_and_5),
+        ("substantive ignores isSidechain records", test_substantive_ignores_sidechain_records),
+        ("substantive mixed isSidechain and main", test_substantive_mixed_sidechain_and_main),
         # opened_or_merged_pr
         ("pr create detected", test_pr_create_detected),
         ("pr merge detected", test_pr_merge_detected),
@@ -716,6 +807,8 @@ def main():
         ("pr create --help only not matched", test_pr_create_help_only_not_matched),
         ("gh pr checks/view not matched", test_gh_pr_checks_not_matched),
         ("pr absent", test_pr_absent),
+        ("pr create isSidechain not counted", test_pr_create_sidechain_not_counted),
+        ("pr merge isSidechain not counted", test_pr_merge_sidechain_not_counted),
         # wrote_stub
         ("wrote_stub Write", test_wrote_stub_write),
         ("wrote_stub Edit", test_wrote_stub_edit),
@@ -723,6 +816,8 @@ def main():
         ("wrote_stub non-stub .md no match", test_wrote_stub_non_stub_md_no_match),
         ("wrote_stub Bash reference", test_wrote_stub_bash_reference),
         ("wrote_stub Bash no ref", test_wrote_stub_bash_no_ref),
+        ("wrote_stub isSidechain write not counted", test_wrote_stub_sidechain_write_not_counted),
+        ("wrote_stub isSidechain bash not counted", test_wrote_stub_sidechain_bash_not_counted),
         # is_review_only_session
         ("review only detected", test_review_only_detected),
         ("review prose not matched", test_review_prose_not_matched),
@@ -743,6 +838,7 @@ def main():
         ("evaluate no-intent no-op", test_evaluate_no_intent_noop),
         ("evaluate below-threshold no-op", test_evaluate_intent_below_threshold_noop),
         ("evaluate task-bookkeeping volume no-op", test_evaluate_task_bookkeeping_alone_does_not_cross_threshold),
+        ("evaluate isSidechain-only work no-op", test_evaluate_sidechain_only_work_does_not_cross_threshold),
         # format_reminder / robustness
         ("reminder cp1252-encodable", test_reminder_is_cp1252_encodable),
         ("reminder includes cwd", test_reminder_includes_cwd),
@@ -757,6 +853,7 @@ def main():
         ("e2e below-threshold allows", test_e2e_intent_below_threshold_allows),
         ("e2e stop_hook_active allows", test_e2e_stop_hook_active_allows),
         ("e2e sentinel suppresses re-fire", test_e2e_sentinel_suppresses_refire),
+        ("e2e isSidechain-only work allows", test_e2e_sidechain_only_work_allows),
         # --- review-of-PR-#706 fixes ---
         ("report_intent 'analytics' not matched", test_report_intent_analytics_not_matched),
         ("report_intent bare 'deploy' not matched", test_report_intent_bare_deploy_not_matched),

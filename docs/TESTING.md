@@ -2098,13 +2098,17 @@ For a one-line navigational map of the test directory, see
     slash-command wrapper never counts); `substantive_tool_count` (counts each of the nine
     substantive tools, ignores `TaskCreate`/`TaskUpdate`/`Agent`/`spawn_task`/text — this
     harness's real bookkeeping/delegation tools; the original comment named the nonexistent
-    `TodoWrite`/bare `Task` instead, dev-env#1020 — counts parallel tool_use in one record, and
-    the 4-vs-5 threshold boundary); `opened_or_merged_pr` (anchored `gh pr create`/
+    `TodoWrite`/bare `Task` instead, dev-env#1020 — counts parallel tool_use in one record, the
+    4-vs-5 threshold boundary, and — dev-env#1023, ADR-100 Amendment 2 — that `isSidechain`
+    tool_use records are excluded entirely, including a mix of main-session and isSidechain calls
+    where only the non-isSidechain ones count); `opened_or_merged_pr` (anchored `gh pr create`/
     `merge` via the shared `_hookio.scan_top_level`, with heredoc-body / `$()`-subshell mentions, a
-    `--help`-only invocation, and `gh pr checks`/`view` all excluded); `wrote_stub` (a Write/Edit
-    `*.stub.md` file_path, a backslash path, a non-stub `.md` non-match, and a Bash `git add
-    ...stub.md` reference — the Bash side uses a `re.search`, not a `"..." in command` check, so this
-    file stays clear of item 39's AST gate); `is_review_only_session` (the `<command-name>/review`
+    `--help`-only invocation, `gh pr checks`/`view`, and (dev-env#1023) an `isSidechain` `gh pr
+    create`/`merge` call all excluded); `wrote_stub` (a Write/Edit `*.stub.md` file_path, a
+    backslash path, a non-stub `.md` non-match, a Bash `git add ...stub.md` reference — the Bash
+    side uses a `re.search`, not a `"..." in command` check, so this file stays clear of item 39's
+    AST gate — and (dev-env#1023) an `isSidechain` Write or Bash stub-write excluded);
+    `is_review_only_session` (the `<command-name>/review`
     wrapper, not prose mentioning `/review`); `skip_override` (a genuine user "skip journal"/"no
     stub", and that a tool_result or `isCompactSummary` mention does NOT waive); `evaluate` (the
     FIRE case `(True, False)`; each terminal exemption — stub written / PR opened / skip / `/review`
@@ -2129,7 +2133,11 @@ For a one-line navigational map of the test directory, see
     (ADR-100 Amendment 1) rebuilt the exclusion test from real-shaped `TaskCreate`/`TaskUpdate`/
     `Agent` tool_use records rather than a hand-built `TodoWrite` fixture, and added an
     `evaluate()`-level regression pinning that 8 `TaskCreate` + 8 `TaskUpdate` calls plus only 3
-    real reads stays below `SUBSTANTIVE_THRESHOLD` (65 tests total).
+    real reads stays below `SUBSTANTIVE_THRESHOLD` (65 tests). dev-env#1023 (ADR-100 Amendment 2)
+    added the `isSidechain`-exclusion coverage named above plus an `evaluate()`-level regression
+    (report intent + 10 isSidechain-only reads + 0 main-session reads stays a no-op) and an e2e
+    case driving the real hook over stdin, via a shared `_sidechain(rec)` fixture helper that
+    returns a copy of a built record with `isSidechain: True` set (73 tests total).
     ([ADR-100](adr/100-stop-journal-stub-checkpoint-hook.md); dev-env#702)
 
     ```bash
