@@ -8,6 +8,14 @@ reminder into Claude's context so Claude surfaces the active permission mode
 an active bypass-permissions session that may have inherited the wrong
 defaultMode from settings.json.
 
+In a bypass-permissions session the injected context also carries the
+content-authoring carve-out (see `_BYPASS_CONTENT_NOTE` / `reminder_text`):
+that mode's standing harness instruction to make file changes with sed,
+heredocs, or short scripts contradicts claude/CLAUDE.md -> Authoring File
+Content, and the harness prompt is not ours to edit -- so the tiebreaker is
+delivered into the same context, in the same sessions. See ADR-138 and
+dev-env#1041.
+
 Output contract: stdout JSON `{"hookSpecificOutput": {"hookEventName":
 "UserPromptSubmit", "additionalContext": "..."}}` + exit 0. The reminder
 becomes added context for Claude alongside the user's prompt; the prompt is
@@ -69,6 +77,41 @@ _REMINDER_TEXT = (
     "will do — skip the preamble for trivial prompts (greetings, /clear, "
     "single-word inputs, prompts where the mode is obviously irrelevant)."
 )
+
+# Bypass-permissions sessions receive a standing harness instruction to prefer
+# the Bash tool and "make file changes with sed, heredocs, or short scripts,
+# rather than using the dedicated Read, Edit, or Write tools." For authoring
+# file CONTENT that instruction is the direct cause of dev-env#1041's three
+# failures, and it contradicts claude/CLAUDE.md -> Authoring File Content with
+# no tiebreaker stated anywhere. The harness prompt is not ours to edit, so the
+# next best thing is to deliver the carve-out into the same context, in the
+# same sessions, at the same moment -- which is exactly what this hook already
+# does. Verified live from this hook's own log (5824 entries): bypass is 79% of
+# all sessions, so the contradiction is present in four sessions out of five.
+# See ADR-138.
+_BYPASS_CONTENT_NOTE = (
+    " Bypass-mode note: the standing instruction to prefer Bash (sed, heredocs, "
+    "short scripts) over the Read/Edit/Write tools governs shell WORK -- running "
+    "commands, inspecting state, invoking tooling -- not authoring file CONTENT. "
+    "For content, claude/CLAUDE.md -> Authoring File Content wins: Write/Edit "
+    "unless the content is another program's redirected output, or a single-line "
+    "literal with no apostrophe, backtick, or backslash "
+    "(pre-tool-use-shell-content-write-guard.py enforces this; ADR-138)."
+)
+
+# The harness reports bypass mode as "bypassPermissions"; matched
+# case-insensitively on the "bypass" stem so a contract rename to a sibling
+# spelling still lands the note rather than silently dropping it.
+_BYPASS_MODE_STEM = "bypass"
+
+
+def reminder_text(permission_mode):
+    """The context to inject. Bypass-mode sessions additionally get the
+    content-authoring carve-out; every other mode gets the base reminder
+    unchanged (no contradiction to resolve there)."""
+    if isinstance(permission_mode, str) and _BYPASS_MODE_STEM in permission_mode.lower():
+        return _REMINDER_TEXT + _BYPASS_CONTENT_NOTE
+    return _REMINDER_TEXT
 
 
 def _marker_path(session_id, event=None):
@@ -163,7 +206,7 @@ def main():
     payload = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
-            "additionalContext": _REMINDER_TEXT,
+            "additionalContext": reminder_text(data.get("permission_mode")),
         }
     }
 

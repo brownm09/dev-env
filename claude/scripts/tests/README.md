@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 82 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 94 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 84 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 96 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -50,6 +50,7 @@ production code.
 | `test_journal_shards.py` | `_journal_shards.py` | Shared numeric-shard (open-PR + tile) and legacy `open-prs.jsonl` reader, plus `project_dirs` — the `sessions/<project>/` walk that precedes both — used by `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, and `post-compact.py`. |
 | `test_repo_scan.py` | `_repo_scan.py` | Shared `find_git_repos()` directory-scan helper used by every `--scan-dir` mode across the worktree/board scripts. |
 | `test_repo_target.py` | `_repo_target.py` | Shared `--repo`/PR-URL/issue-URL/positional-number resolver — ends the per-hook ADR-050 amendment treadmill for this concern. |
+| `test_shell_write_detect.py` | `_shell_write_detect.py` | Shared shell-syntax primitives (quote masking with `<<` neutralization, redirect-target finding, POSIX/PowerShell tokenizers) extracted as a pure move from the ADR-129 journal guard for ADR-138's sibling to share. Item 94 runs the ADR-129 suite alongside it — that suite passing unchanged is the extraction's safety claim. |
 | `test_skill_file_size.py` | `_skill_file_size.py` | Shared `SKILL.md` basename match and `.claude/hook-config.json` loader (`(warn_bytes, limit_bytes)`, one fallback contract) used by both size-guard hooks (ADR-127). |
 | `test_winsubp.py`, `test_pyw_stdio.py` | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning hook applies; the latter probes real `pyw -3` stdio behavior end-to-end. |
 | `test_worktree_canon.py` | `_worktree_canon.py` | Shared worktree-path-to-canonical-root regex/resolution, used by the project-board hook pair and the two PreToolUse worktree guards. |
@@ -152,6 +153,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_pre_bash_drift_check.py` | `pre-bash-drift-check.py` | Elapsed-time-gated repo/branch drift check on every Bash call, not just the three merge-adjacent checkpoints. |
 | `test_pre_tool_use_nested_agent_background_guard.py` | `pre-tool-use-nested-agent-background-guard.py` | Blocks a nested `Agent`-tool spawn that omits `run_in_background` entirely; an explicit value or a top-level spawn passes through untouched (ADR-126). |
 | `test_session_mode_prompt.py` | `session-mode-prompt.py` | One-time per-session reminder of the active permission mode. |
+| `test_shell_content_write_guard.py` | `pre-tool-use-shell-content-write-guard.py` | Blocks a Bash/PowerShell command writing a hazard-bearing inline literal to a file (heredoc, `echo`/`printf`, `node -e`/`py -c`, `sed -i`, a PowerShell `-Value`/here-string); program-output redirection is never matched. Reproduces all three dev-env#1041 occurrences and pins two accepted scope gaps (ADR-138). |
 | `test_session_mode_report.py` | `session-mode-report.py` | On-demand report (not a hook) auditing which sessions started outside `plan` mode. |
 | `test_session_start_sync.py` | `session-start-sync.py` | Fetch/fast-forward-only-or-warn drift check on `SessionStart`, generalized to any repo a session starts in (ADR-130). |
 | `test_skill_file_size_advisory.py` | `skill-file-size-advisory.py` | Non-blocking nudge when a `SKILL.md` write/edit lands at/above a lower watermark, ahead of the hard-block guard's ceiling (ADR-127). |
