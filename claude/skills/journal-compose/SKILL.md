@@ -1156,7 +1156,11 @@ After Step 8, refresh the marker-delimited block at the top of `engineering-jour
 **First, resolve each project to its GitHub repo slug (Source 3's input):**
 
 ```bash
-MAPFILE="C:/Users/brown/.claude/scratch/tmp_repo_map_$$.json"
+# Deterministic path, NOT $$ -- this file is written here and read by the aggregation block
+# below, which runs as a separate Bash call in its own shell. Shell variables do not carry
+# across Bash calls and `$$` would resolve to a different PID there, so both blocks must spell
+# the same literal path. Substitute the compose date, as with the `date` constant below.
+MAPFILE="C:/Users/brown/.claude/scratch/tmp_repo_map_YYYY-MM-DD.json"
 py -3 C:/Users/brown/.claude/scripts/journal-project-repo-map.py "$WT" --json "$MAPFILE"
 ```
 
@@ -1187,6 +1191,8 @@ line for every project that misses it.
 **Then aggregate the priority list (max 5 entries, deduped by `ref`):**
 
 ```bash
+# Same literal path as the resolver block above -- re-declared, not inherited (separate shell).
+MAPFILE="C:/Users/brown/.claude/scratch/tmp_repo_map_YYYY-MM-DD.json"
 TMPFILE="C:/Users/brown/.claude/scratch/tmp_start_here_$$.json"
 node -e "
   const fs = require('fs'); const path = require('path');
@@ -1282,7 +1288,10 @@ node -e "
   if (items.length < 5) {
     const { execSync } = require('child_process');
     let repoMap = { query_order: [] };
-    try { repoMap = JSON.parse(fs.readFileSync('$MAPFILE', 'utf8')); } catch (e) {}
+    // Never swallow this read: an empty map here would silently zero out Source 3, which is the
+    // exact failure mode dev-env#1045 existed to end. Report and continue with zero entries.
+    try { repoMap = JSON.parse(fs.readFileSync('$MAPFILE', 'utf8')); }
+    catch (e) { console.error('SOURCE3_MAP_UNREADABLE -- Source 3 contributing nothing: ' + e.message); }
     for (const entry of (repoMap.query_order || [])) {
       if (items.length >= 5) break;
       const slug = entry.slug;
@@ -1345,13 +1354,17 @@ The block lives above any `## Projects` H2 and below the file's top-level `# Eng
 Tell the user: "Start here block refreshed with N item(s). Source 3 resolved R project(s),
 skipped S: `<project — reason, one per skip>`." Report the skip list even when it is empty
 (`skipped 0`) — a visible zero is what makes a later non-zero meaningful. Also surface any
-`SOURCE3_QUERY_FAILED` / `SOURCE3_QUERY_UNPARSEABLE` line the aggregation printed to stderr: a
-resolved project whose `gh` query then failed is a *different* problem from an unresolved one
-(most often an exhausted GraphQL budget), and it is equally invisible if swallowed.
+`SOURCE3_QUERY_FAILED` / `SOURCE3_QUERY_UNPARSEABLE` / `SOURCE3_MAP_UNREADABLE` line the
+aggregation printed to stderr: a resolved project whose `gh` query then failed, or a map file that
+could not be read at all, is a *different* problem from an unresolved project (most often an
+exhausted GraphQL budget, or the two blocks above having drifted to different `MAPFILE` paths), and
+each is equally invisible if swallowed.
 
-Clean up:
+Clean up (literal paths — `$TMPFILE`/`$MAPFILE` were set in earlier, separate shells and are not
+defined here):
 ```bash
-rm -f "$TMPFILE" "$MAPFILE"
+rm -f "C:/Users/brown/.claude/scratch/tmp_start_here_"*.json \
+      "C:/Users/brown/.claude/scratch/tmp_repo_map_YYYY-MM-DD.json"
 ```
 
 **Promoting an issue to the dashboard:**

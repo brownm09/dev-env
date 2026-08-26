@@ -181,9 +181,14 @@ def build_map(root):
     """Resolve every project under ``<root>/sessions`` to a repo slug.
 
     Returns a result dict with ``resolved`` (project -> slug), ``query_order`` (distinct
-    slugs, each with the first project that claimed it), ``skipped`` (project + reason), and
+    slugs, each with the first project that claimed it), ``skipped`` (project + reason),
+    ``project_count`` (how many project directories this pass actually saw), and
     ``root_readme_error`` (None unless the root README could not be read -- which is reported
     but not fatal, since the per-project fallback may still resolve some projects).
+
+    ``project_count`` is returned rather than recomputed by the caller so the "did anything
+    resolve" verdict is read off the *same* directory scan that produced ``resolved`` -- a second
+    ``list_projects`` call could disagree with this one if the tree changed in between.
 
     ``query_order`` exists so the caller queries each *repo* once rather than each *project*
     once. Two projects legitimately share a slug today (``meta`` and ``dev-env`` both map to
@@ -256,16 +261,17 @@ def build_map(root):
         "resolved": resolved,
         "query_order": query_order,
         "skipped": skipped,
+        "project_count": len(projects),
         "root_readme_error": root_error,
     }
 
 
-def mapping_empty(result, project_count):
+def mapping_empty(result):
     """True when projects exist but none resolved -- the dev-env#1045 signature itself."""
-    return project_count > 0 and not result["resolved"]
+    return result["project_count"] > 0 and not result["resolved"]
 
 
-def format_report(result, project_count):
+def format_report(result):
     """The stdout report, as a list of lines.
 
     dev-env has no runtime logger (see its ``## Observability`` section); for an on-demand
@@ -280,11 +286,12 @@ def format_report(result, project_count):
         lines.append(f"SOURCE3_ROOT_README_UNREADABLE={result['root_readme_error']}")
     for entry in result["skipped"]:
         lines.append(f"SOURCE3_SKIP {entry['project']} -- {entry['reason']}")
-    if mapping_empty(result, project_count):
+    if mapping_empty(result):
+        count = result["project_count"]
         lines.append(
             "SOURCE3_MAPPING_EMPTY -- "
-            f"{project_count} project director"
-            f"{'y' if project_count == 1 else 'ies'} found and none resolved to a repo slug. "
+            f"{count} project director"
+            f"{'y' if count == 1 else 'ies'} found and none resolved to a repo slug. "
             "Source 3 will contribute nothing to the Start here block. This is the dev-env#1045 "
             "signature: check that the root README.md still pairs **Repo:** with **Journal:** "
             "[sessions/<project>/ bullets in each ### section."
@@ -327,7 +334,6 @@ def main(argv):
         return 2
 
     result = build_map(root)
-    project_count = len(list_projects(sessions_dir))
 
     if json_path is not None:
         payload = {
@@ -344,10 +350,10 @@ def main(argv):
             )
             return 2
 
-    for line in format_report(result, project_count):
+    for line in format_report(result):
         print(line)
 
-    return 1 if mapping_empty(result, project_count) else 0
+    return 1 if mapping_empty(result) else 0
 
 
 if __name__ == "__main__":

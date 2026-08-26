@@ -317,11 +317,14 @@ def test_repo_link_trailing_git_suffix_and_slash_are_trimmed():
 
 
 def test_prose_mention_of_repo_mid_sentence_does_not_match():
-    # The pattern is line-anchored precisely so narrative text cannot resolve a slug.
-    text = "# t\n\nSee the Repo: [o/r](https://github.com/o/r) mentioned inline above.\n"
-    assert text.index("Repo:") > 0
-    slug, raw = parse_project_readme("Prose before. " + text.split("\n\n", 1)[1])
-    assert slug is None and raw is None
+    # The pattern is line-anchored precisely so narrative text cannot resolve a slug. The
+    # control below is what makes this meaningful: the identical link resolves when it starts
+    # its own line, so the miss above is the anchor working, not the link being unparseable.
+    inline = "# t\n\nSee the Repo: [o/r](https://github.com/o/r) mentioned inline above.\n"
+    assert parse_project_readme(inline) == (None, None)
+
+    own_line = "# t\n\nRepo: [o/r](https://github.com/o/r)\n"
+    assert parse_project_readme(own_line) == ("o/r", "o/r")
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +413,7 @@ def test_unreadable_root_readme_is_reported_but_fallback_still_resolves():
         assert result["resolved"] == {"p": "o/r"}
         assert "root README.md unreadable" in _skip_reason(result, "q")
 
-        lines = format_report(result, project_count=2)
+        lines = format_report(result)
         assert any(line.startswith("SOURCE3_ROOT_README_UNREADABLE=") for line in lines)
     finally:
         shutil.rmtree(root, ignore_errors=True)
@@ -487,8 +490,9 @@ def test_mapping_empty_signals_the_1045_signature_and_exits_1():
     )
     try:
         result = build_map(root)
-        assert mapping_empty(result, project_count=2) is True
-        lines = format_report(result, project_count=2)
+        assert mapping_empty(result) is True
+        assert result["project_count"] == 2
+        lines = format_report(result)
         assert any(line.startswith("SOURCE3_MAPPING_EMPTY") for line in lines)
         assert "SOURCE3_RESOLVED=0" in lines
         assert "SOURCE3_SKIPPED=2" in lines
@@ -505,7 +509,8 @@ def test_empty_sessions_tree_is_not_a_mapping_failure():
     root = _make_journal(root_readme="# Engineering Journal\n")
     try:
         result = build_map(root)
-        assert mapping_empty(result, project_count=0) is False
+        assert mapping_empty(result) is False
+        assert result["project_count"] == 0
         code, out = _run_main([root])
         assert code == 0
         assert "SOURCE3_MAPPING_EMPTY" not in out
@@ -536,7 +541,7 @@ def test_every_skipped_project_is_named_in_the_report():
         projects={"p": "# p\n", "q": "# q\n", "r": None},
     )
     try:
-        out = "\n".join(format_report(build_map(root), project_count=3))
+        out = "\n".join(format_report(build_map(root)))
         for project in ("q", "r"):
             assert f"SOURCE3_SKIP {project} --" in out
     finally:
