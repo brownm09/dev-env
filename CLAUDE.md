@@ -223,6 +223,15 @@ Which keys belong where:
 `SEED_KEYS` in [`claude/scripts/_settings_sync.py`](claude/scripts/_settings_sync.py) — an
 unclassified key is reported as a warning and *not applied*, rather than silently ignored.
 
+**Machine-local is not the same as correctly scoped.** A key the app writes that carries
+**project-specific** content — an auto-mode environment scan, anything naming a particular repo's
+paths, visibility, or policies — does not belong in `~/.claude/settings.json` either, even though
+that file is now machine-local and out of git: the user-scope file loads for **every** project's
+session on this machine. Relocate it to that project's own `.claude/settings.local.json`, the only
+per-project personal-settings slot Claude Code has (verify the project's `.gitignore` excludes it
+first). This is a global rule, stated in full in
+[`claude/CLAUDE.md`](claude/CLAUDE.md) → Platform & Environment.
+
 `dev-env-sync.py` runs the sync every prompt. To apply it by hand after editing the shared file:
 
 ```bash

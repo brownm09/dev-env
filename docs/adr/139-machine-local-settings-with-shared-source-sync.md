@@ -2,8 +2,9 @@
 
 **Status:** Accepted
 **Date:** 2026-08-25
-**Issue:** [dev-env#1049](https://github.com/brownm09/dev-env/issues/1049)
+**Issues:** [dev-env#1049](https://github.com/brownm09/dev-env/issues/1049), [dev-env#1050](https://github.com/brownm09/dev-env/issues/1050) (duplicate of #1049)
 **Supersedes (in part):** [ADR-003](003-config-in-version-control.md)'s inclusion of `settings.json` in the symlinked set
+**Consolidates:** PR [#1058](https://github.com/brownm09/dev-env/pull/1058), an independent concurrent fix for the same issues, closed as superseded by user decision. Its project-scoping rule is carried forward below — that half was genuinely additive and is not something the structural fix provides.
 
 ---
 
@@ -111,6 +112,39 @@ There is therefore nowhere at user scope to move `autoMode`/`theme`/`tui` *to*. 
 has to happen on the other axis: not "which file does the app write", but "which file does
 dev-env track."
 
+### Second rule, orthogonal to the first: project-scoped content belongs in project-local
+
+Making the live file machine-local fixes *where dev-env's git sees it*. It does **not** fix *how
+broadly it loads*. `~/.claude/settings.json` is the **user** scope — every project's session on this
+machine reads it — so a key carrying project-specific content is misplaced there whether or not the
+file is tracked.
+
+The `autoMode.environment` block is the concrete case: it is a written description of
+**career-playbook's** repo, visibility, policies, and the user's personal career-search data, and
+under the old arrangement it loaded for dev-env, lifting-logbook, and every other project — as well
+as sitting one `git add` away from being committed.
+
+**Rule:** when the Claude Code app writes a key that embeds project-specific content — an auto-mode
+environment scan, a per-project credential hint, anything naming a particular repo's paths,
+visibility, or policies — relocate it to *that project's own* `.claude/settings.local.json`.
+Verify the project's `.gitignore` actually excludes that path first (`git check-ignore -v
+.claude/settings.local.json`); Claude Code auto-excludes the file only when *it* created it. An
+ordinary global preference toggle carrying no project-specific content (`theme`, `tui`,
+`*NotifEnabled`) is unaffected and stays in the user file.
+
+This rule comes from PR #1058 and is the reason that PR was consolidated rather than simply closed.
+Two deliberate divergences from it:
+
+- **#1058's rule text is premised on the symlink** ("because `~/.claude/settings.json` is a symlink
+  into this repo's tracked `claude/settings.json`…"). That premise is removed by the decision above,
+  so the rule is restated on the argument that survives it: **scope**, not git-tracking.
+- **#1058 keeps `skipWorkflowUsageWarning` in the tracked file**, on the reasoning that it is an
+  ordinary global toggle like `theme`/`tui`. The classification is right; the destination is not.
+  Committing an app-written key is the issue's Direction 3, rejected on its face — and it is exactly
+  how the fast-forward re-blocks: the app rewrites the file, the tracked copy goes dirty again, and
+  the remedy is another commit. Here `skipWorkflowUsageWarning` is machine-local, alongside the
+  other toggles it resembles, and nothing has to be committed when the app changes it.
+
 ### Alternatives rejected
 
 - **Auto-stash-and-reapply in `dev-env-sync.py`** (the issue's Direction 2). Contained and
@@ -154,9 +188,13 @@ cannot silently drop an allow rule again, because the next sync restores the sha
 verbatim. The `Bash(node -e *)` and scratch `rm -f` entries are pinned by name in the test
 suite, tied to this issue.
 
-**`autoMode` stays out of git — a privacy win.** Its `environment` block is a written
-description of the user's personal career-search data. Under the old symlink it was one
-`git add` away from being committed to a repo.
+**`autoMode` is out of git *and* correctly scoped.** Its `environment` block is a written
+description of the user's personal career-search data. Under the old symlink it was one `git add`
+away from being committed to a repo; under the second rule above it now lives only in
+career-playbook's own gitignored `.claude/settings.local.json`, so it no longer loads for unrelated
+projects either. The sync still classifies `autoMode` as machine-local and never touches it, so an
+app that writes it globally again is preserved, not destroyed — the relocation is a scoping decision
+a human makes, not something the sync should silently perform.
 
 **Mutations follow [ADR-079](079-backup-restore-convention.md).** Backup before every write,
 read live at backup time; refuse to write if the backup cannot be captured; a
