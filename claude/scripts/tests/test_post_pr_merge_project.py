@@ -100,6 +100,7 @@ extract_repo_from_command = ppmp.extract_repo_from_command
 resolve_command_repo = ppmp.resolve_command_repo
 resolve_command_pr_number = ppmp.resolve_command_pr_number
 find_project_item = ppmp.find_project_item
+_match_item_in_list = ppmp._match_item_in_list
 
 # is_merge_help_only lives in _hookio (a sibling); SCRIPT.parent already on
 # sys.path via the insert above.
@@ -634,7 +635,7 @@ def test_find_project_item_cache_hit_returns_without_subprocess() -> str:
     ~/.claude/scratch/project-item-cache.json."""
     with tempfile.TemporaryDirectory() as tmp:
         cache_path = Path(tmp) / "cache.json"
-        _gh_project.write_item_cache_entry("brownm09/dev-env", 1057, "PVTI_cached", cache_path)
+        _gh_project.write_item_cache_entry("brownm09", "3", "brownm09/dev-env", 1057, "PVTI_cached", cache_path)
         config = {"repo": "brownm09/dev-env", "project_number": "3", "project_owner": "brownm09"}
         real_env = os.environ.get("PROJECT_ITEM_CACHE_PATH_OVERRIDE")
         os.environ["PROJECT_ITEM_CACHE_PATH_OVERRIDE"] = str(cache_path)
@@ -647,6 +648,76 @@ def test_find_project_item_cache_hit_returns_without_subprocess() -> str:
                 os.environ["PROJECT_ITEM_CACHE_PATH_OVERRIDE"] = real_env
         assert result == "PVTI_cached", f"expected the cached id, got {result!r}"
     return "find_project_item returns a cached item id directly, without calling gh"
+
+
+def test_find_project_item_cache_miss_on_different_project() -> str:
+    """A cache entry belonging to a different project board is correctly a miss --
+    the specific gap dev-env#1057's /review pass caught in the original key format
+    (repo/number alone, with no project scope)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "cache.json"
+        _gh_project.write_item_cache_entry("brownm09", "5", "brownm09/dev-env", 1057, "PVTI_wrong_board", cache_path)
+        config = {"repo": "brownm09/dev-env", "project_number": "3", "project_owner": "brownm09"}
+        real_env = os.environ.get("PROJECT_ITEM_CACHE_PATH_OVERRIDE")
+        os.environ["PROJECT_ITEM_CACHE_PATH_OVERRIDE"] = str(cache_path)
+        try:
+            cached = _gh_project.lookup_cached_item_id(
+                config["project_owner"], config["project_number"], config["repo"], 1057, cache_path
+            )
+        finally:
+            if real_env is None:
+                del os.environ["PROJECT_ITEM_CACHE_PATH_OVERRIDE"]
+            else:
+                os.environ["PROJECT_ITEM_CACHE_PATH_OVERRIDE"] = real_env
+        assert cached is None, f"expected a miss across project boards, got {cached!r}"
+    return "an entry cached under project 5 is not returned for a project-3 lookup of the same repo#number"
+
+
+# --- _match_item_in_list: the fallback scan's repo filter (dev-env#1057 /review) ---
+
+def _fake_item(number, repo, item_id):
+    return {"content": {"number": number, "repository": repo}, "id": item_id}
+
+
+def test_match_item_in_list_finds_same_repo_match() -> str:
+    items = [_fake_item(1057, "brownm09/dev-env", "PVTI_1057")]
+    assert _match_item_in_list(items, 1057, "brownm09/dev-env") == "PVTI_1057"
+    return "_match_item_in_list finds an item matching both number and repo"
+
+
+def test_match_item_in_list_rejects_wrong_repo_same_number() -> str:
+    """The exact defect a /review finding on this PR caught: an unfiltered scan
+    would return this WRONG-repo item just because the number matched. This board
+    genuinely carries items from more than one repo (--scan-dir reconciliation),
+    so a same-numbered issue on a different repo is a realistic collision, not a
+    contrived one."""
+    items = [_fake_item(42, "merickvaughn/lifting-logbook", "PVTI_wrong_repo")]
+    assert _match_item_in_list(items, 42, "brownm09/dev-env") is None
+    return "_match_item_in_list rejects a same-numbered item that belongs to a different repo"
+
+
+def test_match_item_in_list_picks_correct_repo_among_several() -> str:
+    items = [
+        _fake_item(42, "merickvaughn/lifting-logbook", "PVTI_wrong"),
+        _fake_item(42, "brownm09/dev-env", "PVTI_right"),
+    ]
+    assert _match_item_in_list(items, 42, "brownm09/dev-env") == "PVTI_right"
+    return "_match_item_in_list picks the same-repo item even when a same-numbered item from another repo appears first"
+
+
+def test_match_item_in_list_no_repo_filter_when_repo_falsy() -> str:
+    """When `repo` is empty/falsy (e.g. an incomplete config), the filter is
+    skipped -- matching the original number-only behavior rather than rejecting
+    every item outright."""
+    items = [_fake_item(1057, "brownm09/dev-env", "PVTI_1057")]
+    assert _match_item_in_list(items, 1057, "") == "PVTI_1057"
+    return "_match_item_in_list falls back to number-only matching when repo is falsy"
+
+
+def test_match_item_in_list_no_match_returns_none() -> str:
+    items = [_fake_item(1, "brownm09/dev-env", "PVTI_1")]
+    assert _match_item_in_list(items, 999, "brownm09/dev-env") is None
+    return "_match_item_in_list returns None when no item matches the number at all"
 
 
 def main() -> int:
@@ -708,6 +779,12 @@ def main() -> int:
         ("repo: --repo on a continued line (dev-env#831)", test_extract_repo_from_command_repo_on_continued_line),
         ("command: PR number on a continued line (dev-env#831)", test_extract_pr_number_from_command_number_on_continued_line),
         ("find_project_item: cache hit returns without gh (dev-env#1057)", test_find_project_item_cache_hit_returns_without_subprocess),
+        ("find_project_item: cache miss across project boards (dev-env#1057)", test_find_project_item_cache_miss_on_different_project),
+        ("_match_item_in_list: same-repo match found", test_match_item_in_list_finds_same_repo_match),
+        ("_match_item_in_list: wrong-repo same-number rejected", test_match_item_in_list_rejects_wrong_repo_same_number),
+        ("_match_item_in_list: picks correct repo among several", test_match_item_in_list_picks_correct_repo_among_several),
+        ("_match_item_in_list: no repo filter when repo is falsy", test_match_item_in_list_no_repo_filter_when_repo_falsy),
+        ("_match_item_in_list: no match returns None", test_match_item_in_list_no_match_returns_none),
     ]
     failed = 0
     for name, fn in tests:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Shared `gh project item-add` wrapper (dev-env#454) plus a best-effort item-ID
-cache (dev-env#1057).
+cache (dev-env#1057, ADR-141).
 
 `post-tool-use.py` (the PostToolUse project-board add-hook) and
 `reconcile-project-board.py` (its background-session backstop, ADR-068) each had their own
@@ -46,30 +46,75 @@ discarded — every later "resolve an item ID from an issue/PR number" lookup re
 to find the one item it already knew moments earlier.
 
 `add_to_project` now best-effort-caches every item ID it successfully creates, keyed by the
-issue/PR number parsed from the URL it was given. Because `add_to_project` is already the
-single shared choke point for `gh project item-add` — used by both post-tool-use.py's
-hook-triggered adds AND reconcile-project-board.py's orphan-add step — this one change covers
-both creation paths with no signature change at either call site.
+issue/PR number parsed from the URL it was given plus the project board it was added to.
+Because `add_to_project` is already the single shared choke point for `gh project item-add` —
+used by both post-tool-use.py's hook-triggered adds AND reconcile-project-board.py's
+orphan-add step — this one change covers both creation paths with no signature change to the
+add call itself at either call site (only the internal cache-write gained the project
+identity it already had in scope).
 
-Cache format: a single flat JSON dict at `CACHE_PATH`, `"<owner>/<repo>#<number>": "<item-id>"`.
-Not per-issue-sharded (unlike engineering-journal's tile shards) — this is small and
-mostly-append, not a high-concurrency multi-writer system. A read-modify-write race between two
-concurrent sessions can lose an entry; that's an accepted, self-healing trade-off (a lost write
-is just a future cache miss, not data loss), the same trade-off `dev-env-sync.py`'s single
-global scratch-state file already accepts.
+Cache format: a single flat JSON dict at `CACHE_PATH`, keyed by `_cache_key(project_owner,
+project_number, repo, number)` -> item-id string. Not per-issue-sharded (unlike
+engineering-journal's tile shards) — this is small and mostly-append, not a high-concurrency
+multi-writer system. A read-modify-write race between two concurrent single-entry writes can
+lose one entry; that's an accepted, self-healing trade-off (a lost write is just a future
+cache miss, not data loss), the same trade-off `dev-env-sync.py`'s single global scratch-state
+file already accepts. A multi-entry backfill uses `write_item_cache_entries` (one
+read-modify-write for the whole batch, not one per entry) specifically so that trade-off stays
+scoped to "one entry, briefly" rather than widening to "the whole batch, for the sweep's full
+duration" (a /review finding on this PR: the original per-item-call backfill implementation
+understated its own documented race window by two orders of magnitude).
+
+**Why the project board is part of the key, not just the repo.** An item ID is scoped to a
+specific (project, content) pair, not to content alone: this repo already reconciles more than
+one real board (dev-env's own #3 and lifting-logbook's #2 — see root `README.md`'s routine
+table), `get-project-item.sh` accepts an overridable `[project-number]`, and
+`reconcile-project-board.py --scan-dir` processes multiple repos each with their own
+`project_number`/`project_owner`. A key built from repo+number alone would silently collapse
+two different boards' answers for what looks like "the same" lookup. `_cache_key` therefore
+takes `project_owner`/`project_number` explicitly, sourced from whatever `hook-config.json`
+(or CLI override) the caller already resolved — never guessed.
+
+**Why every writer lower-cases the repo (and project-owner) half of the key.** GitHub
+owner/repo names are case-insensitive (this file's caller `post-pr-merge-project.py` already
+relies on that: `command_repo.lower() != repo.lower()`), but the four things that build a key
+— `add_to_project`'s URL parse, `reconcile-project-board.py`'s backfill (`content.repository`,
+which GitHub returns in canonical casing), `post-pr-merge-project.py`'s `config["repo"]`
+(human-typed into `hook-config.json`), and `get-project-item.sh`'s `$OWNER`/`$REPO` (CLI/env
+input) — do not all originate from the same casing convention. `_cache_key` lower-cases both
+halves so all four writers agree regardless of source casing (a /review finding: an
+un-normalized key made a `"repo": "brownm09/Dev-Env"` config both a guaranteed cache miss and
+a source of a second, divergent entry for the same real item).
+
+**Why a cache entry is invalidated by the caller on a confirmed-dead use, not by this module.**
+A board item's ID is immutable, but the item's *existence on the board* is not — it can be
+removed (`gh project item-delete`, the web UI, or an issue transferred between repos), leaving
+a dangling cache entry that is genuinely stale (a /review finding: pre-cache, a dead ID
+produced a clean "not found" from a fresh fetch; post-cache, an un-evicted dead ID would keep
+producing a live-looking ID that fails downstream, on every future lookup). This module cannot
+detect that on its own — a cache hit is specifically the path that skips the live `gh` call
+that would reveal it — so detection is necessarily the consuming caller's job, at the one point
+that already knows the ID didn't work: `evict_item_cache_entry` exists for that caller to call
+on a confirmed failure (see `post-pr-merge-project.py`'s `move_to_done` failure path). A cache
+*miss* is still never treated as staleness — a missing entry safely degrades to the
+pre-existing full-fetch fallback every caller already had; only a *used-and-failed* entry is
+evicted.
 
 Every cache function is best-effort and never raises, matching every other sentinel writer in
 this repo (`_hookutil.record_heartbeat`, whose exact tmp-file + `os.replace` atomic-write idiom
-this reuses) — a cache miss or a failed cache write must never be indistinguishable from, or
-turn into, an `add_to_project` failure. `PROJECT_ITEM_CACHE_PATH_OVERRIDE`, checked at call
-time (not import time), lets tests redirect every cache function to a throwaway path — mirrors
-`_hookutil.py`'s `HOOK_HEARTBEAT_DIR_OVERRIDE` exactly, including the "checked per-call, not
-just once at import" property that lets a test set it via `os.environ` after this module was
-already imported.
+this reuses, including cleaning up the tmp file on a failed write rather than leaving an
+unbounded, never-self-cleaning litter of `*.<pid>.tmp` files behind — a /review finding) — a
+cache miss or a failed cache write must never be indistinguishable from, or turn into, an
+`add_to_project` failure. `PROJECT_ITEM_CACHE_PATH_OVERRIDE`, checked at call time (not import
+time), lets tests redirect every cache function to a throwaway path — mirrors `_hookutil.py`'s
+`HOOK_HEARTBEAT_DIR_OVERRIDE` exactly, including the "checked per-call, not just once at
+import" property that lets a test set it via `os.environ` after this module was already
+imported.
 
-Item IDs are immutable once assigned (unlike the `single_select` field *options* ADR-076
-live-fetches, which really can change), so a cache entry is never stale — it can only be
-missing, which safely degrades to the pre-existing full-fetch fallback each caller already had.
+`read_item_cache` also filters out any non-string value under a valid key (a hand-edited or
+partially-written cache file could otherwise hand a caller something that crashes deeper in a
+`subprocess.run` arg list, or renders as `[object Object]` on the bash side, instead of the
+clean miss the rest of this module's contract promises).
 
 See ADR-073, ADR-141.
 """
@@ -102,6 +147,13 @@ def _cache_path(cache_path: Path | None = None) -> Path:
     return cache_path if cache_path is not None else CACHE_PATH
 
 
+def _cache_key(project_owner: str, project_number: str, repo: str, number: int) -> str:
+    """The one place a cache key is ever built. Includes the project board (not just the
+    repo/number) and lower-cases the case-insensitive halves — see module docstring's
+    "Why the project board is part of the key" / "Why every writer lower-cases" sections."""
+    return f"{project_owner.lower()}/{project_number}|{repo.lower()}#{number}"
+
+
 def _parse_issue_url(url: str) -> tuple[str, int] | None:
     """Pure parse of a `https://github.com/<owner>/<repo>/(issues|pull)/<number>` URL
     into (`"owner/repo"`, number). None on any non-match — not a github.com URL, wrong
@@ -116,50 +168,116 @@ def _parse_issue_url(url: str) -> tuple[str, int] | None:
 def read_item_cache(cache_path: Path | None = None) -> dict[str, str]:
     """Best-effort read of the whole item-ID cache. `{}` on any failure — missing
     file, corrupt JSON, I/O error, or a JSON value that isn't an object. Never
-    raises. `cache_path` is a test-only override (see `_cache_path`)."""
+    raises. Values that aren't strings are silently dropped (see module docstring).
+    `cache_path` is a test-only override (see `_cache_path`)."""
     try:
         data = json.loads(_cache_path(cache_path).read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if isinstance(v, str)}
     except Exception:
         return {}
 
 
-def write_item_cache_entry(
-    repo: str, number: int, item_id: str, cache_path: Path | None = None
-) -> None:
-    """Best-effort read-modify-write of one `f"{repo}#{number}"` -> `item_id` entry,
-    via a per-process tmp file + `os.replace` atomic swap (matching
-    `_hookutil.record_heartbeat`'s idiom exactly) — no locks, no subprocess. Never
-    raises; a write failure here must never surface as (or be mistaken for) a failure
-    of whatever caller just successfully created or fetched `item_id`. `cache_path`
-    is a test-only override (see `_cache_path`)."""
+def _atomic_write_cache(cache: dict[str, str], cache_path: Path | None = None) -> None:
+    """Shared atomic-write primitive for both the single-entry and batch writers: a
+    per-process tmp file + `os.replace` swap (matching `_hookutil.record_heartbeat`'s
+    idiom exactly) — no locks, no subprocess. Never raises. Unlinks the tmp file on any
+    failure between its creation and the replace, rather than leaving an orphaned
+    `*.<pid>.tmp` behind for `sweep-scratch-debris.py` to never know about."""
+    target = _cache_path(cache_path)
+    tmp = None
     try:
-        cache = read_item_cache(cache_path)
-        cache[f"{repo}#{number}"] = item_id
-        target = _cache_path(cache_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.parent / f"{target.name}.{os.getpid()}.tmp"
         tmp.write_text(json.dumps(cache, indent=2), encoding="utf-8")
         os.replace(tmp, target)
+        tmp = None  # replaced successfully -- nothing left to clean up
+    except Exception:
+        pass
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def write_item_cache_entry(
+    project_owner: str, project_number: str, repo: str, number: int, item_id: str,
+    cache_path: Path | None = None,
+) -> None:
+    """Best-effort read-modify-write of one cache entry. Never raises; a write failure
+    here must never surface as (or be mistaken for) a failure of whatever caller just
+    successfully created or fetched `item_id`. For writing more than one entry at once
+    (e.g. a sweep's backfill), use `write_item_cache_entries` instead — looping this
+    function widens the single-entry race window into a whole-batch one (see module
+    docstring). `cache_path` is a test-only override (see `_cache_path`)."""
+    try:
+        cache = read_item_cache(cache_path)
+        cache[_cache_key(project_owner, project_number, repo, number)] = item_id
+        _atomic_write_cache(cache, cache_path)
     except Exception:
         pass
 
 
-def lookup_cached_item_id(repo: str, number: int, cache_path: Path | None = None) -> str | None:
+def write_item_cache_entries(
+    project_owner: str, project_number: str, entries: dict[tuple[str, int], str],
+    cache_path: Path | None = None,
+) -> None:
+    """Best-effort read-modify-write of many entries in ONE atomic swap — the batch
+    counterpart to `write_item_cache_entry`, for a caller (a board sweep) that already
+    holds many `(repo, number) -> item_id` pairs for the same project. `entries` keys
+    are `(repo, number)` tuples, all scoped to the same `project_owner`/`project_number`
+    (a sweep enumerates one board at a time). Never raises. `cache_path` is a test-only
+    override (see `_cache_path`)."""
+    try:
+        cache = read_item_cache(cache_path)
+        for (repo, number), item_id in entries.items():
+            cache[_cache_key(project_owner, project_number, repo, number)] = item_id
+        _atomic_write_cache(cache, cache_path)
+    except Exception:
+        pass
+
+
+def lookup_cached_item_id(
+    project_owner: str, project_number: str, repo: str, number: int,
+    cache_path: Path | None = None,
+) -> str | None:
     """Best-effort cache lookup. `None` on a miss OR any read failure — the two are
     indistinguishable by design, since both mean "fall back to a live fetch." Never
     raises. `cache_path` is a test-only override (see `_cache_path`)."""
-    return read_item_cache(cache_path).get(f"{repo}#{number}")
+    return read_item_cache(cache_path).get(_cache_key(project_owner, project_number, repo, number))
 
 
-def _cache_new_item(url: str, item_id: str) -> None:
-    """Best-effort: parse `url` and cache `item_id` under it. Never raises — a
-    failure here must never look like the `add_to_project` call itself failed, since
-    by the time this runs the add has already succeeded."""
+def evict_item_cache_entry(
+    project_owner: str, project_number: str, repo: str, number: int,
+    cache_path: Path | None = None,
+) -> None:
+    """Best-effort removal of one entry — for a caller that just confirmed a cached ID
+    no longer works (see module docstring's "Why a cache entry is invalidated by the
+    caller" section). A no-op if the key isn't present. Never raises. `cache_path` is a
+    test-only override (see `_cache_path`)."""
+    try:
+        cache = read_item_cache(cache_path)
+        key = _cache_key(project_owner, project_number, repo, number)
+        if key in cache:
+            del cache[key]
+            _atomic_write_cache(cache, cache_path)
+    except Exception:
+        pass
+
+
+def _cache_new_item(url: str, item_id: str, project_number: str, project_owner: str) -> None:
+    """Best-effort: parse `url` and cache `item_id` under it, scoped to the project this
+    add just targeted. Never raises — a failure here must never look like the
+    `add_to_project` call itself failed, since by the time this runs the add has already
+    succeeded."""
     try:
         parsed = _parse_issue_url(url)
         if parsed:
-            write_item_cache_entry(parsed[0], parsed[1], item_id)
+            repo, number = parsed
+            write_item_cache_entry(project_owner, project_number, repo, number, item_id)
     except Exception:
         pass
 
@@ -172,10 +290,10 @@ def add_to_project(
     exception's str(). Never raises.
 
     On success, also best-effort-caches the new item ID keyed by the issue/PR number
-    parsed from `url` (dev-env#1057, ADR-141) — see module docstring. Purely
-    additive: this function's return contract is byte-identical to before the cache
-    existed, so neither existing call site (post-tool-use.py, reconcile-project-board.py)
-    needs to change to benefit from it."""
+    parsed from `url` plus this project's identity (dev-env#1057, ADR-141) — see module
+    docstring. Purely additive: this function's return contract is byte-identical to
+    before the cache existed, so neither existing call site (post-tool-use.py,
+    reconcile-project-board.py) needs to change to benefit from it."""
     try:
         result = subprocess.run(
             [
@@ -188,7 +306,7 @@ def add_to_project(
             return None, (result.stderr or "").strip()
         item_id = json.loads(result.stdout).get("id")
         if item_id:
-            _cache_new_item(url, item_id)
+            _cache_new_item(url, item_id, str(project_number), owner)
         return item_id, ""
     except Exception as e:
         return None, str(e)

@@ -197,7 +197,10 @@ def test_backfill_item_cache_populates_every_item() -> str:
     cached (unlike board_issue_numbers's Issue-only filter, which exists for its
     own orphan-detection purpose) -- PR items are equally useful to have cached,
     since get-project-item.sh and post-pr-merge-project.py look up items by number
-    regardless of type. An item with no number is silently skipped, never raises."""
+    regardless of type. An item with no number is silently skipped, never raises.
+    The project board identity (owner + number) is part of every written key -- see
+    _gh_project.py's _cache_key -- since this repo alone already reconciles more
+    than one real board."""
     with tempfile.TemporaryDirectory() as tmp:
         cache_path = Path(tmp) / "cache.json"
         real_env = os.environ.get("PROJECT_ITEM_CACHE_PATH_OVERRIDE")
@@ -210,7 +213,7 @@ def test_backfill_item_cache_populates_every_item() -> str:
                 _item(20, type="PullRequest", item_id="PVTI_pr_20"),  # PR, not just Issue
                 {"content": {"type": "Issue"}, "id": "x"},  # no number -> silently skipped
             ]
-            _backfill_item_cache(items)
+            _backfill_item_cache(items, "brownm09", "3")
         finally:
             if real_env is None:
                 del os.environ["PROJECT_ITEM_CACHE_PATH_OVERRIDE"]
@@ -218,12 +221,37 @@ def test_backfill_item_cache_populates_every_item() -> str:
                 os.environ["PROJECT_ITEM_CACHE_PATH_OVERRIDE"] = real_env
         cache = _gh_project.read_item_cache(cache_path)
         assert cache == {
-            f"{REPO}#434": "PVTI_434",
-            f"{REPO}#30": "PVTI_30",
-            "brownm09/other#7": "PVTI_other_7",
-            f"{REPO}#20": "PVTI_pr_20",
+            f"brownm09/3|{REPO}#434": "PVTI_434",
+            f"brownm09/3|{REPO}#30": "PVTI_30",
+            "brownm09/3|brownm09/other#7": "PVTI_other_7",
+            f"brownm09/3|{REPO}#20": "PVTI_pr_20",
         }, f"unexpected cache contents: {cache}"
-    return "_backfill_item_cache caches every item (any type, any repo) by its own content.repository/number"
+    return "_backfill_item_cache caches every item (any type, any repo), keyed by its own content.repository/number under this board's project identity"
+
+
+def test_backfill_item_cache_batch_write_leaves_no_tmp_leftovers() -> str:
+    """_backfill_item_cache now writes the whole fetched batch in one atomic swap
+    (via write_item_cache_entries), not one read-modify-write call per item -- a
+    /review finding on this PR: looping the single-entry writer over ~719 items
+    widened the documented 'a concurrent write can lose one entry' race into 'a
+    concurrent write can lose entries for the sweep's entire duration'."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "cache.json"
+        real_env = os.environ.get("PROJECT_ITEM_CACHE_PATH_OVERRIDE")
+        os.environ["PROJECT_ITEM_CACHE_PATH_OVERRIDE"] = str(cache_path)
+        try:
+            items = [_item(n, item_id=f"PVTI_{n}") for n in range(20)]
+            _backfill_item_cache(items, "brownm09", "3")
+        finally:
+            if real_env is None:
+                del os.environ["PROJECT_ITEM_CACHE_PATH_OVERRIDE"]
+            else:
+                os.environ["PROJECT_ITEM_CACHE_PATH_OVERRIDE"] = real_env
+        leftovers = [p for p in Path(tmp).iterdir() if p.name != "cache.json"]
+        assert leftovers == [], f"unexpected leftover files: {leftovers}"
+        cache = _gh_project.read_item_cache(cache_path)
+        assert len(cache) == 20, f"expected 20 entries, got {len(cache)}"
+    return "backfilling 20 items leaves no tmp leftovers and writes all 20 entries (structurally one batch write, not 20 individual ones)"
 
 
 # --- required-field detection ------------------------------------------------
@@ -449,6 +477,7 @@ def main() -> int:
         ("board_issue_numbers filtering", test_board_issue_numbers_filters),
         ("compute_orphans set difference", test_compute_orphans_set_difference),
         ("_backfill_item_cache populates every item (dev-env#1057)", test_backfill_item_cache_populates_every_item),
+        ("_backfill_item_cache batch write, no tmp leftovers", test_backfill_item_cache_batch_write_leaves_no_tmp_leftovers),
         ("item_missing_fields presence rule", test_item_missing_fields),
         ("board_items_missing_fields scope", test_board_items_missing_fields_scope),
         ("looks_like_scope_error", test_looks_like_scope_error),

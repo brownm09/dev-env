@@ -40,7 +40,7 @@ import re
 import subprocess
 import sys
 
-from _gh_project import lookup_cached_item_id, write_item_cache_entry
+from _gh_project import evict_item_cache_entry, lookup_cached_item_id, write_item_cache_entry
 from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
@@ -315,15 +315,47 @@ def parse_closes_numbers(body: str) -> list[int]:
     return [int(n) for n in _CLOSES_RE.findall(body)]
 
 
+def _match_item_in_list(items: list[dict], issue_number: int, repo: str) -> str | None:
+    """Pure scan of a `gh project item-list --format json` `items` array for the
+    item whose `content.number == issue_number` AND (when `repo` is truthy)
+    `content.repository == repo`. None if no item matches both. Extracted so this
+    matching logic -- specifically the repo filter -- is unit-testable without a
+    live `gh` call.
+
+    The repo filter exists because an unfiltered number-only match can return a
+    DIFFERENT repo's item on a board that carries more than one (this repo's own
+    board does, via --scan-dir reconciliation) -- pre-existing code elsewhere in
+    this file (dev-env#559/#569, ~line 445) already guards against a
+    same-numbered issue on the WRONG repo when resolving which config to use;
+    this scan needs the identical guard, since an unfiltered match here can both
+    move the wrong repo's issue to Done and, since dev-env#1057 added cache
+    persistence, write that wrong match into the shared cache where
+    get-project-item.sh and every later merge would read it back as if it were
+    correct (a /review finding on that PR)."""
+    for item in items:
+        content = item.get("content", {})
+        if content.get("number") != issue_number:
+            continue
+        if repo and content.get("repository") != repo:
+            continue
+        return item.get("id")
+    return None
+
+
 def find_project_item(issue_number: int, config: dict) -> str | None:
     """Resolve the project item ID for `issue_number`. Checks the shared item-ID
     cache first (dev-env#1057, ADR-141) -- a hit costs zero `gh` calls, which
     matters here since this runs on EVERY PR merge. On a miss, falls back to the
-    original full `gh project item-list --limit 1000` fetch-and-scan unchanged, and
-    populates the cache on a successful match so a repeat lookup (e.g. a second
-    `Closes #N` in the same merge) hits."""
+    original full `gh project item-list --limit 1000` fetch-and-scan (matched via
+    `_match_item_in_list`), and populates the cache on a successful match so a
+    repeat lookup (e.g. a second `Closes #N` in the same merge) hits."""
     repo = config.get("repo", "")
-    cached = lookup_cached_item_id(repo, issue_number) if repo else None
+    project_owner = config.get("project_owner", "")
+    project_number = config.get("project_number", "")
+    cached = (
+        lookup_cached_item_id(project_owner, project_number, repo, issue_number)
+        if repo and project_owner and project_number else None
+    )
     if cached:
         return cached
 
@@ -342,13 +374,10 @@ def find_project_item(issue_number: int, config: dict) -> str | None:
         if result.returncode != 0:
             return None
         data = json.loads(result.stdout)
-        for item in data.get("items", []):
-            if item.get("content", {}).get("number") == issue_number:
-                item_id = item["id"]
-                if repo:
-                    write_item_cache_entry(repo, issue_number, item_id)
-                return item_id
-        return None
+        item_id = _match_item_in_list(data.get("items", []), issue_number, repo)
+        if item_id and repo and project_owner and project_number:
+            write_item_cache_entry(project_owner, project_number, repo, issue_number, item_id)
+        return item_id
     except Exception:
         return None
 
@@ -534,6 +563,17 @@ def main() -> None:
                 f"(item {item_id})."
             )
         else:
+            # Evict rather than leave a possibly-dead ID cached (dev-env#1057,
+            # ADR-141): a failed item-edit can mean the item was removed from the
+            # board since it was cached, in which case the printed manual command
+            # below would tell the user to retry with an ID that no longer exists.
+            # Evicting means the NEXT lookup for this issue is a fresh fetch instead
+            # of a repeat of the same stale answer -- a /review finding on this PR.
+            repo = config.get("repo", "")
+            project_owner = config.get("project_owner", "")
+            project_number = config.get("project_number", "")
+            if repo and project_owner and project_number:
+                evict_item_cache_entry(project_owner, project_number, repo, issue_number)
             messages.append(
                 f"[project-hook] Failed to move Issue #{issue_number} to Done.\n"
                 f"  Move manually:\n"

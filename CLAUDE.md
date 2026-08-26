@@ -299,15 +299,19 @@ gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
   --field-id PVTF_lAHOAjEKvM4BWKFezhRgkN0 --text "<why this matters>"
 
 # 4. Cache the item ID (dev-env#1057, ADR-141) so a later lookup (e.g. to move
-#    Status) is a zero-cost hit instead of another full-board fetch
-node -e "
+#    Status) is a zero-cost hit instead of another full-board fetch. The regex and
+#    key format must stay byte-identical to _gh_project.py's _ISSUE_URL_RE /
+#    _cache_key (project-owner/project-number then repo#number, both lower-cased) —
+#    a drifted copy here would silently never hit what that module writes.
+GPI_URL="$URL" GPI_ITEM_ID="$ITEM_ID" node -e "
   const fs = require('fs'), path = require('path');
-  const m = '$URL'.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)/);
+  const m = process.env.GPI_URL.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)\/?\$/);
   if (!m) process.exit(0);
+  const [, owner, repo, number] = m;
   const cacheFile = 'C:/Users/brown/.claude/scratch/project-item-cache.json';
   let cache = {};
   try { cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch (e) {}
-  cache[m[1] + '/' + m[2] + '#' + m[3]] = '$ITEM_ID';
+  cache['brownm09/3|' + (owner + '/' + repo).toLowerCase() + '#' + number] = process.env.GPI_ITEM_ID;
   fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
   const tmp = cacheFile + '.' + process.pid + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(cache, null, 2), 'utf8');
@@ -335,7 +339,7 @@ To look up an item ID by issue or PR number `<N>` (e.g., to move status in a lat
 on a genuine cache miss — never the unconditional full fetch this section used to document inline:
 
 ```bash
-ITEM_ID=$(bash claude/scripts/get-project-item.sh <N>)
+ITEM_ID=$(bash ~/.claude/scripts/get-project-item.sh <N>)
 ```
 
 **Move status** — set the Status field (`PVTSSF_lAHOAjEKvM4BWKFezhRgkMY`) to In Progress (`47fc9ee4`) when work begins, Done (`98236657`) after the PR merges:

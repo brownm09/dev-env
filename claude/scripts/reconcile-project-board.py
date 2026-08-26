@@ -83,7 +83,7 @@ import os
 import subprocess
 import sys
 
-from _gh_project import add_to_project, write_item_cache_entry
+from _gh_project import add_to_project, write_item_cache_entries
 from _repo_scan import find_git_repos
 from _worktree_canon import canonical_repo_root
 
@@ -434,28 +434,42 @@ def fetch_board_items(project_number: str, owner: str, limit: int = 1000) -> lis
     return items
 
 
-def _backfill_item_cache(items: list[dict]) -> None:
+def _backfill_item_cache(items: list[dict], project_owner: str, project_number: str) -> None:
     """Best-effort: cache every fetched item's `(repo, number) -> id` (dev-env#1057,
-    ADR-141), keyed by each item's own `content.repository` (already `"owner/repo"`)
-    and `content.number` — NOT the single `repo` being reconciled, since a shared
-    project board can carry items from other repos too (ADR-070, --scan-dir), and
-    `content.repository` is exactly what `board_issue_numbers` above already uses to
-    tell them apart. Piggybacks on a fetch this script already legitimately pays for
-    — no additional `gh` calls — so it backfills the *entire* cache (pre-existing
-    items, and anything a background session created without ever triggering
-    post-tool-use.py's hook, per ADR-053) every time this script runs. Every item
-    type is cached, not just Issues (unlike `board_issue_numbers`'s Issue-only
-    filter, which exists to keep its own orphan set-difference correct — the cache
-    is equally useful for PR items, which `get-project-item.sh` and
-    post-pr-merge-project.py also look up by number). Never raises —
-    `write_item_cache_entry` is itself best-effort."""
+    ADR-141) for THIS project board, keyed by each item's own `content.repository`
+    (already `"owner/repo"`) and `content.number` — NOT the single `repo` being
+    reconciled, since a shared project board can carry items from other repos too
+    (ADR-070, --scan-dir), and `content.repository` is exactly what
+    `board_issue_numbers` above already uses to tell them apart. `project_owner`/
+    `project_number` identify which board these items came from — this repo alone
+    already reconciles more than one real board (dev-env #3, lifting-logbook #2 —
+    see root `README.md`'s routine table), so the cache key must scope by board, not
+    just by content (see `_gh_project.py`'s module docstring).
+
+    Piggybacks on a fetch this script already legitimately pays for — no additional
+    `gh` calls — so it backfills the *entire* cache (pre-existing items, and anything
+    a background session created without ever triggering post-tool-use.py's hook, per
+    ADR-053) every time this script runs. Every item type is cached, not just Issues
+    (unlike `board_issue_numbers`'s Issue-only filter, which exists to keep its own
+    orphan set-difference correct — the cache is equally useful for PR items, which
+    `get-project-item.sh` and post-pr-merge-project.py also look up by number).
+
+    Writes the whole batch in ONE atomic swap via `write_item_cache_entries`, not one
+    `write_item_cache_entry` call per item — looping the single-entry writer over
+    ~719 items would each do its own full read-modify-write, widening the documented
+    "a concurrent write can lose one entry" race into "a concurrent write can lose
+    entries for the sweep's entire duration" (a /review finding on this PR). Never
+    raises — `write_item_cache_entries` is itself best-effort."""
+    entries: dict[tuple[str, int], str] = {}
     for item in items:
         content = item.get("content") or {}
         repo = content.get("repository")
         number = content.get("number")
         item_id = item.get("id")
         if repo and isinstance(number, int) and item_id:
-            write_item_cache_entry(repo, number, item_id)
+            entries[(repo, number)] = item_id
+    if entries:
+        write_item_cache_entries(project_owner, project_number, entries)
 
 
 def _reconcile_repo(config: dict, dry_run: bool) -> dict:
@@ -486,8 +500,6 @@ def _reconcile_repo(config: dict, dry_run: bool) -> dict:
         print(f"[reconcile-board] gh call failed: {msg}", file=sys.stderr)
         return {"status": "gh-error", "orphans_added": 0, "add_failed": 0, "needs_attention": 0, "add_scope_error": False}
 
-    _backfill_item_cache(items)
-
     open_nums = open_issue_numbers(issues)
     board_nums = board_issue_numbers(items, repo)
     orphans = compute_orphans(issues, board_nums)
@@ -495,6 +507,11 @@ def _reconcile_repo(config: dict, dry_run: bool) -> dict:
 
     scope_warned = False
     if not dry_run:
+        # Gated behind dry_run, not run unconditionally above: --dry-run is documented
+        # as reporting "without adding anything" (a /review finding on this PR flagged
+        # the original placement -- before this guard -- as a silent side effect a
+        # read-only preview shouldn't have, even though it never touches GitHub).
+        _backfill_item_cache(items, owner, project_number)
         for o in orphans:
             item_id, err = add_to_project(o["url"], project_number, owner, timeout=30)
             o["item_id"] = item_id

@@ -762,9 +762,12 @@ post-tool-use.py's call site, which previously decoded with the OS default local
 non-invoked library modules in the same line as `_repo_scan.py` above. [ADR-073](adr/073-shared-worktree-canon-gh-project-modules.md)
 `_gh_project.py` also now owns a best-effort item-ID cache (dev-env#1057,
 [ADR-141](adr/141-project-item-id-creation-time-cache.md)) — `read_item_cache` /
-`write_item_cache_entry` / `lookup_cached_item_id`, consulted by `add_to_project` on every
-successful add, `reconcile-project-board.py`'s sweep (opportunistic full backfill), `get-project-item.sh`,
-and `post-pr-merge-project.py`'s `find_project_item`, all keyed `"<owner>/<repo>#<number>"` against
+`write_item_cache_entry` / `write_item_cache_entries` (single-entry vs. one-atomic-write-per-batch)
+/ `lookup_cached_item_id` / `evict_item_cache_entry` (caller-driven invalidation on a confirmed-dead
+ID), consulted by `add_to_project` on every successful add, `reconcile-project-board.py`'s sweep
+(opportunistic full backfill, gated behind `not dry_run`), `get-project-item.sh`, and
+`post-pr-merge-project.py`'s `find_project_item`, all keyed
+`"<project-owner>/<project-number>|<owner>/<repo>#<number>"` (lower-cased) against
 `C:/Users/brown/.claude/scratch/project-item-cache.json`.
 `_worktree_canon.py`'s regex additionally recognizes the sibling-directory `<repo>-worktrees/<name>`
 worktree convention alongside the original nested `.claude/worktrees/<name>` shape (dev-env#760, see
