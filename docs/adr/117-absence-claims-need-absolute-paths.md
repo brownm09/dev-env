@@ -220,8 +220,10 @@ This property is unique in this family, and it is what earns the bullet its cont
 mechanism here has a plausible wrong fix that validates itself. The `$`-anchored-CRLF trap's obvious
 fix (drop the trailing `$`) is the *correct* one. The pipe-decode mojibake's obvious fix (re-encode
 the "corrupted" file) is immediately contradicted by a direct byte read showing the file was clean.
-MSYS mangling, a persisted `cd`, and a gitignore blind spot each simply keep failing until the real
-cause is found. Only here does the placebo go green.
+Ref scoping is the cleanest counter-example: re-listing `docs/adr/` returns *identical* output, so
+the re-run neither repairs the blind spot nor falsely confirms anything — it simply repeats it. MSYS
+mangling, a persisted `cd`, and a gitignore blind spot likewise keep failing until the real cause is
+found. Only here does the placebo go green.
 
 An unrecorded wrong fix here therefore does not merely fail — it *survives*. "Always pass
 `--paginate`" is cheap, harmless-looking, confirmed by the very retry that motivated it, and
@@ -240,8 +242,11 @@ as the remedy: **confirm the mechanism, not just that the retry went green.**
   repo-scoped at all.
 - A fifth sub-bullet, **Read-after-write staleness**, is appended after *Suppressed failure* — last
   among the mechanisms, so the four the Decision enumerates keep their original order. Remedy:
-  confirm against the single-object endpoint (`gh api "repos/{owner}/{repo}/issues/{n}"`), which is
-  read-your-writes consistent, or re-read after a delay.
+  re-read after a delay, or confirm against the single-object endpoint
+  (`gh api "repos/{owner}/{repo}/issues/{n}"`), which returned correct state immediately in the
+  observed incident. GitHub publishes no read-your-writes guarantee for that endpoint, so the
+  delayed re-read is the reliable check and the direct read the fast one — the bullet states the
+  observation rather than a contract, per *Documentation and Citations*.
 - The historical "four" in the *Context*, *Decision*, and *Consequences* above — and
   [ADR-120](120-review-skill-absence-checks-over-api.md)'s "folded four false-absent mechanisms" —
   are deliberately **left unchanged**: they narrate what was decided on 2026-07-22. The title keeps
@@ -296,9 +301,9 @@ command would fire on every correct use of it.
   resolves.
 - [cover-letter-runtime#158](https://github.com/brownm09/cover-letter-runtime/issues/158) — the
   session the behavior surfaced in; not a defect in that repo.
-- [dev-env#952](https://github.com/brownm09/dev-env/issues/952) — pipe-decode mojibake, CLI Scripting
-  Checklist item 6: the same false-absent family, and one of the two whose obvious fix is *not*
-  self-confirming.
+- [dev-env#952](https://github.com/brownm09/dev-env/issues/952) — pipe-decode mojibake, the
+  raw-bytes-check item of the CLI Scripting Checklist (item 6 at time of writing): the same
+  false-absent family, and one of the two whose obvious fix is *not* self-confirming.
 - [dev-env#1006](https://github.com/brownm09/dev-env/issues/1006) — `$`-anchored regex against
   CRLF-terminated lines, documented under Git Workflow: the other one, and the case where the obvious
   fix is simply correct.
