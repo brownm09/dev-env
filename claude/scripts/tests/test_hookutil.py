@@ -301,6 +301,85 @@ def test_is_synthetic_user_flags() -> str:
     return "_is_synthetic_user: True for isMeta/isCompactSummary, False for a plain user record and (without raising) a non-dict"
 
 
+def test_first_user_prompt_text_finds_opening_prompt() -> str:
+    # dev-env#1044: the composition of the two helpers above. The FIRST genuine
+    # user prompt is what the unchained-merge trigger's scope test reads.
+    records = [
+        {"type": "user", "message": {"content": "Implement #1044"}},
+        {"type": "user", "message": {"content": "a later prompt"}},
+    ]
+    assert _hookutil.first_user_prompt_text(records) == "Implement #1044"
+    # Multiple text items in ONE record join with newlines -- they render as a
+    # single prompt, so they must read back as one.
+    joined = [{"type": "user", "message": {"content": [
+        {"type": "text", "text": "one"}, {"type": "text", "text": "two"}]}}]
+    assert _hookutil.first_user_prompt_text(joined) == "one\ntwo"
+    return "first_user_prompt_text: returns the first genuine prompt; joins one record's text items"
+
+
+def test_first_user_prompt_text_skips_synthetic_and_toolresult() -> str:
+    # A compact summary restating an earlier request is not a fresh opening
+    # prompt (the same reason skip_override filters it), and a user record
+    # carrying only tool_result items contributes no text -- so a transcript
+    # that opens with either must still resolve to the first REAL prompt, not
+    # to "" (which the caller treats as an unreadable scope test).
+    records = [
+        {"type": "user", "isCompactSummary": True,
+         "message": {"content": "earlier: implement #999"}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "thinking"}]}},
+        {"type": "user", "message": {"content": "fix the flaky test"}},
+    ]
+    assert _hookutil.first_user_prompt_text(records) == "fix the flaky test"
+    # isMeta caveat blocks are skipped for the same reason.
+    assert _hookutil.first_user_prompt_text(
+        [{"type": "user", "isMeta": True, "message": {"content": "<local-command-stdout>"}}]) == ""
+    return "first_user_prompt_text: skips synthetic records and tool_result-only user records"
+
+
+def test_first_user_prompt_text_skips_command_wrapper() -> str:
+    # Review of PR #1053: a <command-name>...</command-name> slash-command
+    # wrapper is a genuine (non-isMeta) "type":"user" record with real string
+    # content, so _is_synthetic_user alone doesn't filter it -- its keywords
+    # are command machinery, not what a human or routine typed. Without this
+    # filter, a /review-launched session's scope (e.g. trigger 5's chain-bearing
+    # test) would be decided by whatever the wrapper text itself contains.
+    records = [
+        {"type": "user", "message": {"content": "<command-name>/review</command-name> "
+                                                 "https://github.com/brownm09/dev-env/pull/1053"}},
+        {"type": "user", "message": {"content": "fix the flaky worktree test"}},
+    ]
+    assert _hookutil.first_user_prompt_text(records) == "fix the flaky worktree test"
+    # A record mixing one wrapper text item with one genuine item keeps only
+    # the genuine one, rather than dropping the whole record.
+    mixed = [{"type": "user", "message": {"content": [
+        {"type": "text", "text": "<command-name>/review</command-name>"},
+        {"type": "text", "text": "real prompt text"},
+    ]}}]
+    assert _hookutil.first_user_prompt_text(mixed) == "real prompt text"
+    # A session whose ONLY user record is the wrapper resolves to "" (the caller
+    # treats this as an unreadable/out-of-scope opening prompt).
+    assert _hookutil.first_user_prompt_text(
+        [{"type": "user", "message": {"content": "<command-name>/review</command-name>"}}]
+    ) == ""
+    return "first_user_prompt_text: skips a <command-name> wrapper, keeping any genuine text"
+
+
+def test_first_user_prompt_text_blank_and_malformed() -> str:
+    # A whitespace-only prompt is not a prompt -- keep walking. And a malformed
+    # record list must yield "" rather than raise: this feeds a Stop hook whose
+    # every input can be hand-built or truncated.
+    assert _hookutil.first_user_prompt_text([]) == ""
+    assert _hookutil.first_user_prompt_text([
+        {"type": "user", "message": {"content": "   \n  "}},
+        {"type": "user", "message": {"content": "real prompt"}},
+    ]) == "real prompt"
+    assert _hookutil.first_user_prompt_text(
+        ["not-a-dict", {"type": "user", "message": "not-a-dict"}, {"type": "user"}]) == ""
+    return "first_user_prompt_text: skips blank prompts; '' (no raise) on empty/malformed records"
+
+
 def test_result_text_string_content() -> str:
     assert _hookutil._result_text({"content": "the URL"}, {}) == "the URL"
     return "_result_text returns string content verbatim"
@@ -749,6 +828,14 @@ def main() -> int:
         ("_content_items: guards -> []", test_content_items_guards),
         ("_user_message_texts: extraction + guards (dev-env#710)", test_user_message_texts_extracts),
         ("_is_synthetic_user: flags + non-dict guard (dev-env#710)", test_is_synthetic_user_flags),
+        ("first_user_prompt_text: opening prompt (dev-env#1044)",
+         test_first_user_prompt_text_finds_opening_prompt),
+        ("first_user_prompt_text: skips synthetic/tool_result (dev-env#1044)",
+         test_first_user_prompt_text_skips_synthetic_and_toolresult),
+        ("first_user_prompt_text: skips <command-name> wrapper (review of PR #1053)",
+         test_first_user_prompt_text_skips_command_wrapper),
+        ("first_user_prompt_text: blank + malformed (dev-env#1044)",
+         test_first_user_prompt_text_blank_and_malformed),
         ("_result_text: string content", test_result_text_string_content),
         ("_result_text: list content", test_result_text_list_content),
         ("_result_text: toolUseResult fallback", test_result_text_tooluseresult_fallback),

@@ -188,7 +188,9 @@ which closed [dev-env#696](https://github.com/brownm09/dev-env/issues/696). Read
   rejected on the merits, with an explicit precondition: *"reconsideration if a 4th trigger is ever
   proposed."* That precondition was met — a **sixth** trigger
   ([dev-env#1044](https://github.com/brownm09/dev-env/issues/1044), the unchained-merge look-ahead
-  gate) is now proposed — so the alternative was adopted.
+  gate) is now proposed — so the alternative was adopted. That sixth trigger landed on the same day
+  as one `_TRIGGER_SPECS` row, exactly as the table was built to allow
+  ([ADR-140](140-unchained-merge-workstream-gate.md)).
 
 **What changed, and why the original objection no longer holds.** The deferral reasoned that the
 evaluators "don't share a return-shape convention... or a formatter signature", so a generic loop

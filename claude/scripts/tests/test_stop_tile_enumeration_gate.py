@@ -1380,10 +1380,19 @@ def test_e2e_partial_session_only_sets_the_fired_triggers_sentinel():
 def test_e2e_fully_compliant_session_sets_all_blocking_sentinels_and_stays_allowed():
     # A session where every blocking condition is resolved in one turn (the spawn
     # resolves triggers 1/2 via enumeration_recorded; the table heading resolves
-    # trigger 3; the shard write resolves trigger 3b) sets all four of those
+    # trigger 3; the shard write resolves trigger 3b) sets all five of those
     # sentinels, and a second Stop with the same transcript stays allowed (stable,
     # no spurious re-fire). Trigger 4's sentinel is deliberately NOT asserted here:
     # it is advisory and its FIRED mark is only set at emission.
+    #
+    # ws_set (trigger 5) is true here via the UNREADABLE-PROMPT out-of-scope path,
+    # NOT via the spawn -- _MERGED_NO_ENUM/_ISSUE_CREATED_NO_ENUM carry no user
+    # record at all, so first_user_prompt_text returns "" and evaluate_workstream
+    # returns (None, True) before ever reaching the spawn/ask/issue-create check
+    # (a prior version of this comment claimed otherwise -- review of PR #1053).
+    # The spawn genuinely resolving trigger 5 is what
+    # test_e2e_unchained_merge_fully_compliant_allows pins, on a fixture with a
+    # real non-chain-bearing prompt.
     records = _MERGED_NO_ENUM + _ISSUE_CREATED_NO_ENUM + [
         _asst_spawn(),
         _asst_shard_write(),
@@ -1395,12 +1404,13 @@ def test_e2e_fully_compliant_session_sets_all_blocking_sentinels_and_stays_allow
         issue_set = _sentinel_file(home, gate._TRIGGER_ISSUE, "sess-full").exists()
         table_set = _sentinel_file(home, gate._TRIGGER_TABLE, "sess-full").exists()
         shard_set = _sentinel_file(home, gate._TRIGGER_SHARD, "sess-full").exists()
+        ws_set = _sentinel_file(home, gate._TRIGGER_WORKSTREAM, "sess-full").exists()
         rc2, out2, err2 = _run_hook(records, home, session_id="sess-full")
     assert rc1 == 0, f"expected exit 0 (fully resolved), got {rc1} (stderr={err1!r})"
-    assert pr_set and issue_set and table_set and shard_set, \
-        "all four blocking sentinels must be set once fully resolved"
+    assert pr_set and issue_set and table_set and shard_set and ws_set, \
+        "all five blocking sentinels must be set once fully resolved"
     assert rc2 == 0, f"second Stop expected exit 0 (stable), got {rc2} (stderr={err2!r})"
-    return ("fully-compliant session -> all four blocking per-trigger sentinels set; "
+    return ("fully-compliant session -> all five blocking per-trigger sentinels set; "
             "a later Stop with the same transcript stays allowed")
 
 
@@ -1829,6 +1839,330 @@ def test_format_shard_reminder_is_ascii_and_actionable():
     return "the shard reminder is ASCII, names the path, the target-project rule, and the escape hatch"
 
 
+# ---------------------------------------------------------------------------
+# trigger 5 -- unchained merge (ADR-140, dev-env#1044)
+# ---------------------------------------------------------------------------
+
+def _user_prompt(text):
+    """A genuine opening user prompt -- the one record trigger 5's scope test reads."""
+    return _user_str(text)
+
+
+# A merge in a session whose opening prompt named NO follow-on work, with nothing
+# queued before the stop. The exact shape trigger 5 exists to catch.
+_MERGED_UNCHAINED = [
+    _user_prompt("Fix the flaky worktree test and get it green."),
+] + _MERGED_NO_ENUM
+
+# The same merge, but the session was HANDED its next thread (the tile-prompt
+# shape ADR-094 mandates). Out of scope for trigger 5 -- ADR-137's prose rule
+# governs what such a session chains next, not this hook.
+_MERGED_CHAINED = [
+    _user_prompt("Implement https://github.com/brownm09/dev-env/issues/1044 - PR 2 of 2."),
+] + _MERGED_NO_ENUM
+
+
+def test_prompt_is_chain_bearing_issue_reference():
+    assert gate.prompt_is_chain_bearing("Implement #1044 - the look-ahead gate.")
+    assert gate.prompt_is_chain_bearing("work on dev-env#696 next")
+    return "a bare #N issue reference in the opening prompt -> chain-bearing"
+
+
+def test_prompt_is_chain_bearing_github_url():
+    # The URL form carries no `#N`, so it needs its own branch -- both the
+    # issues/ and pull/ paths, since a tile prompt may name either.
+    assert gate.prompt_is_chain_bearing(
+        "Implement https://github.com/brownm09/dev-env/issues/1044 now")
+    assert gate.prompt_is_chain_bearing(
+        "Address review findings on https://github.com/brownm09/dev-env/pull/1048")
+    return "a github issues/ or pull/ URL in the opening prompt -> chain-bearing"
+
+
+def test_prompt_is_chain_bearing_chain_marker():
+    assert gate.prompt_is_chain_bearing("=== CHAIN (do this before you finish) ===")
+    assert gate.prompt_is_chain_bearing("===CHAIN===")
+    return "the '=== CHAIN' marker in the opening prompt -> chain-bearing"
+
+
+def test_prompt_is_chain_bearing_rejects_plain_prompt():
+    assert not gate.prompt_is_chain_bearing("Fix the flaky worktree test and get it green.")
+    assert not gate.prompt_is_chain_bearing("")
+    # A number that is not an issue reference must not read as one.
+    assert not gate.prompt_is_chain_bearing("bump the timeout to 60 seconds")
+    return "a plain task prompt with no issue/PR reference or CHAIN marker -> not chain-bearing"
+
+
+def test_prompt_is_chain_bearing_rejects_ordinal_hash_usage():
+    # Review of PR #1053: a bare "#\d+" used to match ANY numbered-step phrase,
+    # silently and permanently disarming trigger 5 for the whole session (the
+    # branch it feeds is marked RESOLVED, not merely not-firing).
+    assert not gate.prompt_is_chain_bearing("do step #2 of the runbook")
+    assert not gate.prompt_is_chain_bearing("this is priority #1 for the week")
+    # But a genuine issue reference must still read as chain-bearing, including
+    # right after an ordinal-shaped word that happens to also be a real number.
+    assert gate.prompt_is_chain_bearing("Implement #1044 - the look-ahead gate.")
+    assert gate.prompt_is_chain_bearing("work on dev-env#696 next")
+    return "an ordinal/step '#N' usage -> not chain-bearing; a genuine issue reference still is"
+
+
+def test_prompt_is_chain_bearing_non_ascii_digit_does_not_match():
+    # re.ASCII on _CHAIN_ISSUE_REF_RE (review of PR #1053): a non-ASCII decimal
+    # digit (Arabic-Indic 1-2 below) must not satisfy "#\d+", mirroring the flag
+    # _TILE_SHARD_PATH_RE already carries.
+    assert not gate.prompt_is_chain_bearing("fix the thing #١٢ today")
+    return "a non-ASCII decimal digit after '#' -> not chain-bearing (re.ASCII)"
+
+
+def test_session_asked_user_detects_tool_use():
+    records = [{"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "AskUserQuestion", "id": "a1", "input": {}}]}}]
+    assert gate.session_asked_user(records)
+    # Bare-verb match, mirroring _SPAWN_TASK_RE: a namespaced host prefix hits.
+    ns = [{"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "mcp__host__AskUserQuestion", "id": "a1", "input": {}}]}}]
+    assert gate.session_asked_user(ns)
+    return "an AskUserQuestion tool_use (bare or namespaced) -> session_asked_user True"
+
+
+def test_session_asked_user_ignores_prose_and_other_tools():
+    # Assistant prose merely describing asking the user is not a real ask --
+    # the same asymmetry enumeration text has with a real spawn (trigger 3).
+    assert not gate.session_asked_user(
+        [_asst_text("I could use AskUserQuestion here to pick the next thread.")])
+    assert not gate.session_asked_user([_asst_spawn("s1")])
+    assert not gate.session_asked_user([_user_str("AskUserQuestion")])
+    return "prose mentioning AskUserQuestion, a spawn, or user text -> not an ask"
+
+
+def test_evaluate_workstream_unchained_merge_fires():
+    fire, resolved = gate.evaluate_workstream(_MERGED_UNCHAINED)
+    assert fire == 599, "must block on the merged PR number, got %r" % (fire,)
+    assert resolved is False
+    return "merged + unchained opening prompt + nothing queued -> fires on the merged PR"
+
+
+def test_evaluate_workstream_chain_bearing_prompt_does_not_fire():
+    # THE scope test: a session handed its next thread is out of scope. Resolved,
+    # not merely not-firing -- the first genuine user prompt is immutable for the
+    # session, so there is nothing left to re-evaluate on a later Stop.
+    fire, resolved = gate.evaluate_workstream(_MERGED_CHAINED)
+    assert fire is None, "a chain-bearing opening prompt must not fire, got %r" % (fire,)
+    assert resolved is True
+    return "merged + chain-bearing opening prompt -> out of scope (None, True)"
+
+
+def test_evaluate_workstream_spawn_resolves():
+    records = _MERGED_UNCHAINED + [_asst_spawn("s1")]
+    fire, resolved = gate.evaluate_workstream(records)
+    assert fire is None and resolved is True
+    return "a spawn_task (the next thread chained) resolves trigger 5"
+
+
+def test_evaluate_workstream_ask_user_resolves():
+    records = _MERGED_UNCHAINED + [{"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "AskUserQuestion", "id": "a1", "input": {}}]}}]
+    fire, resolved = gate.evaluate_workstream(records)
+    assert fire is None and resolved is True
+    return "an AskUserQuestion (the survey put to the user) resolves trigger 5"
+
+
+def test_evaluate_workstream_skip_override_waives():
+    records = _MERGED_UNCHAINED + [_user_str("skip tiles for this one")]
+    fire, resolved = gate.evaluate_workstream(records)
+    assert fire is None and resolved is True
+    return "an explicit 'skip tiles' user instruction waives trigger 5"
+
+
+def test_evaluate_workstream_enumeration_text_alone_does_not_resolve():
+    # Deliberately NOT resolved by enumeration text, for the same reason
+    # evaluate_deferral isn't: "-> not tiled, because ..." is exactly the
+    # decision this trigger exists to question.
+    records = _MERGED_UNCHAINED + [
+        _asst_text("Follow-ups considered: none -> not tiled, because nothing surfaced.")]
+    fire, resolved = gate.evaluate_workstream(records)
+    assert fire == 599 and resolved is False
+    return "enumeration text alone does not resolve trigger 5 -- only a spawn or an ask does"
+
+
+def test_evaluate_workstream_no_merge_noop():
+    records = [_user_prompt("just answer a question"), _asst_text("Here is the answer.")]
+    fire, resolved = gate.evaluate_workstream(records)
+    assert fire is None and resolved is False
+    return "no merge yet -> (None, False), so a merge later in the session is still caught"
+
+
+def test_evaluate_workstream_unreadable_prompt_is_out_of_scope():
+    # _MERGED_NO_ENUM carries no genuine user record at all, so the scope test
+    # cannot be established. A blocking trigger must not fire on that -- the
+    # conservative direction, since a false positive costs a blocked stop.
+    fire, resolved = gate.evaluate_workstream(_MERGED_NO_ENUM)
+    assert fire is None, "an unreadable opening prompt must not fire, got %r" % (fire,)
+    assert resolved is True
+    return "no genuine opening prompt -> out of scope (None, True), never a block"
+
+
+def test_evaluate_workstream_picks_lowest_pr_deterministically():
+    records = _MERGED_UNCHAINED + [
+        _asst_bash("t2", "gh pr merge 604 --squash"),
+        _tool_result("t2", "Squashed and merged pull request #604 (Another)"),
+    ]
+    fire, _resolved = gate.evaluate_workstream(records)
+    assert fire == 599, "two merges -> block on the lowest, mirroring evaluate()"
+    return "two merges in one session -> trigger 5 blocks on the lowest PR (deterministic)"
+
+
+def test_evaluate_workstream_pre_merge_spawn_does_not_resolve():
+    # Review of PR #1053: session_spawned_tiles/session_asked_user used to scan
+    # the WHOLE transcript with no temporal relationship to the merge, so a
+    # spawn from earlier in the session (unrelated to this merge) satisfied the
+    # resolution check. A spawn strictly BEFORE the merge, with nothing queued
+    # after it, must still fire.
+    records = (
+        [_user_prompt("Fix the flaky worktree test and get it green."), _asst_spawn("s1")]
+        + _MERGED_NO_ENUM
+    )
+    fire, resolved = gate.evaluate_workstream(records)
+    assert fire == 599, "a pre-merge spawn unrelated to the merge must not resolve trigger 5"
+    assert resolved is False
+    return "a spawn strictly before the merge does not resolve trigger 5 -- it still fires"
+
+
+def test_evaluate_workstream_post_merge_issue_create_resolves():
+    # The third resolution path (review of PR #1053): claude/CLAUDE.md documents
+    # "file the follow-up issue anyway" as the fallback for a session where
+    # spawn_task itself is unavailable -- evaluate_workstream accepts it too,
+    # scoped the same way as the other two paths (after the merge).
+    records = _MERGED_UNCHAINED + [
+        _asst_bash("i1", 'gh issue create --title "Follow-up" --body "desc"'),
+        _tool_result("i1", "https://github.com/brownm09/dev-env/issues/701"),
+    ]
+    fire, resolved = gate.evaluate_workstream(records)
+    assert fire is None and resolved is True
+    return "a same-session gh issue create after the merge resolves trigger 5"
+
+
+def test_evaluate_workstream_pre_merge_issue_create_does_not_resolve():
+    records = (
+        [
+            _user_prompt("Fix the flaky worktree test and get it green."),
+            _asst_bash("i1", 'gh issue create --title "Unrelated" --body "desc"'),
+            _tool_result("i1", "https://github.com/brownm09/dev-env/issues/701"),
+        ]
+        + _MERGED_NO_ENUM
+    )
+    fire, resolved = gate.evaluate_workstream(records)
+    assert fire == 599, "a pre-merge issue-create unrelated to the merge must not resolve trigger 5"
+    assert resolved is False
+    return "a gh issue create strictly before the merge does not resolve trigger 5 -- it still fires"
+
+
+def test_workstream_and_pr_triggers_are_independent():
+    # A spawn resolves trigger 5 (the next thread was chained) while independently
+    # ARMING triggers 3/3b, which demand its table and its shard -- the same
+    # asymmetry those two already have with trigger 1.
+    records = _MERGED_UNCHAINED + [_asst_spawn("s1")]
+    assert gate.evaluate_workstream(records) == (None, True)
+    assert gate.evaluate_tile_table(records)[0] is True, "bare spawn -> trigger 3 fires"
+    assert gate.evaluate_tile_shard(records)[0] is True, "no shard write -> trigger 3b fires"
+    return "a spawn resolves trigger 5 while still arming triggers 3 and 3b"
+
+
+def test_format_workstream_reminder_is_ascii_and_names_both_paths():
+    text = gate.format_workstream_reminder(599)
+    assert text.isascii(), "exit-2 stderr is cp1252-decoded on Windows"
+    assert "#599" in text
+    assert "spawn_task" in text and "AskUserQuestion" in text and "gh issue create" in text, \
+        "all three resolution paths named"
+    assert "claude/CLAUDE.md" in text, "the ranking order is pointed at, not restated"
+    assert "start-here" not in text and "retro-action" not in text, (
+        "the ranking order belongs in prose (ADR-140 Rationale), not duplicated in the hook "
+        "-- review of PR #1053"
+    )
+    assert "skip tiles" in text
+    # The survey is the FALLBACK -- a reminder that led with it would invert the rule.
+    assert text.index("tile it now") < text.index("survey"), \
+        "chaining a known thread must be stated before the survey fallback"
+    return "the workstream reminder is ASCII, names all three paths, and points at (not restates) the ranking"
+
+
+# --- behavioral layer -- trigger 5 (ADR-140, dev-env#1044) --------------------
+
+def test_e2e_unchained_merge_blocks_on_stderr():
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(_MERGED_UNCHAINED, home)
+    assert rc == 2, f"expected exit 2, got {rc} (stderr={err!r})"
+    assert "opening prompt named" in err, f"trigger 5's own reminder must appear: {err!r}"
+    assert "#599" in err
+    assert out.strip() == "", f"stdout must be empty on exit 2, got {out!r}"
+    return "e2e unchained merge -> exit 2 naming the look-ahead + survey path"
+
+
+def test_e2e_chain_bearing_merge_does_not_fire_workstream():
+    # Trigger 1 still blocks (nothing was enumerated), but trigger 5's own
+    # message must NOT appear -- the session was handed its next thread.
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(_MERGED_CHAINED, home)
+    assert rc == 2, f"expected exit 2 from trigger 1, got {rc} (stderr={err!r})"
+    assert "opening prompt named" not in err, \
+        f"a chain-bearing session must not get trigger 5's reminder: {err!r}"
+    return "e2e chain-bearing opening prompt -> trigger 5 silent (trigger 1 still blocks)"
+
+
+def test_e2e_unchained_merge_fully_compliant_allows():
+    # Chained the next thread AND satisfied every other blocking bar: the spawn
+    # resolves triggers 1/5, the table resolves 3, the shard write resolves 3b.
+    # Uses _MERGED_UNCHAINED (a real, non-chain-bearing prompt) specifically so
+    # ws_set below is set via the actual spawn-after-merge resolution path, not
+    # the unreadable-prompt fallback (review of PR #1053 -- see the comment on
+    # test_e2e_fully_compliant_session_sets_all_blocking_sentinels_and_stays_allowed).
+    records = _MERGED_UNCHAINED + [
+        _asst_spawn("s1"),
+        _asst_shard_write(),
+        _asst_text(_TABLE_HEADING + "\n| Tile | Issue | Status | Next |\n"),
+    ]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home, session_id="sess-unchained-compliant")
+        ws_set = _sentinel_file(home, gate._TRIGGER_WORKSTREAM, "sess-unchained-compliant").exists()
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    assert ws_set, "trigger 5's sentinel must be set via the real spawn-after-merge resolution"
+    return "e2e unchained merge + chained tile + shard + table -> exit 0 (allowed)"
+
+
+def test_e2e_unchained_merge_resolved_by_ask_user():
+    # The survey path: no tile spawned, but the choice was put to the user.
+    # Trigger 1 still blocks (an ask is not an enumeration) -- what this pins is
+    # that trigger 5's OWN message is absent, i.e. the ask really did resolve it.
+    records = _MERGED_UNCHAINED + [{"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "AskUserQuestion", "id": "a1", "input": {}}]}}]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 2, f"expected exit 2 from trigger 1, got {rc} (stderr={err!r})"
+    assert "opening prompt named" not in err, \
+        f"an AskUserQuestion must resolve trigger 5: {err!r}"
+    return "e2e AskUserQuestion resolves trigger 5 (trigger 1's own bar is unaffected)"
+
+
+def test_e2e_unchained_merge_skip_override_allows():
+    records = _MERGED_UNCHAINED + [_user_str("skip tiles")]
+    with tempfile.TemporaryDirectory() as home:
+        rc, out, err = _run_hook(records, home)
+    assert rc == 0, f"expected exit 0 with skip override, got {rc} (stderr={err!r})"
+    return "e2e 'skip tiles' waives trigger 5 (and its siblings) -> exit 0"
+
+
+def test_e2e_workstream_sentinel_suppresses_refire():
+    # Fires at most once per session: the second Stop over the same transcript
+    # must not re-block on trigger 5 (its own per-trigger sentinel, ADR-097).
+    with tempfile.TemporaryDirectory() as home:
+        rc1, _, err1 = _run_hook(_MERGED_UNCHAINED, home, session_id="sess-ws")
+        ws_set = _sentinel_file(home, gate._TRIGGER_WORKSTREAM, "sess-ws").exists()
+        rc2, out2, err2 = _run_hook(_MERGED_UNCHAINED, home, session_id="sess-ws")
+    assert rc1 == 2, f"first run expected exit 2, got {rc1} (stderr={err1!r})"
+    assert ws_set, "trigger 5 fired -- its own sentinel must be set"
+    assert rc2 == 0, f"second run expected exit 0 (sentinel), got {rc2} (stderr={err2!r})"
+    return "e2e trigger 5 fires at most once per session (workstream- sentinel)"
+
+
 # --- trigger-table structural gate (dev-env#696) ------------------------------
 # These pin the invariants the _TriggerSpec table exists to guarantee. Before it,
 # a trigger's identity lived in five hand-synchronized sites and two of them
@@ -1844,7 +2178,7 @@ def test_triggers_tuple_is_derived_from_spec_table():
     assert len(set(gate._TRIGGERS)) == len(gate._TRIGGERS)
     expected = {
         gate._TRIGGER_PR, gate._TRIGGER_ISSUE, gate._TRIGGER_TABLE,
-        gate._TRIGGER_SHARD, gate._TRIGGER_DEFER,
+        gate._TRIGGER_SHARD, gate._TRIGGER_DEFER, gate._TRIGGER_WORKSTREAM,
     }
     assert set(gate._TRIGGERS) == expected
     return "_TRIGGERS derives from _TRIGGER_SPECS; %d distinct keys" % len(gate._TRIGGERS)
@@ -1910,6 +2244,11 @@ def test_prefilter_is_a_superset_of_each_evaluator():
         gate._TRIGGER_TABLE: [_asst_spawn("s1")],
         gate._TRIGGER_SHARD: _SPAWNED_NO_SHARD,
         gate._TRIGGER_DEFER: _MERGED_DEFERRAL_QUESTION,
+        # _MERGED_NO_ENUM would NOT fire trigger 5: it carries no genuine user
+        # record, so the scope test is unreadable and the evaluator returns
+        # (None, True) -- silently dropping this trigger from the check. The
+        # fixture must therefore carry a real, non-chain-bearing opening prompt.
+        gate._TRIGGER_WORKSTREAM: _MERGED_UNCHAINED,
     }
     checked = 0
     for spec in gate._TRIGGER_SPECS:
@@ -2088,6 +2427,34 @@ def main():
         ("e2e deferral 'should i' phrasing after issue create", test_e2e_deferral_should_i_phrasing_after_issue_create),
         ("e2e deferral sentinel suppresses re-fire", test_e2e_deferral_sentinel_suppresses_refire),
         ("e2e deferral advisory resurfaces after blocking trigger resolves (regression pin)", test_e2e_deferral_advisory_resurfaces_after_blocking_trigger_resolves),
+        ("chain-bearing: #N issue reference", test_prompt_is_chain_bearing_issue_reference),
+        ("chain-bearing: github issues/pull URL", test_prompt_is_chain_bearing_github_url),
+        ("chain-bearing: '=== CHAIN' marker", test_prompt_is_chain_bearing_chain_marker),
+        ("chain-bearing: plain prompt rejected", test_prompt_is_chain_bearing_rejects_plain_prompt),
+        ("chain-bearing: ordinal '#N' usage rejected", test_prompt_is_chain_bearing_rejects_ordinal_hash_usage),
+        ("chain-bearing: non-ASCII digit after '#' rejected", test_prompt_is_chain_bearing_non_ascii_digit_does_not_match),
+        ("session_asked_user: AskUserQuestion tool_use", test_session_asked_user_detects_tool_use),
+        ("session_asked_user: prose/other tools ignored", test_session_asked_user_ignores_prose_and_other_tools),
+        ("evaluate_workstream: unchained merge fires", test_evaluate_workstream_unchained_merge_fires),
+        ("evaluate_workstream: chain-bearing prompt does NOT fire", test_evaluate_workstream_chain_bearing_prompt_does_not_fire),
+        ("evaluate_workstream: spawn_task resolves", test_evaluate_workstream_spawn_resolves),
+        ("evaluate_workstream: AskUserQuestion resolves", test_evaluate_workstream_ask_user_resolves),
+        ("evaluate_workstream: skip override waives", test_evaluate_workstream_skip_override_waives),
+        ("evaluate_workstream: enumeration text alone does NOT resolve", test_evaluate_workstream_enumeration_text_alone_does_not_resolve),
+        ("evaluate_workstream: no-merge no-op", test_evaluate_workstream_no_merge_noop),
+        ("evaluate_workstream: unreadable prompt is out of scope", test_evaluate_workstream_unreadable_prompt_is_out_of_scope),
+        ("evaluate_workstream: picks lowest PR", test_evaluate_workstream_picks_lowest_pr_deterministically),
+        ("evaluate_workstream: pre-merge spawn does NOT resolve", test_evaluate_workstream_pre_merge_spawn_does_not_resolve),
+        ("evaluate_workstream: post-merge issue-create resolves", test_evaluate_workstream_post_merge_issue_create_resolves),
+        ("evaluate_workstream: pre-merge issue-create does NOT resolve", test_evaluate_workstream_pre_merge_issue_create_does_not_resolve),
+        ("interaction: spawn resolves trigger 5 but arms 3/3b", test_workstream_and_pr_triggers_are_independent),
+        ("format_workstream_reminder: ASCII + both paths in order", test_format_workstream_reminder_is_ascii_and_names_both_paths),
+        ("e2e unchained merge blocks on stderr", test_e2e_unchained_merge_blocks_on_stderr),
+        ("e2e chain-bearing merge does not fire trigger 5", test_e2e_chain_bearing_merge_does_not_fire_workstream),
+        ("e2e unchained merge fully compliant -> exit 0", test_e2e_unchained_merge_fully_compliant_allows),
+        ("e2e AskUserQuestion resolves trigger 5", test_e2e_unchained_merge_resolved_by_ask_user),
+        ("e2e 'skip tiles' waives trigger 5", test_e2e_unchained_merge_skip_override_allows),
+        ("e2e trigger 5 sentinel suppresses re-fire", test_e2e_workstream_sentinel_suppresses_refire),
         ("trigger table: _TRIGGERS derived from _TRIGGER_SPECS (dev-env#696)", test_triggers_tuple_is_derived_from_spec_table),
         ("trigger table: every evaluator honors the (payload, resolved) contract (dev-env#696)", test_every_evaluator_honors_the_payload_contract),
         ("trigger table: every formatter takes one payload, returns ASCII (dev-env#696)", test_every_formatter_takes_one_payload_and_is_ascii),

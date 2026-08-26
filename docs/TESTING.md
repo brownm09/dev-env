@@ -660,6 +660,15 @@ For a one-line navigational map of the test directory, see
     the two-step REST merge fallback (`gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge` +
     `"merged":true`) also triggers the reminder, while the same call without that marker does not.
 
+    **Deliberate scope gap: the reminder's text is not pinned here.** This item covers *when* the
+    reminder fires, never *what it says* — so the ADR-137/ADR-140 look-ahead + open-issue-survey
+    pointer added to the exit-2 message (dev-env#1044) has no assertion behind it in this file. That
+    is the right split: this hook is the freshest-context reinforcement, not the gate. The
+    equivalent message content **is** pinned on the enforcing side, by item 48's
+    `format_workstream_reminder` assertions (ASCII, both resolution paths, the ranking anchors, and
+    chaining-stated-before-surveying) — see [ADR-053](adr/053-posttooluse-hooks-inert-in-background-sessions.md)
+    for why the Stop trigger, not this PostToolUse hook, is the real gate.
+
     ```bash
     py -3 claude/scripts/tests/test_post_merge_tile_checkpoint.py
     ```
@@ -796,7 +805,19 @@ For a one-line navigational map of the test directory, see
     `stop-tile-enumeration-gate.py`'s `skip_override` front it ahead of `_user_message_texts`'s own dict
     check. Promoted here from `stop-journal-stub-checkpoint.py` and shared with that tile gate, which
     previously inlined the same extraction (the transcript-parsing drift ADR-090 hoists readers here to
-    prevent).
+    prevent). Also exercises `first_user_prompt_text(records)`
+    ([ADR-140](adr/140-unchained-merge-workstream-gate.md); dev-env#1044), which composes those two
+    into "how did this session start?" — the first genuine user prompt, which nothing read before the
+    unchained-merge trigger needed it. Three tests pin what the trigger's scope test depends on: it
+    returns the FIRST prompt (not the last or a joined blob) and joins one record's multiple text items
+    with newlines, since they render as a single prompt; it **skips** synthetic (`isMeta` /
+    `isCompactSummary`) records and user records carrying only `tool_result` items, so a transcript that
+    opens with either still resolves to the first real prompt rather than `""`; and a blank
+    (whitespace-only) prompt is walked past, while an empty or malformed record list yields `""` without
+    raising. That last distinction is load-bearing downstream, not cosmetic: `""` is what the caller
+    reads as "the scope test is unreadable" and treats as out-of-scope rather than firing a blocking
+    gate, so a helper that returned `""` for a session that *does* have an opening prompt (or raised on
+    a truncated transcript) would silently disable the trigger.
 
     ```bash
     py -3 claude/scripts/tests/test_hookutil.py
@@ -1481,7 +1502,7 @@ For a one-line navigational map of the test directory, see
 48. **stop-tile-enumeration-gate test** — required when changing
     `claude/scripts/stop-tile-enumeration-gate.py`. Two layers, mirroring this hook family's
     established split ([ADR-088](adr/088-state-keyed-tile-enumeration-gate.md); dev-env#599),
-    now covering **five independent triggers** that share the same enumeration/skip-override
+    now covering **six independent triggers** that share the same enumeration/skip-override
     machinery (each with its OWN per-trigger sentinel as of
     [ADR-097](adr/097-per-trigger-tile-gate-sentinels.md); dev-env#677 — see that paragraph at
     the end of this item): the merged-PR trigger (below), the dangling-created-issue trigger
@@ -1489,8 +1510,74 @@ For a one-line navigational map of the test directory, see
     tiles-spawned-without-a-table trigger ([ADR-094](adr/094-tile-tables-and-issue-per-tile.md)
     addendum; dev-env#656), the tile-spawned-without-its-shard trigger
     ([ADR-118](adr/118-tile-persistence-shards.md); dev-env#870 — trigger 3b, detailed below),
-    and the deferral-question trigger ([ADR-109](adr/109-tile-gate-deferral-question-trigger.md);
-    dev-env#772).
+    the deferral-question trigger ([ADR-109](adr/109-tile-gate-deferral-question-trigger.md);
+    dev-env#772), and the unchained-merge trigger
+    ([ADR-140](adr/140-unchained-merge-workstream-gate.md); dev-env#1044 — trigger 5, detailed
+    below).
+
+    **Trigger 5 (unchained merge).** Fires when a PR merged, the session's own opening prompt named
+    no follow-on work, and nothing was queued AT OR AFTER that merge — no `spawn_task`,
+    `AskUserQuestion`, or `gh issue create` (dev-env review of PR #1053 added the temporal scoping
+    and the third resolution path; both were originally unscoped/two-path and are covered below).
+    Four groups of tests, matching the four things that can silently break it. *The scope predicate*
+    (`prompt_is_chain_bearing`) is pinned across all three chain-bearing forms — a bare `#N`, a
+    `github.com/.../issues|pull/N` URL (which carries no `#N`, so it needs its own branch, and both
+    the issues/ and pull/ paths are covered since a tile prompt may name either), and the
+    `=== CHAIN` marker — plus the rejections that make it a real test: a plain task prompt, an empty
+    string, a bare number that is not an issue reference, an ordinal/step "#N" usage ("do step #2 of
+    the runbook", "priority #1" — `_CHAIN_ORDINAL_WORDS` — that used to read as chain-bearing and
+    silently, permanently disarm the trigger for the session, since the branch it feeds is marked
+    RESOLVED, not merely not-firing), and a non-ASCII decimal digit after "#" (`re.ASCII` on
+    `_CHAIN_ISSUE_REF_RE`, mirroring `_TILE_SHARD_PATH_RE`). *The resolution detectors*
+    (`session_asked_user`, and `session_created_issues` reused from trigger 2) are pinned on a bare
+    and a namespaced `AskUserQuestion` `tool_use` (the bare-verb match `_SPAWN_TASK_RE` uses, so a
+    rehosted MCP prefix still resolves), and on the three non-matches: assistant prose merely
+    *mentioning* `AskUserQuestion`, a `spawn_task`, and user text — the same prose-is-not-a-tool-call
+    asymmetry trigger 3 has. *Temporal scoping* (`_records_after_merge` /
+    `_bash_call_record_indices`) is pinned directly: a `spawn_task` or `gh issue create` strictly
+    BEFORE the merge, with nothing queued after, still fires trigger 5 rather than resolving it —
+    the original unscoped check accepted evidence from anywhere in the session, including before a
+    merge it had nothing to do with; the same fixture shape with the evidence moved to AFTER the
+    merge resolves it, for both new paths. *`first_user_prompt_text`'s wrapper filter*
+    (`_hookutil.py`, shared with `stop-journal-stub-checkpoint.py`'s `report_intent`, which now
+    imports the hoisted `_is_wrapper_text` instead of keeping its own copy) is pinned in
+    `test_hookutil.py`: a `<command-name>...</command-name>` slash-command wrapper is skipped even
+    though it is a genuine (non-`isMeta`) user record, a record mixing one wrapper text item with
+    one genuine item keeps only the genuine one, and a session whose only user record is the wrapper
+    resolves to `""` (the unreadable-prompt path). *The evaluator quadrant* covers fire /
+    spawn-resolves / ask-resolves / issue-create-resolves / skip-waives / no-merge-no-op, plus three
+    cases that encode deliberate decisions rather than mechanics: enumeration text alone does
+    **not** resolve it (that sentence — "Follow-ups considered: none -> not tiled" — is precisely the
+    decision the trigger questions, the same call ADR-109 made for its own); a chain-bearing prompt
+    returns `(None, True)` — resolved, not merely not-firing, because the first genuine user prompt
+    is immutable for the session, so restoring ADR-097's skip-the-parse fast path is free; and an
+    **unreadable** opening prompt likewise resolves rather than fires, the conservative direction for
+    a blocking gate. Lowest-PR determinism mirrors `evaluate()`. An interaction test pins that a
+    spawn resolves trigger 5 while independently *arming* triggers 3 and 3b — the asymmetry those two
+    already have with trigger 1, and what keeps "chained the next thread" from excusing the tile's
+    own table and shard. `format_workstream_reminder` is asserted ASCII, to name all three resolution
+    paths, to point at (never restate) the survey ranking — `claude/CLAUDE.md` is asserted present
+    and `start-here`/`retro-action` asserted ABSENT, since ADR-140's own Rationale argues the ranking
+    belongs in prose specifically because it will keep evolving, and the hook used to restate it
+    anyway, pinned in place by an earlier version of this same test — and — by index comparison, not
+    just membership — to state *chaining before surveying*: a reminder that led with the fallback
+    would invert the rule it exists to carry. The e2e layer pins the block, the chain-bearing silence
+    (trigger 1 still blocks there, so the assertion is on trigger 5's own message being **absent**,
+    not on the exit code), all three resolution paths, the skip override, and the once-per-session
+    `workstream-` sentinel — asserted directly (not just via `rc == 0`) on the one e2e fixture
+    (`_MERGED_UNCHAINED` plus a spawn) that actually exercises the spawn-resolves path, since the
+    OTHER "fully compliant" e2e fixture (`_MERGED_NO_ENUM`-based) sets that same sentinel via the
+    unreadable-prompt path instead — see that test's own comment for why a prior version of it
+    claimed otherwise.
+
+    **Why trigger 5 needed its own e2e fixture, not `_MERGED_NO_ENUM`.** That long-standing fixture
+    carries no genuine user record at all, so trigger 5 reads its scope test as unreadable and
+    resolves out of scope — which is *why* adding it turned no existing test red, and equally why it
+    cannot serve as the firing fixture in `test_prefilter_is_a_superset_of_each_evaluator`. Dropped
+    in there it would have made that test report "5 checked" of 6 and fail loudly, exactly as the
+    `checked == len(_TRIGGER_SPECS)` assertion is designed to. `_MERGED_UNCHAINED` (a real,
+    non-chain-bearing opening prompt prepended to that same merge) is the fixture that actually
+    fires it.
 
     **Trigger-table structural gate ([dev-env#696](https://github.com/brownm09/dev-env/issues/696)).**
     Each trigger's identity used to live in five hand-synchronized sites in `main()` — the
@@ -1541,8 +1628,11 @@ For a one-line navigational map of the test directory, see
     spawned a tile and wrote no shard, which is now precisely the violation. They were fixed by
     making the fixtures *compliant* (adding a shard write via the shared `_asst_shard_write`
     helper), never by weakening an assertion; `test_e2e_fully_compliant_session_...` now asserts
-    all four blocking sentinels rather than three. Treat that helper's docstring as the record of
-    why every compliant fixture in the file needs one.
+    all five blocking sentinels rather than four (a sixth, trigger 5's `workstream-` sentinel,
+    is set here via the unreadable-prompt path rather than the spawn -- see its own comment and
+    Trigger 5's paragraph below for why that fixture can't exercise the real resolution path).
+    Treat that helper's docstring as the record of why every compliant fixture in the file needs
+    one.
     Pure-helper tests exercise the detection/decision core offline (no stdin, network, gh, or disk):
     `session_merged_prs` across all three merge paths — a `gh pr merge` success marker, a
     `gh api .../pulls/N/merge` with `"merged":true`, and the auto-merge case (a `--auto` enqueue or a

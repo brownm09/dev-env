@@ -190,10 +190,45 @@ spawned.
   thread is still open and unaddressed" instruction, which the chained tile's prompt carries out
   live rather than trusting the original snapshot.
 
+## Amendment (2026-08-25) — the deferred hook has landed, scoped to the floor (dev-env#1044)
+
+*Alternatives considered* above rejected "a mechanical hook enforcing the look-ahead check" as
+premature, with an explicit precondition: *"A hook can follow later if the anti-pattern recurs
+despite the documented rule."* [ADR-140](140-unchained-merge-workstream-gate.md) is that hook —
+added ahead of a recorded recurrence, on the strength of the two gaps
+[dev-env#1043](https://github.com/brownm09/dev-env/issues/1043) named (no forcing function; no
+defined fallback when no next thread is determinable).
+
+**The original objection still stands, and is why the hook is narrower than this ADR's rule.**
+The deferral reasoned that *"will this tile's completion predictably surface or unblock a next
+high-priority thread"* is a semantic priority judgment no hook can reliably detect. That is
+correct and unchanged — ADR-140 does not attempt it. It enforces only the mechanically checkable
+**floor** underneath this rule: a PR merged, the session's own opening prompt named no follow-on
+work, and neither a `spawn_task` nor an `AskUserQuestion` happened before the stop. Those are
+three tool-name/marker facts and one regex over one fixed string, not a judgment. The look-ahead
+judgment this ADR describes stays where it is — in prose, in the *"Capture follow-ups as tiles"*
+bullet.
+
+**What ADR-140 adds beyond enforcement:** the case this ADR does not cover at all — what to do
+when *no* next thread is determinable. This ADR assumes one is identifiable from the session's
+own work; ADR-140 defines the fallback (rank the repo's open issues, dedupe against tile shards
+and `list_sessions`, offer the top 3 via `AskUserQuestion`, tile the choice) and marks that ask
+as the one bounded carve-out to the otherwise absolute "never ask the user whether or when to
+tile" rule.
+
+**Unchanged by this amendment:** everything in *Decision* — the CLAUDE.md paragraph, its bundle
+vs. chain test, and the "name the specific next issue(s) now, while the priority reasoning is
+fresh" instruction. ADR-140's paragraph is appended after it, not in place of it, and a
+chain-bearing session (one handed its next thread in its own opening prompt) is explicitly out of
+ADR-140's scope precisely so this ADR's prose rule remains the thing that governs it.
+
 ## References
 
 - [dev-env#1026](https://github.com/brownm09/dev-env/issues/1026) — the immortalization issue
   this ADR closes.
+- [ADR-140](140-unchained-merge-workstream-gate.md) — the deferred hook, landed 2026-08-25;
+  enforces this rule's floor and defines the no-determinable-thread fallback (see the Amendment
+  above).
 - [ADR-046](046-post-merge-followup-tiles.md) — the base post-merge tile capture discipline.
 - [ADR-094](094-tile-tables-and-issue-per-tile.md) — issue-per-tile and the tile table; the
   chained follow-up tile still gets both when it's eventually spawned.

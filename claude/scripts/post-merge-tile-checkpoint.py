@@ -142,8 +142,11 @@ def main() -> None:
         "This includes the next not-yet-started unit of a multi-PR initiative (ADR-059) "
         "if one exists -- do not convert it into a scheduling/permission question back "
         "to the user ('let me know if you want me to start it now'); tile it the same "
-        "as any other follow-up. Only an explicit 'skip tiles' user instruction exempts "
-        "this checkpoint."
+        "as any other follow-up. If this merge surfaces or unblocks a next high-priority "
+        "thread, chain it now as its own tile -- and if NO next thread is determinable, "
+        "survey the repo's open issues in the ranked order in claude/CLAUDE.md -> Capture "
+        "follow-ups as tiles and offer the top 3 via AskUserQuestion (ADR-137/ADR-140). "
+        "Only an explicit 'skip tiles' user instruction exempts this checkpoint."
     )
 
 
