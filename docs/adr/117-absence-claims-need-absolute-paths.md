@@ -1,8 +1,8 @@
 # ADR-117: An Absence Claim Needs an Absolute Path — One Habit for Four False-Absent Mechanisms
 
-**Date:** 2026-07-22
+**Date:** 2026-07-22 (amended 2026-08-25)
 **Status:** Accepted
-**Tags:** claude-behavior, cli-scripting, absence-claims, false-absent, cwd, git, msys, windows, claude-md, global-rule, correction, adr-066, adr-101, adr-107
+**Tags:** claude-behavior, cli-scripting, absence-claims, false-absent, cwd, ref-scoping, git, msys, windows, claude-md, global-rule, correction, eventual-consistency, read-after-write, gh-api, self-confirming-fix, adr-066, adr-074, adr-101, adr-107, adr-120
 
 ---
 
@@ -173,3 +173,140 @@ Two supporting edits:
   always-loaded global CLAUDE.md, which motivated folding rather than appending.
 - [ADR-038](038-durable-preferences-documented-in-repo.md) — durable corrections live in
   instructions, not memory.
+
+---
+
+## Amendment 1 (2026-08-25, dev-env#1047) — a fifth mechanism: read-after-write staleness, whose wrong fix self-confirms
+
+### The incident
+
+On 2026-08-25, a session implementing
+[cover-letter-runtime#158](https://github.com/brownm09/cover-letter-runtime/issues/158) created that
+repo's `start-here` label and seeded it:
+
+1. Applied `start-here` to six issues via `POST /repos/{owner}/{repo}/issues/{n}/labels`. All six
+   responses echoed `start-here` back — every write demonstrably succeeded.
+2. Verified immediately with `gh api "repos/…/issues?labels=start-here&state=open&per_page=100"` →
+   returned **five**, silently omitting #159. Clean `200`, no error, no warning.
+3. A direct read of `gh api repos/…/issues/159` showed `"labels":["start-here"]`, `"state":"open"` —
+   correct all along.
+4. Re-tested minutes later: the identical query returned all six **without** `--paginate`, **with**
+   `--paginate`, and at the default `per_page`.
+
+### Why it is the same class, on a new axis
+
+A short `200` from a filtered list is indistinguishable from "the write did not land" — the same
+reasoning shortcut the Context above names as the thread joining the original four: **treating empty
+(or short) output as proof of absence.**
+
+What is new is the axis. The four mechanisms in the Decision all answer "you were looking at a
+partial view": the wrong *path* (cwd scoping), the wrong *ref* (ref scoping), an *invisible* slice
+(visibility blind spots), or a *swallowed error* (suppressed failure). This one is none of those. The
+command was right, the path was right, the ref does not apply, nothing was suppressed, and the
+response was genuinely correct at the instant it was served. The variable is **time**.
+
+That is why the headline could not simply absorb it. "An absolute path — and the right ref" names two
+axes, and a session scanning bold headlines for a reason its `gh api` read came back short would
+correctly conclude that neither applies. The headline is extended accordingly (see *The edits*).
+
+### What is genuinely new: the wrong fix passes its own retry test
+
+Adding `--paginate` made the follow-up query return six. Pagination therefore *looked* causal — and
+that went into a public issue comment as the root cause before being caught and corrected. It cannot
+be pagination: six items never paginate at `per_page=100`, and the default-`per_page` query returns
+all six too. Elapsed time was the only variable that changed between the two runs.
+
+This property is unique in this family, and it is what earns the bullet its context weight. No other
+mechanism here has a plausible wrong fix that validates itself. The `$`-anchored-CRLF trap's obvious
+fix (drop the trailing `$`) is the *correct* one. The pipe-decode mojibake's obvious fix (re-encode
+the "corrupted" file) is immediately contradicted by a direct byte read showing the file was clean.
+Ref scoping is the cleanest counter-example: re-listing `docs/adr/` returns *identical* output, so
+the re-run neither repairs the blind spot nor falsely confirms anything — it simply repeats it. MSYS
+mangling, a persisted `cd`, and a gitignore blind spot likewise keep failing until the real cause is
+found. Only here does the placebo go green.
+
+An unrecorded wrong fix here therefore does not merely fail — it *survives*. "Always pass
+`--paginate`" is cheap, harmless-looking, confirmed by the very retry that motivated it, and
+completely ineffective against the actual bug, which recurs at the next unlucky moment. Recording the
+mechanism is the only thing that displaces it, which is why the bullet states the discipline as well
+as the remedy: **confirm the mechanism, not just that the retry went green.**
+
+### The edits
+
+- Item 5's headline becomes **"An absence claim needs an absolute path, the right ref — and, after a
+  write, a fresh read."** The Decision above quotes the two-axis form verbatim; this records the
+  change rather than leaving the two texts silently divergent.
+- The preamble's count goes four → five, and "each turn a partial view into output indistinguishable
+  from a genuine repo-wide miss" becomes "each turn a partial **or stale** view into output
+  indistinguishable from a genuine miss." `repo-wide` is dropped because the fifth mechanism is not
+  repo-scoped at all.
+- A fifth sub-bullet, **Read-after-write staleness**, is appended after *Suppressed failure* — last
+  among the mechanisms, so the four the Decision enumerates keep their original order. Remedy:
+  re-read after a delay, or confirm against the single-object endpoint
+  (`gh api "repos/{owner}/{repo}/issues/{n}"`), which returned correct state immediately in the
+  observed incident. GitHub publishes no read-your-writes guarantee for that endpoint, so the
+  delayed re-read is the reliable check and the direct read the fast one — the bullet states the
+  observation rather than a contract, per *Documentation and Citations*.
+- The historical "four" in the *Context*, *Decision*, and *Consequences* above — and
+  [ADR-120](120-review-skill-absence-checks-over-api.md)'s "folded four false-absent mechanisms" —
+  are deliberately **left unchanged**: they narrate what was decided on 2026-07-22. The title keeps
+  its "Four" for the same reason, per the house convention
+  ([ADR-071](071-canonical-checkout-mutate-guard-hook.md) kept its Bash-only title through the
+  amendment that extended it to PowerShell; [ADR-118](118-tile-persistence-shards.md) kept its title
+  through six).
+
+### Why this is an amendment, not ADR-139
+
+The Alternatives above already rejected "add a separate item 6 and leave item 5 alone," on the
+grounds that adjacent items describing different routes to the same wrong conclusion read as
+unrelated gotchas — precisely the framing that let one session hit two mechanisms in a day without
+recognizing them as one mistake. A free-standing ADR-139 would be that rejected alternative at the
+ADR layer instead of the checklist layer, at the same cost. The context-weight argument
+([ADR-114](114-slim-testing-section-index.md)) points the same way: item 5 grows by one bullet rather
+than the always-loaded file growing by an item. Numbering collision is moot — an amendment claims no
+number, so neither `pre-merge-numbering-check.py`
+([ADR-074](074-pre-merge-numbering-collision-check.md)) nor the *Ref scoping* bullet's own open-PR
+check has anything to guard here.
+
+### Why no mechanical guard
+
+The Alternatives above rejected a `PreToolUse` hook because the detectable event is the *conclusion
+drawn from empty output*, which has no bounded surface form to key on. Here the case against is
+stronger still: **there is no wrong call to intercept.** `gh api "repos/…/issues?labels=…"` is an
+entirely legitimate command, correctly formed, and its response is truthful at the instant it is
+served — the defect exists only in the inference a reader draws a moment later. A hook watching that
+command would fire on every correct use of it.
+
+### Consequences (amendment)
+
+- The habit gains a time axis: "am I about to conclude something is absent?" now also asks "did I
+  just write it?" A session that has never met eventual consistency inherits the guard, which is the
+  same folding argument the original Consequences make for the other four.
+- The self-confirming property is stated in the bullet, not just the remedy. Deliberate: a reader who
+  takes only "re-read the single-object endpoint" and skips the rest still behaves correctly, but a
+  reader who has *already* applied `--paginate` and watched it work needs to be told why that
+  evidence is worthless.
+- Context weight in the always-loaded global `CLAUDE.md` grows by roughly one bullet — the cost the
+  original Consequences flagged, paid once more and bounded the same way.
+- The headline now names three axes, which is about the practical ceiling for a phrase meant to be
+  recalled. A sixth mechanism on yet another axis should prompt re-examining whether the headline
+  ought to generalize ("an absence claim needs a scope you have actually verified") rather than
+  enumerate further.
+- No code, hook, or test changes — a `claude/CLAUDE.md` + ADR change, as the original was. The
+  `## Testing` docs-only guard (item 4) applies.
+
+### References (amendment)
+
+- [dev-env#1047](https://github.com/brownm09/dev-env/issues/1047) — the issue this amendment
+  resolves.
+- [cover-letter-runtime#158](https://github.com/brownm09/cover-letter-runtime/issues/158) — the
+  session the behavior surfaced in; not a defect in that repo.
+- [dev-env#952](https://github.com/brownm09/dev-env/issues/952) — pipe-decode mojibake, the
+  raw-bytes-check item of the CLI Scripting Checklist (item 6 at time of writing): the same
+  false-absent family, and one of the two whose obvious fix is *not* self-confirming.
+- [dev-env#1006](https://github.com/brownm09/dev-env/issues/1006) — `$`-anchored regex against
+  CRLF-terminated lines, documented under Git Workflow: the other one, and the case where the obvious
+  fix is simply correct.
+- [ADR-034](034-error-message-diligence.md) — the closest kin to this amendment's specific hazard.
+  Both concern evidence that *looks* like a diagnosis: there, an emitted error message restated as
+  root cause; here, a green retry restated as confirmation.
