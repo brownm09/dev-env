@@ -376,6 +376,20 @@ def format_advisory(problems: list[tuple[str, list[str]]]) -> str:
     """Build the exit-2 advisory text. Aggregates every file's problems into one
     message; caps the number of files shown (further files are summarized by count, not
     silently dropped) so a pathological batch write can't produce unbounded stderr."""
+    # dev-env#907's own /review: candidate_paths' Bash harvest matches a shard merely
+    # *referenced* by a command (e.g. the ADR-118 Amendment 5 anomaly-restore `git checkout`
+    # recipe), not just one this session wrote -- and stub/task_id now match roughly 60% of
+    # all existing tile shards (measured live at fix time), where cwd's equivalent check ever
+    # matched only 3 shards, all long since fixed. "The write already happened, fix it now"
+    # is a safe assumption at that rarity; it stops being one once a routine command merely
+    # naming an old shard can trigger it. The caveat below is scoped to stub/task_id
+    # specifically -- cwd/BOM/missing-field problems stay rare enough that the original,
+    # more confident framing remains accurate for them.
+    has_legacy_class = any(
+        p.startswith("stub:") or p.startswith("task_id:")
+        for _, file_problems in problems
+        for p in file_problems
+    )
     lines = [
         "[journal-shard] Journal shard file(s) violate the required-field schema "
         "(written or referenced by the last tool call):",
@@ -391,6 +405,13 @@ def format_advisory(problems: list[tuple[str, list[str]]]) -> str:
         "Fix each file now, in this session - the write already happened; "
         "this notice does not block."
     )
+    if has_legacy_class:
+        lines.append(
+            "A `stub`/`task_id` problem above may be PRE-EXISTING data this command only "
+            "referenced (e.g. a restore naming an old shard), not necessarily written by "
+            "this session -- dev-env#1064 tracks the bulk historical sweep. Fix it now only "
+            "if this session's own write introduced it."
+        )
     lines.append(
         '  manifest schema: {"stub":"sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md",'
         '"topic":"<H2>","tokens":{"input":N,"output":N,"cost":N},'
@@ -419,14 +440,20 @@ def format_advisory(problems: list[tuple[str, list[str]]]) -> str:
         "C:Users<U+0008>rown... (dev-env#904) -- a defense-in-depth pin now, not the primary fix, "
         "since the Write tool has removed the shell/serializer-string-literal mechanism that caused it."
     )
-    lines.append(
-        "A tile shard's `stub` (dev-env#907, ADR-118) must be project-qualified "
-        "(sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md) if present at all -- a bare filename is the "
-        "open-PR shard's convention, not a tile's, and does not resolve because a tile is filed under "
-        "its target project, which may differ from the spawning session's own. Never write a "
-        "`task_id` into a tile shard: a chip ID is dead after an app restart (ADR-118), so persisting "
-        "one saves a value that is worthless precisely when the shard is needed."
-    )
+    if has_legacy_class:
+        # Gated, unlike the other guidance paragraphs above: ADR-081 has picked up one more
+        # ungated paragraph with each amendment, and the per-field guidance is now a
+        # meaningful fraction of an advisory whose only value is the reader acting on it. A
+        # manifest shard missing `topic` has no reason to also ship the tile stub/task_id
+        # rules; print them only when a reported problem is actually one of these two.
+        lines.append(
+            "A tile shard's `stub` (dev-env#907, ADR-118) must be project-qualified "
+            "(sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md) if present at all -- a bare filename is the "
+            "open-PR shard's convention, not a tile's, and does not resolve because a tile is filed under "
+            "its target project, which may differ from the spawning session's own. Never write a "
+            "`task_id` into a tile shard: a chip ID is dead after an app restart (ADR-118), so persisting "
+            "one saves a value that is worthless precisely when the shard is needed."
+        )
     lines.append(
         "A manifest re-created after a compose consumed the original must carry the "
         "FULL field set, not just the updated field."

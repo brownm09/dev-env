@@ -305,23 +305,60 @@ unaffected by the restructure (all 69 passed unchanged before any new test was a
 accumulation is additive: a `cwd`-only defect still produces exactly one problem, the same one it
 always did.
 
-`stub`, when present, is flagged unless it starts with `"sessions/"` — this also catches a value
-that has *a* project-like prefix but isn't rooted there (e.g.
+`stub`, when present, gets the same control-character and surrounding-whitespace checks as `cwd`
+(the write recipe that can corrupt one free-form-adjacent field can corrupt the other), then is
+flagged unless it starts with `"sessions/"` after normalizing backslashes to forward slashes —
+catching a value with *a* project-like prefix that isn't rooted there (e.g.
 `"career-playbook/2026-08-03_012340.stub.md"`, also found live in the same sweep), not just a
 fully bare filename. `task_id` needs no shape check: presence alone is the defect, so any present
 value is flagged regardless of content.
+
+**Found by this PR's own `/review` — three defects in the first draft, all fixed before merge:**
+
+1. **The `stub` prefix test initially anchored on a literal `"sessions/"`**, so a
+   backslash-separated but otherwise-qualified value (`sessions\dev-env\….stub.md`) was reported
+   `is not project-qualified` — a wrong diagnosis for a value with no real defect, and a direct
+   contradiction of the same function's own established rule for `cwd` (a backslash Windows path
+   is a *correct* value; only the escaping layer it must survive is fragile). Fixed by normalizing
+   before the prefix test, matching `cwd`'s existing leniency.
+2. **`{value!r}` echoes non-ASCII intact.** Both the pre-existing `cwd` echo and the new `stub`
+   echo interpolated the corrupt value via `!r}` (Python's `repr()`), which leaves printable
+   non-ASCII characters as-is. Every message in this function rides the hook's exit-2 stderr,
+   documented elsewhere in this repo as cp1252-decoded on Windows (dev-env#952's class) — so a
+   non-ASCII corrupt value rendered the *diagnostic message itself* as mojibake, inside the text
+   meant to explain the corruption. `cwd` carried this hole from Amendment 2 onward, unnoticed
+   because no test fed it a non-ASCII fixture; `stub`'s new echo copied the same pattern. Fixed at
+   both sites with `ascii(value)` in place of `{value!r}`, which force-escapes non-ASCII to
+   `\xNN`/`\uNNNN` while keeping identical output for the ASCII case.
+3. **The hook's "fix each file now, in this session — the write already happened" framing
+   stopped being a safe default once these two checks landed.** It was accurate when the only
+   tile shape check was `cwd` (three shards ever matched, all long since fixed) — over-matching
+   was genuinely harmless at that rarity, per this ADR's own Decision point 2 (the Bash harvest
+   validates *referenced* files, not only *written* ones, deliberately). At the ~60% match rate
+   these two checks hit against the live shard inventory, a command that merely *names* an old
+   shard — for example the ADR-118 Amendment 5 anomaly-restore recipe
+   (`git checkout HEAD -- sessions/<project>/tiles/<N>.json`), which leaves the file on disk for
+   this hook's next pass to read — now routinely tells a session it wrote and must fix a file it
+   never touched, instructing it to redo work this same amendment's own non-scope decision
+   explicitly deferred to dev-env#1064. Fixed by gating a new caveat sentence on whether any
+   reported problem is `stub`/`task_id`-shaped: when it is, the advisory now says the problem may
+   be pre-existing data merely referenced, not necessarily written by this session, and points at
+   dev-env#1064. `cwd`/BOM/missing-field problems keep the original, more confident framing —
+   those stayed rare enough that "you just wrote this" remains a safe default for them.
 
 **Deliberate non-scope: no bulk historical sweep in this change.** The 143-shard finding above is
 cleanup of *pre-existing* data, not a live bug this hook needs to also fix — and bulk-editing 143
 files across 5 other projects' journal data in the same PR that adds the validator would be a far
 larger, far riskier change than the validator itself, touching data this PR's own author does not
 own the full context for (which of those shards' underlying issues are still live vs. already
-stale). Filed separately:
-[dev-env#1064](https://github.com/brownm09/dev-env/issues/1064).
+stale). Filed separately: [dev-env#1064](https://github.com/brownm09/dev-env/issues/1064) — the
+same issue point 3 above's caveat message points a session at, live.
 
 **Wiring.** Same as Amendment 2 — `journal-shard-write-advisory.py` only, via the same
 `problems.extend(malformed_tile_fields(entry))` call site, which needed no change since it already
 treats the function's return value generically. Its advisory text gained a new guidance paragraph
-stating both rules explicitly, and the tile schema template's inline note changed from `(stub
-optional, project-qualified)` to `(stub optional, must start with "sessions/<project>/"; no
-task_id key)`.
+stating both rules explicitly (gated on relevance — printed only when a reported problem is
+actually `stub`/`task_id`-shaped, so a manifest shard's missing-field advisory doesn't also ship
+the tile rules), a gated pre-existing-data caveat (point 3 above), and the tile schema template's
+inline note changed from `(stub optional, project-qualified)` to `(stub optional, must start with
+"sessions/<project>/"; no task_id key)`.

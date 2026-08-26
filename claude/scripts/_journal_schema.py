@@ -27,12 +27,13 @@ Three schemas are covered:
     all-required: a tile shard exists to reconstruct a lost ``spawn_task`` chip, and a
     partial one cannot do that, so there is no field it is meaningful to omit.
 
-Two schemas additionally check the *shape* of a present field, not just its presence:
+Two schemas additionally check a *present* field, not just its presence:
 ``malformed_manifest_fields`` (the ``tokens`` dict, dev-env#824) and
-``malformed_tile_fields`` (the ``cwd`` path, dev-env#904). Both exist because a
-present-but-wrong value passes a presence check while defeating the field's purpose —
-for ``cwd``, silently, since the shard still exists, parses, and carries every required
-field while naming a directory that does not exist.
+``malformed_tile_fields`` (``cwd``'s shape, dev-env#904; and, since dev-env#907,
+``stub``'s shape and ``task_id`` as a forbidden key). All exist because a present-but-wrong
+value passes a presence check while defeating the field's purpose — for ``cwd``, silently,
+since the shard still exists, parses, and carries every required field while naming a
+directory that does not exist.
 
 This module is import-only — no ``main()``, no subprocess, no ``_winsubp`` — so every
 helper unit-tests offline (``tests/test_journal_schema.py``).
@@ -154,8 +155,11 @@ def malformed_tile_fields(entry: object) -> list[str]:
     ``malformed_manifest_fields``'s single-field ``tokens`` check, a shard can have more than
     one of these wrong at once). Mirrors ``malformed_manifest_fields`` at the per-field level
     though: returns ``[]`` for a non-dict entry, and contributes nothing for a field that is
-    absent (none of the three is in ``TILE_REQUIRED_FIELDS``, so there is nothing for
-    ``missing_tile_fields`` to double-report).
+    absent. For ``cwd`` — the only one of the three actually in ``TILE_REQUIRED_FIELDS`` —
+    that silence matters: ``missing_tile_fields`` is already the sole reporter of its
+    absence, so staying quiet here avoids double-reporting the same omission. ``stub`` and
+    ``task_id`` are not required at all, so an absent one is simply not this function's to
+    report — not a double-report avoidance, just genuine non-applicability.
 
     ``cwd`` (dev-env#904). Must be a non-empty string holding an *absolute* path — a
     drive-letter root (``C:/...``, ``C:\\...``), a UNC root (``\\\\host\\share``), or POSIX
@@ -187,12 +191,22 @@ def malformed_tile_fields(entry: object) -> list[str]:
 
     ``stub`` (dev-env#907). Optional (``missing_tile_fields`` never requires it — see
     ``TILE_REQUIRED_FIELDS``'s module comment for why). When present it must be
-    **project-qualified**: a string starting with ``sessions/`` (``sessions/<project>/
-    YYYY-MM-DD_HHMMSS.stub.md``, the manifest convention). ADR-118: a tile shard is filed
-    under its *target* project, so the spawning session's stub may live under a different
-    one — a bare filename (the open-PR shard's convention, not a tile's) does not resolve.
-    Not flagged: **whether the referenced stub file actually exists on disk** — same
-    rationale as ``cwd``'s directory-existence non-check, plausibility of shape is the bar.
+    **project-qualified**: starting with ``sessions/`` after normalizing backslashes to
+    forward slashes (``sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md``, the manifest
+    convention). ADR-118: a tile shard is filed under its *target* project, so the spawning
+    session's stub may live under a different one — a bare filename (the open-PR shard's
+    convention, not a tile's) does not resolve. Carries the same control-character and
+    surrounding-whitespace checks as ``cwd``, for the identical reason: the write recipe that
+    can corrupt one free-form-adjacent field can corrupt the other.
+
+    What is deliberately **not** flagged about ``stub``:
+
+    - **A backslash-separated but otherwise-qualified path**
+      (``sessions\dev-env\....stub.md``). Mirrors ``cwd``'s own carve-out below — a correct
+      value must never be flagged, and the separator alone does not make an otherwise-
+      qualified stub incorrect. The prefix test normalizes to forward slashes first.
+    - **Whether the referenced stub file actually exists on disk** — same rationale as
+      ``cwd``'s directory-existence non-check, plausibility of shape is the bar.
 
     ``task_id`` (dev-env#907). ADR-118 says it is "deliberately not stored": a chip ID is
     dead after an app restart, so persisting one saves a value that is worthless precisely
@@ -236,8 +250,12 @@ def malformed_tile_fields(entry: object) -> list[str]:
                 )
             elif not _ABSOLUTE_PATH_RE.match(value):
                 echo = value if len(value) <= _ECHO_LIMIT else value[:_ECHO_LIMIT] + "..."
+                # ascii(), not {echo!r}: repr() leaves printable non-ASCII intact, and this
+                # message rides the hook's exit-2 stderr, cp1252-decoded on Windows -- a
+                # non-ASCII cwd would otherwise render the diagnosis itself as mojibake
+                # (dev-env#952's class), inside the message meant to explain the corruption.
                 problems.append(
-                    f"cwd: {echo!r} is not an absolute path - must be a drive-letter root "
+                    f"cwd: {ascii(echo)} is not an absolute path - must be a drive-letter root "
                     "(C:/Users/.../repo) or POSIX absolute (/...); a value with no path "
                     "separator at all is corrupt, not merely relative"
                 )
@@ -246,14 +264,28 @@ def malformed_tile_fields(entry: object) -> list[str]:
         value = entry["stub"]
         if not isinstance(value, str):
             problems.append(f"stub: must be a string path, got {type(value).__name__}")
-        elif not value.startswith("sessions/"):
-            echo = value if len(value) <= _ECHO_LIMIT else value[:_ECHO_LIMIT] + "..."
-            problems.append(
-                f"stub: {echo!r} is not project-qualified - must start with "
-                "'sessions/<project>/' (ADR-118); a bare filename is the open-PR shard's "
-                "convention, not a tile's, and does not resolve because a tile is filed "
-                "under its target project, which may differ from the spawning session's own"
-            )
+        else:
+            control = sorted({ord(c) for c in value if ord(c) < 0x20 or ord(c) == 0x7F})
+            if control:
+                names = ", ".join(f"U+{c:04X}" for c in control)
+                problems.append(
+                    f"stub: contains control character(s) {names} - escape corruption, not "
+                    "a valid path; rewrite it with the Write tool, never a shell redirect or "
+                    "serializer script"
+                )
+            elif value != value.strip():
+                problems.append(
+                    "stub: has leading or trailing whitespace - a path never does; this is a "
+                    "quoting or interpolation artifact"
+                )
+            elif not value.replace("\\", "/").startswith("sessions/"):
+                echo = value if len(value) <= _ECHO_LIMIT else value[:_ECHO_LIMIT] + "..."
+                problems.append(
+                    f"stub: {ascii(echo)} is not project-qualified - must start with "
+                    "'sessions/<project>/' (ADR-118); a bare filename is the open-PR shard's "
+                    "convention, not a tile's, and does not resolve because a tile is filed "
+                    "under its target project, which may differ from the spawning session's own"
+                )
 
     if "task_id" in entry:
         problems.append(
