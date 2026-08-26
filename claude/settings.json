@@ -530,6 +530,7 @@
   },
   "effortLevel": "max",
   "tui": "fullscreen",
+  "skipWorkflowUsageWarning": true,
   "theme": "dark",
   "agentPushNotifEnabled": true,
   "inputNeededNotifEnabled": true
