@@ -36,25 +36,30 @@ CLAUDE_DIR_LINKS=(scripts skills hooks templates)
 # command rather than abort setup with the links half-applied. `return 0` is explicit for
 # the same reason -- these functions run under `set -e`.
 seed_claude_settings() {
-  local runner=""
+  # An array, not a string: "py -3" as a bare string would only work by relying on
+  # unquoted word-splitting at the call site, which breaks the moment any element
+  # contains a space. shellcheck would flag that (SC2086) -- but `run-shellcheck.sh`
+  # (Testing item 7) SKIPs when shellcheck is not installed, so this file cannot count
+  # on the lint catching it.
+  local -a runner=()
   if command -v py >/dev/null 2>&1; then
-    runner="py -3"
+    runner=(py -3)
   elif command -v python3 >/dev/null 2>&1; then
-    runner="python3"
+    runner=(python3)
   fi
 
-  if [[ -z "$runner" ]]; then
+  if [[ ${#runner[@]} -eq 0 ]]; then
     echo "  WARNING: no python found -- ~/.claude/settings.json not seeded."
     echo "  Run this once python is available:"
     echo "    py -3 $REPO_DIR/claude/scripts/_settings_sync.py"
     return 0
   fi
 
-  if $runner "$REPO_DIR/claude/scripts/_settings_sync.py"; then
+  if "${runner[@]}" "$REPO_DIR/claude/scripts/_settings_sync.py"; then
     echo "  Seeded settings.json (machine-local; see ADR-139)"
   else
     echo "  WARNING: seeding ~/.claude/settings.json failed. Re-run manually:"
-    echo "    $runner $REPO_DIR/claude/scripts/_settings_sync.py"
+    echo "    ${runner[*]} $REPO_DIR/claude/scripts/_settings_sync.py"
   fi
   return 0
 }

@@ -93,8 +93,23 @@ SHARED_PATH = _CLAUDE_DIR / "settings.shared.json"
 LIVE_PATH = Path.home() / ".claude" / "settings.json"
 BACKUP_DIR = Path.home() / ".claude" / "backups"
 
-# Written once, never overwritten, never removed -- the pre-migration original.
+# Written once, never overwritten, never removed (ADR-079 rule 3).
+#
+# Semantics, precisely: this captures the live file as it stood before the FIRST
+# mutating write of any kind -- which on this machine was the symlink migration, hence
+# the name, but on a fresh install will be an ordinary first sync. Read it as "the
+# original, before this module ever touched the file", not as "proof a migration
+# happened". Deliberately NOT renamed to something more literal: the anchor already on
+# disk carries this name, and a rename would orphan it -- the next mutating write would
+# then write a *new* anchor capturing post-migration state, silently destroying the one
+# artifact whose whole job is to predate everything.
 ANCHOR_NAME = "settings.json.pre-migration.bak"
+
+# Timestamped backups to retain, newest first. Every drifting sync writes one, and
+# nothing else reaps them (sweep-scratch-debris.py covers ~/.claude/scratch, not
+# ~/.claude/backups), so without a cap they accumulate for the life of the machine.
+# ANCHOR_NAME is never a pruning candidate.
+KEEP_TIMESTAMPED_BACKUPS = 10
 
 
 class SyncPlan(NamedTuple):
@@ -151,23 +166,30 @@ def apply_plan(live: dict, plan: SyncPlan) -> dict:
     return updated
 
 
-def format_sync_note(plan: SyncPlan, migrated: bool) -> "str | None":
+def format_sync_note(plan: SyncPlan, migrated_from: "str | None") -> "str | None":
     """Advisory text for a completed sync, or None when there is nothing to report.
+
+    `migrated_from` is the symlink target that was replaced, or None if no migration
+    happened. It is reported verbatim rather than described, because
+    `needs_materialization` matches ANY symlink -- calling it "a repo symlink" would
+    assert something false about a link that pointed somewhere else entirely (a dotfiles
+    repo, a synced folder), in the one message telling the user their setup was replaced.
 
     Pure ASCII (ADR-103 output-contract gate). Printed by dev-env-sync.py to stdout,
     which is the only stream a UserPromptSubmit hook forwards on exit 0 (ADR-098).
     """
     lines = []
-    if migrated:
+    if migrated_from is not None:
         lines.append(
-            "[dev-env-sync] Migrated ~/.claude/settings.json from a repo symlink to a real, "
+            "[dev-env-sync] Migrated ~/.claude/settings.json from a symlink to a real, "
             "machine-local file (dev-env#1049, ADR-139)."
         )
+        lines.append(f"  It pointed at: {migrated_from}")
         lines.append(
             "  The app can now write theme/tui/autoMode there without dirtying the tracked "
             "repo file and blocking the canonical's fast-forward."
         )
-        lines.append(f"  Original preserved at: {BACKUP_DIR / ANCHOR_NAME}")
+        lines.append(f"  Content as it stood before this write: {BACKUP_DIR / ANCHOR_NAME}")
     if plan.owned_updates:
         lines.append(
             "[dev-env-sync] Applied shared settings to ~/.claude/settings.json: "
@@ -241,7 +263,33 @@ def backup_live(live_path: Path, backup_dir: Path, stamp: "str | None" = None) -
     stamp = stamp or time.strftime("%Y%m%d_%H%M%S")
     target = backup_dir / f"settings.json.{stamp}.bak"
     target.write_bytes(payload)
+    prune_backups(backup_dir)
     return target
+
+
+def prune_backups(backup_dir: Path, keep: int = KEEP_TIMESTAMPED_BACKUPS) -> "list[Path]":
+    """Delete all but the `keep` newest timestamped backups; return what was removed.
+
+    The anchor is excluded by an explicit name check, NOT by the glob -- `settings.json.*.bak`
+    matches `settings.json.pre-migration.bak` too, so relying on the pattern alone would
+    delete the one backup that must never be pruned. Sorting is by
+    filename, which is a valid recency order because the stamp is `%Y%m%d_%H%M%S`
+    (zero-padded, fixed-width, so lexicographic == chronological); mtime would be the
+    wrong key here, since a restore-by-copy can leave an old capture with a new mtime.
+
+    Best-effort: a file that cannot be removed is skipped rather than raised, because
+    pruning is housekeeping and must never turn a successful settings write into a failure.
+    """
+    candidates = sorted(backup_dir.glob("settings.json.*.bak"))
+    candidates = [p for p in candidates if p.name != ANCHOR_NAME]
+    removed = []
+    for path in candidates[:-keep] if keep > 0 else candidates:
+        try:
+            path.unlink()
+            removed.append(path)
+        except OSError:
+            pass
+    return removed
 
 
 def write_json_verified(path: Path, data: dict) -> None:
@@ -280,18 +328,35 @@ def sync(
     if shared is None:
         return SyncResult(False, False, None, f"could not read {shared_path}")
 
-    migrated = False
+    migrated_from = None
     try:
         if needs_materialization(live_path):
             # Materialize: same bytes, but a real file the app can own. Back up first
             # -- through the symlink, so the anchor captures the pre-migration content.
             backup_live(live_path, backup_dir)
+            try:
+                migrated_from = os.readlink(live_path)
+            except OSError:
+                migrated_from = "<unreadable link target>"
             payload = live_path.read_bytes()
-            live_path.unlink()
-            live_path.write_bytes(payload)
-            migrated = True
+            # tmp + os.replace, NOT unlink-then-write: os.replace overwrites the symlink
+            # with the regular file atomically, so there is no instant where
+            # ~/.claude/settings.json is absent. That gap matters more here than almost
+            # anywhere else -- this file defines every hook on the machine, so a crash
+            # inside it would leave the machine with no hook wiring at all.
+            tmp = live_path.with_suffix(live_path.suffix + f".{os.getpid()}.migrate")
+            try:
+                tmp.write_bytes(payload)
+                os.replace(tmp, live_path)
+            finally:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
     except OSError as exc:
         return SyncResult(False, False, None, f"symlink migration failed: {exc}")
+
+    migrated = migrated_from is not None
 
     if not live_path.exists():
         # Fresh machine (or a just-removed file): seed owned + seed keys outright.
@@ -305,7 +370,7 @@ def sync(
             write_json_verified(live_path, apply_plan({}, plan))
         except OSError as exc:
             return SyncResult(False, migrated, None, f"could not create {live_path}: {exc}")
-        return SyncResult(True, migrated, format_sync_note(plan, migrated), None)
+        return SyncResult(True, migrated, format_sync_note(plan, migrated_from), None)
 
     live = read_json(live_path)
     if live is None:
@@ -318,7 +383,7 @@ def sync(
     plan = plan_sync(shared, live)
     if not plan.owned_updates and not plan.seed_inserts:
         # No-op recorded as a skip, never as a change (ADR-079 rule 4).
-        note = format_sync_note(plan, migrated) if (migrated or plan.unclassified) else None
+        note = format_sync_note(plan, migrated_from) if (migrated or plan.unclassified) else None
         return SyncResult(False, migrated, note, None)
 
     try:
@@ -327,11 +392,31 @@ def sync(
         return SyncResult(False, migrated, None, f"refusing to write without a backup: {exc}")
 
     try:
-        write_json_verified(live_path, apply_plan(live, plan))
+        # Re-read immediately before writing and re-apply the plan to THAT copy, rather
+        # than writing the `live` snapshot taken above. os.replace makes the write atomic,
+        # but read-modify-write as a whole is not: between the read and the write, the
+        # Claude Code app can persist a /config change, or a concurrent session can
+        # complete its own sync. Writing the stale snapshot would silently discard that
+        # update. This hook fires on EVERY prompt across many concurrent sessions, so the
+        # window is real traffic, not a thought experiment.
+        #
+        # Re-applying is safe because the plan is idempotent by construction: owned keys
+        # come from the shared file (independent of live state) and seed keys are
+        # write-if-absent. Worst case the re-read shows the plan already applied, and
+        # write_json_verified writes identical content.
+        fresh = read_json(live_path)
+        if fresh is None:
+            # It parsed moments ago and does not now -- something else is mid-write.
+            # Skip this round rather than overwrite; the next prompt re-syncs.
+            return SyncResult(
+                False, migrated, None,
+                f"{live_path} changed to an unreadable state mid-sync; left untouched",
+            )
+        write_json_verified(live_path, apply_plan(fresh, plan))
     except OSError as exc:
         return SyncResult(False, migrated, None, f"could not write {live_path}: {exc}")
 
-    return SyncResult(True, migrated, format_sync_note(plan, migrated), None)
+    return SyncResult(True, migrated, format_sync_note(plan, migrated_from), None)
 
 
 if __name__ == "__main__":

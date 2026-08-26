@@ -3650,7 +3650,7 @@ For a one-line navigational map of the test directory, see
     `claude/settings.shared.json`, or `setup.sh`'s `seed_claude_settings()`
     ([ADR-139](adr/139-machine-local-settings-with-shared-source-sync.md), dev-env#1049).
 
-    55 cases in 7 groups, **fully hermetic** — every scenario builds a throwaway
+    66 cases in 9 groups, **fully hermetic** — every scenario builds a throwaway
     shared/live/backup trio in a temp directory. Nothing writes the developer's real
     `~/.claude/settings.json`, which matters more than usual here: the subject under test is
     the file that defines every hook on the machine.
@@ -3675,6 +3675,18 @@ For a one-line navigational map of the test directory, see
       captured is asserted to abort the write with the live file byte-identical (rule 1) — the
       failure is induced by parking a *file* where the backup directory must go, so the refusal
       is exercised rather than mocked.
+    - **Backup pruning never eats the anchor (group 4b).** `prune_backups` caps the
+      timestamped backups, and the glob it uses (`settings.json.*.bak`) *does* match
+      `settings.json.pre-migration.bak` — so the anchor is excluded by an explicit name check,
+      not by the pattern. That is asserted directly, along with the anchor's content surviving,
+      because a pruning bug here would delete the one artifact ADR-079 rule 3 exists to
+      preserve. Also pinned: the *newest* backups survive, not the oldest.
+    - **The pre-write re-read (group 4c).** `sync()` re-reads the live file immediately before
+      writing and re-applies the plan to that fresh copy. The test monkeypatches `read_json` to
+      mutate the file on the second call — precisely the window where the app persists a
+      `/config` change after the plan was computed — and asserts the concurrent write *survives*.
+      A stale-snapshot write would silently revert it. This matters because `dev-env-sync` fires
+      on every prompt across many concurrent sessions.
     - **Degraded inputs fail safe (group 5).** An unparseable live file is asserted
       byte-identical afterwards. Overwriting it would be irrecoverable: the app-written half
       exists nowhere else, so "repair by regenerating" is not available.

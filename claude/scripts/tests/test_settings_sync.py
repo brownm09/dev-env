@@ -127,7 +127,7 @@ check(
 
 plan = _settings_sync.plan_sync(dict(SHARED, theme="dark"), {})
 check(plan.unclassified == ["theme"], "a key in neither list is reported as unclassified")
-note = _settings_sync.format_sync_note(plan, migrated=False)
+note = _settings_sync.format_sync_note(plan, migrated_from=None)
 check("WARNING" in note and "theme" in note, "unclassified key produces a named WARNING, not silence")
 
 # --- 2. machine-local keys survive a real sync -------------------------------------------
@@ -199,6 +199,81 @@ with Env() as env:
     check(result.error is not None and "backup" in result.error, "the refusal names the backup as the cause")
     check(env.live.read_bytes() == before, "live file is untouched when the backup fails")
 
+# --- 4b. backup pruning keeps the anchor -------------------------------------------------
+
+print("[4b] timestamped backups are capped; the anchor is never pruned")
+
+with Env() as env:
+    env.backups.mkdir(parents=True, exist_ok=True)
+    anchor = env.backups / _settings_sync.ANCHOR_NAME
+    anchor.write_text("original", encoding="utf-8")
+    # 25 stamped backups, lexicographically ordered the same way real stamps are.
+    for i in range(25):
+        (env.backups / f"settings.json.20260101_{i:06d}.bak").write_text(str(i), encoding="utf-8")
+
+    removed = _settings_sync.prune_backups(env.backups, keep=10)
+    survivors = sorted(p.name for p in env.backups.glob("settings.json.*.bak"))
+
+    check(len(removed) == 15, f"prunes down to the cap (removed {len(removed)}, expected 15)")
+    check(anchor.exists(), "ANCHOR is not pruned even though the glob matches its name")
+    check(
+        anchor.read_text(encoding="utf-8") == "original",
+        "ANCHOR content is untouched by pruning",
+    )
+    stamped = [n for n in survivors if n != _settings_sync.ANCHOR_NAME]
+    check(len(stamped) == 10, "exactly `keep` stamped backups survive")
+    check(
+        stamped[-1] == "settings.json.20260101_000024.bak",
+        "the NEWEST stamped backup survives (not the oldest)",
+    )
+
+with Env() as env:
+    # A backup dir under the cap must lose nothing.
+    env.backups.mkdir(parents=True, exist_ok=True)
+    for i in range(3):
+        (env.backups / f"settings.json.20260101_{i:06d}.bak").write_text(str(i), encoding="utf-8")
+    check(
+        _settings_sync.prune_backups(env.backups, keep=10) == [],
+        "fewer backups than the cap prunes nothing",
+    )
+
+# --- 4c. the write re-reads, so a concurrent update is not clobbered ----------------------
+
+print("[4c] a concurrent write between plan and write is not discarded")
+
+with Env() as env:
+    write_json(env.live, dict(MACHINE_LOCAL))
+    real_read_json = _settings_sync.read_json
+    calls = {"n": 0}
+
+    def racing_read(path):
+        """Simulate the app persisting a /config change after the plan is computed.
+
+        The 2nd read is the pre-write re-read inside sync(); mutating the file just
+        before it returns is exactly the window the re-read exists to close.
+        """
+        calls["n"] += 1
+        if calls["n"] == 2:
+            current = real_read_json(path)
+            if isinstance(current, dict):
+                current["theme"] = "light-set-by-the-app"
+                write_json(Path(path), current)
+        return real_read_json(path)
+
+    _settings_sync.read_json = racing_read
+    try:
+        result = env.sync()
+    finally:
+        _settings_sync.read_json = real_read_json
+
+    data = env.live_data()
+    check(result.changed, "sync still applies its plan under a concurrent write")
+    check(
+        data.get("theme") == "light-set-by-the-app",
+        "the concurrent app write survives (a stale snapshot would have reverted it)",
+    )
+    check(data["permissions"] == SHARED["permissions"], "owned keys still applied on that path")
+
 # --- 5. degraded inputs fail safe --------------------------------------------------------
 
 print("[5] degraded inputs never destroy user config")
@@ -256,6 +331,14 @@ with Env() as env:
         result = env.sync()
         check(result.migrated, "sync reports the migration")
         check(not env.live.is_symlink(), "live path is a real file after migration")
+        check(
+            result.note is not None and "It pointed at:" in result.note,
+            "the advisory names the link target it replaced, rather than asserting 'repo symlink'",
+        )
+        check(
+            result.note is not None and "settings.json" in result.note.split("It pointed at:")[1],
+            "the reported target is the actual resolved path",
+        )
         check(
             (env.backups / _settings_sync.ANCHOR_NAME).exists(),
             "migration captured the pre-migration anchor",
