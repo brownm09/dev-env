@@ -1182,6 +1182,36 @@ For a one-line navigational map of the test directory, see
     reformat or a copy-paste through an editor could silently "fix" the fixture and leave every
     test below it passing against a value that no longer reproduces the bug.
 
+    **`stub`/`task_id` shape** (dev-env#907,
+    [ADR-081](adr/081-write-time-journal-shard-validation-hook.md) Amendment 3) follows the same
+    wiring-vs-shape split as the `cwd` entry above: the shape logic is item 41's to pin, this item
+    covers the end-to-end path through `validate_shard_bytes`/`collect_problems` — a bare-filename
+    `stub` flagged, a project-qualified one staying healthy, a backslash-separated-but-qualified one
+    also staying healthy (`test_validate_tile_backslash_stub_stays_healthy`, found by this PR's own
+    `/review` — mirrors the pre-existing `cwd` backslash pin), a control character in `stub` flagged
+    (`test_validate_tile_stub_control_character_flagged`), a stray `task_id` flagged, all three of
+    `stub`+`task_id`+a missing `prompt` reported together on one entry (independent defects, none
+    masking another), and a real on-disk fixture reproducing dev-env#907's own motivating shard
+    (`career-playbook/tiles/849.json`: `task_id` plus a bare-filename `stub`, no other defect) driven
+    through `collect_problems`. A negative pin
+    (`test_open_pr_shard_is_not_subject_to_the_task_id_check`) fixes the schema boundary the same way
+    the `cwd` entry's does.
+
+    `format_advisory`'s tile-schema line and a new guidance paragraph state both rules explicitly,
+    but — found by this PR's own `/review` — the guidance paragraph and a new pre-existing-data
+    caveat are both *gated*, not printed unconditionally like every other block in this function: a
+    manifest shard's missing-field advisory has no reason to also ship the tile `stub`/`task_id`
+    rules, and once these two checks match roughly 60% of the live tile inventory (measured at fix
+    time — 145 of 240 shards, consistent with ADR-081 Amendment 3's own 143/246 estimate), a command
+    that merely *references* an old shard (not necessarily one this session wrote — the Bash harvest
+    matches either, deliberately, per this ADR's own Decision point 2) can no longer be told with
+    confidence "the write already happened, fix it now." `test_format_advisory_stub_task_id_guidance_gated_on_relevance`
+    and `test_format_advisory_pre_existing_data_caveat_gated_on_relevance` pin both gates: absent for
+    an irrelevant problem (e.g. a missing manifest field), present when a reported problem is
+    actually `stub`/`task_id`-shaped. `test_format_advisory_documents_stub_and_task_id_rules` (updated
+    to pass a `stub`/`task_id`-shaped input, since the paragraph it checks for is now conditional)
+    confirms the guidance text itself.
+
     ```bash
     py -3 claude/scripts/tests/test_journal_shard_write_advisory.py
     ```
@@ -1264,6 +1294,51 @@ For a one-line navigational map of the test directory, see
     so one omission never produces two problem lines. Message text is `.isascii()`-pinned (it rides
     the hook's exit-2 stderr, cp1252-decoded on Windows) and the echoed value is length-bounded so
     one pathological shard cannot flood stderr with its own contents.
+
+    `malformed_tile_fields()` was extended again (dev-env#907,
+    [ADR-081](adr/081-write-time-journal-shard-validation-hook.md) Amendment 3) to validate `stub`
+    and `task_id`, the two remaining tile fields ADR-118 documents a rule for but that had no
+    mechanical check — found live in `sessions/career-playbook/tiles/849.json`, which carried both
+    simultaneously while passing every existing check (all seven required fields present, `cwd`
+    syntactically fine). Unlike the single-field `cwd` check, this made the function accumulate
+    across independent fields rather than return on the first defect found: a shard can have a bad
+    `cwd` *and* a bad `stub` *and* a stray `task_id` at once, and all three must surface, not just
+    whichever the function happened to check first — `test_tile_stub_and_task_id_problems_accumulate_with_cwd`
+    pins exactly that shape (three problems from one entry, one per field, each identifiable by its
+    own `field:` prefix).
+
+    `stub`, when present, must start with `"sessions/"` after normalizing backslashes to forward
+    slashes (project-qualified, ADR-118) — a bare filename (`test_tile_bare_filename_stub_flagged`,
+    the live `849.json` shape) or a filename with *a* prefix that still isn't rooted at `sessions/`
+    (`test_tile_project_prefixed_but_unqualified_stub_flagged`, also a live shape found in this
+    session's own inventory sweep) are both flagged; absent is not (`test_tile_absent_stub_not_flagged`
+    — `stub` stays optional, this check narrows the *shape* of a present value, it does not make the
+    field required); a non-string value is flagged by type, same convention as `cwd`; and the echoed
+    value is length-bounded the same way (`test_tile_long_bad_stub_echo_is_bounded`, bound widened to
+    500 from a since-removed 400 literal that left only 8 chars of headroom against the actual
+    392-char message — found by this PR's own `/review`, same fix applied to `cwd`'s sibling test).
+    `stub` also gets `cwd`'s control-character and surrounding-whitespace checks
+    (`test_tile_stub_control_character_flagged`, `test_tile_stub_surrounding_whitespace_flagged`),
+    and — also found by `/review` — a backslash-separated but otherwise-qualified value is a
+    *correct* value and must not be flagged (`test_tile_backslash_stub_accepted`), mirroring `cwd`'s
+    own established backslash carve-out; the prefix test normalizes before comparing.
+
+    `task_id` has no shape to validate — ADR-118 says it is "deliberately not stored" at all, so
+    presence alone is the defect (`test_tile_present_task_id_flagged`); the value's content is
+    never inspected. `test_tile_absent_task_id_contributes_nothing_alongside_a_real_defect` confirms
+    the common case (no `task_id` key) stays silent — discriminatingly: it pairs the absence with a
+    genuine `cwd` defect and asserts the result names only that defect, rather than asserting `== []`
+    on an all-healthy fixture (a claim the pre-existing `test_tile_healthy_cwd_is_not_flagged` already
+    covers, and one that cannot fail for the reason a "task_id absence" test implies — found by this
+    PR's own `/review`, which also caused the removal of a since-deleted `test_tile_qualified_stub_not_flagged`
+    that asserted the identical redundant claim). Message text for both new checks is
+    `.isascii()`-pinned (`test_tile_stub_and_task_id_messages_are_ascii`), same convention as `cwd`'s
+    — and, also from `/review`: the pre-existing `cwd` echo and the new `stub` echo both used
+    `{value!r}`, which leaves printable non-ASCII intact and would have rendered a non-ASCII corrupt
+    value's diagnostic message itself as mojibake (dev-env#952's class) on the cp1252-decoded exit-2
+    stderr; both now use `ascii(value)` instead, and `test_tile_non_ascii_cwd_echo_is_escaped` /
+    `test_tile_non_ascii_stub_echo_is_escaped` pin the fix with real non-ASCII fixtures (the earlier
+    ASCII-only fixtures in the messages-are-ascii tests exercised nothing about this specific hole).
 
     ```bash
     py -3 claude/scripts/tests/test_journal_schema.py

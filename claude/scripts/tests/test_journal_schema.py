@@ -368,11 +368,159 @@ def test_tile_malformed_messages_are_ascii():
 
 
 def test_tile_long_corrupt_cwd_echo_is_bounded():
-    # One pathological shard must not flood stderr with its own contents.
+    # One pathological shard must not flood stderr with its own contents. The bound here is
+    # a loose "didn't explode" sanity check, not a tight pin on message prose -- the actual
+    # bound on the *value* portion is _ECHO_LIMIT, enforced separately. A literal much
+    # tighter than this (dev-env#907's own /review found the sibling stub test at 400 with
+    # only 8 chars of headroom against a 392-char message) turns any wording tweak into an
+    # unrelated CI failure.
     problems = malformed_tile_fields(_valid_tile_entry(cwd="x" * 5000))
     assert len(problems) == 1, problems
-    assert len(problems[0]) < 400, len(problems[0])
+    assert len(problems[0]) < 500, len(problems[0])
     assert "..." in problems[0], problems
+
+
+# ---------------------------------------------------------------------------
+# malformed_tile_fields — `stub` / `task_id` (dev-env#907, ADR-081 Amendment 3)
+# ---------------------------------------------------------------------------
+
+def test_tile_bare_filename_stub_flagged():
+    # The exact live shape found in dev-env#907 and reconfirmed by this session's own sweep,
+    # e.g. career-playbook/tiles/1009.json: "2026-07-28_174500.stub.md", no project at all.
+    problems = malformed_tile_fields(_valid_tile_entry(stub="2026-07-28_174500.stub.md"))
+    assert len(problems) == 1, problems
+    assert "not project-qualified" in problems[0], problems
+    assert "sessions/" in problems[0], problems
+
+
+def test_tile_project_prefixed_but_unqualified_stub_flagged():
+    # Also live: a project name up front but missing the "sessions/" root, e.g.
+    # career-playbook/tiles/1047.json: "career-playbook/2026-08-03_012340.stub.md". Having
+    # *a* prefix doesn't make it qualified — only "sessions/<project>/..." does.
+    problems = malformed_tile_fields(
+        _valid_tile_entry(stub="career-playbook/2026-08-03_012340.stub.md")
+    )
+    assert len(problems) == 1, problems
+    assert "not project-qualified" in problems[0], problems
+
+
+def test_tile_absent_stub_not_flagged():
+    # stub is optional (test_tile_stub_is_optional pins this for missing_tile_fields);
+    # malformed_tile_fields must agree there is nothing to flag when it's simply not there.
+    entry = _valid_tile_entry()
+    del entry["stub"]
+    assert malformed_tile_fields(entry) == []
+
+
+def test_tile_non_string_stub_flagged_by_type():
+    problems = malformed_tile_fields(_valid_tile_entry(stub=["sessions/dev-env/x.stub.md"]))
+    assert len(problems) == 1, problems
+    assert "must be a string path, got list" in problems[0], problems
+
+
+def test_tile_backslash_stub_accepted():
+    # Found by this PR's own /review: cwd's docstring explicitly carves out backslash paths
+    # as correct values (this module's rule is that a correct value must never be flagged),
+    # but the first draft's stub check anchored on a literal "sessions/" and rejected a
+    # backslash-separated, otherwise-qualified stub as "not project-qualified" — a wrong
+    # diagnosis for a value with no real defect. The prefix test now normalizes first.
+    assert malformed_tile_fields(
+        _valid_tile_entry(stub=r"sessions\dev-env\2026-07-22_140000.stub.md")
+    ) == []
+
+
+def test_tile_stub_control_character_flagged():
+    # stub gets the same control-character check as cwd, for the same reason: the write
+    # recipe that can corrupt one free-form-adjacent field can corrupt the other.
+    problems = malformed_tile_fields(
+        _valid_tile_entry(stub="sessions/dev-env/2026-07-22_14" + chr(0x08) + "0000.stub.md")
+    )
+    assert len(problems) == 1, problems
+    assert "U+0008" in problems[0], problems
+
+
+def test_tile_stub_surrounding_whitespace_flagged():
+    for value in ("  sessions/dev-env/x.stub.md", "sessions/dev-env/x.stub.md  "):
+        problems = malformed_tile_fields(_valid_tile_entry(stub=value))
+        assert len(problems) == 1, (value, problems)
+        assert "leading or trailing whitespace" in problems[0], (value, problems)
+
+
+def test_tile_long_bad_stub_echo_is_bounded():
+    problems = malformed_tile_fields(_valid_tile_entry(stub="x" * 5000))
+    assert len(problems) == 1, problems
+    # A loose sanity bound, not a tight pin — see test_tile_long_corrupt_cwd_echo_is_bounded's
+    # comment for why a tighter literal here is a footgun (dev-env#907's own /review found
+    # this exact test at 400 with 8 chars of headroom against a 392-char message).
+    assert len(problems[0]) < 500, len(problems[0])
+    assert "..." in problems[0], problems
+
+
+def test_tile_present_task_id_flagged():
+    # ADR-118: "deliberately not stored" — a chip ID is dead after an app restart. The exact
+    # live shape from dev-env#907: career-playbook/tiles/849.json carried "task_cdc4d05c".
+    problems = malformed_tile_fields(_valid_tile_entry(task_id="task_cdc4d05c"))
+    assert len(problems) == 1, problems
+    assert "task_id" in problems[0], problems
+    assert "deliberately not stored" in problems[0], problems
+
+
+def test_tile_absent_task_id_contributes_nothing_alongside_a_real_defect():
+    # Found by this PR's own /review: asserting `malformed_tile_fields(_valid_tile_entry())
+    # == []` on an all-healthy fixture cannot fail for the reason a "task_id absence" test
+    # implies — the same assertion passes identically with the entire task_id branch
+    # deleted, and test_tile_healthy_cwd_is_not_flagged already covers the all-healthy case.
+    # Pairing the absence with an unrelated, genuine defect makes the claim discriminating:
+    # if a broken task_id branch ever added a spurious result even when the key is absent,
+    # this would stop being a single-element list naming only the real defect.
+    entry = _valid_tile_entry(cwd="Git/dev-env")
+    assert "task_id" not in entry
+    problems = malformed_tile_fields(entry)
+    assert len(problems) == 1, problems
+    assert problems[0].startswith("cwd:"), problems
+
+
+def test_tile_stub_and_task_id_problems_accumulate_with_cwd():
+    # The architectural change this PR makes to malformed_tile_fields: unlike a single-field
+    # check (malformed_manifest_fields' `tokens`), cwd/stub/task_id are three independent
+    # fields and a shard can have more than one wrong at once — all three must be reported,
+    # not just the first found. dev-env#907's own motivating shard (849.json) actually had
+    # exactly two of these three problems simultaneously (task_id + bad stub).
+    entry = _valid_tile_entry(
+        cwd="Git/dev-env", stub="2026-07-23_021500.stub.md", task_id="task_cdc4d05c"
+    )
+    problems = malformed_tile_fields(entry)
+    assert len(problems) == 3, problems
+    assert any(p.startswith("cwd:") for p in problems), problems
+    assert any(p.startswith("stub:") for p in problems), problems
+    assert any(p.startswith("task_id:") for p in problems), problems
+
+
+def test_tile_stub_and_task_id_messages_are_ascii():
+    # Same rationale as test_tile_malformed_messages_are_ascii: these ride the hook's exit-2
+    # stderr, which is cp1252-decoded on Windows.
+    entry = _valid_tile_entry(stub="not/project/qualified.stub.md", task_id="task_abc123")
+    for problem in malformed_tile_fields(entry):
+        assert problem.isascii(), problem
+
+
+def test_tile_non_ascii_cwd_echo_is_escaped():
+    # Found by this PR's own /review, on the *pre-existing* cwd echo: {value!r} leaves
+    # printable non-ASCII intact, so a non-ASCII cwd produced a non-ASCII problem string —
+    # rendering the diagnosis itself as mojibake on the cp1252-decoded exit-2 stderr
+    # (dev-env#952's class), inside the message meant to explain the corruption.
+    problems = malformed_tile_fields(_valid_tile_entry(cwd="café/dev-env"))
+    assert len(problems) == 1, problems
+    assert problems[0].isascii(), problems
+    assert "caf" in problems[0], problems  # still recognizable, just escaped not dropped
+
+
+def test_tile_non_ascii_stub_echo_is_escaped():
+    # The same fix, applied to stub's echo so the new check doesn't duplicate the hole.
+    problems = malformed_tile_fields(_valid_tile_entry(stub="café/2026-07-22.stub.md"))
+    assert len(problems) == 1, problems
+    assert problems[0].isascii(), problems
+    assert "caf" in problems[0], problems
 
 
 # ---------------------------------------------------------------------------

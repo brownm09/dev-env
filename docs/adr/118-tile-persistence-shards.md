@@ -62,7 +62,9 @@ session that tiles something in passing legitimately writes no stub, and requiri
 would force it to invent one. When present it is **project-qualified**
 (`sessions/<project>/…stub.md`, the manifest convention) rather than the open-PR shard's bare
 filename — the shard is filed under its *target* project, so the spawning session's stub may
-live under a different one and a bare filename would not resolve.
+live under a different one and a bare filename would not resolve. Mechanically enforced at
+write time: `malformed_tile_fields()` flags a present-but-unqualified `stub`
+([ADR-081](081-write-time-journal-shard-validation-hook.md) Amendment 3, dev-env#907).
 
 **The payload must be serialized, never interpolated.** `prompt` is free prose — the entire
 `spawn_task` prompt — which makes the `echo '{...}' > file` idiom the other shards use unsafe
@@ -76,7 +78,9 @@ and the reader deletes it again whenever the last shard is pruned).
 
 **`task_id` is deliberately not stored.** A chip ID is dead after restart, so persisting one
 saves a value that is worthless precisely when the shard is needed. This is ADR-094's
-rejected "task_id record only" alternative, and it stays rejected.
+rejected "task_id record only" alternative, and it stays rejected. Mechanically enforced at
+write time: `malformed_tile_fields()` flags a present `task_id`
+([ADR-081](081-write-time-journal-shard-validation-hook.md) Amendment 3, dev-env#907).
 
 **Writer.** Claude writes the shard immediately after each `spawn_task` call, per a rule in
 `claude/CLAUDE.md` — exactly parallel to "opening PR #N writes `open-prs/<N>.json`". This
@@ -536,6 +540,12 @@ validating a present-but-malformed optional field's *shape*, not just its presen
 present `chain` is a dict with a string `queue_issue`. Left for a follow-up rather than bundled here,
 matching this ADR's own established pattern of validation arriving reactively, after a real incident,
 rather than preemptively for a field with none yet.
+
+*Update 2026-08-26:* `cwd` is no longer the only field with a mechanical check. [ADR-081](081-write-time-journal-shard-validation-hook.md)
+Amendment 3 (dev-env#907) extended `malformed_tile_fields` to also flag a present `task_id` and a
+present-but-unqualified `stub` — see this ADR's own `stub`/`task_id` paragraphs above, each now
+cross-referencing that amendment. `chain` is the one remaining optional field with no mechanical
+check at all.
 
 **References:** [ADR-131](131-retro-chain-idempotent-refill.md) — the mechanism this field supports;
 [dev-env#967](https://github.com/brownm09/dev-env/issues/967) — tracking issue.

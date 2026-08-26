@@ -664,6 +664,86 @@ def test_open_pr_shard_is_not_subject_to_the_cwd_check():
     assert validate_shard_bytes(raw, "open-pr", "147", num_from_name=147) == []
 
 
+# --- `stub` / `task_id` (dev-env#907, ADR-081 Amendment 3) -----------------
+
+def test_validate_tile_bare_filename_stub_flagged():
+    problems = validate_shard_bytes(
+        _tile_bytes(stub="2026-07-28_174500.stub.md"), "tile", "870", num_from_name=870
+    )
+    assert len(problems) == 1, problems
+    assert "not project-qualified" in problems[0], problems
+
+
+def test_validate_tile_qualified_stub_stays_healthy():
+    assert validate_shard_bytes(
+        _tile_bytes(stub="sessions/dev-env/2026-07-22_143749.stub.md"), "tile", "870",
+        num_from_name=870) == []
+
+
+def test_validate_tile_backslash_stub_stays_healthy():
+    # Mirrors test_validate_tile_backslash_cwd_stays_healthy: a backslash-separated but
+    # otherwise-qualified stub is a correct value, found by this PR's own /review.
+    assert validate_shard_bytes(
+        _tile_bytes(stub=r"sessions\dev-env\2026-07-22_143749.stub.md"), "tile", "870",
+        num_from_name=870) == []
+
+
+def test_validate_tile_stub_control_character_flagged():
+    problems = validate_shard_bytes(
+        _tile_bytes(stub="sessions/dev-env/2026-07-22_1" + chr(0x08) + "43749.stub.md"),
+        "tile", "870", num_from_name=870
+    )
+    assert len(problems) == 1, problems
+    assert "U+0008" in problems[0], problems
+
+
+def test_validate_tile_task_id_flagged():
+    problems = validate_shard_bytes(
+        _tile_bytes(task_id="task_cdc4d05c"), "tile", "870", num_from_name=870
+    )
+    assert len(problems) == 1, problems
+    assert "deliberately not stored" in problems[0], problems
+
+
+def test_validate_tile_stub_and_task_id_and_missing_field_all_reported():
+    # Three independent defects, one entry: none may mask another.
+    entry = dict(_TILE_OK)
+    entry["stub"] = "2026-07-23_021500.stub.md"
+    entry["task_id"] = "task_cdc4d05c"
+    del entry["prompt"]
+    problems = validate_shard_bytes(json.dumps(entry).encode("utf-8"), "tile", "870",
+                                    num_from_name=870)
+    assert len(problems) == 3, problems
+    assert any("missing prompt" in p for p in problems), problems
+    assert any("not project-qualified" in p for p in problems), problems
+    assert any("deliberately not stored" in p for p in problems), problems
+
+
+def test_collect_problems_flags_a_real_task_id_and_bad_stub_shard_on_disk():
+    # End-to-end through the impure path, reproducing dev-env#907's own motivating shard
+    # shape (career-playbook/tiles/849.json: task_id + a bare-filename stub).
+    with tempfile.TemporaryDirectory() as tmp:
+        d = os.path.join(tmp, "engineering-journal", "sessions", "career-playbook", "tiles")
+        os.makedirs(d)
+        path = os.path.join(d, "849.json").replace("\\", "/")
+        with open(path, "wb") as f:
+            f.write(_tile_bytes(
+                issue=849, stub="2026-07-23_021500.stub.md", task_id="task_cdc4d05c"
+            ))
+        results = collect_problems([path])
+        assert len(results) == 1, results
+        assert len(results[0][1]) == 2, results
+        assert any("not project-qualified" in p for p in results[0][1]), results
+        assert any("deliberately not stored" in p for p in results[0][1]), results
+
+
+def test_open_pr_shard_is_not_subject_to_the_task_id_check():
+    # task_id is a tile-only forbidden field. An open-PR shard is a different schema and
+    # must not be validated against a rule that doesn't apply to it.
+    raw = json.dumps(_valid_open_pr_entry(task_id="task_abc123")).encode("utf-8")
+    assert validate_shard_bytes(raw, "open-pr", "147", num_from_name=147) == []
+
+
 def test_format_advisory_prescribes_forward_slashes_for_cwd():
     text = format_advisory([("x/tiles/1.json", ["missing prompt"])])
     assert "FORWARD slashes" in text
@@ -678,6 +758,40 @@ def test_format_advisory_documents_the_tile_schema():
     # The serializer warning is the one that prevents a silently-corrupt payload.
     assert "never echo" in text
     assert text.isascii(), "advisory rides exit-2 stderr, which is cp1252-decoded on Windows"
+
+
+def test_format_advisory_documents_stub_and_task_id_rules():
+    # The guidance paragraph is gated on a reported stub/task_id problem (see the gating
+    # tests below) -- this input must actually carry one for the paragraph to appear.
+    text = format_advisory([("x/tiles/1.json", ["task_id: present but deliberately not stored"])])
+    assert "task_id" in text
+    assert "project-qualified" in text
+    assert text.isascii(), "advisory rides exit-2 stderr, which is cp1252-decoded on Windows"
+
+
+def test_format_advisory_stub_task_id_guidance_gated_on_relevance():
+    # Found by this PR's own /review: ADR-081 has picked up one more ungated guidance
+    # paragraph with each amendment, and a manifest shard's missing-topic advisory has no
+    # reason to also ship the tile stub/task_id rules. Absent when irrelevant...
+    irrelevant = format_advisory([("x/dev-env/x.manifest.jsonl", ["missing topic"])])
+    assert "must be project-qualified" not in irrelevant
+    assert "Never write a `task_id`" not in irrelevant
+    # ...present when a reported problem is actually stub/task_id-shaped.
+    relevant = format_advisory([("x/tiles/1.json", ["stub: not project-qualified"])])
+    assert "must be project-qualified" in relevant
+    assert "Never write a `task_id`" in relevant
+
+
+def test_format_advisory_pre_existing_data_caveat_gated_on_relevance():
+    # dev-env#907's own /review: stub/task_id now match ~60% of all existing tile shards,
+    # so a command merely *referencing* an old one (e.g. a restore) can trigger these two
+    # checks without the current session having written the file -- the "fix it now, you
+    # just wrote this" framing stops being a safe default for this class specifically.
+    irrelevant = format_advisory([("x/tiles/1.json", ["missing prompt"])])
+    assert "PRE-EXISTING data" not in irrelevant
+    relevant = format_advisory([("x/tiles/1.json", ["task_id: present but deliberately not stored"])])
+    assert "PRE-EXISTING data" in relevant
+    assert "dev-env#1064" in relevant
 
 
 # ---------------------------------------------------------------------------
