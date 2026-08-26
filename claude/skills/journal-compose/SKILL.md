@@ -1153,9 +1153,46 @@ under `## Projects` using this format.
 
 After Step 8, refresh the marker-delimited block at the top of `engineering-journal/README.md`. This block surfaces a freshness stamp and the top 3–5 cross-project priorities, drawn from (a) priorities flagged in today's manifests, (b) PRs currently open across projects, and (c) open issues labeled `start-here` across project repos — top 5 across all sources, deduped by ref. It is rewritten on every compose; it is not hand-edited between composes. See [ADR-032](https://github.com/brownm09/dev-env/blob/main/docs/adr/032-journal-start-here-dashboard.md) for rationale.
 
-**Aggregate the priority list (max 5 entries, deduped by `ref`):**
+**First, resolve each project to its GitHub repo slug (Source 3's input):**
 
 ```bash
+# Deterministic path, NOT $$ -- this file is written here and read by the aggregation block
+# below, which runs as a separate Bash call in its own shell. Shell variables do not carry
+# across Bash calls and `$$` would resolve to a different PID there, so both blocks must spell
+# the same literal path. Substitute the compose date, as with the `date` constant below.
+MAPFILE="C:/Users/brown/.claude/scratch/tmp_repo_map_YYYY-MM-DD.json"
+py -3 C:/Users/brown/.claude/scripts/journal-project-repo-map.py "$WT" --json "$MAPFILE"
+```
+
+This reads the **root** `README.md` — the canonical project→slug mapping, which Step 8 has just
+regenerated — pairing each `### ` section's `**Repo:**` bullet with its `**Journal:**
+[sessions/<project>/` bullet, and falls back to `sessions/<project>/README.md`'s
+`Repo:`/`Repository:` line. **Report every `SOURCE3_SKIP` line it prints to the user** — a
+skipped project is precisely what used to be invisible (see below).
+
+- **Exit 0:** proceed. `SOURCE3_SKIPPED=N` with N>0 is information, not failure — some projects
+  legitimately have no repo (e.g. `engineering-journal` itself).
+- **Exit 1 (`SOURCE3_MAPPING_EMPTY`):** projects exist and none resolved. Report it and
+  **continue** the compose with Source 3 contributing nothing — same convention as
+  `START_HERE_INSERT_FAILED` below; one dashboard sub-source must never abort a compose.
+- **Exit 2:** usage error — `$WT` is not an engineering-journal checkout. Check the worktree path.
+
+**Why a script rather than an inline regex.** Source 3 previously resolved slugs with a
+`Repo:`-matching regex applied to `sessions/<proj>/README.md`. That regex matched **zero** of the
+11 project READMEs, so Source 3 never contributed an entry for any repo from the day it was added
+([dev-env#292](https://github.com/brownm09/dev-env/issues/292)) until
+[dev-env#1045](https://github.com/brownm09/dev-env/issues/1045). Ten of the eleven carry no repo
+line at all — so no per-project pattern, however wide, could resolve them — and the one that does
+spells it `**Repository:**`, which `Repo:` is not a substring of. The loop's bare `continue` made
+the whole thing silent: a project skipped for a broken mapping looked exactly like a project with
+no labeled issues. Hence both halves of the fix — the canonical mapping source, and a named skip
+line for every project that misses it.
+
+**Then aggregate the priority list (max 5 entries, deduped by `ref`):**
+
+```bash
+# Same literal path as the resolver block above -- re-declared, not inherited (separate shell).
+MAPFILE="C:/Users/brown/.claude/scratch/tmp_repo_map_YYYY-MM-DD.json"
 TMPFILE="C:/Users/brown/.claude/scratch/tmp_start_here_$$.json"
 node -e "
   const fs = require('fs'); const path = require('path');
@@ -1243,28 +1280,31 @@ node -e "
     }
   }
   // Source 3: open issues labeled 'start-here' across project repos (fills to 5).
-  // Project -> repo slug is read from each sessions/<proj>/README.md 'Repo:' line;
-  // projects without a parseable Repo: line are skipped.
+  // Project -> repo slug comes from journal-project-repo-map.py (\$MAPFILE, written above),
+  // which reads the root README's canonical mapping and reports every project it could not
+  // resolve. Do NOT re-derive slugs here -- dev-env#1045 was exactly that, and it was silent.
+  // query_order is already deduped by slug, so each repo is queried once even when two
+  // projects share it (meta and dev-env both map to brownm09/dev-env).
   if (items.length < 5) {
     const { execSync } = require('child_process');
-    for (const proj of projects) {
+    let repoMap = { query_order: [] };
+    // Never swallow this read: an empty map here would silently zero out Source 3, which is the
+    // exact failure mode dev-env#1045 existed to end. Report and continue with zero entries.
+    try { repoMap = JSON.parse(fs.readFileSync('$MAPFILE', 'utf8')); }
+    catch (e) { console.error('SOURCE3_MAP_UNREADABLE -- Source 3 contributing nothing: ' + e.message); }
+    for (const entry of (repoMap.query_order || [])) {
       if (items.length >= 5) break;
-      const readme = path.join(sessionsDir, proj, 'README.md');
-      if (!fs.existsSync(readme)) continue;
-      const txt = fs.readFileSync(readme, 'utf8');
-      const m = txt.match(/Repo:\s*\[([^\]]+)\]\(https:\/\/github\.com\/([^\/]+\/[^\/\)]+)\)/);
-      if (!m) continue;
-      const slug = m[2].replace(/\.git$/,'');
+      const slug = entry.slug;
       let out = '';
       try {
         out = execSync('gh issue list --repo ' + slug + ' --label start-here --state open --json number,title,url --limit 5', { encoding: 'utf8' });
-      } catch (e) { continue; }
+      } catch (e) { console.error('SOURCE3_QUERY_FAILED ' + slug + ' -- ' + e.message); continue; }
       let issues = [];
-      try { issues = JSON.parse(out); } catch (e) { continue; }
+      try { issues = JSON.parse(out); } catch (e) { console.error('SOURCE3_QUERY_UNPARSEABLE ' + slug); continue; }
       for (const iss of issues) {
         if (items.length >= 5) break;
         const ref = slug + '#' + iss.number;
-        push({ source:'issue', project:proj, label:iss.title, ref, why:'open issue', url:iss.url });
+        push({ source:'issue', project:entry.project, label:iss.title, ref, why:'open issue', url:iss.url });
       }
     }
   }
@@ -1311,11 +1351,20 @@ For each item:
 
 The block lives above any `## Projects` H2 and below the file's top-level `# Engineering Journal` title.
 
-Tell the user: "Start here block refreshed with N item(s)."
+Tell the user: "Start here block refreshed with N item(s). Source 3 resolved R project(s),
+skipped S: `<project — reason, one per skip>`." Report the skip list even when it is empty
+(`skipped 0`) — a visible zero is what makes a later non-zero meaningful. Also surface any
+`SOURCE3_QUERY_FAILED` / `SOURCE3_QUERY_UNPARSEABLE` / `SOURCE3_MAP_UNREADABLE` line the
+aggregation printed to stderr: a resolved project whose `gh` query then failed, or a map file that
+could not be read at all, is a *different* problem from an unresolved project (most often an
+exhausted GraphQL budget, or the two blocks above having drifted to different `MAPFILE` paths), and
+each is equally invisible if swallowed.
 
-Clean up:
+Clean up (literal paths — `$TMPFILE`/`$MAPFILE` were set in earlier, separate shells and are not
+defined here):
 ```bash
-rm -f "$TMPFILE"
+rm -f "C:/Users/brown/.claude/scratch/tmp_start_here_"*.json \
+      "C:/Users/brown/.claude/scratch/tmp_repo_map_YYYY-MM-DD.json"
 ```
 
 **Promoting an issue to the dashboard:**
@@ -1325,6 +1374,20 @@ To promote an open issue to the top-level dashboard, apply the `start-here` labe
 gh issue edit <N> --repo <owner/repo> --add-label start-here
 ```
 The label is auto-created on first use. Remove it when the issue is no longer top-priority.
+
+**The label only works for a repo Source 3 can resolve.** A `start-here` label applied in a repo
+whose `sessions/<project>/` directory does not resolve to a slug is inert — the repo is never
+queried. Check with the resolver directly before assuming a labeled issue will surface:
+
+```bash
+py -3 C:/Users/brown/.claude/scripts/journal-project-repo-map.py C:/Users/brown/Git/engineering-journal
+```
+
+If the project appears on a `SOURCE3_SKIP` line, give it a `### ` section in the root `README.md`
+with `**Repo:**` and `**Journal:**` bullets (Step 8's format) — that is the canonical fix, and it
+is what makes the project visible to every later compose. Note also that Source 3 only fills the
+list once Sources 1 and 2 total fewer than 5, so a labeled issue can be correctly resolved and
+still not appear on a day with 5 flagged priorities or open PRs.
 
 ## Step 8b — Scan composed output for stray terminal output
 

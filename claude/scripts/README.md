@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **94 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **95 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -69,7 +69,7 @@ utility scripts that serve the same workflow area — mirroring
 **Event** names the hook registration(s) from `settings.json`; utility scripts show their
 invocation instead.
 
-### Engineering journal & stub workflow (22)
+### Engineering journal & stub workflow (23)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -93,6 +93,7 @@ invocation instead.
 | `reconcile-late-stubs.py` | `py -3 reconcile-late-stubs.py <draft/YYYY-MM-DD>` | Moves stubs pushed to an already-merged draft branch onto the earliest unmerged (or today's) branch, then deletes the stale source branch. |
 | `validate-manifest.py` | `py -3 validate-manifest.py <manifest-path> ...` | Pre-compose validator (`/journal-compose` Step 0.7): every manifest entry has all five required fields. |
 | `validate-composed-output.py` | `py -3 validate-composed-output.py <markdown-path> ...` | Pre-commit scanner (`/journal-compose` Step 8b): composed files contain no stray terminal output. Fence- and code-span-aware; advisory (reports, never edits). [ADR-121](../../docs/adr/121-composed-output-stray-terminal-scan.md) |
+| `journal-project-repo-map.py` | `py -3 journal-project-repo-map.py <engineering-journal-root> [--json <outfile>]` | Resolves each `sessions/<project>/` directory to a GitHub `owner/repo` slug for `/journal-compose` Step 8a Source 3. Reads the root README's canonical `**Repo:**`+`**Journal:**` pairing, falling back to the project README's `Repo:`/`Repository:` line; shape-validates every slug before it reaches a `gh` command line, and names every project it could not resolve (`SOURCE3_SKIP`) so a mapping drift is loud rather than an empty dashboard. [ADR-032 Amendment 1](../../docs/adr/032-journal-start-here-dashboard.md) |
 | `merge-stale-pr.sh` | `bash merge-stale-pr.sh <PR-URL>` | Remediates a stale engineering-journal draft PR: checks out, warns on a missing journal file, deletes orphaned drafts, rebases, squash-merges. |
 | `retro-chain-status.py` | `py -3 retro-chain-status.py --repo <owner/repo> [--repo ...] [--journal-repo PATH]` | Read-only per-repo classifier for the retro-action chained-tile backlog (dev-env#967): reports ALIVE/UNRESOLVED/NO_QUEUE_FOUND/QUEUE_EXHAUSTED/ALL_TILED/AMBIGUOUS/NEEDS_REFILL; never mutates anything, a per-repo failure lands in that repo's own `{"status": "ERROR", "error": "..."}` entry. Engine behind the `retro-chain-refill` skill. |
 
