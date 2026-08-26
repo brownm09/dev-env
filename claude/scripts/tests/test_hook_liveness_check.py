@@ -3,7 +3,7 @@
 
 Exercises the pure helpers offline (tmp dirs for heartbeat files, hand-built
 settings.json fixtures -- no real ~/.claude/scratch and never the live
-claude/settings.json, so this suite's pass/fail doesn't drift with production
+claude/settings.shared.json, so this suite's pass/fail doesn't drift with production
 wiring changes): `hook_name_from_command` (script-basename extraction),
 `wired_hook_events` (settings.json hooks-block parsing into hook -> {events}),
 `exempt_hooks` (PostCompact/Notification-only exemption), `stale_hooks` (the
@@ -14,7 +14,7 @@ caller-supplied `now`), `_age_desc`, `format_warning`, and
 a broken settings.json parse while its own heartbeat stayed fresh). The
 writer side (`_hookutil.record_heartbeat`) is covered in test_hookutil.py.
 
-Also exercises `wired_hook_events()` against the REAL `claude/settings.json`
+Also exercises `wired_hook_events()` against the REAL `claude/settings.shared.json`
 for agreement with `tests/_hook_wiring.wired_script_events()` -- a second
 `/review` finding on PR #752: these are two independent settings.json parsers
 (deliberately not consolidated yet -- see ADR-106's Settings-parsing scope
@@ -367,7 +367,7 @@ def test_format_self_check_failure_distinct_from_format_warning() -> str:
 def test_wired_hook_events_agrees_with_hook_wiring_module() -> str:
     # Regression guard for the two near-duplicate settings.json parsers this repo
     # deliberately keeps separate until Phase E (ADR-106's Settings-parsing scope
-    # decision) -- runs against the REAL claude/settings.json so a future schema
+    # decision) -- runs against the REAL claude/settings.shared.json so a future schema
     # change applied to one parser and not the other is caught here, not just
     # against a static fixture both were written against.
     hook_wiring = importlib.import_module("_hook_wiring")
@@ -379,11 +379,11 @@ def test_wired_hook_events_agrees_with_hook_wiring_module() -> str:
     }
     assert ours == theirs_normalized, (
         f"wired_hook_events() and _hook_wiring.wired_script_events() disagree against the "
-        f"real claude/settings.json -- only in ours: {set(ours) - set(theirs_normalized)}; "
+        f"real claude/settings.shared.json -- only in ours: {set(ours) - set(theirs_normalized)}; "
         f"only in theirs: {set(theirs_normalized) - set(ours)}; "
         f"differing events: {[(k, ours[k], theirs_normalized[k]) for k in ours if k in theirs_normalized and ours[k] != theirs_normalized[k]]}"
     )
-    return "wired_hook_events() agrees with tests/_hook_wiring.wired_script_events() against the real claude/settings.json"
+    return "wired_hook_events() agrees with tests/_hook_wiring.wired_script_events() against the real claude/settings.shared.json"
 
 
 # --- behavioral layer: real main() over stdin via subprocess --------------------

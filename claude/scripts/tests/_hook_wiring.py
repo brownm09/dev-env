@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Shared test helper: parse claude/settings.json into the set of wired hooks,
+"""Shared test helper: parse claude/settings.shared.json into the set of wired hooks,
 their events, and their declared timeouts.
+
+The tracked source, not the live machine-local ~/.claude/settings.json: `hooks` is an
+owned key, so _settings_sync keeps the two identical, and the tracked file is the one CI
+can gate deterministically (dev-env#1049, ADR-139).
 
 The three PR3 output-contract gates all need to reason about *which* hook scripts
 are wired and *under which events* — the safe-exit structural test needs the wired
@@ -27,7 +31,7 @@ from typing import NamedTuple
 # tests/ -> scripts/ -> claude/ -> repo root  (matches test_no_crude_command_substring_checks.py)
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = REPO_ROOT / "claude" / "scripts"
-SETTINGS_PATH = REPO_ROOT / "claude" / "settings.json"
+SETTINGS_PATH = REPO_ROOT / "claude" / "settings.shared.json"
 
 # The last whitespace-delimited token of a hook command is the script path; grab
 # its `<name>.py` basename. Matches the `pyw -3 C:/.../foo.py` invocation form

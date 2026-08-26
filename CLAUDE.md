@@ -132,6 +132,8 @@ the item). A one-line navigational map of the test directory is
 96. **replay-shell-content-guard test** — required when changing `claude/scripts/replay-shell-content-guard.py`; the on-demand reader that replays the ADR-138 guard over recorded session transcripts and reports its block rate, mechanism mix, override use, and failure-rate enrichment (ADR-138 Amendment 1). Re-run the script itself after any detector change to the guard — `py -3 claude/scripts/replay-shell-content-guard.py --gap`. Run: `py -3 claude/scripts/tests/test_replay_shell_content_guard.py`
 97. **journal-project-repo-map test** — required when changing `claude/scripts/journal-project-repo-map.py` or the Step 8a Source 3 block in `claude/skills/journal-compose/SKILL.md` (ADR-032 Amendment 1 lands in both — the script resolves the mapping and names every skip, the skill consumes `query_order` and surfaces those skips to the user). Run: `py -3 claude/scripts/tests/test_journal_project_repo_map.py`
 
+98. **`_settings_sync` shared-module test** — required when changing `claude/scripts/_settings_sync.py`, its `OWNED_KEYS`/`SEED_KEYS` classification, `claude/settings.shared.json`, or `setup.sh`'s `seed_claude_settings()`. Also re-run the three gates that read the shared file through `_hook_wiring.py` (items 61/62/63), `test_pyw_stdio.py` (item 2), `test_hook_liveness_check.py` (item 67), and the setup link-loop (item 49) — all five were repointed off `claude/settings.json` by ADR-139. Run: `py -3 claude/scripts/tests/test_settings_sync.py` + `bash claude/scripts/tests/test-setup-link-loop.sh`
+
 ## Observability
 
 dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
@@ -195,11 +197,46 @@ When a PR modifies any of the paths below, update the listed reference docs **in
 | `~/.claude/hooks/` | `claude/hooks/` (directory junction) |
 | `~/.claude/routines/` | `claude/routines/` (directory junction) |
 | `~/.claude/templates/` | `claude/templates/` (directory junction) |
-| `~/.claude/settings.json` | `claude/settings.json` |
 
 **Machine-local only — never commit:**
 
 `scratch/`, `projects/`, `sessions/`, `backups/`, `ide/`, `plans/`, `shell-snapshots/`
+
+**Machine-local *and* partly repo-owned — `~/.claude/settings.json`:**
+
+`~/.claude/settings.json` is a **real, machine-local file the Claude Code app writes**, not a
+symlink into this repo ([ADR-139](docs/adr/139-machine-local-settings-with-shared-source-sync.md)).
+It used to be symlinked, which made the app dirty a tracked file and blocked the canonical's
+fast-forward *permanently* — serving stale hooks and skills machine-wide, since
+`~/.claude/{scripts,skills,hooks}` are junctions into that same checkout (dev-env#1049).
+
+dev-env tracks `claude/settings.shared.json` instead and syncs it **into** the live file.
+Which keys belong where:
+
+| Class | Keys | Behavior |
+|---|---|---|
+| **Owned** (tracked) | `hooks`, `permissions` | Replaced wholesale on every sync — deletions propagate, and the app cannot silently drop an allow rule. |
+| **Seed** (tracked) | `model`, `effortLevel` | Written only when absent, so a `/config` change sticks ([ADR-079](docs/adr/079-backup-restore-convention.md) rule 3). |
+| **Machine-local** (never tracked) | `theme`, `tui`, `agentPushNotifEnabled`, `inputNeededNotifEnabled`, `skipWorkflowUsageWarning`, `autoMode` | Never read, written, or removed by the sync. `autoMode.environment` describes personal data and must stay out of git. |
+
+**Adding a key to `claude/settings.shared.json` requires classifying it** in `OWNED_KEYS` or
+`SEED_KEYS` in [`claude/scripts/_settings_sync.py`](claude/scripts/_settings_sync.py) — an
+unclassified key is reported as a warning and *not applied*, rather than silently ignored.
+
+**Machine-local is not the same as correctly scoped.** A key the app writes that carries
+**project-specific** content — an auto-mode environment scan, anything naming a particular repo's
+paths, visibility, or policies — does not belong in `~/.claude/settings.json` either, even though
+that file is now machine-local and out of git: the user-scope file loads for **every** project's
+session on this machine. Relocate it to that project's own `.claude/settings.local.json`, the only
+per-project personal-settings slot Claude Code has (verify the project's `.gitignore` excludes it
+first). This is a global rule, stated in full in
+[`claude/CLAUDE.md`](claude/CLAUDE.md) → Platform & Environment.
+
+`dev-env-sync.py` runs the sync every prompt. To apply it by hand after editing the shared file:
+
+```bash
+py -3 ~/.claude/scripts/_settings_sync.py
+```
 
 **Rule:** Any addition or modification to a dev-env-owned artifact — new hook script, new skill, settings change, CLAUDE.md edit — must be committed to `brownm09/dev-env` via branch and PR before the session ends. Do not leave global tooling as untracked files.
 

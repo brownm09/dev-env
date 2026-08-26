@@ -3,7 +3,7 @@
 
 Every wired hook records a heartbeat (`_hookutil.record_heartbeat`) as the first
 statement of its own `main()`. This hook is the other half: it reads
-`claude/settings.json` to discover which hook scripts are currently wired, reads
+`claude/settings.shared.json` to discover which hook scripts are currently wired, reads
 each one's heartbeat file under `~/.claude/scratch/hook-heartbeat/`, and warns
 when a non-exempt hook's heartbeat is missing or older than DEFAULT_CADENCE_DAYS.
 
@@ -60,12 +60,17 @@ from pathlib import Path
 import _hookout
 import _hookutil
 
-# Test seam: HOOK_LIVENESS_SETTINGS_PATH overrides the real claude/settings.json,
-# so an end-to-end test can exercise the self-check-failure path (an unreadable
-# or malformed settings.json) without touching the real file. Unset in production.
+# Reads the TRACKED source (claude/settings.shared.json), not the live machine-local
+# ~/.claude/settings.json -- `hooks` is an owned key, so _settings_sync keeps the two
+# identical, and the tracked file is the deterministic one to gate CI against
+# (dev-env#1049, ADR-139).
+#
+# Test seam: HOOK_LIVENESS_SETTINGS_PATH overrides the real settings file, so an
+# end-to-end test can exercise the self-check-failure path (an unreadable or malformed
+# settings file) without touching the real one. Unset in production.
 SETTINGS_PATH = Path(os.environ["HOOK_LIVENESS_SETTINGS_PATH"]) if os.environ.get(
     "HOOK_LIVENESS_SETTINGS_PATH"
-) else Path(__file__).resolve().parent.parent / "settings.json"
+) else Path(__file__).resolve().parent.parent / "settings.shared.json"
 DEFAULT_CADENCE_DAYS = 7
 EXEMPT_EVENTS = frozenset({"PostCompact", "Notification"})
 SENTINEL_PREFIX = "hook_liveness_check_"
@@ -175,7 +180,7 @@ def format_warning(stale: list[dict], now: float, cadence_days: float) -> str:
     for entry in stale:
         lines.append(f"  - {entry['hook']}: {_age_desc(entry['last_seen'], now)}")
     lines.append(
-        "Check claude/settings.json wiring and the script itself for a crash "
+        "Check claude/settings.shared.json wiring and the script itself for a crash "
         "or a changed invocation path."
     )
     return "\n".join(lines)

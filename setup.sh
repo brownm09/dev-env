@@ -15,8 +15,54 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # (docs/adr/003-config-in-version-control.md). Shared by setup_windows() and
 # setup_unix() so the two platforms' loops can't silently diverge the way
 # `templates` did (dev-env#606) -- one list, iterated twice.
-CLAUDE_FILE_LINKS=(CLAUDE.md settings.json)
+#
+# settings.json is deliberately NOT in this list (dev-env#1049, ADR-139). The Claude
+# Code app writes ~/.claude/settings.json itself -- /config theme changes, `tui`,
+# notification flags, the `autoMode` environment scan -- so symlinking it into the repo
+# made the app dirty a tracked file, and git then refused to fast-forward the canonical
+# checkout, forever. It is now a real, machine-local file seeded and kept current by
+# seed_claude_settings() below.
+CLAUDE_FILE_LINKS=(CLAUDE.md)
 CLAUDE_DIR_LINKS=(scripts skills hooks templates)
+
+# seed_claude_settings -- materialize/refresh the real, machine-local
+# ~/.claude/settings.json from the tracked claude/settings.shared.json. Idempotent:
+# replaces only the keys dev-env owns (hooks, permissions), seeds absent defaults, and
+# leaves every app-written key alone. Also migrates an existing repo symlink left by a
+# pre-ADR-139 setup run. Same code path dev-env-sync.py runs on every prompt.
+#
+# Never fails the run: the symlinks above are the critical half of setup, and a seed that
+# cannot complete (no python, an unreadable shared file) must warn with the exact manual
+# command rather than abort setup with the links half-applied. `return 0` is explicit for
+# the same reason -- these functions run under `set -e`.
+seed_claude_settings() {
+  # An array, not a string: "py -3" as a bare string would only work by relying on
+  # unquoted word-splitting at the call site, which breaks the moment any element
+  # contains a space. shellcheck would flag that (SC2086) -- but `run-shellcheck.sh`
+  # (Testing item 7) SKIPs when shellcheck is not installed, so this file cannot count
+  # on the lint catching it.
+  local -a runner=()
+  if command -v py >/dev/null 2>&1; then
+    runner=(py -3)
+  elif command -v python3 >/dev/null 2>&1; then
+    runner=(python3)
+  fi
+
+  if [[ ${#runner[@]} -eq 0 ]]; then
+    echo "  WARNING: no python found -- ~/.claude/settings.json not seeded."
+    echo "  Run this once python is available:"
+    echo "    py -3 $REPO_DIR/claude/scripts/_settings_sync.py"
+    return 0
+  fi
+
+  if "${runner[@]}" "$REPO_DIR/claude/scripts/_settings_sync.py"; then
+    echo "  Seeded settings.json (machine-local; see ADR-139)"
+  else
+    echo "  WARNING: seeding ~/.claude/settings.json failed. Re-run manually:"
+    echo "    ${runner[*]} $REPO_DIR/claude/scripts/_settings_sync.py"
+  fi
+  return 0
+}
 
 # ---------------------------------------------------------------------------
 # Windows setup
@@ -125,6 +171,8 @@ link_claude_windows() {
   mkdir -p "$HOME/.claude/scratch"
   echo "  Created scratch/"
 
+  seed_claude_settings
+
   win_link "$REPO_DIR/bin" "$HOME/bin" junction
   echo "  Linked ~/bin/"
 }
@@ -174,6 +222,8 @@ link_claude_unix() {
 
   mkdir -p "$HOME/.claude/scratch"
   echo "  Created scratch/"
+
+  seed_claude_settings
 
   ln -sf "$REPO_DIR/bin" "$HOME/bin"
   echo "  Linked ~/bin/"

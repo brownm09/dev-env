@@ -528,9 +528,5 @@
       }
     ]
   },
-  "effortLevel": "max",
-  "tui": "fullscreen",
-  "theme": "dark",
-  "agentPushNotifEnabled": true,
-  "inputNeededNotifEnabled": true
+  "effortLevel": "max"
 }

@@ -53,7 +53,7 @@ from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SETTINGS = REPO_ROOT / "claude" / "settings.json"
+SETTINGS = REPO_ROOT / "claude" / "settings.shared.json"
 HOOKS_DIR = REPO_ROOT / "claude" / "scripts"
 
 

@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **95 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **96 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -33,7 +33,7 @@ exercises these scripts: `py -3 claude/scripts/run-hook-tests.py`.
 `_foo.py` files — imported by other scripts, never directly invoked or wired as a hook
 themselves. None of these get their own row in `docs/REFERENCE.md`'s Hooks/Utilities tables
 (they're described in prose paragraphs at the top of the Hooks section instead); this table is
-the one place all 19 are listed together. Each has its own test file in
+the one place all 20 are listed together. Each has its own test file in
 [`tests/README.md`](tests/README.md) → Shared support modules.
 
 | Module | Purpose | Consumers |
@@ -51,6 +51,7 @@ the one place all 19 are listed together. Each has its own test file in
 | `_journal_shards.py` | Shared numeric-shard + legacy `open-prs.jsonl` reader (`iter_numeric_shards`, with `iter_pr_shards` / `iter_tile_shards` as named delegations; `read_legacy_entries`), plus `project_dirs` — the `sessions/<project>/` walk both reconcile hooks run before reading either shard kind. | `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, `post-compact.py` |
 | `_repo_scan.py` | Shared `find_git_repos()` directory-scan helper for every `--scan-dir` mode. | `prune-merged-worktrees.py`, `reclaim-worktree-disk.py`, `reconcile-project-board.py` |
 | `_repo_target.py` | Shared `--repo` (incl. host-prefixed/URL forms) / PR-URL / issue-URL / positional-number / REST-merge-path resolver for `gh` commands — ends the per-hook ADR-050 amendment treadmill. | `post-pr-merge-project.py`, `pr-merge-reminder.py`, `posttooluse-inert-advisory.py`, `post-pr-merge-pull.py`, `stop-tile-enumeration-gate.py`, `post-tool-use.py` |
+| `_settings_sync.py` | Applies dev-env's tracked `claude/settings.shared.json` into the real, machine-local `~/.claude/settings.json` — `OWNED_KEYS` (`hooks`, `permissions`) replaced wholesale, `SEED_KEYS` (`model`, `effortLevel`) written only if absent, every app-written key left alone — plus the one-time symlink→real-file migration. Ends the class where the app dirtied a tracked file and blocked the canonical's fast-forward forever ([ADR-139](../../docs/adr/139-machine-local-settings-with-shared-source-sync.md)). Also runnable directly: `py -3 ~/.claude/scripts/_settings_sync.py`. | `dev-env-sync.py`, `setup.sh` |
 | `_shell_write_detect.py` | Shared shell-syntax write-detection primitives (`mask_first_line_quotes` with its load-bearing `<<` neutralization, `neutralize_unquoted_escaped_quotes`, `find_redirect_targets`, `next_token`, `first_line`, `segments_or_whole`, `tokenize_posix`, `tokenize_powershell`). Extracted from `pre-tool-use-journal-shell-write-guard.py` as a pure move so the two content-write guards share one copy of quote-state logic ADR-129 Amendment 1 already had to fix twice. Answers only "what does this command's shell syntax say", never "is that a problem". | `pre-tool-use-journal-shell-write-guard.py`, `pre-tool-use-shell-content-write-guard.py` |
 | `_skill_file_size.py` | Shared `SKILL.md` basename match (`is_skill_md`) and `.claude/hook-config.json` loader (`load_config` — returns `(warn_bytes, limit_bytes)`, one shared fallback contract for both fields). | `pre-tool-use-skill-file-size-guard.py`, `skill-file-size-advisory.py` |
 | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning script must `import`. | ~20 subprocess-using scripts |
@@ -63,10 +64,10 @@ the one place all 19 are listed together. Each has its own test file in
 
 ## Wired hooks & their domain utilities
 
-The 45 scripts Claude Code invokes automatically via `claude/settings.json`, grouped with the
-utility scripts that serve the same workflow area — mirroring
+The 45 scripts Claude Code invokes automatically via `claude/settings.shared.json`, grouped with
+the utility scripts that serve the same workflow area — mirroring
 [`tests/README.md`](tests/README.md)'s domain grouping so the two indexes read the same way.
-**Event** names the hook registration(s) from `settings.json`; utility scripts show their
+**Event** names the hook registration(s) from `settings.shared.json`; utility scripts show their
 invocation instead.
 
 ### Engineering journal & stub workflow (23)
@@ -175,7 +176,7 @@ invocation instead.
 
 1. Drop the file in this directory (or `tests/` for its test — see
    [`tests/README.md`](tests/README.md) → Adding a new test file).
-2. **If it's a Claude Code hook:** wire it in `claude/settings.json` in the same commit, follow
+2. **If it's a Claude Code hook:** wire it in `claude/settings.shared.json` in the same commit, follow
    the [Authoring rules](../../docs/REFERENCE.md#authoring-rules) (safe-exit guard, `pyw -3`
    invocation, `_winsubp` import, declared fail direction, output-contract channel), and add rows
    to the root [`README.md`](../../README.md) Hooks table and

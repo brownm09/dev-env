@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 86 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 98 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 87 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 99 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -50,6 +50,7 @@ production code.
 | `test_journal_shards.py` | `_journal_shards.py` | Shared numeric-shard (open-PR + tile) and legacy `open-prs.jsonl` reader, plus `project_dirs` — the `sessions/<project>/` walk that precedes both — used by `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, and `post-compact.py`. |
 | `test_repo_scan.py` | `_repo_scan.py` | Shared `find_git_repos()` directory-scan helper used by every `--scan-dir` mode across the worktree/board scripts. |
 | `test_repo_target.py` | `_repo_target.py` | Shared `--repo`/PR-URL/issue-URL/positional-number resolver — ends the per-hook ADR-050 amendment treadmill for this concern. |
+| `test_settings_sync.py` | `_settings_sync.py` | The owned/seed/machine-local split that keeps `~/.claude/settings.json` a real, app-owned file while dev-env still ships `hooks`/`permissions` (ADR-139). Pins that app-written keys survive a sync, that owned keys are *replaced* (so a silently-dropped `permissions.allow` entry cannot persist), that seed keys are presence-checked (so a `/config` change sticks), the ADR-079 backup/anchor/read-back discipline, and the symlink migration — including the cross-checkout case an earlier detector silently skipped. |
 | `test_shell_write_detect.py` | `_shell_write_detect.py` | Shared shell-syntax primitives (quote masking with `<<` neutralization, redirect-target finding, POSIX/PowerShell tokenizers) extracted as a pure move from the ADR-129 journal guard for ADR-138's sibling to share. Item 94 runs the ADR-129 suite alongside it — that suite passing unchanged is the extraction's safety claim. |
 | `test_skill_file_size.py` | `_skill_file_size.py` | Shared `SKILL.md` basename match and `.claude/hook-config.json` loader (`(warn_bytes, limit_bytes)`, one fallback contract) used by both size-guard hooks (ADR-127). |
 | `test_winsubp.py`, `test_pyw_stdio.py` | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning hook applies; the latter probes real `pyw -3` stdio behavior end-to-end. |
@@ -57,7 +58,7 @@ production code.
 | `test_worktree_liveness.py` | `_worktree_liveness.py` | Active-session liveness check that stops prune/reclaim routines from severing a worktree with a live Claude Code session in it. |
 | `test_worktree_recovery.py` | `_worktree_recovery.py` | Orphaned-worktree recovery recipe: renders it (destructive step kept out of the numbered sequence), pins `docs/REFERENCE.md`'s runbook to it by equality over runnable lines, and blocks the dev-env#751-disproven `worktree add --force`/`-f` form from every live surface. |
 | `test_worktree_topology.py` | `_worktree_topology.py` | Worktree-on-`main` squat detection/diagnosis and park-target decisions shared by prune, sync, and the journal-canonical guard. |
-| — | `_hook_wiring.py` | Not itself a test. Parses `claude/settings.json` into wired hooks/events/timeouts once, shared by the four structural gates below. |
+| — | `_hook_wiring.py` | Not itself a test. Parses `claude/settings.shared.json` into wired hooks/events/timeouts once, shared by the four structural gates below. |
 
 ## Structural / fleet-wide gates
 
@@ -72,7 +73,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_no_crude_command_substring_checks.py` | all `claude/scripts/*.py` | AST gate against `if "<cli>" not in command`-shaped string checks that false-match inside heredocs/quotes/subshells — the recurring false-positive class behind many ADR-050 amendments. |
 | `test_run_hook_tests.py` | `run-hook-tests.py` | Tests the pure discovery/classification helpers behind the test-suite runner itself — the engine behind `py -3 claude/scripts/run-hook-tests.py` and the `hook-tests` CI workflow. |
 | `test_sibling_hooks_hardened_io.py` | 12 of the 13 dev-env#1031/#1033 sibling hooks | AST gate against the unguarded `X.get("tool_input"/"tool_response", {}).get(...)` chain (dev-env#1028's crash class) plus malformed-payload smoke tests driving each hook's `main()` end-to-end; `pre-tool-use-worktree-path-check.py`'s own coverage lives in `test_worktree_path_check.py` instead. |
-| `test_settings_hook_wiring.py` | `claude/settings.json` | Lint: every `(event, matcher, hook)` entry resolves to a real script and carries a timeout at or above its budget floor. |
+| `test_settings_hook_wiring.py` | `claude/settings.shared.json` | Lint: every `(event, matcher, hook)` entry resolves to a real script and carries a timeout at or above its budget floor. |
 | `test_testing_index_parity.py` | `CLAUDE.md` + `docs/TESTING.md` | Asserts the `## Testing` index and `docs/TESTING.md` carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule). |
 | `test_readme_index_parity.py` | this README + `claude/scripts/README.md` | Asserts every file in each indexed directory has a README first-column row (and every row a real file), and that header/section counts match the live directory — the drift `run-hook-tests.py`'s glob discovery never surfaces (dev-env#901). |
 | `check-remote-read-hygiene.sh` | all `claude/**` | Lints for a `git show <ref>:<path>` paired with `2>/dev/null` — the MSYS path-mangling false-absent class where git's swallowed `fatal:` reads as "file absent" (dev-env#602/#877, ADR-120). |
