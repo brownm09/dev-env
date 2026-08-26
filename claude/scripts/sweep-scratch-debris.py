@@ -83,6 +83,7 @@ KNOWN_PATTERNS: list[tuple[str, str]] = [
     ("token-tracker-locate-fail-", ".flag"),       # token-tracker.py (self-cleans; backlog only)
     ("journal-compose-force-", ".json"),           # journal-compose-force-resolve.py
     ("stub-pushed-", ".flag"),                     # stub-push-archive-reminder.py / journal-stop-check.py (self-cleans; backlog only)
+    ("project-item-cache.json.", ".tmp"),          # _gh_project.py / get-project-item.sh (self-cleans on success; backlog only on a failed write)
 ]
 
 
