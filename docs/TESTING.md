@@ -3644,4 +3644,63 @@ For a one-line navigational map of the test directory, see
 
     ```bash
     py -3 claude/scripts/tests/test_journal_project_repo_map.py
+
+98. **`_settings_sync` shared-module test** — required when changing
+    `claude/scripts/_settings_sync.py`, its `OWNED_KEYS`/`SEED_KEYS` classification,
+    `claude/settings.shared.json`, or `setup.sh`'s `seed_claude_settings()`
+    ([ADR-139](adr/139-machine-local-settings-with-shared-source-sync.md), dev-env#1049).
+
+    55 cases in 7 groups, **fully hermetic** — every scenario builds a throwaway
+    shared/live/backup trio in a temp directory. Nothing writes the developer's real
+    `~/.claude/settings.json`, which matters more than usual here: the subject under test is
+    the file that defines every hook on the machine.
+
+    **The groups, in order of how badly a regression would hurt:**
+
+    - **Machine-local keys survive (group 2).** The whole bug was the app's own writes landing
+      in a tracked file. A sync that dropped `theme`/`tui`/`autoMode` would have traded a
+      blocked fast-forward for silent destruction of the user's config — strictly worse than
+      the bug. Each of the six app-written keys observed in the dev-env#1049 dirty diff is
+      asserted individually, and `autoMode`'s *content* is asserted intact, because that block
+      is a written description of personal career data and is the reason it stays out of git.
+    - **Owned keys are replaced, not merged (group 1).** The motivating incident was an app
+      rewrite silently *removing* two committed `permissions.allow` entries. A merge-style
+      union would let such a removal persist forever; the test drives a live file with an
+      emptied allow-list and asserts the shared list comes back verbatim.
+    - **Seed keys are presence-checked, not value-checked (group 1).** The mirror hazard: a
+      sync that reverted a deliberate `/config` change to `model` every prompt would be a new
+      bug, so a *differing* live seed value is asserted to be left alone.
+    - **ADR-079 discipline (group 4).** The `settings.json.pre-migration.bak` anchor is written
+      once and asserted **not** overwritten by a later sync (rule 3). A backup that cannot be
+      captured is asserted to abort the write with the live file byte-identical (rule 1) — the
+      failure is induced by parking a *file* where the backup directory must go, so the refusal
+      is exercised rather than mocked.
+    - **Degraded inputs fail safe (group 5).** An unparseable live file is asserted
+      byte-identical afterwards. Overwriting it would be irrecoverable: the app-written half
+      exists nowhere else, so "repair by regenerating" is not available.
+    - **Symlink migration (group 6).** Includes the regression that testing actually caught:
+      **a symlink into a *different* checkout must still migrate.** An earlier detector asked
+      "does this resolve inside *this* checkout?", which is silently false when the fix ships
+      from a worktree — the live symlink points at the canonical while the shared file being
+      synced sits in the worktree — leaving the live file a symlink to a repo file the merge
+      was about to delete. The detector now tests the symlink bit alone. The group also pins
+      that post-migration writes no longer reach the repo file, which is the entire point.
+    - **The shipped file is well-formed (group 7).** Asserts the real
+      `claude/settings.shared.json` has zero unclassified top-level keys, still carries
+      `Bash(node -e *)` and `Bash(rm -f C:/Users/brown/.claude/scratch/*)` **by name**, and
+      carries none of the machine-local keys. This is the guard against a future edit quietly
+      re-introducing the collision or re-dropping the two permissions.
+
+    **Deliberate scope gap:** the two `os.symlink` scenarios self-skip with a printed note when
+    the platform refuses symlink creation (Windows without Developer Mode or elevation), rather
+    than failing. The pure detector is still exercised on that path. Consequence to know about:
+    a CI runner without symlink privileges reports green while covering 3 fewer cases.
+
+    `setup.sh`'s half is covered by item 49, whose two link-loop scenarios stub
+    `seed_claude_settings` and assert it runs — *and where in the sequence* — rather than
+    shelling out to python against a fake repo path.
+
+    ```bash
+    py -3 claude/scripts/tests/test_settings_sync.py
+    bash claude/scripts/tests/test-setup-link-loop.sh
     ```

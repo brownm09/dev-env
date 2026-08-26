@@ -27,7 +27,9 @@ bad() { echo "  FAIL: $*"; FAIL=$((FAIL + 1)); }
 echo "Testing $SETUP_SCRIPT"
 [ -f "$SETUP_SCRIPT" ] || { echo "FATAL: setup.sh not found at $SETUP_SCRIPT"; exit 1; }
 
-expected_file_links="CLAUDE.md settings.json"
+# settings.json is deliberately absent: it is a real, machine-local file seeded by
+# seed_claude_settings(), not a symlink into the repo (dev-env#1049, ADR-139).
+expected_file_links="CLAUDE.md"
 expected_dir_links="scripts skills hooks templates"
 
 # --- Scenario 1: shared arrays match the documented ADR-003 enumeration ---
@@ -57,6 +59,9 @@ LOGFILE=$(mktemp)
   source "$SETUP_SCRIPT"
   REPO_DIR="$FAKE_REPO"
   win_link() { echo "$1|$2|$3" >> "$LOGFILE"; }
+  # Stubbed so the loop test never shells out to python against $FAKE_REPO. Logging it
+  # into the same file pins that the seed runs, and where in the sequence (ADR-139).
+  seed_claude_settings() { echo "SEED" >> "$LOGFILE"; }
   link_claude_windows >/dev/null
 )
 RC=$?
@@ -64,18 +69,18 @@ RC=$?
 
 EXPECTED_WIN=$(cat <<EOF
 $FAKE_REPO/claude/CLAUDE.md|$TMPHOME/.claude/CLAUDE.md|file
-$FAKE_REPO/claude/settings.json|$TMPHOME/.claude/settings.json|file
 $FAKE_REPO/claude/scripts|$TMPHOME/.claude/scripts|dir
 $FAKE_REPO/claude/skills|$TMPHOME/.claude/skills|dir
 $FAKE_REPO/claude/hooks|$TMPHOME/.claude/hooks|dir
 $FAKE_REPO/claude/templates|$TMPHOME/.claude/templates|dir
 $FAKE_REPO/claude/routines|$TMPHOME/.claude/routines|junction
+SEED
 $FAKE_REPO/bin|$TMPHOME/bin|junction
 EOF
 )
 ACTUAL_WIN=$(cat "$LOGFILE" 2>/dev/null || true)
 if [ "$ACTUAL_WIN" = "$EXPECTED_WIN" ]; then
-  ok "win_link called for exactly the expected 8 targets, in order"
+  ok "win_link called for exactly the expected 7 targets plus the settings seed, in order"
 else
   bad "win_link call log did not match expected:"
   echo "    --- expected ---"; echo "$EXPECTED_WIN" | sed 's/^/    /'
@@ -95,6 +100,8 @@ LOGFILE=$(mktemp)
   source "$SETUP_SCRIPT"
   REPO_DIR="$FAKE_REPO"
   ln() { echo "$*" >> "$LOGFILE"; }
+  # Stubbed for the same reason as the Windows scenario above (ADR-139).
+  seed_claude_settings() { echo "SEED" >> "$LOGFILE"; }
   link_claude_unix >/dev/null
 )
 RC=$?
@@ -102,18 +109,18 @@ RC=$?
 
 EXPECTED_UNIX=$(cat <<EOF
 -sf $FAKE_REPO/claude/CLAUDE.md $TMPHOME/.claude/CLAUDE.md
--sf $FAKE_REPO/claude/settings.json $TMPHOME/.claude/settings.json
 -sf $FAKE_REPO/claude/scripts $TMPHOME/.claude/scripts
 -sf $FAKE_REPO/claude/skills $TMPHOME/.claude/skills
 -sf $FAKE_REPO/claude/hooks $TMPHOME/.claude/hooks
 -sf $FAKE_REPO/claude/templates $TMPHOME/.claude/templates
 -sf $FAKE_REPO/claude/routines $TMPHOME/.claude/routines
+SEED
 -sf $FAKE_REPO/bin $TMPHOME/bin
 EOF
 )
 ACTUAL_UNIX=$(cat "$LOGFILE" 2>/dev/null || true)
 if [ "$ACTUAL_UNIX" = "$EXPECTED_UNIX" ]; then
-  ok "ln -sf called for exactly the expected 8 targets, in order"
+  ok "ln -sf called for exactly the expected 7 targets plus the settings seed, in order"
 else
   bad "ln call log did not match expected:"
   echo "    --- expected ---"; echo "$EXPECTED_UNIX" | sed 's/^/    /'

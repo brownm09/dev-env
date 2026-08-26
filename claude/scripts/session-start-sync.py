@@ -21,7 +21,7 @@ thorough, dev-env-specific mechanism (off-main topology auto-correction + persis
 escalation, ADR-058/ADR-110) that fires unconditionally every prompt regardless of which
 dev-env checkout the current session happens to be in.
 
-**Matcher note (dev-env#966 review finding).** This hook is registered in `claude/settings.json`
+**Matcher note (dev-env#966 review finding).** This hook is registered in `claude/settings.shared.json`
 with `"matcher": "startup|resume"`, NOT unmatched. `SessionStart` also fires on `clear` and
 `compact`; `/compact` in particular is a routine mid-session operation (triggered by context
 growth, not elapsed time) and synchronously blocking it on a remote `git fetch` was measured
@@ -104,7 +104,7 @@ DEV_ENV_REPO = Path.home() / "Git" / "dev-env"
 # ff-only sync.
 CONCURRENT_SESSION_WINDOW_SECONDS = 300
 
-# Must stay <= this hook's own "timeout" value in claude/settings.json. A shared deadline
+# Must stay <= this hook's own "timeout" value in claude/settings.shared.json. A shared deadline
 # (not a flat per-call timeout) bounds the whole firing's total subprocess time, since ~12
 # git calls each independently claiming up to PER_CALL_TIMEOUT_SECONDS could otherwise total
 # far more than the harness's own budget before the harness kills the process outright --

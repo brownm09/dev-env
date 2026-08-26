@@ -32,6 +32,14 @@ path(s), and how long it has been failing — so a genuinely stuck canonical can
 many commits behind (leaving every merged dev-env fix inert, since `~/.claude/` is junctioned to
 this checkout's working tree) the way it has twice before (dev-env#797, ADR-110).
 
+Before any of that, it applies dev-env's shared settings into `~/.claude/settings.json` via
+`_settings_sync` (dev-env#1049, ADR-139). That file used to be a *symlink* into this repo, which
+made it both the version-controlled source of the shipped hooks/permissions and the live file the
+app itself rewrites (`/config` theme, `tui`, `autoMode`) — so the app dirtied a tracked file and
+the fast-forward pull below could never succeed again. It is now a real, machine-local file;
+`claude/settings.shared.json` is the tracked source, and the sync replaces the keys dev-env owns
+while leaving the app-written ones alone.
+
 Exit 0 always — never block the user's prompt.
 """
 
@@ -45,6 +53,7 @@ from pathlib import Path
 
 import _hookout
 import _hookutil
+import _settings_sync
 from _worktree_topology import (
     canonical_sync_action,
     diagnose_main_topology,
@@ -448,6 +457,28 @@ def main() -> None:
     # Guard: repo must exist at the expected path.
     if not DEV_ENV_REPO.is_dir():
         sys.exit(0)
+
+    # Keep ~/.claude/settings.json -- a real, MACHINE-LOCAL file -- carrying the hooks and
+    # permissions dev-env ships, and migrate it off the old repo symlink on first run
+    # (dev-env#1049, ADR-139).
+    #
+    # This runs BEFORE the fast-forward pull below, and the ordering is load-bearing in both
+    # directions. Before: the pull is what removes claude/settings.json from the working tree,
+    # and a still-symlinked live file would then resolve to nothing -- every hook, including
+    # this one, would stop firing, leaving nothing able to self-heal. After the migration the
+    # live file is independent of the repo, so the pull is safe. It also fixes the bug this
+    # whole change exists for: while the live file WAS the tracked file, the app's own writes
+    # dirtied it and git refused to fast-forward over it, forever.
+    try:
+        settings = _settings_sync.sync()
+        if settings.error:
+            print(f"[dev-env-sync] WARNING: settings sync skipped - {settings.error}")
+        if settings.note:
+            print(settings.note)
+    except Exception:
+        # Same fail-open contract as the outer handler: a settings-sync failure must never
+        # block a prompt, and must never stop the fast-forward pull below from running.
+        print("[dev-env-sync] WARNING: settings sync failed unexpectedly and was skipped this prompt.")
 
     # The canonical must stay on main — ~/.claude/ symlinks serve its working tree, so a
     # feature branch there hides newly-merged hooks/scripts. When it's off main we diagnose

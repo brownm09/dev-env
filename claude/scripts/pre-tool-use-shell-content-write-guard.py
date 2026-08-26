@@ -59,7 +59,7 @@ Detection contract (see each function for its own mechanism):
     `_hookutil.record_heartbeat` call every wired hook makes, ADR-106; it
     predates and is independent of this hook's own no-I/O property.)
 
-Wired AFTER `pre-tool-use-journal-shell-write-guard.py` in `claude/settings.json`
+Wired AFTER `pre-tool-use-journal-shell-write-guard.py` in `claude/settings.shared.json`
 so a journal-path write keeps that hook's more specific remedy message.
 
 Stdin JSON shape (PreToolUse):

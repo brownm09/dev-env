@@ -242,7 +242,7 @@ GIT_CALL_TIMEOUT = 5
 # constant in `_gh_issue_state.py` is simpler than two copies plus a test keeping them in
 # sync.
 
-# `HOOK_TIMEOUT_SECONDS` names what was previously only a `claude/settings.json` comment.
+# `HOOK_TIMEOUT_SECONDS` names what was previously only a `claude/settings.shared.json` comment.
 # The primary lookup loop's OWN worst case is NOT `LOOKUP_BUDGET_SECONDS + GH_CALL_TIMEOUT`:
 # `lookup_states` only gates the *start* of each repo's fetch against the budget
 # (gate-the-start, not preempt-in-flight), so a repo whose fetch starts a moment before the
@@ -257,7 +257,7 @@ GIT_CALL_TIMEOUT = 5
 # of an assumed budget. (An earlier draft of this comment, and of the test that pinned it,
 # asserted the wrong equality here; /review caught the contradiction against
 # `test_page_budget_cannot_outrun_the_lookup_budget` in the same test file.)
-HOOK_TIMEOUT_SECONDS = 30  # mirrors this hook's `timeout` in claude/settings.json
+HOOK_TIMEOUT_SECONDS = 30  # mirrors this hook's `timeout` in claude/settings.shared.json
 
 # Minimum slack against HOOK_TIMEOUT_SECONDS required before the deletion-advisory pass is
 # even attempted, once the primary lookup above has already run. Covers the pass's fixed

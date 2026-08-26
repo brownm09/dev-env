@@ -147,7 +147,7 @@ PROBE_DEADLINE_SECONDS = 8.0
 # Exceeding the budget degrades to "unresolved, kept, and said so" — kept because
 # `should_remove` treats None as keep, and *said so* via the unresolved count in the emitted
 # message, so a partial reconciliation is never reported as a clean one. Never a mis-prune.
-HOOK_TIMEOUT_SECONDS = 30      # mirrors this hook's `timeout` in claude/settings.json
+HOOK_TIMEOUT_SECONDS = 30      # mirrors this hook's `timeout` in claude/settings.shared.json
 GH_CALL_TIMEOUT = 8            # one REST lookup; was 15 per path, twice over, under ADR-119
 GIT_CALL_TIMEOUT = 5           # local git plumbing — measured at ~0.07s
 NONLOOKUP_RESERVE_SECONDS = 5  # heartbeat + sentinel sweep + stdin read + message assembly
