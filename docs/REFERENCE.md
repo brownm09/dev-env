@@ -1802,7 +1802,10 @@ session that tiles something in passing may legitimately write no stub at all, a
 would force it to invent a value. When present, `stub` must be **project-qualified**
 (`sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md`, the manifest convention) rather than the open-PR
 shard's bare filename — a tile shard is filed under its *target* project, so the spawning session's stub
-may live under a different one and a bare filename would not resolve.
+may live under a different one and a bare filename would not resolve. `malformed_tile_fields` flags a
+present-but-unqualified `stub` at write time via the hook below (dev-env#907,
+[ADR-081](adr/081-write-time-journal-shard-validation-hook.md) Amendment 3) — found live in
+`sessions/career-playbook/tiles/849.json`, which carried a bare `"2026-07-23_021500.stub.md"`.
 
 **`chain` is an optional field** — `{"queue_issue": "<url>", "seeded_by": "<string>"}` — present only
 when the tile is one link in the retro-action chained-tile backlog burn-down mechanism (dev-env#967,
@@ -1819,7 +1822,10 @@ before this field existed, are not chain tiles at all. See
 
 **`task_id` is deliberately not stored.** Chip IDs do not survive an app restart (ADR-094), so persisting
 one would save a value that is dead exactly when the shard is needed — this is ADR-094's rejected
-"task_id record only" alternative.
+"task_id record only" alternative. `malformed_tile_fields` flags a present `task_id` at write time via
+the hook below (dev-env#907, [ADR-081](adr/081-write-time-journal-shard-validation-hook.md) Amendment
+3) — the same live `849.json` shard also carried `"task_id": "task_cdc4d05c"`, simultaneously with the
+bare `stub` above and passing every other check.
 
 **When a session spawns a tile:** write the shard immediately after the `spawn_task` call, and commit it
 alongside the stub (explicit per-file pathspec, never the bare `tiles/` directory).

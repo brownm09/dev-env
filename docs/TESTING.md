@@ -1182,6 +1182,20 @@ For a one-line navigational map of the test directory, see
     reformat or a copy-paste through an editor could silently "fix" the fixture and leave every
     test below it passing against a value that no longer reproduces the bug.
 
+    **`stub`/`task_id` shape** (dev-env#907,
+    [ADR-081](adr/081-write-time-journal-shard-validation-hook.md) Amendment 3) follows the same
+    wiring-vs-shape split as the `cwd` entry above: the shape logic is item 41's to pin, this item
+    covers the end-to-end path through `validate_shard_bytes`/`collect_problems` — a bare-filename
+    `stub` flagged, a project-qualified one staying healthy, a stray `task_id` flagged, all three of
+    `stub`+`task_id`+a missing `prompt` reported together on one entry (independent defects, none
+    masking another), and a real on-disk fixture reproducing dev-env#907's own motivating shard
+    (`career-playbook/tiles/849.json`: `task_id` plus a bare-filename `stub`, no other defect) driven
+    through `collect_problems`. A negative pin
+    (`test_open_pr_shard_is_not_subject_to_the_task_id_check`) fixes the schema boundary the same way
+    the `cwd` entry's does. `format_advisory`'s tile-schema line and a new guidance paragraph now
+    state both rules explicitly
+    (`test_format_advisory_documents_stub_and_task_id_rules`).
+
     ```bash
     py -3 claude/scripts/tests/test_journal_shard_write_advisory.py
     ```
@@ -1264,6 +1278,33 @@ For a one-line navigational map of the test directory, see
     so one omission never produces two problem lines. Message text is `.isascii()`-pinned (it rides
     the hook's exit-2 stderr, cp1252-decoded on Windows) and the echoed value is length-bounded so
     one pathological shard cannot flood stderr with its own contents.
+
+    `malformed_tile_fields()` was extended again (dev-env#907,
+    [ADR-081](adr/081-write-time-journal-shard-validation-hook.md) Amendment 3) to validate `stub`
+    and `task_id`, the two remaining tile fields ADR-118 documents a rule for but that had no
+    mechanical check — found live in `sessions/career-playbook/tiles/849.json`, which carried both
+    simultaneously while passing every existing check (all seven required fields present, `cwd`
+    syntactically fine). Unlike the single-field `cwd` check, this made the function accumulate
+    across independent fields rather than return on the first defect found: a shard can have a bad
+    `cwd` *and* a bad `stub` *and* a stray `task_id` at once, and all three must surface, not just
+    whichever the function happened to check first — `test_tile_stub_and_task_id_problems_accumulate_with_cwd`
+    pins exactly that shape (three problems from one entry, one per field, each identifiable by its
+    own `field:` prefix).
+
+    `stub`, when present, must start with `"sessions/"` (project-qualified, ADR-118) — a bare
+    filename (`test_tile_bare_filename_stub_flagged`, the live `849.json` shape) or a filename with
+    *a* prefix that still isn't rooted at `sessions/` (`test_tile_project_prefixed_but_unqualified_stub_flagged`,
+    also a live shape found in this session's own inventory sweep) are both flagged; absent is not
+    (`test_tile_absent_stub_not_flagged` — `stub` stays optional, this check narrows the *shape* of
+    a present value, it does not make the field required); a non-string value is flagged by type,
+    same convention as `cwd`; and the echoed value is length-bounded the same way
+    (`test_tile_long_bad_stub_echo_is_bounded`).
+
+    `task_id` has no shape to validate — ADR-118 says it is "deliberately not stored" at all, so
+    presence alone is the defect (`test_tile_present_task_id_flagged`); the value's content is
+    never inspected. `test_tile_absent_task_id_not_flagged` confirms the common case (no `task_id`
+    key) stays silent. Message text for both new checks is `.isascii()`-pinned
+    (`test_tile_stub_and_task_id_messages_are_ascii`), same convention as `cwd`'s.
 
     ```bash
     py -3 claude/scripts/tests/test_journal_schema.py

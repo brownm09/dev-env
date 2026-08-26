@@ -664,6 +664,69 @@ def test_open_pr_shard_is_not_subject_to_the_cwd_check():
     assert validate_shard_bytes(raw, "open-pr", "147", num_from_name=147) == []
 
 
+# --- `stub` / `task_id` (dev-env#907, ADR-081 Amendment 3) -----------------
+
+def test_validate_tile_bare_filename_stub_flagged():
+    problems = validate_shard_bytes(
+        _tile_bytes(stub="2026-07-28_174500.stub.md"), "tile", "870", num_from_name=870
+    )
+    assert len(problems) == 1, problems
+    assert "not project-qualified" in problems[0], problems
+
+
+def test_validate_tile_qualified_stub_stays_healthy():
+    assert validate_shard_bytes(
+        _tile_bytes(stub="sessions/dev-env/2026-07-22_143749.stub.md"), "tile", "870",
+        num_from_name=870) == []
+
+
+def test_validate_tile_task_id_flagged():
+    problems = validate_shard_bytes(
+        _tile_bytes(task_id="task_cdc4d05c"), "tile", "870", num_from_name=870
+    )
+    assert len(problems) == 1, problems
+    assert "deliberately not stored" in problems[0], problems
+
+
+def test_validate_tile_stub_and_task_id_and_missing_field_all_reported():
+    # Three independent defects, one entry: none may mask another.
+    entry = dict(_TILE_OK)
+    entry["stub"] = "2026-07-23_021500.stub.md"
+    entry["task_id"] = "task_cdc4d05c"
+    del entry["prompt"]
+    problems = validate_shard_bytes(json.dumps(entry).encode("utf-8"), "tile", "870",
+                                    num_from_name=870)
+    assert len(problems) == 3, problems
+    assert any("missing prompt" in p for p in problems), problems
+    assert any("not project-qualified" in p for p in problems), problems
+    assert any("deliberately not stored" in p for p in problems), problems
+
+
+def test_collect_problems_flags_a_real_task_id_and_bad_stub_shard_on_disk():
+    # End-to-end through the impure path, reproducing dev-env#907's own motivating shard
+    # shape (career-playbook/tiles/849.json: task_id + a bare-filename stub).
+    with tempfile.TemporaryDirectory() as tmp:
+        d = os.path.join(tmp, "engineering-journal", "sessions", "career-playbook", "tiles")
+        os.makedirs(d)
+        path = os.path.join(d, "849.json").replace("\\", "/")
+        with open(path, "wb") as f:
+            f.write(_tile_bytes(
+                issue=849, stub="2026-07-23_021500.stub.md", task_id="task_cdc4d05c"
+            ))
+        results = collect_problems([path])
+        assert len(results) == 1, results
+        assert len(results[0][1]) == 2, results
+        assert any("not project-qualified" in p for p in results[0][1]), results
+        assert any("deliberately not stored" in p for p in results[0][1]), results
+
+
+def test_open_pr_shard_is_not_subject_to_the_task_id_check():
+    # task_id is a tile-only forbidden field. An open-PR shard is a different schema and
+    # must not be validated against a rule that doesn't apply to it.
+    raw = json.dumps(_valid_open_pr_entry(task_id="task_abc123")).encode("utf-8")
+    assert validate_shard_bytes(raw, "open-pr", "147", num_from_name=147) == []
+
+
 def test_format_advisory_prescribes_forward_slashes_for_cwd():
     text = format_advisory([("x/tiles/1.json", ["missing prompt"])])
     assert "FORWARD slashes" in text
@@ -677,6 +740,13 @@ def test_format_advisory_documents_the_tile_schema():
     assert '"prompt"' in text and '"spawned"' in text
     # The serializer warning is the one that prevents a silently-corrupt payload.
     assert "never echo" in text
+
+
+def test_format_advisory_documents_stub_and_task_id_rules():
+    text = format_advisory([("x/tiles/1.json", ["missing prompt"])])
+    assert "task_id" in text
+    assert "project-qualified" in text
+    assert text.isascii(), "advisory rides exit-2 stderr, which is cp1252-decoded on Windows"
     assert text.isascii(), "advisory rides exit-2 stderr, which is cp1252-decoded on Windows"
 
 

@@ -404,7 +404,7 @@ def format_advisory(problems: list[tuple[str, list[str]]]) -> str:
         '  tile schema:     {"issue":N,"url":"https://github.com/<owner>/<repo>/issues/N",'
         '"title":"<chip label>","tldr":"<tooltip>","prompt":"<full spawn_task prompt>",'
         '"cwd":"C:/Users/brown/Git/<target-repo>","spawned":"YYYY-MM-DD"}  '
-        '(stub optional, project-qualified)'
+        '(stub optional, must start with "sessions/<project>/"; no task_id key)'
     )
     lines.append(
         "Rewrite the shard with the Write tool - never echo/a shell redirect/heredoc/serializer "
@@ -418,6 +418,14 @@ def format_advisory(problems: list[tuple[str, list[str]]]) -> str:
         "path crossing a double-quoted `node -e` string literal silently became "
         "C:Users<U+0008>rown... (dev-env#904) -- a defense-in-depth pin now, not the primary fix, "
         "since the Write tool has removed the shell/serializer-string-literal mechanism that caused it."
+    )
+    lines.append(
+        "A tile shard's `stub` (dev-env#907, ADR-118) must be project-qualified "
+        "(sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md) if present at all -- a bare filename is the "
+        "open-PR shard's convention, not a tile's, and does not resolve because a tile is filed under "
+        "its target project, which may differ from the spawning session's own. Never write a "
+        "`task_id` into a tile shard: a chip ID is dead after an app restart (ADR-118), so persisting "
+        "one saves a value that is worthless precisely when the shard is needed."
     )
     lines.append(
         "A manifest re-created after a compose consumed the original must carry the "

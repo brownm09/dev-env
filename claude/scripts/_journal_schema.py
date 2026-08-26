@@ -85,9 +85,10 @@ TOKENS_REQUIRED_KEYS = ("input", "output", "cost")
 # module's own rule that a correct value must never be flagged.
 _ABSOLUTE_PATH_RE = re.compile(r"^(?:[A-Za-z]:[/\\]|[/\\]{2}[^/\\]|/)")
 
-# Longest `cwd` echoed back in a problem message. A real repo root is far shorter; this
-# only bounds a pathologically long corrupt value so one bad shard can't flood stderr.
-_CWD_ECHO_LIMIT = 120
+# Longest value echoed back in a problem message (`cwd`, and since dev-env#907 also `stub`).
+# A real repo root or stub filename is far shorter; this only bounds a pathologically long
+# corrupt value so one bad shard can't flood stderr.
+_ECHO_LIMIT = 120
 
 
 def missing_required_fields(entry: object, fields: tuple[str, ...] = REQUIRED_FIELDS) -> list[str]:
@@ -148,27 +149,31 @@ def malformed_manifest_fields(entry: object) -> list[str]:
 def malformed_tile_fields(entry: object) -> list[str]:
     """Return descriptions of present-but-malformed fields in a tile shard entry.
 
-    Currently validates only ``cwd``: it must be a non-empty string holding an *absolute*
-    path — a drive-letter root (``C:/...``, ``C:\\...``), a UNC root (``\\\\host\\share``),
-    or POSIX absolute (``/...``) — carrying no control characters and no surrounding
-    whitespace. Mirrors ``malformed_manifest_fields``: returns
-    ``[]`` for a non-dict entry and when ``cwd`` is absent (both already caught by
-    ``missing_tile_fields``) so nothing is double-reported.
+    Validates three independent fields — ``cwd``, ``stub``, ``task_id`` — and accumulates
+    problems across all three rather than short-circuiting on the first (unlike
+    ``malformed_manifest_fields``'s single-field ``tokens`` check, a shard can have more than
+    one of these wrong at once). Mirrors ``malformed_manifest_fields`` at the per-field level
+    though: returns ``[]`` for a non-dict entry, and contributes nothing for a field that is
+    absent (none of the three is in ``TILE_REQUIRED_FIELDS``, so there is nothing for
+    ``missing_tile_fields`` to double-report).
 
-    Why ``cwd`` specifically (dev-env#904). It is the only required field that is a
-    filesystem path, and — with ``prompt`` — one of the two free-form ones. The documented
-    write recipe warns about ``prompt`` (free prose, so interpolating it corrupts the shard
-    or escapes into the shell) and says nothing about ``cwd``, so a Windows path written
-    through a **double-quoted** ``node -e "..."`` serializer crosses a JS string literal on
-    its way to ``JSON.stringify``: ``C:\\Users\\brown\\Git\\dev-env`` loses ``\\U`` and
-    ``\\G`` and turns ``\\b`` into U+0008, yielding ``C:Users<U+0008>rownGitdev-env``. That
-    value names no directory, so the re-spawn the shard exists to enable either fails or
-    lands elsewhere — yet the file exists, parses, and carries all seven required fields, so
-    every other check reports it healthy. Three shards were live in this state when the
-    class was found. (Python's own literal parser raises on ``\\U`` instead of corrupting
-    silently, which is why the ``py -3 -c`` form in the documented recipe never produced it.)
+    ``cwd`` (dev-env#904). Must be a non-empty string holding an *absolute* path — a
+    drive-letter root (``C:/...``, ``C:\\...``), a UNC root (``\\\\host\\share``), or POSIX
+    absolute (``/...``) — carrying no control characters and no surrounding whitespace. It is
+    the only required field that is a filesystem path, and — with ``prompt`` — one of the two
+    free-form ones. The documented write recipe warns about ``prompt`` (free prose, so
+    interpolating it corrupts the shard or escapes into the shell) and says nothing about
+    ``cwd``, so a Windows path written through a **double-quoted** ``node -e "..."``
+    serializer crosses a JS string literal on its way to ``JSON.stringify``:
+    ``C:\\Users\\brown\\Git\\dev-env`` loses ``\\U`` and ``\\G`` and turns ``\\b`` into
+    U+0008, yielding ``C:Users<U+0008>rownGitdev-env``. That value names no directory, so the
+    re-spawn the shard exists to enable either fails or lands elsewhere — yet the file
+    exists, parses, and carries all seven required fields, so every other check reports it
+    healthy. Three shards were live in this state when the class was found. (Python's own
+    literal parser raises on ``\\U`` instead of corrupting silently, which is why the
+    ``py -3 -c`` form in the documented recipe never produced it.)
 
-    What is deliberately **not** flagged:
+    What is deliberately **not** flagged about ``cwd``:
 
     - **A backslash-separated absolute path** (``C:\\Users\\brown\\Git\\dev-env``). It is a
       valid Windows path and a correct value; only the *escaping layer it must survive* is
@@ -179,49 +184,85 @@ def malformed_tile_fields(entry: object) -> list[str]:
       a shard is also read on machines other than the one that wrote it, where a perfectly
       correct path legitimately resolves to nothing. Plausibility is the honest bar — a
       value with no path separator at all is unambiguously corrupt regardless of host.
+
+    ``stub`` (dev-env#907). Optional (``missing_tile_fields`` never requires it — see
+    ``TILE_REQUIRED_FIELDS``'s module comment for why). When present it must be
+    **project-qualified**: a string starting with ``sessions/`` (``sessions/<project>/
+    YYYY-MM-DD_HHMMSS.stub.md``, the manifest convention). ADR-118: a tile shard is filed
+    under its *target* project, so the spawning session's stub may live under a different
+    one — a bare filename (the open-PR shard's convention, not a tile's) does not resolve.
+    Not flagged: **whether the referenced stub file actually exists on disk** — same
+    rationale as ``cwd``'s directory-existence non-check, plausibility of shape is the bar.
+
+    ``task_id`` (dev-env#907). ADR-118 says it is "deliberately not stored": a chip ID is
+    dead after an app restart, so persisting one saves a value that is worthless precisely
+    when the shard is needed — this is ADR-094's rejected "task_id record only" alternative
+    leaking back in. Presence alone is the defect; the value's content is never inspected.
     """
     if not isinstance(entry, dict):
         return []
-    if "cwd" not in entry:
-        return []
-    value = entry["cwd"]
 
-    if not isinstance(value, str):
-        return [f"cwd: must be a string path, got {type(value).__name__}"]
-    if not value.strip():
-        return ["cwd: empty - names no directory, so the tile cannot be re-spawned"]
+    problems: list[str] = []
 
-    control = sorted({ord(c) for c in value if ord(c) < 0x20 or ord(c) == 0x7F})
-    if control:
-        names = ", ".join(f"U+{c:04X}" for c in control)
-        # Reported alone: a control character means the value was mangled in transit, which
-        # is the diagnosis and the fix. Also naming it "not absolute" would restate the same
-        # defect in weaker terms.
-        return [
-            f"cwd: contains control character(s) {names} - escape corruption, not a path "
-            "(a backslash Windows path through a double-quoted `node -e` string literal "
-            "yields exactly this); rewrite it with forward slashes, e.g. C:/Users/.../repo"
-        ]
+    if "cwd" in entry:
+        value = entry["cwd"]
+        if not isinstance(value, str):
+            problems.append(f"cwd: must be a string path, got {type(value).__name__}")
+        elif not value.strip():
+            problems.append("cwd: empty - names no directory, so the tile cannot be re-spawned")
+        else:
+            control = sorted({ord(c) for c in value if ord(c) < 0x20 or ord(c) == 0x7F})
+            if control:
+                names = ", ".join(f"U+{c:04X}" for c in control)
+                # Reported alone: a control character means the value was mangled in
+                # transit, which is the diagnosis and the fix. Also naming it "not absolute"
+                # would restate the same defect in weaker terms.
+                problems.append(
+                    f"cwd: contains control character(s) {names} - escape corruption, not a "
+                    "path (a backslash Windows path through a double-quoted `node -e` string "
+                    "literal yields exactly this); rewrite it with forward slashes, e.g. "
+                    "C:/Users/.../repo"
+                )
+            elif value != value.strip():
+                # Reported on its own rather than falling through to the absolute-path
+                # branch, which would flag a leading-whitespace value with the misleading
+                # "not an absolute path" and miss a trailing-whitespace one entirely (the
+                # regex is anchored at the start). Windows also silently strips trailing
+                # spaces from path components, so " C:/x" and "C:/x " are both corruption
+                # signals that compare unequal to the real path.
+                problems.append(
+                    "cwd: has leading or trailing whitespace - a path never does; this is a "
+                    "quoting or interpolation artifact"
+                )
+            elif not _ABSOLUTE_PATH_RE.match(value):
+                echo = value if len(value) <= _ECHO_LIMIT else value[:_ECHO_LIMIT] + "..."
+                problems.append(
+                    f"cwd: {echo!r} is not an absolute path - must be a drive-letter root "
+                    "(C:/Users/.../repo) or POSIX absolute (/...); a value with no path "
+                    "separator at all is corrupt, not merely relative"
+                )
 
-    if value != value.strip():
-        # Reported on its own rather than falling through to the absolute-path branch, which
-        # would flag a leading-whitespace value with the misleading "not an absolute path"
-        # and miss a trailing-whitespace one entirely (the regex is anchored at the start).
-        # Windows also silently strips trailing spaces from path components, so " C:/x" and
-        # "C:/x " are both corruption signals that compare unequal to the real path.
-        return [
-            "cwd: has leading or trailing whitespace - a path never does; this is a "
-            "quoting or interpolation artifact"
-        ]
+    if "stub" in entry:
+        value = entry["stub"]
+        if not isinstance(value, str):
+            problems.append(f"stub: must be a string path, got {type(value).__name__}")
+        elif not value.startswith("sessions/"):
+            echo = value if len(value) <= _ECHO_LIMIT else value[:_ECHO_LIMIT] + "..."
+            problems.append(
+                f"stub: {echo!r} is not project-qualified - must start with "
+                "'sessions/<project>/' (ADR-118); a bare filename is the open-PR shard's "
+                "convention, not a tile's, and does not resolve because a tile is filed "
+                "under its target project, which may differ from the spawning session's own"
+            )
 
-    if not _ABSOLUTE_PATH_RE.match(value):
-        echo = value if len(value) <= _CWD_ECHO_LIMIT else value[:_CWD_ECHO_LIMIT] + "..."
-        return [
-            f"cwd: {echo!r} is not an absolute path - must be a drive-letter root "
-            "(C:/Users/.../repo) or POSIX absolute (/...); a value with no path separator "
-            "at all is corrupt, not merely relative"
-        ]
-    return []
+    if "task_id" in entry:
+        problems.append(
+            "task_id: present but deliberately not stored (ADR-118) - a chip ID is dead "
+            "after an app restart, so persisting one saves a value that is worthless "
+            "precisely when the shard is needed"
+        )
+
+    return problems
 
 
 def has_unresolved_open_pr(entry: object) -> bool:
