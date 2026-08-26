@@ -34,6 +34,7 @@ Exit 0 = all pass.
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -65,6 +66,12 @@ render_report = mod.render_report
 render_scan_summary = mod.render_scan_summary
 _added_and_failed = mod._added_and_failed
 _validated_config = mod._validated_config
+_backfill_item_cache = mod._backfill_item_cache
+
+# reconcile-project-board.py's own `from _gh_project import ...` already resolved
+# claude/scripts/ onto sys.path (above) -- this module is importable directly too,
+# to read back what _backfill_item_cache wrote (dev-env#1057, ADR-141).
+import _gh_project
 
 REPO = "brownm09/dev-env"
 
@@ -176,6 +183,47 @@ def test_compute_orphans_set_difference() -> str:
     # Nothing orphaned when every open issue is already tracked.
     assert compute_orphans(issues, {30, 434, 435, 436}) == []
     return "compute_orphans = open issues - board issues (the #434/#435/#436 case), sorted"
+
+
+# --- item-ID cache backfill (dev-env#1057, ADR-141) ---------------------------
+
+
+def test_backfill_item_cache_populates_every_item() -> str:
+    """_backfill_item_cache caches every fetched item's (repo, number) -> id, keyed
+    by each item's OWN content.repository -- not the single `repo` being
+    reconciled -- since a shared project board can carry items from other repos
+    too (ADR-070, --scan-dir), and content.repository is exactly what
+    board_issue_numbers above already uses to tell them apart. Every item type is
+    cached (unlike board_issue_numbers's Issue-only filter, which exists for its
+    own orphan-detection purpose) -- PR items are equally useful to have cached,
+    since get-project-item.sh and post-pr-merge-project.py look up items by number
+    regardless of type. An item with no number is silently skipped, never raises."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "cache.json"
+        real_env = os.environ.get("PROJECT_ITEM_CACHE_PATH_OVERRIDE")
+        os.environ["PROJECT_ITEM_CACHE_PATH_OVERRIDE"] = str(cache_path)
+        try:
+            items = [
+                _item(434, item_id="PVTI_434"),
+                _item(30, item_id="PVTI_30"),
+                _item(7, repo="brownm09/other", item_id="PVTI_other_7"),  # cross-repo
+                _item(20, type="PullRequest", item_id="PVTI_pr_20"),  # PR, not just Issue
+                {"content": {"type": "Issue"}, "id": "x"},  # no number -> silently skipped
+            ]
+            _backfill_item_cache(items)
+        finally:
+            if real_env is None:
+                del os.environ["PROJECT_ITEM_CACHE_PATH_OVERRIDE"]
+            else:
+                os.environ["PROJECT_ITEM_CACHE_PATH_OVERRIDE"] = real_env
+        cache = _gh_project.read_item_cache(cache_path)
+        assert cache == {
+            f"{REPO}#434": "PVTI_434",
+            f"{REPO}#30": "PVTI_30",
+            "brownm09/other#7": "PVTI_other_7",
+            f"{REPO}#20": "PVTI_pr_20",
+        }, f"unexpected cache contents: {cache}"
+    return "_backfill_item_cache caches every item (any type, any repo) by its own content.repository/number"
 
 
 # --- required-field detection ------------------------------------------------
@@ -400,6 +448,7 @@ def main() -> int:
         ("open_issue_numbers", test_open_issue_numbers),
         ("board_issue_numbers filtering", test_board_issue_numbers_filters),
         ("compute_orphans set difference", test_compute_orphans_set_difference),
+        ("_backfill_item_cache populates every item (dev-env#1057)", test_backfill_item_cache_populates_every_item),
         ("item_missing_fields presence rule", test_item_missing_fields),
         ("board_items_missing_fields scope", test_board_items_missing_fields_scope),
         ("looks_like_scope_error", test_looks_like_scope_error),

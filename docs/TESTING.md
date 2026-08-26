@@ -3809,6 +3809,7 @@ For a one-line navigational map of the test directory, see
 
     ```bash
     py -3 claude/scripts/tests/test_journal_project_repo_map.py
+    ```
 
 98. **`_settings_sync` shared-module test** — required when changing
     `claude/scripts/_settings_sync.py`, its `OWNED_KEYS`/`SEED_KEYS` classification,
@@ -3880,4 +3881,39 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_settings_sync.py
     bash claude/scripts/tests/test-setup-link-loop.sh
+    ```
+
+99. **`_gh_project` shared-module test** — required when changing
+    `claude/scripts/_gh_project.py` ([ADR-141](adr/141-project-item-id-creation-time-cache.md),
+    dev-env#1057).
+
+    `_gh_project.py` is the shared `gh project item-add` wrapper used by both
+    `post-tool-use.py`'s hook-triggered adds and `reconcile-project-board.py`'s orphan-add step
+    (ADR-073). This item covers its newer half: a best-effort item-ID cache that turns "resolve
+    a board item ID from an issue/PR number" from an unconditional ~719-item board fetch into a
+    near-zero-cost lookup for the common case (the recipe root `CLAUDE.md` → `## GitHub Project`
+    documents, `get-project-item.sh`, and `post-pr-merge-project.py`'s `find_project_item` all
+    read the same cache — see those files' own tests, items 6 and 12, for their consumer-side
+    coverage; `reconcile-project-board.py`'s opportunistic full-board backfill is covered by
+    item 29's `test_backfill_item_cache_populates_every_item`, not here, since it's pure with
+    respect to `reconcile-project-board.py`'s own fixtures).
+
+    22 cases, **fully hermetic** — every scenario passes an explicit `cache_path` (or the
+    `PROJECT_ITEM_CACHE_PATH_OVERRIDE` env var, checked at call time exactly like
+    `_hookutil.record_heartbeat`'s `HOOK_HEARTBEAT_DIR_OVERRIDE`) pointed at a tmp-dir file.
+    Nothing writes the real `~/.claude/scratch/project-item-cache.json`. `add_to_project`'s own
+    `subprocess.run` call stays untested by this repo's no-subprocess-mock convention (see the
+    module's own docstring) — but its cache-write side effect, `_cache_new_item`, sits entirely
+    on the Python side of that boundary and is fully covered directly, which is what actually
+    exercises the new logic without needing to mock `gh`.
+
+    Mirrors `test_hookutil.py`'s env-override precedence tests exactly (env override beats an
+    explicit `cache_path` argument; an empty-string override falls through rather than being
+    treated as a real path) — same shared idiom, same regression shape worth guarding the same
+    way. `write_item_cache_entry`'s atomic tmp-file + `os.replace` swap is pinned the same way
+    `record_heartbeat`'s is: no leftover `.tmp` file, and a write that can't create its parent
+    directory (a plain file occupying that path) degrades silently rather than raising.
+
+    ```bash
+    py -3 claude/scripts/tests/test_gh_project.py
     ```

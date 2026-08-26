@@ -131,8 +131,8 @@ the item). A one-line navigational map of the test directory is
 95. **shell-content-write-guard test** — required when changing `claude/scripts/pre-tool-use-shell-content-write-guard.py` or `claude/scripts/session-mode-prompt.py`'s bypass-mode carve-out (ADR-138 lands in both — the guard blocks the shape, the prompt hook delivers the precedence rule). Run: `py -3 claude/scripts/tests/test_shell_content_write_guard.py` + `py -3 claude/scripts/tests/test_session_mode_prompt.py`
 96. **replay-shell-content-guard test** — required when changing `claude/scripts/replay-shell-content-guard.py`; the on-demand reader that replays the ADR-138 guard over recorded session transcripts and reports its block rate, mechanism mix, override use, and failure-rate enrichment (ADR-138 Amendment 1). Re-run the script itself after any detector change to the guard — `py -3 claude/scripts/replay-shell-content-guard.py --gap`. Run: `py -3 claude/scripts/tests/test_replay_shell_content_guard.py`
 97. **journal-project-repo-map test** — required when changing `claude/scripts/journal-project-repo-map.py` or the Step 8a Source 3 block in `claude/skills/journal-compose/SKILL.md` (ADR-032 Amendment 1 lands in both — the script resolves the mapping and names every skip, the skill consumes `query_order` and surfaces those skips to the user). Run: `py -3 claude/scripts/tests/test_journal_project_repo_map.py`
-
 98. **`_settings_sync` shared-module test** — required when changing `claude/scripts/_settings_sync.py`, its `OWNED_KEYS`/`SEED_KEYS` classification, `claude/settings.shared.json`, or `setup.sh`'s `seed_claude_settings()`. Also re-run the three gates that read the shared file through `_hook_wiring.py` (items 61/62/63), `test_pyw_stdio.py` (item 2), `test_hook_liveness_check.py` (item 67), and the setup link-loop (item 49) — all five were repointed off `claude/settings.json` by ADR-139. Run: `py -3 claude/scripts/tests/test_settings_sync.py` + `bash claude/scripts/tests/test-setup-link-loop.sh`
+99. **`_gh_project` shared-module test** — required when changing `claude/scripts/_gh_project.py`. Run: `py -3 claude/scripts/tests/test_gh_project.py`
 
 ## Observability
 
@@ -284,8 +284,9 @@ All new dev-env issues and PRs must be added to the **Dev Env** project and give
 
 ```bash
 # 1. Add issue/PR to project, capture item ID
+URL="<issue-or-pr-url>"
 TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
-gh project item-add 3 --owner brownm09 --url <issue-or-pr-url> --format json > "$TMPFILE"
+gh project item-add 3 --owner brownm09 --url "$URL" --format json > "$TMPFILE"
 ITEM_ID=$(node -e "const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8')); console.log(d.id);")
 rm -f "$TMPFILE"
 
@@ -296,6 +297,22 @@ gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
 # 3. Set Why (one sentence — the cost of not fixing it)
 gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
   --field-id PVTF_lAHOAjEKvM4BWKFezhRgkN0 --text "<why this matters>"
+
+# 4. Cache the item ID (dev-env#1057, ADR-141) so a later lookup (e.g. to move
+#    Status) is a zero-cost hit instead of another full-board fetch
+node -e "
+  const fs = require('fs'), path = require('path');
+  const m = '$URL'.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)/);
+  if (!m) process.exit(0);
+  const cacheFile = 'C:/Users/brown/.claude/scratch/project-item-cache.json';
+  let cache = {};
+  try { cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch (e) {}
+  cache[m[1] + '/' + m[2] + '#' + m[3]] = '$ITEM_ID';
+  fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+  const tmp = cacheFile + '.' + process.pid + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(cache, null, 2), 'utf8');
+  fs.renameSync(tmp, cacheFile);
+"
 ```
 
 **GraphQL-only, no REST fallback.** Every command in this section — `gh project item-add`,
@@ -310,17 +327,15 @@ If this happens mid-session, note the board update as an outstanding manual step
 rather than hunting for a REST substitute that doesn't exist. See
 [dev-env#769](https://github.com/brownm09/dev-env/issues/769).
 
-To look up an item ID by issue or PR number `<N>` (e.g., to move status in a later session):
+To look up an item ID by issue or PR number `<N>` (e.g., to move status in a later session), use
+`get-project-item.sh` rather than querying the board directly — it checks a local cache first
+(dev-env#1057, [ADR-141](docs/adr/141-project-item-id-creation-time-cache.md)) and costs **zero**
+`gh` calls on a hit (populated automatically at creation time and backfilled wholesale by
+`reconcile-project-board.py`'s sweeps), falling back to the full `--limit 1000` board fetch only
+on a genuine cache miss — never the unconditional full fetch this section used to document inline:
 
 ```bash
-TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
-gh project item-list 3 --owner brownm09 --format json --limit 1000 > "$TMPFILE"
-ITEM_ID=$(node -e "
-  const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8'));
-  const item=d.items.find(i=>i.content&&i.content.number===<N>);
-  console.log(item.id);
-")
-rm -f "$TMPFILE"
+ITEM_ID=$(bash claude/scripts/get-project-item.sh <N>)
 ```
 
 **Move status** — set the Status field (`PVTSSF_lAHOAjEKvM4BWKFezhRgkMY`) to In Progress (`47fc9ee4`) when work begins, Done (`98236657`) after the PR merges:

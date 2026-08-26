@@ -83,7 +83,7 @@ import os
 import subprocess
 import sys
 
-from _gh_project import add_to_project
+from _gh_project import add_to_project, write_item_cache_entry
 from _repo_scan import find_git_repos
 from _worktree_canon import canonical_repo_root
 
@@ -434,6 +434,30 @@ def fetch_board_items(project_number: str, owner: str, limit: int = 1000) -> lis
     return items
 
 
+def _backfill_item_cache(items: list[dict]) -> None:
+    """Best-effort: cache every fetched item's `(repo, number) -> id` (dev-env#1057,
+    ADR-141), keyed by each item's own `content.repository` (already `"owner/repo"`)
+    and `content.number` — NOT the single `repo` being reconciled, since a shared
+    project board can carry items from other repos too (ADR-070, --scan-dir), and
+    `content.repository` is exactly what `board_issue_numbers` above already uses to
+    tell them apart. Piggybacks on a fetch this script already legitimately pays for
+    — no additional `gh` calls — so it backfills the *entire* cache (pre-existing
+    items, and anything a background session created without ever triggering
+    post-tool-use.py's hook, per ADR-053) every time this script runs. Every item
+    type is cached, not just Issues (unlike `board_issue_numbers`'s Issue-only
+    filter, which exists to keep its own orphan set-difference correct — the cache
+    is equally useful for PR items, which `get-project-item.sh` and
+    post-pr-merge-project.py also look up by number). Never raises —
+    `write_item_cache_entry` is itself best-effort."""
+    for item in items:
+        content = item.get("content") or {}
+        repo = content.get("repository")
+        number = content.get("number")
+        item_id = item.get("id")
+        if repo and isinstance(number, int) and item_id:
+            write_item_cache_entry(repo, number, item_id)
+
+
 def _reconcile_repo(config: dict, dry_run: bool) -> dict:
     """Fetch, compute orphans, add them (unless dry_run), and print the report for one
     repo whose config has already been validated (repo/project_number/project_owner
@@ -461,6 +485,8 @@ def _reconcile_repo(config: dict, dry_run: bool) -> dict:
             return {"status": "scope-error", "orphans_added": 0, "add_failed": 0, "needs_attention": 0, "add_scope_error": False}
         print(f"[reconcile-board] gh call failed: {msg}", file=sys.stderr)
         return {"status": "gh-error", "orphans_added": 0, "add_failed": 0, "needs_attention": 0, "add_scope_error": False}
+
+    _backfill_item_cache(items)
 
     open_nums = open_issue_numbers(issues)
     board_nums = board_issue_numbers(items, repo)

@@ -40,6 +40,7 @@ import re
 import subprocess
 import sys
 
+from _gh_project import lookup_cached_item_id, write_item_cache_entry
 from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
@@ -315,6 +316,17 @@ def parse_closes_numbers(body: str) -> list[int]:
 
 
 def find_project_item(issue_number: int, config: dict) -> str | None:
+    """Resolve the project item ID for `issue_number`. Checks the shared item-ID
+    cache first (dev-env#1057, ADR-141) -- a hit costs zero `gh` calls, which
+    matters here since this runs on EVERY PR merge. On a miss, falls back to the
+    original full `gh project item-list --limit 1000` fetch-and-scan unchanged, and
+    populates the cache on a successful match so a repeat lookup (e.g. a second
+    `Closes #N` in the same merge) hits."""
+    repo = config.get("repo", "")
+    cached = lookup_cached_item_id(repo, issue_number) if repo else None
+    if cached:
+        return cached
+
     try:
         result = subprocess.run(
             [
@@ -332,7 +344,10 @@ def find_project_item(issue_number: int, config: dict) -> str | None:
         data = json.loads(result.stdout)
         for item in data.get("items", []):
             if item.get("content", {}).get("number") == issue_number:
-                return item["id"]
+                item_id = item["id"]
+                if repo:
+                    write_item_cache_entry(repo, issue_number, item_id)
+                return item_id
         return None
     except Exception:
         return None

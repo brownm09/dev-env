@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 87 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 99 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 88 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 100 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -41,6 +41,7 @@ production code.
 | `test_bash_state.py` | `_bash_state.py` | Per-session repo/branch state file plus the drift-warning formatter shared by the four commit/PR-create/merge/every-Bash-call checkpoint hooks. |
 | `test_composed_output_scan.py` | `_composed_output_scan.py` | Fence- and code-span-aware detection of stray terminal output in composed journal markdown, behind `/journal-compose` Step 8b. |
 | `test_gh_issue_state.py` | `_gh_issue_state.py` | Shared GitHub issue/PR REST state helpers (URL validation, PR-vs-issue filtering, `state` case normalization, paged-lookup stop condition) extracted from `reconcile-pending-tiles.py` for reuse by `retro-chain-status.py`. |
+| `test_gh_project.py` | `_gh_project.py` | Shared `gh project item-add` wrapper (used by `post-tool-use.py` and `reconcile-project-board.py`'s orphan-add step) plus its best-effort item-ID cache — the near-zero-cost lookup path `get-project-item.sh` and `post-pr-merge-project.py` fall back to a full board fetch only on a miss. |
 | `test_hookio.py` | `_hookio.py` | Shared PostToolUse command-output reader, merge-marker detection, and the `scan_top_level` command-shape parser five PostToolUse hooks import. |
 | `test_hookout.py` | `_hookout.py` | The shared hook advisory/block emitter — one encoding of the stdout/stderr/exit-code channel table every hook should route through. |
 | `test_hookutil.py` | `_hookutil.py` | Sentinel-file, transcript-locate, transcript-record-reader, and heartbeat-recording helpers shared across Stop/PostToolUse hooks. |
