@@ -3590,3 +3590,58 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_replay_shell_content_guard.py
     ```
+
+97. **journal-project-repo-map test** — required when changing
+    `claude/scripts/journal-project-repo-map.py` or the Step 8a Source 3 block in
+    `claude/skills/journal-compose/SKILL.md`
+    ([ADR-032 Amendment 1](adr/032-journal-start-here-dashboard.md), dev-env#1045).
+
+    The script resolves each `sessions/<project>/` directory to a GitHub `owner/repo` slug so Step 8a
+    Source 3 can query it for `start-here`-labeled issues. It exists as a script, rather than the
+    inline regex it replaced, because that regex matched **zero** of the 11 project READMEs — Source 3
+    had never contributed an entry for any repo between dev-env#292 adding it and dev-env#1045 finding
+    it — and nothing tested the inline form.
+
+    **Two independent defects, so two independent regression cases**, each carrying the old pattern
+    applied to the same fixture as a control. Without those controls a test would pass just as happily
+    against the broken implementation: `test_regression_1045_repository_spelling_resolves` (the one
+    project README that *does* carry a repo line spells it `**Repository:**`, and `Repo:` is not a
+    substring of it — after `Repo` comes `s`, not `:`) and `test_regression_1045_bold_markers_resolve`
+    (the pattern also did not tolerate the `**` bold markers that actually precede the colon).
+
+    **The load-bearing case is `test_regression_1045_live_shape_resolves_every_project_from_root_readme`.**
+    Ten of the eleven live project READMEs carry no repo line at all, so no per-project pattern —
+    however wide — can resolve them; only the root README can. A fix that merely widened the regex
+    would have resolved exactly one project, `gas-lifting-logbook`, which is also the end-to-end test
+    case the issue named. It would have looked correct while leaving ten projects silently skipped.
+    That test fixes the fixture so *no* project README carries a repo line, reproducing the live shape,
+    and asserts all three still resolve.
+
+    `test_root_readme_section_title_differs_from_directory` pins why the resolver keys on the
+    `**Journal:** [sessions/<project>/` bullet and never the heading: section titles deliberately do
+    not match directory names (`### Job Search` → `sessions/job-search/`).
+
+    `test_prose_pr_link_is_not_mistaken_for_a_repo_slug` pins the trap that makes "grab the first
+    github.com link" actively wrong here — `sessions/cover-letter-runtime/README.md`'s first link
+    points at **career-playbook**, a different repo. A deep path (`owner/repo/pull/16`) is rejected
+    outright rather than truncated to its first two segments. The same strictness is what keeps a
+    malformed README from reaching the `gh issue list --repo <slug>` command line the caller builds.
+
+    **The observability half is tested, not just the resolution half** — it is what prevents a
+    recurrence, since the original defect's real cost was that a bare `continue` made a broken mapping
+    indistinguishable from "no labeled issues". `test_every_skipped_project_is_named_in_the_report`,
+    `test_skips_alone_are_information_not_failure` (exit 0 — a partial resolution must never fail a
+    compose), and `test_mapping_empty_signals_the_1045_signature_and_exits_1` pin the contract, with
+    `test_empty_sessions_tree_is_not_a_mapping_failure` as its counterpart: nothing to resolve is not
+    the same as failing to resolve everything.
+
+    **Deliberate scope note.** `main()` *is* covered here, unlike the pure-helper convention most
+    `test_*.py` in this directory follow (see item 25). The exit contract and the stdout report are the
+    observability half of the fix, so leaving them to the untested surface would miss the point of the
+    change. The `gh issue list` call is deliberately *not* in this script — it stays in the skill —
+    which is what keeps the extracted unit pure filesystem parsing and lets every case above run
+    offline with no network and no `gh`.
+
+    ```bash
+    py -3 claude/scripts/tests/test_journal_project_repo_map.py
+    ```

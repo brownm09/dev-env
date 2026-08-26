@@ -90,6 +90,75 @@ The empty case (no priorities flagged today and no open PRs) renders an explicit
 
 ---
 
+## Amendment 1 — Source 3's project→repo mapping is the root README, and every skip is named (2026-08-25)
+
+**Closes:** [dev-env#1045](https://github.com/brownm09/dev-env/issues/1045)
+
+The Decision above describes **two** sources. A third — open issues labeled `start-here` across
+project repos, filling the list when the first two total fewer than 5 — was added later by
+[dev-env#292](https://github.com/brownm09/dev-env/issues/292). That addition needed a
+project→repo-slug mapping, which this ADR had never specified, and the one it invented was wrong.
+
+**The defect.** Source 3 resolved each `sessions/<project>/` directory's slug by regex against that
+project's own `README.md`:
+
+```js
+const m = txt.match(/Repo:\s*\[([^\]]+)\]\(https:\/\/github\.com\/([^\/]+\/[^\/\)]+)\)/);
+if (!m) continue;
+```
+
+Verified live 2026-08-25, that pattern matched **zero of the 11 project READMEs**, so Source 3 had
+never contributed an entry for any repo since the day it was added. Two independent reasons, either
+fatal alone:
+
+1. **The file it read is the wrong file.** Ten of the eleven project READMEs carry no repo-link line
+   at all — so no per-project pattern, however wide, can resolve them. The `**Repo:**` bullets the
+   regex was written for live in the **root** `README.md`, which Step 8 writes.
+2. **The one file that does carry a line spells it differently.** `sessions/gas-lifting-logbook/README.md`
+   uses `**Repository:**`, and `Repo:` is not a substring of `Repository:` (after `Repo` comes `s`,
+   not `:`). The pattern also did not tolerate the `**` bold markers that precede the colon.
+
+**Why it went undetected for months** is the part worth recording: the loop's failure branch was a
+bare `continue`. A project skipped because the mapping was broken produced output *identical* to a
+project with no labeled issues — and since the dashboard's empty state is a legitimate, expected
+condition ("no flagged priorities and no open PRs"), there was no observable difference between
+working and completely inert. The Detection section above anticipated the block *disappearing*; it
+did not anticipate one of its sources being silently absent from a block that still rendered.
+
+**The decision.** The **root `README.md` is the canonical project→slug mapping**, because Step 8
+regenerates it on every compose immediately before Step 8a runs. Each `### ` section's `**Repo:**`
+bullet is paired with its `**Journal:** [sessions/<project>/` bullet — the *Journal* bullet, never
+the heading, since section titles deliberately do not match directory names (`### Job Search` →
+`sessions/job-search/`). The project's own README is a documented fallback, accepting `Repo:` **or**
+`Repository:` with or without bold markers, so a project given a repo line locally but not yet a
+root-README section still resolves.
+
+Resolution moves out of the skill's inline `node -e` block and into
+`claude/scripts/journal-project-repo-map.py`, mirroring how Step 8b's logic lives in
+`validate-composed-output.py` ([ADR-121](121-composed-output-stray-terminal-scan.md)). Two reasons:
+the inline form was untestable, and the resolved slug is interpolated straight into a `gh issue list
+--repo <slug>` command line, so shape-validating it belongs in a unit that has tests
+(`## Testing` item 97).
+
+**Every unresolved project must be named.** This is the half that prevents a recurrence, and it is a
+new requirement this ADR did not previously impose: the script emits `SOURCE3_RESOLVED=`/
+`SOURCE3_SKIPPED=` counts, one `SOURCE3_SKIP <project> -- <reason>` line per unresolved project, and
+a distinct `SOURCE3_MAPPING_EMPTY` signal (exit 1) when projects exist and none resolve. The skill
+reports all of it to the user, including a zero skip count — a visible zero is what makes a later
+non-zero meaningful. A wholesale mapping failure can no longer look like a quiet day.
+
+**Failure direction.** Skips alone exit 0: some projects legitimately have no repo
+(`engineering-journal` itself), and a partial resolution must never fail a compose.
+`SOURCE3_MAPPING_EMPTY` exits 1, and Step 8a reports it and **continues** — matching the
+`START_HERE_INSERT_FAILED` convention already in that step. One dashboard sub-source must never
+abort a compose.
+
+**Live result at the time of the fix:** 10 of 12 project directories resolve, versus 0 before. The
+two that do not (`engineering-journal`, `research-notes`) have no root-README section, and both are
+now reported by name with a reason rather than silently dropped.
+
+---
+
 ## References
 
 - [ADR-001 — Per-Session Stub Files for Journal Composition](001-per-session-stub-files.md)
