@@ -268,6 +268,67 @@ def _is_synthetic_user(rec: dict) -> bool:
     return isinstance(rec, dict) and bool(rec.get("isMeta") or rec.get("isCompactSummary"))
 
 
+# A slash-command wrapper -- Claude Code emits "<command-name>/review</command-name>
+# ..." as a genuine (non-isMeta) user record with real string content. Its keywords
+# are command machinery, not typed intent. Hoisted here (dev-env review of PR #1053,
+# dev-env#1044) from stop-journal-stub-checkpoint.py's own local copy, which now
+# imports this instead of keeping a second definition -- exactly the drift ADR-090
+# hoisted this module to prevent. Extend this tuple, not a caller's own copy, if
+# another wrapper prefix is confirmed against a live transcript (a scheduled-task
+# invocation was suspected but not confirmed as of this writing, so it is not
+# seeded here).
+_WRAPPER_PREFIXES = ("<command-name>",)
+
+
+def _is_wrapper_text(text: str) -> bool:
+    """True iff *text* opens with a harness-generated wrapper (see
+    ``_WRAPPER_PREFIXES``) rather than genuine typed content."""
+    return text.lstrip().startswith(_WRAPPER_PREFIXES)
+
+
+def first_user_prompt_text(records: list) -> str:
+    """The text of the session's FIRST genuine user prompt, or ``""``.
+
+    Composes the helpers above: walk *records* in order, skip every synthetic user
+    record (``_is_synthetic_user`` — a compact summary or ``<local-command-*>``
+    caveat block is not a fresh instruction) and every wrapper text item
+    (``_is_wrapper_text`` — a ``<command-name>...`` slash-command wrapper is command
+    machinery, not what a human or routine actually asked for), and return the first
+    non-blank text a genuine user record carries. Multiple text items in one record
+    are joined with newlines, matching how they are rendered as a single prompt; a
+    record mixing one wrapper item with one genuine item keeps only the genuine one.
+
+    Records that are not user messages, and user records carrying only tool_result
+    items, contribute nothing — ``_user_message_texts`` already returns ``[]`` for
+    both, so a transcript whose first records are tool traffic still resolves to
+    the first real prompt rather than ``""``.
+
+    Public (no leading underscore) unlike its building blocks, because it is a
+    hook-facing question ("how did this session start?") rather than a record-shape
+    detail. No hook read the opening prompt before dev-env#1044's unchained-merge
+    trigger; that trigger's whole scope test is "did the session's opening prompt
+    name follow-on work", which is answerable only from this first prompt — not
+    from the transcript at large, where a mid-session mention of an issue number
+    says nothing about what the session was *asked* to do. Without the wrapper
+    filter, a `/review`-launched or otherwise command-wrapped session would have its
+    scope decided by whatever the wrapper's own machinery text happens to contain,
+    rather than by what was actually typed (review of PR #1053).
+    """
+    for rec in records:
+        if _is_synthetic_user(rec):
+            continue
+        texts = [
+            t for t in _user_message_texts(rec)
+            if isinstance(t, str) and not _is_wrapper_text(t)
+        ]
+        if not texts:
+            continue
+        joined = "\n".join(texts)
+        if joined.strip():
+            return joined
+    return ""
+
+
 def _result_text(item: dict, record: dict) -> str:
     """Best-available text of a tool_result: the per-id content the model saw,
     falling back to the record's structured ``toolUseResult`` (stdout+stderr)."""

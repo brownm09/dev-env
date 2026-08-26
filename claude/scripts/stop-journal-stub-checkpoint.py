@@ -80,7 +80,13 @@ import sys
 from pathlib import Path
 
 from _hookio import is_help_only, scan_top_level
-from _hookutil import _content_items, _is_synthetic_user, _parse_records, _user_message_texts
+from _hookutil import (
+    _content_items,
+    _is_synthetic_user,
+    _is_wrapper_text,
+    _parse_records,
+    _user_message_texts,
+)
 
 SENTINEL_PREFIX = "journal-stub-checkpoint-"
 
@@ -142,10 +148,6 @@ _PREFILTER_RE = re.compile(
 _PR_CREATE_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+create\b", re.IGNORECASE)
 _PR_MERGE_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+merge\b", re.IGNORECASE)
 
-# A slash-command wrapper — Claude Code emits "<command-name>/review</command-name>
-# ..." as a genuine user record with string content. Its keywords are command
-# machinery, not a typed request, so report_intent skips a text starting with it.
-_COMMAND_WRAPPER_PREFIX = "<command-name>"
 # A /review command invocation exempts the session (its findings live on the PR).
 # Keyed on the wrapper so prose merely mentioning "/review" never trips it. The
 # `(?!-)` after the `\b` stops a future `/review-<suffix>` command (e.g.
@@ -241,7 +243,7 @@ def report_intent(records: list) -> bool:
         if not isinstance(rec, dict) or rec.get("type") != "user" or _is_synthetic_user(rec):
             continue
         for text in _user_message_texts(rec):
-            if text.lstrip().startswith(_COMMAND_WRAPPER_PREFIX):
+            if _is_wrapper_text(text):
                 continue
             if any(rx.search(text) for rx in _INTENT_RES):
                 return True

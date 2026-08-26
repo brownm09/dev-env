@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code Stop hook — state-keyed tile-enumeration gate (ADR-088, extended ADR-092, ADR-094 addendum, ADR-097 per-trigger sentinels, ADR-118 shard trigger).
+"""Claude Code Stop hook — state-keyed tile-enumeration gate (ADR-088, extended ADR-092, ADR-094 addendum, ADR-097 per-trigger sentinels, ADR-109 deferral-question trigger, ADR-118 shard trigger, ADR-140 unchained-merge trigger).
 
 The command-keyed ``post-merge-tile-checkpoint.py`` (ADR-060) fires on a
 ``gh pr merge`` *you run*, but is BLIND to a PR that reaches merged state some
@@ -10,8 +10,8 @@ PR #700 incident that motivated the ADR-046 2026-07-05 forcing-function
 refinement (dev-env#595).
 
 This hook is STATE-keyed instead: at every Stop it scans the just-ended session
-transcript for FIVE independent triggers, each requiring the same recorded
-tile-enumeration artifact before the stop is allowed:
+transcript for SIX independent triggers, each requiring its own recorded
+follow-up artifact before the stop is allowed:
 
 1. **Merged PR** (ADR-088): a PR reached MERGED state this session (by any
    path) but no enumeration was recorded.
@@ -72,7 +72,34 @@ tile-enumeration artifact before the stop is allowed:
    systemMessage toast, exit 0), so a human judges the specific case, same as
    the user caught the motivating incident directly in chat.
 
-The first three triggers are the direct Stop-hook analog of
+5. **Unchained merge** (ADR-140, dev-env#1044): a PR merged this session, the
+   session's OWN opening prompt named no follow-on work, and the session
+   neither spawned a tile nor asked the user anything. ADR-137 says every tile
+   spawn is a look-ahead moment for what comes after it; its own
+   Alternatives-considered deferred a hook as premature, with the explicit
+   precondition "a hook can follow later if the anti-pattern recurs despite
+   the documented rule." This is that hook, and it enforces the *floor*
+   ADR-137 leaves unenforced: a merge in a session that was not itself handed
+   a next thread must end with one queued, or with the choice put to the user.
+   Chain-bearing-ness is read from the FIRST genuine user prompt
+   (``_hookutil.first_user_prompt_text``) — an issue/PR reference, or the
+   ``=== CHAIN`` marker a ``retro-chain-refill`` / ADR-132 / ADR-137 chained
+   tile prompt carries — means the session already had its next thread named
+   for it, so whatever it chains next is ADR-137's prose rule to judge, not
+   this hook's. A mid-session mention of an issue number is deliberately NOT
+   consulted: it says nothing about what the session was *asked* to do, which
+   is the whole scope test. Resolution is any of three paths ADR-140's
+   CLAUDE.md rule offers, each counted only when it happens AT OR AFTER the
+   merge — a ``spawn_task`` (chained the next thread), an ``AskUserQuestion``
+   (no next thread was determinable, so the ranked open-issue survey was put
+   to the user), or a ``gh issue create`` (the documented fallback for a
+   session where ``spawn_task`` itself is unavailable) — plus the universal
+   "skip tiles" override. Blocking, like 1-3b: every input is an objectively
+   verifiable fact (a merge marker, a tool_use name, a regex over one fixed
+   prompt), not a natural-language judgment, so it does NOT ride trigger 4's
+   advisory channel.
+
+Triggers 1-3b and 5 are the direct Stop-hook analog of
 ``pre-merge-findings-gate`` (ADR-039) and BLOCK the stop (exit 2) with a
 reminder on stderr. A recorded enumeration (triggers 1/2) is either an actual
 ``spawn_task`` tile, or the prescribed text ("Follow-ups considered: ... ->
@@ -138,16 +165,18 @@ Stdin JSON shape (Stop):
   {"session_id": "...", "transcript_path": "/abs/path.jsonl",
    "stop_hook_active": false, ...}
 
-Exit 0 — no merged-state PR, no dangling created issue, and no spawned tile
-         missing its table or its shard this session (triggers 1-3b);
-         enumeration/table/shard already recorded, a "skip tiles" override
+Exit 0 — no merged-state PR, no dangling created issue, no spawned tile
+         missing its table or its shard, and no unchained merge this session
+         (triggers 1-3b and 5); enumeration/table/shard already recorded, the
+         next thread chained or put to the user, a "skip tiles" override
          present, that trigger already fired (its own per-trigger sentinel),
          stop_hook_active set, or any error (fail-open). A deferral-question
-         hit (trigger 4) with none of triggers 1-3b firing still exits 0, but
+         hit (trigger 4) with no blocking trigger firing still exits 0, but
          carries a systemMessage advisory on stdout (see below).
 Exit 2 — a PR merged and/or a created issue remains unresolved and/or a tile
-         was spawned with no table and/or with no shard write this session
-         (triggers 1-3b); blocking reminder(s) on stderr. Trigger 4 never
+         was spawned with no table and/or with no shard write and/or an
+         unchained session merged a PR without queuing what comes next
+         (triggers 1-3b and 5); blocking reminder(s) on stderr. Trigger 4 never
          contributes to this exit code — when any blocking trigger also fires,
          trigger 4's advisory is skipped this turn in favor of the blocking
          reminder (there is only one exit code per invocation, and the harder
@@ -177,6 +206,7 @@ from _hookutil import (
     _is_synthetic_user,
     _parse_records,
     _user_message_texts,
+    first_user_prompt_text,
     iter_bash_calls as _iter_bash_calls,
 )
 from _repo_target import (
@@ -201,6 +231,7 @@ _TRIGGER_ISSUE = "issue-"
 _TRIGGER_TABLE = "table-"
 _TRIGGER_DEFER = "defer-"
 _TRIGGER_SHARD = "shard-"
+_TRIGGER_WORKSTREAM = "workstream-"
 # _TRIGGERS is DERIVED from _TRIGGER_SPECS (below, after the evaluators and
 # formatters it references) rather than hand-listed here, so the sentinel set
 # and the trigger table can never drift apart (dev-env#696).
@@ -321,6 +352,67 @@ _TABLE_MARKER_RE = re.compile(r"^#{1,6}\s*tiles\s+spawned\s+this\s+session",
 # the dangerous one (a false block on a session that did write its shard). It is
 # matched against tool inputs AND tool OUTPUT; see `tile_shard_write_present`.
 _TILE_SHARD_PATH_RE = re.compile(r"\btiles[/\\]\d+\.json\b", re.ASCII)
+
+# --- unchained-merge detection (ADR-140, dev-env#1044) -------------------------
+# An `AskUserQuestion` tool call -- the second of the two resolution paths
+# ADR-140's CLAUDE.md rule offers (the first is a spawn_task). Bare verb with
+# no namespace anchor, deliberately mirroring _SPAWN_TASK_RE's own "so any
+# namespacing hits" philosophy: this is matched against a tool_use item's
+# `name`, so a rehosted/renamed host prefix must still resolve.
+_ASK_USER_RE = re.compile(r"AskUserQuestion", re.IGNORECASE)
+# What makes an opening prompt "chain-bearing": a same-repo issue/PR reference,
+# a full github issues/pull URL, or the `=== CHAIN` marker a chained tile prompt
+# carries (the shape `retro-chain-refill` and ADR-132/ADR-137 chained tiles use).
+# Any one of the three means the session was HANDED its next thread, so trigger 5
+# is out of scope -- what it chains after that is ADR-137's prose rule to judge.
+#
+# A bare `#\d+` is ambiguous: real tile/issue prompts use it ("Implement #1044",
+# "work on dev-env#696"), but ordinary prose also uses "#<digit>" as an ordinal or
+# step marker ("do step #2 of the runbook") that names no issue at all. `re.ASCII`
+# keeps a non-ASCII decimal digit (e.g. Arabic-Indic) from matching either --
+# `_TILE_SHARD_PATH_RE` above already carries the same flag.
+#
+# Over-matching here used to be treated as the SAFE direction on the theory that
+# an extra match just means the trigger does not fire -- but the branch it feeds
+# returns (None, True), which `main()` writes as a RESOLVED sentinel, so an
+# over-match instead silently and PERMANENTLY disarms a blocking trigger for the
+# rest of the session (review of PR #1053, dev-env#1044). `_has_chain_issue_reference`
+# below narrows the bare-`#N` case with a small denylist of common ordinal/step
+# words immediately preceding it -- necessarily incomplete, but it closes the
+# demonstrated false-positive class without narrowing either real form tile
+# prompts use: a bare "#N" at a sentence boundary, or a repo-prefixed compound
+# ("dev-env#696", detected by ANY non-alnum-adjacent word character before "#",
+# which always counts regardless of the word list).
+_CHAIN_ISSUE_REF_RE = re.compile(r"#\d+", re.ASCII)
+_CHAIN_URL_RE = re.compile(r"github\.com/[^\s/]+/[^\s/]+/(?:issues|pull)/\d+", re.IGNORECASE)
+_CHAIN_MARKER_RE = re.compile(r"===\s*CHAIN", re.IGNORECASE)
+# Words that commonly precede a bare "#N" as an ordinal/step marker rather than an
+# issue/PR reference. Deliberately small and conservative: missing a real ordinal
+# usage here just means `prompt_is_chain_bearing` over-matches as it always did
+# (safe-ish, per the comment above), while an entry that's wrong in the OTHER
+# direction (a word that's sometimes part of a genuine issue mention) would
+# silently disarm the trigger -- so this list only grows on a demonstrated case.
+_CHAIN_ORDINAL_WORDS = frozenset({
+    "step", "item", "number", "no", "point", "part", "phase", "priority",
+    "rank", "level", "stage", "tier", "round", "page", "line", "row",
+    "column", "slot",
+})
+
+
+def _has_chain_issue_reference(text: str) -> bool:
+    """True iff *text* contains a bare issue/PR reference (``#1044``,
+    ``dev-env#696``) rather than only an ordinal/step marker that merely looks
+    like one (``step #2``). See ``_CHAIN_ISSUE_REF_RE``'s comment for why this
+    exists instead of a plain ``_CHAIN_ISSUE_REF_RE.search(text)``."""
+    for match in _CHAIN_ISSUE_REF_RE.finditer(text):
+        start = match.start()
+        if start > 0 and text[start - 1].isalnum():
+            return True  # a compound like "dev-env#696" or "gh#123" -- always real
+        before = text[:start].rstrip()
+        word = before.rsplit(None, 1)[-1].lower() if before else ""
+        if word not in _CHAIN_ORDINAL_WORDS:
+            return True
+    return False
 
 # --- deferral-question detection (new ADR, dev-env#772) ------------------------
 # A deliberately narrow, bounded set of phrasings for "asked the user a
@@ -980,6 +1072,180 @@ def evaluate_deferral(records: list) -> tuple:
     return True, False
 
 
+def session_asked_user(records: list) -> bool:
+    """True iff a real ``AskUserQuestion`` tool call happened this session,
+    checked via ``_ASK_USER_RE`` against a ``tool_use`` item's ``name``.
+
+    The exact structural mirror of ``session_spawned_tiles`` (its bare-verb
+    tool-name match, its assistant-record scoping, its early return) for the
+    OTHER resolution path ADR-140 accepts: when no next thread is determinable,
+    the ranked open-issue survey is put to the user via ``AskUserQuestion``
+    rather than chained as a tile. Only a genuine tool_use satisfies it —
+    assistant prose merely *describing* asking the user does not, exactly as
+    enumeration text alone never substitutes for a real spawn in trigger 3.
+    """
+    for rec in records:
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        for item in _content_items(rec):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "tool_use" and _ASK_USER_RE.search(item.get("name", "") or ""):
+                return True
+    return False
+
+
+def prompt_is_chain_bearing(text: str) -> bool:
+    """True iff *text* — a session's opening user prompt — already names the
+    follow-on work the session was handed (an issue/PR reference, a github
+    issues/pull URL, or the ``=== CHAIN`` marker).
+
+    A pure text predicate so the "what counts as chained" decision is testable
+    on its own, independent of transcript shape. Empty/blank text is NOT
+    chain-bearing here; ``evaluate_workstream`` handles the unreadable-prompt
+    case separately, because "no prompt found" and "a prompt that names nothing"
+    warrant opposite treatments (see that function).
+    """
+    return bool(
+        _has_chain_issue_reference(text)
+        or _CHAIN_URL_RE.search(text)
+        or _CHAIN_MARKER_RE.search(text)
+    )
+
+
+def _bash_call_record_indices(records: list) -> list:
+    """The index into *records* of each Bash ``tool_use`` item's own assistant
+    record, one entry per occurrence in transcript-encounter order (so a turn
+    with N parallel Bash calls contributes N indices, possibly repeated).
+
+    A narrow, POSITION-ONLY mirror of ``iter_bash_calls``'s own first walk (``for
+    rec in records: ... for item in _content_items(rec): tool_use named "Bash"``)
+    -- it performs no pairing and no merge detection of its own; that stays
+    entirely delegated to ``session_merged_prs`` via ``_records_after_merge``,
+    below. Callers must not assume this list is the same length as
+    ``iter_bash_calls(records)``: an unresolved trailing Bash call (no
+    tool_result yet at Stop time) is counted here but dropped there, which is
+    exactly why ``_records_after_merge`` compares the two lengths before use.
+    """
+    indices = []
+    for i, rec in enumerate(records):
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        for item in _content_items(rec):
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "tool_use"
+                and item.get("name") == "Bash"
+            ):
+                indices.append(i)
+    return indices
+
+
+def _records_after_merge(records: list, calls: list, merged: set) -> list:
+    """The suffix of *records* at or after the point ``session_merged_prs``
+    first detects evidence for any PR in *merged* -- so a resolution check
+    scoped to this suffix only counts a ``spawn_task``/``AskUserQuestion`` that
+    happened AFTER the merge, not one from earlier in the session for unrelated
+    reasons that ``evaluate_workstream``'s unscoped check used to accept (review
+    of PR #1053, dev-env#1044).
+
+    Delegates ALL merge detection to ``session_merged_prs`` itself, re-invoked on
+    successively longer prefixes of *calls* -- never reimplemented, so this
+    cannot diverge on what counts as evidence (the same non-duplication argument
+    ``evaluate_workstream``'s own docstring makes for reusing
+    ``session_merged_prs`` in the first place). The record-index mapping
+    (``_bash_call_record_indices``) is a position-only mirror of
+    ``iter_bash_calls``'s walk; when its length disagrees with *calls* (a
+    parallel-call turn, or a trailing unresolved Bash call -- both uncommon),
+    this falls back to returning *records* unchanged rather than guessing --
+    conservative in the SAME direction the caller already accepted before this
+    fix, so the fallback only ever widens scope back to the prior, unscoped
+    behavior, never introduces a new false block.
+
+    Quadratic in the session's Bash-CALL count (re-running ``session_merged_prs``
+    on each growing prefix), not in transcript bytes or total record count --
+    paid only once per Stop, and only on the already-narrow subset where the
+    caller has already confirmed *merged* is non-empty.
+    """
+    indices = _bash_call_record_indices(records)
+    if len(indices) != len(calls):
+        return records
+    for k in range(1, len(calls) + 1):
+        if session_merged_prs(calls[:k]) & merged:
+            return records[indices[k - 1]:]
+    return records
+
+
+def evaluate_workstream(records: list) -> tuple:
+    """Return ``(payload, resolved)`` for the unchained-merge trigger (ADR-140,
+    dev-env#1044) — a SIXTH fully independent sibling to the five above.
+
+    Fires when all four hold: a PR merged this session; the session's opening
+    prompt is not chain-bearing; and no ``spawn_task``, ``AskUserQuestion``, or
+    ``gh issue create`` ran AFTER that merge (see ``_records_after_merge`` --
+    evidence from earlier in the session, for unrelated reasons, does not count).
+    ``payload`` is then the lowest merged PR number (mirroring ``evaluate()``'s
+    lowest-PR determinism, so a two-merge session blocks on a stable one);
+    ``None`` otherwise.
+
+    ``session_merged_prs`` is REUSED, not re-implemented — its direct-marker /
+    REST-fallback / observed-auto-merge detection is the single source of truth
+    for "a PR reached merged state", and a second copy here would be exactly the
+    drift ADR-090 hoisted the shared transcript readers to prevent.
+
+    **Three distinct ways to return ``(None, True)``, all of which mark the
+    sentinel so later Stops skip the re-scan:**
+
+    - ``skip_override`` — the universal escape hatch every trigger honors.
+    - **Out of scope: the opening prompt is chain-bearing.** The session was
+      handed its next thread; ADR-137's prose rule governs what it chains after
+      that, not this hook. Marking this resolved is safe *because the first
+      genuine user prompt is immutable for the session* — a chain-bearing
+      session can never become unchained later, so there is nothing left to
+      re-evaluate.
+    - **Out of scope: no genuine opening prompt is readable at all.** The scope
+      test cannot be established, so a blocking trigger must not fire on it —
+      the conservative direction for a gate whose false positive costs a blocked
+      stop. Same immutability argument, so also resolved rather than deferred.
+
+    Deliberately does NOT accept ``enumeration_recorded`` as resolution, and for
+    the same reason ``evaluate_deferral`` doesn't: enumeration TEXT ("-> not
+    tiled, because ...") is what a session writes when it decides there is no
+    follow-up to tile, and that decision is precisely what this trigger exists
+    to question. A real ``spawn_task`` (the next thread chained), a real
+    ``AskUserQuestion`` (the choice put to the user), or a same-session
+    ``gh issue create`` (the CLAUDE.md-documented fallback for a session where
+    ``spawn_task`` itself is unavailable, e.g. some terminal sessions -- "file
+    the follow-up issue anyway") resolves it, each ONLY when it happens at or
+    after the merge (review of PR #1053, dev-env#1044 -- the original check
+    accepted any of the three from anywhere in the session, including before a
+    merge it had nothing to do with). Note that a spawn therefore resolves this
+    trigger while independently *arming* triggers 3 and 3b, which demand its
+    table and its shard: the same asymmetry those two already have with
+    trigger 1.
+
+    A session with no merge yet returns ``(None, False)`` so a merge later in
+    the session is still caught.
+    """
+    calls = iter_bash_calls(records)
+    merged = session_merged_prs(calls)
+    if not merged:
+        return None, False
+    if skip_override(records):
+        return None, True
+    prompt = first_user_prompt_text(records)
+    if not prompt.strip() or prompt_is_chain_bearing(prompt):
+        return None, True
+    post_merge = _records_after_merge(records, calls, merged)
+    if (
+        session_spawned_tiles(post_merge)
+        or session_asked_user(post_merge)
+        or session_created_issues(iter_bash_calls(post_merge))
+    ):
+        return None, True
+    return min(merged), False
+
+
 def format_reminder(pr: int) -> str:
     """The exit-2 stderr message. ASCII-only: Claude Code pipes hook output as
     cp1252 on Windows, so a char outside it (an arrow, em-dash) would raise
@@ -1046,6 +1312,31 @@ def format_shard_reminder(payload: object = None) -> str:
         "shell when interpolated. Recipe: docs/REFERENCE.md -> Tile shards. Only an "
         "explicit \"skip tiles\" instruction anywhere in this session exempts this "
         "checkpoint."
+    )
+
+
+def format_workstream_reminder(pr: int) -> str:
+    """The exit-2 stderr message for the unchained-merge trigger (ADR-140,
+    dev-env#1044). ASCII-only, same cp1252 constraint as its blocking siblings.
+
+    Points at claude/CLAUDE.md for the survey ranking rather than restating it,
+    matching post-merge-tile-checkpoint.py's own reminder (review of PR #1053):
+    ADR-140's own Rationale argues the ranking belongs in prose, not in a hook
+    that reads no gh state, specifically BECAUSE it will keep evolving --
+    restating it here would just be a second, driftable copy of the same list."""
+    return (
+        f"[tile-enumeration-gate] PR #{pr} merged in a session whose opening prompt named "
+        "no follow-on work, and nothing was queued at or after the merge -- no spawn_task "
+        "tile, no AskUserQuestion, and no gh issue create (the fallback for a session where "
+        "spawn_task itself is unavailable). Per ADR-137/ADR-140, a merge is a look-ahead "
+        "moment: if this work predictably surfaces or unblocks a next thread, tile it now "
+        "(tracking issue + spawn_task + shard); only if none is determinable, survey and "
+        "rank the repo's open issues per claude/CLAUDE.md -> Capture follow-ups as tiles, "
+        "then offer the top options via AskUserQuestion and tile the choice. The survey ask "
+        "is the ONE bounded carve-out to the don't-ask-just-tile rule and applies only when "
+        "nothing is determinable -- never a substitute for chaining a follow-up you already "
+        "know. Only an explicit \"skip tiles\" instruction anywhere in this session exempts "
+        "this checkpoint."
     )
 
 
@@ -1149,6 +1440,18 @@ _TRIGGER_SPECS = (
         blocking=True,
     ),
     _TriggerSpec(
+        key=_TRIGGER_WORKSTREAM,
+        evaluate=evaluate_workstream,
+        # Reuses trigger 1's own signal verbatim -- evaluate_workstream fires
+        # only when session_merged_prs() is non-empty, so this is a superset for
+        # exactly the reason that clause is (every merge signal contains
+        # "merged" case-insensitively). No new scan cost: `lower` is computed
+        # once in main() and shared via _PrefilterCtx.
+        prefilter=lambda c: "merged" in c.lower,
+        formatter=format_workstream_reminder,
+        blocking=True,
+    ),
+    _TriggerSpec(
         key=_TRIGGER_DEFER,
         evaluate=evaluate_deferral,
         prefilter=lambda c: (
@@ -1202,8 +1505,10 @@ def main() -> None:
     # Per-trigger sentinels (ADR-097, dev-env#677): each trigger's "already
     # fired or resolved" state is tracked independently, so a trigger whose
     # condition arises later in the session -- after a SIBLING trigger already
-    # set its own sentinel -- is still evaluated. Only when ALL FOUR are
-    # already set is there genuinely nothing left to check this session; skip
+    # set its own sentinel -- is still evaluated. Only when EVERY trigger's
+    # sentinel is already set (the set is derived from _TRIGGER_SPECS, so this
+    # needs no edit when a trigger is added) is there genuinely nothing left to
+    # check this session; skip
     # even reading the transcript (the fully-resolved-session fast path the
     # original single shared sentinel also had).
     already_done = {
@@ -1243,6 +1548,13 @@ def main() -> None:
     # "spawn_task" -- a bare substring check (matching what the real detector,
     # _SPAWN_TASK_RE, itself matches) is a third standalone OR-branch rather
     # than folded into either regex above.
+    #
+    # Trigger 5 (unchained merge, ADR-140, dev-env#1044) shares trigger 1's
+    # "merged" clause verbatim rather than adding one -- it fires only when
+    # session_merged_prs() is non-empty, so the same superset argument holds and
+    # the pre-filter costs nothing new. Its own narrowing conditions (the opening
+    # prompt, the spawn/ask resolution paths) are evaluator-side, deliberately:
+    # a pre-filter clause may only READ _PrefilterCtx, never scan.
     #
     # Trigger 4 (deferral-question, new ADR, dev-env#772) requires one of the
     # _DEFER_PREFILTER_SUBSTRINGS to be present -- see that tuple's own
@@ -1291,7 +1603,7 @@ def main() -> None:
     # re-flagged for the second, exactly as before ADR-097).
     try:
         records = _parse_records(text)
-        # One uniform skip-default for every trigger, now that all five share
+        # One uniform skip-default for every trigger, now that all six share
         # the (payload, resolved) contract -- the (None, False) vs (False,
         # False) split this replaced was the dev-env#696 asymmetry.
         results = {
