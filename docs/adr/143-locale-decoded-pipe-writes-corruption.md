@@ -3,7 +3,7 @@
 **Date:** 2026-08-28
 **Status:** Accepted
 **Closes:** [dev-env#1073](https://github.com/brownm09/dev-env/issues/1073)
-**Tags:** claude-behavior, cli-scripting, encoding, cp1252, utf-8, mojibake, subprocess, text-mode, silent-corruption, read-modify-write, gh-api, github, windows, numeric-verification, data-corruption, global-rule, correction, adr-007, adr-034, adr-117, adr-138
+**Tags:** claude-behavior, cli-scripting, encoding, cp1252, utf-8, mojibake, subprocess, text-mode, silent-corruption, read-modify-write, gh-api, github, windows, numeric-verification, data-corruption, global-rule, correction, adr-007, adr-034, adr-114, adr-117, adr-138
 
 ---
 
@@ -110,9 +110,13 @@ downstream of the very thing being diagnosed.
 **Why the reversal is worth recording.** cp1252-decoding UTF-8 is injective over the bytes it
 maps, so the mangling is exactly invertible and recovery is one expression rather than retyping
 the content by hand. It is stated with its precondition, because the inverse is *not* total: a
-U+FFFD left behind by an `errors="replace"` decode, or a byte that landed on one of the five
-undefined positions, has destroyed the original irreversibly. Recording the recipe without the
-precondition would invite a session to "recover" a body that had already lost information.
+U+FFFD left behind by an `errors="replace"` decode has already destroyed the original, and no
+re-encoding brings it back. Note what that implies — `errors="replace"` is exactly the default
+`_winsubp` installs, so the very setting that keeps a committed hook from crashing on an
+undefined byte is the one that would make this class of corruption unrecoverable. (An undefined
+byte under the *default* `errors="strict"` needs no precondition: it raises, so no corrupted
+string is ever produced to reverse.) Recording the recipe without the precondition would invite a
+session to "recover" a body that had already lost information.
 
 ## Alternatives considered
 
@@ -134,10 +138,19 @@ PATCH/POST`.** Rejected, on two independent grounds.
 `subprocess.Popen.__init__` to default `encoding="utf-8", errors="replace"` on any text-mode call
 that does not specify its own encoding, and `test_pyw_stdio.py` fails the build if a
 subprocess-using hook ships without `import _winsubp` ([ADR-007](007-hook-command-invocation.md),
-2026-07-02 follow-up 3). Verified at the time of writing: all 35 files under `claude/scripts/`
-that use `text=True` — 73 call sites — import `_winsubp`, with no exceptions, so every one of
-them is safe **by construction**. A lint keyed on `text=True` would produce zero true positives
-and 35 false ones.
+2026-07-02 follow-up 3). Verified at the time of writing, over the **top-level hook and utility
+scripts** — `claude/scripts/*.py`, non-recursive, which is the surface such a lint would police:
+all **35** of those files that use `text=True` (73 call sites) import `_winsubp`, with no
+exceptions, so every one is safe **by construction**. A lint keyed on `text=True` would produce
+zero true positives there and 35 false ones.
+
+Recursively (`claude/scripts/**`) the counts are 64 files and 134 call sites, of which **25 do
+not** import `_winsubp` — every one of them under `claude/scripts/tests/`. That is not a
+counterexample: those are test harnesses that spawn a hook and read its stdout, never code that
+round-trips remote prose back to a live resource, so they fall outside this hazard class
+entirely. The scopes are stated separately here precisely because conflating them is the item-5
+glob-scoping trap ([ADR-117](117-absence-claims-need-absolute-paths.md)), and an ADR arguing for
+verification discipline is the worst possible place to commit it.
 
 *Second, the lint's surface does not contain the bug.* The offending code was an **ad-hoc `py -3`
 script written inline in a session** — never a file in `claude/scripts/`, and explicitly outside

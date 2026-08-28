@@ -304,6 +304,12 @@ command would fire on every correct use of it.
 - [dev-env#952](https://github.com/brownm09/dev-env/issues/952) — pipe-decode mojibake, the
   raw-bytes-check item of the CLI Scripting Checklist (item 6 at time of writing): the same
   false-absent family, and one of the two whose obvious fix is *not* self-confirming.
+  **Superseded in scope by [ADR-143](143-locale-decoded-pipe-writes-corruption.md)** (2026-08-28),
+  which split item 6 into two labeled directions: the read direction described here, and a *write*
+  direction in which the same decode silently corrupts content that is then written back to a live
+  remote resource. Only the read direction belongs to this ADR's false-absent family — the write
+  direction concludes nothing absent — so a reader arriving here for item 6 should follow ADR-143
+  for that half.
 - [dev-env#1006](https://github.com/brownm09/dev-env/issues/1006) — `$`-anchored regex against
   CRLF-terminated lines, documented under Git Workflow: the other one, and the case where the obvious
   fix is simply correct.
