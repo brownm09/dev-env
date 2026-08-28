@@ -3,8 +3,8 @@
 **Date:** 2026-08-28
 **Status:** Accepted
 **Closes:** [dev-env#1074](https://github.com/brownm09/dev-env/issues/1074)
-**Tags:** workflow, gates, calibration, measured-properties, thresholds, provenance, false-positives, known-bad-reference, vacuous-gate, diagnostic, pass-3, claude-md, global-rule, claude-facing, career-playbook, cover-letter-runtime, adr-011, adr-042, adr-089, adr-115, adr-116, adr-142
-**Related:** [ADR-042](042-plan-risk-dimension-audit-and-observability-section.md), [ADR-089](089-privilege-restricted-test-defaults.md), [ADR-115](115-experimental-rigor-protocol.md), [ADR-116](116-single-source-worktree-recovery-recipe.md), [ADR-142](142-node-modules-truncation-gate.md)
+**Tags:** workflow, gates, calibration, measured-properties, thresholds, provenance, false-positives, known-bad-reference, vacuous-gate, diagnostic, pass-3, claude-md, global-rule, claude-facing, career-playbook, cover-letter-runtime, adr-011, adr-038, adr-042, adr-089, adr-115, adr-116, adr-142
+**Related:** [ADR-038](038-durable-preferences-documented-in-repo.md), [ADR-042](042-plan-risk-dimension-audit-and-observability-section.md), [ADR-089](089-privilege-restricted-test-defaults.md), [ADR-115](115-experimental-rigor-protocol.md), [ADR-116](116-single-source-worktree-recovery-recipe.md), [ADR-142](142-node-modules-truncation-gate.md)
 
 ---
 
@@ -27,9 +27,14 @@ as an action item:
   scanner ended the section early, and the check compared an empty code block against the recipe and
   passed. Nothing was being enforced, and nothing said so.
 
-The shared failure is not "the gate was wrong." It is that **a threshold was chosen from intuition or
-from a single example, shipped, and only then discovered to reject known-good input** — and that
-nothing in the plan protocol asks the question while it is still cheap to ask.
+The shared failure is not "the gate was wrong." It is that **nobody measured the check against real
+inputs before it shipped** — and that failure surfaces in two opposite directions. A threshold chosen
+from intuition or from a single example **over-rejects**: it turns away known-good input, which is what
+career-playbook and cover-letter-runtime each paid for. A check nobody confirmed can *fail*
+**over-accepts**: ADR-116's gate carried no threshold at all and enforced nothing, silently. One
+requirement closes both — a known-bad reference the check is made to fire on — which is why it is part
+of requirement 2 below rather than an optional nicety. And nothing in the plan protocol asks for it
+while it is still cheap to ask.
 
 ### The nearest existing rule is scoped to the wrong object
 
@@ -87,8 +92,8 @@ applied to a population. The plan must state four things:
    benign tree" is unfalsifiable; stating "3.3× over `confident-mcnulty-ad4e52`, known-good" can be
    checked against the line that classified it.
 
-And one rule about what an uncheck may do: **an uncalibrated check is a diagnostic — it may report, but
-it may not block, fail, or take a destructive action.**
+And one rule about what such a check may do: **an uncalibrated check is a diagnostic — it may report,
+but it may not block, fail, or take a destructive action.**
 
 ### Three scoping decisions, all deliberate
 
@@ -187,8 +192,9 @@ high-false-positive — which would make it, by its own rule, a diagnostic.
   experiment instruments** — where the failure it prevents is equally live, since ADR-142's error
   occurred inside an ADR that cites ADR-115. Deliberately not folded into ADR-115 in this change:
   amending an accepted ADR is a separate decision, and [dev-env#925](https://github.com/brownm09/dev-env/pull/925)
-  already has an ADR-115 amendment in flight. Recorded here so the asymmetry is a known gap rather
-  than an oversight, and tracked as a follow-up.
+  already has an ADR-115 amendment in flight, and two concurrent amendments to the same header and
+  Step D4 region would conflict. Tracked as
+  [dev-env#1077](https://github.com/brownm09/dev-env/issues/1077), which is to land after #925.
 - The dimension count in `claude/CLAUDE.md` moves seven → eight by hand. ADR-042 ("six") and ADR-115
   ("seven") are left as historical record rather than retro-edited, which is the convention ADR-115
   established. `README.md`, `docs/REFERENCE.md`, and `stop-experiment-verdict-gate.py`'s docstring all
