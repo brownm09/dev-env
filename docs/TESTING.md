@@ -133,11 +133,18 @@ For a one-line navigational map of the test directory, see
    following `test_reclaim_worktree_disk.py`'s fake-worktree precedent (item 30).
 
    **Several thresholds here are calibration constants, so the tests pin the measurement rather than
-   the arithmetic.** `test_measured_benign_ceiling_stays_ok` asserts against `MEASURED_BENIGN_CEILING`
-   = 21.3% — the worst *benign* empty-shell ratio observed across the 48-tree corpus, produced by the
-   optional platform dependencies npm correctly skips — and separately asserts the floor still sits
-   above it. A test that only re-checked `0.50 >= 0.50` would pass just as happily after an edit slid
-   the floor down into the benign band, which is the regression that actually matters.
+   the arithmetic.** `test_measured_benign_ceiling_stays_ok` asserts against
+   `EMPTY_SHELL_BENIGN_CEILING` = 15.0% — the worst *confirmed-benign* empty-shell ratio observed
+   across the 48-tree corpus (`confident-mcnulty-ad4e52`: 50 of 334 empty, **zero** partials, every
+   empty an optional platform dep npm skipped) — and asserts the floor/ceiling margin equals the 3.3×
+   that five documents state in prose. A test that only re-checked `0.50 >= 0.50` would pass just as
+   happily after an edit slid the floor into the benign band while the docs kept claiming 3.3×.
+
+   **`test_benign_ceiling_is_not_sourced_from_a_known_bad_tree` guards a defect that was real.** The
+   first draft set that ceiling to 0.213 — which was the *known-bad* reference tree's
+   (empty + partial) / total. A known-good reference taken from a known-bad measurement is exactly the
+   contamination [ADR-115](adr/115-experimental-rigor-protocol.md)'s calibration rule exists to
+   prevent, in an ADR citing ADR-115. Caught in review, not at calibration time.
 
    **`test_ratio_arm_never_repairs` pins the ADR's central asymmetry, not an implementation detail.**
    A 100%-empty tree with zero partials must still only `advise`: the empty-shell ratio has no
@@ -150,21 +157,56 @@ For a one-line navigational map of the test directory, see
    was extracting into one of the corpus worktrees: npm's `.<pkg>-XXXXXXXX` staging directories have
    exactly the PARTIAL shape, so without the suppression the gate would run `npm ci` over somebody's
    running install. `test_staging_names_are_recognized` pins the benign dot-entries
-   (`.bin`, `.cache`, `.vite-temp`, `.package-lock.json`) that must *not* be read as staging.
+   (`.bin`, `.cache`, `.vite-temp`, `.package-lock.json`) that must *not* be read as staging, and
+   `test_unknown_staging_shape_fails_toward_suppression` pins the direction: matching npm's staging
+   *shape* (the original `-[A-Za-z0-9_-]{8}$`, generalised from three samples on one npm version) would
+   have made any npm naming change point the **destructive** arm at live installs, so the check is an
+   allowlist and an unrecognised dot-entry defers.
+
+   **`test_scan_ignores_a_stray_dot_file` and `test_staging_outranks_every_other_signal` pin the two
+   review fixes around that suppression.** `is_staging_name` is a pure *name* test, so without an
+   `is_dir()` guard a stray `.DS_Store` **file** counted as staging — deferring the audit, and since the
+   defer path deliberately skips its sentinel, re-running the full scan on every prompt forever while a
+   genuine partial in the same tree went unrepaired (reproduced live before the fix). The precedence
+   itself (`staging` > `partial` > empty-tree > ratio) now lives in the pure `truncation_verdict()`
+   rather than as a caller short-circuit, which is what makes the most consequential branch testable.
+
+   **`test_install_lock_*` pin the mutual exclusion that keeps a repair from racing an install.**
+   `npm ci` removes `node_modules` before rebuilding, so a repair opens a window where the tree reads as
+   *absent* — and `main()`'s absent-tree branch would start a second concurrent `npm ci` in the same
+   directory, which is one of the root causes ADR-142 lists for the truncation it repairs. The stale-lock
+   case matters just as much: a hook killed mid-install cannot release its own lock, so a lock that were
+   honoured forever would disable installs in that worktree permanently.
+
+   **`test_sentinel_key_without_session_id_is_date_bounded`** pins the middle of three bad options: a
+   shared constant collides across sessions and (against the 30-day sweep) turns "once per session" into
+   "once per month"; a unique fallback re-scans every prompt; the date bounds the blind window to a day.
 
    **`test_scan_unreadable_tree_returns_none` pins a distinction that is easy to collapse.** An
    unreadable tree must return `None`, not `(0, 0, [], 0)` — the latter would reach the `checked == 0`
    arm and advise, turning a permissions error into a truncation report.
 
-   **Deliberate scope gap.** `_audit_existing_tree()` is not unit-tested: it shells out to `npm ci`
-   and writes sentinels under the real `~/.claude/scratch`, both of which this suite's convention keeps
-   out. Its decision logic lives entirely in the pure helpers above. Its end-to-end behaviour was
-   verified before merge against live trees — `repair` on the confirmed known-bad
-   (`reverent-kowalevski-79b384`, carrying the `@langchain/core` truncation dev-env#945 named) and `ok`
-   on known-good trees carrying each benign class. `test_scan_skips_workspace_links` degrades to a
-   printed note (still passing, covering less) where the platform refuses symlink creation — Windows
-   without Developer Mode or elevation; the link branch is still covered purely by
-   `test_classify_covers_the_four_shapes`.
+   **Junctions are covered for real, because they are the load-bearing exclusion.**
+   `test_scan_skips_workspace_junctions` builds an actual junction with `mklink /J` (which succeeds
+   unelevated) and asserts `os.path.islink()` is `False` on it while `os.path.isjunction()` is `True` —
+   the exact asymmetry that makes `_ISJUNCTION` necessary and that a symlink-only fixture cannot
+   demonstrate. It raises a counted skip on non-Windows.
+
+   **Skips are counted, not disguised as passes.** `test_scan_skips_workspace_links` raises a `_Skip`
+   where the platform refuses symlink creation (Windows without Developer Mode or elevation), and the
+   runner reports it in the `Tests: N passed, N skipped, N failed` line. It previously returned a
+   *passing* note, which made a degraded run indistinguishable from a full one — the thing the repo's
+   own Test Integrity Policy Rule 2 exists to prevent.
+
+   **Deliberate scope gap.** `_audit_existing_tree()` is not unit-tested: it shells out to `npm ci` and
+   `git check-ignore` and writes sentinels under the real `~/.claude/scratch`, all of which this suite's
+   convention keeps out. Its decision logic lives in the pure helpers above, and the two pieces of state
+   it manages (the install lock, the sentinel key) are directly tested via injectable paths. Its
+   end-to-end behaviour was verified before merge against the live corpus: 49 trees, 44 `ok` / 5
+   `repair` / 0 `advise`, with the benign ceiling independently re-derived at 0.150. Note the corpus is
+   live, not a fixture — `reverent-kowalevski-79b384`, the known-bad reference named in ADR-142, was
+   reinstalled during this PR's own review and now scans clean. Named trees are dated observations; the
+   reproducible artifacts are the fixtures in this file.
 
    ```bash
    py -3 claude/scripts/tests/test_worktree_npm_install.py
