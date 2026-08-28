@@ -4,7 +4,7 @@
 **Status:** Accepted
 **Closes:** [dev-env#860](https://github.com/brownm09/dev-env/issues/860)
 **Tags:** workflow, experiments, calibration, pre-registration, verdict, rigor, skills, claude-md, pass-3, hooks, stop, global-rule, career-playbook, claude-behavior, adr-042, adr-089, adr-100, adr-109, adr-114
-**Related:** [ADR-042](042-plan-risk-dimension-audit-checklist.md), [ADR-089](089-privilege-restricted-test-defaults.md), [ADR-100](100-stop-journal-stub-checkpoint-hook.md), [ADR-109](109-tile-gate-deferral-question-trigger.md), [ADR-103](103-shared-hookout-emitter.md), [ADR-114](114-slim-testing-section-index.md)
+**Related:** [ADR-042](042-plan-risk-dimension-audit-and-observability-section.md), [ADR-089](089-privilege-restricted-test-defaults.md), [ADR-100](100-stop-journal-stub-checkpoint-hook.md), [ADR-109](109-tile-gate-deferral-question-trigger.md), [ADR-103](103-shared-hookout-emitter.md), [ADR-114](114-slim-testing-section-index.md)
 
 ---
 
@@ -41,7 +41,7 @@ Ship a cross-repo experimental-rigor protocol in four coordinated artifacts.
 
 **4. An advisory Stop-hook backstop** (`stop-experiment-verdict-gate.py`) for the VERDICT half: it blocks once (exit 2 + stderr, the only model-visible Stop channel per [ADR-103](103-shared-hookout-emitter.md)) when an assistant message states an experiment conclusion (a bounded, high-precision set of operative idioms) with no `/experiment-audit` having run and no "skip experiment audit" override. Fail-open, once-per-session sentinel, dismissable in one line — modeled on [ADR-100](100-stop-journal-stub-checkpoint-hook.md)'s journal-stub checkpoint (intent + absence-of-artifact + override + sentinel) and [ADR-109](109-tile-gate-deferral-question-trigger.md)'s bounded natural-language trigger.
 
-**Per-project `## Experiments` sections are optional/advisory** (a corpus catalog, an instrument registry with known-good/known-bad calibration references, a results home, tier triggers). The global dimension and the skill defer to them the way the Observability dimension defers to `## Observability` ([ADR-042](042-plan-risk-dimension-audit-checklist.md)); absence is advisory. career-playbook's own section is a follow-up in that repo, seeded from #811 (Fetch/Motion model letters as known-good references, the HungerRush plan-first letter as known-bad, `calibration/<slug>/` as the results home).
+**Per-project `## Experiments` sections are optional/advisory** (a corpus catalog, an instrument registry with known-good/known-bad calibration references, a results home, tier triggers). The global dimension and the skill defer to them the way the Observability dimension defers to `## Observability` ([ADR-042](042-plan-risk-dimension-audit-and-observability-section.md)); absence is advisory. career-playbook's own section is a follow-up in that repo, seeded from #811 (Fetch/Motion model letters as known-good references, the HungerRush plan-first letter as known-bad, `calibration/<slug>/` as the results home).
 
 ## Rationale
 
@@ -69,7 +69,7 @@ Ship a cross-repo experimental-rigor protocol in four coordinated artifacts.
 ## References
 
 - career-playbook incident: issues #806 / #809 / #811 (the confounded spike and its corrected re-test design).
-- [ADR-042](042-plan-risk-dimension-audit-checklist.md) — the Pass-3 audit + per-project-section deference pattern this mirrors.
+- [ADR-042](042-plan-risk-dimension-audit-and-observability-section.md) — the Pass-3 audit + per-project-section deference pattern this mirrors.
 - [ADR-089](089-privilege-restricted-test-defaults.md) — precedent for extending a Pass-3 dimension with a behavioral rule and no mechanical hook.
 - [ADR-100](100-stop-journal-stub-checkpoint-hook.md) — the intent + absence-of-artifact + sentinel Stop-hook pattern the verdict gate is modeled on.
 - [ADR-109](109-tile-gate-deferral-question-trigger.md) — the bounded natural-language trigger + advisory-vs-blocking reasoning.
