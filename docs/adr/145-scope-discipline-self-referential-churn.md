@@ -41,6 +41,16 @@ over the retro window (2026-07-11 … 2026-08-08, 92 commits on `main`, a squash
 | ADRs added in the window | 28, i.e. one for every ~3.3 PRs |
 | ADRs added on 2026-07-22 alone | **5** |
 
+**How these were derived** — this ADR argues that numbers applied to a population owe their
+provenance, so its own headline number states it. Window is `git log origin/main` between the two
+dates inclusive. The `fix` share counts *commits* (squash-merge repo, so ≈PRs). The latency rows
+count **file-touches, not PRs**: every `claude/scripts/` path touched by a `fix` commit in the
+window, paired with that path's first appearance on `origin/main` (`git log --diff-filter=A`),
+n=75 touches across 51 unique files. The obvious objection — a rename resets the clock and inflates
+recency — was checked and does not bite: of the 51 files, exactly **one** has a different birth date
+under `--follow` (`journal-stop-check.py`, 2026-04-29 vs 2026-04-13), and it sits in the `>90d`
+bucket under either date, so it cannot move the 24% or 65% figures.
+
 Two clarifications the review owes its own evidence. First, the retro's "5 ADRs on 2026-07-22"
 is correct **by merge date**; counted by each ADR's own `Date:` field the same day shows 2. ADR
 dates and merge dates diverge routinely, and any future count should say which it means. Second,
@@ -171,10 +181,24 @@ yields 83:
 Two of four green-lighting a settings file that wires nothing, on the surface that wires all 50
 hooks. Filed as [dev-env#1081](https://github.com/brownm09/dev-env/issues/1081); **not fixed here.**
 
-**Verdict: the class is narrow.** 27 of 29 runtime gates calibrated and 2 of ~13 structural gates
-vacuous does not justify a remediation programme, a standing anti-vacuity gate, or a sweep of the
-whole inventory. It justifies **two scoped fixes and a named pattern** — which is itself an
-application of this ADR's own thesis.
+**Coverage, stated exactly.** The runtime result is a census: all **29** blocking scripts were
+classified. The structural result is **not** — **4** structural gates were probed, namely the four
+consumers of `_hook_wiring`, and 2 of those 4 are vacuous. A further **13** population-scanning
+gates were identified but **never fed a known-bad**: `test_dev_env_sync`, `test_gh_project`,
+`test_hook_liveness_check`, `test_hookutil`, `test_no_crude_command_substring_checks`,
+`test_pyw_stdio`, `test_readme_index_parity`, `test_reconcile_project_board`, `test_settings_sync`,
+`test_sibling_hooks_hardened_io`, `test_stub_push_archive_reminder`, `test_worktree_npm_install`,
+`test_worktree_recovery`. That set is **disjoint** from the four probed — those reach settings
+through the shared module rather than naming `settings.shared.json` — so "2 of 13" would divide a
+numerator from one set by the size of another, and is not a ratio this audit can report.
+
+**Verdict: the class is narrow — on the evidence gathered.** A full census of the runtime gates
+found 27 of 29 calibrated, and the probed structural family yielded 2 defects, both filed. That
+does not justify a remediation programme, a standing anti-vacuity gate, or a sweep of the whole
+inventory; it justifies **two scoped fixes and a named pattern** — itself an application of this
+ADR's own thesis. The **13 unprobed gates are the stated limit of that verdict**: finding vacuity
+among them later would mean this audit never looked, not that it looked and was wrong. Probing them
+is cheap (the recipe is below) and is the natural first move if the class recurs.
 
 **The pattern already exists in-repo, and is now named.** ADR-116's own gate is the worked example:
 alongside its parity assertion it carries two dedicated tests whose only job is to prove the
@@ -211,9 +235,15 @@ the audit's conclusions rest on them, so their provenance is stated to the same 
 - **Vacuity probe** (`vacuity_probe_1079.py`). *Measured property:* whether a gate's process exit
   status changes when `hook_entries()` is driven to 0 entries. *Known-good:* the real
   `settings.shared.json` — 83 entries, all four gates green. *Known-bad:* three constructed
-  malformations, each independently verified to drive the parser to 0. *Non-vacuity of the probe
-  itself:* it **fires on 2 of 4** gates; a probe that reported all-clear would be indistinguishable
-  from a broken probe, and this one is not.
+  malformations of the `hooks` block, each independently verified to drive the parser to 0 —
+  **(a)** the `hooks` key renamed (the shape the app itself could write), **(b)** `hooks` replaced
+  by a list, **(c)** each event's group list replaced by a dict. Recording them here rather than
+  only in [#1081](https://github.com/brownm09/dev-env/issues/1081) is deliberate: the scripts live
+  in `~/.claude/scratch/`, which `sweep-scratch-debris.py` prunes, so this list is the reproduction
+  recipe's smallest durable home — §1's own test — and it is what lets a later session re-derive the
+  result, including over the 13 gates this audit did not probe. *Non-vacuity of the probe itself:*
+  it **fires on 2 of 4** gates; a probe that reported all-clear would be indistinguishable from a
+  broken probe, and this one is not.
 - **Calibration scan** (`gate_audit_1079_v2.py`). *Measured property:* presence of failing-outcome
   assertions in the test file the `## Testing` index declares for each gate. *Known-bad:* its own v1,
   which resolved gate→test by glob fallback (`test_*guard*.py`), silently scored six gates against
@@ -267,9 +297,12 @@ what the GitHub issue does not carry. The measured cost is concentrated in the s
 which is fixable without discarding the store.
 
 **A standing anti-vacuity gate** — a test asserting every gate's extracted population is non-empty.
-Rejected: it is machinery watching machinery, the exact pattern under review, and §3's measurement
-says the class is 2 gates wide. A named pattern in dimension 8 plus two scoped fixes is proportionate;
-if the class recurs after those land, that is new evidence and the decision can be revisited.
+Rejected: it is machinery watching machinery, the exact pattern under review, and §3 found 2 defects
+across everything it actually probed. A named pattern in dimension 8 plus two scoped fixes is
+proportionate. The honest caveat is §3's own: 13 population-scanning gates went unprobed, so this
+rejection rests on a partial structural sample — probing them (recipe in *Instrument calibration*)
+is the cheaper next step, and if the class turns out to be wider, that is new evidence and the
+decision can be revisited.
 
 **A numeric ADR cap.** Rejected — see §1: an uncalibrated threshold on a population, which
 dimension 8 would itself reject.
