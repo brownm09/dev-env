@@ -1,4 +1,4 @@
-# ADR-143: Gate Calibration as a Standing Pass-3 Dimension — Measured Properties, Named Provenance, Uncalibrated Means Diagnostic
+# ADR-144: Gate Calibration as a Standing Pass-3 Dimension — Measured Properties, Named Provenance, Uncalibrated Means Diagnostic
 
 **Date:** 2026-08-28
 **Status:** Accepted
