@@ -393,10 +393,23 @@ The *Ref scoping* bullet in `claude/CLAUDE.md` item 5:
   --sort=-committerdate refs/remotes/origin` and `git ls-tree -r <ref> --name-only -- <dir>/`) and
   the recency-not-ancestry filter above;
 - states why the third surface matters most;
+- notes that `ls-tree` answers only for *filename*-shaped identifiers, and points a
+  **content**-embedded one (a `## Testing` item number) at the API blob read rather than
+  `git show <ref>:<path>`, which would collide with the *Suppressed failure* bullet's MSYS
+  mangling two bullets down;
 - appends the 2026-08-28 incident alongside the existing ADR-116 one.
 
+One edit outside item 5: Git Workflow's *Check for an existing open PR before implementing* bullet
+describes this rule in passing, and described it as the open-PR check. Left alone it would have
+kept teaching the superseded two-surface model from the *same always-loaded file* — and from the
+higher-traffic entry point of the two — so its clause now names all three surfaces. `docs/adr/125`
+also describes the two-surface form, and is deliberately **not** edited: an ADR body narrates its
+own decision moment, the convention Amendment 1 invoked when it left the historical "four" counts
+alone. The forward pointer is carried by this amendment's `adr-125` tag and References entry.
+
 Unchanged: the item-5 headline, the preamble's "five mechanisms" count, and the other four
-bullets. `docs/adr/INDEX.md`'s ADR-117 row gains `2026-08-28` to its amended list and two tags.
+bullets. `docs/adr/INDEX.md`'s ADR-117 row gains `2026-08-28` to its amended list and the
+`remote-branches`, `concurrency`, and `adr-125` tags.
 
 ### Why no mechanical guard
 
