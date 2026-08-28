@@ -71,3 +71,42 @@ The rule is enforcement-style ("never merge a qualifying change without an ADR r
 - The rule appears in `claude/CLAUDE.md` `## Git Workflow` as a bullet between the existing "Test before PR" and "Never commit directly to `main`" bullets.
 - Project-level counterpart already landed in [career-playbook CLAUDE.md `## Testing`](https://github.com/brownm09/career-playbook/blob/main/CLAUDE.md) via PR #89.
 - Tracked in [dev-env#167](https://github.com/brownm09/dev-env/issues/167).
+
+---
+
+## Amendment 1 (2026-08-28, [dev-env#1079](https://github.com/brownm09/dev-env/issues/1079)) — the four criteria are triggers, not a granularity rule
+
+The *Negative* section above anticipated "ADR bloat if criterion 4 is interpreted loosely" and
+mitigated it by leaning on the concreteness of criteria 1–3. That mitigation addressed the wrong
+axis. The observed bloat did not come from criterion 4 firing loosely; it came from criteria 1–3
+firing **correctly** and there being no rule for *where the rationale goes* once they do.
+
+The four criteria answer **"does this change need a written rationale?"** They never answered
+**"which file does it belong in?"**, so every qualifying change defaulted to a new ADR file. Over
+the 2026-07-11 … 2026-08-08 retro window that produced 28 ADRs across ~92 merged PRs — one per
+~3.3 PRs — including **five on 2026-07-22** (by merge date; by their own `Date:` fields, two), and
+several governing one-line rules. [dev-env#963](https://github.com/brownm09/dev-env/issues/963)
+flagged the aggregate; [ADR-145](145-scope-discipline-self-referential-churn.md) §1 decided it.
+
+**Once a change is warranted, choose the smallest home that preserves the reasoning:**
+
+| Home | When |
+|---|---|
+| **A new ADR** | The change makes a decision that could later be *reversed on its own*: a new invariant, a mechanism whose alternatives were weighed, a rule other CLAUDE.md files will cite. |
+| **An amendment to an existing ADR** | The change refines, corrects, extends, or bounds a decision **already recorded**. If the honest opening sentence is "as ADR-N says, except…", it is an amendment. A follow-up fix to machinery an ADR introduced is *always* an amendment; so is a newly discovered failure mode of a decision already taken. |
+| **A CLAUDE.md line, no ADR** | The reasoning is fully contained in the rule as written, and `git log` plus the issue recover everything a reader needs. A one-line rule with no rejected alternative and no invariant to protect does not need a file. |
+
+**Tie-break — if you cannot name at least one *alternative you rejected*, it is not a new ADR.**
+This is the operative half: it is checkable in seconds, and it tests against a structure every ADR
+already has (the *Alternatives Considered* section this one carries). An ADR whose alternatives
+section would have to be invented is a rule, not a decision.
+
+A numeric cap ("at most N ADRs per week") was rejected: it is an uncalibrated threshold applied to a
+population — the defect [ADR-144](144-gate-calibration-pass-3-dimension.md)'s Pass-3 dimension 8
+exists to catch — and it penalizes a genuinely dense day of real decisions identically to a day of
+over-splitting.
+
+The rule is stated in `claude/CLAUDE.md`'s ADR-warrant bullet, so it is read at the moment the
+question arises. It is deliberately **not** mechanically enforced: a gate enforcing restraint about
+gates would be self-refuting, and ADR-145 §3's audit found dev-env's existing gates largely healthy
+without another one watching them.
