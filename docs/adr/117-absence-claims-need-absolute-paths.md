@@ -1,8 +1,8 @@
 # ADR-117: An Absence Claim Needs an Absolute Path — One Habit for Four False-Absent Mechanisms
 
-**Date:** 2026-07-22 (amended 2026-08-25)
+**Date:** 2026-07-22 (amended 2026-08-25, 2026-08-28)
 **Status:** Accepted
-**Tags:** claude-behavior, cli-scripting, absence-claims, false-absent, cwd, ref-scoping, git, msys, windows, claude-md, global-rule, correction, eventual-consistency, read-after-write, gh-api, self-confirming-fix, adr-066, adr-074, adr-101, adr-107, adr-120
+**Tags:** claude-behavior, cli-scripting, absence-claims, false-absent, cwd, ref-scoping, git, msys, windows, claude-md, global-rule, correction, eventual-consistency, read-after-write, gh-api, self-confirming-fix, remote-branches, concurrency, adr-066, adr-074, adr-101, adr-107, adr-120, adr-125
 
 ---
 
@@ -316,3 +316,141 @@ command would fire on every correct use of it.
 - [ADR-034](034-error-message-diligence.md) — the closest kin to this amendment's specific hazard.
   Both concern evidence that *looks* like a diagnosis: there, an emitted error message restated as
   root cause; here, a green retry restated as confirmation.
+
+---
+
+## Amendment 2 (2026-08-28, dev-env#1080) — the *Ref scoping* surface set was incomplete: a pushed branch with no PR
+
+### The incident
+
+On 2026-08-28 two concurrent dev-env sessions independently claimed **ADR-143**:
+
+- [#1073](https://github.com/brownm09/dev-env/issues/1073) → branch `claude/upbeat-hopper-7d691b` →
+  `docs/adr/143-locale-decoded-pipe-writes-corruption.md`, merged as
+  [#1075](https://github.com/brownm09/dev-env/pull/1075).
+- [#1074](https://github.com/brownm09/dev-env/issues/1074) → branch
+  `claude/suspicious-poincare-60bf84` → `docs/adr/143-gate-calibration-pass-3-dimension.md`,
+  renumbered to 144, merged as [#1076](https://github.com/brownm09/dev-env/pull/1076).
+
+**Both sessions ran the check this ADR prescribes, and both were correct when they ran it.** One
+verified that `origin/main` topped out at 142 *and* enumerated all five open PRs, none of which
+added an ADR. Accurate on both surfaces. The other branch was **pushed, with no PR yet**.
+
+Nothing detected the collision. The two sessions happened to write their commit messages to the
+same scratch filename — `~/.claude/scratch/adr143_commit_msg.txt` — and a file-changed-on-disk
+notice surfaced the other session's ADR-143 title. Without that coincidence it would have surfaced
+as a merge conflict at best, or two ADR-143s at worst.
+
+### Why this extends *Ref scoping* rather than becoming a sixth mechanism
+
+Amendment 1 established the criterion: a mechanism earns its own bullet when it sits on a **new
+axis**. Read-after-write staleness qualified because the four before it all answer "you were
+looking at a partial view" — wrong path, wrong ref, invisible slice, swallowed error — while
+eventual consistency answers "you were looking at the right thing at the wrong moment."
+
+This one introduces no axis. It is the **same ref axis**, with an incomplete enumeration of the
+refs, and its remedy is not a new habit but the existing habit applied to one more ref. It
+therefore folds into the *Ref scoping* bullet, and the item-5 headline — "an absolute path, the
+right ref — and, after a write, a fresh read" — is left untouched. That also honors Amendment 1's
+own closing note that three named axes is about the practical ceiling for a phrase meant to be
+recalled: this change spends none of that budget.
+
+### What the lifecycle framing buys
+
+The original bullet named two surfaces as a *list of places to look*, and a list invites the reader
+to treat it as complete. The three surfaces are better understood as three **points in a branch's
+lifecycle** — merged (`origin/main`), PR'd (the open-PR set), pushed (the remote branches) — because
+stated that way the omission is self-evident: a branch exists for some interval before it acquires
+a PR, and the two-surface check covers none of it.
+
+The framing also settles priority, which a list cannot. The uncovered interval is not an edge case;
+it is **the most collision-prone moment there is**. Two agent sessions running in parallel are both
+mid-flight, both with a branch pushed, neither having opened a PR — and parallel sessions across
+worktrees are routine here, not exceptional. So the two-surface check does not merely have a gap:
+it is blind precisely when the answer matters most, and fully sighted once the claim has already
+been staked by someone who finished first.
+
+### The squash-merge filtering trap
+
+Found while applying the new check in the session that wrote this amendment, and recorded because
+it is the difference between a usable rule and a noisy one. The natural way to narrow 121 remote
+branches is "just the unmerged ones," via `git merge-base --is-ancestor <branch> origin/main`. In a
+**squash-merge repo that predicate is false for merged branches too** — their tip commits never
+enter `main`'s history — so it classified 30+ long-merged branches as unmerged and separated
+nothing.
+
+Recency (`git for-each-ref --sort=-committerdate refs/remotes/origin`) is the usable filter, and it
+is also the correct one on the merits: a pushed-but-not-PR'd branch that could collide with a claim
+being made *now* is by definition recent.
+
+### The edits
+
+The *Ref scoping* bullet in `claude/CLAUDE.md` item 5:
+
+- drops "and none of them sees what an **open PR** already claims" — the two-surface framing;
+- names **three** surfaces, each tagged with its lifecycle point (merged / PR'd / pushed-no-PR);
+- gives the third surface's commands (`git fetch origin`, then `git for-each-ref
+  --sort=-committerdate refs/remotes/origin` and `git ls-tree -r <ref> --name-only -- <dir>/`) and
+  the recency-not-ancestry filter above;
+- states why the third surface matters most;
+- appends the 2026-08-28 incident alongside the existing ADR-116 one.
+
+Unchanged: the item-5 headline, the preamble's "five mechanisms" count, and the other four
+bullets. `docs/adr/INDEX.md`'s ADR-117 row gains `2026-08-28` to its amended list and two tags.
+
+### Why no mechanical guard
+
+Three reasons, the last specific to this case.
+
+1. The original *Alternatives* rejected a `PreToolUse` hook because the detectable event is the
+   *conclusion drawn from empty output*, which has no bounded surface form to key on. Unchanged
+   here.
+2. A merge-time gate already exists and is already known to be late.
+   `pre-merge-numbering-check.py` ([ADR-074](074-pre-merge-numbering-collision-check.md)) catches an
+   ADR-number collision at merge, and only once the competing PR has landed first. It did not fire
+   here because **neither PR existed** when either number was chosen — the same lateness the
+   original *Consequences* flagged, not a new gap a new hook would close.
+3. The machinery one would reach for — a hook scanning remote branches on every ADR-file write — is
+   exactly the pattern [dev-env#1079](https://github.com/brownm09/dev-env/issues/1079) was convened
+   to review: machinery about the machinery, guarding a case one sentence in an already-read
+   checklist covers. #1079's own body cites *this very incident* as evidence that some gaps are real
+   and that "less machinery" is not automatically the answer. Both readings hold at once: the gap is
+   real **and** its proportionate fix is the cheapest one available.
+
+### Consequences (amendment)
+
+- Coverage of the branch lifecycle is now complete. The residue is *unpushed local* work in another
+  session's worktree, which no remote surface can see by construction — bounded, and accepted: an
+  unpushed claim cannot reach `main` ahead of yours without first being pushed, at which point
+  surface three sees it, and ADR-074's merge gate remains the backstop for whatever slips past.
+- The check costs one more command than before. `git ls-remote --heads origin` alone answers only
+  "does a branch exist"; learning what a branch *claims* needs a fetch plus an `ls-tree`. That is
+  the honest cost, and the bullet states it rather than implying the cheaper call suffices.
+- The same blind spot exists one section away, in Git Workflow's *Check for an existing open PR
+  before implementing* ([ADR-125](125-check-open-pr-before-implementing-issue.md)): a pushed branch
+  with no PR is a fix already in flight that `gh pr list` cannot see. Deliberately **not** fixed
+  here — this amendment is scoped to item 5 — but noted, and carried as a follow-up rather than
+  left implicit.
+- Context weight in the always-loaded global `CLAUDE.md` grows by roughly two lines, paid inside the
+  existing bullet rather than by a new one ([ADR-114](114-slim-testing-section-index.md)).
+- No code, hook, or test changes — a `claude/CLAUDE.md` + ADR change, as the original and
+  Amendment 1 both were. The `## Testing` docs-only guard (item 4) applies.
+
+### References (amendment)
+
+- [dev-env#1080](https://github.com/brownm09/dev-env/issues/1080) — the issue this amendment
+  resolves.
+- [dev-env#1073](https://github.com/brownm09/dev-env/issues/1073) /
+  [#1075](https://github.com/brownm09/dev-env/pull/1075) (kept 143) and
+  [dev-env#1074](https://github.com/brownm09/dev-env/issues/1074) /
+  [#1076](https://github.com/brownm09/dev-env/pull/1076) (renumbered to 144) — the two colliding
+  claims.
+- [dev-env#1079](https://github.com/brownm09/dev-env/issues/1079) — the scope-discipline review this
+  issue was deliberately read alongside; open and unconcluded when this amendment was written, and
+  citing this incident as evidence that some gaps are real.
+- [ADR-074](074-pre-merge-numbering-collision-check.md) — the merge-time numbering gate: real, but
+  blind while neither competing claim has a PR.
+- [ADR-125](125-check-open-pr-before-implementing-issue.md) — the adjacent open-PR-surface check,
+  which shares this blind spot for the same reason.
+- [dev-env#863](https://github.com/brownm09/dev-env/pull/863) — the ADR-116 collision that produced
+  the original *Ref scoping* bullet, and which this amendment completes.
