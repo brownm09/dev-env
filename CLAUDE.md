@@ -42,7 +42,7 @@ the item). A one-line navigational map of the test directory is
 6. **`get-project-item.sh` smoke test** — required when changing `claude/scripts/get-project-item.sh`. Run: `bash claude/scripts/tests/test-get-project-item.sh`
 7. **shellcheck gate** — recommended when changing any shell script. Run: `bash claude/scripts/tests/run-shellcheck.sh`
 8. **usage-snapshot classifier test** — required when changing `claude/scripts/usage-snapshot.py`. Run: `py -3 claude/scripts/tests/test_usage_snapshot.py`
-9. **worktree-npm-install gate test** — required when changing `claude/scripts/worktree-npm-install.py`. Run: `py -3 claude/scripts/tests/test_worktree_npm_install.py`
+9. **worktree-npm-install gate test** — required when changing `claude/scripts/worktree-npm-install.py`. Covers both of the hook's decisions: the ADR-045 pre-install free-space gate and the ADR-142 node_modules-truncation audit (pure `classify_package_dir`/`truncation_verdict`/`is_staging_name`, plus temp-directory fixtures for `scan_node_modules`). Run: `py -3 claude/scripts/tests/test_worktree_npm_install.py`
 10. **post-pr-merge-reclaim test** — required when changing `claude/scripts/post-pr-merge-reclaim.py`. Run: `py -3 claude/scripts/tests/test_post_pr_merge_reclaim.py`
 11. **memory-write-advisory test** — required when changing `claude/scripts/memory-write-advisory.py`. Run: `py -3 claude/scripts/tests/test_memory_write_advisory.py`
 12. **post-tool-use test** — required when changing `claude/scripts/post-tool-use.py`. Run: `py -3 claude/scripts/tests/test_post_tool_use.py`

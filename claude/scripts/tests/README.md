@@ -134,7 +134,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_prune_merged_worktrees.py` | `prune-merged-worktrees.py` | Removes worktrees whose branch is merged (or, opt-in, whose diff is all-ephemeral) and not live. |
 | `test_reclaim_worktree_disk.py` | `reclaim-worktree-disk.py` | Deletes `node_modules`/`.turbo` from idle, merged, or dirty-excluded worktrees to reclaim disk. |
 | `test_sweep_scratch_debris.py` | `sweep-scratch-debris.py` | On-demand sweep of accumulated per-session marker/sentinel files under `scratch/`. |
-| `test_worktree_npm_install.py` | `worktree-npm-install.py` | Pre-install free-space gate for a new worktree's `npm install` (refuses rather than silently truncating on low disk). |
+| `test_worktree_npm_install.py` | `worktree-npm-install.py` | Pre-install free-space gate for a new worktree's `npm install` (refuses rather than silently truncating on low disk), plus the truncation audit that classifies an existing `node_modules` and decides repair vs. advise. |
 | `test_worktree_path_check.py` | `pre-tool-use-worktree-path-check.py` | Blocks a Write/Edit from an orphaned worktree, or one whose absolute path escapes to the canonical root. |
 
 ### GitHub project board

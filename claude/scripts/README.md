@@ -136,7 +136,7 @@ invocation instead.
 | Script | Event / Invocation | Purpose |
 |---|---|---|
 | `disk-space-check.py` | UserPromptSubmit / PreToolUse (Bash) | Watches free space on `C:`; warns below 20 GB, spawns detached reclamation below 10 GB. |
-| `worktree-npm-install.py` | UserPromptSubmit | Auto-runs `npm ci`/`install` in a worktree missing `node_modules`; gates on free space, refuses below a 5 GB floor. |
+| `worktree-npm-install.py` | UserPromptSubmit | Auto-runs `npm ci`/`install` in a worktree missing `node_modules`; gates on free space, refuses below a 5 GB floor. Also audits a present-but-truncated tree once per session and repairs it with a gated `npm ci`. |
 | `pre-tool-use-worktree-path-check.py` | PreToolUse (Write/Edit/NotebookEdit) | Blocks a write whose absolute path escapes to the canonical root, or any write from an orphaned worktree. |
 | `multi-worktree-alert.py` | UserPromptSubmit | Lists active worktrees in `repo:branch` format when ≥2 are open. |
 | `prune-merged-worktrees.py` | `py -3 prune-merged-worktrees.py [--dry-run] [--repo-path\|--scan-dir] [--include-named]` | Removes merged/idle worktrees and parks any squatting `main`; engine behind the `prune-stale-worktrees` routine. |
