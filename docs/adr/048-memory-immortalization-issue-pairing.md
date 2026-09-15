@@ -124,8 +124,8 @@ this ADR already established, generalized to any bug-report issue, plus a closed
 the old fix actually stuck before treating a new report as valid) the narrower memory-only version
 never needed, since an immortalization issue is closed only once its instruction edit lands. The
 `## Durable Preferences & Memory → Search before filing` bullet now defers to that general bullet for
-the search mechanic itself, keeping only what's unique to the memory case: pairing the match with the
-memory body, and the floor-not-finish framing.
+the search mechanic itself, keeping only what's unique to the memory case: the dev-env-vs-project-repo
+targeting rule (a distinction ordinary bug reports don't need) and pairing a match with the memory body.
 
 **Why this still doesn't need its own hook.** Same reasoning as the 2026-07-09 amendment: detecting a
 duplicate is a one-time content-matching judgment call at file-time, not a mechanical property of the
