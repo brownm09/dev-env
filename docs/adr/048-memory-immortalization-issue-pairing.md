@@ -3,9 +3,9 @@
 **Date:** 2026-06-20
 **Status:** Accepted
 **Closes:** [dev-env#373](https://github.com/brownm09/dev-env/issues/373)
-**Tags:** workflow, memory, claude-behavior, documentation, global-rule, hooks, skill
+**Tags:** workflow, memory, claude-behavior, documentation, global-rule, hooks, skill, issue-dedup, git-workflow
 **Extends:** [ADR-038](038-durable-preferences-documented-in-repo.md)
-**Related:** [ADR-027](027-userpromptsubmit-blocking-hook-conventions.md), [ADR-024](024-worktree-path-guard-hook.md), [ADR-039](039-merge-gate-findings-enforcement.md)
+**Related:** [ADR-027](027-userpromptsubmit-blocking-hook-conventions.md), [ADR-024](024-worktree-path-guard-hook.md), [ADR-039](039-merge-gate-findings-enforcement.md), [ADR-125](125-check-open-pr-before-implementing-issue.md)
 
 ---
 
@@ -98,3 +98,38 @@ every `Write` was already rejected in Alternatives considered above for cost and
 Detecting a duplicate *before* filing is a one-time judgment call (matching search results against
 the memory's actual content) at the moment the agent is about to file — not a mechanical property of
 the write itself — so it stays a documented step the agent follows rather than a new gate.
+
+## Amendment (2026-09-15) — Generalize search-before-filing to ordinary bug-report issues (dev-env#1096)
+
+The 2026-07-09 amendment above added a search-before-filing step, but scoped it specifically to the
+memory-immortalization issue this ADR's Decision introduces. It said nothing about an ordinary
+bug-report issue — the far more common case of `gh issue create` in this repo and every project
+repo — leaving an identical gap one level up: a session that hits a defect can file an issue for it
+without ever checking whether an issue for the same defect already exists.
+
+career-playbook issues [#1575](https://github.com/brownm09/career-playbook/issues/1575) (filed
+2026-09-08) and [#1608](https://github.com/brownm09/career-playbook/issues/1608) (filed 2026-09-14)
+independently documented the identical root cause in `scripts/lib/changed.sh` — a `-n` (non-empty)
+test guarding a test-override seam where `-v`/`${VAR+x}` (existence) was needed, so an override
+explicitly set to the empty string fell through to a live `git` call instead of being honored. Both
+were filed by sessions hitting the failure while running the pre-PR `validate.sh` gate for an
+unrelated application-artifact PR, six days apart, neither referencing the other. Fixed together in
+[career-playbook PR #1610](https://github.com/brownm09/career-playbook/pull/1610). The overlap
+surfaced only by chance, when an unrelated session's journal next-session-context note happened to
+mention #1575 — nothing in the #1608-filing workflow itself would have caught it.
+
+**Fix:** `claude/CLAUDE.md`'s `## Git Workflow` section gains a new bullet, **"Check for an existing
+issue before filing a new one"** — the same `gh issue list --search "<keywords>" --state all` search
+this ADR already established, generalized to any bug-report issue, plus a closed-issue branch (verify
+the old fix actually stuck before treating a new report as valid) the narrower memory-only version
+never needed, since an immortalization issue is closed only once its instruction edit lands. The
+`## Durable Preferences & Memory → Search before filing` bullet now defers to that general bullet for
+the search mechanic itself, keeping only what's unique to the memory case: pairing the match with the
+memory body, and the floor-not-finish framing.
+
+**Why this still doesn't need its own hook.** Same reasoning as the 2026-07-09 amendment: detecting a
+duplicate is a one-time content-matching judgment call at file-time, not a mechanical property of the
+write, and a `gh` round-trip gated on every `issue create` was already rejected above for cost and
+reliability. [ADR-125](125-check-open-pr-before-implementing-issue.md) reached the identical
+conclusion for the sibling one-stage-later check (open PR before implementing), for the same reason —
+both stay documented steps.
