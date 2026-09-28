@@ -204,19 +204,29 @@ win_link() {
 # run and created lazily, so a re-run over an already-correct layout creates nothing.
 SETUP_BACKUP_DIR="${SETUP_BACKUP_DIR:-$HOME/.claude/backups/setup-$(date +%Y%m%d-%H%M%S)}"
 
-# same_path <a> <b> -- whether two paths name the same location. Links are resolved first;
-# on Windows both sides are then rendered in C:/ form and compared case-insensitively,
-# because one directory can be spelled /c/..., C:/..., or through an MSYS mount such as
-# /tmp. A path that cannot be resolved (a dangling link, a missing drive) is compared as
-# written.
+# same_path <a> <b> -- whether two paths name the same location.
+#
+# Identity first: when the path exists, `-ef` asks whether both names reach the same file
+# on disk, which no spelling can fool -- an 8.3 short name, /c/... vs C:/..., an MSYS
+# mount such as /tmp, a link or a junction. A string compare alone was fooled on the
+# GitHub Windows runner, where a junction's resolved target and its source came back in
+# different 8.3 spellings (RUNNER~1 vs runneradmin) and a correct link was removed
+# (dev-env#1114).
+#
+# A path that doesn't exist (a saved core.hooksPath, a dangling link) has no identity, so
+# spellings are compared instead: links resolved, then on Windows in C:/ form with long
+# names, case-insensitively.
 same_path() {
+  if [ -e "$1" ] && [ "$1" -ef "$2" ]; then
+    return 0
+  fi
   local a b
   a="$(readlink -f "$1" 2>/dev/null || printf '%s' "$1")"
   b="$(readlink -f "$2" 2>/dev/null || printf '%s' "$2")"
   case "$(uname -s)" in
     MINGW*|CYGWIN*|MSYS*)
-      a="$(cygpath -m "$a" 2>/dev/null || printf '%s' "$a")"
-      b="$(cygpath -m "$b" 2>/dev/null || printf '%s' "$b")"
+      a="$(cygpath -m -l "$a" 2>/dev/null || printf '%s' "$a")"
+      b="$(cygpath -m -l "$b" 2>/dev/null || printf '%s' "$b")"
       [ "${a,,}" = "${b,,}" ] ;;
     *)
       [ "$a" = "$b" ] ;;

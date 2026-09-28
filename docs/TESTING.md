@@ -1952,6 +1952,14 @@ For a one-line navigational map of the test directory, see
     `same_path` comparing `/tmp/...` against `C:/.../Temp/...` spellings of one directory), and
     `--restore` puts the prior value back.
 
+    Scenario 7 is the regression for the PR's first CI run. On the GitHub Windows runner a
+    junction's resolved target and its source came back in different 8.3 spellings
+    (`RUNNER~1` vs `runneradmin`), a string compare called a correct link different, and
+    `prepare_link_target` removed it. The scenario builds a junction whose target is stored in
+    the short spelling and requires it to be kept (rc 1). That is why `same_path` now asks for
+    file identity (`-ef`) first and compares long-name spellings only for paths that don't
+    exist. On a volume without 8.3 names it reports that there is nothing to compare.
+
     Still out of scope: `setup_windows()`'s elevation gate, the soft-prereq warnings, and
     `win_link`'s actual `cygpath`/`mklink` call ([dev-env#614](https://github.com/brownm09/dev-env/issues/614)).
     For dev-env#1114 the whole script was also run end-to-end in a sandboxed `HOME`/`USERPROFILE`

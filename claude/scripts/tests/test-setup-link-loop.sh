@@ -232,6 +232,39 @@ echo "$OUT" | grep -q "rerun_backup=no" && ok "a re-run that finds its own value
 echo "$OUT" | grep -q "restored=D:/prior/hooks" && ok "--restore puts the prior global value back" || bad "restore hooksPath: $OUT"
 rm -rf "$TMPHOME"
 
+# --- Scenario 7: a correct link spelled through an 8.3 short name is still correct ---
+# Regression for the first CI run of dev-env#1114: on the GitHub Windows runner a junction's
+# resolved target and its source came back in different 8.3 spellings (RUNNER~1 vs
+# runneradmin), a string compare called them different, and a correct link was removed.
+# Here the junction's target is deliberately stored in the SHORT spelling and compared
+# against the LONG one.
+echo "[7] prepare_link_target recognizes a correct link across 8.3 short/long spellings"
+case "$(uname -s)" in
+  MINGW*|CYGWIN*|MSYS*)
+    TMPHOME=$(mktemp -d)
+    LONGDIR="$TMPHOME/long-directory-name-for-8dot3"
+    mkdir -p "$LONGDIR/repo/claude/hooks" "$LONGDIR/.claude"
+    SHORTDIR=$(cygpath -u "$(cygpath -d "$LONGDIR")")
+    if [ "$(basename "$SHORTDIR")" = "$(basename "$LONGDIR")" ]; then
+      ok "no 8.3 short names on this volume -- nothing to compare"
+    else
+      OUT=$(
+        export HOME="$LONGDIR"
+        source "$SETUP_SCRIPT"
+        set +e
+        cmd.exe /c "mklink /J \"$(cygpath -w "$LONGDIR/.claude/hooks")\" \"$(cygpath -w "$SHORTDIR/repo/claude/hooks")\"" >/dev/null
+        prepare_link_target "$LONGDIR/repo/claude/hooks" "$LONGDIR/.claude/hooks" >/dev/null
+        echo "rc=$? still_link=$([ -L "$LONGDIR/.claude/hooks" ] && echo yes || echo no)"
+      )
+      echo "$OUT" | grep -q "rc=1 still_link=yes" \
+        && ok "a correct link whose target is spelled $(basename "$SHORTDIR") is kept (rc 1)" \
+        || bad "8.3 spelling: $OUT"
+    fi
+    rm -rf "$TMPHOME" ;;
+  *)
+    ok "8.3 short names are Windows-only -- nothing to compare" ;;
+esac
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
