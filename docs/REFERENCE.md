@@ -977,9 +977,10 @@ issue: [dev-env#1107](https://github.com/brownm09/dev-env/issues/1107).
    git clone https://github.com/brownm09/engineering-journal.git ~/Git/engineering-journal
    ```
 
-4. Run setup. It moves anything already at a link location into
-   `~/.claude/backups/setup-<timestamp>/` (undo with `bash setup.sh --restore <that dir>`), seeds
-   `~/.claude/settings.json`, sets the global `core.hooksPath`, then runs the doctor:
+4. Run setup. It moves any real file or directory already at a link location into
+   `~/.claude/backups/setup-<timestamp>/` (undo with `bash setup.sh --restore <that dir>`) and
+   replaces existing links, then seeds `~/.claude/settings.json`, sets the global `core.hooksPath`,
+   and runs the doctor:
 
    ```bash
    bash ~/Git/dev-env/setup.sh

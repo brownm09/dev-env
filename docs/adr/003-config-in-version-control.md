@@ -221,9 +221,11 @@ the bootstrap this ADR's link topology depends on.
 1. **`win_link` deleted what it replaced.** An existing `~/.claude/{CLAUDE.md,scripts,skills,hooks,templates}`,
    `routines` or `~/bin` was removed with `rm -f` / `rmdir` / `rm -rf` before linking. On a machine that
    already had Claude Code set up, that silently deleted the user's own skills or `CLAUDE.md`. Every link
-   now goes through `prepare_link_target`: an already-correct link is left alone, a stale link is removed
-   (never its target), and anything real is moved to `~/.claude/backups/setup-<timestamp>/` first —
-   verified by read-back, with the run aborting if the capture fails. `bash setup.sh --restore <dir>`
+   now goes through `prepare_link_target`. An existing link is removed (never its target) and recreated,
+   because a link is not data. Anything real is moved to `~/.claude/backups/setup-<timestamp>/` first —
+   verified by read-back, with the run aborting if the capture fails. (An earlier revision kept
+   already-correct links, but deciding that means comparing where a link points, and Git for Windows
+   runtimes disagree on how they report it. That comparison failed on the GitHub runner and was dropped.) `bash setup.sh --restore <dir>`
    copies the originals back and leaves the backup as the anchor, so a repeated restore converges. A
    different prior global `core.hooksPath` is saved and restored the same way. This applies the global
    "Back up before you mutate" rule ([ADR-079](079-backup-restore-convention.md)) to setup; it is not a new

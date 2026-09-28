@@ -168,16 +168,13 @@ setup_windows() {
 }
 
 # win_link <target> <link> <type: file|dir|junction>
-# Idempotent: prepare_link_target leaves an already-correct link alone, removes a stale
-# link, and backs up (never deletes) a real file or directory before mklink runs.
+# prepare_link_target first clears <link>: an existing link is removed (never its target)
+# and a real file or directory is backed up, never deleted. Then mklink recreates it.
 win_link() {
   local src="$1" dst="$2" type="$3"
-  local src_win dst_win flag rc=0
+  local src_win dst_win flag
 
-  prepare_link_target "$src" "$dst" || rc=$?
-  if [ "$rc" -eq 1 ]; then
-    return 0
-  elif [ "$rc" -ne 0 ]; then
+  if ! prepare_link_target "$src" "$dst"; then
     echo "ERROR: could not clear $dst for linking -- nothing was replaced or deleted." >&2
     exit 1
   fi
@@ -193,29 +190,28 @@ win_link() {
 
   cmd.exe /c "mklink $flag \"$dst_win\" \"$src_win\""
 
-  # Read-back (ADR-079 rule 4): the new link must resolve to its source.
-  if ! same_path "$dst" "$src"; then
-    echo "ERROR: $dst does not resolve to $src after mklink." >&2
+  # Read-back (ADR-079 rule 4): the new link must exist and resolve. Deliberately not a
+  # comparison of where it points -- see prepare_link_target.
+  if [ ! -e "$dst" ]; then
+    echo "ERROR: $dst does not resolve after mklink." >&2
     exit 1
   fi
 }
 
 # Where this run moves anything real that a link would otherwise replace. Computed once per
-# run and created lazily, so a re-run over an already-correct layout creates nothing.
+# run and created lazily: a re-run over an existing layout only replaces links, so it
+# creates no backup directory at all.
 SETUP_BACKUP_DIR="${SETUP_BACKUP_DIR:-$HOME/.claude/backups/setup-$(date +%Y%m%d-%H%M%S)}"
 
-# same_path <a> <b> -- whether two paths name the same location.
+# same_path <a> <b> -- whether two paths name the same location. Used only to decide
+# whether a prior global core.hooksPath is worth saving, where a wrong "different" costs
+# nothing more than a redundant backup file.
 #
 # Identity first: when the path exists, `-ef` asks whether both names reach the same file
-# on disk, which no spelling can fool -- an 8.3 short name, /c/... vs C:/..., an MSYS
-# mount such as /tmp, a link or a junction. A string compare alone was fooled on the
-# GitHub Windows runner, where a junction's resolved target and its source came back in
-# different 8.3 spellings (RUNNER~1 vs runneradmin) and a correct link was removed
-# (dev-env#1114).
-#
-# A path that doesn't exist (a saved core.hooksPath, a dangling link) has no identity, so
-# spellings are compared instead: links resolved, then on Windows in C:/ form with long
-# names, case-insensitively.
+# on disk, whatever the spelling -- an 8.3 short name, /c/... vs C:/..., an MSYS mount
+# such as /tmp. A path that doesn't exist has no identity, so spellings are compared
+# instead: links resolved, then on Windows in C:/ form with long names,
+# case-insensitively.
 same_path() {
   if [ -e "$1" ] && [ "$1" -ef "$2" ]; then
     return 0
@@ -253,18 +249,21 @@ remove_link() {
 }
 
 # prepare_link_target <target> <link> -- clear the way for (re)linking <link> to <target>.
-#   0  the caller should create the link (nothing was there, a stale link was removed,
-#      or a real file/directory was moved into $SETUP_BACKUP_DIR)
-#   1  <link> already resolves to <target>; leave it alone
+#   0  the caller should create the link: nothing was there, an existing link was removed,
+#      or a real file/directory was moved into $SETUP_BACKUP_DIR
 #   2  could not clear it -- the caller must abort. A real item that cannot be captured
 #      is never replaced: changing state you could not back up leaves no way back
 #      (global "Back up before you mutate", ADR-079 rule 1).
+#
+# An existing link is removed whether or not it already points at <target>: a link is not
+# data, and recreating it is exactly what setup did before dev-env#1114. Deciding "already
+# correct" means comparing where a link points, and Git for Windows runtimes disagree about
+# how they report that -- on the GitHub runner a correct junction came back as "different"
+# and the check misfired. Removing and recreating needs no such comparison.
 prepare_link_target() {
   local src="$1" dst="$2" saved
+  : "$src"  # the target is the caller's to link; clearing <link> doesn't need it
   if [ -L "$dst" ]; then
-    if same_path "$dst" "$src"; then
-      return 1
-    fi
     remove_link "$dst" || return 2
     return 0
   fi
@@ -377,11 +376,8 @@ setup_unix() {
 # then `ln -sf`. Clearing first also keeps a re-run from creating a nested link *inside* an
 # existing directory link, which a bare `ln -sf` onto a symlinked directory does.
 unix_link() {
-  local src="$1" dst="$2" rc=0
-  prepare_link_target "$src" "$dst" || rc=$?
-  if [ "$rc" -eq 1 ]; then
-    return 0
-  elif [ "$rc" -ne 0 ]; then
+  local src="$1" dst="$2"
+  if ! prepare_link_target "$src" "$dst"; then
     echo "ERROR: could not clear $dst for linking -- nothing was replaced or deleted." >&2
     exit 1
   fi

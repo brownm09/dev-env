@@ -1939,26 +1939,35 @@ For a one-line navigational map of the test directory, see
     ([ADR-139](adr/139-machine-local-settings-with-shared-source-sync.md)), against a real
     throwaway `$HOME` — so the unstubbed `mkdir -p` calls are verified for real too.
 
-    Scenarios 4–6 ([dev-env#1114](https://github.com/brownm09/dev-env/issues/1114)) run the
+    Scenarios 4–7 ([dev-env#1114](https://github.com/brownm09/dev-env/issues/1114)) run the
     backup-before-replace path for real in a throwaway `$HOME`, building directory links as
-    junctions on Windows (no privilege needed) and symlinks elsewhere. `prepare_link_target`
-    proceeds on an empty target without creating a backup directory, moves a real file or
-    directory into `~/.claude/backups/setup-<ts>/` with its contents intact, leaves an
-    already-correct link alone, and removes a stale link **without touching its target's
-    contents**. `restore_setup_backup` copies the originals back, leaves the repo target and the
-    backup untouched, and converges on a second run. `set_hooks_path` — with global git config
-    redirected to a temp file via `GIT_CONFIG_GLOBAL` — saves a different prior global
-    `core.hooksPath`, saves nothing when the value is already its own (the check that caught
-    `same_path` comparing `/tmp/...` against `C:/.../Temp/...` spellings of one directory), and
-    `--restore` puts the prior value back.
+    junctions on Windows (no privilege needed) and symlinks elsewhere.
 
-    Scenario 7 is the regression for the PR's first CI run. On the GitHub Windows runner a
-    junction's resolved target and its source came back in different 8.3 spellings
-    (`RUNNER~1` vs `runneradmin`), a string compare called a correct link different, and
-    `prepare_link_target` removed it. The scenario builds a junction whose target is stored in
-    the short spelling and requires it to be kept (rc 1). That is why `same_path` now asks for
-    file identity (`-ef`) first and compares long-name spellings only for paths that don't
-    exist. On a volume without 8.3 names it reports that there is nothing to compare.
+    - **Scenario 4 (`prepare_link_target`):** proceeds on an empty target without creating a
+      backup directory, and moves a real file or directory into `~/.claude/backups/setup-<ts>/`
+      with its contents intact. It removes an existing link **without touching its target's
+      contents** and never backs a link up, whether the link already pointed at the target or
+      somewhere stale. The run's backup listing must hold only the two real items.
+    - **Scenario 5 (`restore_setup_backup`):** copies the originals back over setup's link,
+      leaves the repo target and the backup untouched, and converges on a second run.
+    - **Scenario 6 (`set_hooks_path`):** with global git config redirected to a temp file via
+      `GIT_CONFIG_GLOBAL`, it saves a different prior global `core.hooksPath` and saves nothing
+      when the value is already its own — the check that caught `/tmp/...` vs `C:/.../Temp/...`
+      spellings of one directory. `--restore` puts the prior value back.
+    - **Scenario 7 (`same_path`):** one directory reached through its 8.3 short and long
+      spellings is the same path, and its parent is not. On a volume without 8.3 names it
+      reports that there is nothing to compare.
+
+    **Fixture guarantee.** Every link fixture is asserted to exist before its case runs.
+    `make_dir_link` prints a `FIXTURE:` line and fails when no link is there afterwards — what
+    mklink said, whether the path exists, and the volume's filesystem — so no case can pass on a
+    fixture that was never built.
+
+    **CI history.** The PR's first design kept an already-correct link, which meant deciding
+    where a link points. That decision failed twice on the GitHub Windows runner (Git for
+    Windows 2.55, whose `TMPDIR` is on `D:`) while passing locally on 2.37, including after a
+    fix for the suspected 8.3-name cause. Removing and recreating every existing link needs no
+    such decision — and is what `setup.sh` did before this PR.
 
     Still out of scope: `setup_windows()`'s elevation gate, the soft-prereq warnings, and
     `win_link`'s actual `cygpath`/`mklink` call ([dev-env#614](https://github.com/brownm09/dev-env/issues/614)).

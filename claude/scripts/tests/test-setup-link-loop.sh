@@ -135,16 +135,33 @@ fi
 [ -d "$TMPHOME/.claude/scratch" ] && ok "~/.claude/scratch created for real" || bad "~/.claude/scratch was not created"
 rm -rf "$TMPHOME" "$LOGFILE"
 
-# A directory link without needing privilege: a junction on Windows, a symlink elsewhere.
-make_dir_link() {
+# The filesystem of the volume holding $1 (NTFS, ReFS, ext4, ...) -- diagnostics only.
+volume_fs() {
   case "$(uname -s)" in
-    MINGW*|CYGWIN*|MSYS*) cmd.exe /c "mklink /J \"$(cygpath -w "$2")\" \"$(cygpath -w "$1")\"" >/dev/null ;;
-    *) ln -s "$1" "$2" ;;
+    MINGW*|CYGWIN*|MSYS*)
+      powershell.exe -NoProfile -Command "[System.IO.DriveInfo]::new('$(cygpath -w "$1" | cut -c1-2)\\').DriveFormat" 2>/dev/null | tr -d '\r' ;;
+    *)
+      df -T "$1" 2>/dev/null | awk 'NR==2 {print $2}' ;;
   esac
 }
 
+# A directory link without needing privilege: a junction on Windows, a symlink elsewhere.
+# When no link is there afterwards it prints a FIXTURE line -- what mklink said, whether the
+# path exists, the volume's filesystem -- and fails, so no case below can pass on a fixture
+# that was never built.
+make_dir_link() {
+  local out=""
+  case "$(uname -s)" in
+    MINGW*|CYGWIN*|MSYS*) out=$(cmd.exe /c "mklink /J \"$(cygpath -w "$2")\" \"$(cygpath -w "$1")\"" 2>&1) ;;
+    *) out=$(ln -s "$1" "$2" 2>&1) ;;
+  esac
+  [ -L "$2" ] && return 0
+  echo "FIXTURE: no link at $2 after creating it | mklink: $(printf '%s' "$out" | tr -d '\r' | tr '\n' ' ') | exists: $([ -e "$2" ] && echo yes || echo no) | fs: $(volume_fs "$(dirname "$2")")"
+  return 1
+}
+
 # --- Scenario 4: prepare_link_target backs up or unlinks -- it never deletes ---
-echo "[4] prepare_link_target keeps correct links, removes stale ones, backs up real items"
+echo "[4] prepare_link_target removes existing links (never their targets) and backs up real items"
 TMPHOME=$(mktemp -d)
 OUT=$(
   export HOME="$TMPHOME"
@@ -152,6 +169,7 @@ OUT=$(
   set +e
   mkdir -p "$HOME/repo/claude/skills" "$HOME/repo/claude/hooks" "$HOME/elsewhere" "$HOME/.claude"
   echo "keep" > "$HOME/elsewhere/keep.txt"
+  echo "repo" > "$HOME/repo/claude/hooks/from-repo.txt"
 
   prepare_link_target "$HOME/repo/claude/skills" "$HOME/.claude/skills" >/dev/null
   echo "empty_rc=$? backup_dir_exists=$([ -d "$SETUP_BACKUP_DIR" ] && echo yes || echo no)"
@@ -164,18 +182,24 @@ OUT=$(
   prepare_link_target "$HOME/repo/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md" >/dev/null
   echo "realfile_rc=$? saved_file=$(cat "$SETUP_BACKUP_DIR/CLAUDE.md" 2>/dev/null)"
 
-  make_dir_link "$HOME/repo/claude/hooks" "$HOME/.claude/hooks"
-  prepare_link_target "$HOME/repo/claude/hooks" "$HOME/.claude/hooks" >/dev/null
-  echo "correct_rc=$? still_link=$([ -L "$HOME/.claude/hooks" ] && echo yes || echo no)"
+  # A link that already points at the target is removed too (the caller recreates it) --
+  # and the directory it pointed at must survive untouched.
+  if make_dir_link "$HOME/repo/claude/hooks" "$HOME/.claude/hooks"; then
+    prepare_link_target "$HOME/repo/claude/hooks" "$HOME/.claude/hooks" >/dev/null
+    echo "samelink_rc=$? link_gone=$({ [ -L "$HOME/.claude/hooks" ] || [ -e "$HOME/.claude/hooks" ]; } && echo no || echo yes) target_intact=$(cat "$HOME/repo/claude/hooks/from-repo.txt" 2>/dev/null) backups=$(ls "$SETUP_BACKUP_DIR" 2>/dev/null | tr '\n' ',')"
+  fi
 
-  make_dir_link "$HOME/elsewhere" "$HOME/.claude/templates"
-  prepare_link_target "$HOME/repo/claude/templates" "$HOME/.claude/templates" >/dev/null
-  echo "stale_rc=$? stale_gone=$([ -L "$HOME/.claude/templates" ] && echo no || echo yes) target_intact=$(cat "$HOME/elsewhere/keep.txt" 2>/dev/null)"
+  if make_dir_link "$HOME/elsewhere" "$HOME/.claude/templates"; then
+    prepare_link_target "$HOME/repo/claude/templates" "$HOME/.claude/templates" >/dev/null
+    echo "stale_rc=$? stale_gone=$({ [ -L "$HOME/.claude/templates" ] || [ -e "$HOME/.claude/templates" ]; } && echo no || echo yes) target_intact=$(cat "$HOME/elsewhere/keep.txt" 2>/dev/null)"
+  fi
 )
 echo "$OUT" | grep -q "empty_rc=0 backup_dir_exists=no" && ok "nothing there: proceed, no backup dir created" || bad "empty case: $OUT"
 echo "$OUT" | grep -q "realdir_rc=0 dst_gone=yes saved=mine" && ok "real directory moved into the backup, contents intact" || bad "real-dir case: $OUT"
 echo "$OUT" | grep -q "realfile_rc=0 saved_file=my notes" && ok "real file moved into the backup, contents intact" || bad "real-file case: $OUT"
-echo "$OUT" | grep -q "correct_rc=1 still_link=yes" && ok "an already-correct link is left alone (rc 1)" || bad "correct-link case: $OUT"
+# backups= lists what the run backed up: only the two real items, never the links.
+echo "$OUT" | grep -q "samelink_rc=0 link_gone=yes target_intact=repo backups=CLAUDE.md,skills," \
+  && ok "a link already pointing at the target is removed, not backed up; its target survives" || bad "same-target link case: $OUT"
 echo "$OUT" | grep -q "stale_rc=0 stale_gone=yes target_intact=keep" && ok "a stale link is removed and its target's contents survive" || bad "stale-link case: $OUT"
 rm -rf "$TMPHOME"
 
@@ -193,7 +217,8 @@ OUT=$(
   echo "my notes" > "$HOME/.claude/CLAUDE.md"
   prepare_link_target "$HOME/repo/claude/skills" "$HOME/.claude/skills" >/dev/null
   prepare_link_target "$HOME/repo/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md" >/dev/null
-  make_dir_link "$HOME/repo/claude/skills" "$HOME/.claude/skills"   # what setup would have linked
+  # What setup would have linked in its place.
+  make_dir_link "$HOME/repo/claude/skills" "$HOME/.claude/skills" && echo "linked_before=yes"
 
   restore_setup_backup "$SETUP_BACKUP_DIR" >/dev/null
   echo "rc1=$? skills_real=$([ -L "$HOME/.claude/skills" ] && echo no || echo yes) mine=$(cat "$HOME/.claude/skills/mine.txt" 2>/dev/null) notes=$(cat "$HOME/.claude/CLAUDE.md" 2>/dev/null) repo_intact=$(cat "$HOME/repo/claude/skills/from-repo.txt" 2>/dev/null) backup_kept=$([ -f "$SETUP_BACKUP_DIR/skills/mine.txt" ] && echo yes || echo no)"
@@ -201,8 +226,8 @@ OUT=$(
   SECOND=$(restore_setup_backup "$SETUP_BACKUP_DIR")
   echo "rc2=$? skipped=$(echo "$SECOND" | grep -c Skipped)"
 )
-echo "$OUT" | grep -q "rc1=0 skills_real=yes mine=mine notes=my notes repo_intact=repo backup_kept=yes" \
-  && ok "originals restored, the repo target untouched, the backup kept as the anchor" || bad "restore: $OUT"
+echo "$OUT" | grep -q "linked_before=yes" && echo "$OUT" | grep -q "rc1=0 skills_real=yes mine=mine notes=my notes repo_intact=repo backup_kept=yes" \
+  && ok "originals restored over setup's link, the repo target untouched, the backup kept as the anchor" || bad "restore: $OUT"
 echo "$OUT" | grep -q "rc2=0 skipped=2" && ok "a second restore converges (skips both, no error)" || bad "second restore: $OUT"
 rm -rf "$TMPHOME"
 
@@ -232,32 +257,28 @@ echo "$OUT" | grep -q "rerun_backup=no" && ok "a re-run that finds its own value
 echo "$OUT" | grep -q "restored=D:/prior/hooks" && ok "--restore puts the prior global value back" || bad "restore hooksPath: $OUT"
 rm -rf "$TMPHOME"
 
-# --- Scenario 7: a correct link spelled through an 8.3 short name is still correct ---
-# Regression for the first CI run of dev-env#1114: on the GitHub Windows runner a junction's
-# resolved target and its source came back in different 8.3 spellings (RUNNER~1 vs
-# runneradmin), a string compare called them different, and a correct link was removed.
-# Here the junction's target is deliberately stored in the SHORT spelling and compared
-# against the LONG one.
-echo "[7] prepare_link_target recognizes a correct link across 8.3 short/long spellings"
+# --- Scenario 7: same_path sees one directory through its 8.3 short and long spellings ---
+# same_path now only decides whether a prior global core.hooksPath is worth saving. It checks
+# file identity first, so one existing directory reached through two spellings is the same
+# path, and a different directory is not.
+echo "[7] same_path matches an existing directory across 8.3 short/long spellings"
 case "$(uname -s)" in
   MINGW*|CYGWIN*|MSYS*)
     TMPHOME=$(mktemp -d)
     LONGDIR="$TMPHOME/long-directory-name-for-8dot3"
-    mkdir -p "$LONGDIR/repo/claude/hooks" "$LONGDIR/.claude"
+    mkdir -p "$LONGDIR"
     SHORTDIR=$(cygpath -u "$(cygpath -d "$LONGDIR")")
     if [ "$(basename "$SHORTDIR")" = "$(basename "$LONGDIR")" ]; then
       ok "no 8.3 short names on this volume -- nothing to compare"
     else
       OUT=$(
-        export HOME="$LONGDIR"
         source "$SETUP_SCRIPT"
         set +e
-        cmd.exe /c "mklink /J \"$(cygpath -w "$LONGDIR/.claude/hooks")\" \"$(cygpath -w "$SHORTDIR/repo/claude/hooks")\"" >/dev/null
-        prepare_link_target "$LONGDIR/repo/claude/hooks" "$LONGDIR/.claude/hooks" >/dev/null
-        echo "rc=$? still_link=$([ -L "$LONGDIR/.claude/hooks" ] && echo yes || echo no)"
+        same_path "$SHORTDIR" "$LONGDIR" && echo "same=yes" || echo "same=no"
+        same_path "$SHORTDIR" "$TMPHOME" && echo "other=yes" || echo "other=no"
       )
-      echo "$OUT" | grep -q "rc=1 still_link=yes" \
-        && ok "a correct link whose target is spelled $(basename "$SHORTDIR") is kept (rc 1)" \
+      echo "$OUT" | grep -q "same=yes" && echo "$OUT" | grep -q "other=no" \
+        && ok "$(basename "$SHORTDIR") and $(basename "$LONGDIR") are one directory; its parent is not" \
         || bad "8.3 spelling: $OUT"
     fi
     rm -rf "$TMPHOME" ;;
