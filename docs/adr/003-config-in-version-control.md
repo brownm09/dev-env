@@ -224,8 +224,8 @@ the bootstrap this ADR's link topology depends on.
    now goes through `prepare_link_target`. An existing link is removed (never its target) and recreated,
    because a link is not data. Anything real is moved to `~/.claude/backups/setup-<timestamp>/` first —
    verified by read-back, with the run aborting if the capture fails. (An earlier revision kept
-   already-correct links, but deciding that means comparing where a link points, and Git for Windows
-   runtimes disagree on how they report it. That comparison failed on the GitHub runner and was dropped.) `bash setup.sh --restore <dir>`
+   already-correct links. Recreating them instead is simpler, needs no judgment of where a link points,
+   and matches setup's behavior before this change.) `bash setup.sh --restore <dir>`
    copies the originals back and leaves the backup as the anchor, so a repeated restore converges. A
    different prior global `core.hooksPath` is saved and restored the same way. This applies the global
    "Back up before you mutate" rule ([ADR-079](079-backup-restore-convention.md)) to setup; it is not a new
@@ -234,12 +234,20 @@ the bootstrap this ADR's link topology depends on.
    forbids outside its closed allowlist — while `claude/setup-prompt.md` had Claude run setup from an agent
    session, exactly where the dialog has no desktop to render against. It now fails fast with the fix:
    enable Developer Mode, or use an elevated Git Bash.
-3. **Its Developer Mode probe never worked from Git Bash.** Git Bash rewrote `reg.exe`'s `/v` switch into a
-   path, `reg.exe` rejected the query, and `2>/dev/null` hid the error (the
-   [dev-env#602](https://github.com/brownm09/dev-env/issues/602) class). Separately, `grep -P` refuses to
-   run outside a UTF-8 locale. So every non-admin run took the UAC path. Both are fixed
-   (`MSYS_NO_PATHCONV=1`, and an ERE match). They surfaced only when setup was run end-to-end in a
-   sandboxed `HOME`/`USERPROFILE`; the stubbed link-loop test (Testing item 49) cannot reach that code.
+3. **Git Bash's argument path conversion broke its Windows commands** (the
+   [dev-env#602](https://github.com/brownm09/dev-env/issues/602) class):
+   - **The Developer Mode probe never worked.** Conversion rewrote `reg.exe`'s `/v` switch into a path,
+     `reg.exe` rejected the query, and `2>/dev/null` hid the error. Separately, `grep -P` refuses to run
+     outside a UTF-8 locale. So every non-admin run took the UAC path. This surfaced only when setup was
+     run end-to-end in a sandboxed `HOME`/`USERPROFILE`.
+   - **No link could be created on a current Git for Windows.** On 2.55, conversion also takes the lone
+     `/c` in `cmd.exe /c "mklink ..."`, so cmd.exe starts an interactive shell, prints its banner, and
+     runs nothing. Every `mklink` and `rmdir` silently did nothing. This surfaced in CI once the link-loop
+     test (Testing item 49) asserted its fixtures existed — before that, its stale-link case had passed
+     vacuously.
+
+   All `cmd.exe` and `reg.exe` calls now run with conversion off (`win_cmd`; `MSYS_NO_PATHCONV=1` plus
+   `MSYS2_ARG_CONV_EXCL='*'`), and the probe uses an ERE match.
 
 Setup now ends by running `claude/scripts/dev-env-doctor.py`, a read-only check of the whole install:
 links, hook-command scripts, tools and auth, per-clone `core.hooksPath` overrides, and the journal clone

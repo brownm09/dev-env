@@ -91,7 +91,7 @@ setup_windows() {
     # rejects the query ("Invalid syntax", hidden by 2>/dev/null), and Developer Mode never
     # registers -- the dev-env#602 class. ERE rather than `grep -P`, which refuses to run
     # outside a UTF-8 locale (agent sessions). Both fixed in dev-env#1114.
-    val="$(MSYS_NO_PATHCONV=1 reg.exe query \
+    val="$(MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' reg.exe query \
       "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock" \
       /v AllowDevelopmentWithoutDevLicense 2>/dev/null \
       | tr -d '\r' | grep -oE '0x[0-9a-fA-F]+' || echo "0x0")"
@@ -109,7 +109,7 @@ setup_windows() {
   # These don't block setup, but hooks or the workflow fail at runtime without them.
   # dev-env-doctor.py, run at the end, re-checks all of them.
 
-  if ! cmd.exe /c "where bash >NUL 2>&1"; then
+  if ! win_cmd "where bash >NUL 2>&1"; then
     echo "WARNING: bash.exe not on Windows PATH."
     echo "  Add Git Bash: C:\\Program Files\\Git\\usr\\bin"
     echo "  Claude Code's Bash tool and dev-env's *.sh scripts run under Git Bash."
@@ -188,14 +188,23 @@ win_link() {
     junction) flag="/J" ;;
   esac
 
-  cmd.exe /c "mklink $flag \"$dst_win\" \"$src_win\""
+  win_cmd "mklink $flag \"$dst_win\" \"$src_win\""
 
-  # Read-back (ADR-079 rule 4): the new link must exist and resolve. Deliberately not a
-  # comparison of where it points -- see prepare_link_target.
+  # Read-back (ADR-079 rule 4): the new link must exist and resolve.
   if [ ! -e "$dst" ]; then
     echo "ERROR: $dst does not resolve after mklink." >&2
     exit 1
   fi
+}
+
+# win_cmd <command line> -- run one cmd.exe command (mklink, rmdir, where) with Git Bash's
+# argument path conversion switched off. A current Git for Windows (2.55) rewrites cmd's
+# lone `/c` switch into a drive path, so cmd.exe starts an interactive shell, prints its
+# banner, and runs nothing: every mklink silently did nothing (dev-env#1114, the #602
+# class). MSYS_NO_PATHCONV is Git for Windows' switch, MSYS2_ARG_CONV_EXCL upstream
+# MSYS2's; callers pass paths already in Windows form (cygpath -w).
+win_cmd() {
+  MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' cmd.exe /c "$1"
 }
 
 # Where this run moves anything real that a link would otherwise replace. Computed once per
@@ -238,7 +247,7 @@ remove_link() {
   rm -f "$dst" 2>/dev/null || true
   if [ -L "$dst" ]; then
     case "$(uname -s)" in
-      MINGW*|CYGWIN*|MSYS*) cmd.exe /c "rmdir \"$(cygpath -w "$dst")\"" >/dev/null 2>&1 || true ;;
+      MINGW*|CYGWIN*|MSYS*) win_cmd "rmdir \"$(cygpath -w "$dst")\"" >/dev/null 2>&1 || true ;;
     esac
   fi
   if [ -L "$dst" ]; then
@@ -256,10 +265,8 @@ remove_link() {
 #      (global "Back up before you mutate", ADR-079 rule 1).
 #
 # An existing link is removed whether or not it already points at <target>: a link is not
-# data, and recreating it is exactly what setup did before dev-env#1114. Deciding "already
-# correct" means comparing where a link points, and Git for Windows runtimes disagree about
-# how they report that -- on the GitHub runner a correct junction came back as "different"
-# and the check misfired. Removing and recreating needs no such comparison.
+# data, recreating it is exactly what setup did before dev-env#1114, and it needs no
+# judgment of where a link points -- so no path-spelling comparison sits on this path.
 prepare_link_target() {
   local src="$1" dst="$2" saved
   : "$src"  # the target is the caller's to link; clearing <link> doesn't need it

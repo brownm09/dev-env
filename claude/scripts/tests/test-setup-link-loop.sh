@@ -148,11 +148,13 @@ volume_fs() {
 # A directory link without needing privilege: a junction on Windows, a symlink elsewhere.
 # When no link is there afterwards it prints a FIXTURE line -- what mklink said, whether the
 # path exists, the volume's filesystem -- and fails, so no case below can pass on a fixture
-# that was never built.
+# that was never built. (That line is how CI showed cmd.exe printing its interactive banner
+# instead of running mklink -- the `/c` switch lost to path conversion.) On Windows it goes
+# through setup.sh's own win_cmd, so every caller sources setup.sh first.
 make_dir_link() {
   local out=""
   case "$(uname -s)" in
-    MINGW*|CYGWIN*|MSYS*) out=$(cmd.exe /c "mklink /J \"$(cygpath -w "$2")\" \"$(cygpath -w "$1")\"" 2>&1) ;;
+    MINGW*|CYGWIN*|MSYS*) out=$(win_cmd "mklink /J \"$(cygpath -w "$2")\" \"$(cygpath -w "$1")\"" 2>&1 </dev/null) ;;
     *) out=$(ln -s "$1" "$2" 2>&1) ;;
   esac
   [ -L "$2" ] && return 0
@@ -284,6 +286,24 @@ case "$(uname -s)" in
     rm -rf "$TMPHOME" ;;
   *)
     ok "8.3 short names are Windows-only -- nothing to compare" ;;
+esac
+
+# --- Scenario 8: win_cmd runs its command, not an interactive cmd.exe ---
+# Regression pin for dev-env#1114's CI failures. On Git for Windows 2.55 a bare
+# `cmd.exe /c "..."` from Git Bash lost its /c to path conversion: cmd printed its banner
+# and prompt, read end-of-input, and ran nothing -- so setup could create no link at all.
+# stdin is /dev/null so a regression exits at once instead of waiting on a prompt.
+echo "[8] win_cmd runs a cmd.exe command (the /c switch survives path conversion)"
+case "$(uname -s)" in
+  MINGW*|CYGWIN*|MSYS*)
+    OUT=$(source "$SETUP_SCRIPT"; win_cmd "echo win-cmd-ran" 2>&1 </dev/null)
+    if echo "$OUT" | grep -q "win-cmd-ran" && ! echo "$OUT" | grep -q "Microsoft Windows \[Version"; then
+      ok "cmd.exe ran the command it was given"
+    else
+      bad "win_cmd: $(printf '%s' "$OUT" | tr -d '\r' | tr '\n' ' ')"
+    fi ;;
+  *)
+    ok "cmd.exe is Windows-only -- nothing to run" ;;
 esac
 
 echo ""

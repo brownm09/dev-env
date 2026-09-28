@@ -1939,7 +1939,7 @@ For a one-line navigational map of the test directory, see
     ([ADR-139](adr/139-machine-local-settings-with-shared-source-sync.md)), against a real
     throwaway `$HOME` — so the unstubbed `mkdir -p` calls are verified for real too.
 
-    Scenarios 4–7 ([dev-env#1114](https://github.com/brownm09/dev-env/issues/1114)) run the
+    Scenarios 4–8 ([dev-env#1114](https://github.com/brownm09/dev-env/issues/1114)) run the
     backup-before-replace path for real in a throwaway `$HOME`, building directory links as
     junctions on Windows (no privilege needed) and symlinks elsewhere.
 
@@ -1957,17 +1957,25 @@ For a one-line navigational map of the test directory, see
     - **Scenario 7 (`same_path`):** one directory reached through its 8.3 short and long
       spellings is the same path, and its parent is not. On a volume without 8.3 names it
       reports that there is nothing to compare.
+    - **Scenario 8 (`win_cmd`):** runs `echo` through `cmd.exe` and requires its output, not
+      cmd's interactive banner.
 
     **Fixture guarantee.** Every link fixture is asserted to exist before its case runs.
     `make_dir_link` prints a `FIXTURE:` line and fails when no link is there afterwards — what
     mklink said, whether the path exists, and the volume's filesystem — so no case can pass on a
-    fixture that was never built.
+    fixture that was never built. It creates links through `setup.sh`'s own `win_cmd`.
 
-    **CI history.** The PR's first design kept an already-correct link, which meant deciding
-    where a link points. That decision failed twice on the GitHub Windows runner (Git for
-    Windows 2.55, whose `TMPDIR` is on `D:`) while passing locally on 2.37, including after a
-    fix for the suspected 8.3-name cause. Removing and recreating every existing link needs no
-    such decision — and is what `setup.sh` did before this PR.
+    **CI history.** The PR's first two CI runs failed with local runs green, and both guesses at
+    the cause were wrong: 8.3 short names, then runtimes reporting link targets differently. The
+    fixture assertion then showed the real cause. On Git for Windows 2.55 (CI) a bare
+    `cmd.exe /c "mklink ..."` from Git Bash loses its `/c` to argument path conversion, so
+    cmd.exe starts an interactive shell, prints its banner, and runs nothing. No junction was
+    ever created: the "correct link" case failed for want of a link, and the "stale link" case
+    passed vacuously. `setup.sh` itself had the same bug — it could create no link at all on a
+    current Git for Windows. It now runs every `cmd.exe` call through `win_cmd`, with conversion
+    off, and scenario 8 pins that. Removing and recreating existing links, adopted along the
+    way, stayed: it is simpler than judging whether a link is already correct, and it is what
+    `setup.sh` did before this PR.
 
     Still out of scope: `setup_windows()`'s elevation gate, the soft-prereq warnings, and
     `win_link`'s actual `cygpath`/`mklink` call ([dev-env#614](https://github.com/brownm09/dev-env/issues/614)).
