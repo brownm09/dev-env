@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 88 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 100 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 89 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 101 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -176,7 +176,8 @@ Scripts invoked directly (by a person or a skill), not wired as Claude Code hook
 | `test-get-project-item.sh` | `get-project-item.sh` | Execution smoke test (not just `bash -n`) resolving an issue number to a project item ID. |
 | `test-journal-compose-replay.sh` | `journal-compose-replay.sh` | Drives `/journal-compose` Step 10.5's conflict-recovery replay against throwaway fixture repos: uncontested paths replay wholesale, contested ones 3-way merge or stop with exit 2. |
 | `test-merge-stale-pr.sh` | `merge-stale-pr.sh` | Drives the stale-journal-PR remediation script against throwaway fixture repos with `gh` stubbed. |
-| `test-setup-link-loop.sh` | `setup.sh` | Drives the extracted `link_claude_windows`/`link_claude_unix` functions against a throwaway `$HOME`. |
+| `test-setup-link-loop.sh` | `setup.sh` | Drives the extracted `link_claude_windows`/`link_claude_unix` functions against a throwaway `$HOME`, plus the backup-before-replace path for real: stale links removed without touching their targets, real items backed up, `--restore` idempotent, a prior global `core.hooksPath` saved and restored. |
+| `test_dev_env_doctor.py` | `dev-env-doctor.py` | The install health check's pure decision helpers, fixture-only: link list pinned against `setup.sh`, missing hook scripts FAIL, zero commands FAIL rather than passing vacuously, the journal-draft and `core.hooksPath` matrices. |
 
 ---
 

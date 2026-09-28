@@ -8,10 +8,11 @@ Development environment configuration for cross-device use.
 |---|---|---|
 | `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` | Claude Code global configuration |
 | `claude/settings.shared.json` | *synced into* `~/.claude/settings.json` (not linked) | Claude Code hooks and permissions. The live file is a real, machine-local file the app writes; `_settings_sync.py` applies the tracked `hooks`/`permissions` into it each prompt ([ADR-139](docs/adr/139-machine-local-settings-with-shared-source-sync.md)) |
-| `claude/scripts/` | `~/.claude/scripts/` (junction) | Hook scripts and utilities |
-| `claude/skills/` | `~/.claude/skills/` (junction) | Custom slash command skills |
+| `claude/scripts/` | `~/.claude/scripts/` (directory symlink) | Hook scripts and utilities |
+| `claude/skills/` | `~/.claude/skills/` (directory symlink) | Custom slash command skills |
+| `claude/hooks/` | `~/.claude/hooks/` (directory symlink) | Global git hooks — the target of the global `core.hooksPath` ([ADR-005](docs/adr/005-global-core-hooks-path.md)) |
 | `claude/routines/` | `~/.claude/routines/` (junction) | Scheduled-task source definitions — registering a live task is a separate step, see [Routines](#routines) |
-| `claude/templates/` | `~/.claude/templates/` (junction) | Document templates, read at runtime by skills |
+| `claude/templates/` | `~/.claude/templates/` (directory symlink) | Document templates, read at runtime by skills |
 
 ## Setup
 
@@ -24,7 +25,15 @@ bash setup.sh
 ```
 
 The script creates symlinks/junctions from the expected config locations into this repo.
-Any edits made through those symlinks update the repo file directly.
+Any edits made through those symlinks update the repo file directly. It needs Developer Mode
+(or an elevated Git Bash) on Windows, never deletes anything it replaces — an existing file or
+directory is moved to `~/.claude/backups/setup-<timestamp>/`, and `bash setup.sh --restore <dir>`
+puts it back — and finishes by running the read-only install check
+`py -3 ~/.claude/scripts/dev-env-doctor.py`.
+
+**Adding a second machine?** Follow [`docs/REFERENCE.md` → Adding a Second Machine](docs/REFERENCE.md#adding-a-second-machine):
+it covers the prerequisites, which routines to register where, and using both machines on the
+same day ([dev-env#1107](https://github.com/brownm09/dev-env/issues/1107)).
 
 ## Skills
 

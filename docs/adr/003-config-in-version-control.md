@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-13  
 **Status:** Accepted  
-**Amended:** 2026-07-01, 2026-07-06, 2026-07-08, 2026-07-10, 2026-07-14, 2026-08-09 (see Amendment sections below)
+**Amended:** 2026-07-01, 2026-07-06, 2026-07-08, 2026-07-10, 2026-07-14, 2026-08-09, 2026-09-28 (see Amendment sections below)
 
 ---
 
@@ -209,6 +209,41 @@ machine-local live copies are not version-controlled). The frontmatter `model:` 
 the other routines — it is inert, so only `prune-stale-worktrees` retains its (annotated) pin. This is
 the application of the mitigation pattern above, not a new decision; the imperative strings were
 genericized to "the first step below" so they are correct regardless of each routine's step numbering.
+
+---
+
+## Amendment (2026-09-28) — setup.sh backs up instead of deleting, and no longer self-elevates
+
+Preparing dev-env for a second machine ([dev-env#1107](https://github.com/brownm09/dev-env/issues/1107),
+implemented in [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114)) exposed three problems in
+the bootstrap this ADR's link topology depends on.
+
+1. **`win_link` deleted what it replaced.** An existing `~/.claude/{CLAUDE.md,scripts,skills,hooks,templates}`,
+   `routines` or `~/bin` was removed with `rm -f` / `rmdir` / `rm -rf` before linking. On a machine that
+   already had Claude Code set up, that silently deleted the user's own skills or `CLAUDE.md`. Every link
+   now goes through `prepare_link_target`: an already-correct link is left alone, a stale link is removed
+   (never its target), and anything real is moved to `~/.claude/backups/setup-<timestamp>/` first —
+   verified by read-back, with the run aborting if the capture fails. `bash setup.sh --restore <dir>`
+   copies the originals back and leaves the backup as the anchor, so a repeated restore converges. A
+   different prior global `core.hooksPath` is saved and restored the same way. This applies the global
+   "Back up before you mutate" rule ([ADR-079](079-backup-restore-convention.md)) to setup; it is not a new
+   decision.
+2. **It relaunched itself through UAC** — the pattern [ADR-041](041-no-terminal-spawn-in-windows-scripts.md)
+   forbids outside its closed allowlist — while `claude/setup-prompt.md` had Claude run setup from an agent
+   session, exactly where the dialog has no desktop to render against. It now fails fast with the fix:
+   enable Developer Mode, or use an elevated Git Bash.
+3. **Its Developer Mode probe never worked from Git Bash.** Git Bash rewrote `reg.exe`'s `/v` switch into a
+   path, `reg.exe` rejected the query, and `2>/dev/null` hid the error (the
+   [dev-env#602](https://github.com/brownm09/dev-env/issues/602) class). Separately, `grep -P` refuses to
+   run outside a UTF-8 locale. So every non-admin run took the UAC path. Both are fixed
+   (`MSYS_NO_PATHCONV=1`, and an ERE match). They surfaced only when setup was run end-to-end in a
+   sandboxed `HOME`/`USERPROFILE`; the stubbed link-loop test (Testing item 49) cannot reach that code.
+
+Setup now ends by running `claude/scripts/dev-env-doctor.py`, a read-only check of the whole install:
+links, hook-command scripts, tools and auth, per-clone `core.hooksPath` overrides, and the journal clone
+(Testing item 100). The link tables in the project `CLAUDE.md` and `README.md` now say what setup
+actually creates: directory symlinks for `scripts`, `skills`, `hooks` and `templates`, and a junction for
+`routines`.
 
 ---
 

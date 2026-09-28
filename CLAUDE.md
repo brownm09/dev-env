@@ -82,7 +82,7 @@ the item). A one-line navigational map of the test directory is
 46. **check-journal-compose-liveness test** — required when changing `claude/scripts/check-journal-compose-liveness.py`. Run: `py -3 claude/scripts/tests/test_check_journal_compose_liveness.py`
 47. **disk-space-check test** — required when changing `claude/scripts/disk-space-check.py`. Run: `py -3 claude/scripts/tests/test_disk_space_check.py`
 48. **stop-tile-enumeration-gate test** — required when changing `claude/scripts/stop-tile-enumeration-gate.py`. Run: `py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py`
-49. **setup-link-loop test** — required when changing `setup.sh`'s `CLAUDE_FILE_LINKS` / `CLAUDE_DIR_LINKS` arrays or its `link_claude_windows()` / `link_claude_unix()` functions. Run: `bash claude/scripts/tests/test-setup-link-loop.sh`
+49. **setup-link-loop test** — required when changing `setup.sh`'s `CLAUDE_FILE_LINKS` / `CLAUDE_DIR_LINKS` arrays, its `link_claude_windows()` / `link_claude_unix()` functions, or its backup/restore path (`prepare_link_target`, `restore_setup_backup`, `set_hooks_path`). Run: `bash claude/scripts/tests/test-setup-link-loop.sh`
 50. **journal-stop-check test** — required when changing `claude/scripts/journal-stop-check.py`. Run: `py -3 claude/scripts/tests/test_journal_stop_check.py`
 51. **idle-refresher test** — required when changing `claude/scripts/idle-refresher.py`. Run: `py -3 claude/scripts/tests/test_idle_refresher.py`
 52. **pre-auto-merge-checkpoint-gate test** — required when changing `claude/scripts/pre-auto-merge-checkpoint-gate.py`. Run: `py -3 claude/scripts/tests/test_pre_auto_merge_checkpoint_gate.py` + `bash claude/scripts/tests/test-auto-merge-checkpoint-gate.sh`
@@ -133,6 +133,7 @@ the item). A one-line navigational map of the test directory is
 97. **journal-project-repo-map test** — required when changing `claude/scripts/journal-project-repo-map.py` or the Step 8a Source 3 block in `claude/skills/journal-compose/SKILL.md` (ADR-032 Amendment 1 lands in both — the script resolves the mapping and names every skip, the skill consumes `query_order` and surfaces those skips to the user). Run: `py -3 claude/scripts/tests/test_journal_project_repo_map.py`
 98. **`_settings_sync` shared-module test** — required when changing `claude/scripts/_settings_sync.py`, its `OWNED_KEYS`/`SEED_KEYS` classification, `claude/settings.shared.json`, or `setup.sh`'s `seed_claude_settings()`. Also re-run the three gates that read the shared file through `_hook_wiring.py` (items 61/62/63), `test_pyw_stdio.py` (item 2), `test_hook_liveness_check.py` (item 67), and the setup link-loop (item 49) — all five were repointed off `claude/settings.json` by ADR-139. Run: `py -3 claude/scripts/tests/test_settings_sync.py` + `bash claude/scripts/tests/test-setup-link-loop.sh`
 99. **`_gh_project` shared-module test** — required when changing `claude/scripts/_gh_project.py`. Run: `py -3 claude/scripts/tests/test_gh_project.py`
+100. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`, or `setup.sh`'s `CLAUDE_FILE_LINKS` / `CLAUDE_DIR_LINKS` arrays (the doctor's link list is pinned against them). Run: `py -3 claude/scripts/tests/test_dev_env_doctor.py`
 
 ## Observability
 
@@ -192,11 +193,15 @@ When a PR modifies any of the paths below, update the listed reference docs **in
 | Path | dev-env source |
 |---|---|
 | `~/.claude/CLAUDE.md` | `claude/CLAUDE.md` |
-| `~/.claude/scripts/` | `claude/scripts/` (directory junction) |
-| `~/.claude/skills/` | `claude/skills/` (directory junction) |
-| `~/.claude/hooks/` | `claude/hooks/` (directory junction) |
+| `~/.claude/scripts/` | `claude/scripts/` (directory symlink) |
+| `~/.claude/skills/` | `claude/skills/` (directory symlink) |
+| `~/.claude/hooks/` | `claude/hooks/` (directory symlink) |
 | `~/.claude/routines/` | `claude/routines/` (directory junction) |
-| `~/.claude/templates/` | `claude/templates/` (directory junction) |
+| `~/.claude/templates/` | `claude/templates/` (directory symlink) |
+
+`setup.sh` creates these (installs older than it may hold junctions instead — both resolve the
+same). `py -3 ~/.claude/scripts/dev-env-doctor.py` verifies the whole layout on any machine; adding
+a second one: [`docs/REFERENCE.md` → Adding a Second Machine](docs/REFERENCE.md#adding-a-second-machine).
 
 **Machine-local only — never commit:**
 

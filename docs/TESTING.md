@@ -1923,20 +1923,40 @@ For a one-line navigational map of the test directory, see
     ```
 
 49. **setup-link-loop test** — required when changing `setup.sh`'s `CLAUDE_FILE_LINKS` /
-    `CLAUDE_DIR_LINKS` arrays or its `link_claude_windows()` / `link_claude_unix()` functions.
+    `CLAUDE_DIR_LINKS` arrays, its `link_claude_windows()` / `link_claude_unix()` functions, or its
+    backup/restore path (`prepare_link_target`, `restore_setup_backup`, `set_hooks_path`).
     Sources `setup.sh` unmodified — a guard around the OS-dispatch block at the bottom makes this
-    safe, since sourcing only defines functions/arrays without executing anything — and exercises
-    the extracted link functions with `win_link`/`ln` stubbed to a call log, so the test needs no
-    Administrator/Developer Mode privilege and never touches a real `~/.claude` or global git
-    config: pins the shared `CLAUDE_FILE_LINKS` (`CLAUDE.md`, `settings.json`) and
-    `CLAUDE_DIR_LINKS` (`scripts`, `skills`, `hooks`, `templates`) enumeration against
-    [ADR-003](adr/003-config-in-version-control.md)'s table, and that
-    `link_claude_windows()` / `link_claude_unix()` each call their link primitive for exactly the
-    expected 8 targets (the two arrays, plus the separately-linked `routines` junction and
-    `~/bin`) in order, against a real throwaway `$HOME` — so the unstubbed `mkdir -p` calls are
-    verified for real too. `setup_windows()`'s UAC elevation gate, the soft-prereq warnings,
-    `set_hooks_path()`'s global `git config` mutation, and `win_link`'s actual `cygpath`/`mklink`
-    invocation are out of scope by design ([dev-env#614](https://github.com/brownm09/dev-env/issues/614)).
+    safe, since sourcing only defines functions/arrays without executing anything. Nothing touches
+    a real `~/.claude` or the real global git config.
+
+    Scenarios 1–3 exercise the extracted link functions with `win_link`/`ln` stubbed to a call
+    log, so they need no Administrator/Developer Mode privilege: they pin the shared
+    `CLAUDE_FILE_LINKS` (`CLAUDE.md`) and `CLAUDE_DIR_LINKS` (`scripts`, `skills`, `hooks`,
+    `templates`) enumeration against [ADR-003](adr/003-config-in-version-control.md)'s table, and
+    that `link_claude_windows()` / `link_claude_unix()` each call their link primitive for exactly
+    the expected 7 targets (the two arrays, plus the separately-linked `routines` junction and
+    `~/bin`) in order, with the settings seed between them
+    ([ADR-139](adr/139-machine-local-settings-with-shared-source-sync.md)), against a real
+    throwaway `$HOME` — so the unstubbed `mkdir -p` calls are verified for real too.
+
+    Scenarios 4–6 ([dev-env#1114](https://github.com/brownm09/dev-env/issues/1114)) run the
+    backup-before-replace path for real in a throwaway `$HOME`, building directory links as
+    junctions on Windows (no privilege needed) and symlinks elsewhere. `prepare_link_target`
+    proceeds on an empty target without creating a backup directory, moves a real file or
+    directory into `~/.claude/backups/setup-<ts>/` with its contents intact, leaves an
+    already-correct link alone, and removes a stale link **without touching its target's
+    contents**. `restore_setup_backup` copies the originals back, leaves the repo target and the
+    backup untouched, and converges on a second run. `set_hooks_path` — with global git config
+    redirected to a temp file via `GIT_CONFIG_GLOBAL` — saves a different prior global
+    `core.hooksPath`, saves nothing when the value is already its own (the check that caught
+    `same_path` comparing `/tmp/...` against `C:/.../Temp/...` spellings of one directory), and
+    `--restore` puts the prior value back.
+
+    Still out of scope: `setup_windows()`'s elevation gate, the soft-prereq warnings, and
+    `win_link`'s actual `cygpath`/`mklink` call ([dev-env#614](https://github.com/brownm09/dev-env/issues/614)).
+    For dev-env#1114 the whole script was also run end-to-end in a sandboxed `HOME`/`USERPROFILE`
+    — which is how the gate's two detection bugs (an MSYS-mangled `reg.exe /v` switch and a
+    locale-dependent `grep -P`) were found.
 
     ```bash
     bash claude/scripts/tests/test-setup-link-loop.sh
@@ -4001,3 +4021,30 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_gh_project.py
     ```
+
+100. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`, or
+     `setup.sh`'s `CLAUDE_FILE_LINKS` / `CLAUDE_DIR_LINKS` arrays (the doctor's link list is
+     pinned against them). Exercises the doctor's pure decision helpers (`*_result` /
+     `*_results`) against fixtures only — temp files, fake path resolvers, injected
+     `which`/`is_file` callables — so nothing reads this machine's real `~/.claude`, git config,
+     clones or network. `collect()` and `_run()`, the thin I/O layer around the helpers, are
+     deliberately untested, per the repo's no-subprocess-mock convention; the whole script was
+     run live on this machine and in a sandboxed `HOME` for [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114).
+
+     25 cases. `LINKED_ITEMS` equals `setup.sh`'s parsed link arrays plus `routines`, after
+     asserting the parse extracted something — an empty parse compared against nothing would
+     pass. Hook-command script extraction handles plain, double-quoted-with-a-space and non-`.py`
+     commands; all-present is a PASS, a missing script a FAIL naming it, and zero commands or an
+     unreadable settings file a FAIL rather than a vacuous PASS
+     ([ADR-144](adr/144-gate-calibration-pass-3-dimension.md)). Scripts under a different home get
+     the [dev-env#1113](https://github.com/brownm09/dev-env/issues/1113) relocation hint, scripts
+     under this home don't, and a launcher missing from `PATH` FAILs. The link check reports
+     missing, real-not-a-link and points-elsewhere links in one FAIL. Compile severity: clean
+     PASS, invalid escape WARN, syntax error FAIL, no files FAIL. Also covered: tool presence, gh
+     token scopes, the gh credential helper, git identity, global and per-clone `core.hooksPath`,
+     the journal / `origin/draft/<today>` matrix, the board config, the routine-host flag (only
+     JSON `true` counts), and the exit code.
+
+     ```bash
+     py -3 claude/scripts/tests/test_dev_env_doctor.py
+     ```

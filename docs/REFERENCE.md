@@ -13,6 +13,7 @@ For a compact overview see the [README](../README.md).
 - [Utility Scripts](#utilities)
 - [Model Selection](#model-selection)
 - [Platform Constraints](#platform-constraints)
+- [Adding a Second Machine](#adding-a-second-machine)
 - [Git Workflow Runbooks](#git-workflow-runbooks)
 - [Engineering Journal Internals](#engineering-journal-internals)
 
@@ -271,7 +272,7 @@ The orphaned-worktree recovery recipe is `claude/scripts/_worktree_recovery.py` 
 
 #### Machine-local permissions
 
-The `permissions.allow` block in `claude/settings.shared.json` contains paths with a hardcoded Windows username (`C:/Users/brown/...`). These rules are functionally correct on this machine but must be updated manually when bootstrapping dev-env on a new machine or account. If scratch-dir writes or edits start prompting for permission after a re-bootstrap, update the username in every `allow` entry.
+The `permissions.allow` block **and every hook command** in `claude/settings.shared.json` contain paths with a hardcoded Windows username (`C:/Users/brown/...`). They are correct on a machine whose profile is `C:\Users\brown`. On any other, the hook commands name missing scripts and block every prompt — `dev-env-doctor.py` reports it, and [dev-env#1113](https://github.com/brownm09/dev-env/issues/1113) tracks rewriting the prefix per machine; see [Adding a Second Machine](#adding-a-second-machine). If scratch-dir writes or edits start prompting for permission after a re-bootstrap, update the username in every `allow` entry.
 
 **Known scope decisions:**
 
@@ -739,6 +740,7 @@ hooks and shared modules that serve the same workflow, rather than split across 
 | `merge-ready.sh` | `bash merge-ready.sh [owner/repo ...]` | Lists, per repo, the open PRs that are green + mergeable + waiting on nothing (the merge-ready set) vs. those still open but not ready. Defaults to `merickvaughn/lifting-logbook`; accepts multiple `owner/repo` args. Read-only — `gh pr list` plus a `node` rollup of check states (`jq`-free, per the no-`jq` convention). |
 | `get-project-item.sh` | `ITEM_ID=$(bash get-project-item.sh <issue-number> [project-number] [owner])` | Resolves a GitHub Project item node ID from an issue/PR number. Checks a local item-ID cache first (dev-env#1057, [ADR-141](adr/141-project-item-id-creation-time-cache.md)) — a hit costs **zero** `gh` calls, so it succeeds even when `gh` is offline/unauthenticated. Falls back to the original full `gh project item-list --limit 1000` fetch-and-scan on a miss, and writes the result back into the cache. Defaults to project 3, owner `brownm09`, repo `dev-env`. Overridable via args or `PROJECT_NUMBER`/`PROJECT_OWNER` env vars (repo via `PROJECT_REPO`). Requires `project` scope for the fallback path: `gh auth refresh -s project`. |
 | `session-mode-report.py` | `py -3 session-mode-report.py [--since YYYY-MM-DD] [--interactive-only] [--non-plan-only] [--log PATH]` | Reports the startup permission mode per session by parsing the `session-mode-prompt.py` hook log (`scratch/session-mode-prompt.log`). For each `session_id` it takes the earliest entry as the startup mode, classifies sessions as interactive vs. automated (scheduled-task / `<tag>` prompts), and flags (`!`) interactive sessions that started outside `plan`. Desktop/web and spawn-task sessions launch in `bypassPermissions` by design (overriding `defaultMode: plan`); this surfaces that. Read-only; report to stdout, diagnostics to stderr. |
+| `dev-env-doctor.py` | `py -3 dev-env-doctor.py [--offline] [--settings PATH]` | **Read-only health check of this machine's install.** `setup.sh` runs it last; run it any time the tooling misbehaves. Prints one PASS/WARN/FAIL/INFO line per check and exits 1 on any FAIL; never writes anything. Checks: the `~/.claude` links and `~/bin` resolve into the dev-env checkout (the list is pinned against `setup.sh`'s link arrays), which should be `~/Git/dev-env` on `main`; every hook command in the live `~/.claude/settings.json` names an existing script and its launcher is on `PATH` — asserting at least one command was extracted, so an empty settings file FAILs instead of passing vacuously ([ADR-144](adr/144-gate-calibration-pass-3-dimension.md)); every `claude/scripts/*.py` compiles on this Python (a SyntaxWarning is a WARN, since a future Python makes it an error); `py`/`git`/`gh`/`node`, gh's `project` scope, the gh credential helper ([ADR-047](adr/047-standardize-gh-credential-helper.md)) and git identity; the global `core.hooksPath`, plus every `~/Git` clone whose effective hooks dir overrides it ([dev-env#1108](https://github.com/brownm09/dev-env/issues/1108)); the journal clone and whether it contains `origin/draft/<today>`; dev-env's gitignored `.claude/hook-config.json`; and the routine-host flag. `--offline` skips `gh auth status` and `git ls-remote`. See [Adding a Second Machine](#adding-a-second-machine). |
 | `register-keep-token-warm.ps1` | `powershell -ExecutionPolicy Bypass -File register-keep-token-warm.ps1 [-IntervalHours N] [-Unregister]` | **Per-machine, run once.** Registers the non-elevated, hidden `ClaudeKeepTokenWarm` scheduled task (every 4h by default) that runs `keep-token-warm.ps1`. Idempotent (`-Force`); `-Unregister` backs up the live task definition to `Documents\LOGS\ClaudeKeepTokenWarmBackup.xml` first (write-if-absent, [ADR-079](adr/079-backup-restore-convention.md)), refuses to proceed if the backup can't be captured, then removes the task and verifies removal by read-back. Restoring is re-running the script with no switches (the task carries no state the script itself didn't define). Each machine needs its own registration. [ADR-043](adr/043-keep-warm-scheduled-task-for-token-freshness.md) |
 | `keep-token-warm.ps1` | (scheduled-task payload — invoked by `ClaudeKeepTokenWarm`, not run by hand) | Runs `claude -p 'ok' --model haiku` to trigger the CLI's own OAuth-token refresh, keeping `~/.claude/.credentials.json` fresh so `usage-snapshot.py` works without a manual `claude` refresh — unless a `<claude.exe> auth status --json` probe first reports the MSIX desktop-app dead-end (`loggedIn:false`, mirroring `usage-snapshot.py`'s `cli_auth_status`), in which case it exits early logging `desktop-app: nothing to refresh` instead of spawning a doomed refresh call ([dev-env#917](https://github.com/brownm09/dev-env/issues/917)). Logs token mtime + minutes-to-expiry before/after each run to `Documents\LOGS\keep-token-warm_<date>.txt` (never the token value); always exits 0. [ADR-043](adr/043-keep-warm-scheduled-task-for-token-freshness.md) |
 | `validate-manifest.py` | `py -3 validate-manifest.py <manifest-path> [<manifest-path> ...]` | Pre-compose validator for engineering-journal manifest shards. Checks that each entry has all five required fields (`stub`, `topic`, `tokens`, `prs_opened`, `prs_closed`). Both ADR-056 per-session shards (single JSON object per file) and legacy per-day manifests (one JSON object per line) are handled — paths are parsed line-by-line. Absent/unmatched paths are skipped. Exit 0 — all entries valid; exit 1 — at least one entry is missing a required field or a line failed to parse, with file path, line number, and missing fields on stderr. Wired into `/journal-compose` as **Step 0.7** — runs before any stub read or subagent spawn so field gaps surface up front rather than mid-compose (dev-env [#423](https://github.com/brownm09/dev-env/issues/423)). |
@@ -925,6 +927,106 @@ help only object-carrying pushes; it does not address delete-only updates, which
 
 Tracked in [dev-env#303](https://github.com/brownm09/dev-env/issues/303). See
 [ADR-035](adr/035-git-push-delete-web-session-constraint.md).
+
+---
+
+## Adding a Second Machine
+
+Claude Code syncs nothing under `~/.claude/` between machines: not settings, not `CLAUDE.md`, not
+auto-memory, not session transcripts ([settings](https://code.claude.com/docs/en/settings),
+[sessions](https://code.claude.com/docs/en/sessions), [memory](https://code.claude.com/docs/en/memory)).
+Cloud sessions load only a repo's own `.claude/`, never user-scope config
+([Claude Code on the web](https://code.claude.com/docs/en/claude-code-on-the-web)), so they are not a
+substitute for this setup. A *session* therefore can't move between machines; *work* crosses
+through git and GitHub — branches, PRs, issues, journal stubs and tile shards. dev-env is how the
+tooling itself crosses: each machine gets its own clone and its own `~/.claude/` links. Umbrella
+issue: [dev-env#1107](https://github.com/brownm09/dev-env/issues/1107).
+
+### Before you start
+
+- **Check the profile path.** In PowerShell: `echo $env:USERPROFILE`. Every hook command is
+  written as `pyw -3 C:/Users/brown/.claude/scripts/...`, and a hook whose script is missing blocks
+  every prompt. On a profile other than `C:\Users\brown`, don't start a session there until
+  [dev-env#1113](https://github.com/brownm09/dev-env/issues/1113) lands.
+- **Enable Developer Mode** (Settings → System → For developers). `setup.sh` needs it, or an
+  elevated Git Bash, to create symlinks — and stops with that instruction rather than prompting
+  through UAC ([ADR-041](adr/041-no-terminal-spawn-in-windows-scripts.md)).
+- **Install** Git for Windows, Python with the `py`/`pyw` launcher, the GitHub CLI, nvm for Windows
+  (then `nvm install 20.11.1`), and the Claude desktop app, signed in to the same account.
+
+### Steps (Git Bash)
+
+1. Sign in to GitHub, make `gh` git's credential helper
+   ([ADR-047](adr/047-standardize-gh-credential-helper.md)), and add the `project` scope the board
+   commands need:
+
+   ```bash
+   gh auth login
+   gh auth setup-git
+   gh auth refresh -s project
+   ```
+
+2. On a fresh machine, set the git identity: `git config --global user.name "<name>"` and
+   `git config --global user.email "<email>"`.
+3. Clone into `~/Git` — the hooks assume that layout — starting with dev-env and the journal, then
+   the project repos you work in:
+
+   ```bash
+   mkdir -p ~/Git
+   git clone https://github.com/brownm09/dev-env.git ~/Git/dev-env
+   git clone https://github.com/brownm09/engineering-journal.git ~/Git/engineering-journal
+   ```
+
+4. Run setup. It moves anything already at a link location into
+   `~/.claude/backups/setup-<timestamp>/` (undo with `bash setup.sh --restore <that dir>`), seeds
+   `~/.claude/settings.json`, sets the global `core.hooksPath`, then runs the doctor:
+
+   ```bash
+   bash ~/Git/dev-env/setup.sh
+   ```
+
+5. Copy dev-env's gitignored `.claude/hook-config.json` from the other machine to the same path in
+   this clone — the project-board hook needs it (board and field IDs, no secrets). Then re-run the
+   doctor until it reports no FAIL:
+
+   ```bash
+   py -3 ~/.claude/scripts/dev-env-doctor.py
+   ```
+
+### What stays per machine
+
+| Item | On the second machine |
+|---|---|
+| Scheduled routines | Register only `prune-stale-worktrees` and `reclaim-worktree-disk`, which clean that machine's own worktrees. Keep the shared-state routines — `daily-journal-compose`, `biweekly-retro`, `weekly-memory-audit`, `retro-chain-backstop`, `reconcile-project-board`, `nightly-cover-letters` — on one machine: every lock they take is a local file, so two registrations double-run them ([dev-env#1110](https://github.com/brownm09/dev-env/issues/1110) adds a guard). |
+| `ClaudeKeepTokenWarm` | Not needed under the MSIX desktop app ([dev-env#917](https://github.com/brownm09/dev-env/issues/917)); for an npm-CLI install, run `register-keep-token-warm.ps1` on each machine. |
+| Auto-memory | Not shared, and the weekly memory audit only sees the machine it runs on. Durable rules belong in `CLAUDE.md` regardless ([ADR-038](adr/038-durable-preferences-documented-in-repo.md)). |
+| `merge-queue.md`, baseline-test snapshots, the project-item cache | Local. A branch started on one machine has no baseline snapshot on the other. |
+| Session transcripts | Local. To steer a session still running on the other machine, use Remote Control from claude.ai/code ([remote-control](https://code.claude.com/docs/en/remote-control)). |
+
+### Using both machines on the same day
+
+The journal's `draft/<today>` branch is shared through `origin`. Until
+[dev-env#1111](https://github.com/brownm09/dev-env/issues/1111) automates it, before the first stub
+of the day on either machine:
+
+```bash
+git -C ~/Git/engineering-journal fetch origin --prune
+git -C ~/Git/engineering-journal checkout draft/<today>   # no -b when origin already has it
+```
+
+If a push is rejected as non-fast-forward, run
+`git -C ~/Git/engineering-journal pull --no-rebase --no-edit`, then push again. Merge rather than
+rebase: the checkout is shared by concurrent sessions and may hold their uncommitted files. **Never
+force-push a draft branch** — it deletes the other machine's stubs. The doctor warns when
+`origin/draft/<today>` exists but the local checkout doesn't contain it.
+
+### Handing a session to the other machine
+
+Push the branch, spawn a hand-off tile ([ADR-113](adr/113-cross-session-handoff-tiles.md)), and
+commit its shard (`sessions/<project>/tiles/<N>.json`) as usual. On the other machine, pull the
+journal, read the shard, and re-spawn the chip with `cwd` set to that machine's clone —
+[dev-env#1112](https://github.com/brownm09/dev-env/issues/1112) adds a helper that resolves `cwd`
+and checks whether the tile was already started elsewhere.
 
 ---
 

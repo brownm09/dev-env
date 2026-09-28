@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# Self-test for setup.sh's ~/.claude/ link-loop enumeration (dev-env#614).
+# Self-test for setup.sh's ~/.claude/ link-loop enumeration (dev-env#614) and its
+# backup-before-replace / --restore behavior (dev-env#1114).
 #
-# setup.sh's win_link/ln calls and the UAC elevation gate in setup_windows()
-# are never invoked here -- this drives ONLY the extracted
-# link_claude_windows()/link_claude_unix() functions (see setup.sh), with
-# win_link/ln stubbed, so the test needs no Administrator/Developer Mode
-# privilege and never touches a real ~/.claude or global git config. What IS
-# real: setup.sh is sourced unmodified, CLAUDE_FILE_LINKS/CLAUDE_DIR_LINKS are
-# the actual arrays it defines, and mkdir -p runs for real against a
-# throwaway $HOME.
+# Scenarios 1-3 drive ONLY the extracted link_claude_windows()/link_claude_unix()
+# functions (see setup.sh), with win_link/ln stubbed, so they need no
+# Administrator/Developer Mode privilege. What IS real: setup.sh is sourced
+# unmodified, CLAUDE_FILE_LINKS/CLAUDE_DIR_LINKS are the actual arrays it defines,
+# and mkdir -p runs for real against a throwaway $HOME.
+#
+# Scenarios 4-6 run prepare_link_target, restore_setup_backup and set_hooks_path for
+# real against a throwaway $HOME. Directory links are junctions on Windows (no
+# privilege needed) and symlinks elsewhere; global git config is redirected to a
+# temp file via GIT_CONFIG_GLOBAL. Nothing touches the real ~/.claude or git config,
+# and setup_windows()'s elevation gate is never invoked.
 #
 # Portable to Git Bash on Windows and Linux CI. Run from anywhere:
 #   bash claude/scripts/tests/test-setup-link-loop.sh
@@ -130,6 +134,103 @@ fi
 [ -d "$TMPHOME/.claude" ] && ok "~/.claude created for real" || bad "~/.claude was not created"
 [ -d "$TMPHOME/.claude/scratch" ] && ok "~/.claude/scratch created for real" || bad "~/.claude/scratch was not created"
 rm -rf "$TMPHOME" "$LOGFILE"
+
+# A directory link without needing privilege: a junction on Windows, a symlink elsewhere.
+make_dir_link() {
+  case "$(uname -s)" in
+    MINGW*|CYGWIN*|MSYS*) cmd.exe /c "mklink /J \"$(cygpath -w "$2")\" \"$(cygpath -w "$1")\"" >/dev/null ;;
+    *) ln -s "$1" "$2" ;;
+  esac
+}
+
+# --- Scenario 4: prepare_link_target backs up or unlinks -- it never deletes ---
+echo "[4] prepare_link_target keeps correct links, removes stale ones, backs up real items"
+TMPHOME=$(mktemp -d)
+OUT=$(
+  export HOME="$TMPHOME"
+  source "$SETUP_SCRIPT"
+  set +e
+  mkdir -p "$HOME/repo/claude/skills" "$HOME/repo/claude/hooks" "$HOME/elsewhere" "$HOME/.claude"
+  echo "keep" > "$HOME/elsewhere/keep.txt"
+
+  prepare_link_target "$HOME/repo/claude/skills" "$HOME/.claude/skills" >/dev/null
+  echo "empty_rc=$? backup_dir_exists=$([ -d "$SETUP_BACKUP_DIR" ] && echo yes || echo no)"
+
+  mkdir -p "$HOME/.claude/skills" && echo "mine" > "$HOME/.claude/skills/mine.txt"
+  prepare_link_target "$HOME/repo/claude/skills" "$HOME/.claude/skills" >/dev/null
+  echo "realdir_rc=$? dst_gone=$([ -e "$HOME/.claude/skills" ] && echo no || echo yes) saved=$(cat "$SETUP_BACKUP_DIR/skills/mine.txt" 2>/dev/null)"
+
+  echo "my notes" > "$HOME/.claude/CLAUDE.md"
+  prepare_link_target "$HOME/repo/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md" >/dev/null
+  echo "realfile_rc=$? saved_file=$(cat "$SETUP_BACKUP_DIR/CLAUDE.md" 2>/dev/null)"
+
+  make_dir_link "$HOME/repo/claude/hooks" "$HOME/.claude/hooks"
+  prepare_link_target "$HOME/repo/claude/hooks" "$HOME/.claude/hooks" >/dev/null
+  echo "correct_rc=$? still_link=$([ -L "$HOME/.claude/hooks" ] && echo yes || echo no)"
+
+  make_dir_link "$HOME/elsewhere" "$HOME/.claude/templates"
+  prepare_link_target "$HOME/repo/claude/templates" "$HOME/.claude/templates" >/dev/null
+  echo "stale_rc=$? stale_gone=$([ -L "$HOME/.claude/templates" ] && echo no || echo yes) target_intact=$(cat "$HOME/elsewhere/keep.txt" 2>/dev/null)"
+)
+echo "$OUT" | grep -q "empty_rc=0 backup_dir_exists=no" && ok "nothing there: proceed, no backup dir created" || bad "empty case: $OUT"
+echo "$OUT" | grep -q "realdir_rc=0 dst_gone=yes saved=mine" && ok "real directory moved into the backup, contents intact" || bad "real-dir case: $OUT"
+echo "$OUT" | grep -q "realfile_rc=0 saved_file=my notes" && ok "real file moved into the backup, contents intact" || bad "real-file case: $OUT"
+echo "$OUT" | grep -q "correct_rc=1 still_link=yes" && ok "an already-correct link is left alone (rc 1)" || bad "correct-link case: $OUT"
+echo "$OUT" | grep -q "stale_rc=0 stale_gone=yes target_intact=keep" && ok "a stale link is removed and its target's contents survive" || bad "stale-link case: $OUT"
+rm -rf "$TMPHOME"
+
+# --- Scenario 5: restore_setup_backup copies originals back, and converges ---
+echo "[5] restore_setup_backup undoes a run's replacements and is idempotent"
+TMPHOME=$(mktemp -d)
+OUT=$(
+  export HOME="$TMPHOME"
+  export SETUP_BACKUP_DIR="$TMPHOME/.claude/backups/setup-test"
+  source "$SETUP_SCRIPT"
+  set +e
+  mkdir -p "$HOME/repo/claude/skills" "$HOME/.claude/skills"
+  echo "repo" > "$HOME/repo/claude/skills/from-repo.txt"
+  echo "mine" > "$HOME/.claude/skills/mine.txt"
+  echo "my notes" > "$HOME/.claude/CLAUDE.md"
+  prepare_link_target "$HOME/repo/claude/skills" "$HOME/.claude/skills" >/dev/null
+  prepare_link_target "$HOME/repo/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md" >/dev/null
+  make_dir_link "$HOME/repo/claude/skills" "$HOME/.claude/skills"   # what setup would have linked
+
+  restore_setup_backup "$SETUP_BACKUP_DIR" >/dev/null
+  echo "rc1=$? skills_real=$([ -L "$HOME/.claude/skills" ] && echo no || echo yes) mine=$(cat "$HOME/.claude/skills/mine.txt" 2>/dev/null) notes=$(cat "$HOME/.claude/CLAUDE.md" 2>/dev/null) repo_intact=$(cat "$HOME/repo/claude/skills/from-repo.txt" 2>/dev/null) backup_kept=$([ -f "$SETUP_BACKUP_DIR/skills/mine.txt" ] && echo yes || echo no)"
+
+  SECOND=$(restore_setup_backup "$SETUP_BACKUP_DIR")
+  echo "rc2=$? skipped=$(echo "$SECOND" | grep -c Skipped)"
+)
+echo "$OUT" | grep -q "rc1=0 skills_real=yes mine=mine notes=my notes repo_intact=repo backup_kept=yes" \
+  && ok "originals restored, the repo target untouched, the backup kept as the anchor" || bad "restore: $OUT"
+echo "$OUT" | grep -q "rc2=0 skipped=2" && ok "a second restore converges (skips both, no error)" || bad "second restore: $OUT"
+rm -rf "$TMPHOME"
+
+# --- Scenario 6: set_hooks_path saves a different prior global value; --restore puts it back ---
+echo "[6] set_hooks_path backs up a prior global core.hooksPath"
+TMPHOME=$(mktemp -d)
+OUT=$(
+  export HOME="$TMPHOME"
+  export GIT_CONFIG_GLOBAL="$TMPHOME/gitconfig"
+  export SETUP_BACKUP_DIR="$TMPHOME/.claude/backups/setup-test"
+  source "$SETUP_SCRIPT"
+  set +e
+  mkdir -p "$HOME/.claude"
+  git config --global core.hooksPath "D:/prior/hooks"
+  set_hooks_path >/dev/null
+  echo "saved=$(cat "$SETUP_BACKUP_DIR/git-global-core.hooksPath" 2>/dev/null) now_ours=$(git config --global core.hooksPath | grep -c '/.claude/hooks$')"
+
+  SETUP_BACKUP_DIR="$TMPHOME/.claude/backups/setup-rerun"
+  set_hooks_path >/dev/null
+  echo "rerun_backup=$([ -e "$SETUP_BACKUP_DIR" ] && echo yes || echo no)"
+
+  restore_setup_backup "$TMPHOME/.claude/backups/setup-test" >/dev/null
+  echo "restored=$(git config --global core.hooksPath)"
+)
+echo "$OUT" | grep -q "saved=D:/prior/hooks now_ours=1" && ok "prior value saved before core.hooksPath is overwritten" || bad "save: $OUT"
+echo "$OUT" | grep -q "rerun_backup=no" && ok "a re-run that finds its own value saves nothing" || bad "rerun: $OUT"
+echo "$OUT" | grep -q "restored=D:/prior/hooks" && ok "--restore puts the prior global value back" || bad "restore hooksPath: $OUT"
+rm -rf "$TMPHOME"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
