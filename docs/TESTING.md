@@ -1958,7 +1958,8 @@ For a one-line navigational map of the test directory, see
       spellings is the same path, and its parent is not. On a volume without 8.3 names it
       reports that there is nothing to compare.
     - **Scenario 8 (`win_cmd`):** runs `echo` through `cmd.exe` and requires its output, not
-      cmd's interactive banner.
+      cmd's interactive banner. It then creates a junction under a directory whose name
+      contains a space, requiring `mklink` to receive both paths intact.
 
     **Fixture guarantee.** Every link fixture is asserted to exist before its case runs.
     `make_dir_link` prints a `FIXTURE:` line and fails when no link is there afterwards — what
@@ -1973,9 +1974,16 @@ For a one-line navigational map of the test directory, see
     ever created: the "correct link" case failed for want of a link, and the "stale link" case
     passed vacuously. `setup.sh` itself had the same bug — it could create no link at all on a
     current Git for Windows. It now runs every `cmd.exe` call through `win_cmd`, with conversion
-    off, and scenario 8 pins that. Removing and recreating existing links, adopted along the
-    way, stayed: it is simpler than judging whether a link is already correct, and it is what
-    `setup.sh` did before this PR.
+    off.
+
+    A fourth run exposed a second layer. A single pre-quoted command string
+    (`"mklink /J \"...\" \"...\""`) has its embedded quotes escaped as `\"` by 2.55, which
+    cmd.exe rejects: "The filename, directory name, or volume label syntax is incorrect."
+    `win_cmd` now takes each argument separately and lets the runtime quote the ones that hold
+    a space. Scenario 8 pins both layers.
+
+    Removing and recreating existing links, adopted along the way, stayed: it is simpler than
+    judging whether a link is already correct, and it is what `setup.sh` did before this PR.
 
     Still out of scope: `setup_windows()`'s elevation gate, the soft-prereq warnings, and
     `win_link`'s actual `cygpath`/`mklink` call ([dev-env#614](https://github.com/brownm09/dev-env/issues/614)).

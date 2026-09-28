@@ -154,7 +154,7 @@ volume_fs() {
 make_dir_link() {
   local out=""
   case "$(uname -s)" in
-    MINGW*|CYGWIN*|MSYS*) out=$(win_cmd "mklink /J \"$(cygpath -w "$2")\" \"$(cygpath -w "$1")\"" 2>&1 </dev/null) ;;
+    MINGW*|CYGWIN*|MSYS*) out=$(win_cmd mklink /J "$(cygpath -w "$2")" "$(cygpath -w "$1")" 2>&1 </dev/null) ;;
     *) out=$(ln -s "$1" "$2" 2>&1) ;;
   esac
   [ -L "$2" ] && return 0
@@ -288,20 +288,31 @@ case "$(uname -s)" in
     ok "8.3 short names are Windows-only -- nothing to compare" ;;
 esac
 
-# --- Scenario 8: win_cmd runs its command, not an interactive cmd.exe ---
-# Regression pin for dev-env#1114's CI failures. On Git for Windows 2.55 a bare
-# `cmd.exe /c "..."` from Git Bash lost its /c to path conversion: cmd printed its banner
-# and prompt, read end-of-input, and ran nothing -- so setup could create no link at all.
-# stdin is /dev/null so a regression exits at once instead of waiting on a prompt.
-echo "[8] win_cmd runs a cmd.exe command (the /c switch survives path conversion)"
+# --- Scenario 8: win_cmd runs its command, and hands mklink a path with a space intact ---
+# Regression pins for dev-env#1114's CI failures on Git for Windows 2.55, where local 2.37
+# passed. (1) A bare `cmd.exe /c ...` lost its /c to path conversion, so cmd printed its
+# banner and ran nothing. (2) With /c fixed, one pre-quoted command string had its embedded
+# quotes escaped as \", which cmd.exe rejects as bad filename syntax. stdin is /dev/null so a
+# regression exits at once instead of waiting on a prompt.
+echo "[8] win_cmd runs a cmd.exe command, and passes a path with a space intact"
 case "$(uname -s)" in
   MINGW*|CYGWIN*|MSYS*)
-    OUT=$(source "$SETUP_SCRIPT"; win_cmd "echo win-cmd-ran" 2>&1 </dev/null)
+    OUT=$(source "$SETUP_SCRIPT"; win_cmd echo win-cmd-ran 2>&1 </dev/null)
     if echo "$OUT" | grep -q "win-cmd-ran" && ! echo "$OUT" | grep -q "Microsoft Windows \[Version"; then
       ok "cmd.exe ran the command it was given"
     else
       bad "win_cmd: $(printf '%s' "$OUT" | tr -d '\r' | tr '\n' ' ')"
-    fi ;;
+    fi
+
+    TMPHOME=$(mktemp -d)
+    mkdir -p "$TMPHOME/dir with space/target"
+    OUT=$(source "$SETUP_SCRIPT"; win_cmd mklink /J "$(cygpath -w "$TMPHOME/dir with space/link")" "$(cygpath -w "$TMPHOME/dir with space/target")" 2>&1 </dev/null)
+    if [ -L "$TMPHOME/dir with space/link" ] && [ -d "$TMPHOME/dir with space/link" ]; then
+      ok "mklink got a path containing a space intact"
+    else
+      bad "win_cmd with a space in the path: $(printf '%s' "$OUT" | tr -d '\r' | tr '\n' ' ')"
+    fi
+    rm -rf "$TMPHOME" ;;
   *)
     ok "cmd.exe is Windows-only -- nothing to run" ;;
 esac

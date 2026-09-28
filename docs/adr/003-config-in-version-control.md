@@ -245,9 +245,12 @@ the bootstrap this ADR's link topology depends on.
      runs nothing. Every `mklink` and `rmdir` silently did nothing. This surfaced in CI once the link-loop
      test (Testing item 49) asserted its fixtures existed — before that, its stale-link case had passed
      vacuously.
+   - **2.55 also re-quotes a pre-quoted command string.** It escapes the string's embedded quotes as
+     `\"`, which cmd.exe rejects as bad filename syntax.
 
    All `cmd.exe` and `reg.exe` calls now run with conversion off (`win_cmd`; `MSYS_NO_PATHCONV=1` plus
-   `MSYS2_ARG_CONV_EXCL='*'`), and the probe uses an ERE match.
+   `MSYS2_ARG_CONV_EXCL='*'`). `win_cmd` passes each argument separately, so the runtime quotes a path
+   with a space itself. The probe uses an ERE match.
 
 Setup now ends by running `claude/scripts/dev-env-doctor.py`, a read-only check of the whole install:
 links, hook-command scripts, tools and auth, per-clone `core.hooksPath` overrides, and the journal clone

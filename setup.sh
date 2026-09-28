@@ -109,7 +109,7 @@ setup_windows() {
   # These don't block setup, but hooks or the workflow fail at runtime without them.
   # dev-env-doctor.py, run at the end, re-checks all of them.
 
-  if ! win_cmd "where bash >NUL 2>&1"; then
+  if ! win_cmd where bash >/dev/null 2>&1; then
     echo "WARNING: bash.exe not on Windows PATH."
     echo "  Add Git Bash: C:\\Program Files\\Git\\usr\\bin"
     echo "  Claude Code's Bash tool and dev-env's *.sh scripts run under Git Bash."
@@ -172,7 +172,8 @@ setup_windows() {
 # and a real file or directory is backed up, never deleted. Then mklink recreates it.
 win_link() {
   local src="$1" dst="$2" type="$3"
-  local src_win dst_win flag
+  local src_win dst_win
+  local -a flag=()
 
   if ! prepare_link_target "$src" "$dst"; then
     echo "ERROR: could not clear $dst for linking -- nothing was replaced or deleted." >&2
@@ -183,12 +184,12 @@ win_link() {
   dst_win="$(cygpath -w "$dst")"
 
   case "$type" in
-    file)     flag="" ;;
-    dir)      flag="/D" ;;
-    junction) flag="/J" ;;
+    file)     ;;
+    dir)      flag=(/D) ;;
+    junction) flag=(/J) ;;
   esac
 
-  win_cmd "mklink $flag \"$dst_win\" \"$src_win\""
+  win_cmd mklink "${flag[@]}" "$dst_win" "$src_win"
 
   # Read-back (ADR-079 rule 4): the new link must exist and resolve.
   if [ ! -e "$dst" ]; then
@@ -197,14 +198,20 @@ win_link() {
   fi
 }
 
-# win_cmd <command line> -- run one cmd.exe command (mklink, rmdir, where) with Git Bash's
-# argument path conversion switched off. A current Git for Windows (2.55) rewrites cmd's
-# lone `/c` switch into a drive path, so cmd.exe starts an interactive shell, prints its
-# banner, and runs nothing: every mklink silently did nothing (dev-env#1114, the #602
-# class). MSYS_NO_PATHCONV is Git for Windows' switch, MSYS2_ARG_CONV_EXCL upstream
-# MSYS2's; callers pass paths already in Windows form (cygpath -w).
+# win_cmd <command> [args...] -- run one cmd.exe command (mklink, rmdir, where). Both
+# rules below were learned from CI on Git for Windows 2.55 (dev-env#1114); 2.37 happened to
+# tolerate breaking either one.
+#   - Path conversion is off. Otherwise Git Bash rewrites cmd's lone `/c` switch into a
+#     drive path, so cmd.exe starts an interactive shell, prints its banner, and runs
+#     nothing (the #602 class). MSYS_NO_PATHCONV is Git for Windows' switch;
+#     MSYS2_ARG_CONV_EXCL is upstream MSYS2's.
+#   - Every argument is passed separately, never as one pre-quoted string. 2.55 escapes
+#     embedded quotes as \", which cmd.exe does not understand ("The filename, directory
+#     name, or volume label syntax is incorrect"); the runtime quotes an argument itself
+#     when it holds a space.
+# Callers pass paths already in Windows form (cygpath -w).
 win_cmd() {
-  MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' cmd.exe /c "$1"
+  MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' cmd.exe /c "$@"
 }
 
 # Where this run moves anything real that a link would otherwise replace. Computed once per
@@ -247,7 +254,7 @@ remove_link() {
   rm -f "$dst" 2>/dev/null || true
   if [ -L "$dst" ]; then
     case "$(uname -s)" in
-      MINGW*|CYGWIN*|MSYS*) win_cmd "rmdir \"$(cygpath -w "$dst")\"" >/dev/null 2>&1 || true ;;
+      MINGW*|CYGWIN*|MSYS*) win_cmd rmdir "$(cygpath -w "$dst")" >/dev/null 2>&1 || true ;;
     esac
   fi
   if [ -L "$dst" ]; then
