@@ -106,7 +106,7 @@ sibling's convention for a nicety the issue itself didn't ask for.
 
 ## Consequences
 
-- **Testing.** `test_worktree_topology.py` (dev-env `## Testing` item 92) gains four cases for
+- **Testing.** `test_worktree_topology.py` (dev-env `## Testing` item 22) gains four cases for
   `find_orphaned_worktree_dirs()`: none-registered-are-orphans, an unregistered dir is found, empty
   `disk_dirs`, and path normalization (a redundant `.` segment still matches the registered
   spelling). `test_prune_merged_worktrees.py` (item 26) gains real-`tempfile.TemporaryDirectory()`
@@ -121,10 +121,13 @@ sibling's convention for a nicety the issue itself didn't ask for.
   scoping bug caught during authoring: several `Path.exists()` assertions sat outside the
   `tempfile.TemporaryDirectory()` `with` block, so Python's own cleanup had already deleted the
   tree before the assertion ran, masking what the implementation actually did — every filesystem
-  assertion now runs inside the block. The four `_worktree_topology.py` consumer suites
+  assertion now runs inside the block. As additional diligence beyond item 22's own text (which
+  names `test_worktree_topology.py` itself but not these four by number), the four scripts
+  `_worktree_topology.py`'s own module docstring documents as consumers of its shared helpers
   (`test_canonical_mutate_guard.py`, `test_journal_canonical_guard.py`,
-  `test_journal_draft_worktree_guard.py`, `test_worktree_path_check.py` — item 92's own
-  requirement) and the full `run-hook-tests.py` suite all pass unchanged.
+  `test_journal_draft_worktree_guard.py`, `test_worktree_path_check.py`) were also re-run and
+  pass unchanged, confirming the purely-additive change regressed none of them. The full
+  `run-hook-tests.py` suite passes unchanged too.
 - **Observability.** One print line per orphan found/removed/skipped, matching the existing
   per-worktree print convention elsewhere in the same loop; the final `Done — pruned N, skipped N`
   line folds orphan counts into the same totals `prune_one()` already returns and reports.

@@ -342,8 +342,32 @@ def has_git_link(path: str) -> bool:
     as debris from that failure, and its PRESENCE means something else is going on (maybe a
     `git worktree add` race, maybe an unrelated directory a human placed here) that this script
     must never guess about and delete.
+
+    Only meaningful once the caller has already confirmed `path` itself is not a reparse point
+    (see `is_reparse_point()`) -- `Path.exists()` transparently follows a symlink/junction to its
+    TARGET, so this would otherwise report the target's own `.git` state, not the candidate's.
     """
     return Path(path, ".git").exists()
+
+
+def is_reparse_point(path: str) -> bool:
+    """True when `path` is itself a symlink or a Windows directory junction.
+
+    `/review` finding (PR #1117): `find_orphaned_worktree_dirs()`'s path normalization
+    (`Path.resolve()`) and `has_git_link()`'s existence check (`Path.exists()`) both
+    transparently resolve THROUGH a reparse point to its target -- so a junction planted under
+    `.claude/worktrees/` (no elevation required on Windows, unlike a true symlink) would read as
+    "unregistered" (its target is almost never itself a registered worktree) AND "no .git link"
+    (checking the target, which is almost never a worktree either) -- both of this feature's
+    documented safety signals, defeated at once, by an object that was never a partially-deleted
+    orphan in the first place. `os.path.islink()` catches a true symlink; `os.path.isjunction()`
+    (Python 3.12+, always False where junctions aren't supported) catches the realistic Windows
+    vector -- dev-env's own architecture junctions `~/.claude/scripts` etc., and a true symlink
+    requires elevated privilege on this platform, so a junction is the one a script running as
+    the ordinary user could actually create. Checked FIRST, before any other candidate check --
+    a reparse point is never the dev-env#1104 orphan shape, regardless of what its target holds.
+    """
+    return os.path.islink(path) or os.path.isjunction(path)
 
 
 def find_and_remove_orphaned_worktrees(
@@ -357,6 +381,11 @@ def find_and_remove_orphaned_worktrees(
     before the failure, so the leftover directory is invisible to every merge/dirty/liveness check
     in the loop above -- this is a separate, unconditional pass rather than a retry at the point of
     that failure, so it also catches orphans left by any PAST run, not just this one.
+
+    Callers should pass a `worktrees` snapshot fetched as close as possible to this call -- see
+    `prune_one()`'s own re-fetch immediately before calling this, and its comment on why (a
+    worktree that becomes orphaned during the SAME run must be visible in `worktrees` as already
+    gone, or this function has no way to tell it apart from a still-registered one).
 
     Returns (removed_paths, skipped) in the same shape prune_one() already accumulates, so the
     caller can simply .extend() both into its own `pruned`/`skipped` lists.
@@ -375,11 +404,17 @@ def find_and_remove_orphaned_worktrees(
     removed: list[str] = []
     skipped: list[tuple[str, str]] = []
     for path in orphans:
-        if worktree_session_is_live(path, window_seconds=liveness_window_seconds):
-            skipped.append((path, "orphan candidate has an active Claude session (recent transcript activity) — not touched"))
+        # Cheapest and most fundamental check first: a reparse point is never the dev-env#1104
+        # orphan shape no matter what its target holds, and both cheaper checks below would
+        # otherwise silently inspect the TARGET instead of the candidate itself (/review finding).
+        if is_reparse_point(path):
+            skipped.append((path, "orphan candidate is a symlink or junction, not a plain directory — not the dev-env#1104 orphan shape, left for manual review"))
             continue
         if has_git_link(path):
             skipped.append((path, "orphan candidate still has a .git link — not the dev-env#1104 orphan shape, left for manual review"))
+            continue
+        if worktree_session_is_live(path, window_seconds=liveness_window_seconds):
+            skipped.append((path, "orphan candidate has an active Claude session (recent transcript activity) — not touched"))
             continue
         if dry_run:
             removed.append(path)
@@ -586,8 +621,19 @@ def prune_one(
     # Unconditional -- runs every call, not just after a failed removal above, so it also
     # catches orphans left by any past run (dev-env#1104). Independent of fetch_failed: this
     # is a pure disk-vs-registration comparison and never consults origin/main.
+    #
+    # Re-fetch `git worktree list --porcelain` right here, immediately before the scan, rather
+    # than reusing the `worktrees` snapshot from the top of this function (/review finding,
+    # PR #1117): if THIS run's own removal loop just above hit the exact dev-env#1104 failure
+    # (git deregistered a worktree, then the physical delete failed), that snapshot still lists
+    # it as registered -- it predates the failure -- so the orphan scan would otherwise not
+    # catch it until the NEXT invocation. A re-fetch failure here falls back to the stale
+    # snapshot (the existing, already-accepted "catches it next run instead" behavior) rather
+    # than blocking the scan entirely.
+    fresh = run(["git", "worktree", "list", "--porcelain"], cwd=repo)
+    fresh_worktrees = parse_worktree_porcelain(fresh.stdout) if fresh.returncode == 0 else worktrees
     orphans_removed, orphans_skipped = find_and_remove_orphaned_worktrees(
-        primary, worktrees, dry_run, liveness_window_seconds
+        primary, fresh_worktrees, dry_run, liveness_window_seconds
     )
     pruned.extend(orphans_removed)
     skipped.extend(orphans_skipped)

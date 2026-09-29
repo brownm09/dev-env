@@ -686,6 +686,41 @@ def test_has_git_link_false_when_absent() -> str:
     return "no .git anywhere under path -> False (the dev-env#1104 orphan shape)"
 
 
+def _make_junction(link: Path, target: Path) -> None:
+    """Create a real Windows directory junction at `link` pointing at `target`.
+
+    `mklink /J` (a cmd.exe built-in, invoked via a real argument list -- not a shell string, so
+    no MSYS/Git-Bash path-conversion hazard applies) requires no elevated privilege on Windows,
+    unlike a true symlink -- confirmed live on this machine during /review of PR #1117, which is
+    exactly why a junction (not a symlink) is the realistic vector `is_reparse_point()` exists to
+    catch. Raises if the underlying `mklink` call fails, rather than silently no-op-ing into a
+    test that would then trivially pass by having nothing to detect.
+    """
+    r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"mklink /J failed (returncode {r.returncode}): {r.stderr or r.stdout}")
+
+
+def test_is_reparse_point_true_for_junction() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "target"
+        target.mkdir()
+        link = Path(tmp) / "link"
+        _make_junction(link, target)
+        result = prune.is_reparse_point(str(link))
+    assert result is True, "a real Windows junction must be detected as a reparse point"
+    return "a real directory junction (mklink /J, no elevation needed) -> True (/review finding, PR #1117)"
+
+
+def test_is_reparse_point_false_for_plain_directory() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        plain = Path(tmp) / "plain"
+        plain.mkdir()
+        result = prune.is_reparse_point(str(plain))
+    assert result is False, "an ordinary directory is not a reparse point"
+    return "an ordinary directory -> False"
+
+
 def _fake_worktrees_for(primary: str) -> "list[dict]":
     return [{"path": primary, "branch": "main"}]
 
@@ -706,6 +741,31 @@ def test_find_and_remove_orphaned_worktrees_removes_safe_orphan() -> str:
         assert skipped == [], f"expected nothing skipped, got {skipped}"
         assert not orphan.exists(), "the orphan directory must actually be gone from disk"
     return "an orphan with no .git and no live session -> removed, directory actually gone (dev-env#1104)"
+
+
+def test_find_and_remove_orphaned_worktrees_skips_junction() -> str:
+    """/review finding, PR #1117: a Windows directory junction planted as an orphan candidate
+    must never be deleted. Before the fix, both existing safety signals transparently resolved
+    THROUGH the junction to its target -- find_orphaned_worktree_dirs()'s path normalization
+    (Path.resolve()) and has_git_link()'s existence check (Path.exists()) -- so a junction whose
+    target held no .git and wasn't itself a registered worktree would have read as a perfectly
+    safe orphan to delete. is_reparse_point() is checked first, before either of those, so the
+    junction itself -- not its target -- is what gets classified."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "junction-target"
+        target.mkdir()
+        link = Path(tmp) / ".claude" / "worktrees" / "orphan-that-is-really-a-junction"
+        link.parent.mkdir(parents=True)
+        _make_junction(link, target)
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            removed, skipped = prune.find_and_remove_orphaned_worktrees(
+                tmp, _fake_worktrees_for(tmp), dry_run=False, liveness_window_seconds=86400
+            )
+        assert removed == [], f"a junction must never be deleted, got {removed}"
+        assert len(skipped) == 1 and "junction" in skipped[0][1], f"expected a reparse-point skip reason, got {skipped}"
+        assert link.exists(), "the junction itself must be left completely untouched"
+        assert target.exists(), "the junction's target must also be untouched -- nothing was ever deleted"
+    return "a directory junction is detected and never deleted, regardless of what its target holds (/review finding, PR #1117)"
 
 
 def test_find_and_remove_orphaned_worktrees_skips_dir_with_git_link() -> str:
@@ -822,6 +882,70 @@ def test_prune_one_removes_orphaned_worktree_dir_end_to_end() -> str:
     return "prune_one() itself invokes the orphan scan and folds it into pruned/skipped, not just the helper in isolation"
 
 
+def _make_dispatch_same_run_orphan(primary: str, merged_path: str, merged_branch: str):
+    """Two different `git worktree list --porcelain` responses across the SAME prune_one() call:
+    the first (at the top of the function) lists `merged_path` as still registered; every call
+    after that (the /review-finding re-fetch immediately before the orphan scan) omits it --
+    simulating git having deregistered it internally the moment `git worktree remove` "failed"
+    on this exact run, per the dev-env#1104 failure signature. Also serves a merged-and-clean
+    verdict for `merged_path` and a failing (non-zero) `git worktree remove` for it -- the
+    directory is never actually deleted by that mocked call, so it is still there on disk,
+    unregistered, no `.git` inside, for the orphan scan to find moments later in the SAME call.
+    """
+    porcelain_before = (
+        f"worktree {primary}\nHEAD abc123\nbranch refs/heads/main\n\n"
+        f"worktree {merged_path}\nHEAD 789abc\nbranch refs/heads/{merged_branch}\n\n"
+    )
+    porcelain_after = f"worktree {primary}\nHEAD abc123\nbranch refs/heads/main\n\n"
+    calls = {"worktree_list": 0}
+
+    def _dispatch(args, **_kwargs):
+        if args[1:2] == ["remote"]:
+            return _ok("git@github.com:brownm09/dev-env.git\n")
+        if args[1:3] == ["fetch", "origin"]:
+            return _ok()
+        if args[1:3] == ["worktree", "list"]:
+            calls["worktree_list"] += 1
+            return _ok(porcelain_before if calls["worktree_list"] == 1 else porcelain_after)
+        if args[1:3] == ["merge-base", "--is-ancestor"]:
+            return _ok()  # merged
+        if args[1:3] == ["worktree", "remove"]:
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="error: failed to delete: Permission denied")
+        return _ok()
+
+    return _dispatch
+
+
+def test_prune_one_catches_same_run_orphan_via_refetch() -> str:
+    """/review finding, PR #1117: the orphan scan must catch a worktree that becomes orphaned
+    during THIS SAME prune_one() call -- not just one left over from a past run (the case the
+    other end-to-end test above already covers). Before the fix, find_and_remove_orphaned_
+    worktrees() was called with the `worktrees` snapshot fetched at the TOP of prune_one(),
+    which still listed the worktree as registered even after its own `git worktree remove` call,
+    moments earlier in the SAME run, had already failed part-way (the exact dev-env#1104
+    signature: git deregisters internally, then the physical delete fails) -- so the freshly-
+    orphaned directory would not have been caught until the NEXT invocation. The fix re-fetches
+    `git worktree list --porcelain` immediately before the orphan scan; this test's dispatcher
+    returns a DIFFERENT (already-deregistered) porcelain on that second call, proving the fix
+    actually reads fresh state rather than reusing the stale pre-loop snapshot."""
+    with tempfile.TemporaryDirectory() as tmp:
+        primary = str(Path(tmp).resolve())
+        merged = Path(primary) / ".claude" / "worktrees" / "merged-worktree-9117"
+        merged.mkdir(parents=True)  # real directory, no .git inside -- the post-failure orphan shape
+        dispatch = _make_dispatch_same_run_orphan(primary, str(merged), "claude/merged-worktree-9117")
+        with unittest.mock.patch("subprocess.run", side_effect=dispatch):
+            with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+                with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                        repo=primary, dry_run=False, liveness_window_seconds=86400
+                    )
+        assert pruned_count == 1, f"expected the same-run orphan caught and counted as pruned, got {pruned_count}"
+        assert skipped_count == 2, f"expected 2 skipped (primary + the 'worktree remove failed' entry for merged), got {skipped_count}"
+        assert not fetch_failed, "fetch should not be marked failed"
+        assert not merged.exists(), "the same-run orphan must actually be gone -- caught via the re-fetch, not left for next time"
+    return "a worktree orphaned by THIS run's own failed removal is caught in the SAME run via the re-fetch (/review finding, PR #1117)"
+
+
 def main() -> int:
     tests = [
         ("--include-named unset: named branch still skipped (default unchanged)", test_named_branch_skipped_by_default),
@@ -852,13 +976,17 @@ def main() -> int:
         ("list_worktree_subdirs: lists only directories", test_list_worktree_subdirs_lists_only_directories),
         ("has_git_link: true when .git present", test_has_git_link_true_when_present),
         ("has_git_link: false when absent", test_has_git_link_false_when_absent),
+        ("is_reparse_point: true for a real junction (/review, PR #1117)", test_is_reparse_point_true_for_junction),
+        ("is_reparse_point: false for a plain directory", test_is_reparse_point_false_for_plain_directory),
         ("find_and_remove_orphaned_worktrees: removes a safe orphan (dev-env#1104)", test_find_and_remove_orphaned_worktrees_removes_safe_orphan),
+        ("find_and_remove_orphaned_worktrees: skips a junction, whatever its target holds (/review, PR #1117)", test_find_and_remove_orphaned_worktrees_skips_junction),
         ("find_and_remove_orphaned_worktrees: skips a dir that still has .git", test_find_and_remove_orphaned_worktrees_skips_dir_with_git_link),
         ("find_and_remove_orphaned_worktrees: skips a live-session candidate (ADR-051)", test_find_and_remove_orphaned_worktrees_skips_live_session),
         ("find_and_remove_orphaned_worktrees: --dry-run does not delete", test_find_and_remove_orphaned_worktrees_dry_run_does_not_delete),
         ("find_and_remove_orphaned_worktrees: survives an rmtree OSError, keeps going", test_find_and_remove_orphaned_worktrees_survives_rmtree_oserror),
         ("find_and_remove_orphaned_worktrees: empty primary short-circuits", test_find_and_remove_orphaned_worktrees_empty_primary_short_circuits),
         ("prune_one() end-to-end: removes an orphaned worktree dir (dev-env#1104)", test_prune_one_removes_orphaned_worktree_dir_end_to_end),
+        ("prune_one() end-to-end: same-run orphan caught via re-fetch (/review, PR #1117)", test_prune_one_catches_same_run_orphan_via_refetch),
     ]
     failed = 0
     for name, fn in tests:
