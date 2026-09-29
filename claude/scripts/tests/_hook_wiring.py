@@ -20,6 +20,10 @@ output-contract gate imports directly.
 
 Not a test file (no `test_*` functions, no runner) — a supporting module, the
 tests/ analogue of scripts/`_hookio.py` / `_hookutil.py`.
+
+One runtime consumer: dev-env-doctor.py imports `hook_entries` to check the live
+~/.claude/settings.json on any machine (dev-env#1114). A change here re-runs its test
+(Testing item 100) as well as the three gates'.
 """
 from __future__ import annotations
 

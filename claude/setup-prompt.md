@@ -53,14 +53,19 @@ bash "$HOME/Git/dev-env/setup.sh"
 ```
 
 `setup.sh` will:
-- Stop with an instruction if neither Developer Mode nor an elevated shell is available
-- Warn about missing soft prerequisites (`py`, `pyw`, `gh`, `node`, git identity)
-- Move anything already at a link location into `~/.claude/backups/setup-<timestamp>/`
+- Stop before changing anything, with the fix, if this shell can't create symlinks
+  (Developer Mode, the "Create symbolic links" right, or an elevated shell), if Git Bash's
+  `HOME` isn't the Windows profile, or if a path contains one of cmd.exe's special characters
+- Move anything already at a link location into `~/.claude/backups/setup-<timestamp>/`, and
+  record there where any replaced link pointed, if it pointed outside dev-env
 - Create the `~/.claude/` links (`CLAUDE.md`, `scripts`, `skills`, `hooks`, `templates`, `routines`) and `~/bin`
-- Seed `~/.claude/settings.json` and set `core.hooksPath` globally
-- Finish by running `dev-env-doctor.py`
+- Seed `~/.claude/settings.json` (not on a profile other than `C:\Users\brown` — see step 1) and
+  set `core.hooksPath` globally, saving the previous values in the same backup directory
+- Finish by running `dev-env-doctor.py`, which checks the prerequisites (`py`, `pyw`, `gh`
+  and its sign-in, `node`, git identity), and exit non-zero while it reports a FAIL
 
-Read all output. Surface every WARNING, FAIL and "Backed up" line before continuing.
+Read all output. Surface every WARNING, FAIL, "Backed up" and "Replacing link" line before
+continuing. `bash setup.sh --restore <that backup directory>` undoes the run.
 
 ## 4. Finish and verify
 

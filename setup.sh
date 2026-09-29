@@ -3,33 +3,68 @@
 #
 # Usage (Windows, Git Bash):  bash setup.sh
 # Usage (Linux/macOS):        bash setup.sh
-# Undo a run's replacements:  bash setup.sh --restore ~/.claude/backups/setup-<timestamp>
+# Undo one run:               bash setup.sh --restore ~/.claude/backups/setup-<timestamp>
 #
-# Windows: creating the ~/.claude symlinks needs Developer Mode (Settings > System >
-# For developers) or an elevated Git Bash. Without either, setup stops and says so --
-# it no longer relaunches itself through UAC (ADR-041, dev-env#1114).
+# Windows: creating the ~/.claude symlinks needs Developer Mode (Settings > System > For
+# developers), the "Create symbolic links" right, or an elevated Git Bash. Setup creates a
+# throwaway link first and stops with that instruction if it can't -- it never relaunches
+# itself through UAC (ADR-041, dev-env#1114).
 #
-# Nothing is deleted: a real file or directory already sitting where a link belongs is
-# moved to ~/.claude/backups/setup-<timestamp>/ first, and --restore copies it back
-# (ADR-079). Adding a second machine: docs/REFERENCE.md -> "Adding a second machine".
+# Nothing is lost (ADR-079). Into ~/.claude/backups/setup-<timestamp>/ go: any real file or
+# directory that sat where a link belongs (moved, not deleted); where a replaced link pointed,
+# when it pointed anywhere but dev-env; the settings.json the seed changed; and the previous
+# global core.hooksPath, "unset" included. --restore puts all of it back. Adding a second
+# machine: docs/REFERENCE.md -> "Adding a Second Machine".
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Files and directories linked from claude/ into ~/.claude/ on every platform
-# (docs/adr/003-config-in-version-control.md). Shared by setup_windows() and
-# setup_unix() so the two platforms' loops can't silently diverge the way
-# `templates` did (dev-env#606) -- one list, iterated twice.
+# Everything setup links from this repo (docs/adr/003-config-in-version-control.md), named
+# once: setup_windows() and setup_unix() iterate these arrays, so the platforms can't diverge
+# the way `templates` once did (dev-env#606); --restore takes its allow-list from them; and
+# test_dev_env_doctor.py pins dev-env-doctor.py's LINKED_ITEMS / HOME_LINKS against them.
 #
-# settings.json is deliberately NOT in this list (dev-env#1049, ADR-139). The Claude
-# Code app writes ~/.claude/settings.json itself -- /config theme changes, `tui`,
-# notification flags, the `autoMode` environment scan -- so symlinking it into the repo
-# made the app dirty a tracked file, and git then refused to fast-forward the canonical
-# checkout, forever. It is now a real, machine-local file seeded and kept current by
-# seed_claude_settings() below.
-CLAUDE_FILE_LINKS=(CLAUDE.md)
-CLAUDE_DIR_LINKS=(scripts skills hooks templates)
+# settings.json is deliberately NOT a link (dev-env#1049, ADR-139). The Claude Code app
+# writes ~/.claude/settings.json itself -- /config theme changes, `tui`, notification flags,
+# the `autoMode` environment scan -- so symlinking it into the repo made the app dirty a
+# tracked file, and git then refused to fast-forward the canonical checkout, forever. It is
+# now a real, machine-local file seeded and kept current by seed_claude_settings() below.
+CLAUDE_FILE_LINKS=(CLAUDE.md)                     # ~/.claude/<name> -> claude/<name>, file symlink
+CLAUDE_DIR_LINKS=(scripts skills hooks templates) # ~/.claude/<name> -> claude/<name>, directory symlink
+CLAUDE_JUNCTION_LINKS=(routines)                  # ~/.claude/<name> -> claude/<name>, junction on Windows
+HOME_LINKS=(bin)                                  # ~/<name> -> <name>, junction on Windows
+
+# Where this run puts anything it replaces. Computed once per run and created lazily: a
+# re-run that changes nothing creates no backup directory at all.
+SETUP_BACKUP_DIR="${SETUP_BACKUP_DIR:-$HOME/.claude/backups/setup-$(date +%Y%m%d-%H%M%S)}"
+
+# settings_home -- the home directory the tracked hook commands are written for (the prefix
+# of the first ~/.claude path in claude/settings.shared.json, e.g. C:/Users/brown), or
+# nothing when no hook names one.
+settings_home() {
+  { grep -o -E '[A-Za-z]:/Users/[^/"]+/\.claude/' "$REPO_DIR/claude/settings.shared.json" || true; } \
+    | sed -n '1{s#/\.claude/$##;p;}'
+}
+
+# settings_home_mismatch -- why the tracked hook commands can't run here (their scripts sit
+# under another home), or nothing when they can. A hook whose script is missing exits 2,
+# which blocks every prompt, so seeding them under another home would stop every session.
+# dev-env#1113 makes the paths per-machine; until it lands, such a machine isn't seeded.
+settings_home_mismatch() {
+  local want have
+  want="$(settings_home)"
+  [ -n "$want" ] || return 0
+  case "$(uname -s)" in
+    MINGW*|CYGWIN*|MSYS*)
+      have="$(cygpath -m "$HOME")"
+      [ "${want,,}" = "${have,,}" ] && return 0 ;;
+    *)
+      have="$HOME"
+      [ "$want" = "$have" ] && return 0 ;;
+  esac
+  echo "its hook commands run scripts under $want, but this home is $have"
+}
 
 # seed_claude_settings -- materialize/refresh the real, machine-local
 # ~/.claude/settings.json from the tracked claude/settings.shared.json. Idempotent:
@@ -42,6 +77,15 @@ CLAUDE_DIR_LINKS=(scripts skills hooks templates)
 # command rather than abort setup with the links half-applied. `return 0` is explicit for
 # the same reason -- these functions run under `set -e`.
 seed_claude_settings() {
+  local reason live="$HOME/.claude/settings.json" before=""
+  reason="$(settings_home_mismatch)"
+  if [ -n "$reason" ]; then
+    echo "  WARNING: not seeding ~/.claude/settings.json: $reason."
+    echo "  A hook whose script is missing blocks every prompt, so sessions here would not start."
+    echo "  dev-env#1113 makes these paths per-machine; until it lands, this machine runs without dev-env's hooks."
+    return 0
+  fi
+
   # An array, not a string: "py -3" as a bare string would only work by relying on
   # unquoted word-splitting at the call site, which breaks the moment any element
   # contains a space. shellcheck would flag that (SC2086) -- but `run-shellcheck.sh`
@@ -61,11 +105,32 @@ seed_claude_settings() {
     return 0
   fi
 
+  # Copy the live file aside before the sync, and keep the copy only if the sync changed it.
+  # --restore puts it back: restoring a real ~/.claude/scripts under settings that still run
+  # dev-env's hooks from there would leave every hook's script missing (ADR-079 rules 1-2).
+  if [ -f "$live" ] && [ ! -L "$live" ]; then
+    if ! before="$(mktemp "$HOME/.claude/.settings-before-XXXXXX")" || ! cp -p "$live" "$before"; then
+      echo "  WARNING: could not copy ~/.claude/settings.json aside first, so it was not seeded."
+      [ -z "$before" ] || rm -f "$before"
+      return 0
+    fi
+  fi
+
   if "${runner[@]}" "$REPO_DIR/claude/scripts/_settings_sync.py"; then
     echo "  Seeded settings.json (machine-local; see ADR-139)"
   else
     echo "  WARNING: seeding ~/.claude/settings.json failed. Re-run manually:"
     echo "    ${runner[*]} $REPO_DIR/claude/scripts/_settings_sync.py"
+  fi
+
+  if [ -n "$before" ]; then
+    if cmp -s "$before" "$live"; then
+      rm -f "$before"
+    elif keep_in_backup "$before" settings.json; then
+      echo "  Backed up the previous settings.json -> $SETUP_BACKUP_DIR/settings.json"
+    else
+      echo "  WARNING: could not file the previous settings.json in the backup; it is at $before"
+    fi
   fi
   return 0
 }
@@ -77,102 +142,99 @@ setup_windows() {
   echo "dev-env setup (Windows) from $REPO_DIR"
   echo ""
 
-  # -- Elevation / Developer Mode check ------------------------------------
-  # mklink (file symlink) and mklink /D (dir symlink) require either
-  # Administrator or Developer Mode. mklink /J (junction) works without both.
-  # Fail fast with the fix instead of relaunching through UAC: in an agent-driven or
-  # non-interactive session the UAC dialog has no desktop to render against, so a
-  # self-relaunch hangs or dies silently (ADR-041, dev-env#1114).
-
-  is_admin()    { net.exe session &>/dev/null 2>&1; }
-  has_dev_mode() {
-    local val
-    # MSYS_NO_PATHCONV=1: without it Git Bash rewrites the `/v` switch into a path, reg.exe
-    # rejects the query ("Invalid syntax", hidden by 2>/dev/null), and Developer Mode never
-    # registers -- the dev-env#602 class. ERE rather than `grep -P`, which refuses to run
-    # outside a UTF-8 locale (agent sessions). Both fixed in dev-env#1114.
-    val="$(MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' reg.exe query \
-      "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock" \
-      /v AllowDevelopmentWithoutDevLicense 2>/dev/null \
-      | tr -d '\r' | grep -oE '0x[0-9a-fA-F]+' || echo "0x0")"
-    [[ "$val" == "0x1" ]]
-  }
-
-  if ! is_admin && ! has_dev_mode; then
-    echo "ERROR: creating the ~/.claude symlinks needs Developer Mode or an elevated shell." >&2
-    echo "  Enable Developer Mode (Settings > System > For developers > Developer Mode)," >&2
-    echo "  or open Git Bash with 'Run as administrator' -- then re-run: bash setup.sh" >&2
-    exit 1
-  fi
-
-  # -- Soft prerequisites --------------------------------------------------
-  # These don't block setup, but hooks or the workflow fail at runtime without them.
-  # dev-env-doctor.py, run at the end, re-checks all of them.
-
-  if ! win_cmd where bash >/dev/null 2>&1; then
-    echo "WARNING: bash.exe not on Windows PATH."
-    echo "  Add Git Bash: C:\\Program Files\\Git\\usr\\bin"
-    echo "  Claude Code's Bash tool and dev-env's *.sh scripts run under Git Bash."
-    echo ""
-  fi
-
-  if ! py -3 --version &>/dev/null; then
-    echo "WARNING: 'py -3' not found (Windows Python Launcher)."
-    echo "  Install from https://python.org/downloads/ (tick 'Install launcher for all users')."
-    echo "  Hook scripts in claude/scripts/ won't run until this is fixed."
-    echo "  Note: 'python3' on Windows usually resolves to the Microsoft Store stub — use 'py -3'."
-    echo ""
-  fi
-
-  if ! command -v pyw >/dev/null 2>&1; then
-    echo "WARNING: 'pyw' (the windowless Python launcher) not found."
-    echo "  Every hook command runs 'pyw -3 ...' (ADR-007) and fails without it."
-    echo "  Reinstall Python from https://python.org/downloads/ with the launcher enabled."
-    echo ""
-  fi
-
-  if ! command -v gh >/dev/null 2>&1; then
-    echo "WARNING: GitHub CLI 'gh' not found. Install it from https://cli.github.com/, then run:"
-    echo "  gh auth login && gh auth setup-git && gh auth refresh -s project"
-    echo ""
-  elif ! gh auth status >/dev/null 2>&1; then
-    echo "WARNING: gh is not signed in. Run:"
-    echo "  gh auth login && gh auth setup-git && gh auth refresh -s project"
-    echo ""
-  fi
-
-  if ! command -v node >/dev/null 2>&1; then
-    echo "WARNING: node not found. Install nvm for Windows, then: nvm install 20.11.1 && nvm use 20.11.1"
-    echo ""
-  fi
-
-  if [ -z "$(git config --global user.email || true)" ]; then
-    echo "WARNING: git identity not set. Run: git config --global user.name \"<name>\""
-    echo "  and: git config --global user.email \"<email>\""
-    echo ""
-  fi
+  preflight_windows || exit 1
 
   link_claude_windows
 
   set_hooks_path
 
+  # The doctor owns the prerequisite list (py, pyw, gh and its auth, node, git identity, the
+  # credential helper), so setup doesn't keep a second copy that drifts from it.
   echo ""
   echo "Verifying the install with dev-env-doctor (read-only)..."
-  if command -v py >/dev/null 2>&1; then
-    py -3 "$REPO_DIR/claude/scripts/dev-env-doctor.py" || \
-      echo "Fix the FAIL lines above, then re-run: py -3 ~/.claude/scripts/dev-env-doctor.py"
+  if ! command -v py >/dev/null 2>&1; then
+    echo "Could not run the doctor: 'py' is not on PATH. Install Python with the py launcher"
+    echo "(python.org, 'Install launcher for all users'), then run:"
+    echo "  py -3 ~/.claude/scripts/dev-env-doctor.py"
+    exit 1
+  fi
+  if ! py -3 "$REPO_DIR/claude/scripts/dev-env-doctor.py"; then
+    echo ""
+    echo "Setup made its changes, but the install isn't healthy yet. Fix the FAIL lines above,"
+    echo "then re-run: py -3 ~/.claude/scripts/dev-env-doctor.py"
+    exit 1
   fi
 
   echo ""
   echo "Done. Open a new Git Bash window so ~/bin is on PATH."
 }
 
+# preflight_windows -- everything that must hold before setup changes anything, each failing
+# fast with its fix, so a run either proceeds or leaves no trace.
+preflight_windows() {
+  local p
+
+  # Claude Code and dev-env's Python scripts find ~/.claude through the Windows profile
+  # (USERPROFILE), never through Git Bash's HOME; a Windows-level HOME variable splits the two.
+  if [ -z "${USERPROFILE:-}" ] || ! same_path "$(cygpath -u "$USERPROFILE")" "$HOME"; then
+    echo "ERROR: Git Bash's HOME ($HOME) is not your Windows profile (${USERPROFILE:-unset})." >&2
+    echo "  Claude Code reads ~/.claude from the profile, so links made under HOME would never be used." >&2
+    echo "  Re-run with the profile as HOME:  HOME=\"\$(cygpath -u \"\$USERPROFILE\")\" bash setup.sh" >&2
+    return 1
+  fi
+
+  for p in "$HOME" "$REPO_DIR"; do
+    if ! cmd_safe_path "$p"; then
+      echo "ERROR: setup can't link under $(cygpath -w "$p")." >&2
+      echo "  cmd.exe, which creates the links, reads one of  & | < > ^ % ! , ; =  in that path as" >&2
+      echo "  syntax rather than as part of the name. Clone dev-env to a path without them; a" >&2
+      echo "  profile path with one of them isn't supported yet." >&2
+      return 1
+    fi
+  done
+
+  if ! symlink_probe; then
+    echo "ERROR: this shell can't create symlinks, which the ~/.claude layout needs." >&2
+    echo "  Enable Developer Mode (Settings > System > For developers > Developer Mode)," >&2
+    echo "  or open Git Bash with 'Run as administrator' -- then re-run: bash setup.sh" >&2
+    return 1
+  fi
+}
+
+# symlink_probe -- can this shell create the symlinks setup needs? Try it rather than infer
+# it: the "Create symbolic links" right grants it without Developer Mode or elevation, and
+# the registry probe this replaced failed silently under Git Bash (dev-env#1114). On
+# failure, prints mklink's own message.
+symlink_probe() {
+  local probe="$HOME/.claude/.setup-symlink-probe-$$-$RANDOM" out
+  mkdir -p "$HOME/.claude"
+  if ! out="$(win_cmd mklink /D "$(cygpath -w "$probe")" "$(cygpath -w "$REPO_DIR")" 2>&1 </dev/null)"; then
+    printf '%s\n' "$out" | tr -d '\r' | sed '/^[[:space:]]*$/d; s/^/  mklink: /' >&2
+    return 1
+  fi
+  remove_link "$probe" >/dev/null || echo "WARNING: could not remove the probe link $probe" >&2
+  return 0
+}
+
+# cmd_safe_path <path> -- whether cmd.exe reads <path> as one literal argument. The MSYS
+# runtime quotes an argument only when it holds a space or a double quote, so cmd sees
+# & | < > ^ % ! as syntax and , ; = as separators; spaces and parentheses are fine.
+cmd_safe_path() {
+  local w="$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    w="$(cygpath -w "$1")"
+  fi
+  case "$w" in
+    *['&|<>^%!,;=']*) return 1 ;;
+  esac
+  return 0
+}
+
 # win_link <target> <link> <type: file|dir|junction>
-# prepare_link_target first clears <link>: an existing link is removed (never its target)
+# prepare_link_target first clears <link>: an existing link is removed (never its target),
 # and a real file or directory is backed up, never deleted. Then mklink recreates it.
 win_link() {
-  local src="$1" dst="$2" type="$3"
-  local src_win dst_win
+  local src="$1" dst="$2" type="$3" out
   local -a flag=()
 
   if ! prepare_link_target "$src" "$dst"; then
@@ -180,27 +242,37 @@ win_link() {
     exit 1
   fi
 
-  src_win="$(cygpath -w "$src")"
-  dst_win="$(cygpath -w "$dst")"
-
   case "$type" in
     file)     ;;
     dir)      flag=(/D) ;;
     junction) flag=(/J) ;;
   esac
 
-  win_cmd mklink "${flag[@]}" "$dst_win" "$src_win"
+  if ! out="$(win_cmd mklink "${flag[@]}" "$(cygpath -w "$dst")" "$(cygpath -w "$src")" 2>&1 </dev/null)"; then
+    link_failed "$dst" "$(printf '%s' "$out" | tr -d '\r')"
+  fi
 
   # Read-back (ADR-079 rule 4): the new link must exist and resolve.
   if [ ! -e "$dst" ]; then
-    echo "ERROR: $dst does not resolve after mklink." >&2
-    exit 1
+    link_failed "$dst" "mklink reported success, but the link does not resolve"
   fi
 }
 
-# win_cmd <command> [args...] -- run one cmd.exe command (mklink, rmdir, where). Both
-# rules below were learned from CI on Git for Windows 2.55 (dev-env#1114); 2.37 happened to
-# tolerate breaking either one.
+# link_failed <link> <why> -- stop, and say where things are: whatever setup already moved
+# aside is in the backup directory, and --restore puts it back.
+link_failed() {
+  echo "ERROR: could not create the link $1: $2" >&2
+  if [ -d "$SETUP_BACKUP_DIR" ]; then
+    echo "  What this run moved aside is in $SETUP_BACKUP_DIR" >&2
+    echo "  To put it back: bash \"$REPO_DIR/setup.sh\" --restore \"$SETUP_BACKUP_DIR\"" >&2
+  fi
+  echo "  Or fix the cause above and re-run: bash setup.sh" >&2
+  exit 1
+}
+
+# win_cmd <command> [args...] -- run one cmd.exe command (mklink, rmdir). Both rules below
+# were learned from CI on Git for Windows 2.55 (dev-env#1114); 2.37 happened to tolerate
+# breaking either one.
 #   - Path conversion is off. Otherwise Git Bash rewrites cmd's lone `/c` switch into a
 #     drive path, so cmd.exe starts an interactive shell, prints its banner, and runs
 #     nothing (the #602 class). MSYS_NO_PATHCONV is Git for Windows' switch;
@@ -208,20 +280,15 @@ win_link() {
 #   - Every argument is passed separately, never as one pre-quoted string. 2.55 escapes
 #     embedded quotes as \", which cmd.exe does not understand ("The filename, directory
 #     name, or volume label syntax is incorrect"); the runtime quotes an argument itself
-#     when it holds a space.
+#     when it holds a space. It does not quote cmd's own metacharacters, so callers pass
+#     only paths cmd_safe_path accepts.
 # Callers pass paths already in Windows form (cygpath -w).
 win_cmd() {
   MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' cmd.exe /c "$@"
 }
 
-# Where this run moves anything real that a link would otherwise replace. Computed once per
-# run and created lazily: a re-run over an existing layout only replaces links, so it
-# creates no backup directory at all.
-SETUP_BACKUP_DIR="${SETUP_BACKUP_DIR:-$HOME/.claude/backups/setup-$(date +%Y%m%d-%H%M%S)}"
-
-# same_path <a> <b> -- whether two paths name the same location. Used only to decide
-# whether a prior global core.hooksPath is worth saving, where a wrong "different" costs
-# nothing more than a redundant backup file.
+# same_path <a> <b> -- whether two paths name the same location. Decides whether a prior
+# global core.hooksPath is worth saving and whether HOME is the Windows profile.
 #
 # Identity first: when the path exists, `-ef` asks whether both names reach the same file
 # on disk, whatever the spelling -- an 8.3 short name, /c/... vs C:/..., an MSYS mount
@@ -247,14 +314,18 @@ same_path() {
 
 # remove_link <link> -- remove a symlink or junction itself, never what it points to.
 # `rm -f` (no -r) unlinks a symlink; a Windows directory junction can survive it, and
-# `rmdir` removes the junction without touching its target's contents. Returns 2 if the
-# link is still there afterwards.
+# `rmdir` removes the junction without touching its target's contents -- but only through a
+# path cmd.exe reads literally, or it acts on another path. Returns 2 if the link is still
+# there afterwards.
 remove_link() {
   local dst="$1"
   rm -f "$dst" 2>/dev/null || true
   if [ -L "$dst" ]; then
     case "$(uname -s)" in
-      MINGW*|CYGWIN*|MSYS*) win_cmd rmdir "$(cygpath -w "$dst")" >/dev/null 2>&1 || true ;;
+      MINGW*|CYGWIN*|MSYS*)
+        if cmd_safe_path "$dst"; then
+          win_cmd rmdir "$(cygpath -w "$dst")" >/dev/null 2>&1 || true
+        fi ;;
     esac
   fi
   if [ -L "$dst" ]; then
@@ -264,80 +335,278 @@ remove_link() {
   return 0
 }
 
+# save_backup_record <name> <text> -- write a small record into this run's backup directory:
+# written if absent, never overwriting an earlier capture, and read back (ADR-079 rules 3-4).
+save_backup_record() {
+  local saved="$SETUP_BACKUP_DIR/$1"
+  if [ -e "$saved" ] || [ -L "$saved" ]; then
+    echo "ERROR: $saved already exists; not overwriting an earlier backup." >&2
+    return 1
+  fi
+  mkdir -p "$SETUP_BACKUP_DIR" || return 1
+  printf '%s\n' "$2" > "$saved" || return 1
+  if [ "$(cat "$saved")" != "$2" ]; then
+    echo "ERROR: $saved did not read back." >&2
+    return 1
+  fi
+}
+
+# keep_in_backup <path> <name> -- move <path> into this run's backup directory as <name>:
+# written if absent (mv onto an existing file overwrites it, and onto a directory nests
+# inside it), then read back (ADR-079 rules 3-4).
+keep_in_backup() {
+  local saved="$SETUP_BACKUP_DIR/$2"
+  if [ -e "$saved" ] || [ -L "$saved" ]; then
+    echo "ERROR: $saved already exists; not overwriting an earlier backup." >&2
+    return 1
+  fi
+  mkdir -p "$SETUP_BACKUP_DIR" || return 1
+  mv "$1" "$saved" || return 1
+  if [ -e "$1" ] || [ ! -e "$saved" ]; then
+    echo "ERROR: moving $1 to $saved did not complete." >&2
+    return 1
+  fi
+}
+
 # prepare_link_target <target> <link> -- clear the way for (re)linking <link> to <target>.
 #   0  the caller should create the link: nothing was there, an existing link was removed,
 #      or a real file/directory was moved into $SETUP_BACKUP_DIR
-#   2  could not clear it -- the caller must abort. A real item that cannot be captured
-#      is never replaced: changing state you could not back up leaves no way back
-#      (global "Back up before you mutate", ADR-079 rule 1).
-#
-# An existing link is removed whether or not it already points at <target>: a link is not
-# data, recreating it is exactly what setup did before dev-env#1114, and it needs no
-# judgment of where a link points -- so no path-spelling comparison sits on this path.
+#   2  could not clear it -- the caller must abort. Nothing that can't be captured is ever
+#      replaced: changing state you could not back up leaves no way back (global "Back up
+#      before you mutate", ADR-079 rule 1).
 prepare_link_target() {
-  local src="$1" dst="$2" saved
-  : "$src"  # the target is the caller's to link; clearing <link> doesn't need it
+  local src="$1" dst="$2" name prior
+  name="$(basename "$dst")"
   if [ -L "$dst" ]; then
+    # A link that already reaches <target> is setup's own; it's recreated without comment. One
+    # that points anywhere else is configuration -- a dotfiles repo, a synced folder -- so where
+    # it pointed is recorded first, and --restore recreates it. Identity (-ef) decides, not
+    # spelling; a dangling link has no identity, so it is recorded too.
+    if ! [ "$dst" -ef "$src" ]; then
+      prior="$(readlink "$dst")" && [ -n "$prior" ] || return 2
+      save_backup_record "$name.link" "$prior" || return 2
+      echo "  Replacing link $name (it pointed at $prior; recorded for --restore)"
+    fi
     remove_link "$dst" || return 2
     return 0
   fi
   if [ -e "$dst" ]; then
-    saved="$SETUP_BACKUP_DIR/$(basename "$dst")"
-    mkdir -p "$SETUP_BACKUP_DIR" || return 2
-    mv "$dst" "$saved" || return 2
-    # Read-back (ADR-079 rule 4): the original is now in the backup, and gone from $dst.
-    if [ -e "$dst" ] || [ ! -e "$saved" ]; then
-      echo "ERROR: backing up $dst to $saved did not complete." >&2
-      return 2
-    fi
-    echo "  Backed up existing $(basename "$dst") -> $saved"
+    keep_in_backup "$dst" "$name" || return 2
+    echo "  Backed up existing $name -> $SETUP_BACKUP_DIR/$name"
   fi
   return 0
 }
 
-# restore_setup_backup <backup-dir> -- undo one setup run's replacements. For each item the
-# run captured, remove the link setup created in its place and copy the original back. It
-# copies rather than moves, so the backup stays as the anchor and a repeated restore
-# converges: an item whose destination is already a real file/dir is skipped (ADR-079
-# rules 2-3). A saved global core.hooksPath is put back the same way.
+# backup_dst <name> -- where an entry of a setup backup directory goes back to. Fails for a
+# name setup never writes, which is how --restore refuses a directory it didn't make.
+backup_dst() {
+  local base="${1%.link}" n
+  case "$1" in
+    git-global-core.hooksPath|git-global-core.hooksPath.unset)
+      echo "the global git config"; return 0 ;;
+    settings.json)
+      echo "$HOME/.claude/settings.json"; return 0 ;;
+  esac
+  for n in "${CLAUDE_FILE_LINKS[@]}" "${CLAUDE_DIR_LINKS[@]}" "${CLAUDE_JUNCTION_LINKS[@]}"; do
+    if [ "$base" = "$n" ]; then echo "$HOME/.claude/$n"; return 0; fi
+  done
+  for n in "${HOME_LINKS[@]}"; do
+    if [ "$base" = "$n" ]; then echo "$HOME/$n"; return 0; fi
+  done
+  return 1
+}
+
+# restore_setup_backup <backup-dir> -- undo one setup run: put back every real file or
+# directory it moved aside, every link it replaced, the settings.json its seed changed, and
+# the global core.hooksPath (unsetting it if it was unset). Links it created where nothing
+# was stay. The backup is never modified -- it stays the anchor -- and a repeated restore
+# converges (ADR-079 rules 2-3). Exits non-zero if anything could not be put back.
 restore_setup_backup() {
-  local bdir="$1" item name dst prior
+  local bdir="$1" item name dst found=0 rc=0
   if [ ! -d "$bdir" ]; then
     echo "ERROR: no backup directory at $bdir" >&2
     return 1
   fi
+
+  # Refuse, before changing anything, a directory setup didn't write -- passing
+  # ~/.claude/backups itself, one level up, is an easy tab-completion slip.
   for item in "$bdir"/*; do
     [ -e "$item" ] || [ -L "$item" ] || continue
     name="$(basename "$item")"
-    if [ "$name" = "git-global-core.hooksPath" ]; then
-      prior="$(cat "$item")"
-      git config --global core.hooksPath "$prior"
-      echo "  Restored global core.hooksPath -> $prior"
-      continue
+    if ! backup_dst "$name" >/dev/null; then
+      echo "ERROR: $bdir is not one setup run's backup ($name is nothing setup backs up)." >&2
+      echo "  Pass a directory like ~/.claude/backups/setup-<timestamp>." >&2
+      return 1
     fi
-    if [ "$name" = "bin" ]; then
-      dst="$HOME/bin"
-    else
-      dst="$HOME/.claude/$name"
-    fi
-    if [ -L "$dst" ]; then
-      remove_link "$dst" || return 1
-    fi
-    if [ -e "$dst" ]; then
-      echo "  Skipped $name (a real file or directory is already at $dst)"
-      continue
-    fi
-    cp -a "$item" "$dst"
-    echo "  Restored $name from $bdir"
+    found=1
   done
-  return 0
+  if [ "$found" = 0 ]; then
+    echo "ERROR: $bdir holds nothing setup backed up." >&2
+    return 1
+  fi
+
+  for item in "$bdir"/*; do
+    [ -e "$item" ] || [ -L "$item" ] || continue
+    name="$(basename "$item")"
+    dst="$(backup_dst "$name")"
+    case "$name" in
+      git-global-core.hooksPath)       restore_hooks_path "$(cat "$item")" || rc=1 ;;
+      git-global-core.hooksPath.unset) restore_hooks_path "" || rc=1 ;;
+      settings.json)                   restore_settings "$item" "$dst" || rc=1 ;;
+      *.link)                          restore_link "$(cat "$item")" "$dst" || rc=1 ;;
+      *)                               restore_item "$item" "$dst" || rc=1 ;;
+    esac
+  done
+  if [ "$rc" != 0 ]; then
+    echo "Restore incomplete -- see above. The backup in $bdir is unchanged." >&2
+  fi
+  return "$rc"
 }
 
-# link_claude_windows -- create/refresh the ~/.claude junction/symlink layout
-# and ~/bin from the shared CLAUDE_FILE_LINKS/CLAUDE_DIR_LINKS enumeration.
-# Split out from setup_windows() so the enumeration is testable without the
-# UAC elevation gate above -- see claude/scripts/tests/test-setup-link-loop.sh.
+# same_tree <a> <b> -- identical files or trees, comparing links as links (dangling ones too).
+same_tree() {
+  diff -rq --no-dereference "$1" "$2" >/dev/null
+}
+
+# copy_into_place <src> <dst> -- copy <src> to <dst> (absent, or a file to replace). The copy
+# is staged beside <dst> and renamed into place, so an interrupted restore never leaves a
+# partial <dst> that a later run would take for a finished one; links inside stay links
+# (winsymlinks:nativestrict) as the backup's mv kept them, and it's read back afterwards.
+copy_into_place() {
+  local src="$1" dst="$2" stage
+  stage="$(mktemp -d "$(dirname "$dst")/.setup-restore-XXXXXX")" || return 1
+  if ! MSYS="${MSYS:+$MSYS }winsymlinks:nativestrict" cp -a "$src" "$stage/item"; then
+    echo "ERROR: could not copy $src back; $dst is unchanged. (A link inside it needs the same" >&2
+    echo "  symlink right as setup: Developer Mode or an elevated shell.)" >&2
+    rm -rf "$stage"
+    return 1
+  fi
+  if ! mv "$stage/item" "$dst"; then
+    echo "ERROR: could not move the restored copy into place at $dst" >&2
+    rm -rf "$stage"
+    return 1
+  fi
+  rmdir "$stage"
+  if ! same_tree "$src" "$dst"; then
+    echo "ERROR: $dst does not match $src after restoring it" >&2
+    return 1
+  fi
+}
+
+# restore_item <backup-item> <dst> -- put back one real file or directory setup moved aside.
+restore_item() {
+  local item="$1" dst="$2" name
+  name="$(basename "$dst")"
+  if [ -L "$dst" ]; then
+    remove_link "$dst" || return 1
+  fi
+  if [ -e "$dst" ]; then
+    if same_tree "$item" "$dst"; then
+      echo "  Already restored $name"
+      return 0
+    fi
+    echo "  Skipped $name: $dst holds something else, and restore never overwrites it" >&2
+    return 1
+  fi
+  copy_into_place "$item" "$dst" || return 1
+  echo "  Restored $name"
+}
+
+# make_link <target> <link> -- recreate a link the way setup makes them: on Windows a
+# junction for a directory (or a target that no longer exists), a file symlink for a file.
+make_link() {
+  local target="$1" dst="$2"
+  local -a flag=(/J)
+  case "$(uname -s)" in
+    MINGW*|CYGWIN*|MSYS*)
+      if ! cmd_safe_path "$target" || ! cmd_safe_path "$dst"; then
+        echo "ERROR: can't recreate $dst -> $target through cmd.exe (a special character in the path); recreate it by hand" >&2
+        return 1
+      fi
+      if [ -f "$target" ]; then
+        flag=()
+      fi
+      win_cmd mklink "${flag[@]}" "$(cygpath -w "$dst")" "$(cygpath -w "$target")" >/dev/null </dev/null || return 1 ;;
+    *)
+      ln -s "$target" "$dst" || return 1 ;;
+  esac
+  [ -L "$dst" ]
+}
+
+# restore_link <target> <link> -- put back a link setup replaced, from its recorded target.
+restore_link() {
+  local target="$1" dst="$2" name
+  name="$(basename "$dst")"
+  if [ -z "$target" ]; then
+    echo "ERROR: the record for $name is empty" >&2
+    return 1
+  fi
+  # Already back: the same recorded text, or -- whatever the spelling -- the same place.
+  if [ -L "$dst" ] && { [ "$(readlink "$dst")" = "$target" ] || [ "$dst" -ef "$target" ]; }; then
+    echo "  Already restored link $name"
+    return 0
+  fi
+  if [ -L "$dst" ]; then
+    remove_link "$dst" || return 1
+  elif [ -e "$dst" ]; then
+    echo "  Skipped link $name: a real file or directory is at $dst, and restore never overwrites one" >&2
+    return 1
+  fi
+  make_link "$target" "$dst" || return 1
+  echo "  Restored link $name -> $target"
+}
+
+# restore_settings <captured> <live> -- put back the settings.json this run's seed changed,
+# after saving the current one alongside the other backups.
+restore_settings() {
+  local saved="$1" live="$2" keep
+  if [ -f "$live" ] && cmp -s "$saved" "$live"; then
+    echo "  Already restored settings.json"
+    return 0
+  fi
+  if [ -e "$live" ]; then
+    keep="$HOME/.claude/backups/pre-restore-$(date +%Y%m%d-%H%M%S)-settings.json"
+    mkdir -p "$HOME/.claude/backups"
+    if [ -e "$keep" ] || ! cp -p "$live" "$keep"; then
+      echo "ERROR: could not save the current settings.json to $keep, so it was left in place" >&2
+      return 1
+    fi
+    echo "  Saved the current settings.json -> $keep"
+  fi
+  copy_into_place "$saved" "$live" || return 1
+  echo "  Restored settings.json"
+}
+
+# restore_hooks_path <value> -- put the global core.hooksPath back; "" means it was unset.
+restore_hooks_path() {
+  local now
+  now="$(git config --global core.hooksPath || true)"
+  if [ -z "$1" ]; then
+    if [ -n "$now" ]; then
+      git config --global --unset core.hooksPath || return 1
+    fi
+    if [ -n "$(git config --global core.hooksPath || true)" ]; then
+      echo "ERROR: the global core.hooksPath is still set" >&2
+      return 1
+    fi
+    echo "  Unset the global core.hooksPath (it was unset before setup)"
+    return 0
+  fi
+  if [ "$now" != "$1" ]; then
+    git config --global core.hooksPath "$1" || return 1
+  fi
+  if [ "$(git config --global core.hooksPath || true)" != "$1" ]; then
+    echo "ERROR: the global core.hooksPath did not read back as $1" >&2
+    return 1
+  fi
+  echo "  Restored global core.hooksPath -> $1"
+}
+
+# link_claude_windows -- create/refresh the ~/.claude junction/symlink layout and ~/bin from
+# the shared link arrays. Split out from setup_windows() so the enumeration is testable
+# without its preflight -- see claude/scripts/tests/test-setup-link-loop.sh.
 link_claude_windows() {
+  local item
   mkdir -p "$HOME/.claude"
   echo "Creating ~/.claude layout..."
 
@@ -346,24 +615,28 @@ link_claude_windows() {
     echo "  Linked $item"
   done
 
-  for subdir in "${CLAUDE_DIR_LINKS[@]}"; do
-    win_link "$REPO_DIR/claude/$subdir" "$HOME/.claude/$subdir" dir
-    echo "  Linked $subdir/"
+  for item in "${CLAUDE_DIR_LINKS[@]}"; do
+    win_link "$REPO_DIR/claude/$item" "$HOME/.claude/$item" dir
+    echo "  Linked $item/"
   done
 
   # Read-only mirror so a routine can self-reference its own canonical source at
   # run time. Does NOT register scheduled tasks — the scheduled-tasks MCP tool owns
   # a separate, non-linked ~/.claude/scheduled-tasks/ directory. See ADR-003 amendment.
-  win_link "$REPO_DIR/claude/routines" "$HOME/.claude/routines" junction
-  echo "  Linked routines/ (junction)"
+  for item in "${CLAUDE_JUNCTION_LINKS[@]}"; do
+    win_link "$REPO_DIR/claude/$item" "$HOME/.claude/$item" junction
+    echo "  Linked $item/ (junction)"
+  done
 
   mkdir -p "$HOME/.claude/scratch"
   echo "  Created scratch/"
 
   seed_claude_settings
 
-  win_link "$REPO_DIR/bin" "$HOME/bin" junction
-  echo "  Linked ~/bin/"
+  for item in "${HOME_LINKS[@]}"; do
+    win_link "$REPO_DIR/$item" "$HOME/$item" junction
+    echo "  Linked ~/$item/"
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -371,11 +644,6 @@ link_claude_windows() {
 # ---------------------------------------------------------------------------
 setup_unix() {
   echo "dev-env setup ($(uname -s)) from $REPO_DIR"
-  echo ""
-
-  # settings.shared.json contains Windows-specific absolute paths in hook commands.
-  echo "NOTE: claude/settings.shared.json has Windows paths in hook commands."
-  echo "  Hooks will not fire correctly until those paths are updated for this OS."
   echo ""
 
   link_claude_unix
@@ -395,13 +663,13 @@ unix_link() {
     echo "ERROR: could not clear $dst for linking -- nothing was replaced or deleted." >&2
     exit 1
   fi
-  ln -sf "$src" "$dst"
+  ln -sf "$src" "$dst" || link_failed "$dst" "ln -s failed"
 }
 
-# link_claude_unix -- create/refresh the ~/.claude symlink layout and ~/bin
-# from the shared CLAUDE_FILE_LINKS/CLAUDE_DIR_LINKS enumeration -- see
-# claude/scripts/tests/test-setup-link-loop.sh.
+# link_claude_unix -- create/refresh the ~/.claude symlink layout and ~/bin from the shared
+# link arrays -- see claude/scripts/tests/test-setup-link-loop.sh.
 link_claude_unix() {
+  local item
   mkdir -p "$HOME/.claude"
   echo "Creating ~/.claude layout..."
 
@@ -410,64 +678,79 @@ link_claude_unix() {
     echo "  Linked $item"
   done
 
-  for subdir in "${CLAUDE_DIR_LINKS[@]}"; do
-    unix_link "$REPO_DIR/claude/$subdir" "$HOME/.claude/$subdir"
-    echo "  Linked $subdir/"
+  for item in "${CLAUDE_DIR_LINKS[@]}"; do
+    unix_link "$REPO_DIR/claude/$item" "$HOME/.claude/$item"
+    echo "  Linked $item/"
   done
 
   # Read-only mirror so a routine can self-reference its own canonical source at
   # run time. Does NOT register scheduled tasks — the scheduled-tasks MCP tool owns
   # a separate, non-linked ~/.claude/scheduled-tasks/ directory. See ADR-003 amendment.
-  unix_link "$REPO_DIR/claude/routines" "$HOME/.claude/routines"
-  echo "  Linked routines/"
+  for item in "${CLAUDE_JUNCTION_LINKS[@]}"; do
+    unix_link "$REPO_DIR/claude/$item" "$HOME/.claude/$item"
+    echo "  Linked $item/"
+  done
 
   mkdir -p "$HOME/.claude/scratch"
   echo "  Created scratch/"
 
   seed_claude_settings
 
-  unix_link "$REPO_DIR/bin" "$HOME/bin"
-  echo "  Linked ~/bin/"
+  for item in "${HOME_LINKS[@]}"; do
+    unix_link "$REPO_DIR/$item" "$HOME/$item"
+    echo "  Linked ~/$item/"
+  done
 }
 
 # ---------------------------------------------------------------------------
 # Shared: configure global git hooks path
 # ---------------------------------------------------------------------------
 set_hooks_path() {
-  local system_hooks
-  system_hooks="$(git config --system core.hooksPath 2>/dev/null || true)"
+  local hooks="$HOME/.claude/hooks" system_hooks prior prior_path
+  # Store the C:/ form explicitly. Git for Windows reads a /c/... value as a path under its
+  # own install directory, and only MSYS path conversion -- off whenever MSYS_NO_PATHCONV is
+  # exported -- would otherwise translate it on the way in.
+  if command -v cygpath >/dev/null 2>&1; then
+    hooks="$(cygpath -m "$hooks")"
+  fi
 
-  if [ -n "$system_hooks" ] && [ "$system_hooks" != "$HOME/.claude/hooks" ]; then
+  system_hooks="$(git config --system --type=path core.hooksPath || true)"
+  if [ -n "$system_hooks" ] && ! same_path "$system_hooks" "$hooks"; then
     echo ""
     echo "WARNING: system-level core.hooksPath already set to: $system_hooks"
     echo "  This may be enterprise-managed — skipping global hooks config."
-    echo "  Set manually if safe: git config --global core.hooksPath ~/.claude/hooks"
-    return
+    echo "  Set manually if safe: git config --global core.hooksPath \"$hooks\""
+    return 0
   fi
 
-  # Save a different prior global value before overwriting it, so --restore can put it
-  # back (ADR-079). same_path resolves both sides, since git stores this directory as
-  # C:/... while Git Bash spells it /c/...
-  local prior
+  # Record the previous global value before overwriting it, so --restore can put it back --
+  # "unset", the usual starting state, included (ADR-079 rules 1-2). The expanded form (~ and
+  # all) is compared; the raw value is saved, so a restore writes back exactly what was there.
   prior="$(git config --global core.hooksPath || true)"
-  if [ -n "$prior" ] && ! same_path "$prior" "$HOME/.claude/hooks"; then
-    mkdir -p "$SETUP_BACKUP_DIR"
-    printf '%s\n' "$prior" > "$SETUP_BACKUP_DIR/git-global-core.hooksPath"
-    echo "  Saved previous global core.hooksPath ($prior) to $SETUP_BACKUP_DIR/"
+  prior_path="$(git config --global --type=path core.hooksPath || true)"
+  if [ -z "$prior" ]; then
+    save_backup_record git-global-core.hooksPath.unset "" || return 1
+    echo "  Recorded that the global core.hooksPath was unset (--restore unsets it again)"
+  elif ! same_path "$prior_path" "$hooks"; then
+    save_backup_record git-global-core.hooksPath "$prior" || return 1
+    echo "  Saved the previous global core.hooksPath ($prior) to $SETUP_BACKUP_DIR/"
   fi
 
-  git config --global core.hooksPath "$HOME/.claude/hooks"
-  echo "  Set core.hooksPath -> ~/.claude/hooks"
+  git config --global core.hooksPath "$hooks"
+  if [ "$(git config --global core.hooksPath || true)" != "$hooks" ]; then
+    echo "ERROR: the global core.hooksPath did not read back as $hooks" >&2
+    return 1
+  fi
+  echo "  Set core.hooksPath -> $hooks"
 }
 
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
-# Guarded so this file can be sourced by a test harness (which stubs win_link/
-# ln and calls link_claude_windows/link_claude_unix directly) without
-# executing OS detection or the elevation gate -- see
-# claude/scripts/tests/test-setup-link-loop.sh.
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# Only when run, never when sourced: the test harness sources this file to call its
+# functions. `return` succeeds only in a sourced file -- unlike comparing BASH_SOURCE with
+# $0, which `bash -c 'source "$0"' setup.sh` satisfies, running the full setup (dev-env#1114).
+if ! (return 0 2>/dev/null); then
   if [[ "${1:-}" == "--restore" ]]; then
     restore_setup_backup "${2:?usage: bash setup.sh --restore <backup-dir>}"
     exit $?
