@@ -55,6 +55,17 @@ and ``pre-tool-use-worktree-path-check.py`` both build on the shared ``find_work
 confirm a candidate root is (or isn't) a git-registered worktree, replacing a path-shape-regex guess with
 actual ``git worktree list`` ground truth — see ADR-071 Amendment 6 and ADR-024's own dev-env#774 addendum.
 
+A fifth concern is the mirror image of the fourth: instead of asking "is this ONE path a registered
+worktree," ``prune-merged-worktrees.py`` asks "which of THESE on-disk directories are NOT mentioned by
+``git worktree list`` at all" (dev-env#1104). On Windows, ``git worktree remove`` can fail part-way
+(Permission denied / Filename too long / Directory not empty) — git tears down the worktree's own
+registration (the ``.git`` link inside it, and the entry in ``git worktree list``) before attempting the
+actual recursive directory delete, so a failure there leaves the physical directory behind with NO trace
+in git's own bookkeeping. Every check elsewhere in this module starts from ``git worktree list``'s output,
+so such a directory is invisible to all of them — it never resurfaces as a skip on a later run, it just
+accumulates disk usage silently forever. ``find_orphaned_worktree_dirs()`` below is the pure set-difference
+half of noticing this; the caller owns the filesystem scan and the actual (safety-checked) delete.
+
 The non-destructive **park** (recreate ``claude/<slug>`` at the worktree's current commit)
 is the correction precedent: ``git checkout -b`` changes no working-tree files, so it frees
 ``main`` without touching even a dirty worktree's state. A caller parking a *different*
@@ -363,3 +374,23 @@ def pattern_squat_action(path: str, branch: str, *, live: bool, dirty: bool, ful
     if not dirty and fully_pushed:
         return PatternSquatAction("park-and-remove", path, branch, park)
     return PatternSquatAction("park-only", path, branch, park)
+
+
+def find_orphaned_worktree_dirs(disk_dirs: "list[str]", worktrees: "list[dict]") -> "list[str]":
+    """On-disk directory paths that ``git worktree list`` does not know about at all.
+
+    ``disk_dirs`` is the caller's own filesystem listing (e.g. the immediate subdirectories of
+    a repo's ``.claude/worktrees/``) — this function never touches the filesystem itself, it
+    only set-differences ``disk_dirs`` against the resolved registered-worktree paths in
+    ``worktrees`` (via the same ``_norm`` every other comparison in this module uses, so a
+    trailing-slash or relative-vs-absolute spelling difference can't produce a false orphan).
+
+    A directory this returns is NOT necessarily safe to delete on its own — it may still be a
+    worktree mid-``git worktree add`` (a narrow race) or something unrelated a human placed under
+    the same directory. The caller must apply its own additional safety checks (e.g. refusing to
+    touch anything that still has a ``.git`` inside, and the ADR-051 liveness guard) before
+    deleting anything this function names. See this module's docstring, "a fifth concern",
+    for the dev-env#1104 failure mode this exists to catch.
+    """
+    registered = {_norm(wt["path"]) for wt in worktrees}
+    return [d for d in disk_dirs if _norm(d) not in registered]

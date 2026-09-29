@@ -414,6 +414,46 @@ def test_pattern_squat_action_park_only_not_fully_pushed() -> str:
     return "clean but not provably fully pushed -> park-only, not park-and-remove (conservative default)"
 
 
+ORPHAN_DIR = "C:/Users/brown/Git/dev-env/.claude/worktrees/orphan-left-behind-9104"
+
+
+def test_find_orphaned_worktree_dirs_empty_when_none_orphaned() -> str:
+    worktrees = wt.parse_worktree_porcelain(_porcelain([(CANON, "main"), (WT_FOO, "claude/foo")]))
+    result = wt.find_orphaned_worktree_dirs([WT_FOO], worktrees)
+    if result != []:
+        raise AssertionError(f"the only disk dir given IS registered -> no orphans: {result}")
+    return "every disk dir is registered -> [] (dev-env#1104)"
+
+
+def test_find_orphaned_worktree_dirs_finds_unregistered() -> str:
+    worktrees = wt.parse_worktree_porcelain(_porcelain([(CANON, "main"), (WT_FOO, "claude/foo")]))
+    result = wt.find_orphaned_worktree_dirs([WT_FOO, ORPHAN_DIR], worktrees)
+    if result != [ORPHAN_DIR]:
+        raise AssertionError(f"registered WT_FOO must be excluded, only the unregistered dir returned: {result}")
+    return "a disk dir git worktree list doesn't mention at all -> returned; a registered one is not (dev-env#1104)"
+
+
+def test_find_orphaned_worktree_dirs_empty_disk_dirs() -> str:
+    worktrees = wt.parse_worktree_porcelain(_porcelain([(CANON, "main"), (WT_FOO, "claude/foo")]))
+    result = wt.find_orphaned_worktree_dirs([], worktrees)
+    if result != []:
+        raise AssertionError(f"nothing on disk to check -> []: {result}")
+    return "empty disk_dirs -> [] (nothing to compare)"
+
+
+def test_find_orphaned_worktree_dirs_normalizes_paths() -> str:
+    worktrees = wt.parse_worktree_porcelain(_porcelain([(CANON, "main"), (WT_FOO, "claude/foo")]))
+    # A redundant "./" segment must still resolve to the same registered path as WT_FOO --
+    # find_orphaned_worktree_dirs() must normalize both sides via the same _norm() every other
+    # comparison in this module uses, or a harmless spelling difference would falsely orphan a
+    # perfectly-registered worktree.
+    spelled_differently = "C:/Users/brown/Git/dev-env/.claude/worktrees/./foo-bar-abc123"
+    result = wt.find_orphaned_worktree_dirs([spelled_differently], worktrees)
+    if result != []:
+        raise AssertionError(f"a '.'-segment spelling of a registered path must still match: {result}")
+    return "path normalization (redundant '.' segment) matches the registered spelling -> not a false orphan"
+
+
 def main() -> int:
     tests = [
         ("parse_worktree_porcelain", test_parse_worktree_porcelain),
@@ -442,6 +482,10 @@ def main() -> int:
         ("pattern_squat_action: park-and-remove", test_pattern_squat_action_park_and_remove),
         ("pattern_squat_action: park-only (dirty)", test_pattern_squat_action_park_only_dirty),
         ("pattern_squat_action: park-only (not fully pushed)", test_pattern_squat_action_park_only_not_fully_pushed),
+        ("find_orphaned_worktree_dirs: none when all registered", test_find_orphaned_worktree_dirs_empty_when_none_orphaned),
+        ("find_orphaned_worktree_dirs: finds an unregistered dir (dev-env#1104)", test_find_orphaned_worktree_dirs_finds_unregistered),
+        ("find_orphaned_worktree_dirs: empty disk_dirs -> []", test_find_orphaned_worktree_dirs_empty_disk_dirs),
+        ("find_orphaned_worktree_dirs: path normalization", test_find_orphaned_worktree_dirs_normalizes_paths),
     ]
     failed = 0
     for name, fn in tests:

@@ -60,6 +60,18 @@ Scope note: diff_files() has no dedicated test — it is a one-line run() wrappe
 structurally identical to is_merged()/is_dirty(), neither of which has one either; all
 three are exercised via --dry-run against a real repo, not unit tests.
 
+Also covers the dev-env#1104 orphaned-worktree-directory scan: list_worktree_subdirs()
+and has_git_link() against real tempfile.TemporaryDirectory() trees (matching this file's
+own filesystem-test convention rather than mocking os.scandir/Path.exists), and
+find_and_remove_orphaned_worktrees()'s four safety/failure paths -- a safe orphan is
+actually deleted from disk, a directory that still has a .git link is left completely
+untouched, a live-session candidate is left untouched (ADR-051 applies here too), and an
+OSError from one orphan's shutil.rmtree (the lock/long-path failure the whole feature exists
+for) is caught and skipped without aborting a second orphan in the same call. A final
+end-to-end test drives prune_one() itself (not just the helper in isolation) against a real
+tmp directory standing in for the primary worktree, to prove the wiring -- not just the
+helper -- actually removes the orphan and folds it into the returned counts.
+
 Usage:
     py -3 claude/scripts/tests/test_prune_merged_worktrees.py
 
@@ -67,6 +79,7 @@ Exit 0 = all pass.
 """
 import importlib.util
 import io
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -638,6 +651,177 @@ def test_load_ephemeral_patterns_empty_list_behaves_as_absent() -> str:
     return "explicit empty list -> [] (identical outcome to the key being absent)"
 
 
+def test_list_worktree_subdirs_missing_dir_returns_empty() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        result = prune.list_worktree_subdirs(Path(tmp) / "does-not-exist")
+    assert result == [], f"a missing directory must return [], got {result}"
+    return "missing .claude/worktrees/ (the common case: no worktrees yet) -> [], not an error"
+
+
+def test_list_worktree_subdirs_lists_only_directories() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "worktrees"
+        root.mkdir()
+        (root / "dir-a").mkdir()
+        (root / "dir-b").mkdir()
+        (root / "a-file.txt").write_text("not a directory", encoding="utf-8")
+        result = prune.list_worktree_subdirs(root)
+    names = sorted(Path(p).name for p in result)
+    assert names == ["dir-a", "dir-b"], f"expected only the two subdirectories, got {names}"
+    return "lists immediate subdirectories only; a sibling file is excluded"
+
+
+def test_has_git_link_true_when_present() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / ".git").write_text("gitdir: /somewhere/.git/worktrees/x\n", encoding="utf-8")
+        result = prune.has_git_link(tmp)
+    assert result is True, "a .git file inside the directory must be detected"
+    return "path/.git present (the ordinary registered-worktree shape) -> True"
+
+
+def test_has_git_link_false_when_absent() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        result = prune.has_git_link(tmp)
+    assert result is False, "an empty directory has no .git link"
+    return "no .git anywhere under path -> False (the dev-env#1104 orphan shape)"
+
+
+def _fake_worktrees_for(primary: str) -> "list[dict]":
+    return [{"path": primary, "branch": "main"}]
+
+
+def test_find_and_remove_orphaned_worktrees_removes_safe_orphan() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        orphan = Path(tmp) / ".claude" / "worktrees" / "orphan-9104"
+        orphan.mkdir(parents=True)
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            removed, skipped = prune.find_and_remove_orphaned_worktrees(
+                tmp, _fake_worktrees_for(tmp), dry_run=False, liveness_window_seconds=86400
+            )
+        # Every filesystem assertion must run INSIDE this `with` block -- once it exits,
+        # tempfile.TemporaryDirectory's own cleanup deletes the whole tree, which would make
+        # orphan.exists() report False regardless of what find_and_remove_orphaned_worktrees()
+        # actually did (a real bug caught in this exact test during authoring: dev-env#1104).
+        assert removed == [str(orphan)], f"expected the orphan removed, got {removed}"
+        assert skipped == [], f"expected nothing skipped, got {skipped}"
+        assert not orphan.exists(), "the orphan directory must actually be gone from disk"
+    return "an orphan with no .git and no live session -> removed, directory actually gone (dev-env#1104)"
+
+
+def test_find_and_remove_orphaned_worktrees_skips_dir_with_git_link() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        orphan = Path(tmp) / ".claude" / "worktrees" / "not-actually-orphaned"
+        orphan.mkdir(parents=True)
+        (orphan / ".git").write_text("gitdir: somewhere\n", encoding="utf-8")
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            removed, skipped = prune.find_and_remove_orphaned_worktrees(
+                tmp, _fake_worktrees_for(tmp), dry_run=False, liveness_window_seconds=86400
+            )
+        assert removed == [], f"a dir that still has .git must never be deleted, got {removed}"
+        assert len(skipped) == 1 and ".git link" in skipped[0][1], f"expected a .git-link skip reason, got {skipped}"
+        assert orphan.exists(), "the directory must be left completely untouched"
+    return "an unregistered dir that STILL has .git -> never deleted, left for manual review"
+
+
+def test_find_and_remove_orphaned_worktrees_skips_live_session() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        orphan = Path(tmp) / ".claude" / "worktrees" / "orphan-but-live"
+        orphan.mkdir(parents=True)
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=True):
+            removed, skipped = prune.find_and_remove_orphaned_worktrees(
+                tmp, _fake_worktrees_for(tmp), dry_run=False, liveness_window_seconds=86400
+            )
+        assert removed == [], f"a live-session orphan candidate must never be deleted, got {removed}"
+        assert len(skipped) == 1 and "active Claude session" in skipped[0][1], f"expected a liveness skip reason, got {skipped}"
+        assert orphan.exists(), "the directory must be left completely untouched"
+    return "ADR-051 liveness guard applies here too -- a live session is never touched, even an unregistered one"
+
+
+def test_find_and_remove_orphaned_worktrees_dry_run_does_not_delete() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        orphan = Path(tmp) / ".claude" / "worktrees" / "orphan-dry-run"
+        orphan.mkdir(parents=True)
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            removed, skipped = prune.find_and_remove_orphaned_worktrees(
+                tmp, _fake_worktrees_for(tmp), dry_run=True, liveness_window_seconds=86400
+            )
+        assert removed == [str(orphan)], f"dry-run must still report it as would-remove, got {removed}"
+        assert orphan.exists(), "dry-run must never actually delete anything"
+    return "--dry-run: reported as would-remove, directory left on disk"
+
+
+def test_find_and_remove_orphaned_worktrees_survives_rmtree_oserror() -> str:
+    """One orphan's rmtree raises (lock still held); a second orphan in the same call still
+    gets removed -- the loop must not abort on the first failure (mirrors the TimeoutExpired
+    skip-and-continue discipline the main removal loop already has)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        stuck = Path(tmp) / ".claude" / "worktrees" / "orphan-still-locked"
+        stuck.mkdir(parents=True)
+        clears = Path(tmp) / ".claude" / "worktrees" / "orphan-clears-fine"
+        clears.mkdir(parents=True)
+        real_rmtree = shutil.rmtree
+
+        def _flaky_rmtree(path, *args, **kwargs):
+            if str(path) == str(stuck):
+                raise OSError("Permission denied")
+            return real_rmtree(path, *args, **kwargs)
+
+        with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+            with unittest.mock.patch("shutil.rmtree", side_effect=_flaky_rmtree):
+                removed, skipped = prune.find_and_remove_orphaned_worktrees(
+                    tmp, _fake_worktrees_for(tmp), dry_run=False, liveness_window_seconds=86400
+                )
+        assert removed == [str(clears)], f"expected only the clearing orphan removed, got {removed}"
+        assert len(skipped) == 1 and "still could not be removed" in skipped[0][1], f"expected a still-locked skip reason, got {skipped}"
+        assert stuck.exists(), "the still-locked orphan must be left in place, not crash the whole pass"
+    return "an OSError on one orphan's rmtree is caught and skipped -- the loop continues to the next orphan (dev-env#1104)"
+
+
+def test_find_and_remove_orphaned_worktrees_empty_primary_short_circuits() -> str:
+    with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+        removed, skipped = prune.find_and_remove_orphaned_worktrees(
+            "", [], dry_run=False, liveness_window_seconds=86400
+        )
+    assert removed == [] and skipped == [], f"expected ([], []), got ({removed}, {skipped})"
+    return "empty primary (worktrees list itself was empty) -> ([], []), never resolves a bogus cwd-relative path"
+
+
+def _dispatch_for_orphan_integration(porcelain: str):
+    def _dispatch(args, **_kwargs):
+        if args[1:2] == ["remote"]:
+            return _ok("git@github.com:brownm09/dev-env.git\n")
+        if args[1:3] == ["fetch", "origin"]:
+            return _ok()
+        if args[1:3] == ["worktree", "list"]:
+            return _ok(porcelain)
+        return _ok()
+    return _dispatch
+
+
+def test_prune_one_removes_orphaned_worktree_dir_end_to_end() -> str:
+    """End-to-end wiring check: prune_one() itself calls find_and_remove_orphaned_worktrees()
+    and folds its results into the (pruned, skipped) counts it already returns -- not just
+    that the helper function works correctly in isolation (the tests above). Uses a REAL tmp
+    directory as the primary worktree (matching this file's own established filesystem-test
+    convention) so list_worktree_subdirs()'s real os.scandir() call has something real to
+    find; every git call is mocked via subprocess.run, so no actual git process ever runs."""
+    with tempfile.TemporaryDirectory() as tmp:
+        primary = str(Path(tmp).resolve())
+        orphan = Path(primary) / ".claude" / "worktrees" / "orphan-e2e-9104"
+        orphan.mkdir(parents=True)
+        porcelain = f"worktree {primary}\nHEAD abc123\nbranch refs/heads/main\n\n"
+        with unittest.mock.patch("subprocess.run", side_effect=_dispatch_for_orphan_integration(porcelain)):
+            with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
+                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                    repo=primary, dry_run=False, liveness_window_seconds=86400
+                )
+        assert pruned_count == 1, f"expected the orphan counted as pruned, got {pruned_count}"
+        assert skipped_count == 1, f"expected only the primary's own 'primary or current worktree' skip, got {skipped_count}"
+        assert not fetch_failed, "fetch should not be marked failed"
+        assert not orphan.exists(), "the orphan must actually be gone -- this is the real prune_one() code path, not a mock"
+    return "prune_one() itself invokes the orphan scan and folds it into pruned/skipped, not just the helper in isolation"
+
+
 def main() -> int:
     tests = [
         ("--include-named unset: named branch still skipped (default unchanged)", test_named_branch_skipped_by_default),
@@ -664,6 +848,17 @@ def main() -> int:
         ("load_ephemeral_patterns: non-string element -> []", test_load_ephemeral_patterns_non_string_element_returns_empty),
         ("load_ephemeral_patterns: invalid regex -> [] + warns", test_load_ephemeral_patterns_invalid_regex_returns_empty_and_warns),
         ("load_ephemeral_patterns: empty list == absent", test_load_ephemeral_patterns_empty_list_behaves_as_absent),
+        ("list_worktree_subdirs: missing dir -> []", test_list_worktree_subdirs_missing_dir_returns_empty),
+        ("list_worktree_subdirs: lists only directories", test_list_worktree_subdirs_lists_only_directories),
+        ("has_git_link: true when .git present", test_has_git_link_true_when_present),
+        ("has_git_link: false when absent", test_has_git_link_false_when_absent),
+        ("find_and_remove_orphaned_worktrees: removes a safe orphan (dev-env#1104)", test_find_and_remove_orphaned_worktrees_removes_safe_orphan),
+        ("find_and_remove_orphaned_worktrees: skips a dir that still has .git", test_find_and_remove_orphaned_worktrees_skips_dir_with_git_link),
+        ("find_and_remove_orphaned_worktrees: skips a live-session candidate (ADR-051)", test_find_and_remove_orphaned_worktrees_skips_live_session),
+        ("find_and_remove_orphaned_worktrees: --dry-run does not delete", test_find_and_remove_orphaned_worktrees_dry_run_does_not_delete),
+        ("find_and_remove_orphaned_worktrees: survives an rmtree OSError, keeps going", test_find_and_remove_orphaned_worktrees_survives_rmtree_oserror),
+        ("find_and_remove_orphaned_worktrees: empty primary short-circuits", test_find_and_remove_orphaned_worktrees_empty_primary_short_circuits),
+        ("prune_one() end-to-end: removes an orphaned worktree dir (dev-env#1104)", test_prune_one_removes_orphaned_worktree_dir_end_to_end),
     ]
     failed = 0
     for name, fn in tests:
