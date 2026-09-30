@@ -615,6 +615,17 @@ No "see the file" without the path. No "check the PR" without the URL.
 
 ---
 
+## Abbreviations
+
+Applies to every kind of output: chat replies, docs, commit messages, PR and issue bodies.
+
+- **Never coin an abbreviation, acronym, or initialism.** Spell the name out, or use a short descriptive name ("the Round 2 prep"), never initials ("R2P"). The same goes for invented citation codes: cite a record by its file and row or heading, not a code like "ACC:51". A coined term reads like an established one but is private to the session that made it up. Defining it once doesn't fix that, because it spreads into chat replies, commit messages, and PR bodies that never carry the definition.
+- **Define standard abbreviations the reader may not know.** Established terms (API, CDC for change data capture, SLO for service-level objective) are fine, but define each one on first use, or in a linked glossary, whenever the reader may not know it.
+
+Incident: a 2026-09-30 career-playbook interview-prep session coined "R2P" (Round 2 technical prep), "R1"/"R4" (interview rounds), "SD" (system design), and "ACC:51"-style row citations, and used them across prep docs, chat, commits, and a PR body. The user had never seen them defined and had not agreed to them ([dev-env#1120](https://github.com/brownm09/dev-env/issues/1120)). Nothing enforces this mechanically; a Stop hook or doc lint is warranted only if it recurs now that the rule is written down.
+
+---
+
 ## Engineering Journal
 
 After each session (or at natural breakpoints for long sessions), create or update a session
