@@ -617,7 +617,7 @@ No "see the file" without the path. No "check the PR" without the URL.
 
 ## Abbreviations
 
-Applies to every kind of output: chat replies, docs, commit messages, PR and issue bodies.
+Applies to every kind of output, including chat replies, docs, file and branch names, commit messages, and PR and issue titles and bodies.
 
 - **Never coin an abbreviation, acronym, or initialism.** Spell the name out, or use a short descriptive name ("the Round 2 prep"), never initials ("R2P"). The same goes for invented citation codes: cite a record by its file and row or heading, not a code like "ACC:51". A coined term reads like an established one but is private to the session that made it up. Defining it once doesn't fix that, because it spreads into chat replies, commit messages, and PR bodies that never carry the definition.
 - **Define standard abbreviations the reader may not know.** Established terms (API, CDC for change data capture, SLO for service-level objective) are fine, but define each one on first use, or in a linked glossary, whenever the reader may not know it.
