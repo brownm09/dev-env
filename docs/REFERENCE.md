@@ -13,6 +13,7 @@ For a compact overview see the [README](../README.md).
 - [Utility Scripts](#utilities)
 - [Model Selection](#model-selection)
 - [Platform Constraints](#platform-constraints)
+- [Adding a Second Machine](#adding-a-second-machine)
 - [Git Workflow Runbooks](#git-workflow-runbooks)
 - [Engineering Journal Internals](#engineering-journal-internals)
 
@@ -271,7 +272,7 @@ The orphaned-worktree recovery recipe is `claude/scripts/_worktree_recovery.py` 
 
 #### Machine-local permissions
 
-The `permissions.allow` block in `claude/settings.shared.json` contains paths with a hardcoded Windows username (`C:/Users/brown/...`). These rules are functionally correct on this machine but must be updated manually when bootstrapping dev-env on a new machine or account. If scratch-dir writes or edits start prompting for permission after a re-bootstrap, update the username in every `allow` entry.
+The `permissions.allow` block **and every hook command** in `claude/settings.shared.json` contain paths with a hardcoded Windows username (`C:/Users/brown/...`). They are correct on a machine whose profile is `C:\Users\brown`. On any other, the hook commands name missing scripts and block every prompt — `dev-env-doctor.py` reports it, and [dev-env#1113](https://github.com/brownm09/dev-env/issues/1113) tracks rewriting the prefix per machine; see [Adding a Second Machine](#adding-a-second-machine). If scratch-dir writes or edits start prompting for permission after a re-bootstrap, update the username in every `allow` entry.
 
 **Known scope decisions:**
 
@@ -739,6 +740,7 @@ hooks and shared modules that serve the same workflow, rather than split across 
 | `merge-ready.sh` | `bash merge-ready.sh [owner/repo ...]` | Lists, per repo, the open PRs that are green + mergeable + waiting on nothing (the merge-ready set) vs. those still open but not ready. Defaults to `merickvaughn/lifting-logbook`; accepts multiple `owner/repo` args. Read-only — `gh pr list` plus a `node` rollup of check states (`jq`-free, per the no-`jq` convention). |
 | `get-project-item.sh` | `ITEM_ID=$(bash get-project-item.sh <issue-number> [project-number] [owner])` | Resolves a GitHub Project item node ID from an issue/PR number. Checks a local item-ID cache first (dev-env#1057, [ADR-141](adr/141-project-item-id-creation-time-cache.md)) — a hit costs **zero** `gh` calls, so it succeeds even when `gh` is offline/unauthenticated. Falls back to the original full `gh project item-list --limit 1000` fetch-and-scan on a miss, and writes the result back into the cache. Defaults to project 3, owner `brownm09`, repo `dev-env`. Overridable via args or `PROJECT_NUMBER`/`PROJECT_OWNER` env vars (repo via `PROJECT_REPO`). Requires `project` scope for the fallback path: `gh auth refresh -s project`. |
 | `session-mode-report.py` | `py -3 session-mode-report.py [--since YYYY-MM-DD] [--interactive-only] [--non-plan-only] [--log PATH]` | Reports the startup permission mode per session by parsing the `session-mode-prompt.py` hook log (`scratch/session-mode-prompt.log`). For each `session_id` it takes the earliest entry as the startup mode, classifies sessions as interactive vs. automated (scheduled-task / `<tag>` prompts), and flags (`!`) interactive sessions that started outside `plan`. Desktop/web and spawn-task sessions launch in `bypassPermissions` by design (overriding `defaultMode: plan`); this surfaces that. Read-only; report to stdout, diagnostics to stderr. |
+| `dev-env-doctor.py` | `py -3 dev-env-doctor.py [--offline] [--settings PATH]` | **Read-only health check of this machine's install.** `setup.sh` runs it last; run it any time the tooling misbehaves. Prints one PASS/WARN/FAIL/INFO line per check and exits 1 on any FAIL; never writes anything. Checks: the `~/.claude` links and `~/bin` exist, resolve, and point into the dev-env checkout — a dangling link FAILs (the lists are pinned against `setup.sh`'s link arrays) — which should exist and be `~/Git/dev-env` on `main`; every hook command in the live `~/.claude/settings.json` names an existing script and its launcher is on `PATH` — asserting at least one script path was extracted, so an empty or unparseable settings file FAILs instead of passing vacuously ([ADR-144](adr/144-gate-calibration-pass-3-dimension.md)); every `claude/scripts/*.py` compiles on this Python (an invalid escape is a WARN, since a future Python makes it an error); `py`/`git`/`gh`/`node`, gh sign-in (decided locally by `gh auth token`) and its `project` scope, the gh credential helper ([ADR-047](adr/047-standardize-gh-credential-helper.md)) and git identity; the global `core.hooksPath` (read with `--type=path`, and required to exist), plus every `~/Git` clone whose effective hooks dir overrides it ([dev-env#1108](https://github.com/brownm09/dev-env/issues/1108)); the journal clone and whether it contains `origin/draft/<today>`; dev-env's gitignored `.claude/hook-config.json`; and the routine-host flag. Every child runs with prompts off (`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`) and stdin closed, and a timeout kills its whole process tree, so a credential prompt can't hang it; a check that crashes becomes a FAIL line. `--offline` skips the two network reads, `gh auth status` and `git ls-remote`. See [Adding a Second Machine](#adding-a-second-machine). |
 | `register-keep-token-warm.ps1` | `powershell -ExecutionPolicy Bypass -File register-keep-token-warm.ps1 [-IntervalHours N] [-Unregister]` | **Per-machine, run once.** Registers the non-elevated, hidden `ClaudeKeepTokenWarm` scheduled task (every 4h by default) that runs `keep-token-warm.ps1`. Idempotent (`-Force`); `-Unregister` backs up the live task definition to `Documents\LOGS\ClaudeKeepTokenWarmBackup.xml` first (write-if-absent, [ADR-079](adr/079-backup-restore-convention.md)), refuses to proceed if the backup can't be captured, then removes the task and verifies removal by read-back. Restoring is re-running the script with no switches (the task carries no state the script itself didn't define). Each machine needs its own registration. [ADR-043](adr/043-keep-warm-scheduled-task-for-token-freshness.md) |
 | `keep-token-warm.ps1` | (scheduled-task payload — invoked by `ClaudeKeepTokenWarm`, not run by hand) | Runs `claude -p 'ok' --model haiku` to trigger the CLI's own OAuth-token refresh, keeping `~/.claude/.credentials.json` fresh so `usage-snapshot.py` works without a manual `claude` refresh — unless a `<claude.exe> auth status --json` probe first reports the MSIX desktop-app dead-end (`loggedIn:false`, mirroring `usage-snapshot.py`'s `cli_auth_status`), in which case it exits early logging `desktop-app: nothing to refresh` instead of spawning a doomed refresh call ([dev-env#917](https://github.com/brownm09/dev-env/issues/917)). Logs token mtime + minutes-to-expiry before/after each run to `Documents\LOGS\keep-token-warm_<date>.txt` (never the token value); always exits 0. [ADR-043](adr/043-keep-warm-scheduled-task-for-token-freshness.md) |
 | `validate-manifest.py` | `py -3 validate-manifest.py <manifest-path> [<manifest-path> ...]` | Pre-compose validator for engineering-journal manifest shards. Checks that each entry has all five required fields (`stub`, `topic`, `tokens`, `prs_opened`, `prs_closed`). Both ADR-056 per-session shards (single JSON object per file) and legacy per-day manifests (one JSON object per line) are handled — paths are parsed line-by-line. Absent/unmatched paths are skipped. Exit 0 — all entries valid; exit 1 — at least one entry is missing a required field or a line failed to parse, with file path, line number, and missing fields on stderr. Wired into `/journal-compose` as **Step 0.7** — runs before any stub read or subagent spawn so field gaps surface up front rather than mid-compose (dev-env [#423](https://github.com/brownm09/dev-env/issues/423)). |
@@ -842,7 +844,7 @@ CI run ([ADR-103](adr/103-shared-hookout-emitter.md)).
 | `tests/test_validate_manifest.py` | `py -3 claude/scripts/tests/test_validate_manifest.py` | Exercises the pure `missing_required_fields`, `find_entries_missing_fields`, and `parse_manifest_text` helpers in `validate-manifest.py` offline (no disk, no network, no subprocess): pins the all-five-fields-present case, each individually absent field returned in canonical order, non-dict entries treated as missing every field, `find_entries_missing_fields` order preservation and filtering, blank-line skipping, single-object ADR-056 shards, legacy multi-line manifests, invalid JSON, and JSON non-objects. `main()` is not covered (pure-helper convention). (dev-env [#423](https://github.com/brownm09/dev-env/issues/423)) |
 | `tests/test-merge-stale-pr.sh` | `bash claude/scripts/tests/test-merge-stale-pr.sh` | Drives the real `merge-stale-pr.sh` against throwaway fixture repos (a bare "origin" + a working clone standing in for the shared engineering-journal checkout) with `gh` stubbed — no network, no auth. Asserts the Step 4 orphaned-draft commit's explicit pathspec ([dev-env#461](https://github.com/brownm09/dev-env/pull/461)) never sweeps in a file already staged by a simulated concurrent session; that a clean branch with no orphaned drafts skips Step 4 without a spurious commit and runs to completion; that multiple orphaned drafts across directories are all committed (guards `"${DRAFT_FILES[@]}"` array handling); and that a missing composed-journal file plus a declined prompt aborts before any mutation. Rebase and push run for real against the fixture remote; only `gh pr view`/`gh pr merge` are stubbed. (dev-env [#463](https://github.com/brownm09/dev-env/issues/463)) |
 | `tests/test-journal-compose-replay.sh` | `bash claude/scripts/tests/test-journal-compose-replay.sh` | Drives the real `journal-compose-replay.sh` against throwaway fixture repos (`mktemp -d`, with `git update-ref refs/remotes/origin/main` standing in for a remote — no network, no `gh`). Fixture A pins the mechanical paths and a disjoint 3-way merge in which **both** sides' edits survive; fixture B pins the contested ones (overlapping `M` — the literal [#890](https://github.com/brownm09/dev-env/issues/890) shape — plus add/add, delete/modify, and a shard `origin/main` deleted), each asserted to leave `origin/main`'s content on disk with exit 2; fixture C pins exit 1 on every precondition failure. Both fixtures grep the tree for conflict markers, and all set `core.autocrlf true` so the blob-vs-work-tree line-ending trap stays covered on every platform. |
-| `tests/test-setup-link-loop.sh` | `bash claude/scripts/tests/test-setup-link-loop.sh` | Sources `setup.sh` (a sourcing guard around its OS-dispatch block makes this safe) with `win_link`/`ln` stubbed to a call log, and runs the extracted `link_claude_windows()`/`link_claude_unix()` functions against a throwaway `$HOME` — no Administrator/Developer Mode privilege needed, no real `~/.claude` or global git config touched. Pins the shared `CLAUDE_FILE_LINKS`/`CLAUDE_DIR_LINKS` enumeration and each function's exact 8-target call sequence (file links, dir links, the `routines` junction, `~/bin`); also confirms the unstubbed `mkdir -p` calls create `~/.claude`/`~/.claude/scratch` for real. `setup_windows()`'s UAC elevation gate, the soft-prereq warnings, and `win_link`'s actual `cygpath`/`mklink` invocation are out of scope by design. (dev-env [#614](https://github.com/brownm09/dev-env/issues/614)) |
+| `tests/test-setup-link-loop.sh` | `bash claude/scripts/tests/test-setup-link-loop.sh` | Sources `setup.sh` (its dispatch runs only when executed, never when sourced — pinned by scenario 11) against a throwaway `$HOME`, with global git config redirected to a temp file; no real `~/.claude` or global git config is touched. Scenarios 1–3 stub `win_link`/`ln` to a call log and pin the four link arrays and each link function's exact 8-step sequence (file links, dir links, the `routines` junction, the settings seed, `~/bin`). Scenarios 4–15 run the rest for real, with junctions on Windows (no privilege needed): backing up real items, recording links that point outside dev-env, and never overwriting a backup; `--restore` putting items, recorded links, `settings.json` and `core.hooksPath` (unset included) back, converging, and refusing a directory setup didn't write; `win_cmd` actually running its command with a spaced path intact; the symlink probe, the `cmd.exe`-special-character guard, the HOME-vs-profile guard and the other-home seed guard; the dispatch guard; a failed `mklink` naming the backup and `--restore`; and nested links surviving a restore. A case this machine can't run (no 8.3 names, no symlink right) counts as skipped, never passed. `setup_windows()` itself only sequences these functions and was run end-to-end in a sandbox instead. (dev-env [#614](https://github.com/brownm09/dev-env/issues/614), [#1114](https://github.com/brownm09/dev-env/issues/1114)) |
 | `tests/test_run_hook_tests.py` | `py -3 claude/scripts/tests/test_run_hook_tests.py` | Exercises `run-hook-tests.py`'s pure helpers offline (tempfile fixtures; no subprocess/network): `discover_python_tests`/`discover_bash_tests` (glob + `test_`-prefix / `_`-exclusion filtering, multi-dir, missing-dir), `runner_skip_reason`/`SKIP_TESTS` (the pinned single-entry runner-skip list), `_command_for` (interpreter argv incl. the bash-missing and non-test-suffix cases), and `classify_result` (pass / self-skip / fail, with a non-zero exit beating a `SKIP:` marker). `main`/`_run_one` (which shell out) are not covered — the runner's end-to-end acceptance test is the first green CI run. (dev-env [#721](https://github.com/brownm09/dev-env/issues/721)) |
 
 ---
@@ -925,6 +927,123 @@ help only object-carrying pushes; it does not address delete-only updates, which
 
 Tracked in [dev-env#303](https://github.com/brownm09/dev-env/issues/303). See
 [ADR-035](adr/035-git-push-delete-web-session-constraint.md).
+
+---
+
+## Adding a Second Machine
+
+Claude Code syncs nothing under `~/.claude/` between machines: not settings, not `CLAUDE.md`, not
+auto-memory, not session transcripts ([settings](https://code.claude.com/docs/en/settings),
+[sessions](https://code.claude.com/docs/en/sessions), [memory](https://code.claude.com/docs/en/memory)).
+Cloud sessions load only a repo's own `.claude/`, never user-scope config
+([Claude Code on the web](https://code.claude.com/docs/en/claude-code-on-the-web)), so they are not a
+substitute for this setup. A *session* therefore can't move between machines; *work* crosses
+through git and GitHub — branches, PRs, issues, journal stubs and tile shards. dev-env is how the
+tooling itself crosses: each machine gets its own clone and its own `~/.claude/` links. Umbrella
+issue: [dev-env#1107](https://github.com/brownm09/dev-env/issues/1107).
+
+### Before you start
+
+- **Check the profile path.** In PowerShell: `echo $env:USERPROFILE`. Every hook command is
+  written as `pyw -3 C:/Users/brown/.claude/scripts/...`, and a hook whose script is missing blocks
+  every prompt. On a profile other than `C:\Users\brown`, setup links everything but doesn't seed
+  those hooks, so sessions there run without dev-env's hooks until
+  [dev-env#1113](https://github.com/brownm09/dev-env/issues/1113) lands. Setup also refuses to run
+  when Git Bash's `HOME` isn't the profile (a Windows-level `HOME` variable), since Claude Code
+  reads `~/.claude` from the profile, and it can't link under a path containing one of cmd.exe's
+  special characters (`& ^ % ! , ; =`).
+- **Enable Developer Mode** (Settings → System → For developers). `setup.sh` needs it — or the
+  "Create symbolic links" right, or an elevated Git Bash — to create symlinks. It tries creating
+  one first, and stops with that instruction rather than prompting through UAC
+  ([ADR-041](adr/041-no-terminal-spawn-in-windows-scripts.md)).
+- **Install** Git for Windows, Python with the `py`/`pyw` launcher, the GitHub CLI, nvm for Windows
+  (then `nvm install 20.11.1`), and the Claude desktop app, signed in to the same account.
+
+### Steps (Git Bash)
+
+1. Sign in to GitHub, make `gh` git's credential helper
+   ([ADR-047](adr/047-standardize-gh-credential-helper.md)), and add the `project` scope the board
+   commands need:
+
+   ```bash
+   gh auth login
+   gh auth setup-git
+   gh auth refresh -s project
+   ```
+
+2. On a fresh machine, set the git identity: `git config --global user.name "<name>"` and
+   `git config --global user.email "<email>"`.
+3. Clone into `~/Git` — the hooks assume that layout — starting with dev-env and the journal, then
+   the project repos you work in:
+
+   ```bash
+   mkdir -p ~/Git
+   git clone https://github.com/brownm09/dev-env.git ~/Git/dev-env
+   git clone https://github.com/brownm09/engineering-journal.git ~/Git/engineering-journal
+   ```
+
+4. Run setup. It links `~/.claude` and `~/bin` into the clone, seeds `~/.claude/settings.json`,
+   sets the global `core.hooksPath`, and runs the doctor, exiting non-zero while the doctor reports
+   a FAIL. Nothing is lost: into `~/.claude/backups/setup-<timestamp>/` go any real file or
+   directory at a link location (moved, not deleted), where any replaced link pointed if it pointed
+   outside dev-env, the `settings.json` the seed changed, and the previous global `core.hooksPath`
+   (or the fact that it was unset). `bash setup.sh --restore <that dir>` puts all of it back, never
+   overwrites something else it finds in the way, and can be repeated:
+
+   ```bash
+   bash ~/Git/dev-env/setup.sh
+   ```
+
+5. Copy dev-env's gitignored `.claude/hook-config.json` from the other machine to the same path in
+   this clone — the project-board hook needs it (board and field IDs, no secrets). Then re-run the
+   doctor until it reports no FAIL:
+
+   ```bash
+   py -3 ~/.claude/scripts/dev-env-doctor.py
+   ```
+
+### What stays per machine
+
+| Item | On the second machine |
+|---|---|
+| Scheduled routines | Register only `prune-stale-worktrees` and `reclaim-worktree-disk`, which clean that machine's own worktrees. Keep the shared-state routines — `daily-journal-compose`, `biweekly-retro`, `weekly-memory-audit`, `retro-chain-backstop`, `reconcile-project-board`, `nightly-cover-letters` — on one machine: every lock they take is a local file, so two registrations double-run them ([dev-env#1110](https://github.com/brownm09/dev-env/issues/1110) adds a guard). |
+| `ClaudeKeepTokenWarm` | Not needed under the MSIX desktop app ([dev-env#917](https://github.com/brownm09/dev-env/issues/917)); for an npm-CLI install, run `register-keep-token-warm.ps1` on each machine. |
+| Auto-memory | Not shared, and the weekly memory audit only sees the machine it runs on. Durable rules belong in `CLAUDE.md` regardless ([ADR-038](adr/038-durable-preferences-documented-in-repo.md)). |
+| `merge-queue.md`, baseline-test snapshots, the project-item cache | Local. A branch started on one machine has no baseline snapshot on the other. |
+| Session transcripts | Local. To steer a session still running on the other machine, use Remote Control from claude.ai/code ([remote-control](https://code.claude.com/docs/en/remote-control)). |
+
+### Using both machines on the same day
+
+The journal's `draft/<today>` branch is shared through `origin`. Until
+[dev-env#1111](https://github.com/brownm09/dev-env/issues/1111) automates it, before the first stub
+of the day on either machine:
+
+```bash
+git -C ~/Git/engineering-journal fetch origin --prune
+git -C ~/Git/engineering-journal checkout draft/<today>   # no -b when origin already has it
+```
+
+If `draft/<today>` already existed locally — this machine's first session cut it from `main` before
+the other machine pushed — or a push is rejected as non-fast-forward, merge origin's branch in and
+push with its upstream set. Name the remote branch: a branch cut from `main` has no upstream, so a
+bare `pull` has nothing to pull.
+
+```bash
+git -C ~/Git/engineering-journal pull --no-rebase --no-edit origin draft/<today>
+git -C ~/Git/engineering-journal push -u origin draft/<today>
+```
+
+Merge rather than rebase: the checkout is shared by concurrent sessions and may hold their
+uncommitted files. **Never force-push a draft branch** — it deletes the other machine's stubs. The
+doctor warns when `origin/draft/<today>` exists but the local checkout doesn't contain it.
+
+### Handing a session to the other machine
+
+Push the branch, spawn a hand-off tile ([ADR-113](adr/113-cross-session-handoff-tiles.md)), and
+commit its shard (`sessions/<project>/tiles/<N>.json`) as usual. On the other machine, pull the
+journal, read the shard, and re-spawn the chip with `cwd` set to that machine's clone —
+[dev-env#1112](https://github.com/brownm09/dev-env/issues/1112) adds a helper that resolves `cwd`
+and checks whether the tile was already started elsewhere.
 
 ---
 

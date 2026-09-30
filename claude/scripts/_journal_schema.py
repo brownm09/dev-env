@@ -202,7 +202,7 @@ def malformed_tile_fields(entry: object) -> list[str]:
     What is deliberately **not** flagged about ``stub``:
 
     - **A backslash-separated but otherwise-qualified path**
-      (``sessions\dev-env\....stub.md``). Mirrors ``cwd``'s own carve-out below — a correct
+      (``sessions\\dev-env\\....stub.md``). Mirrors ``cwd``'s own carve-out below — a correct
       value must never be flagged, and the separator alone does not make an otherwise-
       qualified stub incorrect. The prefix test normalizes to forward slashes first.
     - **Whether the referenced stub file actually exists on disk** — same rationale as
