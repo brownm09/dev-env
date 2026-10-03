@@ -2,9 +2,11 @@
 """Tests for journal-compose-meta.py -- /journal-compose Step 6.7 (dev-env #52, #892).
 
 Exercises the helper against fixture compose-worktree trees in ``tempfile`` directories. No network
-and no ``gh``. The subprocesses are ``git`` itself -- the ``check-staged`` cases and ``install``'s
-tracked-versus-untracked rule need a real index -- and, for the two end-to-end tests, a Git for
-Windows ``bash`` that runs the skill's own extracted commit blocks against a bare origin.
+and no ``gh``; the git fixtures pin ``core.hooksPath`` and ``commit.gpgsign`` so a developer's global
+git setup (dev-env installs hooks globally) cannot reach them. The subprocesses are ``git`` itself --
+the ``check-staged`` cases and ``install``'s tracked-versus-untracked rule need a real index -- and,
+for the two end-to-end tests, a Git for Windows ``bash`` that runs the skill's own extracted commit
+blocks against a bare origin.
 ``main()`` *is* covered (as in test_journal_project_repo_map.py) because the exit contract and the
 ``KEY=value`` report are what the skill's coordinator reads, and the observability half is what
 turns a recurrence into a loud failure.
@@ -369,6 +371,23 @@ def _git(cwd, *args):
     return proc.stdout.decode("utf-8", errors="replace")
 
 
+def _isolate_git(repo, base):
+    """Pin the git config a developer's global setup would otherwise inject into a fixture repository.
+
+    This machine has dev-env's git hooks installed globally (``core.hooksPath``); one of them calls ``gh``
+    when a past ``draft/`` branch is pushed to a remote whose URL contains "engineering-journal" -- which is
+    exactly what the end-to-end fixture does whenever the temp path says so -- and a global
+    ``commit.gpgsign`` would fail every commit. A linked worktree shares the main repository's config, so
+    this also covers the skill's own ``git -C "$WT"`` calls.
+    """
+    no_hooks = os.path.join(base, "no-hooks")
+    os.makedirs(no_hooks, exist_ok=True)
+    for key, value in (("core.hooksPath", no_hooks.replace("\\", "/")), ("commit.gpgsign", "false"),
+                       ("user.name", "fixture"), ("user.email", "fixture@example.invalid"),
+                       ("core.autocrlf", "false")):
+        _git(repo, "config", key, value)
+
+
 @contextmanager
 def git_worktree():
     """A *linked* git worktree holding the committed draft-branch tree: real stubs and manifests."""
@@ -378,6 +397,7 @@ def git_worktree():
     try:
         os.makedirs(main_repo)
         _git(main_repo, "init", "-q")
+        _isolate_git(main_repo, base)
         _write(main_repo, "README.md", "# top\n")
         _git(main_repo, "add", "README.md")
         _git(main_repo, "commit", "-q", "-m", "init")
@@ -868,12 +888,29 @@ def test_evidence_in_the_opening_brief_is_rejected_by_name():
         rc, out, _err = stub(root, [record(stub=name, evidence="claim sits in the session body")])
         assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
         assert "- Source session: Session: 2026-10-01 14:00 — Fresh work" in _read(root, f"sessions/meta/{DATE}_235900.stub.md")
-    with worktree() as root:  # the three oldest stubs carry no marker: their brief begins "Opening brief"
+    with worktree() as root:  # three real stubs omit the marker: their brief begins "Opening brief"
         name = f"{DATE}_140001.stub.md"
         _write(root, f"sessions/dev-env/{name}",
                "<!-- stub: 2026-10-01 140001 -->\nOpening brief: yesterday we fixed the compose skill.\n"
                "<!-- session: fresh-work -->\n## Session: 14:00 — Fresh work\n\nBody text of the session.\n")
         rc, out, _err = stub(root, [record(stub=name, evidence="yesterday we fixed the compose skill.")])
+        assert rc == 2 and "only in the stub's opening brief" in rejections(out)[0], out
+
+
+def test_a_close_marker_ends_the_opening_brief_so_prose_after_it_stays_citable():
+    """Fourth review, style note: three real meta stubs close the block with `<!-- /opening-brief -->`. Prose
+    between that marker and the first heading is not the carried-forward context, so it must be citable."""
+    lines = ["<!-- opening-brief -->", "Opening brief: carried context.", "<!-- /opening-brief -->",
+             "**Task:** the real claim sits after the close marker.", "", "## Session: x", "body"]
+    assert mod.opening_brief_span(lines) == (0, 3)
+    assert mod.opening_brief_span(lines[:2] + lines[3:]) == (0, 4), "without a close marker it runs to the heading"
+    assert mod.opening_brief_span(["## Session: x", "Opening brief mentioned in a body line."]) is None
+    with worktree() as root:
+        name = f"{DATE}_140005.stub.md"
+        _write(root, f"sessions/dev-env/{name}", "\n".join(lines) + "\n")
+        rc, out, _err = stub(root, [record(stub=name, evidence="the real claim sits after the close marker")])
+        assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
+        rc, out, _err = stub(root, [record(stub=name, evidence="Opening brief: carried context.")])
         assert rc == 2 and "only in the stub's opening brief" in rejections(out)[0], out
 
 
@@ -1149,6 +1186,32 @@ def test_install_does_not_let_a_subtitle_naming_another_category_capture_its_ses
         fixed = composed_journal([(label_a, sources_a), (f"{label_b}: the PR that left {label_a}", sources_b)])
         rc, out, _err = run("install", root, DATE, stage(root, fixed), "meta-triggers")
         assert rc == 0 and kv(out)["SOURCES_CITED"] == "2/2", out
+
+
+def test_install_matches_a_title_to_its_label_ignoring_backticks_case_and_spacing():
+    """Fourth review, non-blocking 1: the Step 2b table itself writes two labels with backticks
+    (`` `CLAUDE.md` modified``, `` `dev-env` PR merged``) and a coordinator may capitalize or bold a title.
+    resolve_type already treated those as the same label; the install gate must not be the one place that
+    did not, because a second refusal sends the triggers to the manual recovery runbook."""
+    variants = (
+        ("`CLAUDE.md` modified", "`dev-env` PR merged"),                  # the Step 2b table's own spelling
+        ("CLAUDE.md Modified", "Dev-env PR merged: a subtitle"),
+        ("CLAUDE.md  modified", "dev-env  PR  merged"),                   # doubled spaces
+        ("**CLAUDE.md modified**", "**dev-env PR merged**"),              # bold
+        ("CLAUDE.md modified.", "dev-env PR merged — and more"),          # a trailing period, a dash subtitle
+    )
+    for title_a, title_b in variants:
+        with worktree() as root:
+            stub(root, [record(), pr_record()])
+            (_label_a, sources_a), (_label_b, sources_b) = derived_info(root)
+            rc, out, _err = run("install", root, DATE, stage(root, composed_journal([(title_a, sources_a), (title_b, sources_b)])), "x")
+            assert rc == 0 and kv(out)["SOURCES_CITED"] == "2/2", (title_a, title_b, out)
+    with worktree() as root:  # known-bad: the title merely CONTAINS the label; it does not begin with it
+        stub(root, [record(), pr_record()])
+        (label_a, sources_a), (label_b, sources_b) = derived_info(root)
+        journal = composed_journal([(f"Notes on {label_a}", sources_a), (label_b, sources_b)])
+        rc, out, _err = run("install", root, DATE, stage(root, journal), "x")
+        assert rc == 2 and f"SESSIONS_MISSING={label_a}" in out, out
 
 
 def test_install_rejects_bad_slugs_and_unreadable_or_empty_input():
@@ -1554,6 +1617,11 @@ def test_every_commit_block_re_runs_check_staged_first_and_stops_on_its_failure(
                 r'\s*py -3 \S*journal-compose-meta\.py check-staged "\$WT" YYYY-MM-DD \|\| \{ echo "[^"]*"; exit 1; \}\s*',
                 guard,
             ), f"{name}: a failed check-staged must stop the block with a brace-group exit: {guard!r}"
+            # The push target is the resolved branch, never a literal: on the `-recovery` path a literal
+            # `draft/YYYY-MM-DD` pushes the compose commit to the wrong ref (fourth review, non-blocking 3).
+            assert 'git -C "$WT" push origin "HEAD:refs/heads/$SOURCE_BRANCH"' in block, (
+                f"{name}: the commit block must push to $SOURCE_BRANCH"
+            )
         # Staging is keyed on META_JOURNAL, never on the PR-body status: a FAILED pass can still have
         # installed a real-stub journal (second review, non-blocking 1). Any mention of META_STATUS in
         # these sections -- however it is worded -- is the old keying coming back.
@@ -1608,13 +1676,14 @@ def compose_day(projects):
     origin = os.path.join(base, "origin.git")
     main_repo = os.path.join(base, "ej")
     wt = os.path.join(base, f"compose-{DATE}")
-    branch = f"draft/{DATE}"
+    # The `-recovery` branch (Step 0.6 documents it): a skill block that pushed a LITERAL
+    # `draft/YYYY-MM-DD` would land on a different ref, and the tip assertions below would fail.
+    branch = f"draft/{DATE}-recovery"
     try:
         os.makedirs(main_repo)
         subprocess.run(["git", "init", "-q", "--bare", origin], check=True, capture_output=True)
         _git(main_repo, "init", "-q")
-        for key, value in (("user.name", "fixture"), ("user.email", "fixture@example.invalid"), ("core.autocrlf", "false")):
-            _git(main_repo, "config", key, value)
+        _isolate_git(main_repo, base)
         _git(main_repo, "remote", "add", "origin", origin.replace("\\", "/"))
         _write(main_repo, "README.md", "# top\n")
         for project in (*projects, "meta"):
@@ -1651,6 +1720,18 @@ def _fill(block, day, projects):
     text = text.replace("YYYY-MM-DD", DATE)
     if not re.search(r"^WT=", text, re.MULTILINE):  # Step 10's blocks assume WT and SOURCE_BRANCH are set
         text = f"WT={wt}\nSOURCE_BRANCH={day['branch']}\n" + text
+    # Every substitution must have taken effect. If the skill rewords its `WT=` line or the helper path,
+    # the block would otherwise run against the REAL engineering-journal checkout or the INSTALLED helper
+    # and still look like a pass (fourth review, non-blocking 2).
+    assert "C:/Users/brown/Git/engineering-journal" not in text, "a WT= path was not substituted"
+    assert "C:/Users/brown/.claude/scripts" not in text, "a helper path was not substituted"
+    if "journal-compose-meta.py" in block:
+        assert mod_posix_path() in text, "the block must run the helper under test"
+    assert f"WT={wt}" in text, "WT is not the fixture's worktree"
+    if "SOURCE_BRANCH" in block or '"$SOURCE_BRANCH"' in block:
+        assert f"SOURCE_BRANCH={day['branch']}" in text, "SOURCE_BRANCH is not the fixture's branch"
+    for leftover in ("<slug", "<meta-slug>", "<project>", "SOURCE_BRANCH=<", "YYYY-MM-DD"):
+        assert leftover not in text, f"placeholder {leftover!r} survived substitution"
     return text
 
 

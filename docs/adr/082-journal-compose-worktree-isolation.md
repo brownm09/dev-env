@@ -450,7 +450,7 @@ automatically would not have produced an entry.
    shards: the `evidence` phrase must appear verbatim (after NFKC and whitespace normalization, on one line or
    two adjacent lines) and run to at least three words, because a one-word "phrase" verifies a fabricated
    record; evidence that occurs only in the stub's opening brief — the block from the `<!-- opening-brief`
-   marker (or, in the three oldest stubs, a line beginning "Opening brief") to the first heading, which carries
+   marker (or, in the three stubs that omit it, a line beginning "Opening brief") to the first heading or a close marker, which carries
    the previous day's context — is rejected, and the search runs outside that block first because session
    bodies repeat it; the project must equal a directory under `sessions/` exactly (the filesystem is
    case-insensitive here) and is never `meta`; records arrive as JSON Lines, so one malformed line costs only
@@ -563,7 +563,7 @@ automatically would not have produced an entry.
   that have them).
 - Step 10.5's replay pathspecs must name `sessions/meta/` whenever meta was composed; omitting it would silently
   drop the entry on the conflict-recovery path.
-- **Testing.** `claude/scripts/tests/test_journal_compose_meta.py` (Testing item 100, 82 cases) replays a
+- **Testing.** `claude/scripts/tests/test_journal_compose_meta.py` (Testing item 100, 84 cases) replays a
   fixture day end to end — records, verified derived stubs and schema-valid manifest shards, gated
   install, simulated Step 9, `check-clean` — and carries the #892 regression (the old `_draft.md`
   shape fails the tree-wide check) and real-git fixtures for `check-staged` and for `install`'s
@@ -572,7 +572,7 @@ automatically would not have produced an entry.
   `claude/CLAUDE.md`, the real staging commands in Step 10 and Phase 2, the position of `check-staged` ahead
   of every commit, the Step 6.7 / Step 10 wiring and both Step 10.5 pathspec lists to the helper. Calibrated
   once against real corpora (recorded in `docs/TESTING.md`): the heading check passes the four real meta
-  journals and flags exactly the four headings missing from the #273 career-playbook journal; 51 of 51
+  journals and flags exactly the four headings missing from the #273 career-playbook journal; 57 of 57
   known-bad mutation cases against the skill, routine and `claude/CLAUDE.md` are caught; and a dry run on the
   real 2026-10-01 day (7 records, 6 accepted, the fabricated one rejected by name) ended with only the
   composed meta journal in the worktree. The skill's own Phase 2 and Step 10 commit blocks are extracted and run

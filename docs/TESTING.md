@@ -4005,7 +4005,8 @@ For a one-line navigational map of the test directory, see
 100. **journal-compose-meta test** — required when changing
     `claude/scripts/journal-compose-meta.py`, the meta handling in
     `claude/skills/journal-compose/SKILL.md` (Step 2b, the Phase 1 template's `META_TRIGGER=` lines,
-    Step 6.7, Step 10's `check-clean` and `check-staged`, both Step 10.5 pathspec lists),
+    Step 6.7, Step 10's `check-clean` and `check-staged`, Phase 2's and Step 10's staging and commit
+    blocks (the end-to-end tests extract and run them), both Step 10.5 pathspec lists),
     the "Meta journal (`sessions/meta/`)" trigger list in `claude/CLAUDE.md`, or the meta rule in
     `claude/routines/daily-journal-compose/SKILL.md`
     ([ADR-082 Addendum, 2026-10-02](adr/082-journal-compose-worktree-isolation.md),
@@ -4022,7 +4023,12 @@ For a one-line navigational map of the test directory, see
     coordinator composing the journal) are **not** exercised offline — the dry run below stands in for
     them.
 
-    82 cases, hermetic: `tempfile` trees, no network and no `gh`. The subprocesses are `git` itself —
+    84 cases, hermetic: `tempfile` trees, no network and no `gh`, and the git fixtures pin
+    `core.hooksPath` to an empty directory and `commit.gpgsign` off so a developer's global git setup
+    cannot reach them (dev-env's own global `pre-push` hook calls `gh` for a past `draft/` branch pushed
+    to a remote whose URL contains "engineering-journal" — exactly what the end-to-end fixture does when
+    the temp path says so; the tests were re-run with such a path and the hooks active). The
+    subprocesses are `git` itself —
     the `check-staged` cases and the `install` cases that need to know whether a journal is tracked
     need a real index (a linked worktree built in a temp directory) — and, for the two end-to-end
     tests, a Git for Windows `bash` (found beside `git` if `PATH` offers the WSL launcher; the test
@@ -4050,7 +4056,7 @@ For a one-line navigational map of the test directory, see
     verbatim match proves little when the quote is a letter. The PR #1126 review showed `e` and `PR`
     are substrings of every stub, so a fabricated record carrying either verified; evidence under
     `MIN_EVIDENCE_WORDS` (3) words is now rejected by name. A phrase that occurs **only in the opening
-    brief** — the block that starts at the `<!-- opening-brief` marker (or, in the three oldest stubs, a
+    brief** — the block that starts at the `<!-- opening-brief` marker (or, in the three stubs that omit it, a
     line beginning "Opening brief") and runs to the first heading; it carries the previous day's context
     — is rejected by name too (`test_evidence_in_the_opening_brief_is_rejected_by_name`). The search
     runs outside the block first, because session bodies repeat the brief that carried their work
@@ -4080,7 +4086,10 @@ For a one-line navigational map of the test directory, see
     **`install` is a gate, not a copy.** A missing heading, or a derived stub whose own `## Session`
     section does not cite each of its `Source:` paths, refuses with exit 2 and copies nothing. The
     check is per category and assigns each category its own session — the one whose title *begins*
-    with the category's label (Step 6.7's contract; a subtitle may follow): a journal that folds two
+    with the category's label (Step 6.7's contract; a subtitle may follow), compared the way
+    `resolve_type` compares labels: NFKC, backticks dropped, whitespace collapsed, case folded, leading
+    `**` ignored, because the Step 2b table itself writes two labels with backticks
+    (`test_install_matches_a_title_to_its_label_ignoring_backticks_case_and_spacing`): a journal that folds two
     categories sharing one source stub into one session fails, a source cited only in some other
     session fails, a real meta session that merely mentions a label cannot hide the derived one
     (`test_install_matches_each_category_to_its_own_session_not_the_first_one_carrying_the_label`), and
@@ -4153,7 +4162,8 @@ For a one-line navigational map of the test directory, see
     `The merged` and `the gap`, 7/7 rejected, the first two being the records the PR #1126 review showed
     verifying against every stub; one fabricated phrase of ordinary length, 1/1 rejected by name.
     **Opening-brief block**, measured with the helper's own `opening_brief_span` and `locate_evidence`
-    over **all 750 stubs ever committed to engineering-journal** (every ref, first-added blob): 65 carry
+    over **all 750 stubs ever committed to engineering-journal** (every ref, first-added blob; a
+    reviewer re-ran it later that day over 751 with the same result): 65 carry
     an opening brief (62 behind the `<!-- opening-brief` marker, 3 older ones that begin "Opening
     brief") and the rule finds the block in **65/65**; the other **685** (683 with only blank or
     comment lines above the first heading, 2 with `**PR:**` / `**Issue:**` metadata lines) get no
@@ -4164,7 +4174,7 @@ For a one-line navigational map of the test directory, see
     7-word run of the brief — occurs in 10 of the 65 briefed stubs; the rule accepts all 10, and the
     first-occurrence version would have rejected all 10. Drift gates, mutation-tested on copies of the
     skill, routine and global `CLAUDE.md` — controls: **13/13**
-    pass unmutated; known-bad: **51/51** mutation cases caught (the old prompt, also reflowed across
+    pass unmutated; known-bad: **57/57** mutation cases caught (the old prompt, also reflowed across
     lines, `_draft.md` staging and "create it with" text reappearing; a `chk()` regex drifting or a copy
     deleted; a slug dropped, renamed or the slugs line deleted; a category label drifting; a slug
     renamed or the list deleted in the Phase 1 template's inline copy, or the template no longer
@@ -4183,9 +4193,15 @@ For a one-line navigational map of the test directory, see
     the meta staging reworded to "When `META_STATUS` is `composed`", Step 6.7's `META_STATUS`
     definition reworded away, and Phase 2's push target turned back into a literal branch name — each
     of the guard and staging ones checked against both the structural gate and the end-to-end gate).
+    The fourth review's additions are in the 57: either commit block pushing to a **literal**
+    `draft/YYYY-MM-DD` (checked against the structural gate and the end-to-end gate; the fixture runs
+    on the `-recovery` branch so a literal push lands on another ref), and Phase 2's `WT=` path or
+    helper path reworded so a block would run against the real journal checkout or the installed
+    helper (the end-to-end tests assert every substitution took effect).
     The behavior added in each review round was checked the other way too: the new helper tests and
     gates were run against the previous commit's helper and skill (`9e1fffd` for the second round,
-    `fc8918f` for the third) and every one **fails** there (7 of 7 each time), then passes on the fix.
+    `fc8918f` for the third, `7783d12` for the fourth) and every one **fails** there (7 of 7, 7 of 7,
+    2 of 2), then passes on the fix.
 
     **Documented dry run on the day that motivated this** (2026-10-01; scratch tree rebuilt from the
     pre-compose commit `11c69f99`, 8 career-playbook and 3 dev-env stubs with their manifests, no
@@ -4216,7 +4232,12 @@ For a one-line navigational map of the test directory, see
     merely looks like it (`|| ( …; exit 1 )` passed the substring check and let the commit through),
     which is why these run the blocks: the mutation check shows each looks-like-a-guard variant
     failing the end-to-end gate. The tests find the interpreter beside `git` when `PATH` offers the
-    WSL launcher, and fail rather than skip when there is none.
+    WSL launcher, and fail rather than skip when there is none. The fixture is isolated from the
+    developer's global git setup (hooks path, signing) and runs on a `draft/<date>-recovery` branch;
+    every placeholder, `WT=` path and helper path substitution is asserted to have taken effect, so a
+    reworded skill line fails loudly instead of running against the real journal checkout or the
+    installed helper. The blocks call `py -3` exactly as the skill does, so the helper runs under
+    whichever interpreter that launcher resolves (3.14 on the CI image).
 
     **Deliberate gaps.** `evidence` matching is exact after NFKC and whitespace normalization, so a
     mis-copied quote rejects a real trigger — loud and recoverable through the PR body and the
@@ -4225,7 +4246,11 @@ For a one-line navigational map of the test directory, see
     trigger type it is filed under: that judgment stays with the coordinator's composition and the PR
     reviewer; and a three-word phrase that recurs in a stub still verifies a fabricated record, quoting
     its first occurrence. The opening-brief block is recognized by its marker or its "Opening brief"
-    label only, so a brief written some other way (none of the 750 stubs) would not be excluded.
+    label only, so a brief written some other way would not be excluded (every one of the 65 in the
+    history is one or the other). Seven stubs label something "Opening brief" as a heading or below
+    their first heading (five lifting-logbook `### Opening brief` stubs, one meta `## Opening Brief`, one
+    `Opening brief:` under a heading); each holds that session's own opening request, not carried-forward
+    context, and the rule leaves them citable.
     The `FIDELITY` ratio is reported, never gated. The ADR-129 shell-write guard's
     tokenizer misses a redirect to `"$WT"/sessions/meta/….stub.md` (a quoted variable glued to a literal
     tail); that is pre-existing, outside this item, and tracked in

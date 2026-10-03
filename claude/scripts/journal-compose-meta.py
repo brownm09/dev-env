@@ -63,11 +63,12 @@ Calibration (ADR-144). Two checks classify stubs the tests do not enumerate.
   case is 7, a margin of 4 words). Known-bad: "e", "PR", ".", "-" (1 word) and "the gap" (2 words),
   all rejected.
 * The opening-brief block (``opening_brief_span``): evidence quoted from the previous day's context
-  is rejected. Measured on all 750 stubs ever committed to engineering-journal: 65 carry an opening
-  brief (62 behind the ``<!-- opening-brief`` marker, 3 older ones that begin "Opening brief") and
-  the rule finds 65/65; the other 685 (683 with only blank or comment lines above the first heading,
-  2 with ``**PR:**``/``**Issue:**`` metadata lines that a blanket "anything above the first heading"
-  rule would have wrongly rejected) get no block, 0/685. The rule searches outside the block first,
+  is rejected. Measured on all 750 stubs ever committed to engineering-journal (751 when a reviewer
+  re-ran it later that day; the same result): 65 carry an opening brief (62 behind the
+  ``<!-- opening-brief`` marker, 3 that omit it and begin "Opening brief") and the rule finds 65/65;
+  the other 685 (683 with only blank or comment lines above the first heading, 2 with
+  ``**PR:**``/``**Issue:**`` metadata lines that a blanket "anything above the first heading" rule
+  would have wrongly rejected) get no block, 0/685. The rule searches outside the block first,
   because session bodies repeat the brief's phrases; ``docs/TESTING.md`` item 100 has the per-stub
   measurement.
 
@@ -140,6 +141,7 @@ _BOUNDARY_RE = re.compile(r"^(?:#{1,6}\s|<!--)")
 _H2_RE = re.compile(r"^##\s+(.*\S)\s*$")
 _ANY_HEADING_RE = re.compile(r"^#{1,6}\s+(.*\S)\s*$")
 _BRIEF_START_RE = re.compile(r"^\s*(?:<!--\s*opening-brief\b|opening brief\b)", re.IGNORECASE)
+_BRIEF_END_RE = re.compile(r"^\s*<!--\s*/opening-brief\b", re.IGNORECASE)
 _SESSION_TITLE_RE = re.compile(r"^## Session [0-9]+ — (.*)$")
 _SESSION_H2_RE = re.compile(r"^## Session [0-9]+ — ")
 _DERIVED_LABEL_RE = re.compile(r"^## (.+?) — detected in ", re.MULTILINE)
@@ -173,6 +175,17 @@ def clip(value, limit, tail=False):
 
 def _label_key(text):
     return normalize(text.replace("`", "")).casefold()
+
+
+def _title_key(text):
+    """A session title compared the way labels are (NFKC, backticks dropped, whitespace collapsed, case
+    folded), with leading emphasis markers (``**``) ignored too.
+
+    The Step 2b table writes two labels with backticks (`` `CLAUDE.md` modified``, `` `dev-env` PR
+    merged``), a coordinator may capitalize or bold a title, and ``resolve_type`` already treats all of
+    those as the same label - the install gate must not be the one place that does not.
+    """
+    return _label_key(text).lstrip("*_ ")
 
 
 _LABEL_TO_SLUG = {_label_key(label): slug for slug, label in TRIGGER_TYPES}
@@ -431,19 +444,25 @@ def find_evidence(lines, needle, skip=None):
 def opening_brief_span(lines):
     """Half-open ``(start, end)`` of the stub's opening-brief block, or None.
 
-    The block starts at the ``<!-- opening-brief`` marker (or, in the three oldest stubs, at a line
-    that begins "Opening brief") and runs to the stub's first Markdown heading. It carries the
-    previous day's Next Session Context, not this session's work, and Step 2b scans session blocks
-    only. Only a start line *above* the first heading counts: a session body that mentions "the
-    opening brief" must not open a block of its own, and a stub with no brief (the scheduled
-    routines' `### Session:` stubs, or the `**PR:**` metadata lines two lifting-logbook stubs carry
-    above their heading) has no span at all.
+    The block starts at the ``<!-- opening-brief`` marker (or, in the three stubs that omit the
+    marker, at a line that begins "Opening brief") and runs to the stub's first Markdown heading, or
+    to a ``<!-- /opening-brief -->`` close marker when the stub has one. It carries the previous
+    day's Next Session Context, not this session's work, and Step 2b scans session blocks only. Only
+    a start line *above* the first heading counts: a session body that mentions "the opening brief"
+    must not open a block of its own, and a stub with no brief (the scheduled routines' `### Session:`
+    stubs, or the `**PR:**` metadata lines two lifting-logbook stubs carry above their heading) has
+    no span at all.
     """
     first = first_heading_index(lines)
     limit = len(lines) if first is None else first
     for position in range(limit):
         if _BRIEF_START_RE.match(lines[position]):
-            return position, limit
+            end = limit
+            for later in range(position + 1, limit):
+                if _BRIEF_END_RE.match(lines[later]):
+                    end = later + 1
+                    break
+            return position, end
     return None
 
 
@@ -918,9 +937,10 @@ def cmd_install(wt, date, staged, slug):
         # can still precede the derived one, so each category claims the first unclaimed session that
         # carries its label AND cites all of its sources; failing that, the one that cites the most is
         # blamed, so the report names what is actually missing.
+        label_key = _label_key(label)
         candidates = [
             i for i, (heading, _body) in enumerate(sections)
-            if session_title(heading).startswith(label) and i not in claimed
+            if _title_key(session_title(heading)).startswith(label_key) and i not in claimed
         ]
         if not candidates:
             missing_sessions.append(label)

@@ -503,7 +503,8 @@ Step 2b — Meta trigger check. Do NOT prompt the user, ask questions, or create
     journal-structure, canonical-reference
   <stub filename> is the YYYY-MM-DD_HHMMSS.stub.md the change appears in, and <phrase> is a short
   exact phrase of at least three words copied CHARACTER FOR CHARACTER from ONE line of a session
-  block of that stub (never the opening brief, the block above its first heading), markdown and
+  block of that stub (never the opening brief: the `<!-- opening-brief` block, or a line beginning
+  "Opening brief", that runs to the stub's first heading), markdown and
   punctuation included. The line must be valid single-line JSON: escape every
   backslash as \\ and every double quote as \" (or pick a phrase from the same line that has
   neither). The coordinator's helper rejects, by name, any record whose phrase is not in the stub
@@ -707,8 +708,9 @@ instead (the template's Step 2b). A record is one JSON object:
 ```
 
 `evidence` is the verification handle: a phrase of **at least three words**, copied character for
-character from ONE line of a **session block** (never from the opening brief, the block above the
-stub's first heading). Step 6.7's helper rejects, by name, any record whose phrase is shorter, is
+character from ONE line of a **session block** (never from the opening brief: the
+`<!-- opening-brief` block, or a line beginning "Opening brief", that runs to the stub's first
+heading). Step 6.7's helper rejects, by name, any record whose phrase is shorter, is
 not found verbatim in the stub it cites, or occurs only in the opening brief — so copy it, never
 paraphrase it, keep it to one line, markdown and punctuation included. The line you print is JSON:
 escape every backslash as `\\` and every double quote as `\"` (or pick a phrase from the same line
