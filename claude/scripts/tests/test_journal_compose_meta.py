@@ -898,7 +898,7 @@ if __name__ == "__main__":
             t()
             print(f"  PASS  {t.__name__}")
             passed += 1
-        except Exception as e:  # noqa: BLE001 -- report every failure, keep running
+        except Exception as e:
             print(f"  FAIL  {t.__name__}: {e}")
             failed += 1
     total = passed + failed
