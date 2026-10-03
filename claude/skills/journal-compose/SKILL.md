@@ -503,7 +503,7 @@ Step 2b — Meta trigger check. Do NOT prompt the user, ask questions, or create
     journal-structure, canonical-reference
   <stub filename> is the YYYY-MM-DD_HHMMSS.stub.md the change appears in, and <phrase> is a short
   exact phrase of at least three words copied CHARACTER FOR CHARACTER from ONE line of a session
-  block of that stub (never the opening brief above its first "## Session" heading), markdown and
+  block of that stub (never the opening brief, the block above its first heading), markdown and
   punctuation included. The line must be valid single-line JSON: escape every
   backslash as \\ and every double quote as \" (or pick a phrase from the same line that has
   neither). The coordinator's helper rejects, by name, any record whose phrase is not in the stub
@@ -627,7 +627,7 @@ re-runs the check and refuses to go on past a failure, because a commit built fr
 check rejected is already published by the time anyone reads the output:
 ```bash
 WT=C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-YYYY-MM-DD
-SOURCE_BRANCH=draft/YYYY-MM-DD   # the draft branch Step 0.6 resolved (it does not persist either)
+SOURCE_BRANCH=<the branch Step 0.6 resolved: draft/YYYY-MM-DD, or draft/YYYY-MM-DD-recovery>   # does not persist either
 py -3 C:/Users/brown/.claude/scripts/journal-compose-meta.py check-staged "$WT" YYYY-MM-DD || { echo "STOP: check-staged failed; nothing is committed"; exit 1; }
 git -C "$WT" commit -m \
   "[docs] Add YYYY-MM-DD journals: <slug-a>, <slug-b>, ..."
@@ -707,9 +707,9 @@ instead (the template's Step 2b). A record is one JSON object:
 ```
 
 `evidence` is the verification handle: a phrase of **at least three words**, copied character for
-character from ONE line of a **session block** (never from the opening brief above the stub's first
-`## Session` heading). Step 6.7's helper rejects, by name, any record whose phrase is shorter, is
-not found verbatim in the stub it cites, or sits above that first heading — so copy it, never
+character from ONE line of a **session block** (never from the opening brief, the block above the
+stub's first heading). Step 6.7's helper rejects, by name, any record whose phrase is shorter, is
+not found verbatim in the stub it cites, or occurs only in the opening brief — so copy it, never
 paraphrase it, keep it to one line, markdown and punctuation included. The line you print is JSON:
 escape every backslash as `\\` and every double quote as `\"` (or pick a phrase from the same line
 that has neither).
@@ -1193,8 +1193,8 @@ Use the Write tool only for the two scratch files below, never for anything unde
    captured: carry it to the PR body (Step 11). `META_STATUS=rejected` with exit 2 (records arrived,
    none accepted) is a derived-side failure — see the failure policy below; it is **not** `none`,
    which means no triggers were reported. A write failure exits 1 and leaves the earlier derived
-   set untouched or no derived files at all, never a mixture. Never hand-create or hand-edit a
-   derived stub.
+   set untouched or no derived files at all, never a mixture (bar a file that stayed locked, which
+   it names: run `abandon` once the lock is gone). Never hand-create or hand-edit a derived stub.
 4. **Compose `sessions/meta/`** in this session by following Steps 2–6.5 over every
    `sessions/meta/YYYY-MM-DD_*.stub.md` — real stubs and derived stubs together, in filename order
    (derived stubs sort last) — with these differences for a **derived stub**:
@@ -1233,12 +1233,15 @@ Use the Write tool only for the two scratch files below, never for anything unde
    `## Session N — <that stub's label>` section citing each of the stub's `Source:` paths. It
    prints `INSTALL_REFUSED` with `STRUCTURE=missing:<list>`, `SESSIONS_MISSING=<labels>` and/or
    `SOURCES_UNCITED <label> -- <path>` lines. Fix the staged file accordingly and re-run **once**.
-   One session per category: a session titled with two labels stands for only the first, and a
-   real meta session that merely mentions a label does not satisfy it. `FIDELITY=n/m` is
-   information, never a gate. It replaces a journal it installed earlier in this run (untracked in
-   `$WT`), but never one the draft branch already carries: then it prints
+   One session per category, and a session belongs to the category whose label its title *begins*
+   with (a subtitle may follow it, and may even name another category): a real meta session that
+   merely mentions a label, or whose title begins with a different one, does not satisfy it.
+   `FIDELITY=n/m` is information, never a gate. It replaces a journal it installed earlier in this
+   run (untracked in `$WT`), but never one the draft branch already carries: then it prints
    `META_JOURNAL_EXISTS=<path>` and exits 1 — do not overwrite or remove that file (the failure
-   policy says what to do next). On success it prints
+   policy says what to do next). If git cannot say which it is (a broken worktree link, git
+   missing), it prints `META_INSTALL_UNVERIFIED=<why>` and exits 1 instead — a different cause
+   that the same policy treats the same way. On success it prints
    `META_JOURNAL=sessions/meta/YYYY-MM-DD-<slug>.md`, and meta is now a composed project for
    Steps 7–11.
 6. **Clean up** the two scratch files, on success **and on any failure**: `rm -f` the records file
@@ -1262,7 +1265,8 @@ differently:
 - **Derived-side failure:** `stub` exits 1 or 2 (every record rejected, an unreadable records file,
   a write failure); the helper cannot run; `install` is refused twice (exit 2) while derived stubs
   are present; or, with no real meta stubs, `install` prints `META_JOURNAL_EXISTS=` (the draft
-  branch already carries a composed meta journal for the date, which must be left alone). Run
+  branch already carries a composed meta journal for the date, which must be left alone) or
+  `META_INSTALL_UNVERIFIED=` (git could not say, so nothing is replaced). Run
   `py -3 C:/Users/brown/.claude/scripts/journal-compose-meta.py abandon "$WT" YYYY-MM-DD` (derived
   files must not linger), set `META_STATUS=failed:<reason>`, and list every trigger not captured
   (the `META_TRIGGER_REJECTED` lines, or the records themselves) for the PR body, with a pointer to
@@ -1273,8 +1277,9 @@ differently:
   meta (`META_JOURNAL` stays empty).
 - **The real-stub journal cannot be installed** (it is refused twice with no derived stubs present,
   or `install` prints `META_JOURNAL_EXISTS=` while real meta stubs are present — stubs added to an
-  already-composed day, the `reconcile-late-stubs.py` case): meta is then an ordinary project that
-  failed — stop and report, as Phase 2's error check does for any project.
+  already-composed day, the `reconcile-late-stubs.py` case — or `META_INSTALL_UNVERIFIED=`): meta is
+  then an ordinary project that failed — stop and report, as Phase 2's error check does for any
+  project. (git failing inside `$WT` would stop Step 10 anyway.)
 
 Steps 7, 8, 8a, 8b, 9 and 9.5 then run for meta like any other project whenever `META_JOURNAL` is
 set — 8a and 8b included, so the stray-output scan covers meta's journal and folder README. Until
@@ -1953,7 +1958,7 @@ Tell the user: "Draft branch had merge conflicts with main — composed journal 
 **Multi-project mode:** apply this check once (after the combined `git push` at the end
 of Phase 2). If conflicts are detected, run the recovery for all projects' composed files
 together on a single `compose/YYYY-MM-DD` branch before opening the combined PR. Example
-for two projects `meta` and `lifting-logbook`:
+for two composed projects, `lifting-logbook` and `career-playbook`, plus a composed meta journal:
 
 ```bash
 PREV=$(git -C "$WT" rev-parse HEAD)
@@ -1965,7 +1970,7 @@ git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
 # are exactly the paths a concurrent compose is most likely to have touched on main, so the
 # both-sides partition matters most here.
 bash C:/Users/brown/.claude/scripts/journal-compose-replay.sh "$WT" "$PREV" \
-     sessions/meta/ sessions/lifting-logbook/ README.md
+     sessions/meta/ sessions/lifting-logbook/ sessions/career-playbook/ README.md
 REPLAY_RC=$?
 [ "$REPLAY_RC" -eq 0 ] || \
   echo "STOP: reconcile the MANUAL_RECONCILE paths listed above before committing"

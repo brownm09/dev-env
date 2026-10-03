@@ -9,10 +9,11 @@ composes, so the answer was lost whether or not meta was composed that day. The 
 in the same run from *derived stubs*. This script is the part of that pass that must not be left to
 an LLM or to the Write tool:
 
-* The harness refuses the coordinator's Write/Edit into the isolated compose worktree (#1119), and
-  ``pre-tool-use-journal-shell-write-guard.py`` blocks most Bash redirects to stub and manifest
-  paths (one quoting form is a known gap, #1127), so a Python process launched by Bash is the only
-  compliant writer (ADR-129 Amendment 2).
+* The harness refuses the coordinator's Write/Edit into the isolated compose worktree (#1119), and a
+  Bash write would have the coordinator author stub and manifest content by hand (the
+  ``pre-tool-use-journal-shell-write-guard.py`` hook blocks most such redirects; one quoting form is
+  a known gap, #1127). A derived stub is generated from records this script has verified, so a
+  Python process launched by Bash with no inline literal is the writer (ADR-129 Amendment 2).
 * A Phase 1 subagent's trigger report is a claim. ``stub`` checks each record against the stub it
   cites before anything is written, and names every rejection -- nothing is dropped silently.
 * The coordinator's composed journal is a claim too. ``install`` gates it before it is copied into
@@ -36,28 +37,43 @@ files are untracked, never pushed, and consumed by Step 9's ordinary deletion gl
 ``install`` copies the staged composed journal to ``<WT>/sessions/meta/DATE-<slug>.md`` once it has
 all eleven required headings **and**, for every derived stub, its own ``## Session N -- <that
 stub's category label>`` section (one session per category) citing each of the stub's ``Source:``
-paths. It replaces a journal this run installed earlier (untracked in the worktree, which is
-created fresh from the draft branch), so Step 6.7's "expand the staged file and re-run" remedy
-works; it never replaces one the draft branch already carries (tracked) -- it prints
-``META_JOURNAL_EXISTS=<path>`` and exits 1. ``abandon`` removes derived files and only derived
+paths, and each session belongs to the category whose label its title *begins* with. It replaces a
+journal this run installed earlier (untracked in the worktree, which is created fresh from the draft
+branch), so Step 6.7's "expand the staged file and re-run" remedy works; it never replaces one the
+draft branch already carries (tracked) -- it prints ``META_JOURNAL_EXISTS=<path>`` and exits 1 -- and
+when git cannot say which it is, it prints ``META_INSTALL_UNVERIFIED=<why>`` (a different cause, a
+different key) and exits 1. ``abandon`` removes derived files and only derived
 files. ``check-clean`` fails if any stub, manifest, ``_draft.md`` or temp file for the date remains
 in any ``sessions/<project>/`` directory. ``check-staged`` fails if ``git status`` shows anything
 unstaged or untracked (apart from compose lock files), so the commit Step 10 builds from the index
 is the commit the working tree describes.
 
 Exit 0 -- ok. Exit 1 -- usage or precondition error, or a write failure (a failed ``stub`` leaves
-either the earlier derived set untouched or no derived files at all, never a mixture). Exit 2 --
+either the earlier derived set untouched or no derived files at all -- never a mixture, apart from
+a file that stayed locked, which is named). Exit 2 --
 verification failure (``stub``: records arrived and none was accepted; ``install``: the journal
 was refused; ``check-clean`` / ``check-staged``: something was left behind). Reports go to stdout
 as ``KEY=value`` lines, errors to stderr prefixed ``[journal-compose-meta]``.
 
-Calibration (ADR-144). The only numeric constant is ``MIN_EVIDENCE_WORDS = 3``: evidence is a
-claim that a phrase is in a stub, and a one- or two-word phrase ("e", "PR", "the gap") occurs in
-almost any stub, so it verifies a fabricated record. Known-good: the six real evidence phrases
-from the 2026-10-01 dry run are 7 to 12 words (the worst case is 7, a margin of 4 words). Known-bad:
-"e", "PR", ".", "-" (1 word) and "the gap" (2 words), all rejected. Everything else keys on a literal
-token this pass generated or that the skill already requires (the eleven section headings, the
-``Source:`` paths, the category labels); ``FIDELITY`` is reported but never gates.
+Calibration (ADR-144). Two checks classify stubs the tests do not enumerate.
+
+* ``MIN_EVIDENCE_WORDS = 3``: evidence is a claim that a phrase is in a stub, and a one- or two-word
+  phrase ("e", "PR", "the gap") occurs in almost any stub, so it verifies a fabricated record.
+  Known-good: the six real evidence phrases from the 2026-10-01 dry run are 7 to 12 words (the worst
+  case is 7, a margin of 4 words). Known-bad: "e", "PR", ".", "-" (1 word) and "the gap" (2 words),
+  all rejected.
+* The opening-brief block (``opening_brief_span``): evidence quoted from the previous day's context
+  is rejected. Measured on all 750 stubs ever committed to engineering-journal: 65 carry an opening
+  brief (62 behind the ``<!-- opening-brief`` marker, 3 older ones that begin "Opening brief") and
+  the rule finds 65/65; the other 685 (683 with only blank or comment lines above the first heading,
+  2 with ``**PR:**``/``**Issue:**`` metadata lines that a blanket "anything above the first heading"
+  rule would have wrongly rejected) get no block, 0/685. The rule searches outside the block first,
+  because session bodies repeat the brief's phrases; ``docs/TESTING.md`` item 100 has the per-stub
+  measurement.
+
+Everything else keys on a literal token this pass generated or that the skill already requires (the
+eleven section headings, the ``Source:`` paths, the category labels); ``FIDELITY`` is reported but
+never gates.
 """
 from __future__ import annotations
 
@@ -123,6 +139,8 @@ _SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
 _BOUNDARY_RE = re.compile(r"^(?:#{1,6}\s|<!--)")
 _H2_RE = re.compile(r"^##\s+(.*\S)\s*$")
 _ANY_HEADING_RE = re.compile(r"^#{1,6}\s+(.*\S)\s*$")
+_BRIEF_START_RE = re.compile(r"^\s*(?:<!--\s*opening-brief\b|opening brief\b)", re.IGNORECASE)
+_SESSION_TITLE_RE = re.compile(r"^## Session [0-9]+ — (.*)$")
 _SESSION_H2_RE = re.compile(r"^## Session [0-9]+ — ")
 _DERIVED_LABEL_RE = re.compile(r"^## (.+?) — detected in ", re.MULTILINE)
 
@@ -386,19 +404,64 @@ def allocate_names(date, type_indexes, taken):
 # Record verification
 # ---------------------------------------------------------------------------
 
-def find_evidence(lines, needle):
+def find_evidence(lines, needle, skip=None):
     """Index of the first line whose normalized text contains ``needle`` (or, failing that, whose
-    join with the next line does -- evidence copied across a wrapped line). None if absent."""
+    join with the next line does -- evidence copied across a wrapped line). None if absent.
+
+    ``skip`` is a half-open ``(start, end)`` range of lines that may not hold or begin a match.
+    """
     if not needle:
         return None
     normalized = [normalize(line) for line in lines]
+
+    def skipped(position):
+        return skip is not None and skip[0] <= position < skip[1]
+
     for index, line in enumerate(normalized):
-        if needle in line:
+        if not skipped(index) and needle in line:
             return index
     for index in range(len(normalized) - 1):
+        if skipped(index) or skipped(index + 1):
+            continue
         if needle in f"{normalized[index]} {normalized[index + 1]}":
             return index
     return None
+
+
+def opening_brief_span(lines):
+    """Half-open ``(start, end)`` of the stub's opening-brief block, or None.
+
+    The block starts at the ``<!-- opening-brief`` marker (or, in the three oldest stubs, at a line
+    that begins "Opening brief") and runs to the stub's first Markdown heading. It carries the
+    previous day's Next Session Context, not this session's work, and Step 2b scans session blocks
+    only. Only a start line *above* the first heading counts: a session body that mentions "the
+    opening brief" must not open a block of its own, and a stub with no brief (the scheduled
+    routines' `### Session:` stubs, or the `**PR:**` metadata lines two lifting-logbook stubs carry
+    above their heading) has no span at all.
+    """
+    first = first_heading_index(lines)
+    limit = len(lines) if first is None else first
+    for position in range(limit):
+        if _BRIEF_START_RE.match(lines[position]):
+            return position, limit
+    return None
+
+
+def locate_evidence(lines, needle):
+    """``(status, index)``: ``("ok", i)`` for the first match outside the opening brief,
+    ``("brief", None)`` when the phrase occurs only inside it, ``("absent", None)`` otherwise.
+
+    Outside-first matters: a session body routinely repeats a phrase from the brief that carried
+    its work forward, and a subagent that copied the phrase from the session body, as instructed,
+    must not be rejected because the brief says it first.
+    """
+    span = opening_brief_span(lines)
+    index = find_evidence(lines, needle, skip=span)
+    if index is not None:
+        return "ok", index
+    if span is not None and find_evidence(lines, needle) is not None:
+        return "brief", None
+    return "absent", None
 
 
 def session_heading(lines, index):
@@ -538,21 +601,16 @@ def validate_record(wt, date, record, listing):
             "from ONE line of the stub"
         )
     lines = text.split("\n")
-    index = find_evidence(lines, needle)
-    if index is None:
+    status, index = locate_evidence(lines, needle)
+    if status == "absent":
         return reject(
             "evidence not found in the cited stub (copy a short phrase from ONE line, "
             "character for character)"
         )
-    first_heading = first_heading_index(lines)
-    if first_heading is not None and index < first_heading:
-        # Above a stub's first heading of any level sits the opening brief: the previous day's Next
-        # Session Context, not this session's work, and Step 2b scans session blocks only. Keyed on
-        # "some heading exists below" rather than "an H2 exists": the scheduled routines write
-        # `### Session: ...` stubs with no H2 at all, and their body must stay citable.
+    if status == "brief":
         return reject(
-            "evidence is above the stub's first heading (the opening brief carries the previous "
-            "day's context, not this session's work)"
+            "evidence appears only in the stub's opening brief (it carries the previous day's "
+            "context, not this session's work): copy a phrase from a session block"
         )
     return {
         "project": project,
@@ -606,6 +664,12 @@ def build_derived_stub(date, label, items):
 def missing_headings(text):
     """Labels of the required headings absent from ``text`` (LF-normalized)."""
     return [label for pattern, label in REQUIRED_HEADINGS if not re.search(pattern, text, re.MULTILINE)]
+
+
+def session_title(heading):
+    """The title after ``## Session N — `` in a heading line (empty when it is not a session heading)."""
+    match = _SESSION_TITLE_RE.match(heading)
+    return match.group(1).strip() if match else ""
 
 
 def session_sections(text):
@@ -846,12 +910,18 @@ def cmd_install(wt, date, staged, slug):
     claimed = set()
     for label, sources in expectations:
         pairs_total += len(sources)
-        # One session per derived stub. A session may be titled with another category's label (a
-        # real meta session about "dev-env PR merged" can precede the derived one), and a session
-        # titled with two labels may stand for only one of them. So each category claims the first
-        # unclaimed session that carries its label AND cites all of its sources; failing that, the
-        # one that cites the most is blamed, so the report names what is actually missing.
-        candidates = [i for i, (heading, _body) in enumerate(sections) if label in heading and i not in claimed]
+        # One session per derived stub, and a session belongs to the category whose label its title
+        # BEGINS with (Step 6.7's contract: `## Session N — <label>`, a subtitle may follow). Matching
+        # the label anywhere in the title let a subtitle that merely names another category ("dev-env
+        # PR merged: the PR that left CLAUDE.md modified") capture that category's session and send the
+        # coordinator to fix the wrong one. A real meta session whose title also begins with the label
+        # can still precede the derived one, so each category claims the first unclaimed session that
+        # carries its label AND cites all of its sources; failing that, the one that cites the most is
+        # blamed, so the report names what is actually missing.
+        candidates = [
+            i for i, (heading, _body) in enumerate(sections)
+            if session_title(heading).startswith(label) and i not in claimed
+        ]
         if not candidates:
             missing_sessions.append(label)
             continue
@@ -886,14 +956,25 @@ def cmd_install(wt, date, staged, slug):
     # written by this run and is never replaced. An untracked one can only be this run's earlier
     # install -- the compose worktree is created fresh from the draft branch -- so it is replaced:
     # Step 6.7's fidelity remedy ("expand the staged file and re-run install") needs exactly that.
-    foreign, own = [], []
+    foreign, own, unverified = [], [], None
     if existing:
-        tracked, _problem = _tracked_meta_files(wt)
-        for name in existing:
-            (foreign if tracked is None or name in tracked else own).append(name)
+        tracked, why = _tracked_meta_files(wt)
+        if tracked is None:
+            foreign, unverified = list(existing), clip(why or "git could not be consulted", 160)
+        else:
+            for name in existing:
+                (foreign if name in tracked else own).append(name)
     if foreign:
         previous, _error = read_utf8(target) if existing == [target_name] else (None, None)
         if previous != final_text:
+            if unverified is not None:
+                # Not "already exists in the draft branch": git could not say, and reporting a guess as
+                # that would make Step 6.7's failure policy stop the compose under a false cause.
+                _emit([f"META_INSTALL_UNVERIFIED={unverified}"])
+                return _fail(
+                    f"cannot tell whether sessions/meta/{foreign[0]} was written by this run ({unverified}); "
+                    "not replacing it -- fix git in the worktree and re-run install, or report it"
+                )
             _emit([f"META_JOURNAL_EXISTS=sessions/meta/{foreign[0]}"])
             return _fail(
                 f"a composed meta journal for {date} already exists in the draft branch "

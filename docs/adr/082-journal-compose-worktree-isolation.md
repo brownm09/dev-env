@@ -449,23 +449,29 @@ automatically would not have produced an entry.
    `stub` verifies each trigger record against the stub it cites and writes the derived stubs and manifest
    shards: the `evidence` phrase must appear verbatim (after NFKC and whitespace normalization, on one line or
    two adjacent lines) and run to at least three words, because a one-word "phrase" verifies a fabricated
-   record; the evidence line must lie below the stub's first heading of any level (above it sits the opening
-   brief, which carries the previous day's context; keyed on "some heading exists below", not on an H2,
-   because the scheduled routines write `### Session: …` stubs with no H2); the project must equal a
-   directory under `sessions/` exactly (the filesystem is case-insensitive here) and is never `meta`; records
-   arrive as JSON Lines, so one malformed line costs only itself.
+   record; evidence that occurs only in the stub's opening brief — the block from the `<!-- opening-brief`
+   marker (or, in the three oldest stubs, a line beginning "Opening brief") to the first heading, which carries
+   the previous day's context — is rejected, and the search runs outside that block first because session
+   bodies repeat it; the project must equal a directory under `sessions/` exactly (the filesystem is
+   case-insensitive here) and is never `meta`; records arrive as JSON Lines, so one malformed line costs only
+   itself.
    `install` gates the coordinator's composed journal — the eleven required headings **and**, for every
-   derived stub, its own `## Session N — <that stub's label>` section (one session per category; a session
-   titled with two labels stands for only the first) citing each of its `Source:` paths — before copying it
-   into the compose worktree. It replaces a journal it installed earlier in the run (untracked in the
-   worktree, which is created fresh from the draft branch), so the fidelity remedy "expand the staged file and
-   re-run" works, and never one the draft branch already carries (tracked: it prints `META_JOURNAL_EXISTS=` and
-   exits 1). Where git cannot say (no linked worktree), it stays conservative and replaces nothing.
+   derived stub, its own `## Session N — <that stub's label>` section citing each of its `Source:` paths (one
+   session per category, and a session belongs to the category whose label its title *begins* with: a subtitle
+   that merely names another category cannot capture that category's session) — before copying it into the
+   compose worktree. It replaces a journal it installed earlier in the run (untracked in the worktree, which is
+   created fresh from the draft branch), so the fidelity remedy "expand the staged file and re-run" works, and
+   never one the draft branch already carries (tracked: it prints `META_JOURNAL_EXISTS=` and exits 1). Where
+   git cannot say (no linked worktree, a broken worktree link), it stays conservative, replaces nothing, and
+   says so under its own key, `META_INSTALL_UNVERIFIED=<why>` — a git problem must not be reported as "the draft
+   branch already has a journal", which the failure policy answers by stopping.
    `abandon` removes derived files. `check-clean` fails if any stub, manifest, `_draft.md` or temp file for the
    date remains in a `sessions/<project>/` directory. `check-staged` fails on anything unstaged or untracked in
-   `git status`, because the commit is built from the index while `check-clean` reads the working tree. A
-   Python process launched by Bash is the only writer that both the harness restriction and the ADR-129 guard
-   allow, and it keeps inline-literal snippets out of the skill
+   `git status`, because the commit is built from the index while `check-clean` reads the working tree. Why a
+   script: Write/Edit cannot reach the compose worktree (#1119) and a Bash write would have the coordinator
+   author stub and manifest content by hand, which is what the verification exists to prevent; a Python
+   process launched by Bash generates the derived stubs from records it has verified, carries no inline
+   literal, and keeps inline-literal snippets out of the skill
    ([dev-env#1101](https://github.com/brownm09/dev-env/issues/1101)).
 5. **Claims are verified, not trusted.** An unverifiable record is rejected by name
    (`META_TRIGGER_REJECTED …`, keeping the record's own reason), never silently included or dropped, and the
@@ -500,12 +506,19 @@ automatically would not have produced an entry.
 - **Never pushed, so the pre-compose commit holds no copy.** Old Step 2b pushed its draft; pushing a derived
   stub would let a crashed run leave one that the next run composes as real, duplicating the entry. Nothing is
   lost: the source stubs are in the pre-compose commit, and the composed journal cites each `Source:` path.
-- **One calibrated constant; everything else keys on a literal token.** The eleven heading regexes are the
+- **Two calibrated checks; everything else keys on a literal token.** The eleven heading regexes are the
   existing structural assertion; the category labels and `Source:` paths are extracted from the derived
   stubs, and a derived stub with no extractable label or `Source:` fails instead of passing vacuously. The
-  one numeric constant is `MIN_EVIDENCE_WORDS = 3` (ADR-144): known-good, the six real evidence phrases from
+  numeric constant is `MIN_EVIDENCE_WORDS = 3` (ADR-144): known-good, the six real evidence phrases from
   the 2026-10-01 dry run are 7 to 12 words (worst case 7, a margin of 4); known-bad, `e`, `PR`, `.`, `-` and a
-  two-word fragment all verified a fabricated record before the minimum and are all rejected now. The fidelity
+  two-word fragment all verified a fabricated record before the minimum and are all rejected now. The second
+  check classifies stubs the plan does not enumerate: the opening-brief block. Measured on all 750 stubs ever
+  committed to engineering-journal, it finds the block in 65 of 65 stubs that carry a brief (62 marked, 3
+  older) and in 0 of the other 685, including the 2 with `**PR:**` / `**Issue:**` lines above their heading
+  that a blanket "anything above the first heading" rule would have rejected; 10 of the 65 briefed stubs echo
+  a 7-word run of the brief in a session body, which the outside-first search accepts (the first-occurrence
+  version rejected all 10). Earlier drafts keyed on "no H2 above" and "anything above the first heading" and
+  each failed on a real shape, which only a replay over real stubs showed. The fidelity
   ratio is reported but never gates: the skill's 80% and 50% figures are rough heuristics never calibrated
   against derived input, so the Step 6.5 floor still applies to the real stubs' share only
   (`REAL_FIDELITY`), as it always did.
@@ -518,9 +531,11 @@ automatically would not have produced an entry.
   still held real meta stubs and the composed journal was untracked — the #892 shape, shipped with a green
   check and a PR body saying `composed`. Step 10 and Phase 2 now stage meta with real commands, and each commit
   block re-runs `check-staged` first and stops on a failure: the second review found Phase 2 committing and
-  pushing right after a failed check (the instruction to stop came after the block). A drift test now pins the
-  block structure, and an end-to-end run of the skill's own extracted snippets in a real bash (recorded in
-  `docs/TESTING.md` item 100) showed the failed check publishing nothing.
+  pushing right after a failed check (the instruction to stop came after the block). A drift test pins the
+  block structure (an anchored brace-group stop), and two committed tests extract the skill's own Phase 2 and
+  Step 10 commit blocks and run them in a real bash against a bare origin: a failed check publishes nothing.
+  The structural test alone is not enough — a subshell `|| ( …; exit 1 )`, whose `exit` leaves only the
+  subshell, passed the first version of it and let the commit through.
 - **ADR-129's "sole method" claim is bounded, not broken.** See its Amendment 2: derived stubs are
   compose-internal and never session records.
 - **Steps 7 and 8 are unchanged for meta.** Until #1119 is fixed, its script-file recipe applies to meta's
@@ -548,7 +563,7 @@ automatically would not have produced an entry.
   that have them).
 - Step 10.5's replay pathspecs must name `sessions/meta/` whenever meta was composed; omitting it would silently
   drop the entry on the conflict-recovery path.
-- **Testing.** `claude/scripts/tests/test_journal_compose_meta.py` (Testing item 100, 76 cases) replays a
+- **Testing.** `claude/scripts/tests/test_journal_compose_meta.py` (Testing item 100, 82 cases) replays a
   fixture day end to end — records, verified derived stubs and schema-valid manifest shards, gated
   install, simulated Step 9, `check-clean` — and carries the #892 regression (the old `_draft.md`
   shape fails the tree-wide check) and real-git fixtures for `check-staged` and for `install`'s
@@ -557,11 +572,12 @@ automatically would not have produced an entry.
   `claude/CLAUDE.md`, the real staging commands in Step 10 and Phase 2, the position of `check-staged` ahead
   of every commit, the Step 6.7 / Step 10 wiring and both Step 10.5 pathspec lists to the helper. Calibrated
   once against real corpora (recorded in `docs/TESTING.md`): the heading check passes the four real meta
-  journals and flags exactly the four headings missing from the #273 career-playbook journal; 37 of 37
+  journals and flags exactly the four headings missing from the #273 career-playbook journal; 51 of 51
   known-bad mutation cases against the skill, routine and `claude/CLAUDE.md` are caught; and a dry run on the
   real 2026-10-01 day (7 records, 6 accepted, the fabricated one rejected by name) ended with only the
-  composed meta journal in the worktree. The skill's own Phase 2 snippets were also run end to end in a real
-  bash. The LLM steps themselves are not exercised offline.
+  composed meta journal in the worktree. The skill's own Phase 2 and Step 10 commit blocks are extracted and run
+  end to end in a real bash (two committed tests), which is what separates a guard that stops from one that
+  only looks like it. The LLM steps themselves are not exercised offline.
 - **Observability.** N/A in the hook sense (dev-env's `## Observability`): the helper reports `KEY=value` lines
   on stdout and errors on stderr.
 - **Security.** N/A — no credentials or network; the helper validates every path, requires an absolute

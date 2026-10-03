@@ -2,10 +2,12 @@
 """Tests for journal-compose-meta.py -- /journal-compose Step 6.7 (dev-env #52, #892).
 
 Exercises the helper against fixture compose-worktree trees in ``tempfile`` directories. No network
-and no ``gh``; the only subprocess is ``git`` itself, for the ``check-staged`` cases, which need a
-real index. ``main()`` *is* covered (as in test_journal_project_repo_map.py) because the exit
-contract and the ``KEY=value`` report are what the skill's coordinator reads, and the observability
-half is what turns a recurrence into a loud failure.
+and no ``gh``. The subprocesses are ``git`` itself -- the ``check-staged`` cases and ``install``'s
+tracked-versus-untracked rule need a real index -- and, for the two end-to-end tests, a Git for
+Windows ``bash`` that runs the skill's own extracted commit blocks against a bare origin.
+``main()`` *is* covered (as in test_journal_project_repo_map.py) because the exit contract and the
+``KEY=value`` report are what the skill's coordinator reads, and the observability half is what
+turns a recurrence into a loud failure.
 
 Cases pinned:
 
@@ -24,13 +26,24 @@ Cases pinned:
   stub must not copy ``<!-- tokens -->`` markers; an empty worktree argument must not mean the cwd.
 - **Every rejection class is named, with the record's reason preserved**, and a day on which every
   record was refused reports ``rejected`` -- never ``none`` (which means "no meta triggers").
-- **Replace semantics, idempotence, rollback.** Re-running ``stub`` yields byte-identical files; a
-  failed write leaves the earlier set and no temp file; a derived stub never shadows a real stub or
-  a real orphan manifest, and ``abandon`` never deletes one.
+- **Replace semantics, idempotence, all-or-nothing swaps.** Re-running ``stub`` yields
+  byte-identical files; a write that fails while staging leaves the earlier set, one that fails
+  while swapping leaves no derived file at all (the swap deletes the earlier set first, so it cannot
+  restore it), neither leaves a temp file, and a locked file is reported, never raised; a derived
+  stub never shadows a real stub or a real orphan manifest, and ``abandon`` never deletes one.
+- **``install`` knows whose journal it is.** An untracked journal is this run's and is replaced (the
+  fidelity remedy needs that); a tracked one is the draft branch's and is refused
+  (``META_JOURNAL_EXISTS=``); where git cannot say it is ``META_INSTALL_UNVERIFIED=``, a different
+  cause with a different key. Each category claims its own session, matched on the title's start.
+- **Evidence is checked against the real stub shapes.** Too-short phrases, the opening brief (found
+  in the body first, because bodies repeat it), ``### Session:`` stubs with no H2, and ``**PR:**``
+  lines above a heading.
 - **Drift gates (ADR-144 "extraction must be non-empty").** The eleven heading regexes, the seven
   trigger slugs (Step 2b *and* the Phase 1 template's inline copy), the trigger list in
   ``claude/CLAUDE.md``, the real staging commands in Step 10 and Phase 2, both Step 10.5 pathspec
   lists, and the routine's meta rule are tied to the helper, each asserted non-empty first.
+- **End to end.** The skill's own Phase 2 and Step 10 commit blocks, extracted and run in a real
+  bash: a failed ``check-staged`` publishes nothing; a clean index commits the meta journal.
 """
 import importlib.util
 import io
@@ -38,6 +51,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -112,6 +126,21 @@ CP_EVIDENCE = "`bash.exe` from WSL shadows Git Bash"
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+def _force_rmtree(path):
+    """``rmtree`` that also removes git's read-only object files (``ignore_errors`` leaves them behind)."""
+    def make_writable_and_retry(func, target, _error):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except OSError:
+            pass
+
+    try:
+        shutil.rmtree(path, onexc=make_writable_and_retry)
+    except TypeError:  # Python < 3.12 has onerror, not onexc
+        shutil.rmtree(path, onerror=make_writable_and_retry)
+
 
 def _write(root, relpath, text):
     path = os.path.join(root, *relpath.split("/"))
@@ -361,7 +390,7 @@ def git_worktree():
         _git(wt, "commit", "-q", "-m", "draft branch tip: the day's stubs")
         yield wt
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        _force_rmtree(base)
 
 
 # ---------------------------------------------------------------------------
@@ -823,8 +852,8 @@ def test_a_locked_derived_file_is_reported_by_abandon_and_stub_not_raised_as_a_t
         assert not [path for path in tree(root) if "_2359" in path]
 
 
-def test_evidence_in_the_opening_brief_above_the_first_heading_is_rejected_by_name():
-    """PR #1126 second review: the region above a stub's first heading is the previous day's context."""
+def test_evidence_in_the_opening_brief_is_rejected_by_name():
+    """PR #1126 second review: the opening brief is the previous day's context, not this session's work."""
     with worktree() as root:
         name = f"{DATE}_140000.stub.md"
         _write(root, f"sessions/dev-env/{name}",
@@ -833,12 +862,62 @@ def test_evidence_in_the_opening_brief_above_the_first_heading_is_rejected_by_na
                "## Session: 2026-10-01 14:00 — Fresh work\n\n"
                "Today's claim sits in the session body of this stub.\n")
         rc, out, _err = stub(root, [record(stub=name, evidence="yesterday we fixed the compose skill.")])
-        assert rc == 2 and "above the stub's first heading" in rejections(out)[0], out
+        assert rc == 2 and "only in the stub's opening brief" in rejections(out)[0], out
         assert not _exists(root, "sessions/meta"), "a rejected record writes nothing"
         # Known-good counterpart: a phrase from the session body of the same stub.
         rc, out, _err = stub(root, [record(stub=name, evidence="claim sits in the session body")])
         assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
         assert "- Source session: Session: 2026-10-01 14:00 — Fresh work" in _read(root, f"sessions/meta/{DATE}_235900.stub.md")
+    with worktree() as root:  # the three oldest stubs carry no marker: their brief begins "Opening brief"
+        name = f"{DATE}_140001.stub.md"
+        _write(root, f"sessions/dev-env/{name}",
+               "<!-- stub: 2026-10-01 140001 -->\nOpening brief: yesterday we fixed the compose skill.\n"
+               "<!-- session: fresh-work -->\n## Session: 14:00 — Fresh work\n\nBody text of the session.\n")
+        rc, out, _err = stub(root, [record(stub=name, evidence="yesterday we fixed the compose skill.")])
+        assert rc == 2 and "only in the stub's opening brief" in rejections(out)[0], out
+
+
+def test_evidence_the_session_body_repeats_from_the_opening_brief_is_found_in_the_body():
+    """Third review, non-blocking 1: session bodies routinely restate the brief that carried their work
+    forward (10 of the 65 briefed stubs in the real corpus). The first version took the FIRST occurrence,
+    inside the brief, and rejected a quote the subagent had correctly copied from the body."""
+    with worktree() as root:
+        name = f"{DATE}_140002.stub.md"
+        _write(root, f"sessions/dev-env/{name}",
+               "<!-- opening-brief (first stub of the day only) -->\n"
+               "Opening brief: Next, merge PR #1126 once the third review is clean.\n\n"
+               "## Session: 2026-10-01 14:00 — Merge day\n\n"
+               "Merged brownm09/dev-env#1126 once the third review is clean and the gate passed.\n")
+        phrase = "once the third review is clean"
+        rc, out, _err = stub(root, [record(stub=name, evidence=phrase)])
+        assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
+        text = _read(root, f"sessions/meta/{DATE}_235900.stub.md")
+        assert "Merged brownm09/dev-env#1126" in text and "Next, merge PR #1126" not in text, (
+            "the excerpt must be the body line, not the brief's"
+        )
+        assert "- Source session: Session: 2026-10-01 14:00 — Merge day" in text
+
+
+def test_lines_above_the_heading_that_are_not_an_opening_brief_stay_citable():
+    """Two real lifting-logbook stubs carry `**PR:**` / `**Issue:**` metadata above their heading. A blanket
+    'anything above the first heading is context' rule rejected exactly the lines a dev-env-pr trigger quotes."""
+    with worktree() as root:
+        name = f"{DATE}_140003.stub.md"
+        _write(root, f"sessions/dev-env/{name}",
+               "**PR:** [#610](https://github.com/brownm09/dev-env/pull/610)\n"
+               "**Issue:** [#609](https://github.com/brownm09/dev-env/issues/609)\n\n"
+               "## Session: 2026-10-01 14:00 — Fix\n\nBody.\n")
+        # Two adjacent metadata lines, so the quote is long enough to be evidence at all (>= 3 words).
+        both = ("**PR:** [#610](https://github.com/brownm09/dev-env/pull/610) "
+                "**Issue:** [#609](https://github.com/brownm09/dev-env/issues/609)")
+        rc, out, _err = stub(root, [pr_record(stub=name, evidence=both)])
+        assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
+    with worktree() as root:  # a body line that mentions "the opening brief" must not open a block of its own
+        name = f"{DATE}_140004.stub.md"
+        _write(root, f"sessions/dev-env/{name}",
+               "## Session: 2026-10-01 14:00 — Docs\n\nOpening brief wording was rewritten in the skill today.\n")
+        rc, out, _err = stub(root, [record(stub=name, evidence="Opening brief wording was rewritten in the skill")])
+        assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
 
 
 def test_a_scheduled_routine_stub_with_only_an_h3_session_heading_stays_citable():
@@ -1018,21 +1097,58 @@ def test_install_matches_each_category_to_its_own_session_not_the_first_one_carr
         assert rc == 2 and "SESSIONS_MISSING=dev-env PR merged" in out, out
 
 
-def test_install_never_overwrites_a_journal_it_did_not_write():
-    """PR #1126 review: same-slug installs silently replaced an already-committed journal.
-    A directory git cannot vouch for (no linked worktree) keeps the conservative rule."""
+def test_install_never_replaces_a_journal_git_cannot_vouch_for_and_names_a_different_cause():
+    """PR #1126 review: same-slug installs silently replaced an already-committed journal. A directory
+    git cannot vouch for (no linked worktree) keeps the conservative rule -- and, third review, non-blocking
+    4, reports it as META_INSTALL_UNVERIFIED, not as 'already exists in the draft branch': Step 6.7's
+    failure policy reads META_JOURNAL_EXISTS as a reason to stop, and a git problem is not that."""
     with worktree() as root:
         stub(root, [record()])
         staged = stage(root, journal_for(root))
         assert run("install", root, DATE, staged, "first")[0] == 0
         assert run("install", root, DATE, staged, "first")[0] == 0, "byte-identical re-run is a no-op success"
-        rc, _out, err = run("install", root, DATE, stage(root, journal_for(root, extra="\nEdited.\n")), "first")
-        assert rc == 1 and "Do not overwrite or remove it" in err
-        rc, _out, err = run("install", root, DATE, staged, "second")
-        assert rc == 1 and "already exists" in err and "Do not overwrite or remove it" in err
+        rc, out, err = run("install", root, DATE, stage(root, journal_for(root, extra="\nEdited.\n")), "first")
+        assert rc == 1 and "META_INSTALL_UNVERIFIED=not a linked git worktree" in out, (out, err)
+        assert "META_JOURNAL_EXISTS" not in out and "cannot tell whether" in err and "not replacing it" in err
+        rc, out, err = run("install", root, DATE, staged, "second")
+        assert rc == 1 and "META_INSTALL_UNVERIFIED=" in out, (out, err)
         assert [n for n in tree(root) if re.match(rf"sessions/meta/{DATE}-.*\.md$", n)] == [
             f"sessions/meta/{DATE}-first.md"
         ]
+
+
+def test_install_in_a_linked_worktree_whose_git_fails_is_unverified_not_already_existing():
+    with git_worktree() as wt:
+        _write(wt, f"sessions/meta/{DATE}-mine.md", composed_journal())  # untracked: this run's
+        assert run("install", wt, DATE, stage(wt, composed_journal(extra="\n## Session 2 — More\n\nx\n")), "mine")[0] == 0
+        link = os.path.join(wt, ".git")
+        os.chmod(link, stat.S_IWRITE)
+        os.remove(link)  # git hides `.git` on Windows, and a hidden file cannot be reopened for writing
+        with open(link, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("gitdir: C:/no/such/place/.git/worktrees/gone\n")  # the pointer git needs is broken
+        rc, out, err = run("install", wt, DATE, stage(wt, composed_journal(extra="\n## Session 2 — Other\n\ny\n")), "mine")
+        assert rc == 1 and "META_INSTALL_UNVERIFIED=" in out and "META_JOURNAL_EXISTS" not in out, (out, err)
+        assert "cannot tell whether" in err
+
+
+def test_install_does_not_let_a_subtitle_naming_another_category_capture_its_session():
+    """Third review, non-blocking 3: a label matched ANYWHERE in a title let 'dev-env PR merged: the PR that
+    left CLAUDE.md modified' capture the CLAUDE.md category, so the gate blamed the wrong session and obeying
+    its report produced a journal it accepted with the real citation still missing."""
+    with worktree() as root:
+        stub(root, [record(), pr_record()])  # claude-md + dev-env-pr from ONE dev-env stub
+        (label_a, sources_a), (label_b, sources_b) = derived_info(root)
+        assert (label_a, label_b) == ("CLAUDE.md modified", "dev-env PR merged")
+        trap = composed_journal([
+            (label_a, []),                                                                  # citation forgotten
+            (f"{label_b}: the PR that left {label_a}", sources_b),                          # cites, subtitle names A
+        ])
+        rc, out, _err = run("install", root, DATE, stage(root, trap), "meta-triggers")
+        assert rc == 2 and f"SOURCES_UNCITED {label_a} -- {sources_a[0]}" in out, out
+        assert "SESSIONS_MISSING" not in out, "the gate must blame the session that really lacks the citation"
+        fixed = composed_journal([(label_a, sources_a), (f"{label_b}: the PR that left {label_a}", sources_b)])
+        rc, out, _err = run("install", root, DATE, stage(root, fixed), "meta-triggers")
+        assert rc == 0 and kv(out)["SOURCES_CITED"] == "2/2", out
 
 
 def test_install_rejects_bad_slugs_and_unreadable_or_empty_input():
@@ -1431,16 +1547,186 @@ def test_every_commit_block_re_runs_check_staged_first_and_stops_on_its_failure(
                       if re.match(r"\s*py -3 \S*journal-compose-meta\.py check-staged ", l)]
             assert guards and guards[0] < commit_at, f"{name}: check-staged must run before the commit, in the same block"
             guard = block[guards[0]]
-            assert "||" in guard and "exit" in guard, f"{name}: a failed check-staged must stop the block: {guard!r}"
-        # The staging itself must never be keyed on META_STATUS: a FAILED pass can still have installed
-        # a real-stub journal (non-blocking 1), and META_JOURNAL is what says one exists.
-        assert "META_STATUS=composed" not in section, f"{name}: staging must key on META_JOURNAL"
+            # Anchored: the stop must be a brace group on the same line. `|| ( ...; exit 1 )` exits only a
+            # subshell, `|| echo "...exit..."` and `|| true  # exit 1` stop nothing -- each looked like a
+            # guard to the earlier substring check and each lets the commit through (third review, NB 2).
+            assert re.fullmatch(
+                r'\s*py -3 \S*journal-compose-meta\.py check-staged "\$WT" YYYY-MM-DD \|\| \{ echo "[^"]*"; exit 1; \}\s*',
+                guard,
+            ), f"{name}: a failed check-staged must stop the block with a brace-group exit: {guard!r}"
+        # Staging is keyed on META_JOURNAL, never on the PR-body status: a FAILED pass can still have
+        # installed a real-stub journal (second review, non-blocking 1). Any mention of META_STATUS in
+        # these sections -- however it is worded -- is the old keying coming back.
+        assert "META_STATUS" not in section, f"{name}: staging must key on META_JOURNAL, not META_STATUS"
         assert "META_JOURNAL" in section, f"{name}: the meta staging must be conditioned on META_JOURNAL"
     phase_2 = _section(skill, r"^### Phase 2 — .*$")
     staging = [b for b in _fenced_blocks(phase_2) if any("add -u sessions/" in l for l in b)]
     assert staging and any(
         re.match(r"\s*py -3 \S*journal-compose-meta\.py check-staged ", l) for l in staging[0]
     ), "Phase 2's staging block must end with the check, so its result is read before any commit"
+    # The push target is a loud placeholder, not a literal draft/YYYY-MM-DD: on the `-recovery` path a
+    # coordinator that substitutes only the date would otherwise push to the wrong branch silently.
+    commit_block = next(b for b in _fenced_blocks(phase_2) if any(re.match(r'\s*git -C "\$WT" commit\b', l) for l in b))
+    assert any(re.match(r"SOURCE_BRANCH=<[^>]+>", l) for l in commit_block), (
+        "Phase 2's commit block must define SOURCE_BRANCH as an explicit <placeholder> to be substituted"
+    )
+    step_67 = _section(skill, r"^## Step 6\.7 — .*$")
+    for definition in ("- `META_JOURNAL` — the", "- `META_STATUS` — what the PR body says"):
+        assert definition in step_67, f"Step 6.7 must define {definition!r}"
+
+
+# ---------------------------------------------------------------------------
+# End to end: the skill's OWN commit blocks, extracted and run in a real bash against a real git repo
+# ---------------------------------------------------------------------------
+
+def _git_bash():
+    """A Git for Windows bash. Fails loudly rather than skipping: a skipped end-to-end gate is no gate.
+
+    ``shutil.which("bash")`` can be the WSL launcher in System32, which cannot run these blocks, so the
+    interpreter is also looked for beside git itself.
+    """
+    candidates = []
+    found = shutil.which("bash")
+    if found and not any(part in found.lower() for part in ("system32", "windowsapps")):
+        candidates.append(found)
+    git = shutil.which("git")
+    if git:
+        here = os.path.dirname(os.path.realpath(git))
+        for hops in ("", "..", os.path.join("..", ".."), os.path.join("..", "..", "..")):
+            candidates.append(os.path.normpath(os.path.join(here, hops, "bin", "bash.exe")))
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    raise AssertionError(f"no Git for Windows bash found (tried {candidates})")
+
+
+@contextmanager
+def compose_day(projects):
+    """A bare origin, a draft branch, and a linked compose worktree left as Phase 1, Step 6.7 (a real-stub-only
+    meta journal), Steps 7-9 leave it: journals and READMEs written, every stub deleted -- nothing staged."""
+    base = tempfile.mkdtemp(prefix="jcm-e2e-")
+    origin = os.path.join(base, "origin.git")
+    main_repo = os.path.join(base, "ej")
+    wt = os.path.join(base, f"compose-{DATE}")
+    branch = f"draft/{DATE}"
+    try:
+        os.makedirs(main_repo)
+        subprocess.run(["git", "init", "-q", "--bare", origin], check=True, capture_output=True)
+        _git(main_repo, "init", "-q")
+        for key, value in (("user.name", "fixture"), ("user.email", "fixture@example.invalid"), ("core.autocrlf", "false")):
+            _git(main_repo, "config", key, value)
+        _git(main_repo, "remote", "add", "origin", origin.replace("\\", "/"))
+        _write(main_repo, "README.md", "# top\n")
+        for project in (*projects, "meta"):
+            _write(main_repo, f"sessions/{project}/README.md", f"# {project}\n")
+            _write(main_repo, f"sessions/{project}/{DATE}_090000.stub.md", f"## Session: {project}\n\nbody\n")
+        _git(main_repo, "add", "-A")
+        _git(main_repo, "commit", "-q", "-m", "draft tip: the day's stubs")
+        _git(main_repo, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
+        _git(main_repo, "worktree", "add", "-q", "--detach", wt, "HEAD")
+        tip = _git(wt, "rev-parse", "HEAD").strip()
+        for project in projects:
+            _write(wt, f"sessions/{project}/{DATE}-slug-a.md", "# journal\n")
+            _write(wt, f"sessions/{project}/README.md", f"# {project}\na row\n")
+        _write(wt, f"sessions/meta/{DATE}-real-only.md", "# meta journal from the real stubs\n")
+        _write(wt, "sessions/meta/README.md", "# meta\na row linking the meta journal\n")
+        _write(wt, "README.md", "# top\nupdated\n")
+        for project in (*projects, "meta"):
+            os.remove(os.path.join(wt, "sessions", project, f"{DATE}_090000.stub.md"))
+        yield {"base": base, "origin": origin, "wt": wt, "branch": branch, "tip": tip}
+    finally:
+        _force_rmtree(base)
+
+
+def _fill(block, day, projects):
+    """Turn a skill block into a runnable script: the helper under test, this fixture's paths."""
+    wt = day["wt"].replace("\\", "/")
+    text = block.replace("C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-YYYY-MM-DD", wt)
+    text = text.replace("C:/Users/brown/.claude/scripts/journal-compose-meta.py", mod_posix_path())
+    text = re.sub(r"^\s*\.\.\. \\\n", "", text, flags=re.MULTILINE)  # the "..." placeholder continuation line
+    for placeholder, value in (("<slug-a>", "slug-a"), ("<slug-b>", "slug-a"), ("<slug>", "slug-a"),
+                               ("<meta-slug>", "real-only"), ("<project>", projects[0])):
+        text = text.replace(placeholder, value)
+    text = re.sub(r"SOURCE_BRANCH=<[^>\n]*>", f"SOURCE_BRANCH={day['branch']}", text)
+    text = text.replace("YYYY-MM-DD", DATE)
+    if not re.search(r"^WT=", text, re.MULTILINE):  # Step 10's blocks assume WT and SOURCE_BRANCH are set
+        text = f"WT={wt}\nSOURCE_BRANCH={day['branch']}\n" + text
+    return text
+
+
+def mod_posix_path():
+    return os.path.join(_SCRIPTS, "journal-compose-meta.py").replace("\\", "/")
+
+
+def _run_block(text, day):
+    script = os.path.join(day["base"], "block.sh")
+    with open(script, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+    proc = subprocess.run([_git_bash(), script.replace("\\", "/")], capture_output=True, cwd=day["base"])
+    return proc.returncode, proc.stdout.decode("utf-8", "replace"), proc.stderr.decode("utf-8", "replace")
+
+
+def _remote_tip(day):
+    proc = subprocess.run(["git", "--git-dir", day["origin"], "rev-parse", f"refs/heads/{day['branch']}"],
+                          capture_output=True)
+    return proc.stdout.decode().strip()
+
+
+def _pushed_changes(day):
+    out = subprocess.run(["git", "--git-dir", day["origin"], "show", "--name-status", "--format=", _remote_tip(day)],
+                         capture_output=True, check=True).stdout.decode("utf-8", "replace")
+    return [line.replace("\t", " ") for line in out.splitlines() if line.strip()]
+
+
+def test_phase_2_blocks_end_to_end_a_failed_check_publishes_nothing_and_a_clean_index_commits_meta():
+    """PR #1126 second review, blocking 1, as a regression test instead of a manual run: the skill's own two
+    Phase 2 blocks, extracted and executed. A structural test of the text cannot tell a guard that stops from
+    one that merely looks like it (a subshell `exit` stops nothing); only running it can."""
+    skill = _read_doc(_SKILL)
+    blocks = ["\n".join(b) for b in _fenced_blocks(_section(skill, r"^### Phase 2 — .*$"))]
+    staging = next(b for b in blocks if "add -u sessions/" in b and "check-staged" in b)
+    commit = next(b for b in blocks if re.search(r'git -C "\$WT" commit', b))
+    projects = ("project-a", "project-b")
+    with compose_day(projects) as day:
+        # A: the failure policy's real-stub-only path, with the meta `git add` skipped.
+        omitted = re.sub(r'^git -C "\$WT" add sessions/meta/[^\n]*\n', "", staging, flags=re.MULTILINE)
+        assert omitted != staging, "the fixture must actually omit the meta add"
+        rc, out, _err = _run_block(_fill(omitted, day, projects), day)
+        assert rc == 2 and "CHECK_STAGED=unstaged" in out and f"?? sessions/meta/{DATE}-real-only.md" in out, (rc, out)
+        rc, out, err = _run_block(_fill(commit, day, projects), day)
+        assert rc != 0 and "CHECK_STAGED=unstaged" in out, f"the commit block must refuse: rc={rc} out={out!r} err={err!r}"
+        assert _remote_tip(day) == day["tip"], "nothing may be pushed past a failed check-staged"
+        # B: the same day with the meta add executed (git add is idempotent, so the same worktree continues).
+        rc, out, _err = _run_block(_fill(staging, day, projects), day)
+        assert rc == 0 and "CHECK_STAGED=ok" in out, (rc, out)
+        rc, out, err = _run_block(_fill(commit, day, projects), day)
+        assert rc == 0, (out, err)
+        assert _remote_tip(day) != day["tip"], "a clean index must be committed and pushed"
+        changes = _pushed_changes(day)
+        assert f"A sessions/meta/{DATE}-real-only.md" in changes, changes
+        assert f"D sessions/meta/{DATE}_090000.stub.md" in changes and "M sessions/meta/README.md" in changes, changes
+
+
+def test_step_10_blocks_end_to_end_a_failed_check_publishes_nothing_and_a_clean_index_commits_meta():
+    """The same run for Step 10's blocks (the single-project flow): project staging, the META_JOURNAL block,
+    and the commit block, with the meta block skipped and then run."""
+    skill = _read_doc(_SKILL)
+    blocks = ["\n".join(b) for b in _fenced_blocks(_section(skill, r"^## Step 10 — .*$"))]
+    project_stage = next(b for b in blocks if "add -u sessions/<project>/" in b)
+    meta_stage = next(b for b in blocks if "add -u sessions/meta/" in b)
+    commit = next(b for b in blocks if re.search(r'git -C "\$WT" commit', b))
+    projects = ("project-a",)
+    with compose_day(projects) as day:
+        assert _run_block(_fill(project_stage, day, projects), day)[0] == 0
+        rc, out, err = _run_block(_fill(commit, day, projects), day)  # meta block skipped
+        assert rc != 0 and "CHECK_STAGED=unstaged" in out, (rc, out, err)
+        assert _remote_tip(day) == day["tip"], "nothing may be pushed past a failed check-staged"
+        assert _run_block(_fill(meta_stage, day, projects), day)[0] == 0
+        rc, out, err = _run_block(_fill(commit, day, projects), day)
+        assert rc == 0, (out, err)
+        assert _remote_tip(day) != day["tip"]
+        changes = _pushed_changes(day)
+        assert f"A sessions/meta/{DATE}-real-only.md" in changes and f"D sessions/meta/{DATE}_090000.stub.md" in changes, changes
 
 
 def test_meta_staging_lines_are_real_commands_not_comments():
