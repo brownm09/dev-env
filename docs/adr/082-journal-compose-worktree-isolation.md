@@ -419,7 +419,7 @@ automatically would not have produced an entry.
 - **Order and report format.** Phase 1 subagents report `META_TRIGGERS` after Step 1 has fixed the composed
   set, as free text (observed: `CLAUDE.md-modified (dev-env#1120: …)`,
   `cross_project_convention, workflow_failure, platform_constraint`), and a re-spawned subagent's report
-  *replaces* the first one's (2026-09-30: three trigger types, then `none`).
+  *replaces* the first one's (the 2026-09-30 compose, #272: three trigger types, then `none`).
 - **Write path.** The harness refuses the coordinator's Write/Edit into the isolated compose worktree
   ([dev-env#1119](https://github.com/brownm09/dev-env/issues/1119)), and
   [ADR-129](129-journal-shell-write-guard.md)'s guard blocks the Bash alternatives for stub and manifest paths.

@@ -569,8 +569,9 @@ When done, report exactly this structure:
 After all subagents complete, collect `OUTPUT_FILE`, `SLUG`, every `META_TRIGGER=` line,
 `STRUCTURE`, and `LOCK_TAKEOVER` (present only when a subagent took over a failed predecessor's
 lock) from each. Keep the `META_TRIGGER=` lines of **every attempt**: a re-spawned subagent's report
-does not replace its first one's (on 2026-09-30 the first career-playbook report listed three
-trigger types and the retry reported none). Step 6.7 collects them all and its helper dedupes.
+does not replace its first one's (in the 2026-09-30 compose, engineering-journal #272, the first
+career-playbook report listed three trigger types and the retry reported none). Step 6.7 collects
+them all and its helper dedupes.
 
 **Error check first:** If any subagent did not return `STATUS=done`, **or** returned
 `STRUCTURE=missing:<list>`, stop immediately and report which project(s) failed — and, for a
