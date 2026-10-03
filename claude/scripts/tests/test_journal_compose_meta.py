@@ -406,6 +406,10 @@ def test_session_heading_is_the_nearest_h2_not_an_h3():
     lines = ["## Session A", "text", "### Detail", "evidence here"]
     assert mod.session_heading(lines, 3) == "Session A"
     assert mod.session_heading(["no heading", "evidence"], 1) is None
+    # A stub with no H2 (the scheduled routines write `### Session: ...`) falls back to its nearest heading.
+    assert mod.session_heading(["### Session: x", "body", "evidence"], 2) == "Session: x"
+    assert mod.first_heading_index(["opening brief", "", "## S", "body"]) == 2
+    assert mod.first_heading_index(["no heading at all"]) is None
 
 
 def test_excerpt_never_crosses_a_heading_in_either_direction():
@@ -751,19 +755,22 @@ def test_a_correctly_escaped_windows_path_in_evidence_is_accepted():
         assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
 
 
-def test_a_failed_write_rolls_back_leaving_the_earlier_set_and_no_temp_file():
-    """PR #1126 review: a mid-write OSError used to leave a half-written set and a stray *.tmp-<pid>."""
+def test_a_failed_swap_leaves_no_derived_files_and_a_failed_staging_keeps_the_earlier_set():
+    """PR #1126 reviews: a mid-write OSError used to leave a half-written set and a stray *.tmp-<pid>;
+    the first fix then claimed a rollback to the earlier set that the swap cannot do (it deletes the
+    earlier set first), so a failed swap now clears every derived file instead -- all or nothing."""
     with worktree() as root:
         stub(root, [record()])
-        before = {path: _read(root, path) for path in tree(root) if path.startswith("sessions/meta/")}
+        assert [path for path in tree(root) if "_2359" in path], "the earlier derived set is in place"
         real_replace = mod.os.replace
         mod.os.replace = lambda *_a, **_k: (_ for _ in ()).throw(PermissionError("locked by the indexer"))
         try:
             rc, _out, err = stub(root, [record(), cp_record()])
         finally:
             mod.os.replace = real_replace
-        assert rc == 1 and "run 'abandon' before retrying" in err
+        assert rc == 1 and "no derived files remain" in err
         assert not [path for path in tree(root) if ".tmp-" in path], "no stray temp file"
+        assert not [path for path in tree(root) if "_2359" in path], "neither a mixture nor the earlier set: none"
     with worktree() as root:
         stub(root, [record()])
         before = {path: _read(root, path) for path in tree(root) if path.startswith("sessions/meta/")}
@@ -785,6 +792,74 @@ def test_a_failed_write_rolls_back_leaving_the_earlier_set_and_no_temp_file():
         after = {path: _read(root, path) for path in tree(root) if path.startswith("sessions/meta/")}
         assert after == before, "the earlier derived set is intact"
         assert not [path for path in tree(root) if ".tmp-" in path]
+
+
+def test_a_locked_derived_file_is_reported_by_abandon_and_stub_not_raised_as_a_traceback():
+    """PR #1126 second review: remove_derived let a PermissionError escape both subcommands."""
+    with worktree() as root:
+        stub(root, [record()])
+        locked = os.path.join(root, "sessions", "meta", f"{DATE}_235900.stub.md")
+        real_remove = mod.os.remove
+
+        def guarded(path, *args, **kwargs):
+            if os.path.abspath(path) == os.path.abspath(locked):
+                raise PermissionError("locked by the indexer")
+            return real_remove(path, *args, **kwargs)
+
+        mod.os.remove = guarded
+        try:
+            rc, out, err = run("abandon", root, DATE)
+            assert rc == 1, (out, err)
+            assert f"META_ABANDON_FAILED=sessions/meta/{DATE}_235900.stub.md" in out
+            assert "locked by the indexer" in err
+            assert not _exists(root, f"sessions/meta/{DATE}_235900.manifest.jsonl"), "everything else was still removed"
+            # stub cannot remove the earlier set either: exit 1, its staged temp files are cleaned up.
+            rc, out, err = stub(root, [record(), cp_record()])
+            assert rc == 1 and "could not remove" in err and "run 'abandon'" in err, (out, err)
+            assert not [path for path in tree(root) if ".tmp-" in path], "no stray temp file"
+        finally:
+            mod.os.remove = real_remove
+        assert run("abandon", root, DATE)[0] == 0, "once the lock is released, abandon finishes the job"
+        assert not [path for path in tree(root) if "_2359" in path]
+
+
+def test_evidence_in_the_opening_brief_above_the_first_heading_is_rejected_by_name():
+    """PR #1126 second review: the region above a stub's first heading is the previous day's context."""
+    with worktree() as root:
+        name = f"{DATE}_140000.stub.md"
+        _write(root, f"sessions/dev-env/{name}",
+               "<!-- opening-brief (first stub of the day only) -->\n"
+               "Opening brief: yesterday we fixed the compose skill.\n\n"
+               "## Session: 2026-10-01 14:00 — Fresh work\n\n"
+               "Today's claim sits in the session body of this stub.\n")
+        rc, out, _err = stub(root, [record(stub=name, evidence="yesterday we fixed the compose skill.")])
+        assert rc == 2 and "above the stub's first heading" in rejections(out)[0], out
+        assert not _exists(root, "sessions/meta"), "a rejected record writes nothing"
+        # Known-good counterpart: a phrase from the session body of the same stub.
+        rc, out, _err = stub(root, [record(stub=name, evidence="claim sits in the session body")])
+        assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
+        assert "- Source session: Session: 2026-10-01 14:00 — Fresh work" in _read(root, f"sessions/meta/{DATE}_235900.stub.md")
+
+
+def test_a_scheduled_routine_stub_with_only_an_h3_session_heading_stays_citable():
+    """The real 2026-10-01 retro-chain-backstop stub opens with `### Session: ...` and has no H2 at all.
+    The first fix for the opening-brief case keyed on 'an H2 exists above' and rejected its body --
+    found by re-running the dry run on the real day, not by any fixture."""
+    with worktree() as root:
+        name = f"{DATE}_150000.stub.md"
+        _write(root, f"sessions/dev-env/{name}",
+               "### Session: retro-chain-backstop (scheduled routine, 2026-10-01)\n\n"
+               "**Task:** daily self-healing check of the backlog chain mechanism across all six repos.\n")
+        rc, out, _err = stub(root, [record(stub=name, evidence="self-healing check of the backlog chain mechanism")])
+        assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
+        text = _read(root, f"sessions/meta/{DATE}_235900.stub.md")
+        assert "- Source session: Session: retro-chain-backstop (scheduled routine, 2026-10-01)" in text
+    with worktree() as root:  # a stub with no heading at all is malformed but not unciteable
+        name = f"{DATE}_150001.stub.md"
+        _write(root, f"sessions/dev-env/{name}", "Plain text with the claim somewhere inside it.\n")
+        rc, out, _err = stub(root, [record(stub=name, evidence="with the claim somewhere inside")])
+        assert rc == 0, out
+        assert "(no session heading found)" in _read(root, f"sessions/meta/{DATE}_235900.stub.md")
 
 
 def test_stub_never_writes_outside_sessions_meta():
@@ -884,8 +959,68 @@ def test_install_a_derived_stub_without_a_source_line_or_label_is_exit_1_never_a
         assert not _exists(root, f"sessions/meta/{DATE}-meta-triggers.md")
 
 
+def test_install_replaces_the_journal_it_installed_earlier_so_the_fidelity_remedy_works():
+    """PR #1126 second review, blocking 2: Step 6.7 says 'expand the staged file and re-run install',
+    but install refused any differing journal -- including the one it had written moments earlier."""
+    with git_worktree() as wt:
+        short = composed_journal()
+        rc, out, _err = run("install", wt, DATE, stage(wt, short), "real-day")
+        assert rc == 0 and kv(out)["REAL_FIDELITY"].endswith("/3"), out
+        longer = composed_journal(extra="\n## Session 2 — More real work\n\nDetail.\n")
+        rc, out, _err = run("install", wt, DATE, stage(wt, longer), "real-day")
+        assert rc == 0, out
+        assert _read(wt, f"sessions/meta/{DATE}-real-day.md") == longer, "the expanded journal replaced it"
+        # A different slug on the re-run replaces it too: one journal per date, never two.
+        rc, out, _err = run("install", wt, DATE, stage(wt, longer), "renamed")
+        assert rc == 0, out
+        assert [n for n in tree(wt) if re.match(rf"sessions/meta/{DATE}-.*\.md$", n)] == [
+            f"sessions/meta/{DATE}-renamed.md"
+        ]
+
+
+def test_install_never_replaces_a_journal_the_draft_branch_already_carries():
+    """The other half of blocking 2: untracked means this run's; tracked means the draft branch's."""
+    with git_worktree() as wt:
+        _write(wt, f"sessions/meta/{DATE}-prior.md", composed_journal())
+        _git(wt, "add", f"sessions/meta/{DATE}-prior.md")
+        _git(wt, "commit", "-q", "-m", "a prior compose of the day")
+        edited = composed_journal(extra="\n## Session 2 — Other\n\nx\n")
+        rc, out, err = run("install", wt, DATE, stage(wt, edited), "prior")
+        assert rc == 1 and f"META_JOURNAL_EXISTS=sessions/meta/{DATE}-prior.md" in out, (out, err)
+        assert "Do not overwrite or remove it" in err
+        assert _read(wt, f"sessions/meta/{DATE}-prior.md") == composed_journal(), "left untouched"
+        rc, out, err = run("install", wt, DATE, stage(wt, composed_journal()), "other-slug")
+        assert rc == 1 and "META_JOURNAL_EXISTS=" in out and not _exists(wt, f"sessions/meta/{DATE}-other-slug.md")
+        # Byte-identical to what the branch carries: nothing to do, and that is success.
+        rc, out, _err = run("install", wt, DATE, stage(wt, composed_journal()), "prior")
+        assert rc == 0 and kv(out)["META_JOURNAL"] == f"sessions/meta/{DATE}-prior.md", out
+
+
+def test_install_matches_each_category_to_its_own_session_not_the_first_one_carrying_the_label():
+    """PR #1126 second review, non-blocking 2: next(... if label in heading) judged only the FIRST
+    session whose title mentions the label, so an earlier real session on the same topic hid it."""
+    with worktree() as root:
+        stub(root, [pr_record()])
+        ((label, sources),) = derived_info(root)
+        shadow = ("dev-env PR merged: #1121 abbreviations rule", [])  # a real session; it cites nothing
+        rc, out, _err = run("install", root, DATE, stage(root, composed_journal([shadow, (label, sources)])), "meta-triggers")
+        assert rc == 0 and kv(out)["SOURCES_CITED"] == "1/1", out
+    with worktree() as root:  # known-bad: only the label-bearing real session exists
+        stub(root, [pr_record()])
+        ((label, sources),) = derived_info(root)
+        rc, out, _err = run("install", root, DATE, stage(root, composed_journal([shadow])), "meta-triggers")
+        assert rc == 2 and f"SOURCES_UNCITED {label} -- {sources[0]}" in out, out
+    with worktree() as root:  # known-bad: one session titled with two labels may stand for only one category
+        stub(root, [record(), pr_record()])  # claude-md + dev-env-pr from ONE dev-env stub
+        info = derived_info(root)
+        both = composed_journal([("CLAUDE.md modified and dev-env PR merged", info[0][1])])
+        rc, out, _err = run("install", root, DATE, stage(root, both), "meta-triggers")
+        assert rc == 2 and "SESSIONS_MISSING=dev-env PR merged" in out, out
+
+
 def test_install_never_overwrites_a_journal_it_did_not_write():
-    """PR #1126 review: same-slug installs silently replaced an already-committed journal."""
+    """PR #1126 review: same-slug installs silently replaced an already-committed journal.
+    A directory git cannot vouch for (no linked worktree) keeps the conservative rule."""
     with worktree() as root:
         stub(root, [record()])
         staged = stage(root, journal_for(root))
@@ -1262,8 +1397,50 @@ def test_skill_wires_step_6_7_to_every_subcommand_and_step_10_to_both_checks():
     for name in ("check-clean", "check-staged"):
         assert re.search(rf"journal-compose-meta\.py {name} ", step_10), f"Step 10 must run {name}"
     phase_2 = _section(skill, r"^### Phase 2 — .*$")
-    for name in ("check-clean", "check-staged"):
-        assert name in phase_2, f"Phase 2 must run {name} before its combined commit"
+    # An executable invocation inside a fenced block -- a prose mention of the word does not run anything.
+    assert re.search(r"^\s*py -3 \S*journal-compose-meta\.py check-staged ", phase_2, re.MULTILINE), (
+        "Phase 2 must invoke check-staged, not merely mention it"
+    )
+
+
+def _fenced_blocks(section):
+    blocks, current = [], None
+    for line in section.split("\n"):
+        if line.lstrip().startswith("```"):
+            if current is None:
+                current = []
+            else:
+                blocks.append(current)
+                current = None
+        elif current is not None:
+            current.append(line)
+    return blocks
+
+
+def test_every_commit_block_re_runs_check_staged_first_and_stops_on_its_failure():
+    """PR #1126 second review, blocking 1: Phase 2's block ran check-staged and then committed and
+    pushed unconditionally, so the check gated nothing. Pin the invocation AND its position."""
+    skill = _read_doc(_SKILL)
+    for name, heading in (("Phase 2", r"^### Phase 2 — .*$"), ("Step 10", r"^## Step 10 — .*$")):
+        section = _section(skill, heading)
+        commit_blocks = [b for b in _fenced_blocks(section) if any(re.match(r'\s*git -C "\$WT" commit\b', l) for l in b)]
+        assert commit_blocks, f"{name}: no fenced block containing the commit was extracted"
+        for block in commit_blocks:
+            commit_at = next(i for i, l in enumerate(block) if re.match(r'\s*git -C "\$WT" commit\b', l))
+            guards = [i for i, l in enumerate(block)
+                      if re.match(r"\s*py -3 \S*journal-compose-meta\.py check-staged ", l)]
+            assert guards and guards[0] < commit_at, f"{name}: check-staged must run before the commit, in the same block"
+            guard = block[guards[0]]
+            assert "||" in guard and "exit" in guard, f"{name}: a failed check-staged must stop the block: {guard!r}"
+        # The staging itself must never be keyed on META_STATUS: a FAILED pass can still have installed
+        # a real-stub journal (non-blocking 1), and META_JOURNAL is what says one exists.
+        assert "META_STATUS=composed" not in section, f"{name}: staging must key on META_JOURNAL"
+        assert "META_JOURNAL" in section, f"{name}: the meta staging must be conditioned on META_JOURNAL"
+    phase_2 = _section(skill, r"^### Phase 2 — .*$")
+    staging = [b for b in _fenced_blocks(phase_2) if any("add -u sessions/" in l for l in b)]
+    assert staging and any(
+        re.match(r"\s*py -3 \S*journal-compose-meta\.py check-staged ", l) for l in staging[0]
+    ), "Phase 2's staging block must end with the check, so its result is read before any commit"
 
 
 def test_meta_staging_lines_are_real_commands_not_comments():
@@ -1305,7 +1482,16 @@ def test_routine_states_the_unattended_meta_rule_in_its_own_words():
         "Late meta entry recovery",
     ):
         assert unique in re.sub(r"\s+", " ", constraints), f"the routine's constraint bullet lost: {unique!r}"
-    assert "Step 6.7" in routine and "Meta journal:" in routine
+    # Steps 5 and 6 each carry their own instruction; the constraint bullet also says "Meta journal:",
+    # so a whole-file substring check cannot tell whether either step still does (second review, NB 4).
+    steps = routine.split("**Constraints:**", 1)[0]
+    step_5 = re.search(r"^5\. .*?(?=^6\. )", steps, re.MULTILINE | re.DOTALL)
+    step_6 = re.search(r"^6\. .*", steps, re.MULTILINE | re.DOTALL)
+    assert step_5 and step_6, "routine steps 5 and 6 were not extracted"
+    assert "Step 6.7" in re.sub(r"\s+", " ", step_5.group(0)), "step 5 must say the skill composes meta (its Step 6.7)"
+    assert "`Meta journal:` status" in re.sub(r"\s+", " ", step_6.group(0)), (
+        "step 6 must tell the routine to report the PR body's Meta journal: status line"
+    )
 
 
 # ---------------------------------------------------------------------------

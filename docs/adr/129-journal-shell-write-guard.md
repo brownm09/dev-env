@@ -371,8 +371,12 @@ unaffected:
 
 - **The Write tool cannot reach the target.** The harness refuses the coordinator's Write/Edit into the isolated
   compose worktree ([dev-env#1119](https://github.com/brownm09/dev-env/issues/1119)), and this guard blocks the
-  Bash alternatives. A Python process launched by Bash and given a file path is the only compliant writer, and it
-  carries no inline literal, so none of the shell-quoting failure modes this ADR exists to prevent can occur.
+  common Bash alternatives. One quoting form slips through today: a quoted variable glued to a literal tail,
+  `echo x > "$WT"/sessions/meta/….stub.md`, which the tokenizer reads as the target `$WT` (verified against this
+  guard on 2026-10-03; pre-existing, tracked in [dev-env#1127](https://github.com/brownm09/dev-env/issues/1127)).
+  The helper's reason to exist does not depend on the guard's completeness: a Python process launched by Bash and
+  given a file path is the only writer the harness allows at all, and it carries no inline literal, so none of the
+  shell-quoting failure modes this ADR exists to prevent can occur.
 - **The guard is structurally outside the match, not overridden.** It keys on shell *text* — a redirect, `tee`,
   or a `node -e` / `py -c` body naming a stub or manifest path.
   `py -3 journal-compose-meta.py stub <worktree> <date> <records.jsonl>` names no such path.

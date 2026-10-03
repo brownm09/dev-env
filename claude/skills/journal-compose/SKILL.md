@@ -502,8 +502,9 @@ Step 2b — Meta trigger check. Do NOT prompt the user, ask questions, or create
     claude-md, platform-constraint, workflow-failure, convention, dev-env-pr,
     journal-structure, canonical-reference
   <stub filename> is the YYYY-MM-DD_HHMMSS.stub.md the change appears in, and <phrase> is a short
-  exact phrase of at least three words copied CHARACTER FOR CHARACTER from ONE line of that stub,
-  markdown and punctuation included. The line must be valid single-line JSON: escape every
+  exact phrase of at least three words copied CHARACTER FOR CHARACTER from ONE line of a session
+  block of that stub (never the opening brief above its first "## Session" heading), markdown and
+  punctuation included. The line must be valid single-line JSON: escape every
   backslash as \\ and every double quote as \" (or pick a phrase from the same line that has
   neither). The coordinator's helper rejects, by name, any record whose phrase is not in the stub
   it cites: copy, never paraphrase. Proceed immediately to Step 3.
@@ -594,15 +595,16 @@ scheduled run and its `_draft.md` was never composed
 [#892](https://github.com/brownm09/dev-env/issues/892)).
 
 Then for each composed project in sequence — every Phase 1 project, plus `meta` when Step 6.7
-composed it:
+installed a meta journal (`META_JOURNAL` is set):
 - **Step 7** — Update `sessions/<project>/README.md`
 - **Step 8** — Update the top-level `README.md` (one pass covering all projects)
 - **Step 9** — Delete stubs, manifests, and release lock for this project
 - **Step 9.5** — Reconcile this project's open-PR shards
 
 Finally, run Step 10's `check-clean` (with its remedy rules), then do one combined commit and PR
-(**Steps 10–11**) that stages all projects' files. When `META_STATUS=composed` the second `git add`
-below is required, and the `check-staged` that follows fails without it:
+(**Steps 10–11**) that stages all projects' files. Stage and check first, as ONE Bash call (it
+defines `WT` itself, and `$WT` does not persist between calls). When `META_JOURNAL` is set the
+second `git add` is required, and the `check-staged` that follows fails without it:
 ```bash
 WT=C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-YYYY-MM-DD
 # Stage all composed files and README updates: one journal + README line per composed project
@@ -613,18 +615,26 @@ git -C "$WT" add \
   sessions/project-a/README.md \
   sessions/project-b/README.md \
   README.md
-# META_STATUS=composed only: meta's journal is a new, untracked file, so `add -u` below cannot see it
+# META_JOURNAL set only: meta's journal is a new, untracked file, so `add -u` below cannot see it
 git -C "$WT" add sessions/meta/YYYY-MM-DD-<meta-slug>.md sessions/meta/README.md
 # Stage deleted stubs/shards and reconciled open-PR shards across all projects
 git -C "$WT" add -u sessions/
 py -3 C:/Users/brown/.claude/scripts/journal-compose-meta.py check-staged "$WT" YYYY-MM-DD
+```
+**Do not commit unless that printed `CHECK_STAGED=ok`.** Exit 2 lists each `UNSTAGED` path (Step 10
+says how to read it): stage it, or stop. Only then commit and push, in a second Bash call. It
+re-runs the check and refuses to go on past a failure, because a commit built from an index the
+check rejected is already published by the time anyone reads the output:
+```bash
+WT=C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-YYYY-MM-DD
+SOURCE_BRANCH=draft/YYYY-MM-DD   # the draft branch Step 0.6 resolved (it does not persist either)
+py -3 C:/Users/brown/.claude/scripts/journal-compose-meta.py check-staged "$WT" YYYY-MM-DD || { echo "STOP: check-staged failed; nothing is committed"; exit 1; }
 git -C "$WT" commit -m \
   "[docs] Add YYYY-MM-DD journals: <slug-a>, <slug-b>, ..."
 git -C "$WT" push origin "HEAD:refs/heads/$SOURCE_BRANCH"
 git -C "$WT" rev-parse HEAD~1
 ```
-Stop if `check-staged` exits non-zero (Step 10 says how to read it). The last command prints the
-**pre-compose draft tip** — keep it for the PR body (Step 11).
+The last command prints the **pre-compose draft tip** — keep it for the PR body (Step 11).
 
 Open one PR covering all projects (Step 11). List each composed journal in the PR body, plus
 the combined `RECONCILED_SHARDS` list from every project's Step 9.5, plus any `LOCK_TAKEOVER`
@@ -696,9 +706,13 @@ instead (the template's Step 2b). A record is one JSON object:
 {"project": "<project>", "type": "<slug>", "stub": "<stub filename>", "reason": "<one sentence: what changed and why it is meta-level>", "evidence": "<a short exact phrase copied character for character from ONE line of that stub>"}
 ```
 
-`evidence` is the verification handle. Step 6.7's helper rejects, by name, any record whose phrase
-does not appear verbatim in the stub it cites — so copy it, never paraphrase it, and keep it to one
-line, markdown and punctuation included.
+`evidence` is the verification handle: a phrase of **at least three words**, copied character for
+character from ONE line of a **session block** (never from the opening brief above the stub's first
+`## Session` heading). Step 6.7's helper rejects, by name, any record whose phrase is shorter, is
+not found verbatim in the stub it cites, or sits above that first heading — so copy it, never
+paraphrase it, keep it to one line, markdown and punctuation included. The line you print is JSON:
+escape every backslash as `\\` and every double quote as `\"` (or pick a phrase from the same line
+that has neither).
 
 If **no triggers match**, continue to Step 3. If one or more match, **do not ask the user anything
 and do not create any file**: keep the records for Step 6.7 and continue to Step 3.
@@ -1151,7 +1165,8 @@ below gates this step instead of a report.
 The helper is `C:/Users/brown/.claude/scripts/journal-compose-meta.py`; `$WT` is the compose
 worktree. It does every write into `$WT` itself: the harness refuses this session's Write/Edit into
 the compose worktree ([#1119](https://github.com/brownm09/dev-env/issues/1119)), and the shell-write
-hook blocks Bash redirects to stub and manifest paths
+hook blocks most Bash redirects to stub and manifest paths (one quoting form still slips through,
+[#1127](https://github.com/brownm09/dev-env/issues/1127) — do not rely on that gap)
 ([ADR-129 Amendment 2](https://github.com/brownm09/dev-env/blob/main/docs/adr/129-journal-shell-write-guard.md)).
 Use the Write tool only for the two scratch files below, never for anything under `$WT`.
 
@@ -1177,8 +1192,9 @@ Use the Write tool only for the two scratch files below, never for anything unde
    `META_TRIGGER_REJECTED` line (it carries the record's own reason) is a trigger that was *not*
    captured: carry it to the PR body (Step 11). `META_STATUS=rejected` with exit 2 (records arrived,
    none accepted) is a derived-side failure — see the failure policy below; it is **not** `none`,
-   which means no triggers were reported. A write failure exits 1 with the earlier derived set
-   intact. Never hand-create or hand-edit a derived stub.
+   which means no triggers were reported. A write failure exits 1 and leaves the earlier derived
+   set untouched or no derived files at all, never a mixture. Never hand-create or hand-edit a
+   derived stub.
 4. **Compose `sessions/meta/`** in this session by following Steps 2–6.5 over every
    `sessions/meta/YYYY-MM-DD_*.stub.md` — real stubs and derived stubs together, in filename order
    (derived stubs sort last) — with these differences for a **derived stub**:
@@ -1199,7 +1215,8 @@ Use the Write tool only for the two scratch files below, never for anything unde
      "*(Not applicable — derived sessions have no token usage of their own.)*".
    - When real meta stubs exist, Step 6.5's fidelity floor still applies to their share: `install`
      prints `REAL_SOURCE_LINES` and `REAL_FIDELITY=n/m`. If `LINE_COUNT` is below 50% of
-     `REAL_SOURCE_LINES`, expand the staged file and re-run `install` before moving on. Derived
+     `REAL_SOURCE_LINES`, expand the staged file and re-run `install` before moving on (it
+     replaces the journal it installed earlier in this run, so the re-run is safe). Derived
      stubs never count toward the floor.
    - The slug follows Step 3 — synthesize one, never ask — and uses lowercase letters, digits and
      hyphens, at most 80 characters. For a derived-only day use
@@ -1216,38 +1233,51 @@ Use the Write tool only for the two scratch files below, never for anything unde
    `## Session N — <that stub's label>` section citing each of the stub's `Source:` paths. It
    prints `INSTALL_REFUSED` with `STRUCTURE=missing:<list>`, `SESSIONS_MISSING=<labels>` and/or
    `SOURCES_UNCITED <label> -- <path>` lines. Fix the staged file accordingly and re-run **once**.
-   `FIDELITY=n/m` is information, never a gate. It never overwrites a meta journal for the date
-   that it did not just write: if it reports one already exists (stubs added to an
-   already-composed day), do not overwrite or remove it — stop and report. On success it prints
+   One session per category: a session titled with two labels stands for only the first, and a
+   real meta session that merely mentions a label does not satisfy it. `FIDELITY=n/m` is
+   information, never a gate. It replaces a journal it installed earlier in this run (untracked in
+   `$WT`), but never one the draft branch already carries: then it prints
+   `META_JOURNAL_EXISTS=<path>` and exits 1 — do not overwrite or remove that file (the failure
+   policy says what to do next). On success it prints
    `META_JOURNAL=sessions/meta/YYYY-MM-DD-<slug>.md`, and meta is now a composed project for
    Steps 7–11.
 6. **Clean up** the two scratch files, on success **and on any failure**: `rm -f` the records file
    and the staged file named above. (Left behind, the Write tool refuses to overwrite them on a
    retry in a session that has not read them.)
 
-Record `META_STATUS` for the PR body (Step 11): `composed` (the journal path and `stub`'s
-accepted/rejected counts), `none`, or `failed:<reason>`.
+Record two values for the later steps. They are independent: after a derived-side failure on a day
+with real meta stubs, the first is set and the second is `failed:<reason>`.
+
+- `META_JOURNAL` — the `sessions/meta/YYYY-MM-DD-<slug>.md` path `install` printed, or empty when no
+  meta journal was installed. **This alone decides whether meta is a composed project** for Steps
+  7–11: its README (Step 7), the Step 8b scan paths, the staging in Step 10 and Phase 2, and the
+  Step 10.5 note all key on it, never on `META_STATUS`.
+- `META_STATUS` — what the PR body says (Step 11): `composed` (the journal path and `stub`'s
+  accepted/rejected counts), `none` (no triggers were reported), or `failed:<reason>`.
 
 **Failure policy — a trigger report can never stop the compose.** Before this step existed, trigger
 reports could not block a compose, and they still must not. Two kinds of failure, treated
 differently:
 
 - **Derived-side failure:** `stub` exits 1 or 2 (every record rejected, an unreadable records file,
-  a write failure), the helper cannot run, or `install` refuses twice while derived stubs are
-  present. Run
+  a write failure); the helper cannot run; `install` is refused twice (exit 2) while derived stubs
+  are present; or, with no real meta stubs, `install` prints `META_JOURNAL_EXISTS=` (the draft
+  branch already carries a composed meta journal for the date, which must be left alone). Run
   `py -3 C:/Users/brown/.claude/scripts/journal-compose-meta.py abandon "$WT" YYYY-MM-DD` (derived
   files must not linger), set `META_STATUS=failed:<reason>`, and list every trigger not captured
   (the `META_TRIGGER_REJECTED` lines, or the records themselves) for the PR body, with a pointer to
   [REFERENCE.md → Late meta entry recovery](https://github.com/brownm09/dev-env/blob/main/docs/REFERENCE.md#late-meta-entry-recovery).
   Then, **if real meta stubs exist, compose them on their own**: redo step 4 for the real stubs
-  only, and `install` (with no derived stubs it prints `SOURCES_CITED=n/a`). With no real stubs,
-  carry on without meta.
+  only, and `install` (with no derived stubs it prints `SOURCES_CITED=n/a`; that sets
+  `META_JOURNAL` while `META_STATUS` stays `failed:<reason>`). With no real stubs, carry on without
+  meta (`META_JOURNAL` stays empty).
 - **The real-stub journal cannot be installed** (it is refused twice with no derived stubs present,
-  or `install` reports a journal for the date that it did not write): meta is then an ordinary
-  project that failed — stop and report, as Phase 2's error check does for any project.
+  or `install` prints `META_JOURNAL_EXISTS=` while real meta stubs are present — stubs added to an
+  already-composed day, the `reconcile-late-stubs.py` case): meta is then an ordinary project that
+  failed — stop and report, as Phase 2's error check does for any project.
 
-Steps 7, 8, 8a, 8b, 9 and 9.5 then run for meta like any other project — 8a and 8b included, so
-the stray-output scan covers meta's journal and folder README. Until
+Steps 7, 8, 8a, 8b, 9 and 9.5 then run for meta like any other project whenever `META_JOURNAL` is
+set — 8a and 8b included, so the stray-output scan covers meta's journal and folder README. Until
 [#1119](https://github.com/brownm09/dev-env/issues/1119) is fixed, its script-file recipe applies to
 meta's READMEs exactly as it does to every other project's. Step 9's existing `rm` globs consume the
 derived stubs and manifest shards; they are untracked, so nothing about them reaches a commit.
@@ -1572,9 +1602,10 @@ py -3 C:/Users/brown/.claude/scripts/validate-composed-output.py \
 ```
 
 In multi-project mode, pass every project's journal entry and folder README in the same
-invocation (absent paths are skipped, so an unmatched glob is harmless). When Step 6.7 composed
-meta, add `"$WT"/sessions/meta/YYYY-MM-DD-<meta-slug>.md` and `"$WT"/sessions/meta/README.md` — in
-the single-project flow as well — so the meta journal and its README get the same scan.
+invocation (absent paths are skipped, so an unmatched glob is harmless). When `META_JOURNAL` is
+set (Step 6.7 installed a meta journal), add `"$WT"/sessions/meta/YYYY-MM-DD-<meta-slug>.md` and
+`"$WT"/sessions/meta/README.md` — in the single-project flow as well — so the meta journal and its
+README get the same scan.
 
 - **Exit 0:** No stray terminal output — proceed to Step 9.
 - **Exit 1:** Read every region the script prints. It reports `file:line`, which check fired,
@@ -1732,8 +1763,9 @@ git -C "$WT" add README.md
 git -C "$WT" add -u sessions/<project>/
 ```
 
-**When `META_STATUS=composed`, also run this block.** These are real commands, not options; skip
-them and `check-staged` below fails:
+**When `META_JOURNAL` is set, also run this block** (that includes a day whose triggers failed but
+whose real meta stubs were composed). These are real commands, not options; skip them and
+`check-staged` below fails:
 
 ```bash
 git -C "$WT" add sessions/meta/YYYY-MM-DD-<meta-slug>.md sessions/meta/README.md
@@ -1765,7 +1797,7 @@ Every line must be `README.md`, `sessions/<project>/README.md`,
 `sessions/<project>/YYYY-MM-DD-<slug>.md`, or a path under `sessions/<project>/` that this
 compose run itself just consumed — a stub, a manifest shard, a legacy `.manifest.jsonl` /
 `open-prs.jsonl` being drained, or an `open-prs/<N>.json` shard **that appears in this run's
-`RECONCILED_SHARDS` list from Step 9.5** — or, when Step 6.7 composed meta, the same shapes
+`RECONCILED_SHARDS` list from Step 9.5** — or, when `META_JOURNAL` is set, the same shapes
 under `sessions/meta/` plus `sessions/meta/YYYY-MM-DD-<meta-slug>.md` (derived stubs and their
 manifest shards never appear here: they are untracked). Because the compose worktree is private to this run
 (nothing else ever writes to it), anything else in the staged diff signals a mistake in the
@@ -1773,10 +1805,14 @@ compose flow itself — not a concurrent session — but still means **stop**; d
 you understand what produced it.
 
 ```bash
+py -3 C:/Users/brown/.claude/scripts/journal-compose-meta.py check-staged "$WT" YYYY-MM-DD || { echo "STOP: check-staged failed; nothing is committed"; exit 1; }
 git -C "$WT" commit -m "[docs] Add YYYY-MM-DD journal: <slug>"
 git -C "$WT" push origin "HEAD:refs/heads/$SOURCE_BRANCH"
 git -C "$WT" rev-parse HEAD~1
 ```
+
+The first line re-runs the check inside the commit block, so a commit can never be built from an
+index the check rejects, whatever happened to the index since the earlier run.
 
 Note the `rev-parse` output: it is the **pre-compose draft tip**, the last commit that still holds
 the day's stubs. Step 11's PR body records it, because on the Step 10.5 conflict path the draft
@@ -1859,7 +1895,7 @@ git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
 #    3-way-merged or stopped on, never blind-overwritten (dev-env#890). Pathspecs are the
 #    only difference between this and the multi-project block below — the logic lives in one
 #    tested script so the two cannot drift. ADR-104 + Amendment 1.
-#    sessions/meta/ is named whenever Step 6.7 composed meta: leaving it out would silently drop
+#    sessions/meta/ is named whenever META_JOURNAL is set: leaving it out would silently drop
 #    the meta journal on this path. Naming it when meta was not composed is harmless — only
 #    paths the draft branch actually changed are replayed.
 bash C:/Users/brown/.claude/scripts/journal-compose-replay.sh "$WT" "$PREV" \
@@ -1925,7 +1961,7 @@ git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
 
 # Same script, same exit-code rule as the single-project block above — the only difference is
 # the pathspec list, which here names every project composed this run — meta included whenever
-# Step 6.7 composed it — plus the top-level README. Both READMEs and the shared top-level one
+# META_JOURNAL is set — plus the top-level README. Both READMEs and the shared top-level one
 # are exactly the paths a concurrent compose is most likely to have touched on main, so the
 # both-sides partition matters most here.
 bash C:/Users/brown/.claude/scripts/journal-compose-replay.sh "$WT" "$PREV" \
@@ -1953,7 +1989,10 @@ precedent set by engineering-journal PR #150. Also include Step 6.7's `Meta jour
 when it is `FAILED` or any trigger was rejected, every trigger not captured (the
 `META_TRIGGER_REJECTED` lines, which carry each record's reason), so a reviewer can recover it with
 the late-meta runbook. `META_STATUS=rejected` and `failed:<reason>` both read `FAILED —`; `none`
-means only that no triggers were reported. Include the **pre-compose draft tip** Step 10 printed:
+means only that no triggers were reported. The line also names the installed journal whenever
+`META_JOURNAL` is set — including after a `FAILED` pass whose real meta stubs were composed alone —
+so the PR body never says `FAILED` next to a meta journal it does not mention. Include the
+**pre-compose draft tip** Step 10 printed:
 on the Step 10.5 conflict path no commit in this PR contains the day's stubs, and the runbook reads
 them from that SHA. In an unattended run the PR body is the only surface any of this reaches.
 
@@ -1970,7 +2009,7 @@ Open-PR shards reconciled (verified merged/closed via gh before removal): <RECON
 
 Paths both branches changed (3-way merged or hand-reconciled, never overwritten): <BOTH_CHANGED or "none">.
 
-Meta journal: <composed: sessions/meta/YYYY-MM-DD-<slug>.md (N triggers accepted, M rejected) | none: no meta triggers | FAILED — <reason>; triggers not captured: <list>>.
+Meta journal: <composed: sessions/meta/YYYY-MM-DD-<slug>.md (N triggers accepted, M rejected) | none: no meta triggers (real meta stubs composed: <sessions/meta/YYYY-MM-DD-<slug>.md or "none">) | FAILED — <reason>; triggers not captured: <list>; meta journal from the real stubs alone: <sessions/meta/YYYY-MM-DD-<slug>.md or "none">>.
 
 Pre-compose draft tip (the day's stubs are recoverable from it): <the SHA Step 10 printed>.
 

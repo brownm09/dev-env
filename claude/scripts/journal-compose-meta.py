@@ -10,8 +10,9 @@ in the same run from *derived stubs*. This script is the part of that pass that 
 an LLM or to the Write tool:
 
 * The harness refuses the coordinator's Write/Edit into the isolated compose worktree (#1119), and
-  ``pre-tool-use-journal-shell-write-guard.py`` blocks Bash redirects to stub and manifest paths, so
-  a Python process launched by Bash is the only compliant writer (ADR-129 Amendment 2).
+  ``pre-tool-use-journal-shell-write-guard.py`` blocks most Bash redirects to stub and manifest
+  paths (one quoting form is a known gap, #1127), so a Python process launched by Bash is the only
+  compliant writer (ADR-129 Amendment 2).
 * A Phase 1 subagent's trigger report is a claim. ``stub`` checks each record against the stub it
   cites before anything is written, and names every rejection -- nothing is dropped silently.
 * The coordinator's composed journal is a claim too. ``install`` gates it before it is copied into
@@ -33,17 +34,22 @@ one *derived stub* per trigger category into ``<WT>/sessions/meta/`` as ``DATE_2
 a manifest shard. A line that is not valid JSON is a named rejection, never a failed batch. Derived
 files are untracked, never pushed, and consumed by Step 9's ordinary deletion globs in the same run.
 ``install`` copies the staged composed journal to ``<WT>/sessions/meta/DATE-<slug>.md`` once it has
-all eleven required headings **and**, for every derived stub, a ``## Session N -- <that stub's
-category label>`` section that cites each of the stub's ``Source:`` paths. ``abandon`` removes
-derived files and only derived files. ``check-clean`` fails if any stub, manifest, ``_draft.md`` or
-temp file for the date remains in any ``sessions/<project>/`` directory. ``check-staged`` fails if
-``git status`` shows anything unstaged or untracked (apart from compose lock files), so the commit
-Step 10 builds from the index is the commit the working tree describes.
+all eleven required headings **and**, for every derived stub, its own ``## Session N -- <that
+stub's category label>`` section (one session per category) citing each of the stub's ``Source:``
+paths. It replaces a journal this run installed earlier (untracked in the worktree, which is
+created fresh from the draft branch), so Step 6.7's "expand the staged file and re-run" remedy
+works; it never replaces one the draft branch already carries (tracked) -- it prints
+``META_JOURNAL_EXISTS=<path>`` and exits 1. ``abandon`` removes derived files and only derived
+files. ``check-clean`` fails if any stub, manifest, ``_draft.md`` or temp file for the date remains
+in any ``sessions/<project>/`` directory. ``check-staged`` fails if ``git status`` shows anything
+unstaged or untracked (apart from compose lock files), so the commit Step 10 builds from the index
+is the commit the working tree describes.
 
-Exit 0 -- ok. Exit 1 -- usage or precondition error, or a write failure that was rolled back.
-Exit 2 -- verification failure (``stub``: records arrived and none was accepted; ``install``: the
-journal was refused; ``check-clean`` / ``check-staged``: something was left behind). Reports go to
-stdout as ``KEY=value`` lines, errors to stderr prefixed ``[journal-compose-meta]``.
+Exit 0 -- ok. Exit 1 -- usage or precondition error, or a write failure (a failed ``stub`` leaves
+either the earlier derived set untouched or no derived files at all, never a mixture). Exit 2 --
+verification failure (``stub``: records arrived and none was accepted; ``install``: the journal
+was refused; ``check-clean`` / ``check-staged``: something was left behind). Reports go to stdout
+as ``KEY=value`` lines, errors to stderr prefixed ``[journal-compose-meta]``.
 
 Calibration (ADR-144). The only numeric constant is ``MIN_EVIDENCE_WORDS = 3``: evidence is a
 claim that a phrase is in a stub, and a one- or two-word phrase ("e", "PR", "the gap") occurs in
@@ -116,6 +122,7 @@ _PROJECT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
 _BOUNDARY_RE = re.compile(r"^(?:#{1,6}\s|<!--)")
 _H2_RE = re.compile(r"^##\s+(.*\S)\s*$")
+_ANY_HEADING_RE = re.compile(r"^#{1,6}\s+(.*\S)\s*$")
 _SESSION_H2_RE = re.compile(r"^## Session [0-9]+ — ")
 _DERIVED_LABEL_RE = re.compile(r"^## (.+?) — detected in ", re.MULTILINE)
 
@@ -321,16 +328,26 @@ def remove_derived(wt, date, include_temps=True):
 
     Marker-verified: a real stub or manifest is never touched. ``include_temps`` also removes the
     ``*.tmp-<pid>`` files a failed write can leave (``stub`` passes False: it stages new temp files
-    before it removes the old set). Returns the removed relative paths.
+    before it removes the old set). Never raises: returns ``(removed, failed)`` -- the relative
+    paths deleted, and ``(path, reason)`` for each file that could not be (a lock held by an
+    antivirus scanner or the indexer), so the caller reports it instead of dying with a traceback.
     """
-    removed = []
+    removed, failed = [], []
+
+    def drop(path):
+        try:
+            os.remove(path)
+        except OSError as exc:
+            failed.append((rel(wt, path), str(exc)))
+        else:
+            removed.append(rel(wt, path))
+
     _real, derived = list_meta_stubs(wt, date)
     for stub in derived:
         pair = stub[: -len(".stub.md")] + ".manifest.jsonl"
         for path in (stub, pair):
             if os.path.isfile(path):
-                os.remove(path)
-                removed.append(rel(wt, path))
+                drop(path)
     meta_dir = _meta_dir(wt)
     try:
         names = sorted(os.listdir(meta_dir))
@@ -339,12 +356,10 @@ def remove_derived(wt, date, include_temps=True):
     for name in names:
         path = os.path.join(meta_dir, name)
         if name.startswith(f"{date}_") and name.endswith(".manifest.jsonl") and _is_derived_manifest(path):
-            os.remove(path)
-            removed.append(rel(wt, path))
+            drop(path)
         elif include_temps and name.startswith((f"{date}_", f"{date}-")) and ".tmp-" in name:
-            os.remove(path)
-            removed.append(rel(wt, path))
-    return removed
+            drop(path)
+    return removed, failed
 
 
 def allocate_names(date, type_indexes, taken):
@@ -387,11 +402,29 @@ def find_evidence(lines, needle):
 
 
 def session_heading(lines, index):
-    """Text of the nearest H2 at or above ``index``, or None."""
+    """Text of the session heading at or above ``index``, or None.
+
+    The nearest H2 wins (a ``### Details`` sub-heading of a ``## Session`` block must not replace
+    it). A stub with no H2 at all -- the scheduled routines write ``### Session: ...`` -- falls back
+    to the nearest heading of any other level.
+    """
+    fallback = None
     for position in range(index, -1, -1):
         match = _H2_RE.match(lines[position])
         if match:
             return match.group(1)
+        if fallback is None:
+            other = _ANY_HEADING_RE.match(lines[position])
+            if other:
+                fallback = other.group(1)
+    return fallback
+
+
+def first_heading_index(lines):
+    """Index of the first Markdown heading of any level, or None."""
+    for position, line in enumerate(lines):
+        if _ANY_HEADING_RE.match(line):
+            return position
     return None
 
 
@@ -510,6 +543,16 @@ def validate_record(wt, date, record, listing):
         return reject(
             "evidence not found in the cited stub (copy a short phrase from ONE line, "
             "character for character)"
+        )
+    first_heading = first_heading_index(lines)
+    if first_heading is not None and index < first_heading:
+        # Above a stub's first heading of any level sits the opening brief: the previous day's Next
+        # Session Context, not this session's work, and Step 2b scans session blocks only. Keyed on
+        # "some heading exists below" rather than "an H2 exists": the scheduled routines write
+        # `### Session: ...` stubs with no H2 at all, and their body must stay citable.
+        return reject(
+            "evidence is above the stub's first heading (the opening brief carries the previous "
+            "day's context, not this session's work)"
         )
     return {
         "project": project,
@@ -695,7 +738,10 @@ def cmd_stub(wt, date, records_path):
         planned.append((names[index], build_derived_stub(date, label, group), json.dumps(manifest) + "\n"))
 
     # Stage every new file under a temp name first, so a failed write (an antivirus lock, a full
-    # drive) leaves the earlier derived set untouched; only then swap the sets.
+    # drive) leaves the earlier derived set untouched; only then swap the sets. A failure while
+    # swapping cannot restore the earlier set (the swap deletes it first), so it clears every
+    # derived file instead: the caller always ends with the whole new set or with none of it, never
+    # a mixture that Step 9 would half-consume.
     meta_dir = _meta_dir(wt)
     staged = []
     try:
@@ -708,14 +754,20 @@ def cmd_stub(wt, date, records_path):
         for temp, _final in staged:
             _remove_quietly(temp)
         return _fail(f"could not write the derived stubs ({exc}); nothing was changed")
-    remove_derived(wt, date, include_temps=False)
     try:
+        _removed, stuck = remove_derived(wt, date, include_temps=False)
+        if stuck:
+            raise OSError(f"could not remove the earlier {stuck[0][0]}: {stuck[0][1]}")
         for temp, final in staged:
             os.replace(temp, final)
     except OSError as exc:
         for temp, _final in staged:
             _remove_quietly(temp)
-        return _fail(f"could not place the derived stubs ({exc}); run 'abandon' before retrying")
+        _removed, stuck = remove_derived(wt, date)
+        if stuck:
+            names = ", ".join(path for path, _reason in stuck)
+            return _fail(f"could not place the derived stubs ({exc}); could not remove {names} -- run 'abandon'")
+        return _fail(f"could not place the derived stubs ({exc}); no derived files remain")
 
     total = 0
     for stub_name, stub_text, _manifest_text in planned:
@@ -746,6 +798,31 @@ def _derived_expectations(wt, derived):
     return expectations, None
 
 
+def _tracked_meta_files(wt):
+    """``(names, problem)``: the file names git tracks directly in ``<WT>/sessions/meta``.
+
+    ``names`` is None when git cannot say -- ``wt`` has no ``.git`` file (it is not a linked
+    worktree, so an enclosing repository must not answer for it), git is missing, or ``ls-files``
+    fails. Callers treat that as "not provably written by this run".
+    """
+    if not os.path.isfile(os.path.join(wt, ".git")):
+        return None, "not a linked git worktree"
+    try:
+        proc = subprocess.run(
+            ["git", "-C", wt, "ls-files", "-z", "--", "sessions/meta"], capture_output=True, check=False
+        )
+    except OSError as exc:
+        return None, f"cannot run git: {exc}"
+    if proc.returncode != 0:
+        return None, "git ls-files failed: " + proc.stderr.decode("utf-8", errors="replace").strip()
+    prefix = "sessions/meta/"
+    names = set()
+    for token in proc.stdout.decode("utf-8", errors="replace").split("\0"):
+        if token.startswith(prefix) and "/" not in token[len(prefix):]:
+            names.add(token[len(prefix):])
+    return names, None
+
+
 def cmd_install(wt, date, staged, slug):
     if not _SLUG_RE.fullmatch(slug):
         return _fail(f"slug {slug!r} must match [a-z0-9][a-z0-9-]* (at most 80 characters)")
@@ -766,17 +843,24 @@ def cmd_install(wt, date, staged, slug):
     sections = session_sections(text)
     missing_sessions, uncited = [], []
     pairs_total = pairs_cited = 0
+    claimed = set()
     for label, sources in expectations:
-        section = next((body for heading, body in sections if label in heading), None)
         pairs_total += len(sources)
-        if section is None:
+        # One session per derived stub. A session may be titled with another category's label (a
+        # real meta session about "dev-env PR merged" can precede the derived one), and a session
+        # titled with two labels may stand for only one of them. So each category claims the first
+        # unclaimed session that carries its label AND cites all of its sources; failing that, the
+        # one that cites the most is blamed, so the report names what is actually missing.
+        candidates = [i for i, (heading, _body) in enumerate(sections) if label in heading and i not in claimed]
+        if not candidates:
             missing_sessions.append(label)
             continue
-        for source in sources:
-            if source in section:
-                pairs_cited += 1
-            else:
-                uncited.append((label, source))
+        cited_in = {i: [source for source in sources if source in sections[i][1]] for i in candidates}
+        complete = [i for i in candidates if len(cited_in[i]) == len(sources)]
+        chosen = complete[0] if complete else max(candidates, key=lambda i: len(cited_in[i]))
+        claimed.add(chosen)
+        pairs_cited += len(cited_in[chosen])
+        uncited += [(label, source) for source in sources if source not in cited_in[chosen]]
     if missing or missing_sessions or uncited:
         report = ["INSTALL_REFUSED"]
         if missing:
@@ -798,19 +882,32 @@ def cmd_install(wt, date, staged, slug):
         )
     except OSError:
         existing = []
+    # A journal the draft branch already carries (tracked), or one git cannot vouch for, was not
+    # written by this run and is never replaced. An untracked one can only be this run's earlier
+    # install -- the compose worktree is created fresh from the draft branch -- so it is replaced:
+    # Step 6.7's fidelity remedy ("expand the staged file and re-run install") needs exactly that.
+    foreign, own = [], []
     if existing:
+        tracked, _problem = _tracked_meta_files(wt)
+        for name in existing:
+            (foreign if tracked is None or name in tracked else own).append(name)
+    if foreign:
         previous, _error = read_utf8(target) if existing == [target_name] else (None, None)
         if previous != final_text:
+            _emit([f"META_JOURNAL_EXISTS=sessions/meta/{foreign[0]}"])
             return _fail(
-                f"a composed meta journal for {date} already exists (sessions/meta/{existing[0]}): "
-                "one per date. Do not overwrite or remove it -- report it (stubs added to an "
-                "already-composed day are the reconcile-late-stubs.py case)"
+                f"a composed meta journal for {date} already exists in the draft branch "
+                f"(sessions/meta/{foreign[0]}): one per date. Do not overwrite or remove it -- report "
+                "it (stubs added to an already-composed day are the reconcile-late-stubs.py case)"
             )
     else:
         try:
+            for name in own:
+                if name != target_name:  # an earlier install of this run, under another slug
+                    os.remove(os.path.join(meta_dir, name))
             write_text_atomic(target, final_text)
         except OSError as exc:
-            return _fail(f"could not write sessions/meta/{target_name} ({exc}); nothing was installed")
+            return _fail(f"could not install sessions/meta/{target_name} ({exc}); re-run install")
 
     def line_count(path):
         body, _err = read_utf8(path)
@@ -835,8 +932,11 @@ def cmd_install(wt, date, staged, slug):
 
 
 def cmd_abandon(wt, date):
-    removed = remove_derived(wt, date)
+    removed, failed = remove_derived(wt, date)
     _emit(["META_ABANDONED=" + (",".join(removed) if removed else "none")])
+    if failed:
+        _emit(["META_ABANDON_FAILED=" + ",".join(path for path, _reason in failed)])
+        return _fail("could not remove " + "; ".join(f"{path} ({reason})" for path, reason in failed))
     return 0
 
 

@@ -422,7 +422,8 @@ automatically would not have produced an entry.
   *replaces* the first one's (the 2026-09-30 compose, #272: three trigger types, then `none`).
 - **Write path.** The harness refuses the coordinator's Write/Edit into the isolated compose worktree
   ([dev-env#1119](https://github.com/brownm09/dev-env/issues/1119)), and
-  [ADR-129](129-journal-shell-write-guard.md)'s guard blocks the Bash alternatives for stub and manifest paths.
+  [ADR-129](129-journal-shell-write-guard.md)'s guard blocks the common Bash alternatives for stub and manifest
+  paths (one quoting form is a known gap, [dev-env#1127](https://github.com/brownm09/dev-env/issues/1127)).
 
 **Decision.**
 
@@ -448,11 +449,18 @@ automatically would not have produced an entry.
    `stub` verifies each trigger record against the stub it cites and writes the derived stubs and manifest
    shards: the `evidence` phrase must appear verbatim (after NFKC and whitespace normalization, on one line or
    two adjacent lines) and run to at least three words, because a one-word "phrase" verifies a fabricated
-   record; the project must equal a directory under `sessions/` exactly (the filesystem is case-insensitive
-   here) and is never `meta`; records arrive as JSON Lines, so one malformed line costs only itself.
+   record; the evidence line must lie below the stub's first heading of any level (above it sits the opening
+   brief, which carries the previous day's context; keyed on "some heading exists below", not on an H2,
+   because the scheduled routines write `### Session: …` stubs with no H2); the project must equal a
+   directory under `sessions/` exactly (the filesystem is case-insensitive here) and is never `meta`; records
+   arrive as JSON Lines, so one malformed line costs only itself.
    `install` gates the coordinator's composed journal — the eleven required headings **and**, for every
-   derived stub, a `## Session N — <that stub's label>` section citing each of its `Source:` paths — before
-   copying it into the compose worktree, and never overwrites a journal for the date that it did not write.
+   derived stub, its own `## Session N — <that stub's label>` section (one session per category; a session
+   titled with two labels stands for only the first) citing each of its `Source:` paths — before copying it
+   into the compose worktree. It replaces a journal it installed earlier in the run (untracked in the
+   worktree, which is created fresh from the draft branch), so the fidelity remedy "expand the staged file and
+   re-run" works, and never one the draft branch already carries (tracked: it prints `META_JOURNAL_EXISTS=` and
+   exits 1). Where git cannot say (no linked worktree), it stays conservative and replaces nothing.
    `abandon` removes derived files. `check-clean` fails if any stub, manifest, `_draft.md` or temp file for the
    date remains in a `sessions/<project>/` directory. `check-staged` fails on anything unstaged or untracked in
    `git status`, because the commit is built from the index while `check-clean` reads the working tree. A
@@ -470,13 +478,17 @@ automatically would not have produced an entry.
    cannot leave a stub the next run would compose as real; `check-clean` is the net. Step 2b no longer writes
    `_draft.md`; the Step 1 legacy read fallback stays for old days.
 7. **A trigger report can never stop the compose.** Before this change trigger reports could not block a
-   compose, and they still must not. On a derived-side failure (`stub` exits 1 or 2, the helper cannot run, or
-   `install` refuses twice while derived stubs are present) the coordinator runs `abandon`, composes meta from
-   the real stubs alone if there are any, and carries on. The PR body states `Meta journal: FAILED — …` with
-   the triggers not captured and the pre-compose draft tip, with a pointer to
+   compose, and they still must not. On a derived-side failure (`stub` exits 1 or 2, the helper cannot run,
+   `install` is refused twice while derived stubs are present, or — with no real stubs — `install` prints
+   `META_JOURNAL_EXISTS=`) the coordinator runs `abandon`, composes meta from the real stubs alone if there are
+   any, and carries on. The PR body states `Meta journal: FAILED — …` with the triggers not captured, the
+   real-stub journal if one was composed, and the pre-compose draft tip, with a pointer to
    [REFERENCE.md → Late meta entry recovery](../REFERENCE.md#late-meta-entry-recovery). Only when the
    real-stub journal itself cannot be installed does the compose stop, as for any project. Only `install` is
-   retried (once); a `stub` failure goes straight to the policy.
+   retried (once); a `stub` failure goes straight to the policy. Whether meta is a composed project for the
+   later steps (README, scan, staging) is decided by `META_JOURNAL` — the path `install` printed — never by
+   the PR-body status `META_STATUS`: after a `FAILED` pass a real-stub journal can still exist, and keying the
+   staging on the status left it untracked.
 
 **Judgment calls.**
 
@@ -504,8 +516,11 @@ automatically would not have produced an entry.
   triggers.
 - **`check-staged` exists because the commit is built from the index.** `check-clean` passed while the index
   still held real meta stubs and the composed journal was untracked — the #892 shape, shipped with a green
-  check and a PR body saying `composed`. Step 10 and Phase 2 now stage meta with real commands, and the
-  commit waits on `check-staged`.
+  check and a PR body saying `composed`. Step 10 and Phase 2 now stage meta with real commands, and each commit
+  block re-runs `check-staged` first and stops on a failure: the second review found Phase 2 committing and
+  pushing right after a failed check (the instruction to stop came after the block). A drift test now pins the
+  block structure, and an end-to-end run of the skill's own extracted snippets in a real bash (recorded in
+  `docs/TESTING.md` item 100) showed the failed check publishing nothing.
 - **ADR-129's "sole method" claim is bounded, not broken.** See its Amendment 2: derived stubs are
   compose-internal and never session records.
 - **Steps 7 and 8 are unchanged for meta.** Until #1119 is fixed, its script-file recipe applies to meta's
@@ -533,26 +548,30 @@ automatically would not have produced an entry.
   that have them).
 - Step 10.5's replay pathspecs must name `sessions/meta/` whenever meta was composed; omitting it would silently
   drop the entry on the conflict-recovery path.
-- **Testing.** `claude/scripts/tests/test_journal_compose_meta.py` (Testing item 100, 69 cases) replays a
+- **Testing.** `claude/scripts/tests/test_journal_compose_meta.py` (Testing item 100, 76 cases) replays a
   fixture day end to end — records, verified derived stubs and schema-valid manifest shards, gated
   install, simulated Step 9, `check-clean` — and carries the #892 regression (the old `_draft.md`
-  shape fails the tree-wide check) and a real-git fixture for `check-staged`. Drift gates tie the skill's
-  heading regexes, its trigger slugs and category labels (in Step 2b *and* the Phase 1 template's inline
-  copy), the trigger list in `claude/CLAUDE.md`, the real staging commands in Step 10 and Phase 2, the
-  Step 6.7 / Step 10 wiring and both Step 10.5 pathspec lists to the helper. Calibrated once against real
-  corpora (recorded in `docs/TESTING.md`): the heading check passes the four real meta journals and flags
-  exactly the four headings missing from the #273 career-playbook journal; 27 of 27 known-bad mutations of
-  the skill, routine and `claude/CLAUDE.md` are caught; and a dry run on the real 2026-10-01 day (7
-  records, 6 accepted, the fabricated one rejected by name) ended with only the composed meta journal in
-  the worktree. The LLM steps themselves are not exercised offline.
+  shape fails the tree-wide check) and real-git fixtures for `check-staged` and for `install`'s
+  tracked-versus-untracked rule. Drift gates tie the skill's heading regexes, its trigger slugs and category
+  labels (in Step 2b *and* the Phase 1 template's inline copy), the "Meta journal" trigger list in
+  `claude/CLAUDE.md`, the real staging commands in Step 10 and Phase 2, the position of `check-staged` ahead
+  of every commit, the Step 6.7 / Step 10 wiring and both Step 10.5 pathspec lists to the helper. Calibrated
+  once against real corpora (recorded in `docs/TESTING.md`): the heading check passes the four real meta
+  journals and flags exactly the four headings missing from the #273 career-playbook journal; 37 of 37
+  known-bad mutation cases against the skill, routine and `claude/CLAUDE.md` are caught; and a dry run on the
+  real 2026-10-01 day (7 records, 6 accepted, the fabricated one rejected by name) ended with only the
+  composed meta journal in the worktree. The skill's own Phase 2 snippets were also run end to end in a real
+  bash. The LLM steps themselves are not exercised offline.
 - **Observability.** N/A in the hook sense (dev-env's `## Observability`): the helper reports `KEY=value` lines
   on stdout and errors on stderr.
 - **Security.** N/A — no credentials or network; the helper validates every path, requires an absolute
   worktree argument that is not a primary checkout (an unsubstituted `$WT` must never mean the current
   directory), and writes only inside the compose worktree's `sessions/` tree.
-- **Resilience.** A derived-side meta failure cannot block the project journals; a failed write rolls back and
-  leaves the earlier derived set and no temp file; a crashed run leaves nothing on the draft branch;
-  re-running Step 0.6 regenerates everything.
+- **Resilience.** A derived-side meta failure cannot block the project journals; a failed write leaves either
+  the earlier derived set untouched (it failed while staging) or no derived files at all (it failed while
+  swapping — the swap deletes the earlier set first, so it cannot restore it, and a mixture would be the worst
+  state), and no temp file; a file that cannot be removed is reported, never raised as a traceback; a crashed run
+  leaves nothing on the draft branch; re-running Step 0.6 regenerates everything.
 - **Data integrity.** Derived manifest shards are validated against the five-field schema
   ([ADR-056](056-per-session-sharding-journal-companion-files.md)) before they are written; one meta journal
   per date.

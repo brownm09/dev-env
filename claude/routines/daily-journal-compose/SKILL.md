@@ -95,7 +95,8 @@ across projects internally), then report the resulting PR URL(s).
   ([dev-env#52](https://github.com/brownm09/dev-env/issues/52),
   [#892](https://github.com/brownm09/dev-env/issues/892);
   [ADR-082 Addendum, 2026-10-02](https://github.com/brownm09/dev-env/blob/main/docs/adr/082-journal-compose-worktree-isolation.md)).
-  If the meta pass fails, the skill carries on without it and the PR body says
+  If the meta pass fails, the skill carries on without it (composing meta from its real stubs
+  alone when it has any) and the PR body says
   `Meta journal: FAILED — …` with the triggers it could not capture: report that line; do not
   retry by hand and do not create a `YYYY-MM-DD_draft.md`. The recovery runbook is
   [REFERENCE.md → Late meta entry recovery](https://github.com/brownm09/dev-env/blob/main/docs/REFERENCE.md#late-meta-entry-recovery).
