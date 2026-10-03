@@ -668,6 +668,16 @@ Use that path wherever `sessions/<project>/` appears below.
   more than two sessions. This prevents the composed
   journal from fragmenting create-iterate-review sequences into unrelated-looking sections.
 
+- **Meta triggers are never asked about.** `/journal-compose` composes the meta journal itself —
+  attended or unattended, with no y/n prompt — from compose-generated *derived stubs* that are
+  consumed in the same run (its Step 6.7), and it never writes `sessions/meta/YYYY-MM-DD_draft.md`
+  (nothing composes that file). User decision, 2026-10-02: "In the future, please do the meta
+  journal entries." A miss is recoverable by hand:
+  [`docs/REFERENCE.md` → Late meta entry recovery](../docs/REFERENCE.md#late-meta-entry-recovery).
+  See [ADR-082](../docs/adr/082-journal-compose-worktree-isolation.md) Addendum (2026-10-02),
+  [dev-env#52](https://github.com/brownm09/dev-env/issues/52) and
+  [#892](https://github.com/brownm09/dev-env/issues/892).
+
 ---
 
 ### Stub file workflow
