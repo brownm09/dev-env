@@ -724,7 +724,15 @@ For a one-line navigational map of the test directory, see
     non-canonical squatter of a pattern, not just the first; the canonical itself is never flagged
     even when it legitimately holds the pattern), and `pattern_squat_action` (`warn-live` /
     `park-and-remove` / `park-only`, keyed on the caller-supplied `live`/`dirty`/`fully_pushed`
-    booleans — see [ADR-105](adr/105-draft-branch-worktree-squat-guard.md)).
+    booleans — see [ADR-105](adr/105-draft-branch-worktree-squat-guard.md)). Also pins the
+    dev-env#1104/ADR-146 addition, `find_orphaned_worktree_dirs(disk_dirs, worktrees)` — this
+    module's "fifth concern" (a directory `git worktree remove` already deregistered on a failed
+    Windows delete, so no check elsewhere in this module can see it): every disk dir registered ->
+    `[]`; a mix of registered and unregistered -> only the unregistered one returned; empty
+    `disk_dirs` -> `[]`; and a path-normalization case (a redundant `.` segment still resolves to
+    the same registered spelling via the shared `_norm()`, so it is never falsely flagged as an
+    orphan). The caller's own filesystem scan and delete-with-safety-checks (no `.git` link inside,
+    not a live session) are exercised in item 26 below, not here — this function stays pure.
 
     ```bash
     py -3 claude/scripts/tests/test_worktree_topology.py
@@ -823,6 +831,34 @@ For a one-line navigational map of the test directory, see
     timeout path above, which skips only. The
     merge-detection and worktree-list steps are not covered here — they are exercised end-to-end by
     `--dry-run` in the PR.
+
+    Also exercises the dev-env#1104/ADR-146 orphaned-worktree-directory scan against real
+    `tempfile.TemporaryDirectory()` trees (matching this file's own filesystem-test convention
+    rather than mocking `os.scandir`/`Path.exists`): `list_worktree_subdirs()` (a missing dir ->
+    `[]`, not an error; lists only directories, a sibling file excluded) and `has_git_link()`
+    (`.git` present/absent). `find_and_remove_orphaned_worktrees()`'s four paths: a safe orphan
+    (no `.git`, no live session) is actually deleted from disk; a directory that still has a
+    `.git` link is left completely untouched (the presence of `.git` means this is NOT the
+    dev-env#1104 orphan shape, so the function must never guess); a live-session candidate is
+    left untouched (the same ADR-051 liveness window the rest of this script already uses applies
+    here too); `--dry-run` reports it as would-remove without deleting anything; and an `OSError`
+    from one orphan's `shutil.rmtree` (the lock/long-path failure this feature exists for) is
+    caught and skipped without aborting a second orphan in the same call (mirroring the
+    `TimeoutExpired` skip-and-continue discipline the main removal loop above already has) — the
+    mocked-failure orphan and the successfully-cleared orphan are both created for real, and the
+    dispatcher calls the real `shutil.rmtree` for the one that should succeed rather than mocking
+    it too, so the test cannot pass by coincidence. An empty `primary` (the repo's `worktrees` list
+    was itself empty) short-circuits to `([], [])`. A final end-to-end case drives `prune_one()`
+    itself — not just the helper in isolation — against a real tmp directory standing in for the
+    primary worktree (every git call mocked via `subprocess.run`, so no real git process runs),
+    proving the wiring actually removes the orphan and folds it into the returned `(pruned,
+    skipped)` counts. **Deliberate scope note from authoring:** several of these tests initially
+    asserted `Path.exists()` *outside* the `tempfile.TemporaryDirectory()` `with` block, so
+    Python's own cleanup had already deleted the tree before the assertion ran — a bug in the test,
+    not the implementation, caught by re-running and finding four failures whose printed detail
+    (no "removed orphaned worktree dir" line, yet the directory was reported gone) did not match
+    what the code path being tested could have done; every filesystem assertion now runs inside
+    the block.
 
     ```bash
     py -3 claude/scripts/tests/test_prune_merged_worktrees.py
