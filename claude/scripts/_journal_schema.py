@@ -148,7 +148,7 @@ def malformed_manifest_fields(entry: object) -> list[str]:
 
 
 def malformed_tile_fields(entry: object) -> list[str]:
-    """Return descriptions of present-but-malformed fields in a tile shard entry.
+    r"""Return descriptions of present-but-malformed fields in a tile shard entry.
 
     Validates three independent fields — ``cwd``, ``stub``, ``task_id`` — and accumulates
     problems across all three rather than short-circuiting on the first (unlike

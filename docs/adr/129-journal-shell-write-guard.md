@@ -375,9 +375,10 @@ unaffected:
   carries no inline literal, so none of the shell-quoting failure modes this ADR exists to prevent can occur.
 - **The guard is structurally outside the match, not overridden.** It keys on shell *text* — a redirect, `tee`,
   or a `node -e` / `py -c` body naming a stub or manifest path.
-  `py -3 journal-compose-meta.py stub <worktree> <date> <records.json>` names no such path.
+  `py -3 journal-compose-meta.py stub <worktree> <date> <records.jsonl>` names no such path.
 - **Derived files are never session records.** They are untracked, never pushed, deleted by Step 9 in the same
-  run, and `journal-compose-meta.py check-clean` fails the compose if one survives.
+  run, and `journal-compose-meta.py check-clean` (working tree) and `check-staged` (index) fail the compose if
+  one survives.
 
 No other script-written journal content file is sanctioned by this amendment; a new one needs its own
 justification against the three points above.

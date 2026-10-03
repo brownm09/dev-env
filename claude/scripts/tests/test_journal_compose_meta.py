@@ -1,34 +1,36 @@
 #!/usr/bin/env python3
 """Tests for journal-compose-meta.py -- /journal-compose Step 6.7 (dev-env #52, #892).
 
-Exercises the helper against fixture compose-worktree trees in ``tempfile`` directories. No network,
-no ``gh``, no git: the helper is pure filesystem work, so the whole pass -- records in, derived
-stubs and manifest shards out, composed journal installed, Step 9 simulated, tree proven clean -- is
-replayable offline. ``main()`` *is* covered (as in test_journal_project_repo_map.py) because the
-exit contract and the ``KEY=value`` report are what the skill's coordinator reads, and the
-observability half is what turns a recurrence into a loud failure.
+Exercises the helper against fixture compose-worktree trees in ``tempfile`` directories. No network
+and no ``gh``; the only subprocess is ``git`` itself, for the ``check-staged`` cases, which need a
+real index. ``main()`` *is* covered (as in test_journal_project_repo_map.py) because the exit
+contract and the ``KEY=value`` report are what the skill's coordinator reads, and the observability
+half is what turns a recurrence into a loud failure.
 
 Cases pinned:
 
-- **The #52 acceptance, as a fixture day.** ``test_issue_52_*`` builds a two-project day with no
-  ``sessions/meta/``, feeds trigger records (two valid, one fabricated), and walks the pass to the end:
-  derived stubs and schema-valid manifest shards appear, the fabricated record is rejected *by name*,
-  a composed journal installs, Step 9 is simulated, ``check-clean`` passes, and the worktree holds
-  ``sessions/meta/DATE-<slug>.md`` with no prompt anywhere.
+- **The #52 acceptance, as a fixture day.** ``test_issue_52_*``: a two-project day with no
+  ``sessions/meta/``, trigger records (two valid, one fabricated), walked to the end -- derived
+  stubs and schema-valid manifest shards appear, the fabricated record is rejected *by name*, a
+  composed journal installs, Step 9 is simulated, ``check-clean`` passes, and the worktree holds
+  ``sessions/meta/DATE-<slug>.md``. No prompt anywhere.
 - **The #892 regression.** ``test_issue_892_*``: the old Step 2b's output -- a stray
-  ``sessions/meta/DATE_draft.md`` -- fails ``check-clean``, so the orphaning shape cannot ship silently.
-- **Every rejection class is named, never silent.** A record is a claim; the report must say which
-  claim failed and why (``test_each_rejection_class_is_named``).
-- **Replace semantics and idempotence.** Re-running ``stub`` yields byte-identical files; a re-run
-  supersedes the earlier derived set; a *failed* re-run leaves the earlier set alone.
-- **A derived stub never shadows a real one**, and ``abandon`` never deletes one.
-- **``install`` is a gate, not a copy**: a missing heading or an uncited ``Source:`` refuses with exit
-  2 and copies nothing; derived stubs with no extractable ``Source:`` are a precondition error, never
-  a vacuous pass; no derived stubs prints ``SOURCES_CITED=n/a`` explicitly.
-- **Drift gates (ADR-144 "extraction must be non-empty").** The eleven heading regexes and the seven
-  trigger slugs in the skill equal the helper's, each asserted non-empty before they are compared;
-  the skill no longer prompts or writes ``_draft.md``; Step 6.7 and both Step 10.5 pathspec lists
-  name what they must.
+  ``sessions/meta/DATE_draft.md`` -- fails ``check-clean``, so the orphaning shape cannot ship.
+- **Review findings on PR #1126, each with a known-bad and a known-good case.** A journal that drops
+  one trigger category's session must not install even when two categories share one source stub
+  (``test_install_*category*``); ``check-clean`` passing while the *index* still holds the stubs and
+  the composed journal is untracked must fail ``check-staged``
+  (``test_check_staged_*``); a one-word "evidence" must not verify a fabricated record; a derived
+  stub must not copy ``<!-- tokens -->`` markers; an empty worktree argument must not mean the cwd.
+- **Every rejection class is named, with the record's reason preserved**, and a day on which every
+  record was refused reports ``rejected`` -- never ``none`` (which means "no meta triggers").
+- **Replace semantics, idempotence, rollback.** Re-running ``stub`` yields byte-identical files; a
+  failed write leaves the earlier set and no temp file; a derived stub never shadows a real stub or
+  a real orphan manifest, and ``abandon`` never deletes one.
+- **Drift gates (ADR-144 "extraction must be non-empty").** The eleven heading regexes, the seven
+  trigger slugs (Step 2b *and* the Phase 1 template's inline copy), the trigger list in
+  ``claude/CLAUDE.md``, the real staging commands in Step 10 and Phase 2, both Step 10.5 pathspec
+  lists, and the routine's meta rule are tied to the helper, each asserted non-empty first.
 """
 import importlib.util
 import io
@@ -36,6 +38,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -57,10 +60,15 @@ import _journal_schema  # noqa: E402
 _REPO = os.path.abspath(os.path.join(_SCRIPTS, "..", ".."))
 _SKILL = os.path.join(_REPO, "claude", "skills", "journal-compose", "SKILL.md")
 _ROUTINE = os.path.join(_REPO, "claude", "routines", "daily-journal-compose", "SKILL.md")
+_GLOBAL_CLAUDE_MD = os.path.join(_REPO, "claude", "CLAUDE.md")
+
+# Built rather than typed: an invisible literal in source is a trap for any editor that strips it.
+BOM = chr(0xFEFF)
 
 DATE = "2026-10-01"
 DEV_NAME = f"{DATE}_101530.stub.md"
 CP_NAME = f"{DATE}_090000.stub.md"
+TAIL_NAME = f"{DATE}_120000.stub.md"
 
 DEV_STUB = """## Session: 2026-10-01 10:15 — Harden the compose skill
 
@@ -85,7 +93,18 @@ call the Git for Windows `bash.exe` by absolute path instead.
 <!-- tokens: input=2 output=2 cost≈$0 -->
 """
 
+# Evidence sits on the line directly above the stub's trailing markers.
+TAIL_STUB = """## Session: 2026-10-01 12:00 — Marker adjacency
+
+Some context line before the claim.
+The hook now refuses a second concurrent compose of the same date.
+<!-- tokens: input=3 output=3 cost≈$0 -->
+<!-- next-session-context -->
+Carry on from here.
+"""
+
 DEV_EVIDENCE = "Edited `claude/CLAUDE.md` to record that unattended composes never prompt."
+PR_EVIDENCE = "The merged PR brownm09/dev-env#900 added the helper script."
 # Evidence is copied character for character, markdown included: the stub writes `bash.exe` in backticks.
 CP_EVIDENCE = "`bash.exe` from WSL shadows Git Bash"
 
@@ -123,19 +142,20 @@ def _manifest(project, name):
     ) + "\n"
 
 
+def _populate(root):
+    _write(root, f"sessions/dev-env/{DEV_NAME}", DEV_STUB)
+    _write(root, f"sessions/dev-env/{DEV_NAME[:-8]}.manifest.jsonl", _manifest("dev-env", DEV_NAME))
+    _write(root, f"sessions/career-playbook/{CP_NAME}", CP_STUB)
+    _write(root, f"sessions/career-playbook/{CP_NAME[:-8]}.manifest.jsonl", _manifest("career-playbook", CP_NAME))
+    _write(root, f"sessions/dev-env/{TAIL_NAME}", TAIL_STUB)
+
+
 @contextmanager
 def worktree():
     """A two-project compose worktree with no ``sessions/meta/`` -- the 2026-10-01 shape."""
     root = tempfile.mkdtemp(prefix="jcm-test-")
     try:
-        _write(root, f"sessions/dev-env/{DEV_NAME}", DEV_STUB)
-        _write(root, f"sessions/dev-env/{DEV_NAME[:-8]}.manifest.jsonl", _manifest("dev-env", DEV_NAME))
-        _write(root, f"sessions/career-playbook/{CP_NAME}", CP_STUB)
-        _write(
-            root,
-            f"sessions/career-playbook/{CP_NAME[:-8]}.manifest.jsonl",
-            _manifest("career-playbook", CP_NAME),
-        )
+        _populate(root)
         yield root
     finally:
         shutil.rmtree(root, ignore_errors=True)
@@ -151,6 +171,12 @@ def record(**overrides):
     }
     base.update(overrides)
     return base
+
+
+def pr_record(**overrides):
+    return record(
+        **{"type": "dev-env-pr", "reason": "PR 900 merged.", "evidence": PR_EVIDENCE, **overrides}
+    )
 
 
 def cp_record(**overrides):
@@ -173,18 +199,28 @@ def run(*args):
     return rc, out.getvalue(), err.getvalue()
 
 
+def stub_file(root, text):
+    path = os.path.join(root, "records.jsonl")
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+    return path
+
+
 def stub(root, records, date=DATE):
-    path = os.path.join(root, "records.json")
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(records, handle)
-    return run("stub", root, date, path)
+    """Run ``stub`` with ``records`` written as one JSON list."""
+    return run("stub", root, date, stub_file(root, json.dumps(records)))
+
+
+def stub_lines(root, text, date=DATE):
+    """Run ``stub`` with ``text`` written verbatim (JSON Lines, or deliberately malformed input)."""
+    return run("stub", root, date, stub_file(root, text))
 
 
 def kv(out):
     """First value for each ``KEY=value`` line, plus every ``META_STUB`` value as a list."""
     values, stubs = {}, []
     for line in out.splitlines():
-        if "=" in line and re.match(r"^[A-Z_]+=", line):
+        if re.match(r"^[A-Z_]+=", line):
             key, _sep, value = line.partition("=")
             values.setdefault(key, value)
             if key == "META_STUB":
@@ -193,8 +229,35 @@ def kv(out):
     return values
 
 
-def composed_journal(sources, extra=""):
-    cited = "\n".join(f"- `{source}`" for source in sources)
+def rejections(out):
+    return [line for line in out.splitlines() if line.startswith("META_TRIGGER_REJECTED")]
+
+
+def derived_info(root):
+    """``[(label, [sources])]`` for every derived stub currently in the worktree, in name order."""
+    info = []
+    meta = os.path.join(root, "sessions", "meta")
+    for name in sorted(os.listdir(meta)):
+        if name.endswith(".stub.md"):
+            text = _read(root, f"sessions/meta/{name}")
+            if text.startswith(mod.DERIVED_MARKER):
+                label = mod._DERIVED_LABEL_RE.search(text).group(1)
+                info.append((label, list(dict.fromkeys(mod._SOURCE_RE.findall(text)))))
+    return info
+
+
+def derived_sources(root):
+    return [source for _label, sources in derived_info(root) for source in sources]
+
+
+def composed_journal(sessions=(), extra=""):
+    """A journal with the eleven required headings and one session per ``(label, [sources])``."""
+    body = ""
+    for number, (label, sources) in enumerate(sessions, 1):
+        cited = "\n".join(f"- `{source}`" for source in sources)
+        body += f"\n## Session {number} — {label}\n\nSources:\n{cited}\n"
+    if not sessions:
+        body = "\n## Session 1 — Routine meta work\n\nNothing derived.\n"
     return f"""# Session Transcript — {DATE}
 
 **Topic:** Meta-relevant changes detected in other projects.
@@ -212,12 +275,7 @@ def composed_journal(sources, extra=""):
 ### Session 1
 
 - A decision.
-
-## Session 1 — Meta-relevant changes
-
-Sources:
-{cited}
-{extra}
+{body}{extra}
 ## Open Items / Next Steps
 
 - [ ] An item.
@@ -244,6 +302,11 @@ Next.
 """
 
 
+def journal_for(root, **kwargs):
+    """A compliant journal for whatever derived stubs are on disk: one labelled session each."""
+    return composed_journal(derived_info(root), **kwargs)
+
+
 def stage(root, text):
     path = os.path.join(root, "staged-journal.md")
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
@@ -259,14 +322,46 @@ def tree(root):
     return sorted(found)
 
 
-def derived_sources(root):
-    """The ``Source:`` paths of every derived stub currently in the worktree."""
-    sources = []
-    meta = os.path.join(root, "sessions", "meta")
-    for name in sorted(os.listdir(meta)):
-        if name.endswith(".stub.md"):
-            sources += mod._SOURCE_RE.findall(_read(root, f"sessions/meta/{name}"))
-    return sources
+def _consume_the_day(root):
+    """Simulate Step 9 for every project: delete the date's stubs and manifest shards."""
+    for base, _dirs, files in os.walk(os.path.join(root, "sessions")):
+        for name in files:
+            if name.startswith(f"{DATE}_") and name.endswith((".stub.md", ".manifest.jsonl")):
+                os.remove(os.path.join(base, name))
+
+
+def _git(cwd, *args):
+    proc = subprocess.run(
+        ["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+         "-c", "core.autocrlf=false", "-C", cwd, *args],
+        capture_output=True,
+    )
+    assert proc.returncode == 0, (args, proc.stderr.decode("utf-8", errors="replace"))
+    return proc.stdout.decode("utf-8", errors="replace")
+
+
+@contextmanager
+def git_worktree():
+    """A *linked* git worktree holding the committed draft-branch tree: real stubs and manifests."""
+    base = tempfile.mkdtemp(prefix="jcm-git-")
+    main_repo = os.path.join(base, "main")
+    wt = os.path.join(base, f"compose-{DATE}")
+    try:
+        os.makedirs(main_repo)
+        _git(main_repo, "init", "-q")
+        _write(main_repo, "README.md", "# top\n")
+        _git(main_repo, "add", "README.md")
+        _git(main_repo, "commit", "-q", "-m", "init")
+        _git(main_repo, "worktree", "add", "-q", "--detach", wt)
+        _populate(wt)
+        _write(wt, f"sessions/meta/{DATE}_060000.stub.md", "## Session: 06:00 — A real meta session\n\nBody.\n")
+        _write(wt, f"sessions/meta/{DATE}_060000.manifest.jsonl", _manifest("meta", f"{DATE}_060000.stub.md"))
+        _write(wt, "sessions/meta/README.md", "# meta\n")
+        _git(wt, "add", "-A")
+        _git(wt, "commit", "-q", "-m", "draft branch tip: the day's stubs")
+        yield wt
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -278,10 +373,25 @@ def test_normalize_collapses_whitespace_and_folds_compatibility_forms():
     assert mod.normalize("The ﬁx") == "The fix"  # U+FB01 ligature -> "fi" under NFKC
 
 
+def test_clip_keeps_the_head_or_the_tail_and_flattens_whitespace():
+    assert mod.clip("one  two\nthree", 50) == "one two three"
+    assert mod.clip("abcdefghij", 6) == "abcde…"
+    assert mod.clip("abcdefghij", 6, tail=True) == "…fghij"
+
+
 def test_valid_date_rejects_the_unsubstituted_placeholder():
     assert mod.valid_date("2026-10-01")
     for bad in ("YYYY-MM-DD", "2026-13-01", "2026-02-30", "26-10-01", "", None):
         assert not mod.valid_date(bad), bad
+
+
+def test_resolve_type_accepts_slugs_in_any_case_and_the_tables_labels():
+    assert mod.resolve_type("claude-md") == "claude-md"
+    assert mod.resolve_type(" Platform_Constraint ") == "platform-constraint"
+    assert mod.resolve_type("CLAUDE.md modified") == "claude-md"
+    assert mod.resolve_type("`dev-env` PR merged") == "dev-env-pr"          # copied from the table, backticks and all
+    assert mod.resolve_type("workflow FAILURE   remediated") == "workflow-failure"
+    assert mod.resolve_type("not a type") is None
 
 
 def test_find_evidence_prefers_single_lines_then_joins_wrapped_lines():
@@ -305,6 +415,20 @@ def test_excerpt_never_crosses_a_heading_in_either_direction():
     assert mod.excerpt(["## H", "EVIDENCE X", "more"], 1) == ["EVIDENCE X", "more"]
 
 
+def test_excerpt_stops_at_html_comment_markers_so_none_are_copied():
+    lines = ["## S", "claim line one two", "<!-- tokens: input=1 -->", "<!-- next-session-context -->", "paragraph"]
+    assert mod.excerpt(lines, 1) == ["claim line one two"]
+    above = ["<!-- opening-brief -->", "Opening brief: text", "claim line one two", "tail"]
+    assert mod.excerpt(above, 2) == ["Opening brief: text", "claim line one two", "tail"]
+
+
+def test_session_sections_run_to_the_next_h2_and_ignore_other_h2s():
+    text = "# T\n\n## Intro\nx\n## Session 1 — A\nbody a\n### sub\nmore\n## Session 2 — B\nbody b\n## Reflection\nz\n"
+    sections = mod.session_sections(text)
+    assert [heading for heading, _body in sections] == ["## Session 1 — A", "## Session 2 — B"]
+    assert "more" in sections[0][1] and "body b" not in sections[0][1] and "z" not in sections[1][1]
+
+
 def test_allocate_names_are_stable_and_skip_real_stubs():
     assert mod.allocate_names(DATE, {0, 1}, set()) == {0: f"{DATE}_235900.stub.md", 1: f"{DATE}_235901.stub.md"}
     taken = {f"{DATE}_235900.stub.md"}
@@ -321,8 +445,8 @@ def test_allocate_names_raises_when_the_minute_is_exhausted():
 
 
 def test_missing_headings_reports_labels_in_schema_order():
-    assert mod.missing_headings(composed_journal([])) == []
-    text = composed_journal([]).replace("## Reflection", "## Thoughts").replace("## Key Decisions", "## KD")
+    assert mod.missing_headings(composed_journal()) == []
+    text = composed_journal().replace("## Reflection", "## Thoughts").replace("## Key Decisions", "## KD")
     assert mod.missing_headings(text) == ["Key Decisions", "Reflection"]
 
 
@@ -359,7 +483,20 @@ def test_derived_stub_quotes_the_source_verbatim_and_carries_no_session_markers(
         # A derived stub must not displace a real stub's opening brief or next-session-context.
         assert "<!-- opening-brief" not in text and "<!-- next-session-context" not in text
         assert text.rstrip().endswith("<!-- tokens: input=0 output=0 cost≈$0 -->")
-        assert "\r" not in text and not text.startswith("﻿")
+        assert "\r" not in text and not text.startswith(BOM)
+
+
+def test_evidence_directly_above_the_stubs_trailing_markers_copies_none_of_them():
+    """PR #1126 review: the excerpt used to carry <!-- tokens --> and <!-- next-session-context -->."""
+    with worktree() as root:
+        evidence = "The hook now refuses a second concurrent compose of the same date."
+        rc, out, _err = stub(root, [record(stub=TAIL_NAME, type="workflow-failure", evidence=evidence)])
+        assert rc == 0, out
+        text = _read(root, f"sessions/meta/{DATE}_235902.stub.md")
+        assert f"> {evidence}" in text
+        assert text.count("<!-- tokens:") == 1, "only the derived stub's own trailing placeholder"
+        for marker in ("<!-- next-session-context", "<!-- opening-brief", "Carry on from here."):
+            assert marker not in text, marker
 
 
 def test_derived_manifest_passes_the_journal_schema():
@@ -367,7 +504,7 @@ def test_derived_manifest_passes_the_journal_schema():
         stub(root, [record(), cp_record()])
         for name in (f"{DATE}_235900", f"{DATE}_235901"):
             raw = _read(root, f"sessions/meta/{name}.manifest.jsonl")
-            assert raw.endswith("\n") and raw.count("\n") == 1 and not raw.startswith("﻿")
+            assert raw.endswith("\n") and raw.count("\n") == 1 and not raw.startswith(BOM)
             entry = json.loads(raw)
             assert _journal_schema.missing_required_fields(entry) == []
             assert _journal_schema.malformed_manifest_fields(entry) == []
@@ -383,10 +520,10 @@ def test_fabricated_evidence_is_rejected_by_name_and_never_written():
         assert rc == 0
         values = kv(out)
         assert values["META_TRIGGERS_ACCEPTED"] == "1" and values["META_TRIGGERS_REJECTED"] == "1"
-        rejected = [line for line in out.splitlines() if line.startswith("META_TRIGGER_REJECTED")]
-        assert len(rejected) == 1
-        assert "dev-env" in rejected[0] and DEV_NAME in rejected[0] and "dev-env-pr" in rejected[0]
-        assert "evidence not found" in rejected[0]
+        lines = rejections(out)
+        assert len(lines) == 1
+        assert "dev-env" in lines[0] and DEV_NAME in lines[0] and "dev-env-pr" in lines[0]
+        assert "evidence not found" in lines[0]
         assert "universe" not in _read(root, f"sessions/meta/{DATE}_235900.stub.md")
         assert not _exists(root, f"sessions/meta/{DATE}_235904.stub.md")  # no dev-env-pr stub at all
 
@@ -394,8 +531,11 @@ def test_fabricated_evidence_is_rejected_by_name_and_never_written():
 def test_each_rejection_class_is_named():
     cases = [
         (record(project="meta"), "project 'meta' is skipped"),
+        (record(project="META"), "project 'meta' is skipped"),
+        (record(project="meta."), "project 'meta' is skipped"),
         (record(project="../escape"), "unsafe project name"),
         (record(project="no-such-project"), "no sessions/no-such-project/ directory"),
+        (record(project="Dev-Env"), "names are case-sensitive"),
         (record(type="bogus"), "unknown type"),
         (record(stub="2026-09-30_101530.stub.md"), "stub name must be"),
         (record(stub=f"{DATE}_999999.stub.md"), "stub not found"),
@@ -410,16 +550,39 @@ def test_each_rejection_class_is_named():
         with worktree() as root:
             rc, out, _err = stub(root, [bad])
             assert rc == 2, (bad, out)
-            assert kv(out)["META_STATUS"] == "none"
-            lines = [line for line in out.splitlines() if line.startswith("META_TRIGGER_REJECTED")]
+            assert kv(out)["META_STATUS"] == "rejected", (bad, out)
+            lines = rejections(out)
             assert len(lines) == 1 and expected in lines[0], (bad, lines)
             assert not _exists(root, "sessions/meta"), bad
 
 
-def test_all_records_rejected_exits_2_but_an_empty_list_is_fine():
+def test_evidence_too_short_to_discriminate_is_rejected_by_name():
+    """PR #1126 review: "e" and "PR" verified fabricated records. Known-bad (1-2 words) vs known-good (>= 3)."""
+    for phrase in ("e", "PR", ".", "-", "the", "The merged", "the gap"):
+        with worktree() as root:
+            rc, out, _err = stub(root, [record(evidence=phrase)])
+            assert rc == 2, phrase
+            assert "evidence too short" in rejections(out)[0], phrase
     with worktree() as root:
-        rc, out, _err = stub(root, [record(evidence="nowhere in the stub")])
-        assert rc == 2 and kv(out)["META_STATUS"] == "none"
+        rc, out, _err = stub(root, [record(evidence="The merged PR brownm09")])  # 4 words: a phrase
+        assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
+        assert mod.MIN_EVIDENCE_WORDS == 3
+
+
+def test_rejection_lines_keep_the_records_reason_and_clip_long_fields_from_the_left():
+    with worktree() as root:
+        long_stub = "x" * 200 + DEV_NAME
+        rc, out, _err = stub(root, [record(stub=long_stub, reason="Why this matters   to the journal.")])
+        assert rc == 2
+        line = rejections(out)[0]
+        assert "| reason: Why this matters to the journal." in line
+        assert "…" in line and line.count(DEV_NAME) >= 1, "clipped from the left, so the filename survives"
+
+
+def test_all_records_rejected_exits_2_with_status_rejected_but_an_empty_list_is_none():
+    with worktree() as root:
+        rc, out, _err = stub(root, [record(evidence="nowhere in the stub at all")])
+        assert rc == 2 and kv(out)["META_STATUS"] == "rejected"
         rc, out, _err = stub(root, [])
         assert rc == 0 and kv(out)["META_STATUS"] == "none" and kv(out)["META_RECORDS_RECEIVED"] == "0"
 
@@ -470,28 +633,48 @@ def test_a_real_meta_stub_is_never_shadowed_or_touched():
         ]
 
 
-def test_duplicate_records_are_deduped_and_counted():
+def test_a_real_orphan_manifest_keeps_its_name_and_survives_stub_and_abandon():
+    """PR #1126 review: allocation avoided real stub names but not real manifest names."""
     with worktree() as root:
-        rc, out, _err = stub(root, [record(), record(reason="same claim, reworded"), cp_record()])
+        orphan = _manifest("meta", f"{DATE}_235900.stub.md")
+        _write(root, f"sessions/meta/{DATE}_235900.manifest.jsonl", orphan)
+        rc, out, _err = stub(root, [record()])
+        assert rc == 0 and kv(out)["_stubs"] == [f"sessions/meta/{DATE}_235901.stub.md"]
+        assert _read(root, f"sessions/meta/{DATE}_235900.manifest.jsonl") == orphan
+        run("abandon", root, DATE)
+        assert _read(root, f"sessions/meta/{DATE}_235900.manifest.jsonl") == orphan
+
+
+def test_records_pointing_at_one_evidence_line_dedupe_and_the_latest_attempt_wins():
+    """PR #1126 review: a retry that quotes the same change differently must not double the entry."""
+    with worktree() as root:
+        first = record(reason="first attempt", evidence="Edited `claude/CLAUDE.md` to record that unattended")
+        second = record(reason="the retry's wording", evidence="record that unattended composes never prompt.")
+        rc, out, _err = stub(root, [first, second, cp_record()])
         values = kv(out)
-        assert rc == 0
-        assert values["META_TRIGGERS_ACCEPTED"] == "2" and values["META_TRIGGERS_DEDUPED"] == "1"
-        assert _read(root, f"sessions/meta/{DATE}_235900.stub.md").count("- Source: `") == 1
+        assert rc == 0 and values["META_TRIGGERS_ACCEPTED"] == "2" and values["META_TRIGGERS_DEDUPED"] == "1"
+        text = _read(root, f"sessions/meta/{DATE}_235900.stub.md")
+        assert text.count("- Source: `") == 1
+        assert "the retry's wording" in text and "first attempt" not in text
 
 
-def test_two_records_in_one_category_share_one_stub():
+def test_distinct_lines_of_one_stub_and_category_stay_separate_records():
     with worktree() as root:
-        second = record(evidence="The merged PR brownm09/dev-env#900 added the helper script.", reason="PR 900 merged.")
-        rc, out, _err = stub(root, [record(), second])
+        other = record(reason="another change", evidence="Ordinary prose with no trigger in it.")
+        rc, out, _err = stub(root, [record(), other])
         assert rc == 0 and kv(out)["_stubs"] == [f"sessions/meta/{DATE}_235900.stub.md"]
         text = _read(root, f"sessions/meta/{DATE}_235900.stub.md")
         assert text.count("\n### ") == 2 and text.count("## CLAUDE.md modified") == 1
 
 
-def test_type_aliases_normalize_underscores_and_case():
+def test_type_aliases_normalize_slugs_underscores_case_and_the_tables_labels():
     with worktree() as root:
-        rc, out, _err = stub(root, [record(type="CLAUDE_MD"), cp_record(type=" Platform_Constraint ")])
+        records = [record(type="CLAUDE_MD"), cp_record(type=" Platform_Constraint ")]
+        rc, out, _err = stub(root, records)
         assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "2"
+    with worktree() as root:
+        rc, out, _err = stub(root, [pr_record(type="`dev-env` PR merged")])
+        assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
 
 
 def test_evidence_matches_after_nfkc_whitespace_and_across_a_wrapped_line():
@@ -502,35 +685,114 @@ def test_evidence_matches_after_nfkc_whitespace_and_across_a_wrapped_line():
         rc, out, _err = stub(root, [ligature, wrapped])
         assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "2", out
     with worktree() as root:
-        rc, out, _err = stub(
-            root, [cp_record(evidence="subprocess calls; the fix is to call the Git for Windows")]
-        )
+        rc, out, _err = stub(root, [cp_record(evidence="subprocess calls; the fix is to call the Git for Windows")])
         assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
 
 
-def test_a_sessions_prefixed_stub_path_is_tolerated_for_its_own_project_only():
+def test_stub_paths_may_be_bare_sessions_prefixed_or_absolute_inside_this_worktree():
     with worktree() as root:
-        rc, out, _err = stub(root, [record(stub=f"sessions/dev-env/{DEV_NAME}")])
-        assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1"
+        bare = record()
+        prefixed = record(stub=f"sessions/dev-env/{DEV_NAME}", type="convention")
+        absolute = record(stub=os.path.join(root, "sessions", "dev-env", DEV_NAME), type="journal-structure")
+        rc, out, _err = stub(root, [bare, prefixed, absolute])
+        assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "3", out
+    with worktree() as root:
+        outside = os.path.join(root, "records.jsonl")
+        with open(outside, "w", encoding="utf-8") as handle:
+            handle.write(DEV_STUB)
+        rc, out, _err = stub(root, [record(stub=outside)])
+        assert rc == 2 and "absolute stub path is not a file under sessions/dev-env/" in rejections(out)[0]
 
 
-def test_records_file_forms_and_failures():
+def test_records_file_forms_json_lines_list_object_and_failures():
     with worktree() as root:
-        path = os.path.join(root, "records.json")
+        path = os.path.join(root, "records.jsonl")
         # Object form with a matching date, and a UTF-8 BOM, are accepted.
         with open(path, "wb") as handle:
-            handle.write(b"\xef\xbb\xbf" + json.dumps({"date": DATE, "records": [record()]}).encode("utf-8"))
+            handle.write(BOM.encode("utf-8") + json.dumps({"date": DATE, "records": [record()]}).encode("utf-8"))
         assert run("stub", root, DATE, path)[0] == 0
+        # JSON Lines: one record per line, blank lines ignored.
+        lines = json.dumps(record()) + "\n\n" + json.dumps(cp_record()) + "\n"
+        rc, out, _err = stub_lines(root, lines)
+        assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "2", out
+        # A single record on one line is a record, not a malformed batch.
+        rc, out, _err = stub_lines(root, json.dumps(record()))
+        assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
         # A file written for another date is refused outright (stale scratch file).
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"date": "2026-09-30", "records": [record()]}, handle)
-        rc, _out, err = run("stub", root, DATE, path)
+        rc, _out, err = stub_lines(root, json.dumps({"date": "2026-09-30", "records": [record()]}))
         assert rc == 1 and "not 2026-10-01" in err
-        for bad in ("{not json", '{"records": "nope"}', "42"):
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write(bad)
-            assert run("stub", root, DATE, path)[0] == 1, bad
-        assert run("stub", root, DATE, os.path.join(root, "absent.json"))[0] == 1
+        for bad in ('{"records": "nope"}', "42"):
+            assert stub_lines(root, bad)[0] == 1, bad
+        assert run("stub", root, DATE, os.path.join(root, "absent.jsonl"))[0] == 1
+
+
+def test_one_malformed_json_line_is_a_named_rejection_not_a_failed_batch():
+    """PR #1126 review: one stray \\U (an unescaped Windows path) used to fail every valid record."""
+    with worktree() as root:
+        good = json.dumps(record())
+        bad = ('{"project": "dev-env", "type": "claude-md", "stub": "' + DEV_NAME
+               + '", "reason": "r", "evidence": "C:\\Users\\x is a path"}')
+        rc, out, _err = stub_lines(root, good + "\n" + bad + "\n")
+        values = kv(out)
+        assert rc == 0, out
+        assert values["META_TRIGGERS_ACCEPTED"] == "1" and values["META_TRIGGERS_REJECTED"] == "1"
+        assert values["META_RECORDS_RECEIVED"] == "2"
+        assert "line 2 is not valid JSON" in rejections(out)[0]
+    with worktree() as root:
+        rc, out, _err = stub_lines(root, "{not json\nalso not json\n")
+        assert rc == 2 and kv(out)["META_STATUS"] == "rejected" and len(rejections(out)) == 2
+
+
+def test_a_correctly_escaped_windows_path_in_evidence_is_accepted():
+    with worktree() as root:
+        _write(root, f"sessions/dev-env/{DATE}_130000.stub.md", "## S\n\nPATH starts with C:\\tools\\bin\\bash.exe on this box.\n")
+        rec = record(stub=f"{DATE}_130000.stub.md", evidence="PATH starts with C:\\tools\\bin\\bash.exe on this box.")
+        rc, out, _err = stub_lines(root, json.dumps(rec) + "\n")
+        assert rc == 0 and kv(out)["META_TRIGGERS_ACCEPTED"] == "1", out
+
+
+def test_a_failed_write_rolls_back_leaving_the_earlier_set_and_no_temp_file():
+    """PR #1126 review: a mid-write OSError used to leave a half-written set and a stray *.tmp-<pid>."""
+    with worktree() as root:
+        stub(root, [record()])
+        before = {path: _read(root, path) for path in tree(root) if path.startswith("sessions/meta/")}
+        real_replace = mod.os.replace
+        mod.os.replace = lambda *_a, **_k: (_ for _ in ()).throw(PermissionError("locked by the indexer"))
+        try:
+            rc, _out, err = stub(root, [record(), cp_record()])
+        finally:
+            mod.os.replace = real_replace
+        assert rc == 1 and "run 'abandon' before retrying" in err
+        assert not [path for path in tree(root) if ".tmp-" in path], "no stray temp file"
+    with worktree() as root:
+        stub(root, [record()])
+        before = {path: _read(root, path) for path in tree(root) if path.startswith("sessions/meta/")}
+        real_stage = mod._stage_text
+        calls = []
+
+        def flaky(path, text):
+            calls.append(path)
+            if len(calls) == 3:
+                raise OSError("disk full")
+            return real_stage(path, text)
+
+        mod._stage_text = flaky
+        try:
+            rc, _out, err = stub(root, [record(), cp_record()])
+        finally:
+            mod._stage_text = real_stage
+        assert rc == 1 and "nothing was changed" in err
+        after = {path: _read(root, path) for path in tree(root) if path.startswith("sessions/meta/")}
+        assert after == before, "the earlier derived set is intact"
+        assert not [path for path in tree(root) if ".tmp-" in path]
+
+
+def test_stub_never_writes_outside_sessions_meta():
+    with worktree() as root:
+        before = set(tree(root))
+        stub(root, [record(), cp_record()])
+        added = set(tree(root)) - before - {"records.jsonl"}
+        assert added and all(path.startswith("sessions/meta/") for path in added), added
 
 
 # ---------------------------------------------------------------------------
@@ -540,69 +802,99 @@ def test_records_file_forms_and_failures():
 def test_install_accepts_a_complete_journal_and_reports():
     with worktree() as root:
         stub(root, [record(), cp_record()])
-        sources = derived_sources(root)
-        assert len(sources) == 2
-        rc, out, _err = run("install", root, DATE, stage(root, composed_journal(sources)), "meta-triggers")
+        assert len(derived_sources(root)) == 2
+        rc, out, _err = run("install", root, DATE, stage(root, journal_for(root)), "meta-triggers")
         values = kv(out)
         assert rc == 0, out
         assert values["META_JOURNAL"] == f"sessions/meta/{DATE}-meta-triggers.md"
         assert values["STRUCTURE"] == "ok" and values["SOURCES_CITED"] == "2/2"
         assert values["FIDELITY"] == f"{values['LINE_COUNT']}/{values['SOURCE_LINES']}"
+        assert values["REAL_SOURCE_LINES"] == "0" and values["REAL_FIDELITY"] == "n/a"
         installed = _read(root, f"sessions/meta/{DATE}-meta-triggers.md")
-        assert "\r" not in installed and not installed.startswith("﻿")
+        assert "\r" not in installed and not installed.startswith(BOM)
         assert not [name for name in tree(root) if ".tmp-" in name]
 
 
 def test_install_refuses_a_missing_heading_and_copies_nothing():
     with worktree() as root:
         stub(root, [record()])
-        text = composed_journal(derived_sources(root)).replace("## Next Session Context", "## Next")
+        text = journal_for(root).replace("## Next Session Context", "## Next")
         rc, out, _err = run("install", root, DATE, stage(root, text), "meta-triggers")
         assert rc == 2 and "INSTALL_REFUSED" in out
         assert "STRUCTURE=missing:Next Session Context" in out
         assert not _exists(root, f"sessions/meta/{DATE}-meta-triggers.md")
 
 
-def test_install_refuses_an_uncited_source():
+def test_install_refuses_a_journal_that_drops_a_category_even_when_two_share_one_source_stub():
+    """PR #1126 blocking finding 1: the old whole-document check passed this with SOURCES_CITED=1/1."""
+    with worktree() as root:
+        rc, out, _err = stub(root, [record(), pr_record()])  # claude-md + dev-env-pr from ONE dev-env stub
+        assert rc == 0 and len(kv(out)["_stubs"]) == 2
+        info = derived_info(root)
+        assert [label for label, _sources in info] == ["CLAUDE.md modified", "dev-env PR merged"]
+        assert info[0][1] == info[1][1] == [f"sessions/dev-env/{DEV_NAME}"], "one shared Source path"
+        dropped = composed_journal(info[:1])  # the dev-env-pr category's whole session is missing
+        rc, out, _err = run("install", root, DATE, stage(root, dropped), "meta-triggers")
+        assert rc == 2, out
+        assert "SESSIONS_MISSING=dev-env PR merged" in out and "STRUCTURE=missing" not in out
+        assert not _exists(root, f"sessions/meta/{DATE}-meta-triggers.md")
+        # Known-good counterpart: both categories present, the shared path cited in each section.
+        rc, out, _err = run("install", root, DATE, stage(root, composed_journal(info)), "meta-triggers")
+        assert rc == 0 and kv(out)["SOURCES_CITED"] == "2/2", out
+
+
+def test_install_refuses_a_source_cited_only_in_the_wrong_sessions_section():
     with worktree() as root:
         stub(root, [record(), cp_record()])
-        sources = derived_sources(root)
-        rc, out, _err = run("install", root, DATE, stage(root, composed_journal(sources[:1])), "meta-triggers")
+        (label_a, sources_a), (label_b, sources_b) = derived_info(root)
+        swapped = composed_journal([(label_a, sources_b), (label_b, sources_a)])
+        rc, out, _err = run("install", root, DATE, stage(root, swapped), "meta-triggers")
         assert rc == 2
-        assert f"SOURCES_UNCITED={sources[1]}" in out and "STRUCTURE=missing" not in out
-        assert not _exists(root, f"sessions/meta/{DATE}-meta-triggers.md")
+        assert f"SOURCES_UNCITED {label_a} -- {sources_a[0]}" in out
+        assert f"SOURCES_UNCITED {label_b} -- {sources_b[0]}" in out
 
 
-def test_install_without_derived_stubs_reports_n_a_explicitly():
+def test_install_without_derived_stubs_reports_n_a_and_the_real_stub_share():
     with worktree() as root:
-        _write(root, f"sessions/meta/{DATE}_060000.stub.md", "## Session: 06:00 — Routine\n\nBody.\n")
-        rc, out, _err = run("install", root, DATE, stage(root, composed_journal([])), "routine")
-        assert rc == 0 and kv(out)["SOURCES_CITED"] == "n/a", out
+        _write(root, f"sessions/meta/{DATE}_060000.stub.md", "## Session: 06:00 — Routine\n\nBody.\nMore.\n")
+        rc, out, _err = run("install", root, DATE, stage(root, composed_journal()), "routine")
+        values = kv(out)
+        assert rc == 0 and values["SOURCES_CITED"] == "n/a", out
+        assert values["REAL_SOURCE_LINES"] == "4" and values["REAL_FIDELITY"].endswith("/4")
 
 
 def test_install_with_no_meta_stub_at_all_is_a_precondition_error():
     with worktree() as root:
-        rc, _out, err = run("install", root, DATE, stage(root, composed_journal([])), "nothing")
+        rc, _out, err = run("install", root, DATE, stage(root, composed_journal()), "nothing")
         assert rc == 1 and "nothing for this journal to compose" in err
         assert not _exists(root, "sessions/meta")
 
 
-def test_install_a_derived_stub_with_no_source_line_is_exit_1_never_a_vacuous_pass():
+def test_install_a_derived_stub_without_a_source_line_or_label_is_exit_1_never_a_vacuous_pass():
     with worktree() as root:
-        _write(root, f"sessions/meta/{DATE}_235900.stub.md", f"{mod.DERIVED_MARKER} fixture -->\n\n## H\n\nNo source line.\n")
-        rc, _out, err = run("install", root, DATE, stage(root, composed_journal([])), "meta-triggers")
+        _write(root, f"sessions/meta/{DATE}_235900.stub.md",
+               f"{mod.DERIVED_MARKER} fixture -->\n\n## CLAUDE.md modified — detected in dev-env ({DATE})\n\nNo source line.\n")
+        rc, _out, err = run("install", root, DATE, stage(root, composed_journal()), "meta-triggers")
         assert rc == 1 and "no extractable 'Source:' line" in err
+    with worktree() as root:
+        _write(root, f"sessions/meta/{DATE}_235900.stub.md",
+               f"{mod.DERIVED_MARKER} fixture -->\n\n## Not the expected heading shape\n\n- Source: `sessions/dev-env/x`\n")
+        rc, _out, err = run("install", root, DATE, stage(root, composed_journal()), "meta-triggers")
+        assert rc == 1 and "no recognizable category heading" in err
         assert not _exists(root, f"sessions/meta/{DATE}-meta-triggers.md")
 
 
-def test_install_allows_one_journal_per_date_and_overwrites_the_same_slug():
+def test_install_never_overwrites_a_journal_it_did_not_write():
+    """PR #1126 review: same-slug installs silently replaced an already-committed journal."""
     with worktree() as root:
         stub(root, [record()])
-        staged = stage(root, composed_journal(derived_sources(root)))
+        staged = stage(root, journal_for(root))
         assert run("install", root, DATE, staged, "first")[0] == 0
-        assert run("install", root, DATE, staged, "first")[0] == 0  # same slug: a retry, not a second journal
+        assert run("install", root, DATE, staged, "first")[0] == 0, "byte-identical re-run is a no-op success"
+        rc, _out, err = run("install", root, DATE, stage(root, journal_for(root, extra="\nEdited.\n")), "first")
+        assert rc == 1 and "Do not overwrite or remove it" in err
         rc, _out, err = run("install", root, DATE, staged, "second")
-        assert rc == 1 and "already exists" in err
+        assert rc == 1 and "already exists" in err and "Do not overwrite or remove it" in err
         assert [n for n in tree(root) if re.match(rf"sessions/meta/{DATE}-.*\.md$", n)] == [
             f"sessions/meta/{DATE}-first.md"
         ]
@@ -611,7 +903,7 @@ def test_install_allows_one_journal_per_date_and_overwrites_the_same_slug():
 def test_install_rejects_bad_slugs_and_unreadable_or_empty_input():
     with worktree() as root:
         stub(root, [record()])
-        staged = stage(root, composed_journal(derived_sources(root)))
+        staged = stage(root, journal_for(root))
         for bad in ("Bad Slug", "../x", "", "-lead", "x" * 81):
             assert run("install", root, DATE, staged, bad)[0] == 1, bad
         assert run("install", root, DATE, os.path.join(root, "absent.md"), "ok")[0] == 1
@@ -621,7 +913,7 @@ def test_install_rejects_bad_slugs_and_unreadable_or_empty_input():
 def test_install_accepts_a_crlf_composed_journal_and_writes_lf():
     with worktree() as root:
         stub(root, [record()])
-        text = composed_journal(derived_sources(root)).replace("\n", "\r\n")
+        text = journal_for(root).replace("\n", "\r\n")
         path = os.path.join(root, "staged-crlf.md")
         with open(path, "wb") as handle:
             handle.write(text.encode("utf-8"))
@@ -635,15 +927,16 @@ def test_install_accepts_a_crlf_composed_journal_and_writes_lf():
 # abandon
 # ---------------------------------------------------------------------------
 
-def test_abandon_removes_only_derived_files():
+def test_abandon_removes_only_derived_files_and_stray_temp_files():
     with worktree() as root:
         _write(root, f"sessions/meta/{DATE}_060000.stub.md", "## Session: real\n\nBody.\n")
         _write(root, f"sessions/meta/{DATE}_060000.manifest.jsonl", _manifest("meta", f"{DATE}_060000.stub.md"))
         stub(root, [record(), cp_record()])
+        _write(root, f"sessions/meta/{DATE}_235900.stub.md.tmp-123", "half written\n")
         rc, out, _err = run("abandon", root, DATE)
         assert rc == 0 and out.startswith("META_ABANDONED=") and "none" not in out
-        assert len(out.split("=", 1)[1].split(",")) == 4
-        assert tree(root) and _exists(root, f"sessions/meta/{DATE}_060000.stub.md")
+        assert len(out.split("=", 1)[1].split(",")) == 5
+        assert _exists(root, f"sessions/meta/{DATE}_060000.stub.md")
         assert _exists(root, f"sessions/meta/{DATE}_060000.manifest.jsonl")
         assert not [n for n in tree(root) if "_2359" in n]
         assert run("abandon", root, DATE)[1].strip() == "META_ABANDONED=none"
@@ -662,14 +955,6 @@ def test_abandon_removes_an_orphaned_derived_manifest():
 # check-clean
 # ---------------------------------------------------------------------------
 
-def _consume_the_day(root):
-    """Simulate Step 9 for every project: delete the date's stubs and manifest shards."""
-    for base, _dirs, files in os.walk(os.path.join(root, "sessions")):
-        for name in files:
-            if name.startswith(f"{DATE}_") and name.endswith((".stub.md", ".manifest.jsonl")):
-                os.remove(os.path.join(base, name))
-
-
 def test_check_clean_fails_on_each_leftover_shape_and_names_it():
     shapes = {
         f"sessions/dev-env/{DEV_NAME}": "an unconsumed stub",
@@ -677,6 +962,8 @@ def test_check_clean_fails_on_each_leftover_shape_and_names_it():
         f"sessions/dev-env/{DATE}.manifest.jsonl": "a legacy per-day manifest",
         f"sessions/meta/{DATE}_draft.md": "the old Step 2b output",
         f"sessions/meta/{DATE}_235900.stub.md": "a derived stub",
+        f"sessions/meta/{DATE}_235900.stub.md.tmp-4242": "a temp file from a failed write",
+        f"sessions/meta/{DATE}-meta-day.md.tmp-4242": "a temp file from a failed install",
     }
     for path, why in shapes.items():
         with worktree() as root:
@@ -688,7 +975,7 @@ def test_check_clean_fails_on_each_leftover_shape_and_names_it():
             assert "CHECK_CLEAN=leftover" in out and f"LEFTOVER {path}" in out, why
 
 
-def test_check_clean_ignores_other_dates_composed_journals_and_non_directories():
+def test_check_clean_scans_one_level_deep_and_ignores_other_dates_and_composed_journals():
     with worktree() as root:
         _consume_the_day(root)
         # The date-mismatched shape PR #182 carried through: stubs for the NEXT day sitting on the branch.
@@ -696,6 +983,9 @@ def test_check_clean_ignores_other_dates_composed_journals_and_non_directories()
         _write(root, "sessions/dev-env/2026-10-02_090000.manifest.jsonl", "{}\n")
         _write(root, f"sessions/dev-env/{DATE}-scheduled-routines.md", "# composed\n")  # a hyphen, not a stub
         _write(root, "sessions/notes.txt", "stray file at the sessions root\n")
+        # Documented limit: only sessions/<project>/ itself is scanned (Step 1's glob is the same depth).
+        _write(root, f"sessions/meta/archive/{DATE}_draft.md", "nested\n")
+        _write(root, f"sessions/{DATE}_090000.stub.md", "root-level\n")
         assert run("check-clean", root, DATE) == (0, "CHECK_CLEAN=ok\n", "")
 
 
@@ -706,6 +996,42 @@ def test_check_clean_on_a_tree_without_sessions_is_a_precondition_error_not_a_pa
         assert rc == 1 and "no sessions/ directory" in err
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# check-staged: the commit is built from the index, not the working tree
+# ---------------------------------------------------------------------------
+
+def test_check_staged_catches_what_check_clean_cannot_see():
+    """PR #1126 blocking finding 3: check-clean was green while the index still held real meta stubs
+    and the composed meta journal was untracked -- the #892 shape, shipped with a green check."""
+    with git_worktree() as wt:
+        # The coordinator composed meta, ran Step 9's rm, edited the README -- and staged nothing.
+        _consume_the_day(wt)
+        _write(wt, f"sessions/meta/{DATE}-meta-day.md", "# composed meta journal\n")
+        _write(wt, "sessions/meta/README.md", "# meta\nA new row.\n")
+        assert run("check-clean", wt, DATE) == (0, "CHECK_CLEAN=ok\n", ""), "the blind spot: the working tree is clean"
+        rc, out, _err = run("check-staged", wt, DATE)
+        assert rc == 2 and "CHECK_STAGED=unstaged" in out
+        assert f"UNSTAGED ?? sessions/meta/{DATE}-meta-day.md" in out, "the composed journal is untracked"
+        assert f"UNSTAGED  D sessions/meta/{DATE}_060000.stub.md" in out, "the real meta stub's deletion is unstaged"
+        assert "UNSTAGED  M sessions/meta/README.md" in out
+        # Known-good counterpart: the skill's own staging commands.
+        _git(wt, "add", f"sessions/meta/{DATE}-meta-day.md", "sessions/meta/README.md")
+        _git(wt, "add", "-u", "sessions/")
+        assert run("check-staged", wt, DATE) == (0, "CHECK_STAGED=ok\n", "")
+
+
+def test_check_staged_ignores_compose_lock_files_and_reports_a_git_failure():
+    with git_worktree() as wt:
+        _consume_the_day(wt)
+        _git(wt, "add", "-u", "sessions/")
+        _write(wt, "sessions/dev-env/.draft-compose.lock", "2026-10-02T00:00:00Z\n")
+        _write(wt, ".compose-creating", "2026-10-02T00:00:00Z\n")
+        assert run("check-staged", wt, DATE) == (0, "CHECK_STAGED=ok\n", "")
+    with worktree() as root:  # a directory that is not a git repository at all
+        rc, _out, err = run("check-staged", root, DATE)
+        assert rc == 1 and "git status failed" in err
 
 
 # ---------------------------------------------------------------------------
@@ -723,12 +1049,11 @@ def test_issue_52_acceptance_a_fixture_day_ends_with_a_composed_meta_journal_and
         assert values["META_TRIGGERS_ACCEPTED"] == "2" and values["META_TRIGGERS_REJECTED"] == "1"
         assert len(values["_stubs"]) == 2
 
-        # Step 6.7 step 3: the coordinator composes from the derived stubs (here: a compliant fixture).
-        sources = derived_sources(root)
-        assert sorted(sources) == sorted(
+        # Step 6.7 step 4: the coordinator composes from the derived stubs (here: a compliant fixture).
+        assert sorted(derived_sources(root)) == sorted(
             [f"sessions/dev-env/{DEV_NAME}", f"sessions/career-playbook/{CP_NAME}"]
         )
-        rc, out, _err = run("install", root, DATE, stage(root, composed_journal(sources)), "meta-triggers")
+        rc, out, _err = run("install", root, DATE, stage(root, journal_for(root)), "meta-triggers")
         assert rc == 0 and kv(out)["META_JOURNAL"] == f"sessions/meta/{DATE}-meta-triggers.md"
 
         # Not clean yet: Step 9 has not run, so every consumed input is still there.
@@ -756,7 +1081,7 @@ def test_issue_892_regression_meta_composes_the_same_whether_or_not_real_meta_st
         _write(root, f"sessions/meta/{DATE}_060000.stub.md", "## Session: 06:00 — Routine\n\nBody.\n")
         _write(root, f"sessions/meta/{DATE}_060000.manifest.jsonl", _manifest("meta", f"{DATE}_060000.stub.md"))
         assert stub(root, [record()])[0] == 0
-        rc, out, _err = run("install", root, DATE, stage(root, composed_journal(derived_sources(root))), "meta-day")
+        rc, out, _err = run("install", root, DATE, stage(root, journal_for(root)), "meta-day")
         assert rc == 0 and kv(out)["SOURCES_CITED"] == "1/1"
         _consume_the_day(root)
         assert run("check-clean", root, DATE)[0] == 0
@@ -775,22 +1100,43 @@ def test_main_usage_and_precondition_errors_exit_1():
         assert run("bogus", root, DATE)[0] == 1
         assert run("stub", root, DATE)[0] == 1                                  # missing records argument
         assert run("check-clean", root, DATE, "extra")[0] == 1                  # too many arguments
+        assert run("check-staged", root)[0] == 1                                # too few arguments
         rc, _out, err = run("check-clean", root, "YYYY-MM-DD")
         assert rc == 1 and "is not a YYYY-MM-DD date" in err                    # unsubstituted placeholder
         assert run("check-clean", root, "2026-13-45")[0] == 1
         assert run("check-clean", os.path.join(root, "no-such-dir"), DATE)[0] == 1
 
 
-def test_stub_never_writes_outside_sessions_meta():
+def test_an_empty_or_relative_worktree_argument_never_means_the_current_directory():
+    """PR #1126 review: normpath('') is '.', so an unsubstituted $WT used to act on the cwd."""
     with worktree() as root:
-        before = set(tree(root))
-        stub(root, [record(), cp_record()])
-        added = set(tree(root)) - before - {"records.json"}
-        assert added and all(path.startswith("sessions/meta/") for path in added), added
+        here = os.getcwd()
+        os.chdir(root)  # a cwd that does have sessions/ -- the dangerous case
+        try:
+            for bad in ("", "   ", ".", "sessions/..", "relative/dir"):
+                rc, _out, err = run("check-clean", bad, DATE)
+                assert rc == 1 and "must be an absolute path" in err, bad
+            rc, _out, _err = run("stub", "", DATE, stub_file(root, json.dumps([record()])))
+            assert rc == 1 and not _exists(root, "sessions/meta")
+        finally:
+            os.chdir(here)
+
+
+def test_a_primary_checkout_is_refused_but_a_linked_worktree_is_not():
+    base = tempfile.mkdtemp(prefix="jcm-primary-")
+    try:
+        _git(base, "init", "-q")
+        _write(base, f"sessions/dev-env/{DEV_NAME}", DEV_STUB)
+        rc, _out, err = run("check-clean", base, DATE)
+        assert rc == 1 and "primary checkout" in err
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    with git_worktree() as wt:
+        assert run("check-clean", wt, DATE)[0] == 2, "reaches the check (and finds the day's stubs)"
 
 
 # ---------------------------------------------------------------------------
-# Drift gates: the skill and routine must agree with the helper
+# Drift gates: the skill, routine and global CLAUDE.md must agree with the helper
 # ---------------------------------------------------------------------------
 
 def _read_doc(path):
@@ -803,9 +1149,15 @@ def _section(text, heading_regex):
     match = re.search(heading_regex, text, re.MULTILINE)
     assert match, f"section not found: {heading_regex}"
     level = len(re.match(r"#+", match.group(0)).group(0))
-    rest = text[match.end():]
-    end = re.search(rf"^#{{1,{level}}} ", rest, re.MULTILINE)
-    return match.group(0) + (rest[: end.start()] if end else rest)
+    stop = re.compile(rf"^#{{1,{level}}} ")
+    kept, in_fence = [], False
+    for line in text[match.end():].split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence and stop.match(line):  # a '# comment' inside a bash fence is not a heading
+            break
+        kept.append(line)
+    return match.group(0) + "\n".join(kept)
 
 
 def test_skill_chk_blocks_equal_the_helpers_heading_regexes():
@@ -826,46 +1178,109 @@ def test_skill_lists_exactly_the_helpers_trigger_slugs():
     assert slugs == [slug for slug, _label in mod.TRIGGER_TYPES]
 
 
+def test_step_2b_table_labels_equal_the_helpers_labels():
+    """The category label is also the session-title token the install gate looks for."""
+    skill = _read_doc(_SKILL)
+    step_2b = _section(skill, r"^## Step 2b — .*$")
+    rows = re.findall(r"^\| ([^|]+?) \| `([a-z-]+)` \|", step_2b, re.MULTILINE)
+    assert len(rows) == len(mod.TRIGGER_TYPES), f"expected {len(mod.TRIGGER_TYPES)} table rows, found {len(rows)}"
+    for (label, slug), (want_slug, want_label) in zip(rows, mod.TRIGGER_TYPES):
+        assert slug == want_slug
+        assert label.replace("`", "") == want_label, (label, want_label)
+
+
 def test_phase_1_template_inlines_the_same_slugs_because_a_subagent_follows_its_own_copy():
     """ADR-082's 2026-07-23 addendum: a subagent acts on the copy in its template, not a pointer."""
     lines = _read_doc(_SKILL).split("\n")
     marker = next((i for i, line in enumerate(lines) if "exactly one of these seven" in line), None)
     assert marker is not None, "the Phase 1 template's Step 2b must inline the trigger slugs"
-    slugs = []
-    for line in lines[marker + 1:]:
-        if not re.fullmatch(r"\s+[a-z-]+(?:,\s*[a-z-]+)*,?\s*", line):
+    slugs, started = [], False
+    for line in lines[marker + 1: marker + 6]:  # the sentence may wrap once before the list starts
+        if re.fullmatch(r"\s+[a-z-]+(?:,\s*[a-z-]+)*,?\s*", line):
+            started = True
+            slugs += re.findall(r"[a-z-]+", line)
+        elif started:
             break
-        slugs += re.findall(r"[a-z-]+", line)
     assert slugs, "no slugs extracted from the template's inline list"
     assert slugs == [slug for slug, _label in mod.TRIGGER_TYPES]
+    template = "\n".join(lines[marker - 8: marker + 12])
+    assert '"project":"<project>"' in template, "the template must make the subagent emit its own project"
+
+
+def test_global_claude_md_trigger_list_matches_the_helpers_seven_categories():
+    """Step 2b names claude/CLAUDE.md as the source of the trigger criteria; tie the two together."""
+    text = _read_doc(_GLOBAL_CLAUDE_MD)
+    start = text.index("**Meta journal** (`sessions/meta/`):")  # a bold line, not a '#' heading
+    section = text[start: text.index("**Full journal conventions:**", start)]
+    assert len(section.splitlines()) > 5, "Meta journal section extraction came back empty"
+    bullets = [line for line in section.split("\n") if line.startswith("- When ")]
+    assert len(bullets) == len(mod.TRIGGER_TYPES), f"expected 7 'When ...' bullets, found {len(bullets)}"
+    keyword = {
+        "claude-md": r"`CLAUDE\.md` is modified",
+        "platform-constraint": r"platform constraint",
+        "workflow-failure": r"workflow failure",
+        "convention": r"cross-project convention",
+        "journal-structure": r"journal structure",
+        "canonical-reference": r"canonical reference",
+        "dev-env-pr": r"dev-env` PR is merged",
+    }
+    assert set(keyword) == {slug for slug, _label in mod.TRIGGER_TYPES}
+    for slug, pattern in keyword.items():
+        hits = [bullet for bullet in bullets if re.search(pattern, bullet)]
+        assert len(hits) == 1, f"{slug}: expected exactly one bullet matching {pattern!r}, found {len(hits)}"
 
 
 def test_skill_no_longer_prompts_or_writes_a_draft_file():
     skill = _read_doc(_SKILL)
     step_2b = _section(skill, r"^## Step 2b — .*$")
     assert len(step_2b.splitlines()) > 5, "Step 2b section extraction came back empty"
+    flat = re.sub(r"\s+", " ", skill)  # robust to a reflowed paragraph: ban the prompt's shape, not its line breaks
     for gone in (
         "Should I open a meta draft block",
-        "open a meta draft block",
         "y (append meta block",
+        "present the findings to the user before continuing",
         "create it with `<!-- draft",
     ):
-        assert gone not in skill, f"the old interactive Step 2b text is back: {gone!r}"
+        assert gone not in flat, f"the old interactive Step 2b text is back: {gone!r}"
     assert not re.search(r"git .*\badd\b.*sessions/meta/YYYY-MM-DD_draft\.md", skill), (
         "the skill must not stage a sessions/meta/YYYY-MM-DD_draft.md (dev-env#892)"
     )
-    assert "no prompt" in step_2b.lower() or "never prompt" in step_2b.lower() or "does not prompt" in step_2b.lower()
+    assert "never prompts" in step_2b.lower()
 
 
-def test_skill_wires_step_6_7_to_every_subcommand_and_check_clean_to_step_10():
+def test_skill_wires_step_6_7_to_every_subcommand_and_step_10_to_both_checks():
     skill = _read_doc(_SKILL)
     step_67 = _section(skill, r"^## Step 6\.7 — .*$")
     assert len(step_67.splitlines()) > 10, "Step 6.7 section extraction came back empty"
     assert "journal-compose-meta.py" in step_67
     for name in ("stub", "install", "abandon"):
         assert re.search(rf"journal-compose-meta\.py {name} ", step_67), f"Step 6.7 must show the {name} invocation"
+    assert re.search(r"Steps 7, 8, 8a, 8b, 9 and 9\.5 then run for meta", step_67), (
+        "Step 6.7's closing step list must name 8a and 8b, or meta skips the stray-output scan"
+    )
     step_10 = _section(skill, r"^## Step 10 — .*$")
-    assert re.search(r"journal-compose-meta\.py check-clean ", step_10), "Step 10 must run check-clean before staging"
+    for name in ("check-clean", "check-staged"):
+        assert re.search(rf"journal-compose-meta\.py {name} ", step_10), f"Step 10 must run {name}"
+    phase_2 = _section(skill, r"^### Phase 2 — .*$")
+    for name in ("check-clean", "check-staged"):
+        assert name in phase_2, f"Phase 2 must run {name} before its combined commit"
+
+
+def test_meta_staging_lines_are_real_commands_not_comments():
+    """PR #1126 blocking finding 3: the staging of the meta journal existed only as commented lines."""
+    skill = _read_doc(_SKILL)
+    command = r'^\s*git -C "\$WT" add[^\n]*sessions/meta/'
+    step_10 = _section(skill, r"^## Step 10 — .*$")
+    assert re.search(command + r"YYYY-MM-DD-<meta-slug>\.md", step_10, re.MULTILINE), (
+        "Step 10 must contain an executable `git add` of the meta journal"
+    )
+    assert re.search(r'^\s*git -C "\$WT" add -u[^\n]*sessions/meta/', step_10, re.MULTILINE), (
+        "Step 10 must stage the deletions of meta's real stubs"
+    )
+    phase_2 = _section(skill, r"^### Phase 2 — .*$")
+    assert re.search(command + r"YYYY-MM-DD-<meta-slug>\.md", phase_2, re.MULTILINE), (
+        "Phase 2's combined commit must contain an executable `git add` of the meta journal"
+    )
 
 
 def test_both_step_10_5_replay_pathspec_lists_name_sessions_meta():
@@ -878,12 +1293,19 @@ def test_both_step_10_5_replay_pathspec_lists_name_sessions_meta():
         assert "sessions/meta/" in call, f"a Step 10.5 pathspec list omits sessions/meta/:\n{call}"
 
 
-def test_routine_states_the_unattended_meta_rule():
+def test_routine_states_the_unattended_meta_rule_in_its_own_words():
+    """PR #1126 review: the old gate still passed with the whole rule deleted -- 'Step 6.7' and
+    'Meta journal:' also appear in steps 5-6, and 'Never prompt the user.' pre-dates the change."""
     routine = _read_doc(_ROUTINE)
-    assert "Step 6.7" in routine and "Meta journal:" in routine, (
-        "daily-journal-compose/SKILL.md must say meta is composed automatically and the status is reported"
-    )
-    assert re.search(r"never (?:ask|prompt)", routine, re.IGNORECASE)
+    constraints = routine.split("**Constraints:**", 1)[-1]
+    assert len(constraints.splitlines()) > 5, "Constraints extraction came back empty"
+    for unique in (
+        "Meta triggers are never asked about, declined, or deferred",
+        "do not create a `YYYY-MM-DD_draft.md`",
+        "Late meta entry recovery",
+    ):
+        assert unique in re.sub(r"\s+", " ", constraints), f"the routine's constraint bullet lost: {unique!r}"
+    assert "Step 6.7" in routine and "Meta journal:" in routine
 
 
 # ---------------------------------------------------------------------------
@@ -901,6 +1323,5 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"  FAIL  {t.__name__}: {e}")
             failed += 1
-    total = passed + failed
     print(f"\nTests: {passed} passed, 0 skipped, {failed} failed")
     sys.exit(1 if failed else 0)

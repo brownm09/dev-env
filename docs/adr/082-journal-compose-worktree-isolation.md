@@ -437,33 +437,46 @@ automatically would not have produced an entry.
    `sessions/meta/` from real and derived stubs together. Meta is therefore composed last, once, on every day:
    with real meta stubs or without, in the composed set or not, there is exactly one canonical meta journal per
    date and no edit to a finished document. Step 1's mode choice counts *non-meta* project directories, so
-   meta's real stubs are always composed here.
+   meta's real stubs are composed here whenever another project has stubs (a meta-only day uses the plain
+   single-project flow, where there are no triggers to derive).
 3. **The coordinator composes meta, not a subagent.** The input is small and bounded; it depends on every other
    project's report, so it is serial regardless; the Haiku composers are the surface that returned fabricated
    `STRUCTURE=ok` and wrong token sections ([dev-env#971](https://github.com/brownm09/dev-env/issues/971),
    [#1090](https://github.com/brownm09/dev-env/issues/1090), and the 2026-10-01 compose); and the 2026-08-25
    meta entry was already "authored directly" in that run's meta pass.
-4. **A script does the mechanical parts** — `claude/scripts/journal-compose-meta.py`, four subcommands.
-   `stub` verifies each trigger record against the stub it cites (the `evidence` phrase must appear verbatim,
-   after NFKC and whitespace normalization, on one line or two adjacent lines) and writes the derived stubs and
-   manifest shards; `install` gates the coordinator's composed journal (the eleven required headings, and every
-   derived `Source:` path cited) before copying it into the compose worktree; `abandon` removes derived files;
-   `check-clean` fails if any stub, manifest or `_draft.md` for the date remains anywhere under `sessions/`. A
+4. **A script does the mechanical parts** — `claude/scripts/journal-compose-meta.py`, five subcommands.
+   `stub` verifies each trigger record against the stub it cites and writes the derived stubs and manifest
+   shards: the `evidence` phrase must appear verbatim (after NFKC and whitespace normalization, on one line or
+   two adjacent lines) and run to at least three words, because a one-word "phrase" verifies a fabricated
+   record; the project must equal a directory under `sessions/` exactly (the filesystem is case-insensitive
+   here) and is never `meta`; records arrive as JSON Lines, so one malformed line costs only itself.
+   `install` gates the coordinator's composed journal — the eleven required headings **and**, for every
+   derived stub, a `## Session N — <that stub's label>` section citing each of its `Source:` paths — before
+   copying it into the compose worktree, and never overwrites a journal for the date that it did not write.
+   `abandon` removes derived files. `check-clean` fails if any stub, manifest, `_draft.md` or temp file for the
+   date remains in a `sessions/<project>/` directory. `check-staged` fails on anything unstaged or untracked in
+   `git status`, because the commit is built from the index while `check-clean` reads the working tree. A
    Python process launched by Bash is the only writer that both the harness restriction and the ADR-129 guard
    allow, and it keeps inline-literal snippets out of the skill
    ([dev-env#1101](https://github.com/brownm09/dev-env/issues/1101)).
 5. **Claims are verified, not trusted.** An unverifiable record is rejected by name
-   (`META_TRIGGER_REJECTED …`), never silently included or dropped, and the rejection list goes in the PR body.
-   Phase 2 unions the `META_TRIGGER=` lines across every attempt of a subagent.
+   (`META_TRIGGER_REJECTED …`, keeping the record's own reason), never silently included or dropped, and the
+   rejection list goes in the PR body. A day on which every record was refused reports `rejected`, not `none`
+   (which means no triggers were reported). Phase 2 unions the `META_TRIGGER=` lines across every attempt of a
+   subagent; a retry that quotes the same change differently is deduped by (project, stub, category, evidence
+   line), the latest attempt winning.
 6. **No file nothing composes, by construction.** Derived files are untracked, never pushed, and consumed by
    Step 9's existing deletion globs in the same run, so the draft branch never carries one and a crashed run
    cannot leave a stub the next run would compose as real; `check-clean` is the net. Step 2b no longer writes
    `_draft.md`; the Step 1 legacy read fallback stays for old days.
-7. **Meta never blocks the project journals.** If the pass fails and only derived stubs are involved, the
-   coordinator retries once, then `abandon`s; the PR body states `Meta journal: FAILED — …` with the triggers
-   not captured and a pointer to
-   [REFERENCE.md → Late meta entry recovery](../REFERENCE.md#late-meta-entry-recovery). If real meta stubs are
-   present the compose stops, as for any project.
+7. **A trigger report can never stop the compose.** Before this change trigger reports could not block a
+   compose, and they still must not. On a derived-side failure (`stub` exits 1 or 2, the helper cannot run, or
+   `install` refuses twice while derived stubs are present) the coordinator runs `abandon`, composes meta from
+   the real stubs alone if there are any, and carries on. The PR body states `Meta journal: FAILED — …` with
+   the triggers not captured and the pre-compose draft tip, with a pointer to
+   [REFERENCE.md → Late meta entry recovery](../REFERENCE.md#late-meta-entry-recovery). Only when the
+   real-stub journal itself cannot be installed does the compose stop, as for any project. Only `install` is
+   retried (once); a `stub` failure goes straight to the policy.
 
 **Judgment calls.**
 
@@ -475,14 +488,24 @@ automatically would not have produced an entry.
 - **Never pushed, so the pre-compose commit holds no copy.** Old Step 2b pushed its draft; pushing a derived
   stub would let a crashed run leave one that the next run composes as real, duplicating the entry. Nothing is
   lost: the source stubs are in the pre-compose commit, and the composed journal cites each `Source:` path.
-- **The gate checks tokens the pass itself generated, with no threshold.** The eleven heading regexes are the
-  existing structural assertion; the `Source:` paths are extracted from the derived stubs, and a derived stub
-  with no extractable `Source:` fails instead of passing vacuously. The fidelity ratio is reported but never
-  gates: the skill's 80% and 50% figures are rough heuristics that have never been calibrated against derived
-  input.
+- **One calibrated constant; everything else keys on a literal token.** The eleven heading regexes are the
+  existing structural assertion; the category labels and `Source:` paths are extracted from the derived
+  stubs, and a derived stub with no extractable label or `Source:` fails instead of passing vacuously. The
+  one numeric constant is `MIN_EVIDENCE_WORDS = 3` (ADR-144): known-good, the six real evidence phrases from
+  the 2026-10-01 dry run are 7 to 12 words (worst case 7, a margin of 4); known-bad, `e`, `PR`, `.`, `-` and a
+  two-word fragment all verified a fabricated record before the minimum and are all rejected now. The fidelity
+  ratio is reported but never gates: the skill's 80% and 50% figures are rough heuristics never calibrated
+  against derived input, so the Step 6.5 floor still applies to the real stubs' share only
+  (`REAL_FIDELITY`), as it always did.
 - **An exact-match evidence check can reject a real trigger whose quote was mis-copied.** That is loud and
   recoverable (PR body plus runbook); a fuzzy matcher would need a calibrated similarity cutoff and would let a
-  fabricated claim through at the margin.
+  fabricated claim through at the margin. Type-specific anchors (a `dev-env-pr` record must quote a `#N`) were
+  considered and rejected: five of the seven categories are semantic, so an anchor would false-reject real
+  triggers.
+- **`check-staged` exists because the commit is built from the index.** `check-clean` passed while the index
+  still held real meta stubs and the composed journal was untracked — the #892 shape, shipped with a green
+  check and a PR body saying `composed`. Step 10 and Phase 2 now stage meta with real commands, and the
+  commit waits on `check-staged`.
 - **ADR-129's "sole method" claim is bounded, not broken.** See its Amendment 2: derived stubs are
   compose-internal and never session records.
 - **Steps 7 and 8 are unchanged for meta.** Until #1119 is fixed, its script-file recipe applies to meta's
@@ -510,23 +533,26 @@ automatically would not have produced an entry.
   that have them).
 - Step 10.5's replay pathspecs must name `sessions/meta/` whenever meta was composed; omitting it would silently
   drop the entry on the conflict-recovery path.
-- **Testing.** `claude/scripts/tests/test_journal_compose_meta.py` (Testing item 100, 50 cases) replays a
+- **Testing.** `claude/scripts/tests/test_journal_compose_meta.py` (Testing item 100, 69 cases) replays a
   fixture day end to end — records, verified derived stubs and schema-valid manifest shards, gated
   install, simulated Step 9, `check-clean` — and carries the #892 regression (the old `_draft.md`
-  shape fails the tree-wide check). Drift gates tie the skill's heading regexes, its trigger slugs (in
-  Step 2b *and* the Phase 1 template's inline copy), the Step 6.7 / Step 10 wiring and both Step 10.5
-  pathspec lists to the helper. Calibrated once against real corpora (recorded in `docs/TESTING.md`):
-  the heading check passes the four real meta journals and flags exactly the four headings missing from
-  the #273 career-playbook journal; 17 of 17 known-bad mutations of the skill and routine are caught;
-  and a dry run on the real 2026-10-01 day (7 records, 6 accepted, the fabricated one rejected by name)
-  ended with only the composed meta journal in the worktree. The LLM steps themselves are not
-  exercised offline.
+  shape fails the tree-wide check) and a real-git fixture for `check-staged`. Drift gates tie the skill's
+  heading regexes, its trigger slugs and category labels (in Step 2b *and* the Phase 1 template's inline
+  copy), the trigger list in `claude/CLAUDE.md`, the real staging commands in Step 10 and Phase 2, the
+  Step 6.7 / Step 10 wiring and both Step 10.5 pathspec lists to the helper. Calibrated once against real
+  corpora (recorded in `docs/TESTING.md`): the heading check passes the four real meta journals and flags
+  exactly the four headings missing from the #273 career-playbook journal; 27 of 27 known-bad mutations of
+  the skill, routine and `claude/CLAUDE.md` are caught; and a dry run on the real 2026-10-01 day (7
+  records, 6 accepted, the fabricated one rejected by name) ended with only the composed meta journal in
+  the worktree. The LLM steps themselves are not exercised offline.
 - **Observability.** N/A in the hook sense (dev-env's `## Observability`): the helper reports `KEY=value` lines
   on stdout and errors on stderr.
-- **Security.** N/A — no credentials or network; the helper validates every path and writes only inside the
-  compose worktree's `sessions/` tree and the scratch directory.
-- **Resilience.** A meta failure cannot block the project journals; a crashed run leaves nothing on the draft
-  branch; re-running Step 0.6 regenerates everything.
+- **Security.** N/A — no credentials or network; the helper validates every path, requires an absolute
+  worktree argument that is not a primary checkout (an unsubstituted `$WT` must never mean the current
+  directory), and writes only inside the compose worktree's `sessions/` tree.
+- **Resilience.** A derived-side meta failure cannot block the project journals; a failed write rolls back and
+  leaves the earlier derived set and no temp file; a crashed run leaves nothing on the draft branch;
+  re-running Step 0.6 regenerates everything.
 - **Data integrity.** Derived manifest shards are validated against the five-field schema
   ([ADR-056](056-per-session-sharding-journal-companion-files.md)) before they are written; one meta journal
   per date.

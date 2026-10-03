@@ -15,33 +15,43 @@ an LLM or to the Write tool:
 * A Phase 1 subagent's trigger report is a claim. ``stub`` checks each record against the stub it
   cites before anything is written, and names every rejection -- nothing is dropped silently.
 * The coordinator's composed journal is a claim too. ``install`` gates it before it is copied into
-  the worktree, and ``check-clean`` proves nothing for the date was left behind.
+  the worktree; ``check-clean`` and ``check-staged`` prove that nothing for the date was left behind
+  in the working tree and that the commit will contain what the working tree does.
 
-Subcommands (``<WT>`` is the compose worktree root, ``<DATE>`` is YYYY-MM-DD)::
+Subcommands (``<WT>`` is the compose worktree root: an absolute path, and never a primary checkout;
+``<DATE>`` is YYYY-MM-DD)::
 
-    stub        <WT> <DATE> <records.json>
-    install     <WT> <DATE> <staged.md> <slug>
-    abandon     <WT> <DATE>
-    check-clean <WT> <DATE>
+    stub         <WT> <DATE> <records.jsonl>
+    install      <WT> <DATE> <staged.md> <slug>
+    abandon      <WT> <DATE>
+    check-clean  <WT> <DATE>
+    check-staged <WT> <DATE>
 
-``stub`` reads records ``{"project", "type", "stub", "reason", "evidence"}`` (a JSON list, or an
-object with a ``records`` list), verifies each, and writes one *derived stub* per trigger category
-into ``<WT>/sessions/meta/`` as ``DATE_2359NN.stub.md`` plus a manifest shard. Derived files are
-untracked, never pushed, and consumed by Step 9's ordinary deletion globs in the same run.
-``install`` copies the staged composed journal to ``<WT>/sessions/meta/DATE-<slug>.md`` once it
-has all eleven required headings and cites every derived ``Source:`` path. ``abandon`` removes
-derived files and only derived files. ``check-clean`` fails if any stub, manifest or ``_draft.md``
-for the date remains anywhere under ``sessions/``.
+``stub`` reads records ``{"project", "type", "stub", "reason", "evidence"}`` -- one JSON object per
+line (JSON Lines), or a JSON list, or an object with a ``records`` list -- verifies each, and writes
+one *derived stub* per trigger category into ``<WT>/sessions/meta/`` as ``DATE_2359NN.stub.md`` plus
+a manifest shard. A line that is not valid JSON is a named rejection, never a failed batch. Derived
+files are untracked, never pushed, and consumed by Step 9's ordinary deletion globs in the same run.
+``install`` copies the staged composed journal to ``<WT>/sessions/meta/DATE-<slug>.md`` once it has
+all eleven required headings **and**, for every derived stub, a ``## Session N -- <that stub's
+category label>`` section that cites each of the stub's ``Source:`` paths. ``abandon`` removes
+derived files and only derived files. ``check-clean`` fails if any stub, manifest, ``_draft.md`` or
+temp file for the date remains in any ``sessions/<project>/`` directory. ``check-staged`` fails if
+``git status`` shows anything unstaged or untracked (apart from compose lock files), so the commit
+Step 10 builds from the index is the commit the working tree describes.
 
-Exit 0 -- ok. Exit 1 -- usage or precondition error, nothing changed. Exit 2 -- verification
-failure (``stub``: records arrived and none was accepted; ``install``: the journal was refused;
-``check-clean``: something was left behind). Reports go to stdout as ``KEY=value`` lines, errors to
-stderr prefixed ``[journal-compose-meta]``.
+Exit 0 -- ok. Exit 1 -- usage or precondition error, or a write failure that was rolled back.
+Exit 2 -- verification failure (``stub``: records arrived and none was accepted; ``install``: the
+journal was refused; ``check-clean`` / ``check-staged``: something was left behind). Reports go to
+stdout as ``KEY=value`` lines, errors to stderr prefixed ``[journal-compose-meta]``.
 
-There are no numeric thresholds anywhere. Every check keys on a literal token this pass generated
-or that the skill already requires (the eleven section headings, the ``Source:`` paths), and
-``FIDELITY`` is reported but never gates: the skill's 80% / 50% figures are rough heuristics that
-have not been calibrated against derived input (ADR-144).
+Calibration (ADR-144). The only numeric constant is ``MIN_EVIDENCE_WORDS = 3``: evidence is a
+claim that a phrase is in a stub, and a one- or two-word phrase ("e", "PR", "the gap") occurs in
+almost any stub, so it verifies a fabricated record. Known-good: the six real evidence phrases
+from the 2026-10-01 dry run are 7 to 12 words (the worst case is 7, a margin of 4 words). Known-bad:
+"e", "PR", ".", "-" (1 word) and "the gap" (2 words), all rejected. Everything else keys on a literal
+token this pass generated or that the skill already requires (the eleven section headings, the
+``Source:`` paths, the category labels); ``FIDELITY`` is reported but never gates.
 """
 from __future__ import annotations
 
@@ -49,9 +59,11 @@ import datetime
 import json
 import os
 import re
+import subprocess
 import sys
 import unicodedata
 
+import _winsubp  # noqa: F401  -- suppress console windows on Windows
 from _journal_schema import malformed_manifest_fields, missing_required_fields
 
 LOG_PREFIX = "[journal-compose-meta]"
@@ -76,6 +88,13 @@ DERIVED_MARKER = "<!-- derived-meta:"
 TOKENS_COMMENT = "<!-- tokens: input=0 output=0 cost≈$0 -->"
 DERIVED_TOPIC_PREFIX = "Derived meta ("
 
+# U+FEFF, built rather than typed: an editor or pipeline that strips an invisible literal would
+# turn the ``lstrip`` below into a silent no-op.
+BOM = chr(0xFEFF)
+
+# A phrase shorter than this verifies almost any record (see the calibration note above).
+MIN_EVIDENCE_WORDS = 3
+
 # The eleven required headings: the skill's ``chk()`` lines, verbatim (Step 6.5 and the Phase 1
 # template's Step 6.6). A test keeps all three copies identical.
 REQUIRED_HEADINGS = (
@@ -95,11 +114,17 @@ REQUIRED_HEADINGS = (
 _SOURCE_RE = re.compile(r"^- Source: `([^`]+)`[ \t]*$", re.MULTILINE)
 _PROJECT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
-_HEADING_RE = re.compile(r"^#{1,6}\s")
+_BOUNDARY_RE = re.compile(r"^(?:#{1,6}\s|<!--)")
 _H2_RE = re.compile(r"^##\s+(.*\S)\s*$")
+_SESSION_H2_RE = re.compile(r"^## Session [0-9]+ — ")
+_DERIVED_LABEL_RE = re.compile(r"^## (.+?) — detected in ", re.MULTILINE)
 
 EXCERPT_CONTEXT = 2          # lines of context either side of the evidence line (formatting only)
 TITLE_LIMIT = 120            # H3 title length (formatting only)
+SHOWN_LIMIT = 80             # a field echoed in a rejection line (formatting only)
+REASON_LIMIT = 100           # a record's reason echoed in a rejection line (formatting only)
+
+_NOT_JSON = object()
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +134,31 @@ TITLE_LIMIT = 120            # H3 title length (formatting only)
 def normalize(text):
     """NFKC, then collapse every whitespace run to one space -- how evidence is compared."""
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text)).strip()
+
+
+def clip(value, limit, tail=False):
+    """Collapse whitespace and shorten to ``limit`` characters, keeping the head (or the tail)."""
+    flat = " ".join(value.split())
+    if len(flat) <= limit:
+        return flat
+    if tail:
+        return "…" + flat[-(limit - 1):]
+    return flat[: limit - 1].rstrip() + "…"
+
+
+def _label_key(text):
+    return normalize(text.replace("`", "")).casefold()
+
+
+_LABEL_TO_SLUG = {_label_key(label): slug for slug, label in TRIGGER_TYPES}
+
+
+def resolve_type(raw):
+    """Map a reported type -- a slug in any case with ``_`` or ``-``, or the table's label -- to a slug."""
+    slug = raw.strip().lower().replace("_", "-")
+    if slug in _SLUG_TO_INDEX:
+        return slug
+    return _LABEL_TO_SLUG.get(_label_key(raw))
 
 
 def read_utf8(path):
@@ -125,13 +175,37 @@ def read_utf8(path):
     return text.replace("\r\n", "\n").replace("\r", "\n"), None
 
 
-def write_text_atomic(path, text):
-    """UTF-8, LF, no BOM, via a temp file in the same directory and ``os.replace``."""
+def _remove_quietly(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _stage_text(path, text):
+    """Write ``text`` to a temp file beside ``path`` and return the temp path; ``path`` is untouched.
+
+    UTF-8, LF, no BOM. A failed write removes its own temp file before re-raising.
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
     temp = f"{path}.tmp-{os.getpid()}"
-    with open(temp, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(text)
-    os.replace(temp, path)
+    try:
+        with open(temp, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+    except OSError:
+        _remove_quietly(temp)
+        raise
+    return temp
+
+
+def write_text_atomic(path, text):
+    """``_stage_text`` plus ``os.replace``; no temp file survives a failure."""
+    temp = _stage_text(path, text)
+    try:
+        os.replace(temp, path)
+    except OSError:
+        _remove_quietly(temp)
+        raise
 
 
 def valid_date(value):
@@ -194,7 +268,7 @@ def is_derived_stub(path):
             head = handle.read(256)
     except OSError:
         return False
-    return head.decode("utf-8", errors="replace").lstrip("﻿").startswith(DERIVED_MARKER)
+    return head.decode("utf-8", errors="replace").lstrip(BOM).startswith(DERIVED_MARKER)
 
 
 def list_meta_stubs(wt, date):
@@ -224,10 +298,30 @@ def _is_derived_manifest(path):
     return isinstance(topic, str) and topic.startswith(DERIVED_TOPIC_PREFIX)
 
 
-def remove_derived(wt, date):
+def real_manifest_stub_names(wt, date):
+    """Stub names implied by *real* manifest shards for ``date`` -- orphans included.
+
+    A real manifest with no stub beside it still owns its name: ``stub`` must not overwrite it.
+    """
+    names = set()
+    meta_dir = _meta_dir(wt)
+    try:
+        listing = sorted(os.listdir(meta_dir))
+    except OSError:
+        return names
+    for name in listing:
+        if name.startswith(f"{date}_") and name.endswith(".manifest.jsonl"):
+            if not _is_derived_manifest(os.path.join(meta_dir, name)):
+                names.add(name[: -len(".manifest.jsonl")] + ".stub.md")
+    return names
+
+
+def remove_derived(wt, date, include_temps=True):
     """Delete derived stubs, their manifest shards, and orphaned derived manifests for ``date``.
 
-    Marker-verified: a real stub or manifest is never touched. Returns the removed relative paths.
+    Marker-verified: a real stub or manifest is never touched. ``include_temps`` also removes the
+    ``*.tmp-<pid>`` files a failed write can leave (``stub`` passes False: it stages new temp files
+    before it removes the old set). Returns the removed relative paths.
     """
     removed = []
     _real, derived = list_meta_stubs(wt, date)
@@ -243,20 +337,22 @@ def remove_derived(wt, date):
     except OSError:
         names = []
     for name in names:
-        if name.startswith(f"{date}_") and name.endswith(".manifest.jsonl"):
-            path = os.path.join(meta_dir, name)
-            if _is_derived_manifest(path):
-                os.remove(path)
-                removed.append(rel(wt, path))
+        path = os.path.join(meta_dir, name)
+        if name.startswith(f"{date}_") and name.endswith(".manifest.jsonl") and _is_derived_manifest(path):
+            os.remove(path)
+            removed.append(rel(wt, path))
+        elif include_temps and name.startswith((f"{date}_", f"{date}-")) and ".tmp-" in name:
+            os.remove(path)
+            removed.append(rel(wt, path))
     return removed
 
 
 def allocate_names(date, type_indexes, taken):
     """Map each type index to a free ``DATE_2359NN.stub.md`` name.
 
-    NN starts at the type's table index and is bumped past ``taken`` (the real stubs' names) and
-    past names already handed out, so a real stub is never shadowed. Raises ValueError when the
-    minute is exhausted.
+    NN starts at the type's table index and is bumped past ``taken`` (names owned by real stubs
+    and real manifests) and past names already handed out, so nothing real is ever shadowed.
+    Raises ValueError when the minute is exhausted.
     """
     used = set()
     names = {}
@@ -300,13 +396,18 @@ def session_heading(lines, index):
 
 
 def excerpt(lines, index):
-    """The evidence line plus up to ``EXCERPT_CONTEXT`` lines either side, never crossing a heading."""
+    """The evidence line plus up to ``EXCERPT_CONTEXT`` lines either side.
+
+    Never crosses a Markdown heading or an HTML comment line: the trailing ``<!-- tokens -->``,
+    ``<!-- next-session-context -->`` and ``<!-- opening-brief -->`` markers must not be copied
+    into a derived stub, which carries none of them by design.
+    """
     start = index
-    while start > max(index - EXCERPT_CONTEXT, 0) and not _HEADING_RE.match(lines[start - 1]):
+    while start > max(index - EXCERPT_CONTEXT, 0) and not _BOUNDARY_RE.match(lines[start - 1]):
         start -= 1
     end = index
     last = min(index + EXCERPT_CONTEXT, len(lines) - 1)
-    while end < last and not _HEADING_RE.match(lines[end + 1]):
+    while end < last and not _BOUNDARY_RE.match(lines[end + 1]):
         end += 1
     chunk = list(lines[start : end + 1])
     while chunk and not chunk[0].strip():
@@ -316,15 +417,28 @@ def excerpt(lines, index):
     return chunk
 
 
-def _shown(value):
+def _shown(record, key):
+    value = record.get(key)
     if isinstance(value, str) and value.strip():
-        return " ".join(value.split())[:60]
+        return clip(value, SHOWN_LIMIT, tail=True)
     return "?"
 
 
-def _stub_basename(value, project, date):
-    path = value.strip().replace("\\", "/")
-    if "/" in path:
+def _stub_basename(value, project, date, wt):
+    """``(name, problem)``: the bare stub filename for a bare name, a ``sessions/<project>/`` path,
+    or an absolute path that is the very file inside this worktree (Step 1's ``ls`` prints those)."""
+    text = value.strip()
+    path = text.replace("\\", "/")
+    if os.path.isabs(text) or re.match(r"^[A-Za-z]:/", path):
+        name = path.rsplit("/", 1)[-1]
+        target = os.path.join(wt, "sessions", project, name)
+        try:
+            same = os.path.samefile(text, target)
+        except OSError:
+            same = False
+        if not same:
+            return None, f"absolute stub path is not a file under sessions/{project}/ of this worktree"
+    elif "/" in path:
         prefix, _sep, name = path.rpartition("/")
         if prefix != f"sessions/{project}":
             return None, f"stub path must be the bare filename or sessions/{project}/<filename>"
@@ -335,18 +449,22 @@ def _stub_basename(value, project, date):
     return name, None
 
 
-def validate_record(wt, date, record):
+def validate_record(wt, date, record, listing):
     """Check one trigger record against the stub it cites.
 
-    Returns ``(accepted, None)`` or ``(None, (project, stub, type, reason))``. The rejection carries
-    whatever the record had, so the report can name it.
+    ``listing`` is ``os.listdir(<WT>/sessions)``: project names are matched against it exactly,
+    because the filesystem is case-insensitive here and ``Dev-Env`` would otherwise be accepted.
+    Returns ``(accepted, None)`` or ``(None, (project, stub, type, why, reason))``; the rejection
+    carries whatever the record had so the report can name it and preserve its reason.
     """
     if not isinstance(record, dict):
-        return None, ("?", "?", "?", "record is not a JSON object")
-    shown = (_shown(record.get("project")), _shown(record.get("stub")), _shown(record.get("type")))
+        return None, ("?", "?", "?", "record is not a JSON object", "")
+    shown = (_shown(record, "project"), _shown(record, "stub"), _shown(record, "type"))
+    raw_reason = record.get("reason")
+    reason_shown = clip(raw_reason, REASON_LIMIT) if isinstance(raw_reason, str) else ""
 
-    def reject(reason):
-        return None, shown + (reason,)
+    def reject(why):
+        return None, shown + (why, reason_shown)
 
     fields = {}
     for key in ("project", "type", "stub", "reason", "evidence"):
@@ -356,23 +474,22 @@ def validate_record(wt, date, record):
         fields[key] = value.strip()
 
     project = fields["project"]
-    if project == "meta":
+    if project.rstrip(". ").casefold() == "meta":
         return reject("project 'meta' is skipped: meta triggers are never reported for meta")
-    if not _PROJECT_RE.fullmatch(project):
+    if not _PROJECT_RE.fullmatch(project) or project.endswith((".", " ")):
         return reject(f"unsafe project name {project!r}")
-    project_dir = os.path.join(wt, "sessions", project)
-    if not os.path.isdir(project_dir):
-        return reject(f"no sessions/{project}/ directory in the compose worktree")
+    if project not in listing:
+        return reject(f"no sessions/{project}/ directory in the compose worktree (names are case-sensitive)")
 
-    slug = fields["type"].lower().replace("_", "-")
-    if slug not in _SLUG_TO_INDEX:
+    slug = resolve_type(fields["type"])
+    if slug is None:
         known = ", ".join(name for name, _label in TRIGGER_TYPES)
         return reject(f"unknown type {fields['type']!r} (expected one of: {known})")
 
-    stub_name, problem = _stub_basename(fields["stub"], project, date)
+    stub_name, problem = _stub_basename(fields["stub"], project, date, wt)
     if problem:
         return reject(problem)
-    stub_path = os.path.join(project_dir, stub_name)
+    stub_path = os.path.join(wt, "sessions", project, stub_name)
     if not _inside(wt, stub_path):
         return reject("stub path escapes the compose worktree")
     if not os.path.isfile(stub_path):
@@ -382,6 +499,11 @@ def validate_record(wt, date, record):
         return reject(f"stub unreadable: {error}")
 
     needle = normalize(fields["evidence"])
+    if len(needle.split()) < MIN_EVIDENCE_WORDS:
+        return reject(
+            f"evidence too short: copy a phrase of at least {MIN_EVIDENCE_WORDS} words "
+            "from ONE line of the stub"
+        )
     lines = text.split("\n")
     index = find_evidence(lines, needle)
     if index is None:
@@ -396,7 +518,7 @@ def validate_record(wt, date, record):
         "reason": " ".join(fields["reason"].split()),
         "heading": session_heading(lines, index),
         "excerpt": excerpt(lines, index),
-        "evidence_norm": needle,
+        "line_index": index,
     }, None
 
 
@@ -408,14 +530,14 @@ def build_derived_stub(date, label, items):
     """Markdown for one derived stub: one H2, an H3 per record, evidence quoted with ``> ``."""
     projects = sorted({item["project"] for item in items})
     lines = [
-        f"{DERIVED_MARKER} generated by journal-compose for {date} from verified trigger records; "
+        f"{DERIVED_MARKER} generated by journal-compose for {date} from trigger records; "
         "compose-internal, not a session. Quoted lines are copied verbatim from the cited source "
         "stubs. -->",
         "",
         f"## {label} — detected in {', '.join(projects)} ({date})",
         "",
-        f"{len(items)} trigger(s) reported by the per-project composers; each was verified "
-        "against the stub it cites.",
+        f"{len(items)} trigger(s) reported by the per-project composers; each evidence phrase "
+        "was found in the stub it cites.",
         "",
     ]
     for item in items:
@@ -443,74 +565,123 @@ def missing_headings(text):
     return [label for pattern, label in REQUIRED_HEADINGS if not re.search(pattern, text, re.MULTILINE)]
 
 
+def session_sections(text):
+    """``[(heading_line, section_text)]`` for each ``## Session N — …`` H2, running to the next H2."""
+    sections = []
+    heading, body = None, []
+    for line in text.split("\n"):
+        if line.startswith("## "):
+            if heading is not None:
+                sections.append((heading, "\n".join(body)))
+            heading = line if _SESSION_H2_RE.match(line) else None
+            body = [line]
+        elif heading is not None:
+            body.append(line)
+    if heading is not None:
+        sections.append((heading, "\n".join(body)))
+    return sections
+
+
 # ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
 
 def _load_records(path, date):
-    """``(records, error)``; exactly one is None."""
+    """``(records, rejections, error)``: parsed records plus per-line rejections, or an error.
+
+    The file is parsed whole first (a list, or an object with a ``records`` list, or a single
+    record). If that fails it is read as JSON Lines, where a malformed line becomes a named
+    rejection instead of failing the batch -- one stray ``\\U`` in a copied Windows path must not
+    cost the valid records beside it.
+    """
     try:
         with open(path, "rb") as handle:
             raw = handle.read()
     except OSError as exc:
-        return None, str(exc)
+        return None, [], str(exc)
     try:
-        data = json.loads(raw.decode("utf-8-sig"))
-    except (UnicodeDecodeError, ValueError) as exc:
-        return None, f"not valid JSON: {exc}"
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        return None, [], f"not valid UTF-8: {exc}"
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = _NOT_JSON
+    if data is _NOT_JSON:
+        records, rejections = [], []
+        for number, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                records.append(json.loads(line))
+            except ValueError as exc:
+                rejections.append(("?", "?", "?", f"line {number} is not valid JSON ({exc})", ""))
+        return records, rejections, None
     if isinstance(data, dict):
-        if data.get("date") not in (None, date):
-            return None, f"records file is for {data.get('date')!r}, not {date}"
-        data = data.get("records")
+        if "records" in data:
+            if data.get("date") not in (None, date):
+                return None, [], f"records file is for {data.get('date')!r}, not {date}"
+            data = data["records"]
+        else:
+            data = [data]
     if not isinstance(data, list):
-        return None, "expected a JSON list of records (or an object with a 'records' list)"
-    return data, None
+        return None, [], "expected JSON Lines, a JSON list, or an object with a 'records' list"
+    return data, [], None
 
 
 def cmd_stub(wt, date, records_path):
-    records, error = _load_records(records_path, date)
+    records, load_rejections, error = _load_records(records_path, date)
     if records is None:
         return _fail(f"cannot read records {records_path!r}: {error}")
+    rejected = list(load_rejections)
 
-    accepted, rejected, seen, deduped = [], [], set(), 0
+    listing = os.listdir(os.path.join(wt, "sessions"))
+    items, deduped = {}, 0
     for record in records:
-        item, rejection = validate_record(wt, date, record)
+        item, rejection = validate_record(wt, date, record, listing)
         if rejection is not None:
             rejected.append(rejection)
             continue
-        key = (item["project"], item["stub"], item["type_index"], item["evidence_norm"])
-        if key in seen:
+        # One trigger per (project, stub, category, evidence line): a retry that quotes the same
+        # change differently is a duplicate, and the latest attempt wins.
+        key = (item["project"], item["stub"], item["type_index"], item["line_index"])
+        if key in items:
             deduped += 1
-            continue
-        seen.add(key)
-        accepted.append(item)
+        items[key] = item
+    accepted = list(items.values())
+    received = len(records) + len(load_rejections)
 
     report = [
-        f"META_RECORDS_RECEIVED={len(records)}",
+        f"META_RECORDS_RECEIVED={received}",
         f"META_TRIGGERS_ACCEPTED={len(accepted)}",
         f"META_TRIGGERS_REJECTED={len(rejected)}",
         f"META_TRIGGERS_DEDUPED={deduped}",
     ]
-    report += [f"META_TRIGGER_REJECTED {proj} {stub} {kind} -- {why}" for proj, stub, kind, why in rejected]
+    for proj, stub, kind, why, reason in rejected:
+        line = f"META_TRIGGER_REJECTED {proj} {stub} {kind} -- {why}"
+        report.append(f"{line} | reason: {reason}" if reason else line)
     if not accepted:
-        report.append("META_STATUS=none")
+        # "rejected" is deliberately not "none": the PR body uses none for "no meta triggers",
+        # and a day on which every record was refused must not be relayed as having had none.
+        report.append("META_STATUS=rejected" if received else "META_STATUS=none")
         _emit(report)
-        return 2 if records else 0
+        return 2 if received else 0
 
     real, _derived_old = list_meta_stubs(wt, date)
     by_type = {}
     for item in accepted:
         by_type.setdefault(item["type_index"], []).append(item)
+    taken = {os.path.basename(path) for path in real} | real_manifest_stub_names(wt, date)
     try:
-        names = allocate_names(date, by_type, {os.path.basename(path) for path in real})
+        names = allocate_names(date, by_type, taken)
     except ValueError as exc:
         return _fail(str(exc))
 
     planned = []
     for index in sorted(by_type):
-        items = sorted(by_type[index], key=lambda entry: (entry["project"], entry["stub"]))
+        group = sorted(by_type[index], key=lambda entry: (entry["project"], entry["stub"], entry["line_index"]))
         label = TRIGGER_TYPES[index][1]
-        projects = sorted({entry["project"] for entry in items})
+        projects = sorted({entry["project"] for entry in group})
         manifest = {
             "stub": f"sessions/meta/{names[index]}",
             "topic": f"{DERIVED_TOPIC_PREFIX}{label}): {', '.join(projects)}",
@@ -521,22 +692,58 @@ def cmd_stub(wt, date, records_path):
         problems = missing_required_fields(manifest) + malformed_manifest_fields(manifest)
         if problems:
             return _fail("derived manifest would be invalid: " + "; ".join(problems))
-        planned.append((names[index], build_derived_stub(date, label, items), json.dumps(manifest) + "\n"))
+        planned.append((names[index], build_derived_stub(date, label, group), json.dumps(manifest) + "\n"))
 
-    # Replace semantics: this run's derived set supersedes any earlier one for the date.
-    remove_derived(wt, date)
+    # Stage every new file under a temp name first, so a failed write (an antivirus lock, a full
+    # drive) leaves the earlier derived set untouched; only then swap the sets.
     meta_dir = _meta_dir(wt)
+    staged = []
+    try:
+        for stub_name, stub_text, manifest_text in planned:
+            final_stub = os.path.join(meta_dir, stub_name)
+            final_manifest = os.path.join(meta_dir, stub_name[: -len(".stub.md")] + ".manifest.jsonl")
+            staged.append((_stage_text(final_stub, stub_text), final_stub))
+            staged.append((_stage_text(final_manifest, manifest_text), final_manifest))
+    except OSError as exc:
+        for temp, _final in staged:
+            _remove_quietly(temp)
+        return _fail(f"could not write the derived stubs ({exc}); nothing was changed")
+    remove_derived(wt, date, include_temps=False)
+    try:
+        for temp, final in staged:
+            os.replace(temp, final)
+    except OSError as exc:
+        for temp, _final in staged:
+            _remove_quietly(temp)
+        return _fail(f"could not place the derived stubs ({exc}); run 'abandon' before retrying")
+
     total = 0
-    for stub_name, stub_text, manifest_text in planned:
-        write_text_atomic(os.path.join(meta_dir, stub_name), stub_text)
-        write_text_atomic(
-            os.path.join(meta_dir, stub_name[: -len(".stub.md")] + ".manifest.jsonl"), manifest_text
-        )
+    for stub_name, stub_text, _manifest_text in planned:
         report.append(f"META_STUB=sessions/meta/{stub_name}")
         total += len(stub_text.splitlines())
     report += [f"META_DERIVED_LINES={total}", "META_STATUS=derived"]
     _emit(report)
     return 0
+
+
+def _derived_expectations(wt, derived):
+    """``([(label, [sources])], error)`` for the derived stubs; an error refuses a vacuous check."""
+    expectations = []
+    for path in derived:
+        stub_text, error = read_utf8(path)
+        if stub_text is None:
+            return None, f"derived stub {rel(wt, path)} unreadable: {error}"
+        label_match = _DERIVED_LABEL_RE.search(stub_text)
+        if not label_match:
+            return None, f"derived stub {rel(wt, path)} has no recognizable category heading"
+        sources = list(dict.fromkeys(_SOURCE_RE.findall(stub_text)))
+        if not sources:
+            return None, (
+                f"derived stub {rel(wt, path)} has no extractable 'Source:' line -- refusing a "
+                "citation check that would pass vacuously"
+            )
+        expectations.append((label_match.group(1), sources))
+    return expectations, None
 
 
 def cmd_install(wt, date, staged, slug):
@@ -551,60 +758,77 @@ def cmd_install(wt, date, staged, slug):
     real, derived = list_meta_stubs(wt, date)
     if not real and not derived:
         return _fail(f"no sessions/meta/{date}_*.stub.md in the worktree: nothing for this journal to compose")
-
-    sources = []
-    for path in derived:
-        stub_text, error = read_utf8(path)
-        if stub_text is None:
-            return _fail(f"derived stub {rel(wt, path)} unreadable: {error}")
-        found = _SOURCE_RE.findall(stub_text)
-        if not found:
-            return _fail(
-                f"derived stub {rel(wt, path)} has no extractable 'Source:' line -- refusing a "
-                "citation check that would pass vacuously"
-            )
-        sources.extend(found)
+    expectations, problem = _derived_expectations(wt, derived)
+    if expectations is None:
+        return _fail(problem)
 
     missing = missing_headings(text)
-    uncited = sorted({source for source in sources if source not in text})
-    if missing or uncited:
+    sections = session_sections(text)
+    missing_sessions, uncited = [], []
+    pairs_total = pairs_cited = 0
+    for label, sources in expectations:
+        section = next((body for heading, body in sections if label in heading), None)
+        pairs_total += len(sources)
+        if section is None:
+            missing_sessions.append(label)
+            continue
+        for source in sources:
+            if source in section:
+                pairs_cited += 1
+            else:
+                uncited.append((label, source))
+    if missing or missing_sessions or uncited:
         report = ["INSTALL_REFUSED"]
         if missing:
             report.append("STRUCTURE=missing:" + ",".join(missing))
-        if uncited:
-            report.append("SOURCES_UNCITED=" + ",".join(uncited))
+        if missing_sessions:
+            report.append("SESSIONS_MISSING=" + ",".join(missing_sessions))
+        for label, source in uncited:
+            report.append(f"SOURCES_UNCITED {label} -- {source}")
         _emit(report)
         return 2
 
     meta_dir = _meta_dir(wt)
     target_name = f"{date}-{slug}.md"
+    target = os.path.join(meta_dir, target_name)
+    final_text = text if text.endswith("\n") else text + "\n"
     try:
         existing = sorted(
             name for name in os.listdir(meta_dir) if name.startswith(f"{date}-") and name.endswith(".md")
         )
     except OSError:
         existing = []
-    other = [name for name in existing if name != target_name]
-    if other:
-        return _fail(
-            f"a composed meta journal for {date} already exists (sessions/meta/{other[0]}): "
-            "one per date -- remove it first"
-        )
+    if existing:
+        previous, _error = read_utf8(target) if existing == [target_name] else (None, None)
+        if previous != final_text:
+            return _fail(
+                f"a composed meta journal for {date} already exists (sessions/meta/{existing[0]}): "
+                "one per date. Do not overwrite or remove it -- report it (stubs added to an "
+                "already-composed day are the reconcile-late-stubs.py case)"
+            )
+    else:
+        try:
+            write_text_atomic(target, final_text)
+        except OSError as exc:
+            return _fail(f"could not write sessions/meta/{target_name} ({exc}); nothing was installed")
 
-    write_text_atomic(os.path.join(meta_dir, target_name), text if text.endswith("\n") else text + "\n")
+    def line_count(path):
+        body, _err = read_utf8(path)
+        return len(body.splitlines()) if body else 0
 
-    source_lines = 0
-    for path in real + derived:
-        stub_text, _error = read_utf8(path)
-        source_lines += len(stub_text.splitlines()) if stub_text else 0
+    real_lines = sum(line_count(path) for path in real)
+    source_lines = real_lines + sum(line_count(path) for path in derived)
+    journal_lines = len(text.splitlines())
     _emit(
         [
             f"META_JOURNAL=sessions/meta/{target_name}",
             "STRUCTURE=ok",
-            f"SOURCES_CITED={len(set(sources))}/{len(set(sources))}" if sources else "SOURCES_CITED=n/a",
-            f"LINE_COUNT={len(text.splitlines())}",
+            f"SOURCES_CITED={pairs_cited}/{pairs_total}" if expectations else "SOURCES_CITED=n/a",
+            f"LINE_COUNT={journal_lines}",
             f"SOURCE_LINES={source_lines}",
-            f"FIDELITY={len(text.splitlines())}/{source_lines}",
+            f"FIDELITY={journal_lines}/{source_lines}",
+            f"REAL_SOURCE_LINES={real_lines}",
+            f"REAL_FIDELITY={journal_lines}/{real_lines}" if real_lines else "REAL_FIDELITY=n/a",
         ]
     )
     return 0
@@ -625,7 +849,8 @@ def cmd_check_clean(wt, date):
             continue
         for name in sorted(os.listdir(project_dir)):
             is_stub = name.startswith(f"{date}_") and name.endswith((".stub.md", ".manifest.jsonl"))
-            if is_stub or name in (f"{date}.manifest.jsonl", f"{date}_draft.md"):
+            is_temp = name.startswith((f"{date}_", f"{date}-")) and ".tmp-" in name
+            if is_stub or is_temp or name in (f"{date}.manifest.jsonl", f"{date}_draft.md"):
                 leftovers.append(f"sessions/{project}/{name}")
     if not leftovers:
         _emit(["CHECK_CLEAN=ok"])
@@ -634,19 +859,63 @@ def cmd_check_clean(wt, date):
     return 2
 
 
+# Untracked files that are expected to sit in a compose worktree and are never committed.
+_EPHEMERAL = (".draft-compose.lock", ".compose-creating")
+
+
+def cmd_check_staged(wt, _date):
+    """Fail on any unstaged change or untracked file: the index must equal the working tree.
+
+    ``check-clean`` reads the working tree, but the commit is built from the index. A stub deleted
+    on disk but still in the index, or a composed journal that was never ``git add``-ed, passes
+    ``check-clean`` and still ships the #892 shape -- real meta stubs reaching ``main`` uncomposed.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", wt, "status", "--porcelain=v1", "-z", "-uall"], capture_output=True, check=False
+        )
+    except OSError as exc:
+        return _fail(f"cannot run git: {exc}")
+    if proc.returncode != 0:
+        return _fail("git status failed: " + proc.stderr.decode("utf-8", errors="replace").strip())
+    tokens = proc.stdout.decode("utf-8", errors="replace").split("\0")
+    unstaged = []
+    position = 0
+    while position < len(tokens):
+        token = tokens[position]
+        position += 1
+        if len(token) < 4:
+            continue
+        status, path = token[:2], token[3:]
+        if status[0] in "RC":
+            position += 1  # a rename or copy entry carries its source path as the next token
+        if status == "??":
+            if os.path.basename(path) in _EPHEMERAL:
+                continue
+            unstaged.append(f"UNSTAGED ?? {path}")
+        elif status[1] != " ":
+            unstaged.append(f"UNSTAGED {status} {path}")
+    if not unstaged:
+        _emit(["CHECK_STAGED=ok"])
+        return 0
+    _emit(["CHECK_STAGED=unstaged"] + unstaged)
+    return 2
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 USAGE = (
-    "usage: py -3 journal-compose-meta.py stub <worktree> <YYYY-MM-DD> <records.json>\n"
+    "usage: py -3 journal-compose-meta.py stub <worktree> <YYYY-MM-DD> <records.jsonl>\n"
     "       py -3 journal-compose-meta.py install <worktree> <YYYY-MM-DD> <staged.md> <slug>\n"
     "       py -3 journal-compose-meta.py abandon <worktree> <YYYY-MM-DD>\n"
     "       py -3 journal-compose-meta.py check-clean <worktree> <YYYY-MM-DD>\n"
+    "       py -3 journal-compose-meta.py check-staged <worktree> <YYYY-MM-DD>\n"
 )
 
 # Positional arguments each subcommand takes after its own name.
-ARITY = {"stub": 3, "install": 4, "abandon": 2, "check-clean": 2}
+ARITY = {"stub": 3, "install": 4, "abandon": 2, "check-clean": 2, "check-staged": 2}
 
 
 def main(argv):
@@ -656,9 +925,19 @@ def main(argv):
         sys.stderr.write(f"{LOG_PREFIX} {USAGE}")
         return 1
     name, params = args[0], args[1:]
-    wt, date = os.path.normpath(params[0]), params[1]
+    raw_wt, date = params[0], params[1]
+    # An empty or relative worktree would silently mean the current directory (normpath('') is '.'),
+    # which could be the shared canonical checkout; Step 0.6 warns that $WT does not persist.
+    if not raw_wt.strip() or not os.path.isabs(raw_wt):
+        return _fail(f"worktree {raw_wt!r} must be an absolute path -- was $WT left unsubstituted?")
+    wt = os.path.normpath(raw_wt)
     if not valid_date(date):
         return _fail(f"{date!r} is not a YYYY-MM-DD date")
+    if os.path.isdir(os.path.join(wt, ".git")):
+        return _fail(
+            f"{wt!r} is a primary checkout (it has a .git directory), not a linked compose "
+            "worktree -- refusing to touch it"
+        )
     if not os.path.isdir(os.path.join(wt, "sessions")):
         return _fail(f"no sessions/ directory under {wt!r} -- is that a compose worktree?")
     if name == "stub":
@@ -667,6 +946,8 @@ def main(argv):
         return cmd_install(wt, date, params[2], params[3])
     if name == "abandon":
         return cmd_abandon(wt, date)
+    if name == "check-staged":
+        return cmd_check_staged(wt, date)
     return cmd_check_clean(wt, date)
 
 
