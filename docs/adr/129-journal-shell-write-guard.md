@@ -356,3 +356,28 @@ back as checked-in tests before this amendment could be considered complete).
 **Consequences updated:** the "Lexical path matching only, no `sessions/`-prefix requirement"
 judgment call above no longer describes this hook's actual behavior (see the "revised" heading);
 all other original Judgment calls and Consequences remain accurate as written.
+
+---
+
+## Amendment 2 (2026-10-02): compose-generated derived stubs are the one script-written exception
+
+Decision §1 makes the Write/Edit tool the sole creation method for the four journal content files, and the
+Context records that "no script under `claude/scripts/` performs any of these four writes." Both statements
+describe **session-authored** files and stay true for them. `/journal-compose` now generates one more kind: the
+*derived stub* (and its manifest shard) that carries verified meta-trigger records into the same run's meta
+journal ([ADR-082 Addendum, 2026-10-02](082-journal-compose-worktree-isolation.md)).
+`claude/scripts/journal-compose-meta.py stub` writes it. Why a script is right here, and why this guard is
+unaffected:
+
+- **The Write tool cannot reach the target.** The harness refuses the coordinator's Write/Edit into the isolated
+  compose worktree ([dev-env#1119](https://github.com/brownm09/dev-env/issues/1119)), and this guard blocks the
+  Bash alternatives. A Python process launched by Bash and given a file path is the only compliant writer, and it
+  carries no inline literal, so none of the shell-quoting failure modes this ADR exists to prevent can occur.
+- **The guard is structurally outside the match, not overridden.** It keys on shell *text* — a redirect, `tee`,
+  or a `node -e` / `py -c` body naming a stub or manifest path.
+  `py -3 journal-compose-meta.py stub <worktree> <date> <records.json>` names no such path.
+- **Derived files are never session records.** They are untracked, never pushed, deleted by Step 9 in the same
+  run, and `journal-compose-meta.py check-clean` fails the compose if one survives.
+
+No other script-written journal content file is sanctioned by this amendment; a new one needs its own
+justification against the three points above.

@@ -60,7 +60,8 @@ stamp + top 3–5 cross-project priorities aggregated from manifest `priorities`
 
 **Constraint:** must run in a dedicated session with no prior task work. If other tasks were handled before invocation, the skill refuses with an error message.
 
-**Multi-project mode:** when the day's stubs span more than one project directory, the skill fans
+**Multi-project mode:** when the day's stubs span two or more project directories other than
+`meta` (meta is composed last, by the coordinator, in Step 6.7 — see below), the skill fans
 out one Haiku composer subagent per project — all inside the single shared compose worktree — then
 runs the README/commit/PR work once. Each subagent's `.draft-compose.lock` is **project-scoped**:
 it checks only `sessions/<project>/.draft-compose.lock` and never globs, because every lock inside
@@ -69,6 +70,25 @@ working, and its own project's lock means it is a re-spawn taking over from a fa
 neither is a concurrency abort ([ADR-082 Addendum](adr/082-journal-compose-worktree-isolation.md),
 dev-env#889). Step 0.6's cross-project lock glob is the separate, still-unqualified guard against a
 genuinely concurrent *invocation*.
+
+**Meta journal (Step 6.7):** meta triggers — `CLAUDE.md` changes, new platform constraints,
+remediated workflow failures, cross-project conventions, `dev-env` PRs, journal-structure changes,
+new canonical references — are **never asked about**. Attended or not, the skill composes
+`sessions/meta/YYYY-MM-DD-<slug>.md` itself, in the same run and the same PR, after every other
+project is composed. Each project's composer (or, in the single-project flow, Step 2b) reports
+records `{project, type, stub, reason, evidence}`;
+[`journal-compose-meta.py stub`](#utilities) verifies each against the stub it cites — `evidence`
+must appear there verbatim, and a rejected record is named, never silently dropped — then turns the
+survivors into compose-generated **derived stubs** (one per trigger category,
+`sessions/meta/YYYY-MM-DD_2359NN.stub.md` plus a manifest shard). The coordinator composes those
+together with any real meta stubs; `install` gates the result (all eleven section headings, every
+derived `Source:` path cited) before copying it into the worktree, and Step 10's `check-clean` fails
+the compose if any stub, manifest shard or `YYYY-MM-DD_draft.md` for the date remains. A failed meta
+pass never blocks the project journals: the PR body says `Meta journal: FAILED — …` and lists the
+triggers not captured, and [Late meta entry recovery](#late-meta-entry-recovery) is the fallback. The
+old Step 2b prompt ("open a meta draft block? (y/n)") is gone, and so is the
+`YYYY-MM-DD_draft.md` it wrote, which nothing composed (dev-env#52, #892;
+[ADR-082 Addendum, 2026-10-02](adr/082-journal-compose-worktree-isolation.md)).
 
 **Source library:** greps `~/.claude/skills/sources.md` before spawning any research subagent (zero-cost cache hit path). A new source found on a cache miss is queued via `queue-source-library-entry` into a dedicated dev-env worktree (`chore/research-sources-queue`), not written to `~/.claude/skills/sources.md` directly — that path is a junction onto the canonical dev-env checkout, unaffected by this skill's own engineering-journal worktree isolation, and writing through it from Section 11's nightly, unattended runs left the canonical dirty and blocked every session's sync hook on this machine ([ADR-102](adr/102-source-library-writes-through-worktree.md)).
 
@@ -511,7 +531,7 @@ Autonomous scheduled agents. They run on a cron schedule with no user interactio
 
 **Schedule:** `0 7 * * *` (7:09am local, daily — the scheduler applies a small deterministic jitter on top of the base cron)
 
-Assembles all `YYYY-MM-DD_*.stub.md` files across all configured projects into the canonical 11-section journal entries and opens PRs against `engineering-journal`.
+Assembles all `YYYY-MM-DD_*.stub.md` files across all configured projects into the canonical 11-section journal entries and opens PRs against `engineering-journal`. When any project's stubs contain meta triggers it also composes `sessions/meta/YYYY-MM-DD-<slug>.md` in the same run and the same PR, without asking (`/journal-compose` Step 6.7); the PR body's `Meta journal:` line is the only place an unattended run reports that outcome. [ADR-082 Addendum, 2026-10-02](adr/082-journal-compose-worktree-isolation.md)
 
 **Retry wrapper:** `journal-compose-with-retry.sh` — wraps the routine for Windows Task Scheduler use. Retries up to 3 times with 5-minute delays on transient failures. Before each attempt except the last, also runs a liveness pre-check (`check-journal-compose-liveness.py`, below) against the shared `engineering-journal` checkout — a dirty working tree for the target date skips that attempt without spending a `claude -p` call; the final attempt proceeds regardless. Logs to `~/.claude/scratch/`. [ADR-086](adr/086-journal-compose-liveness-guard.md)
 
@@ -735,6 +755,7 @@ hooks and shared modules that serve the same workflow, rather than split across 
 | `new-branch.sh` | `new-branch <name>` (shell function; source `~/.claude/scripts/new-branch.sh` in `.bashrc`) | Creates a branch always rooted at `origin/main`. Warns when HEAD has diverged from the merge base. When `baseline_test_failure_tracking: true` is set in `.claude/hook-config.json`, also runs `baseline-tests snapshot` to capture pre-existing failures (ADR-030). |
 | `baseline-tests.sh` | `baseline-tests <snapshot\|diff\|gc>` | Captures and diffs pre-existing test failures for the fix-on-touch policy ([ADR-030](adr/030-baseline-test-failure-policy.md)). `snapshot` runs the project test command (`test_command` in `hook-config.json`, default `npx jest --json --silent`) and writes failing-test fingerprints to `C:/Users/brown/.claude/scratch/baseline_<repo>_<branch>.json`, then calls `gc` (best-effort) to sweep this repo's own stale baselines. `diff` re-runs tests and classifies current failures into `new` (block PR), `preexisting-touched` (fix-on-touch or file), and `preexisting-untouched` (note only); exits 1 if any `new` failures are present. `gc` removes `baseline_<repo>_*.json` files for the current repo whose recorded branch (read from the JSON envelope) no longer exists locally or on `origin`; kept whenever the branch is still live in either place, or whenever the remote existence check itself fails (dev-env#778). Jest-only in the first implementation. |
 | `merge-stale-pr.sh` | `bash merge-stale-pr.sh <PR-URL>` | Remediates stale `engineering-journal` draft PRs: checks out the branch, warns on missing journal file, deletes orphaned drafts, rebases, and squash-merges with auto-conflict resolution. |
+| `journal-compose-meta.py` | `py -3 journal-compose-meta.py stub\|install\|abandon\|check-clean <worktree> <YYYY-MM-DD> [<records.json>\|<staged.md> <slug>]` (`/journal-compose` Step 6.7 and Step 10) | The mechanical half of the meta journal pass. `stub` verifies each trigger record against the stub it cites (`evidence` must appear there verbatim; every rejection is named) and writes the survivors as compose-generated *derived stubs* (`sessions/meta/YYYY-MM-DD_2359NN.stub.md` plus a manifest shard checked with `_journal_schema`) into the compose worktree. `install` gates the coordinator's composed meta journal — all eleven section headings, every derived `Source:` path cited — before copying it in. `abandon` removes derived files and only derived files. `check-clean` fails if any stub, manifest shard or `YYYY-MM-DD_draft.md` for the date remains anywhere under `sessions/`. A Python process is the only compliant writer into the compose worktree: the harness refuses the coordinator's Write/Edit there ([dev-env#1119](https://github.com/brownm09/dev-env/issues/1119)) and the shell-write hook blocks Bash redirects to stub and manifest paths. Exit 0 ok, 1 usage or precondition error, 2 verification failure. [ADR-082 Addendum, 2026-10-02](adr/082-journal-compose-worktree-isolation.md), [ADR-129 Amendment 2](adr/129-journal-shell-write-guard.md) |
 | `journal-project-repo-map.py` | `py -3 journal-project-repo-map.py <engineering-journal-root> [--json <outfile>]` | Resolves each `sessions/<project>/` directory to a GitHub `owner/repo` slug — the input `/journal-compose` Step 8a **Source 3** needs before it can query a repo for `start-here`-labeled issues. Primary source is the **root** `README.md`, pairing each `### ` section's `**Repo:**` bullet with its `**Journal:** [sessions/<project>/` bullet (the Journal bullet is what names the *directory*; section titles deliberately differ, e.g. `### Job Search` → `sessions/job-search/`); falls back to the project's own README accepting `Repo:` **or** `Repository:`, with or without `**` bold markers. Every slug is shape-validated before it reaches the caller's `gh issue list --repo <slug>` command line, so a malformed README produces a reported skip rather than a shell argument. Emits `SOURCE3_RESOLVED=`/`SOURCE3_SKIPPED=` counts, one named `SOURCE3_SKIP <project> -- <reason>` per unresolved project, and a distinct `SOURCE3_MAPPING_EMPTY` (exit 1) when projects exist and none resolve. Exit 0 with skips is information, not failure; exit 2 is a usage error. Replaces an inline regex that matched **zero** of the 11 project READMEs, leaving Source 3 inert — and silently so, since the loop's bare `continue` made a broken mapping indistinguishable from a repo with no labeled issues ([dev-env#1045](https://github.com/brownm09/dev-env/issues/1045), [ADR-032 Amendment 1](adr/032-journal-start-here-dashboard.md)). Run it directly to diagnose why a `start-here` label isn't surfacing. |
 | `merge-ready.sh` | `bash merge-ready.sh [owner/repo ...]` | Lists, per repo, the open PRs that are green + mergeable + waiting on nothing (the merge-ready set) vs. those still open but not ready. Defaults to `merickvaughn/lifting-logbook`; accepts multiple `owner/repo` args. Read-only — `gh pr list` plus a `node` rollup of check states (`jq`-free, per the no-`jq` convention). |
 | `get-project-item.sh` | `ITEM_ID=$(bash get-project-item.sh <issue-number> [project-number] [owner])` | Resolves a GitHub Project item node ID from an issue/PR number. Checks a local item-ID cache first (dev-env#1057, [ADR-141](adr/141-project-item-id-creation-time-cache.md)) — a hit costs **zero** `gh` calls, so it succeeds even when `gh` is offline/unauthenticated. Falls back to the original full `gh project item-list --limit 1000` fetch-and-scan on a miss, and writes the result back into the cache. Defaults to project 3, owner `brownm09`, repo `dev-env`. Overridable via args or `PROJECT_NUMBER`/`PROJECT_OWNER` env vars (repo via `PROJECT_REPO`). Requires `project` scope for the fallback path: `gh auth refresh -s project`. |
@@ -2080,6 +2101,58 @@ Opening brief: <paste the Next Session Context from the previous day's published
 <!-- next-session-context -->
 <one paragraph — for the next session to read and open with>
 ```
+
+**Derived stubs are the one script-written exception to the Write-tool rule.** `/journal-compose`
+Step 6.7 generates *derived stubs* — compose-internal files, not session records — to carry verified
+meta triggers into the same run's meta journal. `journal-compose-meta.py stub` writes them, because
+the harness refuses the coordinator's Write/Edit into the compose worktree and the guard blocks the
+Bash alternatives ([ADR-129 Amendment 2](adr/129-journal-shell-write-guard.md)). A derived stub is
+named `YYYY-MM-DD_2359NN.stub.md` (NN = the trigger category's row in the skill's Step 2b table),
+opens with `<!-- derived-meta: … -->`, carries one H2 and an H3 per trigger (the `Source:` path, the
+source session, the trigger, and the evidence quoted with `> `), ends with the placeholder
+`<!-- tokens: input=0 output=0 cost≈$0 -->`, and has **neither** an opening brief **nor** a
+next-session-context paragraph, so it can never displace a real stub's. Its manifest shard has the
+usual five fields, with `topic` `Derived meta (<category>): <projects>`. Derived files are untracked,
+never pushed, and deleted by Step 9 in the same run. Never write one by hand.
+
+### Late meta entry recovery
+
+For a compose that finished without the meta journal it should have written: a compose that predates
+Step 6.7 and only logged its triggers, a pass whose PR body says `Meta journal: FAILED — …`, or a day
+nobody composed meta for. Author the entry afterwards. This is the procedure that produced
+engineering-journal [#274](https://github.com/brownm09/engineering-journal/pull/274) (the 2026-10-01
+entry), following the post-compose correction pattern of
+[#152](https://github.com/brownm09/engineering-journal/pull/152).
+
+1. **Recover the source stubs.** A compose deletes its stubs from the branch, so read them from the
+   commit just before the compose commit (`[docs] Add YYYY-MM-DD journal…`) on the compose PR's
+   branch:
+   ```bash
+   gh pr view <compose-PR> --repo brownm09/engineering-journal --json commits --jq '.commits[].oid'
+   git -C C:/Users/brown/Git/engineering-journal show <pre-compose-sha>:sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md
+   ```
+   If the commit is not in the local object store, fetch `pull/<compose-PR>/head` first. Do not add
+   `2>/dev/null` to the `git show`: a failure there reads exactly like "nothing to recover"
+   ([dev-env#602](https://github.com/brownm09/dev-env/issues/602)).
+2. **Author the composed meta journal**, modelled on
+   `sessions/meta/2026-10-01-tooling-constraints-and-number-collisions.md`: one
+   `## Session N — <trigger category>` per category, an Opening Brief linking the source projects'
+   journals, a Token Usage section that says the entry has no session of its own, and all eleven
+   required headings (the `chk()` block in the skill). Write and Edit refuse another worktree's
+   paths ([dev-env#1119](https://github.com/brownm09/dev-env/issues/1119)), so draft the file in the
+   session's own scratch directory and `cp` it into the late-meta worktree with Bash. Then check it
+   with `py -3 C:/Users/brown/.claude/scripts/validate-composed-output.py <file>`.
+3. **Update both READMEs:** `sessions/meta/README.md` (a Progress Summary paragraph and an Entries
+   row) and the `### meta` section of the top-level `README.md` (Recent, Open, Next).
+4. **Land it through a disposable worktree, never the canonical checkout**: cut
+   `compose/YYYY-MM-DD-late-meta` from `origin/main`, commit with explicit pathspecs, push, and open
+   a PR (squash-merge, then delete the ref by REST, as Step 11 does).
+   ```bash
+   git -C C:/Users/brown/Git/engineering-journal fetch origin
+   git -C C:/Users/brown/Git/engineering-journal worktree add --detach C:/Users/brown/Git/engineering-journal/.claude/worktrees/late-meta-YYYY-MM-DD origin/main
+   ```
+5. **Validate before the PR:** `node scripts/validate-jsonl.js` from that worktree, and the
+   11-heading check on the new file.
 
 ### Report / analysis artifacts (`sessions/<project>/reports/`)
 

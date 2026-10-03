@@ -66,10 +66,14 @@ across projects internally), then report the resulting PR URL(s).
    - Discovers all `sessions/<project>/${DATE}_*.stub.md` files for every project with stubs
    - Merges each project's stubs into the canonical 11-section document
    - Deletes the stubs and reconciles any resolved open-PR shards
+   - Composes `sessions/meta/YYYY-MM-DD-<slug>.md` itself when any project's stubs contain meta
+     triggers (its Step 6.7) — no prompt, in the same run and the same PR
    - Commits and opens one PR (covering every project composed in this run)
    If a canonical document for a project already exists for that date (i.e., stubs were already
    composed), the skill skips that project on its own.
-6. Collect and return the PR URL(s) produced.
+6. Collect and return the PR URL(s) produced, together with the PR body's `Meta journal:` status
+   line (`composed`, `none`, or `FAILED — …`) — in an unattended run that line is the only place
+   the meta outcome is visible.
 
 **Constraints:**
 - Engineering journal repo: `C:/Users/brown/Git/engineering-journal`
@@ -79,6 +83,22 @@ across projects internally), then report the resulting PR URL(s).
 - Never prompt the user. If stubs span multiple projects, the single `/journal-compose` call's
   own multi-project mode handles them in parallel — do not ask, and do not invoke the skill more
   than once per run.
+- **Meta triggers are never asked about, declined, or deferred — there is no prompt.** When any
+  project's stubs contain meta-relevant content (`CLAUDE.md` changes, platform constraints,
+  remediated workflow failures, conventions, `dev-env` PRs, journal-structure changes, new
+  canonical references), `/journal-compose` composes `sessions/meta/YYYY-MM-DD-<slug>.md` itself
+  in the same run (its Step 6.7) and commits it in the same PR. The composes that merged
+  engineering-journal [#272](https://github.com/brownm09/engineering-journal/pull/272) and
+  [#273](https://github.com/brownm09/engineering-journal/pull/273) each inferred "unattended"
+  from the task framing and skipped meta; the user's decision on 2026-10-02 was "In the future,
+  please do the meta journal entries"
+  ([dev-env#52](https://github.com/brownm09/dev-env/issues/52),
+  [#892](https://github.com/brownm09/dev-env/issues/892);
+  [ADR-082 Addendum, 2026-10-02](https://github.com/brownm09/dev-env/blob/main/docs/adr/082-journal-compose-worktree-isolation.md)).
+  If the meta pass fails, the skill carries on without it and the PR body says
+  `Meta journal: FAILED — …` with the triggers it could not capture: report that line; do not
+  retry by hand and do not create a `YYYY-MM-DD_draft.md`. The recovery runbook is
+  [REFERENCE.md → Late meta entry recovery](https://github.com/brownm09/dev-env/blob/main/docs/REFERENCE.md#late-meta-entry-recovery).
 - **Never pass `--force` from this routine, under any circumstance, and never reason that `--force`
   semantics are implied.** If `/journal-compose` refuses because of the today-guard, that is
   **success** — it means there is nothing yet composable for that date, not a problem to work

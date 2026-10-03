@@ -33,7 +33,7 @@ Custom slash commands loaded from `claude/skills/`. Invoke with `/skill-name [ar
 | Command | Purpose |
 |---|---|
 | [`/propose <idea>`](claude/skills/propose/SKILL.md) | One-line idea → proposal doc → GitHub issue → ROADMAP entry. Per-project config via `.claude/propose.json`. |
-| [`/journal-compose [YYYY-MM-DD]`](claude/skills/journal-compose/SKILL.md) | Composes the end-of-day engineering journal from stub files in an isolated worktree — the shared canonical checkout is never branch-switched or written to. Dedicated-session only. |
+| [`/journal-compose [YYYY-MM-DD]`](claude/skills/journal-compose/SKILL.md) | Composes the end-of-day engineering journal from stub files in an isolated worktree — the shared canonical checkout is never branch-switched or written to. Composes the meta journal itself, in the same run and PR, whenever other projects' stubs contain meta triggers — it never asks. Dedicated-session only. |
 | [`/research [tag:] <decision> [--compare <alt>]`](claude/skills/research/SKILL.md) | Finds 1–3 primary sources. Greps shared source library first; spawns a subagent only on cache miss. |
 | [`/review <PR-URL> [flags]`](claude/skills/review/SKILL.md) | Reviews a PR for correctness, security, reliability, maintainability, documentation reconciliation, test coverage (ADR-022), test integrity (ADR-029), and ADR-warrant check (ADR-011). Posts report as PR comment by default. |
 | [`/journal-onboard [slug]`](claude/skills/journal-onboard/SKILL.md) | Scaffolds `sessions/<project>/` in engineering-journal and optionally creates `.claude/CLAUDE.md` in the project repo. |
@@ -124,7 +124,7 @@ Autonomous scheduled agents. Their canonical source lives in `claude/routines/` 
 
 | Schedule | Routine | Purpose |
 |---|---|---|
-| Daily 7:09am local | `daily-journal-compose` | Assembles stub files into canonical journal entries and opens PRs |
+| Daily 7:09am local | `daily-journal-compose` | Assembles stub files into canonical journal entries (meta included, composed without a prompt) and opens PRs |
 | Daily 4am local | `prune-stale-worktrees` | Removes merged worktrees — both `claude/*` and, via `--include-named`, hand-named branches held to the same merged/dirty/liveness bar ([ADR-078](docs/adr/078-opt-in-named-branch-worktree-pruning.md)) — and parks any non-primary worktree squatting `main` back onto its own branch (freeing the ref, [ADR-058](docs/adr/058-worktree-squatting-main-detection-correction.md)) across all repos under `C:/Users/brown/Git`; skips any worktree with an active Claude session (transcript activity within 24h, see [ADR-051](docs/adr/051-worktree-liveness-guard.md)) |
 | Every 6 hours | `reclaim-worktree-disk` | Strips regenerable `node_modules`/`.turbo` from idle Claude worktrees under `.claude/worktrees/`, reclaiming disk between weekly prune runs; skips any worktree with an active Claude session (transcript activity within 6h, see [ADR-051](docs/adr/051-worktree-liveness-guard.md)) |
 | Nightly 8:00 UTC (3 AM CDT) | `nightly-research` | Researches pending topics from the queue and writes structured markdown notes to `research-notes/` |
