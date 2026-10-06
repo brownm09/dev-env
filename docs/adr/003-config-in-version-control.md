@@ -270,7 +270,7 @@ the bootstrap this ADR's link topology depends on.
 
 Setup now ends by running `claude/scripts/dev-env-doctor.py`, a read-only check of the whole install:
 links, hook-command scripts, tools and auth, per-clone `core.hooksPath` overrides, and the journal clone
-(Testing item 100). Setup exits non-zero while the doctor reports a FAIL, and the doctor never waits on a
+(Testing item 101). Setup exits non-zero while the doctor reports a FAIL, and the doctor never waits on a
 credential prompt. On a profile other than the one the tracked hook commands name, setup doesn't seed them,
 since a hook whose script is missing blocks every prompt
 ([dev-env#1113](https://github.com/brownm09/dev-env/issues/1113) makes the paths per-machine). One list of

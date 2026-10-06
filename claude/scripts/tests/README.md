@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 89 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 101 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 90 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 102 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -59,7 +59,7 @@ production code.
 | `test_worktree_liveness.py` | `_worktree_liveness.py` | Active-session liveness check that stops prune/reclaim routines from severing a worktree with a live Claude Code session in it. |
 | `test_worktree_recovery.py` | `_worktree_recovery.py` | Orphaned-worktree recovery recipe: renders it (destructive step kept out of the numbered sequence), pins `docs/REFERENCE.md`'s runbook to it by equality over runnable lines, and blocks the dev-env#751-disproven `worktree add --force`/`-f` form from every live surface. |
 | `test_worktree_topology.py` | `_worktree_topology.py` | Worktree-on-`main` squat detection/diagnosis and park-target decisions shared by prune, sync, and the journal-canonical guard. |
-| — | `_hook_wiring.py` | Not itself a test. Parses `claude/settings.shared.json` into wired hooks/events/timeouts once, shared by the four structural gates below and imported by `dev-env-doctor.py` (so a change here re-runs item 100 too). |
+| — | `_hook_wiring.py` | Not itself a test. Parses `claude/settings.shared.json` into wired hooks/events/timeouts once, shared by the four structural gates below and imported by `dev-env-doctor.py` (so a change here re-runs item 101 too). |
 
 ## Structural / fleet-wide gates
 
@@ -93,6 +93,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_journal_compose_force_resolve.py` | `journal-compose-force-resolve.py` | CLI glue that writes the today-guard's `--force` marker to disk. |
 | `test_journal_draft_worktree_guard.py` | `pre-tool-use-journal-draft-worktree-guard.py` | Blocks isolating the `draft/YYYY-MM-DD` stub workflow into its own worktree — it must stay on the shared canonical. |
 | `test_journal_onboard_check.py` | `journal-onboard-check.py` | One-time per-session onboarding nudge for a project with no journal home yet. |
+| `test_journal_compose_meta.py` | `journal-compose-meta.py` | `/journal-compose` Step 6.7 (dev-env#52, #892): a fixture day end to end (records → verified derived stubs and schema-valid manifest shards → gated install → simulated Step 9 → `check-clean`), the old `_draft.md` shape failing the check, `check-staged` and `install`'s tracked-versus-untracked rule against a real linked git worktree, every rejection class named (too-short evidence, the opening brief), replace, all-or-nothing swap and idempotence semantics, the per-category install gate, the skill's own Phase 2 and Step 10 commit blocks run end to end in a real bash, and drift gates (mutation-tested) tying the skill's section headings, trigger slugs, Step 6.7/10/10.5 wiring, `claude/CLAUDE.md`'s trigger list and the routine's meta rule to the helper. |
 | `test_journal_project_repo_map.py` | `journal-project-repo-map.py` | Step 8a Source 3 project→repo-slug resolution: the dev-env#1045 regression (both the `Repository:` spelling and the `**` bold markers, each with the old pattern as a control), root-README-vs-project-README precedence, rejection of prose PR links that name a *different* repo, and the named-skip / `SOURCE3_MAPPING_EMPTY` observability contract. |
 | `test_journal_shard_write_advisory.py` | `journal-shard-write-advisory.py` | Write-time PostToolUse validation of manifest/open-PR/tile shards against the schema (BOMs, missing fields, filename-vs-embedded-number mismatches, tile `cwd`/`stub`/`task_id` shape) as they're written. |
 | `test_journal_shell_write_guard.py` | `pre-tool-use-journal-shell-write-guard.py` | Blocks a shell-based content-write (redirect/heredoc/PowerShell write cmdlet) targeting a stub/manifest/open-PR/tile path shape — pins the heredoc-declaration-line masking fix as the critical regression case. |

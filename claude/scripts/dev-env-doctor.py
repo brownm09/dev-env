@@ -62,7 +62,7 @@ import _winsubp  # noqa: F401  -- UTF-8 decoding + no console flash for child pr
 import _repo_scan
 
 # The settings.json hook walker the three settings gates share (Testing items 61-63; the
-# doctor is its one runtime consumer, so item 61 names item 100 too). It lives in tests/ so the
+# doctor is its one runtime consumer, so item 61 names item 101 too). It lives in tests/ so the
 # gates' own claude/scripts/*.py glob never mistakes it for a hook. Appended, not prepended, so
 # nothing in tests/ can shadow a module the doctor imports.
 sys.path.append(str(Path(__file__).resolve().parent / "tests"))

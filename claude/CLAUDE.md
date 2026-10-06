@@ -615,6 +615,17 @@ No "see the file" without the path. No "check the PR" without the URL.
 
 ---
 
+## Abbreviations
+
+Applies to every kind of output, including chat replies, docs, file and branch names, commit messages, and PR and issue titles and bodies.
+
+- **Never coin an abbreviation, acronym, or initialism.** Spell the name out, or use a short descriptive name ("the Round 2 prep"), never initials ("R2P"). The same goes for invented citation codes: cite a record by its file and row or heading, not a code like "ACC:51". A coined term reads like an established one but is private to the session that made it up. Defining it once doesn't fix that, because it spreads into chat replies, commit messages, and PR bodies that never carry the definition.
+- **Define standard abbreviations the reader may not know.** Established terms (API, CDC for change data capture, SLO for service-level objective) are fine, but define each one on first use, or in a linked glossary, whenever the reader may not know it.
+
+Incident: a 2026-09-30 career-playbook interview-prep session coined "R2P" (Round 2 technical prep), "R1"/"R4" (interview rounds), "SD" (system design), and "ACC:51"-style row citations, and used them across prep docs, chat, commits, and a PR body. The user had never seen them defined and had not agreed to them ([dev-env#1120](https://github.com/brownm09/dev-env/issues/1120)). Nothing enforces this mechanically; a Stop hook or doc lint is warranted only if it recurs now that the rule is written down.
+
+---
+
 ## Engineering Journal
 
 After each session (or at natural breakpoints for long sessions), create or update a session
@@ -656,6 +667,16 @@ Use that path wherever `sessions/<project>/` appears below.
   `prs_opened` nor `prs_closed` is set for that PR in its manifest shard — this covers PRs that span
   more than two sessions. This prevents the composed
   journal from fragmenting create-iterate-review sequences into unrelated-looking sections.
+
+- **Meta triggers are never asked about.** `/journal-compose` composes the meta journal itself —
+  attended or unattended, with no y/n prompt — from compose-generated *derived stubs* that are
+  consumed in the same run (its Step 6.7), and it never writes `sessions/meta/YYYY-MM-DD_draft.md`
+  (nothing composes that file). User decision, 2026-10-02: "In the future, please do the meta
+  journal entries." A miss is recoverable by hand:
+  [`docs/REFERENCE.md` → Late meta entry recovery](../docs/REFERENCE.md#late-meta-entry-recovery).
+  See [ADR-082](../docs/adr/082-journal-compose-worktree-isolation.md) Addendum (2026-10-02),
+  [dev-env#52](https://github.com/brownm09/dev-env/issues/52) and
+  [#892](https://github.com/brownm09/dev-env/issues/892).
 
 ---
 

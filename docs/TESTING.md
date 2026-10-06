@@ -2550,7 +2550,7 @@ For a one-line navigational map of the test directory, see
 61. **hook output-contract + ASCII-literal gate** — required when changing
     `claude/scripts/tests/test_hook_output_contract.py` or the shared
     `claude/scripts/tests/_hook_wiring.py` (the settings.json parser all three PR3 gates —
-    items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 100 when
+    items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 101 when
     changing it). AST gate over every wired hook
     (via `_hook_wiring`, cross-referencing each script's event class against the SSOT
     `_hookout.STDOUT_MODEL_VISIBLE_EVENTS`, ADR-103) for four invisible-emission shapes: **A**
@@ -4089,7 +4089,265 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_gh_project.py
     ```
 
-100. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`,
+100. **journal-compose-meta test** — required when changing
+    `claude/scripts/journal-compose-meta.py`, the meta handling in
+    `claude/skills/journal-compose/SKILL.md` (Step 2b, the Phase 1 template's `META_TRIGGER=` lines,
+    Step 6.7, Step 10's `check-clean` and `check-staged`, Phase 2's and Step 10's staging and commit
+    blocks (the end-to-end tests extract and run them), both Step 10.5 pathspec lists),
+    the "Meta journal (`sessions/meta/`)" trigger list in `claude/CLAUDE.md`, or the meta rule in
+    `claude/routines/daily-journal-compose/SKILL.md`
+    ([ADR-082 Addendum, 2026-10-02](adr/082-journal-compose-worktree-isolation.md),
+    [ADR-129 Amendment 2](adr/129-journal-shell-write-guard.md), dev-env#52 and dev-env#892). Also run
+    item 83 when the Step 10.5 block changes.
+
+    The helper is the mechanical half of `/journal-compose` Step 6.7: it verifies the trigger records a
+    compose reports, writes the survivors as compose-generated derived stubs, gates the composed meta
+    journal before it enters the compose worktree, and proves nothing for the date was left behind —
+    in the working tree (`check-clean`) and in the index the commit is built from (`check-staged`).
+    It is a script, rather than skill prose, because the harness refuses the coordinator's Write/Edit
+    into the compose worktree (dev-env#1119) and nothing else could give "an unattended compose writes
+    its meta entry" a regression test. The LLM steps (a Phase 1 subagent reporting records, the
+    coordinator composing the journal) are **not** exercised offline — the dry run below stands in for
+    them.
+
+    84 cases, hermetic: `tempfile` trees, no network and no `gh`, and the git fixtures pin
+    `core.hooksPath` to an empty directory and `commit.gpgsign` off so a developer's global git setup
+    cannot reach them (dev-env's own global `pre-push` hook calls `gh` for a past `draft/` branch pushed
+    to a remote whose URL contains "engineering-journal" — exactly what the end-to-end fixture does when
+    the temp path says so; the tests were re-run with such a path and the hooks active). The
+    subprocesses are `git` itself —
+    the `check-staged` cases and the `install` cases that need to know whether a journal is tracked
+    need a real index (a linked worktree built in a temp directory) — and, for the two end-to-end
+    tests, a Git for Windows `bash` (found beside `git` if `PATH` offers the WSL launcher; the test
+    fails loudly rather than skipping when none exists):
+
+    **The #52 acceptance, as a fixture day** —
+    `test_issue_52_acceptance_a_fixture_day_ends_with_a_composed_meta_journal_and_no_prompt`: two
+    projects' stubs and no `sessions/meta/`, records for two trigger categories plus one fabricated
+    quote. It asserts derived stubs and schema-valid manifest shards appear, the fabricated record is
+    rejected by name, a composed journal installs, `check-clean` fails before Step 9 and passes after
+    a simulated Step 9, and the worktree ends holding `sessions/meta/DATE-<slug>.md` and no `_draft.md`.
+
+    **The #892 regression** — `test_issue_892_regression_the_old_draft_file_fails_check_clean` is the
+    old Step 2b's output (`sessions/meta/DATE_draft.md`); it must fail the tree-wide check.
+    `test_issue_892_regression_meta_composes_the_same_whether_or_not_real_meta_stubs_exist` pins the
+    convergence the design rests on: meta already in the composed set and meta absent from it end in
+    one canonical journal path.
+
+    **Every rejection class is named** (`test_each_rejection_class_is_named`): `meta` as a source
+    project, an unsafe or unknown project, an unknown type, a wrong-date or missing stub, a stub path
+    for another project, `../` traversal, empty fields, a non-object record. A record is a claim; the
+    report says which claim failed and why, and a rejected record writes nothing.
+
+    **Evidence has to discriminate** (`test_evidence_too_short_to_discriminate_is_rejected_by_name`): a
+    verbatim match proves little when the quote is a letter. The PR #1126 review showed `e` and `PR`
+    are substrings of every stub, so a fabricated record carrying either verified; evidence under
+    `MIN_EVIDENCE_WORDS` (3) words is now rejected by name. A phrase that occurs **only in the opening
+    brief** — the block that starts at the `<!-- opening-brief` marker (or, in the three stubs that omit it, a
+    line beginning "Opening brief") and runs to the first heading; it carries the previous day's context
+    — is rejected by name too (`test_evidence_in_the_opening_brief_is_rejected_by_name`). The search
+    runs outside the block first, because session bodies repeat the brief that carried their work
+    forward (`test_evidence_the_session_body_repeats_from_the_opening_brief_is_found_in_the_body`; the
+    first version took the first occurrence and rejected a quote copied correctly from the body).
+    Earlier drafts of this rule failed on real shapes no fixture had, each found by replaying real data:
+    "no H2 above" rejected the real `### Session:` stubs the scheduled routines write
+    (`test_a_scheduled_routine_stub_with_only_an_h3_session_heading_stays_citable`), and "anything above
+    the first heading" rejects the `**PR:**` / `**Issue:**` metadata lines two lifting-logbook stubs
+    carry there (`test_lines_above_the_heading_that_are_not_an_opening_brief_stay_citable`). The other
+    evidence cases pin NFKC, whitespace and wrapped-line matching, a correctly escaped Windows path, an
+    excerpt that stops at headings and HTML comment markers so none are copied into a derived stub, and
+    JSON Lines input where one malformed line costs only itself
+    (`test_one_malformed_json_line_is_a_named_rejection_not_a_failed_batch`).
+
+    **Replace semantics, idempotence, and real stubs.** Two runs are byte-identical; a re-run replaces
+    the earlier derived set; a *failed* re-run leaves it alone. A write that fails while staging leaves
+    the earlier set untouched; one that fails while swapping clears every derived file — all or nothing,
+    because the swap deletes the earlier set first and so cannot restore it, and a mixture is the worst
+    state — with no temp file left either way (`test_a_failed_swap_leaves_no_derived_files_and_a_failed_staging_keeps_the_earlier_set`).
+    A file that cannot be removed is reported (`META_ABANDON_FAILED=`, exit 1), never raised as a
+    traceback (`test_a_locked_derived_file_is_reported_by_abandon_and_stub_not_raised_as_a_traceback`). A
+    derived stub bumps past a real `2359NN` stub and past the name of a real orphan manifest, and
+    `abandon` never deletes a real file; records for the same stub, category and evidence line are
+    deduped and counted, the latest attempt winning.
+
+    **`install` is a gate, not a copy.** A missing heading, or a derived stub whose own `## Session`
+    section does not cite each of its `Source:` paths, refuses with exit 2 and copies nothing. The
+    check is per category and assigns each category its own session — the one whose title *begins*
+    with the category's label (Step 6.7's contract; a subtitle may follow), compared the way
+    `resolve_type` compares labels: NFKC, backticks dropped, whitespace collapsed, case folded, leading
+    `**` ignored, because the Step 2b table itself writes two labels with backticks
+    (`test_install_matches_a_title_to_its_label_ignoring_backticks_case_and_spacing`): a journal that folds two
+    categories sharing one source stub into one session fails, a source cited only in some other
+    session fails, a real meta session that merely mentions a label cannot hide the derived one
+    (`test_install_matches_each_category_to_its_own_session_not_the_first_one_carrying_the_label`), and
+    a subtitle that names another category cannot capture that category's session
+    (`test_install_does_not_let_a_subtitle_naming_another_category_capture_its_session`; matching the
+    label anywhere in a title sent the coordinator to fix the wrong session and then accepted a journal
+    with the real citation still missing).
+    Derived stubs with no extractable `Source:` or category label are exit 1 (a citation check that would
+    pass vacuously is refused), as is a day with no meta stub at all; zero derived stubs prints
+    `SOURCES_CITED=n/a` explicitly. It **replaces the journal it installed earlier in the run**
+    (untracked in the compose worktree) so Step 6.7's "expand the staged file and re-run" remedy works —
+    including under a different slug, because there is one journal per date
+    (`test_install_replaces_the_journal_it_installed_earlier_so_the_fidelity_remedy_works`; the second
+    review found the remedy refused by the very journal it had just written). It never replaces one the
+    draft branch already carries (tracked): `META_JOURNAL_EXISTS=` and exit 1, with a byte-identical
+    re-install a no-op (`test_install_never_replaces_a_journal_the_draft_branch_already_carries`). Where
+    git cannot say — no linked worktree, or a worktree whose link is broken — it stays conservative and
+    replaces nothing, and says so under its own key, `META_INSTALL_UNVERIFIED=<why>`, not as "already
+    exists in the draft branch": Step 6.7's failure policy treats `META_JOURNAL_EXISTS=` as a reason to
+    stop, and a git problem must not be reported as that
+    (`test_install_never_replaces_a_journal_git_cannot_vouch_for_and_names_a_different_cause`,
+    `test_install_in_a_linked_worktree_whose_git_fails_is_unverified_not_already_existing`). CRLF input
+    is written LF.
+
+    **`check-clean` and `check-staged`.** `check-clean` names each leftover shape — a date's stub,
+    manifest shard, legacy `DATE.manifest.jsonl`, `DATE_draft.md` or temp file — one level deep in
+    every `sessions/<project>/`, ignores other dates and composed journals, and treats a worktree
+    without `sessions/` as a precondition error, not a pass. `check-staged` runs against a real linked
+    git worktree and fails on the blind spot `check-clean` cannot see: a clean working tree whose real
+    meta stub deletion, composed meta journal and README edit were never staged (the #892 shape, shipped
+    with a green check). It passes once the skill's own staging commands have run, ignores the compose
+    lock files, and reports a failing `git status` as exit 1. The helper also refuses a primary checkout
+    (a `.git` directory) and an empty or relative worktree argument, which would resolve against the
+    current directory.
+
+    **Drift gates** (extraction asserted non-empty before anything is compared): the eleven heading
+    regexes equal both `chk()` copies in `SKILL.md`; the seven trigger slugs equal the skill's
+    `**Trigger slugs**` line **and** the copy inlined in the Phase 1 template (a subagent acts on its
+    own template's copy, not a pointer to another section — ADR-082's 2026-07-23 addendum), and the
+    Step 2b table's category labels equal the helper's; the template tells each subagent to emit its
+    own `project`; the old y/n prompt and any `_draft.md` staging are absent (checked on
+    whitespace-flattened text, so a reflowed paragraph cannot hide one); Step 6.7 shows the `stub`,
+    `install` and `abandon` invocations and its closing sentence still routes meta through Steps 8a and
+    8b; Step 10 shows `check-clean` and `check-staged`; the meta staging lines in Step 10 and Phase 2
+    are real commands, not commented-out ones, and neither section mentions `META_STATUS` at all
+    (a `FAILED` pass can still have installed a real-stub journal; `META_JOURNAL` says one exists, and
+    Step 6.7 must still define both); **every fenced block that commits — Phase 2's and Step 10's —
+    re-runs `check-staged` first, on a line that is exactly a brace-group stop** (`|| { echo "…"; exit
+    1; }`; `test_every_commit_block_re_runs_check_staged_first_and_stops_on_its_failure`), because a
+    looser match let `|| ( …; exit 1 )` (the `exit` leaves only a subshell), `|| echo "…exit…"` and
+    `|| true # exit 1` through — each looks like a guard and stops nothing; Phase 2's push target is an
+    explicit `<placeholder>` so a coordinator that substitutes only the date fails loudly on the
+    `-recovery` path instead of pushing to the wrong branch; **both** Step 10.5 replay pathspec lists
+    name `sessions/meta/` (omitting it silently drops the meta journal on the conflict-recovery
+    path); the "Meta journal" trigger list in
+    `claude/CLAUDE.md` has the helper's seven categories; the routine carries the unattended meta rule,
+    and its step 5 and step 6 each carry their own instruction (the constraint bullet also says
+    `Meta journal:`, so a whole-file substring check could not tell whether either step still did).
+
+    **Calibration (ADR-144), run at implementation and again after each review round.** Two checks
+    classify stubs the tests do not enumerate — the evidence minimum and the opening-brief block —
+    and every other check keys on a literal token. Heading check against real
+    engineering-journal corpora — known-good: the four meta journals dated 2026-10-01, 2026-08-25,
+    2026-08-31 and 2026-07-21, **4/4** pass; known-bad: the career-playbook 2026-10-01 journal as
+    merged in engineering-journal #273, flagged for exactly the four headings #971's comment names (Key
+    Decisions, Token Optimization Suggestions, Next Session Context, Further Reading). Evidence minimum
+    — known-good: the six real evidence phrases of the dry run below run **7 to 12 words** (shortest:
+    `` `CLAUDE.md` is at 109,791 of 110,000 bytes ``, 7 words), so the constant sits 4 words below the
+    worst known-good observation, and 6/6 are accepted; known-bad: `e`, `PR`, `.`, `-`, `the`,
+    `The merged` and `the gap`, 7/7 rejected, the first two being the records the PR #1126 review showed
+    verifying against every stub; one fabricated phrase of ordinary length, 1/1 rejected by name.
+    **Opening-brief block**, measured with the helper's own `opening_brief_span` and `locate_evidence`
+    over **all 750 stubs ever committed to engineering-journal** (every ref, first-added blob; a
+    reviewer re-ran it later that day over 751 with the same result): 65 carry
+    an opening brief (62 behind the `<!-- opening-brief` marker, 3 older ones that begin "Opening
+    brief") and the rule finds the block in **65/65**; the other **685** (683 with only blank or
+    comment lines above the first heading, 2 with `**PR:**` / `**Issue:**` metadata lines) get no
+    block, **0/685** — the 2 are exactly what a blanket "anything above the first heading" rule would
+    have wrongly rejected. Known-bad probes (a 5-word phrase from the brief's first prose line): 65/65
+    rejected as brief-only. Known-good probes (a 5-word phrase from the first prose line below the first
+    heading): 750/750 accepted, 0 false rejections. The echo class — a session-body line repeating a
+    7-word run of the brief — occurs in 10 of the 65 briefed stubs; the rule accepts all 10, and the
+    first-occurrence version would have rejected all 10. Drift gates, mutation-tested on copies of the
+    skill, routine and global `CLAUDE.md` — controls: **13/13**
+    pass unmutated; known-bad: **57/57** mutation cases caught (the old prompt, also reflowed across
+    lines, `_draft.md` staging and "create it with" text reappearing; a `chk()` regex drifting or a copy
+    deleted; a slug dropped, renamed or the slugs line deleted; a category label drifting; a slug
+    renamed or the list deleted in the Phase 1 template's inline copy, or the template no longer
+    emitting its own project; Step 6.7 renamed, losing `abandon`, or its closing list dropping 8a and
+    8b; Step 10 losing `check-clean` or `check-staged`; the meta staging commands commented out, or
+    the meta stub deletions no longer staged; either replay call omitting `sessions/meta/`; the
+    routine losing the rule, the status line, its whole meta bullet, its step-6 report instruction or
+    its step-5 pointer to Step 6.7; a trigger bullet removed from, or an eighth added to,
+    `claude/CLAUDE.md`; and, added after the second review found them uncaught, Phase 2's
+    `check-staged` invocations deleted while prose mentions remain (checked against two gates), the
+    check moved after the push in Phase 2's or Step 10's commit block, either commit block's guard
+    losing its stop or being deleted, and either section's staging keyed on `META_STATUS=composed`
+    again; and, added after the third review found them uncaught, the guard rewritten as a subshell
+    (`|| ( …; exit 1 )`), as `|| echo "…exit…"` or as `|| true # exit 1`, a commit block losing its
+    guard, Phase 2 losing `git add -u sessions/`, Step 10's meta block losing its stub-deletion staging,
+    the meta staging reworded to "When `META_STATUS` is `composed`", Step 6.7's `META_STATUS`
+    definition reworded away, and Phase 2's push target turned back into a literal branch name — each
+    of the guard and staging ones checked against both the structural gate and the end-to-end gate).
+    The fourth review's additions are in the 57: either commit block pushing to a **literal**
+    `draft/YYYY-MM-DD` (checked against the structural gate and the end-to-end gate; the fixture runs
+    on the `-recovery` branch so a literal push lands on another ref), and Phase 2's `WT=` path or
+    helper path reworded so a block would run against the real journal checkout or the installed
+    helper (the end-to-end tests assert every substitution took effect).
+    The behavior added in each review round was checked the other way too: the new helper tests and
+    gates were run against the previous commit's helper and skill (`9e1fffd` for the second round,
+    `fc8918f` for the third, `7783d12` for the fourth) and every one **fails** there (7 of 7, 7 of 7,
+    2 of 2), then passes on the fix.
+
+    **Documented dry run on the day that motivated this** (2026-10-01; scratch tree rebuilt from the
+    pre-compose commit `11c69f99`, 8 career-playbook and 3 dev-env stubs with their manifests, no
+    `sessions/meta/`): 7 records modelled on the hand-written meta entry's categories gave 6 accepted, 1
+    fabricated record rejected by name, and four derived stubs (102 lines) whose manifests pass the
+    repo's real `validate-manifest.py`. The real hand-written 2026-10-01 meta journal stood in for the
+    composed output: `install` refused it as-is (`SESSIONS_MISSING` for all four derived categories)
+    and accepted a per-category journal that cites every derived `Source:` path in its own session
+    (`STRUCTURE=ok`, `SOURCES_CITED=6/6`, 187 lines against 102 derived source lines); installing the
+    same bytes again is a no-op and a different slug is refused. `check-clean` reported 30 leftovers
+    before the simulated Step 9 (22 real stub and manifest files, 8 derived) and `ok` after, leaving
+    only `sessions/meta/2026-10-01-meta-triggers-career-playbook-dev-env.md`. Re-running this on the
+    real day is what exposed the `###`-heading stub the first opening-brief rule rejected (5 of 7
+    accepted instead of 6). The LLM steps — a subagent emitting `META_TRIGGER=` lines and the
+    coordinator composing the journal — are not exercised.
+
+    **End to end: the skill's own commit blocks, run for real** (second review, blocking 1; made a
+    committed test by the third, non-blocking 2). `test_phase_2_blocks_end_to_end_…` and
+    `test_step_10_blocks_end_to_end_…` extract the fenced bash blocks from `SKILL.md` — not retyped —
+    substitute the placeholders and the helper under test, and run them in a real Git Bash against a
+    real linked worktree and a bare origin. With the meta `git add` omitted (a real-stub-only meta
+    journal left untracked), the staging block ends `CHECK_STAGED=unstaged` (exit 2) and the commit
+    block exits non-zero **without moving the remote draft tip**: nothing is published. With the meta
+    `git add` run, the staging block prints `CHECK_STAGED=ok` and the commit block pushes a commit that
+    adds the meta journal, deletes the real meta stub and modifies the meta README. Before the second
+    round's fix the same omission produced a pushed commit that deleted the stub and carried no
+    journal. A structural test of the text alone could not tell a guard that stops from one that
+    merely looks like it (`|| ( …; exit 1 )` passed the substring check and let the commit through),
+    which is why these run the blocks: the mutation check shows each looks-like-a-guard variant
+    failing the end-to-end gate. The tests find the interpreter beside `git` when `PATH` offers the
+    WSL launcher, and fail rather than skip when there is none. The fixture is isolated from the
+    developer's global git setup (hooks path, signing) and runs on a `draft/<date>-recovery` branch;
+    every placeholder, `WT=` path and helper path substitution is asserted to have taken effect, so a
+    reworded skill line fails loudly instead of running against the real journal checkout or the
+    installed helper. The blocks call `py -3` exactly as the skill does, so the helper runs under
+    whichever interpreter that launcher resolves (3.14 on the CI image).
+
+    **Deliberate gaps.** `evidence` matching is exact after NFKC and whitespace normalization, so a
+    mis-copied quote rejects a real trigger — loud and recoverable through the PR body and the
+    late-meta runbook; a fuzzy matcher would need a calibrated similarity cutoff and would pass a
+    fabricated claim at the margin. A verbatim quote proves the line exists, not that it supports the
+    trigger type it is filed under: that judgment stays with the coordinator's composition and the PR
+    reviewer; and a three-word phrase that recurs in a stub still verifies a fabricated record, quoting
+    its first occurrence. The opening-brief block is recognized by its marker or its "Opening brief"
+    label only, so a brief written some other way would not be excluded (every one of the 65 in the
+    history is one or the other). Seven stubs label something "Opening brief" as a heading or below
+    their first heading (five lifting-logbook `### Opening brief` stubs, one meta `## Opening Brief`, one
+    `Opening brief:` under a heading); each holds that session's own opening request, not carried-forward
+    context, and the rule leaves them citable.
+    The `FIDELITY` ratio is reported, never gated. The ADR-129 shell-write guard's
+    tokenizer misses a redirect to `"$WT"/sessions/meta/….stub.md` (a quoted variable glued to a literal
+    tail); that is pre-existing, outside this item, and tracked in
+    [dev-env#1127](https://github.com/brownm09/dev-env/issues/1127).
+
+    ```bash
+    py -3 claude/scripts/tests/test_journal_compose_meta.py
+    ```
+
+101. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`,
      `setup.sh`'s link arrays (the doctor's `LINKED_ITEMS` / `HOME_LINKS` are pinned against
      them), or `claude/scripts/tests/_hook_wiring.py` (the doctor imports it). Exercises the
      doctor's pure decision helpers (`*_result` / `*_results`, `parse_ls_remote`, `guarded`)
@@ -4100,7 +4358,8 @@ For a one-line navigational map of the test directory, see
      `realpath()`. `collect()`, `_run()` and `_kill_tree()`, the thin I/O layer around the
      helpers, are deliberately untested, per the repo's no-subprocess-mock convention; the whole
      script was run live on this machine, online and offline, and in a sandboxed `HOME` for
-     [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114).
+     [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114). (Numbered 101 because
+     item 100 went to the journal-compose-meta test, which merged first.)
 
      30 cases, passing on Python 3.12 and 3.10. `LINKED_ITEMS` and `HOME_LINKS` equal
      `setup.sh`'s four parsed link arrays, after asserting each parse extracted something — an
