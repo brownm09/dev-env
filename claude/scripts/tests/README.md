@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 89 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 101 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 90 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 102 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -59,7 +59,7 @@ production code.
 | `test_worktree_liveness.py` | `_worktree_liveness.py` | Active-session liveness check that stops prune/reclaim routines from severing a worktree with a live Claude Code session in it. |
 | `test_worktree_recovery.py` | `_worktree_recovery.py` | Orphaned-worktree recovery recipe: renders it (destructive step kept out of the numbered sequence), pins `docs/REFERENCE.md`'s runbook to it by equality over runnable lines, and blocks the dev-env#751-disproven `worktree add --force`/`-f` form from every live surface. |
 | `test_worktree_topology.py` | `_worktree_topology.py` | Worktree-on-`main` squat detection/diagnosis and park-target decisions shared by prune, sync, and the journal-canonical guard. |
-| — | `_hook_wiring.py` | Not itself a test. Parses `claude/settings.shared.json` into wired hooks/events/timeouts once, shared by the four structural gates below. |
+| — | `_hook_wiring.py` | Not itself a test. Parses `claude/settings.shared.json` into wired hooks/events/timeouts once, shared by the four structural gates below and imported by `dev-env-doctor.py` (so a change here re-runs item 101 too). |
 
 ## Structural / fleet-wide gates
 
@@ -177,7 +177,8 @@ Scripts invoked directly (by a person or a skill), not wired as Claude Code hook
 | `test-get-project-item.sh` | `get-project-item.sh` | Execution smoke test (not just `bash -n`) resolving an issue number to a project item ID. |
 | `test-journal-compose-replay.sh` | `journal-compose-replay.sh` | Drives `/journal-compose` Step 10.5's conflict-recovery replay against throwaway fixture repos: uncontested paths replay wholesale, contested ones 3-way merge or stop with exit 2. |
 | `test-merge-stale-pr.sh` | `merge-stale-pr.sh` | Drives the stale-journal-PR remediation script against throwaway fixture repos with `gh` stubbed. |
-| `test-setup-link-loop.sh` | `setup.sh` | Drives the extracted `link_claude_windows`/`link_claude_unix` functions against a throwaway `$HOME`. |
+| `test-setup-link-loop.sh` | `setup.sh` | Drives the extracted `link_claude_windows`/`link_claude_unix` functions against a throwaway `$HOME`, then the rest for real: real items backed up, links pointing outside dev-env recorded, a backup never overwritten; `--restore` putting items, links, `settings.json` and `core.hooksPath` (unset included) back, converging, and refusing a directory setup didn't write; `win_cmd`, the symlink probe, the cmd-special-character, HOME and other-home guards, and the dispatch guard; every link fixture asserted to exist first, and a case this machine can't run counted as skipped, never passed. |
+| `test_dev_env_doctor.py` | `dev-env-doctor.py` | The install health check's pure decision helpers, fixture-only apart from one real dangling junction: link lists pinned against `setup.sh`, dangling links and missing hook scripts FAIL, zero commands or no readable script path FAIL rather than passing vacuously, gh sign-in decided offline, compile warnings on every Python version, the journal-draft and `core.hooksPath` matrices, and a crashing check reported as a FAIL. |
 
 ---
 

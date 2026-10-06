@@ -8,10 +8,11 @@ Development environment configuration for cross-device use.
 |---|---|---|
 | `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` | Claude Code global configuration |
 | `claude/settings.shared.json` | *synced into* `~/.claude/settings.json` (not linked) | Claude Code hooks and permissions. The live file is a real, machine-local file the app writes; `_settings_sync.py` applies the tracked `hooks`/`permissions` into it each prompt ([ADR-139](docs/adr/139-machine-local-settings-with-shared-source-sync.md)) |
-| `claude/scripts/` | `~/.claude/scripts/` (junction) | Hook scripts and utilities |
-| `claude/skills/` | `~/.claude/skills/` (junction) | Custom slash command skills |
+| `claude/scripts/` | `~/.claude/scripts/` (directory symlink) | Hook scripts and utilities |
+| `claude/skills/` | `~/.claude/skills/` (directory symlink) | Custom slash command skills |
+| `claude/hooks/` | `~/.claude/hooks/` (directory symlink) | Global git hooks — the target of the global `core.hooksPath` ([ADR-005](docs/adr/005-global-core-hooks-path.md)) |
 | `claude/routines/` | `~/.claude/routines/` (junction) | Scheduled-task source definitions — registering a live task is a separate step, see [Routines](#routines) |
-| `claude/templates/` | `~/.claude/templates/` (junction) | Document templates, read at runtime by skills |
+| `claude/templates/` | `~/.claude/templates/` (directory symlink) | Document templates, read at runtime by skills |
 
 ## Setup
 
@@ -24,7 +25,17 @@ bash setup.sh
 ```
 
 The script creates symlinks/junctions from the expected config locations into this repo.
-Any edits made through those symlinks update the repo file directly.
+Any edits made through those symlinks update the repo file directly. It needs Developer Mode
+(or the "Create symbolic links" right, or an elevated Git Bash) on Windows, and never loses
+anything it replaces: an existing file or directory is moved to
+`~/.claude/backups/setup-<timestamp>/`, along with where any replaced link pointed, the
+`settings.json` it changed and the previous global `core.hooksPath`, and
+`bash setup.sh --restore <dir>` puts all of it back. It finishes by running the read-only install
+check `py -3 ~/.claude/scripts/dev-env-doctor.py`, and exits non-zero while that reports a FAIL.
+
+**Adding a second machine?** Follow [`docs/REFERENCE.md` → Adding a Second Machine](docs/REFERENCE.md#adding-a-second-machine):
+it covers the prerequisites, which routines to register where, and using both machines on the
+same day ([dev-env#1107](https://github.com/brownm09/dev-env/issues/1107)).
 
 ## Skills
 
@@ -136,7 +147,7 @@ Autonomous scheduled agents. Their canonical source lives in `claude/routines/` 
 ## Adding new configs
 
 1. Add the file under a descriptive directory (e.g., `claude/scripts/`, `claude/skills/`)
-2. If it needs symlinking, add its name to `CLAUDE_FILE_LINKS` or `CLAUDE_DIR_LINKS` near the top of `setup.sh` (both `setup_windows()` and `setup_unix()` iterate the same arrays)
+2. If it needs symlinking, add its name to the matching link array near the top of `setup.sh` (`CLAUDE_FILE_LINKS`, `CLAUDE_DIR_LINKS`, `CLAUDE_JUNCTION_LINKS` or `HOME_LINKS`) — `setup_windows()`, `setup_unix()` and `--restore` all iterate those arrays — and to `LINKED_ITEMS` / `HOME_LINKS` in `claude/scripts/dev-env-doctor.py`, which `test_dev_env_doctor.py` pins against them
 3. Update the relevant table above **and** the corresponding section in [`docs/REFERENCE.md`](docs/REFERENCE.md)
 4. Update `claude/CLAUDE.md` if the artifact changes session behavior
 

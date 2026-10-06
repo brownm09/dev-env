@@ -1922,21 +1922,107 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
     ```
 
-49. **setup-link-loop test** — required when changing `setup.sh`'s `CLAUDE_FILE_LINKS` /
-    `CLAUDE_DIR_LINKS` arrays or its `link_claude_windows()` / `link_claude_unix()` functions.
-    Sources `setup.sh` unmodified — a guard around the OS-dispatch block at the bottom makes this
-    safe, since sourcing only defines functions/arrays without executing anything — and exercises
-    the extracted link functions with `win_link`/`ln` stubbed to a call log, so the test needs no
-    Administrator/Developer Mode privilege and never touches a real `~/.claude` or global git
-    config: pins the shared `CLAUDE_FILE_LINKS` (`CLAUDE.md`, `settings.json`) and
-    `CLAUDE_DIR_LINKS` (`scripts`, `skills`, `hooks`, `templates`) enumeration against
-    [ADR-003](adr/003-config-in-version-control.md)'s table, and that
-    `link_claude_windows()` / `link_claude_unix()` each call their link primitive for exactly the
-    expected 8 targets (the two arrays, plus the separately-linked `routines` junction and
-    `~/bin`) in order, against a real throwaway `$HOME` — so the unstubbed `mkdir -p` calls are
-    verified for real too. `setup_windows()`'s UAC elevation gate, the soft-prereq warnings,
-    `set_hooks_path()`'s global `git config` mutation, and `win_link`'s actual `cygpath`/`mklink`
-    invocation are out of scope by design ([dev-env#614](https://github.com/brownm09/dev-env/issues/614)).
+49. **setup-link-loop test** — required when changing `setup.sh`'s link arrays
+    (`CLAUDE_FILE_LINKS` / `CLAUDE_DIR_LINKS` / `CLAUDE_JUNCTION_LINKS` / `HOME_LINKS`), its
+    `link_claude_windows()` / `link_claude_unix()` functions, its backup/restore path
+    (`prepare_link_target`, `restore_setup_backup` and its helpers, `set_hooks_path`, the
+    settings.json capture in `seed_claude_settings`), its Windows preflight (`preflight_windows`,
+    `symlink_probe`, `cmd_safe_path`), `win_cmd`, or its dispatch guard.
+    Sources `setup.sh` unmodified — the dispatch at the bottom runs only when the file is
+    executed, never when it's sourced (scenario 11), so sourcing only defines functions/arrays.
+    Nothing touches a real `~/.claude` or the real global git config.
+
+    Scenarios 1–3 exercise the extracted link functions with `win_link`/`ln` stubbed to a call
+    log, so they need no Administrator/Developer Mode privilege: they pin the four link arrays
+    (`CLAUDE.md`; `scripts`, `skills`, `hooks`, `templates`; the `routines` junction; `~/bin`)
+    against [ADR-003](adr/003-config-in-version-control.md)'s table, and that
+    `link_claude_windows()` / `link_claude_unix()` each call their link primitive for exactly
+    those 7 targets in order, with the settings seed between them
+    ([ADR-139](adr/139-machine-local-settings-with-shared-source-sync.md)), against a real
+    throwaway `$HOME` — so the unstubbed `mkdir -p` calls are verified for real too.
+
+    Scenarios 4–15 ([dev-env#1114](https://github.com/brownm09/dev-env/issues/1114)) run
+    `setup.sh`'s functions for real in a throwaway `$HOME`, building directory links as
+    junctions on Windows (no privilege needed) and symlinks elsewhere.
+
+    - **Scenario 4 (`prepare_link_target`):** proceeds on an empty target without creating a
+      backup directory, and moves a real file or directory into `~/.claude/backups/setup-<ts>/`
+      with its contents intact. A link already pointing at the target is removed without a
+      record; one pointing anywhere else (compared by identity, `-ef`) is recorded as
+      `<name>.link`, announced and removed. Neither link's target is touched. An existing
+      backup of the same name is never overwritten: the item stays put and the call fails.
+    - **Scenario 5 (`restore_setup_backup`):** copies the originals back over setup's links and
+      recreates the recorded link, leaving the repo target and the backup untouched and no
+      staging directory behind. A second run converges ("Already restored", exit 0); a different
+      item in the way is reported and never overwritten (exit 1); `~/.claude/backups` itself and
+      an empty directory are refused before anything changes.
+    - **Scenario 6 (`set_hooks_path`):** with global git config redirected to a temp file
+      (`GIT_CONFIG_GLOBAL`, the system file ignored via `GIT_CONFIG_NOSYSTEM`), it saves a
+      different prior value and saves nothing when the value is already its own. An unset prior
+      value is recorded as unset, and `--restore` unsets it again. The value is stored in `C:/`
+      form even with `MSYS_NO_PATHCONV` exported.
+    - **Scenario 7 (`same_path`):** one directory reached through its 8.3 short and long
+      spellings is the same path, and its parent is not. A volume without 8.3 names — CI's
+      `D:\a\_temp` — is a skip, not a pass.
+    - **Scenario 8 (`win_cmd`):** runs `echo` through `cmd.exe` and requires its output, not
+      cmd's interactive banner. It then creates a junction under a directory whose name
+      contains a space, requiring `mklink` to receive both paths intact.
+    - **Scenario 9 (`symlink_probe`):** creates and removes a real directory symlink, leaving
+      nothing behind (a skip when the shell lacks the right); with `mklink` refused, it fails
+      and shows mklink's own message.
+    - **Scenario 10 (`cmd_safe_path`):** calibrated on three paths that must pass (a space,
+      parentheses, the usual clone) and seven that must not (`& ^ % ! , ; =`).
+    - **Scenario 11 (dispatch guard):** `bash -c 'source "$0" …' setup.sh` — the shape that ran
+      a full setup under the old `BASH_SOURCE == $0` guard — only sources it. Harmless if the
+      guard regresses: the dispatch would try to restore a nonexistent directory and fail.
+    - **Scenario 12 (HOME and home-path guards):** a `HOME` that isn't the Windows profile is
+      refused, while one directory spelled `/c/…` and `C:\…` passes. Hook commands written for
+      another home aren't seeded, and setup carries on; for this home there's no objection.
+    - **Scenario 13 (`win_link` failure):** a refused `mklink` stops with an error naming the
+      link, mklink's reason, the backup directory and the `--restore` command, with the
+      original safe in the backup.
+    - **Scenario 14 (settings capture):** a `settings.json` the seed changed is captured first;
+      a seed that changes nothing captures nothing and leaves no temp file; `--restore` puts the
+      captured one back after saving the current one.
+    - **Scenario 15 (nested links):** a junction inside a backed-up directory comes back as a
+      link still reaching its source (a skip when the shell can't create symlinks).
+
+    **Fixture guarantee.** Every link fixture is asserted to exist before its case runs.
+    `make_dir_link` prints a `FIXTURE:` line and fails when no link is there afterwards — what
+    mklink said, whether the path exists, and the volume's filesystem — so no case can pass on a
+    fixture that was never built. It creates links through `setup.sh`'s own `win_cmd`. A case
+    that can't run on this machine prints `skipped:` and counts as skipped, never as passed —
+    lowercase, because the runner reads a leading `SKIP:` as a whole-file skip.
+
+    **CI history.** The PR's first two CI runs failed with local runs green, and both guesses at
+    the cause were wrong: 8.3 short names, then runtimes reporting link targets differently. The
+    fixture assertion then showed the real cause. On Git for Windows 2.55 (CI) a bare
+    `cmd.exe /c "mklink ..."` from Git Bash loses its `/c` to argument path conversion, so
+    cmd.exe starts an interactive shell, prints its banner, and runs nothing. No junction was
+    ever created: the "correct link" case failed for want of a link, and the "stale link" case
+    passed vacuously. `setup.sh` itself had the same bug — it could create no link at all on a
+    current Git for Windows. It now runs every `cmd.exe` call through `win_cmd`, with conversion
+    off.
+
+    A fourth run exposed a second layer. A single pre-quoted command string
+    (`"mklink /J \"...\" \"...\""`) has its embedded quotes escaped as `\"` by 2.55, which
+    cmd.exe rejects: "The filename, directory name, or volume label syntax is incorrect."
+    `win_cmd` now takes each argument separately and lets the runtime quote the ones that hold
+    a space. Scenario 8 pins both layers.
+
+    Removing and recreating setup's own links, adopted along the way, stayed: it is simpler than
+    judging whether a link is already correct, and it is what `setup.sh` did before this PR. A
+    link pointing anywhere else is now recorded first (scenario 4).
+
+    **Review round.** The PR's review found that `--restore` couldn't return to the captured
+    state (an unset `core.hooksPath`, a link into a dotfiles repo, nested links, a partial copy),
+    that sourcing the file could run it, and that the Developer Mode gate inferred the privilege
+    from the registry — a probe that had failed silently under Git Bash (an MSYS-mangled
+    `reg.exe /v` switch, found by a sandboxed end-to-end run) — instead of testing it.
+    Scenarios 4–6 and 9–15 pin the fixes. `setup_windows()` itself stays out of scope
+    ([dev-env#614](https://github.com/brownm09/dev-env/issues/614)): it only sequences these
+    functions, and the whole script was run end-to-end in a sandboxed
+    `HOME`/`USERPROFILE`/`GIT_CONFIG_GLOBAL` — first run, idempotent re-run, and restore.
 
     ```bash
     bash claude/scripts/tests/test-setup-link-loop.sh
@@ -2464,7 +2550,8 @@ For a one-line navigational map of the test directory, see
 61. **hook output-contract + ASCII-literal gate** — required when changing
     `claude/scripts/tests/test_hook_output_contract.py` or the shared
     `claude/scripts/tests/_hook_wiring.py` (the settings.json parser all three PR3 gates —
-    items 61/62/63 — share; run all three when changing it). AST gate over every wired hook
+    items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 101 when
+    changing it). AST gate over every wired hook
     (via `_hook_wiring`, cross-referencing each script's event class against the SSOT
     `_hookout.STDOUT_MODEL_VISIBLE_EVENTS`, ADR-103) for four invisible-emission shapes: **A**
     stderr write whose governing exit is 0 (invisible everywhere); **B** *bare* stdout write whose
@@ -4259,3 +4346,42 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_journal_compose_meta.py
     ```
+
+101. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`,
+     `setup.sh`'s link arrays (the doctor's `LINKED_ITEMS` / `HOME_LINKS` are pinned against
+     them), or `claude/scripts/tests/_hook_wiring.py` (the doctor imports it). Exercises the
+     doctor's pure decision helpers (`*_result` / `*_results`, `parse_ls_remote`, `guarded`)
+     against fixtures only — temp files, fake path resolvers, injected
+     `which`/`is_file`/`exists` callables — so nothing reads this machine's real `~/.claude`,
+     git config, clones or network. One case builds a real dangling junction (a symlink off
+     Windows) in a temp directory, because a dangling link passing is a property of the real
+     `realpath()`. `collect()`, `_run()` and `_kill_tree()`, the thin I/O layer around the
+     helpers, are deliberately untested, per the repo's no-subprocess-mock convention; the whole
+     script was run live on this machine, online and offline, and in a sandboxed `HOME` for
+     [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114). (Numbered 101 because
+     item 100 went to the journal-compose-meta test, which merged first.)
+
+     30 cases, passing on Python 3.12 and 3.10. `LINKED_ITEMS` and `HOME_LINKS` equal
+     `setup.sh`'s four parsed link arrays, after asserting each parse extracted something — an
+     empty parse compared against nothing would pass. Hook-command script extraction handles
+     plain, double-quoted-with-a-space and non-`.py` commands; all-present is a PASS, a missing
+     script a FAIL naming it, and zero commands, no readable script path, or an unreadable
+     settings file a FAIL rather than a vacuous PASS
+     ([ADR-144](adr/144-gate-calibration-pass-3-dimension.md)). Scripts under a different home get
+     the [dev-env#1113](https://github.com/brownm09/dev-env/issues/1113) relocation hint, scripts
+     under this home don't, and a launcher missing from `PATH` FAILs. The link check reports
+     missing, real-not-a-link, points-elsewhere and dangling links in one FAIL; the checkout
+     check FAILs a checkout that's gone and passes one reached through a junction. Compile
+     severity: clean or BOM'd PASS, invalid escape WARN (`SyntaxWarning` from 3.12,
+     `DeprecationWarning` before), syntax error or NUL byte FAIL, no files FAIL. gh sign-in is
+     decided by `gh auth token`: a failed `gh auth status` is a WARN, never "not signed in", and
+     `--offline` or a timeout an INFO. `parse_ls_remote` accepts only a 40-hex line for the exact
+     ref. Also covered: tool presence, the gh credential helper, git identity, a global
+     `core.hooksPath` that's unset or missing (FAIL) or different (WARN), per-clone overrides,
+     the journal / `origin/draft/<today>` matrix (an unreadable branch included, and advice
+     naming `origin draft/<today>` explicitly), the board config, the routine-host flag (only
+     JSON `true` counts; UTF-16 WARNs), a crashing check becoming a FAIL line, and the exit code.
+
+     ```bash
+     py -3 claude/scripts/tests/test_dev_env_doctor.py
+     ```
