@@ -116,7 +116,7 @@ Emit a table:
 [experiment-audit] Incumbent-influence inventory — <slug>
 | # | Input the challenger reads | Encodes the incumbent's METHOD or the TASK? | Action |
 |---|----------------------------|--------------------------------------------|--------|
-| 1 | <file/default>             | method | task                              | neutralize (strip/substitute) | log as threat T1 |
+| 1 | <file/default>             | method / task                              | neutralize (strip/substitute) / log as threat T1 |
 ```
 
 **Equal-integration clause:** the challenger runs with its *own* natural defaults and comparable

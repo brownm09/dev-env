@@ -918,7 +918,7 @@ For each JSONL session row (matched to a draft slug where possible):
 ```
 ### Session N — <slug> (or <session-id[:8]> if unmatched)
 
-| # | | Value |
+| # | Field | Value |
 |---|---|---|
 | 1 | Model | claude-sonnet-4-6 |
 | 2 | Input tokens | N |
@@ -966,8 +966,8 @@ Sum across all JSONL rows for the date (excluding the current compose session if
 
 | # | Session | Input | Output | Cache R | Cache W | Turns | Cost |
 |---|---|---|---|---|---|---|---|
-| 1 | 1 — <slug> | N | N | N | N | N | $N |
-| 2 | 2 — <slug> | N | N | N | N | N | $N |
+| 1 | <slug> | N | N | N | N | N | $N |
+| 2 | <slug> | N | N | N | N | N | $N |
 | 3 | *(compose — pending)* | — | — | — | — | — | — |
 | 4 | **Total** | **N** | **N** | **N** | **N** | **N** | **$N** |
 ```
