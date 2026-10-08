@@ -193,7 +193,7 @@ Scaffolds a new project's journal home (`sessions/<slug>/`) in engineering-journ
 /memory-audit
 ```
 
-Reconciles the active project's agent memory against the version-controlled instructions and emits a table — per entry: `type`, durable?, instruction home?, and a disposition (`remain-as-cache` / `promote-to-instructions` / `delete-stale`). Catches the three rot modes ADR-038's write-time rule does not: never-ported durables, stale notes (cited PRs/issues merged, "next steps" shipped), and `MEMORY.md` index drift.
+Reconciles the active project's agent memory against the version-controlled instructions and emits a table with numbered rows (a leading `#` column, per the global *Table Row Numbers* rule) — per entry: `type`, durable?, instruction home?, and a disposition (`remain-as-cache` / `promote-to-instructions` / `delete-stale`). Catches the three rot modes ADR-038's write-time rule does not: never-ported durables, stale notes (cited PRs/issues merged, "next steps" shipped), and `MEMORY.md` index drift.
 
 **How it works:** reads every memory file and `MEMORY.md`, verifies any *claimed* instruction home actually exists on current `origin/main` (so a stale worktree base can't produce a false "drift" finding), classifies each entry, and prints the reconciliation table. Read-only by default — promotions and deletions are confirmed with the user before acting. Audit-time complement to the write-time rule and hook ([ADR-048](adr/048-memory-immortalization-issue-pairing.md), [ADR-038](adr/038-durable-preferences-documented-in-repo.md)).
 
@@ -680,7 +680,7 @@ Deletion and in-place fixes stay human-in-the-loop via the interactive `/memory-
   global/cross-cutting + no-remote + engineering-journal (no issue tracker by convention) → dev-env.
 - A committed reconciliation report at
   `engineering-journal/sessions/meta/memory-audit/YYYY-MM-DD-audit.md` with a cross-project table
-  (project · file · type · durable? · instruction home · drift · disposition), a "Promote issues
+  (# · project · file · type · durable? · instruction home · drift · disposition), a "Promote issues
   filed" subsection, a "Stale / drift / index-drift (report-only)" subsection, and a "Projects not
   scanned (subagent failures)" subsection (omitted when every subagent returned `scanned: true` —
   absent section means no scan failures, not that failures were silently swallowed). Opened as a PR

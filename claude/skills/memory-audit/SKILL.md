@@ -75,11 +75,11 @@ For each memory, determine three things:
 
 ## Step 4 — Emit the reconciliation table
 
-Print one row per memory file:
+Print one row per memory file, numbered 1..N in the leading `#` column (the global *Table Row Numbers* rule):
 
 ```
-| Memory file | Type | Durable? | Instruction home (verified) | Drift | Disposition |
-|---|---|---|---|---|---|
+| # | Memory file | Type | Durable? | Instruction home (verified) | Drift | Disposition |
+|---|---|---|---|---|---|---|
 ```
 
 Disposition is one of:
