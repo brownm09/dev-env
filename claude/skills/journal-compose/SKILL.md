@@ -918,15 +918,15 @@ For each JSONL session row (matched to a draft slug where possible):
 ```
 ### Session N — <slug> (or <session-id[:8]> if unmatched)
 
-| | Value |
-|---|---|
-| Model | claude-sonnet-4-6 |
-| Input tokens | N |
-| Output tokens | N |
-| Cache read tokens | N |
-| Cache write tokens | N |
-| Turns | N (+N subagent turns if applicable) |
-| Estimated cost | $N |
+| # | | Value |
+|---|---|---|
+| 1 | Model | claude-sonnet-4-6 |
+| 2 | Input tokens | N |
+| 3 | Output tokens | N |
+| 4 | Cache read tokens | N |
+| 5 | Cache write tokens | N |
+| 6 | Turns | N (+N subagent turns if applicable) |
+| 7 | Estimated cost | $N |
 ```
 
 If a JSONL row cannot be matched to a draft slug, label it with the short session ID
@@ -964,12 +964,12 @@ Sum across all JSONL rows for the date (excluding the current compose session if
 ```
 ### Combined Totals
 
-| Session | Input | Output | Cache R | Cache W | Turns | Cost |
-|---|---|---|---|---|---|---|
-| 1 — <slug> | N | N | N | N | N | $N |
-| 2 — <slug> | N | N | N | N | N | $N |
-| *(compose — pending)* | — | — | — | — | — | — |
-| **Total** | **N** | **N** | **N** | **N** | **N** | **$N** |
+| # | Session | Input | Output | Cache R | Cache W | Turns | Cost |
+|---|---|---|---|---|---|---|---|
+| 1 | 1 — <slug> | N | N | N | N | N | $N |
+| 2 | 2 — <slug> | N | N | N | N | N | $N |
+| 3 | *(compose — pending)* | — | — | — | — | — | — |
+| 4 | **Total** | **N** | **N** | **N** | **N** | **N** | **$N** |
 ```
 
 Total row excludes any pending/unresolved rows.

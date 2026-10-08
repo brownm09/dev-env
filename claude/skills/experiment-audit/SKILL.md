@@ -114,9 +114,9 @@ Emit a table:
 
 ```
 [experiment-audit] Incumbent-influence inventory — <slug>
-| Input the challenger reads | Encodes the incumbent's METHOD or the TASK? | Action |
-|----------------------------|--------------------------------------------|--------|
-| <file/default>             | method | task                              | neutralize (strip/substitute) | log as threat T1 |
+| # | Input the challenger reads | Encodes the incumbent's METHOD or the TASK? | Action |
+|---|----------------------------|--------------------------------------------|--------|
+| 1 | <file/default>             | method | task                              | neutralize (strip/substitute) | log as threat T1 |
 ```
 
 **Equal-integration clause:** the challenger runs with its *own* natural defaults and comparable
@@ -133,9 +133,9 @@ section). Emit:
 
 ```
 [experiment-audit] Instrument calibration — <slug>
-| Instrument | Known-good ref → expected | Known-bad ref → expected | Runs before arm scoring? |
-|------------|---------------------------|--------------------------|--------------------------|
-| <judge/check> | <ref> → PASS            | <ref> → FLAG             | yes                      |
+| # | Instrument | Known-good ref → expected | Known-bad ref → expected | Runs before arm scoring? |
+|---|------------|---------------------------|--------------------------|--------------------------|
+| 1 | <judge/check> | <ref> → PASS            | <ref> → FLAG             | yes                      |
 ```
 
 An **uncalibrated** instrument is **quarantined**: it may run, its output is reported as instrument

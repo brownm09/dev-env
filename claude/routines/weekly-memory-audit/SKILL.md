@@ -309,8 +309,8 @@ are reported here only. See ADR-069, ADR-038, ADR-048.
    - The full **cross-project reconciliation table**, grouped by project:
 
      ```
-     | Project | Memory file | Type | Durable? | Instruction home (verified) | Drift | Disposition |
-     |---|---|---|---|---|---|---|
+     | # | Project | Memory file | Type | Durable? | Instruction home (verified) | Drift | Disposition |
+     |---|---|---|---|---|---|---|---|
      ```
    - A **"Promote issues filed"** subsection — each new issue (repo#N + URL) and the deduped/skipped
      slugs.
@@ -320,9 +320,9 @@ are reported here only. See ADR-069, ADR-038, ADR-048.
      subagent returned `scanned: false` or returned no data at all**. Format:
      ```
      ## Projects not scanned (subagent failures)
-     | Project | Reason |
-     |---|---|
-     | lifting-logbook | Subagent returned no data |
+     | # | Project | Reason |
+     |---|---|---|
+     | 1 | lifting-logbook | Subagent returned no data |
      ```
      Omit this section entirely when every subagent returned `scanned: true`. A missing section means
      "no scan failures" — not that failures were silently swallowed.
