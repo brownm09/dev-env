@@ -218,11 +218,15 @@ rather than a rediscovery.
 
 ## Amendment (2026-10-10): escalated advisories use the JSON envelope
 
-The plain-text channel this ADR chose still carries every advisory that isn't escalated. An
-escalated one (ADR-110's PERSISTENT FAILURE, and the new STALE CANONICAL for a canonical stuck
-off `main`) now goes out in the `additionalContext` + `systemMessage` JSON envelope rejected
-above, because only that envelope also reaches the user. The "no functional gain" premise no
-longer holds. Full rationale:
+The channel is now chosen per run, not per advisory.
+- A run in which nothing escalated keeps the plain-text channel this ADR chose, now
+  `ascii_sanitize`d.
+- A run in which anything escalated (ADR-110's PERSISTENT FAILURE, or the new STALE CANONICAL for
+  a canonical stuck off `main`) emits the JSON envelope rejected above. Every advisory in the run
+  goes to the model as `additionalContext`, and a one-line summary of each escalation goes to the
+  user as `systemMessage`.
+
+Only that envelope reaches the user, so the "no functional gain" premise no longer holds. Full rationale:
 [ADR-110 Amendment 1](110-escalate-persistent-dev-env-sync-ff-failures.md#amendment-1-2026-10-10-escalate-the-off-main-states-too-and-tell-the-user).
 The incident behind it, [dev-env#1140](https://github.com/brownm09/dev-env/issues/1140), shows why
 this ADR's stdout fix mattered: a June-era copy of the hook, from before this ADR, kept printing

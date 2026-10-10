@@ -218,20 +218,44 @@ no commits-behind count, because that path returns before it fetches. That is th
 
 **Decision.**
 
-1. **Measure the off-main states.** Fetch, then report how far HEAD is behind `origin/main`
-   (`rev-list --count HEAD..origin/main`) and how long ago HEAD last moved (the newest reflog
-   entry, `git reflog show -1 --date=unix --format=%gd HEAD`). The time since the last move is a
-   lower bound on time off `main`. Both measurements are stateless, so the off-main path needs no
-   scratch file and no cross-session bookkeeping. A failed measurement reads "unmeasured", never
-   a false 0, and never drops the warning.
+1. **Measure the off-main states, with local git only.** Report how far HEAD is behind
+   `origin/main` (`rev-list --count HEAD..origin/main`) and how long ago HEAD last moved (the
+   newest reflog entry, `git reflog show -1 --date=unix --format=%gd HEAD`). The time since the
+   last move is a lower bound on time off `main`.
+   - There is deliberately **no fetch** on this path. On Windows a fetch can hang past any
+     per-call timeout, on a credential prompt or a grandchild process holding the pipe. The
+     harness would then kill the hook and lose the very warning this path exists for.
+   - The shared `.git`'s `origin/main` is kept current by every worktree session's fetches. A
+     stale one can only under-count.
+   - Both measurements are stateless, so the off-main path needs no scratch file and no
+     cross-session bookkeeping.
+   - Each measurement fails on its own. A failure reads "unmeasured", never a false 0, and never
+     drops the warning.
 2. **Escalate** to a distinct `STALE CANONICAL` advisory once HEAD hasn't moved for >= 2h **or**
-   the checkout is >= 10 commits behind. The 2h reuses this ADR's time arm. The 10-commit arm
-   catches a branch that keeps getting commits, which reset the reflog clock. An unmeasured arm
-   never escalates by itself.
-3. **Escalations reach the user, not only the model.** Both this ADR's PERSISTENT FAILURE and the
-   new STALE CANONICAL go out as one `_hookout.plan_emission("UserPromptSubmit", ...,
-   audience="both")` JSON object: `additionalContext` for the model, `systemMessage` for the
-   user. Advisories that aren't escalated keep ADR-098's plain stdout text, unchanged.
+   the checkout is >= 10 commits behind.
+   - The 2h reuses this ADR's time arm. The 10-commit arm catches a branch that keeps getting
+     commits, which reset the reflog clock.
+   - An unmeasured arm never escalates by itself.
+   - A **measured 0 behind** suppresses the time arm. A branch cut from the current `origin/main`
+     serves current tooling, so an alarm there would contradict its own "0 commits behind". It
+     escalates on the first prompt after `origin/main` moves on.
+3. **Escalations reach the user, not only the model.** The channel is chosen **per run, not per
+   advisory**. The hook collects everything a run says, and once anything has escalated (this
+   ADR's PERSISTENT FAILURE or the new STALE CANONICAL), the run emits one JSON object:
+   - **Model:** the full text of every advisory in the run, as `additionalContext`.
+   - **User:** only a **one-line summary** of each escalation, as `systemMessage`. A
+     several-line notification repeated on every prompt would train the reader to skip it.
+
+   When nothing escalated, the run keeps ADR-098's plain stdout text. That text is now
+   `ascii_sanitize`d, because one non-cp1252 character (a commit subject with an arrow) would
+   otherwise raise and lose the whole batch. The plain off-main warnings also carry the new
+   measurement line.
+4. **One shared time limit for the whole run** (the `session-start-sync.py` pattern), with network
+   calls made non-interactive (`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`). Output is
+   emitted once, at the end, so a run the harness kills loses everything it collected. No
+   combination of git calls may approach the hook's 30s timeout. The crash fallback emits only
+   its own line, and only if nothing has been written yet. A second write would put two JSON
+   objects on stdout.
 
 **This revises the channel choice ADR-098 and this ADR made.** Both rejected the JSON envelope
 "for no functional gain." There is a gain now. Plain stdout cannot reach the user at all, and

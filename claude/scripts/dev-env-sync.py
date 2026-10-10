@@ -2,9 +2,10 @@
 """
 UserPromptSubmit hook: keep the local dev-env repo in sync with origin/main.
 
-Runs a fast-forward pull at session start so that CLAUDE.md and other
-symlinked tooling always reflect the latest merged changes. Silent on
-success; emits a warning if the repo has diverged and needs manual attention.
+Runs on every prompt (ADR-006) and fast-forward-pulls the canonical checkout so that CLAUDE.md
+and the junctioned tooling always reflect the latest merged changes. Silent when already up to
+date; reports the commits it pulled; warns when the repo has diverged, cannot fast-forward, or
+is off `main`.
 
 When the canonical worktree is off `main` (so `~/.claude/` symlinks would serve
 that branch's stale files) — including a *detached* HEAD, routed into the same path via
@@ -34,12 +35,14 @@ this checkout's working tree) the way it has twice before (dev-env#797, ADR-110)
 
 The off-main states (a dirty canonical, a worktree squatting `main`, an unreadable worktree list,
 a failed auto-return) get the same treatment (dev-env#1140, ADR-110 Amendment 1). Each warning
-states how far behind `origin/main` the checkout is and how long ago its HEAD last moved. Once
-the checkout has been stuck long enough or far enough behind, the warning escalates to a distinct
-STALE CANONICAL advisory. The canonical once sat off `main` for 108 days because a June-era copy
-of this hook printed that warning to stderr, which nobody sees. So both escalations now also go
-to the USER as a `systemMessage`, not only to the model. A model busy with an unrelated task can
-miss a context line it sees every prompt; a toast the user sees cannot be missed that way.
+states how far behind `origin/main` the checkout is and how long ago its HEAD last moved, using
+local git only. Once the checkout has been stuck long enough or far enough behind, the warning
+escalates to a distinct STALE CANONICAL advisory. The canonical once sat off `main` for 108 days
+because a June-era copy of this hook printed that warning to stderr, which nobody sees. So both
+escalations now also reach the USER, as a one-line `systemMessage`, not only the model. A model
+busy with an unrelated task can miss a context line it sees every prompt; a line shown to the
+user cannot be missed that way. All output is collected and emitted once per run, under one
+shared time limit for every git call.
 
 Before any of that, it applies dev-env's shared settings into `~/.claude/settings.json` via
 `_settings_sync` (dev-env#1049, ADR-139). That file used to be a *symlink* into this repo, which
@@ -94,49 +97,88 @@ OFF_MAIN_ESCALATE_AFTER_BEHIND = 10
 HOOK_EVENT = "UserPromptSubmit"
 FALLBACK_MESSAGE = "[dev-env-sync] WARNING: sync check failed unexpectedly and was skipped this prompt."
 
+# One time limit for the whole run, not just per call (the session-start-sync.py pattern,
+# dev-env#966). Output is emitted once, at the end, so a run the harness kills at its
+# `"timeout": 30` (claude/settings.shared.json) loses everything it collected. Up to ~8 git
+# calls at 15s each could otherwise add up to far more than that (PR #1145 review).
+# HOOK_TIMEOUT_SECONDS must stay <= that settings value.
+HOOK_TIMEOUT_SECONDS = 30
+DEADLINE_SAFETY_MARGIN_SECONDS = 5
+PER_CALL_TIMEOUT_SECONDS = 15
+MIN_CALL_BUDGET_SECONDS = 0.5
+_deadline: "float | None" = None
+
+# A network call must never wait on a prompt nobody can answer: the Git Credential Manager GUI
+# (ADR-047) or a terminal password prompt would hold the pipe past any timeout.
+NONINTERACTIVE_GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+
 
 class Output:
     """Collects this run's advisories so they leave in ONE emission.
 
     Plain text and a JSON systemMessage cannot share stdout: Claude Code parses stdout as JSON
     only when the whole of it is JSON. So nothing prints until the run ends. ``alert`` marks the
-    run as escalated, which routes the whole batch to both model and user (see render_output).
+    run as escalated and records a one-line summary for the user (see render_output).
+    ``delivered`` is set once a write has been attempted, so the crash fallback never writes a
+    second time.
     """
 
     def __init__(self) -> None:
         self.lines: "list[str]" = []
-        self.escalated = False
+        self.summaries: "list[str]" = []
+        self.delivered = False
+
+    @property
+    def escalated(self) -> bool:
+        return bool(self.summaries)
 
     def say(self, text: str) -> None:
         self.lines.append(text)
 
-    def alert(self, text: str) -> None:
+    def alert(self, text: str, summary: str) -> None:
         self.lines.append(text)
-        self.escalated = True
+        self.summaries.append(summary)
 
 
-def render_output(lines: "list[str]", escalated: bool) -> "str | None":
+def render_output(out: Output) -> "str | None":
     """Pure: the exact stdout this run emits, or None when there is nothing to say.
 
-    Not escalated: the advisories as plain text, which an exit-0 UserPromptSubmit hook delivers
-    to the model only (ADR-098). Escalated: one JSON object carrying the same text as both
-    ``additionalContext`` (model) and ``systemMessage`` (user), via _hookout (ADR-103).
+    The channel is chosen per run, not per advisory. When nothing escalated, every advisory goes
+    out as plain text, which an exit-0 UserPromptSubmit hook delivers to the model only
+    (ADR-098). It is ascii_sanitized, because the hook's stdout is cp1252 and one stray character
+    (a commit subject with an arrow, say) would otherwise raise and lose the whole batch. Once
+    anything escalated, the run emits one JSON object: the full text as ``additionalContext`` for
+    the model, and only the one-line escalation summaries as ``systemMessage`` for the user, so
+    the notification shown on every prompt stays short enough to keep being read.
     """
-    if not lines:
+    if not out.lines:
         return None
-    text = "\n".join(lines)
-    if not escalated:
-        return text
-    return _hookout.plan_emission(HOOK_EVENT, text, audience="both").stdout
+    text = "\n".join(out.lines)
+    if not out.escalated:
+        return _hookout.ascii_sanitize(text)
+    payload = json.loads(_hookout.plan_emission(HOOK_EVENT, text, audience="model").stdout)
+    payload["systemMessage"] = "\n".join(out.summaries)
+    return json.dumps(payload, ensure_ascii=True)
 
 
 def run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Run git in the canonical, bounded by the per-call ceiling AND the shared run deadline.
+
+    Once the budget is spent, returns a synthetic failure (returncode 124), which every caller
+    already handles as "could not measure", rather than starting a call the harness would kill.
+    """
+    timeout = PER_CALL_TIMEOUT_SECONDS
+    if _deadline is not None:
+        remaining = _deadline - time.monotonic()
+        if remaining <= MIN_CALL_BUDGET_SECONDS:
+            return subprocess.CompletedProcess(args=args, returncode=124, stdout="", stderr="")
+        timeout = min(timeout, remaining)
     return subprocess.run(
         args,
         cwd=DEV_ENV_REPO,
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=timeout,
         **kwargs,
     )
 
@@ -146,9 +188,13 @@ def _plural(count: int) -> str:
 
 
 def _count_from(result: subprocess.CompletedProcess) -> int:
-    """Parse a `git rev-list --count` result; 0 on any failure (advisory-only diagnostic)."""
-    text = result.stdout.strip()
-    return int(text) if result.returncode == 0 and text.isdigit() else 0
+    """Parse a `git rev-list --count` result; 0 on any failure (advisory-only diagnostic).
+
+    The on-main formatters treat 0 as "unmeasured" (a real count there is always >= 1). The
+    off-main path needs the two kept apart, so it uses parse_behind directly.
+    """
+    count = parse_behind(result)
+    return 0 if count is None else count
 
 
 def format_sync_note(local: str, remote: str, behind: int) -> str:
@@ -409,30 +455,37 @@ def build_failure_response(
     remote: str,
     behind_count: int,
     git_stderr: str,
-) -> "tuple[dict, str]":
-    """Pure core of the ff-pull-failure branch: return ``(new_state, message)``.
+) -> "tuple[dict, str, str | None]":
+    """Pure core of the ff-pull-failure branch: return ``(new_state, message, summary)``.
 
     Given the prior on-disk state (``None`` on a first failure) and this failure's context,
-    records one more failure, decides escalated-vs-plain, and returns the state to persist plus
-    the advisory to print. ``main()`` does the read / write / print I/O around it. Extracted so
-    the escalate-vs-plain decision — the feature's load-bearing logic — is unit-testable without
-    git (review finding, PR #800); ``main()``'s remaining glue (``read_failure_state`` ->
-    ``build_failure_response`` -> ``write_failure_state`` + ``print``) is trivial one-liners.
+    records one more failure, decides escalated-vs-plain, and returns the state to persist, the
+    advisory, and the one-line user summary (``None`` when not escalated). The summary IS the
+    escalation decision, so main() never re-derives it (PR #1145 review). ``main()`` does the
+    read / write / emit I/O around it. Extracted so the escalate-vs-plain decision is
+    unit-testable without git (review finding, PR #800).
     """
     state = record_failure(prev_state, now)
     if should_escalate(state, now):
+        seconds_failing = now - state["first_failure_at"]
+        blocking_files = parse_blocking_files(git_stderr)
         message = format_escalated_pull_failure_message(
             local,
             remote,
             behind_count,
-            parse_blocking_files(git_stderr),
+            blocking_files,
             state["consecutive_count"],
-            now - state["first_failure_at"],
+            seconds_failing,
             git_stderr,
         )
-    else:
-        message = format_pull_failure_message(local, remote, behind_count, git_stderr)
-    return state, message
+        files = ", ".join(blocking_files) if blocking_files else "see details in context"
+        summary = (
+            "[dev-env-sync] PERSISTENT FAILURE: the canonical dev-env checkout has not fast-forwarded "
+            f"for {format_duration(seconds_failing)}, so ~/.claude/ tooling is stale. "
+            f"Blocked by: {files}."
+        )
+        return state, message, summary
+    return state, format_pull_failure_message(local, remote, behind_count, git_stderr), None
 
 
 def failure_state_path(scratch: "Path | None" = None) -> Path:
@@ -526,14 +579,21 @@ def should_escalate_off_main(
 ) -> bool:
     """Whether a stuck-off-main canonical warrants the STALE CANONICAL advisory.
 
-    Either arm escalates (OR, like should_escalate). An unmeasured arm never escalates by itself:
-    if both are unmeasured, the plain model-visible warning still goes out. Boundaries escalate.
+    Either arm escalates (OR, like should_escalate). Boundaries escalate. An unmeasured arm never
+    escalates by itself; if both are unmeasured, the plain model-visible warning still goes out.
+
+    One exception to the time arm: a *measured* 0 behind. A canonical sitting on a branch cut
+    from the current origin/main serves current tooling, so a STALE CANONICAL alarm there would
+    contradict its own "0 commits behind" (PR #1145 review; same class as PR #701/#800). It
+    stays a plain warning until origin/main moves on, and then the time arm (already past its
+    threshold) fires on the very next prompt. An unmeasured count (None) keeps the time arm,
+    since staleness can't be ruled out.
     """
-    if seconds_since_move is not None and seconds_since_move >= max_hours * 3600:
-        return True
     if behind is not None and behind >= max_behind:
         return True
-    return False
+    if behind == 0:
+        return False
+    return seconds_since_move is not None and seconds_since_move >= max_hours * 3600
 
 
 def _behind_clause(behind: "int | None") -> str:
@@ -577,11 +637,30 @@ def format_off_main_escalation(
     )
 
 
+def format_off_main_summary(
+    branch: str, seconds_since_move: "float | None", behind: "int | None"
+) -> str:
+    """The one-line systemMessage the user sees on every prompt while the canonical is stuck.
+
+    Kept to one line on purpose: a multi-line notification repeated on every prompt trains the
+    reader to skip it. The full remediation goes to the model as additionalContext.
+    """
+    return (
+        f"[dev-env-sync] STALE CANONICAL: dev-env is on '{branch}', not main - "
+        f"{_behind_clause(behind)}; {_moved_clause(seconds_since_move)}. "
+        "~/.claude/ tooling is stale until it is back on main (dev-env#1140)."
+    )
+
+
 def _report_off_main(out: Output, branch: str, base_warning: str) -> None:
     """Emit an off-main warning, measured and, when warranted, escalated (dev-env#1140).
 
-    Measuring is best-effort. Any git failure or timeout degrades to "unmeasured", never to a
-    lost warning: the base warning always goes out.
+    Local git only, never the network. A fetch here could hang on a credential prompt or a
+    grandchild holding the pipe, past the hook's timeout, and lose the very warning this path
+    exists to deliver (PR #1145 review). The count uses whatever origin/main the shared
+    `.git` already has. Every worktree session's fetches keep that ref current, and a stale
+    one can only under-count, never invent staleness. Each measurement fails on its own:
+    a failure degrades only that number to "unmeasured", and the base warning always goes out.
     """
     seconds_since_move = None
     behind = None
@@ -591,22 +670,34 @@ def _report_off_main(out: Output, branch: str, base_warning: str) -> None:
             last_move = parse_reflog_unix(moved.stdout)
             if last_move is not None:
                 seconds_since_move = max(0.0, time.time() - last_move)
-        # Fetch so the count reflects origin's real tip. A failed fetch still leaves the last
-        # known origin/main, which is a usable (if low) count.
-        run(["git", "fetch", "origin", "main", "--quiet"])
+    except Exception:
+        pass
+    try:
         behind = parse_behind(run(["git", "rev-list", "--count", "HEAD..origin/main"]))
     except Exception:
         pass
     if should_escalate_off_main(seconds_since_move, behind):
-        out.alert(format_off_main_escalation(branch, base_warning, seconds_since_move, behind))
+        out.alert(
+            format_off_main_escalation(branch, base_warning, seconds_since_move, behind),
+            format_off_main_summary(branch, seconds_since_move, behind),
+        )
     else:
         out.say(base_warning + format_off_main_note(seconds_since_move, behind))
 
 
-def main(out: "Output | None" = None) -> None:
+def _start_deadline() -> None:
+    """Start the shared run deadline that bounds every ``run()`` call this firing."""
+    global _deadline
+    _deadline = time.monotonic() + HOOK_TIMEOUT_SECONDS - DEADLINE_SAFETY_MARGIN_SECONDS
+
+
+# main() collects this run's advisories into *out*; the caller delivers it (see deliver()).
+# *out* is required on purpose: a default Output created here would never be delivered, so a
+# bare main() would silently drop every advisory (PR #1145 review). No docstring, because
+# the heartbeat must be main()'s literal first statement (ADR-106 gate, Testing item 68).
+def main(out: Output) -> None:
     _hookutil.record_heartbeat("dev-env-sync")
-    if out is None:
-        out = Output()
+    _start_deadline()
     try:
         sys.stdin.read()
     except Exception:
@@ -738,7 +829,7 @@ def main(out: "Output | None" = None) -> None:
         # "on-main" cannot occur on this path (current_branch != "main"); fall through to pull.
 
     # Fetch quietly so the local remote-tracking ref is current.
-    fetch = run(["git", "fetch", "origin", "main", "--quiet"])
+    fetch = run(["git", "fetch", "origin", "main", "--quiet"], env=NONINTERACTIVE_GIT_ENV)
     if fetch.returncode != 0:
         # Network issue — don't block, don't spam on every turn.
         return
@@ -779,7 +870,7 @@ def main(out: "Output | None" = None) -> None:
         return
 
     # Fast-forward is safe — pull.
-    pull = run(["git", "pull", "--ff-only", "origin", "main"])
+    pull = run(["git", "pull", "--ff-only", "origin", "main"], env=NONINTERACTIVE_GIT_ENV)
     if pull.returncode == 0:
         # Count how many commits were pulled.
         log = run(["git", "log", "--oneline", f"{local}..HEAD"])
@@ -794,24 +885,28 @@ def main(out: "Output | None" = None) -> None:
         # advisory, instead of the same-severity per-prompt warning that let the canonical drift
         # 21 commits / ~41h unnoticed (dev-env#697, #795, #797, ADR-110). The escalate-vs-plain
         # decision lives in the pure build_failure_response helper; main() only does the
-        # read/write/print glue around it. An escalated message also reaches the user
-        # (dev-env#1140): should_escalate is pure, so re-asking it gives the same answer
-        # build_failure_response used.
-        now = time.time()
-        state, message = build_failure_response(
-            read_failure_state(), now, local, remote, behind_count, pull.stderr
+        # read/write/emit glue around it. An escalated message also reaches the user as its
+        # one-line summary (dev-env#1140); the summary is None when it did not escalate.
+        state, message, summary = build_failure_response(
+            read_failure_state(), time.time(), local, remote, behind_count, pull.stderr
         )
         write_failure_state(state)
-        if should_escalate(state, now):
-            out.alert(message)
-        else:
+        if summary is None:
             out.say(message)
+        else:
+            out.alert(message, summary)
 
 
 def deliver(out: Output) -> None:
-    """Print this run's collected advisories in one emission (see render_output)."""
-    text = render_output(out.lines, out.escalated)
+    """Write this run's collected advisories in one emission (see render_output).
+
+    ``delivered`` is set before the write, so after any write attempt, even one that raised
+    partway, the crash fallback stays out. A second write would put two JSON objects on stdout,
+    which Claude Code would not parse (PR #1145 review).
+    """
+    text = render_output(out)
     if text:
+        out.delivered = True
         sys.stdout.write(text + "\n")
         sys.stdout.flush()
 
@@ -827,12 +922,15 @@ if __name__ == "__main__":
         # convention for UserPromptSubmit hooks touching this canonical
         # (journal-canonical-guard.py, new-day-journal-check.py; review finding, PR #661).
         # Unlike those two, this hook's whole purpose is eliminating invisible failures, so
-        # add a minimal pure-ASCII notice (never a formatted/dynamic value that could itself
-        # raise) rather than fail open in total silence — review finding, PR #701. Whatever
-        # main() collected before the failure is still delivered with it.
+        # emit a minimal pure-ASCII notice rather than fail open in total silence — review
+        # finding, PR #701. The notice goes out on its own, in a fresh Output, never re-sending
+        # the batch that just failed (it would fail the same way), and only if nothing has been
+        # written yet.
         try:
-            _out.say(FALLBACK_MESSAGE)
-            deliver(_out)
+            if not _out.delivered:
+                _fallback = Output()
+                _fallback.say(FALLBACK_MESSAGE)
+                deliver(_fallback)
         except Exception:
             pass
         sys.exit(0)

@@ -2343,19 +2343,30 @@ For a one-line navigational map of the test directory, see
     The tests cover:
     - `parse_reflog_unix` (`HEAD@{N}` → N; empty, relative-date or error output → `None`);
     - `parse_behind`, which keeps a genuine `0` apart from a failed count (`None`);
-    - the `should_escalate_off_main` boundaries for each arm alone, and that an unmeasured arm
-      never escalates by itself;
+    - the `should_escalate_off_main` boundaries for each arm alone; an unmeasured arm never
+      escalates by itself, and a measured 0 behind suppresses the time arm;
     - `format_off_main_escalation`, which names the branch, gap, duration, blast radius and the
       ask, keeps the base remediation, and is `.isascii()`; plus its unmeasured wording;
+    - `format_off_main_summary` and the `build_failure_response` summary, each a single ASCII line;
     - `render_output`: `None` when nothing was collected, plain text when not escalated, and one
-      JSON object whose `systemMessage` and `additionalContext` carry the same text once anything
-      escalates.
+      JSON object once anything escalates (the full text as `additionalContext`, only the summaries
+      as `systemMessage`);
+    - the plain path stays ASCII when a pulled-commit subject contains U+2192;
+    - `deliver` sets `delivered` before a write that then fails, so the fallback can't write
+      twice;
+    - `run` refuses to spawn once the shared deadline is spent.
     
-    `_report_off_main` runs against a stubbed `run` in three cases:
+    `_report_off_main` runs against a stubbed `run` in six cases:
     1. The 2026-10-09 incident state (HEAD last moved 108 days ago, 266 behind) must produce a
-       STALE CANONICAL `systemMessage`.
+       one-line STALE CANONICAL `systemMessage`.
     2. A fresh drift (5 minutes, 0 behind) stays a plain warning with its measurements.
     3. A git timeout degrades to "unmeasured" without dropping the base warning.
+    4. It never runs `git fetch`.
+    5. A reflog timeout leaves the behind arm intact.
+    6. 108 days idle at 0 behind stays plain.
+    
+    `build_failure_response` now returns `(state, message, summary)`, where `summary` is `None`
+    when it did not escalate.
     
     `main()`'s settings-sync and topology glue is still not covered (pure-helper convention).
     ([ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md),
