@@ -291,7 +291,9 @@ URL="<issue-or-pr-url>"
 TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
 gh project item-add 3 --owner brownm09 --url "$URL" --format json > "$TMPFILE"
 ITEM_ID=$(node -e "const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8')); console.log(d.id);")
-rm -f "$TMPFILE"
+# No cleanup here: scratch leftovers are harmless, and an `rm` chained onto
+# `gh` is never auto-approved (ADR-147). To clean up, use a separate call:
+#   rm -f C:/Users/brown/.claude/scratch/tmp_item_*.json
 
 # 2. Set Impact   (08de2558=High  6320e8a6=Medium  d8a85c2f=Low)
 gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \

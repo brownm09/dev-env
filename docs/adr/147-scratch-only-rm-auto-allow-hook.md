@@ -129,6 +129,18 @@ rotated to `scratch-rm-allow.log.1`, one generation kept.
 when done, belongs in its own standalone `rm -f` call. Section 6 measures why that sentence is
 load-bearing.
 
+A separate call can't name the file through a variable: shell state does not persist between Bash
+calls, so `$TMPFILE` from an earlier call is unset there (and the hook rejects an unresolved
+variable), and a `tmp_$$.json` name embeds a PID nobody can retype. So the bullet also says to name
+the file by its literal path or a non-recursive glob, and to give a file meant for later deletion a
+deterministic name. The examples sessions copy most were rewritten to match, since they taught the
+chained `...; rm -f "$TMPFILE"` shape the hook rejects: the `jq` example in `claude/CLAUDE.md` and
+the board fallback in the root `CLAUDE.md` drop the cleanup (leftovers are harmless), the
+`journal-compose` token block uses a date-named file with an optional literal-path delete, its meta
+cleanup step says one standalone `rm -f` of both literal paths, and the unattended
+`nightly-research` routine uses a date-named update script deleted in its own call and a literal
+glob for the residual sweep (PR #1135 review finding 2).
+
 ### 6. Gate calibration ([ADR-144](144-gate-calibration-pass-3-dimension.md))
 
 - **Measured property:** segment-kind membership plus resolved-path containment under scratch's

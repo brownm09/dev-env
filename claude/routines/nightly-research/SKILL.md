@@ -187,10 +187,10 @@ The topic will be annotated in the queue at Step 3 (kept in Pending for manual r
 
 ## Step 3 — Update the queue file
 
-Write a Node.js update script to scratch and execute it. (`jq` is not available in this environment — use `node -e`.)
+Write a Node.js update script to scratch and execute it. (`jq` is not available in this environment — use `node -e`.) Use this deterministic path, with the literal run date substituted for `<RUN_DATE>` — shell variables from Step 0 are not defined in later Bash calls, and the cleanup below has to name the file again:
 
-```bash
-UPDATE_SCRIPT="${SCRATCH}/nightly-research-update-$$.js"
+```
+C:/Users/brown/.claude/scratch/nightly-research-update-<RUN_DATE>.js
 ```
 
 The script must:
@@ -207,9 +207,14 @@ The script must:
 4. Remove 3+ consecutive blank lines left by deletions in the Pending section
 5. Write the updated content back to `research-queue.md`
 
-After execution:
+Run it:
 ```bash
-node "$UPDATE_SCRIPT" && rm -f "$UPDATE_SCRIPT"
+node "C:/Users/brown/.claude/scratch/nightly-research-update-<RUN_DATE>.js"
+```
+
+Then delete it as its **own** Bash call — never chained onto `node`: only a command that does nothing but delete scratch files is auto-approved (ADR-147), and an unattended routine stalls on any prompt:
+```bash
+rm -f "C:/Users/brown/.claude/scratch/nightly-research-update-<RUN_DATE>.js"
 ```
 
 ---
@@ -261,10 +266,10 @@ nightly-research complete — <N> researched, <M> failed, <K> remain (<RUN_DATE>
 
 If zero topics were completed: "nightly-research: 0 topics completed on <RUN_DATE> — check scratch logs for errors."
 
-Clean up any residual scratch files from this run (the update script is already deleted inline in Step 3, but this catches anything left by an interrupted run):
+Clean up any residual scratch files from this run (the update script is already deleted in Step 3, but this catches anything left by an interrupted run). Use the literal path — `$SCRATCH` from Step 0 is not defined in this shell:
 
 ```bash
-rm -f "${SCRATCH}/nightly-research-update-"*.js
+rm -f C:/Users/brown/.claude/scratch/nightly-research-update-*.js
 ```
 
 ---
