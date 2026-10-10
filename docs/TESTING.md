@@ -350,6 +350,13 @@ For a one-line navigational map of the test directory, see
     the REST path/heredoc/quoted-string decoy cases mirror this module's existing `scan_top_level`
     decoy convention.
 
+    **Import cost.** `subprocess` and `_winsubp` are imported lazily inside `confirm_merge_via_gh`,
+    the only function here that spawns a process, so a hook importing `_hookio` for a pure read helper
+    doesn't pay ~20-30 ms per call (PR #1135 review finding 5; the scratch-rm-allow hook runs on every
+    Bash call). A probe in a fresh interpreter pins that `import _hookio` loads neither module. No
+    caller depends on `_hookio` for the `_winsubp` patch: every script that calls subprocess imports
+    `_winsubp` itself, which item 2 (`test_pyw_stdio.py`) enforces.
+
     ```bash
     py -3 claude/scripts/tests/test_hookio.py
     ```
