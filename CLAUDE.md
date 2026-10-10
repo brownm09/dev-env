@@ -134,6 +134,8 @@ the item). A one-line navigational map of the test directory is
 98. **`_settings_sync` shared-module test** — required when changing `claude/scripts/_settings_sync.py`, its `OWNED_KEYS`/`SEED_KEYS` classification, `claude/settings.shared.json`, or `setup.sh`'s `seed_claude_settings()`. Also re-run the three gates that read the shared file through `_hook_wiring.py` (items 61/62/63), `test_pyw_stdio.py` (item 2), `test_hook_liveness_check.py` (item 67), and the setup link-loop (item 49) — all five were repointed off `claude/settings.json` by ADR-139. Run: `py -3 claude/scripts/tests/test_settings_sync.py` + `bash claude/scripts/tests/test-setup-link-loop.sh`
 99. **`_gh_project` shared-module test** — required when changing `claude/scripts/_gh_project.py`. Run: `py -3 claude/scripts/tests/test_gh_project.py`
 100. **journal-compose-meta test** — required when changing `claude/scripts/journal-compose-meta.py`, the meta handling in `claude/skills/journal-compose/SKILL.md` (Step 2b, the Phase 1 template's `META_TRIGGER=` lines, Step 6.7, Step 10's `check-clean` and `check-staged`, Phase 2's and Step 10's staging and commit blocks (the end-to-end tests extract and run them), both Step 10.5 pathspec lists), the "Meta journal (`sessions/meta/`)" trigger list in `claude/CLAUDE.md`, or the meta rule in `claude/routines/daily-journal-compose/SKILL.md` ([ADR-082 Addendum, 2026-10-02](docs/adr/082-journal-compose-worktree-isolation.md), dev-env#52 and #892). Also run item 83 when the Step 10.5 block changes. Run: `py -3 claude/scripts/tests/test_journal_compose_meta.py`
+101. **scratch-rm-allow test** — required when changing `claude/scripts/pre-tool-use-scratch-rm-allow.py`, or `_hookout.py`'s `plan_allow`/`emit_allow` (also run item 60 then). Run: `py -3 claude/scripts/tests/test_scratch_rm_allow.py`
+102. **replay-scratch-rm-allow test** — required when changing `claude/scripts/replay-scratch-rm-allow.py`, the on-demand replay of the ADR-147 hook over recorded session transcripts, or the hook's `check_command`/`Reject` surface it calls (also run item 101 then). Re-run the script itself after any change to the hook's lexer — `py -3 claude/scripts/replay-scratch-rm-allow.py`. Run: `py -3 claude/scripts/tests/test_replay_scratch_rm_allow.py`
 
 ## Observability
 
@@ -289,7 +291,9 @@ URL="<issue-or-pr-url>"
 TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
 gh project item-add 3 --owner brownm09 --url "$URL" --format json > "$TMPFILE"
 ITEM_ID=$(node -e "const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8')); console.log(d.id);")
-rm -f "$TMPFILE"
+# No cleanup here: scratch leftovers are harmless, and an `rm` chained onto
+# `gh` is never auto-approved (ADR-147). To clean up, use a separate call:
+#   rm -f C:/Users/brown/.claude/scratch/tmp_item_*.json
 
 # 2. Set Impact   (08de2558=High  6320e8a6=Medium  d8a85c2f=Low)
 gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \

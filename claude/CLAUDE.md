@@ -30,7 +30,7 @@ See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md), [ADR-0
 - **OS:** Windows 11, Git Bash terminal
 - **Node:** 20.11.1 (managed by nvm for Windows; `.nvmrc` is set — run `nvm use` at session start if not already active)
 - **Package manager:** npm (workspaces where applicable)
-- **`jq` is NOT available.** Use `node -e` with a temp file for JSON parsing:
+- **`jq` is NOT available.** Use `node -e` with a temp file for JSON parsing (no cleanup line: scratch leftovers are harmless — see the Scratch directory bullet below):
   ```bash
   TMPFILE="C:/Users/brown/.claude/scratch/tmp_$$.json"
   some-command --format json > "$TMPFILE"
@@ -38,10 +38,9 @@ See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md), [ADR-0
     const d = JSON.parse(require('fs').readFileSync('$TMPFILE','utf8'));
     console.log('VAR=' + d.field);
   "
-  rm -f "$TMPFILE"
   ```
 - **Never use `/tmp/`** for temp files — Node.js on Windows cannot resolve Git Bash Unix paths.
-- **Scratch directory:** `C:/Users/brown/.claude/scratch/` — all processing tmp files (`gh` output, JSON parsing intermediaries, etc.) go here regardless of which project is active. Never write tmp files into a project repo working directory.
+- **Scratch directory:** `C:/Users/brown/.claude/scratch/` — all processing tmp files (`gh` output, JSON parsing intermediaries, etc.) go here regardless of which project is active. Never write tmp files into a project repo working directory. Cleaning up scratch is optional, since leftovers are harmless; if you do, run it as its own standalone `rm -f` Bash call, never chained onto `gh`, `git`, or any other command, because only a command that does nothing but delete scratch files is auto-approved ([ADR-147](../docs/adr/147-scratch-only-rm-auto-allow-hook.md)). In that call, name the file by its literal path (`rm -f "C:/Users/brown/.claude/scratch/pr_body_123.md"`) or a non-recursive glob (`rm -f C:/Users/brown/.claude/scratch/tmp_item_*.json`): shell state does not persist between Bash calls, so a variable like `$TMPFILE` set in an earlier call is not defined there, and a `$$`-named file can't be retyped. A file you mean to delete later therefore needs a deterministic name (a date, PR number, or other fixed suffix) rather than `$$`.
 - **`gh` CLI** is available and authenticated. The `project` scope must be added separately when needed: `gh auth refresh -s project`.
 - **Prefer Git Bash** over PowerShell for scripting — PowerShell handles arrays and arithmetic differently and has caused failures in this environment.
 - **Disk-full (ENOSPC):** `C:` saturating to 0 GB surfaces *indirectly* as truncated `node_modules` (npm exits 0 but a native binary is partial), not an obvious "disk full" error. If an install fails with a confusing downstream error, run `df -h /c` first. Recovery runbook + failure signature + dominant consumers: [`docs/REFERENCE.md` → Disk-Full (ENOSPC) Recovery](../docs/REFERENCE.md#disk-full-enospc-recovery). The `worktree-npm-install.py` gate now refuses a low-space install rather than truncate ([ADR-045](../docs/adr/045-pre-install-freespace-gate.md)).

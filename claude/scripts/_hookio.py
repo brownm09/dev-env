@@ -73,12 +73,18 @@ hook fixes).  See ADR-067 for the merge-dir scoping.
 
 from __future__ import annotations
 
-import _winsubp  # noqa: F401  -- suppress console windows + default UTF-8 decoding on Windows
 import json
 import os
 import re
-import subprocess
 from collections.abc import Callable
+
+# `subprocess` and `_winsubp` are imported lazily, inside `confirm_merge_via_gh`
+# -- the only function here that spawns a process. Importing them at module
+# level cost ~20-30 ms on every hook that imports this module for a pure read
+# helper (e.g. `read_command` in the per-Bash-call scratch-rm-allow hook,
+# ADR-147). No caller relies on this module for the `_winsubp` patch: every
+# script that calls subprocess itself imports `_winsubp` directly, which
+# `test_pyw_stdio.py` enforces.
 
 # gh's completed-merge success line, e.g. "Squashed and merged pull request #380
 # (Title)" — and the cross-repo "... pull request brownm09/dev-env#380" variant.
@@ -353,9 +359,13 @@ def confirm_merge_via_gh(pr_number: int | None, repo: str, cwd: str) -> int | No
         if repo:
             args += ["--repo", repo]
     args += ["--json", "state,number"]
+    # Lazy: see the note at the top-level imports.
+    import _winsubp  # noqa: F401  -- suppress console windows + default UTF-8 decoding on Windows
+    import subprocess
+
     try:
         # text=True decodes as UTF-8 (not the Windows cp1252 default) via the
-        # _winsubp patch imported above — dev-env#503.
+        # _winsubp patch imported just above — dev-env#503.
         result = subprocess.run(args, capture_output=True, text=True, timeout=15, cwd=cwd)
         if result.returncode != 0:
             return None

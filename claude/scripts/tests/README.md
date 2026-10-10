@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 89 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 101 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 91 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 103 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -156,8 +156,10 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_posttooluse_inert_advisory.py` | `posttooluse-inert-advisory.py` | Stop-hook safety net: detects a background/SDK-launched session where PostToolUse hooks never fired at all. |
 | `test_pre_bash_drift_check.py` | `pre-bash-drift-check.py` | Elapsed-time-gated repo/branch drift check on every Bash call, not just the three merge-adjacent checkpoints. |
 | `test_pre_tool_use_nested_agent_background_guard.py` | `pre-tool-use-nested-agent-background-guard.py` | Blocks a nested `Agent`-tool spawn that omits `run_in_background` entirely; an explicit value or a top-level spawn passes through untouched (ADR-126). |
+| `test_scratch_rm_allow.py` | `pre-tool-use-scratch-rm-allow.py` | End-to-end subprocess cases: allows a scratch-only `rm` written with a literal path, in-command variables, `cd`, quoted backslash or `/c/` drive forms, or a final-component glob; gives no decision for a chained non-rm segment, a `..` escape, command substitution, an unresolved variable, a relative path with no `cd`, recursive on the scratch root or a glob, a pipe/redirect, malformed stdin, or a non-Bash tool. Also pins `~`/`$HOME` under a matching vs. divergent `HOME` (against a fake home) and the best-effort approval log. Each fall-through is also checked in-process to come from a deliberate reject, not a swallowed crash; platform-gated cases are counted as skips (ADR-147). |
 | `test_session_mode_prompt.py` | `session-mode-prompt.py` | One-time per-session reminder of the active permission mode. |
 | `test_shell_content_write_guard.py` | `pre-tool-use-shell-content-write-guard.py` | Blocks a Bash/PowerShell command writing a hazard-bearing inline literal to a file (heredoc, `echo`/`printf`, `node -e`/`py -c`, `sed -i`, a PowerShell `-Value`/here-string) — and, as of ADR-138 Amendment 1, a heredoc feeding `gh`/`git`'s own prose argument (`--body-file -`, `-F -`); program-output redirection and an interpreter's stdin are never matched. Reproduces all three dev-env#1041 occurrences and pins the accepted scope gaps (ADR-138). |
+| `test_replay_scratch_rm_allow.py` | `replay-scratch-rm-allow.py` | Hermetic synthetic-transcript tests for the ADR-147 replay: Bash-only extraction and malformed-line tolerance, total/unique/candidate/approval counts, approvals agreeing command-for-command with the hook's `decide()`, the hook's own reject reasons (candidates only), the outside-candidates anomaly counter, truncation, and that replaying never writes the approval log. |
 | `test_replay_shell_content_guard.py` | `replay-shell-content-guard.py` | Hermetic synthetic-transcript tests for the ADR-138 Amendment 1 reader: tool_use/tool_result pairing, malformed-line tolerance, dedup, override counting, truncation (the privacy property), and the enrichment ratio's two denominators — pinned against a hand-computed 1.0x fixture so a conflated denominator cannot pass. |
 | `test_session_mode_report.py` | `session-mode-report.py` | On-demand report (not a hook) auditing which sessions started outside `plan` mode. |
 | `test_session_start_sync.py` | `session-start-sync.py` | Fetch/fast-forward-only-or-warn drift check on `SessionStart`, generalized to any repo a session starts in (ADR-130). |

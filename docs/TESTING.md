@@ -350,6 +350,13 @@ For a one-line navigational map of the test directory, see
     the REST path/heredoc/quoted-string decoy cases mirror this module's existing `scan_top_level`
     decoy convention.
 
+    **Import cost.** `subprocess` and `_winsubp` are imported lazily inside `confirm_merge_via_gh`,
+    the only function here that spawns a process, so a hook importing `_hookio` for a pure read helper
+    doesn't pay ~20-30 ms per call (PR #1135 review finding 5; the scratch-rm-allow hook runs on every
+    Bash call). A probe in a fresh interpreter pins that `import _hookio` loads neither module. No
+    caller depends on `_hookio` for the `_winsubp` patch: every script that calls subprocess imports
+    `_winsubp` itself, which item 2 (`test_pyw_stdio.py`) enforces.
+
     ```bash
     py -3 claude/scripts/tests/test_hookio.py
     ```
@@ -2543,7 +2550,12 @@ For a one-line navigational map of the test directory, see
     `test_all_settings_hooks_use_pyw_and_resolve_to_repo` (item 2) already gates it; the resolution check
     overlaps that test's resolution half by design (it is the precondition for the `_winsubp`-based
     budget). Iterates entries generically, so a new event/matcher group (e.g. PR9's PowerShell mirror) is
-    covered with no change beyond any new script's budget classification.
+    covered with no change beyond any new script's budget classification. The PreToolUse and
+    PostToolUse Bash/PowerShell mirror tests (dev-env#620, #763) assert each pair of matchers wires
+    the identical script set. The PreToolUse one exempts, by name, the approve-only hooks in
+    `APPROVE_ONLY_PRETOOLUSE_HOOKS` (today only `pre-tool-use-scratch-rm-allow.py`, ADR-147): they
+    carry no safety check, so there is nothing to bypass. An exempt hook must be wired under Bash, must
+    not be wired under PowerShell, and its source must not contain `emit_block(` or `exit(2)`.
     ([ADR-103](adr/103-shared-hookout-emitter.md); dev-env#720)
 
     ```bash
@@ -4258,4 +4270,103 @@ For a one-line navigational map of the test directory, see
 
     ```bash
     py -3 claude/scripts/tests/test_journal_compose_meta.py
+    ```
+
+101. **scratch-rm-allow test** — required when changing
+    `claude/scripts/pre-tool-use-scratch-rm-allow.py`, or `_hookout.py`'s `plan_allow`/`emit_allow`
+    (also run item 60 then) ([ADR-147](adr/147-scratch-only-rm-auto-allow-hook.md), dev-env#1134).
+
+    The hook is the only one in this repo that *approves* rather than blocks or advises, so the suite
+    is built around its one failure that matters: approving something it shouldn't. 51 cases, almost
+    all end-to-end: each spawns the real hook with a PreToolUse JSON payload on stdin and asserts on
+    stdout and exit code. Every case must exit 0, because the hook never blocks. An allow case must print
+    exactly the PreToolUse allow JSON. A fall-through case must print nothing and leave stderr empty.
+
+    **Allow cases** cover the shapes autonomous sessions actually wrote (dev-env#1134): a literal path;
+    `S=...; rm -f "$S/x"`; `T="..." && rm -f "$T"`; a variable assigned on an earlier line and used
+    unquoted; `cd <scratch> && rm -f rel`, including a chain of two absolute `cd`s; an absolute target after a
+    `;` that follows a `cd`; `rm -rf` on
+    a scratch subdirectory; a quoted backslash path; the `/c/` drive form (Windows only); a glob in the
+    final component; `${NAME}` inside double quotes; `--` and a flag after a target (GNU rm permutes
+    options); several targets, all named in the reason; and a backslash-newline continuation.
+
+    **`~` and `$HOME`** (review finding 1 on PR #1135). Git Bash expands both from `HOME`, while Python
+    (and so `_hookutil.SCRATCH`, the hook's default scratch) reads `USERPROFILE` on Windows. The cases
+    run against a fake home (`HOME` and `USERPROFILE` both pointed at a temp directory, no scratch
+    override), so they are hermetic and also pin that the default scratch is `_hookutil.SCRATCH`.
+    Allowed: `~`, `$HOME`, and `S=~/...` with a matching `HOME`; `HOME` unset; `HOME` in MSYS `/c/...`
+    form naming the same directory. No decision: a `HOME` naming a different directory (a literal
+    path still allows then). The divergence cases are Windows-only end-to-end, because elsewhere
+    Python's home *is* `$HOME`; an in-process case patches `_python_home` so the same rule (divergent,
+    empty, and relative `HOME` are unresolved; a trailing separator is not divergence) runs on every
+    platform.
+
+    **Approval log.** An allow appends exactly one `<UTC ISO timestamp> scratch-only rm: ...` line to
+    `scratch-rm-allow.log` in scratch; a fall-through writes nothing; a log past
+    `APPROVAL_LOG_MAX_BYTES` rotates to `.1`; and a log path that can't be opened (a directory) still
+    yields the allow, exit 0, and empty stderr.
+
+    **Fall-through cases** each pin a rejection the ADR names: a non-rm segment chained on (`gh`,
+    `|| true`, `; echo`); any `..` component, including in a `cd`; `||`, including
+    `S=<outside> || S=<scratch>; rm -rf "$S/sub"`, where bash never runs the second assignment; a
+    relative target after a `;` or newline that follows a `cd` (if the `cd` failed, `rm` runs in the
+    session's repo cwd); a relative `cd` (`$CDPATH`); `$(...)` and backticks, including inside an assignment; an
+    unresolved variable; a relative path with no `cd`; recursive on the scratch root (spelled four
+    ways, including `cd <scratch> && rm -rf .` and `<scratch>/sub/..`); recursive with a final glob;
+    a target outside scratch, alone and mixed with an inside one; a glob in a directory component; a
+    pipe, a redirect, a background `&`, and an input redirect; disallowed flags and verbs (`-i`, `-v`,
+    `sudo`, `xargs`, `/bin/rm`); an assignment prefix on `rm` (bash expands `$S` before that
+    assignment applies); an unquoted expansion carrying a space; a single-quoted `'$S/x'`, which is a
+    literal and so a relative path; a `cd` outside scratch; unterminated quotes; assignments or `cd`
+    with no `rm`; `rm` with no target; brace expansion, a subshell, and `${S:-...}`; malformed stdin
+    (empty, non-JSON, a JSON list, `null`, a `null` `tool_input`); and a non-Bash tool.
+
+    **Non-vacuity.** The hook fails open, so a crash looks exactly like a correct fall-through from
+    outside. Each Bash fall-through case therefore also loads the module in-process and asserts
+    `evaluate()` raises the module's own `Reject`. A case that only falls through because of an
+    unexpected exception fails. A heartbeat case confirms the `record_heartbeat` call fires.
+
+    **Skips are visible.** A platform-gated case raises `Skip` and is printed as `SKIP` and counted in
+    the `Tests:` line, never as a pass. Six cases are Windows-only (the backslash and `/c/` drive
+    forms, and the four `HOME` divergence, unset, MSYS-form, and MSYS-root cases), so a non-Windows
+    run reports `6 skipped`. The marker is deliberately not a leading `SKIP:`, which
+    `run-hook-tests.py` would read as a whole-file skip.
+
+    Hermetic: `SCRATCH_RM_ALLOW_DIR_OVERRIDE` points the hook at a temporary scratch directory and
+    `HOOK_HEARTBEAT_DIR_OVERRIDE` keeps the heartbeat out of the real ledger. The hook only computes
+    paths (`realpath`) and never deletes anything; the approval-log cases use their own temp scratch
+    directories. Deliberate scope gap: the
+    hook trusts `realpath` for symlinks and junctions, and no case builds one, because creating a
+    symlink on Windows needs Developer Mode or elevation.
+
+    ```bash
+    py -3 claude/scripts/tests/test_scratch_rm_allow.py
+    ```
+
+102. **replay-scratch-rm-allow test** — required when changing
+    `claude/scripts/replay-scratch-rm-allow.py`, or the hook's `check_command`/`Reject` surface it
+    calls (also run item 101 then) ([ADR-147](adr/147-scratch-only-rm-auto-allow-hook.md) section 6;
+    PR #1135 review finding 3).
+
+    The script is ADR-147's calibration replay, committed so the success signal ("re-run the replay
+    once the guidance has been live; a non-zero approval count, every approval spot-checked") is
+    reproducible. It walks `~/.claude/projects/**/*.jsonl`, takes every Bash `tool_use` command,
+    dedups, and runs the hook's own `check_command` in-process (the exact function `decide` calls). It
+    reports total, unique, the rm+scratch candidate population, approvals (each listed with its
+    resolved targets for spot-checking), approvals *outside* the candidate set, and the hook's own
+    `Reject` messages for the candidates it did not approve.
+
+    Ten hermetic cases over synthetic transcript trees under a temp directory, with
+    `SCRATCH_RM_ALLOW_DIR_OVERRIDE` naming a temp scratch; nothing reads the real
+    `~/.claude/projects`. Pinned: only Bash `tool_use` blocks count (PowerShell, text blocks, non-list
+    content, and malformed lines are skipped without aborting the file); total vs. unique counts;
+    candidates and approvals; the replay's approvals agree command-for-command with the hook's
+    `decide()`, so the measurement can't drift from the hook; rejection reasons are the hook's own
+    messages and are counted for candidates only; an approval outside the candidate filter (a scratch
+    path without the word "scratch") is counted and marked; `is_candidate`'s word and case handling;
+    `truncate` caps every printed command at `--width` (the privacy property); replaying never writes
+    the hook's approval log; a missing `--scan-dir` exits 1; and the `--json` and text reports agree.
+
+    ```bash
+    py -3 claude/scripts/tests/test_replay_scratch_rm_allow.py
     ```

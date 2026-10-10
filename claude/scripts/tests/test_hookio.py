@@ -1387,8 +1387,32 @@ def test_output_has_rest_merge_marker_false() -> str:
     return "no \"merged\":true in output -> False"
 
 
+def test_import_does_not_load_subprocess() -> str:
+    """Importing _hookio must stay cheap: `subprocess` and `_winsubp` load only
+    inside `confirm_merge_via_gh` (PR #1135 review finding 5). They cost ~20-30 ms,
+    paid by every hook that imports this module for a pure read helper -- including
+    the per-Bash-call scratch-rm-allow hook. Checked in a fresh interpreter, since
+    this test process has already imported both."""
+    import subprocess  # noqa: PLC0415 -- the probe itself needs a child process
+
+    probe = (
+        "import sys; sys.path.insert(0, sys.argv[1]); import _hookio; "
+        "print(sorted(m for m in ('subprocess', '_winsubp') if m in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(SCRIPTS_DIR)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, f"probe failed: {result.stderr.strip()}"
+    assert result.stdout.strip() == "[]", (
+        f"importing _hookio loaded {result.stdout.strip()} -- keep them lazy inside confirm_merge_via_gh"
+    )
+    return "import _hookio loads neither subprocess nor _winsubp"
+
+
 def main() -> int:
     tests = [
+        ("import _hookio stays subprocess-free (finding 5)", test_import_does_not_load_subprocess),
         ("reads command output from stdout", test_reads_stdout),
         ("combines stdout and stderr", test_combines_stdout_and_stderr),
         ("stderr-only (gh pr merge shape)", test_stderr_only),
