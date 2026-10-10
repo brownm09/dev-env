@@ -171,6 +171,22 @@ def classify_result(returncode: int, output: str) -> str:
     return "pass"
 
 
+_TESTS_SUMMARY_RE = re.compile(r"(?m)^Tests:\s*\d+ passed,\s*(\d+) skipped")
+
+
+def case_skips(output: str) -> int:
+    """Skipped *cases* a passing file reports in its own ``Tests:`` summary line.
+
+    A file that skips one platform-gated case but passes the rest is a ``pass``
+    (see ``classify_result``), so the suite would otherwise print a plain ``PASS``
+    and a degraded run would look identical to a full one (Test Integrity Rule 2,
+    dev-env#1138). Reads the LAST summary line; ``0`` when there is none or it
+    carries no skipped figure (bash gates print ``Tests: N passed, N failed``).
+    """
+    matches = _TESTS_SUMMARY_RE.findall(output or "")
+    return int(matches[-1]) if matches else 0
+
+
 def _command_for(path: Path, bash_bin):
     """Argv to run one test file, or ``None`` if its interpreter is unavailable."""
     if path.suffix == ".py":
@@ -358,6 +374,7 @@ def main(argv=None) -> int:
     failures = []
     flaky = []               # [(name, retries_used)] -- passed only after >=1 retry
     hard_failed_retried = []  # [(name, retries_used)] -- still failing after exhausting retries
+    case_skip_files = []     # [(name, n)] -- passed, but skipped n platform-gated cases
     suite_start = time.monotonic()
 
     for p in runner_skipped:
@@ -382,8 +399,15 @@ def main(argv=None) -> int:
         )
         retry_suffix = f"  [retried {retries_used}x]" if retries_used else ""
         if status == "pass":
-            print(f"PASS  {p.name:<42}  ({elapsed:5.1f}s){retry_suffix}", flush=True)
+            n_case_skips = case_skips(output)
+            skip_suffix = f"  [{n_case_skips} case(s) skipped]" if n_case_skips else ""
+            print(
+                f"PASS  {p.name:<42}  ({elapsed:5.1f}s){retry_suffix}{skip_suffix}",
+                flush=True,
+            )
             passed += 1
+            if n_case_skips:
+                case_skip_files.append((p.name, n_case_skips))
             if retries_used:
                 flaky.append((p.name, retries_used))
         elif status == "skip":
@@ -412,6 +436,12 @@ def main(argv=None) -> int:
     # are FINAL status only, so a flaky-but-passed file still counts as passed
     # and a hard-failed-after-retries file still counts as failed here.
     print(f"Tests: {passed} passed, {skipped} skipped, {failed} failed ({total:.1f}s)", flush=True)
+    if case_skip_files:
+        # Not folded into the Tests: line above (its shape is pinned and counts
+        # FILES); a separate line keeps degraded-but-passing files visible.
+        total_case_skips = sum(n for _, n in case_skip_files)
+        detail = ", ".join(f"{name} ({n})" for name, n in case_skip_files)
+        print(f"Case skips: {total_case_skips} across passing files: {detail}", flush=True)
     if failures:
         print("Failed: " + ", ".join(failures), flush=True)
     if flaky or hard_failed_retried:

@@ -170,6 +170,77 @@ def test_classify_per_case_skip_is_not_a_whole_file_skip():
     assert mod.classify_result(0, out + "\nSKIP: scan: workspace junctions") == "skip"
 
 
+def test_case_skips_reads_the_files_own_summary_line():
+    assert mod.case_skips("Tests: 25 passed, 1 skipped, 0 failed") == 1
+    assert mod.case_skips("noise\n\nTests: 62 passed, 3 skipped, 0 failed (0.4s)\n") == 3
+    assert mod.case_skips("Tests: 5 passed, 0 skipped, 0 failed") == 0
+    # The LAST summary line wins (a file that prints a sub-summary first).
+    assert mod.case_skips("Tests: 1 passed, 9 skipped, 0 failed\nTests: 2 passed, 4 skipped, 0 failed") == 4
+
+
+def test_case_skips_is_zero_without_a_skipped_figure():
+    # Bash gates print "Tests: N passed, N failed" (no skipped figure); empty / None
+    # output and an indented or mid-line "Tests:" must not be misread either.
+    assert mod.case_skips("Tests: 3 passed, 0 failed") == 0
+    assert mod.case_skips("") == 0
+    assert mod.case_skips(None) == 0
+    assert mod.case_skips("  Tests: 1 passed, 7 skipped, 0 failed") == 0
+
+
+def _colon_skip_literals(path):
+    """Line numbers of string literals in ``path`` the runner would read as ``SKIP:``.
+
+    AST-based so a comment that quotes the marker, like ``# Not "SKIP:" --``, is
+    ignored, and reuses the runner's own regex so the two cannot drift apart.
+    """
+    import ast
+    tree = ast.parse(Path(path).read_text(encoding="utf-8"), str(path))
+    return [
+        n.lineno
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        and mod._SELF_SKIP_RE.search(n.value)
+    ]
+
+
+def test_colon_skip_lint_flags_a_known_bad_producer_and_passes_a_known_good_one():
+    # The lint is only meaningful if it can fail: known-bad = the exact line this
+    # PR removed from test_worktree_npm_install.py; known-good = its replacement
+    # plus the explanatory comment that quotes the marker.
+    with tempfile.TemporaryDirectory() as d:
+        bad = Path(d) / "test_bad.py"
+        bad.write_text('print(f"SKIP: {name}")\n', encoding="utf-8")
+        good = Path(d) / "test_good.py"
+        good.write_text(
+            '# Not "SKIP:" -- the runner reads that as a whole-file skip.\n'
+            'print(f"SKIPPED  {name}")\n',
+            encoding="utf-8",
+        )
+        assert _colon_skip_literals(bad) == [1]
+        assert _colon_skip_literals(good) == []
+
+
+def test_no_python_test_prints_a_per_case_colon_skip_marker():
+    # dev-env#1138: two files in a row (test_scratch_rm_allow.py, then
+    # test_worktree_npm_install.py) printed a per-case "SKIP:" and silently turned
+    # a passing file into a whole-file skip. Python tests have no whole-file skip
+    # (that signal belongs to the bash gates), so none may contain the marker --
+    # except this file, whose fixtures spell it out on purpose.
+    files = mod.discover_python_tests(mod.TESTS_DIRS)
+    assert files, "discovered 0 Python tests -- the scan below would pass vacuously"
+    offenders = {
+        p.name: lines
+        for p in files
+        if p.name != Path(__file__).name
+        for lines in [_colon_skip_literals(p)]
+        if lines
+    }
+    assert not offenders, (
+        f"per-case skips must not start a line with 'SKIP:' (the runner reads it as "
+        f"a whole-file skip; print 'SKIPPED  <name>' instead): {offenders}"
+    )
+
+
 def test_classify_nonzero_exit_beats_skip_marker():
     # A test that printed SKIP: but still exited non-zero is a real failure.
     assert mod.classify_result(2, "SKIP: something\nthen it crashed") == "fail"
