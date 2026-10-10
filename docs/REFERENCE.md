@@ -276,6 +276,23 @@ on every prompt. Symlinking it — the pre-[ADR-139](adr/139-machine-local-setti
 arrangement — meant the app dirtied a tracked file and blocked the canonical's fast-forward
 permanently, serving stale hooks and skills machine-wide (dev-env#1049). The owned / seed /
 machine-local key split is in the [dev-env `CLAUDE.md`](../CLAUDE.md) architecture section.
+
+**Every hook runs through the hook launcher** ([ADR-148](adr/148-missing-hook-script-fails-open-via-launcher.md),
+dev-env#1146): `pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/<name>.py`.
+Without it, a wired script that is missing makes Python exit 2, which Claude Code reads as a block
+on every matching tool call, in every session. Since the wiring is machine-local and the scripts
+come through the junction, any lag between the two (a canonical drifted onto an older branch, a
+sync run before a pull) used to lock the machine out of Bash, PowerShell and Write; it happened
+live on 2026-10-09. The launcher (`claude/scripts/_hook_launch.py`, stdlib-only) runs a present
+script in-process as `__main__` with stdio, argv and the exit code untouched. For a missing script
+it prints one `systemMessage` and exits 0, the two fail-closed gates included, since a missing
+gate has no code to scope its block and both are wired on every Bash call. `_settings_sync`
+installs it to `~/.claude/hook-launch.py`, outside every junction so it survives a regressed tree,
+on every sync and before writing any hooks that name it. The sync also withholds `hooks` (keeping
+the live wiring and reporting "pull first") while any path a command names is absent.
+**Residual risk:** if `~/.claude/hook-launch.py` itself is deleted, every hook exits 2 again, and
+`dev-env-sync.py`, the hook that would reinstall it, cannot run. Recover from a hook-free terminal
+(the app's Terminal panel) with `py -3 ~/.claude/scripts/_settings_sync.py`.
 See [ADR-007](adr/007-hook-command-invocation.md) for why hooks invoke scripts via `pyw -3` (the windowless variant of the Windows Python Launcher) rather than `python3` directly, wrapped in `bash -c`, or via `py -3` (which flashes a console window per spawn). Shell-invoked Python (the `## Testing` command, skill `py -3` examples, and the `pre-push` hook) continues to use `py -3`.
 
 Any hook that spawns subprocesses (`git`, `gh`, `bash`, …) must `import _winsubp` near its imports — the helper patches `subprocess.Popen.__init__` to (1) set `CREATE_NO_WINDOW` so children don't flash a console window under `pythonw.exe`, and (2) default a text-mode call (`text=True` / `universal_newlines=True`) with no explicit `encoding=` to `encoding="utf-8", errors="replace"` rather than the Windows cp1252 default, which crashed `post-tool-use.py` reading `gh project item-add`'s output (dev-env#503). The static check in `claude/scripts/tests/test_pyw_stdio.py` fails the build if a subprocess-using hook ships without it. See ADR-007's 2026-06-01 and 2026-07-02 follow-up sections.
@@ -518,7 +535,7 @@ PreToolUse hooks that exit non-zero **block the matched tool call silently** —
    ```
    Never add `sys.exit(N)` where N > 0 to an advisory hook.
 
-3. **Invoke via `pyw -3`, never bare `python3`, never `bash -c`, never `py -3` (which flashes a console window per spawn).** Hook commands call the interpreter directly: `pyw -3 C:/Users/brown/.claude/scripts/foo.py`. `python3` resolves to the Microsoft Store App Execution Alias stub on Windows and exits 49 silently; the `bash -c` wrapper fails because `bash.exe` is not on the Windows system PATH; `py -3` allocates a console window on every spawn. Root causes of [dev-env#81](https://github.com/brownm09/dev-env/issues/81), [dev-env#261](https://github.com/brownm09/dev-env/issues/261), and [dev-env#294](https://github.com/brownm09/dev-env/issues/294). See [ADR-007](adr/007-hook-command-invocation.md).
+3. **Invoke via `pyw -3`, never bare `python3`, never `bash -c`, never `py -3` (which flashes a console window per spawn).** Hook commands call the interpreter directly, through the hook launcher: `pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/foo.py`. The script is always the last token, and the launcher fails open when it is missing ([ADR-148](adr/148-missing-hook-script-fails-open-via-launcher.md)); `test_settings_hook_wiring.py` gates the exact form. `python3` resolves to the Microsoft Store App Execution Alias stub on Windows and exits 49 silently; the `bash -c` wrapper fails because `bash.exe` is not on the Windows system PATH; `py -3` allocates a console window on every spawn. Root causes of [dev-env#81](https://github.com/brownm09/dev-env/issues/81), [dev-env#261](https://github.com/brownm09/dev-env/issues/261), and [dev-env#294](https://github.com/brownm09/dev-env/issues/294). See [ADR-007](adr/007-hook-command-invocation.md).
 
 4. **`import _winsubp` whenever a hook spawns subprocesses.** Under `pythonw.exe` (no console), every `subprocess.run`/`Popen` call that targets a console app (`git`, `gh`, `bash`, `py`, …) gets a fresh console window allocated by Windows unless `creationflags=CREATE_NO_WINDOW` is set. Separately, a text-mode call (`text=True`) with no explicit `encoding=` decodes using the Windows cp1252 default codepage instead of UTF-8, which crashes on any byte `gh`/`git` emits that cp1252 can't represent. The `_winsubp` helper (`claude/scripts/_winsubp.py`) patches both in once on import: `CREATE_NO_WINDOW` unconditionally, and `encoding="utf-8", errors="replace"` for any text-mode call that doesn't already specify its own encoding. Any new subprocess-using hook must add `import _winsubp  # noqa: F401` near its imports; the static check in `claude/scripts/tests/test_pyw_stdio.py` will fail the build otherwise. Root causes: [dev-env#297](https://github.com/brownm09/dev-env/issues/297) (console flash), [dev-env#503](https://github.com/brownm09/dev-env/issues/503) (UTF-8 decoding).
 

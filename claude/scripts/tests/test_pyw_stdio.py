@@ -173,17 +173,20 @@ def _collect_hook_scripts() -> list[str]:
             for hook in entry.get("hooks", []):
                 cmd = hook.get("command", "")
                 parts = cmd.split()
-                # Expected shape: "pyw -3 C:/.../scripts/<name>.py"
-                if len(parts) >= 3 and parts[2].endswith(".py"):
-                    scripts.add(parts[2])
+                # Expected shape: "pyw -3 C:/.../hook-launch.py C:/.../scripts/<name>.py"
+                # (ADR-148) -- the hook script is the LAST token.
+                if len(parts) >= 3 and parts[-1].endswith(".py"):
+                    scripts.add(parts[-1])
     return sorted(scripts)
 
 
 def test_all_settings_hooks_use_pyw_and_resolve_to_repo() -> str:
-    """Every hook command must invoke `pyw -3` and point at a real script in this repo."""
+    """Every hook command must invoke `pyw -3` through the hook launcher (ADR-148) and
+    point at a real script in this repo."""
     settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
     hooks = settings.get("hooks", {})
     bad_launcher: list[str] = []
+    no_hook_launch: list[str] = []
     missing: list[str] = []
     syntax_errors: list[str] = []
     total = 0
@@ -192,14 +195,17 @@ def test_all_settings_hooks_use_pyw_and_resolve_to_repo() -> str:
             for hook in entry.get("hooks", []):
                 cmd = hook.get("command", "")
                 parts = cmd.split()
-                if len(parts) < 3 or not parts[2].endswith(".py"):
+                if len(parts) < 3 or not parts[-1].endswith(".py"):
                     continue
                 total += 1
                 launcher = parts[0]
                 if launcher != "pyw":
                     bad_launcher.append(cmd)
                     continue
-                local = HOOKS_DIR / Path(parts[2]).name
+                if len(parts) != 4 or Path(parts[2]).name != "hook-launch.py":
+                    no_hook_launch.append(cmd)
+                    continue
+                local = HOOKS_DIR / Path(parts[-1]).name
                 if not local.exists():
                     missing.append(local.name)
                     continue
@@ -210,13 +216,20 @@ def test_all_settings_hooks_use_pyw_and_resolve_to_repo() -> str:
     problems: list[str] = []
     if bad_launcher:
         problems.append(f"non-pyw launchers: {bad_launcher}")
+    if no_hook_launch:
+        problems.append(f"not run through hook-launch.py (ADR-148): {no_hook_launch}")
     if missing:
         problems.append(f"missing scripts: {missing}")
     if syntax_errors:
         problems.append("syntax errors:\n  " + "\n  ".join(syntax_errors))
     if problems:
         raise AssertionError("\n".join(problems))
-    return f"{total} hook commands all use `pyw -3` and resolve to syntactically valid scripts in {HOOKS_DIR.name}/"
+    if total == 0:
+        raise AssertionError("no hook commands parsed from the shared settings -- a vacuous pass")
+    return (
+        f"{total} hook commands all use `pyw -3 <launcher>` and resolve to syntactically "
+        f"valid scripts in {HOOKS_DIR.name}/"
+    )
 
 
 def test_winsubp_patches_subprocess_under_pyw() -> str:

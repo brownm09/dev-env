@@ -217,6 +217,19 @@ it `## Testing` items 61, 62, 63), and `claude/scripts/tests/test_pyw_stdio.py`.
 instead, and never fails the run — a seed that cannot complete warns with the exact manual
 command rather than aborting setup with the links half-applied.
 
+**Amendment (2026-10-10): the sync installs the hook launcher and guards `hooks`
+([ADR-148](148-missing-hook-script-fails-open-via-launcher.md), dev-env#1146).** Keeping the
+wiring machine-local while the scripts come through the junction meant that any lag between the
+two made Python exit 2 on a missing script, a block on every matching tool call. On every run the
+sync now:
+
+1. Installs `claude/scripts/_hook_launch.py` to `~/.claude/hook-launch.py`, outside every
+   junction, before it writes any hooks that name it.
+2. Withholds the owned `hooks` key, keeping the live value, while any path a hook command names
+   is missing.
+
+Every shipped command runs through that launcher, which fails open on a missing script.
+
 ---
 
 [^1]: Claude Code settings reference — *Settings files and who they affect* and *Find or

@@ -295,3 +295,11 @@ file.
   the `pyw -3 <script>.py` invocation form that the wiring lint, the heartbeat ledger and ADR-007
   all assume. And it would still be wiped by any post-ADR-139 branch's own settings sync. The
   ADR-071 and ADR-139 fixes remove the causes it would guard against.
+
+**Update (2026-10-10): the missing-script half of the residual risk is closed by
+[ADR-148](148-missing-hook-script-fails-open-via-launcher.md).** Every hook now runs through
+`~/.claude/hook-launch.py`, a launcher installed outside the junction, which fails open (exit 0
+plus a `systemMessage`) when a wired script is missing, so a drift onto an older tree yields
+warnings rather than blocked prompts and tool calls. The sync also refuses to wire hooks whose
+scripts are absent. The detector itself still lives in the tree it monitors; that part of the
+residual risk is unchanged.

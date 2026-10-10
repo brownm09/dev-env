@@ -34,8 +34,10 @@ SCRIPTS_DIR = REPO_ROOT / "claude" / "scripts"
 SETTINGS_PATH = REPO_ROOT / "claude" / "settings.shared.json"
 
 # The last whitespace-delimited token of a hook command is the script path; grab
-# its `<name>.py` basename. Matches the `pyw -3 C:/.../foo.py` invocation form
-# (ADR-007). A command that ends in something other than a .py (none today) -> None.
+# its `<name>.py` basename. Matches the `pyw -3 C:/.../hook-launch.py C:/.../foo.py`
+# invocation form (ADR-007, ADR-148): the launcher comes first, so the last token is
+# still the hook script. A command that ends in something other than a .py (none
+# today) -> None.
 _SCRIPT_RE = re.compile(r"([\w.-]+\.py)\s*$")
 
 

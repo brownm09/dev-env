@@ -83,14 +83,38 @@ class Env:
         self.shared = self.root / "claude" / "settings.shared.json"
         self.live = self.root / "home" / ".claude" / "settings.json"
         self.backups = self.root / "home" / ".claude" / "backups"
-        write_json(self.shared, SHARED)
+        # The launcher source and its installed copy, plus one real hook script, so the
+        # shared `hooks` this Env ships passes hooks_guard (dev-env#1146) -- every path
+        # its command names exists once ensure_launcher has run.
+        self.launcher_src = self.root / "claude" / "scripts" / "_hook_launch.py"
+        self.launcher_dest = self.root / "home" / ".claude" / "hook-launch.py"
+        self.hook_script = self.root / "home" / ".claude" / "scripts" / "a.py"
+        self.launcher_src.parent.mkdir(parents=True, exist_ok=True)
+        self.launcher_src.write_text("# launcher v1\n", encoding="utf-8")
+        self.hook_script.parent.mkdir(parents=True, exist_ok=True)
+        self.hook_script.write_text("pass\n", encoding="utf-8")
+        self.shared_data = dict(SHARED, hooks=self.hooks_for(self.hook_script))
+        write_json(self.shared, self.shared_data)
         return self
+
+    def hooks_for(self, *scripts: Path) -> dict:
+        """A `hooks` value wiring each script through this Env's launcher."""
+        return {
+            "UserPromptSubmit": [
+                {"hooks": [
+                    {"type": "command", "command": f"pyw -3 {self.launcher_dest.as_posix()} {s.as_posix()}"}
+                    for s in scripts
+                ]}
+            ]
+        }
 
     def __exit__(self, *exc):
         shutil.rmtree(self.root, ignore_errors=True)
 
     def sync(self):
-        return _settings_sync.sync(self.shared, self.live, self.backups)
+        return _settings_sync.sync(
+            self.shared, self.live, self.backups, self.launcher_src, self.launcher_dest
+        )
 
     def live_data(self) -> dict:
         return json.loads(self.live.read_text(encoding="utf-8"))
@@ -407,6 +431,139 @@ if real_shared is not None:
     )
     for key in ("theme", "tui", "autoMode", "skipWorkflowUsageWarning"):
         check(key not in real_shared, f"machine-local key stays out of the tracked file: {key}")
+
+# --- 8. hook launcher install + missing-script guard (dev-env#1146, ADR-148) ------------
+
+print("[8] ensure_launcher installs the launcher; hooks_guard never wires a missing file")
+
+with Env() as env:
+    installed, err = _settings_sync.ensure_launcher(env.launcher_src, env.launcher_dest)
+    check(installed and err is None, "first ensure_launcher installs the launcher")
+    check(env.launcher_dest.read_bytes() == env.launcher_src.read_bytes(), "installed bytes match the source")
+    installed, err = _settings_sync.ensure_launcher(env.launcher_src, env.launcher_dest)
+    check(not installed and err is None, "unchanged source -> no-op, reported as a skip (ADR-079 rule 4)")
+    env.launcher_src.write_text("# launcher v2\n", encoding="utf-8")
+    installed, err = _settings_sync.ensure_launcher(env.launcher_src, env.launcher_dest)
+    check(installed and env.launcher_dest.read_text(encoding="utf-8") == "# launcher v2\n",
+          "a changed source replaces the installed launcher")
+    check(not list(env.launcher_dest.parent.glob("hook-launch.py.*.tmp")), "no temp file is left behind")
+    env.launcher_src.unlink()
+    installed, err = _settings_sync.ensure_launcher(env.launcher_src, env.launcher_dest)
+    check(not installed and err is None and env.launcher_dest.is_file(),
+          "source gone (an older tree) -> the installed launcher is kept, no error")
+    env.launcher_dest.unlink()
+    installed, err = _settings_sync.ensure_launcher(env.launcher_src, env.launcher_dest)
+    check(not installed and err is not None and "none is installed" in err,
+          "no source and nothing installed -> a named error, never a raise")
+
+with Env() as env:
+    _settings_sync.ensure_launcher(env.launcher_src, env.launcher_dest)
+    good = env.hooks_for(env.hook_script)
+    check(_settings_sync.hooks_guard(good) is None, "every wired path exists -> guard passes")
+    gone = env.hook_script.parent / "gone.py"
+    reason = _settings_sync.hooks_guard(env.hooks_for(env.hook_script, gone))
+    check(reason is not None and "gone.py" in reason and "1 wired file" in reason,
+          "a missing hook script is named in the guard's reason")
+    env.launcher_dest.unlink()
+    reason = _settings_sync.hooks_guard(good)
+    check(reason is not None and "hook-launch.py" in reason, "a missing launcher is refused too")
+    reason = _settings_sync.hooks_guard({"Stop": [{"hooks": [{"type": "command", "command": "echo hi"}]}]})
+    check(reason is not None and "name no .py" in reason,
+          "a command naming no .py is refused (an empty extraction is not a pass, ADR-144)")
+    check(_settings_sync.hooks_guard([]) is not None, "a non-object hooks value is refused")
+    check(
+        _settings_sync.hooks_guard({"Stop": [{"hooks": [{"type": "prompt", "prompt": "x"}]}]}) is None,
+        "a non-command hook entry runs no file and is not checked",
+    )
+
+# The forward case from the incident: the shared file (a worktree, or a canonical mid-pull)
+# wires a script the junctioned tree does not have yet. The live wiring must be KEPT.
+with Env() as env:
+    old_hooks = env.hooks_for(env.hook_script)
+    write_json(env.live, dict(MACHINE_LOCAL, hooks=old_hooks))
+    _settings_sync.ensure_launcher(env.launcher_src, env.launcher_dest)
+    new_script = env.hook_script.parent / "brand-new-hook.py"
+    write_json(env.shared, dict(env.shared_data, hooks=env.hooks_for(env.hook_script, new_script)))
+    result = env.sync()
+    data = env.live_data()
+    check(result.error is None, "withholding hooks is reported, not an error")
+    check(data["hooks"] == old_hooks, "a missing wired script -> the live hooks are kept untouched")
+    check(data["permissions"] == SHARED["permissions"], "the other owned keys are still applied")
+    check(data["theme"] == MACHINE_LOCAL["theme"], "machine-local keys still survive")
+    note = result.note or ""
+    check("NOT applied" in note and "brand-new-hook.py" in note, "the note names the missing script")
+    check("git -C ~/Git/dev-env" in note, "the note names the recovery command")
+    note.encode("ascii")
+    ok("the withheld note is pure ASCII (ADR-103 output contract)")
+    again = env.sync()
+    check(not again.changed and "NOT applied" in (again.note or ""),
+          "a re-sync with the script still missing writes nothing and says so again")
+    new_script.write_text("pass\n", encoding="utf-8")
+    third = env.sync()
+    check(third.changed and env.live_data()["hooks"] == env.hooks_for(env.hook_script, new_script),
+          "once the script exists (the pull landed), the next sync applies the hooks")
+
+# Ordering: the launcher is installed BEFORE hooks naming it are written.
+with Env() as env:
+    write_json(env.live, dict(MACHINE_LOCAL))
+    check(not env.launcher_dest.exists(), "precondition: no launcher installed yet")
+    result = env.sync()
+    check(env.launcher_dest.is_file(), "sync installs the launcher")
+    check(env.live_data()["hooks"] == env.shared_data["hooks"], "and then applies hooks that name it")
+    check("Installed the current hook launcher" in (result.note or ""), "the install is reported")
+
+# A launcher that cannot be installed (no source, none installed) withholds hooks.
+with Env() as env:
+    write_json(env.live, dict(MACHINE_LOCAL))
+    env.launcher_src.unlink()
+    result = env.sync()
+    data = env.live_data()
+    check("hooks" not in data, "no launcher on disk -> hooks naming it are withheld")
+    check(data["permissions"] == SHARED["permissions"], "other owned keys still applied")
+    check("none is installed" in (result.note or "") and "NOT applied" in (result.note or ""),
+          "both the launcher error and the withheld key are reported")
+
+# A launcher-only change on an otherwise in-sync file is a change, and is reported.
+with Env() as env:
+    env.sync()
+    env.launcher_src.write_text("# launcher v2\n", encoding="utf-8")
+    result = env.sync()
+    check(result.changed and "Installed the current hook launcher" in (result.note or ""),
+          "a launcher update with settings already in sync counts as a change")
+    quiet = env.sync()
+    check(not quiet.changed and quiet.note is None, "and the next sync is silent again")
+
+# Fresh machine: no live file, and a wired script is missing.
+with Env() as env:
+    gone = env.hook_script.parent / "not-here.py"
+    write_json(env.shared, dict(env.shared_data, hooks=env.hooks_for(gone)))
+    result = env.sync()
+    data = env.live_data()
+    check(result.changed and "hooks" not in data, "fresh machine: hooks withheld, file still created")
+    check(data["permissions"] == SHARED["permissions"] and data["model"] == SHARED["model"],
+          "fresh machine: other owned and seed keys still written")
+    check("not-here.py" in (result.note or ""), "fresh machine: the missing script is named")
+
+# Calibration (ADR-144): known-good = the real shipped hooks with their paths remapped into
+# this repo (all must resolve); known-bad = the same with one script removed.
+real = _settings_sync.read_json(_settings_sync.SHARED_PATH) or {}
+real_hooks_text = json.dumps(real.get("hooks", {}))
+scripts_dir = Path(_settings_sync.__file__).resolve().parent
+remapped_text = real_hooks_text.replace(
+    "C:/Users/brown/.claude/hook-launch.py", (scripts_dir / "_hook_launch.py").as_posix()
+).replace("C:/Users/brown/.claude/scripts/", scripts_dir.as_posix() + "/")
+remapped = json.loads(remapped_text)
+n_commands = len(_settings_sync._hook_commands(remapped))
+check(n_commands > 50, f"calibration extracted the shipped commands (n={n_commands}), not an empty set")
+check(_settings_sync.hooks_guard(remapped) is None,
+      f"known-good: all {n_commands} shipped hook commands resolve in this tree")
+with Env() as env:
+    known_bad_text = remapped_text.replace(
+        (scripts_dir / "dev-env-sync.py").as_posix(), (env.root / "dev-env-sync.py").as_posix()
+    )
+    check(known_bad_text != remapped_text, "known-bad fixture actually differs from known-good")
+    reason = _settings_sync.hooks_guard(json.loads(known_bad_text))
+    check(reason is not None and "dev-env-sync.py" in reason, "known-bad: one missing script is caught")
 
 print(f"\nResults: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
