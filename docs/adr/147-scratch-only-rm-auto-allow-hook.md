@@ -105,8 +105,16 @@ profile directory bash falls back to. Literal paths are unaffected.
 
 Any unexpected exception becomes exit 0 with no output, which means no decision and therefore the
 normal prompt. "Fail open" here means "fail to what happens without the hook," never "fail to
-approval." The hook never blocks. It's wired under the PowerShell matcher too, to keep the
-Bash/PowerShell mirror invariant in `test_settings_hook_wiring.py`, and makes no decision there.
+approval." The hook never blocks.
+
+It's wired under the PreToolUse `Bash` matcher only. Every other PreToolUse Bash hook is mirrored
+under `PowerShell` (dev-env#620), so a safety check can't be bypassed by running the same command
+through the other tool. This hook carries no safety check: it can only approve or stay silent, so
+leaving it off PowerShell removes nothing but an approval, and a PowerShell command just gets the
+normal prompt. Its lexer models POSIX shell only, so wired there it would be a guaranteed no-op
+paid on every PowerShell call. `test_settings_hook_wiring.py` exempts it by name in
+`APPROVE_ONLY_PRETOOLUSE_HOOKS`, asserts it is not wired under PowerShell, and checks its source
+never reaches `emit_block(` or `exit(2)`.
 
 Every approval also appends one line to `scratch-rm-allow.log` in scratch (UTC ISO timestamp plus
 the reason, which names every resolved target), written immediately before the allow is emitted.

@@ -2550,7 +2550,12 @@ For a one-line navigational map of the test directory, see
     `test_all_settings_hooks_use_pyw_and_resolve_to_repo` (item 2) already gates it; the resolution check
     overlaps that test's resolution half by design (it is the precondition for the `_winsubp`-based
     budget). Iterates entries generically, so a new event/matcher group (e.g. PR9's PowerShell mirror) is
-    covered with no change beyond any new script's budget classification.
+    covered with no change beyond any new script's budget classification. The PreToolUse and
+    PostToolUse Bash/PowerShell mirror tests (dev-env#620, #763) assert each pair of matchers wires
+    the identical script set. The PreToolUse one exempts, by name, the approve-only hooks in
+    `APPROVE_ONLY_PRETOOLUSE_HOOKS` (today only `pre-tool-use-scratch-rm-allow.py`, ADR-147): they
+    carry no safety check, so there is nothing to bypass. An exempt hook must be wired under Bash, must
+    not be wired under PowerShell, and its source must not contain `emit_block(` or `exit(2)`.
     ([ADR-103](adr/103-shared-hookout-emitter.md); dev-env#720)
 
     ```bash
