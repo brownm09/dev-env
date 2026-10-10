@@ -61,32 +61,57 @@ directory component, a recursive flag on scratch itself or on a glob final
 component, or a target that doesn't resolve (realpath, case-insensitive on
 Windows) strictly inside scratch's realpath.
 
+`~` and `$HOME` are resolved only when the HOME environment variable is
+unset or names the same directory Python resolves as home. Git Bash expands
+both from HOME, but `os.path.expanduser` (and so `_hookutil.SCRATCH`) reads
+USERPROFILE on Windows, so a divergent HOME would have the hook check one
+path while bash deletes another. A divergent HOME makes every `~`/`$HOME`
+unresolved (no decision); literal paths still work.
+
 Fail-open: any unexpected exception becomes exit 0 with no output, which
 means no decision and therefore the normal prompt. "Fail open" here means
 "fail to the status quo", never "fail to approval".
 
-Wired under both the PreToolUse `Bash` and `PowerShell` matchers to keep the
-mirrored-matcher invariant (`test_settings_hook_wiring.py`). For any
-tool other than Bash it returns no decision, because its lexer models
-POSIX shell syntax only.
+Approval log: every approval appends one line (UTC ISO timestamp + the
+reason, which lists the resolved targets) to `scratch-rm-allow.log` in the
+scratch directory, immediately before the allow is emitted, so what the hook
+approved can be audited afterwards. Best effort: any error writing it is
+swallowed and never changes the decision or the exit code. Past
+APPROVAL_LOG_MAX_BYTES the file is rotated to `scratch-rm-allow.log.1`
+(one generation kept).
+
+Wired under the PreToolUse `Bash` matcher only. It is approve-only (it
+carries no safety check), so the Bash/PowerShell mirror invariant does not
+apply to it; `test_settings_hook_wiring.py` exempts it by name. For any tool
+other than Bash it returns no decision, because its lexer models POSIX shell
+syntax only. `replay-scratch-rm-allow.py` replays `check_command` over
+recorded session transcripts (ADR-147 section 6).
 
 Stdin JSON shape (PreToolUse):
   {"hook_event_name": "PreToolUse", "tool_name": "Bash",
    "tool_input": {"command": "..."}, "session_id": "...", "cwd": "..."}
 
-Test-only override: `SCRATCH_RM_ALLOW_DIR_OVERRIDE` replaces the scratch
-directory (read at call time).
+The scratch directory is `_hookutil.SCRATCH`. Test-only override:
+`SCRATCH_RM_ALLOW_DIR_OVERRIDE` replaces it (read at call time); the approval
+log follows it.
 """
 import json
 import os
 import re
 import sys
+import time
 
 from _hookio import read_command
 import _hookout
 import _hookutil
 
 SCRATCH_DIR_OVERRIDE_ENV = "SCRATCH_RM_ALLOW_DIR_OVERRIDE"
+
+APPROVAL_LOG_NAME = "scratch-rm-allow.log"
+# Rotate the approval log once it passes this size. One approval line is a few
+# hundred bytes, so 1 MB holds thousands of approvals; the cap only bounds disk
+# use if something approves in a loop.
+APPROVAL_LOG_MAX_BYTES = 1_000_000
 
 # Commands longer than this get no decision. Real cleanup commands are a few
 # hundred characters, and the cap bounds the lexer's work.
@@ -274,8 +299,34 @@ def lex(cmd):
 # --- Expansion and path resolution ------------------------------------------
 
 
-def _home():
+def _python_home():
+    """The home directory Python resolves: USERPROFILE on Windows (Python 3.8+),
+    HOME elsewhere. `_hookutil.SCRATCH` is built from the same value."""
     return os.path.expanduser("~")
+
+
+def _home():
+    """The directory bash expands `~` and `$HOME` to, or Reject when this hook
+    can't know it.
+
+    Git Bash expands both from the HOME environment variable. Python's home
+    (see `_python_home`) comes from USERPROFILE on Windows. When HOME is set
+    and names a different directory, trusting either one would let the hook
+    check one path while bash deletes another, so `~`/`$HOME` stay
+    unresolved. HOME in MSYS form (`/c/Users/x`) is normalized first; one
+    that can't be (an MSYS-root path like `/home/x`, a relative or empty
+    value) counts as divergent. HOME unset means bash falls back to the same
+    profile directory, so Python's home is used."""
+    home = _python_home()
+    env_home = os.environ.get("HOME")
+    if env_home is None:
+        return home
+    native = _to_native(env_home) if env_home else ""
+    if not native or not _is_abs(native):
+        raise Reject("HOME is not an absolute native path")
+    if os.path.normcase(os.path.realpath(native)) != os.path.normcase(os.path.realpath(home)):
+        raise Reject("HOME differs from the home directory Python resolves")
+    return home
 
 
 def expand(parts, env, *, assignment=False):
@@ -308,9 +359,11 @@ def _has_glob(text):
 
 
 def scratch_root():
+    """Realpath of the scratch directory: `_hookutil.SCRATCH`, the single
+    definition the rest of the tooling uses, unless the test-only override is
+    set."""
     override = os.environ.get(SCRATCH_DIR_OVERRIDE_ENV)
-    base = override if override else os.path.join(_home(), ".claude", "scratch")
-    return os.path.realpath(base)
+    return os.path.realpath(override if override else _hookutil.SCRATCH)
 
 
 def _to_native(path):
@@ -464,21 +517,48 @@ def evaluate(cmd, root):
     return targets_out
 
 
+def check_command(cmd):
+    """Return the resolved rm targets when the Bash command *cmd* is a provable
+    scratch-only rm, else raise Reject naming why. `decide` and the replay
+    harness (`replay-scratch-rm-allow.py`) share this one entry point."""
+    if not isinstance(cmd, str) or not cmd:
+        raise Reject("empty command")
+    if len(cmd) > MAX_COMMAND_LEN:
+        raise Reject("command longer than MAX_COMMAND_LEN")
+    if any((ord(ch) < 32 and ch not in "\t\n\r") or ord(ch) == 127 for ch in cmd):
+        raise Reject("control character")
+    return evaluate(cmd, scratch_root())
+
+
 def decide(data):
     """Return the allow reason for a PreToolUse payload, or None for no
     decision. Pure apart from realpath lookups; never raises Reject."""
     if not isinstance(data, dict) or data.get("tool_name") != "Bash":
         return None
-    cmd = read_command(data)
-    if not cmd or len(cmd) > MAX_COMMAND_LEN:
-        return None
-    if any((ord(ch) < 32 and ch not in "\t\n\r") or ord(ch) == 127 for ch in cmd):
-        return None
     try:
-        targets = evaluate(cmd, scratch_root())
+        targets = check_command(read_command(data))
     except Reject:
         return None
     return "scratch-only rm: " + ", ".join(targets)
+
+
+def log_approval(reason, root=None):
+    """Append one `<UTC ISO timestamp> <reason>` line to the approval log in
+    *root* (default: the scratch directory). Rotates the log to `.1` once it
+    passes APPROVAL_LOG_MAX_BYTES. Best effort: never raises, so it can't
+    change the decision or the exit code."""
+    try:
+        path = os.path.join(root if root is not None else scratch_root(), APPROVAL_LOG_NAME)
+        try:
+            if os.path.getsize(path) > APPROVAL_LOG_MAX_BYTES:
+                os.replace(path, path + ".1")
+        except OSError:
+            pass
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with open(path, "a", encoding="utf-8", errors="replace") as handle:
+            handle.write(f"{stamp} {reason}\n")
+    except Exception:  # noqa: BLE001 -- best effort by contract
+        pass
 
 
 def main():
@@ -493,6 +573,7 @@ def main():
     reason = decide(data)
     if reason is None:
         sys.exit(0)
+    log_approval(reason)
     _hookout.emit_allow(reason)
 
 

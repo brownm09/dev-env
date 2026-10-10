@@ -92,12 +92,28 @@ or on a glob final component, or a target that doesn't resolve strictly inside s
 quoted `C:\`, and `/c/` drive spellings are normalized. Comparison is `os.path.normcase`
 (case-insensitive on Windows) after `realpath` of both sides.
 
+**`~` and `$HOME` resolve only when bash and Python agree on home.** Git Bash expands both from the
+`HOME` environment variable. Python's `os.path.expanduser` reads `USERPROFILE` on Windows (since
+Python 3.8), and `_hookutil.SCRATCH`, the scratch path the rest of the tooling uses and this hook's
+default, is built from it. If `HOME` is set and its realpath (after MSYS `/c/...` normalization)
+differs from Python's home, the hook would check one path while bash deletes another, so every
+`~`/`$HOME` is treated as unresolved and gets no decision. An `HOME` that is empty, relative, or an
+MSYS-root path like `/home/x` counts as divergent. An unset `HOME` uses Python's home, which is the
+profile directory bash falls back to. Literal paths are unaffected.
+
 ### 4. Fail open, to the status quo
 
 Any unexpected exception becomes exit 0 with no output, which means no decision and therefore the
 normal prompt. "Fail open" here means "fail to what happens without the hook," never "fail to
 approval." The hook never blocks. It's wired under the PowerShell matcher too, to keep the
 Bash/PowerShell mirror invariant in `test_settings_hook_wiring.py`, and makes no decision there.
+
+Every approval also appends one line to `scratch-rm-allow.log` in scratch (UTC ISO timestamp plus
+the reason, which names every resolved target), written immediately before the allow is emitted.
+The reason otherwise reaches only Claude Code's debug log, and this is the one hook that grants
+permission, so the log is the after-the-fact audit trail. It is best effort: any error writing it is
+swallowed and never changes the decision or the exit code. Past 1 MB (`APPROVAL_LOG_MAX_BYTES`) it is
+rotated to `scratch-rm-allow.log.1`, one generation kept.
 
 ### 5. Guidance so the hook actually applies
 
@@ -111,11 +127,12 @@ load-bearing.
   realpath. There's no threshold or ratio. The one constant, `MAX_COMMAND_LEN = 8000`, is a
   heuristic bound with no calibration behind it. It can only *remove* approvals, so it can't
   cause a false allow.
-- **Known-good references:** the 16 allow tests (19 commands) in `tests/test_scratch_rm_allow.py`.
+- **Known-good references:** the 18 allow tests (22 commands) in `tests/test_scratch_rm_allow.py`.
   These are the five shapes above, written standalone, plus the drive-form, glob, `${NAME}`, `--`,
-  `~`, and continuation variants. 19/19 allowed.
-- **Known-bad references:** the 25 fall-through tests in the same file (50 commands plus 5
-  malformed payloads), each tied to a rejection in section 3. 55/55 get no decision. Each Bash
+  `~`/`$HOME` (matching, unset, and MSYS-form `HOME`), and continuation variants. 22/22 allowed.
+- **Known-bad references:** the 26 fall-through tests in the same file (53 commands plus 5
+  malformed payloads), each tied to a rejection in section 3, including `~`/`$HOME` under a
+  divergent `HOME`. 58/58 get no decision. Each Bash
   command is also checked in-process to come from the hook's own `Reject`, not from a crash
   swallowed by fail-open, so the suite can't pass vacuously.
 - **Real-traffic replay:** 10,312 unique Bash commands across 1,328 session transcripts under
@@ -142,7 +159,8 @@ load-bearing.
   data. Accepted, because scratch is throwaway by definition and the recursive-glob form (the one
   that would sweep everything in one call) is rejected.
 - Residual trust boundaries the hook does not defend: a `PATH`-shadowed or exported-function `rm`
-  in the session environment, and a symlink or junction inside scratch whose target `realpath`
+  in the session environment, a `HOME` that the Bash tool's shell sets differently from the
+  environment the hook inherits (the hook compares the `HOME` it can see), and a symlink or junction inside scratch whose target `realpath`
   resolves at check time but is swapped before the command runs (a check-then-use race). Both need
   prior control of the machine.
 - `realpath` behavior on symlinks and junctions isn't covered by a test, because creating a

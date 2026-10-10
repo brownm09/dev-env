@@ -4265,9 +4265,9 @@ For a one-line navigational map of the test directory, see
     (also run item 60 then) ([ADR-147](adr/147-scratch-only-rm-auto-allow-hook.md), dev-env#1134).
 
     The hook is the only one in this repo that *approves* rather than blocks or advises, so the suite
-    is built around its one failure that matters: approving something it shouldn't. 42 end-to-end
-    cases, each spawning the real hook with a PreToolUse JSON payload on stdin and asserting on stdout
-    and exit code. Every case must exit 0, because the hook never blocks. An allow case must print
+    is built around its one failure that matters: approving something it shouldn't. 51 cases, almost
+    all end-to-end: each spawns the real hook with a PreToolUse JSON payload on stdin and asserts on
+    stdout and exit code. Every case must exit 0, because the hook never blocks. An allow case must print
     exactly the PreToolUse allow JSON. A fall-through case must print nothing and leave stderr empty.
 
     **Allow cases** cover the shapes autonomous sessions actually wrote (dev-env#1134): a literal path;
@@ -4277,6 +4277,22 @@ For a one-line navigational map of the test directory, see
     a scratch subdirectory; a quoted backslash path; the `/c/` drive form (Windows only); a glob in the
     final component; `${NAME}` inside double quotes; `--` and a flag after a target (GNU rm permutes
     options); several targets, all named in the reason; and a backslash-newline continuation.
+
+    **`~` and `$HOME`** (review finding 1 on PR #1135). Git Bash expands both from `HOME`, while Python
+    (and so `_hookutil.SCRATCH`, the hook's default scratch) reads `USERPROFILE` on Windows. The cases
+    run against a fake home (`HOME` and `USERPROFILE` both pointed at a temp directory, no scratch
+    override), so they are hermetic and also pin that the default scratch is `_hookutil.SCRATCH`.
+    Allowed: `~`, `$HOME`, and `S=~/...` with a matching `HOME`; `HOME` unset; `HOME` in MSYS `/c/...`
+    form naming the same directory. No decision: a `HOME` naming a different directory (a literal
+    path still allows then). The divergence cases are Windows-only end-to-end, because elsewhere
+    Python's home *is* `$HOME`; an in-process case patches `_python_home` so the same rule (divergent,
+    empty, and relative `HOME` are unresolved; a trailing separator is not divergence) runs on every
+    platform.
+
+    **Approval log.** An allow appends exactly one `<UTC ISO timestamp> scratch-only rm: ...` line to
+    `scratch-rm-allow.log` in scratch; a fall-through writes nothing; a log past
+    `APPROVAL_LOG_MAX_BYTES` rotates to `.1`; and a log path that can't be opened (a directory) still
+    yields the allow, exit 0, and empty stderr.
 
     **Fall-through cases** each pin a rejection the ADR names: a non-rm segment chained on (`gh`,
     `|| true`, `; echo`); any `..` component, including in a `cd`; `||`, including
@@ -4298,10 +4314,16 @@ For a one-line navigational map of the test directory, see
     `evaluate()` raises the module's own `Reject`. A case that only falls through because of an
     unexpected exception fails. A heartbeat case confirms the `record_heartbeat` call fires.
 
+    **Skips are visible.** A platform-gated case raises `Skip` and is printed as `SKIP` and counted in
+    the `Tests:` line, never as a pass. Six cases are Windows-only (the backslash and `/c/` drive
+    forms, and the four `HOME` divergence, unset, MSYS-form, and MSYS-root cases), so a non-Windows
+    run reports `6 skipped`. The marker is deliberately not a leading `SKIP:`, which
+    `run-hook-tests.py` would read as a whole-file skip.
+
     Hermetic: `SCRATCH_RM_ALLOW_DIR_OVERRIDE` points the hook at a temporary scratch directory and
     `HOOK_HEARTBEAT_DIR_OVERRIDE` keeps the heartbeat out of the real ledger. The hook only computes
-    paths (`realpath`) and never deletes anything. The tilde and `$HOME` case runs without the scratch
-    override, since `~` expands to the real home; it still touches no file. Deliberate scope gap: the
+    paths (`realpath`) and never deletes anything; the approval-log cases use their own temp scratch
+    directories. Deliberate scope gap: the
     hook trusts `realpath` for symlinks and junctions, and no case builds one, because creating a
     symlink on Windows needs Developer Mode or elevation.
 
