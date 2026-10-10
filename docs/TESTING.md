@@ -198,6 +198,14 @@ For a one-line navigational map of the test directory, see
    *passing* note, which made a degraded run indistinguishable from a full one — the thing the repo's
    own Test Integrity Policy Rule 2 exists to prevent.
 
+   **A per-case skip prints `SKIPPED  <name>`, never `SKIP: <name>`** ([dev-env#1138](https://github.com/brownm09/dev-env/issues/1138)).
+   `run-hook-tests.py` (item 64) reads a leading `SKIP:` line in an exit-0 run as "the whole file
+   self-skipped", so the colon form made the suite report all 25 passing cases as one skipped file.
+   The skip is still counted in the file's own `Tests: N passed, N skipped, N failed` line, which is
+   where its visibility lives, and the runner now surfaces it too: a passing file is tagged
+   `[K case(s) skipped]` and totalled on a `Case skips:` line (item 64). Same no-colon convention as
+   `test_scratch_rm_allow.py` (item 101). Item 64's lint keeps it that way for every Python test.
+
    **Deliberate scope gap.** `_audit_existing_tree()` is not unit-tested: it shells out to `npm ci` and
    `git check-ignore` and writes sentinels under the real `~/.claude/scratch`, all of which this suite's
    convention keeps out. Its decision logic lives in the pure helpers above, and the two pieces of state
@@ -2571,7 +2579,17 @@ For a one-line navigational map of the test directory, see
     host — pinned so any future runner-skip is a test-visible change), `_command_for` (the interpreter
     argv for a `.py` vs `.sh` file, plus the bash-missing → `None` and non-test-suffix → `None`
     cases), `classify_result` (the pass / self-skip / fail mapping, including a non-zero exit
-    overriding a `SKIP:` marker so a bash gate that prints `SKIP:` but still fails is a real failure),
+    overriding a `SKIP:` marker so a bash gate that prints `SKIP:` but still fails is a real failure,
+    and a per-case skip line without the colon — `SKIPPED  <name>` / `  SKIP  <name> -- ...` — beside
+    a passing summary classifying as `pass`, not `skip`; dev-env#1138), `case_skips` (reads the
+    skipped-case figure from a file's own last `Tests: N passed, K skipped, …` line; `0` for the bash
+    shape with no skipped figure, empty/`None` output, and an indented or non-line-start `Tests:`;
+    this feeds the `[K case(s) skipped]` PASS tag and the `Case skips:` summary line, which are in
+    `main` and so not unit-tested), and a producer-side lint that no Python test (this file excepted,
+    since its fixtures spell the marker out) contains a string literal the runner's own `_SELF_SKIP_RE`
+    would read as `SKIP:` — AST-based so a comment quoting the marker is ignored, with a known-bad
+    fixture (the exact line #1138 removed) proving it can fail and a non-empty-discovery assertion
+    proving it cannot pass vacuously,
     and `suite_discovery_error` (dev-env#730 review — the zero-Python-test floor guard that turns a
     broken `REPO_ROOT`/glob into a loud failure instead of a silent green). The `_run_one`
     bash-missing branch (which returns a skip *without* shelling out) is covered too. The runner's
