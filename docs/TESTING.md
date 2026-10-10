@@ -4342,3 +4342,31 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_scratch_rm_allow.py
     ```
+
+102. **replay-scratch-rm-allow test** — required when changing
+    `claude/scripts/replay-scratch-rm-allow.py`, or the hook's `check_command`/`Reject` surface it
+    calls (also run item 101 then) ([ADR-147](adr/147-scratch-only-rm-auto-allow-hook.md) section 6;
+    PR #1135 review finding 3).
+
+    The script is ADR-147's calibration replay, committed so the success signal ("re-run the replay
+    once the guidance has been live; a non-zero approval count, every approval spot-checked") is
+    reproducible. It walks `~/.claude/projects/**/*.jsonl`, takes every Bash `tool_use` command,
+    dedups, and runs the hook's own `check_command` in-process (the exact function `decide` calls). It
+    reports total, unique, the rm+scratch candidate population, approvals (each listed with its
+    resolved targets for spot-checking), approvals *outside* the candidate set, and the hook's own
+    `Reject` messages for the candidates it did not approve.
+
+    Ten hermetic cases over synthetic transcript trees under a temp directory, with
+    `SCRATCH_RM_ALLOW_DIR_OVERRIDE` naming a temp scratch; nothing reads the real
+    `~/.claude/projects`. Pinned: only Bash `tool_use` blocks count (PowerShell, text blocks, non-list
+    content, and malformed lines are skipped without aborting the file); total vs. unique counts;
+    candidates and approvals; the replay's approvals agree command-for-command with the hook's
+    `decide()`, so the measurement can't drift from the hook; rejection reasons are the hook's own
+    messages and are counted for candidates only; an approval outside the candidate filter (a scratch
+    path without the word "scratch") is counted and marked; `is_candidate`'s word and case handling;
+    `truncate` caps every printed command at `--width` (the privacy property); replaying never writes
+    the hook's approval log; a missing `--scan-dir` exits 1; and the `--json` and text reports agree.
+
+    ```bash
+    py -3 claude/scripts/tests/test_replay_scratch_rm_allow.py
+    ```

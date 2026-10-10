@@ -143,8 +143,10 @@ load-bearing.
   divergent `HOME`. 58/58 get no decision. Each Bash
   command is also checked in-process to come from the hook's own `Reject`, not from a crash
   swallowed by fail-open, so the suite can't pass vacuously.
-- **Real-traffic replay:** 10,312 unique Bash commands across 1,328 session transcripts under
-  `~/.claude/projects/`. 158 contain both an `rm` and "scratch". **The hook approves 0 of them.**
+- **Real-traffic replay:** `claude/scripts/replay-scratch-rm-allow.py` (Testing item 102) walks
+  every session transcript under `~/.claude/projects/`, runs the hook's own `check_command` over
+  each unique Bash command, and lists every approval with its resolved targets. At decision time it
+  saw 10,312 unique Bash commands across 1,328 session transcripts. 158 contain both an `rm` and "scratch". **The hook approves 0 of them.**
   Rejection reasons: 89 redirect `>`, 22 pipe, 20 `$(`/unsupported `$`, 14 `<`, 5 `cd` outside
   scratch, 5 non-rm segment, 1 `${X:-y}`, 1 brace group, 1 target outside scratch.
 - **What the replay means:** the false-approval rate on real traffic is 0/158. The flip side is
@@ -152,9 +154,13 @@ load-bearing.
   change. In practice they chain the cleanup onto the work that made the file
   (`gh ... > "$T" && node ... && rm -f "$T"`). So the hook resolves the prompt only once a session
   issues the deletion as its own call. The section 5 guidance is what gets sessions to do that, and
-  the sibling career-playbook change removes the skill-prescribed chained deletions. Re-run the
-  replay after the guidance has been live for a while. A non-zero approval count is the
-  success signal, and every approved command should be spot-checked.
+  the sibling career-playbook change removes the skill-prescribed chained deletions. Re-run
+  `py -3 claude/scripts/replay-scratch-rm-allow.py` after the guidance has been live for a while. A
+  non-zero approval count is the success signal, and every approved command it lists should be
+  spot-checked. A first run of the committed script during review (11,054 unique commands, 1,341
+  transcripts, 182 candidates) approved exactly 1: a standalone literal-path `rm -f` of this PR's
+  own scratch files, correctly inside scratch. The hook's approval log (section 4) is the forward
+  record of what it actually approved once deployed.
 
 ## Consequences
 
