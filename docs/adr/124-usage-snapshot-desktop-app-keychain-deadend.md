@@ -147,3 +147,53 @@ impossible remedy; the skip is fast and its message is true. npm-CLI installs ar
   wire-safety the advisory uses.
 - #355 / #357 — the original "surface a missing/expired token, don't fail silently" decision this
   extends with an *accurate* (not merely visible) message.
+
+---
+
+## Amendment 1 (2026-10-10) — the creds-file-absent case is no longer silent, and the probe finds the new binary layout
+
+**Closes:** [dev-env#1139](https://github.com/brownm09/dev-env/issues/1139). **Reverses** one sentence of
+the Rationale above ("The creds-file-absent case already exits 0 silently").
+
+**What went wrong.** Two merges on 2026-10-09 (dev-env#1135, career-playbook#2097) produced no
+`### Usage Snapshot (post-merge)` block and no advisory. The merge was detected correctly (the trace log
+shows `confirmed: true`); the silence came after it, in two stacked layers:
+
+1. `main()` returned `sys.exit(0)` on `if not creds` — the creds-file-absent case — *before* the
+   `claude auth status` probe, which lived only in the later `if not token` branch. But under the desktop
+   app **no `.credentials.json` exists at all**, which is this ADR's own premise, so the very
+   configuration the ADR was written for always took the silent branch. The ADR's visible-over-silent
+   decision had been applied to the rare blanked-orphan-file state and missed the common absent-file one.
+2. Even reaching the probe would not have helped: app 2.1.295 nests the binary as
+   `claude-code\<ver>\<hash>\claude.exe`, and `resolve_claude_exe()`'s one-level `*/claude.exe` glob
+   matched nothing, so `cli_auth_status()` returned `None` ("unknown") without spawning anything.
+   (`keep-token-warm.ps1` resolves recursively and was unaffected.)
+
+**Decision.**
+
+- A confirmed merge is never silent. With no readable credentials file, `main()` runs the same probe and
+  emits one exit-2 advisory through `_hookout.emit_block` (`creds_absent_advisory()`): the existing
+  desktop-app text when the probe says `out`, a generic path-naming text otherwise (it asserts no cause
+  the probe did not establish — [ADR-034](034-error-message-diligence.md)). No refresh is attempted in
+  either case: with no file there is nothing for the CLI to repair, and under the desktop app it is
+  futile. An *unconfirmed* merge (a queued `--auto`, a failed merge) stays silent — the advisory says a
+  snapshot was omitted *for this merge*, which is false if no merge happened.
+- `resolve_claude_exe()` matches `claude.exe` at any depth under the version directory and sorts versions
+  on the top-level directory only, so the hash level is never parsed as a version.
+
+**Alternatives considered.**
+
+- *Keep the silent exit and rely on the stub's "snapshot omitted" convention.* Rejected: the whole
+  defect is that nothing distinguishes "unavailable by design" from "the hook broke", so every merge
+  session re-diagnoses it (the user hit this twice in one evening).
+- *Pin the exe layout (`<ver>/<hash>/`).* Rejected: the layout already changed once; a recursive match
+  tolerates the next change for free, and the version directory is the only level whose name matters.
+- *Fall back to `claude` on PATH when no packaged exe resolves.* Rejected for the reason the original
+  decision gave: on an npm install the probe is meant to cost nothing and change nothing.
+
+**Consequences.** Under the desktop app the post-merge block is now **structurally absent but
+explained**: the stub records the advisory line (or omits the section), and the global CLAUDE.md "Write a
+stub on PR merge" bullet says so. Cost: one sub-second probe subprocess per confirmed merge on the
+desktop app. Residual, tracked separately: both merges were run as `gh pr merge … 2>&1 | tail; gh pr view …`,
+where piped gh prints no success line at all, so merge confirmation leans on a `gh pr view` fallback that
+infers the PR from cwd's branch instead of the number in the command.
