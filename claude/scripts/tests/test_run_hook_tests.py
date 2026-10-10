@@ -154,6 +154,22 @@ def test_classify_self_skip_on_leading_skip_marker():
     assert mod.classify_result(0, "banner line\n  SKIP: shellcheck not found") == "skip"
 
 
+def test_classify_per_case_skip_is_not_a_whole_file_skip():
+    # dev-env#1138: a file that skips ONE case and passes the rest must classify
+    # "pass". The per-case marker is "SKIPPED  <name>" / "  SKIP  <name> -- ..."
+    # (no colon), and the skip stays visible in the file's own summary line.
+    out = (
+        "PASS: scan: healthy tree is clean\n"
+        "SKIPPED  scan: workspace junctions skipped\n"
+        "      junctions are Windows-only\n"
+        "  SKIP  test_somewhere -- platform-gated\n"
+        "\nTests: 25 passed, 1 skipped, 0 failed"
+    )
+    assert mod.classify_result(0, out) == "pass"
+    # ...whereas the colon form is the whole-file signal, even mid-output.
+    assert mod.classify_result(0, out + "\nSKIP: scan: workspace junctions") == "skip"
+
+
 def test_classify_nonzero_exit_beats_skip_marker():
     # A test that printed SKIP: but still exited non-zero is a real failure.
     assert mod.classify_result(2, "SKIP: something\nthen it crashed") == "fail"
