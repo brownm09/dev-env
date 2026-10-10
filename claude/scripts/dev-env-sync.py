@@ -32,6 +32,15 @@ path(s), and how long it has been failing — so a genuinely stuck canonical can
 many commits behind (leaving every merged dev-env fix inert, since `~/.claude/` is junctioned to
 this checkout's working tree) the way it has twice before (dev-env#797, ADR-110).
 
+The off-main states (a dirty canonical, a worktree squatting `main`, an unreadable worktree list,
+a failed auto-return) get the same treatment (dev-env#1140, ADR-110 Amendment 1). Each warning
+states how far behind `origin/main` the checkout is and how long ago its HEAD last moved. Once
+the checkout has been stuck long enough or far enough behind, the warning escalates to a distinct
+STALE CANONICAL advisory. The canonical once sat off `main` for 108 days because a June-era copy
+of this hook printed that warning to stderr, which nobody sees. So both escalations now also go
+to the USER as a `systemMessage`, not only to the model. A model busy with an unrelated task can
+miss a context line it sees every prompt; a toast the user sees cannot be missed that way.
+
 Before any of that, it applies dev-env's shared settings into `~/.claude/settings.json` via
 `_settings_sync` (dev-env#1049, ADR-139). That file used to be a *symlink* into this repo, which
 made it both the version-controlled source of the shipped hooks/permissions and the live file the
@@ -74,6 +83,51 @@ SCRATCH = Path.home() / ".claude" / "scratch"
 FAILURE_STATE_PREFIX = "dev_env_sync_ff_failure"
 ESCALATE_AFTER_CONSECUTIVE_FAILURES = 3
 ESCALATE_AFTER_HOURS = 2.0
+
+# Off-main escalation (dev-env#1140, ADR-110 Amendment 1). Stateless: the duration comes from the
+# canonical's own HEAD reflog (time since HEAD last moved, a lower bound on time off main) and the
+# gap from `rev-list --count HEAD..origin/main`, so concurrent sessions need no shared state file.
+# Either arm escalates. The 108-day incident would have tripped both on its first day.
+OFF_MAIN_ESCALATE_AFTER_HOURS = ESCALATE_AFTER_HOURS
+OFF_MAIN_ESCALATE_AFTER_BEHIND = 10
+
+HOOK_EVENT = "UserPromptSubmit"
+FALLBACK_MESSAGE = "[dev-env-sync] WARNING: sync check failed unexpectedly and was skipped this prompt."
+
+
+class Output:
+    """Collects this run's advisories so they leave in ONE emission.
+
+    Plain text and a JSON systemMessage cannot share stdout: Claude Code parses stdout as JSON
+    only when the whole of it is JSON. So nothing prints until the run ends. ``alert`` marks the
+    run as escalated, which routes the whole batch to both model and user (see render_output).
+    """
+
+    def __init__(self) -> None:
+        self.lines: "list[str]" = []
+        self.escalated = False
+
+    def say(self, text: str) -> None:
+        self.lines.append(text)
+
+    def alert(self, text: str) -> None:
+        self.lines.append(text)
+        self.escalated = True
+
+
+def render_output(lines: "list[str]", escalated: bool) -> "str | None":
+    """Pure: the exact stdout this run emits, or None when there is nothing to say.
+
+    Not escalated: the advisories as plain text, which an exit-0 UserPromptSubmit hook delivers
+    to the model only (ADR-098). Escalated: one JSON object carrying the same text as both
+    ``additionalContext`` (model) and ``systemMessage`` (user), via _hookout (ADR-103).
+    """
+    if not lines:
+        return None
+    text = "\n".join(lines)
+    if not escalated:
+        return text
+    return _hookout.plan_emission(HOOK_EVENT, text, audience="both").stdout
 
 
 def run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -437,8 +491,122 @@ def clear_failure_state(scratch: "Path | None" = None) -> None:
         pass
 
 
-def main() -> None:
+# --- off-main escalation (dev-env#1140) -------------------------------------------
+# Pure helpers (unit-tested offline). main()'s _report_off_main does the git calls around them.
+
+
+def parse_reflog_unix(stdout: str) -> "float | None":
+    """Unix time of HEAD's newest reflog entry, or None when it can't be read.
+
+    Parses `git reflog show -1 --date=unix --format=%gd HEAD`, which prints `HEAD@{1791601809}`.
+    An empty reflog (core.logAllRefUpdates off, a fresh clone with no moves) prints nothing.
+    """
+    text = stdout.strip()
+    if not text.endswith("}") or "@{" not in text:
+        return None
+    raw = text[text.rindex("@{") + 2 : -1]
+    return float(raw) if raw.isdigit() else None
+
+
+def parse_behind(result: subprocess.CompletedProcess) -> "int | None":
+    """`git rev-list --count` -> int, or None on failure.
+
+    Unlike _count_from, this keeps "unmeasured" (None) apart from a genuine 0, because here a
+    real 0 is possible (a branch cut from the current origin/main) and must not read as a failure.
+    """
+    text = result.stdout.strip()
+    return int(text) if result.returncode == 0 and text.isdigit() else None
+
+
+def should_escalate_off_main(
+    seconds_since_move: "float | None",
+    behind: "int | None",
+    max_hours: float = OFF_MAIN_ESCALATE_AFTER_HOURS,
+    max_behind: int = OFF_MAIN_ESCALATE_AFTER_BEHIND,
+) -> bool:
+    """Whether a stuck-off-main canonical warrants the STALE CANONICAL advisory.
+
+    Either arm escalates (OR, like should_escalate). An unmeasured arm never escalates by itself:
+    if both are unmeasured, the plain model-visible warning still goes out. Boundaries escalate.
+    """
+    if seconds_since_move is not None and seconds_since_move >= max_hours * 3600:
+        return True
+    if behind is not None and behind >= max_behind:
+        return True
+    return False
+
+
+def _behind_clause(behind: "int | None") -> str:
+    if behind is None:
+        return "behind origin/main by an unmeasured number of commits"
+    return f"{behind} commit{_plural(behind)} behind origin/main"
+
+
+def _moved_clause(seconds_since_move: "float | None") -> str:
+    if seconds_since_move is None:
+        return "its HEAD's last move could not be read from the reflog"
+    return f"its HEAD last moved {format_duration(seconds_since_move)} ago"
+
+
+def format_off_main_note(seconds_since_move: "float | None", behind: "int | None") -> str:
+    """Diagnostic line appended to a plain (not yet escalated) off-main warning."""
+    return f"\n  (Canonical is {_behind_clause(behind)}; {_moved_clause(seconds_since_move)}.)"
+
+
+def format_off_main_escalation(
+    branch: str,
+    base_warning: str,
+    seconds_since_move: "float | None",
+    behind: "int | None",
+) -> str:
+    """Distinct, louder advisory for a canonical stuck off main (dev-env#1140).
+
+    It leads with the blast radius (stale machine-wide tooling) and asks the model to tell the
+    user now. It goes out as a systemMessage as well, so the user sees it even if the model
+    doesn't relay it. Then it repeats *base_warning*, the existing state-specific remediation.
+    Plain ASCII, like the ff-failure escalation.
+    """
+    return (
+        f"[dev-env-sync] STALE CANONICAL: {DEV_ENV_REPO} is on '{branch}', not main. It is "
+        f"{_behind_clause(behind)}, and {_moved_clause(seconds_since_move)}.\n"
+        "  ~/.claude/ CLAUDE.md, hooks, skills and scripts are junctioned to that working tree, "
+        "so this machine is serving STALE tooling until the canonical is back on main.\n"
+        "  Tell the user now, even if the current task is unrelated: this exact state once went "
+        "unnoticed for 108 days (dev-env#1140).\n"
+        + base_warning
+    )
+
+
+def _report_off_main(out: Output, branch: str, base_warning: str) -> None:
+    """Emit an off-main warning, measured and, when warranted, escalated (dev-env#1140).
+
+    Measuring is best-effort. Any git failure or timeout degrades to "unmeasured", never to a
+    lost warning: the base warning always goes out.
+    """
+    seconds_since_move = None
+    behind = None
+    try:
+        moved = run(["git", "reflog", "show", "-1", "--date=unix", "--format=%gd", "HEAD"])
+        if moved.returncode == 0:
+            last_move = parse_reflog_unix(moved.stdout)
+            if last_move is not None:
+                seconds_since_move = max(0.0, time.time() - last_move)
+        # Fetch so the count reflects origin's real tip. A failed fetch still leaves the last
+        # known origin/main, which is a usable (if low) count.
+        run(["git", "fetch", "origin", "main", "--quiet"])
+        behind = parse_behind(run(["git", "rev-list", "--count", "HEAD..origin/main"]))
+    except Exception:
+        pass
+    if should_escalate_off_main(seconds_since_move, behind):
+        out.alert(format_off_main_escalation(branch, base_warning, seconds_since_move, behind))
+    else:
+        out.say(base_warning + format_off_main_note(seconds_since_move, behind))
+
+
+def main(out: "Output | None" = None) -> None:
     _hookutil.record_heartbeat("dev-env-sync")
+    if out is None:
+        out = Output()
     try:
         sys.stdin.read()
     except Exception:
@@ -456,7 +624,7 @@ def main() -> None:
 
     # Guard: repo must exist at the expected path.
     if not DEV_ENV_REPO.is_dir():
-        sys.exit(0)
+        return
 
     # Keep ~/.claude/settings.json -- a real, MACHINE-LOCAL file -- carrying the hooks and
     # permissions dev-env ships, and migrate it off the old repo symlink on first run
@@ -472,13 +640,13 @@ def main() -> None:
     try:
         settings = _settings_sync.sync()
         if settings.error:
-            print(f"[dev-env-sync] WARNING: settings sync skipped - {settings.error}")
+            out.say(f"[dev-env-sync] WARNING: settings sync skipped - {settings.error}")
         if settings.note:
-            print(settings.note)
+            out.say(settings.note)
     except Exception:
         # Same fail-open contract as the outer handler: a settings-sync failure must never
         # block a prompt, and must never stop the fast-forward pull below from running.
-        print("[dev-env-sync] WARNING: settings sync failed unexpectedly and was skipped this prompt.")
+        out.say("[dev-env-sync] WARNING: settings sync failed unexpectedly and was skipped this prompt.")
 
     # The canonical must stay on main — ~/.claude/ symlinks serve its working tree, so a
     # feature branch there hides newly-merged hooks/scripts. When it's off main we diagnose
@@ -510,12 +678,14 @@ def main() -> None:
             # Topology undeterminable — don't auto-correct on incomplete data (a silent []
             # would misdiagnose as "dirty drift", review finding). Emit the plain off-main
             # warning and let the user switch back manually.
-            print(
+            _report_off_main(
+                out,
+                current_branch,
                 f"[dev-env-sync] WARNING: Canonical worktree is on '{current_branch}' and its worktree "
                 "list could not be read - ~/.claude/ symlinks may serve stale hooks/scripts.\n"
-                f"Switch it back manually: git -C {DEV_ENV_REPO} checkout main"
+                f"Switch it back manually: git -C {DEV_ENV_REPO} checkout main",
             )
-            sys.exit(0)
+            return
         worktrees = parse_worktree_porcelain(wt.stdout)
         topo = diagnose_main_topology(worktrees)
         status = run(["git", "status", "--porcelain"])
@@ -523,7 +693,9 @@ def main() -> None:
         action = canonical_sync_action(topo, canonical_clean)
 
         if action.kind == "warn-squatter":
-            print(
+            _report_off_main(
+                out,
+                current_branch,
                 f"[dev-env-sync] WARNING: Canonical worktree is on '{current_branch}' and worktree\n"
                 f"  {action.squatter_path}\n"
                 "is squatting 'main' - the canonical cannot return until that worktree is parked\n"
@@ -531,29 +703,34 @@ def main() -> None:
                 f"  git -C {action.squatter_path} checkout -b {action.park_branch}\n"
                 "then the next prompt returns the canonical to main automatically (or run\n"
                 f"  git -C {DEV_ENV_REPO} checkout main\n"
-                "). Until then ~/.claude/ symlinks may serve stale hooks/scripts."
+                "). Until then ~/.claude/ symlinks may serve stale hooks/scripts.",
             )
-            sys.exit(0)
+            return
 
         if action.kind == "warn-dirty":
-            print(
+            _report_off_main(
+                out,
+                current_branch,
                 f"[dev-env-sync] WARNING: Canonical worktree is on '{current_branch}' with uncommitted\n"
                 "changes - ~/.claude/ symlinks may serve stale hooks/scripts. Not auto-switching to\n"
                 "preserve your drift; commit or stash, then:\n"
-                f"  git -C {DEV_ENV_REPO} checkout main"
+                f"  git -C {DEV_ENV_REPO} checkout main",
             )
-            sys.exit(0)
+            return
 
         if action.kind == "return-canonical":
             checkout = run(["git", "checkout", "main"])
             if checkout.returncode != 0:
-                print(
+                # git's stderr is sanitized for the same cp1252 reason as the pull-failure path.
+                _report_off_main(
+                    out,
+                    current_branch,
                     f"[dev-env-sync] WARNING: Canonical worktree is on '{current_branch}'; auto-return to\n"
-                    f"main failed:\n{checkout.stderr.strip()}\n"
-                    "Switch it back manually so symlinked tooling is current."
+                    f"main failed:\n{_hookout.ascii_sanitize(checkout.stderr).strip()}\n"
+                    "Switch it back manually so symlinked tooling is current.",
                 )
-                sys.exit(0)
-            print(
+                return
+            out.say(
                 f"[dev-env-sync] Returned canonical worktree to main (was on '{current_branch}') - "
                 "symlinked tooling restored."
             )
@@ -564,13 +741,13 @@ def main() -> None:
     fetch = run(["git", "fetch", "origin", "main", "--quiet"])
     if fetch.returncode != 0:
         # Network issue — don't block, don't spam on every turn.
-        sys.exit(0)
+        return
 
     # Compare local main to origin/main.
     rev_local = run(["git", "rev-parse", "refs/heads/main"])
     rev_remote = run(["git", "rev-parse", "origin/main"])
     if rev_local.returncode != 0 or rev_remote.returncode != 0:
-        sys.exit(0)
+        return
 
     local = rev_local.stdout.strip()
     remote = rev_remote.stdout.strip()
@@ -578,12 +755,12 @@ def main() -> None:
     if local == remote:
         # Already up-to-date — clear any persisted failure run (dev-env#797).
         clear_failure_state()
-        sys.exit(0)
+        return
 
     # Check if local main is an ancestor of origin/main (fast-forward possible).
     merge_base = run(["git", "merge-base", "refs/heads/main", "origin/main"])
     if merge_base.returncode != 0:
-        sys.exit(0)
+        return
 
     base = merge_base.stdout.strip()
 
@@ -598,8 +775,8 @@ def main() -> None:
         # state, so end any in-progress ff-failure run (review finding, PR #800).
         clear_failure_state()
         ahead_count = _count_from(run(["git", "rev-list", "--count", f"{remote}..{local}"]))
-        print(format_diverged_message(local, remote, behind_count, ahead_count))
-        sys.exit(0)
+        out.say(format_diverged_message(local, remote, behind_count, ahead_count))
+        return
 
     # Fast-forward is safe — pull.
     pull = run(["git", "pull", "--ff-only", "origin", "main"])
@@ -607,7 +784,7 @@ def main() -> None:
         # Count how many commits were pulled.
         log = run(["git", "log", "--oneline", f"{local}..HEAD"])
         lines = [line for line in log.stdout.strip().splitlines() if line]
-        print(format_pulled_message(local, remote, behind_count, lines))
+        out.say(format_pulled_message(local, remote, behind_count, lines))
         clear_failure_state()  # resolved — reset the persistence counter (dev-env#797)
     else:
         # A failed fast-forward is almost always a dirty tracked file conflicting with an
@@ -617,30 +794,46 @@ def main() -> None:
         # advisory, instead of the same-severity per-prompt warning that let the canonical drift
         # 21 commits / ~41h unnoticed (dev-env#697, #795, #797, ADR-110). The escalate-vs-plain
         # decision lives in the pure build_failure_response helper; main() only does the
-        # read/write/print glue around it.
+        # read/write/print glue around it. An escalated message also reaches the user
+        # (dev-env#1140): should_escalate is pure, so re-asking it gives the same answer
+        # build_failure_response used.
         now = time.time()
         state, message = build_failure_response(
             read_failure_state(), now, local, remote, behind_count, pull.stderr
         )
         write_failure_state(state)
-        print(message)
+        if should_escalate(state, now):
+            out.alert(message)
+        else:
+            out.say(message)
 
-    sys.exit(0)
+
+def deliver(out: Output) -> None:
+    """Print this run's collected advisories in one emission (see render_output)."""
+    text = render_output(out.lines, out.escalated)
+    if text:
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":
+    _out = Output()
     try:
-        main()
+        main(_out)
+        deliver(_out)
     except Exception:
         # Honor the "Exit 0 always" docstring contract even against an unexpected subprocess
         # failure (timeout, git missing from PATH, etc.) — matches the established fail-open
         # convention for UserPromptSubmit hooks touching this canonical
         # (journal-canonical-guard.py, new-day-journal-check.py; review finding, PR #661).
         # Unlike those two, this hook's whole purpose is eliminating invisible failures, so
-        # print a minimal pure-ASCII notice (never a formatted/dynamic value that could itself
-        # raise) rather than fail open in total silence — review finding, PR #701.
+        # add a minimal pure-ASCII notice (never a formatted/dynamic value that could itself
+        # raise) rather than fail open in total silence — review finding, PR #701. Whatever
+        # main() collected before the failure is still delivered with it.
         try:
-            print("[dev-env-sync] WARNING: sync check failed unexpectedly and was skipped this prompt.")
+            _out.say(FALLBACK_MESSAGE)
+            deliver(_out)
         except Exception:
             pass
         sys.exit(0)
+    sys.exit(0)

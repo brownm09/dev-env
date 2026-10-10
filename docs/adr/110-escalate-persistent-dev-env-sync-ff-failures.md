@@ -197,3 +197,77 @@ touched — it has no analogous per-prompt-repeating silent-failure mode.
   ~41h) and the origin of "proposed fix #2" this ADR implements.
 - [dev-env#795](https://github.com/brownm09/dev-env/issues/795) — the second incident (5 commits),
   the recurrence that motivated finally implementing the escalation.
+
+## Amendment 1 (2026-10-10): escalate the off-main states too, and tell the user
+
+**Incident** ([dev-env#1140](https://github.com/brownm09/dev-env/issues/1140)). On 2026-10-09 the
+canonical checkout was found on `config/always-plan-rule`, 266 commits behind `main`. Its raw
+`.git/logs/HEAD` is one unbroken chain from a direct commit in the canonical on 2026-06-23 to the
+recovery checkout on 2026-10-09, so HEAD did not move for 108 days. For all of that time the hook
+running was the June copy of this script, because `~/.claude/scripts/` is junctioned to the stale
+working tree. That copy reached the `warn-dirty` branch on every prompt (the app kept dirtying
+the then-tracked `claude/settings.json`) and printed the warning to stderr, where an exit-0
+`UserPromptSubmit` hook is invisible. ADR-098 had already fixed exactly that, on 2026-07-10, but
+the fix lived in commits the stuck checkout could never pull.
+
+**What this ADR left uncovered.** The escalation above covers only a failing fast-forward on
+`main`. The off-main states (`warn-dirty`, `warn-squatter`, an unreadable worktree list, a failed
+auto-return) still produced one same-severity line on every prompt, forever, with no duration and
+no commits-behind count, because that path returns before it fetches. That is the very
+"visible every prompt is not the same as noticed" failure this ADR was written to end.
+
+**Decision.**
+
+1. **Measure the off-main states.** Fetch, then report how far HEAD is behind `origin/main`
+   (`rev-list --count HEAD..origin/main`) and how long ago HEAD last moved (the newest reflog
+   entry, `git reflog show -1 --date=unix --format=%gd HEAD`). The time since the last move is a
+   lower bound on time off `main`. Both measurements are stateless, so the off-main path needs no
+   scratch file and no cross-session bookkeeping. A failed measurement reads "unmeasured", never
+   a false 0, and never drops the warning.
+2. **Escalate** to a distinct `STALE CANONICAL` advisory once HEAD hasn't moved for >= 2h **or**
+   the checkout is >= 10 commits behind. The 2h reuses this ADR's time arm. The 10-commit arm
+   catches a branch that keeps getting commits, which reset the reflog clock. An unmeasured arm
+   never escalates by itself.
+3. **Escalations reach the user, not only the model.** Both this ADR's PERSISTENT FAILURE and the
+   new STALE CANONICAL go out as one `_hookout.plan_emission("UserPromptSubmit", ...,
+   audience="both")` JSON object: `additionalContext` for the model, `systemMessage` for the
+   user. Advisories that aren't escalated keep ADR-098's plain stdout text, unchanged.
+
+**This revises the channel choice ADR-098 and this ADR made.** Both rejected the JSON envelope
+"for no functional gain." There is a gain now. Plain stdout cannot reach the user at all, and
+whether the model relays a warning depends on what the model is doing. An autonomous or
+background session working on another repo may never mention it. The model-visible channel does
+work when the model notices it: #1049's PERSISTENT FAILURE was seen and filed. The user channel is
+the backstop for when it doesn't. `session-start-sync.py` (ADR-130) already sends every other
+repo's drift advisory to both audiences. It skips dev-env on purpose, deferring to this hook, so
+dev-env alone was getting the weaker treatment.
+
+The other objection, that the file would end up with two output mechanisms, is answered
+structurally. `main()` no longer prints. It collects every advisory into an `Output` and leaves in
+one emission, and `render_output()` picks the channel for the whole batch. Mixing plain text and
+JSON on stdout would be worse than inconsistent: Claude Code parses stdout as JSON only when all
+of it is JSON.
+
+**Residual risk, accepted.** The detector still lives in the tree it monitors. A drift onto a
+branch older than this amendment runs that branch's own copy of the hook. Since ADR-139 that case
+is no longer silent, for an unrelated reason: the machine-local settings wire hooks whose scripts
+an old tree lacks, `pyw` exits 2 on a missing script, and so matching prompts and tool calls are
+blocked. That is loud but disruptive, and whether a missing hook script should fail open is a
+separate question. The two causes of this incident are now closed directly: ADR-071 blocks
+`checkout`/`commit` in a canonical checkout, and ADR-139 means the app no longer dirties a tracked
+file.
+
+**Alternatives considered.**
+
+- **Block the prompt (exit 2) after N days off `main`.** Rejected for the reason given in the
+  section above and in ADR-098: blocking erases the user's in-flight prompt for a state they
+  can't fix from inside that prompt. A `systemMessage` on every prompt is unmissable without
+  being destructive.
+- **Track off-main duration in a scratch state file, like the ff-failure arm.** Rejected. The
+  reflog already records when HEAD moved, survives concurrent sessions with no race, and needs no
+  cleanup.
+- **An out-of-tree canary**, an inline hook command in `settings.shared.json` that doesn't depend
+  on the junctioned scripts, so a stale tree can't disable it. Rejected for now. It would break
+  the `pyw -3 <script>.py` invocation form that the wiring lint, the heartbeat ledger and ADR-007
+  all assume. And it would still be wiped by any post-ADR-139 branch's own settings sync. The
+  ADR-071 and ADR-139 fixes remove the causes it would guard against.

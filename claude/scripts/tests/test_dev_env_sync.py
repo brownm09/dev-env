@@ -77,6 +77,17 @@ FAILURE_STATE_PREFIX = des.FAILURE_STATE_PREFIX
 ESCALATE_AFTER_CONSECUTIVE_FAILURES = des.ESCALATE_AFTER_CONSECUTIVE_FAILURES
 ESCALATE_AFTER_HOURS = des.ESCALATE_AFTER_HOURS
 
+# Off-main escalation + single-emission output (dev-env#1140).
+parse_reflog_unix = des.parse_reflog_unix
+parse_behind = des.parse_behind
+should_escalate_off_main = des.should_escalate_off_main
+format_off_main_note = des.format_off_main_note
+format_off_main_escalation = des.format_off_main_escalation
+render_output = des.render_output
+Output = des.Output
+OFF_MAIN_ESCALATE_AFTER_HOURS = des.OFF_MAIN_ESCALATE_AFTER_HOURS
+OFF_MAIN_ESCALATE_AFTER_BEHIND = des.OFF_MAIN_ESCALATE_AFTER_BEHIND
+
 LOCAL = "33b0036049a9ad6747e1b0d88688ee4fb86420e0"
 REMOTE = "d249ba461e1c64aae45a31297e232a756bcdd2fc"
 
@@ -575,6 +586,147 @@ def test_tmp_orphan_swept_by_tmp_cleanup() -> str:
     return "stale .tmp orphan swept, fresh in-flight .tmp preserved"
 
 
+# --- off-main escalation (dev-env#1140) -------------------------------------------------
+
+_BASE_DIRTY = (
+    "[dev-env-sync] WARNING: Canonical worktree is on 'config/always-plan-rule' with uncommitted\n"
+    "changes - ~/.claude/ symlinks may serve stale hooks/scripts."
+)
+
+
+def test_parse_reflog_unix() -> str:
+    assert parse_reflog_unix("HEAD@{1791601809}\n") == 1791601809.0
+    assert parse_reflog_unix("") is None, "an empty reflog prints nothing -> unmeasured"
+    assert parse_reflog_unix("HEAD@{2 days ago}") is None, "a non-unix date format must not misparse"
+    assert parse_reflog_unix("fatal: bad revision") is None
+    return "HEAD@{N} -> N; empty / relative-date / error output -> None"
+
+
+def test_parse_behind_keeps_zero_apart_from_failure() -> str:
+    assert parse_behind(_proc(0, "266\n")) == 266
+    assert parse_behind(_proc(0, "0\n")) == 0, "a genuine 0 must stay 0, not read as a failure"
+    assert parse_behind(_proc(128, "")) is None
+    assert parse_behind(_proc(0, "fatal: bad range")) is None
+    return "266 -> 266, 0 -> 0, failure -> None"
+
+
+def test_should_escalate_off_main_boundaries() -> str:
+    hours = OFF_MAIN_ESCALATE_AFTER_HOURS * 3600
+    behind = OFF_MAIN_ESCALATE_AFTER_BEHIND
+    assert not should_escalate_off_main(None, None), "nothing measured -> plain warning only"
+    assert not should_escalate_off_main(hours - 1, behind - 1), "below both arms"
+    assert should_escalate_off_main(hours, None), "time boundary escalates"
+    assert should_escalate_off_main(None, behind), "behind boundary escalates"
+    assert should_escalate_off_main(60.0, behind), "behind arm alone escalates"
+    assert should_escalate_off_main(hours, 0), "time arm alone escalates"
+    return f"escalates at >= {OFF_MAIN_ESCALATE_AFTER_HOURS}h OR >= {behind} behind; unmeasured never escalates alone"
+
+
+def test_format_off_main_escalation_contains_key_facts() -> str:
+    seconds = 108 * 86400
+    msg = format_off_main_escalation("config/always-plan-rule", _BASE_DIRTY, seconds, 266)
+    for needle in ("STALE CANONICAL", "'config/always-plan-rule'", "266 commits behind origin/main",
+                   "2592h", "STALE tooling", "Tell the user", "dev-env#1140", _BASE_DIRTY):
+        assert needle in msg, f"missing {needle!r} in:\n{msg}"
+    assert msg.isascii(), "must be plain ASCII (cp1252-safe, like the ff-failure escalation)"
+    return "names branch, gap, duration, blast radius, the ask, and keeps the remediation"
+
+
+def test_format_off_main_unmeasured_wording() -> str:
+    msg = format_off_main_escalation("feat/x", _BASE_DIRTY, None, None)
+    assert "unmeasured number of commits" in msg
+    assert "could not be read from the reflog" in msg
+    note = format_off_main_note(300.0, 1)
+    assert "1 commit behind origin/main" in note and "5m ago" in note, note
+    return "unmeasured arms say so instead of printing a false 0; note pluralizes"
+
+
+def test_render_output_plain_vs_escalated() -> str:
+    import json
+
+    assert render_output([], False) is None, "nothing collected -> no output at all"
+    assert render_output(["a", "b"], False) == "a\nb", "not escalated -> plain text, unchanged"
+    raw = render_output(["note", "ALERT"], True)
+    payload = json.loads(raw)
+    assert payload["systemMessage"] == "note\nALERT", "the user sees the whole batch"
+    hso = payload["hookSpecificOutput"]
+    assert hso["hookEventName"] == "UserPromptSubmit"
+    assert hso["additionalContext"] == "note\nALERT", "the model sees the same text"
+    out = Output()
+    out.say("x")
+    assert not out.escalated
+    out.alert("y")
+    assert out.escalated and out.lines == ["x", "y"]
+    return "plain text when quiet; one JSON object to model AND user once anything escalates"
+
+
+def _stub_run(responses):
+    """Replace des.run with a stub answering by git subcommand; returns a restore callable."""
+    original = des.run
+
+    def fake(args, **kwargs):
+        key = args[1]
+        value = responses.get(key)
+        if isinstance(value, Exception):
+            raise value
+        if value is None:
+            return _proc(0, "")
+        return value
+
+    des.run = fake
+    return lambda: setattr(des, "run", original)
+
+
+def test_report_off_main_reproduces_incident_as_escalation() -> str:
+    import json
+
+    # The 2026-10-09 state: HEAD last moved 2026-06-23, 266 commits behind origin/main.
+    moved_at = time.time() - 108 * 86400
+    restore = _stub_run({
+        "reflog": _proc(0, f"HEAD@{{{int(moved_at)}}}\n"),
+        "rev-list": _proc(0, "266\n"),
+    })
+    try:
+        out = Output()
+        des._report_off_main(out, "config/always-plan-rule", _BASE_DIRTY)
+    finally:
+        restore()
+    assert out.escalated, "108 days / 266 behind must escalate"
+    payload = json.loads(render_output(out.lines, out.escalated))
+    assert "266 commits behind origin/main" in payload["systemMessage"]
+    assert "STALE CANONICAL" in payload["systemMessage"]
+    return "incident state -> STALE CANONICAL systemMessage reaching the user"
+
+
+def test_report_off_main_fresh_drift_stays_plain() -> str:
+    restore = _stub_run({
+        "reflog": _proc(0, f"HEAD@{{{int(time.time() - 300)}}}\n"),
+        "rev-list": _proc(0, "0\n"),
+    })
+    try:
+        out = Output()
+        des._report_off_main(out, "feat/x", _BASE_DIRTY)
+    finally:
+        restore()
+    assert not out.escalated
+    assert out.lines[0].startswith(_BASE_DIRTY)
+    assert "0 commits behind origin/main" in out.lines[0]
+    return "5 minutes off main, 0 behind -> plain model-visible warning with measurements"
+
+
+def test_report_off_main_git_failure_never_loses_warning() -> str:
+    restore = _stub_run({"reflog": subprocess.TimeoutExpired(["git"], 15)})
+    try:
+        out = Output()
+        des._report_off_main(out, "feat/x", _BASE_DIRTY)
+    finally:
+        restore()
+    assert not out.escalated
+    assert len(out.lines) == 1 and out.lines[0].startswith(_BASE_DIRTY)
+    assert "unmeasured number of commits" in out.lines[0]
+    return "a git timeout degrades to unmeasured; the base warning still goes out"
+
+
 def main() -> int:
     tests = [
         ("_plural singular and plural", test_plural_singular_and_plural),
@@ -619,6 +771,15 @@ def main() -> int:
         ("build_failure_response: escalates on time (B3)", test_build_failure_response_escalates_on_time),
         ("write_failure_state: per-PID tmp isolation (B5)", test_write_failure_state_per_pid_tmp_isolation),
         (".tmp orphan swept by .tmp cleanup (B1)", test_tmp_orphan_swept_by_tmp_cleanup),
+        ("parse_reflog_unix (#1140)", test_parse_reflog_unix),
+        ("parse_behind keeps 0 apart from failure (#1140)", test_parse_behind_keeps_zero_apart_from_failure),
+        ("should_escalate_off_main boundaries (#1140)", test_should_escalate_off_main_boundaries),
+        ("format_off_main_escalation key facts (#1140)", test_format_off_main_escalation_contains_key_facts),
+        ("off-main unmeasured wording (#1140)", test_format_off_main_unmeasured_wording),
+        ("render_output plain vs escalated (#1140)", test_render_output_plain_vs_escalated),
+        ("_report_off_main: incident state escalates (#1140)", test_report_off_main_reproduces_incident_as_escalation),
+        ("_report_off_main: fresh drift stays plain (#1140)", test_report_off_main_fresh_drift_stays_plain),
+        ("_report_off_main: git failure keeps warning (#1140)", test_report_off_main_git_failure_never_loses_warning),
     ]
     failed = 0
     for name, fn in tests:

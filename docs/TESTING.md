@@ -2339,9 +2339,28 @@ For a one-line navigational map of the test directory, see
     reused from `_worktree_topology.py`) is not covered here — it has no local pure logic beyond
     the formatters above, matching this repo's established convention for topology-diagnosing
     orchestration scripts (items 22/26/30; PR #661's own note that this file previously had
-    "zero local pure logic"). ([ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md),
+    "zero local pure logic"). dev-env#1140 (ADR-110 Amendment 1) adds the off-main escalation.
+    The tests cover:
+    - `parse_reflog_unix` (`HEAD@{N}` → N; empty, relative-date or error output → `None`);
+    - `parse_behind`, which keeps a genuine `0` apart from a failed count (`None`);
+    - the `should_escalate_off_main` boundaries for each arm alone, and that an unmeasured arm
+      never escalates by itself;
+    - `format_off_main_escalation`, which names the branch, gap, duration, blast radius and the
+      ask, keeps the base remediation, and is `.isascii()`; plus its unmeasured wording;
+    - `render_output`: `None` when nothing was collected, plain text when not escalated, and one
+      JSON object whose `systemMessage` and `additionalContext` carry the same text once anything
+      escalates.
+    
+    `_report_off_main` runs against a stubbed `run` in three cases:
+    1. The 2026-10-09 incident state (HEAD last moved 108 days ago, 266 behind) must produce a
+       STALE CANONICAL `systemMessage`.
+    2. A fresh drift (5 minutes, 0 behind) stays a plain warning with its measurements.
+    3. A git timeout degrades to "unmeasured" without dropping the base warning.
+    
+    `main()`'s settings-sync and topology glue is still not covered (pure-helper convention).
+    ([ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md),
     [ADR-110](adr/110-escalate-persistent-dev-env-sync-ff-failures.md);
-    dev-env#694, dev-env#797)
+    dev-env#694, dev-env#797, dev-env#1140)
 
     ```bash
     py -3 claude/scripts/tests/test_dev_env_sync.py
