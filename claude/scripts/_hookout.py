@@ -52,6 +52,16 @@ API
     emit_block(text)
         Deliver a blocking reason to the model (exit-2 stderr) on any event, then
         ``sys.exit(2)``. The exit-2 counterpart of a fail-closed gate's verdict.
+    emit_allow(reason)
+        Deliver a PreToolUse ``permissionDecision: "allow"`` (exit-0 stdout JSON),
+        then ``sys.exit(0)``. This is a *decision*, not an advisory, so it sits
+        outside the table above: Claude Code parses ``hookSpecificOutput`` on
+        PreToolUse stdout at exit 0 even though plain stdout there is
+        transcript-only. ``allow`` skips the permission prompt; deny/ask rules in
+        settings are still evaluated, and a sibling hook's deny/ask outranks it
+        (https://code.claude.com/docs/en/hooks#pretooluse-decision-control).
+        ``permissionDecisionReason`` goes to the debug log only for ``allow``.
+        ``plan_allow(reason)`` is its pure core. ADR-147.
     ascii_sanitize(text) -> str
         Best-effort ASCII rendering (guaranteed ``.isascii()``) so raw-stream text
         survives Claude Code's cp1252-decoded hook-output pipe on Windows — the
@@ -339,3 +349,36 @@ def emit_block(text) -> NoReturn:
     exit-2 stderr too).
     """
     _deliver(plan_emission(None, text, audience="model", blocking=True))
+
+
+def plan_allow(reason) -> Emission:
+    """Pure: the Emission for a PreToolUse ``permissionDecision: "allow"``.
+
+    Exit 0, stdout carrying exactly ``{"hookSpecificOutput": {"hookEventName":
+    "PreToolUse", "permissionDecision": "allow", "permissionDecisionReason":
+    <reason>}}``. Schema: https://code.claude.com/docs/en/hooks#pretooluse-decision-control.
+    PreToolUse is the only event with this field, so the event is fixed rather
+    than a parameter. ``ensure_ascii=True`` keeps the wire bytes ASCII, the same
+    as the advisory JSON channel. ``None``/non-str *reason* is coerced (``None``
+    -> "").
+    """
+    payload = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": "" if reason is None else str(reason),
+        }
+    }
+    return Emission(stdout=json.dumps(payload, ensure_ascii=True), stderr=None, exit_code=0)
+
+
+def emit_allow(reason) -> NoReturn:
+    """Emit a PreToolUse allow decision (exit-0 stdout JSON), then ``sys.exit(0)``.
+
+    Skips the permission prompt for the tool call. Settings deny/ask rules and a
+    sibling hook's deny/ask still win (precedence deny > defer > ask > allow).
+    Use only from a hook that has proved the call safe, and never on a guess.
+    A hook that isn't sure exits 0 with no output instead, which leaves the
+    normal permission flow in charge. ADR-147.
+    """
+    _deliver(plan_allow(reason))

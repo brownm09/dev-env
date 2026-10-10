@@ -4259,3 +4259,52 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_journal_compose_meta.py
     ```
+
+101. **scratch-rm-allow test** — required when changing
+    `claude/scripts/pre-tool-use-scratch-rm-allow.py`, or `_hookout.py`'s `plan_allow`/`emit_allow`
+    (also run item 60 then) ([ADR-147](adr/147-scratch-only-rm-auto-allow-hook.md), dev-env#1134).
+
+    The hook is the only one in this repo that *approves* rather than blocks or advises, so the suite
+    is built around its one failure that matters: approving something it shouldn't. 42 end-to-end
+    cases, each spawning the real hook with a PreToolUse JSON payload on stdin and asserting on stdout
+    and exit code. Every case must exit 0, because the hook never blocks. An allow case must print
+    exactly the PreToolUse allow JSON. A fall-through case must print nothing and leave stderr empty.
+
+    **Allow cases** cover the shapes autonomous sessions actually wrote (dev-env#1134): a literal path;
+    `S=...; rm -f "$S/x"`; `T="..." && rm -f "$T"`; a variable assigned on an earlier line and used
+    unquoted; `cd <scratch> && rm -f rel`, including a chain of two absolute `cd`s; an absolute target after a
+    `;` that follows a `cd`; `rm -rf` on
+    a scratch subdirectory; a quoted backslash path; the `/c/` drive form (Windows only); a glob in the
+    final component; `${NAME}` inside double quotes; `--` and a flag after a target (GNU rm permutes
+    options); several targets, all named in the reason; and a backslash-newline continuation.
+
+    **Fall-through cases** each pin a rejection the ADR names: a non-rm segment chained on (`gh`,
+    `|| true`, `; echo`); any `..` component, including in a `cd`; `||`, including
+    `S=<outside> || S=<scratch>; rm -rf "$S/sub"`, where bash never runs the second assignment; a
+    relative target after a `;` or newline that follows a `cd` (if the `cd` failed, `rm` runs in the
+    session's repo cwd); a relative `cd` (`$CDPATH`); `$(...)` and backticks, including inside an assignment; an
+    unresolved variable; a relative path with no `cd`; recursive on the scratch root (spelled four
+    ways, including `cd <scratch> && rm -rf .` and `<scratch>/sub/..`); recursive with a final glob;
+    a target outside scratch, alone and mixed with an inside one; a glob in a directory component; a
+    pipe, a redirect, a background `&`, and an input redirect; disallowed flags and verbs (`-i`, `-v`,
+    `sudo`, `xargs`, `/bin/rm`); an assignment prefix on `rm` (bash expands `$S` before that
+    assignment applies); an unquoted expansion carrying a space; a single-quoted `'$S/x'`, which is a
+    literal and so a relative path; a `cd` outside scratch; unterminated quotes; assignments or `cd`
+    with no `rm`; `rm` with no target; brace expansion, a subshell, and `${S:-...}`; malformed stdin
+    (empty, non-JSON, a JSON list, `null`, a `null` `tool_input`); and a non-Bash tool.
+
+    **Non-vacuity.** The hook fails open, so a crash looks exactly like a correct fall-through from
+    outside. Each Bash fall-through case therefore also loads the module in-process and asserts
+    `evaluate()` raises the module's own `Reject`. A case that only falls through because of an
+    unexpected exception fails. A heartbeat case confirms the `record_heartbeat` call fires.
+
+    Hermetic: `SCRATCH_RM_ALLOW_DIR_OVERRIDE` points the hook at a temporary scratch directory and
+    `HOOK_HEARTBEAT_DIR_OVERRIDE` keeps the heartbeat out of the real ledger. The hook only computes
+    paths (`realpath`) and never deletes anything. The tilde and `$HOME` case runs without the scratch
+    override, since `~` expands to the real home; it still touches no file. Deliberate scope gap: the
+    hook trusts `realpath` for symlinks and junctions, and no case builds one, because creating a
+    symlink on Windows needs Developer Mode or elevation.
+
+    ```bash
+    py -3 claude/scripts/tests/test_scratch_rm_allow.py
+    ```

@@ -31,6 +31,9 @@ Cases pinned:
   ``ValueError`` (it never reaches a stream write); and ``_deliver`` still delivers
   the exit code even when the stream write raises (closed-pipe resilience).
 - ``STDOUT_MODEL_VISIBLE_EVENTS`` is exactly the three context events.
+- ``plan_allow`` / ``emit_allow`` (ADR-147): the exact PreToolUse allow JSON, ASCII
+  wire bytes with a Unicode reason, ``None`` reason coercion, and delivery to stdout
+  with exit 0 and nothing on stderr.
 """
 import contextlib
 import io
@@ -390,6 +393,46 @@ def test_emit_advisory_undeliverable_propagates_valueerror():
     # The loud-failure property: a non-blocking model advisory on a non-context
     # event raises rather than writing anything to a stream.
     _raises(ValueError, emit_advisory, "PostToolUse", "x", audience="model")
+
+
+# ---------------------------------------------------------------------------
+# plan_allow / emit_allow (ADR-147)
+# ---------------------------------------------------------------------------
+
+def test_plan_allow_shape():
+    e = mod.plan_allow("scratch-only rm: C:/x")
+    assert e.exit_code == 0 and e.stderr is None
+    assert json.loads(e.stdout) == {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": "scratch-only rm: C:/x",
+        }
+    }
+
+
+def test_plan_allow_stdout_isascii_with_unicode_reason():
+    e = mod.plan_allow("caf\u00e9 \u2014 path")
+    assert e.stdout.isascii()
+    assert json.loads(e.stdout)["hookSpecificOutput"]["permissionDecisionReason"] == "caf\u00e9 \u2014 path"
+
+
+def test_plan_allow_none_reason_coerced():
+    e = mod.plan_allow(None)
+    assert json.loads(e.stdout)["hookSpecificOutput"]["permissionDecisionReason"] == ""
+
+
+def test_emit_allow_delivers_stdout_exit0():
+    out, err = io.StringIO(), io.StringIO()
+    code = "no-exit"
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            mod.emit_allow("r")
+        except SystemExit as e:
+            code = e.code
+    assert code == 0
+    assert err.getvalue() == ""
+    assert json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"] == "allow"
 
 
 # ---------------------------------------------------------------------------

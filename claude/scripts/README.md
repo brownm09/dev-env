@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **97 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **98 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -144,12 +144,13 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (22)
+### Session state, reliability & token tracking (23)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
 | `pre-tool-use-shell-content-write-guard.py` | PreToolUse (Bash/PowerShell) | Blocks a command that routes an *inline literal* to a file — or into a `gh`/`git` prose argument (`--body-file -`, `-F -`) — when that literal is multi-line or carries an apostrophe, backtick, or backslash; the content-shaped generalization of the journal guard. Program-output redirection (`gh … > "$TMPFILE"`, `npm test > out.log`) and an interpreter's stdin (`py -3 - <<'PY'`) are never matched, structurally. Bypass with `ALLOW_SHELL_CONTENT_WRITE=1`. See [ADR-138](../../docs/adr/138-shell-content-write-guard.md). |
 | `replay-shell-content-guard.py` | `py -3 replay-shell-content-guard.py [--gap] [--json] [--samples N] [--scan-dir DIR]` | Replays the guard above over recorded session transcripts and reports block rate, mechanism mix, override use, and the **failure-rate enrichment ratio** (blocked-set shell-parse-failure rate ÷ corpus baseline; `>1` concentrates real failures, `~1` means over-matching). Read-only. ADR-138 Amendment 1's answer to "is it over-matching?" — re-run after any detector change to the guard. |
+| `pre-tool-use-scratch-rm-allow.py` | PreToolUse (Bash; also wired under PowerShell, where it makes no decision) | Auto-approves a Bash command that only deletes files inside `~/.claude/scratch/`, resolving in-command variables, `cd`, `~`/`$HOME`, and drive-letter forms, so unattended sessions don't stall on a prompt for throwaway-file cleanup. Approves only when every segment is a literal assignment, a `cd` into scratch, or an `rm` whose every target resolves strictly inside scratch; anything else gets no decision (the normal prompt). Never blocks. See [ADR-147](../../docs/adr/147-scratch-only-rm-auto-allow-hook.md). |
 | `pre-tool-use-nested-agent-background-guard.py` | PreToolUse (Agent) | Blocks a nested `Agent`-tool spawn (`agent_id` present) that omits `run_in_background` entirely — the exact failure signature behind career-playbook's ADR-090 orphaned-subagent stalls. Any explicit value (`true` or `false`) passes through untouched, and a top-level spawn is untouched entirely. See [ADR-126](../../docs/adr/126-nested-agent-spawn-background-guard.md). |
 | `pre-tool-use-skill-file-size-guard.py` | PreToolUse (Write/Edit) | Blocks a Write/Edit that would leave a `SKILL.md` file over a configurable byte ceiling (default 256KB). See [ADR-127](../../docs/adr/127-skill-file-size-guard.md). |
 | `session-mode-prompt.py` | UserPromptSubmit | One-time per-session reminder of the active permission mode (plan/bypass/auto). |
