@@ -415,6 +415,141 @@ def test_cli_auth_status_none_on_subprocess_error() -> str:
     return "subprocess error -> None (degrades to legacy, dev-env#915)"
 
 
+def _touch_exe(base: Path, *parts: str) -> Path:
+    p = base.joinpath(*parts, "claude.exe")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"")
+    return p
+
+
+def test_resolve_claude_exe_matches_hash_directory_layout() -> str:
+    # dev-env#1139: app 2.1.295 moved claude.exe from <ver>/claude.exe to
+    # <ver>/<hash>/claude.exe. The old one-level `*/claude.exe` glob matched nothing,
+    # so the #915 probe was a permanent None. Pin both layouts so neither regresses.
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        flat = _touch_exe(base, "2.1.100")
+        assert usage_snapshot.resolve_claude_exe(base) == str(flat), "legacy flat layout must still resolve"
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        nested = _touch_exe(base, "2.1.295", "d2e29494ec83")
+        got = usage_snapshot.resolve_claude_exe(base)
+        assert got == str(nested), f"hash-directory layout must resolve, got {got!r}"
+    return "resolve_claude_exe finds <ver>/claude.exe and <ver>/<hash>/claude.exe (dev-env#1139)"
+
+
+def test_resolve_claude_exe_picks_newest_version_numerically() -> str:
+    # Versions sort on the top-level directory as integers (2.1.170 > 2.1.99, which
+    # a string sort gets backwards), and the hash level must not be parsed as a version.
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        _touch_exe(base, "2.1.99", "ffffffffffff")
+        newest = _touch_exe(base, "2.1.170", "00000000aaaa")
+        _touch_exe(base, "2.1.8", "zzzzzzzzzzzz")
+        got = usage_snapshot.resolve_claude_exe(base)
+        assert got == str(newest), f"expected 2.1.170, got {got!r}"
+    return "newest version wins by numeric sort of the top-level dir; hash dir ignored (dev-env#1139)"
+
+
+def test_resolve_claude_exe_none_when_absent() -> str:
+    with tempfile.TemporaryDirectory() as td:
+        assert usage_snapshot.resolve_claude_exe(Path(td)) is None, "empty base -> None"
+        assert usage_snapshot.resolve_claude_exe(Path(td) / "missing") is None, "nonexistent base -> None"
+    return "no packaged exe (empty or nonexistent base) -> None (npm-install degradation preserved)"
+
+
+def test_creds_absent_advisory_wording_follows_probe() -> str:
+    # dev-env#1139: desktop-app signature -> the #915 text; anything else -> a generic
+    # text that names the path and does NOT claim a cause the probe didn't establish.
+    out = usage_snapshot.creds_absent_advisory(probe_fn=lambda: "out")
+    assert out == usage_snapshot.DESKTOP_APP_ADVISORY, out
+    for probe in ("in", None):
+        got = usage_snapshot.creds_absent_advisory(probe_fn=lambda p=probe: p, creds_path="C:/x/.credentials.json")
+        assert got != usage_snapshot.DESKTOP_APP_ADVISORY, got
+        assert "C:/x/.credentials.json" in got, got
+        assert got.startswith("[usage-snapshot] Skipped:"), got
+        assert "\n" not in got, "must be a single line"
+    return "probe 'out' -> desktop-app text; 'in'/None -> generic one-line text naming the creds path (dev-env#1139)"
+
+
+def _run_main_with_creds(payload, creds, probe) -> tuple:
+    """Drive the real main() with load_credentials/cli_auth_status faked and
+    emit_block recorded (raising SystemExit(2), like the real NoReturn).
+    Returns (exit_code, [emitted_text, ...])."""
+    import json as _json
+
+    emitted = []
+
+    def fake_emit_block(text):
+        emitted.append(text)
+        raise SystemExit(2)
+
+    saved = (
+        usage_snapshot.sys.stdin,
+        usage_snapshot.load_credentials,
+        usage_snapshot.cli_auth_status,
+        usage_snapshot._hookout.emit_block,
+        usage_snapshot._log_merge_trace,
+    )
+    usage_snapshot.sys.stdin = io.StringIO(_json.dumps(payload))
+    usage_snapshot.load_credentials = lambda: creds
+    usage_snapshot.cli_auth_status = lambda *a, **k: probe
+    usage_snapshot._hookout.emit_block = fake_emit_block
+    usage_snapshot._log_merge_trace = lambda entry: None
+    try:
+        try:
+            usage_snapshot.main()
+            code = 0
+        except SystemExit as e:
+            code = e.code if isinstance(e.code, int) else 1
+    finally:
+        (
+            usage_snapshot.sys.stdin,
+            usage_snapshot.load_credentials,
+            usage_snapshot.cli_auth_status,
+            usage_snapshot._hookout.emit_block,
+            usage_snapshot._log_merge_trace,
+        ) = saved
+    return code, emitted
+
+
+_CONFIRMED_MERGE_PAYLOAD = {
+    "tool_name": "Bash",
+    "tool_input": {"command": "gh pr merge 466 --squash"},
+    "tool_response": {"stdout": "Squashed and merged pull request #466 (fix: x)", "stderr": "", "exitCode": 0},
+    "cwd": "C:/repo",
+}
+
+
+def test_main_confirmed_merge_without_creds_emits_advisory_not_silence() -> str:
+    # dev-env#1139's regression pin: a CONFIRMED merge with no creds file used to
+    # sys.exit(0) with no output. It must now emit exactly one advisory and exit 2,
+    # for both the desktop-app signature and an unknown probe -- and a falsy-but-
+    # present creds value ({}) is the same branch.
+    for creds in (None, {}):
+        for probe, expect_desktop in (("out", True), (None, False), ("in", False)):
+            code, emitted = _run_main_with_creds(_CONFIRMED_MERGE_PAYLOAD, creds, probe)
+            assert code == 2, f"creds={creds!r} probe={probe!r}: exit {code}, expected 2"
+            assert len(emitted) == 1, f"creds={creds!r} probe={probe!r}: emitted {emitted!r}"
+            assert (emitted[0] == usage_snapshot.DESKTOP_APP_ADVISORY) is expect_desktop, emitted[0]
+    return "confirmed merge + no creds -> one advisory, exit 2 (desktop-app text iff probe 'out') (dev-env#1139)"
+
+
+def test_main_unconfirmed_merge_without_creds_stays_silent() -> str:
+    # The advisory is only for a CONFIRMED merge. A clean-exit, marker-less
+    # `gh pr merge` (queued --auto) is unconfirmed (no_confirm_needed) and must not
+    # produce a "snapshot omitted" advisory for a merge that never happened.
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "gh pr merge 466 --auto --squash"},
+        "tool_response": {"stdout": "", "stderr": "", "exitCode": 0},
+        "cwd": "C:/repo",
+    }
+    code, emitted = _run_main_with_creds(payload, None, "out")
+    assert code == 0 and emitted == [], f"exit {code}, emitted {emitted!r}"
+    return "unconfirmed merge + no creds -> silent exit 0, no advisory (dev-env#1139 scope boundary)"
+
+
 def test_merge_confirmed_true_for_worktree_merge_despite_nonzero_exit() -> str:
     # Issue #275: a worktree merge exits non-zero on local branch cleanup
     # ("'main' is already checked out") even though the remote merge
@@ -1070,6 +1205,27 @@ def main() -> int:
             test_cli_auth_status_out_when_subprocess_reports_logged_out,
         ),
         ("cli_auth_status: subprocess error -> None (dev-env#915)", test_cli_auth_status_none_on_subprocess_error),
+        (
+            "resolve_claude_exe: flat and <ver>/<hash>/ layouts both resolve (dev-env#1139)",
+            test_resolve_claude_exe_matches_hash_directory_layout,
+        ),
+        (
+            "resolve_claude_exe: newest version by numeric sort (dev-env#1139)",
+            test_resolve_claude_exe_picks_newest_version_numerically,
+        ),
+        ("resolve_claude_exe: absent -> None (dev-env#1139)", test_resolve_claude_exe_none_when_absent),
+        (
+            "creds_absent_advisory: wording follows the probe (dev-env#1139)",
+            test_creds_absent_advisory_wording_follows_probe,
+        ),
+        (
+            "main(): confirmed merge + no creds -> advisory, exit 2 (dev-env#1139)",
+            test_main_confirmed_merge_without_creds_emits_advisory_not_silence,
+        ),
+        (
+            "main(): unconfirmed merge + no creds -> silent (dev-env#1139)",
+            test_main_unconfirmed_merge_without_creds_stays_silent,
+        ),
         (
             "worktree-merge output confirms despite non-zero exit",
             test_merge_confirmed_true_for_worktree_merge_despite_nonzero_exit,
