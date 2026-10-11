@@ -442,8 +442,10 @@ else
   bad "sourcing ran something: $OUT"
 fi
 
-# --- Scenario 12: the HOME and home-path guards ---
-echo "[12] setup refuses a HOME that isn't the profile, and doesn't seed hooks written for another home"
+# --- Scenario 12: the HOME guard ---
+# (Hooks written for another home are withheld by the settings sync itself -- ADR-148's
+# hooks_guard, tested in test_settings_sync.py -- so setup has no guard of its own for them.)
+echo "[12] setup refuses a HOME that isn't the Windows profile"
 TMPHOME=$(mktemp -d)
 if is_windows; then
   OUT=$(
@@ -464,24 +466,6 @@ if is_windows; then
 else
   skip "the Windows profile check is Windows-only"
 fi
-OUT=$(
-  export HOME="$TMPHOME/home"
-  mkdir -p "$HOME"
-  source "$SETUP_SCRIPT"
-  set +e
-  REPO_DIR="$TMPHOME/fake-repo"
-  mkdir -p "$REPO_DIR/claude"
-  printf '{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "pyw -3 C:/Users/someone-else/.claude/scripts/x.py"}]}]}}\n' > "$REPO_DIR/claude/settings.shared.json"
-  mkdir -p "$HOME/.claude"
-  seed_claude_settings
-  echo "seed_rc=$? seeded=$([ -e "$HOME/.claude/settings.json" ] && echo yes || echo no)"
-  # The same file on a machine whose home is the one it names: no objection.
-  if is_windows; then HOME=/c/Users/someone-else; else HOME=C:/Users/someone-else; fi
-  echo "match=[$(settings_home_mismatch)]"
-)
-echo "$OUT" | grep -q "WARNING: not seeding" && echo "$OUT" | grep -q "seed_rc=0 seeded=no" \
-  && ok "hooks written for another home are not seeded, and setup carries on" || bad "home mismatch: $OUT"
-echo "$OUT" | grep -q "match=\[\]" && ok "hooks written for this home raise no objection" || bad "home match: $OUT"
 rm -rf "$TMPHOME"
 
 # --- Scenario 13: a failed mklink names the link, the backup and the --restore command ---
@@ -514,7 +498,6 @@ OUT=$(
   set +e
   mkdir -p "$HOME/.claude"
   echo '{"theme": "mine"}' > "$HOME/.claude/settings.json"
-  settings_home_mismatch() { :; }   # this scenario is about the capture, not the home guard
   py() { echo '{"theme": "mine", "hooks": {}}' > "$HOME/.claude/settings.json"; }   # stands in for _settings_sync
   seed_claude_settings >/dev/null
   echo "captured=$(cat "$SETUP_BACKUP_DIR/settings.json" 2>/dev/null)"

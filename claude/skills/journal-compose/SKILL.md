@@ -740,7 +740,7 @@ Token data comes from two sources. Collect both; the JSONL log is authoritative.
 **Source A — Real JSONL data (authoritative):**
 
 ```bash
-TMPFILE="C:/Users/brown/.claude/scratch/tmp_tokens_$$.json"
+TMPFILE="C:/Users/brown/.claude/scratch/tmp_tokens_YYYY-MM-DD.json"   # <-- substitute the compose date
 py -3 ~/.claude/scripts/token-report.py --date YYYY-MM-DD --format json > "$TMPFILE"
 node -e "
   const d = JSON.parse(require('fs').readFileSync('$TMPFILE','utf8'));
@@ -758,7 +758,12 @@ node -e "
     console.log('S' + i + '_SUB=' + (s.subagent_count||0));
   });
 "
-rm -f "$TMPFILE"
+```
+
+Cleanup is optional. If you do it, make it its own Bash call with the literal path (`$TMPFILE` is
+not defined in a new shell, and an `rm` chained onto other work is never auto-approved, ADR-147):
+```bash
+rm -f "C:/Users/brown/.claude/scratch/tmp_tokens_YYYY-MM-DD.json"
 ```
 
 Also run the markdown report for use in the Token Usage section:
@@ -918,15 +923,15 @@ For each JSONL session row (matched to a draft slug where possible):
 ```
 ### Session N — <slug> (or <session-id[:8]> if unmatched)
 
-| | Value |
-|---|---|
-| Model | claude-sonnet-4-6 |
-| Input tokens | N |
-| Output tokens | N |
-| Cache read tokens | N |
-| Cache write tokens | N |
-| Turns | N (+N subagent turns if applicable) |
-| Estimated cost | $N |
+| # | Field | Value |
+|---|---|---|
+| 1 | Model | claude-sonnet-4-6 |
+| 2 | Input tokens | N |
+| 3 | Output tokens | N |
+| 4 | Cache read tokens | N |
+| 5 | Cache write tokens | N |
+| 6 | Turns | N (+N subagent turns if applicable) |
+| 7 | Estimated cost | $N |
 ```
 
 If a JSONL row cannot be matched to a draft slug, label it with the short session ID
@@ -964,12 +969,12 @@ Sum across all JSONL rows for the date (excluding the current compose session if
 ```
 ### Combined Totals
 
-| Session | Input | Output | Cache R | Cache W | Turns | Cost |
-|---|---|---|---|---|---|---|
-| 1 — <slug> | N | N | N | N | N | $N |
-| 2 — <slug> | N | N | N | N | N | $N |
-| *(compose — pending)* | — | — | — | — | — | — |
-| **Total** | **N** | **N** | **N** | **N** | **N** | **$N** |
+| # | Session | Input | Output | Cache R | Cache W | Turns | Cost |
+|---|---|---|---|---|---|---|---|
+| 1 | <slug> | N | N | N | N | N | $N |
+| 2 | <slug> | N | N | N | N | N | $N |
+| 3 | *(compose — pending)* | — | — | — | — | — | — |
+| 4 | **Total** | **N** | **N** | **N** | **N** | **N** | **$N** |
 ```
 
 Total row excludes any pending/unresolved rows.
@@ -1246,9 +1251,10 @@ Use the Write tool only for the two scratch files below, never for anything unde
    that the same policy treats the same way. On success it prints
    `META_JOURNAL=sessions/meta/YYYY-MM-DD-<slug>.md`, and meta is now a composed project for
    Steps 7–11.
-6. **Clean up** the two scratch files, on success **and on any failure**: `rm -f` the records file
-   and the staged file named above. (Left behind, the Write tool refuses to overwrite them on a
-   retry in a session that has not read them.)
+6. **Clean up** the two scratch files, on success **and on any failure**: one standalone `rm -f`
+   Bash call naming both literal paths above (the records file and the staged file), never chained
+   onto another command — only a scratch-only delete is auto-approved (ADR-147). (Left behind, the
+   Write tool refuses to overwrite them on a retry in a session that has not read them.)
 
 Record two values for the later steps. They are independent: after a derived-side failure on a day
 with real meta stubs, the first is set and the second is `failed:<reason>`.

@@ -215,3 +215,19 @@ rather than a rediscovery.
   content) of this ADR's motivating live incident; see Context.
 - [dev-env#699](https://github.com/brownm09/dev-env/issues/699) — the follow-up issue for
   `journal-canonical-guard.py`'s parallel defect.
+
+## Amendment (2026-10-10): escalated advisories use the JSON envelope
+
+The channel is now chosen per run, not per advisory.
+- A run in which nothing escalated keeps the plain-text channel this ADR chose, now
+  `ascii_sanitize`d.
+- A run in which anything escalated (ADR-110's PERSISTENT FAILURE, or the new STALE CANONICAL for
+  a canonical stuck off `main`) emits the JSON envelope rejected above. Every advisory in the run
+  goes to the model as `additionalContext`, and a one-line summary of each escalation goes to the
+  user as `systemMessage`.
+
+Only that envelope reaches the user, so the "no functional gain" premise no longer holds. Full rationale:
+[ADR-110 Amendment 1](110-escalate-persistent-dev-env-sync-ff-failures.md#amendment-1-2026-10-10-escalate-the-off-main-states-too-and-tell-the-user).
+The incident behind it, [dev-env#1140](https://github.com/brownm09/dev-env/issues/1140), shows why
+this ADR's stdout fix mattered: a June-era copy of the hook, from before this ADR, kept printing
+its off-main warning to stderr for 108 days on a canonical checkout too stale to pull the fix.

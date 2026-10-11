@@ -186,12 +186,12 @@ Return a per-repo table: repo, the status this run settled on, and the action ta
 notification -- this skill does **not** send a push notification itself; reporting is the caller's
 responsibility.
 
-| Repo | Status | Action |
-|---|---|---|
-| brownm09/dev-env | ALIVE | none |
-| brownm09/career-playbook | AMBIGUOUS | flagged for human review -- \<notes\> |
-| merickvaughn/lifting-logbook | NEEDS_REFILL | refilled -> issue #NNN, shard committed |
-| ... | ... | ... |
+| # | Repo | Status | Action |
+|---|---|---|---|
+| 1 | brownm09/dev-env | ALIVE | none |
+| 2 | brownm09/career-playbook | AMBIGUOUS | flagged for human review -- \<notes\> |
+| 3 | merickvaughn/lifting-logbook | NEEDS_REFILL | refilled -> issue #NNN, shard committed |
+| ... | ... | ... | ... |
 
 ---
 

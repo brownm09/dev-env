@@ -350,6 +350,13 @@ For a one-line navigational map of the test directory, see
     the REST path/heredoc/quoted-string decoy cases mirror this module's existing `scan_top_level`
     decoy convention.
 
+    **Import cost.** `subprocess` and `_winsubp` are imported lazily inside `confirm_merge_via_gh`,
+    the only function here that spawns a process, so a hook importing `_hookio` for a pure read helper
+    doesn't pay ~20-30 ms per call (PR #1135 review finding 5; the scratch-rm-allow hook runs on every
+    Bash call). A probe in a fresh interpreter pins that `import _hookio` loads neither module. No
+    caller depends on `_hookio` for the `_winsubp` patch: every script that calls subprocess imports
+    `_winsubp` itself, which item 2 (`test_pyw_stdio.py`) enforces.
+
     ```bash
     py -3 claude/scripts/tests/test_hookio.py
     ```
@@ -1975,9 +1982,10 @@ For a one-line navigational map of the test directory, see
     - **Scenario 11 (dispatch guard):** `bash -c 'source "$0" …' setup.sh` — the shape that ran
       a full setup under the old `BASH_SOURCE == $0` guard — only sources it. Harmless if the
       guard regresses: the dispatch would try to restore a nonexistent directory and fail.
-    - **Scenario 12 (HOME and home-path guards):** a `HOME` that isn't the Windows profile is
-      refused, while one directory spelled `/c/…` and `C:\…` passes. Hook commands written for
-      another home aren't seeded, and setup carries on; for this home there's no objection.
+    - **Scenario 12 (HOME guard):** a `HOME` that isn't the Windows profile is refused, while one
+      directory spelled `/c/…` and `C:\…` passes. (Hooks written for another home are withheld
+      by the settings sync itself — ADR-148's `hooks_guard`, item 98 — so setup has no guard of
+      its own for them.)
     - **Scenario 13 (`win_link` failure):** a refused `mklink` stops with an error naming the
       link, mklink's reason, the backup directory and the `--restore` command, with the
       original safe in the backup.
@@ -2418,9 +2426,39 @@ For a one-line navigational map of the test directory, see
     reused from `_worktree_topology.py`) is not covered here — it has no local pure logic beyond
     the formatters above, matching this repo's established convention for topology-diagnosing
     orchestration scripts (items 22/26/30; PR #661's own note that this file previously had
-    "zero local pure logic"). ([ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md),
+    "zero local pure logic"). dev-env#1140 (ADR-110 Amendment 1) adds the off-main escalation.
+    The tests cover:
+    - `parse_reflog_unix` (`HEAD@{N}` → N; empty, relative-date or error output → `None`);
+    - `parse_behind`, which keeps a genuine `0` apart from a failed count (`None`);
+    - the `should_escalate_off_main` boundaries for each arm alone; an unmeasured arm never
+      escalates by itself, and a measured 0 behind suppresses the time arm;
+    - `format_off_main_escalation`, which names the branch, gap, duration, blast radius and the
+      ask, keeps the base remediation, and is `.isascii()`; plus its unmeasured wording;
+    - `format_off_main_summary` and the `build_failure_response` summary, each a single ASCII line;
+    - `render_output`: `None` when nothing was collected, plain text when not escalated, and one
+      JSON object once anything escalates (the full text as `additionalContext`, only the summaries
+      as `systemMessage`);
+    - the plain path stays ASCII when a pulled-commit subject contains U+2192;
+    - `deliver` sets `delivered` before a write that then fails, so the fallback can't write
+      twice;
+    - `run` refuses to spawn once the shared deadline is spent.
+    
+    `_report_off_main` runs against a stubbed `run` in six cases:
+    1. The 2026-10-09 incident state (HEAD last moved 108 days ago, 266 behind) must produce a
+       one-line STALE CANONICAL `systemMessage`.
+    2. A fresh drift (5 minutes, 0 behind) stays a plain warning with its measurements.
+    3. A git timeout degrades to "unmeasured" without dropping the base warning.
+    4. It never runs `git fetch`.
+    5. A reflog timeout leaves the behind arm intact.
+    6. 108 days idle at 0 behind stays plain.
+    
+    `build_failure_response` now returns `(state, message, summary)`, where `summary` is `None`
+    when it did not escalate.
+    
+    `main()`'s settings-sync and topology glue is still not covered (pure-helper convention).
+    ([ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md),
     [ADR-110](adr/110-escalate-persistent-dev-env-sync-ff-failures.md);
-    dev-env#694, dev-env#797)
+    dev-env#694, dev-env#797, dev-env#1140)
 
     ```bash
     py -3 claude/scripts/tests/test_dev_env_sync.py
@@ -2550,7 +2588,7 @@ For a one-line navigational map of the test directory, see
 61. **hook output-contract + ASCII-literal gate** — required when changing
     `claude/scripts/tests/test_hook_output_contract.py` or the shared
     `claude/scripts/tests/_hook_wiring.py` (the settings.json parser all three PR3 gates —
-    items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 101 when
+    items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 104 when
     changing it). AST gate over every wired hook
     (via `_hook_wiring`, cross-referencing each script's event class against the SSOT
     `_hookout.STDOUT_MODEL_VISIBLE_EVENTS`, ADR-103) for four invisible-emission shapes: **A**
@@ -2630,7 +2668,12 @@ For a one-line navigational map of the test directory, see
     `test_all_settings_hooks_use_pyw_and_resolve_to_repo` (item 2) already gates it; the resolution check
     overlaps that test's resolution half by design (it is the precondition for the `_winsubp`-based
     budget). Iterates entries generically, so a new event/matcher group (e.g. PR9's PowerShell mirror) is
-    covered with no change beyond any new script's budget classification.
+    covered with no change beyond any new script's budget classification. The PreToolUse and
+    PostToolUse Bash/PowerShell mirror tests (dev-env#620, #763) assert each pair of matchers wires
+    the identical script set. The PreToolUse one exempts, by name, the approve-only hooks in
+    `APPROVE_ONLY_PRETOOLUSE_HOOKS` (today only `pre-tool-use-scratch-rm-allow.py`, ADR-147): they
+    carry no safety check, so there is nothing to bypass. An exempt hook must be wired under Bash, must
+    not be wired under PowerShell, and its source must not contain `emit_block(` or `exit(2)`.
     ([ADR-103](adr/103-shared-hookout-emitter.md); dev-env#720)
 
     ```bash
@@ -4049,6 +4092,31 @@ For a one-line navigational map of the test directory, see
     `seed_claude_settings` and assert it runs — *and where in the sequence* — rather than
     shelling out to python against a fake repo path.
 
+    **Group 8, the hook launcher and the missing-script guard (dev-env#1146,
+    [ADR-148](adr/148-missing-hook-script-fails-open-via-launcher.md)).** `ensure_launcher`
+    installs, no-ops on equal bytes, replaces on a change, leaves no temp file, keeps an
+    installed launcher when the source is gone (an older tree), and returns a named error,
+    never a raise, when there is neither. `hooks_guard` passes when every path every command
+    names exists, and refuses a missing hook script, a missing launcher, a command that names
+    no `.py` at all (an empty extraction is not a pass), and a non-object `hooks`. End to end:
+    a shared file wiring a script the tree lacks keeps the live `hooks` untouched while the
+    other keys still apply, says so in an ASCII note naming the script and the recovery
+    command on every sync, and applies once the script appears; the launcher is installed
+    *before* hooks naming it are written; a fresh machine gets a settings file without
+    `hooks` rather than one that blocks. Calibration (ADR-144): the real shipped hooks, with
+    paths remapped into this repo, all resolve (known-good, n=84 commands at the time of
+    writing), and the same set with one script relocated is caught (known-bad). The `Env`
+    fixture now builds its `hooks` from a real launcher and script under its temp root, so
+    every earlier group runs through the guard too. Added in review (PR #1147):
+    - a launcher source with a syntax error is refused and the installed copy kept;
+    - an install from a non-canonical tree is named as such in the note;
+    - `py_tokens` keeps a quoted path containing a space as one token, and returns nothing for
+      unbalanced quotes or a non-Python command;
+    - the guard accepts an existing quoted path;
+    - the withheld-hooks recovery text uses absolute paths and no `&&`;
+    - the calibration remap asserts that no shipped path still points at the real home. The
+      prefix comes from `_hook_wiring.HOME_PREFIX`, the single definition dev-env#1113 will change.
+
     ```bash
     py -3 claude/scripts/tests/test_settings_sync.py
     bash claude/scripts/tests/test-setup-link-loop.sh
@@ -4347,29 +4415,186 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_journal_compose_meta.py
     ```
 
-101. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`,
-     `setup.sh`'s link arrays (the doctor's `LINKED_ITEMS` / `HOME_LINKS` are pinned against
-     them), or `claude/scripts/tests/_hook_wiring.py` (the doctor imports it). Exercises the
-     doctor's pure decision helpers (`*_result` / `*_results`, `parse_ls_remote`, `guarded`)
-     against fixtures only — temp files, fake path resolvers, injected
-     `which`/`is_file`/`exists` callables — so nothing reads this machine's real `~/.claude`,
-     git config, clones or network. One case builds a real dangling junction (a symlink off
-     Windows) in a temp directory, because a dangling link passing is a property of the real
-     `realpath()`. `collect()`, `_run()` and `_kill_tree()`, the thin I/O layer around the
-     helpers, are deliberately untested, per the repo's no-subprocess-mock convention; the whole
-     script was run live on this machine, online and offline, and in a sandboxed `HOME` for
-     [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114). (Numbered 101 because
-     item 100 went to the journal-compose-meta test, which merged first.)
+101. **scratch-rm-allow test** — required when changing
+    `claude/scripts/pre-tool-use-scratch-rm-allow.py`, or `_hookout.py`'s `plan_allow`/`emit_allow`
+    (also run item 60 then) ([ADR-147](adr/147-scratch-only-rm-auto-allow-hook.md), dev-env#1134).
 
-     30 cases, passing on Python 3.12 and 3.10. `LINKED_ITEMS` and `HOME_LINKS` equal
+    The hook is the only one in this repo that *approves* rather than blocks or advises, so the suite
+    is built around its one failure that matters: approving something it shouldn't. 51 cases, almost
+    all end-to-end: each spawns the real hook with a PreToolUse JSON payload on stdin and asserts on
+    stdout and exit code. Every case must exit 0, because the hook never blocks. An allow case must print
+    exactly the PreToolUse allow JSON. A fall-through case must print nothing and leave stderr empty.
+
+    **Allow cases** cover the shapes autonomous sessions actually wrote (dev-env#1134): a literal path;
+    `S=...; rm -f "$S/x"`; `T="..." && rm -f "$T"`; a variable assigned on an earlier line and used
+    unquoted; `cd <scratch> && rm -f rel`, including a chain of two absolute `cd`s; an absolute target after a
+    `;` that follows a `cd`; `rm -rf` on
+    a scratch subdirectory; a quoted backslash path; the `/c/` drive form (Windows only); a glob in the
+    final component; `${NAME}` inside double quotes; `--` and a flag after a target (GNU rm permutes
+    options); several targets, all named in the reason; and a backslash-newline continuation.
+
+    **`~` and `$HOME`** (review finding 1 on PR #1135). Git Bash expands both from `HOME`, while Python
+    (and so `_hookutil.SCRATCH`, the hook's default scratch) reads `USERPROFILE` on Windows. The cases
+    run against a fake home (`HOME` and `USERPROFILE` both pointed at a temp directory, no scratch
+    override), so they are hermetic and also pin that the default scratch is `_hookutil.SCRATCH`.
+    Allowed: `~`, `$HOME`, and `S=~/...` with a matching `HOME`; `HOME` unset; `HOME` in MSYS `/c/...`
+    form naming the same directory. No decision: a `HOME` naming a different directory (a literal
+    path still allows then). The divergence cases are Windows-only end-to-end, because elsewhere
+    Python's home *is* `$HOME`; an in-process case patches `_python_home` so the same rule (divergent,
+    empty, and relative `HOME` are unresolved; a trailing separator is not divergence) runs on every
+    platform.
+
+    **Approval log.** An allow appends exactly one `<UTC ISO timestamp> scratch-only rm: ...` line to
+    `scratch-rm-allow.log` in scratch; a fall-through writes nothing; a log past
+    `APPROVAL_LOG_MAX_BYTES` rotates to `.1`; and a log path that can't be opened (a directory) still
+    yields the allow, exit 0, and empty stderr.
+
+    **Fall-through cases** each pin a rejection the ADR names: a non-rm segment chained on (`gh`,
+    `|| true`, `; echo`); any `..` component, including in a `cd`; `||`, including
+    `S=<outside> || S=<scratch>; rm -rf "$S/sub"`, where bash never runs the second assignment; a
+    relative target after a `;` or newline that follows a `cd` (if the `cd` failed, `rm` runs in the
+    session's repo cwd); a relative `cd` (`$CDPATH`); `$(...)` and backticks, including inside an assignment; an
+    unresolved variable; a relative path with no `cd`; recursive on the scratch root (spelled four
+    ways, including `cd <scratch> && rm -rf .` and `<scratch>/sub/..`); recursive with a final glob;
+    a target outside scratch, alone and mixed with an inside one; a glob in a directory component; a
+    pipe, a redirect, a background `&`, and an input redirect; disallowed flags and verbs (`-i`, `-v`,
+    `sudo`, `xargs`, `/bin/rm`); an assignment prefix on `rm` (bash expands `$S` before that
+    assignment applies); an unquoted expansion carrying a space; a single-quoted `'$S/x'`, which is a
+    literal and so a relative path; a `cd` outside scratch; unterminated quotes; assignments or `cd`
+    with no `rm`; `rm` with no target; brace expansion, a subshell, and `${S:-...}`; malformed stdin
+    (empty, non-JSON, a JSON list, `null`, a `null` `tool_input`); and a non-Bash tool.
+
+    **Non-vacuity.** The hook fails open, so a crash looks exactly like a correct fall-through from
+    outside. Each Bash fall-through case therefore also loads the module in-process and asserts
+    `evaluate()` raises the module's own `Reject`. A case that only falls through because of an
+    unexpected exception fails. A heartbeat case confirms the `record_heartbeat` call fires.
+
+    **Skips are visible.** A platform-gated case raises `Skip` and is printed as `SKIP` and counted in
+    the `Tests:` line, never as a pass. Six cases are Windows-only (the backslash and `/c/` drive
+    forms, and the four `HOME` divergence, unset, MSYS-form, and MSYS-root cases), so a non-Windows
+    run reports `6 skipped`. The marker is deliberately not a leading `SKIP:`, which
+    `run-hook-tests.py` would read as a whole-file skip.
+
+    Hermetic: `SCRATCH_RM_ALLOW_DIR_OVERRIDE` points the hook at a temporary scratch directory and
+    `HOOK_HEARTBEAT_DIR_OVERRIDE` keeps the heartbeat out of the real ledger. The hook only computes
+    paths (`realpath`) and never deletes anything; the approval-log cases use their own temp scratch
+    directories. Deliberate scope gap: the
+    hook trusts `realpath` for symlinks and junctions, and no case builds one, because creating a
+    symlink on Windows needs Developer Mode or elevation.
+
+    ```bash
+    py -3 claude/scripts/tests/test_scratch_rm_allow.py
+    ```
+
+102. **replay-scratch-rm-allow test** — required when changing
+    `claude/scripts/replay-scratch-rm-allow.py`, or the hook's `check_command`/`Reject` surface it
+    calls (also run item 101 then) ([ADR-147](adr/147-scratch-only-rm-auto-allow-hook.md) section 6;
+    PR #1135 review finding 3).
+
+    The script is ADR-147's calibration replay, committed so the success signal ("re-run the replay
+    once the guidance has been live; a non-zero approval count, every approval spot-checked") is
+    reproducible. It walks `~/.claude/projects/**/*.jsonl`, takes every Bash `tool_use` command,
+    dedups, and runs the hook's own `check_command` in-process (the exact function `decide` calls). It
+    reports total, unique, the rm+scratch candidate population, approvals (each listed with its
+    resolved targets for spot-checking), approvals *outside* the candidate set, and the hook's own
+    `Reject` messages for the candidates it did not approve.
+
+    Ten hermetic cases over synthetic transcript trees under a temp directory, with
+    `SCRATCH_RM_ALLOW_DIR_OVERRIDE` naming a temp scratch; nothing reads the real
+    `~/.claude/projects`. Pinned: only Bash `tool_use` blocks count (PowerShell, text blocks, non-list
+    content, and malformed lines are skipped without aborting the file); total vs. unique counts;
+    candidates and approvals; the replay's approvals agree command-for-command with the hook's
+    `decide()`, so the measurement can't drift from the hook; rejection reasons are the hook's own
+    messages and are counted for candidates only; an approval outside the candidate filter (a scratch
+    path without the word "scratch") is counted and marked; `is_candidate`'s word and case handling;
+    `truncate` caps every printed command at `--width` (the privacy property); replaying never writes
+    the hook's approval log; a missing `--scan-dir` exits 1; and the `--json` and text reports agree.
+
+    ```bash
+    py -3 claude/scripts/tests/test_replay_scratch_rm_allow.py
+    ```
+
+103. **hook-launch test** — required when changing `claude/scripts/_hook_launch.py`, the command
+    form of any hook in `claude/settings.shared.json`, or `_settings_sync.py`'s `ensure_launcher`
+    (also run item 98 then) ([ADR-148](adr/148-missing-hook-script-fails-open-via-launcher.md),
+    dev-env#1146).
+
+    Every wired hook runs as `pyw -3 ~/.claude/hook-launch.py <script>`. Without the launcher a
+    missing script makes Python exit 2, which Claude Code reads as a block on every matching tool
+    call, machine-wide; that happened live on 2026-10-09. Seventeen cases, most running the launcher
+    as a real subprocess against throwaway fixture scripts in a temp directory. Every run points
+    `HOOK_LAUNCH_STATE_DIR` at a fresh temp directory, so no case touches the real
+    `~/.claude/scratch` and no throttle state leaks between cases:
+
+    - **A missing script fails open.** Exit 0 and exactly one stdout line that parses as
+      `{"systemMessage": ...}`, pure ASCII, naming the script and the recovery commands. The
+      recovery text is asserted PowerShell-safe, with no `&&` and no `git -C ~`, since a locked-out
+      user's hook-free terminal is Windows PowerShell 5.1. The repo it names is the realpath of the
+      scripts directory, two levels up, falling back to the expanded `~/Git/dev-env`. The same
+      holds for a directory path and for no argument. Both fail-closed gates fail open too, with a
+      "NOT enforcing" warning: a missing gate has no code left to scope its block, and both are wired
+      on every Bash call, so failing closed would block all Bash (the user's decision, recorded in
+      ADR-148). The known-bad reference, a bare `python <missing>.py`, is asserted to exit 2, so the
+      premise is re-checked on every run.
+    - **The warning is throttled, gates excepted.** A second run within the window is silent, a
+      different script has its own window, a missing gate is announced every time, and a state
+      directory that cannot be created means "announce" (fail open).
+    - **A present script is untouched.** Exit codes 0, 2, 7, a fall-through 0 and a traceback's 1
+      pass through, with stderr intact. stdin reaches the hook and its stdout comes back.
+      `__name__ == "__main__"`, `__file__` (absolute), `sys.argv` (extra arguments included), `sys.path[0]` (the
+      script's own directory, so a sibling `import _helper` resolves),
+      `sys.modules["__main__"]` and `__spec__ is None` all match a direct run, and a UTF-8 BOM with
+      non-ASCII source compiles.
+    - **It stays cheap and in-process, enforced structurally.** An AST scan forbids
+      `subprocess`, `runpy`, `multiprocessing`, `pkgutil`, `importlib` and `os.exec*`/`os.spawn*`/
+      `os.system`, and allows only `builtins`/`os`/`sys` at module level. Four known-bad snippets
+      are checked first to prove the scan can fail. A timing case reports the median of five
+      interleaved runs but never fails: a bound loose enough to survive a shared CI runner also
+      passed a runpy-based draft (+44 ms against +2 ms).
+    - **It is stdlib-only.** An AST scan of its imports rejects any module that lives in
+      `claude/scripts/`, because the installed copy has to work when that tree is stale or broken.
+      `GATE_SCRIPTS` equals `test_hook_safe_exit_guard.FAIL_CLOSED`.
+    - **One real `pyw -3` run** when pyw is on PATH; without it that one case reports a skip in its
+      own detail line, and the `py -3` cases still run.
+
+    The wiring side is gated elsewhere: item 63 asserts every shipped command uses the exact
+    launcher form (with the direct form as its known-bad reference), and item 2 asserts `pyw` plus
+    the launcher in position 3. Item 98, group 8, covers install (including refusing a source that
+    does not compile), the sync-time guard, quoted-path tokenizing and the PowerShell-safe recovery
+    text.
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_launch.py
+    ```
+
+104. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`,
+     `setup.sh`'s link arrays (the doctor's `LINKED_ITEMS` / `HOME_LINKS` are pinned against
+     them), `claude/scripts/tests/_hook_wiring.py` (the doctor imports it), or the command form
+     of the hooks in `claude/settings.shared.json`. Exercises the doctor's pure decision helpers
+     (`*_result` / `*_results`, `hook_files`, `parse_ls_remote`, `guarded`) against fixtures
+     only — temp files, fake path resolvers, injected `which`/`is_file`/`exists` callables — so
+     nothing reads this machine's real `~/.claude`, git config, clones or network. One case
+     builds a real dangling junction (a symlink off Windows) in a temp directory, because a
+     dangling link passing is a property of the real `realpath()`. `collect()`, `_run()` and
+     `_kill_tree()`, the thin I/O layer around the helpers, are deliberately untested, per the
+     repo's no-subprocess-mock convention; the whole script was run live on this machine, online
+     and offline, and in a sandboxed `HOME` for
+     [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114). (Numbered 104 because items
+     100–103 went to tests that merged to `main` while this one's PR was open.)
+
+     31 cases, passing on Python 3.12 and 3.10. `LINKED_ITEMS` and `HOME_LINKS` equal
      `setup.sh`'s four parsed link arrays, after asserting each parse extracted something — an
-     empty parse compared against nothing would pass. Hook-command script extraction handles
-     plain, double-quoted-with-a-space and non-`.py` commands; all-present is a PASS, a missing
-     script a FAIL naming it, and zero commands, no readable script path, or an unreadable
-     settings file a FAIL rather than a vacuous PASS
+     empty parse compared against nothing would pass. A hook command's files are read with
+     `_settings_sync.py_tokens`, the extraction the sync's own `hooks_guard` uses
+     ([ADR-148](adr/148-missing-hook-script-fails-open-via-launcher.md)), so the doctor and the
+     sync agree on what a hook needs: the launcher form, the direct form, trailing arguments and
+     a quoted path with a space all resolve. A missing launcher FAILs as blocking every prompt; a
+     missing script behind it FAILs as a hook that isn't running; a missing script run directly
+     FAILs as blocking; all present is a PASS. Zero commands, no readable script path, or an
+     unreadable settings file FAIL rather than pass vacuously
      ([ADR-144](adr/144-gate-calibration-pass-3-dimension.md)). Scripts under a different home get
      the [dev-env#1113](https://github.com/brownm09/dev-env/issues/1113) relocation hint, scripts
-     under this home don't, and a launcher missing from `PATH` FAILs. The link check reports
+     under this home don't, and an interpreter missing from `PATH` FAILs. The link check reports
      missing, real-not-a-link, points-elsewhere and dangling links in one FAIL; the checkout
      check FAILs a checkout that's gone and passes one reached through a junction. Compile
      severity: clean or BOM'd PASS, invalid escape WARN (`SyntaxWarning` from 3.12,

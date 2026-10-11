@@ -116,6 +116,8 @@ Outside of `settings.json` hook commands, continue to use `py -3` (shell-invoked
 
 `py.exe` and `pyw.exe` both ship with the python.org installer's Python Launcher for Windows.
 
+**Amendment (2026-10-10, [ADR-148](148-missing-hook-script-fails-open-via-launcher.md)):** the interpreter stays `pyw -3`, but every hook now runs through a launcher installed outside the junctioned tree: `pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/<name>.py`. The launcher runs the script in-process with stdio, argv and the exit code untouched, and fails open when the script is missing, instead of Python's exit 2, which Claude Code reads as a block. The hook script remains the last token of the command.
+
 If a future Claude Code version invokes hooks through a different shell context (e.g., a hook runner that pre-resolves to Git Bash where `python3` is the user-shell alias), this decision may revisit. Until then, `pyw -3` is the invocation that works reliably from Claude Code's non-interactive hook context on Windows without flashing a console.
 
 ---

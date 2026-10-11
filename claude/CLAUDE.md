@@ -30,7 +30,7 @@ See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md), [ADR-0
 - **OS:** Windows 11, Git Bash terminal
 - **Node:** 20.11.1 (managed by nvm for Windows; `.nvmrc` is set — run `nvm use` at session start if not already active)
 - **Package manager:** npm (workspaces where applicable)
-- **`jq` is NOT available.** Use `node -e` with a temp file for JSON parsing:
+- **`jq` is NOT available.** Use `node -e` with a temp file for JSON parsing (no cleanup line: scratch leftovers are harmless — see the Scratch directory bullet below):
   ```bash
   TMPFILE="C:/Users/brown/.claude/scratch/tmp_$$.json"
   some-command --format json > "$TMPFILE"
@@ -38,10 +38,9 @@ See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md), [ADR-0
     const d = JSON.parse(require('fs').readFileSync('$TMPFILE','utf8'));
     console.log('VAR=' + d.field);
   "
-  rm -f "$TMPFILE"
   ```
 - **Never use `/tmp/`** for temp files — Node.js on Windows cannot resolve Git Bash Unix paths.
-- **Scratch directory:** `C:/Users/brown/.claude/scratch/` — all processing tmp files (`gh` output, JSON parsing intermediaries, etc.) go here regardless of which project is active. Never write tmp files into a project repo working directory.
+- **Scratch directory:** `C:/Users/brown/.claude/scratch/` — all processing tmp files (`gh` output, JSON parsing intermediaries, etc.) go here regardless of which project is active. Never write tmp files into a project repo working directory. Cleaning up scratch is optional, since leftovers are harmless; if you do, run it as its own standalone `rm -f` Bash call, never chained onto `gh`, `git`, or any other command, because only a command that does nothing but delete scratch files is auto-approved ([ADR-147](../docs/adr/147-scratch-only-rm-auto-allow-hook.md)). In that call, name the file by its literal path (`rm -f "C:/Users/brown/.claude/scratch/pr_body_123.md"`) or a non-recursive glob (`rm -f C:/Users/brown/.claude/scratch/tmp_item_*.json`): shell state does not persist between Bash calls, so a variable like `$TMPFILE` set in an earlier call is not defined there, and a `$$`-named file can't be retyped. A file you mean to delete later therefore needs a deterministic name (a date, PR number, or other fixed suffix) rather than `$$`.
 - **`gh` CLI** is available and authenticated. The `project` scope must be added separately when needed: `gh auth refresh -s project`.
 - **Prefer Git Bash** over PowerShell for scripting — PowerShell handles arrays and arithmetic differently and has caused failures in this environment.
 - **Disk-full (ENOSPC):** `C:` saturating to 0 GB surfaces *indirectly* as truncated `node_modules` (npm exits 0 but a native binary is partial), not an obvious "disk full" error. If an install fails with a confusing downstream error, run `df -h /c` first. Recovery runbook + failure signature + dominant consumers: [`docs/REFERENCE.md` → Disk-Full (ENOSPC) Recovery](../docs/REFERENCE.md#disk-full-enospc-recovery). The `worktree-npm-install.py` gate now refuses a low-space install rather than truncate ([ADR-045](../docs/adr/045-pre-install-freespace-gate.md)).
@@ -557,13 +556,13 @@ Every session boundary — a completed task, a pause for input, or a return afte
 
 - **Close each substantive stop with a summary.** When a stop follows real work or leaves something for the user, end the turn with three parts: **Completed** — what got done; **Context / ask** — what's being asked of the user now, if anything (decisions needed, what to review or test, each with its exact path/URL per *User-Actionable References*); **Remaining** — outstanding to-dos. Tile the *genuine out-of-scope follow-ups* among them — using the *Capture follow-ups as tiles* definition of what counts as genuine, and deduplicating against tiles/issues already created earlier in this session so a multi-stop session never re-files the same follow-up; merely list (don't tile) the immediate next steps of the task in progress — but once that remaining work must move to a *different* session (a blocked/orphaned worktree, a required restart, a session boundary), it is a cross-session follow-up: tile the self-contained hand-off per *Capture follow-ups as tiles*, never a paste-it-yourself chat brief ([ADR-113](../docs/adr/113-cross-session-handoff-tiles.md)). **Skip the summary on trivial exchanges** — a greeting, a one-line acknowledgment, a single clarifying question — where it would be pure noise (the same judgment the session-mode preamble uses).
 
-- **Close a session that involved substantial hands-on correction with a feedback-retro table** ([ADR-128](../docs/adr/128-session-end-feedback-retro-table.md)). When a session included a meaningful amount of corrective or judgment-call feedback from the user — not just task requests, but "no, not that," register/diction catches, record-reconciliation calls, process-preference corrections, a repeated theme flagged more than once — close with a table: **What was said** (paraphrased) / **Underlying pattern** / **Status** (already durable, partially addressed, or not yet formalized) / **Long-term mechanism** (how to make this durable). This is distinct from the substantive-stop summary above, which reports task status, not correction patterns — produce both when both apply, and don't let the retro table substitute for the Completed/Context/Remaining recap or vice versa. Any row landing on "not formalized" is a candidate for the existing memory + issue-pairing discipline under *Durable Preferences & Memory* above — the table is a discovery pass surfacing what to immortalize next, not a new persistence mechanism of its own, and it doesn't replace the periodic, cross-project `biweekly-retro` / `weekly-memory-audit` routines, which hunt for global signal at a different cadence and scope. Judging "substantial" is a judgment call, the same as "substantive" above — deliberately no automated skill or subagent scans for this yet (the risk of a rule-writer over-generalizing one correction into an overly broad rule, without a human confirming the generalization's scope, is real); apply this rule directly, the same way the summary bullet above already works without a dedicated skill behind it.
+- **Close a session that involved substantial hands-on correction with a feedback-retro table** ([ADR-128](../docs/adr/128-session-end-feedback-retro-table.md)). When a session included a meaningful amount of corrective or judgment-call feedback from the user — not just task requests, but "no, not that," register/diction catches, record-reconciliation calls, process-preference corrections, a repeated theme flagged more than once — close with a table: **#** (per *Table Row Numbers*) / **What was said** (paraphrased) / **Underlying pattern** / **Status** (already durable, partially addressed, or not yet formalized) / **Long-term mechanism** (how to make this durable). This is distinct from the substantive-stop summary above, which reports task status, not correction patterns — produce both when both apply, and don't let the retro table substitute for the Completed/Context/Remaining recap or vice versa. Any row landing on "not formalized" is a candidate for the existing memory + issue-pairing discipline under *Durable Preferences & Memory* above — the table is a discovery pass surfacing what to immortalize next, not a new persistence mechanism of its own, and it doesn't replace the periodic, cross-project `biweekly-retro` / `weekly-memory-audit` routines, which hunt for global signal at a different cadence and scope. Judging "substantial" is a judgment call, the same as "substantive" above — deliberately no automated skill or subagent scans for this yet (the risk of a rule-writer over-generalizing one correction into an overly broad rule, without a human confirming the generalization's scope, is real); apply this rule directly, the same way the summary bullet above already works without a dedicated skill behind it.
 
 - **File an issue per tile, and end the session with a tile table.** When you spawn a `spawn_task` tile, also file a tracking issue for it in the same repo and reference that issue in the tile prompt — every genuine tile gets a durable, linkable, status-trackable anchor (this **overrides** ADR-046's tiles-are-capture-not-tracking default; [ADR-094](../docs/adr/094-tile-tables-and-issue-per-tile.md)). Then, whenever one or more tiles were spawned this session, close with a table under the exact heading **`### Tiles spawned this session`** (the stable marker the enforcement hook keys on):
 
-  | Tile | Issue | Status | Next |
-  |------|-------|--------|------|
-  | short title | [#N](url) | open · not started | click the chip, or open the issue |
+  | # | Tile | Issue | Status | Next |
+  |---|------|-------|--------|------|
+  | 1 | short title | [#N](url) | open · not started | click the chip, or open the issue |
 
   **Status, honestly:** the live chip is the one-click "start the session" control and the issue is the durable anchor; there is no per-chip "was it started" API, so **Status** is the issue's open/closed state plus a *best-effort* "started" note from `list_sessions` (title/branch/PR match). A dismissed or lost chip is re-spawnable on request; the issue persists regardless.
 
@@ -623,6 +622,17 @@ Applies to every kind of output, including chat replies, docs, file and branch n
 - **Define standard abbreviations the reader may not know.** Established terms (API, CDC for change data capture, SLO for service-level objective) are fine, but define each one on first use, or in a linked glossary, whenever the reader may not know it.
 
 Incident: a 2026-09-30 career-playbook interview-prep session coined "R2P" (Round 2 technical prep), "R1"/"R4" (interview rounds), "SD" (system design), and "ACC:51"-style row citations, and used them across prep docs, chat, commits, and a PR body. The user had never seen them defined and had not agreed to them ([dev-env#1120](https://github.com/brownm09/dev-env/issues/1120)). Nothing enforces this mechanically; a Stop hook or doc lint is warranted only if it recurs now that the rule is written down.
+
+---
+
+## Table Row Numbers
+
+Applies to every table shown to the user, including chat replies, PR and issue bodies, review comments, and generated docs and reports.
+
+- **Give every table a leading `#` column numbered 1..N.** The user rules on rows by position ("all except rows 3, 6, 10"), and without numbers they have to count by hand. When the same table is shown again, keep each row's number and append new rows at the end; never renumber.
+- **Exception: existing tables in tracked files.** When adding a row to an unnumbered table that already lives in a repo file (a README entry index, a ROADMAP proposal list), match that table's format rather than retrofitting it.
+
+Stated by the user on 2026-10-08 ([dev-env#1131](https://github.com/brownm09/dev-env/issues/1131)). Nothing enforces this mechanically.
 
 ---
 

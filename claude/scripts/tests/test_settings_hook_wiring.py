@@ -10,7 +10,9 @@ initiative fixes: Claude Code's default hook timeout kills a slow hook mid-run,
 so a hook doing real subprocess work (git/gh) under a tight bound is silently
 truncated (gotcha #5). This gate enforces, for EVERY (event, matcher, hook) entry:
 
-  1. the command resolves to a `<name>.py` that exists in claude/scripts/;
+  1. the command resolves to a `<name>.py` that exists in claude/scripts/, and runs
+     through the hook launcher (`pyw -3 <home>/.claude/hook-launch.py <script>`), which
+     fails open when the script is missing (dev-env#1146, ADR-148);
   2. an explicit integer `timeout` (seconds) >= the script's budget floor:
        usage-snapshot.py           -> 90  (does ~45s of internal subprocess work)
        a hook importing _winsubp    -> 30  (spawns git/gh subprocesses)
@@ -138,6 +140,41 @@ def test_every_command_resolves_to_existing_script() -> str:
     return f"all {len(entries)} hook entries resolve to an existing claude/scripts/*.py"
 
 
+LAUNCHED_COMMAND_RE = re.compile(
+    r"^pyw -3 " + re.escape(wiring.LAUNCHER_PATH) + " " + re.escape(wiring.SCRIPTS_PREFIX) + r"[\w.-]+\.py$"
+)
+
+
+def test_every_command_goes_through_launcher() -> str:
+    """Every hook runs through the hook launcher, which fails open when the script is
+    missing (dev-env#1146, ADR-148). A command naming the script directly would make
+    pyw exit 2 -- a machine-wide block -- the moment that script is absent."""
+    settings = wiring.load_settings()
+    entries = wiring.hook_entries(settings)
+    assert entries, "no hook entries parsed from the shared settings -- a vacuous pass"
+    bad = [
+        f"{e.event}/{e.matcher}: {e.command!r}"
+        for e in entries
+        if not LAUNCHED_COMMAND_RE.match(e.command)
+    ]
+    assert not bad, (
+        "Hook commands not in the `pyw -3 <launcher> <script>` form (ADR-148):\n  " + "\n  ".join(bad)
+    )
+    launcher_src = wiring.SCRIPTS_DIR / "_hook_launch.py"
+    assert launcher_src.is_file(), f"the launcher source {launcher_src} is missing"
+    return f"all {len(entries)} hook entries run through hook-launch.py"
+
+
+def test_launcher_form_rejects_direct_command() -> str:
+    """Known-bad reference for the form check above: the pre-ADR-148 direct form."""
+    assert not LAUNCHED_COMMAND_RE.match(f"pyw -3 {wiring.SCRIPTS_PREFIX}foo.py")
+    assert LAUNCHED_COMMAND_RE.match(f"pyw -3 {wiring.LAUNCHER_PATH} {wiring.SCRIPTS_PREFIX}foo.py")
+    assert LAUNCHED_COMMAND_RE.match(
+        "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/foo.py"
+    ), "the derived regex must still match the literal shipped form"
+    return "direct form rejected, launcher form accepted"
+
+
 def test_every_entry_has_timeout_at_or_above_budget() -> str:
     settings = wiring.load_settings()
     entries = wiring.hook_entries(settings)
@@ -155,6 +192,23 @@ def test_every_entry_has_timeout_at_or_above_budget() -> str:
     return f"all {len(entries)} hook entries declare an explicit timeout >= their budget floor"
 
 
+# PreToolUse hooks exempt from the Bash/PowerShell mirror below. The mirror
+# exists so a *safety* check can't be bypassed by running the same command via
+# the other tool. An approve-only hook carries no safety check: it can only emit
+# `permissionDecision: "allow"` or no decision, never deny/ask/block. Leaving one
+# off a matcher therefore removes nothing but an approval -- the command there
+# just gets the normal permission prompt -- so mirroring it would only add a
+# guaranteed no-op spawn to every call on the other matcher. An entry here must
+# be Bash-only (asserted below), and must be a hook that never blocks; adding a
+# hook that can deny or block here would reopen dev-env#620's bypass.
+APPROVE_ONLY_PRETOOLUSE_HOOKS = frozenset({
+    # ADR-147: lexer models POSIX shell only, so it makes no decision for a
+    # PowerShell command; wiring it there was a no-op paid on every call
+    # (PR #1135 review finding 4).
+    "pre-tool-use-scratch-rm-allow.py",
+})
+
+
 def test_pretooluse_bash_and_powershell_matchers_are_mirrored() -> str:
     """dev-env#620 (ADR-071 Amendment 4): PowerShell is a fully sanctioned way
     to run the same git/gh commands Bash can, so every PreToolUse safety hook
@@ -165,6 +219,11 @@ def test_pretooluse_bash_and_powershell_matchers_are_mirrored() -> str:
     forgetting the other would otherwise pass every other check in this file
     (each entry it DOES have is still well-formed) while silently reopening
     the exact bypass dev-env#620 closed.
+
+    Approve-only hooks (`APPROVE_ONLY_PRETOOLUSE_HOOKS`) are exempt: they carry
+    no safety check, so there is nothing to bypass. The exemption is explicit
+    and by name, and an exempt hook must not be wired under PowerShell at all,
+    so a stale entry can't silently widen it.
     """
     settings = wiring.load_settings()
     entries = wiring.hook_entries(settings)
@@ -172,11 +231,30 @@ def test_pretooluse_bash_and_powershell_matchers_are_mirrored() -> str:
     powershell_scripts = {e.script for e in entries if e.event == "PreToolUse" and e.matcher == "PowerShell"}
     assert bash_scripts, "expected at least one PreToolUse/Bash hook entry -- found none"
     assert powershell_scripts, "expected at least one PreToolUse/PowerShell hook entry -- found none"
-    only_bash = bash_scripts - powershell_scripts
-    only_powershell = powershell_scripts - bash_scripts
+    exempt_wired = APPROVE_ONLY_PRETOOLUSE_HOOKS & bash_scripts
+    assert exempt_wired == APPROVE_ONLY_PRETOOLUSE_HOOKS, (
+        "APPROVE_ONLY_PRETOOLUSE_HOOKS names a hook not wired under PreToolUse/Bash "
+        f"(stale exemption): {sorted(APPROVE_ONLY_PRETOOLUSE_HOOKS - bash_scripts)}"
+    )
+    exempt_on_powershell = APPROVE_ONLY_PRETOOLUSE_HOOKS & powershell_scripts
+    assert not exempt_on_powershell, (
+        f"approve-only hook(s) wired under PreToolUse/PowerShell, where they are a no-op: {sorted(exempt_on_powershell)}"
+    )
+    for name in sorted(APPROVE_ONLY_PRETOOLUSE_HOOKS):
+        # Cheap structural check that the exempt hook really can't block: it
+        # never reaches the blocking emitter or an exit-2.
+        source = (wiring.SCRIPTS_DIR / name).read_text(encoding="utf-8")
+        for marker in ("emit_block(", "exit(2)"):
+            assert marker not in source, f"approve-only hook {name} contains {marker!r} -- it can block, so it must be mirrored"
+    mirrored = bash_scripts - APPROVE_ONLY_PRETOOLUSE_HOOKS
+    only_bash = mirrored - powershell_scripts
+    only_powershell = powershell_scripts - mirrored
     assert not only_bash, f"wired under PreToolUse/Bash but missing from PreToolUse/PowerShell: {sorted(only_bash)}"
     assert not only_powershell, f"wired under PreToolUse/PowerShell but missing from PreToolUse/Bash: {sorted(only_powershell)}"
-    return f"PreToolUse Bash and PowerShell matchers wire the identical {len(bash_scripts)}-script set"
+    return (
+        f"PreToolUse Bash and PowerShell matchers wire the identical {len(mirrored)}-script safety set "
+        f"({len(APPROVE_ONLY_PRETOOLUSE_HOOKS)} approve-only hook(s) Bash-only by design)"
+    )
 
 
 def test_posttooluse_bash_and_powershell_matchers_are_mirrored() -> str:
@@ -214,6 +292,8 @@ def main() -> int:
         ("min_timeout pure-Python = 10", test_min_timeout_pure_python_is_10),
         ("_winsubp import regex (anchored)", test_winsubp_import_regex),
         ("every command resolves to an existing script", test_every_command_resolves_to_existing_script),
+        ("every command goes through hook-launch.py (ADR-148)", test_every_command_goes_through_launcher),
+        ("launcher form check rejects the direct form", test_launcher_form_rejects_direct_command),
         ("every entry timeout >= budget", test_every_entry_has_timeout_at_or_above_budget),
         ("PreToolUse Bash/PowerShell matchers mirrored (dev-env#620)", test_pretooluse_bash_and_powershell_matchers_are_mirrored),
         ("PostToolUse Bash/PowerShell matchers mirrored (dev-env#763)", test_posttooluse_bash_and_powershell_matchers_are_mirrored),

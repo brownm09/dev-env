@@ -59,8 +59,9 @@ bash "$HOME/Git/dev-env/setup.sh"
 - Move anything already at a link location into `~/.claude/backups/setup-<timestamp>/`, and
   record there where any replaced link pointed, if it pointed outside dev-env
 - Create the `~/.claude/` links (`CLAUDE.md`, `scripts`, `skills`, `hooks`, `templates`, `routines`) and `~/bin`
-- Seed `~/.claude/settings.json` (not on a profile other than `C:\Users\brown` — see step 1) and
-  set `core.hooksPath` globally, saving the previous values in the same backup directory
+- Seed `~/.claude/settings.json` and set `core.hooksPath` globally, saving the previous values in
+  the same backup directory. On a profile other than `C:\Users\brown` the seed withholds dev-env's
+  hooks, because the launcher and scripts they name aren't there (see step 1)
 - Finish by running `dev-env-doctor.py`, which checks the prerequisites (`py`, `pyw`, `gh`
   and its sign-in, `node`, git identity), and exit non-zero while it reports a FAIL
 

@@ -69,6 +69,12 @@ The Decision section forward-referenced #656 as filed-but-not-yet-built ("landin
 
 Full detection/decision detail and the isolated interaction tests: `claude/scripts/tests/test_stop_tile_enumeration_gate.py` (dev-env `CLAUDE.md` → `## Testing` item 48) and `docs/REFERENCE.md`'s hook entry.
 
+## Addendum (2026-10-08): the tile table gains a leading `#` column ([#1131](https://github.com/brownm09/dev-env/issues/1131))
+
+The user set a global output rule: every table shown to them gets a leading `#` column numbered 1..N, because they rule on rows by position ("all except rows 3, 6, 10"). The rule lives in `claude/CLAUDE.md` under *Table Row Numbers*. It refines the table format this ADR records, so the template in `claude/CLAUDE.md` is now `| # | Tile | Issue | Status | Next |`. The table's purpose, its other columns, and the `### Tiles spawned this session` heading are otherwise unchanged. The enforcement hook keys on that heading only (`table_marker_present`), so it needs no change. The [ADR-128](128-session-end-feedback-retro-table.md) feedback-retro table gains the same `#` column under the same rule.
+
+The global rule itself has no ADR of its own. Per the [ADR-145](145-scope-discipline-self-referential-churn.md) tie-break, no alternative was weighed and rejected; the reasoning is fully contained in the rule as written, the same disposition as the *Abbreviations* rule (dev-env#1120).
+
 ## References
 
 - [dev-env#652](https://github.com/brownm09/dev-env/issues/652) — top-level issue; [#653](https://github.com/brownm09/dev-env/issues/653) — this PR; [#656](https://github.com/brownm09/dev-env/issues/656) — the enforcement hook (this addendum).

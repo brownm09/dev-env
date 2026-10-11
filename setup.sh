@@ -39,52 +39,21 @@ HOME_LINKS=(bin)                                  # ~/<name> -> <name>, junction
 # re-run that changes nothing creates no backup directory at all.
 SETUP_BACKUP_DIR="${SETUP_BACKUP_DIR:-$HOME/.claude/backups/setup-$(date +%Y%m%d-%H%M%S)}"
 
-# settings_home -- the home directory the tracked hook commands are written for (the prefix
-# of the first ~/.claude path in claude/settings.shared.json, e.g. C:/Users/brown), or
-# nothing when no hook names one.
-settings_home() {
-  { grep -o -E '[A-Za-z]:/Users/[^/"]+/\.claude/' "$REPO_DIR/claude/settings.shared.json" || true; } \
-    | sed -n '1{s#/\.claude/$##;p;}'
-}
-
-# settings_home_mismatch -- why the tracked hook commands can't run here (their scripts sit
-# under another home), or nothing when they can. A hook whose script is missing exits 2,
-# which blocks every prompt, so seeding them under another home would stop every session.
-# dev-env#1113 makes the paths per-machine; until it lands, such a machine isn't seeded.
-settings_home_mismatch() {
-  local want have
-  want="$(settings_home)"
-  [ -n "$want" ] || return 0
-  case "$(uname -s)" in
-    MINGW*|CYGWIN*|MSYS*)
-      have="$(cygpath -m "$HOME")"
-      [ "${want,,}" = "${have,,}" ] && return 0 ;;
-    *)
-      have="$HOME"
-      [ "$want" = "$have" ] && return 0 ;;
-  esac
-  echo "its hook commands run scripts under $want, but this home is $have"
-}
-
 # seed_claude_settings -- materialize/refresh the real, machine-local
 # ~/.claude/settings.json from the tracked claude/settings.shared.json. Idempotent:
 # replaces only the keys dev-env owns (hooks, permissions), seeds absent defaults, and
 # leaves every app-written key alone. Also migrates an existing repo symlink left by a
-# pre-ADR-139 setup run. Same code path dev-env-sync.py runs on every prompt.
+# pre-ADR-139 setup run. Same code path dev-env-sync.py runs on every prompt. It installs the
+# hook launcher, and it withholds the `hooks` key when a file a hook names is missing -- on a
+# profile other than the one the tracked commands name, for instance -- because a missing
+# launcher blocks every prompt (ADR-148; dev-env#1113 makes the paths per-machine).
 #
 # Never fails the run: the symlinks above are the critical half of setup, and a seed that
 # cannot complete (no python, an unreadable shared file) must warn with the exact manual
 # command rather than abort setup with the links half-applied. `return 0` is explicit for
 # the same reason -- these functions run under `set -e`.
 seed_claude_settings() {
-  local reason live="$HOME/.claude/settings.json" before=""
-  reason="$(settings_home_mismatch)"
-  if [ -n "$reason" ]; then
-    echo "  WARNING: not seeding ~/.claude/settings.json: $reason."
-    echo "  A hook whose script is missing blocks every prompt, so sessions here would not start."
-    echo "  dev-env#1113 makes these paths per-machine; until it lands, this machine runs without dev-env's hooks."
-    return 0
-  fi
+  local live="$HOME/.claude/settings.json" before=""
 
   # An array, not a string: "py -3" as a bare string would only work by relying on
   # unquoted word-splitting at the call site, which breaks the moment any element

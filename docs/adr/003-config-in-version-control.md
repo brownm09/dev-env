@@ -270,10 +270,13 @@ the bootstrap this ADR's link topology depends on.
 
 Setup now ends by running `claude/scripts/dev-env-doctor.py`, a read-only check of the whole install:
 links, hook-command scripts, tools and auth, per-clone `core.hooksPath` overrides, and the journal clone
-(Testing item 101). Setup exits non-zero while the doctor reports a FAIL, and the doctor never waits on a
-credential prompt. On a profile other than the one the tracked hook commands name, setup doesn't seed them,
-since a hook whose script is missing blocks every prompt
-([dev-env#1113](https://github.com/brownm09/dev-env/issues/1113) makes the paths per-machine). One list of
+(Testing item 104). Setup exits non-zero while the doctor reports a FAIL, and the doctor never waits on a
+credential prompt. On a profile other than the one the tracked hook commands name, the settings sync withholds
+those hooks, because the launcher and scripts they name are missing there and a missing launcher blocks every
+prompt ([ADR-148](148-missing-hook-script-fails-open-via-launcher.md) §3;
+[dev-env#1113](https://github.com/brownm09/dev-env/issues/1113) makes the paths per-machine). An earlier
+revision of this PR had setup skip the whole seed on such a profile; ADR-148's guard, which merged first, is
+finer-grained (permissions and the other keys still apply), so setup relies on it instead. One list of
 link arrays drives the Windows and POSIX link loops, `--restore`'s allow-list and the doctor's checks. The
 link tables in the project `CLAUDE.md` and `README.md` now say what setup actually creates: directory
 symlinks for `scripts`, `skills`, `hooks` and `templates`, and a junction for `routines`.

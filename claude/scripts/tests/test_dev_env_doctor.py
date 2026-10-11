@@ -96,13 +96,16 @@ def test_link_lists_match_setup_sh():
 # --------------------------------------------------------------------------- parsing helpers
 
 
-def test_script_path_from_command():
-    f = doc.script_path_from_command
-    assert f("pyw -3 C:/Users/me/.claude/scripts/a-b.py") == "C:/Users/me/.claude/scripts/a-b.py"
-    assert f('pyw -3 "C:/Users/John Smith/.claude/scripts/x.py"  ') == "C:/Users/John Smith/.claude/scripts/x.py"
-    assert f("bash C:/Users/me/.claude/hooks/pre-push") is None
-    assert f("") is None
-    return "plain, quoted-with-space, non-.py and empty commands"
+def test_hook_files():
+    f = doc.hook_files
+    launcher, script = "C:/Users/me/.claude/hook-launch.py", "C:/Users/me/.claude/scripts/a-b.py"
+    assert f(f"pyw -3 {launcher} {script}") == ([launcher], script), "ADR-148 form: launcher, then script"
+    assert f(f"pyw -3 {script}") == ([], script), "the direct, pre-launcher form"
+    assert f(f"pyw -3 {script} --mode x") == ([], script), "arguments after the script don't hide it"
+    assert f('pyw -3 "C:/Users/John Smith/.claude/scripts/x.py"  ') == ([], "C:/Users/John Smith/.claude/scripts/x.py")
+    assert f("bash C:/Users/me/.claude/hooks/pre-push") == ([], None)
+    assert f("") == ([], None)
+    return "launcher form, direct form, trailing arguments, quoted path with a space, non-.py and empty"
 
 
 def test_home_prefix():
@@ -169,16 +172,39 @@ def test_hook_commands_zero_entries_fails_not_vacuous():
 
 
 def test_hook_commands_none_parsed_fails_not_vacuous():
-    # Entries exist, but no script path can be read from any: the check read nothing, so it
-    # must not report "all present" -- and the launcher is still checked.
-    settings = _settings("pyw -3 C:/x/.claude/scripts/gone-a.py --mode x", "pyw -3 C:/x/.claude/scripts/gone-b.py > log")
+    # Entries exist, but none names a .py: the check read nothing, so it must not report
+    # "all present" -- and the interpreters are still checked.
+    settings = _settings("bash C:/x/.claude/hooks/pre-push", "node C:/x/.claude/scripts/hook.js")
     results = doc.hook_command_results(
         settings, Path("s.json"), Path("C:/x"), is_file=_always(False), which=_always(None),
     )
-    assert _statuses(results) == [FAIL, FAIL], results
+    assert _statuses(results) == [FAIL, FAIL, FAIL], results
     assert "checked nothing" in results[0].detail, results[0].detail
-    assert results[1].check == "hook launcher" and "'pyw'" in results[1].detail, results[1]
+    assert {r.check for r in results[1:]} == {"hook interpreter"}, results
     return results[0].detail
+
+
+def test_hook_commands_launcher_form():
+    # ADR-148: every command runs `pyw -3 <launcher> <script>`. A missing launcher blocks
+    # everything; a missing script behind it is skipped with a warning, so its hook isn't running.
+    launcher = "C:/x/.claude/hook-launch.py"
+    a, b = "C:/x/.claude/scripts/a.py", "C:/x/.claude/scripts/b.py"
+    settings = _settings(f"pyw -3 {launcher} {a}", f"pyw -3 {launcher} {b}")
+    found = doc.hook_command_results(settings, Path("s.json"), Path("C:/x"), is_file=_always(True), which=_always("found"))
+    assert _statuses(found) == [PASS] and "through 1 launcher(s)" in found[0].detail, found
+
+    no_launcher = doc.hook_command_results(
+        settings, Path("s.json"), Path("C:/x"), is_file=lambda p: p != launcher, which=_always("found"),
+    )
+    assert _statuses(no_launcher) == [FAIL] and no_launcher[0].check == "hook launcher", no_launcher
+    assert "every prompt and tool call is blocked" in no_launcher[0].detail, no_launcher[0].detail
+
+    no_script = doc.hook_command_results(
+        settings, Path("s.json"), Path("C:/x"), is_file=lambda p: p != b, which=_always("found"),
+    )
+    assert _statuses(no_script) == [FAIL] and "not running" in no_script[0].detail, no_script
+    assert "1 of 2" in no_script[0].detail and "b.py" in no_script[0].detail, no_script[0].detail
+    return "all present PASS; missing launcher blocks; missing script behind it isn't running"
 
 
 def test_hook_commands_unreadable_settings_fails():
@@ -212,7 +238,7 @@ def test_hook_commands_launcher_missing_fails():
         settings, Path("s.json"), Path("C:/x"), is_file=_always(True), which=_always(None),
     )
     assert _statuses(results) == [PASS, FAIL], results
-    assert results[1].check == "hook launcher" and "'pyw'" in results[1].detail, results[1]
+    assert results[1].check == "hook interpreter" and "'pyw'" in results[1].detail, results[1]
     return results[1].detail
 
 
@@ -489,7 +515,7 @@ def test_exit_code():
 def main() -> int:
     tests = [
         ("LINKED_ITEMS / HOME_LINKS match setup.sh's link arrays", test_link_lists_match_setup_sh),
-        ("script path extracted from hook commands", test_script_path_from_command),
+        ("hook files read with the sync's own extraction", test_hook_files),
         ("home prefix of a hook script path", test_home_prefix),
         ("same_path normalization and case rule", test_same_path),
         ("ls-remote parsed from stdout, SHA validated", test_parse_ls_remote),
@@ -500,7 +526,8 @@ def main() -> int:
         ("unreadable settings -> FAIL", test_hook_commands_unreadable_settings_fails),
         ("scripts under another home -> relocation hint", test_hook_commands_other_home_hint),
         ("scripts under this home -> no relocation hint", test_hook_commands_same_home_no_hint),
-        ("hook launcher not on PATH -> FAIL", test_hook_commands_launcher_missing_fails),
+        ("ADR-148 launcher form: launcher and script both checked", test_hook_commands_launcher_form),
+        ("hook interpreter not on PATH -> FAIL", test_hook_commands_launcher_missing_fails),
         ("a command with no .py -> WARN", test_hook_commands_unparsed_warns),
         ("all links resolve into the repo -> PASS", test_link_results_all_correct),
         ("missing, real, misdirected and dangling links -> one FAIL", test_link_results_reports_missing_real_elsewhere_and_dangling),

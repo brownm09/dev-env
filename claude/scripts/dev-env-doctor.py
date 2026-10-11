@@ -20,10 +20,13 @@ What it checks, and why each one matters on a second machine (dev-env#1114, part
   the dev-env checkout, and that checkout is ~/Git/dev-env on `main` -- dev-env-sync.py
   and session-start-sync.py assume both. A dangling link FAILs: realpath() still returns
   its missing target, which would otherwise compare equal to the expected one.
-- Every hook command in the live ~/.claude/settings.json names a script that exists. A
-  missing script exits 2, which blocks every prompt or tool call it is wired to. The check
-  asserts it extracted at least one script path, so an unreadable or unparseable settings
-  file FAILs instead of passing vacuously (ADR-144).
+- Every file each hook command in the live ~/.claude/settings.json names exists: the hook
+  launcher (~/.claude/hook-launch.py, ADR-148) and the hook script. A missing launcher makes
+  pyw exit 2, which blocks every prompt and tool call; a missing script is skipped by the
+  launcher with a warning, so that hook silently isn't running. The files are read with
+  `_settings_sync.py_tokens`, the same extraction the sync's own guard uses, and the check
+  asserts it extracted at least one script, so an unreadable or unparseable settings file
+  FAILs instead of passing vacuously (ADR-144).
 - The tools the workflow shells out to: the hook launcher (pyw), py, git, gh, node -- plus
   gh sign-in (decided locally by `gh auth token`) and its `project` scope, the gh
   git-credential helper (ADR-047) and git identity.
@@ -60,9 +63,12 @@ from typing import Callable, Iterable, NamedTuple
 
 import _winsubp  # noqa: F401  -- UTF-8 decoding + no console flash for child processes (ADR-007)
 import _repo_scan
+# The files a hook command names, extracted exactly as the settings sync's hooks_guard does
+# (ADR-148), so the doctor and the sync can never disagree about which files a hook needs.
+from _settings_sync import py_tokens
 
 # The settings.json hook walker the three settings gates share (Testing items 61-63; the
-# doctor is its one runtime consumer, so item 61 names item 101 too). It lives in tests/ so the
+# doctor is its one runtime consumer, so item 61 names item 104 too). It lives in tests/ so the
 # gates' own claude/scripts/*.py glob never mistakes it for a hook. Appended, not prepended, so
 # nothing in tests/ can shadow a module the doctor imports.
 sys.path.append(str(Path(__file__).resolve().parent / "tests"))
@@ -82,10 +88,6 @@ HOME_LINKS = ("bin",)
 
 PASS, WARN, FAIL, INFO = "PASS", "WARN", "FAIL", "INFO"
 
-# The script a hook command runs: its last token ending in .py, optionally double-quoted
-# (a home path containing a space). Matches the `pyw -3 C:/.../foo.py` form (ADR-007).
-_SCRIPT_PATH_RE = re.compile(r'(?:"([^"]+\.py)"|(\S+\.py))\s*$')
-
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 
@@ -100,12 +102,14 @@ def same_path(a: object, b: object) -> bool:
     return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(os.path.normpath(str(b)))
 
 
-def script_path_from_command(command: str) -> str | None:
-    """The script path a hook command runs, or None when it names no .py file."""
-    m = _SCRIPT_PATH_RE.search(command.strip())
-    if not m:
-        return None
-    return m.group(1) or m.group(2)
+def hook_files(command: str) -> tuple[list[str], str | None]:
+    """The files a hook command names: (launchers, script). In the ADR-148 form
+    `pyw -3 <launcher>.py <script>.py` the hook script is the last `.py` and anything before
+    it is the launcher. A command naming no `.py` gives ([], None)."""
+    paths = py_tokens(command)
+    if not paths:
+        return [], None
+    return paths[:-1], paths[-1]
 
 
 def home_prefix(script_path: str) -> str | None:
@@ -202,8 +206,18 @@ def hook_command_results(
     is_file: Callable[[str], bool] = os.path.isfile,
     which: Callable[[str], str | None] = shutil.which,
 ) -> list[Result]:
-    """Every wired hook command must name an existing script and an available launcher."""
-    reseed = "re-seed it: py -3 <dev-env>/claude/scripts/_settings_sync.py"
+    """Every file each wired hook command names must exist -- the ADR-148 launcher and the hook
+    script -- and the interpreter every command starts with must be on PATH.
+
+    What a missing file costs depends on which file it is. A missing launcher makes pyw exit 2,
+    which blocks every prompt and tool call. A missing script behind the launcher is skipped with
+    a warning, so that hook silently isn't running. A missing script run directly (a live file
+    still in the pre-ADR-148 form, which the sync's guard can leave in place) exits 2 and blocks."""
+    reseed = (
+        "re-seed it: py -3 <dev-env>/claude/scripts/_settings_sync.py -- if the sync withholds "
+        "`hooks` because files they name are missing, that is ADR-148 refusing hooks that would "
+        "block every prompt (on a profile other than the one they name, see dev-env#1113)"
+    )
     if settings is None:
         return [Result(FAIL, "hook commands", f"cannot read {settings_path} (missing or not JSON) -- {reseed}")]
     entries = hook_entries(settings)
@@ -212,23 +226,36 @@ def hook_command_results(
             FAIL, "hook commands",
             f"no hook commands found in {settings_path}; checking zero commands would pass vacuously -- {reseed}",
         )]
-    missing: list[str] = []
+    missing_launchers: set[str] = set()
+    launched_missing: list[str] = []  # scripts the launcher will skip (one entry per command)
+    direct_missing: list[str] = []    # scripts run without the launcher, which exit 2
     unparsed: list[str] = []
     scripts: set[str] = set()
     launchers: set[str] = set()
+    interpreters: set[str] = set()
     checked = 0
     for entry in entries:
-        tokens = entry.command.split()
-        if tokens:
-            launchers.add(tokens[0])
-        path = script_path_from_command(entry.command)
-        if path is None:
+        words = entry.command.split()
+        if words:
+            interpreters.add(words[0])
+        launch, script = hook_files(entry.command)
+        if script is None:
             unparsed.append(entry.command)
             continue
         checked += 1
-        scripts.add(path)
-        if not is_file(path):
-            missing.append(path)
+        scripts.add(script)
+        for path in launch:
+            launchers.add(path)
+            if not is_file(path):
+                missing_launchers.add(path)
+        if not is_file(script):
+            (launched_missing if launch else direct_missing).append(script)
+
+    def home_hint(paths: Iterable[str]) -> str:
+        prefix = home_prefix(sorted(paths)[0])
+        if prefix and not same_path(prefix, home):
+            return f" -- they point under {prefix}, but this machine's home is {home} (dev-env#1113)"
+        return ""
 
     out: list[Result] = []
     if not scripts:
@@ -238,30 +265,42 @@ def hook_command_results(
             f"none of the {len(entries)} hook commands names a .py script this check can read, so it "
             f"checked nothing -- a vacuous pass otherwise; e.g. {entries[0].command[:80]}",
         ))
-    elif missing:
-        unique = sorted(set(missing))
-        detail = (
-            f"{len(missing)} of {checked} checked hook commands name a missing script "
-            f"(every prompt or tool call they are wired to is blocked), e.g. {', '.join(unique[:3])}"
-        )
-        prefix = home_prefix(unique[0])
-        if prefix and not same_path(prefix, home):
-            detail += f" -- they point under {prefix}, but this machine's home is {home} (dev-env#1113)"
-        out.append(Result(FAIL, "hook commands", detail))
-    else:
+    if missing_launchers:
         out.append(Result(
-            PASS, "hook commands", f"{checked} commands checked, {len(scripts)} distinct scripts, all present",
+            FAIL, "hook launcher",
+            f"{', '.join(sorted(missing_launchers))} is missing, and the hook commands run through it, so "
+            "pyw exits 2 and every prompt and tool call is blocked -- reinstall it with "
+            "py -3 <dev-env>/claude/scripts/_settings_sync.py (ADR-148)" + home_hint(missing_launchers),
+        ))
+    if direct_missing:
+        out.append(Result(
+            FAIL, "hook commands",
+            f"{len(direct_missing)} of {checked} checked hook commands run a missing script without the "
+            "ADR-148 launcher, so pyw exits 2 and blocks every prompt or tool call they are wired to, "
+            f"e.g. {', '.join(sorted(set(direct_missing))[:3])}" + home_hint(direct_missing),
+        ))
+    if launched_missing:
+        out.append(Result(
+            FAIL, "hook commands",
+            f"{len(launched_missing)} of {checked} checked hook commands name a missing script, which the "
+            "launcher skips with a warning, so those hooks are not running (ADR-148), "
+            f"e.g. {', '.join(sorted(set(launched_missing))[:3])}" + home_hint(launched_missing),
+        ))
+    if scripts and not (missing_launchers or direct_missing or launched_missing):
+        via = f" through {len(launchers)} launcher(s)" if launchers else ""
+        out.append(Result(
+            PASS, "hook commands", f"{checked} commands checked, {len(scripts)} distinct scripts{via}, all present",
         ))
     if unparsed and scripts:
         out.append(Result(
             WARN, "hook commands",
             f"{len(unparsed)} command(s) name no .py script, so were not checked, e.g. {unparsed[0][:80]}",
         ))
-    for launcher in sorted(launchers):
-        if which(launcher) is None:
+    for interpreter in sorted(interpreters):
+        if which(interpreter) is None:
             out.append(Result(
-                FAIL, "hook launcher",
-                f"'{launcher}' is not on PATH, and every hook command starts with it (ADR-007)",
+                FAIL, "hook interpreter",
+                f"'{interpreter}' is not on PATH, and every hook command starts with it (ADR-007)",
             ))
     return out
 

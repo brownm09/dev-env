@@ -66,6 +66,22 @@ backup that cannot be captured aborts the write. A one-time
 so repeated syncs can't erode the original. Writes are atomic (tmp + os.replace)
 and verified by read-back. A no-op is reported as a skip, never as a change.
 
+Never wire a hook whose script is missing (dev-env#1146, ADR-148)
+-----------------------------------------------------------------
+A wired command whose `.py` file is absent makes Python exit 2, which Claude Code reads
+as a BLOCK -- one missing script locks every matching tool call out, machine-wide. Two
+defenses live here:
+
+  * `ensure_launcher` installs `_hook_launch.py` to ~/.claude/hook-launch.py, a real
+    file outside every junction, on every sync and BEFORE any hooks are written. Every
+    shipped command runs through it, and it maps "script missing" to exit 0 plus a
+    warning -- which is what still protects a machine whose canonical later regresses
+    to an older tree (no guard inside that older tree can help then).
+  * `hooks_guard` withholds the owned `hooks` key -- keeping the live, working wiring --
+    when any path a command names (launcher included) is not a file, or a command names
+    no `.py` at all. The forward case (a sync run before the canonical pulled) then
+    reports "pull first" instead of wiring scripts that are not there yet.
+
 This module is import-safe and side-effect-free: `dev-env-sync.py` owns the
 advisory printing, so the UserPromptSubmit stdout contract (ADR-098) lives in one
 place. Pure-ASCII output throughout (the ADR-103 output-contract gate).
@@ -74,6 +90,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import time
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -92,6 +109,51 @@ SHARED_PATH = _CLAUDE_DIR / "settings.shared.json"
 
 LIVE_PATH = Path.home() / ".claude" / "settings.json"
 BACKUP_DIR = Path.home() / ".claude" / "backups"
+
+# The hook launcher's source (inside the junctioned scripts tree) and its installed
+# copy (a real file OUTSIDE every junction, so it survives a canonical that regresses
+# to an older tree). Every command in the shared `hooks` names LAUNCHER_DEST.
+LAUNCHER_SRC = _CLAUDE_DIR / "scripts" / "_hook_launch.py"
+LAUNCHER_DEST = Path.home() / ".claude" / "hook-launch.py"
+
+
+
+def py_tokens(command: str) -> "list[str]":
+    """Every argument of a hook command that ends in `.py`: the launcher and the hook
+    script itself. Both must exist, or pyw exits 2 (a block).
+
+    Tokenized with `shlex.split(posix=False)`, which keeps a quoted argument together,
+    then the surrounding quotes are stripped. So a quoted path with a space in it (a
+    home directory such as `C:/Users/Jane Doe`, which dev-env#1113's prefix relocation
+    could produce) is checked as one path rather than turning into "no .py found".
+    Unbalanced quotes yield [], which the guard reports as an unparsed command.
+    """
+    try:
+        parts = shlex.split(command, posix=False)
+    except ValueError:
+        return []
+    tokens = []
+    for part in parts:
+        if len(part) >= 2 and part[0] == part[-1] and part[0] in "\"'":
+            part = part[1:-1]
+        if part.lower().endswith(".py"):
+            tokens.append(part)
+    return tokens
+
+
+def canonical_repo() -> str:
+    """The dev-env checkout the ~/.claude/scripts junction resolves to: the tree whose
+    scripts the hooks actually run, and so the one a "pull first" message must name.
+    Absolute with forward slashes, so it pastes into Git Bash or PowerShell (neither
+    git nor PowerShell 5.1 expands `~` for a native program). Falls back to
+    ~/Git/dev-env."""
+    try:
+        scripts = (Path.home() / ".claude" / "scripts").resolve()
+        if scripts.name == "scripts" and scripts.parent.name == "claude":
+            return scripts.parent.parent.as_posix()
+    except (OSError, RuntimeError):
+        pass
+    return (Path.home() / "Git" / "dev-env").as_posix()
 
 # Written once, never overwritten, never removed (ADR-079 rule 3).
 #
@@ -118,6 +180,7 @@ class SyncPlan(NamedTuple):
     owned_updates: dict          # owned key -> shared value (live differs)
     seed_inserts: dict           # seed key -> shared value (absent from live)
     unclassified: list           # shared top-level keys in neither OWNED nor SEED
+    withheld: "dict | None" = None  # owned key -> why it was NOT applied (hooks_guard)
 
 
 class SyncResult(NamedTuple):
@@ -158,6 +221,73 @@ def plan_sync(shared: dict, live: dict) -> SyncPlan:
     return SyncPlan(owned_updates, seed_inserts, unclassified)
 
 
+def _hook_commands(hooks: dict) -> "list[str]":
+    """Every `command` string a settings `hooks` object wires, in order.
+
+    Walks hooks[event][*].hooks[*]; a malformed level contributes nothing rather than
+    raising. Entries whose `type` is not "command" (e.g. a "prompt" hook) run no file
+    and are skipped.
+    """
+    commands = []
+    for groups in hooks.values():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            for entry in group.get("hooks") or []:
+                if not isinstance(entry, dict) or entry.get("type", "command") != "command":
+                    continue
+                commands.append(str(entry.get("command") or ""))
+    return commands
+
+
+def hooks_guard(hooks: Any) -> "str | None":
+    """Why the shared `hooks` value must NOT be applied, or None when it is safe.
+
+    Safe means every `.py` path every command names -- the launcher and the hook
+    script -- is a file right now, checked exactly as the command spells it, since
+    that is the path pyw will open. A missing one would make pyw exit 2, which Claude
+    Code reads as a block on every matching tool call (dev-env#1146).
+
+    A command naming no `.py` at all is also refused: this guard reads its input by
+    extraction, so an empty extraction must not pass as "nothing missing" (ADR-144).
+    """
+    if not isinstance(hooks, dict):
+        return "the shared `hooks` value is not a JSON object"
+    unparsed, missing = [], []
+    for command in _hook_commands(hooks):
+        tokens = py_tokens(command)
+        if not tokens:
+            unparsed.append(command)
+            continue
+        for token in tokens:
+            if token not in missing and not Path(token).is_file():
+                missing.append(token)
+    reasons = []
+    if missing:
+        shown = ", ".join(missing[:8]) + (f" (+{len(missing) - 8} more)" if len(missing) > 8 else "")
+        reasons.append(f"{len(missing)} wired file(s) do not exist: {shown}")
+    if unparsed:
+        reasons.append(
+            f"{len(unparsed)} command(s) name no .py file to check: " + ", ".join(repr(c) for c in unparsed[:3])
+        )
+    return "; ".join(reasons) or None
+
+
+def guard_plan(plan: SyncPlan) -> SyncPlan:
+    """Move `hooks` from owned_updates to withheld when hooks_guard refuses it. Pure
+    apart from the filesystem existence checks."""
+    if "hooks" not in plan.owned_updates:
+        return plan
+    reason = hooks_guard(plan.owned_updates["hooks"])
+    if reason is None:
+        return plan
+    owned = {k: v for k, v in plan.owned_updates.items() if k != "hooks"}
+    withheld = dict(plan.withheld or {}, hooks=reason)
+    return plan._replace(owned_updates=owned, withheld=withheld)
+
+
 def apply_plan(live: dict, plan: SyncPlan) -> dict:
     """Return a new live-settings dict with the plan applied. Pure."""
     updated = dict(live)
@@ -166,7 +296,13 @@ def apply_plan(live: dict, plan: SyncPlan) -> dict:
     return updated
 
 
-def format_sync_note(plan: SyncPlan, migrated_from: "str | None") -> "str | None":
+def format_sync_note(
+    plan: SyncPlan,
+    migrated_from: "str | None",
+    launcher_installed: bool = False,
+    launcher_error: "str | None" = None,
+    launcher_src: "Path | None" = None,
+) -> "str | None":
     """Advisory text for a completed sync, or None when there is nothing to report.
 
     `migrated_from` is the symlink target that was replaced, or None if no migration
@@ -190,6 +326,37 @@ def format_sync_note(plan: SyncPlan, migrated_from: "str | None") -> "str | None
             "repo file and blocking the canonical's fast-forward."
         )
         lines.append(f"  Content as it stood before this write: {BACKUP_DIR / ANCHOR_NAME}")
+    if launcher_installed:
+        src = Path(launcher_src or LAUNCHER_SRC)
+        lines.append(
+            f"[dev-env-sync] Installed the current hook launcher at {LAUNCHER_DEST} "
+            f"from {src.as_posix()} (dev-env#1146, ADR-148)."
+        )
+        repo = canonical_repo()
+        # Compare the directory exactly, not by prefix: a worktree lives *under* the
+        # canonical (<repo>/.claude/worktrees/<name>/claude/scripts).
+        if src.resolve().parent.as_posix().lower() != (repo + "/claude/scripts").lower():
+            # Run from a worktree, this installs that branch's launcher machine-wide.
+            lines.append(
+                f"  NOTE: that is not the canonical checkout ({repo}). Every hook on this "
+                "machine runs this copy until a sync from the canonical replaces it."
+            )
+    if launcher_error:
+        lines.append(f"[dev-env-sync] WARNING: {launcher_error}")
+    for key, reason in sorted((plan.withheld or {}).items()):
+        lines.append(
+            f"[dev-env-sync] WARNING: shared `{key}` NOT applied to ~/.claude/settings.json "
+            f"(the live value was kept, so nothing is blocked): {reason}"
+        )
+        repo = canonical_repo()
+        sync_script = (Path.home() / ".claude" / "scripts" / "_settings_sync.py").as_posix()
+        # Absolute paths and `;`, not `~` and `&&`: the recovery terminal may be Windows
+        # PowerShell 5.1, which parses neither (dev-env#1146 review).
+        lines.append(
+            "  The dev-env canonical is probably behind the shared file. Pull it, then re-run "
+            f"the sync: git -C {repo} checkout main; git -C {repo} pull; "
+            f"py -3 {sync_script} (dev-env#1146, ADR-148)."
+        )
     if plan.owned_updates:
         lines.append(
             "[dev-env-sync] Applied shared settings to ~/.claude/settings.json: "
@@ -292,6 +459,58 @@ def prune_backups(backup_dir: Path, keep: int = KEEP_TIMESTAMPED_BACKUPS) -> "li
     return removed
 
 
+def ensure_launcher(
+    src: Path = LAUNCHER_SRC, dest: Path = LAUNCHER_DEST
+) -> "tuple[bool, str | None]":
+    """Install the hook launcher's current bytes at `dest`; return (installed, error).
+
+    A no-op (bytes already equal) returns (False, None) -- a skip, not a change
+    (ADR-079 rule 4). The write is atomic (tmp + os.replace) and verified by read-back.
+    No backup is taken: the launcher is code dev-env wholly owns, not user config, and
+    re-running the sync restores it -- ADR-079 governs state someone else could have
+    changed, which this file is not (ADR-148).
+
+    A missing/unreadable source with a launcher already installed keeps the installed
+    one: that is an older tree, and the installed launcher is exactly what must
+    survive it. Never raises.
+    """
+    src, dest = Path(src), Path(dest)
+    try:
+        payload = src.read_bytes()
+    except OSError:
+        if dest.is_file():
+            return False, None
+        return False, f"hook launcher source {src} is unreadable and none is installed at {dest}"
+    # Every hook, dev-env-sync.py included, runs through this one file, so a launcher
+    # that does not even compile would make every hook exit 1. Exit 1 does not block,
+    # so every hook would quietly stop, and with dev-env-sync.py among them nothing
+    # would heal it. Refuse to install one; the previous copy stays in place.
+    try:
+        compile(payload, str(src), "exec")
+    except (SyntaxError, ValueError) as exc:
+        return False, f"refusing to install the hook launcher from {src}: it does not compile ({exc})"
+    try:
+        if dest.is_file() and dest.read_bytes() == payload:
+            return False, None
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + f".{os.getpid()}.tmp")
+        try:
+            tmp.write_bytes(payload)
+            os.replace(tmp, dest)
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        if dest.read_bytes() != payload:
+            return False, f"read-back verification failed for the hook launcher at {dest}"
+    except OSError as exc:
+        # On Windows os.replace fails while another hook process has the file open.
+        # The previously installed launcher still works; the next sync retries.
+        return False, f"could not install the hook launcher at {dest}: {exc}"
+    return True, None
+
+
 def write_json_verified(path: Path, data: dict) -> None:
     """Atomically write `data` as pretty JSON, then verify by read-back (ADR-079 rule 4).
 
@@ -318,8 +537,14 @@ def sync(
     shared_path: Path = SHARED_PATH,
     live_path: Path = LIVE_PATH,
     backup_dir: Path = BACKUP_DIR,
+    launcher_src: Path = LAUNCHER_SRC,
+    launcher_dest: Path = LAUNCHER_DEST,
 ) -> SyncResult:
     """Materialize the live file if needed, then apply the shared settings into it.
+
+    The hook launcher is installed first, so a `hooks` value naming it is never
+    written before the file exists; `guard_plan` then withholds `hooks` if any path a
+    command names is still missing (dev-env#1146, ADR-148).
 
     Never raises: every failure is returned as `error` so the calling
     UserPromptSubmit hook can stay fail-open and never block a prompt.
@@ -327,6 +552,8 @@ def sync(
     shared = read_json(shared_path)
     if shared is None:
         return SyncResult(False, False, None, f"could not read {shared_path}")
+
+    launcher_installed, launcher_error = ensure_launcher(launcher_src, launcher_dest)
 
     migrated_from = None
     try:
@@ -365,12 +592,16 @@ def sync(
             {k: shared[k] for k in SEED_KEYS if k in shared},
             classify(shared)[2],
         )
+        plan = guard_plan(plan)
         try:
             live_path.parent.mkdir(parents=True, exist_ok=True)
             write_json_verified(live_path, apply_plan({}, plan))
         except OSError as exc:
             return SyncResult(False, migrated, None, f"could not create {live_path}: {exc}")
-        return SyncResult(True, migrated, format_sync_note(plan, migrated_from), None)
+        return SyncResult(
+            True, migrated,
+            format_sync_note(plan, migrated_from, launcher_installed, launcher_error, launcher_src), None,
+        )
 
     live = read_json(live_path)
     if live is None:
@@ -380,11 +611,18 @@ def sync(
             False, migrated, None, f"{live_path} is not readable as a JSON object; left untouched"
         )
 
-    plan = plan_sync(shared, live)
+    plan = guard_plan(plan_sync(shared, live))
     if not plan.owned_updates and not plan.seed_inserts:
-        # No-op recorded as a skip, never as a change (ADR-079 rule 4).
-        note = format_sync_note(plan, migrated_from) if (migrated or plan.unclassified) else None
-        return SyncResult(False, migrated, note, None)
+        # No-op recorded as a skip, never as a change (ADR-079 rule 4). A launcher
+        # install is a change of its own, and a withheld key is always reported.
+        worth_saying = (
+            migrated or plan.unclassified or plan.withheld or launcher_installed or launcher_error
+        )
+        note = (
+            format_sync_note(plan, migrated_from, launcher_installed, launcher_error, launcher_src)
+            if worth_saying else None
+        )
+        return SyncResult(launcher_installed, migrated, note, None)
 
     try:
         backup_live(live_path, backup_dir)
@@ -416,7 +654,9 @@ def sync(
     except OSError as exc:
         return SyncResult(False, migrated, None, f"could not write {live_path}: {exc}")
 
-    return SyncResult(True, migrated, format_sync_note(plan, migrated_from), None)
+    return SyncResult(
+        True, migrated, format_sync_note(plan, migrated_from, launcher_installed, launcher_error, launcher_src), None
+    )
 
 
 if __name__ == "__main__":
@@ -431,6 +671,6 @@ if __name__ == "__main__":
         print(f"[settings-sync] WARNING: {outcome.error}")
     if outcome.note:
         print(outcome.note)
-    if not outcome.error and not outcome.changed and not outcome.migrated:
+    if not outcome.error and not outcome.changed and not outcome.migrated and not outcome.note:
         print("[settings-sync] Already in sync - no change.")
     sys.exit(1 if outcome.error else 0)

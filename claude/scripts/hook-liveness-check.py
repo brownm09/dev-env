@@ -79,8 +79,8 @@ OWN_HOOK_NAME = "hook-liveness-check"
 # The last whitespace-delimited token of a hook command is the script path --
 # capture its basename minus ".py", which is exactly the literal string every
 # hook passes to _hookutil.record_heartbeat() at its own call site (see that
-# function's docstring). Matches the `pyw -3 C:/.../foo.py` invocation form
-# (ADR-007).
+# function's docstring). Matches the `pyw -3 C:/.../hook-launch.py C:/.../foo.py`
+# invocation form (ADR-007, ADR-148) -- the launcher is never the last token.
 _SCRIPT_RE = re.compile(r"([\w.-]+)\.py\s*$")
 
 
