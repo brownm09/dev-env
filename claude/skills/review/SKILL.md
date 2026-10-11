@@ -482,6 +482,18 @@ gate above (what / why here / category / what to do), not from a count limit. A 
 cannot meet all four questions should be dropped or downgraded; one that can meet them belongs
 in the report regardless of how many others are already listed.
 
+**Scope-of-change check** (global `claude/CLAUDE.md` → Code Quality → *Scope of a change*,
+[ADR-149](../../../docs/adr/149-scope-of-a-change-rules.md)). With the PR's linked issue in mind,
+also look for:
+- **Out-of-scope hunks:** a changed line that doesn't trace to the issue, such as reformatting,
+  re-commenting, a nearby refactor, or deleting pre-existing dead code. Point to the hunk and
+  suggest reverting it or moving it to its own issue and PR.
+- **Speculative code:** an option, flag, parameter, or branch no caller uses, an abstraction with a
+  single caller, or handling for an error that cannot happen. Name the simpler shape.
+
+Report these as non-blocking `maintainability` findings through the same four-question gate. A
+hunk the PR body explicitly justifies is not a finding.
+
 Proceed to Step 6.
 
 ---
@@ -515,6 +527,7 @@ Spawn two subagents in parallel using the Agent tool with `model: "opus"`. Pass 
 > For each finding, answer: (1) what the code does, (2) why it matters in this context,
 > (3) whether it is reliability, performance, or maintainability, (4) what the author should do.
 > Report every substantive finding that meets the four-question gate (category is pre-restricted to {reliability, performance, maintainability} for this pass — discard any finding outside those three categories; the other subagent will surface them). Do not cap. Do not comment on correctness, security, or style.
+> Under maintainability, also flag (a) hunks that don't trace to the PR's stated purpose, such as reformatting, re-commenting, nearby refactors, or deleted pre-existing dead code, unless the PR body justifies them, and (b) speculative code: unused options or parameters, single-caller abstractions, or handling for errors that cannot happen.
 > Format each finding as:
 > **[reliability|performance|maintainability]** <file>:<line> — <what> / <why here> / <what to do>
 
@@ -541,6 +554,7 @@ Assign each finding to one of four buckets:
 **Non-Blocking** (performance | maintainability | documentation):
 - Performance concerns that do not affect correctness
 - Code that works but will be hard to extend, test, or debug
+- Scope-of-change findings from Step 4 / Subagent B (out-of-scope hunks, speculative code)
 - Step 2c suggestion to create a README where none exists
 
 **Questions for Author:**
