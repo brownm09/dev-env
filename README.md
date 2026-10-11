@@ -8,6 +8,7 @@ Development environment configuration for cross-device use.
 |---|---|---|
 | `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` | Claude Code global configuration |
 | `claude/settings.shared.json` | *synced into* `~/.claude/settings.json` (not linked) | Claude Code hooks and permissions. The live file is a real, machine-local file the app writes; `_settings_sync.py` applies the tracked `hooks`/`permissions` into it each prompt ([ADR-139](docs/adr/139-machine-local-settings-with-shared-source-sync.md)) |
+| `claude/scripts/_hook_launch.py` | *copied to* `~/.claude/hook-launch.py` (a real file, deliberately outside every junction) | The hook launcher every wired command runs through. A missing hook script fails open (exit 0 plus a warning) instead of Python's exit 2, which would block every matching tool call. `_settings_sync.py` installs it before writing any hooks that name it, and refuses to wire hooks whose scripts are absent ([ADR-148](docs/adr/148-missing-hook-script-fails-open-via-launcher.md)) |
 | `claude/scripts/` | `~/.claude/scripts/` (junction) | Hook scripts and utilities |
 | `claude/skills/` | `~/.claude/skills/` (junction) | Custom slash command skills |
 | `claude/routines/` | `~/.claude/routines/` (junction) | Scheduled-task source definitions — registering a live task is a separate step, see [Routines](#routines) |

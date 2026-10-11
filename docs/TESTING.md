@@ -4019,7 +4019,15 @@ For a one-line navigational map of the test directory, see
     paths remapped into this repo, all resolve (known-good, n=84 commands at the time of
     writing), and the same set with one script relocated is caught (known-bad). The `Env`
     fixture now builds its `hooks` from a real launcher and script under its temp root, so
-    every earlier group runs through the guard too.
+    every earlier group runs through the guard too. Added in review (PR #1147):
+    - a launcher source with a syntax error is refused and the installed copy kept;
+    - an install from a non-canonical tree is named as such in the note;
+    - `py_tokens` keeps a quoted path containing a space as one token, and returns nothing for
+      unbalanced quotes or a non-Python command;
+    - the guard accepts an existing quoted path;
+    - the withheld-hooks recovery text uses absolute paths and no `&&`;
+    - the calibration remap asserts that no shipped path still points at the real home. The
+      prefix comes from `_hook_wiring.HOME_PREFIX`, the single definition dev-env#1113 will change.
 
     ```bash
     py -3 claude/scripts/tests/test_settings_sync.py
@@ -4425,25 +4433,36 @@ For a one-line navigational map of the test directory, see
 
     Every wired hook runs as `pyw -3 ~/.claude/hook-launch.py <script>`. Without the launcher a
     missing script makes Python exit 2, which Claude Code reads as a block on every matching tool
-    call, machine-wide; that happened live on 2026-10-09. Thirteen cases, each running the launcher
-    as a real subprocess against throwaway fixture scripts in a temp directory:
+    call, machine-wide; that happened live on 2026-10-09. Seventeen cases, most running the launcher
+    as a real subprocess against throwaway fixture scripts in a temp directory. Every run points
+    `HOOK_LAUNCH_STATE_DIR` at a fresh temp directory, so no case touches the real
+    `~/.claude/scratch` and no throttle state leaks between cases:
 
     - **A missing script fails open.** Exit 0 and exactly one stdout line that parses as
-      `{"systemMessage": ...}`, pure ASCII, naming the script and the recovery command. The same
+      `{"systemMessage": ...}`, pure ASCII, naming the script and the recovery commands. The
+      recovery text is asserted PowerShell-safe, with no `&&` and no `git -C ~`, since a locked-out
+      user's hook-free terminal is Windows PowerShell 5.1. The repo it names is the realpath of the
+      scripts directory, two levels up, falling back to the expanded `~/Git/dev-env`. The same
       holds for a directory path and for no argument. Both fail-closed gates fail open too, with a
       "NOT enforcing" warning: a missing gate has no code left to scope its block, and both are wired
       on every Bash call, so failing closed would block all Bash (the user's decision, recorded in
       ADR-148). The known-bad reference, a bare `python <missing>.py`, is asserted to exit 2, so the
       premise is re-checked on every run.
+    - **The warning is throttled, gates excepted.** A second run within the window is silent, a
+      different script has its own window, a missing gate is announced every time, and a state
+      directory that cannot be created means "announce" (fail open).
     - **A present script is untouched.** Exit codes 0, 2, 7, a fall-through 0 and a traceback's 1
       pass through, with stderr intact. stdin reaches the hook and its stdout comes back.
-      `__name__ == "__main__"`, `__file__`, `sys.argv` (extra arguments included), `sys.path[0]` (the
+      `__name__ == "__main__"`, `__file__` (absolute), `sys.argv` (extra arguments included), `sys.path[0]` (the
       script's own directory, so a sibling `import _helper` resolves),
       `sys.modules["__main__"]` and `__spec__ is None` all match a direct run, and a UTF-8 BOM with
       non-ASCII source compiles.
-    - **It stays cheap and in-process.** It is compared against a direct run, averaged over five.
-      The bound (`direct * 1.5 + 30 ms`) sits between the measured in-process launcher (+2 ms) and an
-      earlier runpy-based draft (+44 ms), so a second interpreter or an eager heavy import fails it.
+    - **It stays cheap and in-process, enforced structurally.** An AST scan forbids
+      `subprocess`, `runpy`, `multiprocessing`, `pkgutil`, `importlib` and `os.exec*`/`os.spawn*`/
+      `os.system`, and allows only `builtins`/`os`/`sys` at module level. Four known-bad snippets
+      are checked first to prove the scan can fail. A timing case reports the median of five
+      interleaved runs but never fails: a bound loose enough to survive a shared CI runner also
+      passed a runpy-based draft (+44 ms against +2 ms).
     - **It is stdlib-only.** An AST scan of its imports rejects any module that lives in
       `claude/scripts/`, because the installed copy has to work when that tree is stale or broken.
       `GATE_SCRIPTS` equals `test_hook_safe_exit_guard.FAIL_CLOSED`.
@@ -4452,7 +4471,9 @@ For a one-line navigational map of the test directory, see
 
     The wiring side is gated elsewhere: item 63 asserts every shipped command uses the exact
     launcher form (with the direct form as its known-bad reference), and item 2 asserts `pyw` plus
-    the launcher in position 3. Item 98, group 8, covers install and the sync-time guard.
+    the launcher in position 3. Item 98, group 8, covers install (including refusing a source that
+    does not compile), the sync-time guard, quoted-path tokenizing and the PowerShell-safe recovery
+    text.
 
     ```bash
     py -3 claude/scripts/tests/test_hook_launch.py

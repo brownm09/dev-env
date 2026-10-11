@@ -285,14 +285,17 @@ come through the junction, any lag between the two (a canonical drifted onto an 
 sync run before a pull) used to lock the machine out of Bash, PowerShell and Write; it happened
 live on 2026-10-09. The launcher (`claude/scripts/_hook_launch.py`, stdlib-only) runs a present
 script in-process as `__main__` with stdio, argv and the exit code untouched. For a missing script
-it prints one `systemMessage` and exits 0, the two fail-closed gates included, since a missing
-gate has no code to scope its block and both are wired on every Bash call. `_settings_sync`
-installs it to `~/.claude/hook-launch.py`, outside every junction so it survives a regressed tree,
-on every sync and before writing any hooks that name it. The sync also withholds `hooks` (keeping
-the live wiring and reporting "pull first") while any path a command names is absent.
+it exits 0 and prints a `systemMessage` naming PowerShell-safe recovery commands (absolute paths,
+`;` rather than `&&`). The warning is throttled to once per script per 10 minutes, except for the
+two fail-closed gates, which also fail open but are announced every time: a missing gate has no
+code to scope its block, and both are wired on every Bash call. `_settings_sync` installs it to
+`~/.claude/hook-launch.py`, outside every junction so it survives a regressed tree, on every sync
+and before writing any hooks that name it. It refuses to install a source that does not compile.
+The sync also withholds `hooks` (keeping the live wiring and reporting "pull first") while any path
+a command names is absent.
 **Residual risk:** if `~/.claude/hook-launch.py` itself is deleted, every hook exits 2 again, and
 `dev-env-sync.py`, the hook that would reinstall it, cannot run. Recover from a hook-free terminal
-(the app's Terminal panel) with `py -3 ~/.claude/scripts/_settings_sync.py`.
+(the app's Terminal panel) with `py -3 C:/Users/brown/.claude/scripts/_settings_sync.py`.
 See [ADR-007](adr/007-hook-command-invocation.md) for why hooks invoke scripts via `pyw -3` (the windowless variant of the Windows Python Launcher) rather than `python3` directly, wrapped in `bash -c`, or via `py -3` (which flashes a console window per spawn). Shell-invoked Python (the `## Testing` command, skill `py -3` examples, and the `pre-push` hook) continues to use `py -3`.
 
 Any hook that spawns subprocesses (`git`, `gh`, `bash`, …) must `import _winsubp` near its imports — the helper patches `subprocess.Popen.__init__` to (1) set `CREATE_NO_WINDOW` so children don't flash a console window under `pythonw.exe`, and (2) default a text-mode call (`text=True` / `universal_newlines=True`) with no explicit `encoding=` to `encoding="utf-8", errors="replace"` rather than the Windows cp1252 default, which crashed `post-tool-use.py` reading `gh project item-add`'s output (dev-env#503). The static check in `claude/scripts/tests/test_pyw_stdio.py` fails the build if a subprocess-using hook ships without it. See ADR-007's 2026-06-01 and 2026-07-02 follow-up sections.

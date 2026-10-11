@@ -62,19 +62,32 @@ the regress case, because once the old tree is checked out, the guard is old cod
 - **Script present.** The launcher runs it **in-process** as `__main__`: it compiles the file and
   executes it in a fresh `__main__` module, the way the interpreter runs a script. It sets
   `sys.argv[0]` to the script, `sys.path[0]` to the script's own directory (so sibling
-  `import _hookio` still resolves), and `__file__`. stdin, stdout, stderr, and the exit code pass
+  `import _hookio` still resolves), and `__file__` (absolute, as Python 3.9+ gives a directly-run
+  script). stdin, stdout, stderr, and the exit code pass
   through untouched. There is no try/except around the call, so `SystemExit(0/2)` and a crash's
   traceback with exit 1 behave exactly as before, and every hook keeps its own declared fail
   direction.
 - **Script missing** (or not a file, or no argument). The launcher prints one ASCII
   `{"systemMessage": ...}` line, which reaches the user on every hook event (see the
   [`_hookout`](103-shared-hookout-emitter.md) channel table), naming the script and the recovery
-  command, and exits **0**.
-- **Stdlib only.** The launcher imports only `os`, `sys` and `builtins`, plus `json` on the
-  missing path alone. It has to work precisely when the dev-env tree is stale or broken, and it
-  runs in front of every hook on every tool call. A `runpy`-based draft cost about 44 ms per hook
-  (it pulls in `pkgutil`, and the draft imported `json` eagerly). The compile-and-exec form
-  measured about 2 ms over a direct run.
+  commands, and exits **0**. The recovery commands use absolute, forward-slash paths and `;`,
+  never `~` or `&&`, because the hook-free terminal a locked-out user reaches for (the app's
+  Terminal panel) runs Windows PowerShell 5.1, which parses neither. The repo named is the one
+  the `~/.claude/scripts` junction resolves to.
+- **Warnings are throttled.** A stale tree can leave a dozen or more hooks missing, each firing
+  on every tool call. So a non-gate script is announced at most once per 10 minutes, keyed by a
+  best-effort timestamp file under `~/.claude/scratch/hook-launch/`. Any filesystem error means
+  "announce". A missing gate is announced every time, so its NOT-enforcing warning is never
+  buried under the rest.
+- **Stdlib only.** At module level the launcher imports only `builtins`, `os` and `sys`, all
+  already loaded before any script starts. `json` and `time` are imported on the missing path
+  alone. It has to work precisely when the dev-env tree is stale or broken, and it runs in front
+  of every hook on every tool call. A `runpy`-based draft ran about 44 ms per hook over a direct
+  run, wall-clock; it pulls in `pkgutil`, and the draft imported `json` eagerly. About 15 ms of
+  that showed as import time under `-X importtime`. The compile-and-exec form measured about
+  2 ms. `test_hook_launch.py` enforces this structurally rather than by timing, which is too noisy
+  on CI to gate on: it forbids `subprocess`/`runpy`/`importlib`/`os.exec*`/`os.spawn*` and any
+  module-level import beyond those three, and checks itself against known-bad snippets.
 
 **Compatibility.** The command form stays `pyw -3` ([ADR-007](007-hook-command-invocation.md)),
 and the hook script stays the **last token**. So `tests/_hook_wiring.py`,
@@ -109,9 +122,12 @@ enforcing until restored". The launcher's `GATE_SCRIPTS` set is pinned equal to
 Before it applies the owned `hooks` key, in both the update path and the fresh-machine path,
 `_settings_sync.guard_plan` runs `hooks_guard`. The guard extracts every `.py` token from every
 `type: "command"` entry (the launcher and the script) and checks each with `Path.is_file()`,
-using the path **exactly as the command spells it**, because that is the path pyw will open. That
-keeps the guard correct after [dev-env#1113](https://github.com/brownm09/dev-env/issues/1113)'s
-planned author-home prefix rewrite. The guard withholds `hooks` when:
+using the path **exactly as the command spells it**, because that is the path pyw will open.
+Commands are tokenized with `shlex.split(posix=False)` and surrounding quotes are stripped. A
+quoted path containing a space, such as a home directory that
+[dev-env#1113](https://github.com/brownm09/dev-env/issues/1113)'s planned author-home prefix
+rewrite could produce, is checked as one path. It does not read as "no `.py` found", which would
+otherwise freeze `hooks` indefinitely. The guard withholds `hooks` when:
 
 - any of those paths is missing;
 - any command names no `.py` at all, since an extracted input must be shown non-empty
@@ -119,14 +135,24 @@ planned author-home prefix rewrite. The guard withholds `hooks` when:
 - or `hooks` is not an object.
 
 Withholding means the **live** `hooks` value stays as it is, while the other owned and seed keys
-still apply. The sync prints an ASCII warning naming the files and the recovery command
-(`git -C ~/Git/dev-env checkout main && git -C ~/Git/dev-env pull`, then re-run the sync). It
-does this on every sync until the files exist, then applies `hooks` on its own.
+still apply. The sync prints an ASCII warning naming the files and the recovery commands:
+`git -C <canonical> checkout main; git -C <canonical> pull; py -3 <home>/.claude/scripts/_settings_sync.py`,
+with absolute paths, for the PowerShell reason given above. It does this on every sync until
+the files exist, then applies `hooks` on its own. Withholding is whole-key, not per entry,
+deliberately: a partially applied `hooks` would be a wiring nobody wrote or tested.
 
 **Ordering.** `ensure_launcher` runs first, on every sync, so the launcher exists before any
 `hooks` naming it is written. If the launcher cannot be installed (no source and none installed),
 its path is missing and the guard withholds `hooks`, and both conditions are reported. A
 launcher-only update is reported as a change.
+
+**A launcher that does not compile is never installed.** Every hook, `dev-env-sync.py`
+included, runs through the installed copy. A broken one would make every hook exit 1, and exit
+1 does not block, so every hook would quietly stop running and nothing would heal it.
+`ensure_launcher` therefore compiles the source before writing, and keeps the previous copy if
+the source fails. When the source is not the canonical checkout's (a sync run from a worktree),
+the note says so, because that branch's launcher now runs machine-wide until a sync from the
+canonical replaces it.
 
 **No backup for the launcher write.** [ADR-079](079-backup-restore-convention.md) governs state
 someone else could have changed, such as user config or system settings. The launcher is code
@@ -152,11 +178,29 @@ includes the known-bad reference that a bare `python <missing>.py` exits 2.
 
 ## Consequences
 
-- **The 2026-10-09 lockout cannot recur from a lagging tree.** In the regress case the user sees
-  warnings, not blocks. In the forward case the old wiring stays in place and the sync says why.
+- **The 2026-10-09 lockout cannot recur from a tree at or after this change.** In the regress
+  case the user sees warnings, not blocks. In the forward case the old wiring stays in place and
+  the sync says why. The exception is a tree older than this change; see the next residual risk.
+- **Residual risk: a regress to a tree made after ADR-139 but before this ADR.** That tree's own
+  `_settings_sync.py` runs through the launcher, but it rewrites the live `hooks` back to the
+  direct form and has no guard. When `dev-env-sync.py` later returns the canonical to `main`, it
+  pulls *after* it syncs. So for the rest of that turn, and the next prompt's other hooks,
+  direct-form wiring runs against main's scripts. A script the older tree wired that main has
+  since removed exits 2. This lasts a turn and then heals itself. A re-sync right after a
+  successful pull would close it, but it needs the freshly pulled module, not the in-memory old
+  one. That is tracked as a follow-up, [dev-env#1148](https://github.com/brownm09/dev-env/issues/1148).
+- **Rollout: the launcher was pre-installed on this machine before merge.** `dev-env-sync.py` on
+  `main` imports `_settings_sync` at process start but reads `settings.shared.json` only later.
+  If a concurrent session's pull lands between the two, the old code, which has no
+  `ensure_launcher` and no guard, would wire launcher-form hooks before the launcher exists.
+  That is a lockout that cannot heal itself (the review of PR #1147 reproduced it). Copying
+  `claude/scripts/_hook_launch.py` to `~/.claude/hook-launch.py` before merging closes the window,
+  the same precaution ADR-139 took for its own migration. A machine that has never run the old
+  code (a fresh `setup.sh`) seeds through the new `_settings_sync.py` and installs the launcher
+  first.
 - **Every hook pays a small extra cost:** one more small file compiled per invocation, about 2 ms
-  measured. A bound in `test_hook_launch.py` catches a regression to a second interpreter or an
-  eager heavy import.
+  measured. `test_hook_launch.py` forbids the imports that would raise it (see Decision §1); a
+  timing case reports the numbers but does not gate.
 - **While a gate script is missing, that gate does not enforce.** The remaining window is a
   canonical regressed onto a pre-July tree, during which `gh pr merge --auto` is ungated. Two
   things partly cover it: GitHub's per-repo `allow_auto_merge` (false on most `brownm09/*`
@@ -164,15 +208,18 @@ includes the known-bad reference that a bare `python <missing>.py` exits 2.
   Amendment 1), which tells the user the canonical is off `main`.
 - **Residual risk: the launcher itself.** If `~/.claude/hook-launch.py` is deleted, every hook
   exits 2 again. That includes `dev-env-sync.py`, the hook that would reinstall it, so it cannot
-  heal itself. Recovery is `py -3 ~/.claude/scripts/_settings_sync.py` from a hook-free terminal,
-  as documented in `docs/REFERENCE.md` and the dev-env `CLAUDE.md` architecture section. This was
+  heal itself. Recovery is `py -3 C:/Users/brown/.claude/scripts/_settings_sync.py` (an absolute
+  path, so it runs in PowerShell as well) from a hook-free terminal, as documented in
+  `docs/REFERENCE.md` and the dev-env `CLAUDE.md` architecture section. A launcher that installs
+  but crashes would have the same effect without blocking, which is why `ensure_launcher` refuses
+  any source that does not compile. This was
   accepted over special-casing `dev-env-sync.py` into the direct form. That would trade a
   near-impossible risk (the launcher deleted) for a different one: a missing `dev-env-sync.py`
   would block every *prompt*, which is worse than blocking Bash. It would also break the uniform
   form the wiring lint checks.
-- **Rollback** means reverting the PR. The shared file returns to the direct form, the sync
-  applies it (every script exists, so the guard passes), and the installed launcher is left
-  behind, inert.
+- **Rollback** means reverting the PR. The shared file and `_settings_sync.py` both return to
+  their earlier versions. The reverted sync, which has no guard, applies the direct form, whose
+  scripts all exist, and the installed launcher is left behind, inert.
 
 ## Alternatives Considered
 

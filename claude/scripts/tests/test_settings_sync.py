@@ -456,6 +456,48 @@ with Env() as env:
     check(not installed and err is not None and "none is installed" in err,
           "no source and nothing installed -> a named error, never a raise")
 
+# A launcher source that does not compile is never installed: every hook runs through
+# the installed copy, so a broken one would make every hook exit 1 and stop silently.
+with Env() as env:
+    _settings_sync.ensure_launcher(env.launcher_src, env.launcher_dest)
+    good_bytes = env.launcher_dest.read_bytes()
+    env.launcher_src.write_text("def broken(:\n", encoding="utf-8")
+    installed, err = _settings_sync.ensure_launcher(env.launcher_src, env.launcher_dest)
+    check(not installed and err is not None and "does not compile" in err,
+          "a launcher source with a syntax error is refused, with a named error")
+    check(env.launcher_dest.read_bytes() == good_bytes, "the previously installed launcher is kept")
+
+# The worktree case: installing from a source that is not the canonical says so.
+with Env() as env:
+    write_json(env.live, dict(MACHINE_LOCAL))
+    note = env.sync().note or ""
+    check("from " in note and "not the canonical checkout" in note,
+          "a launcher installed from a non-canonical tree is named as such in the note")
+
+# Tokenizing: quoted paths (a home with a space) are one token, quotes stripped.
+check(
+    _settings_sync.py_tokens('pyw -3 "C:/Users/Jane Doe/.claude/hook-launch.py" "C:/Users/Jane Doe/x.py"')
+    == ["C:/Users/Jane Doe/.claude/hook-launch.py", "C:/Users/Jane Doe/x.py"],
+    "a quoted path containing a space is checked as one path",
+)
+check(_settings_sync.py_tokens('pyw -3 "unbalanced.py') == [], "unbalanced quotes -> no tokens (reported unparsed)")
+check(_settings_sync.py_tokens("node x.js") == [], "a non-Python command names no .py")
+with Env() as env:
+    spaced = env.root / "Jane Doe" / "hook.py"
+    spaced.parent.mkdir(parents=True)
+    spaced.write_text("pass\n", encoding="utf-8")
+    _settings_sync.ensure_launcher(env.launcher_src, env.launcher_dest)
+    quoted = {"Stop": [{"hooks": [{"type": "command",
+               "command": f'pyw -3 "{env.launcher_dest.as_posix()}" "{spaced.as_posix()}"'}]}]}
+    check(_settings_sync.hooks_guard(quoted) is None, "the guard accepts an existing quoted path with a space")
+
+# The recovery text must work in Windows PowerShell 5.1, the hook-free Terminal panel's
+# default shell: absolute paths (no `~`) and no `&&`.
+plan_withheld = _settings_sync.SyncPlan({}, {}, [], {"hooks": "x"})
+note = _settings_sync.format_sync_note(plan_withheld, None) or ""
+check("&&" not in note and "~/Git" not in note and "py -3 ~" not in note,
+      "the withheld-hooks recovery command uses absolute paths and no &&")
+
 with Env() as env:
     _settings_sync.ensure_launcher(env.launcher_src, env.launcher_dest)
     good = env.hooks_for(env.hook_script)
@@ -492,7 +534,8 @@ with Env() as env:
     check(data["theme"] == MACHINE_LOCAL["theme"], "machine-local keys still survive")
     note = result.note or ""
     check("NOT applied" in note and "brand-new-hook.py" in note, "the note names the missing script")
-    check("git -C ~/Git/dev-env" in note, "the note names the recovery command")
+    check("checkout main;" in note and " pull;" in note and "_settings_sync.py" in note,
+          "the note names the recovery commands")
     note.encode("ascii")
     ok("the withheld note is pure ASCII (ADR-103 output contract)")
     again = env.sync()
@@ -546,12 +589,19 @@ with Env() as env:
 
 # Calibration (ADR-144): known-good = the real shipped hooks with their paths remapped into
 # this repo (all must resolve); known-bad = the same with one script removed.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _hook_wiring  # noqa: E402  (tests/ support module; owns the shipped prefix)
+
 real = _settings_sync.read_json(_settings_sync.SHARED_PATH) or {}
 real_hooks_text = json.dumps(real.get("hooks", {}))
 scripts_dir = Path(_settings_sync.__file__).resolve().parent
 remapped_text = real_hooks_text.replace(
-    "C:/Users/brown/.claude/hook-launch.py", (scripts_dir / "_hook_launch.py").as_posix()
-).replace("C:/Users/brown/.claude/scripts/", scripts_dir.as_posix() + "/")
+    _hook_wiring.LAUNCHER_PATH, (scripts_dir / "_hook_launch.py").as_posix()
+).replace(_hook_wiring.SCRIPTS_PREFIX, scripts_dir.as_posix() + "/")
+# A prefix the remap missed would leave the "known-good" check probing the REAL
+# ~/.claude -- passing on the author's machine and failing only on CI. Fail loudly.
+check(_hook_wiring.HOME_PREFIX not in remapped_text,
+      "calibration remap rewrote every shipped path (none still points at the real home)")
 remapped = json.loads(remapped_text)
 n_commands = len(_settings_sync._hook_commands(remapped))
 check(n_commands > 50, f"calibration extracted the shipped commands (n={n_commands}), not an empty set")

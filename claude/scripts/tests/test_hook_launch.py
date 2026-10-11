@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -48,12 +49,26 @@ import _hook_launch  # noqa: E402
 PY = [sys.executable]
 
 
-def run(args, stdin_text="", interpreter=None):
-    """Run the launcher with `args`; return (returncode, stdout, stderr) as text."""
+def run(args, stdin_text="", interpreter=None, state_dir=None):
+    """Run the launcher with `args`; return (returncode, stdout, stderr) as text.
+
+    The warning throttle's state always goes to a temp directory (a fresh one unless
+    `state_dir` is given), so no case touches the real ~/.claude/scratch and no case's
+    throttle state leaks into another's."""
     cmd = (interpreter or PY) + [str(LAUNCHER)] + [str(a) for a in args]
-    proc = subprocess.run(
-        cmd, input=stdin_text.encode("utf-8"), capture_output=True, timeout=60
-    )
+    env = dict(os.environ)
+    fresh = None
+    if state_dir is None:
+        fresh = tempfile.mkdtemp()
+        state_dir = fresh
+    env["HOOK_LAUNCH_STATE_DIR"] = str(state_dir)
+    try:
+        proc = subprocess.run(
+            cmd, input=stdin_text.encode("utf-8"), capture_output=True, timeout=60, env=env
+        )
+    finally:
+        if fresh:
+            shutil.rmtree(fresh, ignore_errors=True)
     return (
         proc.returncode,
         proc.stdout.decode("utf-8", "replace"),
@@ -99,7 +114,10 @@ def test_missing_script_exits_zero_with_system_message() -> str:
     msg = _system_message(out)
     assert "does-not-exist.py" in msg, msg
     assert "fail-open" in msg and "dev-env#1146" in msg, msg
-    assert "git -C ~/Git/dev-env" in msg, "message must name the recovery command"
+    assert "checkout main;" in msg and " pull" in msg, "message must name the recovery commands"
+    # The recovery terminal may be Windows PowerShell 5.1: no `&&`, and no `~` (neither
+    # git nor PowerShell expands it for a native program).
+    assert "&&" not in msg and "git -C ~" not in msg, f"recovery must be PowerShell-safe: {msg}"
     assert "fail-closed gate" not in msg, "an ordinary hook must not get the gate warning"
     return "exit 0, one ASCII systemMessage naming the script and the recovery"
 
@@ -179,6 +197,7 @@ def test_stdin_stdout_and_identity() -> str:
         assert got["echo"] == "hello", got
         assert got["name"] == "__main__", f"__name__ must be __main__, got {got['name']!r}"
         assert Path(got["file"]).resolve() == script.resolve(), got["file"]
+        assert os.path.isabs(got["file"]), f"__file__ must be absolute, as in a direct run: {got['file']!r}"
         assert Path(got["argv"][0]).resolve() == script.resolve(), got["argv"]
         assert got["argv"][1:] == ["extra1", "extra2"], got["argv"]
         assert Path(got["path0"]).resolve() == fx.root.resolve(), (
@@ -215,27 +234,72 @@ def test_main_module_and_encoding() -> str:
     return "__main__ is the hook's module, __spec__ is None, BOM + UTF-8 source compile"
 
 
-def test_launcher_overhead_is_small() -> str:
-    """Informational: the launcher runs the hook in-process (no second interpreter).
-    The bound is generous -- it guards against an accidental subprocess re-launch,
-    which would roughly double the cost, not against timing noise."""
+def test_launcher_overhead_report() -> str:
+    """Informational only -- never fails. Timing on a shared CI runner is too noisy to
+    gate on (a single stall breaks any bound), and a bound loose enough to be stable
+    also let a runpy-based launcher through. The cost guarantee is structural instead:
+    test_launcher_avoids_costly_imports below. Runs are interleaved and the median is
+    reported, so the printed numbers are at least comparable."""
+    direct, launched = [], []
     with Fixture() as fx:
         script = fx.script("noop.py", "pass\n")
-        t0 = time.perf_counter()
         for _ in range(5):
+            t0 = time.perf_counter()
             subprocess.run(PY + [str(script)], capture_output=True, timeout=60)
-        direct = (time.perf_counter() - t0) / 5
-        t0 = time.perf_counter()
-        for _ in range(5):
+            direct.append(time.perf_counter() - t0)
+            t0 = time.perf_counter()
             run([script])
-        launched = (time.perf_counter() - t0) / 5
-    # Measured 2026-10-10: direct 55 ms, launched 57 ms. A runpy-based launcher measured
-    # 99 ms (it pulls in pkgutil, and json eagerly) -- the bound sits between the two.
-    assert launched < direct * 1.5 + 0.03, (
-        f"launcher run {launched * 1000:.0f} ms vs direct {direct * 1000:.0f} ms -- "
-        "is it spawning a second interpreter?"
+            launched.append(time.perf_counter() - t0)
+    med = lambda xs: sorted(xs)[len(xs) // 2]  # noqa: E731
+    return (
+        f"informational: direct {med(direct) * 1000:.0f} ms, via launcher "
+        f"{med(launched) * 1000:.0f} ms (median of 5, interleaved)"
     )
-    return f"direct {direct * 1000:.0f} ms, via launcher {launched * 1000:.0f} ms (avg of 5)"
+
+
+# Imports and calls that would make the launcher slow (a second interpreter, runpy's
+# pkgutil) or that it must not need at module level (json only on the missing path).
+_FORBIDDEN_MODULES = {"subprocess", "runpy", "multiprocessing", "pkgutil", "importlib"}
+_FORBIDDEN_OS_CALL_PREFIXES = ("exec", "spawn", "system", "popen", "startfile")
+
+
+def test_launcher_avoids_costly_imports() -> str:
+    """The structural cost guarantee: no second interpreter, no runpy, and only the
+    already-loaded `builtins`/`os`/`sys` at module level (json/time are imported on
+    the missing-script path alone). Measured: a runpy draft added about 44 ms per hook,
+    the compile + exec form about 2 ms."""
+    # Known-bad references first, so the scan is proven able to fail (ADR-144).
+    for snippet in ("import runpy\n", "import subprocess\n", "import os\nos.execv('x', [])\n", "import json\n"):
+        bad_found, top = _cost_violations(snippet)
+        assert bad_found or not set(top) <= {"builtins", "os", "sys"}, f"known-bad not caught: {snippet!r}"
+    bad, top_level = _cost_violations(LAUNCHER.read_text(encoding="utf-8"))
+    assert not bad, f"the launcher must not spawn processes or use runpy/importlib: {bad}"
+    assert set(top_level) <= {"builtins", "os", "sys"}, (
+        f"module-level imports must stay builtins/os/sys (already loaded); found {top_level}"
+    )
+    return f"module-level imports {top_level}; no subprocess/runpy/exec/spawn (4 known-bad caught)"
+
+
+def _cost_violations(source: str):
+    """(forbidden imports/calls anywhere, module-level import names) for `source`."""
+    tree = ast.parse(source)
+    bad = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            bad += [a.name for a in node.names if a.name.split(".")[0] in _FORBIDDEN_MODULES]
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] in _FORBIDDEN_MODULES:
+            bad.append(node.module)
+        elif (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "os"
+            and node.attr.startswith(_FORBIDDEN_OS_CALL_PREFIXES)
+        ):
+            bad.append(f"os.{node.attr}")
+    top_level = sorted(
+        alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names
+    ) + sorted(node.module or "" for node in tree.body if isinstance(node, ast.ImportFrom))
+    return bad, top_level
 
 
 def test_real_pyw_round_trip() -> str:
@@ -250,6 +314,60 @@ def test_real_pyw_round_trip() -> str:
         assert code == 0, f"pyw -3 missing script via launcher must exit 0, got {code}"
         _system_message(out)
     return "pyw -3 <launcher> passes stdio + exit 2 through, and fails open on a missing script"
+
+
+def test_missing_warning_is_throttled() -> str:
+    """A stale tree can leave a dozen hooks missing, each firing on every tool call.
+    A non-gate script is announced once per THROTTLE_SECONDS; a gate every time, so its
+    NOT-enforcing warning cannot be buried."""
+    state = Path(tempfile.mkdtemp())
+    try:
+        with Fixture() as fx:
+            code1, out1, _ = run([fx.root / "plain-hook.py"], state_dir=state)
+            code2, out2, _ = run([fx.root / "plain-hook.py"], state_dir=state)
+            code3, out3, _ = run([fx.root / "other-hook.py"], state_dir=state)
+            gate = sorted(_hook_launch.GATE_SCRIPTS)[0]
+            g1 = run([fx.root / gate], state_dir=state)
+            g2 = run([fx.root / gate], state_dir=state)
+        assert (code1, code2, code3) == (0, 0, 0), "every missing-script run exits 0"
+        _system_message(out1)
+        assert out2.strip() == "", f"second announcement within the window must be silent: {out2!r}"
+        _system_message(out3)  # a different script has its own window
+        assert g1[0] == g2[0] == 0
+        assert "NOT enforcing" in _system_message(g1[1]) and "NOT enforcing" in _system_message(g2[1]), (
+            "a missing gate is announced on every run"
+        )
+        assert (state / "plain-hook.py.ts").is_file(), "the throttle state lands in the override dir"
+    finally:
+        shutil.rmtree(state, ignore_errors=True)
+    return "repeat silent within the window, other scripts independent, gates always announced"
+
+
+def test_throttle_fails_open() -> str:
+    """A state dir that cannot be created (a file sits at its path) must still announce
+    every time -- a silenced warning is the worse failure."""
+    with Fixture() as fx:
+        blocker = fx.root / "not-a-dir"
+        blocker.write_text("x", encoding="utf-8")
+        outs = [run([fx.root / "plain-hook.py"], state_dir=blocker / "sub") for _ in range(2)]
+    for code, out, _ in outs:
+        assert code == 0
+        _system_message(out)
+    return "unwritable state dir -> announced on every run, still exit 0"
+
+
+def test_recovery_names_canonical_repo() -> str:
+    """The recovery command names the checkout the scripts dir resolves to, as an
+    absolute forward-slash path (pasteable into Git Bash or PowerShell)."""
+    with Fixture() as fx:
+        scripts = fx.root / "claude" / "scripts"
+        scripts.mkdir(parents=True)
+        repo = _hook_launch.canonical_repo(str(scripts / "gone.py"))
+        expect = os.path.realpath(str(fx.root)).replace("\\", "/")
+        assert repo.lower() == expect.lower(), f"{repo!r} != {expect!r}"
+        other = _hook_launch.canonical_repo(str(fx.root / "elsewhere" / "gone.py"))
+        assert other.replace("\\", "/").endswith("/Git/dev-env") and "~" not in other, other
+    return "repo = realpath(scripts dir)/../..; fallback is the expanded ~/Git/dev-env"
 
 
 # --- 3. stdlib only, and 4. gate list parity -----------------------------------------
@@ -294,7 +412,11 @@ def main() -> int:
         ("stdin/stdout + __name__/__file__/argv/path0", test_stdin_stdout_and_identity),
         ("sibling import resolves", test_sibling_import_resolves),
         ("__main__ module, __spec__, BOM + UTF-8 source", test_main_module_and_encoding),
-        ("launcher overhead is small (in-process)", test_launcher_overhead_is_small),
+        ("launcher overhead (informational)", test_launcher_overhead_report),
+        ("launcher avoids costly imports (structural)", test_launcher_avoids_costly_imports),
+        ("missing-script warning is throttled; gates never", test_missing_warning_is_throttled),
+        ("throttle fails open on unusable state dir", test_throttle_fails_open),
+        ("recovery names the canonical repo, absolute", test_recovery_names_canonical_repo),
         ("real pyw -3 round trip", test_real_pyw_round_trip),
         ("launcher imports only stdlib", test_launcher_imports_only_stdlib),
         ("GATE_SCRIPTS == FAIL_CLOSED", test_gate_scripts_match_fail_closed_set),

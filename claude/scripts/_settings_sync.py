@@ -90,7 +90,7 @@ from __future__ import annotations
 
 import json
 import os
-import re
+import shlex
 import time
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -116,9 +116,44 @@ BACKUP_DIR = Path.home() / ".claude" / "backups"
 LAUNCHER_SRC = _CLAUDE_DIR / "scripts" / "_hook_launch.py"
 LAUNCHER_DEST = Path.home() / ".claude" / "hook-launch.py"
 
-# Every whitespace-delimited token of a hook command that ends in `.py` -- the launcher
-# and the hook script itself. Both must exist, or pyw exits 2 (a block).
-_PY_TOKEN_RE = re.compile(r"\S+\.py(?=\s|$)")
+
+
+def py_tokens(command: str) -> "list[str]":
+    """Every argument of a hook command that ends in `.py`: the launcher and the hook
+    script itself. Both must exist, or pyw exits 2 (a block).
+
+    Tokenized with `shlex.split(posix=False)`, which keeps a quoted argument together,
+    then the surrounding quotes are stripped. So a quoted path with a space in it (a
+    home directory such as `C:/Users/Jane Doe`, which dev-env#1113's prefix relocation
+    could produce) is checked as one path rather than turning into "no .py found".
+    Unbalanced quotes yield [], which the guard reports as an unparsed command.
+    """
+    try:
+        parts = shlex.split(command, posix=False)
+    except ValueError:
+        return []
+    tokens = []
+    for part in parts:
+        if len(part) >= 2 and part[0] == part[-1] and part[0] in "\"'":
+            part = part[1:-1]
+        if part.lower().endswith(".py"):
+            tokens.append(part)
+    return tokens
+
+
+def canonical_repo() -> str:
+    """The dev-env checkout the ~/.claude/scripts junction resolves to: the tree whose
+    scripts the hooks actually run, and so the one a "pull first" message must name.
+    Absolute with forward slashes, so it pastes into Git Bash or PowerShell (neither
+    git nor PowerShell 5.1 expands `~` for a native program). Falls back to
+    ~/Git/dev-env."""
+    try:
+        scripts = (Path.home() / ".claude" / "scripts").resolve()
+        if scripts.name == "scripts" and scripts.parent.name == "claude":
+            return scripts.parent.parent.as_posix()
+    except (OSError, RuntimeError):
+        pass
+    return (Path.home() / "Git" / "dev-env").as_posix()
 
 # Written once, never overwritten, never removed (ADR-079 rule 3).
 #
@@ -222,7 +257,7 @@ def hooks_guard(hooks: Any) -> "str | None":
         return "the shared `hooks` value is not a JSON object"
     unparsed, missing = [], []
     for command in _hook_commands(hooks):
-        tokens = _PY_TOKEN_RE.findall(command)
+        tokens = py_tokens(command)
         if not tokens:
             unparsed.append(command)
             continue
@@ -266,6 +301,7 @@ def format_sync_note(
     migrated_from: "str | None",
     launcher_installed: bool = False,
     launcher_error: "str | None" = None,
+    launcher_src: "Path | None" = None,
 ) -> "str | None":
     """Advisory text for a completed sync, or None when there is nothing to report.
 
@@ -291,10 +327,20 @@ def format_sync_note(
         )
         lines.append(f"  Content as it stood before this write: {BACKUP_DIR / ANCHOR_NAME}")
     if launcher_installed:
+        src = Path(launcher_src or LAUNCHER_SRC)
         lines.append(
             f"[dev-env-sync] Installed the current hook launcher at {LAUNCHER_DEST} "
-            "(dev-env#1146, ADR-148)."
+            f"from {src.as_posix()} (dev-env#1146, ADR-148)."
         )
+        repo = canonical_repo()
+        # Compare the directory exactly, not by prefix: a worktree lives *under* the
+        # canonical (<repo>/.claude/worktrees/<name>/claude/scripts).
+        if src.resolve().parent.as_posix().lower() != (repo + "/claude/scripts").lower():
+            # Run from a worktree, this installs that branch's launcher machine-wide.
+            lines.append(
+                f"  NOTE: that is not the canonical checkout ({repo}). Every hook on this "
+                "machine runs this copy until a sync from the canonical replaces it."
+            )
     if launcher_error:
         lines.append(f"[dev-env-sync] WARNING: {launcher_error}")
     for key, reason in sorted((plan.withheld or {}).items()):
@@ -302,10 +348,14 @@ def format_sync_note(
             f"[dev-env-sync] WARNING: shared `{key}` NOT applied to ~/.claude/settings.json "
             f"(the live value was kept, so nothing is blocked): {reason}"
         )
+        repo = canonical_repo()
+        sync_script = (Path.home() / ".claude" / "scripts" / "_settings_sync.py").as_posix()
+        # Absolute paths and `;`, not `~` and `&&`: the recovery terminal may be Windows
+        # PowerShell 5.1, which parses neither (dev-env#1146 review).
         lines.append(
-            "  The dev-env canonical is probably behind the shared file. Pull it "
-            "(git -C ~/Git/dev-env checkout main && git -C ~/Git/dev-env pull), then re-run: "
-            "py -3 ~/.claude/scripts/_settings_sync.py (dev-env#1146, ADR-148)."
+            "  The dev-env canonical is probably behind the shared file. Pull it, then re-run "
+            f"the sync: git -C {repo} checkout main; git -C {repo} pull; "
+            f"py -3 {sync_script} (dev-env#1146, ADR-148)."
         )
     if plan.owned_updates:
         lines.append(
@@ -431,6 +481,14 @@ def ensure_launcher(
         if dest.is_file():
             return False, None
         return False, f"hook launcher source {src} is unreadable and none is installed at {dest}"
+    # Every hook, dev-env-sync.py included, runs through this one file, so a launcher
+    # that does not even compile would make every hook exit 1. Exit 1 does not block,
+    # so every hook would quietly stop, and with dev-env-sync.py among them nothing
+    # would heal it. Refuse to install one; the previous copy stays in place.
+    try:
+        compile(payload, str(src), "exec")
+    except (SyntaxError, ValueError) as exc:
+        return False, f"refusing to install the hook launcher from {src}: it does not compile ({exc})"
     try:
         if dest.is_file() and dest.read_bytes() == payload:
             return False, None
@@ -542,7 +600,7 @@ def sync(
             return SyncResult(False, migrated, None, f"could not create {live_path}: {exc}")
         return SyncResult(
             True, migrated,
-            format_sync_note(plan, migrated_from, launcher_installed, launcher_error), None,
+            format_sync_note(plan, migrated_from, launcher_installed, launcher_error, launcher_src), None,
         )
 
     live = read_json(live_path)
@@ -561,7 +619,7 @@ def sync(
             migrated or plan.unclassified or plan.withheld or launcher_installed or launcher_error
         )
         note = (
-            format_sync_note(plan, migrated_from, launcher_installed, launcher_error)
+            format_sync_note(plan, migrated_from, launcher_installed, launcher_error, launcher_src)
             if worth_saying else None
         )
         return SyncResult(launcher_installed, migrated, note, None)
@@ -597,7 +655,7 @@ def sync(
         return SyncResult(False, migrated, None, f"could not write {live_path}: {exc}")
 
     return SyncResult(
-        True, migrated, format_sync_note(plan, migrated_from, launcher_installed, launcher_error), None
+        True, migrated, format_sync_note(plan, migrated_from, launcher_installed, launcher_error, launcher_src), None
     )
 
 

@@ -141,7 +141,7 @@ def test_every_command_resolves_to_existing_script() -> str:
 
 
 LAUNCHED_COMMAND_RE = re.compile(
-    r"^pyw -3 C:/Users/brown/\.claude/hook-launch\.py C:/Users/brown/\.claude/scripts/[\w.-]+\.py$"
+    r"^pyw -3 " + re.escape(wiring.LAUNCHER_PATH) + " " + re.escape(wiring.SCRIPTS_PREFIX) + r"[\w.-]+\.py$"
 )
 
 
@@ -167,10 +167,11 @@ def test_every_command_goes_through_launcher() -> str:
 
 def test_launcher_form_rejects_direct_command() -> str:
     """Known-bad reference for the form check above: the pre-ADR-148 direct form."""
-    assert not LAUNCHED_COMMAND_RE.match("pyw -3 C:/Users/brown/.claude/scripts/foo.py")
+    assert not LAUNCHED_COMMAND_RE.match(f"pyw -3 {wiring.SCRIPTS_PREFIX}foo.py")
+    assert LAUNCHED_COMMAND_RE.match(f"pyw -3 {wiring.LAUNCHER_PATH} {wiring.SCRIPTS_PREFIX}foo.py")
     assert LAUNCHED_COMMAND_RE.match(
         "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/foo.py"
-    )
+    ), "the derived regex must still match the literal shipped form"
     return "direct form rejected, launcher form accepted"
 
 

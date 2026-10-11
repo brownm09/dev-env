@@ -216,8 +216,10 @@ the canonical regresses to an older tree, everything under `~/.claude/scripts` r
 but the launcher does not. A wired script that is missing then fails **open** (exit 0 plus a
 warning) instead of making Python exit 2, which would block every matching tool call, machine-wide
 (dev-env#1146). The sync also refuses to apply `hooks` while any script those hooks name is
-absent, keeping the live wiring and saying "pull first". Never delete the file by hand; re-run
-`py -3 ~/.claude/scripts/_settings_sync.py` to restore it.
+absent, keeping the live wiring and saying "pull first". Never delete the file by hand. To
+restore it, run `py -3 C:/Users/brown/.claude/scripts/_settings_sync.py` from a hook-free
+terminal. The path is absolute so the same command works in Windows PowerShell 5.1, the
+Terminal panel's shell, which expands neither `~` nor `&&`.
 
 **Machine-local *and* partly repo-owned — `~/.claude/settings.json`:**
 
