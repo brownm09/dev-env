@@ -3,8 +3,8 @@
 **Date:** 2026-10-11
 **Status:** Accepted
 **Closes:** [dev-env#1149](https://github.com/brownm09/dev-env/issues/1149)
-**Tags:** code-quality, scope-discipline, simplicity, surgical-diffs, review-skill, plan-then-optimize, claude-md, global-rule, claude-facing, third-party-guidelines, attribution, adr-038, adr-145
-**Related:** [ADR-038](038-durable-preferences-documented-in-repo.md), [ADR-145](145-scope-discipline-self-referential-churn.md)
+**Tags:** code-quality, scope-discipline, simplicity, surgical-diffs, review-skill, plan-then-optimize, claude-md, global-rule, claude-facing, third-party-guidelines, attribution, adr-028, adr-038, adr-144, adr-145
+**Related:** [ADR-028](028-all-findings-merge-gate.md), [ADR-038](038-durable-preferences-documented-in-repo.md), [ADR-144](144-gate-calibration-pass-3-dimension.md), [ADR-145](145-scope-discipline-self-referential-churn.md)
 
 ---
 
