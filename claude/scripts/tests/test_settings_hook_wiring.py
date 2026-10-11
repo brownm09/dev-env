@@ -10,7 +10,9 @@ initiative fixes: Claude Code's default hook timeout kills a slow hook mid-run,
 so a hook doing real subprocess work (git/gh) under a tight bound is silently
 truncated (gotcha #5). This gate enforces, for EVERY (event, matcher, hook) entry:
 
-  1. the command resolves to a `<name>.py` that exists in claude/scripts/;
+  1. the command resolves to a `<name>.py` that exists in claude/scripts/, and runs
+     through the hook launcher (`pyw -3 <home>/.claude/hook-launch.py <script>`), which
+     fails open when the script is missing (dev-env#1146, ADR-148);
   2. an explicit integer `timeout` (seconds) >= the script's budget floor:
        usage-snapshot.py           -> 90  (does ~45s of internal subprocess work)
        a hook importing _winsubp    -> 30  (spawns git/gh subprocesses)
@@ -138,6 +140,41 @@ def test_every_command_resolves_to_existing_script() -> str:
     return f"all {len(entries)} hook entries resolve to an existing claude/scripts/*.py"
 
 
+LAUNCHED_COMMAND_RE = re.compile(
+    r"^pyw -3 " + re.escape(wiring.LAUNCHER_PATH) + " " + re.escape(wiring.SCRIPTS_PREFIX) + r"[\w.-]+\.py$"
+)
+
+
+def test_every_command_goes_through_launcher() -> str:
+    """Every hook runs through the hook launcher, which fails open when the script is
+    missing (dev-env#1146, ADR-148). A command naming the script directly would make
+    pyw exit 2 -- a machine-wide block -- the moment that script is absent."""
+    settings = wiring.load_settings()
+    entries = wiring.hook_entries(settings)
+    assert entries, "no hook entries parsed from the shared settings -- a vacuous pass"
+    bad = [
+        f"{e.event}/{e.matcher}: {e.command!r}"
+        for e in entries
+        if not LAUNCHED_COMMAND_RE.match(e.command)
+    ]
+    assert not bad, (
+        "Hook commands not in the `pyw -3 <launcher> <script>` form (ADR-148):\n  " + "\n  ".join(bad)
+    )
+    launcher_src = wiring.SCRIPTS_DIR / "_hook_launch.py"
+    assert launcher_src.is_file(), f"the launcher source {launcher_src} is missing"
+    return f"all {len(entries)} hook entries run through hook-launch.py"
+
+
+def test_launcher_form_rejects_direct_command() -> str:
+    """Known-bad reference for the form check above: the pre-ADR-148 direct form."""
+    assert not LAUNCHED_COMMAND_RE.match(f"pyw -3 {wiring.SCRIPTS_PREFIX}foo.py")
+    assert LAUNCHED_COMMAND_RE.match(f"pyw -3 {wiring.LAUNCHER_PATH} {wiring.SCRIPTS_PREFIX}foo.py")
+    assert LAUNCHED_COMMAND_RE.match(
+        "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/foo.py"
+    ), "the derived regex must still match the literal shipped form"
+    return "direct form rejected, launcher form accepted"
+
+
 def test_every_entry_has_timeout_at_or_above_budget() -> str:
     settings = wiring.load_settings()
     entries = wiring.hook_entries(settings)
@@ -255,6 +292,8 @@ def main() -> int:
         ("min_timeout pure-Python = 10", test_min_timeout_pure_python_is_10),
         ("_winsubp import regex (anchored)", test_winsubp_import_regex),
         ("every command resolves to an existing script", test_every_command_resolves_to_existing_script),
+        ("every command goes through hook-launch.py (ADR-148)", test_every_command_goes_through_launcher),
+        ("launcher form check rejects the direct form", test_launcher_form_rejects_direct_command),
         ("every entry timeout >= budget", test_every_entry_has_timeout_at_or_above_budget),
         ("PreToolUse Bash/PowerShell matchers mirrored (dev-env#620)", test_pretooluse_bash_and_powershell_matchers_are_mirrored),
         ("PostToolUse Bash/PowerShell matchers mirrored (dev-env#763)", test_posttooluse_bash_and_powershell_matchers_are_mirrored),

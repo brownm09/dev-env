@@ -33,9 +33,19 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = REPO_ROOT / "claude" / "scripts"
 SETTINGS_PATH = REPO_ROOT / "claude" / "settings.shared.json"
 
+# The author-home prefix every shipped hook command is written with, and the launcher
+# path under it (ADR-148). Defined once so the tests that pin or remap the command form
+# (test_settings_hook_wiring, test_settings_sync's calibration) change together when
+# dev-env#1113 relocates the prefix.
+HOME_PREFIX = "C:/Users/brown/.claude/"
+LAUNCHER_PATH = HOME_PREFIX + "hook-launch.py"
+SCRIPTS_PREFIX = HOME_PREFIX + "scripts/"
+
 # The last whitespace-delimited token of a hook command is the script path; grab
-# its `<name>.py` basename. Matches the `pyw -3 C:/.../foo.py` invocation form
-# (ADR-007). A command that ends in something other than a .py (none today) -> None.
+# its `<name>.py` basename. Matches the `pyw -3 C:/.../hook-launch.py C:/.../foo.py`
+# invocation form (ADR-007, ADR-148): the launcher comes first, so the last token is
+# still the hook script. A command that ends in something other than a .py (none
+# today) -> None.
 _SCRIPT_RE = re.compile(r"([\w.-]+\.py)\s*$")
 
 

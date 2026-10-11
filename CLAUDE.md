@@ -131,11 +131,12 @@ the item). A one-line navigational map of the test directory is
 95. **shell-content-write-guard test** — required when changing `claude/scripts/pre-tool-use-shell-content-write-guard.py` or `claude/scripts/session-mode-prompt.py`'s bypass-mode carve-out (ADR-138 lands in both — the guard blocks the shape, the prompt hook delivers the precedence rule). Run: `py -3 claude/scripts/tests/test_shell_content_write_guard.py` + `py -3 claude/scripts/tests/test_session_mode_prompt.py`
 96. **replay-shell-content-guard test** — required when changing `claude/scripts/replay-shell-content-guard.py`; the on-demand reader that replays the ADR-138 guard over recorded session transcripts and reports its block rate, mechanism mix, override use, and failure-rate enrichment (ADR-138 Amendment 1). Re-run the script itself after any detector change to the guard — `py -3 claude/scripts/replay-shell-content-guard.py --gap`. Run: `py -3 claude/scripts/tests/test_replay_shell_content_guard.py`
 97. **journal-project-repo-map test** — required when changing `claude/scripts/journal-project-repo-map.py` or the Step 8a Source 3 block in `claude/skills/journal-compose/SKILL.md` (ADR-032 Amendment 1 lands in both — the script resolves the mapping and names every skip, the skill consumes `query_order` and surfaces those skips to the user). Run: `py -3 claude/scripts/tests/test_journal_project_repo_map.py`
-98. **`_settings_sync` shared-module test** — required when changing `claude/scripts/_settings_sync.py`, its `OWNED_KEYS`/`SEED_KEYS` classification, `claude/settings.shared.json`, or `setup.sh`'s `seed_claude_settings()`. Also re-run the three gates that read the shared file through `_hook_wiring.py` (items 61/62/63), `test_pyw_stdio.py` (item 2), `test_hook_liveness_check.py` (item 67), and the setup link-loop (item 49) — all five were repointed off `claude/settings.json` by ADR-139. Run: `py -3 claude/scripts/tests/test_settings_sync.py` + `bash claude/scripts/tests/test-setup-link-loop.sh`
+98. **`_settings_sync` shared-module test** — required when changing `claude/scripts/_settings_sync.py`, its `OWNED_KEYS`/`SEED_KEYS` classification, its launcher install or missing-script guard (`ensure_launcher`/`hooks_guard`, ADR-148; also run item 103), `claude/settings.shared.json`, or `setup.sh`'s `seed_claude_settings()`. Also re-run the three gates that read the shared file through `_hook_wiring.py` (items 61/62/63), `test_pyw_stdio.py` (item 2), `test_hook_liveness_check.py` (item 67), and the setup link-loop (item 49) — all five were repointed off `claude/settings.json` by ADR-139. Run: `py -3 claude/scripts/tests/test_settings_sync.py` + `bash claude/scripts/tests/test-setup-link-loop.sh`
 99. **`_gh_project` shared-module test** — required when changing `claude/scripts/_gh_project.py`. Run: `py -3 claude/scripts/tests/test_gh_project.py`
 100. **journal-compose-meta test** — required when changing `claude/scripts/journal-compose-meta.py`, the meta handling in `claude/skills/journal-compose/SKILL.md` (Step 2b, the Phase 1 template's `META_TRIGGER=` lines, Step 6.7, Step 10's `check-clean` and `check-staged`, Phase 2's and Step 10's staging and commit blocks (the end-to-end tests extract and run them), both Step 10.5 pathspec lists), the "Meta journal (`sessions/meta/`)" trigger list in `claude/CLAUDE.md`, or the meta rule in `claude/routines/daily-journal-compose/SKILL.md` ([ADR-082 Addendum, 2026-10-02](docs/adr/082-journal-compose-worktree-isolation.md), dev-env#52 and #892). Also run item 83 when the Step 10.5 block changes. Run: `py -3 claude/scripts/tests/test_journal_compose_meta.py`
 101. **scratch-rm-allow test** — required when changing `claude/scripts/pre-tool-use-scratch-rm-allow.py`, or `_hookout.py`'s `plan_allow`/`emit_allow` (also run item 60 then). Run: `py -3 claude/scripts/tests/test_scratch_rm_allow.py`
 102. **replay-scratch-rm-allow test** — required when changing `claude/scripts/replay-scratch-rm-allow.py`, the on-demand replay of the ADR-147 hook over recorded session transcripts, or the hook's `check_command`/`Reject` surface it calls (also run item 101 then). Re-run the script itself after any change to the hook's lexer — `py -3 claude/scripts/replay-scratch-rm-allow.py`. Run: `py -3 claude/scripts/tests/test_replay_scratch_rm_allow.py`
+103. **hook-launch test** — required when changing `claude/scripts/_hook_launch.py`, the command form of any hook in `claude/settings.shared.json`, or `_settings_sync.py`'s `ensure_launcher` (also run item 98 then). Every hook runs through the launcher, which fails open on a missing script instead of Python's blocking exit 2 ([ADR-148](docs/adr/148-missing-hook-script-fails-open-via-launcher.md), dev-env#1146). Run: `py -3 claude/scripts/tests/test_hook_launch.py`
 
 ## Observability
 
@@ -204,6 +205,21 @@ When a PR modifies any of the paths below, update the listed reference docs **in
 **Machine-local only — never commit:**
 
 `scratch/`, `projects/`, `sessions/`, `backups/`, `ide/`, `plans/`, `shell-snapshots/`
+
+**Installed by dev-env, but deliberately *outside* every junction — `~/.claude/hook-launch.py`:**
+
+Every hook command runs as `pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/<name>.py`
+([ADR-148](docs/adr/148-missing-hook-script-fails-open-via-launcher.md)). The launcher is a real
+file that `_settings_sync.ensure_launcher` copies from `claude/scripts/_hook_launch.py` on every
+sync, *before* it writes any hooks that name it. It lives outside the junctions on purpose: when
+the canonical regresses to an older tree, everything under `~/.claude/scripts` regresses with it,
+but the launcher does not. A wired script that is missing then fails **open** (exit 0 plus a
+warning) instead of making Python exit 2, which would block every matching tool call, machine-wide
+(dev-env#1146). The sync also refuses to apply `hooks` while any script those hooks name is
+absent, keeping the live wiring and saying "pull first". Never delete the file by hand. To
+restore it, run `py -3 C:/Users/brown/.claude/scripts/_settings_sync.py` from a hook-free
+terminal. The path is absolute so the same command works in Windows PowerShell 5.1, the
+Terminal panel's shell, which expands neither `~` nor `&&`.
 
 **Machine-local *and* partly repo-owned — `~/.claude/settings.json`:**
 
