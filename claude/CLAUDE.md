@@ -315,6 +315,14 @@ Fix any error you encounter in any project, including issues unrelated to the ta
 
 See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md).
 
+### Scope of a change
+
+- **Simplicity first.** Write the least code that meets the issue. No features, options, or configurability nobody asked for; no abstraction with a single caller; no handling for errors that cannot happen. If a senior engineer would call it overcomplicated, or 200 lines could be 50, rewrite it before opening the PR.
+- **Surgical diffs.** Every changed line should trace to the PR's issue. Match the surrounding style even where you'd choose differently, and don't reformat, re-comment, or refactor code next to your change. Remove the imports, variables, and functions *your* change left unused, and nothing else.
+- **How this fits *Fix errors on encounter*.** That rule still applies. Surgical scope governs *this PR's diff*, and an unrelated fix goes in its own issue and PR, as that rule's "separate PR" bullet already says. Pre-existing dead code that isn't an error is not something you encountered and broke: mention it or tile it, but don't delete it in passing.
+
+Adapted, not copied, from [andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills/tree/2c606141936f1eeef17fa3043a72095b4765b9c2) by Jiayuan Zhang ([@forrestchang](https://github.com/forrestchang)), which distills [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876) on LLM coding pitfalls. `/review` checks both rules as non-blocking `[maintainability]` findings. See [ADR-149](../docs/adr/149-scope-of-a-change-rules.md).
+
 ### No spawning new terminal windows (Windows scripts)
 
 For PowerShell or batch scripts on Windows, do not author or accept patterns that spawn a new console window or trigger UAC re-launch from inside the script: `Start-Process -Verb RunAs` self-relaunch, `Start-Process ... -NoExit` sibling consoles, `cmd /c start ... powershell ...`, or any equivalent round-trip. In agent-driven and non-interactive contexts the UAC dialog has no desktop to render against, the prompt hangs the session or is silently dismissed, the new console dies before producing output, and the user pays cleanup tokens to disentangle the orphan processes.
@@ -520,7 +528,7 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 
 **Always plan first — permission modes don't bypass it:** Plan mode (Shift+Tab cycles modes) is the session default for every substantive task. Bypass and auto modes reduce permission prompts only; they do not relax the plan-first discipline.
 
-**Plan-then-optimize before acting:** Any task involving an Agent spawn, a skill invocation, reads across more than one file, or a switch to a new primary objective within the same session (e.g., moving from a `/review` or other skill output to addressing findings, or from one issue to another) requires this protocol. State a numbered plan first, then apply three explicit revision passes before taking any action.
+**Plan-then-optimize before acting:** Any task involving an Agent spawn, a skill invocation, reads across more than one file, or a switch to a new primary objective within the same session (e.g., moving from a `/review` or other skill output to addressing findings, or from one issue to another) requires this protocol. State a numbered plan first, giving each step the check that proves it done (`1. <step> → verify: <check>`), then apply three explicit revision passes before taking any action.
 
 **Pass 1 — Token efficiency:** check:
 - Sequential tool calls that can be parallelized
@@ -534,6 +542,7 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 - No Agent scope was narrowed so far that it misses required context
 - The final outputs (files written, PRs opened, commits made) match what the original plan intended
 - If the plan includes multiple PR merges, the stub-writing step appears once, after the last merge — not once per merge
+- The plan solves the request as stated. When the request has more than one reasonable reading, name the readings and say which one the plan follows, and ask only when the choice changes the result. When a simpler approach than the one requested exists, say so. A bug fix starts with a test that reproduces the bug. ([ADR-149](../docs/adr/149-scope-of-a-change-rules.md))
 
 **Pass 3 — Risk-dimension audit:** before acting, the plan must address each of these eight dimensions explicitly. For any that don't apply, state **`N/A — <reason>`** rather than omitting it. The bar is *stating the decision*, not adding work everywhere.
 
