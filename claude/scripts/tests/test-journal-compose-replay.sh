@@ -215,6 +215,87 @@ eq "9b. nothing restored" "$(field "$OUT" SHARD_INTEGRITY_RESTORED)" "none"
 no_markers "$WT" "10. fixture B leaves no conflict markers"
 
 # ---------------------------------------------------------------------------
+# Fixture D — the skill's own pathspecs keep shards of stub-less projects (#1109)
+# ---------------------------------------------------------------------------
+# Step 10.5 deletes the draft branch after the replay, so anything outside the
+# pathspecs it passes is lost. Tile shards are filed under the tile's TARGET
+# project (ADR-118), which may have no stubs that day. The 2026-10-12 compose lost
+# sessions/tech-leadership-reference/tiles/53.json exactly this way. The pathspecs
+# are read from SKILL.md itself, so this fails if either call narrows them again.
+echo
+echo "Fixture D: SKILL.md pathspecs replay shards under a project with no stubs"
+
+SKILL="$SCRIPT_DIR/../../skills/journal-compose/SKILL.md"
+# A call is its first line plus every backslash-continued line; keep what follows "$PREV".
+mapfile -t CALLS < <(awk '
+  { sub(/\r$/, "") }
+  /journal-compose-replay\.sh "\$WT" "\$PREV"/ {
+    buf = $0
+    while (buf ~ /\\$/ && (getline line) > 0) {
+      sub(/\r$/, "", line); sub(/\\$/, "", buf); buf = buf " " line
+    }
+    sub(/.*"\$PREV"/, "", buf); print buf
+  }' "$SKILL")
+# Extraction gate: an empty capture would make every assertion below pass vacuously.
+eq "both Step 10.5 replay calls found in SKILL.md" "${#CALLS[@]}" "2"
+
+build_fixture_d() {
+  WT=$(new_repo)
+  mkdir -p "$WT/sessions/proj" "$WT/sessions/other/tiles" "$WT/sessions/other/open-prs" \
+           "$WT/sessions/elsewhere"
+  echo "# Journal index"   > "$WT/README.md"
+  echo "stub"              > "$WT/sessions/proj/2026-10-12_090000.stub.md"
+  echo '{"issue":10}'      > "$WT/sessions/other/tiles/10.json"
+  echo '{"pr":20}'         > "$WT/sessions/other/open-prs/20.json"
+  commit_all "$WT" base
+  local base
+  base=$(git -C "$WT" rev-parse HEAD)
+
+  # Draft: compose proj (stub consumed), and — under "other", which has no stubs —
+  # add a tile shard and delete a closed tile's and a merged PR's shards.
+  git -C "$WT" checkout -q -b draftside
+  rm "$WT/sessions/proj/2026-10-12_090000.stub.md" \
+     "$WT/sessions/other/tiles/10.json" "$WT/sessions/other/open-prs/20.json"
+  echo "composed journal" > "$WT/sessions/proj/2026-10-12-journal.md"
+  echo '{"issue":53}'     > "$WT/sessions/other/tiles/53.json"
+  commit_all "$WT" draft
+  PREV=$(git -C "$WT" rev-parse HEAD)
+
+  # origin/main advanced with an unrelated compose.
+  git -C "$WT" checkout -q -b mainside "$base"
+  echo "earlier journal" > "$WT/sessions/elsewhere/2026-10-11-journal.md"
+  commit_all "$WT" main
+  git -C "$WT" update-ref refs/remotes/origin/main HEAD
+  git -C "$WT" checkout -q -b compose origin/main
+}
+
+N=0
+for CALL in ${CALLS+"${CALLS[@]}"}; do
+  N=$((N + 1))
+  read -ra SPECS <<< "$CALL"
+  for i in "${!SPECS[@]}"; do
+    SPECS[i]=${SPECS[i]//\"/}
+    SPECS[i]=${SPECS[i]//<project>/proj}
+  done
+  [ "${#SPECS[@]}" -gt 0 ] && ok "call $N: pathspec list is non-empty" \
+                            || bad "call $N: pathspec list is empty"
+
+  build_fixture_d
+  OUT=$(bash "$SCRIPT" "$WT" "$PREV" "${SPECS[@]}" 2>&1)
+  RC=$?
+  eq "call $N (${SPECS[*]}): exit 0" "$RC" "0"
+  has_file "$WT" "sessions/proj/2026-10-12-journal.md" "call $N: composed journal replayed"
+  has_file "$WT" "sessions/other/tiles/53.json" \
+    "call $N: tile shard under a stub-less project survives (the #1109 regression)"
+  contains "call $N: that tile shard is staged" \
+    "$(git -C "$WT" diff --cached --name-only)" "sessions/other/tiles/53.json"
+  no_file "$WT" "sessions/other/tiles/10.json" \
+    "call $N: closed tile's shard deletion is replayed, not resurrected"
+  no_file "$WT" "sessions/other/open-prs/20.json" \
+    "call $N: merged PR's shard deletion is replayed, not resurrected"
+done
+
+# ---------------------------------------------------------------------------
 # Fixture C — precondition failures exit 1, never 0 or 2
 # ---------------------------------------------------------------------------
 echo

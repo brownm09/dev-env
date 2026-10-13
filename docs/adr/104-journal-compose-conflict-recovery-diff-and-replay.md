@@ -1,7 +1,7 @@
 # ADR-104 — Diff-and-Replay Conflict Recovery in journal-compose Step 10.5
 
 **Date:** 2026-07-12
-**Status:** Accepted (amended 2026-07-23 — see Amendment 1)
+**Status:** Accepted (amended 2026-07-23, 2026-10-13 — see Amendments 1–2)
 **Tags:** journal, composition, skill, git, merge-tree, conflict-recovery, diff-and-replay, three-way-merge, both-sides-changed, data-loss, silent-failure, shared-script, testing, crlf, msys, correction, adr-056, adr-080, adr-082, adr-119, adr-120
 
 ---
@@ -326,3 +326,43 @@ exist, and the real invocation never sets it.
 - `claude/scripts/journal-compose-replay.sh`,
   `claude/scripts/tests/test-journal-compose-replay.sh` (`## Testing` item 83),
   `claude/skills/journal-compose/SKILL.md` → Step 10.5, Step 11.
+
+---
+
+## Amendment 2 (2026-10-13) — replay the whole `sessions/` tree, not the composed projects (dev-env#1109)
+
+### What went wrong
+
+Amendment 1 left the pathspecs as "the only difference" between Step 10.5's two calls, and both
+named only the projects composed that run, plus `sessions/meta/` and `README.md`. Step 10.5 then
+deletes the draft branch, so any change outside those pathspecs is lost with it. Tile shards are
+filed under the tile's *target* project ([ADR-118](118-tile-persistence-shards.md)), which can
+have no stubs that day. Open-PR shard deletions are exposed the same way, and a dropped deletion
+resurrects from `origin/main`.
+
+**Incident.** The 2026-10-12 compose
+([engineering-journal PR #286](https://github.com/brownm09/engineering-journal/pull/286)) took
+the recovery path and lost `sessions/tech-leadership-reference/tiles/53.json`. That project had
+no stubs, so no pathspec covered it. The shard was on no ref afterward, and nothing reported the
+loss.
+
+### Decision
+
+Both calls pass `sessions/ README.md`. On the clean path the whole draft branch merges into
+`main`, so the recovery path now carries the same content. Widening the scope adds no overwrite
+risk, because Amendment 1's partition still applies to every path: a path `origin/main` also
+changed is 3-way-merged or stopped on, and a shard `origin/main` deleted stays deleted.
+
+**Alternatives rejected.** (1) Always-on shard globs inside the script would fix shards but not
+any other path under a stub-less project. (2) Refusing to delete the draft branch while it
+carries unreplayed changes would only detect the loss. With the whole tree replayed, it has
+nothing left to catch.
+
+### Consequences
+
+- The two calls are now identical, so the per-project enumeration that caused the loss is gone.
+- `## Testing` item 83's Fixture D reads both calls' pathspecs **from SKILL.md** and runs the
+  real script with them. It fails if either call is narrowed again. It also asserts that it
+  found exactly two calls, so an extraction that matches nothing cannot pass vacuously.
+- The dev-env#787 open-PR shard restore is now redundant on the real call path, because
+  `sessions/` already covers it. It stays in the script, which still accepts narrower pathspecs.
