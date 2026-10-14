@@ -54,6 +54,8 @@ no_markers() {
   [ -z "$hits" ] && ok "$label" || bad "$label (conflict markers in: $hits)"
 }
 
+# Sets WT rather than printing it: called as `WT=$(new_repo)`, the TMPDIRS append
+# below would run in a subshell and the EXIT trap would never remove the repo.
 new_repo() {
   local root wt
   root=$(mktemp -d) || exit 1
@@ -68,7 +70,7 @@ new_repo() {
   # a trivially disjoint merge conflicts. The script reads all three sides as
   # blobs; this config is what makes the test able to tell.
   git -C "$wt" config core.autocrlf true
-  printf '%s' "$wt"
+  WT=$wt
 }
 
 commit_all() { git -C "$1" add -A && git -C "$1" commit -q -m "$2"; }
@@ -79,7 +81,7 @@ commit_all() { git -C "$1" add -A && git -C "$1" commit -q -m "$2"; }
 echo
 echo "Fixture A: safe replay, disjoint 3-way merge, deletions, shard restore"
 
-WT=$(new_repo)
+new_repo
 mkdir -p "$WT/sessions/proj" "$WT/sessions/other/open-prs"
 
 # A 40-line README whose two edited regions are far apart, so the draft's and
@@ -156,7 +158,7 @@ eq "all replayed changes are staged" "${UNSTAGED:-none}" "none"
 echo
 echo "Fixture B: overlapping merge, add/add, delete/modify, shard main deleted"
 
-WT=$(new_repo)
+new_repo
 mkdir -p "$WT/sessions/proj" "$WT/sessions/other/open-prs"
 
 # The real dev-env#890 shape: a reverse-chronological entry table both composes
@@ -240,7 +242,7 @@ mapfile -t CALLS < <(awk '
 eq "both Step 10.5 replay calls found in SKILL.md" "${#CALLS[@]}" "2"
 
 build_fixture_d() {
-  WT=$(new_repo)
+  new_repo
   mkdir -p "$WT/sessions/proj" "$WT/sessions/other/tiles" "$WT/sessions/other/open-prs" \
            "$WT/sessions/elsewhere"
   echo "# Journal index"   > "$WT/README.md"
@@ -307,7 +309,7 @@ eq "no arguments exits 1" "$?" "1"
 bash "$SCRIPT" "/nonexistent/worktree" HEAD "sessions/" >/dev/null 2>&1
 eq "missing worktree exits 1" "$?" "1"
 
-WT=$(new_repo)
+new_repo
 echo x > "$WT/f.md"
 commit_all "$WT" base
 bash "$SCRIPT" "$WT" HEAD "sessions/" >/dev/null 2>&1
