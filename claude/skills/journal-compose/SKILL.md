@@ -1905,14 +1905,13 @@ git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
 #    deleted — since it diverged from main, plus the open-PR shard-integrity restore
 #    (dev-env#787). The script partitions every path by whether origin/main ALSO changed it,
 #    so a path only the draft branch touched replays wholesale while a contested one is
-#    3-way-merged or stopped on, never blind-overwritten (dev-env#890). Pathspecs are the
-#    only difference between this and the multi-project block below — the logic lives in one
-#    tested script so the two cannot drift. ADR-104 + Amendment 1.
-#    sessions/meta/ is named whenever META_JOURNAL is set: leaving it out would silently drop
-#    the meta journal on this path. Naming it when meta was not composed is harmless — only
-#    paths the draft branch actually changed are replayed.
+#    3-way-merged or stopped on, never blind-overwritten (dev-env#890). ADR-104 + Amendments.
+#    The pathspec is the whole sessions/ tree, never a list of composed projects: step 4
+#    deletes the draft branch, so anything outside it is lost — a tile shard is filed under
+#    its TARGET project, which may have no stubs today (dev-env#1109). That matches the clean
+#    path, where the entire draft branch merges. Only paths the draft changed are replayed.
 bash C:/Users/brown/.claude/scripts/journal-compose-replay.sh "$WT" "$PREV" \
-     "sessions/<project>/" sessions/meta/ README.md
+     sessions/ README.md
 REPLAY_RC=$?
 [ "$REPLAY_RC" -eq 0 ] || \
   echo "STOP: reconcile the MANUAL_RECONCILE paths listed above before running step 3"
@@ -1972,13 +1971,12 @@ for two composed projects, `lifting-logbook` and `career-playbook`, plus a compo
 PREV=$(git -C "$WT" rev-parse HEAD)
 git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
 
-# Same script, same exit-code rule as the single-project block above — the only difference is
-# the pathspec list, which here names every project composed this run — meta included whenever
-# META_JOURNAL is set — plus the top-level README. Both READMEs and the shared top-level one
-# are exactly the paths a concurrent compose is most likely to have touched on main, so the
+# Same script, same pathspecs, same exit-code rule as the single-project block above — never
+# narrow them to the composed projects (dev-env#1109). The per-project READMEs and the shared
+# top-level one are the paths a concurrent compose most likely touched on main, so the
 # both-sides partition matters most here.
 bash C:/Users/brown/.claude/scripts/journal-compose-replay.sh "$WT" "$PREV" \
-     sessions/meta/ sessions/lifting-logbook/ sessions/career-playbook/ README.md
+     sessions/ README.md
 REPLAY_RC=$?
 [ "$REPLAY_RC" -eq 0 ] || \
   echo "STOP: reconcile the MANUAL_RECONCILE paths listed above before committing"

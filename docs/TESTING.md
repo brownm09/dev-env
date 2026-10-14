@@ -3330,6 +3330,8 @@ For a one-line navigational map of the test directory, see
 
     Fixture C also pins that the scratch-dir **fallback** cleans up after itself. When the fixed scratch path is absent — which is the case on CI, running as a different user — the script creates its own temp dir, and the `EXIT` trap must `rmdir` it rather than leaking one per run. `JOURNAL_COMPOSE_REPLAY_SCRATCH` exists solely to make that branch reachable from a machine where the fixed path *does* exist; `TMPDIR` is pointed at a private directory so the assertion is deterministic rather than a racy count of the shared temp root.
 
+    **Fixture D** pins the caller's pathspecs rather than the script's logic ([ADR-104](adr/104-journal-compose-conflict-recovery-diff-and-replay.md) Amendment 2, dev-env#1109). It reads both Step 10.5 replay calls out of `claude/skills/journal-compose/SKILL.md`, asserts it found exactly two (so an extraction that matches nothing fails instead of passing vacuously), and runs the real script with each call's pathspecs. The fixture is the 2026-10-12 incident shape: the draft composes one project and, under a project with **no stubs**, adds a tile shard and deletes a closed tile's shard and a merged PR's shard. All three must be replayed, because Step 10.5 deletes the draft branch afterward. Against the pre-fix SKILL.md, which listed only the composed projects, this fixture failed 9 assertions.
+
     Deliberate scope gap: the caller-side contract (that Step 10.5 actually stops on exit 2 before committing) is prose in the skill, not code, so it is unenforced here — the same limit ADR-104 already accepted for bash embedded in a markdown skill.
 
     ```bash
