@@ -69,14 +69,12 @@ Stdin JSON shape (PreToolUse): {"session_id": <str>,"tool_name":"Agent",
 <present only when fired inside a subagent>,"agent_type": <str>}
 """
 import json
-import re
 import sys
 
 import _hookout
 import _hookutil
 
 SENTINEL_PREFIX = "nested_agent_rib_seen_"
-_SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 BLOCK_MESSAGE = """Nested Agent-tool spawn with no explicit run_in_background (agent_id={agent_id}, agent_type={agent_type}).
 
@@ -107,19 +105,20 @@ def main() -> None:
         sys.exit(0)
 
     session_id = data.get("session_id")
-    if not isinstance(session_id, str) or not _SAFE_SESSION_ID.match(session_id):
+    if not isinstance(session_id, str) or not _hookutil._SAFE_SESSION_ID.match(session_id):
         sys.exit(0)  # no safe key for the schema evidence -- cannot judge
     sentinel = _hookutil.sentinel_path(SENTINEL_PREFIX, session_id)
 
     if "run_in_background" in tool_input:
         # Explicit choice, either value -- not the failure mode. It also proves
         # this session's subagent schema offers the choice.
-        try:
-            sentinel.parent.mkdir(parents=True, exist_ok=True)
-            sentinel.touch()
-        except OSError:
-            pass
-        _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
+        if not sentinel.exists():
+            try:
+                sentinel.parent.mkdir(parents=True, exist_ok=True)
+                sentinel.touch()
+            except OSError:
+                pass
+            _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
         sys.exit(0)
 
     if not sentinel.exists():
