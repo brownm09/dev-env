@@ -190,6 +190,58 @@ registration change was needed — the matcher was already wired in Stage 1.
   trigger shape but stay in separate files): this hook's trigger condition (`Agent` tool, nesting,
   background default) has no relationship to any existing hook's domain.
 
+## Amendment (2026-10-24) — an omission blocks only when the schema offers the field
+
+**What changed.** The Decision's second condition assumed a subagent's `Agent` tool always offers
+`run_in_background`, so an omitted field meant the model forgot to choose. That stopped being
+true. Current harness builds give subagents an `Agent` tool with no `run_in_background` parameter
+at all. A probe subagent, asked to quote its own tool definition on 2026-10-24, listed only
+`description`, `prompt`, `subagent_type`, `model`, `effort` and `isolation`, and its description
+reads "Subagents run in the background; you'll be notified when one completes." In such a session
+the field can never reach the hook, the block can never be satisfied, and every nested spawn
+fails. Observed 2026-10-21 in career-playbook [PR #2271](https://github.com/brownm09/career-playbook/pull/2271):
+a subagent delegated Phase 5 of the cover-letter workflow could not spawn any of its six blind
+checks, and the main loop had to run them ([dev-env#1158](https://github.com/brownm09/dev-env/issues/1158)).
+
+**The hook input cannot see the schema.** A missing key reads identically whether the caller
+forgot it or had no such parameter. What the input does carry is `session_id`, and one session runs
+one harness version. So the hook now gathers evidence per session:
+
+- A nested call that **carries** `run_in_background` (either value) still passes, and also writes
+  the sentinel `~/.claude/scratch/nested_agent_rib_seen_<session_id>.flag`. It proves this
+  session's subagent schema offers the choice. Stale sentinels are swept after 30 days, like other
+  per-session sentinels.
+- A nested call that **omits** it is blocked only when that sentinel exists. Without it, the call
+  passes: the harness is choosing the execution mode itself, and no edit to the call could satisfy
+  the hook.
+- A missing or unsafe `session_id` (anything outside `[A-Za-z0-9_-]`) passes, since there is no
+  safe key to record evidence under.
+
+**The orphaning protection still holds where it can.** In a session whose subagents can choose
+(the harness the original design targeted), skills that follow career-playbook's convention pass the
+field explicitly. That sets the sentinel, and any later omission in the same session is blocked with
+the original message and the original one-line fix. Where the harness offers no choice, there is no
+model error left to catch. Whether a backgrounded nested child's completion reaches its parent is
+then the harness's job. The probe's own completion notice ("fires each time this agent stops with
+no live background children of its own") suggests the harness now tracks a subagent's children.
+That is unverified here, so this amendment claims only that the hook no longer prevents nested
+spawns.
+
+**Accepted gap.** In a session that does offer the field, an omission that comes *before* any
+explicit call is not blocked. This shows up only in the first nested spawn of a session whose
+skills never pass the field. The alternative was a machine-wide marker with an expiry, which would
+have re-created this bug for the length of the expiry after every harness upgrade that drops the
+field.
+
+**Calibration (ADR-144).** The gate keys on two things: whether the key is present in
+`tool_input`, and whether the per-session sentinel exists. Known-good: a nested spawn from a
+schema without the field, the PR #2271 shape. It now allows, and it blocked before this change
+(`test_nested_missing_field_without_schema_evidence_allows` fails against the pre-amendment hook
+with the incident's exact message). Known-bad: an omission after the same session sent the field.
+It still blocks (`test_nested_missing_field_after_schema_evidence_blocks`). No live harness that
+offers the field was available to re-confirm the blocked case end to end. That case is
+fixture-pinned only.
+
 ## References
 
 - [career-playbook ADR-090](https://github.com/brownm09/career-playbook/blob/main/docs/adr/090-synchronous-subagent-spawns.md) —
