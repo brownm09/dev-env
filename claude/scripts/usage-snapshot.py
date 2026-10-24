@@ -24,10 +24,15 @@ Stdin JSON shape (PostToolUse):
     "cwd": "..."
   }
 
-Exit 0  — not a merge command, an unconfirmed merge (no success marker and the
-          live `gh pr view` fallback also found nothing — e.g. a queued
-          `--auto`, or a genuinely failed merge), or creds file absent; silent
-Exit 2  — snapshot emitted via stderr, OR a missing/unparseable token whose
+Exit 0  — not a merge command, or an unconfirmed merge (no success marker and
+          the live `gh pr view` fallback also found nothing — e.g. a queued
+          `--auto`, or a genuinely failed merge); silent. A *confirmed* merge is
+          never silent (dev-env#1139).
+Exit 2  — snapshot emitted via stderr, OR the creds file is absent/unreadable
+          (advisory — dev-env#1139; the desktop-app text when the
+          `claude auth status` probe says the CLI subprocess is unauthenticated,
+          a generic text otherwise; no refresh attempted either way), OR a
+          missing/unparseable token whose
           on-demand refresh didn't produce one (advisory — dev-env#819), OR an
           expired token whose on-demand refresh failed (advisory), OR the usage
           API was unreachable after one retry (advisory — #302). Both a
@@ -303,7 +308,7 @@ def get_access_token(creds: dict) -> tuple[str | None, int]:
 _MSIX_CLAUDE_CODE_REL = "Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code"
 
 
-def resolve_claude_exe() -> str | None:
+def resolve_claude_exe(base: Path | None = None) -> str | None:
     """Path to the newest packaged claude.exe, or None if the MSIX layout is absent.
 
     Returns the real .exe (not the ~/bin PATH shim) so subprocess can exec it
@@ -311,13 +316,22 @@ def resolve_claude_exe() -> str | None:
     this probe exists only to detect the desktop-app dead-end (dev-env#915); on an
     npm-CLI install the packaged .exe is absent and None routes the caller to the
     legacy refresh path.
+
+    Matches `claude.exe` at any depth under the version directory: app 2.1.295
+    moved it from `<ver>/claude.exe` to `<ver>/<hash>/claude.exe`, which the old
+    one-level `*/claude.exe` glob silently stopped matching, turning this probe
+    into a permanent None (dev-env#1139). Versions sort on the *top-level*
+    directory under *base* (the hash level is not a version), mirroring
+    keep-token-warm.ps1's recursive `Resolve-ClaudeExe`. *base* is an injection
+    point for tests; production callers pass nothing.
     """
-    local = os.environ.get("LOCALAPPDATA", "")
-    if not local:
-        return None
-    base = Path(local) / _MSIX_CLAUDE_CODE_REL
+    if base is None:
+        local = os.environ.get("LOCALAPPDATA", "")
+        if not local:
+            return None
+        base = Path(local) / _MSIX_CLAUDE_CODE_REL
     try:
-        exes = list(base.glob("*/claude.exe"))
+        exes = list(base.rglob("claude.exe"))
     except OSError:
         return None
     if not exes:
@@ -325,7 +339,7 @@ def resolve_claude_exe() -> str | None:
 
     def _ver(p: Path) -> tuple:
         try:
-            return tuple(int(x) for x in p.parent.name.split("."))
+            return tuple(int(x) for x in p.relative_to(base).parts[0].split("."))
         except ValueError:
             return (0,)
 
@@ -378,6 +392,39 @@ def cli_auth_status(timeout: int = 8, exe_fn=resolve_claude_exe, run_fn=None) ->
     except Exception:
         return None
     return parse_auth_status(getattr(proc, "stdout", "") or "")
+
+
+DESKTOP_APP_ADVISORY = (
+    "[usage-snapshot] Skipped: the Claude desktop app keeps OAuth in the "
+    "OS keychain, so no readable token file exists and a CLI refresh "
+    "cannot create one (dev-env#915). Post-merge usage snapshots are "
+    "unavailable in this configuration."
+)
+
+
+def creds_absent_advisory(probe_fn=None, creds_path: str = CREDS_PATH) -> str:
+    """One-line advisory for a confirmed merge with no readable credentials file.
+
+    A confirmed merge must never be silent (dev-env#1139): this branch used to
+    `sys.exit(0)` with no output, so on the desktop app -- where no
+    `.credentials.json` is ever written -- the snapshot vanished on every merge
+    and looked like a hook malfunction. The `claude auth status` probe picks the
+    wording: "out" is the desktop-app dead-end signature (the same text the
+    token-missing branch emits); anything else (npm CLI, unknown) gets a generic
+    message that makes no claim about the cause. No refresh is attempted either way:
+    with no file there is nothing for the CLI to repair, and the desktop-app case
+    is futile (ADR-124). probe_fn is dependency-injected for offline tests and
+    defaults to cli_auth_status, looked up at call time (not bound at definition)
+    so a test can also fake it through the module global when driving main().
+    """
+    if (probe_fn or cli_auth_status)() == "out":
+        return DESKTOP_APP_ADVISORY
+    return (
+        f"[usage-snapshot] Skipped: no readable OAuth credentials file at {creds_path}, "
+        "so the usage snapshot was omitted for this merge. On the Claude desktop app "
+        "this is expected (OAuth lives in the OS keychain, dev-env#915); otherwise run "
+        "`claude` interactively once to write the file."
+    )
 
 
 # --- usage API ---
@@ -857,7 +904,9 @@ def main() -> None:
 
     creds = load_credentials()
     if not creds:
-        sys.exit(0)
+        # Confirmed merge, nothing to authenticate with: say so rather than
+        # vanish (dev-env#1139). emit_block() exits(2).
+        _hookout.emit_block(creds_absent_advisory())
 
     token, expires_at_ms = get_access_token(creds)
     if not token:
@@ -874,12 +923,7 @@ def main() -> None:
         # status` reporting loggedIn:false is that exact signature — skip straight to
         # an accurate advisory rather than a doomed refresh. emit_block() exits(2).
         if cli_auth_status() == "out":
-            _hookout.emit_block(
-                "[usage-snapshot] Skipped: the Claude desktop app keeps OAuth in the "
-                "OS keychain, so no readable token file exists and a CLI refresh "
-                "cannot create one (dev-env#915). Post-merge usage snapshots are "
-                "unavailable in this configuration."
-            )
+            _hookout.emit_block(DESKTOP_APP_ADVISORY)
         # Otherwise (npm-CLI world, or an unknown probe result): attempt an on-demand
         # refresh, mirroring the expired-token branch below — the CLI's refresh path
         # can repair a locally corrupted/missing token field, not just refresh an

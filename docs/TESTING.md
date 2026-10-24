@@ -112,6 +112,19 @@ For a one-line navigational map of the test directory, see
    never-raise-on-write-failure, and 500-line cap (a `/review` finding on PR #998 — an uncapped trace
    grows forever) contract (real tempfile I/O, no network). The live usage API call is not covered (the
    repo avoids urllib mocks).
+   Also pins the never-silent-on-a-confirmed-merge contract
+   ([dev-env#1139](https://github.com/brownm09/dev-env/issues/1139)): `main()` driven end to end with
+   `load_credentials` / `cli_auth_status` / `emit_block` faked asserts a *confirmed* merge with no
+   credentials file (`None` and `{}`) emits exactly one advisory and exits 2 — the desktop-app text iff
+   the probe says `out`, a generic path-naming text for `in` / `None` — while an *unconfirmed* merge (a
+   queued `--auto`) with no credentials stays silent. `creds_absent_advisory()`'s wording selection is
+   pinned on its own, and `resolve_claude_exe()` is pinned against real temp directory trees for the flat
+   `<ver>/claude.exe` layout, the `<ver>/<hash>/claude.exe` layout app 2.1.295 introduced (the old
+   one-level glob matched neither's successor and silently turned the dev-env#915 probe into a permanent
+   `None`), numeric-not-lexical version ordering (2.1.170 beats 2.1.99; the hash level is not parsed as
+   a version), and `None` for an empty or nonexistent base. Deliberate gap: the real
+   `claude auth status` subprocess is not spawned by the suite (injected), so a future app change to the
+   *output* of that command is caught only by the live check in the PR body, not here.
 
    ```bash
    py -3 claude/scripts/tests/test_usage_snapshot.py
