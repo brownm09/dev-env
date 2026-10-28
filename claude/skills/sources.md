@@ -219,3 +219,15 @@ posts on company engineering blogs, and books with canonical URLs.
 
 - **Extract Function** | Martin Fowler | https://refactoring.com/catalog/extractFunction.html |
   Catalog entry from Fowler's *Refactoring* (2nd ed.); the canonical case for pulling a fragment of logic into its own well-named function to improve readability, enable reuse, and make the extracted logic independently testable; cite when centralizing inline resolution/config logic into a standalone helper.
+
+---
+
+## ML Evaluation & Experimentation
+
+**tags: llm-as-judge, rubric-evaluation, ab-testing, controlled-experiments, holdout, calibration**
+
+- **Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena** | Lianmin Zheng, Wei-Lin Chiang, et al. (UC Berkeley et al.), NeurIPS 2023 Datasets and Benchmarks Track | https://arxiv.org/abs/2306.05685 |
+  Establishes LLM-as-judge / rubric-based scoring of generated text against a reference as a validated methodology (judge-human agreement comparable to human-human agreement) and names the biases (position, verbosity, self-enhancement) a calibration arm must control for; cite when justifying a second independently-generated draft scored against a fixed rubric before choosing which version to use.
+
+- **Controlled experiments on the web: survey and practical guide** | Ron Kohavi, Roger Longbotham, Dan Sommerfield, Randal M. Henne, Data Mining and Knowledge Discovery 18(1), 2009 (DOI: 10.1007/s10618-008-0114-1) | https://exp-platform.com/hippo_long.aspx |
+  Canonical practitioner reference for holdout/controlled-comparison design — pre-specifying the success metric before looking at results, randomization, and guarding against post-hoc metric selection; cite for the general discipline of running a calibration arm against a baseline under a fixed, pre-declared evaluation criterion.
