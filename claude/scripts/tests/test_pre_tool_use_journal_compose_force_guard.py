@@ -44,6 +44,9 @@ command_targets_today_compose = mod.command_targets_today_compose
 _is_compose_op = mod._is_compose_op
 
 import _journal_compose_force as jcf  # noqa: E402
+from _heartbeat_isolation import isolate_heartbeat  # noqa: E402
+
+isolate_heartbeat()  # keep this file's hook fires out of the real heartbeat ledger (dev-env#1163)
 
 MODULE_PATH = Path(_SCRIPT)
 

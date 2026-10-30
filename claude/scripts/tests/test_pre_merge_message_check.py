@@ -16,6 +16,10 @@ import subprocess
 import sys
 import tempfile
 
+from _heartbeat_isolation import isolate_heartbeat
+
+isolate_heartbeat()  # keep this file's hook fires out of the real heartbeat ledger (dev-env#1163)
+
 # ---------------------------------------------------------------------------
 # Load the module under test without executing main()
 # ---------------------------------------------------------------------------

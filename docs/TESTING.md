@@ -4568,3 +4568,50 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_turn_count_hook.py
     ```
+
+106. **heartbeat-ledger isolation gate** — required when adding or changing any test that runs a
+    real wired hook (a subprocess or a `<module>.main()` call), or when changing
+    `claude/scripts/tests/_heartbeat_isolation.py` (dev-env#1163).
+
+    Every wired hook's `main()` starts with `_hookutil.record_heartbeat()` (ADR-106), which writes
+    `~/.claude/scratch/hook-heartbeat/<hook>.ts` and appends to `<hook>.dur.jsonl` (item 104). A
+    test that runs a real hook without `HOOK_HEARTBEAT_DIR_OVERRIDE` refreshes that hook's
+    liveness heartbeat, which can hide a hook that stopped firing in production for up to the
+    7-day cadence, and mixes test fires into the timing data. Hook-driving tests call
+    `isolate_heartbeat()` from `_heartbeat_isolation.py` once at module level. It points the
+    override at a temp directory for that test process, so in-process `main()` calls and every
+    subprocess that inherits `os.environ` are covered. `child_env()` covers a hand-built
+    subprocess environment, and the two bash gates export the variable themselves. The override
+    is set per test file, not by `run-hook-tests.py`, because `test_hookutil.py`'s precedence
+    tests need it unset.
+
+    The gate classifies every `test_*.py` and `*.sh` in both test directories. A file is
+    *hook-driving* when it names a wired script from `claude/settings.shared.json` and runs
+    something: a `subprocess` call that launches Python (`sys.executable`, a `py`/`python`
+    literal, or a module-level helper such as `_py_cmd()` that names one), a `<module>.main()`
+    call, or `runpy`. A bare `main()` (the test file's own runner) and `unittest.main()` do not
+    count. A file is *isolated* when it calls `isolate_heartbeat()`/`child_env()` or uses the
+    override name as a code string (a docstring mention does not count). Every hook-driving
+    file must be isolated. The one exemption is `test_hook_liveness_check.py`, which redirects
+    HOME/USERPROFILE instead because its end-to-end cases read the hook's own heartbeat from
+    the temp home's ledger. The gate checks that the exemption still sets `USERPROFILE`.
+
+    Calibration, measured 2026-10-30 against `ec66eb1` before the fix. A temporary probe in
+    `record_heartbeat` logged every call that resolved to the real ledger, tagged by test file.
+    Fifteen files wrote there (13 Python, plus `test-auto-merge-checkpoint-gate.sh` and
+    `test-merge-findings-gate.sh`), led by `test_canonical_mutate_guard.py` at 43 fires per
+    run. The detector flagged all 15. It also flagged 10 more that ran real hooks under a
+    temp-HOME redirect. The rule above treats those as offenders too, since one of the 15,
+    `test_skill_file_size_advisory.py`, mixed both and leaked from its unredirected cases. It
+    flagged no file that never ran a hook. An earlier version that counted any `main()` call or
+    any subprocess flagged 19 extra files; the bare-`main()` and Python-launch rules removed
+    them. After the fix the same probe logged zero writes across the whole suite. Embedded
+    fixtures pin the known-bad shapes (an unisolated subprocess driver, an in-process `main()`
+    driver, a docstring-only mention, an unisolated bash gate) and the known-good ones (each
+    isolation call, a pure-function test that loads a hook but never runs it, an isolated bash
+    gate). Two non-empty checks fail the gate if the wired-script list or the hook-driving set
+    shrinks below its floor, so a detector that stops recognizing anything cannot pass.
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_heartbeat_isolation.py
+    ```

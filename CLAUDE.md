@@ -139,6 +139,7 @@ the item). A one-line navigational map of the test directory is
 103. **hook-launch test** — required when changing `claude/scripts/_hook_launch.py`, the command form of any hook in `claude/settings.shared.json`, or `_settings_sync.py`'s `ensure_launcher` (also run item 98 then). Every hook runs through the launcher, which fails open on a missing script instead of Python's blocking exit 2 ([ADR-148](docs/adr/148-missing-hook-script-fails-open-via-launcher.md), dev-env#1146). Run: `py -3 claude/scripts/tests/test_hook_launch.py`
 104. **hook-timing-report test** — required when changing `claude/scripts/hook-timing-report.py`, or `_hookutil.py`'s `record_duration` line format (also run item 27 then). Reads the per-fire duration lines the heartbeat writes (dev-env#848, ADR-106 Amendment 2). Run: `py -3 claude/scripts/tests/test_hook_timing_report.py`
 105. **turn-count-hook journal-stub band test** — required when changing `claude/scripts/turn-count-hook.py` ([ADR-150](docs/adr/150-context-growth-journal-stub-trigger.md), dev-env#1160). Run: `py -3 claude/scripts/tests/test_turn_count_hook.py`
+106. **heartbeat-ledger isolation gate** — required when adding or changing any test that runs a real wired hook (a subprocess or a `<module>.main()` call), or when changing `claude/scripts/tests/_heartbeat_isolation.py`. No test may write the production ledger `~/.claude/scratch/hook-heartbeat/` (dev-env#1163). Run: `py -3 claude/scripts/tests/test_hook_heartbeat_isolation.py`
 
 ## Observability
 

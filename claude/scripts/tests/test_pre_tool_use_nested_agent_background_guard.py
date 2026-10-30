@@ -27,6 +27,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+from _heartbeat_isolation import isolate_heartbeat
+
+isolate_heartbeat()  # keep this file's hook fires out of the real heartbeat ledger (dev-env#1163)
+
 _SCRIPT = os.path.join(os.path.dirname(__file__), "..", "pre-tool-use-nested-agent-background-guard.py")
 MODULE_PATH = Path(_SCRIPT)
 SENTINEL_PREFIX = "nested_agent_rib_seen_"

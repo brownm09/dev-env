@@ -51,6 +51,12 @@ bad() { echo "  FAIL: $*"; FAIL=$((FAIL + 1)); }
 [ -f "$HOOK" ] || { echo "FATAL: hook not found at $HOOK"; exit 1; }
 if command -v py >/dev/null 2>&1; then PY="py -3"; else PY="python3"; fi
 
+# Keep the hook's heartbeat write out of the real ~/.claude/scratch/hook-heartbeat/ (dev-env#1163).
+HOOK_HEARTBEAT_DIR_OVERRIDE=$(mktemp -d)
+command -v cygpath >/dev/null 2>&1 && HOOK_HEARTBEAT_DIR_OVERRIDE=$(cygpath -m "$HOOK_HEARTBEAT_DIR_OVERRIDE")
+export HOOK_HEARTBEAT_DIR_OVERRIDE
+trap 'rm -rf "$HOOK_HEARTBEAT_DIR_OVERRIDE"' EXIT
+
 # Encode a string as a JSON string literal (handles quotes/backslashes).
 json_str() { $PY -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")'; }
 

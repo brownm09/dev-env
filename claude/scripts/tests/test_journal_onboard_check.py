@@ -33,6 +33,10 @@ import tempfile
 import time
 from pathlib import Path
 
+from _heartbeat_isolation import isolate_heartbeat
+
+isolate_heartbeat()  # keep this file's hook fires out of the real heartbeat ledger (dev-env#1163)
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "claude" / "scripts" / "journal-onboard-check.py"
 SENTINEL_PREFIX = "journal_onboard_"
