@@ -502,7 +502,10 @@ def unmerged_draft_branches() -> list[str]:
     composed_project_dates_on_main(), which already reads the local origin/main.
     A push from this machine updates the tracking ref immediately, and any
     fetch/pull refreshes the rest. A ref left behind after its remote branch was
-    deleted is filtered out once its date is composed on origin/main.
+    deleted is filtered out once its date is composed on origin/main. The one
+    residual: the journal repo sets no fetch.prune, so a branch deleted remotely
+    WITHOUT a composed file keeps being reported until `git fetch --prune` runs
+    there (ADR-091 Amendment 4).
     """
     try:
         result = subprocess.run(

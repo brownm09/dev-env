@@ -954,10 +954,12 @@ def test_e2e_unmerged_draft_advisory_without_network():
     assert out.strip(), "no advisory emitted -- the unmerged draft was not found from local refs"
     payload = json.loads(out)
     msg = payload.get("systemMessage", "")
-    assert "Unmerged draft branch(es): 2020-01-01" in msg, (
+    # Today-exclusion is pinned in-process above: the hook subprocess computes its
+    # own TODAY, so asserting on it here would flake on a run that crosses midnight.
+    assert "Unmerged draft branch(es)" in msg and "2020-01-01" in msg, (
         f"advisory must come from local refs with origin unreachable, got {out!r}"
     )
-    assert "2020-01-02" not in msg and jsc.TODAY not in msg, msg
+    assert "2020-01-02" not in msg, msg
     return "e2e unreachable origin + local origin/draft/2020-01-01 ref -> unmerged advisory still delivered"
 
 
