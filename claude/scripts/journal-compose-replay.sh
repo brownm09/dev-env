@@ -7,7 +7,7 @@
 #
 #   PREV=$(git -C "$WT" rev-parse HEAD)              # the draft branch's tip
 #   git -C "$WT" checkout -b compose/YYYY-MM-DD origin/main
-#   bash journal-compose-replay.sh "$WT" "$PREV" "sessions/<project>/" README.md
+#   bash journal-compose-replay.sh "$WT" "$PREV" sessions/ README.md
 #
 # WHAT IT REPLAYS.  Everything the draft branch actually added, modified, or
 # deleted since it diverged from origin/main (ADR-104's diff-and-replay), scoped

@@ -37,6 +37,8 @@ docstring first):
   - hook-heartbeat/*.ts                      -- one per HOOK (not per
     session), a small fixed count, actively read by hook-liveness-check.py
     for staleness detection. Sweeping these would defeat that monitor.
+    The `*.dur.jsonl` duration logs beside them (dev-env#848) are bounded
+    by their own writer's compaction, so they need no sweep either.
   - token-sessions.jsonl, session-mode-prompt.log -- single append-only
     logs, not per-session files; a log-rotation concern, not this script's.
   - baseline_<repo>_<branch>.json (baseline-tests.sh) -- scoped to a

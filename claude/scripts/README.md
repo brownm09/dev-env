@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **101 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **102 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -145,7 +145,7 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (25)
+### Session state, reliability & token tracking (26)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -153,14 +153,15 @@ invocation instead.
 | `replay-shell-content-guard.py` | `py -3 replay-shell-content-guard.py [--gap] [--json] [--samples N] [--scan-dir DIR]` | Replays the guard above over recorded session transcripts and reports block rate, mechanism mix, override use, and the **failure-rate enrichment ratio** (blocked-set shell-parse-failure rate ÷ corpus baseline; `>1` concentrates real failures, `~1` means over-matching). Read-only. ADR-138 Amendment 1's answer to "is it over-matching?" — re-run after any detector change to the guard. |
 | `replay-scratch-rm-allow.py` | `py -3 replay-scratch-rm-allow.py [--json] [--width N] [--reasons N] [--scan-dir DIR]` | Replays the scratch-rm-allow hook below over recorded session transcripts: unique Bash commands, rm+scratch candidates, what it would approve (each listed with resolved targets for spot-checking), and why candidates were rejected. Read-only. ADR-147 section 6's calibration replay — re-run after any change to the hook's lexer. |
 | `pre-tool-use-scratch-rm-allow.py` | PreToolUse (Bash) | Auto-approves a Bash command that only deletes files inside `~/.claude/scratch/`, resolving in-command variables, `cd`, `~`/`$HOME`, and drive-letter forms, so unattended sessions don't stall on a prompt for throwaway-file cleanup. Approves only when every segment is a literal assignment, a `cd` into scratch, or an `rm` whose every target resolves strictly inside scratch; anything else gets no decision (the normal prompt). Never blocks. See [ADR-147](../../docs/adr/147-scratch-only-rm-auto-allow-hook.md). |
-| `pre-tool-use-nested-agent-background-guard.py` | PreToolUse (Agent) | Blocks a nested `Agent`-tool spawn (`agent_id` present) that omits `run_in_background` entirely — the exact failure signature behind career-playbook's ADR-090 orphaned-subagent stalls. Any explicit value (`true` or `false`) passes through untouched, and a top-level spawn is untouched entirely. See [ADR-126](../../docs/adr/126-nested-agent-spawn-background-guard.md). |
+| `pre-tool-use-nested-agent-background-guard.py` | PreToolUse (Agent) | Blocks a nested `Agent`-tool spawn (`agent_id` present) that omits `run_in_background` entirely — the exact failure signature behind career-playbook's ADR-090 orphaned-subagent stalls. Any explicit value (`true` or `false`) passes through untouched, and a top-level spawn is untouched entirely. An omission blocks only once the same session has sent the field on an earlier nested call; harness builds whose subagent `Agent` tool has no such parameter are never blocked (dev-env#1158). See [ADR-126](../../docs/adr/126-nested-agent-spawn-background-guard.md). |
 | `pre-tool-use-skill-file-size-guard.py` | PreToolUse (Write/Edit) | Blocks a Write/Edit that would leave a `SKILL.md` file over a configurable byte ceiling (default 256KB). See [ADR-127](../../docs/adr/127-skill-file-size-guard.md). |
 | `session-mode-prompt.py` | UserPromptSubmit | One-time per-session reminder of the active permission mode (plan/bypass/auto). |
 | `dev-env-sync.py` | UserPromptSubmit | Fast-forward pulls dev-env to `origin/main`; auto-returns a clean canonical to `main` or warns; escalates a persistent pull failure. |
 | `session-start-sync.py` | SessionStart (`startup`/`resume`) | Generalizes `dev-env-sync.py`'s fetch/ff-only-or-warn mechanic to any repo a session starts in (any dev-env checkout, canonical or worktree, stays covered by `dev-env-sync.py`); auto-fast-forwards only a canonical/sole checkout on its own default branch, clean of tracked changes and ff-safe, with no other session active there recently, else emits a loud advisory naming why not. [ADR-130](../../docs/adr/130-session-start-fetch-ff-only-or-warn.md) |
-| `turn-count-hook.py` | UserPromptSubmit | Warns when session context token/turn count exceeds threshold. |
+| `turn-count-hook.py` | UserPromptSubmit | Warns when session context token/turn count exceeds threshold; nudges a journal-stub update once per band of context growth (ADR-150). |
 | `idle-refresher.py` | UserPromptSubmit | After a long idle gap, injects a cue to open the reply with a refresher of prior state. |
 | `hook-liveness-check.py` | UserPromptSubmit | Warns when a wired hook's heartbeat has gone stale (hasn't recorded in its expected cadence). |
+| `hook-timing-report.py` | `py -3 hook-timing-report.py [--since-hours N] [--dir PATH]` | Per-hook run-time and (sampled) launch-time percentiles from the `<hook>.dur.jsonl` lines every heartbeat appends (dev-env#848). Read-only. Before/after evidence for hot-path gating and the hook dispatcher. |
 | `awake-blocker.py` | UserPromptSubmit / Stop / Notification | Holds a Windows system-sleep lock via a detached watcher while Claude is processing. |
 | `memory-write-advisory.py` | PostToolUse (Write) | Reminds Claude to pair a durable memory write with an immortalization issue when none is linked. |
 | `skill-file-size-advisory.py` | PostToolUse (Write/Edit) | Non-blocking nudge when a `SKILL.md` write/edit lands at/above a lower watermark (default 200KB), ahead of the hard-block guard's ceiling. See [ADR-127](../../docs/adr/127-skill-file-size-guard.md). |

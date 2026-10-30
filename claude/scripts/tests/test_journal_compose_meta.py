@@ -1834,7 +1834,11 @@ def test_both_step_10_5_replay_pathspec_lists_name_sessions_meta():
     assert len(calls) == 2, f"expected the single-project and multi-project replay calls, found {len(calls)}"
     for call in calls:
         assert call.count("\n") >= 1, f"the pathspec continuation line was not captured:\n{call}"
-        assert "sessions/meta/" in call, f"a Step 10.5 pathspec list omits sessions/meta/:\n{call}"
+        # The whole sessions/ tree covers meta (dev-env#1109); a narrower list must name it.
+        specs = [s.strip('"') for s in call.replace("\\\n", " ").split()[3:]]
+        assert "sessions/" in specs or "sessions/meta/" in specs, (
+            f"a Step 10.5 pathspec list does not cover sessions/meta/:\n{call}"
+        )
 
 
 def test_routine_states_the_unattended_meta_rule_in_its_own_words():

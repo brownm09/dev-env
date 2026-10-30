@@ -41,13 +41,21 @@ How it decides:
      documented "a reviewer subagent that dispatches a verifier per
      finding" parallel-fan-out pattern -- and must not be punished; an
      explicit `false` is exactly the fix this hook exists to require.
-     Only an OMITTED field blocks.
-  4. Otherwise: BLOCK (exit 2) with a message explaining the mechanism and
+     A present field also proves this session's subagent `Agent` schema
+     exposes the parameter, so record a per-session sentinel saying so.
+  4. Fail OPEN on an OMITTED field unless that sentinel exists (dev-env#1158).
+     The harness has shipped subagent `Agent` schemas with no
+     `run_in_background` parameter at all; there the field can never
+     arrive, the harness picks the execution mode itself, and blocking
+     would make every nested spawn impossible. A missing key alone cannot
+     tell "forgot to choose" from "had no choice", but a session runs one
+     harness version, so a key seen earlier in the same session settles it.
+  5. Otherwise: BLOCK (exit 2) with a message explaining the mechanism and
      the one-line fix, naming `agent_id`/`agent_type` for the model to
      orient on which of its own in-flight spawns triggered it.
 
 Fail direction: FAILS OPEN (REFERENCE.md authoring rule 5) -- a crash, an
-unparseable payload, or any of the three pass-through conditions above all
+unparseable payload, or any of the four pass-through conditions above all
 allow the call. This is a narrow, high-precision gate (nested AND omitted
 -- both conditions required), not a blanket restriction on `Agent` calls,
 so failing open on uncertainty costs little: the failure modes it guards
@@ -56,15 +64,17 @@ now," so there is no case for failing closed the way
 pre-tool-use-journal-compose-force-guard.py does for its much narrower,
 already-rare trigger.
 
-Stdin JSON shape (PreToolUse): {"tool_name":"Agent","tool_input":{...,
-"run_in_background": <bool, optional>},"agent_id": <present only when
-fired inside a subagent>,"agent_type": <str>}
+Stdin JSON shape (PreToolUse): {"session_id": <str>,"tool_name":"Agent",
+"tool_input":{..., "run_in_background": <bool, optional>},"agent_id":
+<present only when fired inside a subagent>,"agent_type": <str>}
 """
 import json
 import sys
 
 import _hookout
 import _hookutil
+
+SENTINEL_PREFIX = "nested_agent_rib_seen_"
 
 BLOCK_MESSAGE = """Nested Agent-tool spawn with no explicit run_in_background (agent_id={agent_id}, agent_type={agent_type}).
 
@@ -91,8 +101,28 @@ def main() -> None:
         sys.exit(0)  # top-level spawn -- out of scope by design
 
     tool_input = data.get("tool_input")
-    if not isinstance(tool_input, dict) or "run_in_background" in tool_input:
-        sys.exit(0)  # explicit choice, either value -- not the failure mode
+    if not isinstance(tool_input, dict):
+        sys.exit(0)
+
+    session_id = data.get("session_id")
+    if not isinstance(session_id, str) or not _hookutil._SAFE_SESSION_ID.match(session_id):
+        sys.exit(0)  # no safe key for the schema evidence -- cannot judge
+    sentinel = _hookutil.sentinel_path(SENTINEL_PREFIX, session_id)
+
+    if "run_in_background" in tool_input:
+        # Explicit choice, either value -- not the failure mode. It also proves
+        # this session's subagent schema offers the choice.
+        if not sentinel.exists():
+            try:
+                sentinel.parent.mkdir(parents=True, exist_ok=True)
+                sentinel.touch()
+            except OSError:
+                pass
+            _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
+        sys.exit(0)
+
+    if not sentinel.exists():
+        sys.exit(0)  # schema may have no such parameter (dev-env#1158)
 
     _hookout.emit_block(BLOCK_MESSAGE.format(
         agent_id=agent_id, agent_type=data.get("agent_type", "unknown")))

@@ -290,3 +290,81 @@ unchanged. They harden the *reader*'s (`hook-liveness-check.py`'s) own reliabili
 maintainability gap in how the invariant is enforced going forward, and address a performance
 concern the original PR body did not discuss — all found by the same review process this
 initiative's other PRs (ADR-098, ADR-099, ADR-100) also relied on to catch per-site channel bugs.
+
+## Amendment 2 (2026-10-30) — the heartbeat also records how long each fire took
+
+The addendum above is the first change to this decision; this is the second.
+
+**Why.** The ledger answers "did this hook fire?" but not "what did that fire cost?" The
+2026-07 optimization roadmap ([dev-env#840](https://github.com/brownm09/dev-env/issues/840))
+proposes gating hot-path hooks ([#849](https://github.com/brownm09/dev-env/issues/849)) and
+running each event's hooks in one dispatcher process
+([#851](https://github.com/brownm09/dev-env/issues/851)). Both need per-hook timing before and
+after the change, and [#848](https://github.com/brownm09/dev-env/issues/848) asked for it to
+come from this ledger. A 2026-10-30 measurement on the user's machine found a no-op Python
+launch taking 0.5–4.3 s, because Defender and Acronis scan every process start
+([#851 comment](https://github.com/brownm09/dev-env/issues/851#issuecomment-6526180164)). So
+the number that matters is the launch, not the hook body, and the ledger has to measure both.
+
+**What changed.** When the hook is the process's `__main__` script (a real launch: the
+ADR-148 launcher runs it as `__main__` with its own `__file__`), `record_heartbeat` also
+registers an `atexit` callback, once. At process exit it appends one JSON line to
+`<ledger>/<hook>.dur.jsonl`, next to the `.ts` heartbeat:
+
+- `run_ms`: from the heartbeat call (the first statement of `main()`) to process exit. `atexit`
+  runs on a normal return, `sys.exit` and an uncaught exception alike, and doesn't change the
+  exit code.
+- `startup_ms`: from the launch to the heartbeat call, which covers the py launcher,
+  interpreter start and the hook's module-level imports. `pyw -3` starts `pythonw.exe` as a
+  child, so the launch time is the parent's creation time when the parent's image is
+  `py.exe` or `pyw.exe`. Otherwise it's this process's own. Windows only, via `ctypes`
+  (`GetProcessTimes`); `null` elsewhere.
+- `t`: the Unix time of the write.
+
+The `__main__` condition matters for anything that runs a hook's `main()` inside another
+process: a test calling it in a loop, or the #851 dispatcher running many handlers in one
+process. Arming there would record one sample spanning every later call. Those callers get the
+heartbeat but no exit record. They time their own calls and use the public
+`record_duration(hook_name, run_ms, startup_ms=None, heartbeat_dir=None)`. One consequence for
+#851: before it, `run_ms` covers `main()` to process exit; after it, a dispatcher's per-handler
+`run_ms` covers just the handler. The two are close for a hook whose only post-`main()` work is
+interpreter teardown, but compare them knowingly. A new on-demand script, `hook-timing-report.py`, prints per-hook medians and 90th
+percentiles from these files. The `.ts` file format and `hook-liveness-check.py` are unchanged.
+
+**Three constraints shaped it:**
+
+1. **Sampling the launch time.** Importing `ctypes` measured 10–75 ms on the user's machine,
+   because the antivirus scans the DLL load. Paying that on every fire of every hook would add
+   the overhead #851 exists to remove. So `startup_ms` is measured on about one fire in
+   `STARTUP_SAMPLE_EVERY = 16`, and the rest record `null`. `run_ms` costs only the append.
+   The report shows how many startup samples back each row.
+2. **Bounded without a GC job.** Once a file passes `DURATION_MAX_BYTES` (256 KiB), the
+   writer rewrites it to its newest `DURATION_KEEP_LINES` (2,000) via tmp + `os.replace`.
+   Retention is by line count, not time: a hook that fires on every tool call keeps a day or
+   two, so a baseline must be snapshotted (the report's output, pasted into the issue) before the
+   change it measures ships. The report shows how many hours back each hook's data reaches.
+   Appends and compaction take no lock, so concurrent fires of one hook can lose or tear a few
+   lines; the report skips torn lines. When `os.replace` fails (on Windows, while another
+   process holds the target open) the tmp file is removed rather than left behind. The `.ts`
+   write now shares that helper, which stops the same leak there: the production ledger held
+   about 400 orphaned `.ts.<pid>.tmp` files when this was written. `sweep-scratch-debris.py` stays away
+   from these files, as it does from the `.ts` files.
+3. **The atexit callback must never speak.** An exception escaping an atexit callback prints a
+   traceback to stderr. On a blocking hook's exit 2, Claude Code would hand that traceback to
+   the model as part of the block reason. The callback swallows everything. It also does
+   nothing when the ledger directory no longer exists: a test that drives a hook's `main()`
+   against a temporary ledger has deleted it by the time the test process exits, and
+   recreating it would leave debris in `%TEMP%`.
+
+**Known blind spot.** A fire that Claude Code kills at its hook timeout never reaches `atexit`
+and writes nothing, so the 90th percentile is a lower bound on the slow tail.
+
+**Alternatives rejected.** *Putting the duration in the `.ts` file* would change a format
+`hook-liveness-check.py` parses as a bare float, for no gain. *One shared log for all hooks*
+brings back the concurrent read-modify-write hazard this ADR's per-file design avoids.
+*Timing from outside* (a harness that launches hooks and times them) measures a synthetic run,
+not the production fires this ledger sees. It stays the right tool for a controlled
+before/after, and #851 uses one, but it can't replace in-situ data. *Measuring the launch on
+every fire* is the cost described in constraint 1.
+
+Tests: [`docs/TESTING.md`](../TESTING.md) items 27 (`_hookutil`) and 104 (the report).

@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 93 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 105 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 95 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 107 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -60,7 +60,7 @@ production code.
 | `test_worktree_liveness.py` | `_worktree_liveness.py` | Active-session liveness check that stops prune/reclaim routines from severing a worktree with a live Claude Code session in it. |
 | `test_worktree_recovery.py` | `_worktree_recovery.py` | Orphaned-worktree recovery recipe: renders it (destructive step kept out of the numbered sequence), pins `docs/REFERENCE.md`'s runbook to it by equality over runnable lines, and blocks the dev-env#751-disproven `worktree add --force`/`-f` form from every live surface. |
 | `test_worktree_topology.py` | `_worktree_topology.py` | Worktree-on-`main` squat detection/diagnosis and park-target decisions shared by prune, sync, and the journal-canonical guard. |
-| — | `_hook_wiring.py` | Not itself a test. Parses `claude/settings.shared.json` into wired hooks/events/timeouts once, shared by the four structural gates below and imported by `dev-env-doctor.py` (so a change here re-runs item 104 too). |
+| — | `_hook_wiring.py` | Not itself a test. Parses `claude/settings.shared.json` into wired hooks/events/timeouts once, shared by the four structural gates below and imported by `dev-env-doctor.py` (so a change here re-runs item 106 too). |
 
 ## Structural / fleet-wide gates
 
@@ -152,11 +152,12 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 |---|---|---|
 | `test_dev_env_sync.py` | `dev-env-sync.py` | Fast-forwards the canonical checkout's `main` on every prompt; escalates a persistent pull failure. |
 | `test_hook_liveness_check.py` | `hook-liveness-check.py` | Warns when a wired hook's heartbeat ledger has gone stale (hasn't recorded in its expected cadence). |
+| `test_hook_timing_report.py` | `hook-timing-report.py` | Per-hook duration percentiles from the heartbeat's `.dur.jsonl` lines: window and malformed-line filtering, numbered slowest-first table, empty/missing ledger, and a round trip against `_hookutil.record_duration`'s own output. |
 | `test_idle_refresher.py` | `idle-refresher.py` | Injects a "here's what we were doing" cue after a long idle gap between prompts. |
 | `test_memory_write_advisory.py` | `memory-write-advisory.py` | Flags a durable memory write that has no paired immortalization issue. |
 | `test_posttooluse_inert_advisory.py` | `posttooluse-inert-advisory.py` | Stop-hook safety net: detects a background/SDK-launched session where PostToolUse hooks never fired at all. |
 | `test_pre_bash_drift_check.py` | `pre-bash-drift-check.py` | Elapsed-time-gated repo/branch drift check on every Bash call, not just the three merge-adjacent checkpoints. |
-| `test_pre_tool_use_nested_agent_background_guard.py` | `pre-tool-use-nested-agent-background-guard.py` | Blocks a nested `Agent`-tool spawn that omits `run_in_background` entirely; an explicit value or a top-level spawn passes through untouched (ADR-126). |
+| `test_pre_tool_use_nested_agent_background_guard.py` | `pre-tool-use-nested-agent-background-guard.py` | Blocks a nested `Agent`-tool spawn that omits `run_in_background` entirely, but only once the same session has shown its subagent schema offers the field; an explicit value or a top-level spawn passes through untouched (ADR-126, Amendment 2026-10-24). |
 | `test_scratch_rm_allow.py` | `pre-tool-use-scratch-rm-allow.py` | End-to-end subprocess cases: allows a scratch-only `rm` written with a literal path, in-command variables, `cd`, quoted backslash or `/c/` drive forms, or a final-component glob; gives no decision for a chained non-rm segment, a `..` escape, command substitution, an unresolved variable, a relative path with no `cd`, recursive on the scratch root or a glob, a pipe/redirect, malformed stdin, or a non-Bash tool. Also pins `~`/`$HOME` under a matching vs. divergent `HOME` (against a fake home) and the best-effort approval log. Each fall-through is also checked in-process to come from a deliberate reject, not a swallowed crash; platform-gated cases are counted as skips (ADR-147). |
 | `test_session_mode_prompt.py` | `session-mode-prompt.py` | One-time per-session reminder of the active permission mode. |
 | `test_shell_content_write_guard.py` | `pre-tool-use-shell-content-write-guard.py` | Blocks a Bash/PowerShell command writing a hazard-bearing inline literal to a file (heredoc, `echo`/`printf`, `node -e`/`py -c`, `sed -i`, a PowerShell `-Value`/here-string) — and, as of ADR-138 Amendment 1, a heredoc feeding `gh`/`git`'s own prose argument (`--body-file -`, `-F -`); program-output redirection and an interpreter's stdin are never matched. Reproduces all three dev-env#1041 occurrences and pins the accepted scope gaps (ADR-138). |
@@ -167,6 +168,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_skill_file_size_advisory.py` | `skill-file-size-advisory.py` | Non-blocking nudge when a `SKILL.md` write/edit lands at/above a lower watermark, ahead of the hard-block guard's ceiling (ADR-127). |
 | `test_skill_file_size_guard.py` | `pre-tool-use-skill-file-size-guard.py` | Blocks a Write/Edit that would leave a `SKILL.md` file over a configurable byte ceiling; an exactly-at-limit size and an Edit that shrinks an already-oversized file both pass (ADR-127). |
 | `test_stop_experiment_verdict_gate.py` | `stop-experiment-verdict-gate.py` | Stop-hook backstop for the experiment-verdict half of the Experimental Rigor protocol: blocks the stop when an assistant message states a process-experiment conclusion with no `/experiment-audit` run and no skip override (ADR-115). |
+| `test_turn_count_hook.py` | `turn-count-hook.py` | Context-growth journal-stub bands: once per band, post-compaction growth, sidechain records skipped, stub discovery, config fallback, and an end-to-end subprocess run (ADR-150). |
 | `test_token_tracker.py` | `token-tracker.py` | Per-session token/cost aggregation and the once-per-session locate-failure advisory. |
 | `test_usage_snapshot.py` | `usage-snapshot.py` | OAuth-token expiry classification plus the merge-confirmation predicate for the post-tool-use usage snapshot. |
 

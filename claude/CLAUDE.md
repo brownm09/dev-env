@@ -315,6 +315,14 @@ Fix any error you encounter in any project, including issues unrelated to the ta
 
 See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md).
 
+### Scope of a change
+
+- **Simplicity first.** Write the least code that meets the issue. No features, options, or configurability nobody asked for; no abstraction with a single caller; no handling for errors that cannot happen. If a senior engineer would call it overcomplicated, or 200 lines could be 50, rewrite it before opening the PR.
+- **Surgical diffs.** Every changed line should trace to the PR's issue. Match the surrounding style even where you'd choose differently, and don't reformat, re-comment, or refactor code next to your change. Remove the imports, variables, and functions *your* change left unused, and nothing else.
+- **How this fits *Fix errors on encounter*.** That rule still applies. Surgical scope governs *this PR's diff*, and an unrelated fix goes in its own issue and PR, as that rule's "separate PR" bullet already says. Pre-existing dead code that isn't an error is not something you encountered and broke: mention it or tile it, but don't delete it in passing.
+
+Adapted, not copied, from [andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills/tree/2c606141936f1eeef17fa3043a72095b4765b9c2) by Jiayuan Zhang ([@forrestchang](https://github.com/forrestchang)), which distills [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876) on LLM coding pitfalls. `/review` checks both rules as non-blocking `[maintainability]` findings. See [ADR-149](../docs/adr/149-scope-of-a-change-rules.md).
+
 ### No spawning new terminal windows (Windows scripts)
 
 For PowerShell or batch scripts on Windows, do not author or accept patterns that spawn a new console window or trigger UAC re-launch from inside the script: `Start-Process -Verb RunAs` self-relaunch, `Start-Process ... -NoExit` sibling consoles, `cmd /c start ... powershell ...`, or any equivalent round-trip. In agent-driven and non-interactive contexts the UAC dialog has no desktop to render against, the prompt hangs the session or is silently dismissed, the new console dies before producing output, and the user pays cleanup tokens to disentangle the orphan processes.
@@ -520,7 +528,7 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 
 **Always plan first — permission modes don't bypass it:** Plan mode (Shift+Tab cycles modes) is the session default for every substantive task. Bypass and auto modes reduce permission prompts only; they do not relax the plan-first discipline.
 
-**Plan-then-optimize before acting:** Any task involving an Agent spawn, a skill invocation, reads across more than one file, or a switch to a new primary objective within the same session (e.g., moving from a `/review` or other skill output to addressing findings, or from one issue to another) requires this protocol. State a numbered plan first, then apply three explicit revision passes before taking any action.
+**Plan-then-optimize before acting:** Any task involving an Agent spawn, a skill invocation, reads across more than one file, or a switch to a new primary objective within the same session (e.g., moving from a `/review` or other skill output to addressing findings, or from one issue to another) requires this protocol. State a numbered plan first, giving each step the check that proves it done (`1. <step> → verify: <check>`), then apply three explicit revision passes before taking any action.
 
 **Pass 1 — Token efficiency:** check:
 - Sequential tool calls that can be parallelized
@@ -534,6 +542,7 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 - No Agent scope was narrowed so far that it misses required context
 - The final outputs (files written, PRs opened, commits made) match what the original plan intended
 - If the plan includes multiple PR merges, the stub-writing step appears once, after the last merge — not once per merge
+- The plan solves the request as stated. When the request has more than one reasonable reading, name the readings and say which one the plan follows, and ask only when the choice changes the result. When a simpler approach than the one requested exists, say so. A bug fix starts with a test that reproduces the bug. ([ADR-149](../docs/adr/149-scope-of-a-change-rules.md))
 
 **Pass 3 — Risk-dimension audit:** before acting, the plan must address each of these eight dimensions explicitly. For any that don't apply, state **`N/A — <reason>`** rather than omitting it. The bar is *stating the decision*, not adding work everywhere.
 
@@ -871,6 +880,7 @@ branch-switched or committed to ([ADR-082](../docs/adr/082-journal-compose-workt
   - PR closed without merging — stub was already written at PR creation; stopping is optional (see Git Workflow → PR closed without merging)
   - PR updated (push to a branch with an open PR) — when the hook reminder fires after `git push`, update the engineering journal immediately: if a stub already exists for the current session, update it in place; otherwise create a new stub. Document what changed in this session (review findings addressed, approach decisions, what was pushed).
   - **Report / analysis generated** — whenever the user requests any report or analysis (an audit, an investigation write-up, a **verification or deploy-check**, a comparison, a findings summary, etc.), capture it in the journal: save the full output as an artifact under `sessions/<project>/reports/YYYY-MM-DD-<slug>.md` and link it from the session stub (create the stub if none exists yet for the session). Report/analysis generation is itself a journal boundary — it does not require a PR. Short analyses (≲ one screen) may be inlined in the stub instead of linked; anything longer must be a linked artifact so the stub stays scannable. Applies to all projects. (A `/review <PR-URL>` session stays exempt per the exclusion below — its findings live on the PR, not in a free-standing report.) This trigger is mechanically backstopped by `stop-journal-stub-checkpoint.py` (a Stop hook): when a session with report/analysis/verification intent does substantive work but ends with no stub — and opened no PR, isn't a `/review` session, and carries no "skip journal" override — it blocks the stop once with an advisory reminder ([ADR-100](../docs/adr/100-stop-journal-stub-checkpoint-hook.md)).
+  - **Context growth band** — when `turn-count-hook.py` prints a `[journal-stub]` nudge, update this session's stub in place (Edit tool), or create one if the nudge says none was written (Write tool, per the Stub file workflow below), then commit with an explicit pathspec and push. The nudge fires once per band of cumulative context growth since the session's first turn: first at 150k tokens of growth, then every further 100k (override with `journal_stub_context_first_tokens` / `journal_stub_context_step_tokens` in `.claude/hook-config.json`). Growth is measured from the first turn because this machine's session-start context is already ~130–185k, and a compaction's drop never resets it, so work done after a compaction still counts toward the next band. This bounds how much work a crash, compaction, or app restart can cost between the event triggers above. If the stub already covers everything since its last update, no edit is needed ([ADR-150](../docs/adr/150-context-growth-journal-stub-trigger.md)).
 - The following do **not** auto-create a stub — they are not session boundaries:
   - Review-only sessions (`/review <PR-URL>`)
 

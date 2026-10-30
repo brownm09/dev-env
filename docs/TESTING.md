@@ -889,6 +889,20 @@ For a one-line navigational map of the test directory, see
     occupying the path), and that the default `heartbeat_dir` is `SCRATCH / "hook-heartbeat"`. This
     is the writer side, called as the first statement of `main()` by all 41 currently-wired hooks
     plus `hook-liveness-check.py` itself — see item 67 for the reader side. Also exercises the
+    per-fire duration record that same call arms (dev-env#848, ADR-106 Amendment 2):
+    `record_duration` appends one `{t, run_ms, startup_ms}` line per call, compacts to the newest
+    lines past its byte cap without leaving a tmp file, honors `HOOK_HEARTBEAT_DIR_OVERRIDE` and
+    swallows errors; a failed `os.replace` (the target held open, as Windows does under parallel
+    fires) leaves no PID-named tmp file behind, for both the `.ts` and the compaction write; a hook
+    that is not the process's `__main__` script (a test or a dispatcher calling `main()`
+    in-process) gets its heartbeat but no exit record; the `atexit` half skips a ledger directory
+    that has since been deleted (so a test's temp ledger is never resurrected), records
+    `startup_ms` only on a sampled fire and only when the launch time precedes `main()`;
+    `_launch_time` returns a plausible launch time on Windows and `None` elsewhere, and in real
+    children uses the py launcher parent's earlier creation time under `py -3` but the process's
+    own under a bare interpreter; and, in a real subprocess, a hook that calls `record_heartbeat`
+    twice and then `sys.exit(2)`s or raises keeps its exit code (2, 1), writes nothing to stderr on
+    the clean exit, and leaves exactly one duration line. Also exercises the
     user-text extraction helpers `_user_message_texts(rec)` and `_is_synthetic_user(rec)` (dev-env#710):
     the bare-string / list-of-`{"type":"text"}` extraction with its `[]` guards for a non-user / non-dict
     / malformed record and missing-`text`→`""` coercion, and that `_is_synthetic_user` flags
@@ -2073,6 +2087,14 @@ For a one-line navigational map of the test directory, see
     separately unit-tested (pure-helper convention) — the end-to-end runs exercise their fail-closed path
     and, with the planted stub, the systemMessage delivery.
 
+    dev-env#628 pins that the unmerged-branch advisory makes no network call. A real git fixture repo has an
+    unresolvable `origin` (`*.invalid`, RFC 6761) and local `refs/remotes/origin/draft/*` refs for an
+    uncomposed date, a date composed on `origin/main`, and today. `unmerged_draft_branches()` is called
+    in-process with `subprocess.run` wrapped to record every git command. It must return only the uncomposed
+    date and issue no `ls-remote`/`fetch`/`pull`. An end-to-end run against the same fixture must still
+    deliver the `Unmerged draft branch(es)` systemMessage. Both tests fail against the former live
+    `git ls-remote` implementation.
+
     dev-env#1002 (ADR-091 Amendment 3) adds a fourth pure-helper group and end-to-end cases addressing
     the archive reminder's own blind spot: it previously fired unconditionally even when the session's
     own transcript showed other approved, unfinished work. A `/review` pass on the closing PR (#1009)
@@ -2588,7 +2610,7 @@ For a one-line navigational map of the test directory, see
 61. **hook output-contract + ASCII-literal gate** — required when changing
     `claude/scripts/tests/test_hook_output_contract.py` or the shared
     `claude/scripts/tests/_hook_wiring.py` (the settings.json parser all three PR3 gates —
-    items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 104 when
+    items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 106 when
     changing it). AST gate over every wired hook
     (via `_hook_wiring`, cross-referencing each script's event class against the SSOT
     `_hookout.STDOUT_MODEL_VISIBLE_EVENTS`, ADR-103) for four invisible-emission shapes: **A**
@@ -3417,6 +3439,8 @@ For a one-line navigational map of the test directory, see
     - **`core.autocrlf true` is set on every fixture, on every platform.** `git show` emits the stored LF blob while the checked-out file is CRLF, so a merge mixing work-tree content with blob content sees *every* line as changed and a trivially disjoint merge conflicts. The script reads all three sides as blobs; this config is what lets the test tell the difference. The same run surfaced that `MSYS_NO_PATHCONV=1` is all-or-nothing per command — applied to `git -C "$WT" show`, it also stops `-C`'s path from being translated and git cannot find the repo — hence the `cd`-subshell form in `show_blob`.
 
     Fixture C also pins that the scratch-dir **fallback** cleans up after itself. When the fixed scratch path is absent — which is the case on CI, running as a different user — the script creates its own temp dir, and the `EXIT` trap must `rmdir` it rather than leaking one per run. `JOURNAL_COMPOSE_REPLAY_SCRATCH` exists solely to make that branch reachable from a machine where the fixed path *does* exist; `TMPDIR` is pointed at a private directory so the assertion is deterministic rather than a racy count of the shared temp root.
+
+    **Fixture D** pins the caller's pathspecs rather than the script's logic ([ADR-104](adr/104-journal-compose-conflict-recovery-diff-and-replay.md) Amendment 2, dev-env#1109). It reads both Step 10.5 replay calls out of `claude/skills/journal-compose/SKILL.md`, asserts it found exactly two (so an extraction that matches nothing fails instead of passing vacuously), and runs the real script with each call's pathspecs. The fixture is the 2026-10-12 incident shape: the draft composes one project and, under a project with **no stubs**, adds a tile shard and deletes a closed tile's shard and a merged PR's shard. All three must be replayed, because Step 10.5 deletes the draft branch afterward. Against the pre-fix SKILL.md, which listed only the composed projects, this fixture failed 9 assertions.
 
     Deliberate scope gap: the caller-side contract (that Step 10.5 actually stops on exit 2 before committing) is prose in the skill, not code, so it is unenforced here — the same limit ADR-104 already accepted for bash embedded in a markdown skill.
 
@@ -4567,7 +4591,73 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_hook_launch.py
     ```
 
-104. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`,
+104. **hook-timing-report test** — required when changing `claude/scripts/hook-timing-report.py`,
+    or `_hookutil.py`'s `record_duration` line format (also run item 27 then) (dev-env#848,
+    [ADR-106 Amendment 2](adr/106-hook-heartbeat-liveness-ledger.md)).
+
+    Every wired hook's `record_heartbeat` call now also appends `{t, run_ms, startup_ms}` to
+    `<hook>.dur.jsonl` beside its heartbeat, and this report turns those lines into per-hook
+    medians and 90th percentiles: the before/after evidence for hot-path gating (dev-env#849) and
+    the hook dispatcher (dev-env#851). Six offline cases, each with its own temp ledger:
+    nearest-rank `percentile` (including one value and none); `load_hook` keeping in-window samples
+    while skipping out-of-window, malformed, non-object and untimestamped lines; `main` printing a
+    `#`-numbered table slowest median run first, with `-` for a hook whose startup was never
+    sampled, a final column giving how many hours back each hook's data reaches (retention is by
+    line count, so it can be shorter than the window), and ignoring the `.ts` heartbeat files
+    beside the data; an empty or missing ledger
+    reporting so with exit 0; `--since-hours 0` exiting 2 as a usage error; and a round trip
+    proving the report reads exactly what `_hookutil.record_duration` writes, so the writer and
+    reader cannot drift apart unnoticed.
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_timing_report.py
+    ```
+
+105. **turn-count-hook journal-stub band test** — required when changing
+    `claude/scripts/turn-count-hook.py`
+    ([ADR-150](adr/150-context-growth-journal-stub-trigger.md), dev-env#1160).
+
+    The hook nudges Claude to update the session's journal stub the first time cumulative context
+    growth reaches each band. Sixteen cases, all against fixture transcripts in a temp directory with
+    the module's `SCRATCH` swapped out, so no case touches the real `~/.claude/scratch`:
+
+    - **Growth is cumulative, from the first turn.** `get_context_stats` sums every increase between
+      consecutive main-thread assistant turns. A compaction's drop is not subtracted. Sidechain
+      records, and zero-usage synthetic turns (`"model": "<synthetic>"`, such as "No response
+      requested."), neither set the current size nor add growth. Before that skip, a synthetic
+      turn reset the current size to 0 and the next real turn added the whole context back as
+      growth, which the `/review` of PR #1164 found in 38 of 192 local transcripts. A record with
+      a non-integer usage field (`null`, a string) is skipped rather than raised, since one bad
+      record would otherwise silence every warning for the rest of the session.
+    - **Each band fires once.** Below the first band is silent. Band 1 and band 2 each fire exactly
+      once, and a jump straight to band 3 nudges once and records band 3.
+    - **Post-compaction.** After a compaction, climbing back past the absolute size that fired band 1
+      does not fire it again. Band 2 fires only when cumulative growth reaches it, and a second
+      compaction leaves the recorded band unchanged.
+    - **Unsafe or missing session id** (empty, `None`, `../evil`, or a trailing newline, which `$`
+      would accept under `.match`) never fires and writes no state file, so sessions without an id
+      cannot suppress each other. End to end, an unsafe id makes the existing warnings fall back to
+      `*-unknown` scratch files.
+    - **Config.** `hook-config.json` overrides are honored, and each key falls back to its default
+      independently on a missing, non-positive, non-integer, JSON `Infinity`, non-object or
+      malformed value.
+    - **Stub discovery and the nudge.** The newest main-thread Write/Edit of a `*.stub.md` is named,
+      with the Edit tool. A Read, a Bash `git add`, a sidechain write, and a write whose
+      `tool_result` is an error (blocked, denied, failed) are ignored. With no stub,
+      the nudge says to create one with the Write tool. The text is ASCII, starts with
+      `[journal-stub]`, and carries the ADR-129 rule.
+    - **End to end.** `main()` runs as a subprocess with a temporary home directory: two prompts in
+      the same band produce one nudge, and garbage stdin still exits 0.
+
+    The existing `[session-size]` and `[prompt-count]` warnings are not covered here beyond the
+    unsafe-id case. Only their input changed: the shared transcript pass now skips sidechain,
+    zero-usage and malformed records, and an unsafe session id now falls back to `unknown`.
+
+    ```bash
+    py -3 claude/scripts/tests/test_turn_count_hook.py
+    ```
+
+106. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`,
      `setup.sh`'s link arrays (the doctor's `LINKED_ITEMS` / `HOME_LINKS` are pinned against
      them), `claude/scripts/tests/_hook_wiring.py` (the doctor imports it), or the command form
      of the hooks in `claude/settings.shared.json`. Exercises the doctor's pure decision helpers
@@ -4579,8 +4669,8 @@ For a one-line navigational map of the test directory, see
      `_kill_tree()`, the thin I/O layer around the helpers, are deliberately untested, per the
      repo's no-subprocess-mock convention; the whole script was run live on this machine, online
      and offline, and in a sandboxed `HOME` for
-     [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114). (Numbered 104 because items
-     100–103 went to tests that merged to `main` while this one's PR was open.)
+     [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114). (Numbered 106 because items
+     100–105 went to tests that merged to `main` while this one's PR was open.)
 
      31 cases, passing on Python 3.12 and 3.10. `LINKED_ITEMS` and `HOME_LINKS` equal
      `setup.sh`'s four parsed link arrays, after asserting each parse extracted something — an
