@@ -14,11 +14,9 @@ then re-attempts the merge.
 Fails OPEN: any I/O or JSON error exits 0 so a misconfigured queue file never
 permanently wedges a merge.
 
-Merge detection is built on `_hookio.scan_top_level` (dev-env#519), the same
-quote/subshell/heredoc-aware engine `pre-merge-numbering-check.py` and
-`pr-merge-reminder.py` already use — not a plain unanchored `re.search` over
-the whole command string, which could spuriously fire on a `gh pr merge`
-mentioned only inside a heredoc body or `$()` subshell (dev-env#499).
+Merge detection is `_hookio.is_pr_merge_command` (dev-env#1168), the predicate
+every merge hook shares: top-level statements only, so a `gh pr merge` mentioned
+inside a heredoc body or `$()` subshell never fires it (dev-env#499).
 
 Also fires for the PowerShell tool (dev-env#620): registered under both the
 Bash and PowerShell PreToolUse matchers in settings.json, since PowerShell is
@@ -31,7 +29,6 @@ Exit 0 — allow (queue absent, empty, whitespace-only, or any error).
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import os
-import re
 import sys
 
 from _hookio import is_pr_merge_command, load_hook_input, read_command, SHELL_TOOLS

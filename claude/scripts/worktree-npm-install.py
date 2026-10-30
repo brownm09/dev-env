@@ -83,7 +83,7 @@ import sys
 import time
 from pathlib import Path
 
-from _hookio import load_hook_input
+from _hookinput import load_hook_input
 import _hookutil
 
 TARGET_DRIVE = "C:/"

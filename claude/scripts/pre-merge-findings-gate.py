@@ -39,17 +39,15 @@ can) — see the inline comment at `command = read_command(data)` in `main()` an
 ADR-050 Amendment 27 for the full reasoning, including why failing CLOSED here
 instead was considered and rejected.
 
-Merge detection is built on `_hookio.scan_top_level` (dev-env#519), the same
-quote/subshell/heredoc-aware engine `pre-merge-numbering-check.py` and
-`pr-merge-reminder.py` already use — not a plain unanchored `re.search` over
-the whole command string, which could spuriously fire on a `gh pr merge`
-mentioned only inside a heredoc body or `$()` subshell (dev-env#499) and pay
-this hook's live `gh pr view` call for a command that never actually merges.
+Merge detection is `_hookio.is_pr_merge_command` (dev-env#1168), the predicate
+every merge hook shares: top-level statements only, so a `gh pr merge` mentioned
+inside a heredoc body or `$()` subshell (dev-env#499) never pays this hook's live
+`gh pr view` call.
 
-`is_pr_merge_command`, `_parse_merge_target`, `_MARKER_RE`, `_DISPOSED_RE`, and `_fetch_pr_json`
-are also imported by `pre-auto-merge-checkpoint-gate.py` (ADR-083) via a dynamic
-`importlib.util.spec_from_file_location` load, despite the leading underscore on three of
-them — do not rename, remove, or change the signature/regex-group shape of any of these five
+`_parse_merge_target`, `_MARKER_RE`, `_DISPOSED_RE`, and `_fetch_pr_json` are also
+imported by `pre-auto-merge-checkpoint-gate.py` (ADR-083) via a dynamic
+`importlib.util.spec_from_file_location` load, despite their leading underscore —
+do not rename, remove, or change the signature/regex-group shape of any of these four
 without updating that file too.
 
 Also fires for the PowerShell tool (dev-env#620): registered under both the
@@ -70,6 +68,7 @@ import sys
 
 import _hookout
 from _hookio import (
+    GH_PR_MERGE,
     is_merge_help_only,
     is_pr_merge_command,
     load_hook_input,
@@ -126,8 +125,7 @@ def _parse_merge_target(command):
     so the masked split's length slices the correct, UNMASKED prefix back out
     of the real tail before the (unchanged) tokenization step above runs.
     """
-    # gh.exe and any case, matching is_pr_merge_command (dev-env#1168).
-    m = re.search(r"gh(?:\.exe)?\s+pr\s+merge\b(.*)", command, re.DOTALL | re.IGNORECASE)
+    m = re.search(GH_PR_MERGE + r"(.*)", command, re.DOTALL | re.IGNORECASE)
     if not m:
         return None, None
     tail = strip_line_continuations(m.group(1))  # join shell line-continuations (dev-env#831)

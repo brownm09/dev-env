@@ -84,7 +84,7 @@ from _shell_write_detect import (
     tokenize_powershell,
 )
 import _hookout
-from _hookio import load_hook_input
+from _hookinput import load_hook_input
 import _hookutil
 
 # --- Hazard tests -----------------------------------------------------------

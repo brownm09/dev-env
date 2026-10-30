@@ -732,7 +732,7 @@ _PLAUSIBLE_MERGE_RE = re.compile(r"\bgh\b.*\bpr\b.*\bmerge\b|/pulls/\d+/merge\b"
 def _plausibly_merge_shaped(command: str) -> bool:
     """Cheap, bounded-substring merge-shape check for the `classify_error`
     fallback below (dev-env#1028) -- not the real (and more fragile)
-    `scan_top_level`/`_MERGE_RE` machinery, since that may be exactly what
+    `_hookio.is_pr_merge_command` machinery, since that may be exactly what
     just raised. Word-bounded (dev-env#1028 post-review finding): an
     unbounded substring test would match "gh"/"pr" inside an unrelated
     command's ordinary words (e.g. `git merge origin/print-highlights`

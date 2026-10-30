@@ -54,7 +54,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _hookio import load_hook_input
+from _hookinput import load_hook_input
 import _hookutil
 
 # Path.home()-derived (identical real-world value to a hardcoded string on

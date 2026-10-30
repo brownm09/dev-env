@@ -1092,8 +1092,8 @@ def test_mask_prose_flag_values_mid_word_flag_not_matched() -> str:
 # ---------------------------------------------------------------------------
 # is_merge_help_only  (dev-env#557)
 #
-# `gh pr merge --help` textually satisfies every `is_pr_merge_command` /
-# `_check_merge_stmt` predicate in the hook family -- it *is* a `gh pr merge`
+# `gh pr merge --help` textually satisfies `is_pr_merge_command`, the merge
+# predicate the hook family shares -- it *is* a `gh pr merge`
 # invocation. Since --help prints no success marker, `should_confirm_via_gh`
 # returns True (no marker + non-zero/-1 exit), triggering a live `gh pr view`
 # confirmation with no explicit PR number that resolves against cwd's checked-
@@ -1127,8 +1127,7 @@ def test_is_merge_help_only_bare_merge_no_help_is_false() -> str:
 
 
 def test_is_merge_help_only_no_merge_invocation_at_all_is_false() -> str:
-    # Callers already gate on their own is_pr_merge_command/_check_merge_stmt
-    # check first, so this predicate seeing zero merge segments must also be
+    # Callers already gate on is_pr_merge_command first, so this predicate seeing zero merge segments must also be
     # False -- it never independently claims "this is a help-only command"
     # when there was no merge command to begin with.
     assert not is_merge_help_only("git status")
@@ -1448,7 +1447,7 @@ def test_load_hook_input_tool_filter() -> str:
 def test_is_pr_merge_command_shapes() -> str:
     for cmd in ("gh pr merge 5 --squash", "cd /r && gh pr merge", "git fetch; gh pr merge",
                 "gh.exe pr merge 5", "GH PR MERGE 5", "ALLOW_CANONICAL_MUTATE=1 gh pr merge 5 -d",
-                "A=1 B=x gh pr merge 5"):
+                "A=1 B=x gh pr merge 5", 'X="a b" gh pr merge 5', "X='a b' Y= gh pr merge 5"):
         assert is_pr_merge_command(cmd), f"{cmd!r} should be a merge"
     for cmd in ("gh pr view 5", "echo 'gh pr merge 5'", "git commit -m \"run gh pr merge\"",
                 "cat <<'EOF'\ngh pr merge 5\nEOF", "x=$(gh pr merge 5)"):

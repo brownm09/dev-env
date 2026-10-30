@@ -22,8 +22,8 @@ marker instead of the exit code. These tests pin that a worktree-merge payload
 marker) and a non-merge command do not.
 
 dev-env#557: `main()` adds a second guard — `if is_merge_help_only(command):
-sys.exit(0)`, right after the existing `if not scan_top_level(command,
-_check_merge_stmt): sys.exit(0)` line, before computing `exit_code` — so a
+sys.exit(0)`, right after the existing `if not is_pr_merge_command(command):
+sys.exit(0)` line, before computing `exit_code` — so a
 `gh pr merge --help` command never reaches the live `gh pr view` fallback
 that would otherwise misattribute an unrelated already-merged PR to the
 harmless `--help` invocation. The guard fires before the credentials/config
@@ -522,7 +522,7 @@ def test_resolve_merge_not_merge_shape_for_unrelated_command() -> str:
 
 def test_resolve_merge_not_merge_shape_still_traces_unconfirmed_rest_call() -> str:
     # A REST-merge-shaped call that ran but didn't report "merged":true (e.g. a
-    # conflict/failure response) doesn't satisfy `_check_merge_stmt` (it's not a
+    # conflict/failure response) doesn't satisfy `is_pr_merge_command` (it's not a
     # `gh pr merge` shape), but IS still worth tracing as an informative outcome.
     command = "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash"
     output = '{"message":"Merge already in progress"}'

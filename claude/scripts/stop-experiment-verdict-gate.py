@@ -72,7 +72,7 @@ Exit 2 -- an experiment conclusion was stated with no audit; blocking reminder
 """
 from __future__ import annotations
 
-from _hookio import load_hook_input
+from _hookinput import load_hook_input
 import _hookutil
 import re
 import sys

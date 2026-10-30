@@ -21,9 +21,9 @@ substring test was blind to (dev-env#499's original repro class) but the
 anchored predicate correctly rejects.
 
 dev-env#557: `main()` adds a second guard — `if is_merge_help_only(command):
-sys.exit(0)`, right after the existing `if not scan_top_level(command,
-_check_merge_stmt): sys.exit(0)` line, before computing `exit_code` — so a
-`gh pr merge --help` command (which passes that scan_top_level check, since
+sys.exit(0)`, right after the existing `if not is_pr_merge_command(command):
+sys.exit(0)` line, before computing `exit_code` — so a
+`gh pr merge --help` command (which passes that predicate, since
 it *is* a `gh pr merge` invocation) never reaches the live `gh pr view`
 fallback that would otherwise misattribute an unrelated already-merged PR
 (dev-env#485's original repro was this same `--help` shape; #557 found the

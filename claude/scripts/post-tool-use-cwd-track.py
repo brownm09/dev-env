@@ -43,7 +43,7 @@ import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import sys
 
 import _bash_state
-from _hookio import load_hook_input, SHELL_TOOLS
+from _hookinput import load_hook_input, SHELL_TOOLS
 import _hookutil
 
 

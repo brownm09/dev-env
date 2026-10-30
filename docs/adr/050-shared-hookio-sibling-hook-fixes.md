@@ -2591,30 +2591,46 @@ the top-level tracking issue closes with this PR.
 
 ## Amendment 29 (2026-10-30) — one merge predicate and one stdin loader (dev-env#1168, part 1 of #850)
 
-**What changed.** `_hookio` now owns the two pieces every merge hook and nearly every hook still copied:
+**What changed.** One copy each of the two pieces every merge hook and nearly every hook still copied:
 
-1. `is_pr_merge_command(command)`: a top-level `gh pr merge` statement, built on `scan_top_level` with
-   the same invocation regex `is_merge_help_only` uses (`gh(?:\.exe)?\s+pr\s+merge\b`, any case). It
-   replaces ten local `_MERGE_RE`/`_MERGE_STMT_RE` + `_check_merge_stmt` pairs (five of which also
-   defined their own `is_pr_merge_command`), `posttooluse-inert-advisory.py`'s unanchored `.search`,
-   and `stop-journal-stub-checkpoint.py`'s private copy.
-2. `load_hook_input(tools=None)` plus `SHELL_TOOLS`: read stdin, parse, and return the payload dict, or
-   None when stdin is empty, not JSON, not an object, or for a `tool_name` outside `tools`. 32 hooks
-   with the standard block now call `if data is None: sys.exit(0)`; seven that continued with `{}`
-   call `load_hook_input() or {}`.
+1. **The merge statement.** `_hookio.GH_PR_MERGE` is the one pattern string (`gh` or `gh.exe`, compiled
+   with `re.IGNORECASE`). `is_pr_merge_command(command)` is the one predicate: a top-level statement that
+   starts with it, after any `NAME=value` prefix (unquoted or quoted; `strip_env_prefix`), sharing one
+   compiled regex with `is_merge_help_only`. It replaces ten local `_MERGE_RE`/`_MERGE_STMT_RE` +
+   `_check_merge_stmt` pairs (five of which also defined their own `is_pr_merge_command`),
+   `posttooluse-inert-advisory.py`'s unanchored `.search`, and `stop-journal-stub-checkpoint.py`'s
+   private copy. Every unanchored parser that locates the merge's arguments is built from
+   `GH_PR_MERGE` too: `_parse_merge_target` (findings gate), `_merge_tail` (auto-merge gate),
+   `_repo_target._MERGE_ARGS_RE`, and `effective_merge_dir`. `stop-tile-enumeration-gate.py` keeps its
+   own first-word match (it matches words it has already extracted per segment, not a raw command), but
+   compiles it from `GH_PR_MERGE` and strips the same prefix, and a test pins it to every spelling the
+   predicate admits.
+2. **The payload.** `load_hook_input(tools=None)` plus `SHELL_TOOLS`, in the tiny `_hookinput.py`
+   (re-exported by `_hookio`): read stdin, parse, and return the payload dict, or None when stdin is
+   empty, not JSON, not an object, or for a `tool_name` outside `tools`. 32 hooks with the standard block
+   now call `if data is None: sys.exit(0)`; seven that continued with `{}` call
+   `load_hook_input() or {}`. It lives apart from `_hookio` because 13 hooks need nothing else from that
+   1,300-line module, which cost 11-15 ms to import per fire; two of them run on every Bash call.
 
-**Behavior changes, both deliberate.**
+**Behavior changes, all deliberate.**
 
-- The four PreToolUse merge gates and the six PostToolUse merge hooks now match `gh.exe pr merge` and
-  uppercase spellings. Before, `is_merge_help_only` matched them but the gate predicates did not, so
-  a gate and its own help-only check could disagree about whether a command was a merge, and
-  `gh.exe pr merge` skipped the findings and numbering gates entirely.
-- Five hooks that had no non-object check (`post-tool-use-cwd-track`, `pre-bash-drift-check`,
-  `posttooluse-inert-advisory`, `pre-tool-use-scratch-rm-allow`, `stop-tile-enumeration-gate`) crashed
-  into their safe-exit guard on a JSON list or string, as did five tolerant hooks on `.get`
-  (`disk-space-check`, `hook-liveness-check`, `multi-worktree-alert`, `reconcile-open-prs`,
-  `turn-count-hook`). They now get None or `{}` instead. Every one of
-  those guards already exits 0, so the visible result is unchanged; the crash is simply gone.
+- The four PreToolUse merge gates, the auto-merge gate (which takes the same predicate) and the six
+  PostToolUse merge hooks now treat `gh.exe pr merge`, uppercase spellings and an env-prefixed
+  `ALLOW_CANONICAL_MUTATE=1 gh pr merge` as merges, and their argument parsers find the PR, the repo and
+  `--auto` in them. Before, `is_merge_help_only` matched `gh.exe` while the gate predicates did not, and
+  all of these spellings skipped the findings, numbering and `--auto` gates entirely. Widening the
+  predicate alone was not enough: the first cut of this amendment let these commands reach parsers that
+  still matched lowercase `gh` only, so the findings gate checked the cwd branch's PR and the board hook's
+  cross-repo guard switched off. That is why every parser now builds from one pattern string.
+- `posttooluse-inert-advisory` now counts only a top-level merge, not any mention of `gh pr merge` in
+  the command text (the dev-env#499 false-positive class).
+- Four hooks with no non-object check (`post-tool-use-cwd-track`, `pre-bash-drift-check`,
+  `posttooluse-inert-advisory`, `stop-tile-enumeration-gate`) crashed into their safe-exit guard on a
+  JSON list or string, as did five tolerant hooks on `.get` (`disk-space-check`, `hook-liveness-check`,
+  `multi-worktree-alert`, `reconcile-open-prs`, `turn-count-hook`). They now get None or `{}` instead.
+  Every one of those guards already exits 0, so the visible result is unchanged; the crash is simply
+  gone. (`pre-tool-use-scratch-rm-allow` already rejected a non-object in `decide()`, which keeps owning
+  that hook's tool filter so its pure tests cover the whole decision.)
 
 **Fail direction is unchanged.** Unreadable input exits 0 in every hook, as before. That includes the
 fail-closed gates (ADR-083, ADR-096), which already exited 0 on it by design (dev-env#1031/#1033): they
@@ -2624,9 +2640,8 @@ fail closed only on a crash after a payload was read, which this amendment does 
 and `post-compact.py` parse without a guard, so invalid JSON crashes them into their safe-exit guard and
 they do nothing; `load_hook_input() or {}` would instead run them on an empty payload. Migrating them is a
 behavior change for no current defect. `journal-stop-check.py` parses the raw string with its own
-helpers, and `dev-env-sync.py` and `journal-canonical-guard.py` only drain stdin.
-`stop-tile-enumeration-gate.py` keeps its own `_MERGE_STMT_RE`: it matches the first word sequences it
-has already extracted per segment, not a raw command, and its regex is identical to the shared one.
+helpers, and `dev-env-sync.py` and `journal-canonical-guard.py` only drain stdin. The `gh pr create`
+and `git push` predicates keep their own patterns; they had no gate/help-only disagreement to fix.
 
 **Alternatives considered.** Folding the five `post-pr-merge-*` hooks into one processor, and having the
 three pre-merge gates share one `gh pr view` fetch (the rest of #850's merge-path item), were moved to

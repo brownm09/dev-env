@@ -40,7 +40,7 @@ import json
 import sys
 
 import _bash_state
-from _hookio import load_hook_input, SHELL_TOOLS
+from _hookinput import load_hook_input, SHELL_TOOLS
 import _hookutil
 
 # Margin-of-safety default, not fit to the one observed 5-7 min incident — a

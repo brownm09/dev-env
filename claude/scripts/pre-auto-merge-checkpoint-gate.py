@@ -23,7 +23,8 @@ an unattended async merge. No override token exists (ADR-083 Decision point 4) â
 available fallback is dropping `--auto` and running a plain `gh pr merge` after CI is green, which
 this gate does not touch at all.
 
-Reuses `pre-merge-findings-gate.py`'s `is_pr_merge_command`, `_parse_merge_target`, `_MARKER_RE`,
+Takes `is_pr_merge_command` from `_hookio` (dev-env#1168) and reuses `pre-merge-findings-gate.py`'s
+`_parse_merge_target`, `_MARKER_RE`,
 `_DISPOSED_RE`, and `_fetch_pr_json` (which carries the `MERGE_GATE_TEST_JSON` test seam) via
 `importlib.util.spec_from_file_location` â€” the same dynamic-load trick
 `test_pre_merge_findings_gate.py` and `test-merge-findings-gate.sh` already use, since a hyphenated
@@ -51,7 +52,7 @@ import re
 import shlex
 import sys
 
-from _hookio import load_hook_input, SHELL_TOOLS
+from _hookio import GH_PR_MERGE, is_pr_merge_command, load_hook_input, SHELL_TOOLS
 import _hookutil
 
 
@@ -100,7 +101,6 @@ try:
     _pmfg = importlib.util.module_from_spec(_pmfg_spec)
     _pmfg_spec.loader.exec_module(_pmfg)
 
-    is_pr_merge_command = _pmfg.is_pr_merge_command
     _parse_merge_target = _pmfg._parse_merge_target
     _MARKER_RE = _pmfg._MARKER_RE
     _DISPOSED_RE = _pmfg._DISPOSED_RE
@@ -170,8 +170,7 @@ def _merge_tail(command):
     Amendment 20 paragraph above describes cannot recur here because a well-formed multi-line
     command no longer leaves shlex an unbalanced/dangling slice to reject.
     """
-    # gh.exe and any case, matching is_pr_merge_command (dev-env#1168).
-    m = re.search(r"gh(?:\.exe)?\s+pr\s+merge\b(.*)", command, re.DOTALL | re.IGNORECASE)
+    m = re.search(GH_PR_MERGE + r"(.*)", command, re.DOTALL | re.IGNORECASE)
     if not m:
         return ""
     tail = strip_line_continuations(m.group(1))  # join shell line-continuations (dev-env#823, #831)

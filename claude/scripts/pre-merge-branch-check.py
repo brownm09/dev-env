@@ -12,11 +12,9 @@ Also appends a drift warning when the repo/branch recorded by
 post-tool-use-cwd-track.py after the session's last Bash call differs from
 the repo/branch at merge time. Advisory only; never blocks.
 
-Merge detection reuses `_hookio.scan_top_level` (dev-env#519), the same
-quote/subshell/heredoc-aware engine pre-merge-message-check.py and
-pre-merge-numbering-check.py already use — not a plain unanchored
-`re.search`, which could spuriously fire on a `gh pr merge` mentioned only
-inside a heredoc body or `$()` subshell (dev-env#499).
+Merge detection is `_hookio.is_pr_merge_command` (dev-env#1168), the predicate
+every merge hook shares: top-level statements only, so a `gh pr merge` mentioned
+inside a heredoc body or `$()` subshell never fires it (dev-env#499).
 
 Also fires for the PowerShell tool (dev-env#620): registered under both the
 Bash and PowerShell PreToolUse matchers in settings.json, since PowerShell is
@@ -35,7 +33,6 @@ Exit 0 — always; hook is advisory only.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
-import re
 import sys
 
 import _bash_state

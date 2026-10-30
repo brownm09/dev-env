@@ -562,6 +562,8 @@ def log_approval(reason, root=None):
 
 def main():
     _hookutil.record_heartbeat("pre-tool-use-scratch-rm-allow")
+    # No tools= filter here: decide() owns the Bash check, so the pure function
+    # its tests drive stays the whole decision.
     data = load_hook_input()
     if data is None:
         sys.exit(0)

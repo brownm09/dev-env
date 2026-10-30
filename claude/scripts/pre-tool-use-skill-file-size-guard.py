@@ -72,7 +72,7 @@ import os
 import sys
 
 import _hookout
-from _hookio import load_hook_input
+from _hookinput import load_hook_input
 import _hookutil
 import _skill_file_size
 

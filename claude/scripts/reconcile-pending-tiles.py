@@ -134,7 +134,7 @@ from __future__ import annotations
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import _hookout
-from _hookio import load_hook_input
+from _hookinput import load_hook_input
 import _hookutil
 import json
 import re

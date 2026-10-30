@@ -30,8 +30,8 @@ at the target path — always true for dev-env's own canonical, which must stay 
 instead; the feature-branch-checked-out case (issue #275) is unchanged.
 
 dev-env#557: `main()` adds a second guard — `if is_merge_help_only(command):
-sys.exit(0)`, right after the existing `if not scan_top_level(command,
-_check_merge_stmt): sys.exit(0)` line, before computing `exit_code` — so a
+sys.exit(0)`, right after the existing `if not is_pr_merge_command(command):
+sys.exit(0)` line, before computing `exit_code` — so a
 `gh pr merge --help` command never reaches the live `gh pr view` fallback
 that would otherwise misattribute an unrelated already-merged PR to the
 harmless `--help` invocation, and never falls through to the live
