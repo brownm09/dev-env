@@ -170,7 +170,8 @@ def _merge_tail(command):
     Amendment 20 paragraph above describes cannot recur here because a well-formed multi-line
     command no longer leaves shlex an unbalanced/dangling slice to reject.
     """
-    m = re.search(r"gh\s+pr\s+merge\b(.*)", command, re.DOTALL)
+    # gh.exe and any case, matching is_pr_merge_command (dev-env#1168).
+    m = re.search(r"gh(?:\.exe)?\s+pr\s+merge\b(.*)", command, re.DOTALL | re.IGNORECASE)
     if not m:
         return ""
     tail = strip_line_continuations(m.group(1))  # join shell line-continuations (dev-env#823, #831)

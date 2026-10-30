@@ -126,7 +126,8 @@ def _parse_merge_target(command):
     so the masked split's length slices the correct, UNMASKED prefix back out
     of the real tail before the (unchanged) tokenization step above runs.
     """
-    m = re.search(r"gh\s+pr\s+merge\b(.*)", command, re.DOTALL)
+    # gh.exe and any case, matching is_pr_merge_command (dev-env#1168).
+    m = re.search(r"gh(?:\.exe)?\s+pr\s+merge\b(.*)", command, re.DOTALL | re.IGNORECASE)
     if not m:
         return None, None
     tail = strip_line_continuations(m.group(1))  # join shell line-continuations (dev-env#831)

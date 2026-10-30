@@ -297,7 +297,9 @@ def merge_pr_number_from_output(output: str) -> int | None:
 
 
 # Locates the `gh pr merge` token so the pre-merge region can be bounded.
-_BARE_MERGE_RE = re.compile(r"\bgh\s+pr\s+merge\b")
+# Same spellings as `is_pr_merge_command` (gh.exe, any case), so a command that
+# predicate admits is always located here too (dev-env#1168).
+_BARE_MERGE_RE = re.compile(r"\bgh(?:\.exe)?\s+pr\s+merge\b", re.IGNORECASE)
 # Matches a `cd <path>` followed by `&&` or `;` — identical pattern to the push
 # equivalent in pr-merge-reminder.py but scoped to merge commands here.
 _MERGE_CD_CHAIN_RE = re.compile(r"""cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)""")
@@ -1308,7 +1310,7 @@ def is_help_only(command: str, invocation_re: re.Pattern) -> bool:
     """
     matching_segments = [
         seg for seg in split_top_level(command)
-        if invocation_re.match(_first_line(seg).lstrip())
+        if invocation_re.match(_strip_env_prefix(_first_line(seg).lstrip()))
     ]
     if not matching_segments:
         return False
@@ -1324,8 +1326,17 @@ def is_merge_help_only(command: str) -> bool:
     return is_help_only(command, _GH_MERGE_INVOCATION_RE)
 
 
+# Leading `NAME=value` environment assignments, as in the
+# `ALLOW_CANONICAL_MUTATE=1 gh pr merge -d` override CLAUDE.md prescribes.
+_ENV_PREFIX_RE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*")
+
+
+def _strip_env_prefix(statement: str) -> str:
+    return statement[_ENV_PREFIX_RE.match(statement).end():]
+
+
 def _check_merge_stmt(token: str) -> bool:
-    return bool(_GH_MERGE_INVOCATION_RE.match(token.lstrip()))
+    return bool(_GH_MERGE_INVOCATION_RE.match(_strip_env_prefix(token.lstrip())))
 
 
 def is_pr_merge_command(command: str) -> bool:

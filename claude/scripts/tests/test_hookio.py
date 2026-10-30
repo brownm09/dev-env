@@ -1447,7 +1447,8 @@ def test_load_hook_input_tool_filter() -> str:
 
 def test_is_pr_merge_command_shapes() -> str:
     for cmd in ("gh pr merge 5 --squash", "cd /r && gh pr merge", "git fetch; gh pr merge",
-                "gh.exe pr merge 5", "GH PR MERGE 5"):
+                "gh.exe pr merge 5", "GH PR MERGE 5", "ALLOW_CANONICAL_MUTATE=1 gh pr merge 5 -d",
+                "A=1 B=x gh pr merge 5"):
         assert is_pr_merge_command(cmd), f"{cmd!r} should be a merge"
     for cmd in ("gh pr view 5", "echo 'gh pr merge 5'", "git commit -m \"run gh pr merge\"",
                 "cat <<'EOF'\ngh pr merge 5\nEOF", "x=$(gh pr merge 5)"):
@@ -1456,9 +1457,22 @@ def test_is_pr_merge_command_shapes() -> str:
 
 
 def test_is_pr_merge_command_agrees_with_help_only() -> str:
-    for cmd in ("gh.exe pr merge --help", "GH pr merge -h", "gh pr merge --help"):
+    for cmd in ("gh.exe pr merge --help", "GH pr merge -h", "gh pr merge --help", "X=1 gh pr merge --help"):
         assert is_pr_merge_command(cmd) and is_merge_help_only(cmd), cmd
-    return "every command is_merge_help_only treats as a merge, is_pr_merge_command also does"
+    for cmd in ("gh.exe pr merge 5", "X=1 gh pr merge 5"):
+        assert is_pr_merge_command(cmd) and not is_merge_help_only(cmd), cmd
+    return "both helpers agree on gh.exe, uppercase and env-prefixed merges, help-only or not"
+
+
+def test_merge_parsers_accept_every_predicate_spelling() -> str:
+    """Review finding: the predicate admitted gh.exe/uppercase merges that the
+    downstream parsers could not parse, so a gate checked the cwd's PR instead."""
+    from _repo_target import merge_args, repo_from_flag  # noqa: PLC0415
+
+    for cmd in ("gh.exe pr merge 42 --repo o/r", "GH PR MERGE 42 -R o/r", "X=1 gh pr merge 42 --repo o/r"):
+        assert repo_from_flag(merge_args(cmd) or "") == "o/r", cmd
+    assert effective_merge_dir("cd /a && gh.exe pr merge 42 && cd /b; ls", "/cwd") == "/a"
+    return "merge_args and effective_merge_dir locate gh.exe, uppercase and env-prefixed merges"
 
 
 def main() -> int:
@@ -1468,6 +1482,7 @@ def main() -> int:
         ("load_hook_input: tool filter", test_load_hook_input_tool_filter),
         ("is_pr_merge_command: shapes", test_is_pr_merge_command_shapes),
         ("is_pr_merge_command agrees with is_merge_help_only", test_is_pr_merge_command_agrees_with_help_only),
+        ("merge parsers accept every predicate spelling", test_merge_parsers_accept_every_predicate_spelling),
         ("import _hookio stays subprocess-free (finding 5)", test_import_does_not_load_subprocess),
         ("reads command output from stdout", test_reads_stdout),
         ("combines stdout and stderr", test_combines_stdout_and_stderr),

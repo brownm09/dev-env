@@ -63,6 +63,15 @@ def test_non_merge_gh_command():
 def test_unrelated_command():
     assert not is_pr_merge_command("git status")
 
+def test_parse_merge_target_every_predicate_spelling():
+    # dev-env#1168 review: is_pr_merge_command admits gh.exe, uppercase and
+    # env-prefixed merges, so the target parser must too, or the gate fetches
+    # the cwd branch's PR instead of the one named in the command.
+    for command in ("gh.exe pr merge 42 --repo o/r", "GH PR MERGE 42 --repo o/r",
+                    "ALLOW_CANONICAL_MUTATE=1 gh pr merge 42 --repo o/r -d"):
+        assert is_pr_merge_command(command), command
+        assert mod._parse_merge_target(command) == ("42", "o/r"), command
+
 def test_merge_heredoc_body_not_matched():
     # dev-env#499: a "gh pr merge" mentioned only inside a heredoc body
     # (e.g. as prose in a commit message) must not count as a genuine

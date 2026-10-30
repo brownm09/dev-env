@@ -129,7 +129,8 @@ _POS_NUM_RE = re.compile(r"(?<!\S)(\d+)(?=\s|$)")
 # extraction.  Group 1 is the args span.  The negated class has no quote-awareness
 # of its own, which is why _invocation_args searches a mask_quoted_spans copy
 # (ADR-050 Amendment 20).
-_MERGE_ARGS_RE = re.compile(r"\bgh\s+pr\s+merge\b([^\n;|&]*)")
+# gh.exe and any case, matching _hookio.is_pr_merge_command (dev-env#1168).
+_MERGE_ARGS_RE = re.compile(r"\bgh(?:\.exe)?\s+pr\s+merge\b([^\n;|&]*)", re.IGNORECASE)
 _CREATE_ARGS_RE = re.compile(r"\bgh\s+pr\s+create\b([^\n;|&]*)")
 _ISSUE_CREATE_ARGS_RE = re.compile(r"\bgh\s+issue\s+create\b([^\n;|&]*)")
 
