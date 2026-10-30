@@ -40,8 +40,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import _hookutil  # noqa: E402
+import _hookutil
 
 
 def percentile(values: list[int], pct: float) -> int | None:
@@ -98,7 +97,9 @@ def build_rows(ledger: Path, since: float) -> list[dict]:
 def render(rows: list[dict], since_hours: float) -> str:
     if not rows:
         return f"No hook duration data in the last {since_hours:g} hours.\n"
-    show = lambda v: "-" if v is None else str(v)  # noqa: E731
+    def show(value: int | None) -> str:
+        return "-" if value is None else str(value)
+
     lines = [
         f"Hook durations, last {since_hours:g} hours (ms; startup is sampled)",
         "",
