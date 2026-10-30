@@ -87,7 +87,9 @@ subprocess git against the journal repo and are not unit-tested here (pure-helpe
 convention) -- the end-to-end no-flag run exercises their fail-closed path.
 The exception is unmerged_draft_branches() (dev-env#628): a real git fixture
 with an unreachable origin pins that it reads local refs/remotes/origin/draft/*
-and issues no network git call, in-process and end-to-end.
+and issues no network git call, in-process and end-to-end. The same fixture also
+drives stale_draft_artifacts() then unmerged_draft_branches() in main()'s order
+and pins a single `git ls-tree` per invocation (dev-env#1165).
 
 Usage:
     py -3 claude/scripts/tests/test_journal_stop_check.py
