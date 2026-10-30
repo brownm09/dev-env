@@ -15,6 +15,18 @@ Two independent signals:
      PROMPT_REPEAT_INTERVAL after that. Useful as an early heads-up but prone
      to false positives since one prompt can span many cheap tool calls.
 
+Plus one journal trigger (dev-env#1160, ADR-150), computed from the same
+transcript pass as signal 1 so it costs no extra process or scan:
+
+  3. Context growth band — cumulative context *growth* since the session's
+     first turn (the sum of every increase between consecutive assistant
+     turns, so a compaction's drop never subtracts and post-compaction work
+     still counts). The first band is STUB_FIRST_TOKENS of growth, then every
+     STUB_STEP_TOKENS more; each band nudges Claude to update the session's
+     journal stub exactly once (highest band fired persists in
+     ~/.claude/scratch/ctx-stub-<session_id>.txt). Growth, not absolute size,
+     because this machine's session-start context is already ~130-185k.
+
 Exit 0 always — never block the user's prompt.
 Stdout is injected as context Claude sees before processing the user's message.
 """
@@ -23,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -37,6 +50,12 @@ CONTEXT_REPEAT_TOKENS = 20_000 # repeat interval after first warning
 # --- Signal 2: user prompt count ---
 PROMPT_THRESHOLD = 8           # first warning
 PROMPT_REPEAT_INTERVAL = 4     # repeat interval after first warning
+
+# --- Journal trigger: context growth bands (ADR-150 has the corpus behind these) ---
+STUB_FIRST_TOKENS = 150_000    # growth since the first turn before the first nudge
+STUB_STEP_TOKENS = 100_000     # further growth per additional nudge
+
+_STUB_PATH_RE = re.compile(r"\.stub\.md$", re.IGNORECASE)
 
 CONFIG_FILE = ".claude/hook-config.json"
 COUNTER_MAX_AGE_DAYS = 30
@@ -53,6 +72,33 @@ def load_prompt_threshold(cwd: str) -> int:
         return PROMPT_THRESHOLD
 
 
+def load_stub_bands(cwd: str) -> tuple[int, int]:
+    """Return (first, step) growth bands from project hook-config.json keys
+    ``journal_stub_context_first_tokens`` / ``journal_stub_context_step_tokens``.
+    A missing, unreadable, non-integer, or non-positive value falls back to that
+    key's default independently — a step of 0 would never advance a band."""
+    config: dict = {}
+    try:
+        with open(os.path.join(cwd, CONFIG_FILE), encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            config = loaded
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+
+    def positive(key: str, default: int) -> int:
+        try:
+            value = int(config.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return value if value > 0 else default
+
+    return (
+        positive("journal_stub_context_first_tokens", STUB_FIRST_TOKENS),
+        positive("journal_stub_context_step_tokens", STUB_STEP_TOKENS),
+    )
+
+
 def cleanup_stale_counters() -> None:
     """Delete counter and ctx-warn files older than COUNTER_MAX_AGE_DAYS.
 
@@ -66,12 +112,21 @@ def cleanup_stale_counters() -> None:
     ``_hookutil.MAX_AGE_DAYS``."""
     _hookutil.cleanup_stale_sentinels("turn-count-", ext=".txt", max_age_days=COUNTER_MAX_AGE_DAYS)
     _hookutil.cleanup_stale_sentinels("ctx-warn-", ext=".txt", max_age_days=COUNTER_MAX_AGE_DAYS)
+    _hookutil.cleanup_stale_sentinels("ctx-stub-", ext=".txt", max_age_days=COUNTER_MAX_AGE_DAYS)
 
 
-def get_current_context_tokens(transcript_path_str: str) -> int | None:
+def get_context_stats(transcript_path_str: str) -> tuple[int, int] | None:
     """
-    Parse the transcript JSONL and return total context tokens from the last
-    assistant turn: input_tokens + cache_read_input_tokens + cache_creation_input_tokens.
+    Parse the transcript JSONL once and return ``(current, growth)``:
+
+    * current — total context tokens on the last assistant turn:
+      input_tokens + cache_read_input_tokens + cache_creation_input_tokens.
+    * growth — the sum of every increase in that total between consecutive
+      assistant turns. A compaction's drop is never subtracted, so work done
+      after a compaction keeps adding to the same running figure.
+
+    Sidechain (subagent) records are skipped: their much smaller context would
+    otherwise read as a drop and then a spurious rise back to the main thread's.
     Returns None if the transcript cannot be read or has no assistant turns yet.
 
     transcript_path_str comes from the documented `transcript_path` field in the
@@ -83,7 +138,8 @@ def get_current_context_tokens(transcript_path_str: str) -> int | None:
     if not path.exists():
         return None
 
-    last_usage = None
+    current = None
+    growth = 0
     try:
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -94,33 +150,34 @@ def get_current_context_tokens(transcript_path_str: str) -> int | None:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(record, dict) or record.get("isSidechain"):
+                    continue
                 if record.get("type") == "assistant":
                     msg = record.get("message", {})
-                    usage = msg.get("usage", {})
-                    if usage:
-                        last_usage = usage
+                    usage = msg.get("usage", {}) if isinstance(msg, dict) else {}
+                    if isinstance(usage, dict) and usage:
+                        tokens = (
+                            usage.get("input_tokens", 0)
+                            + usage.get("cache_read_input_tokens", 0)
+                            + usage.get("cache_creation_input_tokens", 0)
+                        )
+                        if current is not None and tokens > current:
+                            growth += tokens - current
+                        current = tokens
     except OSError:
         return None
 
-    if last_usage is None:
+    if current is None:
         return None
-
-    return (
-        last_usage.get("input_tokens", 0)
-        + last_usage.get("cache_read_input_tokens", 0)
-        + last_usage.get("cache_creation_input_tokens", 0)
-    )
+    return current, growth
 
 
-def check_context_tokens(transcript_path_str: str, session_id: str) -> str | None:
+def check_context_tokens(tokens: int, session_id: str) -> str | None:
     """
     Return a warning string if context token threshold is crossed since the last
     warning, else None. Persists the last-warned level to avoid re-firing on the
     same threshold boundary across multiple prompts.
     """
-    tokens = get_current_context_tokens(transcript_path_str)
-    if tokens is None:
-        return None
 
     warn_file = SCRATCH / f"ctx-warn-{session_id}.txt"
     try:
@@ -151,6 +208,80 @@ def check_context_tokens(transcript_path_str: str, session_id: str) -> str | Non
         f"(threshold: {next_threshold:,}{clause}). "
         f"Consider running /compact or /clear if the task scope has shifted — "
         f"accumulated context increases cost on every subsequent turn."
+    )
+
+
+def find_session_stub(transcript_path_str: str) -> str | None:
+    """Return the ``file_path`` of the most recent Write/Edit of a ``*.stub.md``
+    in this session's transcript, or None. A compaction keeps appending to the
+    same JSONL, so a stub written before it is still found. Reads from the end
+    and stops at the first match; called only when a band fires."""
+    try:
+        for rec in _hookutil.iter_records_reverse(Path(transcript_path_str)):
+            if rec.get("type") != "assistant" or rec.get("isSidechain"):
+                continue
+            for item in reversed(_hookutil._content_items(rec)):
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "tool_use"
+                    and item.get("name") in ("Write", "Edit")
+                ):
+                    inp = item.get("input")
+                    path = inp.get("file_path", "") if isinstance(inp, dict) else ""
+                    if isinstance(path, str) and _STUB_PATH_RE.search(path):
+                        return path
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def check_stub_band(
+    growth: int, session_id: str, cwd: str, transcript_path_str: str
+) -> str | None:
+    """
+    Return a journal-stub nudge the first time context growth reaches a new
+    band, else None. Band k (k >= 1) starts at first + (k - 1) * step tokens of
+    growth. The highest band already nudged persists per session, so a band
+    fires once, and growth that jumps several bands in one turn nudges once.
+    """
+    if not _hookutil._SAFE_SESSION_ID.match(session_id or ""):
+        return None
+    first, step = load_stub_bands(cwd)
+    if growth < first:
+        return None
+    band = 1 + (growth - first) // step
+
+    state_file = SCRATCH / f"ctx-stub-{session_id}.txt"
+    try:
+        last_band = int(state_file.read_text().strip())
+    except (OSError, ValueError):
+        last_band = 0
+    if band <= last_band:
+        return None
+    try:
+        state_file.write_text(str(band))
+    except OSError:
+        pass
+
+    threshold = first + (band - 1) * step
+    stub = find_session_stub(transcript_path_str)
+    if stub:
+        where = f"Update this session's stub in place with the Edit tool: {stub}"
+    else:
+        where = (
+            "No stub was written in this session yet: create "
+            "sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md and its manifest shard "
+            "with the Write tool, per the Stub file workflow in ~/.claude/CLAUDE.md "
+            "(Engineering Journal)"
+        )
+    return (
+        f"[journal-stub] Context has grown {growth:,} tokens since this session's "
+        f"first turn (band {band}, at {threshold:,}). Record the work done since "
+        f"the stub's last update so it survives a crash, compaction, or app "
+        f"restart. {where}. Never write a stub through a shell heredoc, echo, or "
+        f"redirect (ADR-129); commit it with an explicit pathspec and push. If "
+        f"the stub already covers everything since its last update, no action "
+        f"is needed."
     )
 
 
@@ -198,9 +329,17 @@ def main() -> None:
 
     messages = []
 
-    ctx_warn = check_context_tokens(transcript_path, session_id)
-    if ctx_warn:
-        messages.append(ctx_warn)
+    stats = get_context_stats(transcript_path)
+    if stats is not None:
+        tokens, growth = stats
+        ctx_warn = check_context_tokens(tokens, session_id)
+        if ctx_warn:
+            messages.append(ctx_warn)
+        # The raw id, not the "unknown" fallback: sessions without an id must
+        # not share one band-state file and suppress each other's nudges.
+        stub_nudge = check_stub_band(growth, data.get("session_id") or "", cwd, transcript_path)
+        if stub_nudge:
+            messages.append(stub_nudge)
 
     prompt_warn = check_prompt_count(session_id, cwd)
     if prompt_warn:

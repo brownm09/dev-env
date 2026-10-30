@@ -4480,3 +4480,37 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_hook_launch.py
     ```
+
+104. **turn-count-hook journal-stub band test** — required when changing
+    `claude/scripts/turn-count-hook.py`
+    ([ADR-150](adr/150-context-growth-journal-stub-trigger.md), dev-env#1160).
+
+    The hook nudges Claude to update the session's journal stub the first time cumulative context
+    growth reaches each band. Twelve cases, all against fixture transcripts in a temp directory with
+    the module's `SCRATCH` swapped out, so no case touches the real `~/.claude/scratch`:
+
+    - **Growth is cumulative, from the first turn.** `get_context_stats` sums every increase between
+      consecutive main-thread assistant turns. A compaction's drop is not subtracted, and sidechain
+      records neither set the current size nor add growth.
+    - **Each band fires once.** Below the first band is silent. Band 1 and band 2 each fire exactly
+      once, and a jump straight to band 3 nudges once and records band 3.
+    - **Post-compaction.** After a compaction, climbing back past the absolute size that fired band 1
+      does not fire it again. Band 2 fires only when cumulative growth reaches it, and a second
+      compaction leaves the recorded band unchanged.
+    - **Unsafe or missing session id** never fires and writes no state file, so sessions without an
+      id cannot suppress each other.
+    - **Config.** `hook-config.json` overrides are honored, and each key falls back to its default
+      independently on a missing, non-positive, non-integer, non-object or malformed value.
+    - **Stub discovery and the nudge.** The newest main-thread Write/Edit of a `*.stub.md` is named,
+      with the Edit tool. A Read, a Bash `git add` and a sidechain write are ignored. With no stub,
+      the nudge says to create one with the Write tool. The text is ASCII, starts with
+      `[journal-stub]`, and carries the ADR-129 rule.
+    - **End to end.** `main()` runs as a subprocess with a temporary home directory: two prompts in
+      the same band produce one nudge, and garbage stdin still exits 0.
+
+    The existing `[session-size]` and `[prompt-count]` warnings are not covered here. Only their
+    input changed: the shared transcript pass now skips sidechain records.
+
+    ```bash
+    py -3 claude/scripts/tests/test_turn_count_hook.py
+    ```
