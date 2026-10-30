@@ -27,6 +27,9 @@ in the consuming scripts before this module:
   for months, usage-snapshot.py for 8 days, discovered only by accident) leaves a
   detectable trace. `hook-liveness-check.py` reads the ledger this writes and warns
   when a wired hook has gone quiet longer than its expected cadence (ADR-106).
+  The same call also arms a per-fire duration record (`record_duration`, appended
+  at process exit to ``<hook>.dur.jsonl`` beside the heartbeat), which
+  `hook-timing-report.py` summarizes (dev-env#848, ADR-106 Amendment 2).
 
 Mirrors how _hookio.py was extracted for PostToolUse Bash hooks (ADR-050).
 See ADR-064 and ADR-090 for rationale.
@@ -59,6 +62,7 @@ Usage:
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
@@ -82,6 +86,18 @@ _SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 SCRATCH = Path.home() / ".claude" / "scratch"
 PROJECTS = Path.home() / ".claude" / "projects"
 HEARTBEAT_DIR = SCRATCH / "hook-heartbeat"
+# Per-fire duration log beside each heartbeat (dev-env#848). Appended once per
+# hook process; compacted to the newest DURATION_KEEP_LINES once it passes
+# DURATION_MAX_BYTES, so it stays bounded without a GC job.
+DURATION_SUFFIX = ".dur.jsonl"
+DURATION_MAX_BYTES = 64 * 1024
+DURATION_KEEP_LINES = 500
+# The launch-time probe needs ctypes, whose import measured 10-75 ms on this
+# machine (Defender + Acronis scan the DLL load) -- too much to pay on every fire
+# of every hook. One fire in STARTUP_SAMPLE_EVERY pays it; the rest record run_ms
+# only, which costs nothing beyond the append.
+STARTUP_SAMPLE_EVERY = 16
+_DURATION_ARMED: set[str] = set()
 MAX_AGE_DAYS = 30
 DEFAULT_REVERSE_CHUNK_SIZE = 65536  # 64 KiB
 
@@ -190,22 +206,146 @@ def record_heartbeat(hook_name: str, heartbeat_dir: Path | None = None) -> None:
     ``~/.claude/scratch/hook-heartbeat/`` and silently blinding
     ``hook-liveness-check.py``'s staleness detector for up to its 7-day
     cadence on every test run.
+
+    Also arms, once per hook name per process, an ``atexit`` callback that
+    appends this fire's duration via ``record_duration`` (dev-env#848):
+    ``run_ms`` from this call to process exit, and on a sampled fire
+    ``startup_ms`` from the process launch to this call. ``atexit`` runs on a
+    normal return, ``sys.exit`` and an uncaught exception alike, and never
+    changes the exit code.
     """
-    override = os.environ.get("HOOK_HEARTBEAT_DIR_OVERRIDE")
-    if override:
-        root = Path(override)
-    elif heartbeat_dir is not None:
-        root = heartbeat_dir
-    else:
-        root = HEARTBEAT_DIR
+    started = time.time()
+    root = _heartbeat_root(heartbeat_dir)
     try:
         root.mkdir(parents=True, exist_ok=True)
         target = root / f"{hook_name}.ts"
         tmp = root / f"{hook_name}.ts.{os.getpid()}.tmp"
-        tmp.write_text(str(time.time()), encoding="utf-8")
+        tmp.write_text(str(started), encoding="utf-8")
         os.replace(tmp, target)
     except Exception:
         pass
+    if hook_name not in _DURATION_ARMED:
+        _DURATION_ARMED.add(hook_name)
+        atexit.register(_record_exit_duration, hook_name, root, started)
+
+
+def _heartbeat_root(heartbeat_dir: Path | None) -> Path:
+    """The ledger directory: ``HOOK_HEARTBEAT_DIR_OVERRIDE``, then
+    *heartbeat_dir*, then ``HEARTBEAT_DIR`` (see ``record_heartbeat``)."""
+    override = os.environ.get("HOOK_HEARTBEAT_DIR_OVERRIDE")
+    if override:
+        return Path(override)
+    if heartbeat_dir is not None:
+        return heartbeat_dir
+    return HEARTBEAT_DIR
+
+
+def record_duration(
+    hook_name: str,
+    run_ms: int,
+    startup_ms: int | None = None,
+    heartbeat_dir: Path | None = None,
+) -> None:
+    """Append one ``{"t", "run_ms", "startup_ms"}`` line to
+    ``<ledger>/<hook_name>.dur.jsonl`` (dev-env#848).
+
+    *run_ms* is the hook body's wall time; *startup_ms* is the launch-to-main()
+    time when it was measured, else ``None``. Once the file passes
+    ``DURATION_MAX_BYTES`` it is rewritten to its newest ``DURATION_KEEP_LINES``
+    lines via tmp + ``os.replace``. Two processes of the same hook compacting at
+    once can lose a sample to last-write-wins, which a timing summary tolerates.
+    Best-effort like ``record_heartbeat``: swallows every error."""
+    root = _heartbeat_root(heartbeat_dir)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / f"{hook_name}{DURATION_SUFFIX}"
+        line = json.dumps(
+            {"t": round(time.time(), 3), "run_ms": run_ms, "startup_ms": startup_ms}
+        )
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+        if target.stat().st_size > DURATION_MAX_BYTES:
+            lines = target.read_text(encoding="utf-8").splitlines()
+            tmp = root / f"{hook_name}{DURATION_SUFFIX}.{os.getpid()}.tmp"
+            tmp.write_text("\n".join(lines[-DURATION_KEEP_LINES:]) + "\n", encoding="utf-8")
+            os.replace(tmp, target)
+    except Exception:
+        pass
+
+
+def _sample_startup() -> bool:
+    """True on roughly one fire in ``STARTUP_SAMPLE_EVERY`` (tests replace it)."""
+    return (time.time_ns() // 1000) % STARTUP_SAMPLE_EVERY == 0
+
+
+def _record_exit_duration(hook_name: str, root: Path, started: float) -> None:
+    """The ``atexit`` half of ``record_heartbeat``. Must never raise: an
+    exception escaping an atexit callback prints a traceback to stderr, which a
+    blocking hook's exit 2 would hand to Claude as part of its reason.
+
+    Skips when the ledger directory no longer exists: a test that drove a hook's
+    ``main()`` against a temporary ledger has already deleted it by the time the
+    test process exits, and ``record_duration``'s mkdir would resurrect it."""
+    try:
+        if not root.is_dir():
+            return
+        run_ms = round((time.time() - started) * 1000)
+        startup_ms = None
+        if _sample_startup():
+            launched = _launch_time()
+            if launched is not None and launched <= started:
+                startup_ms = round((started - launched) * 1000)
+        record_duration(hook_name, run_ms, startup_ms, heartbeat_dir=root)
+    except Exception:
+        pass
+
+
+def _launch_time() -> float | None:
+    """Unix time this hook was launched, or ``None`` off Windows or on failure.
+
+    ``pyw -3`` is the py launcher, which starts pythonw.exe as a child and
+    waits, so the launch began when the PARENT was created. The parent's
+    creation time is used when its image is py.exe/pyw.exe; otherwise (a bare
+    ``python foo.py``) this process's own. A recycled parent PID is rejected by
+    the caller's ``launched <= started`` check and by the image-name check."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        k32 = ctypes.WinDLL("kernel32")
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        k32.OpenProcess.restype = ctypes.c_void_p
+        k32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        filetime = ctypes.POINTER(ctypes.c_ulonglong)
+        k32.GetProcessTimes.argtypes = [ctypes.c_void_p, filetime, filetime, filetime, filetime]
+        k32.QueryFullProcessImageNameW.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_ulong),
+        ]
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+        def created(handle) -> float | None:
+            times = [ctypes.c_ulonglong() for _ in range(4)]
+            if not k32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+                return None
+            # FILETIME: 100 ns ticks since 1601-01-01.
+            return times[0].value / 1e7 - 11644473600
+
+        when = created(k32.GetCurrentProcess())
+        parent = k32.OpenProcess(0x1000, False, os.getppid())  # QUERY_LIMITED_INFORMATION
+        if parent:
+            try:
+                buf = ctypes.create_unicode_buffer(1024)
+                size = ctypes.c_ulong(1024)
+                if k32.QueryFullProcessImageNameW(parent, 0, buf, ctypes.byref(size)) and (
+                    os.path.basename(buf.value).lower() in ("py.exe", "pyw.exe")
+                ):
+                    when = created(parent) or when
+            finally:
+                k32.CloseHandle(parent)
+        return when
+    except Exception:
+        return None
 
 
 # --- transcript record readers -------------------------------------------------
