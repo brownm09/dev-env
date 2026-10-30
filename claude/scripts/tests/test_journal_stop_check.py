@@ -85,6 +85,9 @@ Three layers, mirroring this repo's hook-test convention:
 main()'s advisory branches (stale drafts / unmerged branches / orphan cleanup) run
 subprocess git against the journal repo and are not unit-tested here (pure-helper
 convention) -- the end-to-end no-flag run exercises their fail-closed path.
+The exception is unmerged_draft_branches() (dev-env#628): a real git fixture
+with an unreachable origin pins that it reads local refs/remotes/origin/draft/*
+and issues no network git call, in-process and end-to-end.
 
 Usage:
     py -3 claude/scripts/tests/test_journal_stop_check.py
@@ -885,6 +888,79 @@ def test_e2e_stale_advisory_is_systemmessage():
     return "e2e no flag + planted stale stub -> exit 0, Checks 2-3 delivered as a systemMessage JSON on stdout"
 
 
+# --- unmerged draft branches read from local refs, no network (dev-env#628) ---
+
+# Unresolvable by construction (RFC 6761 reserves .invalid), so any network git
+# call against this origin fails -- the old live `git ls-remote` returned [] here.
+_UNREACHABLE_ORIGIN = "https://journal.invalid/engineering-journal.git"
+
+
+def _git(repo, *args):
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+
+
+def _init_draft_refs_fixture(repo: Path) -> None:
+    """A journal repo whose origin is unreachable, with local remote-tracking refs:
+    origin/main carries a composed file for 2020-01-02, and origin/draft/* exists for
+    2020-01-01 (uncomposed -> reported), 2020-01-02 (composed -> filtered) and today
+    (always excluded)."""
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-q")
+    _git(repo, "remote", "add", "origin", _UNREACHABLE_ORIGIN)
+    composed = repo / "sessions" / "proj" / "2020-01-02-composed.md"
+    composed.parent.mkdir(parents=True, exist_ok=True)
+    composed.write_text("composed")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "fixture")
+    for ref in ("main", "draft/2020-01-01", "draft/2020-01-02", f"draft/{jsc.TODAY}"):
+        _git(repo, "update-ref", f"refs/remotes/origin/{ref}", "HEAD")
+
+
+def test_unmerged_draft_branches_reads_local_refs_without_network():
+    real_run = jsc.subprocess.run
+    real_repo = jsc.JOURNAL_REPO
+    calls = []
+
+    def recording_run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        return real_run(cmd, *args, **kwargs)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "engineering-journal"
+        _init_draft_refs_fixture(repo)
+        jsc.JOURNAL_REPO = repo
+        jsc.subprocess.run = recording_run
+        try:
+            result = jsc.unmerged_draft_branches()
+        finally:
+            jsc.subprocess.run = real_run
+            jsc.JOURNAL_REPO = real_repo
+    network = [c for c in calls if any(a in ("ls-remote", "fetch", "pull") for a in c)]
+    assert not network, f"no network git call allowed, got {network}"
+    assert calls, "expected at least one local git call"
+    assert result == ["2020-01-01"], f"got {result!r}"
+    return ("local origin/draft/* refs -> uncomposed 2020-01-01 reported, composed + today "
+            "filtered, and no ls-remote/fetch/pull issued")
+
+
+def test_e2e_unmerged_draft_advisory_without_network():
+    with tempfile.TemporaryDirectory() as home:
+        _init_draft_refs_fixture(Path(home) / "Git" / "engineering-journal")
+        rc, out, err = _run_hook(home, flag_present=False, stop_hook_active=False)
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    assert out.strip(), "no advisory emitted -- the unmerged draft was not found from local refs"
+    payload = json.loads(out)
+    msg = payload.get("systemMessage", "")
+    assert "Unmerged draft branch(es): 2020-01-01" in msg, (
+        f"advisory must come from local refs with origin unreachable, got {out!r}"
+    )
+    assert "2020-01-02" not in msg and jsc.TODAY not in msg, msg
+    return "e2e unreachable origin + local origin/draft/2020-01-01 ref -> unmerged advisory still delivered"
+
+
 def main():
     tests = [
         ("archive message cp1252-encodable", test_archive_message_is_cp1252_encodable),
@@ -950,6 +1026,8 @@ def main():
         ("e2e no session_id never blocks (dev-env#980)", test_e2e_no_session_id_never_blocks),
         ("e2e stale advisory is a systemMessage", test_e2e_stale_advisory_is_systemmessage),
         ("e2e stop_hook_active allows + preserves flag", test_e2e_stop_hook_active_allows_and_preserves_flag),
+        ("unmerged drafts from local refs, no network (dev-env#628)", test_unmerged_draft_branches_reads_local_refs_without_network),
+        ("e2e unmerged-draft advisory with unreachable origin (dev-env#628)", test_e2e_unmerged_draft_advisory_without_network),
     ]
     failed = 0
     for name, fn in tests:

@@ -42,7 +42,8 @@ Check 1 — stub-push sentinel (CLAUDE-facing, BLOCKING via exit 2 + stderr):
 
 Checks 2–3 (user-facing, NON-blocking — exit 0, systemMessage):
 1. Stale *_draft.md / *.stub.md files from before today
-2. Unmerged remote draft/* branches
+2. Unmerged remote draft/* branches (read from the local remote-tracking
+   refs, so a Stop makes no network call -- dev-env#628)
   These point at work for a LATER, dedicated session (journal composition is
   dedicated-session-only and must never be triggered proactively; stale-PR
   merges are separate work), so they must not block the stop. A Stop hook's
@@ -493,20 +494,29 @@ def stale_draft_artifacts() -> list[str]:
 
 
 def unmerged_draft_branches() -> list[str]:
-    """Return remote draft/* branch names not yet merged into origin/main."""
+    """Return remote draft/* branch names not yet merged into origin/main.
+
+    Reads the local remote-tracking refs (refs/remotes/origin/draft/*), not a
+    live `git ls-remote`: this hook fires on every Stop, and a network round-trip
+    on every turn is the cost dev-env#628 removes. Same staleness model as
+    composed_project_dates_on_main(), which already reads the local origin/main.
+    A push from this machine updates the tracking ref immediately, and any
+    fetch/pull refreshes the rest. A ref left behind after its remote branch was
+    deleted is filtered out once its date is composed on origin/main.
+    """
     try:
         result = subprocess.run(
-            ["git", "ls-remote", "--heads", "origin", "refs/heads/draft/*"],
+            ["git", "for-each-ref", "--format=%(refname)", "refs/remotes/origin/draft/"],
             cwd=JOURNAL_REPO,
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=10,
         )
         remote_dates = set()
         for line in result.stdout.splitlines():
-            if "\t" in line:
-                ref = line.split("\t", 1)[1].strip()
-                remote_dates.add(ref.replace("refs/heads/draft/", ""))
+            ref = line.strip()
+            if ref.startswith("refs/remotes/origin/draft/"):
+                remote_dates.add(ref.replace("refs/remotes/origin/draft/", ""))
 
         if not remote_dates:
             return []

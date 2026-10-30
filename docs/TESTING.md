@@ -1986,6 +1986,14 @@ For a one-line navigational map of the test directory, see
     separately unit-tested (pure-helper convention) — the end-to-end runs exercise their fail-closed path
     and, with the planted stub, the systemMessage delivery.
 
+    dev-env#628 pins that the unmerged-branch advisory makes no network call. A real git fixture repo has an
+    unresolvable `origin` (`*.invalid`, RFC 6761) and local `refs/remotes/origin/draft/*` refs for an
+    uncomposed date, a date composed on `origin/main`, and today. `unmerged_draft_branches()` is called
+    in-process with `subprocess.run` wrapped to record every git command. It must return only the uncomposed
+    date and issue no `ls-remote`/`fetch`/`pull`. An end-to-end run against the same fixture must still
+    deliver the `Unmerged draft branch(es)` systemMessage. Both tests fail against the former live
+    `git ls-remote` implementation.
+
     dev-env#1002 (ADR-091 Amendment 3) adds a fourth pure-helper group and end-to-end cases addressing
     the archive reminder's own blind spot: it previously fired unconditionally even when the session's
     own transcript showed other approved, unfinished work. A `/review` pass on the closing PR (#1009)
