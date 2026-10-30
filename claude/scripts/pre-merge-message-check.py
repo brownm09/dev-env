@@ -35,7 +35,7 @@ import os
 import re
 import sys
 
-from _hookio import read_command, scan_top_level
+from _hookio import is_pr_merge_command, read_command
 import _hookutil
 
 # Overridable so a subprocess-driven end-to-end test can point this at a
@@ -43,20 +43,6 @@ import _hookutil
 # pre-tool-use-journal-draft-worktree-guard.py's JOURNAL_DRAFT_WORKTREE_GUARD_REPO_PATH
 # and pre-tool-use-canonical-mutate-guard.py's CANONICAL_MUTATE_GUARD_JOURNAL_PATH).
 _QUEUE_FILE = os.environ.get("MERGE_QUEUE_FILE_PATH", "C:/Users/brown/.claude/merge-queue.md")
-_MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
-
-
-def _check_merge_stmt(token):
-    return bool(_MERGE_STMT_RE.match(token.lstrip()))
-
-
-def is_pr_merge_command(command):
-    """True iff *command* contains a top-level `gh pr merge` -- i.e. not one
-    merely mentioned inside a quoted string, $() subshell, or heredoc body
-    (dev-env#499). Mirrors `pre-merge-numbering-check.py`'s identically-named
-    predicate (dev-env#519).
-    """
-    return scan_top_level(command, _check_merge_stmt)
 
 
 def _read_queue():

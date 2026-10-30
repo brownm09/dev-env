@@ -79,7 +79,7 @@ import re
 import sys
 from pathlib import Path
 
-from _hookio import is_help_only, scan_top_level
+from _hookio import is_help_only, is_merge_help_only, is_pr_merge_command, scan_top_level
 from _hookutil import (
     _content_items,
     _is_synthetic_user,
@@ -146,7 +146,6 @@ _PREFILTER_RE = re.compile(
 # genuine invocation (the dev-env#499 class). Built on _hookio.scan_top_level to
 # stay clear of the item-39 crude-substring AST gate.
 _PR_CREATE_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+create\b", re.IGNORECASE)
-_PR_MERGE_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+merge\b", re.IGNORECASE)
 
 # A /review command invocation exempts the session (its findings live on the PR).
 # Keyed on the wrapper so prose merely mentioning "/review" never trips it. The
@@ -272,10 +271,6 @@ def _check_pr_create(seg: str) -> bool:
     return bool(_PR_CREATE_RE.match(seg.lstrip()))
 
 
-def _check_pr_merge(seg: str) -> bool:
-    return bool(_PR_MERGE_RE.match(seg.lstrip()))
-
-
 def opened_or_merged_pr(records: list) -> bool:
     """True iff the session ran a real top-level ``gh pr create`` or ``gh pr
     merge`` (those events already nudge for a stub). Command-shape only — a
@@ -284,7 +279,7 @@ def opened_or_merged_pr(records: list) -> bool:
     for cmd in _bash_commands(records):
         if scan_top_level(cmd, _check_pr_create) and not is_help_only(cmd, _PR_CREATE_RE):
             return True
-        if scan_top_level(cmd, _check_pr_merge) and not is_help_only(cmd, _PR_MERGE_RE):
+        if is_pr_merge_command(cmd) and not is_merge_help_only(cmd):
             return True
     return False
 

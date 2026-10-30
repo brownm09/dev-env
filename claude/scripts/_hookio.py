@@ -66,6 +66,7 @@ Usage:
     from _hookio import output_has_merge_marker
     from _hookio import effective_merge_dir, scan_top_level, split_top_level
     from _hookio import is_help_only, is_merge_help_only
+    from _hookio import load_hook_input, SHELL_TOOLS, is_pr_merge_command
 
 See ADR-049 (root cause + canonical read) and ADR-050 (shared helper + sibling
 hook fixes).  See ADR-067 for the merge-dir scoping.
@@ -76,6 +77,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from collections.abc import Callable
 
 # `subprocess` and `_winsubp` are imported lazily, inside `confirm_merge_via_gh`
@@ -96,6 +98,36 @@ _MERGE_MARKER_RE = re.compile(
     r"(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#(\d+)",
     re.IGNORECASE,
 )
+
+
+SHELL_TOOLS = ("Bash", "PowerShell")
+
+
+def load_hook_input(tools: tuple[str, ...] | None = None) -> dict | None:
+    """Read the hook payload from stdin and return it as a dict, or None.
+
+    None means "nothing this hook should act on": stdin is empty or not JSON,
+    the JSON is not an object (a list, string, number or null, dev-env#1031),
+    or *tools* is given and the payload's ``tool_name`` is not in it. Every
+    caller exits 0 on None, so unreadable input fails open in every hook. That
+    includes the fail-closed gates (ADR-083, ADR-096), which fail closed only
+    on a crash after a payload was read (dev-env#1168).
+
+    ``sys.stdin`` is looked up at call time, so a test that swaps
+    ``mod.sys.stdin`` for a ``StringIO`` keeps working.
+    """
+    raw = sys.stdin.read().strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if tools is not None and data.get("tool_name") not in tools:
+        return None
+    return data
 
 
 def read_command_output(data: dict) -> str:
@@ -1290,3 +1322,17 @@ def is_merge_help_only(command: str) -> bool:
     signature; see dev-env#557 (this module's header docstring) for the
     motivating incident."""
     return is_help_only(command, _GH_MERGE_INVOCATION_RE)
+
+
+def _check_merge_stmt(token: str) -> bool:
+    return bool(_GH_MERGE_INVOCATION_RE.match(token.lstrip()))
+
+
+def is_pr_merge_command(command: str) -> bool:
+    """True iff *command* has a top-level `gh pr merge` statement, i.e. not one
+    merely mentioned inside a quoted string, $() subshell or heredoc body
+    (dev-env#499). Matches `gh.exe` and any case, the same invocation pattern
+    `is_merge_help_only` uses, so a gate and its help-only check always agree
+    on what a merge is. The one copy every merge hook imports (dev-env#1168);
+    ten hooks used to carry their own, in four regex variants."""
+    return scan_top_level(command, _check_merge_stmt)

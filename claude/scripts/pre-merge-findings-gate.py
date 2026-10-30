@@ -71,15 +71,14 @@ import sys
 import _hookout
 from _hookio import (
     is_merge_help_only,
+    is_pr_merge_command,
     mask_quoted_spans,
     read_command,
     read_cwd,
-    scan_top_level,
     strip_line_continuations,
 )
 import _hookutil
 
-_MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
 _MARKER_RE = re.compile(
     r"<!--\s*review-findings:\s*blocking\s*=\s*(\d+)\s+non_blocking\s*=\s*(\d+)\s*-->"
 )
@@ -90,19 +89,6 @@ _DISPOSED_RE = re.compile(r"findings[\s\-]dispos", re.IGNORECASE)
 # Flags to `gh pr merge` that consume the following token as their value.
 _VALUE_FLAGS = {"--repo", "-R", "-b", "--body", "-t", "--subject", "--match-head-commit",
                 "--author-email"}
-
-
-def _check_merge_stmt(token):
-    return bool(_MERGE_STMT_RE.match(token.lstrip()))
-
-
-def is_pr_merge_command(command):
-    """True iff *command* contains a top-level `gh pr merge` -- i.e. not one
-    merely mentioned inside a quoted string, $() subshell, or heredoc body
-    (dev-env#499). Mirrors `pre-merge-numbering-check.py`'s identically-named
-    predicate (dev-env#519).
-    """
-    return scan_top_level(command, _check_merge_stmt)
 
 
 def _parse_merge_target(command):

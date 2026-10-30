@@ -40,6 +40,7 @@ from _hookio import (
     effective_merge_dir,
     is_absolute_path,
     is_merge_help_only,
+    is_pr_merge_command,
     is_rest_merge_command,
     output_has_merge_marker,
     output_has_rest_merge_marker,
@@ -53,9 +54,8 @@ from _hookio import (
 import _hookutil
 from _repo_target import create_args, merge_args, repo_from_flag
 
-# Matches the start of a statement token against `gh pr merge`, `gh pr create`,
-# or `git push`.
-_MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
+# Matches the start of a statement token against `gh pr create` or `git push`
+# (`gh pr merge` is `_hookio.is_pr_merge_command`, dev-env#1168).
 _CREATE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+create\b")
 _PUSH_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?git\s+push\b")
 
@@ -73,21 +73,12 @@ _CD_CHAIN_RE = re.compile(r"""cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)""")
 _BARE_PUSH_RE = re.compile(r"\bgit\s+push\b")
 
 
-def _check_merge_stmt(token: str) -> bool:
-    return bool(_MERGE_RE.match(token.lstrip()))
-
-
 def _check_create_stmt(token: str) -> bool:
     return bool(_CREATE_RE.match(token.lstrip()))
 
 
 def _check_push_stmt(token: str) -> bool:
     return bool(_PUSH_RE.match(token.lstrip()))
-
-
-def is_pr_merge_command(command: str) -> bool:
-    """Return True only when *command* contains a top-level `gh pr merge`."""
-    return scan_top_level(command, _check_merge_stmt)
 
 
 def is_pr_create_command(command: str) -> bool:

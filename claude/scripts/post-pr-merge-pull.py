@@ -41,6 +41,7 @@ from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
     is_merge_help_only,
+    is_pr_merge_command,
     is_rest_merge_command,
     mask_prose_flag_values,
     output_has_merge_marker,
@@ -49,20 +50,11 @@ from _hookio import (
     read_command_output,
     read_cwd,
     read_exit_code,
-    scan_top_level,
     should_confirm_via_gh,
 )
 import _hookutil
 from _repo_target import merge_args, repo_from_flag, repo_from_pr_url, repo_from_rest_merge_path
 from _worktree_topology import canonical_on_main, merge_park_target, parse_worktree_porcelain
-
-# Anchored top-level match — mirrors usage-snapshot.py / pr-merge-reminder.py /
-# post-pr-merge-project.py's identical _check_merge_stmt (ADR-050 Amendments 5/6).
-_MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
-
-
-def _check_merge_stmt(token: str) -> bool:
-    return bool(_MERGE_RE.match(token.lstrip()))
 
 
 # Map GitHub repo slugs to local clone paths.
@@ -310,7 +302,7 @@ def is_successful_merge(command: str, output: str) -> bool:
     .../pulls/<N>/merge`, dev-env#986) — see usage-snapshot.py's
     merge_confirmed() for the full rationale.
     """
-    if scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output):
+    if is_pr_merge_command(command) and output_has_merge_marker(output):
         return True
     return is_rest_merge_command(command) and output_has_rest_merge_marker(output)
 
@@ -367,7 +359,7 @@ def main() -> None:
         # when gh exits abruptly right after a worktree's local-cleanup
         # failure (dev-env#489) — fall back to a live `gh pr view` confirmation
         # rather than silently skipping the local-main fast-forward (dev-env#504).
-        if not scan_top_level(command, _check_merge_stmt):
+        if not is_pr_merge_command(command):
             sys.exit(0)
         # `gh pr merge --help` (or any other non-mutating gh pr merge invocation
         # that prints no marker) can categorically never attempt a real merge —

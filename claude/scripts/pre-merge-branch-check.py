@@ -39,23 +39,8 @@ import re
 import sys
 
 import _bash_state
-from _hookio import read_command, read_cwd, scan_top_level
+from _hookio import is_pr_merge_command, read_command, read_cwd
 import _hookutil
-
-_MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
-
-
-def _check_merge_stmt(token: str) -> bool:
-    return bool(_MERGE_STMT_RE.match(token.lstrip()))
-
-
-def is_pr_merge_command(command: str) -> bool:
-    """True iff *command* contains a top-level `gh pr merge` — i.e. not one
-    merely mentioned inside a quoted string, $() subshell, or heredoc body
-    (dev-env#499). Mirrors pre-merge-message-check.py's /
-    pre-merge-numbering-check.py's identically-named predicate (dev-env#519).
-    """
-    return scan_top_level(command, _check_merge_stmt)
 
 
 def build_message(branch: str | None, repo_root: str | None, drift_warning: str | None) -> str:

@@ -80,7 +80,12 @@ from _hookutil import iter_bash_calls, load_records, _result_text  # noqa: F401
 # args-region bounding, and PR-URL extraction (all quote-aware) now come from
 # the shared _repo_target module (ADR-111), one implementation across the five
 # sibling hooks that each used to carry a near-copy.
-from _hookio import is_rest_merge_command, mask_prose_flag_values, output_has_rest_merge_marker
+from _hookio import (
+    is_pr_merge_command,
+    is_rest_merge_command,
+    mask_prose_flag_values,
+    output_has_rest_merge_marker,
+)
 from _repo_target import (
     iter_pr_urls,
     merge_args,
@@ -98,7 +103,6 @@ SENTINEL_PREFIX = "posttooluse-inert-resolved-"
 # PostToolUse silence is legitimate.
 _ISSUE_CREATE_RE = re.compile(r"\bgh\s+issue\s+create\b")
 _PR_CREATE_RE = re.compile(r"\bgh\s+pr\s+create\b")
-_MERGE_RE = re.compile(r"\bgh\s+pr\s+merge\b")
 _DEVENV_CREATE_URL_RE = re.compile(
     r"https://github\.com/brownm09/dev-env/(issues|pull)/(\d+)"
 )
@@ -261,7 +265,7 @@ def detect_board_actions(calls: list[tuple[str, str, str]]) -> list[dict]:
             if m:
                 kind = "issue" if m.group(1) == "issues" else "PR"
                 actions.append({"action": "create", "label": f"{kind} {m.group(0)}"})
-        if _MERGE_RE.search(command):
+        if is_pr_merge_command(command):
             pr = _devenv_merge_pr(command, cwd)
             if pr and not _HARD_MERGE_FAIL_RE.search(output):
                 actions.append({"action": "merge", "label": f"PR #{pr}"})

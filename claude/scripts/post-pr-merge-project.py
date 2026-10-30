@@ -45,6 +45,7 @@ from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
     is_merge_help_only,
+    is_pr_merge_command,
     is_rest_merge_command,
     mask_prose_flag_values,
     merge_pr_number_from_output,
@@ -70,17 +71,12 @@ from _repo_target import (
 
 CONFIG_FILE = ".claude/hook-config.json"
 
-_MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
 _CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
 # The `--repo`/`-R` flag, PR-URL, positional-number, and `gh pr merge`
 # args-region extraction (with their quote-aware masking) now live in the
 # shared `_repo_target` module — one implementation across the five sibling
 # hooks that used to each carry a near-copy (ADR-111). `merge_succeeded` /
 # `extract_pr_number`'s output-marker read still come from `_hookio`.
-
-
-def _check_merge_stmt(token: str) -> bool:
-    return bool(_MERGE_RE.match(token.lstrip()))
 
 
 def load_config(cwd: str) -> dict | None:
@@ -121,7 +117,7 @@ def merge_succeeded(command: str, output: str) -> bool:
     `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`,
     `post-merge-tile-checkpoint.py`).
     """
-    if scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output):
+    if is_pr_merge_command(command) and output_has_merge_marker(output):
         return True
     return is_rest_merge_command(command) and output_has_rest_merge_marker(output)
 
@@ -433,7 +429,7 @@ def main() -> None:
     # shape (`gh api -X PUT .../pulls/<N>/merge`, dev-env#986) — the original
     # gate only recognized `gh pr merge`, so a REST-only merge exited here
     # before ever reaching the marker check below.
-    if not (scan_top_level(command, _check_merge_stmt) or is_rest_merge_command(command)):
+    if not (is_pr_merge_command(command) or is_rest_merge_command(command)):
         sys.exit(0)
 
     output = read_command_output(data)
@@ -455,7 +451,7 @@ def main() -> None:
     # finding). No established cd-chain convention exists for the REST shape,
     # so skip the resolver entirely there and use cwd directly rather than
     # risk a wrong-repo config resolution.
-    if scan_top_level(command, _check_merge_stmt):
+    if is_pr_merge_command(command):
         merge_dir = effective_merge_dir(command, cwd)
     else:
         merge_dir = cwd
@@ -515,7 +511,7 @@ def main() -> None:
         # without this re-check the widened top-level gate above let a failed
         # REST command reach this fallback, contradicting this hook's own
         # documented scope decision in ADR-050 Amendment 23).
-        if not scan_top_level(command, _check_merge_stmt):
+        if not is_pr_merge_command(command):
             sys.exit(0)
         # `gh pr merge --help` (or any other non-mutating gh pr merge invocation
         # that prints no marker) can categorically never attempt a real merge —
