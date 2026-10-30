@@ -806,6 +806,197 @@ def test_record_heartbeat_empty_env_override_falls_through_to_default() -> str:
     return "an empty-string HOOK_HEARTBEAT_DIR_OVERRIDE falls through to heartbeat_dir, not treated as a real path"
 
 
+# --- per-fire duration record (dev-env#848) ------------------------------------
+
+def _dur_lines(path: Path) -> list:
+    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l]
+
+
+def test_record_duration_appends_one_line_per_call() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        hb_dir = Path(tmp) / "hb"
+        _hookutil.record_duration("h", 12, None, heartbeat_dir=hb_dir)
+        _hookutil.record_duration("h", 34, 1500, heartbeat_dir=hb_dir)
+        recs = _dur_lines(hb_dir / "h.dur.jsonl")
+        assert [r["run_ms"] for r in recs] == [12, 34], recs
+        assert [r["startup_ms"] for r in recs] == [None, 1500], recs
+        assert all(abs(r["t"] - time.time()) < 60 for r in recs), recs
+    return "record_duration appends one {t, run_ms, startup_ms} JSON line per call"
+
+
+def test_record_duration_compacts_past_cap() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        hb_dir = Path(tmp)
+        with unittest.mock.patch.object(_hookutil, "DURATION_MAX_BYTES", 400), \
+                unittest.mock.patch.object(_hookutil, "DURATION_KEEP_LINES", 3):
+            for i in range(20):
+                _hookutil.record_duration("h", i, heartbeat_dir=hb_dir)
+        recs = _dur_lines(hb_dir / "h.dur.jsonl")
+        assert len(recs) <= 3 + 10, f"file not compacted: {len(recs)} lines"
+        assert recs[-1]["run_ms"] == 19, "the newest sample must survive compaction"
+        assert not list(hb_dir.glob("*.tmp")), "compaction left a tmp file"
+    return "record_duration keeps the file bounded: past the byte cap it keeps the newest lines"
+
+
+def test_record_duration_honors_env_override() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        override = Path(tmp) / "override"
+        explicit = Path(tmp) / "explicit"
+        with unittest.mock.patch.dict(os.environ, {"HOOK_HEARTBEAT_DIR_OVERRIDE": str(override)}):
+            _hookutil.record_duration("h", 5, heartbeat_dir=explicit)
+        assert (override / "h.dur.jsonl").exists(), "override directory must receive the line"
+        assert not explicit.exists(), "explicit directory must not be used under the override"
+    return "record_duration resolves its directory the way record_heartbeat does (override first)"
+
+
+def test_record_duration_swallows_errors() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        blocker = Path(tmp) / "not-a-dir"
+        blocker.write_text("x", encoding="utf-8")
+        _hookutil.record_duration("h", 1, heartbeat_dir=blocker)  # must not raise
+    return "record_duration swallows errors when the ledger directory cannot be created"
+
+
+def test_exit_duration_skips_deleted_ledger() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        gone = Path(tmp) / "gone"
+        _hookutil._record_exit_duration("h", gone, time.time())
+        assert not gone.exists(), "the atexit half must not resurrect a deleted ledger directory"
+    return "the atexit half skips a ledger directory that no longer exists (no resurrected temp dirs)"
+
+
+def test_exit_duration_records_startup_when_sampled() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        hb_dir = Path(tmp)
+        started = time.time()
+        with unittest.mock.patch.object(_hookutil, "_sample_startup", lambda: True), \
+                unittest.mock.patch.object(_hookutil, "_launch_time", lambda: started - 1.5):
+            _hookutil._record_exit_duration("h", hb_dir, started)
+        with unittest.mock.patch.object(_hookutil, "_sample_startup", lambda: True), \
+                unittest.mock.patch.object(_hookutil, "_launch_time", lambda: started + 5):
+            _hookutil._record_exit_duration("h", hb_dir, started)
+        with unittest.mock.patch.object(_hookutil, "_sample_startup", lambda: False):
+            _hookutil._record_exit_duration("h", hb_dir, started)
+        recs = _dur_lines(hb_dir / "h.dur.jsonl")
+        assert 1450 <= recs[0]["startup_ms"] <= 1550, recs[0]
+        assert recs[1]["startup_ms"] is None, "a launch time after main() started is rejected"
+        assert recs[2]["startup_ms"] is None, "an unsampled fire carries no startup"
+        assert all(isinstance(r["run_ms"], int) and r["run_ms"] >= 0 for r in recs), recs
+    return "a sampled fire records startup_ms; a launch time after main() or an unsampled fire records null"
+
+
+def test_heartbeat_does_not_arm_when_not_main_script() -> str:
+    """A hook whose main() runs in-process under some other __main__ (a test,
+    a dispatcher) must not arm the exit record: it would time every later call
+    too (PR #1162 review)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        name = "not-the-main-script"
+        _hookutil.record_heartbeat(name, heartbeat_dir=Path(tmp))
+        assert name not in _hookutil._DURATION_ARMED, "armed although __main__ is not this hook"
+        assert (Path(tmp) / f"{name}.ts").exists(), "the heartbeat itself must still be written"
+    return "record_heartbeat writes the heartbeat but arms no exit record when the hook is not __main__"
+
+
+def test_replace_text_removes_tmp_on_failed_replace() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        hb_dir = Path(tmp)
+        with unittest.mock.patch.object(_hookutil.os, "replace", side_effect=PermissionError("held open")):
+            _hookutil.record_heartbeat("held", heartbeat_dir=hb_dir)  # must not raise
+            _hookutil.record_duration("held", 1, heartbeat_dir=hb_dir)
+            with unittest.mock.patch.object(_hookutil, "DURATION_MAX_BYTES", 1):
+                _hookutil.record_duration("held", 2, heartbeat_dir=hb_dir)  # compaction fails
+        leftovers = list(hb_dir.glob("*.tmp"))
+        assert not leftovers, f"a failed os.replace left tmp files behind: {leftovers}"
+    return "a failed os.replace (target held open on Windows) leaves no PID-named tmp file behind"
+
+
+def test_launch_time_plausible() -> str:
+    launched = _hookutil._launch_time()
+    if os.name != "nt":
+        assert launched is None, launched
+        return "_launch_time returns None off Windows"
+    assert launched is not None, "_launch_time returned None on Windows"
+    age = time.time() - launched
+    assert 0 <= age < 24 * 3600, f"launch time {age:.1f}s ago is implausible for this test process"
+    return f"_launch_time on Windows returns this process's launch, {age * 1000:.0f} ms ago"
+
+
+def test_launch_time_uses_py_launcher_parent() -> str:
+    """Drives both branches of _launch_time in real children (PR #1162 review):
+    under the py launcher the parent's (earlier) creation time is used; under a
+    bare interpreter the process's own is. Each child also prints its own
+    creation time, read by forcing the parent lookup to fail (getppid -> 0)."""
+    if os.name != "nt":
+        return "SKIP-equivalent: _launch_time is Windows-only (asserted None above)"
+    import shutil
+    import subprocess
+    scripts_dir = Path(__file__).resolve().parents[1]
+    child = (
+        "import json, os, sys, unittest.mock\n"
+        f"sys.path.insert(0, {str(scripts_dir)!r})\n"
+        "import _hookutil\n"
+        "chosen = _hookutil._launch_time()\n"
+        "with unittest.mock.patch.object(os, 'getppid', lambda: 0):\n"
+        "    own = _hookutil._launch_time()\n"
+        "print(json.dumps({'chosen': chosen, 'own': own}))\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "launch_probe.py"
+        path.write_text(child, encoding="utf-8")
+
+        def run(argv):
+            out = subprocess.run(argv + [str(path)], capture_output=True, timeout=60)
+            assert out.returncode == 0, out.stderr
+            return json.loads(out.stdout)
+
+        bare = run([sys.executable])
+        assert bare["chosen"] == bare["own"], f"bare interpreter must use its own creation time: {bare}"
+        if shutil.which("py") is None:
+            return "bare-interpreter branch pinned; py launcher not on PATH, so its branch was not run"
+        launched = run(["py", "-3"])
+        assert launched["chosen"] < launched["own"], (
+            f"under py -3 the launcher parent's earlier creation time must be used: {launched}"
+        )
+    return "under py -3 the launcher parent's earlier creation time is used; a bare interpreter uses its own"
+
+
+def test_heartbeat_arms_duration_once_and_keeps_exit_code() -> str:
+    """End to end in a real subprocess: the atexit record lands for sys.exit(2)
+    and for an uncaught exception, leaves stderr untouched on the clean exit,
+    preserves both exit codes, and a second record_heartbeat call for the same
+    name in one process still yields exactly one duration line."""
+    scripts_dir = Path(__file__).resolve().parents[1]
+    script = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(scripts_dir)!r})\n"
+        "from pathlib import Path\n"
+        "import _hookutil\n"
+        "ledger = Path(sys.argv[1])\n"
+        "_hookutil.record_heartbeat('probe', heartbeat_dir=ledger)\n"
+        "_hookutil.record_heartbeat('probe', heartbeat_dir=ledger)\n"
+        "if sys.argv[2] == 'raise':\n"
+        "    raise RuntimeError('boom')\n"
+        "sys.exit(2)\n"
+    )
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "probe.py"
+        path.write_text(script, encoding="utf-8")
+        env = {k: v for k, v in os.environ.items() if k != "HOOK_HEARTBEAT_DIR_OVERRIDE"}
+        for mode, want_rc in (("exit", 2), ("raise", 1)):
+            ledger = Path(tmp) / f"ledger-{mode}"
+            proc = subprocess.run(
+                [sys.executable, str(path), str(ledger), mode],
+                capture_output=True, env=env, timeout=60,
+            )
+            assert proc.returncode == want_rc, f"{mode}: rc {proc.returncode}, stderr {proc.stderr!r}"
+            if mode == "exit":
+                assert proc.stderr == b"", f"atexit wrote to stderr: {proc.stderr!r}"
+            recs = _dur_lines(ledger / "probe.dur.jsonl")
+            assert len(recs) == 1, f"{mode}: expected one duration line, got {recs}"
+    return "the atexit record lands on sys.exit(2) and on an uncaught exception, once, exit codes intact"
+
+
 def main() -> int:
     tests = [
         ("sentinel_path: correct path with override", test_sentinel_path_returns_correct_path),
@@ -868,6 +1059,17 @@ def main() -> int:
         ("record_heartbeat: HOOK_HEARTBEAT_DIR_OVERRIDE beats the default (dev-env#1031/#1033)", test_record_heartbeat_env_override_takes_precedence_over_default),
         ("record_heartbeat: HOOK_HEARTBEAT_DIR_OVERRIDE beats an explicit heartbeat_dir too", test_record_heartbeat_env_override_takes_precedence_over_explicit_param),
         ("record_heartbeat: empty-string override falls through to heartbeat_dir", test_record_heartbeat_empty_env_override_falls_through_to_default),
+        ("record_duration: one line per call (dev-env#848)", test_record_duration_appends_one_line_per_call),
+        ("record_duration: compacts past the byte cap", test_record_duration_compacts_past_cap),
+        ("record_duration: honors HOOK_HEARTBEAT_DIR_OVERRIDE", test_record_duration_honors_env_override),
+        ("record_duration: swallows errors", test_record_duration_swallows_errors),
+        ("exit duration: skips a deleted ledger dir", test_exit_duration_skips_deleted_ledger),
+        ("exit duration: startup only when sampled and plausible", test_exit_duration_records_startup_when_sampled),
+        ("record_heartbeat: no exit record unless the hook is __main__", test_heartbeat_does_not_arm_when_not_main_script),
+        ("_replace_text: failed replace leaves no tmp file", test_replace_text_removes_tmp_on_failed_replace),
+        ("_launch_time: plausible on Windows, None elsewhere", test_launch_time_plausible),
+        ("_launch_time: py launcher parent vs bare interpreter", test_launch_time_uses_py_launcher_parent),
+        ("record_heartbeat: arms duration once, exit codes intact (subprocess)", test_heartbeat_arms_duration_once_and_keeps_exit_code),
     ]
     failed = 0
     for name, fn in tests:

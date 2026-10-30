@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 93 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 105 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 94 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 106 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -152,6 +152,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 |---|---|---|
 | `test_dev_env_sync.py` | `dev-env-sync.py` | Fast-forwards the canonical checkout's `main` on every prompt; escalates a persistent pull failure. |
 | `test_hook_liveness_check.py` | `hook-liveness-check.py` | Warns when a wired hook's heartbeat ledger has gone stale (hasn't recorded in its expected cadence). |
+| `test_hook_timing_report.py` | `hook-timing-report.py` | Per-hook duration percentiles from the heartbeat's `.dur.jsonl` lines: window and malformed-line filtering, numbered slowest-first table, empty/missing ledger, and a round trip against `_hookutil.record_duration`'s own output. |
 | `test_idle_refresher.py` | `idle-refresher.py` | Injects a "here's what we were doing" cue after a long idle gap between prompts. |
 | `test_memory_write_advisory.py` | `memory-write-advisory.py` | Flags a durable memory write that has no paired immortalization issue. |
 | `test_posttooluse_inert_advisory.py` | `posttooluse-inert-advisory.py` | Stop-hook safety net: detects a background/SDK-launched session where PostToolUse hooks never fired at all. |

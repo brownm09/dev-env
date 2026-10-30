@@ -2,8 +2,8 @@
 
 **Date:** 2026-07-08
 **Status:** Accepted
-**Amended:** 2026-07-09, 2026-08-15, 2026-08-16 (three amendments — see Amendment sections below)
-**Tags:** hooks, stop, journal, archive, session-archiving, exit-code, stderr, claude-facing, adr-021, adr-088, false-positive, manifest, open-prs, session-scoping, sentinel, adr-064, cross-session, in-flight-work, todowrite, background-agent
+**Amended:** 2026-07-09, 2026-08-15, 2026-08-16, 2026-10-30 (four amendments — see Amendment sections below)
+**Tags:** hooks, stop, journal, archive, session-archiving, exit-code, stderr, claude-facing, adr-021, adr-088, false-positive, manifest, open-prs, session-scoping, sentinel, adr-064, cross-session, in-flight-work, todowrite, background-agent, latency, network, remote-tracking-refs
 
 ---
 
@@ -509,3 +509,53 @@ the `run_in_background` top-level-omitted-defaults-true behavior this amendment'
 `open_background_agent_count()` relies on. [PR #1009](https://github.com/brownm09/dev-env/pull/1009)
 — the `/review` comment there has the full verification commands and raw counts behind the
 Correction section above.
+
+---
+
+## Amendment 4 (2026-10-30) — the unmerged-draft-branch advisory reads local refs, not the network (dev-env#628)
+
+**Context.** The unmerged-draft-branch advisory ("The other three message types stay
+NON-blocking", above) got its branch list from a live
+`git ls-remote --heads origin refs/heads/draft/*` against the engineering-journal remote. This
+hook fires on every Stop, so every turn of every session paid a network round-trip. That made a
+local, non-blocking advisory depend on the remote being reachable. On angstrom-b, where every
+hook process start is already scanned by Defender and Acronis
+([dev-env#851](https://github.com/brownm09/dev-env/issues/851#issuecomment-6526180164)), it
+added 1–10 s per turn.
+
+**Decision.** `unmerged_draft_branches()` reads the local remote-tracking refs
+(`git for-each-ref refs/remotes/origin/draft/`). No Stop makes a network call. The
+composed-on-`origin/main` filter and today-exclusion are unchanged, and so are the advisory's
+channel and fail-open behavior.
+
+**Why local refs are good enough here.** The function already judged "merged" from the local
+`origin/main` ref without fetching, so only the branch list was live. That list is fresh locally
+on this setup:
+- Every session pushes `draft/<date>` from the one shared engineering-journal canonical, and the
+  compose routine uses a worktree of it, which shares refs. A push updates the local tracking ref
+  right away.
+- Every session's stub workflow `git pull` refreshes all `origin/*` refs.
+
+On the live repo, 45 local refs against 29 remote gave the identical 21-date advisory. All 16
+stale local-only refs were already-composed dates, which the existing filter drops.
+
+**Accepted residuals.**
+1. The journal repo sets no `fetch.prune`. A draft branch deleted remotely *without* a composed
+   file on main keeps being reported until `git fetch --prune` runs there. None existed when
+   this amendment was written.
+2. A draft branch pushed from another machine and never fetched here is missed until the next
+   pull. This is a single-machine setup, and `new-day-journal-check.py`'s own live `ls-remote`
+   (at most every 30 minutes) still covers it.
+
+**Alternatives considered.**
+- *A TTL cache of the `ls-remote` result in scratch.* Rejected. It still calls the network once
+  per window on a Stop with nothing to report, and adds a shared cache file, a TTL constant and
+  concurrent-write handling.
+- *Run `ls-remote` only when local state suggests unmerged work.* Rejected. Several unmerged
+  `draft/*` branches coexisting is the normal steady state (21 when this was written), so the
+  gate would be open on nearly every turn and save almost nothing.
+
+**References:** [dev-env#628](https://github.com/brownm09/dev-env/issues/628), the issue this
+amendment closes. [PR #1161](https://github.com/brownm09/dev-env/pull/1161) has the before/after
+timing (in-process median 1.71 s → 0.18 s) and the tests that fail against the old
+implementation.
