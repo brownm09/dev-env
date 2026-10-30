@@ -187,7 +187,6 @@ from __future__ import annotations
 
 import _hookout
 import _hookutil
-import json
 import re
 import sys
 from pathlib import Path
@@ -195,6 +194,7 @@ from typing import NamedTuple
 
 from _hookio import (
     is_rest_merge_command,
+    load_hook_input,
     mask_prose_flag_values,
     merge_pr_number_from_output,
     output_has_merge_marker,
@@ -1488,12 +1488,8 @@ def main() -> None:
     _hookutil.record_heartbeat("stop-tile-enumeration-gate")
     _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
+    data = load_hook_input()
+    if data is None:
         sys.exit(0)
 
     # Loop guard: once this hook has already blocked and Claude is continuing,

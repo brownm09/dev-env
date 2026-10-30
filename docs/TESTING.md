@@ -357,6 +357,14 @@ For a one-line navigational map of the test directory, see
     caller depends on `_hookio` for the `_winsubp` patch: every script that calls subprocess imports
     `_winsubp` itself, which item 2 (`test_pyw_stdio.py`) enforces.
 
+    **Shared merge predicate and stdin loader (dev-env#1168, ADR-050 Amendment 29).** Every merge
+    hook now imports `is_pr_merge_command` and every hook with the standard stdin block imports
+    `load_hook_input`, so these tests guard all of them. `load_hook_input` returns None for an empty,
+    non-JSON or non-object payload and for a `tool_name` outside `tools=`. `is_pr_merge_command`
+    matches a top-level `gh`/`gh.exe pr merge` in any case and rejects quoted, heredoc and `$()`
+    mentions. A final test pins that every command `is_merge_help_only` counts as a merge is also one
+    for `is_pr_merge_command`, the disagreement the old per-hook copies allowed.
+
     ```bash
     py -3 claude/scripts/tests/test_hookio.py
     ```

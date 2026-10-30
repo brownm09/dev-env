@@ -22,6 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _hookio import load_hook_input
 import _hookutil
 
 
@@ -80,13 +81,7 @@ def find_current_worktree(worktrees: list[dict], cwd: str) -> dict | None:
 
 def main() -> None:
     _hookutil.record_heartbeat("multi-worktree-alert")
-    raw = sys.stdin.read().strip()
-    cwd = ""
-    if raw:
-        try:
-            cwd = json.loads(raw).get("cwd", "")
-        except json.JSONDecodeError:
-            pass
+    cwd = (load_hook_input() or {}).get("cwd", "")
 
     if not cwd:
         sys.exit(0)

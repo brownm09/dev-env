@@ -39,6 +39,7 @@ import re
 import sys
 from pathlib import Path
 
+from _hookio import load_hook_input
 import _hookutil
 
 SCRATCH = Path.home() / ".claude" / "scratch"
@@ -342,13 +343,7 @@ def main() -> None:
     _hookutil.record_heartbeat("turn-count-hook")
     cleanup_stale_counters()
 
-    raw = sys.stdin.read().strip()
-    data: dict = {}
-    if raw:
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            pass
+    data = load_hook_input() or {}
 
     raw_session_id = data.get("session_id")
     # The id becomes part of scratch filenames, so an unsafe one falls back.

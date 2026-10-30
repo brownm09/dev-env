@@ -40,13 +40,12 @@ Stdin JSON shape (PostToolUse):
   }
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
-import json
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-from _hookio import read_command, read_command_output, scan_top_level
+from _hookio import load_hook_input, read_command, read_command_output, scan_top_level
 import _hookutil
 from _journal_schema import decode_shard_bytes, has_unresolved_open_pr, parse_manifest_text
 
@@ -239,19 +238,8 @@ def has_push_error(output: str) -> bool:
 
 def main() -> None:
     _hookutil.record_heartbeat("stub-push-archive-reminder")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
-        # or null) would otherwise crash the very next line (dev-env#1031/
-        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
+    data = load_hook_input()
+    if data is None:
         sys.exit(0)
 
     # A sentinel that can't be scoped to a session must never fall back to a

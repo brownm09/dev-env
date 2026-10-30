@@ -39,7 +39,7 @@ import re
 import sys
 
 import _bash_state
-from _hookio import is_pr_merge_command, read_command, read_cwd
+from _hookio import is_pr_merge_command, load_hook_input, read_command, read_cwd, SHELL_TOOLS
 import _hookutil
 
 
@@ -58,22 +58,8 @@ def build_message(branch: str | None, repo_root: str | None, drift_warning: str 
 
 def main() -> None:
     _hookutil.record_heartbeat("pre-merge-branch-check")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
-        # or null) would otherwise crash the very next line (dev-env#1031/
-        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
-        sys.exit(0)
-
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
 
     # dev-env#1031/#1033: read_command()/read_cwd() never raise on a

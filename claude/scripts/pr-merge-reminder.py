@@ -42,6 +42,7 @@ from _hookio import (
     is_merge_help_only,
     is_pr_merge_command,
     is_rest_merge_command,
+    load_hook_input,
     output_has_merge_marker,
     output_has_rest_merge_marker,
     read_command,
@@ -49,6 +50,7 @@ from _hookio import (
     read_cwd,
     read_exit_code,
     scan_top_level,
+    SHELL_TOOLS,
     should_confirm_via_gh,
 )
 import _hookutil
@@ -416,22 +418,8 @@ def _build_messages(
 
 def main() -> None:
     _hookutil.record_heartbeat("pr-merge-reminder")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
-        # or null) would otherwise crash the very next line (dev-env#1031/
-        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
-        sys.exit(0)
-
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
 
     # dev-env#1031/#1033: read_command()/read_exit_code() never raise on a

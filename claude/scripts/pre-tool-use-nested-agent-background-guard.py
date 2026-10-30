@@ -68,10 +68,10 @@ Stdin JSON shape (PreToolUse): {"session_id": <str>,"tool_name":"Agent",
 "tool_input":{..., "run_in_background": <bool, optional>},"agent_id":
 <present only when fired inside a subagent>,"agent_type": <str>}
 """
-import json
 import sys
 
 import _hookout
+from _hookio import load_hook_input
 import _hookutil
 
 SENTINEL_PREFIX = "nested_agent_rib_seen_"
@@ -86,14 +86,8 @@ If you are deliberately fanning this out in parallel (independent work you will 
 
 def main() -> None:
     _hookutil.record_heartbeat("pre-tool-use-nested-agent-background-guard")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-    if not isinstance(data, dict) or data.get("tool_name") != "Agent":
+    data = load_hook_input(("Agent",))
+    if data is None:
         sys.exit(0)
 
     agent_id = data.get("agent_id")

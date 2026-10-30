@@ -30,12 +30,11 @@ Exit 2 — block the merge and show queued messages (queue has content).
 Exit 0 — allow (queue absent, empty, whitespace-only, or any error).
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
-import json
 import os
 import re
 import sys
 
-from _hookio import is_pr_merge_command, read_command
+from _hookio import is_pr_merge_command, load_hook_input, read_command, SHELL_TOOLS
 import _hookutil
 
 # Overridable so a subprocess-driven end-to-end test can point this at a
@@ -56,19 +55,8 @@ def _read_queue():
 
 def main() -> None:
     _hookutil.record_heartbeat("pre-merge-message-check")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
-        # or null) would otherwise crash the very next line (dev-env#1031/
-        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
-        sys.exit(0)
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
     # dev-env#1031/#1033: read_command() never raises on a present-but-non-dict
     # tool_input (dev-env#1028's payload shape) -- the pre-fix unguarded chain

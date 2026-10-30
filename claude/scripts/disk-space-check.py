@@ -54,6 +54,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _hookio import load_hook_input
 import _hookutil
 
 # Path.home()-derived (identical real-world value to a hardcoded string on
@@ -162,18 +163,10 @@ def _spawn_reclaim(protect_cwd: str) -> bool:
 
 def main() -> None:
     _hookutil.record_heartbeat("disk-space-check")
-    raw = sys.stdin.read().strip()
-    session_id = ""
-    cwd = ""
-    hook_event_name = ""
-    if raw:
-        try:
-            payload = json.loads(raw)
-            session_id = payload.get("session_id", "") or ""
-            cwd = payload.get("cwd", "") or ""
-            hook_event_name = payload.get("hook_event_name", "") or ""
-        except json.JSONDecodeError:
-            pass
+    payload = load_hook_input() or {}
+    session_id = payload.get("session_id", "") or ""
+    cwd = payload.get("cwd", "") or ""
+    hook_event_name = payload.get("hook_event_name", "") or ""
 
     if should_cleanup_sentinels(hook_event_name):
         _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)

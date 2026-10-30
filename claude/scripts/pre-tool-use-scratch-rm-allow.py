@@ -95,13 +95,12 @@ The scratch directory is `_hookutil.SCRATCH`. Test-only override:
 `SCRATCH_RM_ALLOW_DIR_OVERRIDE` replaces it (read at call time); the approval
 log follows it.
 """
-import json
 import os
 import re
 import sys
 import time
 
-from _hookio import read_command
+from _hookio import load_hook_input, read_command
 import _hookout
 import _hookutil
 
@@ -563,12 +562,8 @@ def log_approval(reason, root=None):
 
 def main():
     _hookutil.record_heartbeat("pre-tool-use-scratch-rm-allow")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
+    data = load_hook_input()
+    if data is None:
         sys.exit(0)
     reason = decide(data)
     if reason is None:

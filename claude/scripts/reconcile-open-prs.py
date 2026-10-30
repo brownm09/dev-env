@@ -96,6 +96,7 @@ pathspec for the deletions it may safely commit.
 from __future__ import annotations
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+from _hookio import load_hook_input
 import _hookutil
 import json
 import re
@@ -742,13 +743,7 @@ def main() -> None:
     _hookutil.record_heartbeat("reconcile-open-prs")
     _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
-    raw = sys.stdin.read().strip()
-    data: dict = {}
-    if raw:
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            pass
+    data = load_hook_input() or {}
 
     session_id = data.get("session_id") or f"unknown-{int(time.time())}"
 

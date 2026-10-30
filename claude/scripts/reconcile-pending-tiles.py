@@ -134,6 +134,7 @@ from __future__ import annotations
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import _hookout
+from _hookio import load_hook_input
 import _hookutil
 import json
 import re
@@ -925,15 +926,7 @@ def main() -> None:
     _hookutil.record_heartbeat("reconcile-pending-tiles")
     _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
-    raw = sys.stdin.read().strip()
-    data: dict = {}
-    if raw:
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, dict):
-            data = parsed
+    data = load_hook_input() or {}
 
     session_id = data.get("session_id") or f"unknown-{int(time.time())}"
 

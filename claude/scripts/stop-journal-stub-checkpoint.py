@@ -74,12 +74,17 @@ Exit 2 — a report/analysis/verification session is ending with no stub;
 from __future__ import annotations
 
 import _hookutil
-import json
 import re
 import sys
 from pathlib import Path
 
-from _hookio import is_help_only, is_merge_help_only, is_pr_merge_command, scan_top_level
+from _hookio import (
+    is_help_only,
+    is_merge_help_only,
+    is_pr_merge_command,
+    load_hook_input,
+    scan_top_level,
+)
 from _hookutil import (
     _content_items,
     _is_synthetic_user,
@@ -413,14 +418,8 @@ def main() -> None:
     _hookutil.record_heartbeat("stop-journal-stub-checkpoint")
     _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-    if not isinstance(data, dict):
+    data = load_hook_input()
+    if data is None:
         sys.exit(0)
 
     # Loop guard: once this hook has already blocked and Claude is continuing,

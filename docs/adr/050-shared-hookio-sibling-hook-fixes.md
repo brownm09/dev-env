@@ -2589,3 +2589,48 @@ to catch is not a regression test, whatever its pass/fail output says.
 **Closes dev-env#1031.** Both Part 1 (dev-env#1032, PR #1034) and Part 2 (dev-env#1033, this PR) are merged;
 the top-level tracking issue closes with this PR.
 
+## Amendment 29 (2026-10-30) — one merge predicate and one stdin loader (dev-env#1168, part 1 of #850)
+
+**What changed.** `_hookio` now owns the two pieces every merge hook and nearly every hook still copied:
+
+1. `is_pr_merge_command(command)`: a top-level `gh pr merge` statement, built on `scan_top_level` with
+   the same invocation regex `is_merge_help_only` uses (`gh(?:\.exe)?\s+pr\s+merge\b`, any case). It
+   replaces ten local `_MERGE_RE`/`_MERGE_STMT_RE` + `_check_merge_stmt` pairs (five of which also
+   defined their own `is_pr_merge_command`), `posttooluse-inert-advisory.py`'s unanchored `.search`,
+   and `stop-journal-stub-checkpoint.py`'s private copy.
+2. `load_hook_input(tools=None)` plus `SHELL_TOOLS`: read stdin, parse, and return the payload dict, or
+   None when stdin is empty, not JSON, not an object, or for a `tool_name` outside `tools`. 32 hooks
+   with the standard block now call `if data is None: sys.exit(0)`; seven that continued with `{}`
+   call `load_hook_input() or {}`.
+
+**Behavior changes, both deliberate.**
+
+- The four PreToolUse merge gates and the six PostToolUse merge hooks now match `gh.exe pr merge` and
+  uppercase spellings. Before, `is_merge_help_only` matched them but the gate predicates did not, so
+  a gate and its own help-only check could disagree about whether a command was a merge, and
+  `gh.exe pr merge` skipped the findings and numbering gates entirely.
+- Five hooks that had no non-object check (`post-tool-use-cwd-track`, `pre-bash-drift-check`,
+  `posttooluse-inert-advisory`, `pre-tool-use-scratch-rm-allow`, `stop-tile-enumeration-gate`) crashed
+  into their safe-exit guard on a JSON list or string, as did five tolerant hooks on `.get`
+  (`disk-space-check`, `hook-liveness-check`, `multi-worktree-alert`, `reconcile-open-prs`,
+  `turn-count-hook`). They now get None or `{}` instead. Every one of
+  those guards already exits 0, so the visible result is unchanged; the crash is simply gone.
+
+**Fail direction is unchanged.** Unreadable input exits 0 in every hook, as before. That includes the
+fail-closed gates (ADR-083, ADR-096), which already exited 0 on it by design (dev-env#1031/#1033): they
+fail closed only on a crash after a payload was read, which this amendment does not touch.
+
+**Deliberately left alone.** `journal-onboard-check.py`, `new-day-journal-check.py`, `token-tracker.py`
+and `post-compact.py` parse without a guard, so invalid JSON crashes them into their safe-exit guard and
+they do nothing; `load_hook_input() or {}` would instead run them on an empty payload. Migrating them is a
+behavior change for no current defect. `journal-stop-check.py` parses the raw string with its own
+helpers, and `dev-env-sync.py` and `journal-canonical-guard.py` only drain stdin.
+`stop-tile-enumeration-gate.py` keeps its own `_MERGE_STMT_RE`: it matches the first word sequences it
+has already extracted per segment, not a raw command, and its regex is identical to the shared one.
+
+**Alternatives considered.** Folding the five `post-pr-merge-*` hooks into one processor, and having the
+three pre-merge gates share one `gh pr view` fetch (the rest of #850's merge-path item), were moved to
+#851's in-process dispatcher stages: one process running those handlers removes the duplicate spawns and
+lets a fetch be memoized in memory, with no new cross-process cache to invalidate. The settings walker and
+transcript aggregation are dev-env#1169.
+

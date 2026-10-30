@@ -107,13 +107,14 @@ from _hookio import (
     is_merge_help_only,
     is_pr_merge_command,
     is_rest_merge_command,
+    load_hook_input,
     output_has_merge_marker,
     output_has_rest_merge_marker,
     read_command,
     read_command_output,
     read_cwd,
     read_exit_code,
-    scan_top_level,
+    SHELL_TOOLS,
     should_confirm_via_gh,
 )
 import _hookutil
@@ -755,24 +756,8 @@ def _plausibly_merge_shaped(command: str) -> bool:
 
 def main() -> None:
     _hookutil.record_heartbeat("usage-snapshot")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string,
-        # number, or null) would otherwise crash the very next line
-        # (dev-env#1028 post-review finding). Nothing to trace: without a
-        # dict there is no tool_name to even confirm this was a
-        # Bash/PowerShell PostToolUse event in the first place.
-        sys.exit(0)
-
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
 
     command = read_command(data)

@@ -41,7 +41,6 @@ Exit 0 always — a background-housekeeping systemMessage toast at most (via _ho
 PR5 of dev-env#717); never blocks Claude.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
-import json
 import subprocess
 import sys
 
@@ -54,12 +53,14 @@ from _hookio import (
     is_merge_help_only,
     is_pr_merge_command,
     is_rest_merge_command,
+    load_hook_input,
     output_has_merge_marker,
     output_has_rest_merge_marker,
     read_command,
     read_command_output,
     read_cwd,
     read_exit_code,
+    SHELL_TOOLS,
     should_confirm_via_gh,
 )
 import _hookutil
@@ -128,22 +129,8 @@ def _spawn_reclaim(protect_cwd: str) -> bool:
 
 def main() -> None:
     _hookutil.record_heartbeat("post-pr-merge-reclaim")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
-        # or null) would otherwise crash the very next line (dev-env#1031/
-        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
-        sys.exit(0)
-
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
 
     # dev-env#1031/#1033: read_command()/read_cwd() never raise on a

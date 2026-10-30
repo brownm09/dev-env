@@ -40,6 +40,7 @@ import json
 import sys
 
 import _bash_state
+from _hookio import load_hook_input, SHELL_TOOLS
 import _hookutil
 
 # Margin-of-safety default, not fit to the one observed 5-7 min incident — a
@@ -68,16 +69,8 @@ def build_message(drift_warning: str) -> str:
 
 def main() -> None:
     _hookutil.record_heartbeat("pre-bash-drift-check")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
 
     session_id = data.get("session_id", "") or ""
