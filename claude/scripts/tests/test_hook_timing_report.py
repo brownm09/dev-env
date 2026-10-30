@@ -61,7 +61,7 @@ def test_load_hook_filters_window_and_malformed() -> str:
             {"run_ms": 3},  # no timestamp
         ])
         data = report.load_hook(ledger / "h.dur.jsonl", now - 3600)
-    assert data == {"runs": [5, 7], "startups": [900]}, data
+    assert data == {"runs": [5, 7], "startups": [900], "oldest": now - 10}, data
     return "load_hook keeps in-window samples and skips malformed or untimestamped lines"
 
 
@@ -70,15 +70,19 @@ def test_main_renders_numbered_table_slowest_first() -> str:
     with tempfile.TemporaryDirectory() as tmp:
         ledger = Path(tmp)
         _write(ledger, "fast-hook", [{"t": now, "run_ms": 3, "startup_ms": None}])
-        _write(ledger, "slow-hook", [{"t": now, "run_ms": 80, "startup_ms": 1200}])
+        _write(ledger, "slow-hook", [
+            {"t": now - 1800, "run_ms": 80, "startup_ms": 1200},
+            {"t": now, "run_ms": 80, "startup_ms": None},
+        ])
         (ledger / "slow-hook.ts").write_text(str(now), encoding="utf-8")  # heartbeat, not data
         rc, out = _run(["--dir", str(ledger), "--since-hours", "1"])
     assert rc == 0, rc
     rows = [l for l in out.splitlines() if l.startswith("| ") and not l.startswith("| #")]
-    assert rows[0].startswith("| 1 | slow-hook | 1 | 80 | 80 | 1200 | 1200 | 1 |"), rows
-    assert rows[1].startswith("| 2 | fast-hook | 1 | 3 | 3 | - | - | 0 |"), rows
+    assert rows[0] == "| 1 | slow-hook | 2 | 80 | 80 | 1200 | 1200 | 1 | 0.5 |", rows
+    assert rows[1] == "| 2 | fast-hook | 1 | 3 | 3 | - | - | 0 | 0 |", rows
     assert len(rows) == 2, rows
-    return "main prints a #-numbered table, slowest median run first, '-' for unsampled startup"
+    return ("main prints a #-numbered table, slowest median run first, '-' for unsampled "
+            "startup, and how many hours back each hook's data reaches")
 
 
 def test_main_no_data_and_missing_dir() -> str:
@@ -108,7 +112,7 @@ def test_reads_what_hookutil_writes() -> str:
         ledger = Path(tmp)
         _hookutil.record_duration("real", 42, 1100, heartbeat_dir=ledger)
         rc, out = _run(["--dir", str(ledger)])
-    assert rc == 0 and "| 1 | real | 1 | 42 | 42 | 1100 | 1100 | 1 |" in out, out
+    assert rc == 0 and "| 1 | real | 1 | 42 | 42 | 1100 | 1100 | 1 | 0 |" in out, out
     return "the report reads the exact format _hookutil.record_duration writes"
 
 

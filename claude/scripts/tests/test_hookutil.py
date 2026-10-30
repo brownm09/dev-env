@@ -885,6 +885,31 @@ def test_exit_duration_records_startup_when_sampled() -> str:
     return "a sampled fire records startup_ms; a launch time after main() or an unsampled fire records null"
 
 
+def test_heartbeat_does_not_arm_when_not_main_script() -> str:
+    """A hook whose main() runs in-process under some other __main__ (a test,
+    a dispatcher) must not arm the exit record: it would time every later call
+    too (PR #1162 review)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        name = "not-the-main-script"
+        _hookutil.record_heartbeat(name, heartbeat_dir=Path(tmp))
+        assert name not in _hookutil._DURATION_ARMED, "armed although __main__ is not this hook"
+        assert (Path(tmp) / f"{name}.ts").exists(), "the heartbeat itself must still be written"
+    return "record_heartbeat writes the heartbeat but arms no exit record when the hook is not __main__"
+
+
+def test_replace_text_removes_tmp_on_failed_replace() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        hb_dir = Path(tmp)
+        with unittest.mock.patch.object(_hookutil.os, "replace", side_effect=PermissionError("held open")):
+            _hookutil.record_heartbeat("held", heartbeat_dir=hb_dir)  # must not raise
+            _hookutil.record_duration("held", 1, heartbeat_dir=hb_dir)
+            with unittest.mock.patch.object(_hookutil, "DURATION_MAX_BYTES", 1):
+                _hookutil.record_duration("held", 2, heartbeat_dir=hb_dir)  # compaction fails
+        leftovers = list(hb_dir.glob("*.tmp"))
+        assert not leftovers, f"a failed os.replace left tmp files behind: {leftovers}"
+    return "a failed os.replace (target held open on Windows) leaves no PID-named tmp file behind"
+
+
 def test_launch_time_plausible() -> str:
     launched = _hookutil._launch_time()
     if os.name != "nt":
@@ -894,6 +919,45 @@ def test_launch_time_plausible() -> str:
     age = time.time() - launched
     assert 0 <= age < 24 * 3600, f"launch time {age:.1f}s ago is implausible for this test process"
     return f"_launch_time on Windows returns this process's launch, {age * 1000:.0f} ms ago"
+
+
+def test_launch_time_uses_py_launcher_parent() -> str:
+    """Drives both branches of _launch_time in real children (PR #1162 review):
+    under the py launcher the parent's (earlier) creation time is used; under a
+    bare interpreter the process's own is. Each child also prints its own
+    creation time, read by forcing the parent lookup to fail (getppid -> 0)."""
+    if os.name != "nt":
+        return "SKIP-equivalent: _launch_time is Windows-only (asserted None above)"
+    import shutil
+    import subprocess
+    scripts_dir = Path(__file__).resolve().parents[1]
+    child = (
+        "import json, os, sys, unittest.mock\n"
+        f"sys.path.insert(0, {str(scripts_dir)!r})\n"
+        "import _hookutil\n"
+        "chosen = _hookutil._launch_time()\n"
+        "with unittest.mock.patch.object(os, 'getppid', lambda: 0):\n"
+        "    own = _hookutil._launch_time()\n"
+        "print(json.dumps({'chosen': chosen, 'own': own}))\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "launch_probe.py"
+        path.write_text(child, encoding="utf-8")
+
+        def run(argv):
+            out = subprocess.run(argv + [str(path)], capture_output=True, timeout=60)
+            assert out.returncode == 0, out.stderr
+            return json.loads(out.stdout)
+
+        bare = run([sys.executable])
+        assert bare["chosen"] == bare["own"], f"bare interpreter must use its own creation time: {bare}"
+        if shutil.which("py") is None:
+            return "bare-interpreter branch pinned; py launcher not on PATH, so its branch was not run"
+        launched = run(["py", "-3"])
+        assert launched["chosen"] < launched["own"], (
+            f"under py -3 the launcher parent's earlier creation time must be used: {launched}"
+        )
+    return "under py -3 the launcher parent's earlier creation time is used; a bare interpreter uses its own"
 
 
 def test_heartbeat_arms_duration_once_and_keeps_exit_code() -> str:
@@ -1001,7 +1065,10 @@ def main() -> int:
         ("record_duration: swallows errors", test_record_duration_swallows_errors),
         ("exit duration: skips a deleted ledger dir", test_exit_duration_skips_deleted_ledger),
         ("exit duration: startup only when sampled and plausible", test_exit_duration_records_startup_when_sampled),
+        ("record_heartbeat: no exit record unless the hook is __main__", test_heartbeat_does_not_arm_when_not_main_script),
+        ("_replace_text: failed replace leaves no tmp file", test_replace_text_removes_tmp_on_failed_replace),
         ("_launch_time: plausible on Windows, None elsewhere", test_launch_time_plausible),
+        ("_launch_time: py launcher parent vs bare interpreter", test_launch_time_uses_py_launcher_parent),
         ("record_heartbeat: arms duration once, exit codes intact (subprocess)", test_heartbeat_arms_duration_once_and_keeps_exit_code),
     ]
     failed = 0

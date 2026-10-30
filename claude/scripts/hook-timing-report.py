@@ -14,7 +14,12 @@ sampled (one fire in ``_hookutil.STARTUP_SAMPLE_EVERY``) because measuring it
 needs ctypes, so most lines carry ``null``.
 
 This report prints one row per hook: fires, the median and 90th percentile of
-each measure, and how many startup samples back the startup columns. Its job is
+each measure, how many startup samples back the startup columns, and how many
+hours back the hook's data reaches. Each file keeps its newest 2,000 lines, so a
+hook that fires on every tool call may hold far less than the window asks for;
+snapshot a baseline before the change it is meant to measure ships. A fire that
+Claude Code kills at its hook timeout writes no line, so the 90th percentile is
+a lower bound on the slow tail. Its job is
 the before/after evidence for the hot-path gating (dev-env#849) and the hook
 dispatcher (dev-env#851): the dispatcher removes a launch per hook, so the
 startup columns are what it should shrink.
@@ -58,6 +63,7 @@ def load_hook(path: Path, since: float) -> dict:
     a concurrent compaction is possible."""
     runs: list[int] = []
     startups: list[int] = []
+    oldest: float | None = None
     for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             rec = json.loads(raw)
@@ -69,12 +75,13 @@ def load_hook(path: Path, since: float) -> dict:
             continue
         if isinstance(rec.get("run_ms"), int):
             runs.append(rec["run_ms"])
+            oldest = rec["t"] if oldest is None else min(oldest, rec["t"])
         if isinstance(rec.get("startup_ms"), int):
             startups.append(rec["startup_ms"])
-    return {"runs": runs, "startups": startups}
+    return {"runs": runs, "startups": startups, "oldest": oldest}
 
 
-def build_rows(ledger: Path, since: float) -> list[dict]:
+def build_rows(ledger: Path, since: float, now: float) -> list[dict]:
     """One row per hook with any fire in the window, slowest median run first."""
     rows = []
     for path in sorted(ledger.glob(f"*{_hookutil.DURATION_SUFFIX}")):
@@ -82,6 +89,7 @@ def build_rows(ledger: Path, since: float) -> list[dict]:
         if not data["runs"]:
             continue
         rows.append({
+            "span_h": round((now - data["oldest"]) / 3600, 1),
             "hook": path.name[: -len(_hookutil.DURATION_SUFFIX)],
             "fires": len(data["runs"]),
             "run_p50": percentile(data["runs"], 50),
@@ -103,13 +111,13 @@ def render(rows: list[dict], since_hours: float) -> str:
     lines = [
         f"Hook durations, last {since_hours:g} hours (ms; startup is sampled)",
         "",
-        "| # | Hook | Fires | Run p50 | Run p90 | Startup p50 | Startup p90 | Startup samples |",
-        "|---|------|-------|---------|---------|-------------|-------------|-----------------|",
+        "| # | Hook | Fires | Run p50 | Run p90 | Startup p50 | Startup p90 | Startup samples | Data spans (h) |",
+        "|---|------|-------|---------|---------|-------------|-------------|-----------------|----------------|",
     ]
     for i, r in enumerate(rows, 1):
         lines.append(
             f"| {i} | {r['hook']} | {r['fires']} | {r['run_p50']} | {r['run_p90']} | "
-            f"{show(r['startup_p50'])} | {show(r['startup_p90'])} | {r['startup_n']} |"
+            f"{show(r['startup_p50'])} | {show(r['startup_p90'])} | {r['startup_n']} | {r['span_h']:g} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -124,7 +132,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dir.is_dir():
         sys.stdout.write(f"No heartbeat ledger at {args.dir}.\n")
         return 0
-    rows = build_rows(args.dir, time.time() - args.since_hours * 3600)
+    now = time.time()
+    rows = build_rows(args.dir, now - args.since_hours * 3600, now)
     sys.stdout.write(render(rows, args.since_hours))
     return 0
 

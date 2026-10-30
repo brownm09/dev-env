@@ -66,6 +66,7 @@ import atexit
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -88,10 +89,11 @@ PROJECTS = Path.home() / ".claude" / "projects"
 HEARTBEAT_DIR = SCRATCH / "hook-heartbeat"
 # Per-fire duration log beside each heartbeat (dev-env#848). Appended once per
 # hook process; compacted to the newest DURATION_KEEP_LINES once it passes
-# DURATION_MAX_BYTES, so it stays bounded without a GC job.
+# DURATION_MAX_BYTES, so it stays bounded without a GC job. Retention is by line
+# count, not time: a hook that fires on every tool call keeps a day or two.
 DURATION_SUFFIX = ".dur.jsonl"
-DURATION_MAX_BYTES = 64 * 1024
-DURATION_KEEP_LINES = 500
+DURATION_MAX_BYTES = 256 * 1024
+DURATION_KEEP_LINES = 2000
 # The launch-time probe needs ctypes, whose import measured 10-75 ms on this
 # machine (Defender + Acronis scan the DLL load) -- too much to pay on every fire
 # of every hook. One fire in STARTUP_SAMPLE_EVERY pays it; the rest record run_ms
@@ -207,26 +209,48 @@ def record_heartbeat(hook_name: str, heartbeat_dir: Path | None = None) -> None:
     ``hook-liveness-check.py``'s staleness detector for up to its 7-day
     cadence on every test run.
 
-    Also arms, once per hook name per process, an ``atexit`` callback that
-    appends this fire's duration via ``record_duration`` (dev-env#848):
-    ``run_ms`` from this call to process exit, and on a sampled fire
-    ``startup_ms`` from the process launch to this call. ``atexit`` runs on a
-    normal return, ``sys.exit`` and an uncaught exception alike, and never
-    changes the exit code.
+    When *hook_name* is this process's ``__main__`` script (a real launch), also
+    arms, once, an ``atexit`` callback that appends this fire's duration
+    (dev-env#848): ``run_ms`` from this call to process exit, and on a sampled
+    fire ``startup_ms`` from the process launch to this call. ``atexit`` runs on
+    a normal return, ``sys.exit`` and an uncaught exception alike, and never
+    changes the exit code. A fire killed at its hook timeout writes nothing.
     """
     started = time.time()
     root = _heartbeat_root(heartbeat_dir)
     try:
         root.mkdir(parents=True, exist_ok=True)
-        target = root / f"{hook_name}.ts"
-        tmp = root / f"{hook_name}.ts.{os.getpid()}.tmp"
-        tmp.write_text(str(started), encoding="utf-8")
-        os.replace(tmp, target)
+        _replace_text(root / f"{hook_name}.ts", str(started))
     except Exception:
         pass
-    if hook_name not in _DURATION_ARMED:
+    if hook_name not in _DURATION_ARMED and _is_main_script(hook_name):
         _DURATION_ARMED.add(hook_name)
         atexit.register(_record_exit_duration, hook_name, root, started)
+
+
+def _is_main_script(hook_name: str) -> bool:
+    """True when *hook_name* is this process's ``__main__`` script, i.e. a real
+    one-hook launch (the ADR-148 launcher runs the script as ``__main__`` with
+    its own ``__file__``). A test calling a hook's ``main()`` in-process, or a
+    future dispatcher running many handlers in one process, is not: arming there
+    would record one sample spanning every call until exit. Such callers time
+    their own runs and call ``record_duration`` directly."""
+    main_file = getattr(sys.modules.get("__main__"), "__file__", None)
+    return bool(main_file) and Path(main_file).stem == hook_name
+
+
+def _replace_text(target: Path, text: str) -> None:
+    """Atomically replace *target* with *text* via a per-process tmp file and
+    ``os.replace``. On Windows the replace fails while another process holds the
+    target open; the tmp file is then removed rather than left behind under a new
+    PID-qualified name on every failure, and the error re-raised to the caller."""
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        os.replace(tmp, target)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _heartbeat_root(heartbeat_dir: Path | None) -> Path:
@@ -252,25 +276,28 @@ def record_duration(
     *run_ms* is the hook body's wall time; *startup_ms* is the launch-to-main()
     time when it was measured, else ``None``. Once the file passes
     ``DURATION_MAX_BYTES`` it is rewritten to its newest ``DURATION_KEEP_LINES``
-    lines via tmp + ``os.replace``. Two processes of the same hook compacting at
-    once can lose a sample to last-write-wins, which a timing summary tolerates.
-    Best-effort like ``record_heartbeat``: swallows every error."""
+    lines via tmp + ``os.replace``. Appends and compaction take no lock, so
+    concurrent fires of the same hook can lose or tear a few lines; the report
+    skips torn lines, and a timing summary tolerates the loss. Best-effort like
+    ``record_heartbeat``: swallows every error."""
     root = _heartbeat_root(heartbeat_dir)
     try:
         root.mkdir(parents=True, exist_ok=True)
-        target = root / f"{hook_name}{DURATION_SUFFIX}"
-        line = json.dumps(
-            {"t": round(time.time(), 3), "run_ms": run_ms, "startup_ms": startup_ms}
-        )
-        with open(target, "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-        if target.stat().st_size > DURATION_MAX_BYTES:
-            lines = target.read_text(encoding="utf-8").splitlines()
-            tmp = root / f"{hook_name}{DURATION_SUFFIX}.{os.getpid()}.tmp"
-            tmp.write_text("\n".join(lines[-DURATION_KEEP_LINES:]) + "\n", encoding="utf-8")
-            os.replace(tmp, target)
+        _append_duration(root, hook_name, run_ms, startup_ms)
     except Exception:
         pass
+
+
+def _append_duration(root: Path, hook_name: str, run_ms: int, startup_ms: int | None) -> None:
+    """``record_duration``'s body for a ledger directory known to exist (the
+    ``atexit`` path checks it first, so it skips the mkdir). Raises on error."""
+    target = root / f"{hook_name}{DURATION_SUFFIX}"
+    line = json.dumps({"t": round(time.time(), 3), "run_ms": run_ms, "startup_ms": startup_ms})
+    with open(target, "a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+    if target.stat().st_size > DURATION_MAX_BYTES:
+        lines = target.read_text(encoding="utf-8").splitlines()
+        _replace_text(target, "\n".join(lines[-DURATION_KEEP_LINES:]) + "\n")
 
 
 def _sample_startup() -> bool:
@@ -285,7 +312,7 @@ def _record_exit_duration(hook_name: str, root: Path, started: float) -> None:
 
     Skips when the ledger directory no longer exists: a test that drove a hook's
     ``main()`` against a temporary ledger has already deleted it by the time the
-    test process exits, and ``record_duration``'s mkdir would resurrect it."""
+    test process exits, and recreating it would leave debris in %TEMP%."""
     try:
         if not root.is_dir():
             return
@@ -295,7 +322,7 @@ def _record_exit_duration(hook_name: str, root: Path, started: float) -> None:
             launched = _launch_time()
             if launched is not None and launched <= started:
                 startup_ms = round((started - launched) * 1000)
-        record_duration(hook_name, run_ms, startup_ms, heartbeat_dir=root)
+        _append_duration(root, hook_name, run_ms, startup_ms)
     except Exception:
         pass
 

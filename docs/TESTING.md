@@ -892,10 +892,15 @@ For a one-line navigational map of the test directory, see
     per-fire duration record that same call arms (dev-env#848, ADR-106 Amendment 2):
     `record_duration` appends one `{t, run_ms, startup_ms}` line per call, compacts to the newest
     lines past its byte cap without leaving a tmp file, honors `HOOK_HEARTBEAT_DIR_OVERRIDE` and
-    swallows errors; the `atexit` half skips a ledger directory that has since been deleted (so a
-    test's temp ledger is never resurrected), records `startup_ms` only on a sampled fire and only
-    when the launch time precedes `main()`; `_launch_time` returns a plausible launch time on
-    Windows and `None` elsewhere; and, in a real subprocess, a hook that calls `record_heartbeat`
+    swallows errors; a failed `os.replace` (the target held open, as Windows does under parallel
+    fires) leaves no PID-named tmp file behind, for both the `.ts` and the compaction write; a hook
+    that is not the process's `__main__` script (a test or a dispatcher calling `main()`
+    in-process) gets its heartbeat but no exit record; the `atexit` half skips a ledger directory
+    that has since been deleted (so a test's temp ledger is never resurrected), records
+    `startup_ms` only on a sampled fire and only when the launch time precedes `main()`;
+    `_launch_time` returns a plausible launch time on Windows and `None` elsewhere, and in real
+    children uses the py launcher parent's earlier creation time under `py -3` but the process's
+    own under a bare interpreter; and, in a real subprocess, a hook that calls `record_heartbeat`
     twice and then `sys.exit(2)`s or raises keeps its exit code (2, 1), writes nothing to stderr on
     the clean exit, and leaves exactly one duration line. Also exercises the
     user-text extraction helpers `_user_message_texts(rec)` and `_is_synthetic_user(rec)` (dev-env#710):
@@ -4501,7 +4506,9 @@ For a one-line navigational map of the test directory, see
     nearest-rank `percentile` (including one value and none); `load_hook` keeping in-window samples
     while skipping out-of-window, malformed, non-object and untimestamped lines; `main` printing a
     `#`-numbered table slowest median run first, with `-` for a hook whose startup was never
-    sampled, and ignoring the `.ts` heartbeat files beside the data; an empty or missing ledger
+    sampled, a final column giving how many hours back each hook's data reaches (retention is by
+    line count, so it can be shorter than the window), and ignoring the `.ts` heartbeat files
+    beside the data; an empty or missing ledger
     reporting so with exit 0; `--since-hours 0` exiting 2 as a usage error; and a round trip
     proving the report reads exactly what `_hookutil.record_duration` writes, so the writer and
     reader cannot drift apart unnoticed.
