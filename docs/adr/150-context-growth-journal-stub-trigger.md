@@ -28,8 +28,10 @@ how much unrecorded work a session has accumulated.
 | 1 | Context on the session's first assistant turn | 130,852 | — | 173,370 | — | 184,799 |
 | 2 | Peak context | — | — | 402,674 | 676,080 | 963,291 |
 | 3 | Growth from first turn to peak | — | 127,182 | 234,345 | 508,795 | 786,355 |
+| 4 | Cumulative growth, the shipped measure (Decision 2; 191 transcripts, re-run during review) | — | 132,945 | 252,743 | 534,504 | 1,372,659 |
 
-62 of the 190 sessions compacted at least once.
+62 of the 190 sessions compacted at least once. Row 4 is larger than row 3 at the top because a
+compacted session's cumulative growth keeps counting past its peak. The maximum was 2,483,616.
 
 Row 1 is the finding that shapes the design. Before any work happens, the loaded instructions
 already put a session at roughly 130k–185k tokens. A threshold on *absolute* context, such as
@@ -43,7 +45,8 @@ sessions. It would measure the size of `CLAUDE.md`, not the work done.
    [dev-env#851](https://github.com/brownm09/dev-env/issues/851)). The hook already scans the
    transcript once per prompt. That one pass now returns both the current context, which feeds
    `[session-size]`, and the growth figure below. There is no extra process and no second full
-   scan. The stub path is looked up with a bounded reverse read only when a band fires. When the
+   scan. The stub path is looked up only when a band fires, with a reverse read that stops at the
+   newest stub write (it walks the whole file only when the session has written none). When the
    #851 UserPromptSubmit dispatcher lands, this logic moves with the rest of the hook.
 2. **Measure cumulative growth since the first turn.** Growth is the sum of every increase in
    context between consecutive main-thread assistant turns. A compaction's drop is never
@@ -51,10 +54,19 @@ sessions. It would measure the size of `CLAUDE.md`, not the work done.
    re-climb past an absolute size cannot re-fire a band. Sidechain (subagent) records are
    skipped, because their smaller context would read as a drop followed by a spurious rise. This
    also makes `[session-size]` read the main thread's context rather than a subagent's.
+   Zero-usage records are skipped too. Claude Code writes synthetic assistant turns ("No response
+   requested.", a usage-limit notice, an API error) with every usage field 0, and counting one
+   would add the whole context back as growth. The `/review` of PR #1164 found such records in
+   38 of 192 local transcripts, adding 179 spurious bands.
 3. **Bands: the first at 150k tokens of growth, then every further 100k.** These are the
-   numbers the issue proposed, now applied to growth. Over the corpus, 133 of the 190 sessions
-   would have been nudged at least once, 462 nudges in total (about 2.4 per session, at most 8
-   in a session that ran near 1M). The incident session would have been nudged by about 320k
+   numbers the issue proposed, now applied to growth. Measured with the shipped formula (row 4),
+   137 of 191 sessions would have been nudged at least once, 757 nudges in total (4.0 per session
+   on average). The most was 24, in the session with 2.48M of cumulative growth. The rate is fixed
+   per unit of work, one nudge per 100k tokens of real context growth, so the count tracks how
+   much a session did. A first draft of this ADR quoted 462 nudges and a maximum of 8, computed
+   from row 3; `/review` caught that row 3 is the "last minus first" measure rejected below. A
+   150k step would give 532 nudges with a maximum of 16, at the cost of up to 150k of
+   unrecorded work. The incident session would have been nudged by about 320k
    absolute and again by about 420k. Projects can override both values with
    `journal_stub_context_first_tokens` and `journal_stub_context_step_tokens` in
    `.claude/hook-config.json`. A non-positive or non-integer value falls back to that key's
@@ -79,8 +91,9 @@ sessions. It would measure the size of `CLAUDE.md`, not the work done.
 - Sessions that hit a PR or merge trigger soon after a band will sometimes get a redundant
   nudge. The nudge says no edit is needed in that case, and a nudge that costs a glance is
   cheaper than lost work.
-- Each nudge that leads to an edit costs a stub Edit, a commit and a push. At about 15 nudges
-  per day across all sessions (462 in 30 days), that is acceptable. If it proves noisy, the
+- Each nudge that leads to an edit costs a stub Edit, a commit and a push. That is about 25
+  nudges per day across all sessions (757 in 30 days), each standing for 100k tokens of work, so
+  the cost of a nudge is small next to the context it protects. If it proves noisy, the
   hook-config keys tune it without a code change.
 - The stub lookup sees only Write/Edit calls. A stub written by a shell command is not found and
   the nudge says to create one. ADR-129 already blocks shell writes to stubs, so this misses

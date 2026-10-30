@@ -89,7 +89,7 @@ def load_stub_bands(cwd: str) -> tuple[int, int]:
     def positive(key: str, default: int) -> int:
         try:
             value = int(config.get(key, default))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):  # OverflowError: JSON Infinity
             return default
         return value if value > 0 else default
 
@@ -127,6 +127,9 @@ def get_context_stats(transcript_path_str: str) -> tuple[int, int] | None:
 
     Sidechain (subagent) records are skipped: their much smaller context would
     otherwise read as a drop and then a spurious rise back to the main thread's.
+    So are zero-usage records: Claude Code writes synthetic assistant turns
+    ("No response requested.", a usage-limit notice, an API error) with every
+    usage field 0, and counting one would add the whole context back as growth.
     Returns None if the transcript cannot be read or has no assistant turns yet.
 
     transcript_path_str comes from the documented `transcript_path` field in the
@@ -156,11 +159,18 @@ def get_context_stats(transcript_path_str: str) -> tuple[int, int] | None:
                     msg = record.get("message", {})
                     usage = msg.get("usage", {}) if isinstance(msg, dict) else {}
                     if isinstance(usage, dict) and usage:
-                        tokens = (
-                            usage.get("input_tokens", 0)
-                            + usage.get("cache_read_input_tokens", 0)
-                            + usage.get("cache_creation_input_tokens", 0)
-                        )
+                        parts = [
+                            usage.get("input_tokens", 0),
+                            usage.get("cache_read_input_tokens", 0),
+                            usage.get("cache_creation_input_tokens", 0),
+                        ]
+                        # One malformed record must not raise past this loop and
+                        # silence every warning for the rest of the session.
+                        if not all(isinstance(p, int) for p in parts):
+                            continue
+                        tokens = sum(parts)
+                        if tokens == 0:
+                            continue
                         if current is not None and tokens > current:
                             growth += tokens - current
                         current = tokens
@@ -215,16 +225,32 @@ def find_session_stub(transcript_path_str: str) -> str | None:
     """Return the ``file_path`` of the most recent Write/Edit of a ``*.stub.md``
     in this session's transcript, or None. A compaction keeps appending to the
     same JSONL, so a stub written before it is still found. Reads from the end
-    and stops at the first match; called only when a band fires."""
+    and stops at the first match, so it walks the whole file only when the
+    session has written no stub; called only when a band fires. A write whose
+    tool_result is an error (blocked, denied, failed) is skipped; reading
+    backwards meets each result before the tool_use it answers."""
+    failed_ids: set = set()
     try:
         for rec in _hookutil.iter_records_reverse(Path(transcript_path_str)):
-            if rec.get("type") != "assistant" or rec.get("isSidechain"):
+            if rec.get("isSidechain"):
+                continue
+            if rec.get("type") == "user":
+                for item in _hookutil._content_items(rec):
+                    if (
+                        isinstance(item, dict)
+                        and item.get("type") == "tool_result"
+                        and item.get("is_error")
+                    ):
+                        failed_ids.add(item.get("tool_use_id"))
+                continue
+            if rec.get("type") != "assistant":
                 continue
             for item in reversed(_hookutil._content_items(rec)):
                 if (
                     isinstance(item, dict)
                     and item.get("type") == "tool_use"
                     and item.get("name") in ("Write", "Edit")
+                    and item.get("id") not in failed_ids
                 ):
                     inp = item.get("input")
                     path = inp.get("file_path", "") if isinstance(inp, dict) else ""
@@ -244,7 +270,8 @@ def check_stub_band(
     growth. The highest band already nudged persists per session, so a band
     fires once, and growth that jumps several bands in one turn nudges once.
     """
-    if not _hookutil._SAFE_SESSION_ID.match(session_id or ""):
+    # fullmatch, not match: `$` would also accept a trailing newline.
+    if not isinstance(session_id, str) or not _hookutil._SAFE_SESSION_ID.fullmatch(session_id):
         return None
     first, step = load_stub_bands(cwd)
     if growth < first:
@@ -323,7 +350,13 @@ def main() -> None:
         except json.JSONDecodeError:
             pass
 
-    session_id = data.get("session_id", "unknown")
+    raw_session_id = data.get("session_id")
+    # The id becomes part of scratch filenames, so an unsafe one falls back.
+    session_id = (
+        raw_session_id
+        if isinstance(raw_session_id, str) and _hookutil._SAFE_SESSION_ID.fullmatch(raw_session_id)
+        else "unknown"
+    )
     cwd = data.get("cwd", os.getcwd())
     transcript_path = data.get("transcript_path", "")
 
@@ -337,7 +370,7 @@ def main() -> None:
             messages.append(ctx_warn)
         # The raw id, not the "unknown" fallback: sessions without an id must
         # not share one band-state file and suppress each other's nudges.
-        stub_nudge = check_stub_band(growth, data.get("session_id") or "", cwd, transcript_path)
+        stub_nudge = check_stub_band(growth, raw_session_id, cwd, transcript_path)
         if stub_nudge:
             messages.append(stub_nudge)
 

@@ -136,6 +136,32 @@ def test_stats_skip_sidechain() -> str:
     return "sidechain records neither set current nor add spurious growth"
 
 
+def test_stats_skip_zero_usage_synthetic() -> str:
+    synthetic = {
+        "type": "assistant",
+        "message": {
+            "model": "<synthetic>",
+            "content": [{"type": "text", "text": "No response requested."}],
+            "usage": {"input_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+        },
+    }
+    with _Tmp() as t:
+        _write_transcript(t.transcript, [_assistant(170_000), synthetic, _assistant(200_000), synthetic])
+        current, growth = tch.get_context_stats(str(t.transcript))
+    assert (current, growth) == (200_000, 30_000), (current, growth)
+    return "a zero-usage synthetic turn neither resets current nor adds growth"
+
+
+def test_stats_skip_malformed_usage() -> str:
+    bad = {"type": "assistant", "message": {"usage": {"input_tokens": None, "cache_read_input_tokens": 5}}}
+    worse = {"type": "assistant", "message": {"usage": {"input_tokens": "12"}}}
+    with _Tmp() as t:
+        _write_transcript(t.transcript, [_assistant(170_000), bad, worse, _assistant(200_000)])
+        current, growth = tch.get_context_stats(str(t.transcript))
+    assert (current, growth) == (200_000, 30_000), (current, growth)
+    return "a non-integer usage field skips that record instead of raising"
+
+
 # --- check_stub_band -----------------------------------------------------------
 
 def test_band_fires_once_per_band() -> str:
@@ -183,6 +209,8 @@ def test_band_requires_safe_session_id() -> str:
         records = [_assistant(170_000), _assistant(170_000 + FIRST)]
         assert t.band(records, session_id="") is None, "empty id"
         assert t.band([], session_id="../evil") is None, "path traversal id"
+        assert t.band([], session_id=SID + "\n") is None, "trailing newline id"
+        assert t.band([], session_id=None) is None, "missing id"
         assert not list(t.root.glob("ctx-stub-*")), "no state file written"
     return "empty or unsafe session id never fires or writes state"
 
@@ -215,6 +243,8 @@ def test_load_stub_bands_fallbacks() -> str:
         assert tch.load_stub_bands(d) == (FIRST, STEP), "non-positive / non-integer"
         cfg.write_text(json.dumps({"journal_stub_context_step_tokens": 40_000}), encoding="utf-8")
         assert tch.load_stub_bands(d) == (FIRST, 40_000), "per-key fallback"
+        cfg.write_text('{"journal_stub_context_step_tokens": Infinity}', encoding="utf-8")
+        assert tch.load_stub_bands(d) == (FIRST, STEP), "JSON Infinity"
         cfg.write_text("[1, 2]", encoding="utf-8")
         assert tch.load_stub_bands(d) == (FIRST, STEP), "non-object config"
         cfg.write_text("{not json", encoding="utf-8")
@@ -240,6 +270,39 @@ def test_find_session_stub_newest_write_or_edit() -> str:
         found = tch.find_session_stub(str(t.transcript))
     assert found == new, found
     return "newest main-thread Write/Edit wins; Read, Bash, sidechain ignored"
+
+
+def test_find_session_stub_skips_failed_write() -> str:
+    good = "C:/Users/brown/Git/engineering-journal/sessions/dev-env/2026-10-30_090000.stub.md"
+    blocked = "C:/Users/brown/Git/engineering-journal/sessions/dev-env/2026-10-30_120000.stub.md"
+    with _Tmp() as t:
+        _write_transcript(t.transcript, [
+            _assistant(170_000, content=[{"type": "tool_use", "id": "tu_1", "name": "Write", "input": {"file_path": good}}]),
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"}]}},
+            _assistant(171_000, content=[{"type": "tool_use", "id": "tu_2", "name": "Write", "input": {"file_path": blocked}}]),
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "tu_2", "is_error": True, "content": "blocked by hook"},
+            ]}},
+        ])
+        found = tch.find_session_stub(str(t.transcript))
+    assert found == good, found
+    return "a stub Write whose tool_result is an error is not named"
+
+
+def test_main_unsafe_session_id_falls_back() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        home = Path(d)
+        scratch = home / ".claude" / "scratch"
+        scratch.mkdir(parents=True)
+        transcript = home / "t.jsonl"
+        _write_transcript(transcript, [_assistant(170_000), _assistant(170_000 + FIRST + 1)])
+        proc = _run_hook(home, {"session_id": "../x", "cwd": d, "transcript_path": str(transcript)})
+        names = sorted(p.name for p in scratch.iterdir())
+    out = proc.stdout.decode("utf-8", "replace")
+    assert proc.returncode == 0 and "[session-size]" in out, (proc.returncode, out)
+    assert "[journal-stub]" not in out, out
+    assert all(".." not in n for n in names) and "ctx-warn-unknown.txt" in names, names
+    return "an unsafe id writes only *-unknown state files and never a band nudge"
 
 
 def test_message_names_stub_or_says_create() -> str:
@@ -296,6 +359,8 @@ def main() -> int:
         ("stats: missing/empty -> None", test_stats_missing_or_empty),
         ("stats: growth ignores compaction drop", test_stats_growth_ignores_compaction_drop),
         ("stats: sidechain records skipped", test_stats_skip_sidechain),
+        ("stats: zero-usage synthetic records skipped", test_stats_skip_zero_usage_synthetic),
+        ("stats: malformed usage skipped, not raised", test_stats_skip_malformed_usage),
         ("band: fires once per band", test_band_fires_once_per_band),
         ("band: multi-band jump fires once", test_band_multi_jump_fires_once),
         ("band: post-compaction re-climb", test_band_post_compaction_no_refire),
@@ -303,8 +368,10 @@ def main() -> int:
         ("band: hook-config override", test_band_config_override),
         ("load_stub_bands fallbacks", test_load_stub_bands_fallbacks),
         ("find_session_stub newest Write/Edit", test_find_session_stub_newest_write_or_edit),
+        ("find_session_stub skips failed write", test_find_session_stub_skips_failed_write),
         ("nudge names stub or says create", test_message_names_stub_or_says_create),
         ("main() end to end", test_main_end_to_end),
+        ("main() unsafe session id falls back", test_main_unsafe_session_id_falls_back),
     ]
     failed = 0
     for name, fn in tests:
