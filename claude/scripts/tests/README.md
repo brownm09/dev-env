@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 93 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 105 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 94 `test_*.py` files, 11 bash gates, and
+one shared test-support module (`_hook_wiring.py`) — 106 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -168,6 +168,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_skill_file_size_advisory.py` | `skill-file-size-advisory.py` | Non-blocking nudge when a `SKILL.md` write/edit lands at/above a lower watermark, ahead of the hard-block guard's ceiling (ADR-127). |
 | `test_skill_file_size_guard.py` | `pre-tool-use-skill-file-size-guard.py` | Blocks a Write/Edit that would leave a `SKILL.md` file over a configurable byte ceiling; an exactly-at-limit size and an Edit that shrinks an already-oversized file both pass (ADR-127). |
 | `test_stop_experiment_verdict_gate.py` | `stop-experiment-verdict-gate.py` | Stop-hook backstop for the experiment-verdict half of the Experimental Rigor protocol: blocks the stop when an assistant message states a process-experiment conclusion with no `/experiment-audit` run and no skip override (ADR-115). |
+| `test_turn_count_hook.py` | `turn-count-hook.py` | Context-growth journal-stub bands: once per band, post-compaction growth, sidechain records skipped, stub discovery, config fallback, and an end-to-end subprocess run (ADR-150). |
 | `test_token_tracker.py` | `token-tracker.py` | Per-session token/cost aggregation and the once-per-session locate-failure advisory. |
 | `test_usage_snapshot.py` | `usage-snapshot.py` | OAuth-token expiry classification plus the merge-confirmation predicate for the post-tool-use usage snapshot. |
 

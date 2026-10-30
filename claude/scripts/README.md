@@ -158,7 +158,7 @@ invocation instead.
 | `session-mode-prompt.py` | UserPromptSubmit | One-time per-session reminder of the active permission mode (plan/bypass/auto). |
 | `dev-env-sync.py` | UserPromptSubmit | Fast-forward pulls dev-env to `origin/main`; auto-returns a clean canonical to `main` or warns; escalates a persistent pull failure. |
 | `session-start-sync.py` | SessionStart (`startup`/`resume`) | Generalizes `dev-env-sync.py`'s fetch/ff-only-or-warn mechanic to any repo a session starts in (any dev-env checkout, canonical or worktree, stays covered by `dev-env-sync.py`); auto-fast-forwards only a canonical/sole checkout on its own default branch, clean of tracked changes and ff-safe, with no other session active there recently, else emits a loud advisory naming why not. [ADR-130](../../docs/adr/130-session-start-fetch-ff-only-or-warn.md) |
-| `turn-count-hook.py` | UserPromptSubmit | Warns when session context token/turn count exceeds threshold. |
+| `turn-count-hook.py` | UserPromptSubmit | Warns when session context token/turn count exceeds threshold; nudges a journal-stub update once per band of context growth (ADR-150). |
 | `idle-refresher.py` | UserPromptSubmit | After a long idle gap, injects a cue to open the reply with a refresher of prior state. |
 | `hook-liveness-check.py` | UserPromptSubmit | Warns when a wired hook's heartbeat has gone stale (hasn't recorded in its expected cadence). |
 | `hook-timing-report.py` | `py -3 hook-timing-report.py [--since-hours N] [--dir PATH]` | Per-hook run-time and (sampled) launch-time percentiles from the `<hook>.dur.jsonl` lines every heartbeat appends (dev-env#848). Read-only. Before/after evidence for hot-path gating and the hook dispatcher. |
