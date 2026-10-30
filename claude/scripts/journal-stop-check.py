@@ -59,6 +59,7 @@ next session (see dev-env#31).
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import _hookout
 import _hookutil
+import functools
 import glob
 import json
 import os
@@ -426,6 +427,10 @@ def in_flight_work_note(
         return ""
 
 
+# Memoized: stale_draft_artifacts() and unmerged_draft_branches() both call this
+# reader with identical inputs; without the cache the same git ls-tree runs twice
+# per Stop (dev-env#1165). Process-lifetime cache, so no staleness within a run.
+@functools.lru_cache(maxsize=1)
 def composed_project_dates_on_main() -> set[tuple[str, str]]:
     """Return (project, YYYY-MM-DD) pairs that have a composed file on origin/main.
 

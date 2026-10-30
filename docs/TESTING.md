@@ -2008,6 +2008,14 @@ For a one-line navigational map of the test directory, see
     deliver the `Unmerged draft branch(es)` systemMessage. Both tests fail against the former live
     `git ls-remote` implementation.
 
+    dev-env#1165 pins that `composed_project_dates_on_main()` runs its `git ls-tree origin/main` at most
+    once per hook invocation. Against the same fixture, `stale_draft_artifacts()` then
+    `unmerged_draft_branches()` are called in-process (the order `main()` uses) with `subprocess.run`
+    recorded, and exactly one `ls-tree` must appear while the composed-date filter still applies. The
+    reader is `functools.lru_cache`-memoized like its twin in `new-day-journal-check.py`; a cache
+    persists across tests in one process, so both fixture tests call `cache_clear()` before and after.
+    The test fails against the former uncached reader (two `ls-tree` calls).
+
     dev-env#1002 (ADR-091 Amendment 3) adds a fourth pure-helper group and end-to-end cases addressing
     the archive reminder's own blind spot: it previously fired unconditionally even when the session's
     own transcript showed other approved, unfinished work. A `/review` pass on the closing PR (#1009)
