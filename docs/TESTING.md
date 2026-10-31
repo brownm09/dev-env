@@ -3366,7 +3366,7 @@ For a one-line navigational map of the test directory, see
 
     1. **Row coverage** — every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`, subdirectories, and the exemption set) appears in some table's **first** column. First column, not "mentioned anywhere": a prose cross-reference is not an index entry. A first cell may legitimately name two files (a shared module's paired tests, e.g. ``` `test_winsubp.py`, `test_pyw_stdio.py` ```) — both count.
     2. **No orphan rows** — every first-column filename exists on disk, catching a rename or delete that updated the file but not its row.
-    3. **Exemptions are real and indexed** — each exempt file both exists and appears *somewhere* in the README, so an exemption can never silently hide a file's deletion. The only current exemption is `_hook_wiring.py` in `claude/scripts/tests/`, which is deliberately indexed in the **second** column (with a `—` first cell) because it is test-support infrastructure, not a test.
+    3. **Exemptions are real and indexed** — each exempt file both exists and appears *somewhere* in the README, so an exemption can never silently hide a file's deletion. The current exemptions are `_hook_wiring.py` and `_heartbeat_isolation.py` in `claude/scripts/tests/`, which are deliberately indexed in the **second** column (with a `—` first cell) because they are test-support infrastructure, not tests.
     4. **Header counts** — each header count sentence occurs **exactly once** and equals the live directory count (`claude/scripts/tests/`: `test_*.py`, bash-gate, and total; `claude/scripts/`: top-level total). Exactly-once, not first-match, so a stray second copy of a count phrase can't hide drift behind it.
     5. **Section counts** — every `### Title (N)` heading's N equals that section's first-column entry count, **and** the number of `(N)` headings matches a per-directory expectation (`claude/scripts/README.md`: 5; `claude/scripts/tests/README.md`: 0) so a heading reworded past the `(N)` form can't silently drop out of gating.
     6. **Component completeness** — where a header breaks its total into components (the tests README's "N `test_*.py`, N bash gates, one module"), every indexable file matches a declared component glob or is an exemption, so a file of a new kind (e.g. a stray `.ps1`) can't make the components silently fail to sum to the gated total.
@@ -4580,21 +4580,31 @@ For a one-line navigational map of the test directory, see
     7-day cadence, and mixes test fires into the timing data. Hook-driving tests call
     `isolate_heartbeat()` from `_heartbeat_isolation.py` once at module level. It points the
     override at a temp directory for that test process, so in-process `main()` calls and every
-    subprocess that inherits `os.environ` are covered. `child_env()` covers a hand-built
-    subprocess environment, and the two bash gates export the variable themselves. The override
-    is set per test file, not by `run-hook-tests.py`, because `test_hookutil.py`'s precedence
-    tests need it unset.
+    subprocess that inherits `os.environ` are covered. A test that builds a subprocess
+    environment from scratch sets the variable in it itself, as `test_hook_liveness_check.py`
+    does (it points the override at its temp home's ledger, the directory the hook reads back),
+    and the two bash gates export it. The override is set per test file, not by
+    `run-hook-tests.py`, because `test_hookutil.py`'s precedence tests need it unset.
 
     The gate classifies every `test_*.py` and `*.sh` in both test directories. A file is
     *hook-driving* when it names a wired script from `claude/settings.shared.json` and runs
-    something: a `subprocess` call that launches Python (`sys.executable`, a `py`/`python`
-    literal, or a module-level helper such as `_py_cmd()` that names one), a `<module>.main()`
-    call, or `runpy`. A bare `main()` (the test file's own runner) and `unittest.main()` do not
-    count. A file is *isolated* when it calls `isolate_heartbeat()`/`child_env()` or uses the
-    override name as a code string (a docstring mention does not count). Every hook-driving
-    file must be isolated. The one exemption is `test_hook_liveness_check.py`, which redirects
-    HOME/USERPROFILE instead because its end-to-end cases read the hook's own heartbeat from
-    the temp home's ledger. The gate checks that the exemption still sets `USERPROFILE`.
+    something:
+    - a subprocess call (`subprocess.run` and friends, or a bare `run` from
+      `from subprocess import run`) that launches Python, meaning its arguments name
+      `sys.executable`, a `py`/`python` literal, or a module-level launcher (a helper function
+      like `_py_cmd()` or a constant like `PY = [sys.executable]` that names one);
+    - a `.main()` call on a module or an expression (`mod.main()`, `_load().main()`);
+    - or `runpy`.
+
+    A bare `main()` (the test file's own runner) and `unittest.main()` do not count. A file is
+    *isolated* when it calls `isolate_heartbeat()` or uses the override name as a code string;
+    a docstring mention does not count. Every hook-driving file must be isolated, with no
+    exemptions.
+
+    Known gaps: the detector does not follow a launcher defined in another module, a hook path
+    built without its literal basename, or `main` reached through `getattr`. The
+    non-empty floor guards against the detector going blind across the board, not against one
+    new test using such a shape. Embedded fixtures cover the shapes it does recognize.
 
     Calibration, measured 2026-10-30 against `ec66eb1` before the fix. A temporary probe in
     `record_heartbeat` logged every call that resolved to the real ledger, tagged by test file.
@@ -4605,12 +4615,18 @@ For a one-line navigational map of the test directory, see
     `test_skill_file_size_advisory.py`, mixed both and leaked from its unredirected cases. It
     flagged no file that never ran a hook. An earlier version that counted any `main()` call or
     any subprocess flagged 19 extra files; the bare-`main()` and Python-launch rules removed
-    them. After the fix the same probe logged zero writes across the whole suite. Embedded
-    fixtures pin the known-bad shapes (an unisolated subprocess driver, an in-process `main()`
-    driver, a docstring-only mention, an unisolated bash gate) and the known-good ones (each
-    isolation call, a pure-function test that loads a hook but never runs it, an isolated bash
-    gate). Two non-empty checks fail the gate if the wired-script list or the hook-driving set
-    shrinks below its floor, so a detector that stops recognizing anything cannot pass.
+    them. After the fix the same probe logged zero writes across the whole suite. Review then
+    widened the detector to three more shapes: a module-level interpreter constant,
+    `from subprocess import run`, and `.main()` on a call result. On the real corpus it still
+    classifies the same 29 files as hook-driving, so it gained no false positives.
+
+    Embedded fixtures pin the known-bad shapes (an unisolated subprocess driver, an in-process
+    `main()` driver, a docstring-only mention, and the three shapes above, plus an unisolated
+    bash gate). They also pin the known-good ones: an isolated driver, an isolated bash gate,
+    and a test that loads a hook, runs git and its own `main()`/`unittest.main()`, but never
+    runs the hook. Two non-empty checks fail the gate if the wired-script list or the
+    hook-driving set shrinks below its floor, so a detector that stops recognizing anything
+    cannot pass.
 
     ```bash
     py -3 claude/scripts/tests/test_hook_heartbeat_isolation.py

@@ -61,7 +61,7 @@ test-support infrastructure, not production code.
 | `test_worktree_recovery.py` | `_worktree_recovery.py` | Orphaned-worktree recovery recipe: renders it (destructive step kept out of the numbered sequence), pins `docs/REFERENCE.md`'s runbook to it by equality over runnable lines, and blocks the dev-env#751-disproven `worktree add --force`/`-f` form from every live surface. |
 | `test_worktree_topology.py` | `_worktree_topology.py` | Worktree-on-`main` squat detection/diagnosis and park-target decisions shared by prune, sync, and the journal-canonical guard. |
 | — | `_hook_wiring.py` | Not itself a test. Parses `claude/settings.shared.json` into wired hooks/events/timeouts once, shared by the four structural gates below. |
-| — | `_heartbeat_isolation.py` | Not itself a test. `isolate_heartbeat()` points `HOOK_HEARTBEAT_DIR_OVERRIDE` at a temp dir for the calling test process, so a test that runs a real hook never writes the production heartbeat ledger (dev-env#1163); `child_env()` does the same for a hand-built subprocess environment. |
+| — | `_heartbeat_isolation.py` | Not itself a test. `isolate_heartbeat()` points `HOOK_HEARTBEAT_DIR_OVERRIDE` at a temp dir for the calling test process, so a test that runs a real hook never writes the production heartbeat ledger (dev-env#1163). |
 
 ## Structural / fleet-wide gates
 

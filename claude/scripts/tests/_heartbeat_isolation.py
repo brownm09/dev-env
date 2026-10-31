@@ -13,7 +13,7 @@ Call ``isolate_heartbeat()`` once at module level in any test file that runs a
 real hook. It points the override at a fresh temp directory for the rest of the
 test process, so in-process ``main()`` calls and every subprocess that inherits
 ``os.environ`` (``env=None``, or ``env=dict(os.environ, ...)``) are covered. A
-subprocess built from a hand-assembled environment uses ``child_env()`` instead.
+subprocess built from a hand-assembled environment sets the variable itself.
 
 Process-wide, not suite-wide: ``run-hook-tests.py`` runs each test file as its
 own process, and must not set the override itself, because ``test_hookutil.py``'s
@@ -43,12 +43,3 @@ def isolate_heartbeat() -> str:
     os.environ[ENV_VAR] = path
     atexit.register(shutil.rmtree, path, ignore_errors=True)
     return path
-
-
-def child_env(base: dict | None = None, **overrides: str) -> dict:
-    """Return a copy of *base* (default ``os.environ``) with the override set,
-    plus any *overrides*, for a subprocess that does not inherit ``os.environ``."""
-    env = dict(os.environ if base is None else base)
-    env[ENV_VAR] = isolate_heartbeat()
-    env.update(overrides)
-    return env
