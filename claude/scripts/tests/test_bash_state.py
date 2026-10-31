@@ -267,8 +267,104 @@ def test_drift_warning_for_fires_on_drift() -> str:
     return "drift_warning_for fires a warning when the recorded state differs from current"
 
 
+def _fake_repo(root: Path, head: str) -> Path:
+    (root / ".git").mkdir()
+    (root / ".git" / "HEAD").write_text(head + "\n", encoding="utf-8")
+    return root
+
+
+def test_repo_state_from_files_branch_detached_and_subdir() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = _fake_repo(Path(tmp), "ref: refs/heads/feat/x")
+        (repo / "a" / "b").mkdir(parents=True)
+        want_root = repo.resolve().as_posix()
+        assert _bash_state.repo_state_from_files(str(repo)) == (want_root, "feat/x")
+        assert _bash_state.repo_state_from_files(str(repo / "a" / "b")) == (want_root, "feat/x")
+        (repo / ".git" / "HEAD").write_text("0123456789abcdef0123456789abcdef01234567\n", encoding="utf-8")
+        assert _bash_state.repo_state_from_files(str(repo)) == (want_root, None)
+    return "branch read from HEAD, found from a subdirectory, and a detached SHA gives branch None"
+
+
+def test_repo_state_from_files_worktree_gitdir_file() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        admin = base / "main" / ".git" / "worktrees" / "wt"
+        admin.mkdir(parents=True)
+        (admin / "HEAD").write_text("ref: refs/heads/wt-branch\n", encoding="utf-8")
+        wt = base / "wt"
+        wt.mkdir()
+        (wt / ".git").write_text(f"gitdir: {admin.as_posix()}\n", encoding="utf-8")
+        assert _bash_state.repo_state_from_files(str(wt)) == (wt.resolve().as_posix(), "wt-branch")
+        (wt / ".git").write_text("gitdir: ../main/.git/worktrees/wt\n", encoding="utf-8")
+        assert _bash_state.repo_state_from_files(str(wt)) == (wt.resolve().as_posix(), "wt-branch")
+    return "a worktree's .git file is followed, absolute or relative"
+
+
+def test_repo_state_from_files_defers_to_git_when_unsure() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _fake_repo(repo, "ref: refs/remotes/origin/main")
+        assert _bash_state.repo_state_from_files(str(repo)) is None, "non-branch symbolic ref"
+        (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        assert _bash_state.repo_state_from_files(str(repo / ".git")) is None, "cwd inside .git"
+        (repo / ".git" / "HEAD").unlink()
+        assert _bash_state.repo_state_from_files(str(repo)) is None, "unreadable HEAD"
+        assert _bash_state.repo_state_from_files("") is None, "empty cwd"
+        old = os.environ.get("GIT_DIR")
+        os.environ["GIT_DIR"] = str(repo / ".git")
+        try:
+            assert _bash_state.repo_state_from_files(str(repo)) is None, "GIT_DIR set"
+        finally:
+            if old is None:
+                os.environ.pop("GIT_DIR", None)
+            else:
+                os.environ["GIT_DIR"] = old
+    return "a non-branch ref, a cwd inside .git, a missing HEAD, an empty cwd and GIT_DIR all defer to git"
+
+
+def test_repo_state_from_files_matches_git() -> str:
+    # write_state and the drift checks compare these values as exact strings, so the
+    # file read must give byte-identical output to the git call it replaces.
+    import subprocess  # noqa: PLC0415
+
+    for cwd in (REPO_ROOT, REPO_ROOT / "claude" / "scripts"):
+        git = subprocess.run(["git", "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"],
+                             capture_output=True, text=True, cwd=str(cwd), timeout=30)
+        lines = git.stdout.splitlines()
+        want = (lines[0].strip(), None if lines[1].strip() == "HEAD" else lines[1].strip())
+        got = _bash_state.repo_state_from_files(str(cwd))
+        assert got == want, f"{cwd}: files {got!r} != git {want!r}"
+    return "the file read equals `git rev-parse --show-toplevel --abbrev-ref HEAD` on this checkout"
+
+
+def test_read_branch_files_then_git() -> str:
+    calls = []
+
+    class _Result:
+        returncode, stdout = 0, "from-git\n"
+
+    def run(args):
+        calls.append(args)
+        return _Result()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = _fake_repo(Path(tmp), "ref: refs/heads/main")
+        assert _bash_state.read_branch(repo, run) == "main" and not calls
+        (repo / ".git" / "HEAD").write_text("0123456789abcdef0123456789abcdef01234567\n", encoding="utf-8")
+        assert _bash_state.read_branch(repo, run) == _bash_state.DETACHED and not calls
+        (repo / ".git" / "HEAD").write_text("ref: refs/tags/v1\n", encoding="utf-8")
+        assert _bash_state.read_branch(repo, run) == "from-git"
+        assert calls == [["git", "symbolic-ref", "--short", "HEAD"]], calls
+    return "read_branch answers from HEAD (branch or DETACHED) and runs git only when the file cannot"
+
+
 def main() -> int:
     tests = [
+        ("repo_state_from_files: branch, detached, subdir", test_repo_state_from_files_branch_detached_and_subdir),
+        ("repo_state_from_files: worktree .git file", test_repo_state_from_files_worktree_gitdir_file),
+        ("repo_state_from_files: defers to git when unsure", test_repo_state_from_files_defers_to_git_when_unsure),
+        ("repo_state_from_files: matches git byte for byte", test_repo_state_from_files_matches_git),
+        ("read_branch: files first, git fallback", test_read_branch_files_then_git),
         ("state_path: correct path with override", test_state_path_returns_correct_path),
         ("state_path: default SCRATCH parent", test_state_path_default_scratch),
         ("state_age_seconds: missing file -> None", test_state_age_seconds_missing_file_returns_none),

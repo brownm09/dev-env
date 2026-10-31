@@ -57,11 +57,14 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 import time
 from pathlib import Path
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+from _worktree_topology import DETACHED, resolve_current_branch
 
 SCRATCH = Path.home() / ".claude" / "scratch"
 MAX_AGE_DAYS = 30
@@ -88,11 +91,75 @@ def cleanup_stale_state(scratch: Path | None = None) -> None:
             continue
 
 
+_DETACHED_SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+_HEADS_PREFIX = "ref: refs/heads/"
+
+
+def repo_state_from_files(cwd: str) -> tuple[str | None, str | None] | None:
+    """Return ``(repo_root, branch)`` by reading ``.git`` and ``HEAD``, or None to ask git.
+
+    post-tool-use-cwd-track.py runs this on every Bash call, and a git process
+    there cost 263 ms at the median on this machine (dev-env#849 baseline), while
+    these reads take 1-2 ms. The result is in the same form `git rev-parse
+    --show-toplevel --abbrev-ref HEAD` gives (forward slashes, real path, a
+    ``.git`` file followed for a worktree), checked against git on the canonical,
+    worktrees, subdirectories and a junctioned path, because write_state and the
+    drift checks compare it as an exact string. None for anything unusual (GIT_DIR
+    set, a cwd inside ``.git``, an unreadable or non-branch HEAD), so git decides.
+    ``(None, None)`` when no ``.git`` is found up to the root, as git reports.
+    """
+    if not cwd or os.environ.get("GIT_DIR") or os.environ.get("GIT_WORK_TREE"):
+        return None
+    try:
+        start = Path(cwd).resolve()
+        if ".git" in start.parts:
+            return None
+        for directory in (start, *start.parents):
+            dot_git = directory / ".git"
+            if dot_git.is_dir():
+                git_dir = dot_git
+            elif dot_git.is_file():
+                text = dot_git.read_text(encoding="utf-8").strip()
+                if not text.startswith("gitdir:"):
+                    return None
+                git_dir = Path(text[len("gitdir:"):].strip())
+                if not git_dir.is_absolute():
+                    git_dir = directory / git_dir
+            else:
+                continue
+            head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+            if head.startswith(_HEADS_PREFIX):
+                return directory.as_posix(), head[len(_HEADS_PREFIX):]
+            if _DETACHED_SHA_RE.fullmatch(head):
+                return directory.as_posix(), None
+            return None
+        return None, None
+    except (OSError, ValueError):
+        return None
+
+
+def read_branch(repo: Path, run) -> str:
+    """The branch *repo* has checked out, or ``DETACHED``, as resolve_current_branch gives it.
+
+    Read from ``.git/HEAD`` without a process (dev-env#849); when that read cannot answer,
+    *run* (the caller's own git runner, already bound to *repo*) runs
+    ``git symbolic-ref --short HEAD``. Used for the every-prompt canonical checks in
+    dev-env-sync.py and journal-canonical-guard.py.
+    """
+    state = repo_state_from_files(str(repo))
+    if state is not None and state[0] is not None:
+        return state[1] or DETACHED
+    result = run(["git", "symbolic-ref", "--short", "HEAD"])
+    return resolve_current_branch(result.returncode, result.stdout)
+
+
 def current_repo_state(cwd: str) -> tuple[str | None, str | None]:
-    """Return ``(repo_root, branch)`` for *cwd* via a single git subprocess call.
+    """Return ``(repo_root, branch)`` for *cwd*, from the files when it can, else one git call.
 
     Both ``None`` for a non-git cwd or any subprocess failure/timeout;
     ``branch`` alone is ``None`` for a detached HEAD. Never raises.
+    ``repo_state_from_files`` answers without a process in the common case
+    (dev-env#849); the git call below is its fallback.
 
     Combines what were two separate ``git rev-parse --show-toplevel`` +
     ``git branch --show-current`` calls into one ``git rev-parse
@@ -104,6 +171,9 @@ def current_repo_state(cwd: str) -> tuple[str | None, str | None]:
     caller of this function that runs on every Bash tool call rather than at
     a low-frequency checkpoint.
     """
+    from_files = repo_state_from_files(cwd)
+    if from_files is not None:
+        return from_files
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"],

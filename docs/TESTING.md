@@ -1520,6 +1520,16 @@ For a one-line navigational map of the test directory, see
     diverged in its failure-mode return value) — shells out and is not covered here (pure-helper
     convention).
 
+    **File-based repo state (dev-env#849, ADR-085 Amendment 1).** `current_repo_state()` now
+    answers from `repo_state_from_files()` and calls git only as a fallback, so that read is
+    covered: temp-directory fake repos pin the branch from `HEAD`, discovery from a
+    subdirectory, a detached SHA, a worktree's `.git` file (absolute and relative `gitdir:`),
+    and the cases that must defer to git (a non-branch ref, a cwd inside `.git`, a missing
+    `HEAD`, an empty cwd, `GIT_DIR` set). One test compares the read with
+    `git rev-parse --show-toplevel --abbrev-ref HEAD` on the test's own checkout, because the
+    drift checks compare the values as exact strings. `read_branch()` is pinned to answer from
+    `HEAD` without calling its git runner, and to call it only when the file cannot answer.
+
     ```bash
     py -3 claude/scripts/tests/test_bash_state.py
     ```
@@ -2406,6 +2416,10 @@ For a one-line navigational map of the test directory, see
     when it did not escalate.
     
     `main()`'s settings-sync and topology glue is still not covered (pure-helper convention).
+
+    **Fetch gate (dev-env#849, ADR-006 Amendment 1).** `fetched_recently()` decides whether the
+    per-prompt `git fetch` runs: a fresh `.git/FETCH_HEAD` skips it, while a missing, stale or
+    future-dated one fetches.
     ([ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md),
     [ADR-110](adr/110-escalate-persistent-dev-env-sync-ff-failures.md);
     dev-env#694, dev-env#797, dev-env#1140)
