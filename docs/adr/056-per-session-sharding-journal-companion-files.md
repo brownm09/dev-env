@@ -284,3 +284,59 @@ is *complete*.
 **Status:** this is a scope extension of the pathspec-commit discipline, covering a failure mode
 opposite in direction to the one the 2026-06-30/07-01 addenda fixed — ADR-056's Decision and
 Consequences stand unchanged. Tracked in [dev-env#927](https://github.com/brownm09/dev-env/issues/927).
+
+---
+
+## Addendum (2026-10-31) — Sync the shared canonical without `git pull` (dev-env#1166)
+
+The 2026-06-30 addendum found that shard disjointness is a guarantee about file **content** only, and
+that the shared git **index** needed its own rule. `.git/FETCH_HEAD` is a second piece of shared git
+state with the same problem. `git pull` fetches into `FETCH_HEAD` and then merges whatever that file
+holds. With or without `--ff-only`, it reads the file back. Every session syncing the
+engineering-journal canonical shares that one file, so another session's fetch can rewrite it between
+this session's fetch and its merge.
+
+**Incident:** 2026-10-30, during dev-env#1160 (PR #1164). The documented `git -C <journal> pull` failed
+with `fatal: not something we can merge in .git/FETCH_HEAD`. The file held a half-written line plus a
+`not-for-merge` line for an unrelated branch. That failure was loud. If the competing fetch had
+finished writing a different branch's tip as the merge candidate, `pull` could have merged the wrong
+branch into `draft/YYYY-MM-DD` without any error.
+
+**Fix:** every documented or scripted sync of a shared checkout now fetches, then merges a
+remote-tracking ref, which each fetch updates atomically: `fetch origin <branch>` plus
+`merge --ff-only origin/<branch>`, or `merge --ff-only '@{upstream}'` where the branch is not known in
+advance. A diverged branch gets the same `merge` without `--ff-only`. Sites changed:
+
+- `claude/CLAUDE.md` → Stub file workflow, "First session of the day" step 1 and "Subsequent
+  sessions" step 1, plus a short rule stating why. The old first-session step also ran its `git pull`
+  without `-C`, so it pulled whatever repo the session's cwd happened to be.
+- `claude/scripts/new-day-journal-check.py` and `pre-tool-use-journal-draft-worktree-guard.py`: the
+  commands their messages recommend.
+- `claude/scripts/merge-stale-pr.sh` (runs `cd "$JOURNAL_REPO"`): `git merge --no-edit
+  "origin/$BRANCH"` after its existing `git fetch origin`. This keeps the old `pull`'s behavior of
+  allowing a real merge.
+- `claude/scripts/post-pr-merge-pull.py`: when the merged repo's canonical sits on `main` (dev-env
+  always, the journal sometimes), it fetches and then runs `merge --ff-only origin/main` in place of
+  `pull --ff-only`. The change applies to every repo, since any shared canonical has the same race.
+- `claude/routines/retro-chain-backstop/SKILL.md` Step 0, `claude/skills/journal-onboard/SKILL.md`
+  Step 2, `claude/skills/retro-chain-refill/SKILL.md` Step 4, and the matching `docs/REFERENCE.md`
+  text.
+
+**Confirmed exempt:** `claude/skills/journal-compose/SKILL.md` runs in its own disposable worktree
+(ADR-082). `FETCH_HEAD` is a pseudo-ref, and git keeps pseudo-refs per worktree
+([git-worktree, "Refs"](https://git-scm.com/docs/git-worktree#_refs)), so no other session can rewrite
+the one compose sees. It also never runs `pull`. `dev-env-sync.py` still runs `pull --ff-only` in the **dev-env**
+canonical, not the journal one, so it is outside dev-env#1166's scope and tracked separately in
+[dev-env#1174](https://github.com/brownm09/dev-env/issues/1174).
+
+**No hook or advisory.** Rejected alternative: extend `pre-tool-use-canonical-mutate-guard.py` to
+block any `pull` aimed at the journal canonical. That guard's journal exemption is deliberately
+blanket (ADR-071, ADR-105, shared through ADR-133), and a verb rule for one repo would be the first
+crack in it. The race has been seen once, and in its loud form. Every source a session copies the
+command from (this CLAUDE.md, hook messages, skills, routines, scripts) now shows the safe form, so a
+recurrence would come only from habit. Revisit if a `pull` against the journal canonical shows up
+again in a transcript or another `FETCH_HEAD` failure is reported.
+
+**Status:** a scope extension of the 2026-06-30 addendum's finding, from the shared index to shared
+`FETCH_HEAD`. ADR-056's Decision and Consequences stand unchanged. Tracked in
+[dev-env#1166](https://github.com/brownm09/dev-env/issues/1166).

@@ -749,7 +749,8 @@ routine's own isolated worktree but unsafe against the engineering-journal path 
 canonical checkout*, which normally sits on `draft/YYYY-MM-DD`, a branch every concurrent session
 commits stub/manifest/tile-shard shards to throughout the day (`daily-journal-compose` dropped this
 identical call for this identical reason). Step 0 instead runs a plain `git fetch` followed by
-`git pull --ff-only` against the canonical checkout — safely advances the branch to its own
+`git merge --ff-only '@{upstream}'` against the canonical checkout (never `git pull`, which merges
+the shared `.git/FETCH_HEAD`, dev-env#1166) — safely advances the branch to its own
 upstream when possible, and fails non-destructively (no check-out, no rewrite) on any divergence or
 dirty tree, aborting the run cleanly rather than risking a concurrent session's work. Step 1 then
 invokes the `retro-chain-refill` skill against the standard 6-repo participant list
@@ -2297,7 +2298,8 @@ gh -R brownm09/engineering-journal pr close <N> \
 ```
 
 If the working tree is simply on the wrong branch (not the draft branch), no recovery is needed —
-just `git checkout draft/YYYY-MM-DD && git pull`. If the wrong branch specifically looks like a
+just `git fetch origin draft/YYYY-MM-DD && git checkout draft/YYYY-MM-DD && git merge --ff-only
+origin/draft/YYYY-MM-DD` (not `git pull`; see dev-env#1166). If the wrong branch specifically looks like a
 hijack (detached HEAD, or a stray `claude/<slug>` branch matching no live worktree —
 dev-env#630), `journal-canonical-guard.py` now auto-corrects this to `main` on the next prompt of
 any session, before you'd typically reach for this manual step; see

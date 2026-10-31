@@ -51,6 +51,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -186,6 +187,19 @@ def test_format_day_rollover_command_is_idempotent_when_branch_exists() -> str:
     assert "checkout main" not in exists, "must not move the shared canonical to main"
     assert "checkout draft/2026-07-22" in exists, exists
     return "the recommended command matches reality: create when absent, switch when present"
+
+
+def test_format_day_rollover_command_never_pulls() -> str:
+    """`git pull` merges .git/FETCH_HEAD, which concurrent sessions in the shared canonical
+    overwrite between fetch and merge (dev-env#1166). The advisory must merge the
+    remote-tracking ref instead."""
+    fresh = _msg(today_branch_exists=False)
+    exists = _msg(today_branch_exists=True)
+    for msg in (fresh, exists):
+        assert not re.search(r"\bpull\b", msg), msg
+    assert "merge --ff-only origin/main" in fresh, fresh
+    assert "merge --ff-only origin/draft/2026-07-22" in exists, exists
+    return "both recommended commands fetch + merge --ff-only a remote-tracking ref, never pull"
 
 
 def test_format_day_rollover_warns_on_dirty_canonical() -> str:
@@ -554,6 +568,7 @@ def main() -> int:
         ("date check is digit-strict, not separator-only", test_mismatched_stub_paths_requires_digits_not_just_separators),
         ("rollover silent on same-date / non-draft branches", test_format_day_rollover_silent_on_same_date_and_non_draft),
         ("recommended command is idempotent when today's branch exists", test_format_day_rollover_command_is_idempotent_when_branch_exists),
+        ("recommended command never pulls through FETCH_HEAD", test_format_day_rollover_command_never_pulls),
         ("dirty canonical gets a caution, not a blind switch", test_format_day_rollover_warns_on_dirty_canonical),
         ("message states the branch-move-before-commit ordering", test_format_day_rollover_states_the_ordering_constraint),
         ("mismatch summary names every affected project", test_format_day_rollover_summarizes_projects),

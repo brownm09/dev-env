@@ -166,7 +166,8 @@ unchecked-item list:
 Ensure today's `draft/YYYY-MM-DD` branch exists in the engineering-journal canonical checkout at
 `C:/Users/brown/Git/engineering-journal`, following the exact procedure in `claude/CLAUDE.md` →
 Engineering Journal → Stub file workflow (cut fresh from `origin/main` with the SHA-equality branch
-validation if this is the first touch of the journal today; checkout + pull if it already exists) --
+validation if this is the first touch of the journal today; fetch, checkout, and `merge --ff-only
+origin/draft/YYYY-MM-DD` if it already exists, never `git pull`, dev-env#1166) --
 **never a dedicated worktree**, per that section's rule against isolating the Stub file workflow into
 one, which applies identically here: a tile shard is one of the four journal content-file kinds
 committed on that same shared branch. This target is independent of whatever branch the invoking

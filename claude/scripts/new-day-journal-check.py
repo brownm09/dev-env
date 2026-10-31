@@ -450,11 +450,16 @@ def format_day_rollover(
     # Idempotent by construction: `checkout -b` fails when the branch already exists, and it
     # fails AFTER `checkout main` has already moved the shared canonical — parking it on main
     # for every other session. Pick the command that matches reality instead.
+    # Never `pull`: it merges .git/FETCH_HEAD, which concurrent sessions overwrite (dev-env#1166).
     if today_branch_exists:
-        cut = f"git -C {ej} checkout draft/{today} && git -C {ej} pull --ff-only"
+        cut = (
+            f"git -C {ej} fetch origin draft/{today} && git -C {ej} checkout draft/{today} && "
+            f"git -C {ej} merge --ff-only origin/draft/{today}"
+        )
     else:
         cut = (
-            f"git -C {ej} checkout main && git -C {ej} pull && "
+            f"git -C {ej} fetch origin main && git -C {ej} checkout main && "
+            f"git -C {ej} merge --ff-only origin/main && "
             f"git -C {ej} checkout -b draft/{today}"
         )
 

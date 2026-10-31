@@ -341,15 +341,19 @@ def test_extract_repo_chained_sibling_flag_not_leaked() -> str:
     return "chained sibling `gh pr create --repo X`'s flag no longer leaks into the merge (dev-env#482 Gap 1)"
 
 
-def test_pull_command_on_main_uses_ff_only_pull() -> str:
-    cmd = pull_command("C:/Users/brown/Git/dev-env", True)
-    assert cmd == ["git", "-C", "C:/Users/brown/Git/dev-env", "pull", "--ff-only", "origin", "main"], cmd
-    return "canonical on main -> plain ff-only pull ('git fetch origin main:main' would fail: refusing to fetch into branch ... checked out)"
+def test_pull_command_on_main_uses_fetch_then_ff_merge() -> str:
+    cmds = pull_command("C:/Users/brown/Git/dev-env", True)
+    assert cmds == [
+        ["git", "-C", "C:/Users/brown/Git/dev-env", "fetch", "origin", "main"],
+        ["git", "-C", "C:/Users/brown/Git/dev-env", "merge", "--ff-only", "origin/main"],
+    ], cmds
+    assert not any("pull" in c for c in cmds), "pull merges the shared FETCH_HEAD (dev-env#1166)"
+    return "canonical on main -> fetch + merge --ff-only origin/main, never pull ('git fetch origin main:main' would fail: refusing to fetch into branch ... checked out)"
 
 
 def test_pull_command_off_main_uses_fetch_into_ref() -> str:
-    cmd = pull_command("C:/Users/brown/Git/lifting-logbook", False)
-    assert cmd == ["git", "-C", "C:/Users/brown/Git/lifting-logbook", "fetch", "origin", "main:main"], cmd
+    cmds = pull_command("C:/Users/brown/Git/lifting-logbook", False)
+    assert cmds == [["git", "-C", "C:/Users/brown/Git/lifting-logbook", "fetch", "origin", "main:main"]], cmds
     return "canonical on a feature branch (or worktree squatting main) -> fetch-into-ref, unchanged (issue #275)"
 
 
@@ -487,7 +491,7 @@ def main() -> int:
         ("extract_repo: --repo flag survives alongside quoted URL-shaped decoy (dev-env#634)", test_extract_repo_flag_survives_alongside_quoted_url_decoy),
         ("extract_repo: --repo=owner/repo equals form resolves (dev-env#482)", test_extract_repo_equals_flag_form),
         ("extract_repo: chained sibling create's --repo not leaked into merge (dev-env#482)", test_extract_repo_chained_sibling_flag_not_leaked),
-        ("pull_command: canonical on main -> ff-only pull", test_pull_command_on_main_uses_ff_only_pull),
+        ("pull_command: canonical on main -> fetch + ff-only merge", test_pull_command_on_main_uses_fetch_then_ff_merge),
         ("pull_command: canonical off main -> fetch-into-ref", test_pull_command_off_main_uses_fetch_into_ref),
         ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_successful_merge_and_is_help_only),
         ("unresolved real merge: guard does not suppress fallback", test_unresolved_real_merge_is_not_help_only),
