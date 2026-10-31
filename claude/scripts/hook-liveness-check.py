@@ -52,7 +52,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import time
 from pathlib import Path
@@ -60,6 +59,7 @@ from pathlib import Path
 import _hookout
 from _hookinput import load_hook_input
 import _hookutil
+from _settings_sync import py_tokens
 
 # Reads the TRACKED source (claude/settings.shared.json), not the live machine-local
 # ~/.claude/settings.json -- `hooks` is an owned key, so _settings_sync keeps the two
@@ -82,19 +82,16 @@ OWN_HOOK_NAME = "hook-liveness-check"
 # dispatcher and each handler it runs in-process (dev-env#851, ADR-151). The
 # basename minus ".py" is exactly the literal string each passes to
 # _hookutil.record_heartbeat() at its own call site (see that function's docstring).
-_SCRIPT_RE = re.compile(r"(?:^|[/\\])([\w.-]+)\.py$")
+# Tokenized by _settings_sync.py_tokens, as the missing-script guard and the
+# structural gates (tests/_hook_wiring.py) do, so all three read a command alike.
 _LAUNCHER_NAME = "hook-launch"
 
 
 def hook_names_from_command(command: str) -> list[str]:
     """The bare hook names (script basenames minus .py) a settings.json command
     runs, launcher excluded; empty if it names no .py script."""
-    names = []
-    for token in (command or "").split():
-        m = _SCRIPT_RE.search(token)
-        if m and m.group(1) != _LAUNCHER_NAME:
-            names.append(m.group(1))
-    return names
+    names = (Path(token).stem for token in py_tokens(command or ""))
+    return [name for name in names if name != _LAUNCHER_NAME]
 
 
 def wired_hook_events(settings: dict) -> dict[str, set[str]]:

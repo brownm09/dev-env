@@ -42,6 +42,7 @@ Usage:
 Exit 0 = all pass.
 """
 
+import importlib.util
 import os
 import re
 import sys
@@ -49,6 +50,14 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 import _hook_wiring as wiring  # noqa: E402
+
+_dispatch_spec = importlib.util.spec_from_file_location("hook_dispatch", wiring.SCRIPTS_DIR / wiring.DISPATCHER_NAME)
+dispatch = importlib.util.module_from_spec(_dispatch_spec)
+_dispatch_spec.loader.exec_module(dispatch)
+
+# Claude Code's timeout runs from process spawn, the dispatcher's budgets from its own
+# start, and a start costs up to about 4.3 s under AV here (ADR-151).
+DISPATCH_START_MARGIN = 10
 
 # Per-hook timeout budget (seconds). See the module docstring.
 _PURE_PYTHON_BUDGET = 10
@@ -197,8 +206,11 @@ def test_every_entry_has_timeout_at_or_above_budget() -> str:
     for e in entries:
         if e.script is None:
             continue  # already reported by the resolution gate
-        # A dispatcher runs its handlers concurrently, so its floor is the largest of theirs.
-        floor = max(min_timeout(s) for s in e.scripts)
+        # A dispatcher runs its handlers concurrently, so its floor is the largest of their
+        # budgets plus the start margin (test_dispatcher_commands_are_well_formed).
+        floor = min_timeout(e.script)
+        if e.script == wiring.DISPATCHER_NAME:
+            floor = max(dispatch.budget_for(s[:-3]) for s in e.scripts[1:]) + DISPATCH_START_MARGIN
         t = e.timeout
         if not isinstance(t, int) or isinstance(t, bool):
             bad.append(f"{e.event}/{e.matcher}:{e.script}: timeout is {t!r}, expected an int >= {floor}")
@@ -206,6 +218,53 @@ def test_every_entry_has_timeout_at_or_above_budget() -> str:
             bad.append(f"{e.event}/{e.matcher}:{e.script}: timeout {t}s < budget floor {floor}s")
     assert not bad, "Hook entries with a missing / too-tight timeout:\n  " + "\n  ".join(bad)
     return f"all {len(entries)} hook entries declare an explicit timeout >= their budget floor"
+
+
+def dispatcher_problems(entry) -> list:
+    """What is wrong with a dispatcher *entry*'s handler list and budgets (ADR-151)."""
+    handlers = list(entry.scripts[1:])
+    problems = []
+    if not handlers:
+        problems.append("no handlers")
+    for bad in (wiring.DISPATCHER_NAME, "_hook_launch.py", wiring.LAUNCHER_NAME):
+        if bad in handlers:
+            problems.append(f"{bad} listed as a handler")
+    repeats = sorted({h for h in handlers if handlers.count(h) > 1})
+    if repeats:
+        problems.append(f"repeated handlers {repeats}")
+    for h in handlers:
+        if (wiring.SCRIPTS_DIR / h).exists() and dispatch.budget_for(h[:-3]) < min_timeout(h):
+            problems.append(f"{h}: dispatcher budget {dispatch.budget_for(h[:-3])}s < its floor {min_timeout(h)}s")
+    if handlers:
+        need = max(dispatch.budget_for(h[:-3]) for h in handlers) + DISPATCH_START_MARGIN
+        if not isinstance(entry.timeout, int) or entry.timeout < need:
+            problems.append(f"timeout {entry.timeout!r} < largest budget + {DISPATCH_START_MARGIN}s = {need}s")
+    return problems
+
+
+def test_dispatcher_commands_are_well_formed() -> str:
+    """Each dispatcher entry runs distinct real handlers, never itself or the launcher,
+    each budget at or above that handler's floor, and its timeout clears the largest
+    budget by the start margin (a dispatcher killed at its timeout loses every handler)."""
+    entries = [e for e in wiring.hook_entries(wiring.load_settings()) if e.script == wiring.DISPATCHER_NAME]
+    assert entries, "expected the PostToolUse dispatcher entries (ADR-151) -- found none"
+    bad = [f"{e.event}/{e.matcher}: {p}" for e in entries for p in dispatcher_problems(e)]
+    assert not bad, "Malformed dispatcher entries:\n  " + "\n  ".join(bad)
+    return f"{len(entries)} dispatcher entries: distinct handlers, budgets at or above floors, timeouts with margin"
+
+
+def test_dispatcher_check_flags_known_bad() -> str:
+    """Known-bad references, so the check above cannot pass vacuously."""
+    def entry(scripts, timeout=100):
+        return wiring.HookEntry("PostToolUse", "Bash", "", scripts[0], timeout, tuple(scripts))
+
+    d = wiring.DISPATCHER_NAME
+    assert dispatcher_problems(entry([d, "usage-snapshot.py", "post-tool-use.py"])) == []
+    assert dispatcher_problems(entry([d])), "no handlers"
+    assert dispatcher_problems(entry([d, d, "post-tool-use.py"])), "the dispatcher as its own handler"
+    assert dispatcher_problems(entry([d, "post-tool-use.py", "post-tool-use.py"])), "a repeated handler"
+    assert dispatcher_problems(entry([d, "usage-snapshot.py"], timeout=90)), "no start margin"
+    return "no handlers, self-dispatch, a repeat and a missing margin are all flagged; a good entry is not"
 
 
 # PreToolUse hooks exempt from the Bash/PowerShell mirror below. The mirror
@@ -311,6 +370,8 @@ def main() -> int:
         ("every command goes through hook-launch.py (ADR-148)", test_every_command_goes_through_launcher),
         ("launcher form check rejects the direct form", test_launcher_form_rejects_direct_command),
         ("every entry timeout >= budget", test_every_entry_has_timeout_at_or_above_budget),
+        ("dispatcher commands well-formed (ADR-151)", test_dispatcher_commands_are_well_formed),
+        ("dispatcher check flags known-bad commands", test_dispatcher_check_flags_known_bad),
         ("PreToolUse Bash/PowerShell matchers mirrored (dev-env#620)", test_pretooluse_bash_and_powershell_matchers_are_mirrored),
         ("PostToolUse Bash/PowerShell matchers mirrored (dev-env#763)", test_posttooluse_bash_and_powershell_matchers_are_mirrored),
     ]

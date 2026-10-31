@@ -24,7 +24,7 @@ tests/ analogue of scripts/`_hookio.py` / `_hookutil.py`.
 from __future__ import annotations
 
 import json
-import re
+import sys
 from pathlib import Path
 from typing import NamedTuple
 
@@ -32,6 +32,10 @@ from typing import NamedTuple
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = REPO_ROOT / "claude" / "scripts"
 SETTINGS_PATH = REPO_ROOT / "claude" / "settings.shared.json"
+
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+from _settings_sync import py_tokens  # noqa: E402 -- the one hook-command tokenizer (ADR-151)
 
 # The author-home prefix every shipped hook command is written with, and the launcher
 # path under it (ADR-148). Defined once so the tests that pin or remap the command form
@@ -41,12 +45,13 @@ HOME_PREFIX = "C:/Users/brown/.claude/"
 LAUNCHER_PATH = HOME_PREFIX + "hook-launch.py"
 SCRIPTS_PREFIX = HOME_PREFIX + "scripts/"
 
-# Every `<name>.py` token after the launcher is a script the command runs: the hook
+# Every `<name>.py` argument after the launcher is a script the command runs: the hook
 # itself (`pyw -3 C:/.../hook-launch.py C:/.../foo.py`, ADR-007, ADR-148), or the
 # dispatcher followed by each handler it runs in-process
 # (`... hook-launch.py C:/.../hook-dispatch.py C:/.../a.py C:/.../b.py`, dev-env#851,
-# ADR-151). Gates must see every handler, not only the last token.
-_PY_BASENAME_RE = re.compile(r"(?:^|[/\\])([\w.-]+\.py)$")
+# ADR-151). Gates must see every handler, not only the last token. Arguments come from
+# `_settings_sync.py_tokens`, the tokenizer its missing-script guard uses (quoted paths
+# included), so the gates, that guard and hook-liveness-check read a command the same way.
 LAUNCHER_NAME = "hook-launch.py"
 DISPATCHER_NAME = "hook-dispatch.py"
 
@@ -68,12 +73,8 @@ def load_settings(path: Path = SETTINGS_PATH) -> dict:
 
 def scripts_from_command(command: str) -> tuple:
     """Every `<name>.py` basename the command runs, in order, the launcher excluded."""
-    names = []
-    for token in command.split():
-        m = _PY_BASENAME_RE.search(token)
-        if m and m.group(1) != LAUNCHER_NAME:
-            names.append(m.group(1))
-    return tuple(names)
+    names = (Path(token).name for token in py_tokens(command))
+    return tuple(name for name in names if name != LAUNCHER_NAME)
 
 
 def script_from_command(command: str) -> str | None:

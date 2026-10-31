@@ -17,34 +17,36 @@ Each handler keeps what it had as its own process:
   ``if __name__ == "__main__":`` block runs, including its own crash guard. It reads
   the same stdin payload. Its module globals are its own.
 - **Concurrency and its time budget.** Claude Code runs an event's hooks in parallel,
-  so each handler runs in its own thread, and its output counts only if it finishes
-  within the timeout it had as a hook command (``BUDGET_SECONDS``), measured from the
-  dispatch start, as Claude Code's own timeout would. A handler still running then is
-  dropped, as a killed hook would be, and the process ends with ``os._exit`` so its
-  thread does not hold the result back.
+  so each handler runs in its own thread. Its output counts only if it finished within
+  the timeout it had as a hook command (``BUDGET_SECONDS``), counted from the dispatch
+  start, as Claude Code's own timeout counted from its spawn. A handler that missed its
+  budget is dropped with a warning, as a killed hook got a timeout notice, and if one
+  is still running the process ends with ``os._exit`` rather than wait for it.
 - **Its streams.** ``sys.stdin``/``stdout``/``stderr`` are routed per thread to the
-  handler's own buffers. File descriptors 1 and 2 point at the null device while
-  handlers run, so a child process writing to an inherited stdout cannot corrupt the
-  one result this process writes.
+  handler's own buffers, and stay routed until the process exits, so a late handler
+  never writes into the result. A child process inherits the real standard handles, as
+  it did when the handler was its own hook.
 - **Its heartbeat and duration.** Its own ``record_heartbeat`` call still writes its
   liveness file. Its exit-time duration record does not arm, because ``__main__`` in
-  ``sys.modules`` stays this dispatcher; this records each handler's run time instead
-  (ADR-106 Amendment 2), and never for one dropped at its budget.
+  ``sys.modules`` stays this dispatcher; this records each kept handler's run time
+  instead (ADR-106 Amendment 2). That run time now spans compiling the handler and its
+  imports too, with no separate startup sample.
 - **Its fail direction.** Every handler wired through this today is advisory and fails
-  open, and so does the dispatcher: a missing handler file is skipped with a warning
-  (as the launcher does, ADR-148), and anything unexpected here exits 0.
+  open, and so does the dispatcher: a missing handler file is skipped with the
+  launcher's own throttled warning (ADR-148), and anything unexpected here exits 0.
 
 The handlers' results are combined into the one output Claude Code reads:
 
-- only exit-2 stderr: those texts joined, on stderr, exit 2 (as each would have been);
-- only ``systemMessage`` JSON: the messages joined, as one ``systemMessage``, exit 0;
+- only blocks (exit 2 with stderr, or exit-0 JSON ``decision: "block"``): the texts
+  joined, on stderr, exit 2;
+- only ``systemMessage``s and warnings: one joined ``systemMessage``, exit 0;
 - both: a PostToolUse ``{"decision": "block", "reason": ..., "systemMessage": ...}``,
   exit 0, because exit 2 would drop the user's messages. Per the Claude Code hooks
   reference, ``decision: "block"`` prompts Claude with ``reason``, as exit-2 stderr does;
 - neither: nothing, exit 0.
 
-Exit 1 (an uncaught error the handler's own guard missed) is ignored, as Claude Code
-shows a non-blocking error only in the transcript view. See ADR-151.
+A handler's exit 1 (an error its own guard missed) and any JSON key this cannot carry
+through become warnings instead of vanishing. See ADR-151.
 """
 
 import builtins
@@ -56,17 +58,24 @@ import threading
 import time
 from pathlib import Path
 
+import _hook_launch
 import _hookout
 import _hookutil
 
+DISPATCH_NAME = "hook-dispatch"
+
 # The timeout each handler had as its own hook command. Unlisted handlers get the
-# default. The dispatcher's own timeout in settings must exceed the largest of these.
+# default. The wiring lint checks each is at least that handler's floor, and that the
+# dispatcher's own settings timeout clears the largest by a margin for process start.
 DEFAULT_BUDGET_SECONDS = 30
 BUDGET_SECONDS = {
     "usage-snapshot": 90,
     "post-merge-tile-checkpoint": 10,
     "journal-shard-write-advisory": 10,
 }
+
+# The JSON keys a handler's exit-0 output may carry; anything else is reported, not lost silently.
+_CARRIED_KEYS = {"systemMessage", "decision", "reason"}
 
 
 class _Routed:
@@ -79,34 +88,30 @@ class _Routed:
     def bind(self, stream) -> None:
         self._local.stream = stream
 
-    def _target(self):
-        return getattr(self._local, "stream", self._default)
-
-    def write(self, text):
-        return self._target().write(text)
-
-    def read(self, *args):
-        return self._target().read(*args)
-
-    def flush(self):
-        return self._target().flush()
-
     def __getattr__(self, name):
-        return getattr(self._target(), name)
+        return getattr(getattr(self._local, "stream", self._default), name)
+
+    def __iter__(self):
+        return iter(getattr(self._local, "stream", self._default))
 
 
 class HandlerRun:
-    """One handler's outcome; ``done`` stays False if it outlived its budget."""
+    """One handler's outcome; ``kept`` is set once, when the dispatcher stops waiting."""
 
     def __init__(self, path: Path):
         self.path = path
         self.name = path.stem
-        self.budget = BUDGET_SECONDS.get(self.name, DEFAULT_BUDGET_SECONDS)
+        self.budget = budget_for(self.name)
         self.code = 0
         self.stdout = ""
         self.stderr = ""
         self.run_ms = 0
-        self.done = False
+        self.ended = None
+        self.kept = False
+
+
+def budget_for(name: str) -> int:
+    return BUDGET_SECONDS.get(name, DEFAULT_BUDGET_SECONDS)
 
 
 def exit_code(code) -> int:
@@ -137,32 +142,71 @@ def run_handler(run: HandlerRun, payload: str, routes) -> None:
         exec(compile(source, str(run.path), "exec"), module.__dict__)  # noqa: S102 -- running the hook IS the job
     except SystemExit as exc:
         code = exit_code(exc.code)
-    except BaseException:  # noqa: BLE001 -- an escaped error is this handler's exit 1, never the dispatcher's
+    except BaseException as exc:  # noqa: BLE001 -- an escaped error is this handler's exit 1, never the dispatcher's
         code = 1
-    run.run_ms = int((time.monotonic() - start) * 1000)
+        err.write(f"{type(exc).__name__}: {exc}\n")
     run.code, run.stdout, run.stderr = code, out.getvalue(), err.getvalue()
-    run.done = True
+    run.run_ms = int((time.monotonic() - start) * 1000)
+    run.ended = time.monotonic()
 
 
-def system_message(stdout: str) -> str | None:
-    """The ``systemMessage`` a handler printed as JSON on stdout, or None."""
+def handler_paths(argv: list, own: Path) -> tuple:
+    """The handler files to run, and warnings for the ones skipped.
+
+    Skips this dispatcher and the launcher (a misconfigured command must not recurse)
+    and repeats (a handler must not run twice at once). A missing file gets the
+    launcher's own warning, throttled the same way."""
+    paths, warnings, seen = [], [], set()
+    for arg in argv:
+        path = Path(arg)
+        key = path.name.lower()
+        if key in seen or key in (own.name.lower(), "hook-launch.py", "_hook_launch.py"):
+            continue
+        seen.add(key)
+        if path.is_file():
+            paths.append(path)
+        elif _hook_launch.should_announce(path.name):
+            warnings.append(_hook_launch.missing_message(str(path)))
+    return paths, warnings
+
+
+def read_output(run: HandlerRun) -> tuple:
+    """``(block_text, system_message, warning)`` from a kept handler's own output."""
+    if run.code == 2:
+        return run.stderr.strip() or None, None, None
+    if run.code != 0:
+        last = run.stderr.strip().splitlines()[-1:] or [f"exit {run.code}"]
+        return None, None, f"[hook-dispatch] {run.name} failed (exit {run.code}): {last[0]}"
     try:
-        data = json.loads(stdout)
+        data = json.loads(run.stdout)
     except ValueError:
-        return None
-    message = data.get("systemMessage") if isinstance(data, dict) else None
-    return message if isinstance(message, str) and message else None
+        return None, None, None
+    if not isinstance(data, dict):
+        return None, None, None
+    block = data.get("reason") if data.get("decision") == "block" else None
+    message = data.get("systemMessage")
+    dropped = sorted(set(data) - _CARRIED_KEYS)
+    warning = f"[hook-dispatch] {run.name} output keys not carried: {', '.join(dropped)}" if dropped else None
+    return (
+        block if isinstance(block, str) and block else None,
+        message if isinstance(message, str) and message else None,
+        warning,
+    )
 
 
 def combine(runs: list, warnings: list) -> tuple:
-    """Return ``(stdout_text, stderr_text, exit_code)`` for the finished *runs*."""
-    blocks = [r.stderr.strip() for r in runs if r.done and r.code == 2 and r.stderr.strip()]
-    messages = list(warnings)
-    for r in runs:
-        if r.done and r.code == 0:
-            message = system_message(r.stdout)
-            if message:
-                messages.append(message)
+    """Return ``(stdout_text, stderr_text, exit_code)`` for the kept *runs*."""
+    blocks, messages = [], list(warnings)
+    for run in runs:
+        if not run.kept:
+            messages.append(
+                f"[hook-dispatch] {run.name} did not finish within its {run.budget}s budget; "
+                "its output was dropped."
+            )
+            continue
+        block, message, warning = read_output(run)
+        blocks += [block] if block else []
+        messages += [m for m in (message, warning) if m]
     reason = "\n\n".join(blocks)
     shown = "\n\n".join(messages)
     if blocks and messages:
@@ -175,33 +219,15 @@ def combine(runs: list, warnings: list) -> tuple:
     return "", "", 0
 
 
-def _silence_fds():
-    """Point fds 1 and 2 at the null device; return the saved originals, or None."""
-    try:
-        saved = (os.dup(1), os.dup(2))
-        null = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(null, 1)
-        os.dup2(null, 2)
-        os.close(null)
-        return saved
-    except OSError:
-        return None
-
-
 def main() -> None:
     _hookutil.record_heartbeat("hook-dispatch")
     payload = sys.stdin.read()
-    runs, warnings = [], []
-    for arg in sys.argv[1:]:
-        path = Path(arg)
-        if path.is_file():
-            runs.append(HandlerRun(path))
-        else:
-            warnings.append(f"[hook-dispatch] WARNING: hook script not found, skipped: {path.name} (ADR-148)")
+    paths, warnings = handler_paths(sys.argv[1:], Path(__file__))
+    runs = [HandlerRun(path) for path in paths]
 
-    saved = _silence_fds()
+    real_out, real_err = sys.__stdout__, sys.__stderr__
     routes = (_Routed(sys.stdin), _Routed(sys.stdout), _Routed(sys.stderr))
-    sys.stdin, sys.stdout, sys.stderr = routes
+    sys.stdin, sys.stdout, sys.stderr = routes  # left in place: a late handler must not write into the result
     start = time.monotonic()
     threads = []
     for run in runs:
@@ -210,19 +236,24 @@ def main() -> None:
         threads.append(thread)
     for run, thread in zip(runs, threads):
         thread.join(max(0.0, start + run.budget - time.monotonic()))
-    sys.stdin, sys.stdout, sys.stderr = sys.__stdin__, sys.__stdout__, sys.__stderr__
+    for run in runs:  # one decision per handler, read once
+        run.kept = run.ended is not None and run.ended - start <= run.budget
 
     for run in runs:
-        if run.done:
+        if run.kept:
             _hookutil.record_duration(run.name, run.run_ms)
     out_text, err_text, code = combine(runs, warnings)
-    out_fd, err_fd = saved if saved else (1, 2)
     if out_text:
-        os.write(out_fd, out_text.encode("ascii", "replace"))
+        real_out.write(out_text)
+        real_out.flush()
     if err_text:
-        os.write(err_fd, err_text.encode("ascii", "replace"))
-    if not all(run.done for run in runs):
-        os._exit(code)  # a handler outlived its budget; don't wait on its thread
+        real_err.write(err_text)
+        real_err.flush()
+    if any(thread.is_alive() for thread in threads):
+        # A handler outlived its budget: don't wait on its thread. os._exit skips the
+        # dispatcher's exit-time duration record, so record it here.
+        _hookutil.record_duration(DISPATCH_NAME, int((time.monotonic() - start) * 1000))
+        os._exit(code)
     sys.exit(code)
 
 

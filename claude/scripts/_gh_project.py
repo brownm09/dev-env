@@ -125,6 +125,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 from pathlib import Path
 
 # Literal Windows-style path (not "~/.claude/..." or an env-var-built path) so every
@@ -189,7 +190,7 @@ def _atomic_write_cache(cache: dict[str, str], cache_path: Path | None = None) -
     tmp = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.parent / f"{target.name}.{os.getpid()}.tmp"
+        tmp = target.parent / f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp"
         tmp.write_text(json.dumps(cache, indent=2), encoding="utf-8")
         os.replace(tmp, target)
         tmp = None  # replaced successfully -- nothing left to clean up

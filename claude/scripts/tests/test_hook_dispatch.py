@@ -2,13 +2,12 @@
 """Tests for hook-dispatch.py, the in-process hook dispatcher (dev-env#851 stage 1, ADR-151).
 
 Two layers:
-- ``combine()`` and ``exit_code()`` offline: how the handlers' exit codes and streams
-  become the one output Claude Code reads.
+- ``combine()``, ``handler_paths()`` and ``exit_code()`` offline: how the handlers' exit
+  codes and streams become the one output Claude Code reads, and which arguments run.
 - End to end, as a subprocess through the real launcher, with fake handler scripts in
   a temp directory: stdin reaches every handler, blocks and toasts combine, an uncaught
-  error and a missing script fail open, a child process writing to the inherited stdout
-  cannot corrupt the result, each handler gets exactly one duration line, and a handler
-  past its budget is dropped without holding the result back.
+  error is reported and fails open, each handler gets exactly one duration line, and a
+  handler past its budget is dropped with a warning without holding the result back.
 
 The real PostToolUse handlers are not fired here: on a merge-shaped payload they act on
 GitHub and the canonical. Their own suites cover them; the dispatcher only runs them.
@@ -50,10 +49,6 @@ HANDLERS = {
     ),
     "blocker.py": "import sys\nsys.stderr.write('[blocker] stop and look\\n')\nsys.exit(2)\n",
     "crasher.py": "raise RuntimeError('escaped its guard')\n",
-    "child-writer.py": (
-        "import subprocess, sys\n"
-        "subprocess.run([sys.executable, '-c', \"print('child noise on the real stdout')\"])\n"
-    ),
     "beats.py": (
         "import sys\n"
         f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
@@ -67,8 +62,9 @@ HANDLERS = {
 
 
 class _Run:
-    def __init__(self, name, code, stdout="", stderr="", done=True):
-        self.name, self.code, self.stdout, self.stderr, self.done = name, code, stdout, stderr, done
+    def __init__(self, name, code, stdout="", stderr="", kept=True, budget=30):
+        self.name, self.code, self.stdout, self.stderr = name, code, stdout, stderr
+        self.kept, self.budget = kept, budget
 
 
 def _fire(handler_paths, budgets=None):
@@ -131,10 +127,37 @@ def test_combine_both_uses_decision_block() -> str:
     return "a block plus a toast becomes decision:block with reason and systemMessage, so neither is lost"
 
 
-def test_combine_ignores_exit_1_and_dropped() -> str:
-    runs = [_Run("a", 1, stderr="Traceback ..."), _Run("b", 2, stderr="[b] late", done=False)]
-    assert hd.combine(runs, []) == ("", "", 0)
-    return "an exit-1 handler and one dropped at its budget contribute nothing"
+def test_combine_reports_exit_1_and_dropped() -> str:
+    runs = [_Run("a", 1, stderr="Traceback ...\nRuntimeError: boom"), _Run("b", 2, stderr="[b] late", kept=False)]
+    out, err, code = hd.combine(runs, [])
+    assert (err, code) == ("", 0), (err, code)
+    shown = json.loads(out)["systemMessage"]
+    assert "a failed (exit 1): RuntimeError: boom" in shown, shown
+    assert "b did not finish within its 30s budget" in shown and "[b] late" not in shown, shown
+    return "an exit-1 handler and one past its budget become warnings, and the dropped one's output is not used"
+
+
+def test_combine_carries_json_block_and_reports_other_keys() -> str:
+    runs = [
+        _Run("a", 0, stdout=json.dumps({"decision": "block", "reason": "[a] json block"})),
+        _Run("b", 0, stdout=json.dumps({"systemMessage": "hi", "hookSpecificOutput": {}})),
+    ]
+    body = json.loads(hd.combine(runs, [])[0])
+    assert body["decision"] == "block" and body["reason"] == "[a] json block", body
+    assert "hi" in body["systemMessage"] and "b output keys not carried: hookSpecificOutput" in body["systemMessage"], body
+    return "an exit-0 JSON decision:block is kept as a block, and a key the dispatcher can't carry is reported"
+
+
+def test_handler_paths_skips_self_launcher_repeats_and_missing() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        a = Path(tmp) / "a.py"
+        a.write_text("", encoding="utf-8")
+        missing = Path(tmp) / "zz-missing-handler-1173.py"
+        argv = [str(a), str(DISPATCH), str(Path(tmp) / "hook-launch.py"), str(a), str(missing)]
+        paths, warnings = hd.handler_paths(argv, DISPATCH)
+    assert paths == [a], paths
+    assert len(warnings) <= 1 and all("zz-missing-handler-1173.py" in w for w in warnings), warnings
+    return "the dispatcher, the launcher and a repeat are skipped; a missing file gets the launcher's throttled warning"
 
 
 def test_combine_sanitizes_non_ascii() -> str:
@@ -147,16 +170,15 @@ def test_combine_sanitizes_non_ascii() -> str:
 
 def test_end_to_end_combines_and_fails_open() -> str:
     with tempfile.TemporaryDirectory() as tmp:
-        paths = _handlers(tmp, ["echo-tool.py", "blocker.py", "crasher.py", "child-writer.py"])
-        paths.append(Path(tmp) / "not-there.py")
+        paths = _handlers(tmp, ["echo-tool.py", "blocker.py", "crasher.py"])
         proc, _ = _fire(paths)
     assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)
-    body = json.loads(proc.stdout)  # one JSON object: the child's noise did not reach stdout
+    body = json.loads(proc.stdout)
     assert body["decision"] == "block" and body["reason"] == "[blocker] stop and look", body
     assert "saw Bash" in body["systemMessage"], body
-    assert "not-there.py" in body["systemMessage"], body
+    assert "crasher failed (exit 1): RuntimeError: escaped its guard" in body["systemMessage"], body
     assert proc.stderr == "", repr(proc.stderr)
-    return "stdin reached each handler, block and toast combined, crash and missing script failed open, child output contained"
+    return "stdin reached each handler, block and toast combined, an uncaught error reported and failed open"
 
 
 def test_end_to_end_one_duration_line_per_handler() -> str:
@@ -182,8 +204,10 @@ def test_end_to_end_budget_drops_slow_handler() -> str:
         proc, elapsed = _fire(paths, budgets={"slow": 1})
     assert elapsed < 15, f"dispatcher waited {elapsed:.1f}s on a handler with a 1s budget"
     assert proc.returncode == 0, (proc.returncode, proc.stderr)
-    assert json.loads(proc.stdout) == {"systemMessage": "saw Bash"}, proc.stdout
-    return "a handler past its budget is dropped, the rest still report, and the process doesn't wait for it"
+    shown = json.loads(proc.stdout)["systemMessage"]
+    assert "saw Bash" in shown and "slow did not finish within its 1s budget" in shown, shown
+    assert "too late" not in proc.stdout, proc.stdout
+    return "a handler past its budget is dropped with a warning, the rest still report, and the process doesn't wait"
 
 
 def main() -> int:
@@ -192,7 +216,9 @@ def main() -> int:
         ("combine: blocks only", test_combine_blocks_only),
         ("combine: messages only", test_combine_messages_only),
         ("combine: block plus toast", test_combine_both_uses_decision_block),
-        ("combine: exit 1 and dropped ignored", test_combine_ignores_exit_1_and_dropped),
+        ("combine: exit 1 and dropped reported", test_combine_reports_exit_1_and_dropped),
+        ("combine: JSON block kept, other keys reported", test_combine_carries_json_block_and_reports_other_keys),
+        ("handler_paths: self, launcher, repeats, missing", test_handler_paths_skips_self_launcher_repeats_and_missing),
         ("combine: ASCII-safe output", test_combine_sanitizes_non_ascii),
         ("end to end: combine and fail open", test_end_to_end_combines_and_fails_open),
         ("end to end: one duration line per handler", test_end_to_end_one_duration_line_per_handler),
