@@ -320,3 +320,31 @@ suppresses a real detection.
 - [Claude Code Hooks documentation](https://code.claude.com/docs/en/hooks) — `PreToolUse`/
   `PostToolUse` payload schema (`cwd`, `session_id`), and the `CwdChanged` event this decision
   does not depend on
+
+## Amendment 1 (2026-10-30) — repo state read from `.git` files, not a git process (dev-env#849)
+
+**What changed.** `_bash_state.current_repo_state(cwd)` first calls `repo_state_from_files(cwd)`, which
+walks up from `cwd` to the first `.git`, follows a worktree's `gitdir:` file, and reads `HEAD`:
+`ref: refs/heads/<b>` gives branch `<b>`, a bare SHA gives a detached HEAD. The git call it used to
+make (`rev-parse --show-toplevel --abbrev-ref HEAD`) is now the fallback, used whenever the file read
+is unsure: `GIT_DIR`/`GIT_WORK_TREE` set, a `cwd` inside `.git`, an unreadable `HEAD`, or a symbolic
+ref outside `refs/heads/`. A `cwd` with no `.git` up to the root gives `(None, None)`, as git does.
+`read_branch(repo, run)` applies the same read to the every-prompt canonical checks in
+`dev-env-sync.py` and `journal-canonical-guard.py`.
+
+**Why.** `post-tool-use-cwd-track.py` calls this on every Bash call, and its git process cost 263 ms
+at the median on this machine (dev-env#849 baseline). The read takes 1-2 ms in-process; measured per
+fire, cwd-track went from 444 to 381 ms at the median (12 alternating fires each), the rest being
+interpreter start, which #851 addresses.
+
+**Exactness.** `write_state` and `format_drift_warning` compare the values as exact strings, so the read
+returns git's form: the resolved real path with forward slashes (`Path.resolve().as_posix()`). It was
+checked equal to git on the canonical, a worktree, subdirectories, the junctioned `~/.claude/scripts`,
+a lowercase drive letter and backslashes, and a test pins the equality on the test's own checkout. A
+session recorded by the old code compares equal after the change, so deploying it raises no drift
+warning.
+
+**Alternatives considered.** Caching the git result per session and cwd, as the issue suggested
+(rejected: a branch can change inside the very Bash call being recorded, `git checkout` or a script,
+which is exactly what this ADR detects, so a cache would need command parsing to invalidate it and
+would still miss checkouts inside scripts); skipping the record when `cwd` is unchanged (same flaw).

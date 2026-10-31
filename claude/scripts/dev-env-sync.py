@@ -63,6 +63,7 @@ import sys
 import time
 from pathlib import Path
 
+import _bash_state
 import _hookout
 import _hookutil
 import _settings_sync
@@ -70,7 +71,6 @@ from _worktree_topology import (
     canonical_sync_action,
     diagnose_main_topology,
     parse_worktree_porcelain,
-    resolve_current_branch,
 )
 
 DEV_ENV_REPO = Path.home() / "Git" / "dev-env"
@@ -93,6 +93,13 @@ ESCALATE_AFTER_HOURS = 2.0
 # Either arm escalates. The 108-day incident would have tripped both on its first day.
 OFF_MAIN_ESCALATE_AFTER_HOURS = ESCALATE_AFTER_HOURS
 OFF_MAIN_ESCALATE_AFTER_BEHIND = 10
+
+# The network fetch is the bulk of this hook's per-prompt cost (2.5 s at the median, 6.3 s at
+# the 90th percentile on this machine, dev-env#849 baseline), so it runs at most once per
+# interval, keyed on .git/FETCH_HEAD's mtime. That file is rewritten by every fetch of the
+# checkout, whoever ran it, so no state file of our own is needed. A merge made from this
+# machine is pulled by post-pr-merge-pull at once; another machine's merge waits at most this.
+FETCH_MIN_INTERVAL_SECONDS = 15 * 60
 
 HOOK_EVENT = "UserPromptSubmit"
 FALLBACK_MESSAGE = "[dev-env-sync] WARNING: sync check failed unexpectedly and was skipped this prompt."
@@ -685,6 +692,19 @@ def _report_off_main(out: Output, branch: str, base_warning: str) -> None:
         out.say(base_warning + format_off_main_note(seconds_since_move, behind))
 
 
+def fetched_recently(fetch_head: Path, now: float, interval: float = FETCH_MIN_INTERVAL_SECONDS) -> bool:
+    """True when *fetch_head* was written less than *interval* seconds before *now*.
+
+    False when the file is missing or unreadable, or its mtime is in the future (a clock
+    change), so a doubtful case fetches rather than trusting a possibly stale ref.
+    """
+    try:
+        age = now - fetch_head.stat().st_mtime
+    except OSError:
+        return False
+    return 0 <= age < interval
+
+
 def _start_deadline() -> None:
     """Start the shared run deadline that bounds every ``run()`` call this firing."""
     global _deadline
@@ -749,8 +769,8 @@ def main(out: Output) -> None:
     # instead of exiting silently here. diagnose_main_topology/canonical_sync_action already
     # handle "<detached>" correctly (main_squatter's bare/detached guard); the gap was purely
     # that nothing used to route a detached canonical into them (dev-env#619).
-    branch = run(["git", "symbolic-ref", "--short", "HEAD"])
-    current_branch = resolve_current_branch(branch.returncode, branch.stdout)
+    # The HEAD file answers without a process in the common case (dev-env#849).
+    current_branch = _bash_state.read_branch(DEV_ENV_REPO, run)
     if current_branch != "main":
         # Off main is a determinate not-actively-ff-pull-failing state (a different problem, or
         # a topological one that pauses the pull) — end any in-progress ff-failure run so a
@@ -828,20 +848,24 @@ def main(out: Output) -> None:
             current_branch = "main"
         # "on-main" cannot occur on this path (current_branch != "main"); fall through to pull.
 
-    # Fetch quietly so the local remote-tracking ref is current.
-    fetch = run(["git", "fetch", "origin", "main", "--quiet"], env=NONINTERACTIVE_GIT_ENV)
-    if fetch.returncode != 0:
-        # Network issue — don't block, don't spam on every turn.
+    # Fetch quietly so the local remote-tracking ref is current, unless any fetch of this
+    # checkout (this hook's, session-start-sync's, a merge hook's, a manual one) ran within
+    # FETCH_MIN_INTERVAL_SECONDS (dev-env#849). Everything else below still runs every prompt
+    # against the last-fetched ref, so a canonical behind that ref is still pulled, and a
+    # failing pull still counts toward escalation each prompt (dev-env#697/#795).
+    if not fetched_recently(DEV_ENV_REPO / ".git" / "FETCH_HEAD", time.time()):
+        fetch = run(["git", "fetch", "origin", "main", "--quiet"], env=NONINTERACTIVE_GIT_ENV)
+        if fetch.returncode != 0:
+            # Network issue — don't block, don't spam on every turn.
+            return
+
+    # Compare local main to origin/main (one git call for both).
+    revs = run(["git", "rev-parse", "refs/heads/main", "origin/main"])
+    rev_lines = revs.stdout.split()
+    if revs.returncode != 0 or len(rev_lines) != 2:
         return
 
-    # Compare local main to origin/main.
-    rev_local = run(["git", "rev-parse", "refs/heads/main"])
-    rev_remote = run(["git", "rev-parse", "origin/main"])
-    if rev_local.returncode != 0 or rev_remote.returncode != 0:
-        return
-
-    local = rev_local.stdout.strip()
-    remote = rev_remote.stdout.strip()
+    local, remote = rev_lines
 
     if local == remote:
         # Already up-to-date — clear any persisted failure run (dev-env#797).

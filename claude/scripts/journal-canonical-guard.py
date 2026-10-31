@@ -38,6 +38,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import _bash_state
 import _hookutil
 import _journal_canon
 from _worktree_topology import (
@@ -95,8 +96,8 @@ def main() -> None:
     # Cheap first read (no worktree-list/status calls) so the common healthy path — on main,
     # on draft/YYYY-MM-DD, or any other legitimate branch — stays cheap, mirroring
     # dev-env-sync.py's "extra git calls only on the rare/broken path" design.
-    branch = run(["git", "symbolic-ref", "--short", "HEAD"])
-    current_branch = resolve_current_branch(branch.returncode, branch.stdout)
+    # The HEAD file answers without a process in the common case (dev-env#849).
+    current_branch = _bash_state.read_branch(JOURNAL_REPO, run)
     if not is_hijacked_branch(current_branch):
         sys.exit(0)
 
