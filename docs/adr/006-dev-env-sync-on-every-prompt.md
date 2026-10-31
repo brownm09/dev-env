@@ -59,7 +59,10 @@ delays noticing a new remote commit, never a stuck checkout.
 
 **Cost.** A merge made on another machine, or one this machine's merge hooks did not pull, reaches the
 canonical up to 15 minutes later. A merge from this machine is pulled at once by
-`post-pr-merge-pull.py`.
+`post-pr-merge-pull.py`. A fetch in the canonical of some other ref also refreshes `FETCH_HEAD`
+without updating `origin/main`; that only restarts the same 15-minute bound. (A worktree's own
+fetches write its own `FETCH_HEAD`, but they update the shared `origin/main`, which this hook then
+compares against, so they only help.)
 
 **Alternatives considered.** A per-session or repo-level timestamp file (rejected: `FETCH_HEAD`
 already records every fetch, including other hooks'); gating the whole hook (rejected: the off-main

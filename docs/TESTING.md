@@ -1524,8 +1524,8 @@ For a one-line navigational map of the test directory, see
     answers from `repo_state_from_files()` and calls git only as a fallback, so that read is
     covered: temp-directory fake repos pin the branch from `HEAD`, discovery from a
     subdirectory, a detached SHA, a worktree's `.git` file (absolute and relative `gitdir:`),
-    and the cases that must defer to git (a non-branch ref, a cwd inside `.git`, a missing
-    `HEAD`, an empty cwd, `GIT_DIR` set). One test compares the read with
+    and the cases that must defer to git (a non-branch ref, a cwd inside `.git`, a deleted cwd,
+    a missing `HEAD`, an empty cwd, `GIT_DIR` set). Only that git fallback is still uncovered. One test compares the read with
     `git rev-parse --show-toplevel --abbrev-ref HEAD` on the test's own checkout, because the
     drift checks compare the values as exact strings. `read_branch()` is pinned to answer from
     `HEAD` without calling its git runner, and to call it only when the file cannot answer.

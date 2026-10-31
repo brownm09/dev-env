@@ -307,6 +307,7 @@ def test_repo_state_from_files_defers_to_git_when_unsure() -> str:
         assert _bash_state.repo_state_from_files(str(repo)) is None, "non-branch symbolic ref"
         (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
         assert _bash_state.repo_state_from_files(str(repo / ".git")) is None, "cwd inside .git"
+        assert _bash_state.repo_state_from_files(str(repo / "removed-worktree")) is None, "deleted cwd"
         (repo / ".git" / "HEAD").unlink()
         assert _bash_state.repo_state_from_files(str(repo)) is None, "unreadable HEAD"
         assert _bash_state.repo_state_from_files("") is None, "empty cwd"
@@ -319,7 +320,7 @@ def test_repo_state_from_files_defers_to_git_when_unsure() -> str:
                 os.environ.pop("GIT_DIR", None)
             else:
                 os.environ["GIT_DIR"] = old
-    return "a non-branch ref, a cwd inside .git, a missing HEAD, an empty cwd and GIT_DIR all defer to git"
+    return "a non-branch ref, a cwd inside .git, a deleted cwd, a missing HEAD, an empty cwd and GIT_DIR all defer to git"
 
 
 def test_repo_state_from_files_matches_git() -> str:

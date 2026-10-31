@@ -105,14 +105,17 @@ def repo_state_from_files(cwd: str) -> tuple[str | None, str | None] | None:
     ``.git`` file followed for a worktree), checked against git on the canonical,
     worktrees, subdirectories and a junctioned path, because write_state and the
     drift checks compare it as an exact string. None for anything unusual (GIT_DIR
-    set, a cwd inside ``.git``, an unreadable or non-branch HEAD), so git decides.
+    set, a cwd inside ``.git`` or no longer on disk, an unreadable or non-branch
+    HEAD), so git decides.
     ``(None, None)`` when no ``.git`` is found up to the root, as git reports.
     """
     if not cwd or os.environ.get("GIT_DIR") or os.environ.get("GIT_WORK_TREE"):
         return None
     try:
         start = Path(cwd).resolve()
-        if ".git" in start.parts:
+        # A deleted cwd (a removed worktree) would otherwise resolve to the repo above it,
+        # where git reports no repo at all.
+        if ".git" in start.parts or not start.is_dir():
             return None
         for directory in (start, *start.parents):
             dot_git = directory / ".git"
