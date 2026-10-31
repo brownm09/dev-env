@@ -187,19 +187,21 @@ from __future__ import annotations
 
 import _hookout
 import _hookutil
-import json
 import re
 import sys
 from pathlib import Path
 from typing import NamedTuple
 
 from _hookio import (
+    GH_PR_MERGE,
     is_rest_merge_command,
+    load_hook_input,
     mask_prose_flag_values,
     merge_pr_number_from_output,
     output_has_merge_marker,
     output_has_rest_merge_marker,
     split_top_level,
+    strip_env_prefix,
 )
 from _hookutil import (
     _content_items,
@@ -240,7 +242,7 @@ _TRIGGER_WORKSTREAM = "workstream-"
 # Each of these is matched against the lstripped FIRST LINE of a top-level
 # segment, so a phrase appearing inside a heredoc body / quoted argument / $()
 # subshell is never mistaken for a genuine invocation (the dev-env#499 class).
-_MERGE_STMT_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+merge\b", re.IGNORECASE)
+_MERGE_STMT_RE = re.compile(GH_PR_MERGE, re.IGNORECASE)  # _hookio's one spelling (dev-env#1168)
 _PR_CREATE_STMT_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+create\b", re.IGNORECASE)
 _PR_VIEW_STMT_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+(?:view|checks)\b", re.IGNORECASE)
 # The `gh api` verb + PUT-method-flag check and the `"merged":true` output check
@@ -558,7 +560,9 @@ def session_merged_prs(calls: list) -> set:
 
     for command, output in calls:
         output = output or ""
-        firsts = [_first_line(seg).lstrip() for seg in split_top_level(command)]
+        # strip_env_prefix: `ALLOW_CANONICAL_MUTATE=1 gh pr merge` counts, as in
+        # _hookio.is_pr_merge_command (dev-env#1168).
+        firsts = [strip_env_prefix(_first_line(seg).lstrip()) for seg in split_top_level(command)]
         merge_firsts = [f for f in firsts if _MERGE_STMT_RE.match(f)]
         view_firsts = [f for f in firsts if _PR_VIEW_STMT_RE.match(f)]
         has_create = any(_PR_CREATE_STMT_RE.match(f) for f in firsts)
@@ -1488,12 +1492,8 @@ def main() -> None:
     _hookutil.record_heartbeat("stop-tile-enumeration-gate")
     _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
+    data = load_hook_input()
+    if data is None:
         sys.exit(0)
 
     # Loop guard: once this hook has already blocked and Claude is continuing,

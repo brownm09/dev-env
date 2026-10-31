@@ -25,6 +25,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+from _heartbeat_isolation import isolate_heartbeat
+
+isolate_heartbeat()  # keep this file's hook fires out of the real heartbeat ledger (dev-env#1163)
+
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 MODULE_PATH = SCRIPTS_DIR / "skill-file-size-advisory.py"
 

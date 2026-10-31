@@ -88,7 +88,7 @@ import shlex
 import subprocess
 import sys
 
-from _hookio import is_absolute_path, read_command, split_top_level
+from _hookio import is_absolute_path, load_hook_input, read_command, SHELL_TOOLS, split_top_level
 import _hookutil
 import _journal_canon
 
@@ -421,19 +421,8 @@ def _emit_block(matched: str, root) -> None:
 
 def main() -> None:
     _hookutil.record_heartbeat("pre-tool-use-journal-draft-worktree-guard")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if not isinstance(data, dict):
-        sys.exit(0)
-
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
 
     cwd = data.get("cwd", "") or ""

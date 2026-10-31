@@ -40,25 +40,17 @@ Stdin JSON shape (PostToolUse):
 Exit 0 always — pure side-channel recording, never blocks or messages.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
-import json
 import sys
 
 import _bash_state
+from _hookinput import load_hook_input, SHELL_TOOLS
 import _hookutil
 
 
 def main() -> None:
     _hookutil.record_heartbeat("post-tool-use-cwd-track")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
 
     session_id = data.get("session_id", "") or ""

@@ -68,11 +68,11 @@ Stdin JSON shape (PreToolUse):
     "cwd": "..."
   }
 """
-import json
 import os
 import sys
 
 import _hookout
+from _hookinput import load_hook_input
 import _hookutil
 import _skill_file_size
 
@@ -163,14 +163,8 @@ def resulting_edit_size(file_path: str, tool_input: dict):
 
 def main() -> None:
     _hookutil.record_heartbeat("pre-tool-use-skill-file-size-guard")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-    if not isinstance(data, dict):
+    data = load_hook_input()
+    if data is None:
         sys.exit(0)
 
     tool_name = data.get("tool_name", "")

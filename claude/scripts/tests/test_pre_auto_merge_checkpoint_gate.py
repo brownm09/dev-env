@@ -45,6 +45,13 @@ from _hookio import is_merge_help_only  # noqa: E402
 def test_bare_auto():
     assert wants_auto_merge("gh pr merge 999 --auto --squash")
 
+def test_auto_every_predicate_spelling():
+    # dev-env#1168 review: gh.exe/uppercase merges reach this gate now, so
+    # --auto must be seen on them too, or the fail-closed gate is bypassed.
+    for command in ("gh.exe pr merge 999 --auto", "GH PR MERGE 999 --auto", "X=1 gh pr merge 999 --auto"):
+        assert is_pr_merge_command(command), command
+        assert wants_auto_merge(command), command
+
 def test_auto_equals_true():
     assert wants_auto_merge("gh pr merge --auto=true --squash")
 

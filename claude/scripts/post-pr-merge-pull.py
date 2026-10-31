@@ -30,7 +30,6 @@ know. Exit-2 on PostToolUse only feeds stderr to the model as feedback; it never
 blocks Claude's work.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
-import json
 import os
 import re
 import subprocess
@@ -41,7 +40,9 @@ from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
     is_merge_help_only,
+    is_pr_merge_command,
     is_rest_merge_command,
+    load_hook_input,
     mask_prose_flag_values,
     output_has_merge_marker,
     output_has_rest_merge_marker,
@@ -49,20 +50,12 @@ from _hookio import (
     read_command_output,
     read_cwd,
     read_exit_code,
-    scan_top_level,
+    SHELL_TOOLS,
     should_confirm_via_gh,
 )
 import _hookutil
 from _repo_target import merge_args, repo_from_flag, repo_from_pr_url, repo_from_rest_merge_path
 from _worktree_topology import canonical_on_main, merge_park_target, parse_worktree_porcelain
-
-# Anchored top-level match — mirrors usage-snapshot.py / pr-merge-reminder.py /
-# post-pr-merge-project.py's identical _check_merge_stmt (ADR-050 Amendments 5/6).
-_MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
-
-
-def _check_merge_stmt(token: str) -> bool:
-    return bool(_MERGE_RE.match(token.lstrip()))
 
 
 # Map GitHub repo slugs to local clone paths.
@@ -310,7 +303,7 @@ def is_successful_merge(command: str, output: str) -> bool:
     .../pulls/<N>/merge`, dev-env#986) — see usage-snapshot.py's
     merge_confirmed() for the full rationale.
     """
-    if scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output):
+    if is_pr_merge_command(command) and output_has_merge_marker(output):
         return True
     return is_rest_merge_command(command) and output_has_rest_merge_marker(output)
 
@@ -333,22 +326,8 @@ def plan_advisory(status_msg: str | None, park_msg: str | None) -> tuple[bool, s
 
 def main() -> None:
     _hookutil.record_heartbeat("post-pr-merge-pull")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
-        # or null) would otherwise crash the very next line (dev-env#1031/
-        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
-        sys.exit(0)
-
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
 
     # dev-env#1031/#1033: read_command()/read_cwd() never raise on a
@@ -367,7 +346,7 @@ def main() -> None:
         # when gh exits abruptly right after a worktree's local-cleanup
         # failure (dev-env#489) — fall back to a live `gh pr view` confirmation
         # rather than silently skipping the local-main fast-forward (dev-env#504).
-        if not scan_top_level(command, _check_merge_stmt):
+        if not is_pr_merge_command(command):
             sys.exit(0)
         # `gh pr merge --help` (or any other non-mutating gh pr merge invocation
         # that prints no marker) can categorically never attempt a real merge —

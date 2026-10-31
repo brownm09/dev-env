@@ -58,6 +58,7 @@ import time
 from pathlib import Path
 
 import _hookout
+from _hookinput import load_hook_input
 import _hookutil
 
 # Reads the TRACKED source (claude/settings.shared.json), not the live machine-local
@@ -222,11 +223,7 @@ def main() -> None:
     # write, so a concurrent writer's live tmp is never swept. Mirrors dev-env-sync.py's #797 sweep.
     _hookutil.cleanup_stale_sentinels("", scratch=_hookutil.HEARTBEAT_DIR, ext=".tmp")
 
-    raw = sys.stdin.read().strip()
-    try:
-        data = json.loads(raw) if raw else {}
-    except Exception:
-        data = {}
+    data = load_hook_input() or {}
     session_id = data.get("session_id") or f"unknown-{int(time.time())}"
 
     # Debounced to once per session -- the 7-day staleness cadence needs nowhere

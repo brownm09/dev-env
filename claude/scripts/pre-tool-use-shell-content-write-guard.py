@@ -71,7 +71,6 @@ Stdin JSON shape (PreToolUse):
     "cwd": "..."
   }
 """
-import json
 import re
 import sys
 
@@ -85,6 +84,7 @@ from _shell_write_detect import (
     tokenize_powershell,
 )
 import _hookout
+from _hookinput import load_hook_input
 import _hookutil
 
 # --- Hazard tests -----------------------------------------------------------
@@ -748,14 +748,8 @@ def _build_block_message(match):
 
 def main():
     _hookutil.record_heartbeat("pre-tool-use-shell-content-write-guard")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-    if not isinstance(data, dict):
+    data = load_hook_input()
+    if data is None:
         sys.exit(0)
 
     tool_name = data.get("tool_name")

@@ -41,8 +41,6 @@ Exit 0 always — a background-housekeeping systemMessage toast at most (via _ho
 PR5 of dev-env#717); never blocks Claude.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
-import json
-import re
 import subprocess
 import sys
 
@@ -53,14 +51,16 @@ from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
     is_merge_help_only,
+    is_pr_merge_command,
     is_rest_merge_command,
+    load_hook_input,
     output_has_merge_marker,
     output_has_rest_merge_marker,
     read_command,
     read_command_output,
     read_cwd,
     read_exit_code,
-    scan_top_level,
+    SHELL_TOOLS,
     should_confirm_via_gh,
 )
 import _hookutil
@@ -72,14 +72,6 @@ RECLAIM_MSG = (
 
 SCAN_DIR = "C:/Users/brown/Git"
 RECLAIM_SCRIPT = Path(__file__).resolve().parent / "reclaim-worktree-disk.py"
-
-# Anchored top-level match — mirrors usage-snapshot.py / pr-merge-reminder.py /
-# post-pr-merge-project.py's identical _check_merge_stmt (ADR-050 Amendments 5/6).
-_MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
-
-
-def _check_merge_stmt(token: str) -> bool:
-    return bool(_MERGE_RE.match(token.lstrip()))
 
 
 def is_successful_merge(command: str, output: str) -> bool:
@@ -102,7 +94,7 @@ def is_successful_merge(command: str, output: str) -> bool:
     .../pulls/<N>/merge`, dev-env#986) — see usage-snapshot.py's
     merge_confirmed() for the full rationale.
     """
-    if scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output):
+    if is_pr_merge_command(command) and output_has_merge_marker(output):
         return True
     return is_rest_merge_command(command) and output_has_rest_merge_marker(output)
 
@@ -137,22 +129,8 @@ def _spawn_reclaim(protect_cwd: str) -> bool:
 
 def main() -> None:
     _hookutil.record_heartbeat("post-pr-merge-reclaim")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
-        # or null) would otherwise crash the very next line (dev-env#1031/
-        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
-        sys.exit(0)
-
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
 
     # dev-env#1031/#1033: read_command()/read_cwd() never raise on a
@@ -171,7 +149,7 @@ def main() -> None:
         # when gh exits abruptly right after a worktree's local-cleanup
         # failure (dev-env#489) — fall back to a live `gh pr view` confirmation
         # rather than silently skipping the disk reclaim (dev-env#504).
-        if not scan_top_level(command, _check_merge_stmt):
+        if not is_pr_merge_command(command):
             sys.exit(0)
         # `gh pr merge --help` (or any other non-mutating gh pr merge invocation
         # that prints no marker) can categorically never attempt a real merge —

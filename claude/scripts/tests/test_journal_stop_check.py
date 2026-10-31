@@ -87,7 +87,9 @@ subprocess git against the journal repo and are not unit-tested here (pure-helpe
 convention) -- the end-to-end no-flag run exercises their fail-closed path.
 The exception is unmerged_draft_branches() (dev-env#628): a real git fixture
 with an unreachable origin pins that it reads local refs/remotes/origin/draft/*
-and issues no network git call, in-process and end-to-end.
+and issues no network git call, in-process and end-to-end. The same fixture also
+drives stale_draft_artifacts() then unmerged_draft_branches() in main()'s order
+and pins a single `git ls-tree` per invocation (dev-env#1165).
 
 Usage:
     py -3 claude/scripts/tests/test_journal_stop_check.py
@@ -111,6 +113,9 @@ SCRIPT = REPO_ROOT / "claude" / "scripts" / "journal-stop-check.py"
 # The script imports _winsubp (sibling in scripts/); make it resolvable.
 sys.path.insert(0, str(SCRIPT.parent))
 import _hookutil  # noqa: E402  -- needs the sys.path.insert above
+from _heartbeat_isolation import isolate_heartbeat  # noqa: E402
+
+isolate_heartbeat()  # keep this file's hook fires out of the real heartbeat ledger (dev-env#1163)
 
 _spec = importlib.util.spec_from_file_location("journal_stop_check", SCRIPT)
 assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
@@ -933,9 +938,13 @@ def test_unmerged_draft_branches_reads_local_refs_without_network():
         _init_draft_refs_fixture(repo)
         jsc.JOURNAL_REPO = repo
         jsc.subprocess.run = recording_run
+        # The composed-dates reader is memoized (dev-env#1165): clear it on both
+        # sides so this test reads its own fixture and leaks nothing to the next.
+        jsc.composed_project_dates_on_main.cache_clear()
         try:
             result = jsc.unmerged_draft_branches()
         finally:
+            jsc.composed_project_dates_on_main.cache_clear()
             jsc.subprocess.run = real_run
             jsc.JOURNAL_REPO = real_repo
     network = [c for c in calls if any(a in ("ls-remote", "fetch", "pull") for a in c)]
@@ -944,6 +953,38 @@ def test_unmerged_draft_branches_reads_local_refs_without_network():
     assert result == ["2020-01-01"], f"got {result!r}"
     return ("local origin/draft/* refs -> uncomposed 2020-01-01 reported, composed + today "
             "filtered, and no ls-remote/fetch/pull issued")
+
+
+def test_composed_dates_ls_tree_runs_once_per_invocation():
+    # dev-env#1165: main() calls stale_draft_artifacts() then unmerged_draft_branches(),
+    # and both read composed_project_dates_on_main() with identical inputs. Each extra
+    # git spawn is per-turn Stop latency on this machine (dev-env#851).
+    real_run = jsc.subprocess.run
+    real_repo = jsc.JOURNAL_REPO
+    calls = []
+
+    def recording_run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        return real_run(cmd, *args, **kwargs)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "engineering-journal"
+        _init_draft_refs_fixture(repo)
+        jsc.JOURNAL_REPO = repo
+        jsc.subprocess.run = recording_run
+        jsc.composed_project_dates_on_main.cache_clear()
+        try:
+            stale = jsc.stale_draft_artifacts()
+            unmerged = jsc.unmerged_draft_branches()
+        finally:
+            jsc.composed_project_dates_on_main.cache_clear()
+            jsc.subprocess.run = real_run
+            jsc.JOURNAL_REPO = real_repo
+    ls_tree = [c for c in calls if "ls-tree" in c]
+    assert len(ls_tree) == 1, f"expected exactly one git ls-tree, got {len(ls_tree)}: {ls_tree}"
+    assert stale == [], f"got {stale!r}"
+    assert unmerged == ["2020-01-01"], f"the cached read must still filter composed dates, got {unmerged!r}"
+    return "stale_draft_artifacts() + unmerged_draft_branches() in one invocation -> one git ls-tree"
 
 
 def test_e2e_unmerged_draft_advisory_without_network():
@@ -1029,6 +1070,7 @@ def main():
         ("e2e stale advisory is a systemMessage", test_e2e_stale_advisory_is_systemmessage),
         ("e2e stop_hook_active allows + preserves flag", test_e2e_stop_hook_active_allows_and_preserves_flag),
         ("unmerged drafts from local refs, no network (dev-env#628)", test_unmerged_draft_branches_reads_local_refs_without_network),
+        ("composed-dates ls-tree runs once per invocation (dev-env#1165)", test_composed_dates_ls_tree_runs_once_per_invocation),
         ("e2e unmerged-draft advisory with unreachable origin (dev-env#628)", test_e2e_unmerged_draft_advisory_without_network),
     ]
     failed = 0

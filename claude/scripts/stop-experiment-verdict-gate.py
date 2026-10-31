@@ -72,8 +72,8 @@ Exit 2 -- an experiment conclusion was stated with no audit; blocking reminder
 """
 from __future__ import annotations
 
+from _hookinput import load_hook_input
 import _hookutil
-import json
 import re
 import sys
 from pathlib import Path
@@ -294,14 +294,8 @@ def main() -> None:
     _hookutil.record_heartbeat("stop-experiment-verdict-gate")
     _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
 
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-    if not isinstance(data, dict):
+    data = load_hook_input()
+    if data is None:
         sys.exit(0)
 
     # Loop guard: once this hook has already blocked and Claude is continuing,

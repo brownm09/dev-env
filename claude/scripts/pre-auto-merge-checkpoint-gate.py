@@ -23,7 +23,8 @@ an unattended async merge. No override token exists (ADR-083 Decision point 4) �
 available fallback is dropping `--auto` and running a plain `gh pr merge` after CI is green, which
 this gate does not touch at all.
 
-Reuses `pre-merge-findings-gate.py`'s `is_pr_merge_command`, `_parse_merge_target`, `_MARKER_RE`,
+Takes `is_pr_merge_command` from `_hookio` (dev-env#1168) and reuses `pre-merge-findings-gate.py`'s
+`_parse_merge_target`, `_MARKER_RE`,
 `_DISPOSED_RE`, and `_fetch_pr_json` (which carries the `MERGE_GATE_TEST_JSON` test seam) via
 `importlib.util.spec_from_file_location` — the same dynamic-load trick
 `test_pre_merge_findings_gate.py` and `test-merge-findings-gate.sh` already use, since a hyphenated
@@ -46,12 +47,12 @@ Exit 0 — allow: not a `gh pr merge`, no `--auto` (or an explicit falsy value),
 invocation, or all checks pass.
 """
 import importlib.util
-import json
 import os
 import re
 import shlex
 import sys
 
+from _hookio import GH_PR_MERGE, is_pr_merge_command, load_hook_input, SHELL_TOOLS
 import _hookutil
 
 
@@ -100,7 +101,6 @@ try:
     _pmfg = importlib.util.module_from_spec(_pmfg_spec)
     _pmfg_spec.loader.exec_module(_pmfg)
 
-    is_pr_merge_command = _pmfg.is_pr_merge_command
     _parse_merge_target = _pmfg._parse_merge_target
     _MARKER_RE = _pmfg._MARKER_RE
     _DISPOSED_RE = _pmfg._DISPOSED_RE
@@ -170,7 +170,7 @@ def _merge_tail(command):
     Amendment 20 paragraph above describes cannot recur here because a well-formed multi-line
     command no longer leaves shlex an unbalanced/dangling slice to reject.
     """
-    m = re.search(r"gh\s+pr\s+merge\b(.*)", command, re.DOTALL)
+    m = re.search(GH_PR_MERGE + r"(.*)", command, re.DOTALL | re.IGNORECASE)
     if not m:
         return ""
     tail = strip_line_continuations(m.group(1))  # join shell line-continuations (dev-env#823, #831)
@@ -267,38 +267,12 @@ def _qualifying_comment(comments):
 
 def main() -> None:
     _hookutil.record_heartbeat("pre-auto-merge-checkpoint-gate")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-    # dev-env#1031/#1033, corrected post-review: an earlier version of this
-    # migration deliberately did NOT add this guard, reasoning that a non-dict
-    # top-level `data` was "more implausible" than a malformed `tool_input`
-    # and so should keep crashing into this file's fail-CLOSED `__main__`
-    # handler (ADR-083 Decision point 3) rather than exit 0 like the other
-    # twelve sibling hooks in this migration. Review correctly identified
-    # that reasoning as inconsistent: PLAUSIBILITY isn't the axis that
-    # matters here, CONSEQUENCE is -- and the consequence is identical for
-    # both malformed-payload shapes. Once `data` OR `tool_input` is
-    # unreadable, this hook has no way to tell whether the command it's
-    # looking at was ever a `gh pr merge --auto` in the first place (no
-    # `tool_response` exists yet at PreToolUse time to fall back on).
-    # Crashing into `_fail_closed(...)` for the non-dict-`data` case blocked
-    # EVERY Bash/PowerShell call on a rare payload glitch -- an ordinary
-    # `git status`, an `npm test` -- with a "the --auto checkpoint gate
-    # crashed while evaluating this merge" message and remediation advice
-    # ("drop --auto and run a plain `gh pr merge`") that is nonsensical for
-    # whatever command was actually run. That is exactly the over-broad
-    # blast radius this same migration already rejects for the `tool_input`
-    # case two paragraphs below -- there is no principled reason to treat
-    # the two non-dict shapes in opposite directions. Guarding here instead
-    # brings this file in line with the other twelve.
-    if not isinstance(data, dict):
-        sys.exit(0)
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    # An unreadable payload (empty, not JSON, not an object) allows rather than
+    # failing closed: nothing shows the command was a merge at all, so blocking
+    # would block every Bash call (dev-env#1031/#1033; ADR-083 point 3 covers
+    # crashes after a payload was read).
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
     # dev-env#1031/#1033: read_command() never raises on a present-but-non-dict
     # tool_input (dev-env#1028's payload shape) -- the pre-fix

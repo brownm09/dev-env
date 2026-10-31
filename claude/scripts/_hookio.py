@@ -66,6 +66,7 @@ Usage:
     from _hookio import output_has_merge_marker
     from _hookio import effective_merge_dir, scan_top_level, split_top_level
     from _hookio import is_help_only, is_merge_help_only
+    from _hookio import load_hook_input, SHELL_TOOLS, is_pr_merge_command
 
 See ADR-049 (root cause + canonical read) and ADR-050 (shared helper + sibling
 hook fixes).  See ADR-067 for the merge-dir scoping.
@@ -77,6 +78,8 @@ import json
 import os
 import re
 from collections.abc import Callable
+
+from _hookinput import SHELL_TOOLS, load_hook_input  # noqa: F401 -- re-exported (dev-env#1168)
 
 # `subprocess` and `_winsubp` are imported lazily, inside `confirm_merge_via_gh`
 # -- the only function here that spawns a process. Importing them at module
@@ -264,8 +267,23 @@ def merge_pr_number_from_output(output: str) -> int | None:
     return None
 
 
+# The one `gh pr merge` spelling every merge hook and parser builds from
+# (dev-env#1168): `gh` or `gh.exe`, compiled with re.IGNORECASE. Hand copies of
+# this pattern drifted into four variants before, so build from it, never copy it.
+GH_PR_MERGE = r"gh(?:\.exe)?\s+pr\s+merge\b"
+
+# Leading `NAME=value` assignments, unquoted or quoted, as in the
+# `ALLOW_CANONICAL_MUTATE=1 gh pr merge -d` override CLAUDE.md prescribes.
+_ENV_PREFIX_RE = re.compile(r"""(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)*""")
+
+
+def strip_env_prefix(statement: str) -> str:
+    """Return *statement* without its leading `NAME=value` assignments."""
+    return statement[_ENV_PREFIX_RE.match(statement).end():]
+
+
 # Locates the `gh pr merge` token so the pre-merge region can be bounded.
-_BARE_MERGE_RE = re.compile(r"\bgh\s+pr\s+merge\b")
+_BARE_MERGE_RE = re.compile(r"\b" + GH_PR_MERGE, re.IGNORECASE)
 # Matches a `cd <path>` followed by `&&` or `;` — identical pattern to the push
 # equivalent in pr-merge-reminder.py but scoped to merge commands here.
 _MERGE_CD_CHAIN_RE = re.compile(r"""cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)""")
@@ -1201,8 +1219,8 @@ def mask_prose_flag_values(command: str) -> str:
 # ---------------------------------------------------------------------------
 # is_help_only / is_merge_help_only  (dev-env#557, generalized dev-env#636)
 #
-# `gh pr merge --help` textually satisfies every `is_pr_merge_command` /
-# `_check_merge_stmt` predicate in this hook family — it *is* a `gh pr merge`
+# `gh pr merge --help` textually satisfies `is_pr_merge_command`, the merge
+# predicate every hook in this family shares — it *is* a `gh pr merge`
 # invocation, syntactically. Since --help prints no success marker,
 # `should_confirm_via_gh` returns True (no marker + non-zero/-1 exit),
 # triggering a live `gh pr view` confirmation with no explicit PR number —
@@ -1222,7 +1240,8 @@ def mask_prose_flag_values(command: str) -> str:
 # it with its pre-existing signature/behavior unchanged.
 # ---------------------------------------------------------------------------
 
-_GH_MERGE_INVOCATION_RE = re.compile(r"gh(?:\.exe)?\s+pr\s+merge\b", re.IGNORECASE)
+# A statement that starts with `gh pr merge`, after any `NAME=value` prefix.
+_GH_MERGE_INVOCATION_RE = re.compile(_ENV_PREFIX_RE.pattern + GH_PR_MERGE, re.IGNORECASE)
 
 # A standalone --help/-h flag token: bounded by whitespace/start/end so it
 # can't be mistaken for part of a longer token (e.g. `--helpful`, a branch
@@ -1290,3 +1309,18 @@ def is_merge_help_only(command: str) -> bool:
     signature; see dev-env#557 (this module's header docstring) for the
     motivating incident."""
     return is_help_only(command, _GH_MERGE_INVOCATION_RE)
+
+
+def _check_merge_stmt(token: str) -> bool:
+    return bool(_GH_MERGE_INVOCATION_RE.match(token.lstrip()))
+
+
+def is_pr_merge_command(command: str) -> bool:
+    """True iff *command* has a top-level `gh pr merge` statement, i.e. not one
+    merely mentioned inside a quoted string, $() subshell or heredoc body
+    (dev-env#499). Matches `gh.exe`, any case, and a leading `NAME=value`
+    prefix, with the same compiled pattern `is_merge_help_only` uses, so a
+    gate and its help-only check always agree on what a merge is. The one copy
+    every merge hook imports (dev-env#1168); ten hooks used to carry their own,
+    in four regex variants. Unanchored merge parsers build from `GH_PR_MERGE`."""
+    return scan_top_level(command, _check_merge_stmt)

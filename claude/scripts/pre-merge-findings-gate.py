@@ -39,17 +39,15 @@ can) — see the inline comment at `command = read_command(data)` in `main()` an
 ADR-050 Amendment 27 for the full reasoning, including why failing CLOSED here
 instead was considered and rejected.
 
-Merge detection is built on `_hookio.scan_top_level` (dev-env#519), the same
-quote/subshell/heredoc-aware engine `pre-merge-numbering-check.py` and
-`pr-merge-reminder.py` already use — not a plain unanchored `re.search` over
-the whole command string, which could spuriously fire on a `gh pr merge`
-mentioned only inside a heredoc body or `$()` subshell (dev-env#499) and pay
-this hook's live `gh pr view` call for a command that never actually merges.
+Merge detection is `_hookio.is_pr_merge_command` (dev-env#1168), the predicate
+every merge hook shares: top-level statements only, so a `gh pr merge` mentioned
+inside a heredoc body or `$()` subshell (dev-env#499) never pays this hook's live
+`gh pr view` call.
 
-`is_pr_merge_command`, `_parse_merge_target`, `_MARKER_RE`, `_DISPOSED_RE`, and `_fetch_pr_json`
-are also imported by `pre-auto-merge-checkpoint-gate.py` (ADR-083) via a dynamic
-`importlib.util.spec_from_file_location` load, despite the leading underscore on three of
-them — do not rename, remove, or change the signature/regex-group shape of any of these five
+`_parse_merge_target`, `_MARKER_RE`, `_DISPOSED_RE`, and `_fetch_pr_json` are also
+imported by `pre-auto-merge-checkpoint-gate.py` (ADR-083) via a dynamic
+`importlib.util.spec_from_file_location` load, despite their leading underscore —
+do not rename, remove, or change the signature/regex-group shape of any of these four
 without updating that file too.
 
 Also fires for the PowerShell tool (dev-env#620): registered under both the
@@ -70,16 +68,18 @@ import sys
 
 import _hookout
 from _hookio import (
+    GH_PR_MERGE,
     is_merge_help_only,
+    is_pr_merge_command,
+    load_hook_input,
     mask_quoted_spans,
     read_command,
     read_cwd,
-    scan_top_level,
+    SHELL_TOOLS,
     strip_line_continuations,
 )
 import _hookutil
 
-_MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
 _MARKER_RE = re.compile(
     r"<!--\s*review-findings:\s*blocking\s*=\s*(\d+)\s+non_blocking\s*=\s*(\d+)\s*-->"
 )
@@ -90,19 +90,6 @@ _DISPOSED_RE = re.compile(r"findings[\s\-]dispos", re.IGNORECASE)
 # Flags to `gh pr merge` that consume the following token as their value.
 _VALUE_FLAGS = {"--repo", "-R", "-b", "--body", "-t", "--subject", "--match-head-commit",
                 "--author-email"}
-
-
-def _check_merge_stmt(token):
-    return bool(_MERGE_STMT_RE.match(token.lstrip()))
-
-
-def is_pr_merge_command(command):
-    """True iff *command* contains a top-level `gh pr merge` -- i.e. not one
-    merely mentioned inside a quoted string, $() subshell, or heredoc body
-    (dev-env#499). Mirrors `pre-merge-numbering-check.py`'s identically-named
-    predicate (dev-env#519).
-    """
-    return scan_top_level(command, _check_merge_stmt)
 
 
 def _parse_merge_target(command):
@@ -138,7 +125,7 @@ def _parse_merge_target(command):
     so the masked split's length slices the correct, UNMASKED prefix back out
     of the real tail before the (unchanged) tokenization step above runs.
     """
-    m = re.search(r"gh\s+pr\s+merge\b(.*)", command, re.DOTALL)
+    m = re.search(GH_PR_MERGE + r"(.*)", command, re.DOTALL | re.IGNORECASE)
     if not m:
         return None, None
     tail = strip_line_continuations(m.group(1))  # join shell line-continuations (dev-env#831)
@@ -208,19 +195,8 @@ def _fetch_pr_json(view_cmd, cwd):
 
 def main() -> None:
     _hookutil.record_heartbeat("pre-merge-findings-gate")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
-        # or null) would otherwise crash the very next line (dev-env#1031,
-        # mirroring usage-snapshot.py's dev-env#1028 post-review fix).
-        sys.exit(0)
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
     # dev-env#1031: read_command() never raises on a present-but-non-dict
     # tool_input (dev-env#1028's payload shape) -- the pre-fix

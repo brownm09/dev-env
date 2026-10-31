@@ -293,7 +293,7 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_post_tool_use.py
     ```
 
-13. **_hookio shared-read test** — required when changing `claude/scripts/_hookio.py`. Exercises the pure
+13. **_hookio shared-read test** — required when changing `claude/scripts/_hookio.py` or `claude/scripts/_hookinput.py`. Exercises the pure
     `read_command_output()` and merge-marker helpers (`output_has_merge_marker` / `merge_pr_number_from_output`) offline (no network, no gh): pins that the real `stdout`/`stderr`-shaped
     Bash payload yields the command output (the pre-#380 `output` read was always `""`), that stdout and
     stderr are joined, that the legacy `output` field is still honored as a fallback, and that a missing /
@@ -356,6 +356,18 @@ For a one-line navigational map of the test directory, see
     Bash call). A probe in a fresh interpreter pins that `import _hookio` loads neither module. No
     caller depends on `_hookio` for the `_winsubp` patch: every script that calls subprocess imports
     `_winsubp` itself, which item 2 (`test_pyw_stdio.py`) enforces.
+
+    **Shared merge predicate and stdin loader (dev-env#1168, ADR-050 Amendment 29).** Every merge
+    hook now imports `is_pr_merge_command` and every hook with the standard stdin block imports
+    `load_hook_input` (from `_hookinput.py`, re-exported here), so these tests guard all of them.
+    `load_hook_input` returns None for an empty, non-JSON or non-object payload and for a
+    `tool_name` outside `tools=`. `is_pr_merge_command` matches a top-level `gh`/`gh.exe pr merge`
+    in any case, after any `NAME=value` prefix (quoted values included), and rejects quoted,
+    heredoc and `$()` mentions. Two tests pin agreement: `is_merge_help_only` and
+    `is_pr_merge_command` classify every spelling the same way, and the argument parsers built on
+    `GH_PR_MERGE` (`merge_args`, `effective_merge_dir`) find the merge in every spelling the
+    predicate admits. The gates' own parsers are pinned in items 38 and 52, and the stop-tile gate's
+    first-word match in item 48.
 
     ```bash
     py -3 claude/scripts/tests/test_hookio.py
@@ -765,8 +777,8 @@ For a one-line navigational map of the test directory, see
     ```
 
 24. **pre-merge-message-check test** — required when changing `claude/scripts/pre-merge-message-check.py`.
-    Exercises the pure `is_pr_merge_command` predicate (built on the shared `_hookio.scan_top_level`,
-    matching `pre-merge-numbering-check.py`'s identically-named predicate — dev-env#519) and the
+    Exercises the pure `is_pr_merge_command` predicate (`_hookio`'s shared one, which every merge hook
+    imports — dev-env#1168) and the
     `_read_queue()` helper offline (tmp files for queue content; no network, no gh): pins that
     detection fires on a bare / flagged / chained / `cd`-chained `gh pr merge` invocation and stays
     silent on a non-merge command or a `gh pr merge` mentioned only inside a heredoc body
@@ -1177,8 +1189,7 @@ For a one-line navigational map of the test directory, see
     check against https, ssh, and other-repo origin URLs; pins that a gap already present on
     `origin/main` alone is never re-advised (only a gap this branch's own numbers create or
     extend is), so a long-standing legitimate hole doesn't nag on every future merge; and pins
-    `is_pr_merge_command` (built on the shared `_hookio.scan_top_level`, matching
-    `pr-merge-reminder.py`'s identically-named predicate) against a bare invocation, a
+    `is_pr_merge_command` (`_hookio`'s shared predicate, dev-env#1168) against a bare invocation, a
     `cd`-chained one, and a `gh pr merge` mentioned only inside a heredoc body, which must NOT
     match (dev-env#499). A second, end-to-end layer drives the real `main()` over stdin via
     subprocess against real throwaway git repos (a bare "origin" plus independent clones,
@@ -1196,9 +1207,7 @@ For a one-line navigational map of the test directory, see
 
 38. **pre-merge-findings-gate test** — required when changing `claude/scripts/pre-merge-findings-gate.py`.
     Two layers, mirroring this hook family's established split. A pure-helper Python test exercises
-    `is_pr_merge_command` offline (built on the shared `_hookio.scan_top_level`, matching
-    `pre-merge-numbering-check.py`'s and `pre-merge-message-check.py`'s identically-named predicate —
-    dev-env#519): pins a bare, `&&`-chained, and `cd`-chained top-level `gh pr merge` match, and that
+    `is_pr_merge_command` offline (`_hookio`'s shared predicate, dev-env#1168): pins a bare, `&&`-chained, and `cd`-chained top-level `gh pr merge` match, and that
     a non-merge command or a `gh pr merge` mentioned only inside a heredoc body (dev-env#499) does not match, so
     the hook's live `gh pr view` call is never paid for a command that never actually merges. A
     behavioral shell test drives the real hook end-to-end via the `MERGE_GATE_TEST_JSON` seam (no
@@ -1549,9 +1558,7 @@ For a one-line navigational map of the test directory, see
     ```
 
 45. **pre-merge-branch-check test** — required when changing `claude/scripts/pre-merge-branch-check.py`.
-    Exercises `is_pr_merge_command()` (built on the shared `_hookio.scan_top_level`, matching the
-    identically-named predicate in `pre-merge-message-check.py` / `pre-merge-numbering-check.py` —
-    dev-env#519): a bare and a `cd`-chained `gh pr merge` match, a `gh pr merge` mentioned only
+    Exercises `is_pr_merge_command()` (`_hookio`'s shared predicate, dev-env#1168): a bare and a `cd`-chained `gh pr merge` match, a `gh pr merge` mentioned only
     inside a heredoc body does not (dev-env#499), and an unrelated `gh` command does not. Also
     exercises `build_message()`: no drift is a single line with no warning appended, a drift warning
     appends on its own line after the branch-display text, and `None` branch/repo_root render
@@ -2095,6 +2102,14 @@ For a one-line navigational map of the test directory, see
     deliver the `Unmerged draft branch(es)` systemMessage. Both tests fail against the former live
     `git ls-remote` implementation.
 
+    dev-env#1165 pins that `composed_project_dates_on_main()` runs its `git ls-tree origin/main` at most
+    once per hook invocation. Against the same fixture, `stale_draft_artifacts()` then
+    `unmerged_draft_branches()` are called in-process (the order `main()` uses) with `subprocess.run`
+    recorded, and exactly one `ls-tree` must appear while the composed-date filter still applies. The
+    reader is `functools.lru_cache`-memoized like its twin in `new-day-journal-check.py`; a cache
+    persists across tests in one process, so both fixture tests call `cache_clear()` before and after.
+    The test fails against the former uncached reader (two `ls-tree` calls).
+
     dev-env#1002 (ADR-091 Amendment 3) adds a fourth pure-helper group and end-to-end cases addressing
     the archive reminder's own blind spot: it previously fired unconditionally even when the session's
     own transcript showed other approved, unfinished work. A `/review` pass on the closing PR (#1009)
@@ -2610,7 +2625,7 @@ For a one-line navigational map of the test directory, see
 61. **hook output-contract + ASCII-literal gate** — required when changing
     `claude/scripts/tests/test_hook_output_contract.py` or the shared
     `claude/scripts/tests/_hook_wiring.py` (the settings.json parser all three PR3 gates —
-    items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 106 when
+    items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 107 when
     changing it). AST gate over every wired hook
     (via `_hook_wiring`, cross-referencing each script's event class against the SSOT
     `_hookout.STDOUT_MODEL_VISIBLE_EVENTS`, ADR-103) for four invisible-emission shapes: **A**
@@ -3454,7 +3469,7 @@ For a one-line navigational map of the test directory, see
 
     1. **Row coverage** — every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`, subdirectories, and the exemption set) appears in some table's **first** column. First column, not "mentioned anywhere": a prose cross-reference is not an index entry. A first cell may legitimately name two files (a shared module's paired tests, e.g. ``` `test_winsubp.py`, `test_pyw_stdio.py` ```) — both count.
     2. **No orphan rows** — every first-column filename exists on disk, catching a rename or delete that updated the file but not its row.
-    3. **Exemptions are real and indexed** — each exempt file both exists and appears *somewhere* in the README, so an exemption can never silently hide a file's deletion. The only current exemption is `_hook_wiring.py` in `claude/scripts/tests/`, which is deliberately indexed in the **second** column (with a `—` first cell) because it is test-support infrastructure, not a test.
+    3. **Exemptions are real and indexed** — each exempt file both exists and appears *somewhere* in the README, so an exemption can never silently hide a file's deletion. The current exemptions are `_hook_wiring.py` and `_heartbeat_isolation.py` in `claude/scripts/tests/`, which are deliberately indexed in the **second** column (with a `—` first cell) because they are test-support infrastructure, not tests.
     4. **Header counts** — each header count sentence occurs **exactly once** and equals the live directory count (`claude/scripts/tests/`: `test_*.py`, bash-gate, and total; `claude/scripts/`: top-level total). Exactly-once, not first-match, so a stray second copy of a count phrase can't hide drift behind it.
     5. **Section counts** — every `### Title (N)` heading's N equals that section's first-column entry count, **and** the number of `(N)` headings matches a per-directory expectation (`claude/scripts/README.md`: 5; `claude/scripts/tests/README.md`: 0) so a heading reworded past the `(N)` form can't silently drop out of gating.
     6. **Component completeness** — where a header breaks its total into components (the tests README's "N `test_*.py`, N bash gates, one module"), every indexable file matches a declared component glob or is an exemption, so a file of a new kind (e.g. a stray `.ps1`) can't make the components silently fail to sum to the gated total.
@@ -4657,7 +4672,95 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_turn_count_hook.py
     ```
 
-106. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`,
+106. **heartbeat-ledger isolation gate** — required when adding or changing any test that runs a
+    real wired hook (a subprocess or a `<module>.main()` call), or when changing
+    `claude/scripts/tests/_heartbeat_isolation.py` (dev-env#1163).
+
+    Every wired hook's `main()` starts with `_hookutil.record_heartbeat()` (ADR-106), which writes
+    `~/.claude/scratch/hook-heartbeat/<hook>.ts` and appends to `<hook>.dur.jsonl` (item 104). A
+    test that runs a real hook without `HOOK_HEARTBEAT_DIR_OVERRIDE` refreshes that hook's
+    liveness heartbeat, which can hide a hook that stopped firing in production for up to the
+    7-day cadence, and mixes test fires into the timing data. Hook-driving tests call
+    `isolate_heartbeat()` from `_heartbeat_isolation.py` once at module level. It points the
+    override at a temp directory for that test process, so in-process `main()` calls and every
+    subprocess that inherits `os.environ` are covered. A test that builds a subprocess
+    environment from scratch sets the variable in it itself, as `test_hook_liveness_check.py`
+    does (it points the override at its temp home's ledger, the directory the hook reads back),
+    and the two bash gates export it. The override is set per test file, not by
+    `run-hook-tests.py`, because `test_hookutil.py`'s precedence tests need it unset.
+
+    The gate classifies every `test_*.py` and `*.sh` in both test directories. A file is
+    *hook-driving* when a code string contains a wired script's basename from
+    `claude/settings.shared.json` and the file runs something:
+    - A subprocess call that launches Python. That covers `subprocess.run` and friends, also
+      under an alias (`import subprocess as sp`) or as a bare `run` from
+      `from subprocess import run`. The call launches Python when its arguments name
+      `sys.executable`, a `py`/`python` literal, or a shell string starting with one, or when
+      they use a launcher: a function, method or variable anywhere in the file that names one
+      (`_py_cmd()`, `self._py()`, `PY = [sys.executable]`, `cmd = [sys.executable, HOOK]`).
+    - A `.main()` call on a module or an expression (`mod.main()`, `_load().main()`).
+    - A `runpy` call.
+    - In bash, any `py -3`, `pyw -3`, `python`, `$PY` or `$PYTHON`, matched case-insensitively.
+
+    A bare `main()` (the test file's own runner) and `unittest.main()` do not count. A file is
+    *isolated* when one of these holds:
+    - It calls `isolate_heartbeat()` as a module-level statement, so the call runs at import.
+      A call inside a test function runs too late.
+    - It *sets* the override: a subscript assignment (`env["…"] = …`), a dict-literal key, or
+      a keyword argument (`dict(os.environ, …=…)`). In bash, an assignment or `export`.
+
+    Naming the override in a docstring, a comparison, a `.pop()` or an `unset` does not count.
+    Every hook-driving file must be isolated, with no exemptions.
+
+    Known gaps:
+    - The detector does not follow a launcher defined in another module.
+    - It misses a hook path built without the hook's literal basename, and `main` reached
+      through `getattr`.
+    - It cannot tell whether a hand-built environment (`env={"PATH": …}`) in a file that also
+      calls `isolate_heartbeat()` drops the override.
+    - The bash rule only checks that some line sets the override, not that it does so before
+      the hook runs.
+
+    The non-empty floor guards against the detector going blind across the board, not against
+    one new test using such a shape. Embedded fixtures cover the shapes it does recognize.
+
+    Calibration, measured 2026-10-30 against `ec66eb1` before the fix. A temporary probe in
+    `record_heartbeat` logged every call that resolved to the real ledger, tagged by test file.
+    Fifteen files wrote there (13 Python, plus `test-auto-merge-checkpoint-gate.sh` and
+    `test-merge-findings-gate.sh`), led by `test_canonical_mutate_guard.py` at 43 fires per
+    run. The detector flagged all 15. It also flagged 10 more that ran real hooks under a
+    temp-HOME redirect. The rule above treats those as offenders too, since one of the 15,
+    `test_skill_file_size_advisory.py`, mixed both and leaked from its unredirected cases. It
+    flagged no file that never ran a hook. An earlier version that counted any `main()` call or
+    any subprocess flagged 19 extra files; the bare-`main()` and Python-launch rules removed
+    them. After the fix the same probe logged zero writes across the whole suite.
+
+    Two rounds of review widened the hook-driving shapes to everything listed above and
+    narrowed "isolated" to setting the override rather than naming it. On the real corpus the
+    detector still classifies the same 29 files as hook-driving, all isolated, so neither
+    round added a false positive or exposed a new leak. The 29 are the 15 writers, the 10
+    temp-HOME drivers, and 4 files isolated before this change (`test_worktree_path_check.py`,
+    `test_sibling_hooks_hardened_io.py`, `test_scratch_rm_allow.py`, `test_turn_count_hook.py`).
+
+    Embedded fixtures pin each known-bad shape:
+    - every hook-driving form listed above, unisolated;
+    - a docstring-only mention of the override;
+    - `isolate_heartbeat()` called only inside a test;
+    - the override name only compared and popped;
+    - two bash gates: one unisolated, one that only `unset`s the override and calls `$PYTHON`.
+
+    They also pin the known-good ones:
+    - each isolation form (module-level call, subscript, keyword) and an isolated bash gate;
+    - a test that loads a hook and runs git and its own `main()`/`unittest.main()`, but never
+      runs the hook. Two non-empty checks fail the gate if the wired-script list or the
+    hook-driving set shrinks below its floor, so a detector that stops recognizing anything
+    cannot pass.
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_heartbeat_isolation.py
+    ```
+
+107. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`,
      `setup.sh`'s link arrays (the doctor's `LINKED_ITEMS` / `HOME_LINKS` are pinned against
      them), `claude/scripts/tests/_hook_wiring.py` (the doctor imports it), or the command form
      of the hooks in `claude/settings.shared.json`. Exercises the doctor's pure decision helpers
@@ -4669,8 +4772,8 @@ For a one-line navigational map of the test directory, see
      `_kill_tree()`, the thin I/O layer around the helpers, are deliberately untested, per the
      repo's no-subprocess-mock convention; the whole script was run live on this machine, online
      and offline, and in a sandboxed `HOME` for
-     [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114). (Numbered 106 because items
-     100–105 went to tests that merged to `main` while this one's PR was open.)
+     [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114). (Numbered 107 because items
+     100–106 went to tests that merged to `main` while this one's PR was open.)
 
      31 cases, passing on Python 3.12 and 3.10. `LINKED_ITEMS` and `HOME_LINKS` equal
      `setup.sh`'s four parsed link arrays, after asserting each parse extracted something — an

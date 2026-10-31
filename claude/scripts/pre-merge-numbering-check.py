@@ -40,7 +40,7 @@ merge on its own failure -- matching `pre-merge-findings-gate.py` and
 
 Pure-helper convention (matches the rest of `claude/scripts/`): extraction,
 collision-detection, gap-detection, message-formatting, and merge-command
-detection (`is_pr_merge_command`, built on `_hookio.scan_top_level`) are pure
+detection (`_hookio.is_pr_merge_command`, dev-env#1168) are pure
 functions, unit-tested offline in `tests/test_pre_merge_numbering_check.py`
 with no subprocess, network, or disk. `main()`'s git/subprocess orchestration
 is additionally covered end-to-end by a handful of real-subprocess tests in
@@ -68,31 +68,16 @@ import sys
 from _hookio import (
     effective_merge_dir,
     is_merge_help_only,
+    is_pr_merge_command,
+    load_hook_input,
     read_command,
     read_cwd,
-    scan_top_level,
+    SHELL_TOOLS,
 )
 import _hookutil
 
-_MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
 _TESTING_ITEM_RE = re.compile(r'^(\d+)\.\s+\*\*')
 _ADR_ROW_RE = re.compile(r'^\|\s*\[(\d+)\]\(')
-
-
-def _check_merge_stmt(token):
-    return bool(_MERGE_STMT_RE.match(token.lstrip()))
-
-
-def is_pr_merge_command(command):
-    """True iff *command* contains a top-level `gh pr merge` -- i.e. not one
-    merely mentioned inside a quoted string, $() subshell, or heredoc body
-    (dev-env#499). Mirrors `pr-merge-reminder.py`'s identically-named
-    predicate. Unlike this hook's two older PreToolUse-merge siblings
-    (`pre-merge-message-check.py`, `pre-merge-findings-gate.py`), which still
-    use an unanchored regex, this one is built on the shared engine those two
-    predate -- dev-env#519 tracks migrating them for consistency.
-    """
-    return scan_top_level(command, _check_merge_stmt)
 
 
 def extract_section(text, heading):
@@ -239,19 +224,8 @@ def _run_git(args, cwd):
 
 def main():
     _hookutil.record_heartbeat("pre-merge-numbering-check")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
-        # or null) would otherwise crash the very next line (dev-env#1031/
-        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
-        sys.exit(0)
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
     # dev-env#1031/#1033: read_command() never raises on a present-but-non-dict
     # tool_input (dev-env#1028's payload shape) -- the pre-fix unguarded chain

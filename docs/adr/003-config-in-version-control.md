@@ -270,7 +270,7 @@ the bootstrap this ADR's link topology depends on.
 
 Setup now ends by running `claude/scripts/dev-env-doctor.py`, a read-only check of the whole install:
 links, hook-command scripts, tools and auth, per-clone `core.hooksPath` overrides, and the journal clone
-(Testing item 106). Setup exits non-zero while the doctor reports a FAIL, and the doctor never waits on a
+(Testing item 107). Setup exits non-zero while the doctor reports a FAIL, and the doctor never waits on a
 credential prompt. On a profile other than the one the tracked hook commands name, the settings sync withholds
 those hooks, because the launcher and scripts they name are missing there and a missing launcher blocks every
 prompt ([ADR-148](148-missing-hook-script-fails-open-via-launcher.md) §3;

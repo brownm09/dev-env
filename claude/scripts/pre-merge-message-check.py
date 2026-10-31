@@ -14,11 +14,9 @@ then re-attempts the merge.
 Fails OPEN: any I/O or JSON error exits 0 so a misconfigured queue file never
 permanently wedges a merge.
 
-Merge detection is built on `_hookio.scan_top_level` (dev-env#519), the same
-quote/subshell/heredoc-aware engine `pre-merge-numbering-check.py` and
-`pr-merge-reminder.py` already use — not a plain unanchored `re.search` over
-the whole command string, which could spuriously fire on a `gh pr merge`
-mentioned only inside a heredoc body or `$()` subshell (dev-env#499).
+Merge detection is `_hookio.is_pr_merge_command` (dev-env#1168), the predicate
+every merge hook shares: top-level statements only, so a `gh pr merge` mentioned
+inside a heredoc body or `$()` subshell never fires it (dev-env#499).
 
 Also fires for the PowerShell tool (dev-env#620): registered under both the
 Bash and PowerShell PreToolUse matchers in settings.json, since PowerShell is
@@ -30,12 +28,10 @@ Exit 2 — block the merge and show queued messages (queue has content).
 Exit 0 — allow (queue absent, empty, whitespace-only, or any error).
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
-import json
 import os
-import re
 import sys
 
-from _hookio import read_command, scan_top_level
+from _hookio import is_pr_merge_command, load_hook_input, read_command, SHELL_TOOLS
 import _hookutil
 
 # Overridable so a subprocess-driven end-to-end test can point this at a
@@ -43,20 +39,6 @@ import _hookutil
 # pre-tool-use-journal-draft-worktree-guard.py's JOURNAL_DRAFT_WORKTREE_GUARD_REPO_PATH
 # and pre-tool-use-canonical-mutate-guard.py's CANONICAL_MUTATE_GUARD_JOURNAL_PATH).
 _QUEUE_FILE = os.environ.get("MERGE_QUEUE_FILE_PATH", "C:/Users/brown/.claude/merge-queue.md")
-_MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
-
-
-def _check_merge_stmt(token):
-    return bool(_MERGE_STMT_RE.match(token.lstrip()))
-
-
-def is_pr_merge_command(command):
-    """True iff *command* contains a top-level `gh pr merge` -- i.e. not one
-    merely mentioned inside a quoted string, $() subshell, or heredoc body
-    (dev-env#499). Mirrors `pre-merge-numbering-check.py`'s identically-named
-    predicate (dev-env#519).
-    """
-    return scan_top_level(command, _check_merge_stmt)
 
 
 def _read_queue():
@@ -70,19 +52,8 @@ def _read_queue():
 
 def main() -> None:
     _hookutil.record_heartbeat("pre-merge-message-check")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
-        # or null) would otherwise crash the very next line (dev-env#1031/
-        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
-        sys.exit(0)
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
     # dev-env#1031/#1033: read_command() never raises on a present-but-non-dict
     # tool_input (dev-env#1028's payload shape) -- the pre-fix unguarded chain

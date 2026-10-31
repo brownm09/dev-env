@@ -2,9 +2,7 @@
 """Unit tests for pre-merge-branch-check.py.
 
 Exercises the pure helpers offline (no subprocess, no stdin): `is_pr_merge_command()`
-(built on the shared `_hookio.scan_top_level`, matching the identically-named
-predicate in pre-merge-message-check.py / pre-merge-numbering-check.py —
-dev-env#519) and the new `build_message()` formatter added for dev-env#573's
+(`_hookio`'s shared predicate, imported by every merge hook — dev-env#1168) and the new `build_message()` formatter added for dev-env#573's
 drift-warning integration. `current_branch()` / `current_repo_root()` shell
 out to git and are not covered here (pure-helper convention).
 

@@ -80,7 +80,7 @@ from __future__ import annotations
 
 import re
 
-from _hookio import mask_quoted_spans, strip_line_continuations
+from _hookio import GH_PR_MERGE, mask_quoted_spans, strip_line_continuations
 
 # ---------------------------------------------------------------------------
 # --repo / -R flag  (canonical, ends the three-shape drift)
@@ -129,7 +129,7 @@ _POS_NUM_RE = re.compile(r"(?<!\S)(\d+)(?=\s|$)")
 # extraction.  Group 1 is the args span.  The negated class has no quote-awareness
 # of its own, which is why _invocation_args searches a mask_quoted_spans copy
 # (ADR-050 Amendment 20).
-_MERGE_ARGS_RE = re.compile(r"\bgh\s+pr\s+merge\b([^\n;|&]*)")
+_MERGE_ARGS_RE = re.compile(r"\b" + GH_PR_MERGE + r"([^\n;|&]*)", re.IGNORECASE)
 _CREATE_ARGS_RE = re.compile(r"\bgh\s+pr\s+create\b([^\n;|&]*)")
 _ISSUE_CREATE_ARGS_RE = re.compile(r"\bgh\s+issue\s+create\b([^\n;|&]*)")
 
