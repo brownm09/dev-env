@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **102 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **103 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -101,7 +101,7 @@ invocation instead.
 | `merge-stale-pr.sh` | `bash merge-stale-pr.sh <PR-URL>` | Remediates a stale engineering-journal draft PR: checks out, warns on a missing journal file, deletes orphaned drafts, rebases, squash-merges. |
 | `retro-chain-status.py` | `py -3 retro-chain-status.py --repo <owner/repo> [--repo ...] [--journal-repo PATH]` | Read-only per-repo classifier for the retro-action chained-tile backlog (dev-env#967): reports ALIVE/UNRESOLVED/NO_QUEUE_FOUND/QUEUE_EXHAUSTED/ALL_TILED/AMBIGUOUS/NEEDS_REFILL; never mutates anything, a per-repo failure lands in that repo's own `{"status": "ERROR", "error": "..."}` entry. Engine behind the `retro-chain-refill` skill. |
 
-### PR / merge workflow (19)
+### PR / merge workflow (20)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -118,6 +118,7 @@ invocation instead.
 | `post-merge-tile-checkpoint.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` or the two-step REST merge fallback | Blocking reminder to spawn follow-up tiles via `spawn_task` immediately after a merge. |
 | `post-pr-merge-pull.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` or the two-step REST merge fallback | Fast-forwards local `main`; parks a worktree left squatting `main` by `--delete-branch`. |
 | `post-pr-merge-reclaim.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` or the two-step REST merge fallback | Spawns detached `node_modules`/`.turbo` reclamation from now-idle merged worktrees. |
+| `hook-dispatch.py` | PostToolUse (Bash/PowerShell), every call | Runs the handler scripts named after it in one process (concurrently, each as `__main__` with its own stdin, streams, budget and heartbeat) and combines their output. The ten PostToolUse Bash/PowerShell hooks run through it. [ADR-151](../../docs/adr/151-in-process-hook-dispatcher.md) |
 | `post-tool-use-cwd-track.py` | PostToolUse (Bash/PowerShell), every call | Records `{repo_root, branch, cwd}` to a per-session state file, feeding the four drift checks above. |
 | `usage-snapshot.py` | PostToolUse (Bash/PowerShell), `gh pr merge` or the two-step REST merge fallback | Emits a weekly/5-hour usage snapshot + top-5 costliest exchanges after every merge. |
 | `stop-tile-enumeration-gate.py` | Stop | Blocks the stop when a merged PR, a dangling issue, an untabled tile spawn, or a tile spawned without its shard has no recorded follow-up enumeration. |

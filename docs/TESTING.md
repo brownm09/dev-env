@@ -4685,3 +4685,25 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_hook_heartbeat_isolation.py
     ```
+
+107. **hook-dispatch test** — required when changing `claude/scripts/hook-dispatch.py`, or which hooks a dispatcher command runs in `claude/settings.shared.json` (also run items 61-63, 67 and 68 then). The in-process dispatcher runs a group of hooks in one process ([ADR-151](adr/151-in-process-hook-dispatcher.md), dev-env#851); stage 1 runs the ten PostToolUse Bash/PowerShell hooks through it.
+
+    Offline, `combine()` pins how handler results become the one output Claude Code reads:
+    exit-2 texts joined on stderr with exit 2; `systemMessage`s joined into one JSON message; both
+    together as `{"decision": "block", "reason", "systemMessage"}` with exit 0, so a merge's user
+    messages aren't dropped; exit 1 and a handler dropped at its budget contribute nothing; stderr
+    is ASCII-sanitized and JSON ASCII-escaped. End to end, through the real launcher with fake
+    handler scripts in a temp directory: the stdin payload reaches every handler, a block and a
+    toast combine, an uncaught error and a missing script fail open, a child process writing to the
+    inherited stdout cannot corrupt the single JSON result, each handler gets its own heartbeat and
+    exactly one duration line (the exit-time record does not double it), and a handler past its
+    budget is dropped while the rest still report and the process does not wait for it.
+
+    Not covered here: the real handlers' behavior, which their own items cover; the dispatcher only
+    runs them. The structural gates (items 61-63 and 68) and the liveness check (item 67) read every
+    handler path in a dispatcher command through `_hook_wiring.scripts_from_command` and
+    `hook_names_from_command`, so they keep checking each handler.
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_dispatch.py
+    ```

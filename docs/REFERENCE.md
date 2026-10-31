@@ -418,6 +418,17 @@ Fires before matched tool calls. Matcher values are set per entry in `settings.j
 
 Fires after a matched tool call completes. Matcher values are set per entry in `settings.json`.
 
+**One process for the Bash/PowerShell group.** The ten Bash/PowerShell hooks in the table below are
+wired as a single command, `hook-launch.py hook-dispatch.py <ten handler paths>`. `hook-dispatch.py`
+runs each handler as `__main__` from its own file, concurrently in threads, with its own stdin
+payload, routed streams, time budget (the timeout it had as its own command) and heartbeat. It
+combines their output: exit-2 texts on stderr with exit 2, `systemMessage`s as one JSON message, or,
+when both occur (on a merge), `{"decision": "block", "reason": ..., "systemMessage": ...}` so the
+user's messages aren't dropped. A missing handler is skipped with a warning, and the dispatcher fails
+open. This cuts spawns per Bash call for this event from 10 to 1. The structural gates, the wiring lint
+and `hook-liveness-check.py` read every handler path in the command. See
+[ADR-151](adr/151-in-process-hook-dispatcher.md), dev-env#851.
+
 > **Background / SDK-launched sessions:** every PostToolUse hook below can be **silently inert** in a
 > session launched as a background task / via `spawn_task` — while the `UserPromptSubmit`,
 > `PreToolUse`, and `Stop` hooks from the same `settings.json` still fire. This is an upstream Claude

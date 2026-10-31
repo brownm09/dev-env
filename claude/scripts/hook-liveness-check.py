@@ -77,27 +77,32 @@ EXEMPT_EVENTS = frozenset({"PostCompact", "Notification"})
 SENTINEL_PREFIX = "hook_liveness_check_"
 OWN_HOOK_NAME = "hook-liveness-check"
 
-# The last whitespace-delimited token of a hook command is the script path --
-# capture its basename minus ".py", which is exactly the literal string every
-# hook passes to _hookutil.record_heartbeat() at its own call site (see that
-# function's docstring). Matches the `pyw -3 C:/.../hook-launch.py C:/.../foo.py`
-# invocation form (ADR-007, ADR-148) -- the launcher is never the last token.
-_SCRIPT_RE = re.compile(r"([\w.-]+)\.py\s*$")
+# Every `<name>.py` token after the launcher is a hook this command runs: the hook
+# itself (`pyw -3 C:/.../hook-launch.py C:/.../foo.py`, ADR-007, ADR-148), or the
+# dispatcher and each handler it runs in-process (dev-env#851, ADR-151). The
+# basename minus ".py" is exactly the literal string each passes to
+# _hookutil.record_heartbeat() at its own call site (see that function's docstring).
+_SCRIPT_RE = re.compile(r"(?:^|[/\\])([\w.-]+)\.py$")
+_LAUNCHER_NAME = "hook-launch"
 
 
-def hook_name_from_command(command: str) -> str | None:
-    """The bare hook name (script basename minus .py) a settings.json command
-    invokes, or None if the command's last token isn't a .py script."""
-    m = _SCRIPT_RE.search((command or "").strip())
-    return m.group(1) if m else None
+def hook_names_from_command(command: str) -> list[str]:
+    """The bare hook names (script basenames minus .py) a settings.json command
+    runs, launcher excluded; empty if it names no .py script."""
+    names = []
+    for token in (command or "").split():
+        m = _SCRIPT_RE.search(token)
+        if m and m.group(1) != _LAUNCHER_NAME:
+            names.append(m.group(1))
+    return names
 
 
 def wired_hook_events(settings: dict) -> dict[str, set[str]]:
     """Map each wired hook name -> the set of events it is registered under.
 
     Walks settings.json's hooks[event][*].hooks[*].command entries. A command
-    that doesn't resolve to a .py basename (hook_name_from_command returns
-    None) is skipped -- it contributes no hook. Malformed/missing structure at
+    that doesn't resolve to a .py basename (hook_names_from_command returns
+    []) is skipped -- it contributes no hook. Malformed/missing structure at
     any level (a non-dict `hooks`, a non-list event group, a non-dict group or
     hook entry) is skipped rather than raised, so an unexpected settings.json
     shape degrades to whatever it CAN parse instead of aborting the whole scan.
@@ -115,8 +120,7 @@ def wired_hook_events(settings: dict) -> dict[str, set[str]]:
             for h in group.get("hooks", []) or []:
                 if not isinstance(h, dict):
                     continue
-                name = hook_name_from_command(h.get("command", "") or "")
-                if name:
+                for name in hook_names_from_command(h.get("command", "") or ""):
                     out.setdefault(name, set()).add(event)
     return out
 

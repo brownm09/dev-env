@@ -41,12 +41,14 @@ HOME_PREFIX = "C:/Users/brown/.claude/"
 LAUNCHER_PATH = HOME_PREFIX + "hook-launch.py"
 SCRIPTS_PREFIX = HOME_PREFIX + "scripts/"
 
-# The last whitespace-delimited token of a hook command is the script path; grab
-# its `<name>.py` basename. Matches the `pyw -3 C:/.../hook-launch.py C:/.../foo.py`
-# invocation form (ADR-007, ADR-148): the launcher comes first, so the last token is
-# still the hook script. A command that ends in something other than a .py (none
-# today) -> None.
-_SCRIPT_RE = re.compile(r"([\w.-]+\.py)\s*$")
+# Every `<name>.py` token after the launcher is a script the command runs: the hook
+# itself (`pyw -3 C:/.../hook-launch.py C:/.../foo.py`, ADR-007, ADR-148), or the
+# dispatcher followed by each handler it runs in-process
+# (`... hook-launch.py C:/.../hook-dispatch.py C:/.../a.py C:/.../b.py`, dev-env#851,
+# ADR-151). Gates must see every handler, not only the last token.
+_PY_BASENAME_RE = re.compile(r"(?:^|[/\\])([\w.-]+\.py)$")
+LAUNCHER_NAME = "hook-launch.py"
+DISPATCHER_NAME = "hook-dispatch.py"
 
 
 class HookEntry(NamedTuple):
@@ -55,18 +57,29 @@ class HookEntry(NamedTuple):
     event: str            # e.g. "PreToolUse", "UserPromptSubmit", "Stop"
     matcher: str | None   # e.g. "Bash", "Write"; None for event groups with no matcher
     command: str          # the full command string
-    script: str | None    # the .py basename the command invokes, or None
+    script: str | None    # the .py basename the command invokes (a dispatcher's own name), or None
     timeout: object       # the entry's "timeout" value verbatim (int, or None if absent)
+    scripts: tuple = ()   # every .py basename the command runs: script, then any dispatched handlers
 
 
 def load_settings(path: Path = SETTINGS_PATH) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def scripts_from_command(command: str) -> tuple:
+    """Every `<name>.py` basename the command runs, in order, the launcher excluded."""
+    names = []
+    for token in command.split():
+        m = _PY_BASENAME_RE.search(token)
+        if m and m.group(1) != LAUNCHER_NAME:
+            names.append(m.group(1))
+    return tuple(names)
+
+
 def script_from_command(command: str) -> str | None:
-    """Return the `<name>.py` basename the command invokes, or None."""
-    m = _SCRIPT_RE.search(command.strip())
-    return m.group(1) if m else None
+    """Return the `<name>.py` basename the command invokes (a dispatcher's own), or None."""
+    scripts = scripts_from_command(command)
+    return scripts[0] if scripts else None
 
 
 def hook_entries(settings: dict) -> list[HookEntry]:
@@ -100,6 +113,7 @@ def hook_entries(settings: dict) -> list[HookEntry]:
                         command=command,
                         script=script_from_command(command),
                         timeout=h.get("timeout"),
+                        scripts=scripts_from_command(command),
                     )
                 )
     return entries
@@ -124,8 +138,8 @@ def wired_script_events(settings: dict) -> dict[str, set[str]]:
     """
     out: dict[str, set[str]] = {}
     for e in hook_entries(settings):
-        if e.script:
-            out.setdefault(e.script, set()).add(e.event)
+        for script in e.scripts:  # a dispatcher and each of its handlers (dev-env#851)
+            out.setdefault(script, set()).add(e.event)
     return out
 
 

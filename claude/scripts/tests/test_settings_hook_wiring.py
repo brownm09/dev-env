@@ -134,14 +134,20 @@ def test_every_command_resolves_to_existing_script() -> str:
     for e in entries:
         if e.script is None:
             bad.append(f"{e.event}/{e.matcher}: command resolves to no .py -> {e.command!r}")
-        elif not (wiring.SCRIPTS_DIR / e.script).exists():
-            bad.append(f"{e.event}/{e.matcher}: {e.script} not found in claude/scripts/")
+        for script in e.scripts:  # a dispatcher and every handler it runs (dev-env#851)
+            if not (wiring.SCRIPTS_DIR / script).exists():
+                bad.append(f"{e.event}/{e.matcher}: {script} not found in claude/scripts/")
     assert not bad, "Hook commands not resolving to an existing script:\n  " + "\n  ".join(bad)
     return f"all {len(entries)} hook entries resolve to an existing claude/scripts/*.py"
 
 
+_SCRIPT_TOKEN = re.escape(wiring.SCRIPTS_PREFIX) + r"[\w.-]+\.py"
+# The launcher runs one hook script, or the dispatcher followed by one or more
+# handler scripts it runs in-process (dev-env#851, ADR-151).
 LAUNCHED_COMMAND_RE = re.compile(
-    r"^pyw -3 " + re.escape(wiring.LAUNCHER_PATH) + " " + re.escape(wiring.SCRIPTS_PREFIX) + r"[\w.-]+\.py$"
+    r"^pyw -3 " + re.escape(wiring.LAUNCHER_PATH) + " "
+    + r"(?:(?!" + re.escape(wiring.SCRIPTS_PREFIX + wiring.DISPATCHER_NAME) + r"$)" + _SCRIPT_TOKEN
+    + r"|" + re.escape(wiring.SCRIPTS_PREFIX + wiring.DISPATCHER_NAME) + r"(?: " + _SCRIPT_TOKEN + r")+)$"
 )
 
 
@@ -172,7 +178,16 @@ def test_launcher_form_rejects_direct_command() -> str:
     assert LAUNCHED_COMMAND_RE.match(
         "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/foo.py"
     ), "the derived regex must still match the literal shipped form"
-    return "direct form rejected, launcher form accepted"
+    dispatch = wiring.SCRIPTS_PREFIX + wiring.DISPATCHER_NAME
+    assert LAUNCHED_COMMAND_RE.match(
+        f"pyw -3 {wiring.LAUNCHER_PATH} {dispatch} {wiring.SCRIPTS_PREFIX}a.py {wiring.SCRIPTS_PREFIX}b.py"
+    ), "the dispatcher form must be accepted"
+    assert not LAUNCHED_COMMAND_RE.match(f"pyw -3 {wiring.LAUNCHER_PATH} {dispatch}"), \
+        "a dispatcher with no handlers is a mistake, not a hook"
+    assert not LAUNCHED_COMMAND_RE.match(
+        f"pyw -3 {wiring.LAUNCHER_PATH} {wiring.SCRIPTS_PREFIX}a.py {wiring.SCRIPTS_PREFIX}b.py"
+    ), "two scripts without the dispatcher would run only the first"
+    return "direct form rejected, launcher and dispatcher forms accepted, malformed dispatcher forms rejected"
 
 
 def test_every_entry_has_timeout_at_or_above_budget() -> str:
@@ -182,7 +197,8 @@ def test_every_entry_has_timeout_at_or_above_budget() -> str:
     for e in entries:
         if e.script is None:
             continue  # already reported by the resolution gate
-        floor = min_timeout(e.script)
+        # A dispatcher runs its handlers concurrently, so its floor is the largest of theirs.
+        floor = max(min_timeout(s) for s in e.scripts)
         t = e.timeout
         if not isinstance(t, int) or isinstance(t, bool):
             bad.append(f"{e.event}/{e.matcher}:{e.script}: timeout is {t!r}, expected an int >= {floor}")
@@ -227,8 +243,8 @@ def test_pretooluse_bash_and_powershell_matchers_are_mirrored() -> str:
     """
     settings = wiring.load_settings()
     entries = wiring.hook_entries(settings)
-    bash_scripts = {e.script for e in entries if e.event == "PreToolUse" and e.matcher == "Bash"}
-    powershell_scripts = {e.script for e in entries if e.event == "PreToolUse" and e.matcher == "PowerShell"}
+    bash_scripts = {s for e in entries if e.event == "PreToolUse" and e.matcher == "Bash" for s in e.scripts}
+    powershell_scripts = {s for e in entries if e.event == "PreToolUse" and e.matcher == "PowerShell" for s in e.scripts}
     assert bash_scripts, "expected at least one PreToolUse/Bash hook entry -- found none"
     assert powershell_scripts, "expected at least one PreToolUse/PowerShell hook entry -- found none"
     exempt_wired = APPROVE_ONLY_PRETOOLUSE_HOOKS & bash_scripts
@@ -272,8 +288,8 @@ def test_posttooluse_bash_and_powershell_matchers_are_mirrored() -> str:
     """
     settings = wiring.load_settings()
     entries = wiring.hook_entries(settings)
-    bash_scripts = {e.script for e in entries if e.event == "PostToolUse" and e.matcher == "Bash"}
-    powershell_scripts = {e.script for e in entries if e.event == "PostToolUse" and e.matcher == "PowerShell"}
+    bash_scripts = {s for e in entries if e.event == "PostToolUse" and e.matcher == "Bash" for s in e.scripts}
+    powershell_scripts = {s for e in entries if e.event == "PostToolUse" and e.matcher == "PowerShell" for s in e.scripts}
     assert bash_scripts, "expected at least one PostToolUse/Bash hook entry -- found none"
     assert powershell_scripts, "expected at least one PostToolUse/PowerShell hook entry -- found none"
     only_bash = bash_scripts - powershell_scripts
