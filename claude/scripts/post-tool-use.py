@@ -70,11 +70,13 @@ import sys
 from _gh_project import add_to_project
 from _hookio import (
     is_help_only,
+    load_hook_input,
     read_command,
     read_command_output,
     read_cwd,
     read_exit_code,
     scan_top_level,
+    SHELL_TOOLS,
 )
 import _hookutil
 from _repo_target import create_args, issue_create_args, repo_from_flag
@@ -533,22 +535,8 @@ def format_reminder(
 
 def main() -> None:
     _hookutil.record_heartbeat("post-tool-use")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
-        # or null) would otherwise crash the very next line (dev-env#1031/
-        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
-        sys.exit(0)
-
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
 
     # dev-env#1031/#1033: read_command()/read_cwd()/read_exit_code() never

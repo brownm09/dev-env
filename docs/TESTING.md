@@ -293,7 +293,7 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_post_tool_use.py
     ```
 
-13. **_hookio shared-read test** — required when changing `claude/scripts/_hookio.py`. Exercises the pure
+13. **_hookio shared-read test** — required when changing `claude/scripts/_hookio.py` or `claude/scripts/_hookinput.py`. Exercises the pure
     `read_command_output()` and merge-marker helpers (`output_has_merge_marker` / `merge_pr_number_from_output`) offline (no network, no gh): pins that the real `stdout`/`stderr`-shaped
     Bash payload yields the command output (the pre-#380 `output` read was always `""`), that stdout and
     stderr are joined, that the legacy `output` field is still honored as a fallback, and that a missing /
@@ -356,6 +356,18 @@ For a one-line navigational map of the test directory, see
     Bash call). A probe in a fresh interpreter pins that `import _hookio` loads neither module. No
     caller depends on `_hookio` for the `_winsubp` patch: every script that calls subprocess imports
     `_winsubp` itself, which item 2 (`test_pyw_stdio.py`) enforces.
+
+    **Shared merge predicate and stdin loader (dev-env#1168, ADR-050 Amendment 29).** Every merge
+    hook now imports `is_pr_merge_command` and every hook with the standard stdin block imports
+    `load_hook_input` (from `_hookinput.py`, re-exported here), so these tests guard all of them.
+    `load_hook_input` returns None for an empty, non-JSON or non-object payload and for a
+    `tool_name` outside `tools=`. `is_pr_merge_command` matches a top-level `gh`/`gh.exe pr merge`
+    in any case, after any `NAME=value` prefix (quoted values included), and rejects quoted,
+    heredoc and `$()` mentions. Two tests pin agreement: `is_merge_help_only` and
+    `is_pr_merge_command` classify every spelling the same way, and the argument parsers built on
+    `GH_PR_MERGE` (`merge_args`, `effective_merge_dir`) find the merge in every spelling the
+    predicate admits. The gates' own parsers are pinned in items 38 and 52, and the stop-tile gate's
+    first-word match in item 48.
 
     ```bash
     py -3 claude/scripts/tests/test_hookio.py
@@ -765,8 +777,8 @@ For a one-line navigational map of the test directory, see
     ```
 
 24. **pre-merge-message-check test** — required when changing `claude/scripts/pre-merge-message-check.py`.
-    Exercises the pure `is_pr_merge_command` predicate (built on the shared `_hookio.scan_top_level`,
-    matching `pre-merge-numbering-check.py`'s identically-named predicate — dev-env#519) and the
+    Exercises the pure `is_pr_merge_command` predicate (`_hookio`'s shared one, which every merge hook
+    imports — dev-env#1168) and the
     `_read_queue()` helper offline (tmp files for queue content; no network, no gh): pins that
     detection fires on a bare / flagged / chained / `cd`-chained `gh pr merge` invocation and stays
     silent on a non-merge command or a `gh pr merge` mentioned only inside a heredoc body
@@ -1177,8 +1189,7 @@ For a one-line navigational map of the test directory, see
     check against https, ssh, and other-repo origin URLs; pins that a gap already present on
     `origin/main` alone is never re-advised (only a gap this branch's own numbers create or
     extend is), so a long-standing legitimate hole doesn't nag on every future merge; and pins
-    `is_pr_merge_command` (built on the shared `_hookio.scan_top_level`, matching
-    `pr-merge-reminder.py`'s identically-named predicate) against a bare invocation, a
+    `is_pr_merge_command` (`_hookio`'s shared predicate, dev-env#1168) against a bare invocation, a
     `cd`-chained one, and a `gh pr merge` mentioned only inside a heredoc body, which must NOT
     match (dev-env#499). A second, end-to-end layer drives the real `main()` over stdin via
     subprocess against real throwaway git repos (a bare "origin" plus independent clones,
@@ -1196,9 +1207,7 @@ For a one-line navigational map of the test directory, see
 
 38. **pre-merge-findings-gate test** — required when changing `claude/scripts/pre-merge-findings-gate.py`.
     Two layers, mirroring this hook family's established split. A pure-helper Python test exercises
-    `is_pr_merge_command` offline (built on the shared `_hookio.scan_top_level`, matching
-    `pre-merge-numbering-check.py`'s and `pre-merge-message-check.py`'s identically-named predicate —
-    dev-env#519): pins a bare, `&&`-chained, and `cd`-chained top-level `gh pr merge` match, and that
+    `is_pr_merge_command` offline (`_hookio`'s shared predicate, dev-env#1168): pins a bare, `&&`-chained, and `cd`-chained top-level `gh pr merge` match, and that
     a non-merge command or a `gh pr merge` mentioned only inside a heredoc body (dev-env#499) does not match, so
     the hook's live `gh pr view` call is never paid for a command that never actually merges. A
     behavioral shell test drives the real hook end-to-end via the `MERGE_GATE_TEST_JSON` seam (no
@@ -1549,9 +1558,7 @@ For a one-line navigational map of the test directory, see
     ```
 
 45. **pre-merge-branch-check test** — required when changing `claude/scripts/pre-merge-branch-check.py`.
-    Exercises `is_pr_merge_command()` (built on the shared `_hookio.scan_top_level`, matching the
-    identically-named predicate in `pre-merge-message-check.py` / `pre-merge-numbering-check.py` —
-    dev-env#519): a bare and a `cd`-chained `gh pr merge` match, a `gh pr merge` mentioned only
+    Exercises `is_pr_merge_command()` (`_hookio`'s shared predicate, dev-env#1168): a bare and a `cd`-chained `gh pr merge` match, a `gh pr merge` mentioned only
     inside a heredoc body does not (dev-env#499), and an unrelated `gh` command does not. Also
     exercises `build_message()`: no drift is a single line with no warning appended, a drift warning
     appends on its own line after the branch-display text, and `None` branch/repo_root render

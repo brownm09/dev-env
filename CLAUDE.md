@@ -46,7 +46,7 @@ the item). A one-line navigational map of the test directory is
 10. **post-pr-merge-reclaim test** — required when changing `claude/scripts/post-pr-merge-reclaim.py`. Run: `py -3 claude/scripts/tests/test_post_pr_merge_reclaim.py`
 11. **memory-write-advisory test** — required when changing `claude/scripts/memory-write-advisory.py`. Run: `py -3 claude/scripts/tests/test_memory_write_advisory.py`
 12. **post-tool-use test** — required when changing `claude/scripts/post-tool-use.py`. Run: `py -3 claude/scripts/tests/test_post_tool_use.py`
-13. **_hookio shared-read test** — required when changing `claude/scripts/_hookio.py`. Run: `py -3 claude/scripts/tests/test_hookio.py`
+13. **_hookio shared-read test** — required when changing `claude/scripts/_hookio.py` or `claude/scripts/_hookinput.py`. Run: `py -3 claude/scripts/tests/test_hookio.py`
 14. **post-pr-merge-project test** — required when changing `claude/scripts/post-pr-merge-project.py`. Run: `py -3 claude/scripts/tests/test_post_pr_merge_project.py`
 15. **post-pr-merge-pull test** — required when changing `claude/scripts/post-pr-merge-pull.py`. Run: `py -3 claude/scripts/tests/test_post_pr_merge_pull.py`
 16. **stub-push-archive-reminder test** — required when changing `claude/scripts/stub-push-archive-reminder.py`. Run: `py -3 claude/scripts/tests/test_stub_push_archive_reminder.py`

@@ -83,6 +83,7 @@ import sys
 import time
 from pathlib import Path
 
+from _hookinput import load_hook_input
 import _hookutil
 
 TARGET_DRIVE = "C:/"
@@ -737,17 +738,9 @@ def _audit_existing_tree(cwd_path: Path, session_id: str) -> None:
 
 def main() -> None:
     _hookutil.record_heartbeat("worktree-npm-install")
-    raw = sys.stdin.read().strip()
-    cwd = ""
-    session_id = ""
-    if raw:
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            payload = {}
-        if isinstance(payload, dict):
-            cwd = payload.get("cwd", "") or ""
-            session_id = payload.get("session_id", "") or ""
+    payload = load_hook_input() or {}
+    cwd = payload.get("cwd", "") or ""
+    session_id = payload.get("session_id", "") or ""
 
     if not cwd:
         sys.exit(0)

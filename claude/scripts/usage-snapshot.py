@@ -105,14 +105,16 @@ from _hookio import (
     confirm_merge_via_gh,
     effective_merge_dir,
     is_merge_help_only,
+    is_pr_merge_command,
     is_rest_merge_command,
+    load_hook_input,
     output_has_merge_marker,
     output_has_rest_merge_marker,
     read_command,
     read_command_output,
     read_cwd,
     read_exit_code,
-    scan_top_level,
+    SHELL_TOOLS,
     should_confirm_via_gh,
 )
 import _hookutil
@@ -129,11 +131,6 @@ MERGE_TRACE_MAX_LINES = 500
 
 # --- merge detection (command-shape scan; success confirmed via _hookio's
 # output marker — mirrors post-pr-merge-project.py) ---
-_MERGE_RE = re.compile(r"(?:cd\s+\S+\s+&&\s+)?gh\s+pr\s+merge\b")
-
-
-def _check_merge_stmt(token: str) -> bool:
-    return bool(_MERGE_RE.match(token.lstrip()))
 
 
 def merge_confirmed(command: str, output: str) -> bool:
@@ -161,7 +158,7 @@ def merge_confirmed(command: str, output: str) -> bool:
     marker and needs its own success signal (the REST response body's
     `"merged":true`).
     """
-    if scan_top_level(command, _check_merge_stmt) and output_has_merge_marker(output):
+    if is_pr_merge_command(command) and output_has_merge_marker(output):
         return True
     return is_rest_merge_command(command) and output_has_rest_merge_marker(output)
 
@@ -210,7 +207,7 @@ def resolve_merge(
         is_rest = is_rest_merge_command(command) and output_has_rest_merge_marker(output)
         return {"is_merge_shaped": True, "confirmed": True, "reason": "rest_marker" if is_rest else "marker"}
 
-    if not scan_top_level(command, _check_merge_stmt):
+    if not is_pr_merge_command(command):
         # Not a `gh pr merge` shape at all -- still worth tracing when it IS an
         # (unconfirmed) REST-merge shape, since that's a distinct, informative
         # outcome ("REST call ran but printed no merged:true").
@@ -735,7 +732,7 @@ _PLAUSIBLE_MERGE_RE = re.compile(r"\bgh\b.*\bpr\b.*\bmerge\b|/pulls/\d+/merge\b"
 def _plausibly_merge_shaped(command: str) -> bool:
     """Cheap, bounded-substring merge-shape check for the `classify_error`
     fallback below (dev-env#1028) -- not the real (and more fragile)
-    `scan_top_level`/`_MERGE_RE` machinery, since that may be exactly what
+    `_hookio.is_pr_merge_command` machinery, since that may be exactly what
     just raised. Word-bounded (dev-env#1028 post-review finding): an
     unbounded substring test would match "gh"/"pr" inside an unrelated
     command's ordinary words (e.g. `git merge origin/print-highlights`
@@ -759,24 +756,8 @@ def _plausibly_merge_shaped(command: str) -> bool:
 
 def main() -> None:
     _hookutil.record_heartbeat("usage-snapshot")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string,
-        # number, or null) would otherwise crash the very next line
-        # (dev-env#1028 post-review finding). Nothing to trace: without a
-        # dict there is no tool_name to even confirm this was a
-        # Bash/PowerShell PostToolUse event in the first place.
-        sys.exit(0)
-
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
 
     command = read_command(data)

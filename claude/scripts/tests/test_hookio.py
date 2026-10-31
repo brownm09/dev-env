@@ -28,7 +28,9 @@ from _hookio import (  # noqa: E402
     is_absolute_path,
     is_help_only,
     is_merge_help_only,
+    is_pr_merge_command,
     is_rest_merge_command,
+    load_hook_input,
     mask_prose_flag_values,
     mask_quoted_spans,
     merge_pr_number_from_output,
@@ -1090,8 +1092,8 @@ def test_mask_prose_flag_values_mid_word_flag_not_matched() -> str:
 # ---------------------------------------------------------------------------
 # is_merge_help_only  (dev-env#557)
 #
-# `gh pr merge --help` textually satisfies every `is_pr_merge_command` /
-# `_check_merge_stmt` predicate in the hook family -- it *is* a `gh pr merge`
+# `gh pr merge --help` textually satisfies `is_pr_merge_command`, the merge
+# predicate the hook family shares -- it *is* a `gh pr merge`
 # invocation. Since --help prints no success marker, `should_confirm_via_gh`
 # returns True (no marker + non-zero/-1 exit), triggering a live `gh pr view`
 # confirmation with no explicit PR number that resolves against cwd's checked-
@@ -1125,8 +1127,7 @@ def test_is_merge_help_only_bare_merge_no_help_is_false() -> str:
 
 
 def test_is_merge_help_only_no_merge_invocation_at_all_is_false() -> str:
-    # Callers already gate on their own is_pr_merge_command/_check_merge_stmt
-    # check first, so this predicate seeing zero merge segments must also be
+    # Callers already gate on is_pr_merge_command first, so this predicate seeing zero merge segments must also be
     # False -- it never independently claims "this is a help-only command"
     # when there was no merge command to begin with.
     assert not is_merge_help_only("git status")
@@ -1410,8 +1411,77 @@ def test_import_does_not_load_subprocess() -> str:
     return "import _hookio loads neither subprocess nor _winsubp"
 
 
+def _load(raw: str, tools=None):
+    import io  # noqa: PLC0415
+
+    real = sys.stdin
+    sys.stdin = io.StringIO(raw)
+    try:
+        return load_hook_input(tools) if tools is not None else load_hook_input()
+    finally:
+        sys.stdin = real
+
+
+def test_load_hook_input_unreadable_is_none() -> str:
+    for raw in ("", "   \n", "not json", "[1, 2]", '"x"', "7", "null"):
+        assert _load(raw) is None, f"{raw!r} should load as None"
+    return "empty, non-JSON, and non-object payloads all load as None (dev-env#1168)"
+
+
+def test_load_hook_input_returns_dict() -> str:
+    data = _load(' {"tool_name": "Bash", "cwd": "C:/x"} \n')
+    assert data == {"tool_name": "Bash", "cwd": "C:/x"}, data
+    return "a JSON object is returned as a dict, surrounding whitespace ignored"
+
+
+def test_load_hook_input_tool_filter() -> str:
+    from _hookio import SHELL_TOOLS  # noqa: PLC0415
+
+    assert _load('{"tool_name": "PowerShell"}', SHELL_TOOLS) == {"tool_name": "PowerShell"}
+    assert _load('{"tool_name": "Write"}', SHELL_TOOLS) is None
+    assert _load("{}", SHELL_TOOLS) is None
+    assert _load('{"tool_name": "Agent"}', ("Agent",)) == {"tool_name": "Agent"}
+    return "tools= keeps listed tool names and drops others, including a missing tool_name"
+
+
+def test_is_pr_merge_command_shapes() -> str:
+    for cmd in ("gh pr merge 5 --squash", "cd /r && gh pr merge", "git fetch; gh pr merge",
+                "gh.exe pr merge 5", "GH PR MERGE 5", "ALLOW_CANONICAL_MUTATE=1 gh pr merge 5 -d",
+                "A=1 B=x gh pr merge 5", 'X="a b" gh pr merge 5', "X='a b' Y= gh pr merge 5"):
+        assert is_pr_merge_command(cmd), f"{cmd!r} should be a merge"
+    for cmd in ("gh pr view 5", "echo 'gh pr merge 5'", "git commit -m \"run gh pr merge\"",
+                "cat <<'EOF'\ngh pr merge 5\nEOF", "x=$(gh pr merge 5)"):
+        assert not is_pr_merge_command(cmd), f"{cmd!r} should not be a merge"
+    return "top-level gh/gh.exe pr merge in any case matches; quoted, heredoc and $() mentions do not"
+
+
+def test_is_pr_merge_command_agrees_with_help_only() -> str:
+    for cmd in ("gh.exe pr merge --help", "GH pr merge -h", "gh pr merge --help", "X=1 gh pr merge --help"):
+        assert is_pr_merge_command(cmd) and is_merge_help_only(cmd), cmd
+    for cmd in ("gh.exe pr merge 5", "X=1 gh pr merge 5"):
+        assert is_pr_merge_command(cmd) and not is_merge_help_only(cmd), cmd
+    return "both helpers agree on gh.exe, uppercase and env-prefixed merges, help-only or not"
+
+
+def test_merge_parsers_accept_every_predicate_spelling() -> str:
+    """Review finding: the predicate admitted gh.exe/uppercase merges that the
+    downstream parsers could not parse, so a gate checked the cwd's PR instead."""
+    from _repo_target import merge_args, repo_from_flag  # noqa: PLC0415
+
+    for cmd in ("gh.exe pr merge 42 --repo o/r", "GH PR MERGE 42 -R o/r", "X=1 gh pr merge 42 --repo o/r"):
+        assert repo_from_flag(merge_args(cmd) or "") == "o/r", cmd
+    assert effective_merge_dir("cd /a && gh.exe pr merge 42 && cd /b; ls", "/cwd") == "/a"
+    return "merge_args and effective_merge_dir locate gh.exe, uppercase and env-prefixed merges"
+
+
 def main() -> int:
     tests = [
+        ("load_hook_input: unreadable payload -> None", test_load_hook_input_unreadable_is_none),
+        ("load_hook_input: object returned", test_load_hook_input_returns_dict),
+        ("load_hook_input: tool filter", test_load_hook_input_tool_filter),
+        ("is_pr_merge_command: shapes", test_is_pr_merge_command_shapes),
+        ("is_pr_merge_command agrees with is_merge_help_only", test_is_pr_merge_command_agrees_with_help_only),
+        ("merge parsers accept every predicate spelling", test_merge_parsers_accept_every_predicate_spelling),
         ("import _hookio stays subprocess-free (finding 5)", test_import_does_not_load_subprocess),
         ("reads command output from stdout", test_reads_stdout),
         ("combines stdout and stderr", test_combines_stdout_and_stderr),

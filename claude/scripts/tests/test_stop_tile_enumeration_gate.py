@@ -146,6 +146,18 @@ def test_direct_merge_marker_detected():
     return "gh pr merge + success marker -> merged {599}"
 
 
+def test_merge_counted_for_every_shared_predicate_spelling():
+    # dev-env#1168 review: this gate keeps its own first-word match, so pin it
+    # to every spelling _hookio.is_pr_merge_command admits, or the two drift.
+    from _hookio import is_pr_merge_command  # noqa: PLC0415
+    for command in ("gh.exe pr merge 599 --squash", "GH PR MERGE 599",
+                    "ALLOW_CANONICAL_MUTATE=1 gh pr merge 599 -d", 'X="a b" gh pr merge 599'):
+        assert is_pr_merge_command(command), command
+        calls = [(command, "Squashed and merged pull request #599 (Title)")]
+        assert gate.session_merged_prs(calls) == {599}, command
+    return "gh.exe, uppercase and env-prefixed merges count here as they do in _hookio"
+
+
 def test_gh_api_merge_detected():
     calls = [("gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
               '{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}')]
@@ -2271,6 +2283,7 @@ def test_prefilter_is_a_superset_of_each_evaluator():
 def main():
     tests = [
         ("direct merge marker detected", test_direct_merge_marker_detected),
+        ("merge counted for every shared-predicate spelling", test_merge_counted_for_every_shared_predicate_spelling),
         ("gh api merge detected", test_gh_api_merge_detected),
         ("gh api GET (no -X PUT) not merged", test_gh_api_get_no_put_flag_not_merged),
         ("auto-merge correlated detected", test_auto_merge_correlated_detected),

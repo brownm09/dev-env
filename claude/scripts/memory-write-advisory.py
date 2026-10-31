@@ -29,11 +29,10 @@ Stdin JSON shape (PostToolUse):
 Exit 0 — not a relevant write, or the memory body already carries a link; silent.
 Exit 2 — durable memory written with no immortalization link; reminder on stderr.
 """
-import json
 import re
 import sys
 
-from _hookio import read_tool_input_field
+from _hookio import load_hook_input, read_tool_input_field
 import _hookutil
 
 # An immortalization link anywhere in the written body suppresses the nudge.
@@ -83,18 +82,8 @@ ADVISORY = (
 
 def main() -> None:
     _hookutil.record_heartbeat("memory-write-advisory")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
-        # or null) would otherwise crash the very next line (dev-env#1031/
-        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
+    data = load_hook_input()
+    if data is None:
         sys.exit(0)
 
     # dev-env#1031/#1033 (/review finding on PR #1035): read_tool_input_field()

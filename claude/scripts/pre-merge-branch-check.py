@@ -12,11 +12,9 @@ Also appends a drift warning when the repo/branch recorded by
 post-tool-use-cwd-track.py after the session's last Bash call differs from
 the repo/branch at merge time. Advisory only; never blocks.
 
-Merge detection reuses `_hookio.scan_top_level` (dev-env#519), the same
-quote/subshell/heredoc-aware engine pre-merge-message-check.py and
-pre-merge-numbering-check.py already use — not a plain unanchored
-`re.search`, which could spuriously fire on a `gh pr merge` mentioned only
-inside a heredoc body or `$()` subshell (dev-env#499).
+Merge detection is `_hookio.is_pr_merge_command` (dev-env#1168), the predicate
+every merge hook shares: top-level statements only, so a `gh pr merge` mentioned
+inside a heredoc body or `$()` subshell never fires it (dev-env#499).
 
 Also fires for the PowerShell tool (dev-env#620): registered under both the
 Bash and PowerShell PreToolUse matchers in settings.json, since PowerShell is
@@ -35,27 +33,11 @@ Exit 0 — always; hook is advisory only.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
-import re
 import sys
 
 import _bash_state
-from _hookio import read_command, read_cwd, scan_top_level
+from _hookio import is_pr_merge_command, load_hook_input, read_command, read_cwd, SHELL_TOOLS
 import _hookutil
-
-_MERGE_STMT_RE = re.compile(r"gh\s+pr\s+merge\b")
-
-
-def _check_merge_stmt(token: str) -> bool:
-    return bool(_MERGE_STMT_RE.match(token.lstrip()))
-
-
-def is_pr_merge_command(command: str) -> bool:
-    """True iff *command* contains a top-level `gh pr merge` — i.e. not one
-    merely mentioned inside a quoted string, $() subshell, or heredoc body
-    (dev-env#499). Mirrors pre-merge-message-check.py's /
-    pre-merge-numbering-check.py's identically-named predicate (dev-env#519).
-    """
-    return scan_top_level(command, _check_merge_stmt)
 
 
 def build_message(branch: str | None, repo_root: str | None, drift_warning: str | None) -> str:
@@ -73,22 +55,8 @@ def build_message(branch: str | None, repo_root: str | None, drift_warning: str 
 
 def main() -> None:
     _hookutil.record_heartbeat("pre-merge-branch-check")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-
-    if not isinstance(data, dict):
-        # A valid-JSON-but-non-dict top-level payload (a list, string, number,
-        # or null) would otherwise crash the very next line (dev-env#1031/
-        # #1033, mirroring usage-snapshot.py's dev-env#1028 post-review fix).
-        sys.exit(0)
-
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
 
     # dev-env#1031/#1033: read_command()/read_cwd() never raise on a

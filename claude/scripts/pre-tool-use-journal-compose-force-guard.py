@@ -82,7 +82,7 @@ import re
 import shlex
 import sys
 
-from _hookio import read_command, split_top_level
+from _hookio import load_hook_input, read_command, SHELL_TOOLS, split_top_level
 import _hookutil
 from _journal_compose_force import is_marker_fresh, marker_path_for, read_marker
 
@@ -333,16 +333,8 @@ def _emit_block(today: str) -> None:
 
 def main() -> None:
     _hookutil.record_heartbeat("pre-tool-use-journal-compose-force-guard")
-    raw = sys.stdin.read().strip()
-    if not raw:
-        sys.exit(0)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.exit(0)
-    if not isinstance(data, dict):
-        sys.exit(0)
-    if data.get("tool_name") not in ("Bash", "PowerShell"):
+    data = load_hook_input(SHELL_TOOLS)
+    if data is None:
         sys.exit(0)
 
     # dev-env#1031/#1033: read_command() never raises on a present-but-non-dict
