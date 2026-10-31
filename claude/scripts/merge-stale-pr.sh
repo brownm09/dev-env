@@ -5,7 +5,7 @@
 #
 # Steps:
 #   1. Look up the branch from the PR
-#   2. Check out the branch, pull latest
+#   2. Check out the branch, fetch and merge latest
 #   3. Warn if no composed journal file exists on the branch
 #   4. Delete orphaned *_draft.md files if present
 #   5. Rebase against main (resolve README conflicts by keeping branch version)
@@ -42,7 +42,7 @@ if [[ -z "$BRANCH" ]]; then
 fi
 echo "    Branch: $BRANCH"
 
-# ── Step 2: check out branch and pull ─────────────────────────────────────────
+# ── Step 2: check out branch, fetch and merge───────────────────────────────────
 echo "==> Checking out $BRANCH..."
 git fetch origin
 git checkout "$BRANCH"

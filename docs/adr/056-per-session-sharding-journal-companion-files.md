@@ -302,8 +302,8 @@ with `fatal: not something we can merge in .git/FETCH_HEAD`. The file held a hal
 finished writing a different branch's tip as the merge candidate, `pull` could have merged the wrong
 branch into `draft/YYYY-MM-DD` without any error.
 
-**Fix:** every documented or scripted sync of a shared checkout now fetches, then merges a
-remote-tracking ref, which each fetch updates atomically: `fetch origin <branch>` plus
+**Fix:** every documented or scripted sync of the engineering-journal canonical (plus
+`post-pr-merge-pull.py`, for any repo) now fetches, then merges a remote-tracking ref, which each fetch updates atomically: `fetch origin <branch>` plus
 `merge --ff-only origin/<branch>`, or `merge --ff-only '@{upstream}'` where the branch is not known in
 advance. A diverged branch gets the same `merge` without `--ff-only`. Sites changed:
 

@@ -35,6 +35,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 import _hookout
 from _hookio import (
@@ -210,6 +211,9 @@ def format_pull_message(
     return f"[post-merge-pull] {repo}: git {kind} failed — {err}"
 
 
+PULL_BUDGET_S = 25
+
+
 def pull_main(local_path: str, repo: str, on_main: bool) -> str:
     """Fast-forward local main from origin; return the status line (see pull_command).
 
@@ -218,9 +222,13 @@ def pull_main(local_path: str, repo: str, on_main: bool) -> str:
     kind = "fetch"
     try:
         out: list[str] = []
+        # One budget for every command, under the hook's own 30s timeout (settings.shared.json),
+        # so a slow fetch cannot leave the merge to be killed with no status line.
+        deadline = time.monotonic() + PULL_BUDGET_S
         for cmd in pull_command(local_path, on_main):
             kind = cmd[3]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            remaining = max(1.0, deadline - time.monotonic())
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=remaining)
             if result.returncode != 0:
                 return format_pull_message(
                     repo, kind,
