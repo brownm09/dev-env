@@ -409,6 +409,9 @@ def _run_hook(settings_path, home, *, session_id="sess-test"):
     env = dict(os.environ)
     env["HOME"] = str(home)
     env["USERPROFILE"] = str(home)  # Path.home() honors USERPROFILE on Windows
+    # The hook reads its ledger from the temp home; write it there too, explicitly,
+    # so the heartbeat never depends on the HOME redirect alone (dev-env#1163).
+    env["HOOK_HEARTBEAT_DIR_OVERRIDE"] = str(Path(home) / ".claude" / "scratch" / "hook-heartbeat")
     env["HOOK_LIVENESS_SETTINGS_PATH"] = str(settings_path)
     proc = subprocess.run(
         _py_cmd() + [str(SCRIPT)], input=payload,

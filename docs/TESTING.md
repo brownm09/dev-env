@@ -3381,7 +3381,7 @@ For a one-line navigational map of the test directory, see
 
     1. **Row coverage** — every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`, subdirectories, and the exemption set) appears in some table's **first** column. First column, not "mentioned anywhere": a prose cross-reference is not an index entry. A first cell may legitimately name two files (a shared module's paired tests, e.g. ``` `test_winsubp.py`, `test_pyw_stdio.py` ```) — both count.
     2. **No orphan rows** — every first-column filename exists on disk, catching a rename or delete that updated the file but not its row.
-    3. **Exemptions are real and indexed** — each exempt file both exists and appears *somewhere* in the README, so an exemption can never silently hide a file's deletion. The only current exemption is `_hook_wiring.py` in `claude/scripts/tests/`, which is deliberately indexed in the **second** column (with a `—` first cell) because it is test-support infrastructure, not a test.
+    3. **Exemptions are real and indexed** — each exempt file both exists and appears *somewhere* in the README, so an exemption can never silently hide a file's deletion. The current exemptions are `_hook_wiring.py` and `_heartbeat_isolation.py` in `claude/scripts/tests/`, which are deliberately indexed in the **second** column (with a `—` first cell) because they are test-support infrastructure, not tests.
     4. **Header counts** — each header count sentence occurs **exactly once** and equals the live directory count (`claude/scripts/tests/`: `test_*.py`, bash-gate, and total; `claude/scripts/`: top-level total). Exactly-once, not first-match, so a stray second copy of a count phrase can't hide drift behind it.
     5. **Section counts** — every `### Title (N)` heading's N equals that section's first-column entry count, **and** the number of `(N)` headings matches a per-directory expectation (`claude/scripts/README.md`: 5; `claude/scripts/tests/README.md`: 0) so a heading reworded past the `(N)` form can't silently drop out of gating.
     6. **Component completeness** — where a header breaks its total into components (the tests README's "N `test_*.py`, N bash gates, one module"), every indexable file matches a declared component glob or is an exemption, so a file of a new kind (e.g. a stray `.ps1`) can't make the components silently fail to sum to the gated total.
@@ -4582,4 +4582,92 @@ For a one-line navigational map of the test directory, see
 
     ```bash
     py -3 claude/scripts/tests/test_turn_count_hook.py
+    ```
+
+106. **heartbeat-ledger isolation gate** — required when adding or changing any test that runs a
+    real wired hook (a subprocess or a `<module>.main()` call), or when changing
+    `claude/scripts/tests/_heartbeat_isolation.py` (dev-env#1163).
+
+    Every wired hook's `main()` starts with `_hookutil.record_heartbeat()` (ADR-106), which writes
+    `~/.claude/scratch/hook-heartbeat/<hook>.ts` and appends to `<hook>.dur.jsonl` (item 104). A
+    test that runs a real hook without `HOOK_HEARTBEAT_DIR_OVERRIDE` refreshes that hook's
+    liveness heartbeat, which can hide a hook that stopped firing in production for up to the
+    7-day cadence, and mixes test fires into the timing data. Hook-driving tests call
+    `isolate_heartbeat()` from `_heartbeat_isolation.py` once at module level. It points the
+    override at a temp directory for that test process, so in-process `main()` calls and every
+    subprocess that inherits `os.environ` are covered. A test that builds a subprocess
+    environment from scratch sets the variable in it itself, as `test_hook_liveness_check.py`
+    does (it points the override at its temp home's ledger, the directory the hook reads back),
+    and the two bash gates export it. The override is set per test file, not by
+    `run-hook-tests.py`, because `test_hookutil.py`'s precedence tests need it unset.
+
+    The gate classifies every `test_*.py` and `*.sh` in both test directories. A file is
+    *hook-driving* when a code string contains a wired script's basename from
+    `claude/settings.shared.json` and the file runs something:
+    - A subprocess call that launches Python. That covers `subprocess.run` and friends, also
+      under an alias (`import subprocess as sp`) or as a bare `run` from
+      `from subprocess import run`. The call launches Python when its arguments name
+      `sys.executable`, a `py`/`python` literal, or a shell string starting with one, or when
+      they use a launcher: a function, method or variable anywhere in the file that names one
+      (`_py_cmd()`, `self._py()`, `PY = [sys.executable]`, `cmd = [sys.executable, HOOK]`).
+    - A `.main()` call on a module or an expression (`mod.main()`, `_load().main()`).
+    - A `runpy` call.
+    - In bash, any `py -3`, `pyw -3`, `python`, `$PY` or `$PYTHON`, matched case-insensitively.
+
+    A bare `main()` (the test file's own runner) and `unittest.main()` do not count. A file is
+    *isolated* when one of these holds:
+    - It calls `isolate_heartbeat()` as a module-level statement, so the call runs at import.
+      A call inside a test function runs too late.
+    - It *sets* the override: a subscript assignment (`env["…"] = …`), a dict-literal key, or
+      a keyword argument (`dict(os.environ, …=…)`). In bash, an assignment or `export`.
+
+    Naming the override in a docstring, a comparison, a `.pop()` or an `unset` does not count.
+    Every hook-driving file must be isolated, with no exemptions.
+
+    Known gaps:
+    - The detector does not follow a launcher defined in another module.
+    - It misses a hook path built without the hook's literal basename, and `main` reached
+      through `getattr`.
+    - It cannot tell whether a hand-built environment (`env={"PATH": …}`) in a file that also
+      calls `isolate_heartbeat()` drops the override.
+    - The bash rule only checks that some line sets the override, not that it does so before
+      the hook runs.
+
+    The non-empty floor guards against the detector going blind across the board, not against
+    one new test using such a shape. Embedded fixtures cover the shapes it does recognize.
+
+    Calibration, measured 2026-10-30 against `ec66eb1` before the fix. A temporary probe in
+    `record_heartbeat` logged every call that resolved to the real ledger, tagged by test file.
+    Fifteen files wrote there (13 Python, plus `test-auto-merge-checkpoint-gate.sh` and
+    `test-merge-findings-gate.sh`), led by `test_canonical_mutate_guard.py` at 43 fires per
+    run. The detector flagged all 15. It also flagged 10 more that ran real hooks under a
+    temp-HOME redirect. The rule above treats those as offenders too, since one of the 15,
+    `test_skill_file_size_advisory.py`, mixed both and leaked from its unredirected cases. It
+    flagged no file that never ran a hook. An earlier version that counted any `main()` call or
+    any subprocess flagged 19 extra files; the bare-`main()` and Python-launch rules removed
+    them. After the fix the same probe logged zero writes across the whole suite.
+
+    Two rounds of review widened the hook-driving shapes to everything listed above and
+    narrowed "isolated" to setting the override rather than naming it. On the real corpus the
+    detector still classifies the same 29 files as hook-driving, all isolated, so neither
+    round added a false positive or exposed a new leak. The 29 are the 15 writers, the 10
+    temp-HOME drivers, and 4 files isolated before this change (`test_worktree_path_check.py`,
+    `test_sibling_hooks_hardened_io.py`, `test_scratch_rm_allow.py`, `test_turn_count_hook.py`).
+
+    Embedded fixtures pin each known-bad shape:
+    - every hook-driving form listed above, unisolated;
+    - a docstring-only mention of the override;
+    - `isolate_heartbeat()` called only inside a test;
+    - the override name only compared and popped;
+    - two bash gates: one unisolated, one that only `unset`s the override and calls `$PYTHON`.
+
+    They also pin the known-good ones:
+    - each isolation form (module-level call, subscript, keyword) and an isolated bash gate;
+    - a test that loads a hook and runs git and its own `main()`/`unittest.main()`, but never
+      runs the hook. Two non-empty checks fail the gate if the wired-script list or the
+    hook-driving set shrinks below its floor, so a detector that stops recognizing anything
+    cannot pass.
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_heartbeat_isolation.py
     ```

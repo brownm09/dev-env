@@ -175,6 +175,9 @@ from _hookio import is_merge_help_only  # noqa: E402
 # ascii_sanitize is emit_block's wire-safety backstop — the real guarantee that a
 # snapshot interpolating a non-ASCII exchange action can't crash the stderr write.
 from _hookout import ascii_sanitize  # noqa: E402
+from _heartbeat_isolation import isolate_heartbeat  # noqa: E402
+
+isolate_heartbeat()  # keep this file's hook fires out of the real heartbeat ledger (dev-env#1163)
 
 NOW_MS = 1_700_000_000_000  # fixed synthetic "now"; real time never consulted
 HOUR_MS = 3_600_000

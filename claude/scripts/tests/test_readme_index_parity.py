@@ -147,10 +147,10 @@ SPECS = [
         label="claude/scripts/tests",
         directory="claude/scripts/tests",
         readme="claude/scripts/tests/README.md",
-        # _hook_wiring.py is test-support infrastructure, not a test, so it is indexed in
-        # the SECOND column (with a "--" first cell) rather than as a test file. Check 3
-        # still requires it to appear somewhere in the README.
-        exemptions={"_hook_wiring.py"},
+        # _hook_wiring.py and _heartbeat_isolation.py are test-support infrastructure, not
+        # tests, so they are indexed in the SECOND column (with a "--" first cell) rather
+        # than as test files. Check 3 still requires each to appear somewhere in the README.
+        exemptions={"_hook_wiring.py", "_heartbeat_isolation.py"},
         count_checks=[
             ("test_*.py",
              re.compile(r"(\d+) `test_\*\.py` files"),
@@ -163,8 +163,8 @@ SPECS = [
              lambda files: len(files)),
         ],
         numbered_sections=0,  # this README's section headings carry no "(N)"
-        # The header reads "N test_*.py files, N bash gates, and one shared module": every
-        # indexable file is a test, a bash gate, or the exempt module -- nothing else.
+        # The header reads "N test_*.py files, N bash gates, and two shared modules": every
+        # indexable file is a test, a bash gate, or an exempt module -- nothing else.
         partition_patterns=("test_*.py", "*.sh"),
     ),
     DirSpec(

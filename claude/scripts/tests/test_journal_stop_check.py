@@ -113,6 +113,9 @@ SCRIPT = REPO_ROOT / "claude" / "scripts" / "journal-stop-check.py"
 # The script imports _winsubp (sibling in scripts/); make it resolvable.
 sys.path.insert(0, str(SCRIPT.parent))
 import _hookutil  # noqa: E402  -- needs the sys.path.insert above
+from _heartbeat_isolation import isolate_heartbeat  # noqa: E402
+
+isolate_heartbeat()  # keep this file's hook fires out of the real heartbeat ledger (dev-env#1163)
 
 _spec = importlib.util.spec_from_file_location("journal_stop_check", SCRIPT)
 assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"

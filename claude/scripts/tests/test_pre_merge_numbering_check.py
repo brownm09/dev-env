@@ -79,6 +79,9 @@ is_pr_merge_command = mod.is_pr_merge_command
 # is_merge_help_only lives in _hookio (a sibling); SCRIPTS_DIR is already on
 # sys.path via the insert above.
 from _hookio import is_merge_help_only  # noqa: E402
+from _heartbeat_isolation import isolate_heartbeat  # noqa: E402
+
+isolate_heartbeat()  # keep this file's hook fires out of the real heartbeat ledger (dev-env#1163)
 
 
 # ---------------------------------------------------------------------------

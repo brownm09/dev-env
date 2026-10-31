@@ -368,3 +368,22 @@ before/after, and #851 uses one, but it can't replace in-situ data. *Measuring t
 every fire* is the cost described in constraint 1.
 
 Tests: [`docs/TESTING.md`](../TESTING.md) items 27 (`_hookutil`) and 104 (the report).
+
+## Amendment 3 (2026-10-30) — tests never write the production ledger
+
+**Why.** `HOOK_HEARTBEAT_DIR_OVERRIDE` (dev-env#1031/#1033) let a test redirect a hook's
+heartbeat, but nothing required a test to use it. A probe of `record_heartbeat` found 15 test
+files writing the real ledger on every suite run, 43 fires from `test_canonical_mutate_guard.py`
+alone ([#1163](https://github.com/brownm09/dev-env/issues/1163)). That refreshed `.ts` heartbeats,
+which can hide a hook that has stopped firing for up to the 7-day cadence, and since Amendment 2
+it also mixed test fires into the timing data that #849 and #851 compare.
+
+**What changed.** A test that runs a real hook calls `isolate_heartbeat()` from
+`claude/scripts/tests/_heartbeat_isolation.py` at module level, or exports the override itself
+(the bash gates). The structural gate `test_hook_heartbeat_isolation.py` fails any test file that
+names a wired hook and runs it without one; its calibration is in
+[`docs/TESTING.md`](../TESTING.md) item 106.
+
+**Rejected: setting the override once in `run-hook-tests.py`.** One line, but
+`test_hookutil.py`'s precedence tests pass an explicit `heartbeat_dir` and need the variable
+unset, and a test run directly with `py -3` outside the runner would still leak.

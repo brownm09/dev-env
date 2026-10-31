@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 94 `test_*.py` files, 11 bash gates, and
-one shared test-support module (`_hook_wiring.py`) — 106 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 95 `test_*.py` files, 11 bash gates, and
+two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 108 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -32,9 +32,9 @@ that adds a test file.
 ## Shared support modules
 
 Tests for internal `_foo.py` libraries that live in `claude/scripts/` and get imported by
-multiple hooks, rather than being wired as a hook themselves. `_hook_wiring.py` is the one
-exception: it lives in *this* directory because it's test-support infrastructure, not
-production code.
+multiple hooks, rather than being wired as a hook themselves. `_hook_wiring.py` and
+`_heartbeat_isolation.py` are the exceptions: they live in *this* directory because they're
+test-support infrastructure, not production code.
 
 | Test file | Covers | Purpose |
 |---|---|---|
@@ -61,6 +61,7 @@ production code.
 | `test_worktree_recovery.py` | `_worktree_recovery.py` | Orphaned-worktree recovery recipe: renders it (destructive step kept out of the numbered sequence), pins `docs/REFERENCE.md`'s runbook to it by equality over runnable lines, and blocks the dev-env#751-disproven `worktree add --force`/`-f` form from every live surface. |
 | `test_worktree_topology.py` | `_worktree_topology.py` | Worktree-on-`main` squat detection/diagnosis and park-target decisions shared by prune, sync, and the journal-canonical guard. |
 | — | `_hook_wiring.py` | Not itself a test. Parses `claude/settings.shared.json` into wired hooks/events/timeouts once, shared by the four structural gates below. |
+| — | `_heartbeat_isolation.py` | Not itself a test. `isolate_heartbeat()` points `HOOK_HEARTBEAT_DIR_OVERRIDE` at a temp dir for the calling test process, so a test that runs a real hook never writes the production heartbeat ledger (dev-env#1163). |
 
 ## Structural / fleet-wide gates
 
@@ -70,6 +71,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | Test file | Covers | Purpose |
 |---|---|---|
 | `test_hook_heartbeat_guard.py` | every wired hook | Structural gate: every wired hook calls `_hookutil.record_heartbeat("<own-name>")` as the first statement of `main()`. |
+| `test_hook_heartbeat_isolation.py` | every test that runs a wired hook | Structural gate: a test file that runs a real hook (subprocess or `<module>.main()`) isolates the heartbeat ledger via `_heartbeat_isolation.py` or the override variable, so no test writes `~/.claude/scratch/hook-heartbeat/` (dev-env#1163). Calibrated against known-bad and known-good fixtures. |
 | `test_hook_output_contract.py` | every wired hook | AST gate: no hook emits to a stream/exit-code combination Claude Code actually discards (stderr-on-exit-0, stdout-on-exit-2, `additionalContext` on a non-context event). |
 | `test_hook_safe_exit_guard.py` | every wired hook | Structural gate: every wired hook has a top-level `try/except` in `__main__` that deterministically exits in its declared fail direction (open vs. closed). |
 | `test_no_crude_command_substring_checks.py` | all `claude/scripts/*.py` | AST gate against `if "<cli>" not in command`-shaped string checks that false-match inside heredocs/quotes/subshells — the recurring false-positive class behind many ADR-050 amendments. |
