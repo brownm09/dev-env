@@ -2626,7 +2626,12 @@ For a one-line navigational map of the test directory, see
     `<name>.py` that exists in `claude/scripts/`, and it carries an explicit integer `timeout` (seconds)
     at or above its budget floor — `usage-snapshot.py` -> 90, a hook importing `_winsubp` (the
     subprocess-hook marker, authoring rule 4) -> 30, pure-Python -> 10 (a FLOOR, `>=`, so a longer
-    timeout is allowed). Pins `min_timeout`'s three tiers and `script_from_command`. The `pyw -3`
+    timeout is allowed). Pins `min_timeout`'s three tiers and `script_from_command`. A dispatcher entry
+    (ADR-151) is checked per handler: every handler must exist, the launcher-form regex accepts
+    `hook-dispatch.py` followed by one or more handlers and rejects it alone or two scripts without
+    it, Bash/PowerShell mirroring compares handler sets, and `test_dispatcher_commands_are_well_formed`
+    (with known-bad references) rejects a dispatcher listing itself or the launcher, a repeated
+    handler, a budget below a handler's floor, or a timeout under the largest budget plus 10 s. The `pyw -3`
     invocation invariant (authoring rule 3) is deliberately not re-checked here — `test_pyw_stdio.py`'s
     `test_all_settings_hooks_use_pyw_and_resolve_to_repo` (item 2) already gates it; the resolution check
     overlaps that test's resolution half by design (it is the precondition for the `_winsubp`-based
@@ -2780,9 +2785,10 @@ For a one-line navigational map of the test directory, see
     Exercises the pure helpers offline (tmp dirs for heartbeat files, hand-built settings.json
     fixtures — never the live `claude/settings.json`, so this suite's pass/fail doesn't drift with
     production wiring changes; [ADR-106](adr/106-hook-heartbeat-liveness-ledger.md);
-    dev-env#745, PR8 of #717): `hook_name_from_command` (script-basename-minus-`.py` extraction,
-    matching the literal string every hook passes to `_hookutil.record_heartbeat` — trailing
-    whitespace tolerated, a non-`.py` command and empty/`None` input both -> `None`);
+    dev-env#745, PR8 of #717): `hook_names_from_command` (every script-basename-minus-`.py` after
+    the launcher, matching the literal string each hook passes to `_hookutil.record_heartbeat` —
+    a dispatcher command yields the dispatcher and every handler (ADR-151), trailing whitespace is
+    tolerated, and a non-`.py` command and empty/`None` input both give `[]`);
     `wired_hook_events` (a settings.json fixture mapping each wired hook name to the union of
     events it's registered under; multiple matcher groups under one event — e.g.
     `journal-shard-write-advisory`'s real Bash/Write/Edit tripling — dedupe to a single event
@@ -4684,4 +4690,28 @@ For a one-line navigational map of the test directory, see
 
     ```bash
     py -3 claude/scripts/tests/test_hook_heartbeat_isolation.py
+    ```
+
+107. **hook-dispatch test** — required when changing `claude/scripts/hook-dispatch.py`, or which hooks a dispatcher command runs in `claude/settings.shared.json` (also run items 2, 61-63, 67, 68 and 98 then). The in-process dispatcher runs a group of hooks in one process ([ADR-151](adr/151-in-process-hook-dispatcher.md), dev-env#851); stage 1 runs the ten PostToolUse Bash/PowerShell hooks through it.
+
+    Offline, `combine()` pins how handler results become the one output Claude Code reads:
+    blocks (exit-2 texts, or an exit-0 JSON `decision: "block"`) joined on stderr with exit 2;
+    `systemMessage`s joined into one JSON message; both together as
+    `{"decision": "block", "reason", "systemMessage"}` with exit 0, so a merge's user messages aren't
+    dropped; a handler's exit 1, one past its budget, and an exit-0 JSON key that can't be carried
+    each become a warning, and a dropped handler's own output is not used; stderr is ASCII-sanitized
+    and JSON ASCII-escaped. `handler_paths()` skips the dispatcher itself, the launcher and repeats,
+    and gives a missing file the launcher's throttled warning. End to end, through the real launcher
+    with fake handler scripts in a temp directory: the stdin payload reaches every handler, a block and
+    a toast combine, an uncaught error is reported and fails open, each handler gets its own heartbeat
+    and exactly one duration line (the exit-time record does not double it), and a handler past a 1 s
+    budget is dropped with a warning while the rest still report and the process does not wait for it.
+
+    Not covered here: the real handlers' behavior, which their own items cover; the dispatcher only
+    runs them. The structural gates (items 61-63 and 68), item 2 and the liveness check (item 67) read
+    every handler path in a dispatcher command (`_hook_wiring.scripts_from_command` and
+    `hook_names_from_command`, both over `_settings_sync.py_tokens`), so they keep checking each handler.
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_dispatch.py
     ```

@@ -95,8 +95,6 @@ import re
 import subprocess
 import sys
 import time
-import urllib.request
-import urllib.error
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -380,6 +378,11 @@ def cli_auth_status(timeout: int = 8, exe_fn=resolve_claude_exe, run_fn=None) ->
 # --- usage API ---
 
 def fetch_usage(token: str) -> dict | None:
+    # Imported here, not at the top: urllib.request costs about 85 ms and only a
+    # confirmed merge reaches this, while the hook runs on every Bash call (dev-env#1173).
+    import urllib.error  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
     req = urllib.request.Request(
         USAGE_URL,
         headers={
