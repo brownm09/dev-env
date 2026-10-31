@@ -4587,24 +4587,39 @@ For a one-line navigational map of the test directory, see
     `run-hook-tests.py`, because `test_hookutil.py`'s precedence tests need it unset.
 
     The gate classifies every `test_*.py` and `*.sh` in both test directories. A file is
-    *hook-driving* when it names a wired script from `claude/settings.shared.json` and runs
-    something:
-    - a subprocess call (`subprocess.run` and friends, or a bare `run` from
-      `from subprocess import run`) that launches Python, meaning its arguments name
-      `sys.executable`, a `py`/`python` literal, or a module-level launcher (a helper function
-      like `_py_cmd()` or a constant like `PY = [sys.executable]` that names one);
-    - a `.main()` call on a module or an expression (`mod.main()`, `_load().main()`);
-    - or `runpy`.
+    *hook-driving* when a code string contains a wired script's basename from
+    `claude/settings.shared.json` and the file runs something:
+    - A subprocess call that launches Python. That covers `subprocess.run` and friends, also
+      under an alias (`import subprocess as sp`) or as a bare `run` from
+      `from subprocess import run`. The call launches Python when its arguments name
+      `sys.executable`, a `py`/`python` literal, or a shell string starting with one, or when
+      they use a launcher: a function, method or variable anywhere in the file that names one
+      (`_py_cmd()`, `self._py()`, `PY = [sys.executable]`, `cmd = [sys.executable, HOOK]`).
+    - A `.main()` call on a module or an expression (`mod.main()`, `_load().main()`).
+    - A `runpy` call.
+    - In bash, any `py -3`, `pyw -3`, `python`, `$PY` or `$PYTHON`, matched case-insensitively.
 
     A bare `main()` (the test file's own runner) and `unittest.main()` do not count. A file is
-    *isolated* when it calls `isolate_heartbeat()` or uses the override name as a code string;
-    a docstring mention does not count. Every hook-driving file must be isolated, with no
-    exemptions.
+    *isolated* when one of these holds:
+    - It calls `isolate_heartbeat()` as a module-level statement, so the call runs at import.
+      A call inside a test function runs too late.
+    - It *sets* the override: a subscript assignment (`env["…"] = …`), a dict-literal key, or
+      a keyword argument (`dict(os.environ, …=…)`). In bash, an assignment or `export`.
 
-    Known gaps: the detector does not follow a launcher defined in another module, a hook path
-    built without its literal basename, or `main` reached through `getattr`. The
-    non-empty floor guards against the detector going blind across the board, not against one
-    new test using such a shape. Embedded fixtures cover the shapes it does recognize.
+    Naming the override in a docstring, a comparison, a `.pop()` or an `unset` does not count.
+    Every hook-driving file must be isolated, with no exemptions.
+
+    Known gaps:
+    - The detector does not follow a launcher defined in another module.
+    - It misses a hook path built without the hook's literal basename, and `main` reached
+      through `getattr`.
+    - It cannot tell whether a hand-built environment (`env={"PATH": …}`) in a file that also
+      calls `isolate_heartbeat()` drops the override.
+    - The bash rule only checks that some line sets the override, not that it does so before
+      the hook runs.
+
+    The non-empty floor guards against the detector going blind across the board, not against
+    one new test using such a shape. Embedded fixtures cover the shapes it does recognize.
 
     Calibration, measured 2026-10-30 against `ec66eb1` before the fix. A temporary probe in
     `record_heartbeat` logged every call that resolved to the real ledger, tagged by test file.
@@ -4615,16 +4630,26 @@ For a one-line navigational map of the test directory, see
     `test_skill_file_size_advisory.py`, mixed both and leaked from its unredirected cases. It
     flagged no file that never ran a hook. An earlier version that counted any `main()` call or
     any subprocess flagged 19 extra files; the bare-`main()` and Python-launch rules removed
-    them. After the fix the same probe logged zero writes across the whole suite. Review then
-    widened the detector to three more shapes: a module-level interpreter constant,
-    `from subprocess import run`, and `.main()` on a call result. On the real corpus it still
-    classifies the same 29 files as hook-driving, so it gained no false positives.
+    them. After the fix the same probe logged zero writes across the whole suite.
 
-    Embedded fixtures pin the known-bad shapes (an unisolated subprocess driver, an in-process
-    `main()` driver, a docstring-only mention, and the three shapes above, plus an unisolated
-    bash gate). They also pin the known-good ones: an isolated driver, an isolated bash gate,
-    and a test that loads a hook, runs git and its own `main()`/`unittest.main()`, but never
-    runs the hook. Two non-empty checks fail the gate if the wired-script list or the
+    Two rounds of review widened the hook-driving shapes to everything listed above and
+    narrowed "isolated" to setting the override rather than naming it. On the real corpus the
+    detector still classifies the same 29 files as hook-driving, all isolated, so neither
+    round added a false positive or exposed a new leak. The 29 are the 15 writers, the 10
+    temp-HOME drivers, and 4 files isolated before this change (`test_worktree_path_check.py`,
+    `test_sibling_hooks_hardened_io.py`, `test_scratch_rm_allow.py`, `test_turn_count_hook.py`).
+
+    Embedded fixtures pin each known-bad shape:
+    - every hook-driving form listed above, unisolated;
+    - a docstring-only mention of the override;
+    - `isolate_heartbeat()` called only inside a test;
+    - the override name only compared and popped;
+    - two bash gates: one unisolated, one that only `unset`s the override and calls `$PYTHON`.
+
+    They also pin the known-good ones:
+    - each isolation form (module-level call, subscript, keyword) and an isolated bash gate;
+    - a test that loads a hook and runs git and its own `main()`/`unittest.main()`, but never
+      runs the hook. Two non-empty checks fail the gate if the wired-script list or the
     hook-driving set shrinks below its floor, so a detector that stops recognizing anything
     cannot pass.
 

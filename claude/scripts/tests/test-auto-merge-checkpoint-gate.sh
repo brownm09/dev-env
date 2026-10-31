@@ -52,7 +52,7 @@ bad() { echo "  FAIL: $*"; FAIL=$((FAIL + 1)); }
 if command -v py >/dev/null 2>&1; then PY="py -3"; else PY="python3"; fi
 
 # Keep the hook's heartbeat write out of the real ~/.claude/scratch/hook-heartbeat/ (dev-env#1163).
-HOOK_HEARTBEAT_DIR_OVERRIDE=$(mktemp -d)
+HOOK_HEARTBEAT_DIR_OVERRIDE=$(mktemp -d) || { echo "FATAL: mktemp -d failed"; exit 1; }
 command -v cygpath >/dev/null 2>&1 && HOOK_HEARTBEAT_DIR_OVERRIDE=$(cygpath -m "$HOOK_HEARTBEAT_DIR_OVERRIDE")
 export HOOK_HEARTBEAT_DIR_OVERRIDE
 trap 'rm -rf "$HOOK_HEARTBEAT_DIR_OVERRIDE"' EXIT
