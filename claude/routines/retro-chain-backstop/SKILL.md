@@ -38,7 +38,7 @@ next biweekly run notices. This routine is the daily backstop that catches it sa
 
 **Steps:**
 
-0. Bring the engineering-journal working tree current -- a plain fetch + fast-forward-only pull,
+0. Bring the engineering-journal working tree current -- a plain fetch + fast-forward-only merge,
    **never** `sync-routine-worktree`. That skill's own documented branch-class logic
    (`~/.claude/skills/sync-routine-worktree/SKILL.md`) `rebase`s (or `reset --hard`s) any branch
    that isn't `main` onto `origin/main` -- correct for a routine's own isolated worktree, but the
@@ -55,11 +55,15 @@ next biweekly run notices. This routine is the daily backstop that catches it sa
 
    ```bash
    git -C C:/Users/brown/Git/engineering-journal fetch origin --quiet
-   git -C C:/Users/brown/Git/engineering-journal pull --ff-only --quiet
+   git -C C:/Users/brown/Git/engineering-journal merge --ff-only --quiet '@{upstream}'
    ```
 
+   Merge `@{upstream}` (the current branch's remote-tracking ref), not `git pull --ff-only`: `pull`
+   merges `.git/FETCH_HEAD`, which a concurrent session's fetch in this same shared checkout can
+   overwrite between the fetch and the merge (dev-env#1166).
+
    Step 1's classify pass reads tile shards directly from this working tree, so a stale checkout
-   would read stale shard data; a fast-forward-only pull can only ever advance the branch to its
+   would read stale shard data; a fast-forward-only merge can only ever advance the branch to its
    own already-pushed upstream, never rewrite it, and safely no-ops if the branch has diverged or
    the tree is dirty -- in either case it fails non-destructively rather than silently succeeding
    against stale data. On failure (either command), push-notify `retro-chain-backstop: could not

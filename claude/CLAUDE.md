@@ -793,8 +793,10 @@ of the session (`date +%Y-%m-%d` / `date +%H%M%S`). Local time is used so stub f
 and branch names always share the same calendar day. UTC is reserved for internal
 operational artifacts (compose lock files, log file timestamps).
 
+**Sync the canonical with `fetch` + `merge --ff-only origin/<branch>`, never `git pull`.** `git pull` (with or without `--ff-only`) fetches into `.git/FETCH_HEAD` and then merges whatever that file holds, and every concurrent session shares that one file. Another session's fetch can rewrite it in between, so the merge fails with `fatal: not something we can merge in .git/FETCH_HEAD` or, worse, merges the wrong branch into `draft/YYYY-MM-DD`. `merge origin/<branch>` reads the remote-tracking ref instead, which each fetch updates atomically. If the fast-forward fails because the branch has diverged, run the same `merge` without `--ff-only`. See [ADR-056](../docs/adr/056-per-session-sharding-journal-companion-files.md) Addendum (2026-10-31), [dev-env#1166](https://github.com/brownm09/dev-env/issues/1166).
+
 **First session of the day:**
-1. `git -C C:/Users/brown/Git/engineering-journal checkout main && git pull`
+1. `git -C C:/Users/brown/Git/engineering-journal fetch origin main && git -C C:/Users/brown/Git/engineering-journal checkout main && git -C C:/Users/brown/Git/engineering-journal merge --ff-only origin/main`
 2. `git -C C:/Users/brown/Git/engineering-journal checkout -b draft/YYYY-MM-DD`
    **Branch validation (required):** Confirm the new branch was cut from `main`, not a previous
    draft branch. Both commands below must print the same SHA — if they differ, delete the local
@@ -829,7 +831,7 @@ operational artifacts (compose lock files, log file timestamps).
    whole add, silently leaving the stub and manifest unstaged.)*
 
 **Subsequent sessions:**
-1. `git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD && git -C C:/Users/brown/Git/engineering-journal pull`
+1. `git -C C:/Users/brown/Git/engineering-journal fetch origin draft/YYYY-MM-DD && git -C C:/Users/brown/Git/engineering-journal checkout draft/YYYY-MM-DD && git -C C:/Users/brown/Git/engineering-journal merge --ff-only origin/draft/YYYY-MM-DD`
 2. Read the open-PR records (`sessions/<project>/open-prs/*.json` shards, plus any legacy `open-prs.jsonl`) if present — include their PR list as session context before starting work (the `reconcile-open-prs.py` hook also surfaces this at session start).
 3. Find the most recent stub and read only its `<!-- next-session-context -->` paragraph:
    ```bash
