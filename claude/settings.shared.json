@@ -244,6 +244,17 @@
             "timeout": 30
           }
         ]
+      },
+      {
+        "matcher": "resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/session-start-auto-resume.py",
+            "asyncRewake": true,
+            "timeout": 180
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
