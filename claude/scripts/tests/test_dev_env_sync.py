@@ -874,6 +874,8 @@ def _run_fast_forward(merge_result):
         return _proc(0, "")
 
     with tempfile.TemporaryDirectory() as td:
+        # Seed a failure run so a success that skips clear_failure_state() is caught.
+        write_failure_state({"first_failure_at": time.time() - 60, "consecutive_count": 2}, Path(td))
         des.run, des.SCRATCH = recording, Path(td)
         try:
             out = Output()
@@ -900,7 +902,7 @@ def test_fast_forward_failure_records_merge_stderr() -> str:
     failed = subprocess.CompletedProcess(args=["git"], returncode=1, stdout="", stderr=_LOCAL_CHANGES_STDERR)
     calls, out, state = _run_fast_forward(failed)
     assert [c[1] for c in calls] == ["merge"], f"no log or retry after a failed merge: {calls}"
-    assert state is not None and state.get("consecutive_count") == 1, state
+    assert state is not None and state.get("consecutive_count") == 3, "the seeded run of 2 continues"
     assert "claude/skills/sources.md" in out.lines[0], "git's blocking path must reach the warning"
     return "failed merge -> failure state recorded, blocking path surfaced"
 
