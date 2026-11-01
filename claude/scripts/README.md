@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **104 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **108 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -33,11 +33,12 @@ exercises these scripts: `py -3 claude/scripts/run-hook-tests.py`.
 `_foo.py` files — imported by other scripts, never directly invoked or wired as a hook
 themselves. None of these get their own row in `docs/REFERENCE.md`'s Hooks/Utilities tables
 (they're described in prose paragraphs at the top of the Hooks section instead); this table is
-the one place all 21 are listed together. Each has its own test file in
+the one place all 22 are listed together. Each has its own test file in
 [`tests/README.md`](tests/README.md) → Shared support modules.
 
 | Module | Purpose | Consumers |
 |---|---|---|
+| `_auto_resume.py` | Auto-resume for desktop sessions cut off mid-turn: the opt-in config (`~/.claude/auto-resume.json`, fail closed), transcript-tail classification, the app's session files, the attempt cap and the JSONL log. [ADR-152](../../docs/adr/152-auto-resume-interrupted-desktop-sessions.md) | `session-start-auto-resume.py`, `auto-resume-launcher.py` |
 | `_bash_state.py` | Per-session repo/branch state file, plus the shared drift-warning formatter and elapsed-time gate. | `post-tool-use-cwd-track.py` (writer); `pre-commit-branch-check.py`, `pre-pr-create-check.py`, `pre-merge-branch-check.py`, `pre-bash-drift-check.py` (readers) |
 | `_composed_output_scan.py` | Fence- and code-span-aware scanner for stray terminal output in composed journal markdown (`scan_text`, `find_signature_hits`, `strip_code_spans`). | `validate-composed-output.py` |
 | `_gh_issue_state.py` | Shared GitHub issue/PR REST state helpers (`repo_from_issue_url`, `issue_number_from_url`, `issue_states_from_rows`, `should_stop_paging`, `is_closed`, `check_issue_state`) extracted from `reconcile-pending-tiles.py`: strict URL validation, PR-vs-issue row filtering, and `state` case normalization. | `reconcile-pending-tiles.py`, `retro-chain-status.py` |
@@ -146,7 +147,7 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (27)
+### Session state, reliability & token tracking (30)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -160,6 +161,7 @@ invocation instead.
 | `session-mode-prompt.py` | UserPromptSubmit | One-time per-session reminder of the active permission mode (plan/bypass/auto). |
 | `dev-env-sync.py` | UserPromptSubmit | Fast-forward pulls dev-env to `origin/main`; auto-returns a clean canonical to `main` or warns; escalates a persistent pull failure. |
 | `session-start-sync.py` | SessionStart (`startup`/`resume`) | Generalizes `dev-env-sync.py`'s fetch/ff-only-or-warn mechanic to any repo a session starts in (any dev-env checkout, canonical or worktree, stays covered by `dev-env-sync.py`); auto-fast-forwards only a canonical/sole checkout on its own default branch, clean of tracked changes and ff-safe, with no other session active there recently, else emits a loud advisory naming why not. [ADR-130](../../docs/adr/130-session-start-fetch-ff-only-or-warn.md) |
+| `session-start-auto-resume.py` | SessionStart (`resume`, `asyncRewake`) | When a session's CLI starts and its transcript ended mid-turn, and the session is opted in, waits `settleSeconds`, re-checks nothing new arrived, then exits 2 to wake the model with a check-for-errors-and-continue message. [ADR-152](../../docs/adr/152-auto-resume-interrupted-desktop-sessions.md) |
 | `turn-count-hook.py` | UserPromptSubmit | Warns when session context token/turn count exceeds threshold; nudges a journal-stub update once per band of context growth (ADR-150). |
 | `idle-refresher.py` | UserPromptSubmit | After a long idle gap, injects a cue to open the reply with a refresher of prior state. |
 | `hook-liveness-check.py` | UserPromptSubmit | Warns when a wired hook's heartbeat has gone stale (hasn't recorded in its expected cadence). |
@@ -177,6 +179,8 @@ invocation instead.
 | `dev-env-doctor.py` | `py -3 dev-env-doctor.py [--offline] [--settings PATH]` | Read-only health check of this machine's install (links, dangling ones included; hook-command scripts; tools and gh sign-in; `core.hooksPath` overrides; the journal clone); exits 1 on any FAIL, and never waits on a credential prompt. Run by `setup.sh`; see `docs/REFERENCE.md` → Adding a Second Machine. |
 | `register-keep-token-warm.ps1` | `powershell -File register-keep-token-warm.ps1 [-IntervalHours N] [-Unregister]` | Per-machine, run-once: registers the scheduled task that keeps the OAuth token fresh. |
 | `keep-token-warm.ps1` | Scheduled-task payload (not run by hand) | Triggers a CLI OAuth-token refresh every few hours so `usage-snapshot.py` rarely needs an on-demand refresh — unless a desktop-app auth-status probe detects the refresh would be futile, in which case it exits early instead. |
+| `register-auto-resume.ps1` | `powershell -File register-auto-resume.ps1 [-Include ...] [-IntervalMinutes N] [-Unregister]` | Per-machine, run-once: creates the opt-in config if absent and registers the `ClaudeAutoResumeLauncher` task; `-Unregister` is the undo. |
+| `auto-resume-launcher.py` | Scheduled-task payload (`--dry-run` to preview) | After the Claude app starts, opens each opted-in session cut off mid-turn before that start with `claude://code/continue?session=`, so its auto-resume hook fires; skips sessions already running. |
 
 ---
 
