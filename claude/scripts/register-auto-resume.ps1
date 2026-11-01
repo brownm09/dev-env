@@ -20,7 +20,8 @@
 
     The task is non-elevated and windowless (ADR-041): Limited run level, Interactive logon,
     pyw.exe with no console, and the task is marked Hidden. It runs at sign-in plus 1 minute
-    and every -IntervalMinutes after that. A run with nothing to do exits in a few seconds.
+    and every -IntervalMinutes around the clock. A run with nothing to do exits in about a
+    second.
 
 .PARAMETER Include
     Opt-in rules written to a new ~/.claude/auto-resume.json. Default: "all".
@@ -96,6 +97,14 @@ if ($Unregister) {
     return
 }
 
+# Under `powershell -File`, `-Include a,b` arrives as the single string "a,b": split it.
+$Include = @($Include | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim(" '`"") } |
+    Where-Object { $_ })
+$badRules = @($Include | Where-Object { $_ -notmatch '^(all|pinned|(cwd|session):.+)$' })
+if ($badRules.Count -gt 0) {
+    throw "Unknown -Include rule(s): $($badRules -join ', '). Use all, pinned, cwd:<glob> or session:<local_id>."
+}
+
 $pyw = (Get-Command pyw.exe -ErrorAction SilentlyContinue).Source
 if (-not $pyw) { throw "pyw.exe (the Python launcher) is not on PATH; install Python with the py launcher first." }
 if (-not (Test-Path $ScriptPath)) {
@@ -114,13 +123,17 @@ if (Test-Path $ConfigPath) {
 
 $action = New-ScheduledTaskAction -Execute $pyw -Argument ('-3 "{0}"' -f $ScriptPath)
 
-# Sign-in plus 1 minute, then every N minutes; plus a trigger from now so it works without
-# signing out first. Leaving -RepetitionDuration unset makes the repetition indefinite.
+# A daily trigger repeating every N minutes for 24 hours gives one continuous cycle that
+# needs no sign-out to start and never doubles up. A logon trigger repeating forever does
+# both: its cycle starts only at the next sign-in, and a second "from now" trigger beside
+# it would run out of phase with it. The extra sign-in run (plus 1 minute, no repetition)
+# catches a reboot without waiting for the next slot.
 $every = New-TimeSpan -Minutes $IntervalMinutes
+$daily = New-ScheduledTaskTrigger -Daily -At '00:00'
+$daily.Repetition = (New-ScheduledTaskTrigger -Once -At '00:00' -RepetitionInterval $every `
+    -RepetitionDuration (New-TimeSpan -Hours 24)).Repetition
 $atLogon = New-ScheduledTaskTrigger -AtLogOn -User ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
 $atLogon.Delay = 'PT1M'
-$atLogon.Repetition = (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval $every).Repetition
-$fromNow = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) -RepetitionInterval $every
 
 $principal = New-ScheduledTaskPrincipal -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) `
     -LogonType Interactive -RunLevel Limited
@@ -132,14 +145,15 @@ $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
     -Hidden
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($atLogon, $fromNow) `
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($daily, $atLogon) `
     -Principal $principal -Settings $settings -Force `
     -Description "Opens Claude desktop sessions that a reboot or app crash cut off mid-turn, so their SessionStart hook can continue them. dev-env #1182 / ADR-152." | Out-Null
 
 if (-not (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)) {
     throw "Register-ScheduledTask completed but '$TaskName' is missing at read-back."
 }
-Write-Host "Registered scheduled task '$TaskName' (sign-in + 1 min, then every ${IntervalMinutes} min; non-elevated, hidden)."
+Start-ScheduledTask -TaskName $TaskName
+Write-Host "Registered scheduled task '$TaskName' (every ${IntervalMinutes} min, plus sign-in + 1 min; non-elevated, hidden)."
 Write-Host "Launcher: $ScriptPath"
 Write-Host "Logs:     $LogsDir\claude-auto-resume_<date>.jsonl"
 Write-Host "Undo:     powershell -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Unregister"

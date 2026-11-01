@@ -2,15 +2,21 @@
 """Unit tests for _auto_resume.py, session-start-auto-resume.py and auto-resume-launcher.py.
 
 dev-env#1182 / ADR-152. These cover the decisions that keep auto-resume from doing
-harm: how a transcript tail is classified (a clean, waiting or user-stopped turn
-must never read as interrupted), the opt-in rules (fail closed), the attempt cap,
-the hook's settle re-check (a turn the user started meanwhile cancels the wake),
-and the launcher's candidate filter (running sessions, interruptions after this app
-start, and stale ones are never opened). The tail shapes are taken from real
-transcripts cut off by a reboot on 2026-11-01.
+harm:
+- How a transcript tail is classified. A clean, waiting, user-stopped or /compact-ed
+  turn must never read as interrupted.
+- The opt-in rules, which fail closed: no app metadata means not opted in, and a bad
+  config is disabled.
+- The per-session attempt cap.
+- The hook's guards against a double send: the interrupted message must predate the
+  hook, and any turn activity during the settle wait cancels.
+- The launcher's process parsing, candidate filter and retry plan.
 
-Not covered: the PowerShell process query, ``os.startfile`` on the deep link and the
-model wake itself. Those were verified live (see docs/TESTING.md item 108).
+The tail shapes are taken from real transcripts: two cut off by a reboot on
+2026-11-01, and one that was only compacted.
+
+Not covered here: the PowerShell process query, ``os.startfile`` on the deep link and
+the model wake itself. Those are verified live (docs/TESTING.md item 108).
 
 Usage:
     py -3 claude/scripts/tests/test_auto_resume.py
@@ -22,6 +28,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "claude" / "scripts"))
@@ -37,6 +44,8 @@ hook = importlib.import_module("session-start-auto-resume")
 launcher = importlib.import_module("auto-resume-launcher")
 
 TS = "2026-11-01T16:13:42.762Z"
+T0 = ar.parse_ts(TS)
+META = {"sessionId": "local_t", "cliSessionId": "sess", "isArchived": False, "isStarred": False}
 
 
 def _asst(blocks, stop="tool_use", uuid="a1", **kw):
@@ -49,32 +58,39 @@ def _user(content, uuid="u1", **kw):
 
 
 NOISE = [{"type": "api-request"}, {"type": "bridge-session"}, {"type": "custom-title"}]
+CUT = [_asst([{"type": "tool_use", "name": "Bash"}])]
 
 
 def test_tool_use_without_result_is_interrupted() -> str:
-    v = ar.classify([_asst([{"type": "tool_use", "name": "Bash"}])] + NOISE)
+    v = ar.classify(CUT + NOISE)
     assert v["state"] == "interrupted" and "Bash" in v["detail"], v
     return "a trailing Bash tool_use with no result is interrupted (dev-env-sync shape)"
 
 
 def test_unanswered_tool_result_is_interrupted() -> str:
-    v = ar.classify([_asst([{"type": "tool_use", "name": "Bash"}]),
-                     _user([{"type": "tool_result", "content": "ok"}], uuid="u9")] + NOISE)
+    v = ar.classify(CUT + [_user([{"type": "tool_result", "content": "ok"}], uuid="u9")] + NOISE)
     assert v["state"] == "interrupted" and v["uuid"] == "u9", v
     return "a tool_result followed only by api-request is interrupted (hook-dispatcher shape)"
 
 
-def test_end_turn_is_clean() -> str:
-    v = ar.classify([_asst([{"type": "text", "text": "done"}], stop="end_turn")])
-    assert v["state"] == "clean", v
-    return "an end_turn reply is clean"
+def test_finished_turns_are_clean() -> str:
+    a = ar.classify([_asst([{"type": "text", "text": "done"}], stop="end_turn")])
+    b = ar.classify(CUT + [{"type": "system", "subtype": "stop_hook_summary"}])
+    assert a["state"] == b["state"] == "clean", (a, b)
+    return "an end_turn reply, or any message followed by stop_hook_summary, is clean"
 
 
-def test_stop_hook_summary_is_clean() -> str:
-    v = ar.classify([_asst([{"type": "tool_use", "name": "Bash"}]),
-                     {"type": "system", "subtype": "stop_hook_summary"}])
-    assert v["state"] == "clean", v
-    return "a stop_hook_summary after the last message means the turn finished"
+def test_compact_and_local_commands_are_not_interrupted() -> str:
+    done = _asst([{"type": "text", "text": "PR opened"}], stop="end_turn")
+    compact = [done, {"type": "system", "subtype": "compact_boundary"},
+               _user("summary of the conversation", isCompactSummary=True),
+               _user("<command-name>/compact</command-name>"),
+               _user("<local-command-stdout>Compacted </local-command-stdout>")]
+    model = [done, _user("<command-name>/model</command-name>"),
+             _user([{"type": "text", "text": "<local-command-stdout>Set model</local-command-stdout>"}])]
+    a, b = ar.classify(compact), ar.classify(model)
+    assert a["state"] == b["state"] == "clean", (a, b)
+    return "a /compact tail (compact_boundary, summary, command entries) and a /model tail are clean"
 
 
 def test_waiting_tools_are_not_interrupted() -> str:
@@ -108,133 +124,192 @@ def test_empty_and_unanswered_prompt() -> str:
     return "no messages is empty; a prompt with no reply is interrupted"
 
 
+def test_read_tail_grows_past_a_huge_last_line() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "t.jsonl"
+        big = _user([{"type": "tool_result", "content": "x" * (600 * 1024)}], uuid="big")
+        p.write_text(json.dumps(CUT[0]) + "\n" + json.dumps(big) + "\n", encoding="utf-8")
+        v = ar.classify(ar.read_tail(p))
+    assert v["state"] == "interrupted" and v["uuid"] == "big", v
+    return "a last line larger than the first 512 KB window is still read and classified"
+
+
 def test_opt_in_rules() -> str:
     cfg = dict(ar.DEFAULTS, enabled=True, include=["pinned", r"cwd:C:\Git\dev-env*"],
                exclude=["session:local_x"])
-    assert ar.opted_in(cfg, {"isStarred": True})
-    assert ar.opted_in(cfg, {"cwd": r"c:\git\DEV-ENV\.claude\worktrees\w"})
-    assert not ar.opted_in(cfg, {"cwd": r"C:\Git\other"})
-    assert not ar.opted_in(cfg, {"isStarred": True, "sessionId": "local_x"})
-    assert not ar.opted_in(cfg, {"isStarred": True, "isArchived": True})
-    assert not ar.opted_in(dict(cfg, enabled=False), {"isStarred": True})
+    base = {"sessionId": "local_a", "isArchived": False}
+    assert ar.opted_in(cfg, {**base, "isStarred": True})
+    assert ar.opted_in(cfg, {**base, "cwd": r"c:\git\DEV-ENV\.claude\worktrees\w"})
+    assert not ar.opted_in(cfg, {**base, "cwd": r"C:\Git\other"})
+    assert not ar.opted_in(cfg, {**base, "isStarred": True, "sessionId": "local_x"})
+    assert not ar.opted_in(cfg, {**base, "isStarred": True, "isArchived": True})
+    assert not ar.opted_in(dict(cfg, enabled=False), {**base, "isStarred": True})
     return "pinned / cwd-glob (case-insensitive) include; exclude, archived and disabled win"
 
 
-def test_missing_or_bad_config_is_disabled() -> str:
+def test_no_app_metadata_is_never_opted_in() -> str:
+    cfg = dict(ar.DEFAULTS, enabled=True, include=["all"])
+    assert not ar.opted_in(cfg, {})
+    assert not ar.opted_in(cfg, {"cliSessionId": "sess"})
+    assert not ar.opted_in(cfg, {"sessionId": "cse_remote", "isArchived": False})
+    assert not ar.opted_in(cfg, {"sessionId": "local_a"})  # archived state unknown
+    return "include=all still skips a session with no desktop metadata or unknown archived state"
+
+
+def test_bad_config_is_disabled_with_a_reason() -> str:
     with tempfile.TemporaryDirectory() as d:
-        bad = Path(d) / "c.json"
-        bad.write_text("{not json", encoding="utf-8")
-        assert ar.load_config(Path(d) / "missing.json")["enabled"] is False
-        assert ar.load_config(bad)["enabled"] is False
-        bad.write_text(json.dumps({"enabled": True, "include": "all"}), encoding="utf-8")
-        assert ar.load_config(bad)["enabled"] is False
-    return "missing, unparseable or malformed config fails closed"
+        p = Path(d) / "c.json"
+        assert ar.load_config(Path(d) / "missing.json") == ar.DEFAULTS
+        cases = ["{not json", json.dumps({"enabled": True, "include": "all"}),
+                 json.dumps({"enabled": True, "include": ["pinned,cwd:C:\\x"]}),
+                 json.dumps({"enabled": True, "include": ["all"], "maxAgeHours": "12h"}),
+                 json.dumps({"enabled": True, "include": ["all"], "settleSeconds": 600})]
+        for raw in cases:
+            p.write_text(raw, encoding="utf-8")
+            cfg = ar.load_config(p)
+            assert cfg["enabled"] is False and cfg.get("invalid"), (raw, cfg)
+        p.write_text(json.dumps({"enabled": True, "include": ["all"]}), encoding="utf-8")
+        assert ar.load_config(p)["enabled"] is True
+    return ("unparseable, non-list, unknown-rule ('pinned,cwd:...'), non-numeric and over-limit "
+            "configs are disabled with a reason; a valid one is enabled")
 
 
-def test_attempt_cap() -> str:
+def test_attempt_cap_is_per_session() -> str:
     cfg = dict(ar.DEFAULTS, maxAttempts=2, maxAgeHours=1)
     with tempfile.TemporaryDirectory() as d:
-        p = Path(d) / "attempts.json"
-        now = 1_000_000.0
-        assert ar.attempts_left("s", cfg, now=now, path=p)
-        ar.record_attempt("s", cfg, now=now, path=p)
-        ar.record_attempt("s", cfg, now=now + 1, path=p)
-        assert not ar.attempts_left("s", cfg, now=now + 2, path=p)
-        assert ar.attempts_left("s", cfg, now=now + 3700, path=p)
-    return "two wakes exhaust the cap; attempts older than maxAgeHours stop counting"
-
-
-def _hook_fixture(d: Path, entries):
-    t = d / "sess.jsonl"
-    t.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
-    ar.ATTEMPTS_PATH = d / "attempts.json"
-    ar.meta_for = lambda sid, sessions=None: {"cliSessionId": sid, "sessionId": "local_t"}
-    ar.boot_time = lambda: None
-    return {"session_id": "sess", "transcript_path": str(t), "source": "resume", "cwd": str(d)}
+        root, now = Path(d), 1_000_000.0
+        assert ar.attempts_left("s", cfg, now=now, root=root)
+        ar.record_attempt("s", cfg, now=now, root=root)
+        ar.record_attempt("s", cfg, now=now + 1, root=root)
+        assert not ar.attempts_left("s", cfg, now=now + 2, root=root)
+        assert ar.attempts_left("other", cfg, now=now + 2, root=root)
+        assert ar.attempts_left("s", cfg, now=now + 3700, root=root)
+        assert sorted(f.name for f in root.iterdir()) == ["s.json"]
+    return "two wakes exhaust one session's cap only; old wakes stop counting; one file per session"
 
 
 CFG_ALL = dict(ar.DEFAULTS, enabled=True, include=["all"], settleSeconds=0)
 
 
+def _decide(d: Path, entries, cfg=CFG_ALL, sleep=lambda s: None, at=T0 + 60, meta=META, **payload):
+    t = d / "sess.jsonl"
+    t.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+    p = {"session_id": "sess", "transcript_path": str(t), "source": "resume", **payload}
+    with mock.patch.object(ar, "ATTEMPTS_DIR", d / "attempts"), \
+            mock.patch.object(ar, "meta_for", lambda sid: dict(meta)), \
+            mock.patch.object(ar, "boot_time", lambda: T0 - 3600):
+        return hook.decide(p, cfg, sleep=lambda s: sleep(t), now=lambda: at)
+
+
 def test_hook_wakes_interrupted_session() -> str:
     with tempfile.TemporaryDirectory() as d:
-        payload = _hook_fixture(Path(d), [_asst([{"type": "tool_use", "name": "Bash"}])])
-        now = lambda: ar.parse_ts(TS) + 60  # noqa: E731
-        decision, info = hook.decide(payload, CFG_ALL, sleep=lambda s: None, now=now)
+        decision, info = _decide(Path(d), CUT)
     assert decision == "wake" and "[auto-resume]" in info["message"], (decision, info)
     return "an opted-in, recent, interrupted resume decides wake with an [auto-resume] message"
 
 
-def test_hook_cancels_when_a_turn_started_during_settle() -> str:
+def test_hook_ignores_a_message_newer_than_itself() -> str:
     with tempfile.TemporaryDirectory() as d:
-        payload = _hook_fixture(Path(d), [_asst([{"type": "tool_use", "name": "Bash"}])])
-
-        def user_types(_s):
-            with open(payload["transcript_path"], "a", encoding="utf-8") as f:
-                f.write(json.dumps(_user("hello", uuid="u-new")) + "\n")
-
-        now = lambda: ar.parse_ts(TS) + 60  # noqa: E731
-        decision, _ = hook.decide(payload, CFG_ALL, sleep=user_types, now=now)
-    assert decision == "activity_during_settle", decision
-    return "a message that arrives during the settle wait cancels the wake (no double send)"
+        decision, _ = _decide(Path(d), [_user("new prompt")], at=T0 + 1)
+    assert decision == "not_interrupted", decision
+    return "a prompt written after the hook started (the one that launched this CLI) is not interrupted"
 
 
-def test_hook_skips_startup_old_and_not_opted_in() -> str:
+def _append(entry):
+    def write(t):
+        with open(t, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    return write
+
+
+def test_hook_cancels_on_turn_activity_during_settle() -> str:
+    for entry in (_user("hello", uuid="u-new"), {"type": "api-request"},
+                  {"type": "attachment", "uuid": "x"}):
+        with tempfile.TemporaryDirectory() as d:
+            decision, _ = _decide(Path(d), CUT, sleep=_append(entry))
+        assert decision == "activity_during_settle", (entry, decision)
     with tempfile.TemporaryDirectory() as d:
-        payload = _hook_fixture(Path(d), [_asst([{"type": "tool_use", "name": "Bash"}])])
-        nosleep = lambda s: None  # noqa: E731
-        recent = lambda: ar.parse_ts(TS) + 60  # noqa: E731
-        late = lambda: ar.parse_ts(TS) + 13 * 3600  # noqa: E731
-        a = hook.decide(dict(payload, source="startup"), CFG_ALL, nosleep, recent)[0]
-        b = hook.decide(payload, CFG_ALL, nosleep, late)[0]
-        c = hook.decide(payload, dict(CFG_ALL, include=["pinned"]), nosleep, recent)[0]
-        e = hook.decide(payload, dict(CFG_ALL, enabled=False), nosleep, recent)[0]
-    assert (a, b, c, e) == ("not_a_resume", "too_old", "not_opted_in", "disabled"), (a, b, c, e)
-    return "startup source, an interruption past maxAgeHours, no matching rule and disabled all skip"
+        decision, _ = _decide(Path(d), CUT, sleep=_append({"type": "custom-title"}))
+    assert decision == "wake", decision
+    return ("a new message, api-request or attachment during the settle cancels the wake; an app "
+            "bookkeeping line (custom-title) does not")
+
+
+def test_hook_skips() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        got = (
+            _decide(d, CUT, source="startup")[0],
+            _decide(d, CUT, at=T0 + 13 * 3600)[0],
+            _decide(d, CUT, cfg=dict(CFG_ALL, include=["pinned"]))[0],
+            _decide(d, CUT, meta={})[0],
+            _decide(d, CUT, cfg=dict(CFG_ALL, enabled=False))[0],
+            _decide(d, CUT, cfg=dict(CFG_ALL, enabled=False, invalid="bad"))[0],
+        )
+    want = ("not_a_resume", "too_old", "not_opted_in", "not_opted_in", "disabled", "config_invalid")
+    assert got == want, got
+    return ("startup source, past maxAgeHours, no matching rule, no desktop metadata, disabled "
+            "and invalid config all skip")
 
 
 def test_launcher_process_parsing() -> str:
     procs = [
-        {"path": r"C:\Program Files\WindowsApps\Claude_1\app\Claude.exe", "cmd": '"Claude.exe"',
+        {"path": r"C:\Program Files\WindowsApps\Claude_4.4_x64__pz\app\Claude.exe", "cmd": '"Claude.exe"',
          "created": "2026-11-01T16:18:35.0000000Z"},
-        {"path": r"C:\Program Files\WindowsApps\Claude_1\app\Claude.exe",
+        {"path": r"C:\Program Files\WindowsApps\Claude_4.4_x64__pz\app\Claude.exe",
          "cmd": "Claude.exe --type=gpu-process", "created": "2026-11-01T16:18:36.0000000Z"},
         {"path": r"C:\Users\b\AppData\Local\Claude-Data\c\claude-code\2.1\x\claude.exe",
          "cmd": "claude.exe --resume=4973F611-F060-47AC-8CEC-AED3911B1DF1 --model=x",
          "created": "2026-11-01T16:43:08.0000000Z"},
+        {"path": r"C:\Users\b\.local\bin\claude.exe",
+         "cmd": "claude --resume 11111111-2222-3333-4444-555555555555",
+         "created": "2026-11-01T10:00:00.0000000Z"},
     ]
     assert launcher.app_start(procs) == ar.parse_ts("2026-11-01T16:18:35Z")
-    assert launcher.running_cli_ids(procs) == {"4973f611-f060-47ac-8cec-aed3911b1df1"}
+    assert launcher.running_cli_ids(procs) == {"4973f611-f060-47ac-8cec-aed3911b1df1",
+                                               "11111111-2222-3333-4444-555555555555"}
     assert launcher.app_start(procs[2:]) is None
-    return "the app start comes from the main Claude.exe; CLI --resume ids are collected lowercased"
+    return ("the app start comes only from WindowsApps\\Claude_*\\app\\Claude.exe; any claude.exe "
+            "--resume counts as running, including a native CLI install")
 
 
 def test_launcher_candidates_filter() -> str:
     with tempfile.TemporaryDirectory() as d:
         proj = Path(d) / "projects" / "p"
         proj.mkdir(parents=True)
-        ar.ATTEMPTS_PATH = Path(d) / "attempts.json"
 
         def tx(cli, entries):
             (proj / f"{cli}.jsonl").write_text("\n".join(json.dumps(e) for e in entries), encoding="utf-8")
 
-        cut = [_asst([{"type": "tool_use", "name": "Bash"}])]
         ids = {n: f"{n}0000000-0000-0000-0000-000000000000"[:36] for n in "abcdef"}
-        tx(ids["a"], cut)                                                   # opens
-        tx(ids["b"], cut)                                                   # already running
+        tx(ids["a"], CUT)                                                     # opens
+        tx(ids["b"], CUT)                                                     # already running
         tx(ids["c"], [_asst([{"type": "text", "text": "x"}], stop="end_turn")])  # clean
-        tx(ids["d"], cut)                                                   # not opted in
-        tx(ids["e"], [dict(cut[0], timestamp="2026-11-01T17:00:00Z")])      # after app start
-        sessions = [{"sessionId": f"local_{n}", "cliSessionId": ids[n], "isStarred": n != "d"}
-                    for n in "abcde"]
-        sessions.append({"sessionId": "cse_f", "cliSessionId": ids["f"], "isStarred": True})
+        tx(ids["d"], CUT)                                                     # not opted in
+        tx(ids["e"], [dict(CUT[0], timestamp="2026-11-01T17:00:00Z")])       # after app start
+        tx(ids["f"], CUT)                                                     # not a local session
+        sessions = [{"sessionId": f"local_{n}", "cliSessionId": ids[n], "isStarred": n != "d",
+                     "isArchived": False} for n in "abcde"]
+        sessions.append({"sessionId": "cse_f", "cliSessionId": ids["f"], "isStarred": True,
+                         "isArchived": False})
         cfg = dict(ar.DEFAULTS, enabled=True, include=["pinned"])
         started = ar.parse_ts("2026-11-01T16:18:35Z")
-        got = launcher.candidates(cfg, sessions, started, {ids["b"]}, started + 120,
-                                  projects=Path(d) / "projects")
+        with mock.patch.object(ar, "ATTEMPTS_DIR", Path(d) / "attempts"):
+            got = launcher.candidates(cfg, sessions, started, {ids["b"]}, started + 120,
+                                      projects=Path(d) / "projects")
     assert [c["sessionId"] for c in got] == ["local_a"], got
     return ("only an opted-in local session interrupted before this app start, with no running "
             "CLI, is opened")
+
+
+def test_launcher_retry_plan() -> str:
+    found = [{"sessionId": "local_a"}, {"sessionId": "local_b"}]
+    todo, done = launcher.plan_opens(found, {"opens": {"local_a": launcher.MAX_OPENS}})
+    assert [c["sessionId"] for c in todo] == ["local_b"] and not done, todo
+    todo, done = launcher.plan_opens(found, {"opens": {"local_a": 3, "local_b": 3}})
+    assert todo == [] and done
+    assert launcher.plan_opens([], {}) == ([], True)
+    return "a session is re-opened on later runs until MAX_OPENS; the instance is done when none remain"
 
 
 def main() -> int:

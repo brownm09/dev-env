@@ -13,14 +13,17 @@ Two callers use it:
   starts a session's CLI only when the session is opened.
 
 The opt-in lives in ``~/.claude/auto-resume.json``, which is machine-local and not in
-this repo. A missing, unreadable or ``"enabled": false`` file means nothing is ever
-resumed (fail closed).
+this repo. A missing, unreadable or invalid file, or ``"enabled": false``, means nothing
+is ever resumed (fail closed).
 
-The app's own session files (``Claude-Data/*/claude-code-sessions/<account>/<org>/
-local_*.json``) are read-only inputs here and are never written. Only ``cliSessionId``,
-``cwd``, ``title``, ``isArchived`` and ``isStarred`` (the sidebar pin) are read. An
-unreadable file means "no metadata": the session can still match ``all`` or
-``session:<cliSessionId>``, but never ``pinned``.
+The app's own session files (``%LOCALAPPDATA%\\Claude-Data\\<package>\\
+claude-code-sessions\\<account>\\<org>\\local_*.json``, the MSIX install's layout) are
+read-only inputs here and are never written. Only ``sessionId``, ``cliSessionId``,
+``cwd``, ``title``, ``isArchived`` and ``isStarred`` (the sidebar pin) are read. A
+session with no readable file there is not a desktop session as far as this module is
+concerned, and is never opted in. That covers terminal and headless resumes, and keeps
+exclude rules and the archived check from being skipped while the app is writing the
+file.
 """
 from __future__ import annotations
 
@@ -36,7 +39,7 @@ CLAUDE_HOME = Path.home() / ".claude"
 CONFIG_PATH = CLAUDE_HOME / "auto-resume.json"
 PROJECTS = CLAUDE_HOME / "projects"
 STATE_DIR = CLAUDE_HOME / "scratch" / "auto-resume"
-ATTEMPTS_PATH = STATE_DIR / "attempts.json"
+ATTEMPTS_DIR = STATE_DIR / "attempts"
 
 DEFAULTS = {
     "enabled": False,
@@ -47,33 +50,67 @@ DEFAULTS = {
     # A turn cut off longer ago than this is left alone.
     "maxAgeHours": 12,
     # The hook waits this long before waking the model, then re-reads the transcript.
-    # Any new message in the meantime (the user typed, or a queued message ran) cancels.
+    # Any new turn activity in the meantime (the user typed, or a queued message ran)
+    # cancels. Capped well below the hook's 180 s timeout in settings.shared.json.
     "settleSeconds": 20,
     # At most this many wakes per session within maxAgeHours, so a turn that keeps
     # crashing is not resumed forever.
     "maxAttempts": 2,
 }
+_LIMITS = {"maxAgeHours": (0.1, 168), "settleSeconds": (5, 120), "maxAttempts": (1, 10)}
 
 # A turn whose last step is one of these is waiting on the user, not interrupted.
 WAITING_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
 USER_STOP_MARKER = "[Request interrupted by user"
-TAIL_BYTES = 512 * 1024
+# User entries a local slash command (/compact, /model, ...) writes. No reply follows them.
+LOCAL_COMMAND_PREFIXES = ("<command-name>", "<command-message>", "<local-command-stdout>",
+                          "<local-command-stderr>")
+# Transcript lines the app and CLI write that are not turn activity. Any other new line
+# during the hook's settle wait counts as activity and cancels the wake.
+BOOKKEEPING_TYPES = {"bridge-session", "custom-title", "agent-name", "atis-latch", "mode",
+                     "last-prompt", "pr-link", "summary", "tag", "file-history-snapshot"}
+TAIL_SIZES = (512 * 1024, 4 * 1024 * 1024, 32 * 1024 * 1024)
 
 
 # --- config -------------------------------------------------------------------------
 
 
+def _valid_rule(rule) -> bool:
+    if rule in ("all", "pinned"):
+        return True
+    kind, _, value = str(rule).partition(":")
+    return kind in ("cwd", "session") and bool(value)
+
+
 def load_config(path: Path | None = None) -> dict:
-    """Return the config merged over DEFAULTS. Missing or bad file -> disabled."""
+    """Return the config merged over DEFAULTS.
+
+    Missing file -> disabled. A file that can't be parsed, an unknown rule, or a number
+    outside its limits -> disabled, with the reason in ``cfg["invalid"]`` for the caller
+    to log.
+    """
     cfg = dict(DEFAULTS)
+    p = path or CONFIG_PATH
     try:
-        raw = json.loads((path or CONFIG_PATH).read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
+        raw = json.loads(p.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
         return cfg
-    if isinstance(raw, dict):
-        cfg.update({k: v for k, v in raw.items() if k in DEFAULTS})
-    if not isinstance(cfg["include"], list) or not isinstance(cfg["exclude"], list):
-        cfg["enabled"] = False
+    except (OSError, ValueError) as e:
+        return {**cfg, "invalid": f"{p} could not be read: {e}"}
+    if not isinstance(raw, dict):
+        return {**cfg, "invalid": f"{p} is not a JSON object"}
+    cfg.update({k: v for k, v in raw.items() if k in DEFAULTS})
+    problems = []
+    for key in ("include", "exclude"):
+        rules = cfg[key]
+        if not isinstance(rules, list) or not all(_valid_rule(r) for r in rules):
+            problems.append(f"{key} must be a list of all | pinned | cwd:<glob> | session:<id>")
+    for key, (lo, hi) in _LIMITS.items():
+        v = cfg[key]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+            problems.append(f"{key} must be a number from {lo} to {hi}")
+    if problems:
+        return {**cfg, "enabled": False, "invalid": f"{p}: " + "; ".join(problems)}
     return cfg
 
 
@@ -83,37 +120,31 @@ def _rule_matches(rule: str, meta: dict) -> bool:
     if rule == "pinned":
         return meta.get("isStarred") is True
     kind, _, value = rule.partition(":")
-    if kind == "cwd" and value and meta.get("cwd"):
+    if kind == "cwd" and meta.get("cwd"):
         return fnmatch.fnmatch(os.path.normcase(meta["cwd"]), os.path.normcase(value))
-    if kind == "session" and value:
+    if kind == "session":
         return value in (meta.get("sessionId"), meta.get("cliSessionId"))
     return False
 
 
 def opted_in(cfg: dict, meta: dict) -> bool:
-    """True when the config is enabled, an include rule matches and no exclude rule does."""
-    if cfg.get("enabled") is not True or meta.get("isArchived") is True:
+    """True for an enabled config, a desktop session (app metadata present), not archived,
+    an include rule matching and no exclude rule matching."""
+    if cfg.get("enabled") is not True or not str(meta.get("sessionId") or "").startswith("local_"):
         return False
-    if any(_rule_matches(str(r), meta) for r in cfg["exclude"]):
+    if meta.get("isArchived") is not False:
         return False
-    return any(_rule_matches(str(r), meta) for r in cfg["include"])
+    if any(_rule_matches(r, meta) for r in cfg["exclude"]):
+        return False
+    return any(_rule_matches(r, meta) for r in cfg["include"])
 
 
 # --- transcript ---------------------------------------------------------------------
 
 
-def read_tail(path: Path, max_bytes: int = TAIL_BYTES) -> list[dict]:
-    """Parse the last *max_bytes* of a JSONL transcript. Unparseable lines are skipped."""
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - max_bytes))
-            chunk = f.read()
-    except OSError:
-        return []
+def _parse_lines(chunk: bytes, cut_first: bool) -> list[dict]:
     lines = chunk.decode("utf-8", "replace").splitlines()
-    if size > max_bytes:
+    if cut_first:
         lines = lines[1:]  # the first line is probably cut in half
     out = []
     for ln in lines:
@@ -124,6 +155,25 @@ def read_tail(path: Path, max_bytes: int = TAIL_BYTES) -> list[dict]:
         if isinstance(e, dict):
             out.append(e)
     return out
+
+
+def read_tail(path: Path) -> list[dict]:
+    """Parse the end of a JSONL transcript.
+
+    The window grows until it holds at least one whole message line, so a huge last line
+    (a screenshot tool_result, say) can't hide the interruption.
+    """
+    try:
+        with open(path, "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            for n in TAIL_SIZES:
+                f.seek(max(0, size - n))
+                entries = _parse_lines(f.read(), cut_first=size > n)
+                if size <= n or any(e.get("type") in ("user", "assistant") for e in entries):
+                    return entries
+            return entries
+    except OSError:
+        return []
 
 
 def _blocks(entry: dict) -> list:
@@ -144,6 +194,16 @@ def _text_of(block: dict) -> str:
     return ""
 
 
+def _ignored(e: dict) -> bool:
+    if e.get("isSidechain") or e.get("isMeta") or e.get("isCompactSummary") \
+            or e.get("isVisibleInTranscriptOnly"):
+        return True
+    if e.get("type") == "user":
+        text = " ".join(_text_of(b) for b in _blocks(e)).lstrip()
+        return text.startswith(LOCAL_COMMAND_PREFIXES)
+    return False
+
+
 def classify(entries: list[dict]) -> dict:
     """Classify how the last turn in a transcript ended.
 
@@ -153,23 +213,23 @@ def classify(entries: list[dict]) -> dict:
     ``user_stopped`` (the user pressed stop), ``api_error`` (the turn ended on an
     API error message) or ``empty``.
 
-    Only main-thread ``user`` / ``assistant`` messages count; sidechain (subagent)
-    entries, ``isMeta`` user entries and app bookkeeping lines (``bridge-session``,
-    ``custom-title``, ``api-request``, ``attachment``, ...) are ignored. A
-    ``system/stop_hook_summary`` after the last message means the Stop hooks ran, so
-    the turn finished.
+    Only main-thread ``user`` / ``assistant`` messages count. These are ignored:
+    sidechain (subagent) entries; ``isMeta``, compact-summary and transcript-only
+    entries; the user entries a local slash command writes (``/compact``, ...); and app
+    bookkeeping lines. A ``system`` ``stop_hook_summary`` or ``compact_boundary`` after
+    the last message means the turn finished.
     """
-    stop_summary_after = False
+    finished_after = False
     for e in reversed(entries):
         t = e.get("type")
-        if t == "system" and e.get("subtype") == "stop_hook_summary":
-            stop_summary_after = True
+        if t == "system" and e.get("subtype") in ("stop_hook_summary", "compact_boundary"):
+            finished_after = True
             continue
-        if t not in ("user", "assistant") or e.get("isSidechain") or e.get("isMeta"):
+        if t not in ("user", "assistant") or _ignored(e):
             continue
         res = {"uuid": e.get("uuid"), "timestamp": e.get("timestamp"), "detail": ""}
         blocks = _blocks(e)
-        if stop_summary_after:
+        if finished_after:
             return {**res, "state": "clean"}
         if t == "assistant":
             if e.get("isApiErrorMessage"):
@@ -192,6 +252,14 @@ def classify(entries: list[dict]) -> dict:
     return {"state": "empty", "uuid": None, "timestamp": None, "detail": ""}
 
 
+def activity_marker(entries: list[dict]):
+    """Identity of the last line that is not app bookkeeping. If it changes, a turn moved."""
+    for e in reversed(entries):
+        if e.get("type") not in BOOKKEEPING_TYPES:
+            return (e.get("type"), e.get("subtype"), e.get("uuid"), e.get("timestamp"))
+    return None
+
+
 def parse_ts(ts) -> float | None:
     """ISO-8601 transcript timestamp -> epoch seconds, or None."""
     if not isinstance(ts, str) or not ts:
@@ -202,8 +270,12 @@ def parse_ts(ts) -> float | None:
         return None
 
 
+def _safe_id(cli_session_id: str) -> bool:
+    return bool(cli_session_id) and all(c.isalnum() or c == "-" for c in cli_session_id)
+
+
 def find_transcript(cli_session_id: str, projects: Path | None = None) -> Path | None:
-    if not cli_session_id or not all(c.isalnum() or c == "-" for c in cli_session_id):
+    if not _safe_id(cli_session_id):
         return None
     return next((projects or PROJECTS).glob(f"*/{cli_session_id}.jsonl"), None)
 
@@ -211,43 +283,55 @@ def find_transcript(cli_session_id: str, projects: Path | None = None) -> Path |
 # --- app session metadata -----------------------------------------------------------
 
 
-def session_dirs() -> list[Path]:
-    """Every ``claude-code-sessions/<account>/<org>`` directory the desktop app keeps."""
-    roots = [Path(os.environ.get("LOCALAPPDATA", "")) / "Claude-Data",
-             Path(os.environ.get("APPDATA", "")) / "Claude"]
-    found = []
-    for root in roots:
-        found += [p for p in root.glob("*/claude-code-sessions/*/*") if p.is_dir()]
-        found += [p for p in root.glob("claude-code-sessions/*/*") if p.is_dir()]
-    return found
-
-
-def load_app_sessions(dirs: list[Path] | None = None) -> list[dict]:
+def load_app_sessions() -> list[dict]:
     """Read the app's ``local_*.json`` session files, keeping only the fields used here."""
     keep = ("sessionId", "cliSessionId", "cwd", "title", "isArchived", "isStarred")
+    root = Path(os.environ.get("LOCALAPPDATA", "")) / "Claude-Data"
     out = []
-    for d in session_dirs() if dirs is None else dirs:
-        for f in d.glob("local_*.json"):
-            try:
-                j = json.loads(f.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue  # the app may be mid-write; skipping is safe
-            if isinstance(j, dict) and j.get("cliSessionId"):
-                out.append({k: j.get(k) for k in keep})
+    for f in root.glob("*/claude-code-sessions/*/*/local_*.json"):
+        try:
+            j = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # the app may be mid-write; that session is skipped this time
+        if isinstance(j, dict) and j.get("cliSessionId"):
+            out.append({k: j.get(k) for k in keep})
     return out
 
 
-def meta_for(cli_session_id: str, sessions: list[dict] | None = None) -> dict:
-    for s in load_app_sessions() if sessions is None else sessions:
-        if s.get("cliSessionId") == cli_session_id:
-            return s
-    return {"cliSessionId": cli_session_id}
+def meta_for(cli_session_id: str, tries: int = 3, delay: float = 2.0) -> dict:
+    """App metadata for a CLI session id, or ``{}`` when no readable file names it.
+
+    Retries briefly, since the app may be rewriting the file just as the session opens.
+    """
+    for i in range(tries):
+        for s in load_app_sessions():
+            if s.get("cliSessionId") == cli_session_id:
+                return s
+        if i + 1 < tries:
+            time.sleep(delay)
+    return {}
 
 
-# --- attempts ledger ----------------------------------------------------------------
+# --- state files --------------------------------------------------------------------
 
 
-def _load_attempts(path: Path) -> dict:
+def write_json_atomic(path: Path, data) -> None:
+    """Write via a temp file and ``os.replace``, retrying briefly if a reader holds it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    for i in range(5):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if i == 4:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.2)
+
+
+def read_json(path: Path) -> dict:
     try:
         d = json.loads(path.read_text(encoding="utf-8"))
         return d if isinstance(d, dict) else {}
@@ -255,28 +339,26 @@ def _load_attempts(path: Path) -> dict:
         return {}
 
 
-def attempts_left(cli_session_id: str, cfg: dict, now: float | None = None,
-                  path: Path | None = None) -> bool:
-    now = time.time() if now is None else now
+def _attempts(cli_session_id: str, cfg: dict, now: float, root: Path) -> list[float]:
     window = float(cfg["maxAgeHours"]) * 3600
-    recent = [t for t in _load_attempts(path or ATTEMPTS_PATH).get(cli_session_id, [])
-              if isinstance(t, (int, float)) and now - t < window]
-    return len(recent) < int(cfg["maxAttempts"])
+    times = read_json(root / f"{cli_session_id}.json").get("wakes", [])
+    return [t for t in times if isinstance(t, (int, float)) and now - t < window]
+
+
+def attempts_left(cli_session_id: str, cfg: dict, now: float | None = None,
+                  root: Path | None = None) -> bool:
+    """One file per session, so concurrent hooks for different sessions never collide."""
+    now = time.time() if now is None else now
+    return len(_attempts(cli_session_id, cfg, now, root or ATTEMPTS_DIR)) < int(cfg["maxAttempts"])
 
 
 def record_attempt(cli_session_id: str, cfg: dict, now: float | None = None,
-                   path: Path | None = None) -> None:
-    path = path or ATTEMPTS_PATH
+                   root: Path | None = None) -> None:
     now = time.time() if now is None else now
-    window = float(cfg["maxAgeHours"]) * 3600
-    data = {k: [t for t in v if isinstance(t, (int, float)) and now - t < window]
-            for k, v in _load_attempts(path).items() if isinstance(v, list)}
-    data.setdefault(cli_session_id, []).append(now)
-    data = {k: v for k, v in data.items() if v}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    os.replace(tmp, path)
+    root = root or ATTEMPTS_DIR
+    if _safe_id(cli_session_id):
+        times = _attempts(cli_session_id, cfg, now, root) + [now]
+        write_json_atomic(root / f"{cli_session_id}.json", {"wakes": times})
 
 
 # --- logging ------------------------------------------------------------------------
@@ -284,12 +366,9 @@ def record_attempt(cli_session_id: str, cfg: dict, now: float | None = None,
 
 def documents_dir() -> Path:
     """The real Documents folder (follows OneDrive redirection), via SHGetFolderPathW."""
-    try:
-        buf = ctypes.create_unicode_buffer(260)
-        if ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf) == 0 and buf.value:
-            return Path(buf.value)
-    except (AttributeError, OSError):
-        pass
+    buf = ctypes.create_unicode_buffer(260)
+    if ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf) == 0 and buf.value:
+        return Path(buf.value)
     return Path.home() / "Documents"
 
 
@@ -317,11 +396,8 @@ def log(source: str, event: str, **fields) -> None:
         pass
 
 
-def boot_time() -> float | None:
-    """Epoch seconds of the last Windows boot, or None off Windows."""
-    try:
-        tick = ctypes.windll.kernel32.GetTickCount64
-        tick.restype = ctypes.c_uint64  # the default c_int wraps after 24.8 days
-        return time.time() - tick() / 1000.0
-    except AttributeError:
-        return None
+def boot_time() -> float:
+    """Epoch seconds of the last Windows boot."""
+    tick = ctypes.windll.kernel32.GetTickCount64
+    tick.restype = ctypes.c_uint64  # the default c_int wraps after 24.8 days
+    return time.time() - tick() / 1000.0

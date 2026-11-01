@@ -4717,26 +4717,68 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_hook_dispatch.py
     ```
 
-108. **auto-resume test** — required when changing `claude/scripts/_auto_resume.py`, `session-start-auto-resume.py`, `auto-resume-launcher.py` or `register-auto-resume.ps1` ([ADR-152](adr/152-auto-resume-interrupted-desktop-sessions.md), dev-env#1182).
+108. **auto-resume test**: required when changing `claude/scripts/_auto_resume.py`, `session-start-auto-resume.py`, `auto-resume-launcher.py` or `register-auto-resume.ps1` ([ADR-152](adr/152-auto-resume-interrupted-desktop-sessions.md), dev-env#1182).
 
-    Offline, it pins the decisions that keep auto-resume from doing harm. `classify()` reads the two
-    tail shapes a 2026-11-01 reboot left: a trailing `tool_use` with no result, and a `tool_result`
-    followed only by `api-request`. Both are `interrupted`. These are not: an `end_turn` reply, any
-    message followed by `stop_hook_summary`, a turn paused on AskUserQuestion or ExitPlanMode, a stop
-    the user pressed, and an API-error reply. Sidechain and `isMeta` entries are ignored. The opt-in
-    rules: `pinned`, a case-insensitive `cwd:` glob, `session:`, with exclude, archived and disabled
-    always winning. A missing or malformed config fails closed. The attempt cap counts only wakes inside
-    `maxAgeHours`. For the hook's `decide()`: a recent, opted-in interruption wakes; a message written
-    during the settle wait cancels it; a `startup` source, an interruption past `maxAgeHours`, no
-    matching rule and a disabled config all skip. For the launcher: the app start comes from the main
-    `Claude.exe` (not a `--type=` child or a CLI); running CLI ids come from `--resume=`; and
-    `candidates()` opens only an opted-in `local_` session interrupted before this app start that has
-    no running CLI.
+    Offline, it pins the decisions that keep auto-resume from doing harm.
 
-    Not covered here: the PowerShell process query, `os.startfile` on the deep link, and the model
-    wake. Verify those live: kill the app while an opted-in session is mid-turn, start it again, and
-    within a few minutes `Documents\LOGS\claude-auto-resume_<date>.jsonl` shows the launcher's
-    `scan` / `open` / `started` lines and the hook's `wake` line, and the session continues on its own.
+    **Transcript classification (`classify()`).** These tail shapes read as `interrupted`:
+    - a trailing `tool_use` with no result;
+    - a `tool_result` followed only by `api-request`;
+    - a prompt with no reply.
+
+    The first two are the shapes a 2026-11-01 reboot left. None of these reads as interrupted:
+    - an `end_turn` reply, or any message followed by `stop_hook_summary`;
+    - a `/compact` tail (`compact_boundary`, the summary, and the `<command-name>` /
+      `<local-command-stdout>` entries), or another local slash command;
+    - a turn paused on AskUserQuestion or ExitPlanMode;
+    - a stop the user pressed;
+    - an API-error reply.
+
+    Sidechain and `isMeta` entries are ignored. `read_tail()` grows its window when the last line
+    alone is larger than 512 KB.
+
+    **Opt-in rules.** `pinned`, a case-insensitive `cwd:` glob and `session:` all opt a session in.
+    An exclude rule, an archived session and a disabled config always win. A session with no
+    desktop metadata, or whose archived state is unknown, is never opted in. A config that can't be
+    parsed, has an unknown rule (such as `"pinned,cwd:..."`) or has an out-of-range number is
+    disabled, with the reason given. The attempt cap is one file per session and counts only wakes
+    inside `maxAgeHours`.
+
+    **The hook's `decide()`:**
+    - a recent, opted-in interruption wakes;
+    - a message newer than the hook's own start (the prompt that launched the CLI) is not treated as
+      interrupted;
+    - a new message, `api-request` or `attachment` during the settle wait cancels the wake, but an
+      app bookkeeping line does not;
+    - these all skip: a `startup` source, an interruption past `maxAgeHours`, no matching rule, no
+      metadata, a disabled config and an invalid config.
+
+    **The launcher:**
+    - the app start comes only from `WindowsApps\Claude_*\app\Claude.exe` with no `--type=`;
+    - any `claude.exe --resume` counts as running, including a native CLI install;
+    - `candidates()` opens only an opted-in `local_` session that was interrupted before this app
+      start and has no running CLI;
+    - `plan_opens()` re-opens a session on later runs until `MAX_OPENS`, and the instance is done
+      when none remain.
+
+    Not covered here: the PowerShell process query, `os.startfile` on the deep link, the model wake,
+    and `register-auto-resume.ps1`.
+
+    For `register-auto-resume.ps1`:
+    1. Parse-check it (the win11-init-tools parse snippet works on one file).
+    2. Run it. `Get-ScheduledTask ClaudeAutoResumeLauncher` should show exactly two triggers: a
+       daily trigger repeating every 3 minutes for 24 hours, and a sign-in trigger delayed 1 minute.
+    3. Check that `~/.claude/auto-resume.json` exists and is BOM-free.
+    4. Run `-Include pinned,'cwd:C:\x*'` against a missing config. It should write two rules, and an
+       unknown rule should throw.
+    5. Run `-Unregister`. It should write `Documents\LOGS\ClaudeAutoResumeLauncherBackup.xml`,
+       remove the task, and set `"enabled": false`.
+
+    To verify the rest live:
+    1. Kill the app while an opted-in session is mid-turn, then start it again.
+    2. Within a few minutes, `Documents\LOGS\claude-auto-resume_<date>.jsonl` should show the
+       launcher's `scan`, `open` and `started` lines and the hook's `wake` line.
+    3. The session should continue on its own.
 
     ```bash
     py -3 claude/scripts/tests/test_auto_resume.py

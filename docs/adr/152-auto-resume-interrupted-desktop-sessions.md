@@ -31,11 +31,17 @@ Auto-resume has two parts. Both read a machine-local opt-in file, `~/.claude/aut
    - the last message is unchanged after `settleSeconds`.
 
    The wake message asks the model to check what the interruption left behind first: a half-run command, a partly written file, or a stale `index.lock` (remove one only if it predates the boot and no git process is running). Then the model carries on.
-2. **`auto-resume-launcher.py`**, run by the hidden, non-elevated `ClaudeAutoResumeLauncher` task at sign-in plus 1 minute and every 3 minutes after (`register-auto-resume.ps1`). It does real work once per app instance. It waits until the app has been up for 90 s, then opens each opted-in session that was interrupted before this instance started and has no running CLI, using the `code/continue` deep link. It confirms each one started a CLI. It never sends anything itself.
+2. **`auto-resume-launcher.py`**, run by the hidden, non-elevated `ClaudeAutoResumeLauncher` task (`register-auto-resume.ps1`). The task runs every 3 minutes around the clock from a daily trigger that repeats for 24 hours, plus once at sign-in plus 1 minute. It ignores everything until a new app instance has been up for 90 s. Then it opens each opted-in session that was interrupted before that instance started and has no running CLI, using the `code/continue` deep link. It confirms each one started a CLI. A session that didn't start is opened again on later runs, up to 3 times per instance. A failing run is retried up to 3 times before that instance is given up, so a slow or half-loaded app doesn't lose a session and a recurring failure doesn't repeat all day. The launcher never sends anything itself.
 
-**Opt-in.** The config's `include` rules are `all`, `pinned` (the sidebar pin, read from the app's session files), `cwd:<glob>` and `session:<id>`. `exclude` rules use the same syntax and win. A missing, unreadable or disabled file means nothing is resumed.
+**Opt-in.** The config's `include` rules are `all`, `pinned` (the sidebar pin, read from the app's session files), `cwd:<glob>` and `session:<id>`. `exclude` rules use the same syntax and win. A missing file, or one with an unknown rule or an out-of-range number, means nothing is resumed, and the reason is logged. So does a session with no readable app metadata: that is how terminal and headless resumes are kept out, and how exclude rules and the archived check avoid being skipped while the app is rewriting the file.
 
-**No double send.** The launcher skips any session whose CLI is already running. Opening a running session wouldn't fire `SessionStart` anyway. The hook's settle re-check cancels the wake when the user, or a queued message, has already started a turn. The attempt cap stops a turn that keeps crashing from being resumed indefinitely.
+**No double send.**
+- The launcher skips any session whose CLI is already running, and opening a running session doesn't fire `SessionStart` anyway.
+- The hook ignores an "interrupted" message newer than its own start, since that is the prompt that launched this CLI.
+- Any turn activity during the settle wait cancels the wake: a message, an `api-request` or an `attachment` line.
+- The per-session attempt cap stops a turn that keeps crashing from being resumed indefinitely.
+
+**Not interruptions.** A `/compact` or other local slash command leaves user entries with no reply. These are not interruptions: `classify` skips them and treats `compact_boundary` as a finished turn.
 
 **Undo.** `register-auto-resume.ps1 -Unregister` backs up the task definition (write-if-absent, ADR-079), removes the task, and sets `"enabled": false`, which also stops the hook.
 
