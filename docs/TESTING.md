@@ -4716,3 +4716,28 @@ For a one-line navigational map of the test directory, see
     ```bash
     py -3 claude/scripts/tests/test_hook_dispatch.py
     ```
+
+108. **auto-resume test** — required when changing `claude/scripts/_auto_resume.py`, `session-start-auto-resume.py`, `auto-resume-launcher.py` or `register-auto-resume.ps1` ([ADR-152](adr/152-auto-resume-interrupted-desktop-sessions.md), dev-env#1182).
+
+    Offline, it pins the decisions that keep auto-resume from doing harm. `classify()` reads the two
+    tail shapes a 2026-11-01 reboot left: a trailing `tool_use` with no result, and a `tool_result`
+    followed only by `api-request`. Both are `interrupted`. These are not: an `end_turn` reply, any
+    message followed by `stop_hook_summary`, a turn paused on AskUserQuestion or ExitPlanMode, a stop
+    the user pressed, and an API-error reply. Sidechain and `isMeta` entries are ignored. The opt-in
+    rules: `pinned`, a case-insensitive `cwd:` glob, `session:`, with exclude, archived and disabled
+    always winning. A missing or malformed config fails closed. The attempt cap counts only wakes inside
+    `maxAgeHours`. For the hook's `decide()`: a recent, opted-in interruption wakes; a message written
+    during the settle wait cancels it; a `startup` source, an interruption past `maxAgeHours`, no
+    matching rule and a disabled config all skip. For the launcher: the app start comes from the main
+    `Claude.exe` (not a `--type=` child or a CLI); running CLI ids come from `--resume=`; and
+    `candidates()` opens only an opted-in `local_` session interrupted before this app start that has
+    no running CLI.
+
+    Not covered here: the PowerShell process query, `os.startfile` on the deep link, and the model
+    wake. Verify those live: kill the app while an opted-in session is mid-turn, start it again, and
+    within a few minutes `Documents\LOGS\claude-auto-resume_<date>.jsonl` shows the launcher's
+    `scan` / `open` / `started` lines and the hook's `wake` line, and the session continues on its own.
+
+    ```bash
+    py -3 claude/scripts/tests/test_auto_resume.py
+    ```

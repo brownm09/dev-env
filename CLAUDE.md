@@ -141,6 +141,7 @@ the item). A one-line navigational map of the test directory is
 105. **turn-count-hook journal-stub band test** — required when changing `claude/scripts/turn-count-hook.py` ([ADR-150](docs/adr/150-context-growth-journal-stub-trigger.md), dev-env#1160). Run: `py -3 claude/scripts/tests/test_turn_count_hook.py`
 106. **heartbeat-ledger isolation gate** — required when adding or changing any test that runs a real wired hook (a subprocess or a `<module>.main()` call), or when changing `claude/scripts/tests/_heartbeat_isolation.py`. No test may write the production ledger `~/.claude/scratch/hook-heartbeat/` (dev-env#1163). Run: `py -3 claude/scripts/tests/test_hook_heartbeat_isolation.py`
 107. **hook-dispatch test** — required when changing `claude/scripts/hook-dispatch.py`, or which hooks a dispatcher command runs in `claude/settings.shared.json` (also run items 2, 61-63, 67, 68 and 98 then). The in-process dispatcher that runs a group of hooks in one process ([ADR-151](docs/adr/151-in-process-hook-dispatcher.md), dev-env#851). Run: `py -3 claude/scripts/tests/test_hook_dispatch.py`
+108. **auto-resume test** — required when changing `claude/scripts/_auto_resume.py`, `session-start-auto-resume.py`, `auto-resume-launcher.py` or `register-auto-resume.ps1`. These continue desktop sessions a reboot or app crash cut off mid-turn ([ADR-152](docs/adr/152-auto-resume-interrupted-desktop-sessions.md), dev-env#1182). Run: `py -3 claude/scripts/tests/test_auto_resume.py`
 
 ## Observability
 
