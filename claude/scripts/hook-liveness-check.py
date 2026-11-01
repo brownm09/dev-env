@@ -52,7 +52,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import time
 from pathlib import Path
@@ -60,6 +59,7 @@ from pathlib import Path
 import _hookout
 from _hookinput import load_hook_input
 import _hookutil
+from _settings_sync import py_tokens
 
 # Reads the TRACKED source (claude/settings.shared.json), not the live machine-local
 # ~/.claude/settings.json -- `hooks` is an owned key, so _settings_sync keeps the two
@@ -77,27 +77,29 @@ EXEMPT_EVENTS = frozenset({"PostCompact", "Notification"})
 SENTINEL_PREFIX = "hook_liveness_check_"
 OWN_HOOK_NAME = "hook-liveness-check"
 
-# The last whitespace-delimited token of a hook command is the script path --
-# capture its basename minus ".py", which is exactly the literal string every
-# hook passes to _hookutil.record_heartbeat() at its own call site (see that
-# function's docstring). Matches the `pyw -3 C:/.../hook-launch.py C:/.../foo.py`
-# invocation form (ADR-007, ADR-148) -- the launcher is never the last token.
-_SCRIPT_RE = re.compile(r"([\w.-]+)\.py\s*$")
+# Every `<name>.py` token after the launcher is a hook this command runs: the hook
+# itself (`pyw -3 C:/.../hook-launch.py C:/.../foo.py`, ADR-007, ADR-148), or the
+# dispatcher and each handler it runs in-process (dev-env#851, ADR-151). The
+# basename minus ".py" is exactly the literal string each passes to
+# _hookutil.record_heartbeat() at its own call site (see that function's docstring).
+# Tokenized by _settings_sync.py_tokens, as the missing-script guard and the
+# structural gates (tests/_hook_wiring.py) do, so all three read a command alike.
+_LAUNCHER_NAME = "hook-launch"
 
 
-def hook_name_from_command(command: str) -> str | None:
-    """The bare hook name (script basename minus .py) a settings.json command
-    invokes, or None if the command's last token isn't a .py script."""
-    m = _SCRIPT_RE.search((command or "").strip())
-    return m.group(1) if m else None
+def hook_names_from_command(command: str) -> list[str]:
+    """The bare hook names (script basenames minus .py) a settings.json command
+    runs, launcher excluded; empty if it names no .py script."""
+    names = (Path(token).stem for token in py_tokens(command or ""))
+    return [name for name in names if name != _LAUNCHER_NAME]
 
 
 def wired_hook_events(settings: dict) -> dict[str, set[str]]:
     """Map each wired hook name -> the set of events it is registered under.
 
     Walks settings.json's hooks[event][*].hooks[*].command entries. A command
-    that doesn't resolve to a .py basename (hook_name_from_command returns
-    None) is skipped -- it contributes no hook. Malformed/missing structure at
+    that doesn't resolve to a .py basename (hook_names_from_command returns
+    []) is skipped -- it contributes no hook. Malformed/missing structure at
     any level (a non-dict `hooks`, a non-list event group, a non-dict group or
     hook entry) is skipped rather than raised, so an unexpected settings.json
     shape degrades to whatever it CAN parse instead of aborting the whole scan.
@@ -115,8 +117,7 @@ def wired_hook_events(settings: dict) -> dict[str, set[str]]:
             for h in group.get("hooks", []) or []:
                 if not isinstance(h, dict):
                     continue
-                name = hook_name_from_command(h.get("command", "") or "")
-                if name:
+                for name in hook_names_from_command(h.get("command", "") or ""):
                     out.setdefault(name, set()).add(event)
     return out
 

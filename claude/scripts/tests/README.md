@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 95 `test_*.py` files, 11 bash gates, and
-two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 108 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 96 `test_*.py` files, 11 bash gates, and
+two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 109 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -43,6 +43,7 @@ test-support infrastructure, not production code.
 | `test_gh_issue_state.py` | `_gh_issue_state.py` | Shared GitHub issue/PR REST state helpers (URL validation, PR-vs-issue filtering, `state` case normalization, paged-lookup stop condition) extracted from `reconcile-pending-tiles.py` for reuse by `retro-chain-status.py`. |
 | `test_gh_project.py` | `_gh_project.py` | Shared `gh project item-add` wrapper (used by `post-tool-use.py` and `reconcile-project-board.py`'s orphan-add step) plus its best-effort item-ID cache — the near-zero-cost lookup path `get-project-item.sh` and `post-pr-merge-project.py` fall back to a full board fetch only on a miss. |
 | `test_hook_launch.py` | `_hook_launch.py` | The launcher in front of every wired hook (ADR-148): a missing script exits 0 with one ASCII `systemMessage` (the two fail-closed gates included, with louder text) rather than Python's blocking exit 2; a present script's exit code, stdio, `__name__`/`__file__`/argv and sibling imports pass through as under a direct `pyw -3` run; the missing-script warning is throttled per script (gates excepted) and its recovery text is PowerShell-safe; the launcher stays stdlib-only and in-process, enforced by an AST scan with known-bad references (timing is reported, not gated); its gate list matches `FAIL_CLOSED`. |
+| `test_hook_dispatch.py` | `hook-dispatch.py` | The in-process dispatcher (ADR-151): how handlers' exit codes and streams combine (exit-2 texts, `systemMessage`s, both as `decision: block`, exit 1 and dropped ignored, ASCII-safe), and end to end through the launcher with fake handlers: stdin reaches each, a crash and a missing script fail open, a child's stdout can't corrupt the result, one duration line per handler, and a handler past its budget is dropped without holding the result back. |
 | `test_hookio.py` | `_hookio.py` | Shared PostToolUse command-output reader, merge-marker detection, and the `scan_top_level` command-shape parser five PostToolUse hooks import. |
 | `test_hookout.py` | `_hookout.py` | The shared hook advisory/block emitter — one encoding of the stdout/stderr/exit-code channel table every hook should route through. |
 | `test_hookutil.py` | `_hookutil.py` | Sentinel-file, transcript-locate, transcript-record-reader, and heartbeat-recording helpers shared across Stop/PostToolUse hooks. |

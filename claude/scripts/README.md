@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **102 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **103 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -146,10 +146,11 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (25)
+### Session state, reliability & token tracking (26)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
+| `hook-dispatch.py` | PostToolUse (Bash/PowerShell), every call | Runs the handler scripts named after it in one process (concurrently, each as `__main__` with its own stdin, routed streams, budget and heartbeat) and combines their output; a dropped or crashed handler becomes a warning. The ten PostToolUse Bash/PowerShell hooks run through it. [ADR-151](../../docs/adr/151-in-process-hook-dispatcher.md) |
 | `pre-tool-use-shell-content-write-guard.py` | PreToolUse (Bash/PowerShell) | Blocks a command that routes an *inline literal* to a file — or into a `gh`/`git` prose argument (`--body-file -`, `-F -`) — when that literal is multi-line or carries an apostrophe, backtick, or backslash; the content-shaped generalization of the journal guard. Program-output redirection (`gh … > "$TMPFILE"`, `npm test > out.log`) and an interpreter's stdin (`py -3 - <<'PY'`) are never matched, structurally. Bypass with `ALLOW_SHELL_CONTENT_WRITE=1`. See [ADR-138](../../docs/adr/138-shell-content-write-guard.md). |
 | `replay-shell-content-guard.py` | `py -3 replay-shell-content-guard.py [--gap] [--json] [--samples N] [--scan-dir DIR]` | Replays the guard above over recorded session transcripts and reports block rate, mechanism mix, override use, and the **failure-rate enrichment ratio** (blocked-set shell-parse-failure rate ÷ corpus baseline; `>1` concentrates real failures, `~1` means over-matching). Read-only. ADR-138 Amendment 1's answer to "is it over-matching?" — re-run after any detector change to the guard. |
 | `replay-scratch-rm-allow.py` | `py -3 replay-scratch-rm-allow.py [--json] [--width N] [--reasons N] [--scan-dir DIR]` | Replays the scratch-rm-allow hook below over recorded session transcripts: unique Bash commands, rm+scratch candidates, what it would approve (each listed with resolved targets for spot-checking), and why candidates were rejected. Read-only. ADR-147 section 6's calibration replay — re-run after any change to the hook's lexer. |

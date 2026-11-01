@@ -7,7 +7,10 @@ Every wired hook calls ``_hookutil.record_heartbeat`` as the first statement of
 
     {"t": <unix time>, "run_ms": <hook body wall time>, "startup_ms": <int or null>}
 
-``run_ms`` runs from ``main()``'s first statement to process exit. ``startup_ms``
+``run_ms`` runs from ``main()``'s first statement to process exit; for a handler run
+by ``hook-dispatch.py`` (ADR-151) it runs from the start of executing its file to its
+return, so it includes the handler's compile and imports, and ``startup_ms`` is null
+(the dispatcher's own row carries the process start). ``startup_ms``
 runs from the py launcher's process creation to that first statement, so it
 covers launcher start, interpreter start and the hook's module imports. It is
 sampled (one fire in ``_hookutil.STARTUP_SAMPLE_EVERY``) because measuring it

@@ -67,6 +67,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -244,7 +245,7 @@ def _replace_text(target: Path, text: str) -> None:
     ``os.replace``. On Windows the replace fails while another process holds the
     target open; the tmp file is then removed rather than left behind under a new
     PID-qualified name on every failure, and the error re-raised to the caller."""
-    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(text, encoding="utf-8")
     try:
         os.replace(tmp, target)

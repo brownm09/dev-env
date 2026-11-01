@@ -42,9 +42,11 @@ launcher does not. For the same reason it imports nothing but the standard libra
 it has to work precisely when the dev-env tree is stale, half-updated, or broken.
 test_hook_launch.py pins the stdlib-only rule.
 
-The script stays the LAST token of the command, so every parser that reads a hook's
-identity from that token (tests/_hook_wiring.py, hook-liveness-check.py, the ADR-106
-heartbeat ledger) is unaffected. `pyw -3` (ADR-007) is unchanged.
+The script follows this launcher on the command line; for a dispatched group it is
+hook-dispatch.py, followed by the handlers it runs (ADR-151). The parsers that read a
+hook's identity (tests/_hook_wiring.py, hook-liveness-check.py, _settings_sync's
+missing-script guard) read every .py argument after the launcher, through
+_settings_sync.py_tokens. `pyw -3` (ADR-007) is unchanged.
 
 Cost
 ----
