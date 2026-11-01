@@ -68,11 +68,12 @@ import _repo_scan
 from _settings_sync import py_tokens
 
 # The settings.json hook walker the three settings gates share (Testing items 61-63; the
-# doctor is its one runtime consumer, so item 61 names item 107 too). It lives in tests/ so the
+# doctor is its one runtime consumer, so item 61 names item 108 too). It lives in tests/ so the
 # gates' own claude/scripts/*.py glob never mistakes it for a hook. Appended, not prepended, so
-# nothing in tests/ can shadow a module the doctor imports.
+# nothing in tests/ can shadow a module the doctor imports. LAUNCHER_NAME is how the gates tell
+# the launcher from the scripts a command runs (ADR-151), so the doctor tells them apart the same way.
 sys.path.append(str(Path(__file__).resolve().parent / "tests"))
-from _hook_wiring import hook_entries  # noqa: E402
+from _hook_wiring import LAUNCHER_NAME, hook_entries  # noqa: E402
 
 HOME = Path.home()
 CLAUDE_HOME = HOME / ".claude"
@@ -102,14 +103,14 @@ def same_path(a: object, b: object) -> bool:
     return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(os.path.normpath(str(b)))
 
 
-def hook_files(command: str) -> tuple[list[str], str | None]:
-    """The files a hook command names: (launchers, script). In the ADR-148 form
-    `pyw -3 <launcher>.py <script>.py` the hook script is the last `.py` and anything before
-    it is the launcher. A command naming no `.py` gives ([], None)."""
+def hook_files(command: str) -> tuple[list[str], list[str]]:
+    """The files a hook command names: (launchers, scripts). The ADR-148 launcher is known by its
+    name; every other `.py` is a script the command runs -- the hook in
+    `pyw -3 <launcher>.py <script>.py`, or an ADR-151 dispatcher followed by each handler it runs.
+    A command naming no `.py` gives ([], [])."""
     paths = py_tokens(command)
-    if not paths:
-        return [], None
-    return paths[:-1], paths[-1]
+    launchers = [p for p in paths if Path(p).name == LAUNCHER_NAME]
+    return launchers, [p for p in paths if Path(p).name != LAUNCHER_NAME]
 
 
 def home_prefix(script_path: str) -> str | None:
@@ -207,12 +208,14 @@ def hook_command_results(
     which: Callable[[str], str | None] = shutil.which,
 ) -> list[Result]:
     """Every file each wired hook command names must exist -- the ADR-148 launcher and the hook
-    script -- and the interpreter every command starts with must be on PATH.
+    script, or an ADR-151 dispatcher and each handler it runs -- and the interpreter every command
+    starts with must be on PATH.
 
     What a missing file costs depends on which file it is. A missing launcher makes pyw exit 2,
-    which blocks every prompt and tool call. A missing script behind the launcher is skipped with
-    a warning, so that hook silently isn't running. A missing script run directly (a live file
-    still in the pre-ADR-148 form, which the sync's guard can leave in place) exits 2 and blocks."""
+    which blocks every prompt and tool call. A missing script behind the launcher -- the hook, a
+    dispatcher, or one of its handlers -- is skipped with a warning, so that hook silently isn't
+    running. A missing script run directly (a live file still in the pre-ADR-148 form, which the
+    sync's guard can leave in place) exits 2 and blocks."""
     reseed = (
         "re-seed it: py -3 <dev-env>/claude/scripts/_settings_sync.py -- if the sync withholds "
         "`hooks` because files they name are missing, that is ADR-148 refusing hooks that would "
@@ -227,8 +230,8 @@ def hook_command_results(
             f"no hook commands found in {settings_path}; checking zero commands would pass vacuously -- {reseed}",
         )]
     missing_launchers: set[str] = set()
-    launched_missing: list[str] = []  # scripts the launcher will skip (one entry per command)
-    direct_missing: list[str] = []    # scripts run without the launcher, which exit 2
+    launched_missing: list[list[str]] = []  # per command: files the launcher or dispatcher will skip
+    direct_missing: list[list[str]] = []    # per command: scripts run without the launcher, which exit 2
     unparsed: list[str] = []
     scripts: set[str] = set()
     launchers: set[str] = set()
@@ -238,18 +241,19 @@ def hook_command_results(
         words = entry.command.split()
         if words:
             interpreters.add(words[0])
-        launch, script = hook_files(entry.command)
-        if script is None:
+        launch, paths = hook_files(entry.command)
+        if not paths:
             unparsed.append(entry.command)
             continue
         checked += 1
-        scripts.add(script)
+        scripts.update(paths)
         for path in launch:
             launchers.add(path)
             if not is_file(path):
                 missing_launchers.add(path)
-        if not is_file(script):
-            (launched_missing if launch else direct_missing).append(script)
+        missing = [path for path in paths if not is_file(path)]
+        if missing:
+            (launched_missing if launch else direct_missing).append(missing)
 
     def home_hint(paths: Iterable[str]) -> str:
         prefix = home_prefix(sorted(paths)[0])
@@ -273,18 +277,20 @@ def hook_command_results(
             "py -3 <dev-env>/claude/scripts/_settings_sync.py (ADR-148)" + home_hint(missing_launchers),
         ))
     if direct_missing:
+        gone = {path for paths in direct_missing for path in paths}
         out.append(Result(
             FAIL, "hook commands",
             f"{len(direct_missing)} of {checked} checked hook commands run a missing script without the "
             "ADR-148 launcher, so pyw exits 2 and blocks every prompt or tool call they are wired to, "
-            f"e.g. {', '.join(sorted(set(direct_missing))[:3])}" + home_hint(direct_missing),
+            f"e.g. {', '.join(sorted(gone)[:3])}" + home_hint(gone),
         ))
     if launched_missing:
+        gone = {path for paths in launched_missing for path in paths}
         out.append(Result(
             FAIL, "hook commands",
             f"{len(launched_missing)} of {checked} checked hook commands name a missing script, which the "
-            "launcher skips with a warning, so those hooks are not running (ADR-148), "
-            f"e.g. {', '.join(sorted(set(launched_missing))[:3])}" + home_hint(launched_missing),
+            "launcher or the ADR-151 dispatcher skips with a warning, so those hooks are not running "
+            f"(ADR-148), e.g. {', '.join(sorted(gone)[:3])}" + home_hint(gone),
         ))
     if scripts and not (missing_launchers or direct_missing or launched_missing):
         via = f" through {len(launchers)} launcher(s)" if launchers else ""
@@ -519,15 +525,17 @@ def journal_results(
         out.append(Result(PASS, "journal draft", f"this checkout contains origin/{draft}"))
     else:
         j = journal.as_posix()
-        # Explicit remote and branch throughout: this machine's own draft/<today>, cut from
-        # main before origin's existed, has no upstream, so a bare `pull` has nothing to pull.
+        # Merge origin's remote-tracking ref by name: this machine's own draft/<today>, cut from
+        # main before origin's existed, has no upstream, and `git pull` would merge
+        # .git/FETCH_HEAD, which concurrent sessions share (ADR-056 addendum, dev-env#1166).
         out.append(Result(
             WARN, "journal draft",
             f"origin/{draft} already exists (pushed from another machine or session) but this checkout "
-            f"does not contain it. Before writing a stub: git -C {j} fetch origin, then "
-            f"git -C {j} checkout {draft} (no -b), then git -C {j} pull --no-rebase --no-edit origin {draft}. "
-            f"If a push is rejected, pull the same way, then git -C {j} push -u origin {draft} "
-            "-- never --force (dev-env#1111)",
+            f"does not contain it. Before writing a stub: git -C {j} fetch origin {draft}, then "
+            f"git -C {j} checkout {draft} (no -b), then git -C {j} merge --no-edit origin/{draft}, which "
+            f"fast-forwards, or merges if this machine's own {draft} has diverged. If a push is rejected, "
+            f"fetch and merge the same way, then git -C {j} push -u origin {draft}. Never git pull, which "
+            "merges the shared .git/FETCH_HEAD (ADR-056), and never --force (dev-env#1111)",
         ))
     return out
 

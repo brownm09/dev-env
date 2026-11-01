@@ -99,13 +99,16 @@ def test_link_lists_match_setup_sh():
 def test_hook_files():
     f = doc.hook_files
     launcher, script = "C:/Users/me/.claude/hook-launch.py", "C:/Users/me/.claude/scripts/a-b.py"
-    assert f(f"pyw -3 {launcher} {script}") == ([launcher], script), "ADR-148 form: launcher, then script"
-    assert f(f"pyw -3 {script}") == ([], script), "the direct, pre-launcher form"
-    assert f(f"pyw -3 {script} --mode x") == ([], script), "arguments after the script don't hide it"
-    assert f('pyw -3 "C:/Users/John Smith/.claude/scripts/x.py"  ') == ([], "C:/Users/John Smith/.claude/scripts/x.py")
-    assert f("bash C:/Users/me/.claude/hooks/pre-push") == ([], None)
-    assert f("") == ([], None)
-    return "launcher form, direct form, trailing arguments, quoted path with a space, non-.py and empty"
+    assert f(f"pyw -3 {launcher} {script}") == ([launcher], [script]), "ADR-148 form: launcher, then script"
+    dispatcher, a, b = (f"C:/Users/me/.claude/scripts/{n}.py" for n in ("hook-dispatch", "a", "b"))
+    assert f(f"pyw -3 {launcher} {dispatcher} {a} {b}") == ([launcher], [dispatcher, a, b]), \
+        "ADR-151 form: the dispatcher and every handler it runs are scripts, not launchers"
+    assert f(f"pyw -3 {script}") == ([], [script]), "the direct, pre-launcher form"
+    assert f(f"pyw -3 {script} --mode x") == ([], [script]), "arguments after the script don't hide it"
+    assert f('pyw -3 "C:/Users/John Smith/.claude/scripts/x.py"  ') == ([], ["C:/Users/John Smith/.claude/scripts/x.py"])
+    assert f("bash C:/Users/me/.claude/hooks/pre-push") == ([], [])
+    assert f("") == ([], [])
+    return "launcher form, dispatcher form, direct form, trailing arguments, quoted path with a space, non-.py and empty"
 
 
 def test_home_prefix():
@@ -205,6 +208,30 @@ def test_hook_commands_launcher_form():
     assert _statuses(no_script) == [FAIL] and "not running" in no_script[0].detail, no_script
     assert "1 of 2" in no_script[0].detail and "b.py" in no_script[0].detail, no_script[0].detail
     return "all present PASS; missing launcher blocks; missing script behind it isn't running"
+
+
+def test_hook_commands_dispatcher_form():
+    # ADR-151: `pyw -3 <launcher> <dispatcher> <handler> ...` runs every handler in one process.
+    # The dispatcher and its handlers are scripts, not launchers: a missing one is skipped with a
+    # warning (its hooks aren't running), never "every prompt is blocked", and a command missing
+    # two handlers is still one command.
+    launcher = "C:/x/.claude/hook-launch.py"
+    dispatcher, a, b, c = (f"C:/x/.claude/scripts/{n}.py" for n in ("hook-dispatch", "a", "b", "c"))
+    settings = _settings(f"pyw -3 {launcher} {dispatcher} {a} {b}", f"pyw -3 {launcher} {c}")
+    found = doc.hook_command_results(settings, Path("s.json"), Path("C:/x"), is_file=_always(True), which=_always("found"))
+    assert _statuses(found) == [PASS], found
+    assert "2 commands checked, 4 distinct scripts through 1 launcher(s)" in found[0].detail, found[0].detail
+
+    for gone in ({a, b}, {dispatcher}):
+        results = doc.hook_command_results(
+            settings, Path("s.json"), Path("C:/x"), is_file=lambda p, gone=gone: p not in gone, which=_always("found"),
+        )
+        assert _statuses(results) == [FAIL] and results[0].check == "hook commands", results
+        detail = results[0].detail
+        assert "not running" in detail and "1 of 2" in detail, detail
+        assert "blocked" not in detail and "blocks" not in detail, detail
+        assert all(Path(p).name in detail for p in gone), detail
+    return found[0].detail + "; missing handlers or dispatcher -> one not-running FAIL"
 
 
 def test_hook_commands_unreadable_settings_fails():
@@ -464,8 +491,11 @@ def test_journal_results():
     assert _statuses(stale) == [INFO, WARN], stale
     detail = stale[1].detail
     assert f"checkout draft/{today} (no -b)" in detail and "never --force" in detail, detail
-    # This machine's own draft/<today> has no upstream, so the advice names the remote branch.
-    assert f"pull --no-rebase --no-edit origin draft/{today}" in detail, detail
+    # The advice merges origin's remote-tracking ref by name: this machine's own draft/<today>
+    # has no upstream, and git pull would merge the shared .git/FETCH_HEAD (ADR-056 addendum).
+    assert f"fetch origin draft/{today}" in detail, detail
+    assert f"merge --no-edit origin/draft/{today}" in detail, detail
+    assert "pull --" not in detail and "pull origin" not in detail, "no git pull command: " + detail
     assert f"push -u origin draft/{today}" in detail, detail
     return "missing FAIL; unreadable branch WARN; offline/no-branch INFO; unreachable WARN; contained PASS; not contained WARN with explicit-remote advice"
 
@@ -527,6 +557,7 @@ def main() -> int:
         ("scripts under another home -> relocation hint", test_hook_commands_other_home_hint),
         ("scripts under this home -> no relocation hint", test_hook_commands_same_home_no_hint),
         ("ADR-148 launcher form: launcher and script both checked", test_hook_commands_launcher_form),
+        ("ADR-151 dispatcher form: dispatcher and handlers are scripts", test_hook_commands_dispatcher_form),
         ("hook interpreter not on PATH -> FAIL", test_hook_commands_launcher_missing_fails),
         ("a command with no .py -> WARN", test_hook_commands_unparsed_warns),
         ("all links resolve into the repo -> PASS", test_link_results_all_correct),

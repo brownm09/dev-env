@@ -427,7 +427,8 @@ For a one-line navigational map of the test directory, see
     invocation like `gh pr merge --help` (dev-env#485), or `gh pr merge` text mentioned only inside a
     heredoc body, a quoted argument, or a `$()` subshell (dev-env#529 — the command-shape check is
     `scan_top_level`-anchored, not a raw substring test) does not. Also exercises the pure `pull_command()`
-    predicate: a canonical checked out on `main` gets a plain `pull --ff-only` (the fetch-into-ref trick
+    predicate: a canonical checked out on `main` gets `fetch origin main` then `merge --ff-only origin/main`,
+    never `pull`, which reads the shared `.git/FETCH_HEAD` (dev-env#1166) (the fetch-into-ref trick
     fails with 'refusing to fetch into branch ... checked out' there — dev-env#488,
     [ADR-058 amendment](adr/058-worktree-squatting-main-detection-correction.md)); a feature branch
     (or squatting worktree) checked out gets the original fetch-into-ref, unchanged. Also exercises the
@@ -1520,6 +1521,16 @@ For a one-line navigational map of the test directory, see
     diverged in its failure-mode return value) — shells out and is not covered here (pure-helper
     convention).
 
+    **File-based repo state (dev-env#849, ADR-085 Amendment 1).** `current_repo_state()` now
+    answers from `repo_state_from_files()` and calls git only as a fallback, so that read is
+    covered: temp-directory fake repos pin the branch from `HEAD`, discovery from a
+    subdirectory, a detached SHA, a worktree's `.git` file (absolute and relative `gitdir:`),
+    and the cases that must defer to git (a non-branch ref, a cwd inside `.git`, a deleted cwd,
+    a missing `HEAD`, an empty cwd, `GIT_DIR` set). Only that git fallback is still uncovered. One test compares the read with
+    `git rev-parse --show-toplevel --abbrev-ref HEAD` on the test's own checkout, because the
+    drift checks compare the values as exact strings. `read_branch()` is pinned to answer from
+    `HEAD` without calling its git runner, and to call it only when the file cannot answer.
+
     ```bash
     py -3 claude/scripts/tests/test_bash_state.py
     ```
@@ -2493,6 +2504,10 @@ For a one-line navigational map of the test directory, see
     when it did not escalate.
     
     `main()`'s settings-sync and topology glue is still not covered (pure-helper convention).
+
+    **Fetch gate (dev-env#849, ADR-006 Amendment 1).** `fetched_recently()` decides whether the
+    per-prompt `git fetch` runs: a fresh `.git/FETCH_HEAD` skips it, while a missing, stale or
+    future-dated one fetches.
     ([ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md),
     [ADR-110](adr/110-escalate-persistent-dev-env-sync-ff-failures.md);
     dev-env#694, dev-env#797, dev-env#1140)
@@ -2625,7 +2640,7 @@ For a one-line navigational map of the test directory, see
 61. **hook output-contract + ASCII-literal gate** — required when changing
     `claude/scripts/tests/test_hook_output_contract.py` or the shared
     `claude/scripts/tests/_hook_wiring.py` (the settings.json parser all three PR3 gates —
-    items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 107 when
+    items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 108 when
     changing it). AST gate over every wired hook
     (via `_hook_wiring`, cross-referencing each script's event class against the SSOT
     `_hookout.STDOUT_MODEL_VISIBLE_EVENTS`, ADR-103) for four invisible-emission shapes: **A**
@@ -2700,7 +2715,12 @@ For a one-line navigational map of the test directory, see
     `<name>.py` that exists in `claude/scripts/`, and it carries an explicit integer `timeout` (seconds)
     at or above its budget floor — `usage-snapshot.py` -> 90, a hook importing `_winsubp` (the
     subprocess-hook marker, authoring rule 4) -> 30, pure-Python -> 10 (a FLOOR, `>=`, so a longer
-    timeout is allowed). Pins `min_timeout`'s three tiers and `script_from_command`. The `pyw -3`
+    timeout is allowed). Pins `min_timeout`'s three tiers and `script_from_command`. A dispatcher entry
+    (ADR-151) is checked per handler: every handler must exist, the launcher-form regex accepts
+    `hook-dispatch.py` followed by one or more handlers and rejects it alone or two scripts without
+    it, Bash/PowerShell mirroring compares handler sets, and `test_dispatcher_commands_are_well_formed`
+    (with known-bad references) rejects a dispatcher listing itself or the launcher, a repeated
+    handler, a budget below a handler's floor, or a timeout under the largest budget plus 10 s. The `pyw -3`
     invocation invariant (authoring rule 3) is deliberately not re-checked here — `test_pyw_stdio.py`'s
     `test_all_settings_hooks_use_pyw_and_resolve_to_repo` (item 2) already gates it; the resolution check
     overlaps that test's resolution half by design (it is the precondition for the `_winsubp`-based
@@ -2854,9 +2874,10 @@ For a one-line navigational map of the test directory, see
     Exercises the pure helpers offline (tmp dirs for heartbeat files, hand-built settings.json
     fixtures — never the live `claude/settings.json`, so this suite's pass/fail doesn't drift with
     production wiring changes; [ADR-106](adr/106-hook-heartbeat-liveness-ledger.md);
-    dev-env#745, PR8 of #717): `hook_name_from_command` (script-basename-minus-`.py` extraction,
-    matching the literal string every hook passes to `_hookutil.record_heartbeat` — trailing
-    whitespace tolerated, a non-`.py` command and empty/`None` input both -> `None`);
+    dev-env#745, PR8 of #717): `hook_names_from_command` (every script-basename-minus-`.py` after
+    the launcher, matching the literal string each hook passes to `_hookutil.record_heartbeat` —
+    a dispatcher command yields the dispatcher and every handler (ADR-151), trailing whitespace is
+    tolerated, and a non-`.py` command and empty/`None` input both give `[]`);
     `wired_hook_events` (a settings.json fixture mapping each wired hook name to the union of
     events it's registered under; multiple matcher groups under one event — e.g.
     `journal-shard-write-advisory`'s real Bash/Write/Edit tripling — dedupe to a single event
@@ -4760,7 +4781,31 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_hook_heartbeat_isolation.py
     ```
 
-107. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`,
+107. **hook-dispatch test** — required when changing `claude/scripts/hook-dispatch.py`, or which hooks a dispatcher command runs in `claude/settings.shared.json` (also run items 2, 61-63, 67, 68 and 98 then). The in-process dispatcher runs a group of hooks in one process ([ADR-151](adr/151-in-process-hook-dispatcher.md), dev-env#851); stage 1 runs the ten PostToolUse Bash/PowerShell hooks through it.
+
+    Offline, `combine()` pins how handler results become the one output Claude Code reads:
+    blocks (exit-2 texts, or an exit-0 JSON `decision: "block"`) joined on stderr with exit 2;
+    `systemMessage`s joined into one JSON message; both together as
+    `{"decision": "block", "reason", "systemMessage"}` with exit 0, so a merge's user messages aren't
+    dropped; a handler's exit 1, one past its budget, and an exit-0 JSON key that can't be carried
+    each become a warning, and a dropped handler's own output is not used; stderr is ASCII-sanitized
+    and JSON ASCII-escaped. `handler_paths()` skips the dispatcher itself, the launcher and repeats,
+    and gives a missing file the launcher's throttled warning. End to end, through the real launcher
+    with fake handler scripts in a temp directory: the stdin payload reaches every handler, a block and
+    a toast combine, an uncaught error is reported and fails open, each handler gets its own heartbeat
+    and exactly one duration line (the exit-time record does not double it), and a handler past a 1 s
+    budget is dropped with a warning while the rest still report and the process does not wait for it.
+
+    Not covered here: the real handlers' behavior, which their own items cover; the dispatcher only
+    runs them. The structural gates (items 61-63 and 68), item 2 and the liveness check (item 67) read
+    every handler path in a dispatcher command (`_hook_wiring.scripts_from_command` and
+    `hook_names_from_command`, both over `_settings_sync.py_tokens`), so they keep checking each handler.
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_dispatch.py
+    ```
+
+108. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`,
      `setup.sh`'s link arrays (the doctor's `LINKED_ITEMS` / `HOME_LINKS` are pinned against
      them), `claude/scripts/tests/_hook_wiring.py` (the doctor imports it), or the command form
      of the hooks in `claude/settings.shared.json`. Exercises the doctor's pure decision helpers
@@ -4772,18 +4817,22 @@ For a one-line navigational map of the test directory, see
      `_kill_tree()`, the thin I/O layer around the helpers, are deliberately untested, per the
      repo's no-subprocess-mock convention; the whole script was run live on this machine, online
      and offline, and in a sandboxed `HOME` for
-     [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114). (Numbered 107 because items
-     100–106 went to tests that merged to `main` while this one's PR was open.)
+     [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114). (Numbered 108 because items
+     100–107 went to tests that merged to `main` while this one's PR was open.)
 
-     31 cases, passing on Python 3.12 and 3.10. `LINKED_ITEMS` and `HOME_LINKS` equal
+     32 cases, passing on Python 3.12 and 3.10. `LINKED_ITEMS` and `HOME_LINKS` equal
      `setup.sh`'s four parsed link arrays, after asserting each parse extracted something — an
      empty parse compared against nothing would pass. A hook command's files are read with
      `_settings_sync.py_tokens`, the extraction the sync's own `hooks_guard` uses
-     ([ADR-148](adr/148-missing-hook-script-fails-open-via-launcher.md)), so the doctor and the
-     sync agree on what a hook needs: the launcher form, the direct form, trailing arguments and
-     a quoted path with a space all resolve. A missing launcher FAILs as blocking every prompt; a
-     missing script behind it FAILs as a hook that isn't running; a missing script run directly
-     FAILs as blocking; all present is a PASS. Zero commands, no readable script path, or an
+     ([ADR-148](adr/148-missing-hook-script-fails-open-via-launcher.md)), and the launcher is
+     recognized by its name, `_hook_wiring.LAUNCHER_NAME`, as the structural gates recognize it.
+     So the doctor, the sync and the gates agree on what a hook needs: the launcher form, the
+     [ADR-151](adr/151-in-process-hook-dispatcher.md) dispatcher form (the dispatcher and every
+     handler it runs), the direct form, trailing arguments and a quoted path with a space all
+     resolve. A missing launcher FAILs as blocking every prompt. A missing script, dispatcher or
+     handler behind the launcher FAILs as a hook that isn't running, counted once per command
+     however many of its files are missing. A missing script run directly FAILs as blocking, and
+     all present is a PASS. Zero commands, no readable script path, or an
      unreadable settings file FAIL rather than pass vacuously
      ([ADR-144](adr/144-gate-calibration-pass-3-dimension.md)). Scripts under a different home get
      the [dev-env#1113](https://github.com/brownm09/dev-env/issues/1113) relocation hint, scripts
@@ -4796,9 +4845,11 @@ For a one-line navigational map of the test directory, see
      `--offline` or a timeout an INFO. `parse_ls_remote` accepts only a 40-hex line for the exact
      ref. Also covered: tool presence, the gh credential helper, git identity, a global
      `core.hooksPath` that's unset or missing (FAIL) or different (WARN), per-clone overrides,
-     the journal / `origin/draft/<today>` matrix (an unreadable branch included, and advice
-     naming `origin draft/<today>` explicitly), the board config, the routine-host flag (only
-     JSON `true` counts; UTF-16 WARNs), a crashing check becoming a FAIL line, and the exit code.
+     the journal / `origin/draft/<today>` matrix (an unreadable branch included, and advice that
+     fetches and merges `origin/draft/<today>` by name and never pulls, per the
+     [ADR-056](adr/056-per-session-sharding-journal-companion-files.md) addendum of 2026-10-31),
+     the board config, the routine-host flag (only JSON `true` counts; UTF-16 WARNs), a crashing
+     check becoming a FAIL line, and the exit code.
 
      ```bash
      py -3 claude/scripts/tests/test_dev_env_doctor.py

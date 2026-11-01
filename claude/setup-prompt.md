@@ -44,7 +44,8 @@ gh auth refresh -s project
 mkdir -p "$HOME/Git"
 for repo in dev-env engineering-journal; do
   if [ -d "$HOME/Git/$repo/.git" ]; then
-    git -C "$HOME/Git/$repo" pull --ff-only
+    # fetch + merge, never pull: pull merges .git/FETCH_HEAD, which concurrent sessions share (ADR-056)
+    git -C "$HOME/Git/$repo" fetch origin && git -C "$HOME/Git/$repo" merge --ff-only '@{upstream}'
   else
     git clone "https://github.com/brownm09/$repo.git" "$HOME/Git/$repo"
   fi

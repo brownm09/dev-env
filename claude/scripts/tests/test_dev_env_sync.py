@@ -846,8 +846,22 @@ def test_report_off_main_git_failure_never_loses_warning() -> str:
     return "a git timeout degrades to unmeasured; the base warning still goes out"
 
 
+def test_fetched_recently() -> str:
+    # dev-env#849: the network fetch is skipped while .git/FETCH_HEAD is fresh.
+    with tempfile.TemporaryDirectory() as tmp:
+        fetch_head = Path(tmp) / "FETCH_HEAD"
+        assert not des.fetched_recently(fetch_head, time.time()), "missing file must fetch"
+        fetch_head.write_text("", encoding="utf-8")
+        now = fetch_head.stat().st_mtime
+        assert des.fetched_recently(fetch_head, now + 60)
+        assert not des.fetched_recently(fetch_head, now + des.FETCH_MIN_INTERVAL_SECONDS + 1)
+        assert not des.fetched_recently(fetch_head, now - 60), "a future mtime must fetch"
+    return "fresh FETCH_HEAD skips the fetch; missing, stale or future-dated fetches"
+
+
 def main() -> int:
     tests = [
+        ("fetched_recently: FETCH_HEAD age gate (#849)", test_fetched_recently),
         ("_plural singular and plural", test_plural_singular_and_plural),
         ("_count_from parses valid digit output", test_count_from_parses_valid_digit_output),
         ("_count_from fails open on nonzero returncode", test_count_from_fails_open_on_nonzero_returncode),

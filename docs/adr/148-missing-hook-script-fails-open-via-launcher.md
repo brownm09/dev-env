@@ -95,7 +95,9 @@ and the hook script stays the **last token**. So `tests/_hook_wiring.py`,
 ([ADR-106](106-hook-heartbeat-liveness-ledger.md)) are unchanged; they all read a hook's identity
 from that token. `test_pyw_stdio.py` (Testing item 2) moved from `parts[2]` to the last token and
 now also asserts the launcher sits in position 3. `test_settings_hook_wiring.py` (item 63) gates
-the exact launcher form, using the old direct form as its known-bad reference.
+the exact launcher form, using the old direct form as its known-bad reference. (Superseded in part
+by [ADR-151](151-in-process-hook-dispatcher.md): a dispatched group's command lists the dispatcher
+and then every handler, so these readers now take every `.py` argument after the launcher.)
 
 ### 2. The two fail-closed gates fail open on a missing script too
 

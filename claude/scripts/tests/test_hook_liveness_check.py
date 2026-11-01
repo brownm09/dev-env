@@ -4,7 +4,7 @@
 Exercises the pure helpers offline (tmp dirs for heartbeat files, hand-built
 settings.json fixtures -- no real ~/.claude/scratch and never the live
 claude/settings.shared.json, so this suite's pass/fail doesn't drift with production
-wiring changes): `hook_name_from_command` (script-basename extraction),
+wiring changes): `hook_names_from_command` (script-basename extraction, every script in a dispatcher command),
 `wired_hook_events` (settings.json hooks-block parsing into hook -> {events}),
 `exempt_hooks` (PostCompact/Notification-only exemption), `stale_hooks` (the
 missing/stale/fresh decision against injected heartbeat files and a
@@ -55,31 +55,42 @@ sys.path.insert(0, str(REPO_ROOT / "claude" / "scripts"))
 hook_liveness_check = importlib.import_module("hook-liveness-check")
 
 
-# --- hook_name_from_command ------------------------------------------------
+# --- hook_names_from_command -----------------------------------------------
 
 def test_hook_name_from_command_matches_py_script() -> str:
-    got = hook_liveness_check.hook_name_from_command(
-        "pyw -3 C:/Users/brown/.claude/scripts/foo-bar.py"
+    got = hook_liveness_check.hook_names_from_command(
+        "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/foo-bar.py"
     )
-    assert got == "foo-bar", got
-    return "hook_name_from_command extracts the script basename minus .py"
+    assert got == ["foo-bar"], got
+    return "hook_names_from_command extracts the script basename minus .py, launcher excluded"
 
 
 def test_hook_name_from_command_trailing_whitespace() -> str:
-    got = hook_liveness_check.hook_name_from_command("pyw -3 C:/x/y.py   ")
-    assert got == "y", got
-    return "hook_name_from_command tolerates trailing whitespace"
+    got = hook_liveness_check.hook_names_from_command("pyw -3 C:/x/y.py   ")
+    assert got == ["y"], got
+    return "hook_names_from_command tolerates trailing whitespace"
 
 
 def test_hook_name_from_command_non_py_returns_none() -> str:
-    assert hook_liveness_check.hook_name_from_command("echo hello") is None
-    return "hook_name_from_command returns None for a non-.py command"
+    assert hook_liveness_check.hook_names_from_command("echo hello") == []
+    return "hook_names_from_command returns [] for a non-.py command"
 
 
 def test_hook_name_from_command_empty_or_none() -> str:
-    assert hook_liveness_check.hook_name_from_command("") is None
-    assert hook_liveness_check.hook_name_from_command(None) is None
-    return "hook_name_from_command returns None for empty string / None"
+    assert hook_liveness_check.hook_names_from_command("") == []
+    assert hook_liveness_check.hook_names_from_command(None) == []
+    return "hook_names_from_command returns [] for empty string / None"
+
+
+def test_hook_names_from_command_dispatcher() -> str:
+    # dev-env#851: a dispatcher command runs every handler after it, and each one
+    # writes its own heartbeat, so the check must watch all of them.
+    got = hook_liveness_check.hook_names_from_command(
+        "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/hook-dispatch.py "
+        "C:/Users/brown/.claude/scripts/a.py C:/Users/brown/.claude/scripts/b-c.py"
+    )
+    assert got == ["hook-dispatch", "a", "b-c"], got
+    return "a dispatcher command yields the dispatcher and every handler"
 
 
 # --- wired_hook_events -------------------------------------------------------
@@ -530,10 +541,11 @@ def test_e2e_heartbeat_tmp_orphan_swept() -> str:
 
 def main() -> int:
     tests = [
-        ("hook_name_from_command: matches .py script", test_hook_name_from_command_matches_py_script),
-        ("hook_name_from_command: trailing whitespace", test_hook_name_from_command_trailing_whitespace),
-        ("hook_name_from_command: non-.py -> None", test_hook_name_from_command_non_py_returns_none),
-        ("hook_name_from_command: empty/None -> None", test_hook_name_from_command_empty_or_none),
+        ("hook_names_from_command: matches .py script", test_hook_name_from_command_matches_py_script),
+        ("hook_names_from_command: trailing whitespace", test_hook_name_from_command_trailing_whitespace),
+        ("hook_names_from_command: non-.py -> []", test_hook_name_from_command_non_py_returns_none),
+        ("hook_names_from_command: empty/None -> []", test_hook_name_from_command_empty_or_none),
+        ("hook_names_from_command: dispatcher and handlers", test_hook_names_from_command_dispatcher),
         ("wired_hook_events: basic multi-event mapping", test_wired_hook_events_basic),
         ("wired_hook_events: multiple groups, same event dedupe", test_wired_hook_events_multiple_groups_same_event_dedupe_to_one),
         ("wired_hook_events: empty settings -> {}", test_wired_hook_events_empty_settings),
