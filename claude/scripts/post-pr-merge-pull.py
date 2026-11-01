@@ -6,8 +6,9 @@ Uses `git fetch origin main:main` to update the local main ref without requiring
 a checkout — except when the repo's canonical checkout is itself on `main` (e.g.
 dev-env's own canonical, which must always stay on `main` per its symlink
 architecture, CLAUDE.md -> Dev-Env Architecture): git refuses that fetch
-('refusing to fetch into branch ... checked out'), so a plain `pull --ff-only`
-is used there instead (dev-env#488).
+('refusing to fetch into branch ... checked out'), so a fetch followed by
+`merge --ff-only origin/main` is used there instead (dev-env#488) -- never `pull`,
+which reads the shared .git/FETCH_HEAD (dev-env#1166).
 
 Also fires for the PowerShell tool (dev-env#763): registered under both the
 Bash and PowerShell PostToolUse matchers in settings.json, since PowerShell is
@@ -34,6 +35,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 import _hookout
 from _hookio import (
@@ -159,21 +161,26 @@ def list_worktrees(local_path: str) -> list[dict]:
     return parse_worktree_porcelain(wt.stdout) if wt.returncode == 0 else []
 
 
-def pull_command(local_path: str, on_main: bool) -> list[str]:
-    """Pure: the git invocation that fast-forwards local main from origin.
+def pull_command(local_path: str, on_main: bool) -> list[list[str]]:
+    """Pure: the git invocations, run in order, that fast-forward local main from origin.
 
     `git fetch origin main:main` fails ('refusing to fetch into branch
     "refs/heads/main" checked out at ...') whenever `main` is the branch currently
     checked out at *local_path* — always true for dev-env's canonical (CLAUDE.md ->
     Dev-Env Architecture requires it stay on `main`; its tree is symlinked into
-    ~/.claude/). Use a plain `pull --ff-only` there instead. Otherwise (a feature
-    branch is checked out — the case the fetch-into-ref trick was written for,
-    issue #275) the fetch updates main without disturbing the current checkout,
-    unchanged.
+    ~/.claude/). Fetch, then fast-forward to `origin/main` there instead. Not
+    `pull --ff-only`: pull merges .git/FETCH_HEAD, which a concurrent session's
+    fetch in the same shared checkout can overwrite between the two steps
+    (dev-env#1166). Otherwise (a feature branch is checked out — the case the
+    fetch-into-ref trick was written for, issue #275) the fetch updates main
+    without disturbing the current checkout, unchanged.
     """
     if on_main:
-        return ["git", "-C", local_path, "pull", "--ff-only", "origin", "main"]
-    return ["git", "-C", local_path, "fetch", "origin", "main:main"]
+        return [
+            ["git", "-C", local_path, "fetch", "origin", "main"],
+            ["git", "-C", local_path, "merge", "--ff-only", "origin/main"],
+        ]
+    return [["git", "-C", local_path, "fetch", "origin", "main:main"]]
 
 
 def format_pull_message(
@@ -204,18 +211,33 @@ def format_pull_message(
     return f"[post-merge-pull] {repo}: git {kind} failed — {err}"
 
 
+PULL_BUDGET_S = 25
+
+
 def pull_main(local_path: str, repo: str, on_main: bool) -> str:
-    """Fast-forward local main from origin; return the status line (see pull_command)."""
-    cmd = pull_command(local_path, on_main)
-    kind = "pull" if on_main else "fetch"
+    """Fast-forward local main from origin; return the status line (see pull_command).
+
+    Runs each command in turn and reports the first failure, named by its git verb.
+    """
+    kind = "fetch"
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        return format_pull_message(
-            repo, kind,
-            returncode=result.returncode,
-            stdout=result.stdout,
-            stderr=result.stderr,
-        )
+        out: list[str] = []
+        # One budget for every command, under the hook's own 30s timeout (settings.shared.json),
+        # so a slow fetch cannot leave the merge to be killed with no status line.
+        deadline = time.monotonic() + PULL_BUDGET_S
+        for cmd in pull_command(local_path, on_main):
+            kind = cmd[3]
+            remaining = max(1.0, deadline - time.monotonic())
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=remaining)
+            if result.returncode != 0:
+                return format_pull_message(
+                    repo, kind,
+                    returncode=result.returncode,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                )
+            out += [result.stdout, result.stderr]
+        return format_pull_message(repo, kind, returncode=0, stdout="\n".join(p.strip() for p in out if p.strip()))
     except subprocess.TimeoutExpired:
         return format_pull_message(repo, kind, timed_out=True)
     except Exception as exc:

@@ -427,7 +427,8 @@ For a one-line navigational map of the test directory, see
     invocation like `gh pr merge --help` (dev-env#485), or `gh pr merge` text mentioned only inside a
     heredoc body, a quoted argument, or a `$()` subshell (dev-env#529 — the command-shape check is
     `scan_top_level`-anchored, not a raw substring test) does not. Also exercises the pure `pull_command()`
-    predicate: a canonical checked out on `main` gets a plain `pull --ff-only` (the fetch-into-ref trick
+    predicate: a canonical checked out on `main` gets `fetch origin main` then `merge --ff-only origin/main`,
+    never `pull`, which reads the shared `.git/FETCH_HEAD` (dev-env#1166) (the fetch-into-ref trick
     fails with 'refusing to fetch into branch ... checked out' there — dev-env#488,
     [ADR-058 amendment](adr/058-worktree-squatting-main-detection-correction.md)); a feature branch
     (or squatting worktree) checked out gets the original fetch-into-ref, unchanged. Also exercises the

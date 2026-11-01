@@ -41,9 +41,13 @@ If the directory exists: report "Journal home for `<slug>` already exists at `se
 ## Step 2 — Prepare engineering-journal
 
 ```bash
+git -C ~/Git/engineering-journal fetch origin main
 git -C ~/Git/engineering-journal checkout main
-git -C ~/Git/engineering-journal pull
+git -C ~/Git/engineering-journal merge --ff-only origin/main
 ```
+
+Not `git pull`: it merges `.git/FETCH_HEAD`, which concurrent sessions overwrite in this shared
+checkout ([dev-env#1166](https://github.com/brownm09/dev-env/issues/1166)).
 
 ---
 

@@ -5,7 +5,7 @@
 #
 # Steps:
 #   1. Look up the branch from the PR
-#   2. Check out the branch, pull latest
+#   2. Check out the branch, fetch and merge latest
 #   3. Warn if no composed journal file exists on the branch
 #   4. Delete orphaned *_draft.md files if present
 #   5. Rebase against main (resolve README conflicts by keeping branch version)
@@ -42,11 +42,13 @@ if [[ -z "$BRANCH" ]]; then
 fi
 echo "    Branch: $BRANCH"
 
-# ── Step 2: check out branch and pull ─────────────────────────────────────────
+# ── Step 2: check out branch, fetch and merge───────────────────────────────────
 echo "==> Checking out $BRANCH..."
 git fetch origin
 git checkout "$BRANCH"
-git pull origin "$BRANCH"
+# Merge the remote-tracking ref, not `git pull`: pull merges .git/FETCH_HEAD, which a
+# concurrent session's fetch in this shared checkout can overwrite (dev-env#1166).
+git merge --no-edit "origin/$BRANCH"
 
 # ── Step 3: check for composed journal ────────────────────────────────────────
 DATE_PART="${BRANCH#draft/}"  # e.g. "2026-04-19"

@@ -286,6 +286,10 @@ def test_main_blocks_worktree_add_onto_draft_branch() -> str:
         reason = json.loads(proc.stderr).get("reason", "")
         if "journal-draft-worktree-guard" not in reason or "ALLOW_JOURNAL_DRAFT_WORKTREE=1" not in reason:
             raise AssertionError(f"block reason missing expected markers: {reason!r}")
+        # The recommended canonical commands must not `pull` (it merges the shared
+        # .git/FETCH_HEAD, dev-env#1166).
+        if " pull" in reason or "merge --ff-only origin/draft/YYYY-MM-DD" not in reason:
+            raise AssertionError(f"block reason must recommend fetch + merge --ff-only, not pull: {reason!r}")
     return "git worktree add ... draft/YYYY-MM-DD blocked (exit 2), reason on stderr"
 
 
