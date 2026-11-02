@@ -150,8 +150,10 @@ The transcript-record readers (``load_records`` / ``_parse_records`` /
 from — so this hook and ``posttooluse-inert-advisory.py`` can no longer drift on
 how a transcript is parsed (ADR-090, reversing ADR-088's original replicate-them
 decision after both PR #604 reviewers flagged the duplication). This gate imports
-only the three it uses: ``_content_items`` and ``_parse_records`` (its ``main()``
-parses the transcript text directly, after the cheap pre-filter), and
+the ones it uses: ``_parse_records`` (its ``main()`` parses the transcript text
+directly, after the cheap pre-filter), the ``iter_tool_uses`` /
+``iter_assistant_texts`` scans (dev-env#1169; ``resolve_transcript`` is called
+module-qualified), and
 the shared ``iter_bash_calls`` (aliased) — wrapped in a thin 2-tuple adapter below,
 since ``_hookutil``'s ``iter_bash_calls`` returns ``(command, output, cwd)`` and
 this gate never needs ``cwd``. (``load_records`` and ``_result_text`` also live in
@@ -204,12 +206,13 @@ from _hookio import (
     strip_env_prefix,
 )
 from _hookutil import (
-    _content_items,
     _is_synthetic_user,
     _parse_records,
     _user_message_texts,
     first_user_prompt_text,
+    iter_assistant_texts,
     iter_bash_calls as _iter_bash_calls,
+    iter_tool_uses,
 )
 from _repo_target import (
     issue_number_from_issue_url,
@@ -461,8 +464,9 @@ _DEFER_PREFILTER_SUBSTRINGS = ("let me know if you", "should i ", "want me to")
 # --- transcript readers -------------------------------------------------------
 # The record readers (``load_records`` / ``_parse_records`` / ``iter_bash_calls`` /
 # ``_result_text`` / ``_content_items``) now live in ``_hookutil`` (ADR-090); this
-# gate imports the three it uses (``_content_items``, ``_parse_records``, and the
-# shared ``iter_bash_calls`` aliased as ``_iter_bash_calls``). Only ``_first_line``
+# gate imports the ones it uses (``_parse_records``, the ``iter_tool_uses`` /
+# ``iter_assistant_texts`` scans, and the shared ``iter_bash_calls`` aliased as
+# ``_iter_bash_calls``). Only ``_first_line``
 # (a command-segment helper, not a transcript reader) and the 2-tuple
 # ``iter_bash_calls`` adapter below stay local.
 
@@ -748,15 +752,9 @@ def session_spawned_tiles(records: list) -> bool:
     table — only an actual spawn does). Extracting this out of
     ``enumeration_recorded`` (review of PR #674) means the two callers can
     never drift on what counts as "a tile was spawned."""
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        for item in _content_items(rec):
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "tool_use" and _SPAWN_TASK_RE.search(item.get("name", "") or ""):
-                return True
-    return False
+    return any(
+        _SPAWN_TASK_RE.search(item.get("name", "") or "") for _i, _rec, item in iter_tool_uses(records)
+    )
 
 
 def table_marker_present(records: list) -> bool:
@@ -766,15 +764,7 @@ def table_marker_present(records: list) -> bool:
     or CLAUDE.md's own rule text merely mentioning the heading must never
     satisfy the gate (mirrors ``skip_override``'s user-text-only scoping,
     inverted to assistant-text-only here)."""
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        for item in _content_items(rec):
-            if not isinstance(item, dict) or item.get("type") != "text":
-                continue
-            if _TABLE_MARKER_RE.search(item.get("text", "") or ""):
-                return True
-    return False
+    return any(_TABLE_MARKER_RE.search(text) for text in iter_assistant_texts(records))
 
 
 def enumeration_recorded(records: list) -> bool:
@@ -792,16 +782,9 @@ def enumeration_recorded(records: list) -> bool:
     """
     if session_spawned_tiles(records):
         return True
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        for item in _content_items(rec):
-            if not isinstance(item, dict) or item.get("type") != "text":
-                continue
-            text = item.get("text", "") or ""
-            if any(rx.search(text) for rx in _ENUM_MARKERS):
-                return True
-    return False
+    return any(
+        rx.search(text) for text in iter_assistant_texts(records) for rx in _ENUM_MARKERS
+    )
 
 
 def skip_override(records: list) -> bool:
@@ -941,19 +924,14 @@ def tile_shard_write_present(records: list) -> bool:
     ``journal-shard-write-advisory.py``, which validates real on-disk bytes — is what catches
     a shard that exists but is wrong; this trigger only catches the total absence.
     """
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+    for _i, _rec, item in iter_tool_uses(records):
+        inp = item.get("input")
+        if not isinstance(inp, dict):
             continue
-        for item in _content_items(rec):
-            if not isinstance(item, dict) or item.get("type") != "tool_use":
-                continue
-            inp = item.get("input")
-            if not isinstance(inp, dict):
-                continue
-            for key in ("file_path", "command"):
-                value = inp.get(key)
-                if isinstance(value, str) and _TILE_SHARD_PATH_RE.search(value):
-                    return True
+        for key in ("file_path", "command"):
+            value = inp.get(key)
+            if isinstance(value, str) and _TILE_SHARD_PATH_RE.search(value):
+                return True
 
     for _command, output in iter_bash_calls(records):
         if output and _TILE_SHARD_PATH_RE.search(output):
@@ -1005,16 +983,9 @@ def deferral_question_present(records: list) -> bool:
     (mirrors ``table_marker_present``'s assistant-only scoping): a user
     message or a tool_result merely containing one of these phrases must
     never satisfy the trigger."""
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        for item in _content_items(rec):
-            if not isinstance(item, dict) or item.get("type") != "text":
-                continue
-            text = item.get("text", "") or ""
-            if any(rx.search(text) for rx in _DEFERRAL_QUESTION_RES):
-                return True
-    return False
+    return any(
+        rx.search(text) for text in iter_assistant_texts(records) for rx in _DEFERRAL_QUESTION_RES
+    )
 
 
 def evaluate_deferral(records: list) -> tuple:
@@ -1088,15 +1059,9 @@ def session_asked_user(records: list) -> bool:
     assistant prose merely *describing* asking the user does not, exactly as
     enumeration text alone never substitutes for a real spawn in trigger 3.
     """
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        for item in _content_items(rec):
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "tool_use" and _ASK_USER_RE.search(item.get("name", "") or ""):
-                return True
-    return False
+    return any(
+        _ASK_USER_RE.search(item.get("name", "") or "") for _i, _rec, item in iter_tool_uses(records)
+    )
 
 
 def prompt_is_chain_bearing(text: str) -> bool:
@@ -1122,8 +1087,8 @@ def _bash_call_record_indices(records: list) -> list:
     record, one entry per occurrence in transcript-encounter order (so a turn
     with N parallel Bash calls contributes N indices, possibly repeated).
 
-    A narrow, POSITION-ONLY mirror of ``iter_bash_calls``'s own first walk (``for
-    rec in records: ... for item in _content_items(rec): tool_use named "Bash"``)
+    A narrow, POSITION-ONLY mirror of ``iter_bash_calls``'s own first walk (the
+    shared ``_hookutil.iter_tool_uses`` scan, filtered to ``name == "Bash"``)
     -- it performs no pairing and no merge detection of its own; that stays
     entirely delegated to ``session_merged_prs`` via ``_records_after_merge``,
     below. Callers must not assume this list is the same length as
@@ -1131,18 +1096,7 @@ def _bash_call_record_indices(records: list) -> list:
     tool_result yet at Stop time) is counted here but dropped there, which is
     exactly why ``_records_after_merge`` compares the two lengths before use.
     """
-    indices = []
-    for i, rec in enumerate(records):
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        for item in _content_items(rec):
-            if (
-                isinstance(item, dict)
-                and item.get("type") == "tool_use"
-                and item.get("name") == "Bash"
-            ):
-                indices.append(i)
-    return indices
+    return [i for i, _rec, item in iter_tool_uses(records) if item.get("name") == "Bash"]
 
 
 def _records_after_merge(records: list, calls: list, merged: set) -> list:
@@ -1518,11 +1472,8 @@ def main() -> None:
     if session_id and all(already_done.values()):
         sys.exit(0)
 
-    tpath_str = data.get("transcript_path") or ""
-    tpath = Path(tpath_str) if tpath_str else None
-    if (tpath is None or not tpath.exists()) and session_id:
-        tpath = _hookutil.find_transcript(session_id)
-    if tpath is None or not tpath.exists():
+    tpath = _hookutil.resolve_transcript(data.get("transcript_path") or "", session_id)
+    if tpath is None:
         sys.exit(0)
 
     try:

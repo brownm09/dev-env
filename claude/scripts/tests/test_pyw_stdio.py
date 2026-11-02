@@ -52,7 +52,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _heartbeat_isolation import isolate_heartbeat  # noqa: E402
+from _settings_sync import iter_hook_entries  # noqa: E402 -- the one settings walker (dev-env#1169)
 
 isolate_heartbeat()
 
@@ -173,16 +175,14 @@ def _collect_hook_scripts() -> list[str]:
     settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
     hooks = settings.get("hooks", {})
     scripts: set[str] = set()
-    for event_entries in hooks.values():
-        for entry in event_entries:
-            for hook in entry.get("hooks", []):
-                cmd = hook.get("command", "")
-                parts = cmd.split()
-                # Expected shape: "pyw -3 C:/.../hook-launch.py C:/.../scripts/<name>.py"
-                # (ADR-148), or the dispatcher followed by its handlers
-                # ("... hook-launch.py C:/.../hook-dispatch.py C:/.../a.py ...", ADR-151):
-                # every .py token after the launcher is a script that runs.
-                scripts.update(p for p in parts[3:] if p.endswith(".py"))
+    for _event, _group, hook in iter_hook_entries(hooks):
+        cmd = hook.get("command", "")
+        parts = cmd.split()
+        # Expected shape: "pyw -3 C:/.../hook-launch.py C:/.../scripts/<name>.py"
+        # (ADR-148), or the dispatcher followed by its handlers
+        # ("... hook-launch.py C:/.../hook-dispatch.py C:/.../a.py ...", ADR-151):
+        # every .py token after the launcher is a script that runs.
+        scripts.update(p for p in parts[3:] if p.endswith(".py"))
     return sorted(scripts)
 
 
@@ -196,32 +196,30 @@ def test_all_settings_hooks_use_pyw_and_resolve_to_repo() -> str:
     missing: list[str] = []
     syntax_errors: list[str] = []
     total = 0
-    for event_entries in hooks.values():
-        for entry in event_entries:
-            for hook in entry.get("hooks", []):
-                cmd = hook.get("command", "")
-                parts = cmd.split()
-                if len(parts) < 3 or not parts[-1].endswith(".py"):
-                    continue
-                total += 1
-                launcher = parts[0]
-                if launcher != "pyw":
-                    bad_launcher.append(cmd)
-                    continue
-                # One script, or the dispatcher plus one or more handlers (ADR-151).
-                dispatched = len(parts) > 4 and Path(parts[3]).name == "hook-dispatch.py"
-                if Path(parts[2]).name != "hook-launch.py" or (len(parts) != 4 and not dispatched):
-                    no_hook_launch.append(cmd)
-                    continue
-                for script in parts[3:]:
-                    local = HOOKS_DIR / Path(script).name
-                    if not local.exists():
-                        missing.append(local.name)
-                        continue
-                    try:
-                        ast.parse(local.read_text(encoding="utf-8"), filename=str(local))
-                    except SyntaxError as e:
-                        syntax_errors.append(f"{local.name}: {e}")
+    for _event, _group, hook in iter_hook_entries(hooks):
+        cmd = hook.get("command", "")
+        parts = cmd.split()
+        if len(parts) < 3 or not parts[-1].endswith(".py"):
+            continue
+        total += 1
+        launcher = parts[0]
+        if launcher != "pyw":
+            bad_launcher.append(cmd)
+            continue
+        # One script, or the dispatcher plus one or more handlers (ADR-151).
+        dispatched = len(parts) > 4 and Path(parts[3]).name == "hook-dispatch.py"
+        if Path(parts[2]).name != "hook-launch.py" or (len(parts) != 4 and not dispatched):
+            no_hook_launch.append(cmd)
+            continue
+        for script in parts[3:]:
+            local = HOOKS_DIR / Path(script).name
+            if not local.exists():
+                missing.append(local.name)
+                continue
+            try:
+                ast.parse(local.read_text(encoding="utf-8"), filename=str(local))
+            except SyntaxError as e:
+                syntax_errors.append(f"{local.name}: {e}")
     problems: list[str] = []
     if bad_launcher:
         problems.append(f"non-pyw launchers: {bad_launcher}")

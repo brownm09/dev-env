@@ -59,7 +59,7 @@ from pathlib import Path
 import _hookout
 from _hookinput import load_hook_input
 import _hookutil
-from _settings_sync import py_tokens
+from _settings_sync import iter_hook_entries, py_tokens
 
 # Reads the TRACKED source (claude/settings.shared.json), not the live machine-local
 # ~/.claude/settings.json -- `hooks` is an owned key, so _settings_sync keeps the two
@@ -97,28 +97,17 @@ def hook_names_from_command(command: str) -> list[str]:
 def wired_hook_events(settings: dict) -> dict[str, set[str]]:
     """Map each wired hook name -> the set of events it is registered under.
 
-    Walks settings.json's hooks[event][*].hooks[*].command entries. A command
-    that doesn't resolve to a .py basename (hook_names_from_command returns
-    []) is skipped -- it contributes no hook. Malformed/missing structure at
-    any level (a non-dict `hooks`, a non-list event group, a non-dict group or
-    hook entry) is skipped rather than raised, so an unexpected settings.json
+    Walks settings.json's hooks[event][*].hooks[*].command entries through
+    _settings_sync.iter_hook_entries, the shared walker, which skips malformed
+    structure at any level rather than raising, so an unexpected settings.json
     shape degrades to whatever it CAN parse instead of aborting the whole scan.
+    A command that doesn't resolve to a .py basename (hook_names_from_command
+    returns []) is skipped -- it contributes no hook.
     """
     out: dict[str, set[str]] = {}
-    hooks = settings.get("hooks", {})
-    if not isinstance(hooks, dict):
-        return out
-    for event, groups in hooks.items():
-        if not isinstance(groups, list):
-            continue
-        for group in groups:
-            if not isinstance(group, dict):
-                continue
-            for h in group.get("hooks", []) or []:
-                if not isinstance(h, dict):
-                    continue
-                for name in hook_names_from_command(h.get("command", "") or ""):
-                    out.setdefault(name, set()).add(event)
+    for event, _group, h in iter_hook_entries(settings.get("hooks", {})):
+        for name in hook_names_from_command(h.get("command", "") or ""):
+            out.setdefault(name, set()).add(event)
     return out
 
 

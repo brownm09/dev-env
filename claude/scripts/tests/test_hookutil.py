@@ -252,6 +252,33 @@ def test_find_transcript_empty_session_id_returns_none() -> str:
     return "find_transcript('') -> None without touching the filesystem"
 
 
+def test_resolve_transcript_prefers_existing_payload_path() -> str:
+    with tempfile.TemporaryDirectory() as root:
+        projects = Path(root) / "projects"
+        (projects / "p").mkdir(parents=True)
+        (projects / "p" / "sid1.jsonl").write_text("")
+        given = Path(root) / "given.jsonl"
+        given.write_text("")
+        result = _hookutil.resolve_transcript(str(given), "sid1", projects=projects)
+        assert result == given, f"expected {given}, got {result}"
+    return "resolve_transcript returns the payload path when it is an existing file"
+
+
+def test_resolve_transcript_falls_back_to_session_search() -> str:
+    # A missing path and a directory both fall through to find_transcript.
+    with tempfile.TemporaryDirectory() as root:
+        projects = Path(root) / "projects"
+        (projects / "p").mkdir(parents=True)
+        found = projects / "p" / "sid1.jsonl"
+        found.write_text("")
+        for bad in ("", str(Path(root) / "missing.jsonl"), str(projects)):
+            result = _hookutil.resolve_transcript(bad, "sid1", projects=projects)
+            assert result == found, f"{bad!r}: expected {found}, got {result}"
+        assert _hookutil.resolve_transcript("", "", projects=projects) is None
+        assert _hookutil.resolve_transcript("", "other", projects=projects) is None
+    return "resolve_transcript falls back to find_transcript; None with no session id or no match"
+
+
 # --- transcript-record readers (ADR-090) --------------------------------------
 
 def test_content_items_returns_list() -> str:
@@ -411,6 +438,38 @@ def test_result_text_output_fallback_coerced() -> str:
     rec = {"toolUseResult": {"output": 123}}
     assert _hookutil._result_text(item, rec) == "123"
     return "_result_text falls back to toolUseResult.output, coercing a non-str via str()"
+
+
+def test_iter_tool_uses_yields_index_record_item() -> str:
+    a = {"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "hi"},
+        {"type": "tool_use", "name": "Bash", "id": "1"},
+        {"type": "tool_use", "name": "Read", "id": "2"}]}}
+    b = {"type": "assistant", "isSidechain": True, "message": {"content": [
+        {"type": "tool_use", "name": "Agent", "id": "3"}, "not-a-dict"]}}
+    records = [
+        None, a,
+        {"type": "user", "message": {"content": [{"type": "tool_use", "name": "X", "id": "u"}]}},
+        {"type": "assistant", "message": ["not-a-dict"]},
+        b,
+    ]
+    got = [(i, rec is a or rec is b, item["id"]) for i, rec, item in _hookutil.iter_tool_uses(records)]
+    assert got == [(1, True, "1"), (1, True, "2"), (4, True, "3")], f"got {got!r}"
+    return "iter_tool_uses yields every assistant tool_use with its record index, skipping malformed and user records"
+
+
+def test_iter_assistant_texts_only_assistant_text_items() -> str:
+    records = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "one"},
+            {"type": "tool_use", "name": "Write", "input": {"content": "not text"}},
+            {"type": "text"}]}},
+        {"type": "user", "message": {"content": [{"type": "text", "text": "user"}]}},
+        "junk",
+    ]
+    got = list(_hookutil.iter_assistant_texts(records))
+    assert got == ["one", ""], f"got {got!r}"
+    return "iter_assistant_texts yields assistant text items only, never tool_use input or user text"
 
 
 def test_iter_bash_calls_pairs_by_id_with_cwd() -> str:
@@ -1015,6 +1074,13 @@ def main() -> int:
         ("find_transcript: nested dir", test_find_transcript_nested),
         ("find_transcript: unsafe session_id rejected (dev-env#1002)", test_find_transcript_unsafe_session_id_returns_none_without_globbing),
         ("find_transcript: empty session_id -> None (dev-env#1002)", test_find_transcript_empty_session_id_returns_none),
+        ("resolve_transcript: payload path wins (dev-env#1169)", test_resolve_transcript_prefers_existing_payload_path),
+        ("resolve_transcript: falls back to session search (dev-env#1169)",
+         test_resolve_transcript_falls_back_to_session_search),
+        ("iter_tool_uses: index/record/item, malformed-safe (dev-env#1169)",
+         test_iter_tool_uses_yields_index_record_item),
+        ("iter_assistant_texts: assistant text only (dev-env#1169)",
+         test_iter_assistant_texts_only_assistant_text_items),
         ("_content_items: returns list", test_content_items_returns_list),
         ("_content_items: guards -> []", test_content_items_guards),
         ("_user_message_texts: extraction + guards (dev-env#710)", test_user_message_texts_extracts),

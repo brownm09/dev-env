@@ -221,25 +221,40 @@ def plan_sync(shared: dict, live: dict) -> SyncPlan:
     return SyncPlan(owned_updates, seed_inserts, unclassified)
 
 
-def _hook_commands(hooks: dict) -> "list[str]":
-    """Every `command` string a settings `hooks` object wires, in order.
+def iter_hook_entries(hooks: Any):
+    """Yield `(event, group, entry)` for every hook entry a settings `hooks` object
+    wires, in settings order.
 
-    Walks hooks[event][*].hooks[*]; a malformed level contributes nothing rather than
-    raising. Entries whose `type` is not "command" (e.g. a "prompt" hook) run no file
-    and are skipped.
+    Walks hooks[event][*].hooks[*]; a malformed level (a non-dict `hooks`, a non-list
+    event, a non-dict group or entry) contributes nothing rather than raising. The one
+    walker of the `hooks` block: this module's missing-script guard, hook-liveness-check,
+    the structural gates' tests/_hook_wiring.py and tests/test_pyw_stdio.py all read the
+    wiring through it, so a change to the block's shape is made once (dev-env#1169).
     """
-    commands = []
-    for groups in hooks.values():
+    if not isinstance(hooks, dict):
+        return
+    for event, groups in hooks.items():
         if not isinstance(groups, list):
             continue
         for group in groups:
             if not isinstance(group, dict):
                 continue
             for entry in group.get("hooks") or []:
-                if not isinstance(entry, dict) or entry.get("type", "command") != "command":
-                    continue
-                commands.append(str(entry.get("command") or ""))
-    return commands
+                if isinstance(entry, dict):
+                    yield event, group, entry
+
+
+def _hook_commands(hooks: dict) -> "list[str]":
+    """Every `command` string a settings `hooks` object wires, in order.
+
+    Entries whose `type` is not "command" (e.g. a "prompt" hook) run no file and are
+    skipped.
+    """
+    return [
+        str(entry.get("command") or "")
+        for _event, _group, entry in iter_hook_entries(hooks)
+        if entry.get("type", "command") == "command"
+    ]
 
 
 def hooks_guard(hooks: Any) -> "str | None":

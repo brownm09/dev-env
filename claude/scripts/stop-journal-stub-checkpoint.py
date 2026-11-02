@@ -54,9 +54,9 @@ loop-guard flag (Claude Code hooks reference: a Stop hook must check it and exit
 0 early once continuing, or it can block forever). A single per-session sentinel
 suffices — this hook has one trigger (unlike the tile gate's three, ADR-097).
 
-The transcript-record readers (``_parse_records`` / ``_content_items``) and the
-sentinel / transcript-locate helpers come from the shared ``_hookutil`` module
-(ADR-090 / ADR-064); the anchored command scanner (``scan_top_level``) and the
+The transcript-record readers (``_parse_records`` / ``iter_tool_uses``) and the
+sentinel / transcript-locate helpers (``resolve_transcript``) come from the shared
+``_hookutil`` module (ADR-090 / ADR-064, dev-env#1169); the anchored command scanner (``scan_top_level``) and the
 ``--help``-only filter (``is_help_only``) come from ``_hookio`` (ADR-050) — the
 same shared modules ``stop-tile-enumeration-gate.py`` builds on.
 
@@ -76,7 +76,6 @@ from __future__ import annotations
 import _hookutil
 import re
 import sys
-from pathlib import Path
 
 from _hookio import (
     is_help_only,
@@ -86,11 +85,11 @@ from _hookio import (
     scan_top_level,
 )
 from _hookutil import (
-    _content_items,
     _is_synthetic_user,
     _is_wrapper_text,
     _parse_records,
     _user_message_texts,
+    iter_tool_uses,
 )
 
 SENTINEL_PREFIX = "journal-stub-checkpoint-"
@@ -216,24 +215,18 @@ _SUBSTANTIVE_TOOLS = frozenset({
 def _bash_commands(records: list) -> list:
     """Every Bash tool_use command string in the transcript.
 
-    A thin UNPAIRED walk (unlike ``_hookutil.iter_bash_calls``, which pairs each
+    A thin UNPAIRED walk over ``_hookutil.iter_tool_uses`` (unlike
+    ``_hookutil.iter_bash_calls``, which pairs each
     Bash call with its tool_result output): this hook's detection needs only the
     command text — PR-create/merge presence and stub-file references — never the
     command's output, and an unpaired walk also catches a trailing Bash call
     whose result isn't in the transcript yet at Stop time.
     """
-    commands: list = []
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        for item in _content_items(rec):
-            if (
-                isinstance(item, dict)
-                and item.get("type") == "tool_use"
-                and item.get("name") == "Bash"
-            ):
-                commands.append((item.get("input") or {}).get("command", "") or "")
-    return commands
+    return [
+        (item.get("input") or {}).get("command", "") or ""
+        for _i, _rec, item in iter_tool_uses(records)
+        if item.get("name") == "Bash"
+    ]
 
 
 # --- pure detection helpers (offline-testable) ---------------------------------
@@ -258,18 +251,7 @@ def substantive_tool_count(records: list) -> int:
     """Count of assistant ``tool_use`` items whose ``name`` is a substantive
     tool (see ``_SUBSTANTIVE_TOOLS``). Parallel tool_use items in one record
     each count individually."""
-    n = 0
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        for item in _content_items(rec):
-            if (
-                isinstance(item, dict)
-                and item.get("type") == "tool_use"
-                and item.get("name") in _SUBSTANTIVE_TOOLS
-            ):
-                n += 1
-    return n
+    return sum(1 for _i, _rec, item in iter_tool_uses(records) if item.get("name") in _SUBSTANTIVE_TOOLS)
 
 
 def _check_pr_create(seg: str) -> bool:
@@ -296,20 +278,15 @@ def wrote_stub(records: list) -> bool:
     bare read like ``ls``/``cat``, which the journal workflow itself runs to find
     the latest stub; review of PR #706). Errs toward suppression (the safe
     advisory direction: a false "stub written" only silences the nudge)."""
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        for item in _content_items(rec):
-            if not isinstance(item, dict) or item.get("type") != "tool_use":
-                continue
-            name = item.get("name")
-            inp = item.get("input") or {}
-            if name in ("Write", "Edit", "NotebookEdit"):
-                if _STUB_PATH_RE.search(inp.get("file_path", "") or ""):
-                    return True
-            elif name == "Bash":
-                if _STUB_BASH_WRITE_RE.search(inp.get("command", "") or ""):
-                    return True
+    for _i, _rec, item in iter_tool_uses(records):
+        name = item.get("name")
+        inp = item.get("input") or {}
+        if name in ("Write", "Edit", "NotebookEdit"):
+            if _STUB_PATH_RE.search(inp.get("file_path", "") or ""):
+                return True
+        elif name == "Bash":
+            if _STUB_BASH_WRITE_RE.search(inp.get("command", "") or ""):
+                return True
     return False
 
 
@@ -432,11 +409,8 @@ def main() -> None:
     if session_id and _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).exists():
         sys.exit(0)
 
-    tpath_str = data.get("transcript_path") or ""
-    tpath = Path(tpath_str) if tpath_str else None
-    if (tpath is None or not tpath.exists()) and session_id:
-        tpath = _hookutil.find_transcript(session_id)
-    if tpath is None or not tpath.exists():
+    tpath = _hookutil.resolve_transcript(data.get("transcript_path") or "", session_id)
+    if tpath is None:
         sys.exit(0)
 
     try:

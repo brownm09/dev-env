@@ -615,5 +615,31 @@ with Env() as env:
     reason = _settings_sync.hooks_guard(json.loads(known_bad_text))
     check(reason is not None and "dev-env-sync.py" in reason, "known-bad: one missing script is caught")
 
+# --- 9. the one settings-hook walker (dev-env#1169) --------------------------------------
+print("\n-- iter_hook_entries --")
+walked = list(_settings_sync.iter_hook_entries({
+    "Stop": [
+        {"hooks": [{"type": "command", "command": "a"}, "not-a-dict", {"type": "prompt", "prompt": "p"}]},
+        "not-a-group",
+        {"matcher": "Bash", "hooks": None},
+    ],
+    "PreToolUse": [{"matcher": "Write", "hooks": [{"command": "b", "timeout": 5}]}],
+    "Broken": "not-a-list",
+}))
+check(
+    [(event, group.get("matcher"), entry.get("command")) for event, group, entry in walked]
+    == [("Stop", None, "a"), ("Stop", None, None), ("PreToolUse", "Write", "b")],
+    "walker yields every dict entry with its event and group, in order, skipping malformed levels",
+)
+check(list(_settings_sync.iter_hook_entries([])) == [], "a non-object hooks value yields nothing")
+check(list(_settings_sync.iter_hook_entries(None)) == [], "a missing hooks value yields nothing")
+check(_settings_sync._hook_commands({"Stop": [{"hooks": [entry for _e, _g, entry in walked]}]}) == ["a", "b"],
+      "_hook_commands keeps only command-type entries from the walk")
+shipped_hooks = json.loads(_settings_sync.SHARED_PATH.read_text(encoding="utf-8"))["hooks"]
+n_walked = len(list(_settings_sync.iter_hook_entries(shipped_hooks)))
+n_entries = sum(len(group["hooks"]) for groups in shipped_hooks.values() for group in groups)
+check(n_walked > 0 and n_walked == n_entries,
+      f"walker reaches every hook entry in the shipped settings ({n_walked}/{n_entries}), not a vacuous subset")
+
 print(f"\nResults: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

@@ -35,7 +35,7 @@ SETTINGS_PATH = REPO_ROOT / "claude" / "settings.shared.json"
 
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
-from _settings_sync import py_tokens  # noqa: E402 -- the one hook-command tokenizer (ADR-151)
+from _settings_sync import iter_hook_entries, py_tokens  # noqa: E402 -- the one walker (dev-env#1169) and tokenizer (ADR-151)
 
 # The author-home prefix every shipped hook command is written with, and the launcher
 # path under it (ADR-148). Defined once so the tests that pin or remap the command form
@@ -93,30 +93,20 @@ def hook_entries(settings: dict) -> list[HookEntry]:
     entry's timeout independently.
     """
     entries: list[HookEntry] = []
-    hooks = settings.get("hooks", {})
-    if not isinstance(hooks, dict):
-        return entries
-    for event, groups in hooks.items():
-        if not isinstance(groups, list):
-            continue
-        for group in groups:
-            if not isinstance(group, dict):
-                continue
-            matcher = group.get("matcher")
-            for h in group.get("hooks", []) or []:
-                if not isinstance(h, dict):
-                    continue
-                command = h.get("command", "") or ""
-                entries.append(
-                    HookEntry(
-                        event=event,
-                        matcher=matcher,
-                        command=command,
-                        script=script_from_command(command),
-                        timeout=h.get("timeout"),
-                        scripts=scripts_from_command(command),
-                    )
-                )
+    # The walk itself is _settings_sync.iter_hook_entries, shared with the
+    # missing-script guard and hook-liveness-check (dev-env#1169).
+    for event, group, h in iter_hook_entries(settings.get("hooks", {})):
+        command = h.get("command", "") or ""
+        entries.append(
+            HookEntry(
+                event=event,
+                matcher=group.get("matcher"),
+                command=command,
+                script=script_from_command(command),
+                timeout=h.get("timeout"),
+                scripts=scripts_from_command(command),
+            )
+        )
     return entries
 
 
