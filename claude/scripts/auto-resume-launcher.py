@@ -74,7 +74,7 @@ def candidates(cfg: dict, sessions: list[dict], started: float, running: set[str
         ts = ar.parse_ts(v["timestamp"])
         if v["state"] not in ar.RESUMABLE or ts is None or ts >= started:
             continue
-        if now - ts > float(cfg["maxAgeHours"]) * 3600 \
+        if now - ts > ar.max_age_seconds(cfg, v["state"]) \
                 or not ar.attempts_left(cli, cfg, since=started, now=now) \
                 or ar.consecutive_wakes(tail) >= ar.MAX_CONSECUTIVE_WAKES:
             continue

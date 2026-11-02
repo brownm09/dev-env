@@ -117,7 +117,7 @@ def decide(payload: dict, cfg: dict, sleep=time.sleep, now=time.time,
     info.update(sessionId=meta.get("sessionId"), title=meta.get("title"))
     if not ar.opted_in(cfg, meta):
         return "not_opted_in", info
-    if started - ts > float(cfg["maxAgeHours"]) * 3600:
+    if started - ts > ar.max_age_seconds(cfg, verdict["state"]):
         return "too_old", info
     if not ar.attempts_left(sid, cfg, since=instance, now=started) \
             or ar.consecutive_wakes(tail) >= ar.MAX_CONSECUTIVE_WAKES:
