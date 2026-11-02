@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-21
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08, 2026-07-09, 2026-07-11, 2026-08-15, 2026-08-16, 2026-08-20 (twenty-six amendments — see Amendment sections below)
-**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking, gh-create-help, prose-flag-masking, pr-create, bare-number-masking, args-boundary, truncation, rest-merge-fallback, gh-api, graphql-rate-limit, stop-hook-parity, stop-tile-enumeration-gate, convergence, observability, trace-logging, forensic-debugging, silent-failure, defense-in-depth, null-payload, dispatch
+**Amended:** 2026-07-01, 2026-07-02, 2026-07-04, 2026-07-08, 2026-07-09, 2026-07-11, 2026-08-15, 2026-08-16, 2026-08-20, 2026-10-30, 2026-11-02 (thirty amendments — see Amendment sections below)
+**Tags:** hooks, post-tool-use, tool_response, payload, github-project, automation, reliability, dry, usage-snapshot, pr-merge-reminder, gh-pr-view, api-fallback, message-dispatch, top-level-statement-scan, issue-create, false-positive, command-parsing, heredoc, regex, quote-tracking, canonical-mutate-guard, pre-tool-use, ast, regression-test, allowlist, gh-pr-merge-help, misattribution, live-confirmation-fallback, repo-flag-shorthand, quote-masking, gh-create-help, prose-flag-masking, pr-create, bare-number-masking, args-boundary, truncation, rest-merge-fallback, gh-api, graphql-rate-limit, stop-hook-parity, stop-tile-enumeration-gate, convergence, observability, trace-logging, forensic-debugging, silent-failure, defense-in-depth, null-payload, dispatch, settings-walker, transcript-scan
 
 ---
 
@@ -2648,4 +2648,46 @@ three pre-merge gates share one `gh pr view` fetch (the rest of #850's merge-pat
 #851's in-process dispatcher stages: one process running those handlers removes the duplicate spawns and
 lets a fetch be memoized in memory, with no new cross-process cache to invalidate. The settings walker and
 transcript aggregation are dev-env#1169.
+
+## Amendment 30 (2026-11-02) — one settings walker and one transcript scan (dev-env#1169, part 2 of #850)
+
+**What changed.** The last two copies on #850's list:
+
+1. **The settings walker.** `_settings_sync.iter_hook_entries(hooks)` yields `(event, group, entry)` for
+   every entry under `hooks[event][*].hooks[*]`, skipping a malformed level instead of raising. Three
+   readers walked that nesting themselves: the ADR-148 missing-script guard (`_hook_commands`),
+   `hook-liveness-check.py` (`wired_hook_events`) and the structural gates' `tests/_hook_wiring.py`
+   (`hook_entries`). The issue named two; the guard was a third. All three now call the walker, next to
+   `py_tokens`, the tokenizer they already shared (ADR-151). Each still applies its own filter: only the
+   guard drops non-`command` entries, so the gates keep flagging an entry with no script as unparsed.
+2. **The transcript scan.** Three helpers in `_hookutil`, beside the ADR-090 readers:
+   - `resolve_transcript(transcript_path, session_id, projects=None)`: the payload path if it is a file,
+     else `find_transcript(session_id)`. It replaces the locate block in six Stop hooks: the five the
+     issue named plus `stop-experiment-verdict-gate.py`, which carried the same block.
+   - `iter_tool_uses(records)`: `(index, record, item)` for every assistant tool_use. It replaces ten
+     hand-written loops (`iter_bash_calls`, three in `stop-journal-stub-checkpoint`, four in
+     `stop-tile-enumeration-gate`, two in `journal-stop-check`). Name and `isSidechain` filters stay
+     with the caller.
+   - `iter_assistant_texts(records)`: hoisted from the verdict gate's `_assistant_texts`, and now also
+     used by the tile gate's three text checks (table heading, enumeration text, deferral question).
+
+**Behavior.** Every hook suite passed unchanged. One edge differs: the old locate blocks accepted any
+existing path, so a `transcript_path` naming a *directory* made four hooks fail their read and exit 0, and
+made `token-tracker` record an empty session. Now a directory falls through to the session-id search, as
+`journal-stop-check` already did. No real payload names a directory. Fail direction is unchanged: every
+hook still exits 0 when no transcript is found, and none of the fail-closed gates (ADR-083, ADR-096)
+reads a transcript.
+
+**Deliberately left alone.** `token-tracker` keeps its own line-by-line usage totals; it streams the file
+so that a bad byte keeps the totals so far (dev-env#804), and nothing else sums usage. The prefilter-then-
+parse step stays in each hook because each prefilter is hook-specific. `reconcile-open-prs`,
+`idle-refresher` and `turn-count-hook` are not Stop hooks and were out of scope. Stale PR #1025, which adds
+`isSidechain` filters to the stub checkpoint's three counters, now conflicts with this change; its filters
+fit as a caller-side `rec.get("isSidechain")` check on `iter_tool_uses`, as `journal-stop-check` does.
+
+**Alternatives considered.** A new `_hook_settings.py` module for the walker was rejected: both readers
+already imported `_settings_sync` for `py_tokens`, and the guard there needed the walk too, so a new
+module would add an import and leave the guard's copy in place. Reading the transcript once for all Stop
+hooks belongs to #851's dispatcher, which runs them in one process; these helpers give it one place to
+add that cache.
 

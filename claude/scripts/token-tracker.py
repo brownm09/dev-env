@@ -238,17 +238,7 @@ def main() -> None:
     hook_data = json.loads(raw) if raw else {}
 
     session_id = hook_data.get("session_id", "")
-    transcript_path_str = hook_data.get("transcript_path", "")
-
-    transcript_path: Path | None = None
-    if transcript_path_str:
-        p = Path(transcript_path_str)
-        if p.exists():
-            transcript_path = p
-
-    if transcript_path is None and session_id:
-        transcript_path = _hookutil.find_transcript(session_id)
-
+    transcript_path = _hookutil.resolve_transcript(hook_data.get("transcript_path", ""), session_id)
     if transcript_path is None:
         # A Stop hook's exit-0 stdout/stderr are invisible, so surface the
         # transcript-locate failure via the shared _hookout user channel (ADR-103) —

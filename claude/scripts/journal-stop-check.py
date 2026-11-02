@@ -194,27 +194,22 @@ def pending_task_count(records: list) -> int:
     """
     create_tool_use_ids: list[str] = []
     updates: list[tuple[str, str]] = []
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
+    for _i, rec, item in _hookutil.iter_tool_uses(records):
         if rec.get("isSidechain"):
             continue
-        for item in _content_items(rec):
-            if not (isinstance(item, dict) and item.get("type") == "tool_use"):
+        name = item.get("name")
+        if name == "TaskCreate":
+            tid = item.get("id")
+            if isinstance(tid, str) and tid:
+                create_tool_use_ids.append(tid)
+        elif name == "TaskUpdate":
+            inp = item.get("input")
+            if not isinstance(inp, dict):
                 continue
-            name = item.get("name")
-            if name == "TaskCreate":
-                tid = item.get("id")
-                if isinstance(tid, str) and tid:
-                    create_tool_use_ids.append(tid)
-            elif name == "TaskUpdate":
-                inp = item.get("input")
-                if not isinstance(inp, dict):
-                    continue
-                task_id = inp.get("taskId")
-                status = inp.get("status")
-                if task_id is not None and isinstance(status, str):
-                    updates.append((str(task_id), status))
+            task_id = inp.get("taskId")
+            status = inp.get("status")
+            if task_id is not None and isinstance(status, str):
+                updates.append((str(task_id), status))
     if not create_tool_use_ids:
         return 0
 
@@ -311,25 +306,16 @@ def open_background_agent_count(records: list) -> int:
     Never raises: isinstance guards throughout.
     """
     backgrounded_ids: set[str] = set()
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+    for _i, rec, item in _hookutil.iter_tool_uses(records):
+        if rec.get("isSidechain") or item.get("name") != "Agent":
             continue
-        if rec.get("isSidechain"):
-            continue
-        for item in _content_items(rec):
-            if not (
-                isinstance(item, dict)
-                and item.get("type") == "tool_use"
-                and item.get("name") == "Agent"
-            ):
-                continue
-            inp = item.get("input")
-            rib = inp.get("run_in_background") if isinstance(inp, dict) else None
-            if rib is False:
-                continue  # explicit opt-out -- genuinely foreground, blocks the turn
-            tid = item.get("id")
-            if isinstance(tid, str) and tid:
-                backgrounded_ids.add(tid)
+        inp = item.get("input")
+        rib = inp.get("run_in_background") if isinstance(inp, dict) else None
+        if rib is False:
+            continue  # explicit opt-out -- genuinely foreground, blocks the turn
+        tid = item.get("id")
+        if isinstance(tid, str) and tid:
+            backgrounded_ids.add(tid)
     if not backgrounded_ids:
         return 0
 
@@ -376,9 +362,10 @@ def in_flight_work_note(
 ) -> str:
     """Best-effort in-flight-work caveat for the archive reminder (dev-env#1002).
 
-    Resolves a transcript path -- *transcript_path_str* if it names a real
-    file, else `_hookutil.find_transcript(session_id, projects=projects)`
-    when *session_id* is truthy, else gives up -- loads its records, and
+    Resolves a transcript path via `_hookutil.resolve_transcript` --
+    *transcript_path_str* if it names a real file, else
+    `_hookutil.find_transcript(session_id, projects=projects)` when
+    *session_id* is truthy, else gives up -- loads its records, and
     returns `format_in_flight_note()`'s caveat, or "" on ANY failure.
 
     *projects* overrides _hookutil.find_transcript's default search root --
@@ -407,13 +394,7 @@ def in_flight_work_note(
     is already firing.
     """
     try:
-        path: Path | None = None
-        if transcript_path_str:
-            candidate = Path(transcript_path_str)
-            if candidate.is_file():
-                path = candidate
-        if path is None and session_id:
-            path = _hookutil.find_transcript(session_id, projects=projects)
+        path = _hookutil.resolve_transcript(transcript_path_str, session_id, projects=projects)
         if path is None:
             return ""
         text = path.read_text(encoding="utf-8")
