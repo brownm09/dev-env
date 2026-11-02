@@ -4784,7 +4784,10 @@ For a one-line navigational map of the test directory, see
       metadata, a disabled config and an invalid config;
     - the CLI's own stop-notice turn during the settle doesn't cancel the wake, and a lost
       background task gets a "rerun it" message, but a user prompt during that turn still cancels;
-    - a wake from an earlier app instance doesn't count against the cap.
+    - a wake from an earlier app instance doesn't count against the cap;
+    - a background wait 12.6 h old is still resumed under `maxWaitAgeHours` (48), a mid-turn
+      interruption that old is not (`maxAgeHours` 12), and a wait past 48 h is not
+      (dev-env#1189).
 
     **The launcher:**
     - the app start comes only from `WindowsApps\Claude_*\app\Claude.exe` with no `--type=`;

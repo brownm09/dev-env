@@ -51,6 +51,11 @@ DEFAULTS = {
     "exclude": [],
     # A turn cut off longer ago than this is left alone.
     "maxAgeHours": 12,
+    # The same limit for a turn that finished waiting on a background task, measured from
+    # when it started waiting. Longer, because the task can run for hours and die at a
+    # later reset: overnight waits killed by a morning reset were missed at 12 h
+    # (dev-env#1189). MAX_CONSECUTIVE_WAKES still bounds how often an old wait is nudged.
+    "maxWaitAgeHours": 48,
     # The hook waits this long before waking the model, then re-reads the transcript.
     # Any new turn activity in the meantime (the user typed, or a queued message ran)
     # cancels. The 90 s limit leaves room, inside the hook's 180 s timeout in
@@ -63,7 +68,8 @@ DEFAULTS = {
     # MAX_CONSECUTIVE_WAKES bounds it.
     "maxAttempts": 2,
 }
-_LIMITS = {"maxAgeHours": (0.1, 168), "settleSeconds": (5, 90), "maxAttempts": (1, 10)}
+_LIMITS = {"maxAgeHours": (0.1, 168), "maxWaitAgeHours": (0.1, 336), "settleSeconds": (5, 90),
+           "maxAttempts": (1, 10)}
 # Wakes with no human prompt in between, counted from the transcript across app
 # instances and reboots. A session whose resumed work keeps crashing the whole app or
 # machine stops here.
@@ -132,6 +138,12 @@ def load_config(path: Path | None = None) -> dict:
     if problems:
         return {**cfg, "enabled": False, "invalid": f"{p}: " + "; ".join(problems)}
     return cfg
+
+
+def max_age_seconds(cfg: dict, state: str) -> float:
+    """How old an interruption may be and still be resumed, for this verdict state."""
+    key = "maxWaitAgeHours" if state == "waiting_on_background" else "maxAgeHours"
+    return float(cfg[key]) * 3600
 
 
 def _rule_matches(rule: str, meta: dict) -> bool:

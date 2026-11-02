@@ -350,6 +350,21 @@ def test_hook_wakes_through_the_clis_stop_notice_turn() -> str:
             "background task gets a 'rerun it' message); a user prompt during it still does")
 
 
+def test_background_waits_have_their_own_age_limit() -> str:
+    # The 2026-11-02 noon resets: sessions waiting since ~23:50 were 12.6 h old.
+    wait = [_bg_launch()] + END
+    with tempfile.TemporaryDirectory() as d:
+        overnight = _decide(Path(d), wait, at=T0 + 12.6 * 3600)[0]
+    with tempfile.TemporaryDirectory() as d:
+        cut = _decide(Path(d), CUT, at=T0 + 12.6 * 3600)[0]
+    with tempfile.TemporaryDirectory() as d:
+        stale = _decide(Path(d), wait, at=T0 + 49 * 3600)[0]
+    assert (overnight, cut, stale) == ("wake", "too_old", "too_old"), (overnight, cut, stale)
+    assert ar.load_config(Path(tempfile.gettempdir()) / "no-such.json")["maxWaitAgeHours"] == 48
+    return ("a background wait 12.6 h old is still resumed (maxWaitAgeHours 48); a mid-turn "
+            "interruption that old is not (maxAgeHours 12); a wait past 48 h is not")
+
+
 def test_hook_attempts_reset_with_the_app_instance() -> str:
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
