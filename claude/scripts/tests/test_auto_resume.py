@@ -409,6 +409,18 @@ def test_completion_matched_by_task_id() -> str:
                 "content": "<task-notification>\n<task-id>a52e6362f</task-id>\n<status>completed</status>"}
     q = ar.classify(agent + [enqueued] + END)  # finished, notification not yet delivered
     typed = {"type": "queue-operation", "operation": "enqueue", "content": "please also check X"}
+    # A foreground Bash that outlived its timeout (the 23:23 reset's "Restore hook config" case).
+    moved = [_asst([{"type": "tool_use", "id": "toolu_fg", "name": "Bash",
+                     "input": {"command": "py -3 run-hook-tests.py", "description": "full suite"}}]),
+             _user([{"type": "tool_result", "tool_use_id": "toolu_fg", "content":
+                     "Command did not complete within its 120s timeout and was moved to the "
+                     "background (ID: b713i2ixy). Output is being written to: x"}])]
+    m1 = ar.classify(moved + END)
+    m2 = ar.classify(moved + [_user("<task-notification>\n<task-id>b713i2ixy</task-id>\n"
+                                    "<status>completed</status>", uuid="n2",
+                                    origin={"kind": "task-notification"})] + END)
+    assert m1["state"] == "waiting_on_background" and "full suite" in m1["detail"], m1
+    assert m2["state"] == "clean", m2
     assert a["state"] == b["state"] == q["state"] == "clean", (a, b, q)
     assert c["state"] == "waiting_on_background", c
     assert ar.is_human_activity(typed) and not ar.is_human_activity(enqueued)

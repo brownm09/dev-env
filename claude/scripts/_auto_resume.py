@@ -318,6 +318,9 @@ _BACKGROUND_KINDS = {"Bash": "Bash", "PowerShell": "PowerShell", "Agent": "agent
 # "agentId: a...", Monitor "Monitor started (task b...". Notifications name tasks by it.
 _TASK_ID = re.compile(r"(?:with ID: |agentId: |\(task )([A-Za-z0-9]+)")
 _NOTICE_IDS = re.compile(r"<(?:task-id|tool-use-id)>([^<]+)</")
+# A foreground Bash/PowerShell call past its timeout: "Command did not complete within
+# its 120s timeout and was moved to the background (ID: b...)".
+_MOVED = re.compile(r"moved to the background \(ID: ([A-Za-z0-9]+)\)")
 # Monitor's documented default and ceiling for timeout_ms (dev-env#1185 review).
 MONITOR_DEFAULT_TIMEOUT_MS = 300_000
 MONITOR_MAX_TIMEOUT_MS = 1_800_000
@@ -325,7 +328,8 @@ MONITOR_MAX_TIMEOUT_MS = 1_800_000
 
 def pending_background(entries: list[dict], restarted_at: float | None) -> list[str]:
     """Descriptions of background tasks launched on the main thread that never reported
-    back: Bash/PowerShell or Agent with ``run_in_background``, and Monitor.
+    back: Bash/PowerShell or Agent with ``run_in_background``, a foreground Bash/PowerShell
+    call that was moved to the background at its timeout, and Monitor.
 
     A task is done once any notification names it, by its ``tool_use`` id or by the
     task ID its tool result reported. Agent notices and grouped stop notices carry only
@@ -336,7 +340,7 @@ def pending_background(entries: list[dict], restarted_at: float | None) -> list[
     deadline falls after *restarted_at* (the restart must have killed it). With no
     *restarted_at*, Monitors are not counted.
     """
-    launched, task_of, named = {}, {}, set()
+    launched, task_of, named, foreground = {}, {}, set(), {}
     for e in entries:
         if e.get("isSidechain"):
             continue
@@ -345,13 +349,23 @@ def pending_background(entries: list[dict], restarted_at: float | None) -> list[
             named.update(_NOTICE_IDS.findall(text))
             continue
         for b in _blocks(e):
-            if b.get("type") == "tool_result" and b.get("tool_use_id") in launched:
+            if b.get("type") == "tool_result" and b.get("tool_use_id") in foreground:
+                # A foreground call that outlived its timeout keeps running in the background.
+                m = _MOVED.search(_text_of(b))
+                if m:
+                    launched[b["tool_use_id"]] = foreground[b["tool_use_id"]]
+                    task_of[b["tool_use_id"]] = m.group(1)
+            elif b.get("type") == "tool_result" and b.get("tool_use_id") in launched:
                 m = _TASK_ID.search(_text_of(b))
                 if m:
                     task_of[b["tool_use_id"]] = m.group(1)
             if b.get("type") != "tool_use" or not b.get("id") or e.get("type") != "assistant":
                 continue
             inp = b.get("input") or {}
+            if b.get("name") in ("Bash", "PowerShell") and not inp.get("run_in_background"):
+                desc = str(inp.get("description") or inp.get("command") or "")[:80]
+                foreground[b["id"]] = f"background {b['name']} task" + (f" ({desc})" if desc else "")
+                continue
             if b.get("name") == "Monitor":
                 start = parse_ts(e.get("timestamp"))
                 timeout = inp.get("timeout_ms") or MONITOR_DEFAULT_TIMEOUT_MS
