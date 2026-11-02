@@ -59,3 +59,18 @@ Auto-resume has two parts. Both read a machine-local opt-in file, `~/.claude/aut
 - **Driving the internal messaging pipe.** Rejected: an undocumented protocol and a secret token.
 - **`CronCreate` inside each session.** Rejected: it is session-only, and its `durable` flag is documented as having no effect, so it doesn't survive the restart.
 - **The `SessionStart` hook alone.** Rejected as incomplete: after a restart, interrupted sessions get no CLI process until opened, so the hook never fires for them.
+
+## Amendment — 2026-11-01: background tasks, the CLI's own resume turn, a per-instance cap
+
+[dev-env#1185](https://github.com/brownm09/dev-env/issues/1185). Three gaps showed up after the reboots at 16:48 and 18:39 the same day. The fixes refine the decision above rather than replace it.
+
+1. **A turn waiting on a background task counts as resumable.** "Fix #845" finished a turn while it waited on a background `npm ci`, typecheck and test run. The 18:39 reboot killed that task, and the transcript ended cleanly, so nothing reopened the session. `classify` now returns `waiting_on_background` when a finished turn has a background task with no completion notification. That covers Bash/PowerShell or Agent with `run_in_background`, and a Monitor still inside its `timeout_ms` at the restart. Completion is searched in user entries and in the `queued_command` attachments that carry notifications arriving mid-turn. The launcher and the hook both act on this state, and the hook's message asks the model to rerun the task.
+2. **The resumed CLI's own turn no longer hides the interruption or cancels the wake.** On resume, Claude Code writes two things: a synthetic assistant placeholder (`model: "<synthetic>"`, "No response requested.") when the transcript ends on a user message, and a `stopped` task-notification ("didn't finish before the previous session ended") for each dead background task. The notification starts a turn by itself. At 17:09 that turn ended with nothing done, and the hook's settle check read it as activity and cancelled the wake. Now:
+   - synthetic placeholders are ignored;
+   - a trailing run of stop notices, and the one turn they set off, is set aside when classifying (`trim_stop_notices`);
+   - the settle check counts only a non-notice user entry as a turn starting after a stop notice. Any other non-bookkeeping line still counts when there's no notice.
+
+   The settle check also reads exactly the bytes appended since the first read, rather than comparing the last line.
+3. **The attempt cap counts per app instance.** "Hook dispatcher" used its two wakes on the 15:58 and 16:07 restarts. After the 18:39 reboot it was skipped as `attempts_exhausted`. `maxAttempts` now counts wakes since the current Claude app instance started: the launcher uses its app start, and the hook queries it, falling back to the boot time. Every app restart or reboot gets fresh tries, and a session that crashes on every reopen is still stopped within one instance.
+
+Considered and not taken: keying the cap on the boot time alone, as first suggested. App crashes without a reboot happen several times a day here, and they would share one boot's cap.

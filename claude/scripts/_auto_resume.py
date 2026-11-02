@@ -32,6 +32,8 @@ import datetime as _dt
 import fnmatch
 import json
 import os
+import re
+import subprocess
 import time
 from pathlib import Path
 
@@ -53,14 +55,21 @@ DEFAULTS = {
     # Any new turn activity in the meantime (the user typed, or a queued message ran)
     # cancels. Capped well below the hook's 180 s timeout in settings.shared.json.
     "settleSeconds": 20,
-    # At most this many wakes per session within maxAgeHours, so a turn that keeps
-    # crashing is not resumed forever.
+    # At most this many wakes per session per Claude app instance (so per boot too), so
+    # a session that crashes again on every reopen is not resumed forever, while a new
+    # crash later in the day still gets its own tries (dev-env#1185).
     "maxAttempts": 2,
 }
 _LIMITS = {"maxAgeHours": (0.1, 168), "settleSeconds": (5, 120), "maxAttempts": (1, 10)}
 
+# States the hook and launcher act on. `waiting_on_background`: the turn finished, but a
+# background task it started never reported back. After a restart that task is dead.
+RESUMABLE = {"interrupted", "waiting_on_background"}
 # A turn whose last step is one of these is waiting on the user, not interrupted.
 WAITING_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
+# A resumed CLI writes one of these task-notifications for each background task the
+# previous process left unfinished, and that notification starts a turn on its own.
+STOP_NOTICE = "didn't finish before the previous session ended"
 USER_STOP_MARKER = "[Request interrupted by user"
 # User entries a local slash command (/compact, /model, ...) writes. No reply follows them.
 LOCAL_COMMAND_PREFIXES = ("<command-name>", "<command-message>", "<local-command-stdout>",
@@ -68,7 +77,8 @@ LOCAL_COMMAND_PREFIXES = ("<command-name>", "<command-message>", "<local-command
 # Transcript lines the app and CLI write that are not turn activity. Any other new line
 # during the hook's settle wait counts as activity and cancels the wake.
 BOOKKEEPING_TYPES = {"bridge-session", "custom-title", "agent-name", "atis-latch", "mode",
-                     "last-prompt", "pr-link", "summary", "tag", "file-history-snapshot"}
+                     "last-prompt", "pr-link", "summary", "tag", "file-history-snapshot",
+                     "file-history-delta"}
 TAIL_SIZES = (512 * 1024, 4 * 1024 * 1024, 32 * 1024 * 1024)
 
 
@@ -194,9 +204,17 @@ def _text_of(block: dict) -> str:
     return ""
 
 
+def is_synthetic(e: dict) -> bool:
+    """A placeholder reply Claude Code writes itself (model ``<synthetic>``), such as the
+    "No response requested." it adds when a resumed transcript ends on a user message.
+    API-error messages are synthetic too, but keep their own ``api_error`` state."""
+    return e.get("type") == "assistant" and not e.get("isApiErrorMessage") \
+        and (e.get("message") or {}).get("model") == "<synthetic>"
+
+
 def _ignored(e: dict) -> bool:
     if e.get("isSidechain") or e.get("isMeta") or e.get("isCompactSummary") \
-            or e.get("isVisibleInTranscriptOnly"):
+            or e.get("isVisibleInTranscriptOnly") or is_synthetic(e):
         return True
     if e.get("type") == "user":
         text = " ".join(_text_of(b) for b in _blocks(e)).lstrip()
@@ -204,14 +222,108 @@ def _ignored(e: dict) -> bool:
     return False
 
 
-def classify(entries: list[dict]) -> dict:
+def is_stop_notice(e: dict) -> bool:
+    """A task-notification a resumed CLI wrote for a background task that died with the
+    previous process."""
+    if e.get("type") != "user":
+        return False
+    text = " ".join(_text_of(b) for b in _blocks(e))
+    return "<task-notification>" in text and STOP_NOTICE in text
+
+
+def trim_stop_notices(entries: list[dict]) -> tuple[list[dict], bool]:
+    """Drop a trailing run of CLI stop notices and the one reply turn they set off.
+
+    Returns ``(entries, trimmed)``. The run is trimmed only when nothing else happened
+    after the first notice: no other user entry (a prompt, a queued message, a wake from
+    the auto-resume hook itself), no tool call, and at most one finished turn. That turn
+    is the model answering the notice, often with just "No response requested." Without
+    the trim, that turn would hide the interruption it followed (dev-env#1185).
+    """
+    first = None
+    for i in range(len(entries) - 1, -1, -1):
+        e = entries[i]
+        if is_stop_notice(e):
+            first = i
+            continue
+        if e.get("isSidechain"):
+            continue
+        if e.get("type") == "user":
+            break
+        if e.get("type") == "assistant" and any(b.get("type") == "tool_use" for b in _blocks(e)):
+            break
+    if first is None:
+        return entries, False
+    tail = entries[first:]
+    turns = sum(1 for e in tail if e.get("type") == "system" and e.get("subtype") == "stop_hook_summary")
+    if any(e.get("type") == "user" and not is_stop_notice(e) and not e.get("isSidechain") for e in tail) \
+            or turns > 1:
+        return entries, False
+    return entries[:first], True
+
+
+_BACKGROUND_KINDS = {"Bash": "Bash", "PowerShell": "PowerShell", "Agent": "agent", "Task": "agent"}
+
+
+MONITOR_DEFAULT_TIMEOUT_MS = 600_000
+
+
+def pending_background(entries: list[dict], restarted_at: float | None) -> list[str]:
+    """Descriptions of background tasks launched on the main thread that never reported
+    back: Bash/PowerShell or Agent with ``run_in_background``, and Monitor.
+
+    A notification is a user entry when it arrives between turns. It is a
+    ``queued_command`` attachment (and a ``queue-operation``) when it arrives mid-turn,
+    so every non-assistant line is searched. A stop notice still present here also
+    counts as done: trailing ones were already set aside (``trim_stop_notices``), so the
+    session has dealt with any that remain.
+
+    A Monitor can end on its ``timeout_ms`` without leaving a mark, so it counts only
+    when its deadline falls after *restarted_at* (the restart must have killed it). With
+    no *restarted_at*, Monitors are not counted.
+    """
+    launched, done = {}, set()
+    for e in entries:
+        if e.get("isSidechain"):
+            continue
+        if e.get("type") == "assistant":
+            for b in _blocks(e):
+                if b.get("type") != "tool_use" or not b.get("id"):
+                    continue
+                inp = b.get("input") or {}
+                if b.get("name") == "Monitor":
+                    start = parse_ts(e.get("timestamp"))
+                    timeout = inp.get("timeout_ms") or MONITOR_DEFAULT_TIMEOUT_MS
+                    if start is None or restarted_at is None or not isinstance(timeout, (int, float)) \
+                            or start + timeout / 1000 <= restarted_at:
+                        continue
+                    kind = "Monitor"
+                else:
+                    kind = _BACKGROUND_KINDS.get(b.get("name")) if inp.get("run_in_background") else None
+                if kind:
+                    desc = str(inp.get("description") or inp.get("command") or "")[:80]
+                    launched[b["id"]] = f"background {kind} task" + (f" ({desc})" if desc else "")
+        elif launched:
+            raw = json.dumps(e)
+            if "<task-notification>" in raw:
+                done.update(i for i in launched if i in raw)
+    return [d for i, d in launched.items() if i not in done]
+
+
+def classify(entries: list[dict], restarted_at: float | None = None) -> dict:
     """Classify how the last turn in a transcript ended.
 
-    Returns ``{"state", "uuid", "timestamp", "detail"}``, where state is one of:
-    ``interrupted`` (cut off mid-turn), ``clean`` (the reply finished),
-    ``waiting_on_user`` (the turn is paused on AskUserQuestion / ExitPlanMode),
-    ``user_stopped`` (the user pressed stop), ``api_error`` (the turn ended on an
-    API error message) or ``empty``.
+    *restarted_at* is when the CLI that owns the transcript was (re)started: the hook's
+    own start, or the app instance's start for the launcher. Only Monitor detection
+    needs it; see ``pending_background``.
+
+    Returns ``{"state", "uuid", "timestamp", "detail", "stopNotice"}``, where state is
+    one of: ``interrupted`` (cut off mid-turn), ``waiting_on_background`` (the turn
+    finished but a background task it started never reported back), ``clean`` (the
+    reply finished), ``waiting_on_user`` (the turn is paused on AskUserQuestion /
+    ExitPlanMode), ``user_stopped`` (the user pressed stop), ``api_error`` (the turn
+    ended on an API error message) or ``empty``. ``stopNotice`` is True when a trailing
+    CLI stop notice (and its reply) was set aside first (``trim_stop_notices``).
 
     Only main-thread ``user`` / ``assistant`` messages count. These are ignored:
     sidechain (subagent) entries; ``isMeta``, compact-summary and transcript-only
@@ -219,6 +331,16 @@ def classify(entries: list[dict]) -> dict:
     bookkeeping lines. A ``system`` ``stop_hook_summary`` or ``compact_boundary`` after
     the last message means the turn finished.
     """
+    entries, trimmed = trim_stop_notices(entries)
+    v = _classify(entries)
+    if v["state"] == "clean":
+        pending = pending_background(entries, restarted_at)
+        if pending:
+            v = {**v, "state": "waiting_on_background", "detail": "; ".join(pending)}
+    return {**v, "stopNotice": trimmed}
+
+
+def _classify(entries: list[dict]) -> dict:
     finished_after = False
     for e in reversed(entries):
         t = e.get("type")
@@ -252,12 +374,38 @@ def classify(entries: list[dict]) -> dict:
     return {"state": "empty", "uuid": None, "timestamp": None, "detail": ""}
 
 
-def activity_marker(entries: list[dict]):
-    """Identity of the last line that is not app bookkeeping. If it changes, a turn moved."""
-    for e in reversed(entries):
-        if e.get("type") not in BOOKKEEPING_TYPES:
-            return (e.get("type"), e.get("subtype"), e.get("uuid"), e.get("timestamp"))
-    return None
+def file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def read_since(path: Path, offset: int) -> list[dict]:
+    """Parse the lines appended to a transcript after byte *offset*."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            return _parse_lines(f.read(), cut_first=False)
+    except OSError:
+        return []
+
+
+def turn_started(new: list[dict], stop_notice: bool) -> bool:
+    """Did a turn start in the lines written during the hook's settle wait?
+
+    A user entry that isn't a CLI stop notice always counts: a prompt, a queued or
+    cross-session message. Otherwise, any line that isn't app bookkeeping counts, except
+    after a stop notice. That turn is the CLI's own, answering the notice, and it is
+    exactly the turn that would otherwise hide the interruption.
+    """
+    stop_notice = stop_notice or any(is_stop_notice(e) for e in new)
+    for e in new:
+        if e.get("type") == "user" and not is_stop_notice(e) and not e.get("isSidechain"):
+            return True
+        if not stop_notice and e.get("type") not in BOOKKEEPING_TYPES and not is_synthetic(e):
+            return True
+    return False
 
 
 def parse_ts(ts) -> float | None:
@@ -312,6 +460,60 @@ def meta_for(cli_session_id: str, tries: int = 3, delay: float = 2.0) -> dict:
     return {}
 
 
+# --- processes ----------------------------------------------------------------------
+
+_RESUME_ARG = re.compile(r"--(?:resume|session-id)[= ]\"?([0-9a-fA-F-]{36})")
+_APP_EXE = re.compile(r"\\windowsapps\\claude_[^\\]+\\app\\claude\.exe$", re.IGNORECASE)
+_PS = (
+    "Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" -ErrorAction Stop | "
+    "ForEach-Object { [pscustomobject]@{ path = $_.ExecutablePath; cmd = $_.CommandLine; "
+    "created = $_.CreationDate.ToUniversalTime().ToString('o') } } | ConvertTo-Json -Compress"
+)
+
+
+def list_processes() -> list[dict]:
+    """Every process named claude.exe (case-insensitive: the app and its CLI children).
+
+    Raises when the query itself fails, so a failure is never read as "not running".
+    """
+    r = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _PS],
+        capture_output=True, timeout=60, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if r.returncode != 0:
+        raise RuntimeError("process query failed: " + r.stderr.decode("utf-8", "replace").strip()[:300])
+    out = r.stdout.decode("utf-8", "replace").strip()
+    if not out:
+        return []
+    data = json.loads(out)
+    return data if isinstance(data, list) else [data]
+
+
+def app_start(procs: list[dict]) -> float | None:
+    """Start time of the app's main process, identified by its MSIX install path."""
+    starts = [parse_ts(p.get("created")) for p in procs
+              if _APP_EXE.search(p.get("path") or "") and "--type=" not in (p.get("cmd") or "")]
+    starts = [s for s in starts if s is not None]
+    return min(starts) if starts else None
+
+
+def running_cli_ids(procs: list[dict]) -> set[str]:
+    """Session ids any claude.exe is running, from its ``--resume`` / ``--session-id``."""
+    ids = set()
+    for p in procs:
+        ids.update(m.lower() for m in _RESUME_ARG.findall(p.get("cmd") or ""))
+    return ids
+
+
+def instance_start() -> float:
+    """Start of the current app instance, or the last boot if the app can't be found."""
+    try:
+        started = app_start(list_processes())
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        started = None
+    return started if started is not None else boot_time()
+
+
 # --- state files --------------------------------------------------------------------
 
 
@@ -345,11 +547,15 @@ def _attempts(cli_session_id: str, cfg: dict, now: float, root: Path) -> list[fl
     return [t for t in times if isinstance(t, (int, float)) and now - t < window]
 
 
-def attempts_left(cli_session_id: str, cfg: dict, now: float | None = None,
+def attempts_left(cli_session_id: str, cfg: dict, since: float, now: float | None = None,
                   root: Path | None = None) -> bool:
-    """One file per session, so concurrent hooks for different sessions never collide."""
+    """Fewer than ``maxAttempts`` wakes since *since*, the current app instance's start.
+
+    One file per session, so concurrent hooks for different sessions never collide.
+    """
     now = time.time() if now is None else now
-    return len(_attempts(cli_session_id, cfg, now, root or ATTEMPTS_DIR)) < int(cfg["maxAttempts"])
+    recent = [t for t in _attempts(cli_session_id, cfg, now, root or ATTEMPTS_DIR) if t >= since]
+    return len(recent) < int(cfg["maxAttempts"])
 
 
 def record_attempt(cli_session_id: str, cfg: dict, now: float | None = None,
