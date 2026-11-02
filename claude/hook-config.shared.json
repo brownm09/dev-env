@@ -1,0 +1,26 @@
+{
+  "repo": "brownm09/dev-env",
+  "project_number": "3",
+  "project_owner": "brownm09",
+  "project_node_id": "PVT_kwHOAjEKvM4BWKFe",
+  "status_field_id": "PVTSSF_lAHOAjEKvM4BWKFezhRgkMY",
+  "done_option_id": "98236657",
+  "required_fields": [
+    {
+      "name": "Impact",
+      "field_id": "PVTSSF_lAHOAjEKvM4BWKFezhRgkNc",
+      "type": "single_select",
+      "options": {
+        "High": "08de2558",
+        "Medium": "6320e8a6",
+        "Low": "d8a85c2f"
+      }
+    },
+    {
+      "name": "Why",
+      "field_id": "PVTF_lAHOAjEKvM4BWKFezhRgkN0",
+      "type": "text",
+      "hint": "one sentence: the cost of not fixing it"
+    }
+  ]
+}

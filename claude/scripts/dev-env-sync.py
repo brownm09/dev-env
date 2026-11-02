@@ -759,6 +759,17 @@ def main(out: Output) -> None:
         # block a prompt, and must never stop the fast-forward pull below from running.
         out.say("[dev-env-sync] WARNING: settings sync failed unexpectedly and was skipped this prompt.")
 
+    # Seed dev-env's own .claude/hook-config.json from its tracked source when absent, so
+    # post-tool-use.py can add dev-env issues and PRs to project #3 (dev-env#669).
+    try:
+        seeded, seed_error = _settings_sync.seed_hook_config()
+        if seed_error:
+            out.say(f"[dev-env-sync] WARNING: hook-config seed skipped - {seed_error}")
+        if seeded:
+            out.say("[dev-env-sync] Seeded .claude/hook-config.json from claude/hook-config.shared.json (dev-env#669).")
+    except Exception:
+        out.say("[dev-env-sync] WARNING: hook-config seed failed unexpectedly and was skipped this prompt.")
+
     # The canonical must stay on main — ~/.claude/ symlinks serve its working tree, so a
     # feature branch there hides newly-merged hooks/scripts. When it's off main we diagnose
     # the worktree topology below and auto-correct (clean canonical -> back to main) or warn

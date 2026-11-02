@@ -12,7 +12,11 @@ Project opt-in: add .claude/hook-config.json to the project root. That file is
 gitignored by dev-env's own convention (.gitignore ignores all of .claude/),
 but that is a per-project choice, not a universal one -- e.g. lifting-logbook
 deliberately tracks it in git (dev-env#527). Projects without the file at all
-are silently skipped.
+are silently skipped -- except dev-env itself (dev-env#669): its config has a
+tracked source, claude/hook-config.shared.json, which _settings_sync seeds into
+the canonical's .claude/. When an item lands in that source's `repo` and no
+config resolves, the hook warns instead of exiting silently, since dev-env
+requires every issue and PR on its board. See expected_opt_in_config.
 
 Cross-repo resolution (dev-env#542): when the invoking session's own cwd has
 no resolvable hook-config.json but the gh command names an explicit
@@ -58,7 +62,8 @@ reminder labels which source it used so staleness is visible instead of
 silent, the way it drifted undetected in lifting-logbook#628.
 
 Exit 0  — not a relevant command, no config, or gh command itself failed; silent
-Exit 2  — item added (or failed to add); structured reminder emitted via stderr
+Exit 2  — item added (or failed to add), or created in an expected-opt-in repo
+          with no config; structured reminder emitted via stderr
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
@@ -66,6 +71,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 from _gh_project import add_to_project
 from _hookio import (
@@ -80,6 +86,7 @@ from _hookio import (
 )
 import _hookutil
 from _repo_target import create_args, issue_create_args, repo_from_flag
+from _settings_sync import HOOK_CONFIG_SHARED_PATH
 from _worktree_canon import canonical_root_from_worktree
 
 CONFIG_FILE = ".claude/hook-config.json"
@@ -324,6 +331,39 @@ def extract_github_url(output: str, repo: str | None = None) -> str | None:
             if match:
                 return match.group(0).rstrip(".")
     return None
+
+
+def expected_opt_in_config(output: str, shared_path=HOOK_CONFIG_SHARED_PATH) -> dict | None:
+    """The tracked dev-env config when *output* names an item created in its
+    `repo`, else None (dev-env#669).
+
+    Called only after load_config found nothing. Keyed on the created item's
+    URL rather than cwd, so it covers both a create run from a dev-env
+    worktree and a `--repo brownm09/dev-env` create run from another
+    project. Any other repo keeps the silent skip."""
+    shared = _read_config(str(shared_path)) or {}
+    if not all(shared.get(k) for k in ("repo", "project_number", "project_owner")):
+        return None
+    if not extract_github_url(output, shared["repo"]):
+        return None
+    return shared
+
+
+def format_missing_config_warning(item_type: str, url: str, shared: dict) -> str:
+    """The loud message for a create in an expected-opt-in repo with no config."""
+    sync_script = (Path.home() / ".claude" / "scripts" / "_settings_sync.py").as_posix()
+    return "\n".join([
+        f"[project-hook] WARNING: {item_type} created but NOT added to project "
+        f"#{shared['project_number']}: no readable .claude/hook-config.json for this checkout "
+        f"or its canonical.",
+        f"  {shared['repo']} requires every issue and PR on its board (dev-env#669).",
+        f"  URL: {url}",
+        "  Seed the config from claude/hook-config.shared.json:",
+        f"    py -3 {sync_script}",
+        "  Then add this item by hand:",
+        f"    gh project item-add {shared['project_number']} "
+        f"--owner {shared['project_owner']} --url {url}",
+    ])
 
 
 # GraphQL query for a ProjectV2SingleSelectField's current options
@@ -591,12 +631,19 @@ def main() -> None:
     if exit_code != 0:
         sys.exit(0)
 
-    # Load project config — skip silently if not present
+    item_type = "Issue" if is_issue_create else "PR"
+
+    # Load project config — skip silently if not present, unless the item landed
+    # in a repo that is expected to opt in (dev-env#669)
     config = load_config(cwd, command)
     if config is None:
-        sys.exit(0)
+        expected = expected_opt_in_config(output)
+        if expected is None:
+            sys.exit(0)
+        url = extract_github_url(output, expected["repo"])
+        print(format_missing_config_warning(item_type, url, expected), file=sys.stderr)
+        sys.exit(2)
 
-    item_type = "Issue" if is_issue_create else "PR"
     repo = config.get("repo")  # e.g. "owner/repo-name"
 
     url = extract_github_url(output, repo)
