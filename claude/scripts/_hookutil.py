@@ -7,14 +7,15 @@ in the consuming scripts before this module:
 - **Per-session sentinels** (`cleanup_stale_sentinels`, `sentinel_path`) — used by
   posttooluse-inert-advisory.py, stop-tile-enumeration-gate.py, and
   reconcile-open-prs.py to fire at most once per session (ADR-064).
-- **Transcript locate** (`find_transcript`) — used by token-tracker.py and
-  posttooluse-inert-advisory.py to find a session's JSONL when the Stop payload's
-  path is absent/stale (ADR-064).
-- **Transcript record readers** (`load_records`, `_parse_records`, `iter_bash_calls`,
-  `_result_text`, `_content_items`) — used by posttooluse-inert-advisory.py and
-  stop-tile-enumeration-gate.py to parse a transcript into records and pair Bash
-  tool_use/tool_result calls. `iter_bash_calls` returns (command, output, cwd)
-  3-tuples (the advisory scopes by cwd; the gate ignores it) (ADR-090).
+- **Transcript locate** (`resolve_transcript`, over `find_transcript`) — used by the
+  Stop hooks to take the payload's `transcript_path`, or find the session's JSONL
+  when that path is absent/stale (ADR-064, dev-env#1169).
+- **Transcript record readers** (`load_records`, `_parse_records`, `iter_tool_uses`,
+  `iter_assistant_texts`, `iter_bash_calls`, `_result_text`, `_content_items`) —
+  used by the Stop hooks to parse a transcript into records, walk its tool calls
+  and assistant text, and pair Bash tool_use/tool_result calls. `iter_bash_calls`
+  returns (command, output, cwd) 3-tuples (the advisory scopes by cwd; the gate
+  ignores it) (ADR-090, ADR-050 Amendment 30).
 - **Bounded tail reader** (`iter_records_reverse`) — used by idle-refresher.py,
   which only needs the last assistant record's timestamp and would otherwise pay
   a full parse of a potentially multi-MB transcript on every prompt submit. Reads
@@ -43,8 +44,10 @@ Usage:
 
     _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
     path = _hookutil.sentinel_path(SENTINEL_PREFIX, session_id)
-    tpath = _hookutil.find_transcript(session_id)
+    tpath = _hookutil.resolve_transcript(data.get("transcript_path") or "", session_id)
     records = _hookutil.load_records(tpath)
+    for _i, rec, item in _hookutil.iter_tool_uses(records):
+        ...
     for command, output, cwd in _hookutil.iter_bash_calls(records):
         ...
 
@@ -398,9 +401,9 @@ def _launch_time() -> float | None:
 
 
 # --- transcript record readers -------------------------------------------------
-# Parse a session JSONL transcript into records and pair Bash tool_use/tool_result
-# calls. Shared by posttooluse-inert-advisory.py and stop-tile-enumeration-gate.py,
-# extracted from the near-verbatim copies that lived in each (ADR-090).
+# Parse a session JSONL transcript into records, walk its tool calls and assistant
+# text, and pair Bash tool_use/tool_result calls. Shared by the Stop hooks, extracted
+# from the near-verbatim copies that lived in each (ADR-090, dev-env#1169).
 
 
 def _content_items(rec: dict) -> list:

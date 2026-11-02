@@ -635,11 +635,11 @@ check(list(_settings_sync.iter_hook_entries([])) == [], "a non-object hooks valu
 check(list(_settings_sync.iter_hook_entries(None)) == [], "a missing hooks value yields nothing")
 check(_settings_sync._hook_commands({"Stop": [{"hooks": [entry for _e, _g, entry in walked]}]}) == ["a", "b"],
       "_hook_commands keeps only command-type entries from the walk")
-shipped = _settings_sync.SHARED_PATH.read_text(encoding="utf-8")
-shipped_hooks = json.loads(shipped)["hooks"]
+shipped_hooks = json.loads(_settings_sync.SHARED_PATH.read_text(encoding="utf-8"))["hooks"]
 n_walked = len(list(_settings_sync.iter_hook_entries(shipped_hooks)))
-check(n_walked == shipped.count('"command":'),
-      f"walker reaches every hook entry in the shipped settings ({n_walked}), not a vacuous subset")
+n_entries = sum(len(group["hooks"]) for groups in shipped_hooks.values() for group in groups)
+check(n_walked > 0 and n_walked == n_entries,
+      f"walker reaches every hook entry in the shipped settings ({n_walked}/{n_entries}), not a vacuous subset")
 
 print(f"\nResults: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

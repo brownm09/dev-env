@@ -152,7 +152,8 @@ how a transcript is parsed (ADR-090, reversing ADR-088's original replicate-them
 decision after both PR #604 reviewers flagged the duplication). This gate imports
 the ones it uses: ``_parse_records`` (its ``main()`` parses the transcript text
 directly, after the cheap pre-filter), the ``iter_tool_uses`` /
-``iter_assistant_texts`` scans and ``resolve_transcript`` (dev-env#1169), and
+``iter_assistant_texts`` scans (dev-env#1169; ``resolve_transcript`` is called
+module-qualified), and
 the shared ``iter_bash_calls`` (aliased) — wrapped in a thin 2-tuple adapter below,
 since ``_hookutil``'s ``iter_bash_calls`` returns ``(command, output, cwd)`` and
 this gate never needs ``cwd``. (``load_records`` and ``_result_text`` also live in

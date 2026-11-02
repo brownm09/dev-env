@@ -937,10 +937,10 @@ For a one-line navigational map of the test directory, see
     gate, so a helper that returned `""` for a session that *does* have an opening prompt (or raised on
     a truncated transcript) would silently disable the trigger.
 
-    The three shared transcript scans the Stop hooks call (dev-env#1169, ADR-050 Amendment 30):
-    `resolve_transcript` returns the payload path when it is an existing file and otherwise falls
+    The shared transcript helpers the Stop hooks call (dev-env#1169, ADR-050 Amendment 30): the
+    locate helper `resolve_transcript` returns the payload path when it is an existing file and otherwise falls
     back to `find_transcript` (a missing path and a directory both fall through; no session id or no
-    match gives `None`); `iter_tool_uses` yields `(index, record, item)` for every assistant
+    match gives `None`); the scan `iter_tool_uses` yields `(index, record, item)` for every assistant
     tool_use, skipping user records and malformed records or items; `iter_assistant_texts` yields
     assistant `text` items only, never a tool_use input or user text.
 
@@ -4106,8 +4106,9 @@ For a one-line navigational map of the test directory, see
     Group 9 pins `iter_hook_entries`, the one walker of the `hooks` block that the guard,
     `hook-liveness-check.py` and `tests/_hook_wiring.py` share (dev-env#1169): order, event and
     group are preserved, every malformed level is skipped, a non-object `hooks` yields nothing, and
-    on the shipped file it reaches one entry per `"command":` key, so a walk that silently skipped
-    a level could not pass as clean.
+    on the shipped file it reaches every entry the parsed JSON holds (and more than zero), so a walk
+    that silently skipped a level could not pass as clean. `test_pyw_stdio.py` (item 2) walks the
+    same block through it.
 
     ```bash
     py -3 claude/scripts/tests/test_settings_sync.py

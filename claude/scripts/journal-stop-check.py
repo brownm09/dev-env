@@ -69,15 +69,14 @@ import sys
 from datetime import date
 from pathlib import Path
 
-# Bare-name import for these three specific _hookutil helpers -- matches the
+# Bare-name import for these specific _hookutil record readers -- matches the
 # established convention in sibling Stop hooks (stop-tile-enumeration-gate.py,
-# stop-experiment-verdict-gate.py), which import _content_items and
-# _user_message_texts the same way while leaving sentinel_path /
-# cleanup_stale_sentinels / record_heartbeat / find_transcript / load_records /
-# _parse_records module-qualified (dev-env#1002). _result_text joins the same
-# bare-imported class -- a per-item text-extraction helper, same as the other
-# two -- added for pending_task_count()'s TaskCreate tool_result parsing.
-from _hookutil import _content_items, _result_text, _user_message_texts
+# stop-journal-stub-checkpoint.py), which import _user_message_texts and
+# iter_tool_uses the same way while leaving sentinel_path /
+# cleanup_stale_sentinels / record_heartbeat / resolve_transcript / _parse_records
+# module-qualified (dev-env#1002, dev-env#1169). _content_items and _result_text
+# serve pending_task_count()'s TaskCreate tool_result parsing.
+from _hookutil import _content_items, _result_text, _user_message_texts, iter_tool_uses
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 # Must match stub-push-archive-reminder.py's SENTINEL_PREFIX -- per-session
@@ -194,7 +193,7 @@ def pending_task_count(records: list) -> int:
     """
     create_tool_use_ids: list[str] = []
     updates: list[tuple[str, str]] = []
-    for _i, rec, item in _hookutil.iter_tool_uses(records):
+    for _i, rec, item in iter_tool_uses(records):
         if rec.get("isSidechain"):
             continue
         name = item.get("name")
@@ -306,7 +305,7 @@ def open_background_agent_count(records: list) -> int:
     Never raises: isinstance guards throughout.
     """
     backgrounded_ids: set[str] = set()
-    for _i, rec, item in _hookutil.iter_tool_uses(records):
+    for _i, rec, item in iter_tool_uses(records):
         if rec.get("isSidechain") or item.get("name") != "Agent":
             continue
         inp = item.get("input")

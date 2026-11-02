@@ -227,9 +227,9 @@ def iter_hook_entries(hooks: Any):
 
     Walks hooks[event][*].hooks[*]; a malformed level (a non-dict `hooks`, a non-list
     event, a non-dict group or entry) contributes nothing rather than raising. The one
-    walker of the `hooks` block: this module's missing-script guard, hook-liveness-check
-    and the structural gates' tests/_hook_wiring.py all read the wiring through it, so a
-    change to the block's shape is made once (dev-env#1169).
+    walker of the `hooks` block: this module's missing-script guard, hook-liveness-check,
+    the structural gates' tests/_hook_wiring.py and tests/test_pyw_stdio.py all read the
+    wiring through it, so a change to the block's shape is made once (dev-env#1169).
     """
     if not isinstance(hooks, dict):
         return

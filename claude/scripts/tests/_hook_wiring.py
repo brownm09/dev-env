@@ -35,7 +35,7 @@ SETTINGS_PATH = REPO_ROOT / "claude" / "settings.shared.json"
 
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
-from _settings_sync import iter_hook_entries, py_tokens  # noqa: E402 -- the one walker and tokenizer (ADR-151)
+from _settings_sync import iter_hook_entries, py_tokens  # noqa: E402 -- the one walker (dev-env#1169) and tokenizer (ADR-151)
 
 # The author-home prefix every shipped hook command is written with, and the launcher
 # path under it (ADR-148). Defined once so the tests that pin or remap the command form

@@ -213,6 +213,7 @@ has; converting it, if warranted, is a separate, independently-scoped change.
 
 The reader set grew by three: `resolve_transcript` (payload path, else `find_transcript`),
 `iter_tool_uses` (every assistant tool_use with its record index) and `iter_assistant_texts` (every
-assistant text item). Six Stop hooks now locate the transcript and walk its tool calls and text through
-them instead of their own loops. Rationale, the one behavior edge (a directory `transcript_path`) and
+assistant text item). Six Stop hooks now locate the transcript through `resolve_transcript`, and four
+of them (the tile gate, the stub checkpoint, the verdict gate and journal-stop-check) walk its tool calls
+and text through the two scans instead of their own loops. Rationale, the one behavior edge (a directory `transcript_path`) and
 what was left alone: [ADR-050 Amendment 30](050-shared-hookio-sibling-hook-fixes.md).

@@ -2657,7 +2657,8 @@ transcript aggregation are dev-env#1169.
    every entry under `hooks[event][*].hooks[*]`, skipping a malformed level instead of raising. Three
    readers walked that nesting themselves: the ADR-148 missing-script guard (`_hook_commands`),
    `hook-liveness-check.py` (`wired_hook_events`) and the structural gates' `tests/_hook_wiring.py`
-   (`hook_entries`). The issue named two; the guard was a third. All three now call the walker, next to
+   (`hook_entries`). The issue named two; the guard was a third, and `tests/test_pyw_stdio.py` held a
+   fourth (two loops). All of them now call the walker, next to
    `py_tokens`, the tokenizer they already shared (ADR-151). Each still applies its own filter: only the
    guard drops non-`command` entries, so the gates keep flagging an entry with no script as unparsed.
 2. **The transcript scan.** Three helpers in `_hookutil`, beside the ADR-090 readers:
@@ -2674,7 +2675,9 @@ transcript aggregation are dev-env#1169.
 **Behavior.** Every hook suite passed unchanged. One edge differs: the old locate blocks accepted any
 existing path, so a `transcript_path` naming a *directory* made four hooks fail their read and exit 0, and
 made `token-tracker` record an empty session. Now a directory falls through to the session-id search, as
-`journal-stop-check` already did. No real payload names a directory. Fail direction is unchanged: every
+`journal-stop-check` already did; when that search also finds nothing, `token-tracker` shows its
+once-per-session "couldn't locate the transcript" notice instead of recording an empty session. No real
+payload names a directory. Fail direction is unchanged: every
 hook still exits 0 when no transcript is found, and none of the fail-closed gates (ADR-083, ADR-096)
 reads a transcript.
 
