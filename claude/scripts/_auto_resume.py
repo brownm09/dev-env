@@ -27,6 +27,7 @@ file.
 """
 from __future__ import annotations
 
+import _winsubp  # noqa: F401  -- suppress console windows + default UTF-8 decoding on Windows
 import ctypes
 import datetime as _dt
 import fnmatch
