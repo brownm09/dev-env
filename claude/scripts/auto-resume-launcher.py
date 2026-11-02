@@ -16,10 +16,11 @@ to run at sign-in and then every few minutes. Each run:
    with, the run exits right away. That makes the frequent trigger cheap.
 2. Waits until the app has been up for ``SETTLE_SECONDS``, so a slow start is not
    scanned half-loaded. A later run picks it up if this one is too early.
-3. Collects the opted-in sessions whose transcript ended mid-turn *before* this app
-   instance started, inside ``maxAgeHours``, with wakes left, and with no CLI process
-   already running for them. A running session is never opened, so it is never sent a
-   second turn.
+3. Collects the opted-in sessions whose transcript, *before* this app instance started,
+   ended mid-turn, or ended waiting on a background task that died with the old
+   process (dev-env#1185). Each must be inside ``maxAgeHours``, have wakes left for this
+   app instance, and have no CLI process already running. A running session is never
+   opened, so it is never sent a second turn.
 4. Opens each one with ``claude://code/continue?session=local_<id>``. That is the app's
    OS entry-point deep link, and it starts the session's CLI. The hook then decides
    whether to wake the model and makes the final checks. A session that has already
@@ -40,10 +41,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
-import json
 import os
-import re
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -59,48 +57,6 @@ OPEN_GAP_SECONDS = 10
 VERIFY_SECONDS = 45
 MAX_OPENS = 3
 MAX_ERRORS = 3
-_RESUME_ARG = re.compile(r"--(?:resume|session-id)[= ]\"?([0-9a-fA-F-]{36})")
-_APP_EXE = re.compile(r"\\windowsapps\\claude_[^\\]+\\app\\claude\.exe$", re.IGNORECASE)
-
-_PS = (
-    "Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" -ErrorAction Stop | "
-    "ForEach-Object { [pscustomobject]@{ path = $_.ExecutablePath; cmd = $_.CommandLine; "
-    "created = $_.CreationDate.ToUniversalTime().ToString('o') } } | ConvertTo-Json -Compress"
-)
-
-
-def list_processes() -> list[dict]:
-    """Every process named claude.exe (case-insensitive: the app and its CLI children).
-
-    Raises when the query itself fails, so a failure is never read as "not running".
-    """
-    r = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _PS],
-        capture_output=True, timeout=60, creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    if r.returncode != 0:
-        raise RuntimeError("process query failed: " + r.stderr.decode("utf-8", "replace").strip()[:300])
-    out = r.stdout.decode("utf-8", "replace").strip()
-    if not out:
-        return []
-    data = json.loads(out)
-    return data if isinstance(data, list) else [data]
-
-
-def app_start(procs: list[dict]) -> float | None:
-    """Start time of the app's main process, identified by its MSIX install path."""
-    starts = [ar.parse_ts(p.get("created")) for p in procs
-              if _APP_EXE.search(p.get("path") or "") and "--type=" not in (p.get("cmd") or "")]
-    starts = [s for s in starts if s is not None]
-    return min(starts) if starts else None
-
-
-def running_cli_ids(procs: list[dict]) -> set[str]:
-    """Session ids any claude.exe is running, from its ``--resume`` / ``--session-id``."""
-    ids = set()
-    for p in procs:
-        ids.update(m.lower() for m in _RESUME_ARG.findall(p.get("cmd") or ""))
-    return ids
 
 
 def candidates(cfg: dict, sessions: list[dict], started: float, running: set[str],
@@ -113,11 +69,14 @@ def candidates(cfg: dict, sessions: list[dict], started: float, running: set[str
         path = ar.find_transcript(cli, projects)
         if path is None:
             continue
-        v = ar.classify(ar.read_tail(path))
+        tail = ar.read_tail(path)
+        v = ar.classify(tail, restarted_at=started)
         ts = ar.parse_ts(v["timestamp"])
-        if v["state"] != "interrupted" or ts is None or ts >= started:
+        if v["state"] not in ar.RESUMABLE or ts is None or ts >= started:
             continue
-        if now - ts > float(cfg["maxAgeHours"]) * 3600 or not ar.attempts_left(cli, cfg, now=now):
+        if now - ts > float(cfg["maxAgeHours"]) * 3600 \
+                or not ar.attempts_left(cli, cfg, since=started, now=now) \
+                or ar.consecutive_wakes(tail) >= ar.MAX_CONSECUTIVE_WAKES:
             continue
         out.append({"sessionId": s["sessionId"], "cliSessionId": cli, "title": s.get("title"),
                     "detail": v["detail"], "lastMessageAt": v["timestamp"]})
@@ -140,7 +99,7 @@ def run(args, state: dict, started: float, started_iso: str, procs: list[dict]) 
         if args.dry_run:
             print(cfg.get("invalid") or f"Disabled: {ar.CONFIG_PATH} is missing or not enabled.")
         return True
-    found = candidates(cfg, ar.load_app_sessions(), started, running_cli_ids(procs), time.time())
+    found = candidates(cfg, ar.load_app_sessions(), started, ar.running_cli_ids(procs), time.time())
     todo, done = plan_opens(found, state)
     if args.dry_run:
         for c in todo:
@@ -163,7 +122,7 @@ def run(args, state: dict, started: float, started_iso: str, procs: list[dict]) 
             ar.log(SOURCE, "open_failed", error=f"{type(e).__name__}: {e}", **c)
         time.sleep(OPEN_GAP_SECONDS)
     time.sleep(VERIFY_SECONDS)
-    running = running_cli_ids(list_processes())
+    running = ar.running_cli_ids(ar.list_processes())
     for c in todo:
         ok = c["cliSessionId"].lower() in running
         ar.log(SOURCE, "started" if ok else "not_started", sessionId=c["sessionId"],
@@ -177,8 +136,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="list, open nothing, record nothing")
     args = ap.parse_args(argv)
 
-    procs = list_processes()
-    started = app_start(procs)
+    procs = ar.list_processes()
+    started = ar.app_start(procs)
     if started is None:
         if args.dry_run:
             print("The Claude app is not running.")
