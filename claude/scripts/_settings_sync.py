@@ -724,4 +724,6 @@ if __name__ == "__main__":
         print(f"[settings-sync] WARNING: hook-config seed skipped - {seed_error}")
     if seeded:
         print("[settings-sync] Seeded .claude/hook-config.json from claude/hook-config.shared.json.")
-    sys.exit(1 if outcome.error or seed_error else 0)
+    # The status reflects the settings sync alone: setup.sh reads non-zero as "settings.json
+    # seeding failed", and a seed failure is already named by its own WARNING line above.
+    sys.exit(1 if outcome.error else 0)

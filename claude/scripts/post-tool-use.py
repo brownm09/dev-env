@@ -337,10 +337,11 @@ def expected_opt_in_config(output: str, shared_path=HOOK_CONFIG_SHARED_PATH) -> 
     """The tracked dev-env config when *output* names an item created in its
     `repo`, else None (dev-env#669).
 
-    Called only after load_config found nothing. Keyed on the created item's
-    URL rather than cwd, so it covers both a create run from a dev-env
-    worktree and a `--repo brownm09/dev-env` create run from another
-    project. Any other repo keeps the silent skip."""
+    Called wherever main() would otherwise exit silently: no config resolved,
+    or a cwd config for a different repo (load_config prefers cwd, so a
+    `--repo brownm09/dev-env` create from another onboarded project lands
+    there). Keyed on the created item's URL rather than cwd, so it covers
+    both. Any other repo keeps the silent skip."""
     shared = _read_config(str(shared_path)) or {}
     if not all(shared.get(k) for k in ("repo", "project_number", "project_owner")):
         return None
@@ -350,20 +351,33 @@ def expected_opt_in_config(output: str, shared_path=HOOK_CONFIG_SHARED_PATH) -> 
 
 
 def format_missing_config_warning(item_type: str, url: str, shared: dict) -> str:
-    """The loud message for a create in an expected-opt-in repo with no config."""
+    """The loud message for a create in an expected-opt-in repo whose config
+    was not resolved from this session's checkout."""
     sync_script = (Path.home() / ".claude" / "scripts" / "_settings_sync.py").as_posix()
     return "\n".join([
         f"[project-hook] WARNING: {item_type} created but NOT added to project "
-        f"#{shared['project_number']}: no readable .claude/hook-config.json for this checkout "
-        f"or its canonical.",
+        f"#{shared['project_number']}: no hook config for {shared['repo']} was resolved "
+        f"from this session's checkout.",
         f"  {shared['repo']} requires every issue and PR on its board (dev-env#669).",
         f"  URL: {url}",
-        "  Seed the config from claude/hook-config.shared.json:",
-        f"    py -3 {sync_script}",
-        "  Then add this item by hand:",
+        "  Add this item by hand:",
         f"    gh project item-add {shared['project_number']} "
         f"--owner {shared['project_owner']} --url {url}",
+        "  If the dev-env canonical has no .claude/hook-config.json, seed it from "
+        "claude/hook-config.shared.json:",
+        f"    py -3 {sync_script}",
     ])
+
+
+def exit_unless_expected_opt_in(item_type: str, output: str) -> None:
+    """Exit 0 silently, unless the item landed in an expected-opt-in repo:
+    then warn on stderr and exit 2 (dev-env#669). Never returns."""
+    expected = expected_opt_in_config(output)
+    if expected is None:
+        sys.exit(0)
+    url = extract_github_url(output, expected["repo"])
+    print(format_missing_config_warning(item_type, url, expected), file=sys.stderr)
+    sys.exit(2)
 
 
 # GraphQL query for a ProjectV2SingleSelectField's current options
@@ -637,12 +651,7 @@ def main() -> None:
     # in a repo that is expected to opt in (dev-env#669)
     config = load_config(cwd, command)
     if config is None:
-        expected = expected_opt_in_config(output)
-        if expected is None:
-            sys.exit(0)
-        url = extract_github_url(output, expected["repo"])
-        print(format_missing_config_warning(item_type, url, expected), file=sys.stderr)
-        sys.exit(2)
+        exit_unless_expected_opt_in(item_type, output)
 
     repo = config.get("repo")  # e.g. "owner/repo-name"
 
@@ -654,8 +663,9 @@ def main() -> None:
         # If a successful create produced no GitHub URL at all, that is the
         # symptom of a real failure (e.g. reading the wrong payload field — the
         # bug behind #377) and must surface rather than be swallowed silently.
+        # An item in an expected-opt-in repo still warns (dev-env#669).
         if repo and extract_github_url(output, None):
-            sys.exit(0)
+            exit_unless_expected_opt_in(item_type, output)
         print(
             f"[project-hook] {item_type} created but no GitHub URL found in output.\n"
             f"  Add to project manually:\n"
