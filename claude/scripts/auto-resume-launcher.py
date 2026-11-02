@@ -69,12 +69,14 @@ def candidates(cfg: dict, sessions: list[dict], started: float, running: set[str
         path = ar.find_transcript(cli, projects)
         if path is None:
             continue
-        v = ar.classify(ar.read_tail(path), restarted_at=started)
+        tail = ar.read_tail(path)
+        v = ar.classify(tail, restarted_at=started)
         ts = ar.parse_ts(v["timestamp"])
         if v["state"] not in ar.RESUMABLE or ts is None or ts >= started:
             continue
         if now - ts > float(cfg["maxAgeHours"]) * 3600 \
-                or not ar.attempts_left(cli, cfg, since=started, now=now):
+                or not ar.attempts_left(cli, cfg, since=started, now=now) \
+                or ar.consecutive_wakes(tail) >= ar.MAX_CONSECUTIVE_WAKES:
             continue
         out.append({"sessionId": s["sessionId"], "cliSessionId": cli, "title": s.get("title"),
                     "detail": v["detail"], "lastMessageAt": v["timestamp"]})

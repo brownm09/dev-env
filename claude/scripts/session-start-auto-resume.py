@@ -27,15 +27,16 @@ restart. It wakes the model only when all of these hold:
    doing, and that turn often ends with nothing done.
 3. The interrupted message is older than this hook's own start. A prompt the user just
    sent, which is what started this CLI, is never mistaken for an interrupted one.
-4. It is less than ``maxAgeHours`` old, and this session has had fewer than
-   ``maxAttempts`` wakes since the current Claude app instance started. The cap resets
-   with every app restart or boot, and still stops a session that crashes on every
-   reopen.
-5. After waiting ``settleSeconds``, no turn has started in the transcript
-   (``_auto_resume.turn_started``). Any new user entry counts (a prompt, or a queued or
-   cross-session message), and so does any other non-bookkeeping line, unless the turn
-   is the CLI's own answer to a stop notice. A turn already running would get a second
-   message.
+4. It is less than ``maxAgeHours`` old, and the session has wakes left: fewer than
+   ``maxAttempts`` since the current Claude app instance started, which resets with every
+   app restart or boot, and fewer than ``MAX_CONSECUTIVE_WAKES`` wakes in a row with no
+   human prompt. The second limit counts from the transcript across instances, so a
+   session whose resumed work keeps crashing the app or the machine is still stopped.
+5. After waiting ``settleSeconds``, nothing has moved (``settle_verdict``). A prompt, a
+   message typed mid-turn, or a line still being written cancels the wake, and so does
+   a changed classification. Without a stop notice, any other turn line cancels too.
+   With one, the CLI's own notice turn is allowed, but only once it has finished: one
+   extra wait, then give up. A turn already running would get a second message.
 
 Every decision on an interrupted transcript is logged to
 ``Documents\\LOGS\\claude-auto-resume_<date>.jsonl``, and so is an invalid config or
@@ -58,6 +59,8 @@ import _hookutil  # noqa: E402
 SOURCE = "hook"
 # The interrupted message must be at least this much older than the hook's start.
 START_MARGIN_SECONDS = 5
+# How long to wait, once, for the CLI's own stop-notice turn to finish.
+STOP_TURN_WAIT_SECONDS = 30
 
 
 def build_message(verdict: dict, boot: float) -> str:
@@ -97,8 +100,12 @@ def decide(payload: dict, cfg: dict, sleep=time.sleep, now=time.time,
     if cfg.get("enabled") is not True:
         return ("config_invalid", {"cliSessionId": sid, "reason": cfg["invalid"]}) \
             if cfg.get("invalid") else ("disabled", {})
+    # One reference time for this app instance, used for Monitor deadlines and the
+    # attempt cap alike, so the hook agrees with the launcher that opened the session.
+    instance = instance_start()
     offset = ar.file_size(path)
-    verdict = ar.classify(ar.read_tail(path), restarted_at=started)
+    tail = ar.read_tail(path)
+    verdict = ar.classify(tail, restarted_at=instance)
     info = {"cliSessionId": sid, "state": verdict["state"], "detail": verdict["detail"],
             "lastMessageAt": verdict["timestamp"]}
     if verdict["state"] not in ar.RESUMABLE:
@@ -112,11 +119,39 @@ def decide(payload: dict, cfg: dict, sleep=time.sleep, now=time.time,
         return "not_opted_in", info
     if started - ts > float(cfg["maxAgeHours"]) * 3600:
         return "too_old", info
-    if not ar.attempts_left(sid, cfg, since=instance_start(), now=started):
+    if not ar.attempts_left(sid, cfg, since=instance, now=started) \
+            or ar.consecutive_wakes(tail) >= ar.MAX_CONSECUTIVE_WAKES:
         return "attempts_exhausted", info
     sleep(float(cfg["settleSeconds"]))
-    if ar.turn_started(ar.read_since(path, offset), verdict["stopNotice"]):
-        return "activity_during_settle", info
+    return settle_verdict(path, offset, verdict, instance, sleep, info)
+
+
+def settle_verdict(path: Path, offset: int, verdict: dict, instance: float, sleep,
+                   info: dict) -> tuple[str, dict]:
+    """After the settle wait: wake only if nothing moved and the state is unchanged.
+
+    A prompt, a message typed mid-turn, or a line still being written always cancels.
+    Without a stop notice, so does any other turn line. With one, the CLI's own turn
+    answering the notice is allowed, but it must have finished first; if it is still
+    running, wait once more, then give up.
+    """
+    for wait in (STOP_TURN_WAIT_SECONDS, None):
+        new, partial = ar.read_since(path, offset)
+        if partial or any(ar.is_human_activity(e) for e in new):
+            return "activity_during_settle", info
+        tail = ar.read_tail(path)
+        now_v = ar.classify(tail, restarted_at=instance)
+        if (now_v["state"], now_v["uuid"]) != (verdict["state"], verdict["uuid"]):
+            return "activity_during_settle", info
+        if not (verdict["stopNotice"] or now_v["stopNotice"]):
+            if ar.turn_activity(new):
+                return "activity_during_settle", info
+            break
+        if not ar.cli_turn_running(tail):
+            break
+        if wait is None:
+            return "cli_turn_running", info
+        sleep(wait)
     info["message"] = build_message(verdict, ar.boot_time())
     return "wake", info
 

@@ -74,3 +74,16 @@ Auto-resume has two parts. Both read a machine-local opt-in file, `~/.claude/aut
 3. **The attempt cap counts per app instance.** "Hook dispatcher" used its two wakes on the 15:58 and 16:07 restarts. After the 18:39 reboot it was skipped as `attempts_exhausted`. `maxAttempts` now counts wakes since the current Claude app instance started: the launcher uses its app start, and the hook queries it, falling back to the boot time. Every app restart or reboot gets fresh tries, and a session that crashes on every reopen is still stopped within one instance.
 
 Considered and not taken: keying the cap on the boot time alone, as first suggested. App crashes without a reboot happen several times a day here, and they would share one boot's cap.
+
+**Hardening from review ([PR #1186](https://github.com/brownm09/dev-env/pull/1186)).**
+- **Only CLI-written notices count.** A stop notice must be a task-notification the CLI delivered: a `user` entry with `origin.kind` task-notification, or a mid-turn `queued_command` attachment, with `<status>stopped</status>` and the stop sentence in its `<summary>`. Tool output that quotes the sentence no longer matches. That had falsely set aside a finished turn, in this very session's transcript.
+- **Completion is matched by task ID too.** A task is done once any notification names its `tool_use` id or the task ID its own tool result reported (`with ID:` / `agentId:` / `(task …`). Agent and grouped stop notices carry only the task ID. Before this, 98 of 1,921 clean turn ends over 14 days reported finished tasks as pending.
+- **Monitor deadlines** use the tool's 300 s default and 30 min ceiling.
+- **The trim follows the classifier's rules.** It skips ignored lines and allows several notice-only turns, but stops at any prompt, a mid-turn `queued_command` prompt, another notification (a wake), or a tool call.
+- **The settle check now runs these steps in order:**
+  1. Read the new bytes from the start of the line the offset fell in. A line still being written counts as activity.
+  2. Cancel on any human activity.
+  3. Re-classify, and require the same state and uuid.
+  4. With a stop notice present, require the CLI's notice turn to have finished, with one extra 30 s wait before giving up.
+- **A crash-loop guard across instances.** At most `MAX_CONSECUTIVE_WAKES` (3) wakes with no human prompt in between, counted from the `[auto-resume]` wake entries in the transcript. A session whose resumed work keeps crashing the whole app or machine is stopped, which the per-instance cap alone could not do.
+- **A time budget.** The hook queries the app's start once, with a 15 s timeout, and uses it for both Monitor deadlines and the cap, matching the launcher. `settleSeconds` is capped at 90, so the worst case fits the 180 s hook timeout.

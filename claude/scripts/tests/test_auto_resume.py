@@ -225,7 +225,8 @@ def test_waiting_on_background() -> str:
     e = ar.classify([_asst([{"type": "tool_use", "id": "toolu_f", "name": "Bash",
                              "input": {"command": "ls"}}])] + END)
     # A notification that arrives mid-turn is a queued_command attachment, not a user entry.
-    queued = {"type": "attachment", "attachment": {"type": "queued_command", "prompt":
+    queued = {"type": "attachment", "attachment": {"type": "queued_command", "commandMode":
+              "task-notification", "prompt":
               "<task-notification>\n<tool-use-id>toolu_bg1</tool-use-id>\n<status>completed</status>"}}
     f = ar.classify(launch + [queued] + END)
     assert f["state"] == "clean", f
@@ -285,7 +286,7 @@ def test_synthetic_placeholder_after_restart() -> str:
                   _notice(status="stopped", summary=STOP)]
     v = ar.classify(tail)
     assert v["state"] == "interrupted" and v["uuid"] == "u9" and v["stopNotice"], v
-    assert not ar.turn_started([synthetic], stop_notice=False)
+    assert not ar.turn_activity([synthetic, {"type": "file-history-delta"}])
     return ("the CLI's synthetic placeholder reply and stop notice don't hide a dangling "
             "tool_result, and the placeholder alone doesn't count as a turn starting")
 
@@ -376,6 +377,128 @@ def test_hook_skips() -> str:
     assert got == want, got
     return ("startup source, past maxAgeHours, no matching rule, no desktop metadata, disabled "
             "and invalid config all skip")
+
+
+def test_only_cli_written_notices_are_stop_notices() -> str:
+    phrase = f"<task-notification><status>stopped</status><summary>{STOP}</summary>"
+    quoted = _user([{"type": "tool_result", "content": phrase}], uuid="q")  # tool output quoting it
+    done = _notice(status="completed", summary="Agent finished; it mentioned: " + STOP)
+    grouped = _notice(status="stopped", summary="2 background agents " + STOP[len("Background shell command "):])
+    assert not ar.is_stop_notice(quoted) and not ar.is_stop_notice(done), (quoted, done)
+    assert ar.is_stop_notice(grouped)
+    v = ar.classify(CUT + [quoted, _asst([{"type": "text", "text": "done"}], stop="end_turn")])
+    assert v["state"] == "clean" and not v["stopNotice"], v
+    return ("a tool result or completed notice that quotes the stop sentence is not a stop notice "
+            "(a finished turn stays clean); a grouped 'N background agents' notice is one")
+
+
+def test_completion_matched_by_task_id() -> str:
+    agent = [_bg_launch("toolu_ag", name="Agent"),
+             _user([{"type": "tool_result", "tool_use_id": "toolu_ag",
+                     "content": [{"type": "text", "text": "Async agent launched.\nagentId: a52e6362f (x)"}]}])]
+    by_task = _user("<task-notification>\n<task-id>a52e6362f</task-id>\n<status>completed</status>",
+                    uuid="n", origin={"kind": "task-notification"})
+    grouped = _notice(status="stopped", summary="2 background agents " + STOP[len("Background shell command "):])
+    grouped["message"]["content"] = grouped["message"]["content"].replace(
+        "<tool-use-id>toolu_bg1</tool-use-id>", "<task-id>a52e6362f</task-id>")
+    moved = [_user("carry on", uuid="u5"), _asst([{"type": "text", "text": "ok"}], stop="end_turn")]
+    a = ar.classify(agent + END + [by_task] + moved)
+    b = ar.classify(agent + END + [grouped] + moved)
+    c = ar.classify(agent + END)
+    enqueued = {"type": "queue-operation", "operation": "enqueue",
+                "content": "<task-notification>\n<task-id>a52e6362f</task-id>\n<status>completed</status>"}
+    q = ar.classify(agent + [enqueued] + END)  # finished, notification not yet delivered
+    typed = {"type": "queue-operation", "operation": "enqueue", "content": "please also check X"}
+    assert a["state"] == b["state"] == q["state"] == "clean", (a, b, q)
+    assert c["state"] == "waiting_on_background", c
+    assert ar.is_human_activity(typed) and not ar.is_human_activity(enqueued)
+    return ("an agent completion or a grouped stop notice that names only the task ID (from the "
+            "launch's 'agentId:' result) marks the task done")
+
+
+def test_monitor_default_and_ceiling() -> str:
+    t = T0
+    no_timeout = [_bg_launch("toolu_m", name="Monitor")] + END
+    huge = [_bg_launch("toolu_m", name="Monitor", timeout_ms=10 * 3600 * 1000)] + END
+    assert ar.classify(no_timeout, restarted_at=t + 200)["state"] == "waiting_on_background"
+    assert ar.classify(no_timeout, restarted_at=t + 400)["state"] == "clean"  # 300 s default
+    assert ar.classify(huge, restarted_at=t + 2000)["state"] == "clean"       # capped at 30 min
+    return "a Monitor's deadline uses the 300 s default and the 30 min ceiling"
+
+
+def test_stop_notice_trim_edges() -> str:
+    stop = _notice(status="stopped", summary=STOP)
+    reply = [_asst([{"type": "text", "text": "No response requested."}], stop="end_turn", uuid="r"),
+             {"type": "system", "subtype": "stop_hook_summary"}]
+    two_turns = ar.classify(CUT + [stop] + reply + [dict(stop, uuid="s2")] + reply)
+    meta = ar.classify(CUT + [stop, _user("<system-reminder>caveat</system-reminder>", isMeta=True)] + reply)
+    typed = ar.classify(CUT + [stop, {"type": "attachment", "attachment": {
+        "type": "queued_command", "commandMode": "prompt", "prompt": "please continue"}}] + reply)
+    assert two_turns["state"] == meta["state"] == "interrupted", (two_turns, meta)
+    assert two_turns["stopNotice"] and meta["stopNotice"]
+    assert not typed["stopNotice"], typed
+    return ("several notice-only turns and an isMeta line inside one are still set aside; a prompt "
+            "typed mid-turn (queued_command) is not")
+
+
+def test_consecutive_wakes_guard_crosses_instances() -> str:
+    wake = _user("<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>\n"
+                 "[auto-resume] Your previous turn was cut off", uuid="w",
+                 origin={"kind": "task-notification"})
+    loop = [_user("do the thing", uuid="h")] + [wake, *CUT] * 3
+    assert ar.consecutive_wakes(loop) == 3
+    assert ar.consecutive_wakes(loop + [_user("try again", uuid="h2")] + CUT) == 0
+    with tempfile.TemporaryDirectory() as d:
+        decision = _decide(Path(d), loop)[0]
+    assert decision == "attempts_exhausted", decision
+    return ("three wakes with no human prompt in between stop further wakes, whatever the app "
+            "instance; a human prompt resets the count")
+
+
+def test_settle_with_stop_notice_turn() -> str:
+    stop = _notice(status="stopped", summary=STOP)
+    running = [stop, {"type": "api-request"}]
+    finished = running + [_asst([{"type": "text", "text": "No response requested."}], stop="end_turn",
+                                uuid="r"), {"type": "system", "subtype": "stop_hook_summary"}]
+    with tempfile.TemporaryDirectory() as d:
+        still = _decide(Path(d), CUT, sleep=_append_all(finished))
+    # The CLI's notice turn still running across both waits: give up, don't wake mid-turn.
+    calls = []
+
+    def once(t):
+        if not calls:
+            _append_all(running)(t)
+        calls.append(1)
+    with tempfile.TemporaryDirectory() as d:
+        busy = _decide(Path(d), CUT, sleep=once)[0]
+    with tempfile.TemporaryDirectory() as d:
+        acted = _decide(Path(d), CUT, sleep=_append_all(
+            [stop, _asst([{"type": "tool_use", "name": "Bash", "id": "x"}], uuid="x")]))[0]
+    with tempfile.TemporaryDirectory() as d:
+        typed = _decide(Path(d), CUT, sleep=_append_all([stop, {"type": "attachment", "attachment": {
+            "type": "queued_command", "commandMode": "prompt", "prompt": "hi"}}]))[0]
+    assert still[0] == "wake", still
+    assert (busy, acted, typed) == ("cli_turn_running", "activity_during_settle",
+                                    "activity_during_settle"), (busy, acted, typed)
+    return ("a finished CLI notice turn still wakes; one still running gets one more wait, then no "
+            "wake; a tool call or a prompt typed during it cancels")
+
+
+def test_read_since_partial_lines() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "t.jsonl"
+        first = json.dumps(CUT[0]) + "\n"
+        half = json.dumps(_user("typed", uuid="u7"))
+        p.write_bytes((first + half[:10]).encode())
+        offset = ar.file_size(p)                          # taken mid-line
+        new, partial = ar.read_since(p, offset)
+        assert partial and new == [], (new, partial)
+        with open(p, "ab") as f:
+            f.write((half[10:] + "\n").encode())
+        new, partial = ar.read_since(p, offset)
+    assert not partial and [e.get("uuid") for e in new] == ["u7"], (new, partial)
+    return ("a line half-written at the offset is read whole once finished; a line still being "
+            "written reports partial (treated as activity)")
 
 
 def test_launcher_process_parsing() -> str:

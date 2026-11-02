@@ -53,22 +53,32 @@ DEFAULTS = {
     "maxAgeHours": 12,
     # The hook waits this long before waking the model, then re-reads the transcript.
     # Any new turn activity in the meantime (the user typed, or a queued message ran)
-    # cancels. Capped well below the hook's 180 s timeout in settings.shared.json.
+    # cancels. The 90 s limit leaves room, inside the hook's 180 s timeout in
+    # settings.shared.json, for the 15 s process query, metadata retries and one 30 s
+    # wait for the CLI's own stop-notice turn to finish.
     "settleSeconds": 20,
     # At most this many wakes per session per Claude app instance (so per boot too), so
     # a session that crashes again on every reopen is not resumed forever, while a new
-    # crash later in the day still gets its own tries (dev-env#1185).
+    # crash later in the day still gets its own tries (dev-env#1185). Across instances,
+    # MAX_CONSECUTIVE_WAKES bounds it.
     "maxAttempts": 2,
 }
-_LIMITS = {"maxAgeHours": (0.1, 168), "settleSeconds": (5, 120), "maxAttempts": (1, 10)}
+_LIMITS = {"maxAgeHours": (0.1, 168), "settleSeconds": (5, 90), "maxAttempts": (1, 10)}
+# Wakes with no human prompt in between, counted from the transcript across app
+# instances and reboots. A session whose resumed work keeps crashing the whole app or
+# machine stops here.
+MAX_CONSECUTIVE_WAKES = 3
 
 # States the hook and launcher act on. `waiting_on_background`: the turn finished, but a
 # background task it started never reported back. After a restart that task is dead.
 RESUMABLE = {"interrupted", "waiting_on_background"}
 # A turn whose last step is one of these is waiting on the user, not interrupted.
 WAITING_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
-# A resumed CLI writes one of these task-notifications for each background task the
-# previous process left unfinished, and that notification starts a turn on its own.
+# A resumed CLI writes a `<status>stopped</status>` task-notification for the background
+# tasks the previous process left unfinished, and it starts a turn on its own. Its
+# summary reads "Background shell command didn't finish before the previous session
+# ended" or "N background agents didn't finish ...". The wording is from Claude Code
+# 2.1.309 transcripts (2026-11-01).
 STOP_NOTICE = "didn't finish before the previous session ended"
 USER_STOP_MARKER = "[Request interrupted by user"
 # User entries a local slash command (/compact, /model, ...) writes. No reply follows them.
@@ -222,114 +232,178 @@ def _ignored(e: dict) -> bool:
     return False
 
 
+def notification_text(e: dict) -> str | None:
+    """The text of a task-notification the CLI delivered, or None.
+
+    Between turns a notification is a ``user`` entry (``origin.kind`` task-notification,
+    string content starting ``<task-notification>``). Mid-turn it is a ``queued_command``
+    attachment with ``commandMode`` task-notification. Tool output that merely quotes a
+    notification is neither.
+    """
+    if e.get("type") == "user" and (e.get("origin") or {}).get("kind") == "task-notification":
+        content = (e.get("message") or {}).get("content")
+        text = content if isinstance(content, str) else " ".join(_text_of(b) for b in _blocks(e))
+        return text if text.lstrip().startswith("<task-notification>") else None
+    a = e.get("attachment")
+    if e.get("type") == "attachment" and isinstance(a, dict) and a.get("type") == "queued_command" \
+            and a.get("commandMode") == "task-notification":
+        return str(a.get("prompt") or "")
+    # Enqueued but not yet delivered: the task has finished even if the turn hasn't seen it.
+    if e.get("type") == "queue-operation" and e.get("operation") == "enqueue" \
+            and str(e.get("content") or "").lstrip().startswith("<task-notification>"):
+        return str(e.get("content"))
+    return None
+
+
+_STOP_SUMMARY = re.compile(r"<summary>[^<]*" + re.escape(STOP_NOTICE), re.IGNORECASE)
+
+
 def is_stop_notice(e: dict) -> bool:
-    """A task-notification a resumed CLI wrote for a background task that died with the
-    previous process."""
-    if e.get("type") != "user":
+    """A notification a resumed CLI wrote for background tasks that died with the
+    previous process: ``<status>stopped</status>`` and the stop sentence in its summary
+    (one task, or "N background agents ..." for several)."""
+    text = notification_text(e)
+    return bool(text) and "<status>stopped</status>" in text and bool(_STOP_SUMMARY.search(text))
+
+
+def is_human_activity(e: dict) -> bool:
+    """A prompt or message reaching the session: a user entry that is not a tool result,
+    a notification or an ignored line, or a ``queued_command`` typed mid-turn."""
+    if e.get("isSidechain"):
         return False
-    text = " ".join(_text_of(b) for b in _blocks(e))
-    return "<task-notification>" in text and STOP_NOTICE in text
+    if e.get("type") == "user":
+        if notification_text(e) is not None or _ignored(e):
+            return False
+        return not any(b.get("type") == "tool_result" for b in _blocks(e))
+    if e.get("type") == "queue-operation":
+        return e.get("operation") == "enqueue" and notification_text(e) is None
+    a = e.get("attachment")
+    return e.get("type") == "attachment" and isinstance(a, dict) \
+        and a.get("type") == "queued_command" and a.get("commandMode") != "task-notification"
+
+
+def _moves_on(e: dict) -> bool:
+    """After a stop notice, does this line mean the session did more than answer it?"""
+    if e.get("isSidechain"):
+        return False
+    if is_human_activity(e):
+        return True
+    if e.get("type") == "user" and not _ignored(e):
+        return not is_stop_notice(e)  # a tool result, or another notification (a wake)
+    return e.get("type") == "assistant" and any(b.get("type") == "tool_use" for b in _blocks(e))
 
 
 def trim_stop_notices(entries: list[dict]) -> tuple[list[dict], bool]:
-    """Drop a trailing run of CLI stop notices and the one reply turn they set off.
+    """Drop the trailing CLI stop notices and the turns they set off.
 
-    Returns ``(entries, trimmed)``. The run is trimmed only when nothing else happened
-    after the first notice: no other user entry (a prompt, a queued message, a wake from
-    the auto-resume hook itself), no tool call, and at most one finished turn. That turn
-    is the model answering the notice, often with just "No response requested." Without
-    the trim, that turn would hide the interruption it followed (dev-env#1185).
+    Returns ``(entries, trimmed)``. Everything from the first trailing stop notice on is
+    set aside when nothing after it moves the session on (``_moves_on``): no prompt, no
+    other notification (a wake from this hook is one), no tool call. What is left are
+    the notices and replies such as "No response requested.", which would otherwise
+    hide the interruption they followed (dev-env#1185).
     """
     first = None
     for i in range(len(entries) - 1, -1, -1):
-        e = entries[i]
-        if is_stop_notice(e):
+        if is_stop_notice(entries[i]):
             first = i
-            continue
-        if e.get("isSidechain"):
-            continue
-        if e.get("type") == "user":
-            break
-        if e.get("type") == "assistant" and any(b.get("type") == "tool_use" for b in _blocks(e)):
+        elif _moves_on(entries[i]):
             break
     if first is None:
-        return entries, False
-    tail = entries[first:]
-    turns = sum(1 for e in tail if e.get("type") == "system" and e.get("subtype") == "stop_hook_summary")
-    if any(e.get("type") == "user" and not is_stop_notice(e) and not e.get("isSidechain") for e in tail) \
-            or turns > 1:
         return entries, False
     return entries[:first], True
 
 
-_BACKGROUND_KINDS = {"Bash": "Bash", "PowerShell": "PowerShell", "Agent": "agent", "Task": "agent"}
-
-
-MONITOR_DEFAULT_TIMEOUT_MS = 600_000
+_BACKGROUND_KINDS = {"Bash": "Bash", "PowerShell": "PowerShell", "Agent": "agent"}
+# The ID a launch's own tool result reports: Bash/PowerShell "with ID: b...", Agent
+# "agentId: a...", Monitor "Monitor started (task b...". Notifications name tasks by it.
+_TASK_ID = re.compile(r"(?:with ID: |agentId: |\(task )([A-Za-z0-9]+)")
+_NOTICE_IDS = re.compile(r"<(?:task-id|tool-use-id)>([^<]+)</")
+# Monitor's documented default and ceiling for timeout_ms (dev-env#1185 review).
+MONITOR_DEFAULT_TIMEOUT_MS = 300_000
+MONITOR_MAX_TIMEOUT_MS = 1_800_000
 
 
 def pending_background(entries: list[dict], restarted_at: float | None) -> list[str]:
     """Descriptions of background tasks launched on the main thread that never reported
     back: Bash/PowerShell or Agent with ``run_in_background``, and Monitor.
 
-    A notification is a user entry when it arrives between turns. It is a
-    ``queued_command`` attachment (and a ``queue-operation``) when it arrives mid-turn,
-    so every non-assistant line is searched. A stop notice still present here also
-    counts as done: trailing ones were already set aside (``trim_stop_notices``), so the
-    session has dealt with any that remain.
+    A task is done once any notification names it, by its ``tool_use`` id or by the
+    task ID its tool result reported. Agent notices and grouped stop notices carry only
+    the task ID. A stop notice still present here counts as done too: trailing ones were
+    already set aside (``trim_stop_notices``), so the session has dealt with the rest.
 
-    A Monitor can end on its ``timeout_ms`` without leaving a mark, so it counts only
-    when its deadline falls after *restarted_at* (the restart must have killed it). With
-    no *restarted_at*, Monitors are not counted.
+    A Monitor can end on its timeout without leaving a mark, so it counts only when its
+    deadline falls after *restarted_at* (the restart must have killed it). With no
+    *restarted_at*, Monitors are not counted.
     """
-    launched, done = {}, set()
+    launched, task_of, named = {}, {}, set()
     for e in entries:
         if e.get("isSidechain"):
             continue
-        if e.get("type") == "assistant":
-            for b in _blocks(e):
-                if b.get("type") != "tool_use" or not b.get("id"):
+        text = notification_text(e)
+        if text is not None:
+            named.update(_NOTICE_IDS.findall(text))
+            continue
+        for b in _blocks(e):
+            if b.get("type") == "tool_result" and b.get("tool_use_id") in launched:
+                m = _TASK_ID.search(_text_of(b))
+                if m:
+                    task_of[b["tool_use_id"]] = m.group(1)
+            if b.get("type") != "tool_use" or not b.get("id") or e.get("type") != "assistant":
+                continue
+            inp = b.get("input") or {}
+            if b.get("name") == "Monitor":
+                start = parse_ts(e.get("timestamp"))
+                timeout = inp.get("timeout_ms") or MONITOR_DEFAULT_TIMEOUT_MS
+                if not isinstance(timeout, (int, float)) or start is None or restarted_at is None \
+                        or start + min(timeout, MONITOR_MAX_TIMEOUT_MS) / 1000 <= restarted_at:
                     continue
-                inp = b.get("input") or {}
-                if b.get("name") == "Monitor":
-                    start = parse_ts(e.get("timestamp"))
-                    timeout = inp.get("timeout_ms") or MONITOR_DEFAULT_TIMEOUT_MS
-                    if start is None or restarted_at is None or not isinstance(timeout, (int, float)) \
-                            or start + timeout / 1000 <= restarted_at:
-                        continue
-                    kind = "Monitor"
-                else:
-                    kind = _BACKGROUND_KINDS.get(b.get("name")) if inp.get("run_in_background") else None
-                if kind:
-                    desc = str(inp.get("description") or inp.get("command") or "")[:80]
-                    launched[b["id"]] = f"background {kind} task" + (f" ({desc})" if desc else "")
-        elif launched:
-            raw = json.dumps(e)
-            if "<task-notification>" in raw:
-                done.update(i for i in launched if i in raw)
-    return [d for i, d in launched.items() if i not in done]
+                kind = "Monitor"
+            else:
+                kind = _BACKGROUND_KINDS.get(b.get("name")) if inp.get("run_in_background") else None
+            if kind:
+                desc = str(inp.get("description") or inp.get("command") or "")[:80]
+                launched[b["id"]] = f"background {kind} task" + (f" ({desc})" if desc else "")
+    return [d for i, d in launched.items() if i not in named and task_of.get(i) not in named]
+
+
+def consecutive_wakes(entries: list[dict]) -> int:
+    """Wakes from this hook since the last human prompt: the crash-loop guard.
+
+    A wake is recorded as a task-notification carrying the ``[auto-resume]`` message.
+    This counts across app instances and reboots, so a session whose resumed work keeps
+    taking the whole app or machine down is still stopped (dev-env#1185 review).
+    """
+    n = 0
+    for e in reversed(entries):
+        if is_human_activity(e):
+            break
+        text = notification_text(e)
+        if text and "[auto-resume]" in text:
+            n += 1
+    return n
 
 
 def classify(entries: list[dict], restarted_at: float | None = None) -> dict:
     """Classify how the last turn in a transcript ended.
-
-    *restarted_at* is when the CLI that owns the transcript was (re)started: the hook's
-    own start, or the app instance's start for the launcher. Only Monitor detection
-    needs it; see ``pending_background``.
 
     Returns ``{"state", "uuid", "timestamp", "detail", "stopNotice"}``, where state is
     one of: ``interrupted`` (cut off mid-turn), ``waiting_on_background`` (the turn
     finished but a background task it started never reported back), ``clean`` (the
     reply finished), ``waiting_on_user`` (the turn is paused on AskUserQuestion /
     ExitPlanMode), ``user_stopped`` (the user pressed stop), ``api_error`` (the turn
-    ended on an API error message) or ``empty``. ``stopNotice`` is True when a trailing
-    CLI stop notice (and its reply) was set aside first (``trim_stop_notices``).
+    ended on an API error message) or ``empty``. ``stopNotice`` is True when trailing
+    CLI stop notices (and their replies) were set aside first (``trim_stop_notices``).
+
+    *restarted_at* is when the current app instance started. Only Monitor detection
+    needs it; see ``pending_background``.
 
     Only main-thread ``user`` / ``assistant`` messages count. These are ignored:
     sidechain (subagent) entries; ``isMeta``, compact-summary and transcript-only
-    entries; the user entries a local slash command writes (``/compact``, ...); and app
-    bookkeeping lines. A ``system`` ``stop_hook_summary`` or ``compact_boundary`` after
-    the last message means the turn finished.
+    entries; the user entries a local slash command writes (``/compact``, ...); the
+    CLI's synthetic placeholder replies; and app bookkeeping lines. A ``system``
+    ``stop_hook_summary`` or ``compact_boundary`` after the last message means the turn
+    finished.
     """
     entries, trimmed = trim_stop_notices(entries)
     v = _classify(entries)
@@ -381,31 +455,47 @@ def file_size(path: Path) -> int:
         return 0
 
 
-def read_since(path: Path, offset: int) -> list[dict]:
-    """Parse the lines appended to a transcript after byte *offset*."""
+def read_since(path: Path, offset: int) -> tuple[list[dict], bool]:
+    """Parse the lines appended to a transcript after byte *offset*.
+
+    Starts at the beginning of the line *offset* falls in, so a line that was half
+    written when *offset* was taken is read whole. Returns ``(entries, partial)``;
+    *partial* is True when the last line is still being written, which callers treat
+    as activity.
+    """
     try:
         with open(path, "rb") as f:
-            f.seek(offset)
-            return _parse_lines(f.read(), cut_first=False)
+            back = max(0, offset - 65536)
+            f.seek(back)
+            head = f.read(offset - back)
+            cut = head.rfind(b"\n")
+            f.seek(back + cut + 1 if cut >= 0 else back)
+            chunk = f.read()
     except OSError:
-        return []
+        return [], False
+    partial = bool(chunk) and not chunk.endswith(b"\n")
+    return _parse_lines(chunk, cut_first=False), partial
 
 
-def turn_started(new: list[dict], stop_notice: bool) -> bool:
-    """Did a turn start in the lines written during the hook's settle wait?
+def cli_turn_running(entries: list[dict]) -> bool:
+    """After the last stop notice, has a turn started that hasn't finished yet?"""
+    last = max((i for i, e in enumerate(entries) if is_stop_notice(e)), default=None)
+    if last is None:
+        return False
+    running = False
+    for e in entries[last + 1:]:
+        if e.get("isSidechain"):
+            continue
+        if e.get("type") == "api-request" or (e.get("type") == "assistant" and not is_synthetic(e)):
+            running = True
+        elif e.get("type") == "system" and e.get("subtype") == "stop_hook_summary":
+            running = False
+    return running
 
-    A user entry that isn't a CLI stop notice always counts: a prompt, a queued or
-    cross-session message. Otherwise, any line that isn't app bookkeeping counts, except
-    after a stop notice. That turn is the CLI's own, answering the notice, and it is
-    exactly the turn that would otherwise hide the interruption.
-    """
-    stop_notice = stop_notice or any(is_stop_notice(e) for e in new)
-    for e in new:
-        if e.get("type") == "user" and not is_stop_notice(e) and not e.get("isSidechain"):
-            return True
-        if not stop_notice and e.get("type") not in BOOKKEEPING_TYPES and not is_synthetic(e):
-            return True
-    return False
+
+def turn_activity(new: list[dict]) -> bool:
+    """Any line in *new* that is not app bookkeeping or a synthetic placeholder."""
+    return any(e.get("type") not in BOOKKEEPING_TYPES and not is_synthetic(e) for e in new)
 
 
 def parse_ts(ts) -> float | None:
@@ -471,14 +561,14 @@ _PS = (
 )
 
 
-def list_processes() -> list[dict]:
+def list_processes(timeout: float = 60) -> list[dict]:
     """Every process named claude.exe (case-insensitive: the app and its CLI children).
 
     Raises when the query itself fails, so a failure is never read as "not running".
     """
     r = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _PS],
-        capture_output=True, timeout=60, creationflags=subprocess.CREATE_NO_WINDOW,
+        capture_output=True, timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW,
     )
     if r.returncode != 0:
         raise RuntimeError("process query failed: " + r.stderr.decode("utf-8", "replace").strip()[:300])
@@ -508,7 +598,7 @@ def running_cli_ids(procs: list[dict]) -> set[str]:
 def instance_start() -> float:
     """Start of the current app instance, or the last boot if the app can't be found."""
     try:
-        started = app_start(list_processes())
+        started = app_start(list_processes(timeout=15))
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
         started = None
     return started if started is not None else boot_time()

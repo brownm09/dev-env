@@ -4746,6 +4746,18 @@ For a one-line navigational map of the test directory, see
     - The CLI's synthetic "No response requested." placeholder is ignored.
     - A trailing stop notice and its reply turn are set aside, which reveals the interruption.
       A prompt, a wake or a tool call after the notice means the session moved on.
+    - Only CLI-written notices count. A tool result or a completed notice that quotes the stop
+      sentence is not one; a grouped "N background agents" notice is.
+    - Completion is matched by the launch's task ID (`agentId:` / `with ID:`) as well as its
+      `tool_use` id.
+    - A Monitor's deadline uses the 300 s default and the 30 min ceiling.
+    - Several notice-only turns, and an `isMeta` line inside one, are still set aside. A
+      `queued_command` prompt typed mid-turn is not.
+    - Three wakes with no human prompt in between stop further wakes across instances.
+    - `read_since()` reads a half-written line whole once it's finished, and reports one still
+      being written.
+    - In the settle step: a finished CLI notice turn still wakes; one still running gets one more
+      wait and then no wake; a tool call or a typed prompt during it cancels.
 
     **Opt-in rules.** `pinned`, a case-insensitive `cwd:` glob and `session:` all opt a session in.
     An exclude rule, an archived session and a disabled config always win. A session with no
