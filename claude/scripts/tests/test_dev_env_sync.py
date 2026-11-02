@@ -22,9 +22,10 @@ This file additionally exercises the pure escalation helpers offline (`parse_blo
 `format_duration`, `record_failure`, `should_escalate`, `format_escalated_pull_failure_message`)
 and the best-effort scratch-state I/O (`read/write/clear_failure_state`) against a
 `tempfile.TemporaryDirectory()` (its only impure surface is the filesystem, matching
-`test_hookutil.py`'s convention — no real `~/.claude/scratch`). `main()`'s orchestration (the
-track-on-failure / clear-on-success wiring) is not covered here, consistent with the same
-pure-helper convention above.
+`test_hookutil.py`'s convention — no real `~/.claude/scratch`). The fast-forward step
+(`_fast_forward`) runs against a stubbed `run`, pinning `git merge --ff-only origin/main` in
+place of a `git pull` through the shared FETCH_HEAD (dev-env#1174). The rest of `main()`'s
+orchestration is not covered here, consistent with the same pure-helper convention above.
 
 Usage:
     py -3 claude/scripts/tests/test_dev_env_sync.py
@@ -859,6 +860,53 @@ def test_fetched_recently() -> str:
     return "fresh FETCH_HEAD skips the fetch; missing, stale or future-dated fetches"
 
 
+def _run_fast_forward(merge_result):
+    """Run des._fast_forward against a recording git stub and a temp SCRATCH."""
+    calls = []
+    original_run, original_scratch = des.run, des.SCRATCH
+
+    def recording(args, **kwargs):
+        calls.append(list(args))
+        if args[1] == "merge":
+            return merge_result
+        if args[1] == "log":
+            return _proc(0, "abc1234 fix: x\n")
+        return _proc(0, "")
+
+    with tempfile.TemporaryDirectory() as td:
+        # Seed a failure run so a success that skips clear_failure_state() is caught.
+        write_failure_state({"first_failure_at": time.time() - 60, "consecutive_count": 2}, Path(td))
+        des.run, des.SCRATCH = recording, Path(td)
+        try:
+            out = Output()
+            des._fast_forward(out, LOCAL, REMOTE, 1)
+            state = read_failure_state(Path(td))
+        finally:
+            des.run, des.SCRATCH = original_run, original_scratch
+    return calls, out, state
+
+
+def test_fast_forward_merges_remote_tracking_ref() -> str:
+    # dev-env#1174: `git pull` merges whatever the canonical's shared .git/FETCH_HEAD holds,
+    # which another session's fetch can rewrite mid-pull. The ref must be origin/main.
+    calls, out, state = _run_fast_forward(_proc(0, ""))
+    assert calls[0] == ["git", "merge", "--ff-only", "origin/main"], f"ran: {calls}"
+    verbs = [c[1] for c in calls]
+    assert "pull" not in verbs and "fetch" not in verbs, f"no pull, no network: {verbs}"
+    assert "Pulled 1 commit" in out.lines[0], out.lines
+    assert state is None, "a successful fast-forward clears the failure state"
+    return f"ran {verbs}; success reported and failure state cleared"
+
+
+def test_fast_forward_failure_records_merge_stderr() -> str:
+    failed = subprocess.CompletedProcess(args=["git"], returncode=1, stdout="", stderr=_LOCAL_CHANGES_STDERR)
+    calls, out, state = _run_fast_forward(failed)
+    assert [c[1] for c in calls] == ["merge"], f"no log or retry after a failed merge: {calls}"
+    assert state is not None and state.get("consecutive_count") == 3, "the seeded run of 2 continues"
+    assert "claude/skills/sources.md" in out.lines[0], "git's blocking path must reach the warning"
+    return "failed merge -> failure state recorded, blocking path surfaced"
+
+
 def main() -> int:
     tests = [
         ("fetched_recently: FETCH_HEAD age gate (#849)", test_fetched_recently),
@@ -920,6 +968,8 @@ def main() -> int:
         ("_report_off_main: never fetches (#1145)", test_report_off_main_never_fetches),
         ("_report_off_main: reflog failure keeps behind arm (#1145)", test_report_off_main_reflog_failure_keeps_behind_arm),
         ("_report_off_main: 0 behind does not alarm (#1145)", test_report_off_main_current_branch_does_not_alarm),
+        ("_fast_forward: merges origin/main, never pulls (#1174)", test_fast_forward_merges_remote_tracking_ref),
+        ("_fast_forward: failed merge feeds failure state (#1174)", test_fast_forward_failure_records_merge_stderr),
     ]
     failed = 0
     for name, fn in tests:

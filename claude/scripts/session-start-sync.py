@@ -13,7 +13,7 @@ resolve the repo the session is actually in, fetch, and either fast-forward the 
 it is safe to do so or emit a loud advisory naming exactly how far behind it is and why it
 was not auto-fixed.
 
-Generalizes `dev-env-sync.py`'s fetch -> compare -> `pull --ff-only` mechanic (which is
+Generalizes `dev-env-sync.py`'s fetch -> compare -> `merge --ff-only` mechanic (which is
 hardcoded to one repo and one branch) to any repo/default-branch, resolved dynamically from
 the session's own cwd. dev-env's own checkouts (canonical AND any worktree of it — see
 `DEV_ENV_REPO` below) are explicitly excluded here — dev-env already has a strictly more

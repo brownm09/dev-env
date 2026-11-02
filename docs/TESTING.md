@@ -2421,6 +2421,13 @@ For a one-line navigational map of the test directory, see
     **Fetch gate (dev-env#849, ADR-006 Amendment 1).** `fetched_recently()` decides whether the
     per-prompt `git fetch` runs: a fresh `.git/FETCH_HEAD` skips it, while a missing, stale or
     future-dated one fetches.
+
+    **Fast-forward without `git pull` (dev-env#1174, ADR-056 Addendum 2026-11-01).**
+    `_fast_forward` runs against a stubbed `run` and a temporary `SCRATCH`. Its first git call
+    must be `git merge --ff-only origin/main`, with no `pull` and no `fetch`, because a pull
+    merges whatever the canonical's shared `.git/FETCH_HEAD` holds. A success reports the
+    pulled commit and clears the failure state. A failed merge records a failure run and puts
+    git's blocking path in the warning.
     ([ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md),
     [ADR-110](adr/110-escalate-persistent-dev-env-sync-ff-failures.md);
     dev-env#694, dev-env#797, dev-env#1140)
