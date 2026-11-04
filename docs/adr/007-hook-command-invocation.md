@@ -106,6 +106,14 @@ Follow-up 3 above fixed `_hookio.py`'s `confirm_merge_via_gh` missing its own `i
 
 **Verification:** Ran `claude/scripts/tests/test_pyw_stdio.py` after the fix. `test_every_subprocess_using_hook_imports_winsubp`'s `checked` count increased by exactly 2 (now including `_hookio.py` and `_gh_project.py`, previously skipped by the blanket exemption) and the test still passes — empirically confirming the audit above found the complete set of affected files and that both already comply. `test_no_hook_spawns_python_via_py_launcher` was reviewed and requires no change: its scan loop has no underscore-prefix filter of any kind and already covers `_winsubp.py` and every other underscore-prefixed file unconditionally.
 
+### 2026-11-04 (follow-up 5) — Move the static scans where CI runs them ([dev-env#1194](https://github.com/brownm09/dev-env/issues/1194))
+
+The follow-ups above say the static scans "fail the build". They did not. `run-hook-tests.py` skips `test_pyw_stdio.py` as a whole because its `pythonw.exe` probes need a console (ADR-103), so the `hook-tests` CI workflow never ran the scans. `_auto_resume.py` merged without `import _winsubp` and stayed red on `main` until a local run caught it (dev-env#1191).
+
+The three static checks now live in `claude/scripts/tests/test_hook_static_scans.py`, which the runner does not skip: settings hooks use `pyw -3` and resolve, subprocess-using scripts import `_winsubp`, and no script spawns Python via `py`. `test_pyw_stdio.py` keeps only the `pythonw.exe` probes and stays local-only. Each scan is now a function over a directory, run once on `claude/scripts/` and once on a temp-directory fixture with known-bad and known-good modules, and each fails if it examined no files (ADR-144).
+
+**Rejected:** un-skipping `test_pyw_stdio.py` and having its probes self-skip without a console. The probes are not reliably detectable as console-less on a CI runner, so the file would flake or skip for the wrong reason. A separate file keeps the runner-skip list exact.
+
 ---
 
 ## Decision
@@ -127,8 +135,8 @@ If a future Claude Code version invokes hooks through a different shell context 
 - All hook command entries in `settings.json` use `pyw -3 C:/...` syntax.
 - Shell-invoked Python (the `## Testing` command, skill docs, the `pre-push` hook) continues to use `py -3`. Note that `python3` still resolves to the Microsoft Store App Execution Alias on this machine — shell commands must use `py -3`, not `python3`, or they will silently no-op (e.g., `python3 -m py_compile ...` produces no error and no compiled output).
 - Any new hook added to this repo must follow the `pyw -3` pattern for its `settings.json` entry.
-- Any new hook that imports `subprocess` (directly or indirectly) **must** add `import _winsubp` near the top of its imports. The static test in `test_pyw_stdio.py` fails the build if a subprocess-using hook ships without it.
-- Any hook in `claude/scripts/` that spawns Python as a subprocess **must** use `sys.executable` (or `pyw -3` if the command must be a literal string), never `py` or `py -3`. Naming `py` chains through the `py.exe` console-subsystem launcher, which spawns `python.exe` without propagating `CREATE_NO_WINDOW` — Windows then allocates a fresh console for the grandchild, re-introducing the flash that `_winsubp` thought it had eliminated. Enforced by `test_pyw_stdio.py` test 6 (AST-based scan).
+- Any new hook that imports `subprocess` (directly or indirectly) **must** add `import _winsubp` near the top of its imports. The static test in `test_hook_static_scans.py` fails the build if a subprocess-using hook ships without it.
+- Any hook in `claude/scripts/` that spawns Python as a subprocess **must** use `sys.executable` (or `pyw -3` if the command must be a literal string), never `py` or `py -3`. Naming `py` chains through the `py.exe` console-subsystem launcher, which spawns `python.exe` without propagating `CREATE_NO_WINDOW` — Windows then allocates a fresh console for the grandchild, re-introducing the flash that `_winsubp` thought it had eliminated. Enforced by `test_hook_static_scans.py` (AST-based scan).
 - If `py.exe` or `pyw.exe` is missing on a future machine, install the python.org distribution which bundles the launcher.
 - Any text-mode (`text=True` / `universal_newlines=True`) `subprocess.run`/`Popen` call made anywhere in a process that has imported `_winsubp` is decoded as UTF-8 with `errors="replace"` by default, unless the caller explicitly passes its own `encoding=`. New subprocess calls do **not** need to (and should not redundantly) pass `encoding="utf-8"` themselves. This is process-wide, not per-file: it takes effect once *anything* in the process has imported `_winsubp` (typically the entry-point hook script, near its top), not only in the file that happens to make the call — see `_hookio.py`'s subprocess call for an example that relies on this. `test_winsubp.py`'s tests of `_apply_windows_subprocess_defaults` are the source of truth for the exact defaulting rules (creationflags OR-merge + encoding/errors default, both caller-overridable).
 

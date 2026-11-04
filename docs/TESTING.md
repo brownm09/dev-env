@@ -24,7 +24,9 @@ For a one-line navigational map of the test directory, see
    to the Microsoft Store stub — use `py -3` (the Windows Python Launcher), see [ADR-007](adr/007-hook-command-invocation.md).
 
 2. **`pyw -3` stdio verification** (Windows-only — confirms `pythonw.exe` honors parent-supplied
-   pipes, the invariant ADR-007's 2026-06-01 decision relies on):
+   pipes, the invariant ADR-007's 2026-06-01 decision relies on). Every check spawns a real
+   `pythonw.exe`, so `run-hook-tests.py` skips this file and CI never runs it; run it locally. The
+   static scans that used to live here run in CI as item 109:
 
    ```bash
    py -3 claude/scripts/tests/test_pyw_stdio.py
@@ -355,7 +357,7 @@ For a one-line navigational map of the test directory, see
     doesn't pay ~20-30 ms per call (PR #1135 review finding 5; the scratch-rm-allow hook runs on every
     Bash call). A probe in a fresh interpreter pins that `import _hookio` loads neither module. No
     caller depends on `_hookio` for the `_winsubp` patch: every script that calls subprocess imports
-    `_winsubp` itself, which item 2 (`test_pyw_stdio.py`) enforces.
+    `_winsubp` itself, which item 109 (`test_hook_static_scans.py`) enforces.
 
     **Shared merge predicate and stdin loader (dev-env#1168, ADR-050 Amendment 29).** Every merge
     hook now imports `is_pr_merge_command` and every hook with the standard stdin block imports
@@ -2647,8 +2649,8 @@ For a one-line navigational map of the test directory, see
     it, Bash/PowerShell mirroring compares handler sets, and `test_dispatcher_commands_are_well_formed`
     (with known-bad references) rejects a dispatcher listing itself or the launcher, a repeated
     handler, a budget below a handler's floor, or a timeout under the largest budget plus 10 s. The `pyw -3`
-    invocation invariant (authoring rule 3) is deliberately not re-checked here — `test_pyw_stdio.py`'s
-    `test_all_settings_hooks_use_pyw_and_resolve_to_repo` (item 2) already gates it; the resolution check
+    invocation invariant (authoring rule 3) is deliberately not re-checked here — `test_hook_static_scans.py`'s
+    `test_all_settings_hooks_use_pyw_and_resolve_to_repo` (item 109) already gates it; the resolution check
     overlaps that test's resolution half by design (it is the precondition for the `_winsubp`-based
     budget). Iterates entries generically, so a new event/matcher group (e.g. PR9's PowerShell mirror) is
     covered with no change beyond any new script's budget classification. The PreToolUse and
@@ -4832,4 +4834,38 @@ For a one-line navigational map of the test directory, see
 
     ```bash
     py -3 claude/scripts/tests/test_auto_resume.py
+    ```
+
+109. **hook static-scan test** — required when adding or changing any `claude/scripts/*.py` that uses
+    subprocess or spawns Python, any hook command in `claude/settings.shared.json`, or
+    `claude/scripts/tests/test_hook_static_scans.py` itself (dev-env#1194, [ADR-007](adr/007-hook-command-invocation.md)).
+
+    The three ADR-007 static source scans, which need no console and so run in CI:
+    - every hook command runs `pyw -3` through `hook-launch.py` (ADR-148), alone or with the
+      dispatcher and its handlers (ADR-151), and every script it names exists and parses;
+    - every `claude/scripts/*.py` that uses subprocess imports `_winsubp` (only `_winsubp.py` is
+      exempt);
+    - no `claude/scripts/*.py` spawns Python through `py` / `py.exe` as argv[0] of a
+      `subprocess.<spawn>([...])` call.
+
+    They used to live in `test_pyw_stdio.py` (item 2). `run-hook-tests.py` skips that whole file
+    because its `pythonw.exe` probes need a console, so CI never ran the scans. `_auto_resume.py`
+    then merged without `import _winsubp` and stayed red on `main` until a local run caught it
+    (dev-env#1191).
+
+    **Calibration (ADR-144).** Each scan is a function over a directory. Fixture tests run the same
+    function on a temporary directory:
+    - the `_winsubp` scan must report a `subprocess.run` module and a `from subprocess import run`
+      module, both without the import, and must pass a module that has it. A comment mentioning
+      `_winsubp` does not count as the import. A `_winsubp.py` in the fixture is exempt, and a
+      module with no subprocess use is not counted.
+    - the `py` scan must report `['py', ...]` and `('PY.EXE', ...)` spawns and must pass a
+      `sys.executable` spawn.
+
+    Each real-directory scan also fails if it examined no files, so an empty glob cannot pass.
+
+    Out of scope: string commands such as `shell=True` with `"py -3 ..."`.
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_static_scans.py
     ```
