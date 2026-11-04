@@ -77,8 +77,9 @@ Store:
 - **DIFF** — the full diff text
 - **DIFF_SIZE** = ADDITIONS + DELETIONS
 
-Store **LINKED_ISSUE** for the scope-of-change check (Steps 4 and 5). When PR_BODY contains
-`Closes #N`, `Fixes #N`, or `Resolves #N`, store that issue's title and body:
+Store **LINKED_ISSUE** for the scope-of-change check (Steps 4 and 5). Step 2g finds its linked
+issues separately, through `closingIssuesReferences`. When PR_BODY contains `Closes #N`,
+`Fixes #N`, or `Resolves #N`, store that issue's title and body:
 
 ```bash
 gh issue view <N> --repo <OWNER>/<REPO> --json title,body
@@ -464,6 +465,79 @@ output (format mirrors Step 2b's finding block) and record `missing` for the Ste
 The outcome (`written` / `not-warranted` / `missing`) is recorded regardless of which branch was
 taken above — the Step 8 marker field is always emitted, never left implicit.
 
+Proceed to Step 2g.
+
+---
+
+## Step 2g — Acceptance-Criteria Verification
+
+Applies to PR_URL mode only. Skip it if DIFF_MODE is true: a pasted diff has no linked issue, and
+nothing is posted in that mode. Emit no marker or finding, and note "DIFF_MODE: acceptance
+criteria not checked."
+
+**Severity of `not met`: blocking.** Calibrated on 2026-11-04; see *Calibration* below. To demote
+it, change this line to `non-blocking` and record why in ADR-153 → *Calibration*.
+
+Checks the diff against each linked issue's acceptance criteria, one criterion at a time.
+
+**Read the shared schema first.** It defines extraction, the table, the status values, the
+deferral and admission rules, and the marker, and Switchyard parses the same output, so follow
+it exactly. Read it in this order:
+1. `~/.claude/templates/acceptance-evidence.md`.
+2. If that path can't be read (the junction may be missing on a machine):
+   `gh api "repos/brownm09/dev-env/contents/claude/templates/acceptance-evidence.md" -H "Accept: application/vnd.github.raw"`.
+3. If both fail, **stop the review and report it.** Don't improvise the rules: the schema's
+   deferral and admission rules are what calibration measured.
+
+Decision record: [ADR-153](../../../docs/adr/153-acceptance-criteria-filing-and-verification.md).
+
+1. **Find the linked issues and extract their criteria,** per schema §1. Get the linked issues
+   from `gh pr view "<PR_URL>" --json closingIssuesReferences`, not from a body regex. Read
+   each issue with `gh issue view <N> --repo <owner>/<repo> --json title,body`. **A failed read
+   stops the review and is reported as a tool error.** It never becomes outcome `no-issue`.
+   Record each issue's outcome: `parsed`, `exempt`, `none`, `empty`, or (no linked issues)
+   `no-issue`.
+2. **Assert the extraction is non-empty before judging anything.** For any outcome other than
+   `parsed`, there is nothing to verify, so record the finding in step 5 and move on. Never emit
+   an empty table, and never count a zero-row result as a pass.
+3. **Judge each criterion** by applying schema §2 in full: the status definitions, the deferral
+   and admission rules with their precedence, and the all-`not verifiable` rule. Sub-items
+   (schema §1.4) are part of their criterion. Evidence may come from:
+   - DIFF,
+   - PR_BODY, including its Testing section and test-summary line,
+   - PR and issue comments made up to the merge,
+   - the PR's CI checks (`gh pr view --json statusCheckRollup`),
+   - files on the head ref, read via the Step 2b API form.
+
+   A box ticked in the issue is a claim, not evidence.
+4. **Build one block per linked issue,** exactly as in schema §2: the heading, the `Issue:` line,
+   the table with the criterion text verbatim, and the §3 marker.
+5. **Record findings** to include in Step 6:
+   - **[correctness] — Acceptance criterion not met**, one per `not met` row, naming the row
+     number and what is missing. It is Blocking or Non-Blocking according to the severity line
+     above.
+     **Fix:** Implement the criterion in this PR, or amend the issue to defer it explicitly to a
+     linked follow-up (the row then becomes `not verifiable`). Under the global fix-everything
+     rule, "filed #N" alone is not a valid disposition for this finding, because filing a follow-up
+     *is* the deferral, and the issue must say so.
+   - **Non-blocking [documentation] — Acceptance criterion not verifiable from the PR**, one per
+     `not verifiable` row that has no linked follow-up or named post-merge check.
+     **Suggestion:** State in the PR body how and when it will be verified, or rewrite the
+     criterion so it names a check (schema §4).
+   - **Non-blocking [documentation] — No acceptance criteria found** for outcomes `none`,
+     `empty`, or `no-issue`. Say which one. The report states plainly that no criterion was
+     verified; it is never a pass. Outcome `exempt` produces no finding.
+     **Suggestion:** Add a `## Acceptance criteria` checklist of verifiable items to the linked
+     issue, or an `Exempt: <reason>` line (global `claude/CLAUDE.md` → Git Workflow). If the PR
+     has no linked issue, link it with `Closes #N`.
+6. **Emit** each issue's block in Step 8, whatever the outcome.
+
+**Calibration.** The severity line above is `blocking` because blind scoring on known-good and
+known-bad merged PRs produced no false blocks. The corpus, the hit rates, the known miss, and what
+the figures do and don't show are in ADR-153 → *Calibration*. If a false block is observed (a PR
+that did meet its criteria), record it there and change the severity line until the step is
+recalibrated (Pass 3 Gate calibration, ADR-144).
+
 Proceed to Step 3.
 
 ---
@@ -561,12 +635,14 @@ Assign each finding to one of four buckets:
 - Documentation gaps from Step 2b (skill/hook/script/routine changed without updating README.md or docs/REFERENCE.md)
 - Documentation gaps from Step 2c (README exists at a relevant directory level and warrants an update, but was not changed in this PR)
 - ADR-warrant gaps from Step 2f (a qualifying change per ADR-011's four criteria, with no ADR present in the diff and no prior-PR citation in the PR body)
+- Acceptance criteria marked `not met` in Step 2g, while its severity line reads `blocking`
 
 **Non-Blocking** (performance | maintainability | documentation):
 - Performance concerns that do not affect correctness
 - Code that works but will be hard to extend, test, or debug
 - Scope-of-change findings from Step 4 / Subagent B (out-of-scope hunks, speculative code)
 - Step 2c suggestion to create a README where none exists
+- Step 2g `not verifiable` rows with no stated verification path, and a missing or empty criteria section
 
 **Questions for Author:**
 - Only for ambiguities where intent is genuinely unclear — frame as a question, not a criticism.
@@ -614,6 +690,20 @@ directly into a query string..."). Suggest a concrete fix, not just a direction.
 <1 paragraph: overall readiness — merge / merge with minor changes / needs revision.
 Name the single highest-severity finding. If DIFF_SIZE > 400, note whether the PR
 is appropriately scoped or should be split.>
+
+---
+
+### Acceptance criteria evidence
+
+Issue: <full issue URL>
+
+| # | Criterion | Evidence | Status |
+|---|---|---|---|
+
+<!-- acceptance-criteria: issue=<N> outcome=parsed total=<N> met=<N> not_met=<N> not_verifiable=<N> -->
+
+<One block per linked issue, from Step 2g, in the exact form of shared schema §2-§3
+(`~/.claude/templates/acceptance-evidence.md`). Omit the section in DIFF_MODE.>
 
 ---
 
@@ -676,8 +766,14 @@ merge until that disposition exists (ADR-039).>
 <!-- premerge-checkpoints: adr_warrant=<written|not-warranted|missing> doc_reconciliation=<updated|not-applicable|missing> -->
 ```
 
+**Always emit one `<!-- acceptance-criteria: ... -->` marker per linked issue,** at the end of
+that issue's block in the *Acceptance criteria evidence* section. Its format is defined in
+shared schema §3. Each `not met` finding is also counted in `blocking` or `non_blocking`,
+according to Step 2g's severity line. The findings gate (ADR-039) requires a recorded disposition
+for every finding, whichever bucket it is in.
+
 **Always emit the trailing `<!-- review-findings: blocking=<B> non_blocking=<NB> -->`
-marker** as the last line of the review, substituting the actual counts (e.g.
+marker** as the first of the two trailing marker lines, substituting the actual counts (e.g.
 `blocking=0 non_blocking=2`; use `0 0` for a clean review). The merge-gate hook
 parses this marker to decide whether a disposition is required, so it must be
 present and accurate in every posted review.
