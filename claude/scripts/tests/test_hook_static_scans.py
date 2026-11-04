@@ -122,13 +122,18 @@ def find_py_launcher_spawns(tree: ast.AST) -> list[tuple[int, str]]:
 
 
 def scan_py_launcher_spawns(directory: Path) -> tuple[int, list[str]]:
-    """Return (files parsed, offenders as `name:line -- argv[0]=...`)."""
+    """Return (files parsed, offenders as `name:line -- argv[0]=...`).
+
+    A file that does not parse is an offender too: skipping it would leave the
+    rule unchecked for that file while the count still looked healthy.
+    """
     scanned = 0
     offenders: list[str] = []
     for path in sorted(directory.glob("*.py")):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        except SyntaxError:
+        except SyntaxError as e:
+            offenders.append(f"{path.name}:{e.lineno} -- does not parse, so it cannot be scanned")
             continue
         scanned += 1
         for lineno, head in find_py_launcher_spawns(tree):
@@ -288,13 +293,16 @@ def test_py_launcher_scan_flags_fixture_offender() -> str:
             "import subprocess, sys\nsubprocess.run([sys.executable, 'x.py'])\n",
             encoding="utf-8",
         )
+        (d / "unparseable.py").write_text("def broken(:\n", encoding="utf-8")
         scanned, offenders = scan_py_launcher_spawns(d)
     names = sorted(o.split(":", 1)[0] for o in offenders)
-    if names != ["bad_spawn.py", "bad_spawn_exe.py"]:
-        raise AssertionError(f"expected exactly the two known-bad fixtures, got {offenders}")
+    if names != ["bad_spawn.py", "bad_spawn_exe.py", "unparseable.py"]:
+        raise AssertionError(
+            f"expected the two known-bad spawns and the unparseable file, got {offenders}"
+        )
     if scanned != 3:
         raise AssertionError(f"expected 3 fixture files parsed, got {scanned}")
-    return "known-bad `py` / `PY.EXE` spawns reported, sys.executable passes"
+    return "known-bad `py` / `PY.EXE` spawns and an unparseable file reported, sys.executable passes"
 
 
 def test_import_regex_ignores_comments_and_docstrings() -> str:

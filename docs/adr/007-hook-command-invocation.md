@@ -112,7 +112,7 @@ The follow-ups above say the static scans "fail the build". They did not. `run-h
 
 The three static checks now live in `claude/scripts/tests/test_hook_static_scans.py`, which the runner does not skip: settings hooks use `pyw -3` and resolve, subprocess-using scripts import `_winsubp`, and no script spawns Python via `py`. `test_pyw_stdio.py` keeps only the `pythonw.exe` probes and stays local-only. Each scan is now a function over a directory, run once on `claude/scripts/` and once on a temp-directory fixture with known-bad and known-good modules, and each fails if it examined no files (ADR-144).
 
-**Rejected:** un-skipping `test_pyw_stdio.py` and having its probes self-skip without a console. The probes are not reliably detectable as console-less on a CI runner, so the file would flake or skip for the wrong reason. A separate file keeps the runner-skip list exact.
+**Rejected:** un-skipping `test_pyw_stdio.py` and having its probes self-skip without a console. That would need a new console-detection check inside the test, and a check that guessed wrong would either fail CI or skip probes that could have run. Splitting the files needs no detection, and the runner-skip list stays exact: the one skipped file holds only checks that cannot run in CI.
 
 ---
 

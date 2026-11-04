@@ -25,8 +25,8 @@ For a one-line navigational map of the test directory, see
 
 2. **`pyw -3` stdio verification** (Windows-only — confirms `pythonw.exe` honors parent-supplied
    pipes, the invariant ADR-007's 2026-06-01 decision relies on). Every check spawns a real
-   `pythonw.exe`, so `run-hook-tests.py` skips this file and CI never runs it; run it locally. The
-   static scans that used to live here run in CI as item 109:
+   `pythonw.exe`, so `run-hook-tests.py` skips this file and CI never runs it; run it locally. (The
+   static scans that used to live here are now item 109, which CI runs.)
 
    ```bash
    py -3 claude/scripts/tests/test_pyw_stdio.py
@@ -4859,8 +4859,8 @@ For a one-line navigational map of the test directory, see
       module, both without the import, and must pass a module that has it. A comment mentioning
       `_winsubp` does not count as the import. A `_winsubp.py` in the fixture is exempt, and a
       module with no subprocess use is not counted.
-    - the `py` scan must report `['py', ...]` and `('PY.EXE', ...)` spawns and must pass a
-      `sys.executable` spawn.
+    - the `py` scan must report `['py', ...]` and `('PY.EXE', ...)` spawns, and a file that does
+      not parse (it would otherwise go unchecked), and must pass a `sys.executable` spawn.
 
     Each real-directory scan also fails if it examined no files, so an empty glob cannot pass.
 
