@@ -303,7 +303,7 @@ def format_pulled_message(local: str, remote: str, behind_count: int, pulled_lin
 def parse_blocking_files(git_stderr: str) -> "list[str]":
     """Extract the file paths git names as blocking a `--ff-only` pull, from its stderr.
 
-    `git pull --ff-only` aborts with either of two shapes, both listing the offending paths
+    `git merge --ff-only` aborts with either of two shapes, both listing the offending paths
     one per line, tab-indented, between a header and a "Please ..." / "Aborting" line:
 
         error: Your local changes to the following files would be overwritten by merge:
@@ -759,6 +759,17 @@ def main(out: Output) -> None:
         # block a prompt, and must never stop the fast-forward pull below from running.
         out.say("[dev-env-sync] WARNING: settings sync failed unexpectedly and was skipped this prompt.")
 
+    # Seed dev-env's own .claude/hook-config.json from its tracked source when absent, so
+    # post-tool-use.py can add dev-env issues and PRs to project #3 (dev-env#669).
+    try:
+        seeded, seed_error = _settings_sync.seed_hook_config()
+        if seed_error:
+            out.say(f"[dev-env-sync] WARNING: hook-config seed skipped - {seed_error}")
+        if seeded:
+            out.say("[dev-env-sync] Seeded .claude/hook-config.json from claude/hook-config.shared.json (dev-env#669).")
+    except Exception:
+        out.say("[dev-env-sync] WARNING: hook-config seed failed unexpectedly and was skipped this prompt.")
+
     # The canonical must stay on main — ~/.claude/ symlinks serve its working tree, so a
     # feature branch there hides newly-merged hooks/scripts. When it's off main we diagnose
     # the worktree topology below and auto-correct (clean canonical -> back to main) or warn
@@ -893,9 +904,21 @@ def main(out: Output) -> None:
         out.say(format_diverged_message(local, remote, behind_count, ahead_count))
         return
 
-    # Fast-forward is safe — pull.
-    pull = run(["git", "pull", "--ff-only", "origin", "main"], env=NONINTERACTIVE_GIT_ENV)
-    if pull.returncode == 0:
+    # Fast-forward is safe.
+    _fast_forward(out, local, remote, behind_count)
+
+
+def _fast_forward(out: Output, local: str, remote: str, behind_count: int) -> None:
+    """Fast-forward the canonical's ``main`` to ``origin/main`` and report the outcome.
+
+    Merges the remote-tracking ref, never ``git pull``. A pull reads its merge target back out
+    of ``.git/FETCH_HEAD``, which every session's copy of this hook shares in the canonical, so
+    another session's fetch can rewrite it between this session's fetch and merge (dev-env#1174,
+    ADR-056 Addendum 2026-10-31). ``origin/main`` is updated atomically by each fetch, and it is
+    the ref the comparison above measured. Local git only: the fetch already ran in main().
+    """
+    merge = run(["git", "merge", "--ff-only", "origin/main"])
+    if merge.returncode == 0:
         # Count how many commits were pulled.
         log = run(["git", "log", "--oneline", f"{local}..HEAD"])
         lines = [line for line in log.stdout.strip().splitlines() if line]
@@ -912,7 +935,7 @@ def main(out: Output) -> None:
         # read/write/emit glue around it. An escalated message also reaches the user as its
         # one-line summary (dev-env#1140); the summary is None when it did not escalate.
         state, message, summary = build_failure_response(
-            read_failure_state(), time.time(), local, remote, behind_count, pull.stderr
+            read_failure_state(), time.time(), local, remote, behind_count, merge.stderr
         )
         write_failure_state(state)
         if summary is None:

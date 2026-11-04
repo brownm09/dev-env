@@ -18,8 +18,10 @@ Avoid enumerating implementation steps here — those belong in the issue or ADR
 
 ## Acceptance Criteria
 
-- [ ] <criterion — testable and unambiguous>
+- [ ] <criterion — names how it is checked: a command and result, a test, a file and its content, or an observable behaviour>
 - [ ] <criterion>
+
+<!-- Format and extraction rules: ~/.claude/templates/acceptance-evidence.md -->
 
 ## Out of Scope
 

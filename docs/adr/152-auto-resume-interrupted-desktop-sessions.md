@@ -59,3 +59,33 @@ Auto-resume has two parts. Both read a machine-local opt-in file, `~/.claude/aut
 - **Driving the internal messaging pipe.** Rejected: an undocumented protocol and a secret token.
 - **`CronCreate` inside each session.** Rejected: it is session-only, and its `durable` flag is documented as having no effect, so it doesn't survive the restart.
 - **The `SessionStart` hook alone.** Rejected as incomplete: after a restart, interrupted sessions get no CLI process until opened, so the hook never fires for them.
+
+## Amendment — 2026-11-01: background tasks, the CLI's own resume turn, a per-instance cap
+
+[dev-env#1185](https://github.com/brownm09/dev-env/issues/1185). Three gaps showed up after the reboots at 16:48 and 18:39 the same day. The fixes refine the decision above rather than replace it.
+
+1. **A turn waiting on a background task counts as resumable.** "Fix #845" finished a turn while it waited on a background `npm ci`, typecheck and test run. The 18:39 reboot killed that task, and the transcript ended cleanly, so nothing reopened the session. `classify` now returns `waiting_on_background` when a finished turn has a background task with no completion notification. That covers Bash/PowerShell or Agent with `run_in_background`, and a Monitor still inside its `timeout_ms` at the restart. Completion is searched in user entries and in the `queued_command` attachments that carry notifications arriving mid-turn. The launcher and the hook both act on this state, and the hook's message asks the model to rerun the task.
+2. **The resumed CLI's own turn no longer hides the interruption or cancels the wake.** On resume, Claude Code writes two things: a synthetic assistant placeholder (`model: "<synthetic>"`, "No response requested.") when the transcript ends on a user message, and a `stopped` task-notification ("didn't finish before the previous session ended") for each dead background task. The notification starts a turn by itself. At 17:09 that turn ended with nothing done, and the hook's settle check read it as activity and cancelled the wake. Now:
+   - synthetic placeholders are ignored;
+   - a trailing run of stop notices, and the one turn they set off, is set aside when classifying (`trim_stop_notices`);
+   - the settle check counts only a non-notice user entry as a turn starting after a stop notice. Any other non-bookkeeping line still counts when there's no notice.
+
+   The settle check also reads exactly the bytes appended since the first read, rather than comparing the last line.
+3. **The attempt cap counts per app instance.** "Hook dispatcher" used its two wakes on the 15:58 and 16:07 restarts. After the 18:39 reboot it was skipped as `attempts_exhausted`. `maxAttempts` now counts wakes since the current Claude app instance started: the launcher uses its app start, and the hook queries it, falling back to the boot time. Every app restart or reboot gets fresh tries, and a session that crashes on every reopen is still stopped within one instance.
+
+Considered and not taken: keying the cap on the boot time alone, as first suggested. App crashes without a reboot happen several times a day here, and they would share one boot's cap.
+
+**Hardening from review ([PR #1186](https://github.com/brownm09/dev-env/pull/1186)).**
+- **Only CLI-written notices count.** A stop notice must be a task-notification the CLI delivered: a `user` entry with `origin.kind` task-notification, or a mid-turn `queued_command` attachment, with `<status>stopped</status>` and the stop sentence in its `<summary>`. Tool output that quotes the sentence no longer matches. That had falsely set aside a finished turn, in this very session's transcript.
+- **Completion is matched by task ID too.** A task is done once any notification names its `tool_use` id or the task ID its own tool result reported (`with ID:` / `agentId:` / `(task …`). Agent and grouped stop notices carry only the task ID. Before this, 98 of 1,921 clean turn ends over 14 days reported finished tasks as pending.
+- **Monitor deadlines** use the tool's 300 s default and 30 min ceiling.
+- **The trim follows the classifier's rules.** It skips ignored lines and allows several notice-only turns, but stops at any prompt, a mid-turn `queued_command` prompt, another notification (a wake), or a tool call.
+- **The settle check now runs these steps in order:**
+  1. Read the new bytes from the start of the line the offset fell in. A line still being written counts as activity.
+  2. Cancel on any human activity.
+  3. Re-classify, and require the same state and uuid.
+  4. With a stop notice present, require the CLI's notice turn to have finished, with one extra 30 s wait before giving up.
+- **A crash-loop guard across instances.** At most `MAX_CONSECUTIVE_WAKES` (3) wakes with no human prompt in between, counted from the `[auto-resume]` wake entries in the transcript. A session whose resumed work keeps crashing the whole app or machine is stopped, which the per-instance cap alone could not do.
+- **A time budget.** The hook queries the app's start once, with a 15 s timeout, and uses it for both Monitor deadlines and the cap, matching the launcher. `settleSeconds` is capped at 90, so the worst case fits the 180 s hook timeout.
+- **A foreground call that ran past its timeout counts as a background task.** A foreground Bash/PowerShell call that outlives its 120 s timeout is "moved to the background (ID: …)" with no `run_in_background` flag. The 23:23 reset left a session idle on exactly that.
+- **Background waits get their own age limit** ([dev-env#1189](https://github.com/brownm09/dev-env/issues/1189)). After the 2026-11-02 noon resets, three sessions that had been waiting since about 23:50 were 12.6 h old and fell outside `maxAgeHours` (12). The time a session started waiting says nothing about when its task died, so `waiting_on_background` uses `maxWaitAgeHours` (default 48). `MAX_CONSECUTIVE_WAKES` still bounds how often an old wait is nudged.

@@ -116,6 +116,10 @@ BACKUP_DIR = Path.home() / ".claude" / "backups"
 LAUNCHER_SRC = _CLAUDE_DIR / "scripts" / "_hook_launch.py"
 LAUNCHER_DEST = Path.home() / ".claude" / "hook-launch.py"
 
+# The tracked source of dev-env's own .claude/hook-config.json (dev-env#669). That file
+# is machine-local, since .gitignore ignores all of .claude/, so a machine where nobody
+# created it by hand silently left every dev-env issue and PR off project #3.
+HOOK_CONFIG_SHARED_PATH = _CLAUDE_DIR / "hook-config.shared.json"
 
 
 def py_tokens(command: str) -> "list[str]":
@@ -221,25 +225,40 @@ def plan_sync(shared: dict, live: dict) -> SyncPlan:
     return SyncPlan(owned_updates, seed_inserts, unclassified)
 
 
-def _hook_commands(hooks: dict) -> "list[str]":
-    """Every `command` string a settings `hooks` object wires, in order.
+def iter_hook_entries(hooks: Any):
+    """Yield `(event, group, entry)` for every hook entry a settings `hooks` object
+    wires, in settings order.
 
-    Walks hooks[event][*].hooks[*]; a malformed level contributes nothing rather than
-    raising. Entries whose `type` is not "command" (e.g. a "prompt" hook) run no file
-    and are skipped.
+    Walks hooks[event][*].hooks[*]; a malformed level (a non-dict `hooks`, a non-list
+    event, a non-dict group or entry) contributes nothing rather than raising. The one
+    walker of the `hooks` block: this module's missing-script guard, hook-liveness-check,
+    the structural gates' tests/_hook_wiring.py and tests/test_pyw_stdio.py all read the
+    wiring through it, so a change to the block's shape is made once (dev-env#1169).
     """
-    commands = []
-    for groups in hooks.values():
+    if not isinstance(hooks, dict):
+        return
+    for event, groups in hooks.items():
         if not isinstance(groups, list):
             continue
         for group in groups:
             if not isinstance(group, dict):
                 continue
             for entry in group.get("hooks") or []:
-                if not isinstance(entry, dict) or entry.get("type", "command") != "command":
-                    continue
-                commands.append(str(entry.get("command") or ""))
-    return commands
+                if isinstance(entry, dict):
+                    yield event, group, entry
+
+
+def _hook_commands(hooks: dict) -> "list[str]":
+    """Every `command` string a settings `hooks` object wires, in order.
+
+    Entries whose `type` is not "command" (e.g. a "prompt" hook) run no file and are
+    skipped.
+    """
+    return [
+        str(entry.get("command") or "")
+        for _event, _group, entry in iter_hook_entries(hooks)
+        if entry.get("type", "command") == "command"
+    ]
 
 
 def hooks_guard(hooks: Any) -> "str | None":
@@ -533,6 +552,33 @@ def write_json_verified(path: Path, data: dict) -> None:
         raise OSError(f"read-back verification failed for {path}")
 
 
+def seed_hook_config(
+    shared_path: Path = HOOK_CONFIG_SHARED_PATH, live_path: "Path | None" = None
+) -> "tuple[bool, str | None]":
+    """Copy the tracked hook config to the canonical's `.claude/hook-config.json` when
+    that file is absent; return (seeded, error). Never raises.
+
+    Write-if-absent only (ADR-079 rule 3): an existing live file is never read, compared
+    or rewritten, so a machine's own tuning keys (turn_threshold and the like) stick, and
+    with no prior state there is nothing to back up. Worktrees need no copy of their own:
+    post-tool-use.py's load_config falls back to the canonical's (ADR-052).
+    """
+    live_path = Path(live_path) if live_path is not None else (
+        Path(canonical_repo()) / ".claude" / "hook-config.json"
+    )
+    if live_path.exists():
+        return False, None
+    shared = read_json(shared_path)
+    if shared is None:
+        return False, f"could not read {shared_path}"
+    try:
+        live_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json_verified(live_path, shared)
+    except OSError as exc:
+        return False, f"could not create {live_path}: {exc}"
+    return True, None
+
+
 def sync(
     shared_path: Path = SHARED_PATH,
     live_path: Path = LIVE_PATH,
@@ -673,4 +719,11 @@ if __name__ == "__main__":
         print(outcome.note)
     if not outcome.error and not outcome.changed and not outcome.migrated and not outcome.note:
         print("[settings-sync] Already in sync - no change.")
+    seeded, seed_error = seed_hook_config()
+    if seed_error:
+        print(f"[settings-sync] WARNING: hook-config seed skipped - {seed_error}")
+    if seeded:
+        print("[settings-sync] Seeded .claude/hook-config.json from claude/hook-config.shared.json.")
+    # The status reflects the settings sync alone: setup.sh reads non-zero as "settings.json
+    # seeding failed", and a seed failure is already named by its own WARNING line above.
     sys.exit(1 if outcome.error else 0)

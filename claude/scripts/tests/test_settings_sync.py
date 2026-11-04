@@ -587,6 +587,29 @@ with Env() as env:
           "fresh machine: other owned and seed keys still written")
     check("not-here.py" in (result.note or ""), "fresh machine: the missing script is named")
 
+# dev-env#669: the tracked hook config is seeded into a canonical that lacks one, and an
+# existing live copy is never touched (write-if-absent, ADR-079 rule 3).
+with Env() as env:
+    hc_shared = env.root / "hook-config.shared.json"
+    write_json(hc_shared, {"repo": "brownm09/dev-env", "project_number": "3"})
+    hc_live = env.root / "canonical" / ".claude" / "hook-config.json"
+    seeded, err = _settings_sync.seed_hook_config(hc_shared, hc_live)
+    check(seeded and err is None, "hook-config: absent live copy is seeded")
+    check(_settings_sync.read_json(hc_live) == {"repo": "brownm09/dev-env", "project_number": "3"},
+          "hook-config: seeded copy equals the tracked source")
+    write_json(hc_live, {"repo": "brownm09/dev-env", "project_number": "3", "turn_threshold": 80})
+    again, err = _settings_sync.seed_hook_config(hc_shared, hc_live)
+    check(not again and err is None, "hook-config: existing live copy is a skip, not a change")
+    check(_settings_sync.read_json(hc_live).get("turn_threshold") == 80,
+          "hook-config: a machine's own keys in the live copy survive")
+    hc_live.unlink()
+    hc_shared.unlink()
+    seeded, err = _settings_sync.seed_hook_config(hc_shared, hc_live)
+    check(not seeded and err and "could not read" in err and not hc_live.exists(),
+          "hook-config: unreadable source -> error reported, nothing written")
+check(_settings_sync.read_json(_settings_sync.HOOK_CONFIG_SHARED_PATH) is not None,
+      "hook-config: the real tracked claude/hook-config.shared.json parses")
+
 # Calibration (ADR-144): known-good = the real shipped hooks with their paths remapped into
 # this repo (all must resolve); known-bad = the same with one script removed.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -614,6 +637,32 @@ with Env() as env:
     check(known_bad_text != remapped_text, "known-bad fixture actually differs from known-good")
     reason = _settings_sync.hooks_guard(json.loads(known_bad_text))
     check(reason is not None and "dev-env-sync.py" in reason, "known-bad: one missing script is caught")
+
+# --- 9. the one settings-hook walker (dev-env#1169) --------------------------------------
+print("\n-- iter_hook_entries --")
+walked = list(_settings_sync.iter_hook_entries({
+    "Stop": [
+        {"hooks": [{"type": "command", "command": "a"}, "not-a-dict", {"type": "prompt", "prompt": "p"}]},
+        "not-a-group",
+        {"matcher": "Bash", "hooks": None},
+    ],
+    "PreToolUse": [{"matcher": "Write", "hooks": [{"command": "b", "timeout": 5}]}],
+    "Broken": "not-a-list",
+}))
+check(
+    [(event, group.get("matcher"), entry.get("command")) for event, group, entry in walked]
+    == [("Stop", None, "a"), ("Stop", None, None), ("PreToolUse", "Write", "b")],
+    "walker yields every dict entry with its event and group, in order, skipping malformed levels",
+)
+check(list(_settings_sync.iter_hook_entries([])) == [], "a non-object hooks value yields nothing")
+check(list(_settings_sync.iter_hook_entries(None)) == [], "a missing hooks value yields nothing")
+check(_settings_sync._hook_commands({"Stop": [{"hooks": [entry for _e, _g, entry in walked]}]}) == ["a", "b"],
+      "_hook_commands keeps only command-type entries from the walk")
+shipped_hooks = json.loads(_settings_sync.SHARED_PATH.read_text(encoding="utf-8"))["hooks"]
+n_walked = len(list(_settings_sync.iter_hook_entries(shipped_hooks)))
+n_entries = sum(len(group["hooks"]) for groups in shipped_hooks.values() for group in groups)
+check(n_walked > 0 and n_walked == n_entries,
+      f"walker reaches every hook entry in the shipped settings ({n_walked}/{n_entries}), not a vacuous subset")
 
 print(f"\nResults: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

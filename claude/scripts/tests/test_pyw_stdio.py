@@ -24,14 +24,18 @@ the shape Claude Code uses — and asserting:
   3. Bytes the child writes to `sys.stdout` reach the parent intact.
   4. A synthetic Claude-Code-shaped hook (reads JSON on stdin, writes
      `systemMessage` JSON to stdout, exits 0) round-trips correctly.
-  5. Every hook script referenced from `claude/settings.json` exists on
-     disk under `claude/scripts/` and is syntactically valid Python —
-     the test does not invoke real hooks (many have side effects:
-     scratch writes, git fetches, project board mutations).
+  5. `import _winsubp` under `pyw -3` installs the Popen patch and leaves
+     `subprocess.run` working.
   6. A `subprocess.run(..., text=True)` call made after `import _winsubp`
      decodes a child's UTF-8 output as UTF-8, not the Windows cp1252
      default codepage — the dev-env#503 crash, reproduced end-to-end with
      the exact byte from its traceback and proven fixed.
+
+Every check here spawns a real `pythonw.exe`, so `run-hook-tests.py` skips
+this file (no attached console on a CI runner). The static source scans that
+need no console — every settings hook uses `pyw -3` and resolves, every
+subprocess-using script imports `_winsubp`, no script spawns Python via `py`
+— live in `test_hook_static_scans.py`, which CI runs (dev-env#1194).
 
 If any check fails, the `pyw -3` swap in `claude/settings.json` is not
 safe and should be reverted.
@@ -43,9 +47,7 @@ The test runs under `py -3` (a console-attached parent); the
 subprocess invocations under test are `pyw -3`. Exit 0 = all pass.
 """
 
-import ast
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -58,8 +60,6 @@ isolate_heartbeat()
 
 # tests/ -> scripts/ -> claude/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SETTINGS = REPO_ROOT / "claude" / "settings.shared.json"
-HOOKS_DIR = REPO_ROOT / "claude" / "scripts"
 
 
 def _require_pyw() -> str:
@@ -168,79 +168,6 @@ def test_pyw_runs_claude_code_shaped_hook_end_to_end() -> str:
     return "Claude-Code-shaped JSON-in/JSON-out hook contract works under pyw -3"
 
 
-def _collect_hook_scripts() -> list[str]:
-    """Pull every distinct script path referenced from settings.json hook commands."""
-    settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
-    hooks = settings.get("hooks", {})
-    scripts: set[str] = set()
-    for event_entries in hooks.values():
-        for entry in event_entries:
-            for hook in entry.get("hooks", []):
-                cmd = hook.get("command", "")
-                parts = cmd.split()
-                # Expected shape: "pyw -3 C:/.../hook-launch.py C:/.../scripts/<name>.py"
-                # (ADR-148), or the dispatcher followed by its handlers
-                # ("... hook-launch.py C:/.../hook-dispatch.py C:/.../a.py ...", ADR-151):
-                # every .py token after the launcher is a script that runs.
-                scripts.update(p for p in parts[3:] if p.endswith(".py"))
-    return sorted(scripts)
-
-
-def test_all_settings_hooks_use_pyw_and_resolve_to_repo() -> str:
-    """Every hook command must invoke `pyw -3` through the hook launcher (ADR-148) and
-    point at a real script in this repo."""
-    settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
-    hooks = settings.get("hooks", {})
-    bad_launcher: list[str] = []
-    no_hook_launch: list[str] = []
-    missing: list[str] = []
-    syntax_errors: list[str] = []
-    total = 0
-    for event_entries in hooks.values():
-        for entry in event_entries:
-            for hook in entry.get("hooks", []):
-                cmd = hook.get("command", "")
-                parts = cmd.split()
-                if len(parts) < 3 or not parts[-1].endswith(".py"):
-                    continue
-                total += 1
-                launcher = parts[0]
-                if launcher != "pyw":
-                    bad_launcher.append(cmd)
-                    continue
-                # One script, or the dispatcher plus one or more handlers (ADR-151).
-                dispatched = len(parts) > 4 and Path(parts[3]).name == "hook-dispatch.py"
-                if Path(parts[2]).name != "hook-launch.py" or (len(parts) != 4 and not dispatched):
-                    no_hook_launch.append(cmd)
-                    continue
-                for script in parts[3:]:
-                    local = HOOKS_DIR / Path(script).name
-                    if not local.exists():
-                        missing.append(local.name)
-                        continue
-                    try:
-                        ast.parse(local.read_text(encoding="utf-8"), filename=str(local))
-                    except SyntaxError as e:
-                        syntax_errors.append(f"{local.name}: {e}")
-    problems: list[str] = []
-    if bad_launcher:
-        problems.append(f"non-pyw launchers: {bad_launcher}")
-    if no_hook_launch:
-        problems.append(f"not run through hook-launch.py (ADR-148): {no_hook_launch}")
-    if missing:
-        problems.append(f"missing scripts: {missing}")
-    if syntax_errors:
-        problems.append("syntax errors:\n  " + "\n  ".join(syntax_errors))
-    if problems:
-        raise AssertionError("\n".join(problems))
-    if total == 0:
-        raise AssertionError("no hook commands parsed from the shared settings -- a vacuous pass")
-    return (
-        f"{total} hook commands all use `pyw -3 <launcher>` and resolve to syntactically "
-        f"valid scripts in {HOOKS_DIR.name}/"
-    )
-
-
 def test_winsubp_patches_subprocess_under_pyw() -> str:
     """`import _winsubp` under pyw -3 must install the Popen patch and let subprocess still work."""
     _require_pyw()
@@ -337,185 +264,12 @@ def test_winsubp_decodes_utf8_not_cp1252_under_pyw() -> str:
     return "byte 0x9d (dev-env#503's exact crash byte) decodes to U+FFFD instead of being silently lost"
 
 
-# Regexes used by the static-scan guard below. Defined at module scope so
-# the negative-control assertion at the bottom of this test exercises the
-# exact same patterns the real scan uses.
-#
-# `_WINSUBP_IMPORT_RE` matches a real top-level import of the helper —
-# either `import _winsubp` (optionally with `as alias` or `# comment`) or
-# `from _winsubp import X`. Multiline + leading-whitespace tolerant so an
-# indented re-import inside a function still counts; comments and
-# docstring mentions of the bare string `_winsubp` do not.
-_WINSUBP_IMPORT_RE = re.compile(
-    r"^\s*(?:import\s+_winsubp\b|from\s+_winsubp\b)",
-    re.MULTILINE,
-)
-# `_SUBPROCESS_USE_RE` matches an actual subprocess use-site. Covers both
-# `subprocess.run(...)` / `subprocess.Popen(...)` etc. AND
-# `from subprocess import run, Popen` (or any subset) so that a hook
-# using the `from subprocess import` idiom is not silently skipped.
-_SUBPROCESS_USE_RE = re.compile(
-    r"\bsubprocess\.(?:run|Popen|check_output|check_call|call)\b"
-    r"|^\s*from\s+subprocess\s+import\b",
-    re.MULTILINE,
-)
-
-
-def _is_winsubp_module(name: str) -> bool:
-    """True only for the literal filename `_winsubp.py`.
-
-    This is the one hook-directory module structurally exempt from the
-    "subprocess use requires `import _winsubp`" rule below — it cannot
-    import itself. Every other underscore-prefixed support module
-    (`_hookio.py`, `_gh_project.py`, etc.) is a normal scan target: if it
-    uses subprocess, it must import `_winsubp` like any other script.
-    """
-    return name == "_winsubp.py"
-
-
-def test_every_subprocess_using_hook_imports_winsubp() -> str:
-    """Every hook script in claude/scripts/ that uses subprocess must import _winsubp.
-
-    The check uses real regexes (not substring matches) so neither a
-    comment/docstring mention of `_winsubp` nor a `from subprocess import …`
-    idiom can bypass the guard.
-    """
-    hooks_dir = REPO_ROOT / "claude" / "scripts"
-    missing: list[str] = []
-    checked = 0
-    for path in sorted(hooks_dir.glob("*.py")):
-        # Skip only _winsubp.py itself — it cannot import itself. Every
-        # other underscore-prefixed support module is scanned normally.
-        if _is_winsubp_module(path.name):
-            continue
-        text = path.read_text(encoding="utf-8")
-        if not _SUBPROCESS_USE_RE.search(text):
-            continue
-        checked += 1
-        if not _WINSUBP_IMPORT_RE.search(text):
-            missing.append(path.name)
-    if missing:
-        raise AssertionError(
-            f"{len(missing)} hook(s) use subprocess but do not import _winsubp: "
-            + ", ".join(missing)
-        )
-
-    # Negative controls — make sure the regexes don't false-positive on
-    # comments/docstrings or false-negative on the `from subprocess import`
-    # idiom. If these fail, the guard above is no longer load-bearing.
-    if _WINSUBP_IMPORT_RE.search("# _winsubp is great\n"):
-        raise AssertionError("import regex false-positive on a comment mentioning _winsubp")
-    if _WINSUBP_IMPORT_RE.search('"""mentions _winsubp in a docstring"""\n'):
-        raise AssertionError("import regex false-positive on a docstring mentioning _winsubp")
-    if not _SUBPROCESS_USE_RE.search("from subprocess import run\nrun(['x'])\n"):
-        raise AssertionError("subprocess-use regex missed the `from subprocess import` idiom")
-    if not _is_winsubp_module("_winsubp.py"):
-        raise AssertionError("_is_winsubp_module rejected the one file it must exempt")
-    for representative_name in ("_hookio.py", "_gh_project.py", "_hookutil.py"):
-        if _is_winsubp_module(representative_name):
-            raise AssertionError(
-                f"_is_winsubp_module wrongly exempted {representative_name!r} — "
-                "the blanket underscore-prefix skip has regressed"
-            )
-
-    return f"all {checked} subprocess-using hook scripts import _winsubp"
-
-
-def test_no_hook_spawns_python_via_py_launcher() -> str:
-    """No hook in claude/scripts/ may spawn Python via the `py` / `py.exe` launcher.
-
-    Naming `py` as the first element of a `subprocess.Popen` / `subprocess.run`
-    argv re-introduces the launcher-chain console flash that ADR-007 follow-up 2
-    fixed (dev-env#300): `py.exe` is a console-subsystem program that spawns
-    `python.exe` without propagating `CREATE_NO_WINDOW`, so Windows allocates a
-    fresh console for the grandchild. `_winsubp` only suppresses the immediate
-    child's console, not the grandchild's. Hooks that spawn Python must use
-    `sys.executable` (or another already-windowless launcher).
-
-    This check is AST-based: it walks every `subprocess.Popen(...)` /
-    `subprocess.run(...)` / `subprocess.check_*(...)` / `subprocess.call(...)`
-    call in `claude/scripts/*.py` and fails if any of them passes a list/tuple
-    literal whose first element is the bare string `"py"` or `"py.exe"`.
-    String-command spawns (e.g., `shell=True` invocations of `"py -3 ..."`)
-    are out of scope — those flash for other reasons and would be caught by
-    review separately.
-    """
-    hooks_dir = REPO_ROOT / "claude" / "scripts"
-    SPAWN_FUNCS = {"run", "Popen", "check_output", "check_call", "call"}
-    FORBIDDEN = {"py", "py.exe"}
-    offenders: list[str] = []
-    scanned = 0
-    for path in sorted(hooks_dir.glob("*.py")):
-        text = path.read_text(encoding="utf-8")
-        try:
-            tree = ast.parse(text, filename=str(path))
-        except SyntaxError:
-            continue
-        scanned += 1
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            # Match `subprocess.<fn>(...)`.
-            if not (
-                isinstance(func, ast.Attribute)
-                and isinstance(func.value, ast.Name)
-                and func.value.id == "subprocess"
-                and func.attr in SPAWN_FUNCS
-            ):
-                continue
-            if not node.args:
-                continue
-            first = node.args[0]
-            if not isinstance(first, (ast.List, ast.Tuple)) or not first.elts:
-                continue
-            head = first.elts[0]
-            if isinstance(head, ast.Constant) and isinstance(head.value, str):
-                if head.value.lower() in FORBIDDEN:
-                    offenders.append(
-                        f"{path.name}:{node.lineno} — argv[0]={head.value!r}"
-                    )
-    if offenders:
-        raise AssertionError(
-            "Hook(s) spawn Python via the `py` launcher (re-introduces "
-            "launcher-chain console flash; see ADR-007 follow-up 2):\n  "
-            + "\n  ".join(offenders)
-        )
-
-    # Negative control — a synthetic offending snippet must trip the AST walk.
-    # If this stops detecting, the guard above is no longer load-bearing.
-    bad = "import subprocess\nsubprocess.Popen(['py', '-3', 'x.py'])\n"
-    bad_tree = ast.parse(bad)
-    detected = False
-    for node in ast.walk(bad_tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "subprocess"
-            and node.func.attr in SPAWN_FUNCS
-            and node.args
-            and isinstance(node.args[0], (ast.List, ast.Tuple))
-            and node.args[0].elts
-            and isinstance(node.args[0].elts[0], ast.Constant)
-            and node.args[0].elts[0].value in FORBIDDEN
-        ):
-            detected = True
-    if not detected:
-        raise AssertionError("AST walker failed to detect a synthetic `py` offender")
-
-    return f"scanned {scanned} hook script(s); none spawn Python via the `py` launcher"
-
-
 def main() -> int:
     tests = [
         ("pyw -3 stdio wired when parent supplies pipes", test_pyw_stdio_wired_when_parent_supplies_pipes),
         ("pyw -3 runs Claude-Code-shaped hook end-to-end", test_pyw_runs_claude_code_shaped_hook_end_to_end),
-        ("all settings.json hooks use pyw -3 and resolve", test_all_settings_hooks_use_pyw_and_resolve_to_repo),
         ("_winsubp patches subprocess under pyw -3", test_winsubp_patches_subprocess_under_pyw),
         ("_winsubp decodes UTF-8 not cp1252 under pyw -3", test_winsubp_decodes_utf8_not_cp1252_under_pyw),
-        ("every subprocess-using hook imports _winsubp", test_every_subprocess_using_hook_imports_winsubp),
-        ("no hook spawns Python via the `py` launcher", test_no_hook_spawns_python_via_py_launcher),
     ]
     failed = 0
     passed_names: list[str] = []

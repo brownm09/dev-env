@@ -502,9 +502,12 @@ def test_journal_results():
 
 def test_hook_config_result():
     assert doc.hook_config_result(Path("x/hook-config.json"), True).status == PASS
-    absent = doc.hook_config_result(Path("x/hook-config.json"), False)
-    assert absent.status == WARN and "copy it from your other machine" in absent.detail, absent
-    return "present PASS; absent WARN"
+    absent = doc.hook_config_result(Path("repo/.claude/hook-config.json"), False)
+    assert absent.status == WARN, absent
+    # The fix is the checkout's own seed command (dev-env#669), not a hand copy.
+    assert "py -3 repo/claude/scripts/_settings_sync.py" in absent.detail, absent
+    assert "other machine" not in absent.detail, absent
+    return "present PASS; absent WARN with the seed command"
 
 
 def test_machine_role_result():

@@ -7,14 +7,15 @@ in the consuming scripts before this module:
 - **Per-session sentinels** (`cleanup_stale_sentinels`, `sentinel_path`) — used by
   posttooluse-inert-advisory.py, stop-tile-enumeration-gate.py, and
   reconcile-open-prs.py to fire at most once per session (ADR-064).
-- **Transcript locate** (`find_transcript`) — used by token-tracker.py and
-  posttooluse-inert-advisory.py to find a session's JSONL when the Stop payload's
-  path is absent/stale (ADR-064).
-- **Transcript record readers** (`load_records`, `_parse_records`, `iter_bash_calls`,
-  `_result_text`, `_content_items`) — used by posttooluse-inert-advisory.py and
-  stop-tile-enumeration-gate.py to parse a transcript into records and pair Bash
-  tool_use/tool_result calls. `iter_bash_calls` returns (command, output, cwd)
-  3-tuples (the advisory scopes by cwd; the gate ignores it) (ADR-090).
+- **Transcript locate** (`resolve_transcript`, over `find_transcript`) — used by the
+  Stop hooks to take the payload's `transcript_path`, or find the session's JSONL
+  when that path is absent/stale (ADR-064, dev-env#1169).
+- **Transcript record readers** (`load_records`, `_parse_records`, `iter_tool_uses`,
+  `iter_assistant_texts`, `iter_bash_calls`, `_result_text`, `_content_items`) —
+  used by the Stop hooks to parse a transcript into records, walk its tool calls
+  and assistant text, and pair Bash tool_use/tool_result calls. `iter_bash_calls`
+  returns (command, output, cwd) 3-tuples (the advisory scopes by cwd; the gate
+  ignores it) (ADR-090, ADR-050 Amendment 30).
 - **Bounded tail reader** (`iter_records_reverse`) — used by idle-refresher.py,
   which only needs the last assistant record's timestamp and would otherwise pay
   a full parse of a potentially multi-MB transcript on every prompt submit. Reads
@@ -43,8 +44,10 @@ Usage:
 
     _hookutil.cleanup_stale_sentinels(SENTINEL_PREFIX)
     path = _hookutil.sentinel_path(SENTINEL_PREFIX, session_id)
-    tpath = _hookutil.find_transcript(session_id)
+    tpath = _hookutil.resolve_transcript(data.get("transcript_path") or "", session_id)
     records = _hookutil.load_records(tpath)
+    for _i, rec, item in _hookutil.iter_tool_uses(records):
+        ...
     for command, output, cwd in _hookutil.iter_bash_calls(records):
         ...
 
@@ -173,6 +176,27 @@ def find_transcript(session_id: str, projects: Path | None = None) -> Path | Non
     # Session ids are unique, so the first match is the answer — next() short-circuits
     # instead of materializing every JSONL under ~/.claude/projects/.
     return next(root.glob(f"**/{session_id}.jsonl"), None)
+
+
+def resolve_transcript(
+    transcript_path: str, session_id: str, projects: Path | None = None
+) -> Path | None:
+    """The session's transcript file: *transcript_path* (a hook payload's
+    ``transcript_path``) when it names an existing file, else
+    ``find_transcript(session_id, projects)`` when *session_id* is truthy, else
+    ``None``.
+
+    The one copy of the locate step every transcript-reading Stop hook ran on its
+    own (dev-env#1169). A directory or missing path falls through to the
+    session-id search rather than being handed to a reader that would fail on it.
+    """
+    if transcript_path:
+        candidate = Path(transcript_path)
+        if candidate.is_file():
+            return candidate
+    if session_id:
+        return find_transcript(session_id, projects=projects)
+    return None
 
 
 def record_heartbeat(hook_name: str, heartbeat_dir: Path | None = None) -> None:
@@ -377,9 +401,9 @@ def _launch_time() -> float | None:
 
 
 # --- transcript record readers -------------------------------------------------
-# Parse a session JSONL transcript into records and pair Bash tool_use/tool_result
-# calls. Shared by posttooluse-inert-advisory.py and stop-tile-enumeration-gate.py,
-# extracted from the near-verbatim copies that lived in each (ADR-090).
+# Parse a session JSONL transcript into records, walk its tool calls and assistant
+# text, and pair Bash tool_use/tool_result calls. Shared by the Stop hooks, extracted
+# from the near-verbatim copies that lived in each (ADR-090, dev-env#1169).
 
 
 def _content_items(rec: dict) -> list:
@@ -522,6 +546,43 @@ def _result_text(item: dict, record: dict) -> str:
     return ""
 
 
+def iter_tool_uses(records: list):
+    """Yield ``(index, record, item)`` for every ``tool_use`` item of every
+    assistant record, in transcript order; *index* is the record's position in
+    *records*. Parallel tool calls in one record each yield.
+
+    The one scan behind every per-tool question a Stop hook asks of a transcript
+    (which tools ran, with what input, how often), which each hook used to walk
+    on its own (dev-env#1169). Filtering by tool name, ``isSidechain`` or input
+    stays with the caller. Non-dict records and items are skipped, so it is safe
+    on malformed or hand-built record lists.
+    """
+    for i, rec in enumerate(records):
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        for item in _content_items(rec):
+            if isinstance(item, dict) and item.get("type") == "tool_use":
+                yield i, rec, item
+
+
+def iter_assistant_texts(records: list):
+    """Yield the string of every assistant ``text`` item, in transcript order,
+    skipping tool_use inputs.
+
+    The companion to ``iter_tool_uses`` for the "did the assistant SAY X" checks
+    (a tile-table heading, enumeration text, a verdict idiom). Text written INTO
+    a file lives in a Write/Edit tool_use input, never a ``text`` item, so a
+    session authoring docs about a phrase is not read as saying it. Hoisted from
+    stop-experiment-verdict-gate.py's ``_assistant_texts`` (dev-env#1169).
+    """
+    for rec in records:
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        for item in _content_items(rec):
+            if isinstance(item, dict) and item.get("type") == "text":
+                yield item.get("text", "") or ""
+
+
 def iter_bash_calls(records: list) -> list:
     """Pair each Bash tool_use with its tool_result by ``tool_use_id``.
 
@@ -533,19 +594,11 @@ def iter_bash_calls(records: list) -> list:
     per-item) keep it safe on malformed or hand-built record lists.
     """
     commands: dict = {}
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        cwd = rec.get("cwd", "") or ""
-        for item in _content_items(rec):
-            if (
-                isinstance(item, dict)
-                and item.get("type") == "tool_use"
-                and item.get("name") == "Bash"
-            ):
-                tid = item.get("id")
-                if tid:
-                    commands[tid] = ((item.get("input") or {}).get("command", ""), cwd)
+    for _i, rec, item in iter_tool_uses(records):
+        if item.get("name") == "Bash":
+            tid = item.get("id")
+            if tid:
+                commands[tid] = ((item.get("input") or {}).get("command", ""), rec.get("cwd", "") or "")
 
     calls: list = []
     for rec in records:

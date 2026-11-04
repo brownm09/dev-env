@@ -68,7 +68,7 @@ import _repo_scan
 from _settings_sync import py_tokens
 
 # The settings.json hook walker the three settings gates share (Testing items 61-63; the
-# doctor is its one runtime consumer, so item 61 names item 109 too). It lives in tests/ so the
+# doctor is its one runtime consumer, so item 61 names item 110 too). It lives in tests/ so the
 # gates' own claude/scripts/*.py glob never mistakes it for a hook. Appended, not prepended, so
 # nothing in tests/ can shadow a module the doctor imports. LAUNCHER_NAME is how the gates tell
 # the launcher from the scripts a command runs (ADR-151), so the doctor tells them apart the same way.
@@ -541,13 +541,16 @@ def journal_results(
 
 
 def hook_config_result(path: Path, exists: bool) -> Result:
-    """dev-env's board config is gitignored, so a fresh clone never has it."""
+    """dev-env's board config is gitignored. The settings sync seeds it from the tracked
+    claude/hook-config.shared.json when it's absent (dev-env#669), so the fix for a missing
+    one is that checkout's own _settings_sync.py, the command post-tool-use.py prints too."""
     if exists:
         return Result(PASS, "board config", str(path))
+    sync = (path.parents[1] / "claude" / "scripts" / "_settings_sync.py").as_posix()
     return Result(
         WARN, "board config",
         f"{path} is missing; the project-board hook (post-tool-use.py) cannot add issues or PRs "
-        "to the board without it -- copy it from your other machine (board and field IDs, no secrets)",
+        f"to the board without it -- seed it from claude/hook-config.shared.json: py -3 {sync}",
     )
 
 

@@ -56,9 +56,9 @@ missing transcript, parse/scan failure, the outer ``__main__`` guard) exits 0.
 Honors the ``stop_hook_active`` loop-guard flag. A single per-session sentinel
 suffices -- this hook has one trigger.
 
-The transcript-record readers (``_parse_records`` / ``_content_items``) and the
-sentinel / transcript-locate helpers come from the shared ``_hookutil`` module
-(ADR-090 / ADR-064), the same modules the sibling Stop hooks build on.
+The transcript-record readers (``_parse_records`` / ``iter_assistant_texts``) and the
+sentinel / transcript-locate helpers (``resolve_transcript``) come from the shared
+``_hookutil`` module (ADR-090 / ADR-064, dev-env#1169), the same modules the sibling Stop hooks build on.
 
 Stdin JSON shape (Stop):
   {"session_id": "...", "transcript_path": "/abs/path.jsonl",
@@ -76,9 +76,8 @@ from _hookinput import load_hook_input
 import _hookutil
 import re
 import sys
-from pathlib import Path
 
-from _hookutil import _content_items, _is_synthetic_user, _parse_records, _user_message_texts
+from _hookutil import _is_synthetic_user, _parse_records, _user_message_texts, iter_assistant_texts
 
 SENTINEL_PREFIX = "experiment-verdict-gate-"
 
@@ -179,25 +178,14 @@ def _prefilter_passes(text_lower: str) -> bool:
 
 # --- pure detection helpers (offline-testable) ---------------------------------
 
-def _assistant_texts(records: list):
-    """Yield every assistant ``text`` item's string, skipping tool_use inputs.
-
-    Verdict wording written INTO a file (a Write/Edit ``tool_use`` input -- an
-    ADR, a report) lives in tool_use, never in a ``text`` item, so scanning text
-    only is what keeps a rigor-docs session from flagging the very prose it is
-    authoring."""
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        for item in _content_items(rec):
-            if isinstance(item, dict) and item.get("type") == "text":
-                yield item.get("text", "") or ""
-
+# Assistant text only (``_hookutil.iter_assistant_texts``): verdict wording written
+# INTO a file (a Write/Edit tool_use input -- an ADR, a report) lives in tool_use,
+# never in a ``text`` item, so a rigor-docs session never flags the prose it authors.
 
 def verdict_conclusion_present(records: list) -> bool:
     """True iff an assistant text item states an experiment conclusion in one of
     the bounded operative idioms (``_VERDICT_RES``). The single fire signal."""
-    for text in _assistant_texts(records):
+    for text in iter_assistant_texts(records):
         if any(rx.search(text) for rx in _VERDICT_RES):
             return True
     return False
@@ -209,7 +197,7 @@ def audit_marker_present(records: list) -> bool:
     or a ``<command-name>/experiment-audit`` invocation in any user text. Errs
     toward suppression (a false "audit ran" only silences the nudge, the safe
     advisory direction)."""
-    for text in _assistant_texts(records):
+    for text in iter_assistant_texts(records):
         if _AUDIT_MARKER_RE.search(text):
             return True
     for rec in records:
@@ -308,11 +296,8 @@ def main() -> None:
     if session_id and _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).exists():
         sys.exit(0)
 
-    tpath_str = data.get("transcript_path") or ""
-    tpath = Path(tpath_str) if tpath_str else None
-    if (tpath is None or not tpath.exists()) and session_id:
-        tpath = _hookutil.find_transcript(session_id)
-    if tpath is None or not tpath.exists():
+    tpath = _hookutil.resolve_transcript(data.get("transcript_path") or "", session_id)
+    if tpath is None:
         sys.exit(0)
 
     try:

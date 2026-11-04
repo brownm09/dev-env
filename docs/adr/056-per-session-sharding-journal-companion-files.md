@@ -340,3 +340,23 @@ again in a transcript or another `FETCH_HEAD` failure is reported.
 **Status:** a scope extension of the 2026-06-30 addendum's finding, from the shared index to shared
 `FETCH_HEAD`. ADR-056's Decision and Consequences stand unchanged. Tracked in
 [dev-env#1166](https://github.com/brownm09/dev-env/issues/1166).
+
+---
+
+## Addendum (2026-11-01) — `dev-env-sync.py` stops pulling too (dev-env#1174)
+
+The 2026-10-31 addendum left one `pull` in place: `dev-env-sync.py` ran `git pull --ff-only origin
+main` in the **dev-env** canonical, outside dev-env#1166's journal scope. It has the same race. Every
+session's copy of the hook runs with the canonical as its cwd, so they all share its
+`.git/FETCH_HEAD`, and the hook fires on every prompt of every session, which makes it the busiest
+call site of all.
+
+**Fix:** the hook already fetched `origin main` (at most once per 15 minutes, dev-env#849) and
+measured `origin/main` before deciding a fast-forward was safe. Its fast-forward step is now `git
+merge --ff-only origin/main`, so it merges the ref it measured, and the `pull`'s second network
+fetch goes away. Nothing else changes. A failed merge still feeds the persistent-failure escalation
+(ADR-110), since `merge --ff-only` aborts with the same two stderr shapes `pull --ff-only` did, and
+every advisory still goes to stdout (ADR-098). Pinned by `## Testing` item 56.
+
+**Status:** completes the 2026-10-31 addendum's sweep. With this change, no scripted sync of a shared
+canonical runs `git pull`. Tracked in [dev-env#1174](https://github.com/brownm09/dev-env/issues/1174).

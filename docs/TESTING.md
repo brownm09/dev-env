@@ -24,7 +24,9 @@ For a one-line navigational map of the test directory, see
    to the Microsoft Store stub — use `py -3` (the Windows Python Launcher), see [ADR-007](adr/007-hook-command-invocation.md).
 
 2. **`pyw -3` stdio verification** (Windows-only — confirms `pythonw.exe` honors parent-supplied
-   pipes, the invariant ADR-007's 2026-06-01 decision relies on):
+   pipes, the invariant ADR-007's 2026-06-01 decision relies on). Every check spawns a real
+   `pythonw.exe`, so `run-hook-tests.py` skips this file and CI never runs it; run it locally. (The
+   static scans that used to live here are now item 109, which CI runs.)
 
    ```bash
    py -3 claude/scripts/tests/test_pyw_stdio.py
@@ -287,7 +289,14 @@ For a one-line navigational map of the test directory, see
     `--repo`/URL buried in a quoted `--title`/`--body` value does not hijack the real trailing
     flag (captured by the old unmasked regex); the pre-existing dev-env#544 URL/host-prefix
     cases now pass unchanged through the widened shared `repo_from_flag`. See
-    [ADR-111 Amendment 1](adr/111-shared-repo-target-resolution.md).
+    [ADR-111 Amendment 1](adr/111-shared-repo-target-resolution.md). Also (dev-env#669,
+    [ADR-052 Amendment 2](adr/052-worktree-config-canonical-fallback.md)) pins the loud
+    no-config path: `expected_opt_in_config()` returns the tracked source only for an item in its
+    `repo`, and returns None for another repo or for a source that is missing or lacks the project
+    fields. The real `claude/hook-config.shared.json` is asserted to name project #3 with Impact and
+    Why. A `main()` end-to-end pair runs a config-less temp cwd: a dev-env issue URL exits 2 with
+    ASCII stderr carrying the seed command and the exact `gh project item-add`, and `origin/main`
+    exited 0 silently on that same payload. Another repo's URL stays exit 0 and silent.
 
     ```bash
     py -3 claude/scripts/tests/test_post_tool_use.py
@@ -355,7 +364,7 @@ For a one-line navigational map of the test directory, see
     doesn't pay ~20-30 ms per call (PR #1135 review finding 5; the scratch-rm-allow hook runs on every
     Bash call). A probe in a fresh interpreter pins that `import _hookio` loads neither module. No
     caller depends on `_hookio` for the `_winsubp` patch: every script that calls subprocess imports
-    `_winsubp` itself, which item 2 (`test_pyw_stdio.py`) enforces.
+    `_winsubp` itself, which item 109 (`test_hook_static_scans.py`) enforces.
 
     **Shared merge predicate and stdin loader (dev-env#1168, ADR-050 Amendment 29).** Every merge
     hook now imports `is_pr_merge_command` and every hook with the standard stdin block imports
@@ -936,6 +945,13 @@ For a one-line navigational map of the test directory, see
     reads as "the scope test is unreadable" and treats as out-of-scope rather than firing a blocking
     gate, so a helper that returned `""` for a session that *does* have an opening prompt (or raised on
     a truncated transcript) would silently disable the trigger.
+
+    The shared transcript helpers the Stop hooks call (dev-env#1169, ADR-050 Amendment 30): the
+    locate helper `resolve_transcript` returns the payload path when it is an existing file and otherwise falls
+    back to `find_transcript` (a missing path and a directory both fall through; no session id or no
+    match gives `None`); the scan `iter_tool_uses` yields `(index, record, item)` for every assistant
+    tool_use, skipping user records and malformed records or items; `iter_assistant_texts` yields
+    assistant `text` items only, never a tool_use input or user text.
 
     ```bash
     py -3 claude/scripts/tests/test_hookutil.py
@@ -2508,6 +2524,13 @@ For a one-line navigational map of the test directory, see
     **Fetch gate (dev-env#849, ADR-006 Amendment 1).** `fetched_recently()` decides whether the
     per-prompt `git fetch` runs: a fresh `.git/FETCH_HEAD` skips it, while a missing, stale or
     future-dated one fetches.
+
+    **Fast-forward without `git pull` (dev-env#1174, ADR-056 Addendum 2026-11-01).**
+    `_fast_forward` runs against a stubbed `run` and a temporary `SCRATCH`. Its first git call
+    must be `git merge --ff-only origin/main`, with no `pull` and no `fetch`, because a pull
+    merges whatever the canonical's shared `.git/FETCH_HEAD` holds. A success reports the
+    pulled commit and clears the failure state. A failed merge records a failure run and puts
+    git's blocking path in the warning.
     ([ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md),
     [ADR-110](adr/110-escalate-persistent-dev-env-sync-ff-failures.md);
     dev-env#694, dev-env#797, dev-env#1140)
@@ -2640,7 +2663,7 @@ For a one-line navigational map of the test directory, see
 61. **hook output-contract + ASCII-literal gate** — required when changing
     `claude/scripts/tests/test_hook_output_contract.py` or the shared
     `claude/scripts/tests/_hook_wiring.py` (the settings.json parser all three PR3 gates —
-    items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 109 when
+    items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 110 when
     changing it). AST gate over every wired hook
     (via `_hook_wiring`, cross-referencing each script's event class against the SSOT
     `_hookout.STDOUT_MODEL_VISIBLE_EVENTS`, ADR-103) for four invisible-emission shapes: **A**
@@ -2721,8 +2744,8 @@ For a one-line navigational map of the test directory, see
     it, Bash/PowerShell mirroring compares handler sets, and `test_dispatcher_commands_are_well_formed`
     (with known-bad references) rejects a dispatcher listing itself or the launcher, a repeated
     handler, a budget below a handler's floor, or a timeout under the largest budget plus 10 s. The `pyw -3`
-    invocation invariant (authoring rule 3) is deliberately not re-checked here — `test_pyw_stdio.py`'s
-    `test_all_settings_hooks_use_pyw_and_resolve_to_repo` (item 2) already gates it; the resolution check
+    invocation invariant (authoring rule 3) is deliberately not re-checked here — `test_hook_static_scans.py`'s
+    `test_all_settings_hooks_use_pyw_and_resolve_to_repo` (item 109) already gates it; the resolution check
     overlaps that test's resolution half by design (it is the precondition for the `_winsubp`-based
     budget). Iterates entries generically, so a new event/matcher group (e.g. PR9's PowerShell mirror) is
     covered with no change beyond any new script's budget classification. The PreToolUse and
@@ -4177,6 +4200,19 @@ For a one-line navigational map of the test directory, see
     - the calibration remap asserts that no shipped path still points at the real home. The
       prefix comes from `_hook_wiring.HOME_PREFIX`, the single definition dev-env#1113 will change.
 
+    Group 9 pins `iter_hook_entries`, the one walker of the `hooks` block that the guard,
+    `hook-liveness-check.py` and `tests/_hook_wiring.py` share (dev-env#1169): order, event and
+    group are preserved, every malformed level is skipped, a non-object `hooks` yields nothing, and
+    on the shipped file it reaches every entry the parsed JSON holds (and more than zero), so a walk
+    that silently skipped a level could not pass as clean. `test_pyw_stdio.py` (item 2) walks the
+    same block through it.
+
+    **Hook-config seed (dev-env#669, [ADR-052 Amendment 2](adr/052-worktree-config-canonical-fallback.md)).**
+    `seed_hook_config` writes the tracked source to an absent live path and the result equals the
+    source. An existing live copy, including a machine's own `turn_threshold`, is a skip that leaves it
+    untouched (write-if-absent). An unreadable source returns a named error and writes nothing. The real
+    `claude/hook-config.shared.json` is asserted to parse. Run this item when changing that file too.
+
     ```bash
     py -3 claude/scripts/tests/test_settings_sync.py
     bash claude/scripts/tests/test-setup-link-loop.sh
@@ -4825,12 +4861,35 @@ For a one-line navigational map of the test directory, see
     Sidechain and `isMeta` entries are ignored. `read_tail()` grows its window when the last line
     alone is larger than 512 KB.
 
+    **After a restart (dev-env#1185).** These were added from the 2026-11-01 reboots:
+    - A finished turn whose background Bash or Agent never reported back is
+      `waiting_on_background`. So is a Monitor still inside its `timeout_ms` at the restart.
+    - A completion notification clears the task, whether it arrived as a user entry or mid-turn
+      as a `queued_command` attachment. So does a stop notice the session already dealt with, and
+      so does a Monitor past its timeout.
+    - The CLI's synthetic "No response requested." placeholder is ignored.
+    - A trailing stop notice and its reply turn are set aside, which reveals the interruption.
+      A prompt, a wake or a tool call after the notice means the session moved on.
+    - Only CLI-written notices count. A tool result or a completed notice that quotes the stop
+      sentence is not one; a grouped "N background agents" notice is.
+    - Completion is matched by the launch's task ID (`agentId:` / `with ID:`) as well as its
+      `tool_use` id.
+    - A Monitor's deadline uses the 300 s default and the 30 min ceiling.
+    - Several notice-only turns, and an `isMeta` line inside one, are still set aside. A
+      `queued_command` prompt typed mid-turn is not.
+    - Three wakes with no human prompt in between stop further wakes across instances.
+    - `read_since()` reads a half-written line whole once it's finished, and reports one still
+      being written.
+    - In the settle step: a finished CLI notice turn still wakes; one still running gets one more
+      wait and then no wake; a tool call or a typed prompt during it cancels.
+
     **Opt-in rules.** `pinned`, a case-insensitive `cwd:` glob and `session:` all opt a session in.
     An exclude rule, an archived session and a disabled config always win. A session with no
     desktop metadata, or whose archived state is unknown, is never opted in. A config that can't be
     parsed, has an unknown rule (such as `"pinned,cwd:..."`) or has an out-of-range number is
-    disabled, with the reason given. The attempt cap is one file per session and counts only wakes
-    inside `maxAgeHours`.
+    disabled, with the reason given. The attempt cap is one file per session. It counts only wakes
+    inside `maxAgeHours` and since the current app instance started, so a new instance starts a
+    fresh count.
 
     **The hook's `decide()`:**
     - a recent, opted-in interruption wakes;
@@ -4839,7 +4898,13 @@ For a one-line navigational map of the test directory, see
     - a new message, `api-request` or `attachment` during the settle wait cancels the wake, but an
       app bookkeeping line does not;
     - these all skip: a `startup` source, an interruption past `maxAgeHours`, no matching rule, no
-      metadata, a disabled config and an invalid config.
+      metadata, a disabled config and an invalid config;
+    - the CLI's own stop-notice turn during the settle doesn't cancel the wake, and a lost
+      background task gets a "rerun it" message, but a user prompt during that turn still cancels;
+    - a wake from an earlier app instance doesn't count against the cap;
+    - a background wait 12.6 h old is still resumed under `maxWaitAgeHours` (48), a mid-turn
+      interruption that old is not (`maxAgeHours` 12), and a wait past 48 h is not
+      (dev-env#1189).
 
     **The launcher:**
     - the app start comes only from `WindowsApps\Claude_*\app\Claude.exe` with no `--type=`;
@@ -4872,7 +4937,41 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_auto_resume.py
     ```
 
-109. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`,
+109. **hook static-scan test** — required when adding or changing any `claude/scripts/*.py` that uses
+    subprocess or spawns Python, any hook command in `claude/settings.shared.json`, or
+    `claude/scripts/tests/test_hook_static_scans.py` itself (dev-env#1194, [ADR-007](adr/007-hook-command-invocation.md)).
+
+    The three ADR-007 static source scans, which need no console and so run in CI:
+    - every hook command runs `pyw -3` through `hook-launch.py` (ADR-148), alone or with the
+      dispatcher and its handlers (ADR-151), and every script it names exists and parses;
+    - every `claude/scripts/*.py` that uses subprocess imports `_winsubp` (only `_winsubp.py` is
+      exempt);
+    - no `claude/scripts/*.py` spawns Python through `py` / `py.exe` as argv[0] of a
+      `subprocess.<spawn>([...])` call.
+
+    They used to live in `test_pyw_stdio.py` (item 2). `run-hook-tests.py` skips that whole file
+    because its `pythonw.exe` probes need a console, so CI never ran the scans. `_auto_resume.py`
+    then merged without `import _winsubp` and stayed red on `main` until a local run caught it
+    (dev-env#1191).
+
+    **Calibration (ADR-144).** Each scan is a function over a directory. Fixture tests run the same
+    function on a temporary directory:
+    - the `_winsubp` scan must report a `subprocess.run` module and a `from subprocess import run`
+      module, both without the import, and must pass a module that has it. A comment mentioning
+      `_winsubp` does not count as the import. A `_winsubp.py` in the fixture is exempt, and a
+      module with no subprocess use is not counted.
+    - the `py` scan must report `['py', ...]` and `('PY.EXE', ...)` spawns, and a file that does
+      not parse (it would otherwise go unchecked), and must pass a `sys.executable` spawn.
+
+    Each real-directory scan also fails if it examined no files, so an empty glob cannot pass.
+
+    Out of scope: string commands such as `shell=True` with `"py -3 ..."`.
+
+    ```bash
+    py -3 claude/scripts/tests/test_hook_static_scans.py
+    ```
+
+110. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`,
      `setup.sh`'s link arrays (the doctor's `LINKED_ITEMS` / `HOME_LINKS` are pinned against
      them), `claude/scripts/tests/_hook_wiring.py` (the doctor imports it), or the command form
      of the hooks in `claude/settings.shared.json`. Exercises the doctor's pure decision helpers
@@ -4884,8 +4983,8 @@ For a one-line navigational map of the test directory, see
      `_kill_tree()`, the thin I/O layer around the helpers, are deliberately untested, per the
      repo's no-subprocess-mock convention; the whole script was run live on this machine, online
      and offline, and in a sandboxed `HOME` for
-     [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114). (Numbered 109 because items
-     100–108 went to tests that merged to `main` while this one's PR was open.)
+     [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114). (Numbered 110 because items
+     100–109 went to tests that merged to `main` while this one's PR was open.)
 
      32 cases, passing on Python 3.12 and 3.10. `LINKED_ITEMS` and `HOME_LINKS` equal
      `setup.sh`'s four parsed link arrays, after asserting each parse extracted something — an
@@ -4915,8 +5014,10 @@ For a one-line navigational map of the test directory, see
      the journal / `origin/draft/<today>` matrix (an unreadable branch included, and advice that
      fetches and merges `origin/draft/<today>` by name and never pulls, per the
      [ADR-056](adr/056-per-session-sharding-journal-companion-files.md) addendum of 2026-10-31),
-     the board config, the routine-host flag (only JSON `true` counts; UTF-16 WARNs), a crashing
-     check becoming a FAIL line, and the exit code.
+     the board config (a missing one WARNs with the command that seeds it from the tracked
+     `claude/hook-config.shared.json`, [dev-env#669](https://github.com/brownm09/dev-env/issues/669)),
+     the routine-host flag (only JSON `true` counts; UTF-16 WARNs), a crashing check becoming a
+     FAIL line, and the exit code.
 
      ```bash
      py -3 claude/scripts/tests/test_dev_env_doctor.py

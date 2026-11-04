@@ -2,6 +2,7 @@
 
 **Date:** 2026-07-08
 **Status:** Accepted
+**Amended:** 2026-07-10, 2026-11-02
 **Tags:** hooks, stop-hook, transcript, dry, maintainability, shared-module, adr-064, adr-088
 
 ---
@@ -205,3 +206,14 @@ a hypothetical future caller would be speculative. `posttooluse-inert-advisory.p
 call was left untouched — the issue named it as one of the five hooks affected by the general "full parse
 on every hook fire" pattern, not as a caller with the same "only needs the tail" shape `idle-refresher.py`
 has; converting it, if warranted, is a separate, independently-scoped change.
+
+---
+
+## Amendment 2 (2026-11-02) — shared locate and scan helpers (dev-env#1169)
+
+The reader set grew by three: `resolve_transcript` (payload path, else `find_transcript`),
+`iter_tool_uses` (every assistant tool_use with its record index) and `iter_assistant_texts` (every
+assistant text item). Six Stop hooks now locate the transcript through `resolve_transcript`, and four
+of them (the tile gate, the stub checkpoint, the verdict gate and journal-stop-check) walk its tool calls
+and text through the two scans instead of their own loops. Rationale, the one behavior edge (a directory `transcript_path`) and
+what was left alone: [ADR-050 Amendment 30](050-shared-hookio-sibling-hook-fixes.md).

@@ -65,7 +65,6 @@ import _hookout
 import _hookutil
 import re
 import sys
-from pathlib import Path
 
 # Shared transcript-record readers (ADR-090). `_result_text` is imported only so
 # it stays reachable as a module attribute for the existing test suite (the
@@ -342,11 +341,8 @@ def main() -> None:
     if session_id and _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).exists():
         sys.exit(0)
 
-    tpath_str = data.get("transcript_path") or ""
-    tpath = Path(tpath_str) if tpath_str else None
-    if (tpath is None or not tpath.exists()) and session_id:
-        tpath = _hookutil.find_transcript(session_id)
-    if tpath is None or not tpath.exists():
+    tpath = _hookutil.resolve_transcript(data.get("transcript_path") or "", session_id)
+    if tpath is None:
         sys.exit(0)
 
     try:

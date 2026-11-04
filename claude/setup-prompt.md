@@ -63,6 +63,8 @@ bash "$HOME/Git/dev-env/setup.sh"
 - Seed `~/.claude/settings.json` and set `core.hooksPath` globally, saving the previous values in
   the same backup directory. On a profile other than `C:\Users\brown` the seed withholds dev-env's
   hooks, because the launcher and scripts they name aren't there (see step 1)
+- Seed dev-env's gitignored `.claude/hook-config.json` (the project-board IDs) from the tracked
+  `claude/hook-config.shared.json`, only if it's missing
 - Finish by running `dev-env-doctor.py`, which checks the prerequisites (`py`, `pyw`, `gh`
   and its sign-in, `node`, git identity), and exit non-zero while it reports a FAIL
 
@@ -71,8 +73,7 @@ continuing. `bash setup.sh --restore <that backup directory>` undoes the run.
 
 ## 4. Finish and verify
 
-Ask me to copy `.claude/hook-config.json` from `~/Git/dev-env/` on my other
-machine into the same path here (it holds project-board IDs). Then:
+Run the doctor:
 
 ```bash
 py -3 ~/.claude/scripts/dev-env-doctor.py

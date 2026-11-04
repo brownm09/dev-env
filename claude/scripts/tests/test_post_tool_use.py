@@ -806,6 +806,122 @@ def test_main_exit_code_zero_proceeds_past_gate_to_no_url_advisory() -> str:
     return "genuine top-level create + exitCode==0, no URL in output -> exit 2 advisory (detection fired)"
 
 
+# ---------------------------------------------------------------------------
+# dev-env#669: dev-env's hook-config.json is gitignored and machine-local, and on
+# one machine it was never created, so every dev-env create exited 0 silently.
+# The config now has a tracked source; with no config resolved, a create that
+# lands in that source's repo must warn (exit 2) instead of vanishing.
+# ---------------------------------------------------------------------------
+
+SHARED = {"repo": REPO, "project_number": "3", "project_owner": "brownm09"}
+
+
+def _write_shared(tmp_root: str, data) -> str:
+    path = os.path.join(tmp_root, "hook-config.shared.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    return path
+
+
+def test_expected_opt_in_config_matches_tracked_repo() -> str:
+    with tempfile.TemporaryDirectory() as tmp_root:
+        path = _write_shared(tmp_root, SHARED)
+        got = post_tool_use.expected_opt_in_config(URL, path)
+    assert got == SHARED, f"expected the tracked config, got {got!r}"
+    return "created item in the tracked repo -> tracked config returned"
+
+
+def test_expected_opt_in_config_other_repo_is_none() -> str:
+    with tempfile.TemporaryDirectory() as tmp_root:
+        path = _write_shared(tmp_root, SHARED)
+        got = post_tool_use.expected_opt_in_config(OTHER_REPO_URL, path)
+    assert got is None, f"another repo must keep the silent skip, got {got!r}"
+    return "created item in another repo -> None (silent skip kept)"
+
+
+def test_expected_opt_in_config_unusable_source_is_none() -> str:
+    with tempfile.TemporaryDirectory() as tmp_root:
+        missing = os.path.join(tmp_root, "absent.json")
+        incomplete = _write_shared(tmp_root, {"repo": REPO})
+        assert post_tool_use.expected_opt_in_config(URL, missing) is None
+        assert post_tool_use.expected_opt_in_config(URL, incomplete) is None
+    return "missing source, or one lacking project_number/owner -> None, never a raise"
+
+
+def test_tracked_shared_config_names_dev_env_board() -> str:
+    # The real tracked source is what the loud check and the seed both read.
+    shared = _read_config(str(REPO_ROOT / "claude" / "hook-config.shared.json"))
+    assert shared is not None, "claude/hook-config.shared.json must parse"
+    assert shared["repo"] == REPO and shared["project_number"] == "3", shared
+    assert shared["project_owner"] == "brownm09", shared
+    names = [f["name"] for f in shared["required_fields"]]
+    assert names == ["Impact", "Why"], f"dev-env CLAUDE.md requires Impact and Why, got {names}"
+    return "tracked source: brownm09/dev-env -> project #3, Impact + Why required"
+
+
+def _no_config_create_payload(cwd: str, stdout: str) -> dict:
+    return {
+        "tool_name": "Bash",
+        "tool_input": {"command": "gh issue create --title t --body-file b.md"},
+        "tool_response": {"stdout": stdout, "stderr": "", "exitCode": 0},
+        "cwd": cwd,
+    }
+
+
+def test_main_no_config_dev_env_item_warns() -> str:
+    # The #669 reproduction: a tmp cwd with no config anywhere, a dev-env URL out.
+    with tempfile.TemporaryDirectory() as tmp_root:
+        result = _run_hook(_no_config_create_payload(tmp_root, URL))
+    assert result.returncode == 2, (
+        f"expected exit 2 (loud no-config warning), got {result.returncode}: {result.stderr!r}"
+    )
+    assert "NOT added to project #3" in result.stderr, result.stderr
+    assert f"gh project item-add 3 --owner brownm09 --url {URL}" in result.stderr, result.stderr
+    assert "_settings_sync.py" in result.stderr, result.stderr
+    assert result.stderr.isascii(), "hook output must stay ASCII (ADR-103 gate)"
+    return "no config + dev-env item -> exit 2 with the seed and item-add commands (#669)"
+
+
+def test_main_no_config_other_repo_item_is_silent() -> str:
+    with tempfile.TemporaryDirectory() as tmp_root:
+        result = _run_hook(_no_config_create_payload(tmp_root, OTHER_REPO_URL))
+    assert result.returncode == 0, f"expected exit 0, got {result.returncode}: {result.stderr!r}"
+    assert result.stderr == "", f"expected no stderr output, got {result.stderr!r}"
+    return "no config + item in a repo with no tracked source -> exit 0, silent"
+
+
+def _other_repo_config_cwd(tmp_root: str) -> str:
+    # An onboarded project whose own config wins over any --repo target (ADR-077).
+    cfg_dir = os.path.join(tmp_root, ".claude")
+    os.makedirs(cfg_dir, exist_ok=True)
+    with open(os.path.join(cfg_dir, "hook-config.json"), "w", encoding="utf-8") as f:
+        json.dump({"repo": "someone/other-repo", "project_number": "999", "project_owner": "x"}, f)
+    return tmp_root
+
+
+def test_main_other_repo_cwd_config_dev_env_item_warns() -> str:
+    # PR #1187 review: a `--repo brownm09/dev-env` create from another onboarded
+    # project resolves that project's config, misses its repo filter, and used to
+    # take the silent "different repo" exit even though the item is a dev-env one.
+    with tempfile.TemporaryDirectory() as tmp_root:
+        result = _run_hook(_no_config_create_payload(_other_repo_config_cwd(tmp_root), URL))
+    assert result.returncode == 2, (
+        f"expected exit 2 (loud warning), got {result.returncode}: {result.stderr!r}"
+    )
+    assert "NOT added to project #3" in result.stderr, result.stderr
+    assert f"gh project item-add 3 --owner brownm09 --url {URL}" in result.stderr, result.stderr
+    return "cwd config for another repo + dev-env item -> exit 2 warning, not the silent skip"
+
+
+def test_main_other_repo_cwd_config_third_repo_item_is_silent() -> str:
+    third = "https://github.com/third/party/issues/9"
+    with tempfile.TemporaryDirectory() as tmp_root:
+        result = _run_hook(_no_config_create_payload(_other_repo_config_cwd(tmp_root), third))
+    assert result.returncode == 0, f"expected exit 0, got {result.returncode}: {result.stderr!r}"
+    assert result.stderr == "", f"expected no stderr output, got {result.stderr!r}"
+    return "cwd config for another repo + item in a third repo -> exit 0, silent (unchanged)"
+
+
 def test_main_help_only_issue_create_is_silent() -> str:
     # The dev-env#636 regression, end-to-end: before the fix, this exact
     # payload reached the "no GitHub URL found" exit-2 advisory (reproduced
@@ -1136,6 +1252,14 @@ def main() -> int:
         ("extract_repo_flag: quoted --title decoy URL not hijacked (#838)", test_extract_repo_flag_quoted_url_decoy_not_hijacked),
         ("main(): exitCode!=0 short-circuits even when create detected", test_main_exit_code_nonzero_short_circuits_even_when_create_detected),
         ("main(): exitCode==0 proceeds to no-URL advisory", test_main_exit_code_zero_proceeds_past_gate_to_no_url_advisory),
+        ("expected opt-in: tracked repo matched (dev-env#669)", test_expected_opt_in_config_matches_tracked_repo),
+        ("expected opt-in: other repo -> None (dev-env#669)", test_expected_opt_in_config_other_repo_is_none),
+        ("expected opt-in: unusable source -> None (dev-env#669)", test_expected_opt_in_config_unusable_source_is_none),
+        ("tracked hook-config.shared.json names the dev-env board (dev-env#669)", test_tracked_shared_config_names_dev_env_board),
+        ("main(): no config + dev-env item -> loud warning (dev-env#669)", test_main_no_config_dev_env_item_warns),
+        ("main(): no config + other-repo item -> silent (dev-env#669)", test_main_no_config_other_repo_item_is_silent),
+        ("main(): other-repo cwd config + dev-env item -> loud (PR #1187 review)", test_main_other_repo_cwd_config_dev_env_item_warns),
+        ("main(): other-repo cwd config + third-repo item -> silent", test_main_other_repo_cwd_config_third_repo_item_is_silent),
         ("main(): gh issue create --help -> silent (dev-env#636)", test_main_help_only_issue_create_is_silent),
         ("main(): gh pr create --help -> silent (dev-env#636)", test_main_help_only_pr_create_is_silent),
         ("main(): help-only issue-create chained with real pr-create still processes", test_main_chained_help_only_issue_create_and_real_pr_create_still_processes),
