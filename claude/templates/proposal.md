@@ -23,7 +23,6 @@ Avoid enumerating implementation steps here — those belong in the issue or ADR
 
 <!-- Format and extraction rules: ~/.claude/templates/acceptance-evidence.md -->
 
-
 ## Out of Scope
 
 - <item — explicitly excluded to prevent scope creep>
