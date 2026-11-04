@@ -82,7 +82,7 @@ the item). A one-line navigational map of the test directory is
 46. **check-journal-compose-liveness test** — required when changing `claude/scripts/check-journal-compose-liveness.py`. Run: `py -3 claude/scripts/tests/test_check_journal_compose_liveness.py`
 47. **disk-space-check test** — required when changing `claude/scripts/disk-space-check.py`. Run: `py -3 claude/scripts/tests/test_disk_space_check.py`
 48. **stop-tile-enumeration-gate test** — required when changing `claude/scripts/stop-tile-enumeration-gate.py`. Run: `py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py`
-49. **setup-link-loop test** — required when changing `setup.sh`'s `CLAUDE_FILE_LINKS` / `CLAUDE_DIR_LINKS` arrays or its `link_claude_windows()` / `link_claude_unix()` functions. Run: `bash claude/scripts/tests/test-setup-link-loop.sh`
+49. **setup-link-loop test** — required when changing `setup.sh`'s link arrays (`CLAUDE_FILE_LINKS` / `CLAUDE_DIR_LINKS` / `CLAUDE_JUNCTION_LINKS` / `HOME_LINKS`), its `link_claude_windows()` / `link_claude_unix()` functions, its backup/restore path (`prepare_link_target`, `restore_setup_backup` and its helpers, `set_hooks_path`, the settings.json capture in `seed_claude_settings`), its Windows preflight (`preflight_windows`, `symlink_probe`, `cmd_safe_path`), `win_cmd`, or its dispatch guard. Run: `bash claude/scripts/tests/test-setup-link-loop.sh`
 50. **journal-stop-check test** — required when changing `claude/scripts/journal-stop-check.py`. Run: `py -3 claude/scripts/tests/test_journal_stop_check.py`
 51. **idle-refresher test** — required when changing `claude/scripts/idle-refresher.py`. Run: `py -3 claude/scripts/tests/test_idle_refresher.py`
 52. **pre-auto-merge-checkpoint-gate test** — required when changing `claude/scripts/pre-auto-merge-checkpoint-gate.py`. Run: `py -3 claude/scripts/tests/test_pre_auto_merge_checkpoint_gate.py` + `bash claude/scripts/tests/test-auto-merge-checkpoint-gate.sh`
@@ -94,7 +94,7 @@ the item). A one-line navigational map of the test directory is
 58. **stop-journal-stub-checkpoint test** — required when changing `claude/scripts/stop-journal-stub-checkpoint.py`. Run: `py -3 claude/scripts/tests/test_stop_journal_stub_checkpoint.py`
 59. **pre-bash-drift-check test** — required when changing `claude/scripts/pre-bash-drift-check.py`. Run: `py -3 claude/scripts/tests/test_pre_bash_drift_check.py`
 60. **_hookout emitter test** — required when changing `claude/scripts/_hookout.py`. Run: `py -3 claude/scripts/tests/test_hookout.py`
-61. **hook output-contract + ASCII-literal gate** — required when changing `claude/scripts/tests/test_hook_output_contract.py` or the shared `claude/scripts/tests/_hook_wiring.py` (the settings.json parser all three PR3 gates — items 61/62/63 — share; run all three when changing it). Run: `py -3 claude/scripts/tests/test_hook_output_contract.py`
+61. **hook output-contract + ASCII-literal gate** — required when changing `claude/scripts/tests/test_hook_output_contract.py` or the shared `claude/scripts/tests/_hook_wiring.py` (the settings.json parser all three PR3 gates — items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 110 when changing it). Run: `py -3 claude/scripts/tests/test_hook_output_contract.py`
 62. **hook safe-exit structural gate** — required when changing `claude/scripts/tests/test_hook_safe_exit_guard.py` (or `_hook_wiring.py`, item 61). Run: `py -3 claude/scripts/tests/test_hook_safe_exit_guard.py`
 63. **settings-hook wiring lint** — required when changing `claude/scripts/tests/test_settings_hook_wiring.py` (or `_hook_wiring.py`, item 61) or the `hooks` block of `claude/settings.json`. Run: `py -3 claude/scripts/tests/test_settings_hook_wiring.py`
 64. **run-hook-tests runner test** — required when changing `claude/scripts/run-hook-tests.py`. Run: `py -3 claude/scripts/tests/test_run_hook_tests.py`
@@ -143,6 +143,7 @@ the item). A one-line navigational map of the test directory is
 107. **hook-dispatch test** — required when changing `claude/scripts/hook-dispatch.py`, or which hooks a dispatcher command runs in `claude/settings.shared.json` (also run items 2, 61-63, 67, 68 and 98 then). The in-process dispatcher that runs a group of hooks in one process ([ADR-151](docs/adr/151-in-process-hook-dispatcher.md), dev-env#851). Run: `py -3 claude/scripts/tests/test_hook_dispatch.py`
 108. **auto-resume test** — required when changing `claude/scripts/_auto_resume.py`, `session-start-auto-resume.py`, `auto-resume-launcher.py` or `register-auto-resume.ps1`. These continue desktop sessions a reboot or app crash cut off mid-turn ([ADR-152](docs/adr/152-auto-resume-interrupted-desktop-sessions.md), dev-env#1182). Run: `py -3 claude/scripts/tests/test_auto_resume.py`. When changing `register-auto-resume.ps1`, also parse-check it and do the manual steps in docs/TESTING.md item 108.
 109. **hook static-scan test** — required when adding or changing any `claude/scripts/*.py` that uses subprocess or spawns Python, or any hook command in `claude/settings.shared.json`. The ADR-007 static scans (every hook runs `pyw -3` through the launcher and resolves, every subprocess-using script imports `_winsubp`, none spawns Python via `py`), split out of item 2 so CI runs them (dev-env#1194). Run: `py -3 claude/scripts/tests/test_hook_static_scans.py`
+110. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`, `setup.sh`'s link arrays (the doctor's `LINKED_ITEMS` / `HOME_LINKS` are pinned against them), `claude/scripts/tests/_hook_wiring.py` (the doctor imports it), or the command form of the hooks in `claude/settings.shared.json` (the doctor checks every file a command names: the ADR-148 launcher, the ADR-151 dispatcher and each handler it runs). Run: `py -3 claude/scripts/tests/test_dev_env_doctor.py`
 
 ## Observability
 
@@ -202,11 +203,15 @@ When a PR modifies any of the paths below, update the listed reference docs **in
 | Path | dev-env source |
 |---|---|
 | `~/.claude/CLAUDE.md` | `claude/CLAUDE.md` |
-| `~/.claude/scripts/` | `claude/scripts/` (directory junction) |
-| `~/.claude/skills/` | `claude/skills/` (directory junction) |
-| `~/.claude/hooks/` | `claude/hooks/` (directory junction) |
+| `~/.claude/scripts/` | `claude/scripts/` (directory symlink) |
+| `~/.claude/skills/` | `claude/skills/` (directory symlink) |
+| `~/.claude/hooks/` | `claude/hooks/` (directory symlink) |
 | `~/.claude/routines/` | `claude/routines/` (directory junction) |
-| `~/.claude/templates/` | `claude/templates/` (directory junction) |
+| `~/.claude/templates/` | `claude/templates/` (directory symlink) |
+
+`setup.sh` creates these (installs older than it may hold junctions instead — both resolve the
+same). `py -3 ~/.claude/scripts/dev-env-doctor.py` verifies the whole layout on any machine; adding
+a second one: [`docs/REFERENCE.md` → Adding a Second Machine](docs/REFERENCE.md#adding-a-second-machine).
 
 **Machine-local only — never commit:**
 
@@ -233,7 +238,7 @@ Terminal panel's shell, which expands neither `~` nor `&&`.
 symlink into this repo ([ADR-139](docs/adr/139-machine-local-settings-with-shared-source-sync.md)).
 It used to be symlinked, which made the app dirty a tracked file and blocked the canonical's
 fast-forward *permanently* — serving stale hooks and skills machine-wide, since
-`~/.claude/{scripts,skills,hooks}` are junctions into that same checkout (dev-env#1049).
+`~/.claude/{scripts,skills,hooks}` are links into that same checkout (dev-env#1049).
 
 dev-env tracks `claude/settings.shared.json` instead and syncs it **into** the live file.
 Which keys belong where:
