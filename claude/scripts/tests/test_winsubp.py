@@ -16,7 +16,7 @@ project item-add`'s stdout, because `subprocess.run(..., text=True)` with no
 Windows) rather than UTF-8. `canonical_root_via_git()` in the same file and
 `confirm_merge_via_gh()` in `_hookio.py` had the identical gap. All three
 (and every other subprocess-using script in claude/scripts/, since the
-existing `test_pyw_stdio.py` guard already requires every one of them to
+existing `test_hook_static_scans.py` guard already requires every one of them to
 import `_winsubp`) are fixed by this one change to the shared patch, rather
 than by editing each call site — see ADR-007's 2026-07-02 follow-up.
 

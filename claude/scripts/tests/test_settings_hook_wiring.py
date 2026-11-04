@@ -22,8 +22,8 @@ truncated (gotcha #5). This gate enforces, for EVERY (event, matcher, hook) entr
      a hook may declare a longer timeout, never a shorter one.
 
 The `pyw -3` invocation invariant (authoring rule 3) is deliberately NOT re-checked
-here -- `test_pyw_stdio.py`'s `test_all_settings_hooks_use_pyw_and_resolve_to_repo`
-already gates it statically (and exercises the real `pyw` stdio behavior). The
+here -- `test_hook_static_scans.py`'s `test_all_settings_hooks_use_pyw_and_resolve_to_repo`
+already gates it statically (`test_pyw_stdio.py` exercises the real `pyw` stdio behavior). The
 resolution check below overlaps that test's resolution half by design: resolving a
 script is the precondition for computing its `_winsubp`-based budget, and the plan
 names resolution as a wiring-lint requirement.

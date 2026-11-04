@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 97 `test_*.py` files, 11 bash gates, and
-two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 110 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 98 `test_*.py` files, 11 bash gates, and
+two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 111 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -57,7 +57,7 @@ test-support infrastructure, not production code.
 | `test_settings_sync.py` | `_settings_sync.py` | The owned/seed/machine-local split that keeps `~/.claude/settings.json` a real, app-owned file while dev-env still ships `hooks`/`permissions` (ADR-139). Pins that app-written keys survive a sync, that owned keys are *replaced* (so a silently-dropped `permissions.allow` entry cannot persist), that seed keys are presence-checked (so a `/config` change sticks), the ADR-079 backup/anchor/read-back discipline, and the symlink migration — including the cross-checkout case an earlier detector silently skipped. |
 | `test_shell_write_detect.py` | `_shell_write_detect.py` | Shared shell-syntax primitives (quote masking with `<<` neutralization, redirect-target finding, POSIX/PowerShell tokenizers) extracted as a pure move from the ADR-129 journal guard for ADR-138's sibling to share. Item 94 runs the ADR-129 suite alongside it — that suite passing unchanged is the extraction's safety claim. |
 | `test_skill_file_size.py` | `_skill_file_size.py` | Shared `SKILL.md` basename match and `.claude/hook-config.json` loader (`(warn_bytes, limit_bytes)`, one fallback contract) used by both size-guard hooks (ADR-127). |
-| `test_winsubp.py`, `test_pyw_stdio.py` | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning hook applies; the latter probes real `pyw -3` stdio behavior end-to-end. |
+| `test_winsubp.py`, `test_pyw_stdio.py` | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning hook applies; the latter probes real `pyw -3` stdio behavior end-to-end (local only; CI skips it). |
 | `test_worktree_canon.py` | `_worktree_canon.py` | Shared worktree-path-to-canonical-root regex/resolution, used by the project-board hook pair and the two PreToolUse worktree guards. |
 | `test_worktree_liveness.py` | `_worktree_liveness.py` | Active-session liveness check that stops prune/reclaim routines from severing a worktree with a live Claude Code session in it. |
 | `test_worktree_recovery.py` | `_worktree_recovery.py` | Orphaned-worktree recovery recipe: renders it (destructive step kept out of the numbered sequence), pins `docs/REFERENCE.md`'s runbook to it by equality over runnable lines, and blocks the dev-env#751-disproven `worktree add --force`/`-f` form from every live surface. |
@@ -75,6 +75,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_hook_heartbeat_guard.py` | every wired hook | Structural gate: every wired hook calls `_hookutil.record_heartbeat("<own-name>")` as the first statement of `main()`. |
 | `test_hook_heartbeat_isolation.py` | every test that runs a wired hook | Structural gate: a test file that runs a real hook (subprocess or `<module>.main()`) isolates the heartbeat ledger via `_heartbeat_isolation.py` or the override variable, so no test writes `~/.claude/scratch/hook-heartbeat/` (dev-env#1163). Calibrated against known-bad and known-good fixtures. |
 | `test_hook_output_contract.py` | every wired hook | AST gate: no hook emits to a stream/exit-code combination Claude Code actually discards (stderr-on-exit-0, stdout-on-exit-2, `additionalContext` on a non-context event). |
+| `test_hook_static_scans.py` | every wired hook, all `claude/scripts/*.py` | The ADR-007 static scans, run in CI: every hook runs `pyw -3` through the launcher and resolves; every subprocess-using script imports `_winsubp`; none spawns Python via `py`. Known-bad fixtures prove each scan can fail (dev-env#1194). |
 | `test_hook_safe_exit_guard.py` | every wired hook | Structural gate: every wired hook has a top-level `try/except` in `__main__` that deterministically exits in its declared fail direction (open vs. closed). |
 | `test_no_crude_command_substring_checks.py` | all `claude/scripts/*.py` | AST gate against `if "<cli>" not in command`-shaped string checks that false-match inside heredocs/quotes/subshells — the recurring false-positive class behind many ADR-050 amendments. |
 | `test_run_hook_tests.py` | `run-hook-tests.py` | Tests the pure discovery/classification helpers behind the test-suite runner itself — the engine behind `py -3 claude/scripts/run-hook-tests.py` and the `hook-tests` CI workflow. |
