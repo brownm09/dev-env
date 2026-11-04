@@ -524,8 +524,10 @@ follow the schema exactly rather than adapting it. Decision record:
      issue (global `claude/CLAUDE.md` → Git Workflow), or link the issue with `Closes #N`.
 6. **Emit** the schema §3 marker in Step 8, whatever the outcome.
 
-**Calibration.** Before this step was allowed to block, it was run on 6 known-good and 6
-known-bad merged PRs. The hit rates and the corpus are in ADR-153 → *Calibration*. If the step
+**Calibration.** Before this step was allowed to block, it was scored blind on 13 known-good and
+11 known-bad merged PRs from dev-env, career-playbook, and lifting-logbook. It blocked 0 of the 13
+good PRs and 10 of the 11 bad ones; on the 10-PR held-out subset the rules were not tuned on, it
+blocked 0 of 6 good and 3 of 4 bad. The corpus and per-PR results are in ADR-153 → *Calibration*. If the step
 later shows a false block on a PR that did meet its criteria, record it there and treat `not met`
 as non-blocking until the step is recalibrated (Pass 3 Gate calibration, ADR-144).
 

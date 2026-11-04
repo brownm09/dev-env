@@ -110,6 +110,14 @@ wrong (ADR-153 → *Calibration*):
    the PR body (`Tests: N passed, ...`), count as command-plus-output evidence. A bare claim
    ("tested locally", "verified") does not.
 
+**Precedence.** An admission with no link (rule 2) outranks rules 3 and 6. "Done post-merge" or
+"held open until X", with no linked issue, is `not met`, even when the work is the post-merge or
+conditional kind.
+
+**Closing keywords** are read as GitHub reads them. A negated or quoted `Closes #N` ("**Not**
+`Closes #N`") still closes the issue on merge, so the issue counts as linked and its criteria
+are scored.
+
 **Not every row `not verifiable`.** If every row of a `parsed` table is `not verifiable` and none
 cites a linked follow-up, report it as `not met` on the first row. A PR that closes an issue while
 verifying none of it has not shown that it did the work.
