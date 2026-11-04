@@ -287,7 +287,14 @@ For a one-line navigational map of the test directory, see
     `--repo`/URL buried in a quoted `--title`/`--body` value does not hijack the real trailing
     flag (captured by the old unmasked regex); the pre-existing dev-env#544 URL/host-prefix
     cases now pass unchanged through the widened shared `repo_from_flag`. See
-    [ADR-111 Amendment 1](adr/111-shared-repo-target-resolution.md).
+    [ADR-111 Amendment 1](adr/111-shared-repo-target-resolution.md). Also (dev-env#669,
+    [ADR-052 Amendment 2](adr/052-worktree-config-canonical-fallback.md)) pins the loud
+    no-config path: `expected_opt_in_config()` returns the tracked source only for an item in its
+    `repo`, and returns None for another repo or for a source that is missing or lacks the project
+    fields. The real `claude/hook-config.shared.json` is asserted to name project #3 with Impact and
+    Why. A `main()` end-to-end pair runs a config-less temp cwd: a dev-env issue URL exits 2 with
+    ASCII stderr carrying the seed command and the exact `gh project item-add`, and `origin/main`
+    exited 0 silently on that same payload. Another repo's URL stays exit 0 and silent.
 
     ```bash
     py -3 claude/scripts/tests/test_post_tool_use.py
@@ -4109,6 +4116,12 @@ For a one-line navigational map of the test directory, see
     on the shipped file it reaches every entry the parsed JSON holds (and more than zero), so a walk
     that silently skipped a level could not pass as clean. `test_pyw_stdio.py` (item 2) walks the
     same block through it.
+
+    **Hook-config seed (dev-env#669, [ADR-052 Amendment 2](adr/052-worktree-config-canonical-fallback.md)).**
+    `seed_hook_config` writes the tracked source to an absent live path and the result equals the
+    source. An existing live copy, including a machine's own `turn_threshold`, is a skip that leaves it
+    untouched (write-if-absent). An unreadable source returns a named error and writes nothing. The real
+    `claude/hook-config.shared.json` is asserted to parse. Run this item when changing that file too.
 
     ```bash
     py -3 claude/scripts/tests/test_settings_sync.py

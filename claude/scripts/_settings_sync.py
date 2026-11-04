@@ -116,6 +116,10 @@ BACKUP_DIR = Path.home() / ".claude" / "backups"
 LAUNCHER_SRC = _CLAUDE_DIR / "scripts" / "_hook_launch.py"
 LAUNCHER_DEST = Path.home() / ".claude" / "hook-launch.py"
 
+# The tracked source of dev-env's own .claude/hook-config.json (dev-env#669). That file
+# is machine-local, since .gitignore ignores all of .claude/, so a machine where nobody
+# created it by hand silently left every dev-env issue and PR off project #3.
+HOOK_CONFIG_SHARED_PATH = _CLAUDE_DIR / "hook-config.shared.json"
 
 
 def py_tokens(command: str) -> "list[str]":
@@ -548,6 +552,33 @@ def write_json_verified(path: Path, data: dict) -> None:
         raise OSError(f"read-back verification failed for {path}")
 
 
+def seed_hook_config(
+    shared_path: Path = HOOK_CONFIG_SHARED_PATH, live_path: "Path | None" = None
+) -> "tuple[bool, str | None]":
+    """Copy the tracked hook config to the canonical's `.claude/hook-config.json` when
+    that file is absent; return (seeded, error). Never raises.
+
+    Write-if-absent only (ADR-079 rule 3): an existing live file is never read, compared
+    or rewritten, so a machine's own tuning keys (turn_threshold and the like) stick, and
+    with no prior state there is nothing to back up. Worktrees need no copy of their own:
+    post-tool-use.py's load_config falls back to the canonical's (ADR-052).
+    """
+    live_path = Path(live_path) if live_path is not None else (
+        Path(canonical_repo()) / ".claude" / "hook-config.json"
+    )
+    if live_path.exists():
+        return False, None
+    shared = read_json(shared_path)
+    if shared is None:
+        return False, f"could not read {shared_path}"
+    try:
+        live_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json_verified(live_path, shared)
+    except OSError as exc:
+        return False, f"could not create {live_path}: {exc}"
+    return True, None
+
+
 def sync(
     shared_path: Path = SHARED_PATH,
     live_path: Path = LIVE_PATH,
@@ -688,4 +719,11 @@ if __name__ == "__main__":
         print(outcome.note)
     if not outcome.error and not outcome.changed and not outcome.migrated and not outcome.note:
         print("[settings-sync] Already in sync - no change.")
+    seeded, seed_error = seed_hook_config()
+    if seed_error:
+        print(f"[settings-sync] WARNING: hook-config seed skipped - {seed_error}")
+    if seeded:
+        print("[settings-sync] Seeded .claude/hook-config.json from claude/hook-config.shared.json.")
+    # The status reflects the settings sync alone: setup.sh reads non-zero as "settings.json
+    # seeding failed", and a seed failure is already named by its own WARNING line above.
     sys.exit(1 if outcome.error else 0)

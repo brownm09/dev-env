@@ -587,6 +587,29 @@ with Env() as env:
           "fresh machine: other owned and seed keys still written")
     check("not-here.py" in (result.note or ""), "fresh machine: the missing script is named")
 
+# dev-env#669: the tracked hook config is seeded into a canonical that lacks one, and an
+# existing live copy is never touched (write-if-absent, ADR-079 rule 3).
+with Env() as env:
+    hc_shared = env.root / "hook-config.shared.json"
+    write_json(hc_shared, {"repo": "brownm09/dev-env", "project_number": "3"})
+    hc_live = env.root / "canonical" / ".claude" / "hook-config.json"
+    seeded, err = _settings_sync.seed_hook_config(hc_shared, hc_live)
+    check(seeded and err is None, "hook-config: absent live copy is seeded")
+    check(_settings_sync.read_json(hc_live) == {"repo": "brownm09/dev-env", "project_number": "3"},
+          "hook-config: seeded copy equals the tracked source")
+    write_json(hc_live, {"repo": "brownm09/dev-env", "project_number": "3", "turn_threshold": 80})
+    again, err = _settings_sync.seed_hook_config(hc_shared, hc_live)
+    check(not again and err is None, "hook-config: existing live copy is a skip, not a change")
+    check(_settings_sync.read_json(hc_live).get("turn_threshold") == 80,
+          "hook-config: a machine's own keys in the live copy survive")
+    hc_live.unlink()
+    hc_shared.unlink()
+    seeded, err = _settings_sync.seed_hook_config(hc_shared, hc_live)
+    check(not seeded and err and "could not read" in err and not hc_live.exists(),
+          "hook-config: unreadable source -> error reported, nothing written")
+check(_settings_sync.read_json(_settings_sync.HOOK_CONFIG_SHARED_PATH) is not None,
+      "hook-config: the real tracked claude/hook-config.shared.json parses")
+
 # Calibration (ADR-144): known-good = the real shipped hooks with their paths remapped into
 # this repo (all must resolve); known-bad = the same with one script removed.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
