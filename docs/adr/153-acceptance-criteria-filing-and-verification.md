@@ -132,7 +132,7 @@ re-derive them from the PR list above.
 - **Known miss (false pass), lifting-logbook PR 212.** Criterion 4, the manual Tempo check, was
   deferred to #207, which built the stack the check needed but did not track running it. Under
   rule 1, a link to any issue counts as a deferral. Tightening that, so the linked issue must
-  name the criterion as its own work, is an open refinement. It was not applied here, because it
+  name the criterion as its own work, is an open refinement ([dev-env#1197](https://github.com/brownm09/dev-env/issues/1197)). It was not applied here, because it
   would be tuned on the held-out case it fixes. The miss is in the safe direction: a pass, not a
   false block.
 - **Precedence clarifications added after round 2,** for two collisions the round-2 scorer
@@ -154,4 +154,4 @@ and demote `not met` to non-blocking until recalibrated (Step 2g → *Calibratio
   non-blocking until recalibrated.
 - The issue's remaining criterion, "one completed PR in each of dev-env, career-playbook, and
   lifting-logbook shows the table, and its linked issue shows ticked boxes or an evidence
-  comment", is post-merge by construction. It is tracked as a follow-up rather than claimed here.
+  comment", is post-merge by construction. It is tracked in [dev-env#1196](https://github.com/brownm09/dev-env/issues/1196) rather than claimed here.
