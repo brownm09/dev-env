@@ -1,6 +1,6 @@
 # ADR-041 — No Spawning New Terminal Windows in Windows Scripts
 
-**Date:** 2026-06-06
+**Date:** 2026-06-06 (amended 2026-11-05)
 **Status:** Accepted
 **Closes:** [dev-env#324](https://github.com/brownm09/dev-env/issues/324)
 **Tags:** code-quality, global-rule, windows, powershell, claude-behavior, review, sudo, uac, elevation
@@ -108,7 +108,7 @@ The script rule above stands: a script fails fast with `#Requires -RunAsAdminist
 | 5 | `sudo cmd /c "echo to-stderr 1>&2 & exit 5"` with stderr redirected | returned 5; the text landed in the redirect target, so stderr stays separate |
 | 6 | Polling for `consent.exe` during `sudo cmd /c "exit 0"` | `consent.exe` ran for about 2.3 s of a 3.1 s call |
 | 7 | `sudo cmd /c "exit 7"` from Git Bash, no prefix | `/c` reached `cmd` as `C:/` (confirmed by printing `argv`); an interactive elevated prompt opened and hung |
-| 8 | Row 7 with `</dev/null`, under `timeout 40` | still hung, until `timeout` killed `sudo` at 40 s; the elevated `cmd` survived and needed `sudo taskkill /PID <pid> /F` |
+| 8 | Row 7 with `</dev/null`, under `timeout 40` | still hung, until `timeout` killed `sudo` at 40 s; the elevated `cmd` survived, identified by name, a null `CommandLine` and a start time during the call, and needed `sudo taskkill /PID <pid> /F` |
 
 **UAC.** [Microsoft's documentation](https://learn.microsoft.com/en-us/windows/advanced-settings/sudo/) says a prompt opens for verification, and `sudo --help` says the same. The [source](https://github.com/microsoft/sudo/blob/main/sudo/src/run_handler.rs) elevates through `ShellExecuteExW` with the `runas` verb. So UAC is involved on every call, and the Inline-mode security risks Microsoft describes are the ones already accepted by enabling that mode. Row 6 shows the prompt process ran. It does not show what was on screen, and the 3–5 s calls don't say who answered. The [source](https://github.com/microsoft/sudo/blob/main/sudo/src/main.rs) maps a cancelled prompt to a printed message and a non-zero exit, which was read but not run, since declining needs a person.
 
