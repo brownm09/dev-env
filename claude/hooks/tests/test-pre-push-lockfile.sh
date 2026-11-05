@@ -1,5 +1,6 @@
 #!/bin/bash
-# Self-test for the lockfile-drift guard in claude/hooks/pre-push (dev-env#308, ADR-036).
+# Self-test for the lockfile-drift guard (dev-env#308, ADR-036) and the resurrected-draft
+# guard (dev-env#1205) in claude/hooks/pre-push.
 #
 # Drives the REAL hook against throwaway fixture repos with a stubbed `npm`, asserting:
 #   - BLOCK (exit 1) on a drifted lockfile

@@ -64,6 +64,11 @@ recovery pushes to it are still legitimate on the same calendar day. Stale-branc
 becomes a problem when a branch is pushed on a day after it was merged — the session that
 resurrected it is long gone and the orphaned commits are unattended.
 
+**Amendment (2026-11-05, [dev-env#1205](https://github.com/brownm09/dev-env/issues/1205)).** The
+merged-PR check now looks up both `draft/<D>` and `compose/<D>`. A day whose draft conflicted merges
+from `compose/<D>`, about half of merged days, and the single-head lookup let a push recreate those
+days' draft branches. This same-day exemption is unchanged.
+
 ---
 
 ## Consequences
