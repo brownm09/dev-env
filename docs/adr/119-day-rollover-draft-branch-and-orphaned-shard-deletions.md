@@ -197,7 +197,7 @@ A session that finds another session's stale edit commits it to its own day's br
 
 **Negative / accepted.** A session idle for over a day can have its edit committed for it. The content lands unchanged on the right branch, and that session's later commit simply carries less. A stale edit whose day has merged may repeat content already in the composed journal, which is cheaper than losing it.
 
-**Known gap.** `reconcile-late-stubs.py` still moves stubs without renaming them, so compose skips them. The rule carries a manual step until [dev-env#1203](https://github.com/brownm09/dev-env/issues/1203) lands.
+**Gap closed by [dev-env#1203](https://github.com/brownm09/dev-env/issues/1203).** `reconcile-late-stubs.py` used to move stubs without renaming them, so compose skipped them. It now renames each moved stub and manifest to the target branch's date, keeping `HHMMSS` and stepping it past another session's file. It finds the day's merge at both `draft/<D>` and `compose/<D>`, taking the latest: a composed file on `main` proves a day merged but not when, and the script needs the time to separate late commits. Across the journal's 192 composed days on 2026-11-05, 184 have a merged PR at one of those two heads. The other 8 are from 2026-06-27 or earlier, and for those the script stops with an error and keeps the branch.
 
 ### References (amendment)
 
