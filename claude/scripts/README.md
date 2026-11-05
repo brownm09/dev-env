@@ -182,7 +182,7 @@ invocation instead.
 | `keep-token-warm.ps1` | Scheduled-task payload (not run by hand) | Triggers a CLI OAuth-token refresh every few hours so `usage-snapshot.py` rarely needs an on-demand refresh — unless a desktop-app auth-status probe detects the refresh would be futile, in which case it exits early instead. |
 | `register-auto-resume.ps1` | `powershell -File register-auto-resume.ps1 [-Include ...] [-IntervalMinutes N] [-Unregister]` | Per-machine, run-once: creates the opt-in config if absent and registers the `ClaudeAutoResumeLauncher` task; `-Unregister` is the undo. |
 | `auto-resume-launcher.py` | Scheduled-task payload (`--dry-run` to preview) | After the Claude app starts, opens each opted-in session cut off mid-turn before that start with `claude://code/continue?session=`, so its auto-resume hook fires; skips sessions already running. |
-| `register-window-flash-monitor.ps1` | `powershell -File register-window-flash-monitor.ps1 [-Unregister]` | Per-machine, run-once: registers the hidden `ClaudeWindowFlashMonitor` logon task that keeps `window-flash-monitor.py` running. ADR-155. |
+| `register-window-flash-monitor.ps1` | `powershell -File register-window-flash-monitor.ps1 [-Unregister]` | Per-machine, run-once: registers the hidden `ClaudeWindowFlashMonitor` task that keeps `window-flash-monitor.py` running. ADR-155. |
 | `window-flash-monitor.py` | Scheduled-task payload; `py -3 window-flash-monitor.py --report [YYYY-MM-DD]` by hand | Records console flashes, the focus each one took and the process behind it, and reports them by day. Observes only. ADR-155. |
 
 ---

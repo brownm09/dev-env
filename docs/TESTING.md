@@ -5079,21 +5079,24 @@ For a one-line navigational map of the test directory, see
 
 113. **window-flash-monitor test** — required when changing `claude/scripts/window-flash-monitor.py` or
      `register-window-flash-monitor.ps1` (dev-env#1225, ADR-155). The default run is pure, over fixtures
-     modelled on what the real monitor logged: focus-loss timing, the source lookup order (a window's own
-     owner, then a pseudo console's owner, then the program named in the title), a process still nameable
-     after it exits, a reused parent pid, what counts as a flash, the title rule, retention, watching
-     stopping at the flash limit, and the report's counts and numbered rows. It also pins that an empty
-     log claims nothing and a missing log is an error, so neither reads as zero flashes.
+     modelled on what the real monitor logged: focus-loss timing and its bound, the source lookup order (a
+     window's own owner, then a pseudo console's owner on a name match and only once, then the program named
+     in the title), a process still nameable after it exits, a reused parent pid including at startup,
+     what counts as a flash, origin needing evidence, the title rule, retention and the size cap, write
+     failures, a flash across midnight, and the report's counts, numbered rows, gaps and errors. A timing
+     check keeps `find_flashes` from going quadratic. It also pins that an empty log claims nothing and a
+     missing log is an error, so neither reads as zero flashes.
 
      `--live` runs the real monitor against real windows and briefly takes focus, so it is local only,
-     like item 2. A `CREATE_NEW_CONSOLE` probe must be reported with the test in its source chain, proving
-     the recorder isn't blind. The same command under `CREATE_NO_WINDOW` must add no flash, proving it
-     doesn't over-count. A titled window started through WMI, outside Claude's process tree, must stay out
-     of the log. Other sessions may flash during the run, so only flashes with the test in their chain
-     count. Deliberately not covered: `register-window-flash-monitor.ps1` has no automated test, because
-     it changes real scheduled tasks. To check it by hand, register it twice, confirm one task and one
-     `pythonw.exe` monitor, then `-Unregister` and confirm both are gone. CI can't run `--live`, so a
-     regression in the Windows calls shows up only when it is run locally.
+     like item 2. The probes are uniquely named copies of `PING.EXE`, so another session's flash can't be
+     mistaken for one. The `CREATE_NEW_CONSOLE` copy must be reported with this test in its chain, proving
+     the recorder isn't blind. The `CREATE_NO_WINDOW` copy must add no flash, proving it doesn't over-count.
+     A titled window started through WMI, outside Claude's process tree, must stay out of the log, with the
+     monitor confirmed alive at that moment so the check can't pass vacuously. Deliberately not covered:
+     `register-window-flash-monitor.ps1` has no automated test, because it changes real scheduled tasks. To
+     check it by hand, register it twice, confirm one task and one `pythonw.exe` monitor, kill the monitor
+     and confirm it returns within 5 minutes, then `-Unregister` and confirm both are gone. CI can't run
+     `--live`, so a regression in the Windows calls shows up only when it is run locally.
 
      ```bash
      py -3 claude/scripts/tests/test_window_flash_monitor.py

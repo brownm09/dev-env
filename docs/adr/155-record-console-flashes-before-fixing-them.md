@@ -19,11 +19,12 @@ On this machine the default terminal is "Let Windows decide", and a new console 
 ## Decision
 
 1. **Measure first.** An always-on recorder, `claude/scripts/window-flash-monitor.py`, runs from a hidden logon task. Its report decides which fixes get filed. It changes nothing about how windows open.
-2. **Keep a process history so an exited process can still be named.** The monitor snapshots processes every 0.5 seconds and again when a console window appears, keeping each entry for 60 seconds after it exits. Each flash record carries the processes that had just started.
-3. **Name the source from what each window reports.** A classic console window and a `PseudoConsoleWindow` report the program using them as their owner. A Windows Terminal window reports only itself, so the fallback is the program named in its title, matched against the processes that had just started. Anything else is reported as unattributed and never as "not Claude".
-4. **Log as little as possible.** Titles are kept only for windows descended from `claude.exe`. A console window keeps only the program name found in its title. Other windows aren't logged, apart from the one foreground change that ends a flash's time in front, which has no title. This is narrower than logging every focus change, which would be a record of what the user was doing.
+2. **Keep a process history so an exited process can still be named.** The monitor snapshots processes every 0.5 seconds and again when a console or titled window is shown, keeping each entry for 60 seconds after it exits. Each flash record carries the processes that had just started. The first snapshot takes real start times from [`GetProcessTimes`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes), so a parent pid that has since been reused can't place a process under `claude.exe`.
+3. **Name the source from what each window reports.** A classic console window and a `PseudoConsoleWindow` report the program using them as their owner. A Windows Terminal window reports only itself, so the fallback is the program named in its title, matched against a pseudo console or the processes that had just started. A flash with no match is reported as unattributed. "From Claude" says no only when the chain reaches a known root, and unknown otherwise, because a chain cut off at an exited parent proves nothing.
+4. **Log as little as possible.** A window descended from `claude.exe` keeps its title when shown, and not each time it takes focus. A console window keeps only the program its title names, and only when the title is just that program. Foreground changes are logged only around a console window young enough to be a flash, so switching to an ordinary terminal leaves no record. Nothing else is logged. Logging every focus change would be a record of what the user was doing.
 5. **Watch young console windows directly instead of hooking every hide and name change.** The monitor hooks only show and foreground events, through [`SetWinEventHook`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook). While a console window is under 5 seconds old, the loop checks it every 20 ms.
-6. **Say what wasn't seen.** The report states the times the monitor was recording, and a missing log is an error rather than zero flashes.
+6. **Say what wasn't seen.** The report states the times the monitor was recording, any gap longer than twice its 5-minute beat, and that day's monitor errors. A missing log is an error rather than zero flashes.
+7. **Bring a dead monitor back with a repeating trigger.** The task is retried every 5 minutes, and `MultipleInstances IgnoreNew` drops the retry while the monitor runs. Task Scheduler's `RestartCount` setting was tried first and did not work: a script exiting 1 under the real task ran once in 200 seconds, with a 1-minute restart interval set. [Microsoft's page](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-restartonfailure-settingstype-element) doesn't define what counts as failure.
 
 ## Calibration
 
@@ -31,9 +32,11 @@ The monitor reports and never blocks, so it is not a gate, but its count is only
 
 | # | Reference | Input | Expected | Measured |
 |---|---|---|---|---|
-| 1 | Known-bad | `cmd.exe` started with `CREATE_NEW_CONSOLE` | One flash, with the test's process in its chain | 1, `cmd.exe < python.exe < py.exe` |
-| 2 | Known-good | The same command with [`CREATE_NO_WINDOW`](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags) | No flash | 0 |
+| 1 | Known-bad | A named copy of `PING.EXE` started with `CREATE_NEW_CONSOLE` | One flash, with the test's process in its chain | 1, `flashprobe-bad.exe < python.exe < py.exe` |
+| 2 | Known-good | Another named copy with [`CREATE_NO_WINDOW`](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags) | No flash | 0 |
 | 3 | Privacy | A titled window started through WMI, outside Claude's process tree | Title absent from the log | Absent |
+
+The task runs at Task Scheduler's default priority, below normal, and the probes don't. Under the real task on a busy machine, the monitor still attributed all 55 flashes it saw in 12 minutes, including one known-bad probe, so the priority isn't costing attribution at that load.
 
 The 5-second limit that defines a flash is a judgment, not a measurement. Flashes seen so far lasted 0.15 to 1.2 seconds, so it has room, and a console window a person opened on purpose and closed within 5 seconds would be miscounted.
 
@@ -56,6 +59,8 @@ Snapshotting every 0.1 seconds with hooks on hide, destroy and name-change event
 ## Consequences
 
 - A hidden task now runs all the time on any machine where it is registered, at about 3% of one core on a 16-thread machine. `-Unregister` removes it and keeps the logs.
-- Lookups can still miss. A parent that starts and exits between snapshots drops out of a chain, and a program that sets its own console title can defeat the name match. Such a flash reads as unattributed or with a shorter chain.
+- Lookups can still miss. A parent that starts and exits between snapshots drops out of a chain, and a program that sets its own console title can defeat the name match. Such a flash reads as unattributed or of unknown origin.
 - Two instances of one program at once can't be told apart by name, so the newest match is used.
+- A stream of flashes logs tens of megabytes a day. A 200 MB total cap, checked once a day, bounds that on a machine with a disk-full history, and can shorten the 14 days of history. Today's log is never removed.
+- Under a window descended from `claude.exe`, the title at show time is still kept, so an application a session opened can record what it opened. That is the "windows opened under Claude" list, and it is the one remaining place a title can carry private content.
 - Fixes are separate work, each with its own issue, starting from what the report shows.

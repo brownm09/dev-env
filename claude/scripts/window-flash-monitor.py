@@ -11,105 +11,141 @@ running processes, so it can still name that process, and logs what it sees to
     py -3 window-flash-monitor.py --report      today's report
     py -3 window-flash-monitor.py --report 2026-11-05
 
-The monitor only observes. It keeps titles only for windows descended from claude.exe,
-because other titles can expose private content. A console window keeps only the program
-name found in its title. Other windows are not logged at all, apart from the one
-foreground change that ends a flash's time in front, which is logged without a title.
+The monitor only observes, and logs as little as it can, because a record of windows is a
+record of what the user was doing. A window descended from claude.exe keeps its title when
+it is shown. A console window keeps only the program its title names. Foreground changes are
+logged only around a console window young enough to be a flash, without titles. Nothing else
+is logged.
 """
 from __future__ import annotations
 
 import argparse
+import bisect
+import collections
 import datetime as _dt
 import json
 import re
 import sys
 import time
+import traceback
 from pathlib import Path
 
 LOG_DIR = Path.home() / ".claude" / "scratch" / "window-flash-monitor"
+ERROR_LOG = "monitor-errors.log"
 RETENTION_DAYS = 14
+LOG_CAP_BYTES = 200 * 1024 * 1024  # a stream of flashes logs tens of MB a day
 SNAPSHOT_SECONDS = 0.5  # 0.1 cost 22% of a core; a console's own process is caught when it shows
 WATCH_SECONDS = 0.02  # how often a console window that may be a flash is checked
 HISTORY_SECONDS = 60
 RECENT_SECONDS = 3.0
+RECENT_LIMIT = 12
+CHAIN_LIMIT = 12
 BEAT_SECONDS = 300
 FLASH_MAX_SECONDS = 5.0
 FOREGROUND_LEAD_SECONDS = 1.0  # a foreground event can land just before the show event
+FOCUS_RETURN_SECONDS = 5.0  # a later foreground change is the user's, not focus returning
 
 FLASH_CLASSES = {"ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS"}
 CONSOLE_CLASSES = FLASH_CLASSES | {"PseudoConsoleWindow"}
 TERMINAL_HOSTS = {"windowsterminal.exe", "conhost.exe", "openconsole.exe"}
-PROGRAM_RE = re.compile(r"([\w.-]+\.exe)\b", re.I)
+# A chain ending at one of these is complete. Any other ending may be a parent that has exited.
+ORIGIN_ROOTS = {"wininit.exe", "winlogon.exe", "services.exe", "svchost.exe", "explorer.exe", "csrss.exe"}
 LOG_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.jsonl$")
+DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 def program_from_title(title: str) -> str | None:
-    """The program a console window names in its title, and nothing else from the title."""
-    found = PROGRAM_RE.findall(title or "")
-    return found[-1] if found else None
+    """The program a console window's title names, if the title is just that program.
+
+    A path or a bare name counts. Text that merely contains ``.exe`` doesn't, because a title
+    can hold a file name or a command the user typed.
+    """
+    text = (title or "").strip().removeprefix("Administrator: ")
+    if not text.lower().endswith(".exe"):
+        return None
+    if DRIVE_PATH_RE.match(text) or " " not in text:
+        return re.split(r"[\\/]", text)[-1] or None
+    return None
 
 
 def is_claude(chain: list[str]) -> bool:
     return any(exe.lower() == "claude.exe" for exe in chain)
 
 
+def origin(source: list[str] | None) -> str:
+    """claude, elsewhere, or unknown. A chain cut off at an exited parent proves nothing."""
+    if not source:
+        return "unknown"
+    if is_claude(source):
+        return "claude"
+    return "elsewhere" if source[-1].lower() in ORIGIN_ROOTS else "unknown"
+
+
 class ProcessHistory:
     """Recently seen processes, kept for a while after they exit."""
 
-    def __init__(self, keep_seconds: float = HISTORY_SECONDS):
-        self.keep_seconds = keep_seconds
+    def __init__(self):
         self.entries: dict[int, dict] = {}
 
-    def update(self, snapshot: dict[int, tuple[str, int]], now: float) -> None:
+    def update(self, snapshot: dict[int, tuple[str, int]], now: float,
+               created: dict[int, float] | None = None) -> None:
+        """Merge a snapshot. ``created`` gives real start times for the first snapshot.
+
+        Without them every process in it would tie, and the reused-pid check in chain() could
+        never fire. A process whose time can't be read belongs to another user or the system.
+        It gets the oldest time, so a chain can still walk up through it.
+        """
         for pid, (exe, ppid) in snapshot.items():
             entry = self.entries.get(pid)
             if entry is None or entry["exe"] != exe or entry["ppid"] != ppid:  # new, or a reused pid
-                self.entries[pid] = {"exe": exe, "ppid": ppid, "first": now, "last": now}
+                first = now if created is None else created.get(pid, 0.0)
+                self.entries[pid] = {"exe": exe, "ppid": ppid, "first": first, "last": now}
             else:
                 entry["last"] = now
-        for pid in [p for p, e in self.entries.items() if now - e["last"] > self.keep_seconds]:
+        for pid in [p for p, e in self.entries.items() if now - e["last"] > HISTORY_SECONDS]:
             del self.entries[pid]
 
     def chain(self, pid: int) -> list[str]:
         """Executable names from pid up through its parents, newest first."""
         names: list[str] = []
-        entry = self.entries.get(pid)
-        while entry is not None and len(names) < 12:
+        current = pid
+        entry = self.entries.get(current)
+        while entry is not None and len(names) < CHAIN_LIMIT:
             names.append(entry["exe"])
             parent = self.entries.get(entry["ppid"])
-            # A parent seen after its child is a reused pid, not the real parent.
-            if parent is None or parent["first"] > entry["first"]:
+            # A parent that started after its child is a reused pid, not the real parent.
+            if entry["ppid"] == current or parent is None or parent["first"] > entry["first"]:
                 break
-            entry = parent
+            current, entry = entry["ppid"], parent
         return names
 
-    def recent(self, now: float, seconds: float = RECENT_SECONDS, limit: int = 30) -> list[dict]:
-        """Processes first seen in the last few seconds, newest first."""
-        pids = [p for p, e in self.entries.items() if now - e["first"] <= seconds]
+    def recent(self, now: float) -> list[dict]:
+        """Processes first seen in the last few seconds, newest first, without console hosts."""
+        pids = [p for p, e in self.entries.items() if now - e["first"] <= RECENT_SECONDS
+                and e["exe"].lower() not in TERMINAL_HOSTS]
         pids.sort(key=lambda p: self.entries[p]["first"], reverse=True)
-        return [{"exe": self.entries[p]["exe"], "chain": self.chain(p)} for p in pids[:limit]]
+        return [{"exe": self.entries[p]["exe"], "chain": self.chain(p)} for p in pids[:RECENT_LIMIT]]
 
 
-def window_record(event: str, now: float, hwnd: int, pid: int, cls: str, title: str,
-                  history: ProcessHistory) -> dict | None:
-    """The log record for a show or foreground event, or None if the window isn't logged."""
+def show_record(now: float, hwnd: int, pid: int, cls: str, title: str, history: ProcessHistory) -> dict | None:
+    """The log record for a window being shown, or None if the window isn't logged."""
     chain = history.chain(pid)
     claude = is_claude(chain)
     console = cls in CONSOLE_CLASSES
     if not console and not claude:
         return None
-    record = {"t": round(now, 3), "e": event, "hwnd": hwnd, "pid": pid, "cls": cls, "chain": chain}
+    record = {"t": round(now, 3), "e": "show", "hwnd": hwnd, "pid": pid, "cls": cls, "chain": chain}
     program = program_from_title(title) if console else None
     if program:
         record["program"] = program
     if claude and title:
         record["title"] = title
-    if console and event == "show":
+    if console:
         record["recent"] = history.recent(now)
     return record
 
 
-def likely_source(show: dict, program: str | None, pseudo: dict | None = None) -> list[str] | None:
+def likely_source(show: dict, program: str | None, pseudo: dict | None) -> list[str] | None:
     """The parent chain of the process behind a console window, or None if unknown.
 
     A classic console window and a PseudoConsoleWindow both report the program using them as
@@ -119,9 +155,8 @@ def likely_source(show: dict, program: str | None, pseudo: dict | None = None) -
     chain = show.get("chain") or []
     if chain and chain[0].lower() not in TERMINAL_HOSTS:
         return chain
-    pseudo_chain = (pseudo or {}).get("chain") or []
-    if pseudo_chain and (not program or pseudo_chain[0].lower() == program.lower()):
-        return pseudo_chain
+    if pseudo:
+        return pseudo["chain"]
     if program:
         for candidate in show.get("recent", []):
             if candidate["exe"].lower() == program.lower():
@@ -129,40 +164,77 @@ def likely_source(show: dict, program: str | None, pseudo: dict | None = None) -
     return None
 
 
-def find_flashes(records: list[dict], max_seconds: float = FLASH_MAX_SECONDS) -> list[dict]:
-    """Console windows shown and gone within max_seconds, with focus loss and source."""
+def _flash_windows(records: list[dict]) -> list[tuple[dict, dict, str | None]]:
+    """(show, hide, program) for each flash-class window shown and gone within the limit."""
+    windows: dict[int, list[dict]] = collections.defaultdict(list)
+    for record in records:
+        if "hwnd" in record:
+            windows[record["hwnd"]].append(record)
+    found = []
+    for events in windows.values():
+        for i, show in enumerate(events):
+            if show.get("e") != "show" or show.get("cls") not in FLASH_CLASSES:
+                continue
+            program, gone = show.get("program"), None
+            for later in events[i + 1:]:
+                if later.get("e") == "show":
+                    break
+                if later.get("e") == "hide":
+                    gone = later
+                    break
+                if later.get("e") == "name" and not program:
+                    program = later.get("program")
+            if gone and gone["t"] - show["t"] <= FLASH_MAX_SECONDS:
+                found.append((show, gone, program))
+    found.sort(key=lambda item: item[0]["t"])
+    return found
+
+
+def find_flashes(records: list[dict]) -> list[dict]:
+    """Console windows shown and gone within the flash limit, with focus loss and source."""
     records = sorted((r for r in records if "t" in r), key=lambda r: r["t"])
+    foreground = [r for r in records if r.get("e") == "foreground"]
+    pseudos = [r for r in records if r.get("e") == "show" and r.get("cls") == "PseudoConsoleWindow"
+               and r.get("chain")]
+    foreground_times = [r["t"] for r in foreground]
+    pseudo_times = [r["t"] for r in pseudos]
+    used: set[int] = set()
     flashes = []
-    for i, show in enumerate(records):
-        if show.get("e") != "show" or show.get("cls") not in FLASH_CLASSES:
-            continue
-        hwnd = show["hwnd"]
-        gone = next((r for r in records[i + 1:] if r.get("hwnd") == hwnd and r.get("e") == "hide"), None)
-        if gone is None or gone["t"] - show["t"] > max_seconds:
-            continue
-        program = show.get("program") or next(
-            (r["program"] for r in records[i + 1:]
-             if r.get("hwnd") == hwnd and r.get("e") == "name" and r["t"] <= gone["t"]), None)
-        pseudo = next((r for r in records[i + 1:] if r.get("e") == "show"
-                       and r.get("cls") == "PseudoConsoleWindow" and r["t"] <= gone["t"]), None)
+    for show, gone, program in _flash_windows(records):
+        pseudo = None
+        if program:  # without a name to match, a pseudo console could be any program's
+            for j in range(bisect.bisect_left(pseudo_times, show["t"]), len(pseudos)):
+                if pseudos[j]["t"] > gone["t"]:
+                    break
+                if j not in used and pseudos[j]["chain"][0].lower() == program.lower():
+                    used.add(j)
+                    pseudo = pseudos[j]
+                    break
         source = likely_source(show, program, pseudo)
+        lost, returned = _focus_lost(foreground, foreground_times, show["hwnd"], show["t"], gone["t"])
         flashes.append({
             "t": show["t"], "cls": show["cls"], "seconds": round(gone["t"] - show["t"], 3),
-            "focus_lost": _focus_lost(records, hwnd, show["t"], gone["t"]),
-            "program": program, "source": source, "claude": bool(source and is_claude(source)),
+            "focus_lost": lost, "focus_returned": returned,
+            "program": program, "source": source, "origin": origin(source),
         })
     return flashes
 
 
-def _focus_lost(records: list[dict], hwnd: int, shown: float, gone: float) -> float:
-    """Seconds this window held the foreground, or 0.0 if it never took it."""
-    foreground = [r for r in records if r.get("e") == "foreground"]
-    taken = next((r for r in foreground if r["hwnd"] == hwnd
-                  and shown - FOREGROUND_LEAD_SECONDS <= r["t"] <= gone), None)
-    if taken is None:
-        return 0.0
-    back = next((r for r in foreground if r["t"] > taken["t"] and r["hwnd"] != hwnd), None)
-    return round((back["t"] if back else gone) - taken["t"], 3)
+def _focus_lost(foreground: list[dict], times: list[float], hwnd: int, shown: float,
+                gone: float) -> tuple[float, bool]:
+    """Seconds this window held the foreground, and whether focus was seen going elsewhere."""
+    for j in range(bisect.bisect_left(times, shown - FOREGROUND_LEAD_SECONDS), len(foreground)):
+        if times[j] > gone:
+            break
+        if foreground[j]["hwnd"] != hwnd:
+            continue
+        for k in range(j + 1, len(foreground)):
+            if times[k] > gone + FOCUS_RETURN_SECONDS:
+                break
+            if foreground[k]["hwnd"] != hwnd:
+                return round(times[k] - times[j], 3), True
+        return round(gone - times[j], 3), False
+    return 0.0, True
 
 
 def claude_windows(records: list[dict]) -> list[dict]:
@@ -171,9 +243,16 @@ def claude_windows(records: list[dict]) -> list[dict]:
             and is_claude(r.get("chain") or [])]
 
 
+def recording_gaps(times: list[float]) -> list[tuple[float, float]]:
+    """Spans with no records long enough that the monitor can't have been running."""
+    ordered = sorted(times)
+    return [(a, b) for a, b in zip(ordered, ordered[1:]) if b - a > 2 * BEAT_SECONDS]
+
+
 def load_records(path: Path) -> list[dict]:
     records = []
-    with open(path, encoding="utf-8") as fh:
+    # errors="replace": a crash can cut a line in the middle of a character.
+    with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             try:
                 records.append(json.loads(line))
@@ -195,23 +274,28 @@ def render_report(date: str, records: list[dict]) -> str:
     if not times:
         return f"# Console flashes on {date}\n\nThe log has no records, so nothing can be said about this day.\n"
     flashes = find_flashes(records)
-    known = sum(1 for f in flashes if f["source"])
-    from_claude = sum(1 for f in flashes if f["claude"])
-    lines = [
-        f"# Console flashes on {date}", "",
-        f"Monitor recorded from {_clock(min(times))} to {_clock(max(times))}. "
-        "Anything outside those times was not seen.", "",
-        f"Flashes: {len(flashes)} ({from_claude} from Claude, {known - from_claude} from elsewhere, "
-        f"{len(flashes) - known} unattributed).", "",
-    ]
+    counts = collections.Counter(f["origin"] for f in flashes)
+    lines = [f"# Console flashes on {date}", "",
+             f"Monitor recorded from {_clock(min(times))} to {_clock(max(times))}. "
+             "Anything outside those times was not seen."]
+    gaps = recording_gaps(times)
+    if gaps:
+        spans = ", ".join(f"{_clock(a)} to {_clock(b)}" for a, b in gaps)
+        lines.append(f"Nothing was seen in these gaps either, because the monitor was off or the machine asleep: {spans}.")
+    lines += ["", f"Flashes: {len(flashes)} ({counts['claude']} from Claude, {counts['elsewhere']} from elsewhere, "
+                  f"{counts['unknown']} of unknown origin).", ""]
     if flashes:
         lines += ["| # | Time | Seconds shown | Focus lost (s) | Program | Source chain | From Claude |",
                   "|---|------|---------------|----------------|---------|--------------|-------------|"]
+        answer = {"claude": "yes", "elsewhere": "no", "unknown": "unknown"}
         for n, f in enumerate(flashes, 1):
             source = " < ".join(f["source"]) if f["source"] else "unattributed"
-            lines.append(f"| {n} | {_clock(f['t'])} | {f['seconds']} | {f['focus_lost']} | "
-                         f"{f['program'] or '-'} | {_cell(source)} | {'yes' if f['claude'] else 'no'} |")
+            lost = f"{f['focus_lost']}{'' if f['focus_returned'] else '+'}"
+            lines.append(f"| {n} | {_clock(f['t'])} | {f['seconds']} | {lost} | "
+                         f"{f['program'] or '-'} | {_cell(source)} | {answer[f['origin']]} |")
         lines.append("")
+        if not all(f["focus_returned"] for f in flashes):
+            lines += ["A + means focus was not seen going elsewhere, so the time is a minimum.", ""]
     windows = claude_windows(records)
     lines.append(f"Other windows opened under Claude: {len(windows)}.")
     if windows:
@@ -221,14 +305,41 @@ def render_report(date: str, records: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def expired_logs(names: list[str], today: _dt.date, days: int = RETENTION_DAYS) -> list[str]:
-    """Daily log names older than the retention window. Other names are never returned."""
-    old = []
-    for name in names:
+def expired_logs(sizes: dict[str, int], today: _dt.date) -> list[str]:
+    """Daily logs past retention, then the oldest past the size cap. Today's log always stays.
+
+    Other names are never returned, including one shaped like a date that isn't one.
+    """
+    old, kept = [], []
+    for name, size in sizes.items():
         match = LOG_NAME_RE.match(name)
-        if match and (today - _dt.date.fromisoformat(match.group(1))).days > days:
+        if not match:
+            continue
+        try:
+            day = _dt.date.fromisoformat(match.group(1))
+        except ValueError:
+            continue
+        if (today - day).days > RETENTION_DAYS:
+            old.append(name)
+        else:
+            kept.append((day, name, size))
+    total = 0
+    for day, name, size in sorted(kept, reverse=True):
+        total += size
+        if total > LOG_CAP_BYTES and day != today:
             old.append(name)
     return old
+
+
+def append_error(log_dir: Path, text: str) -> None:
+    """Record a monitor error. pyw has no console, so this file is the only place for it."""
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(log_dir / ERROR_LOG, "a", encoding="utf-8", errors="backslashreplace") as fh:
+            stamp = _dt.datetime.now().isoformat(timespec="seconds")
+            fh.write(f"{stamp} {text.strip().replace(chr(10), ' | ')}\n")
+    except OSError:
+        pass  # a full disk or a missing directory: nowhere left to say so, and it shouldn't stop the monitor
 
 
 class Monitor:
@@ -238,50 +349,74 @@ class Monitor:
         self.log_dir = log_dir
         self.history = ProcessHistory()
         self.watched: dict[int, dict] = {}  # console windows young enough to still be a flash
-        self.log_next_foreground = False
+        self.foreground = 0
+        self.pending_foreground: tuple[float, int] | None = None  # may precede its window's show
+        self.just_gone = 0
         self.log_date = ""
+        self.errors: set[str] = set()
 
-    def write(self, record: dict) -> None:
-        date = _dt.date.today().isoformat()
-        if date != self.log_date:
-            self.log_date = date
+    def log_error(self, error: Exception) -> None:
+        text = f"{type(error).__name__}: {error}"
+        if text not in self.errors:  # once per distinct error: this can run on every window event
+            self.errors.add(text)
+            append_error(self.log_dir, text)
+
+    def write(self, record: dict, date: str | None = None) -> None:
+        today = _dt.date.today().isoformat()
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        if today != self.log_date:
+            self.log_date = today
             self.prune()
-        with open(self.log_dir / f"{date}.jsonl", "a", encoding="utf-8") as fh:
+        with open(self.log_dir / f"{date or today}.jsonl", "a", encoding="utf-8", errors="backslashreplace") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def prune(self) -> None:
-        names = [p.name for p in self.log_dir.iterdir()]
-        for name in expired_logs(names, _dt.date.today()):
-            (self.log_dir / name).unlink(missing_ok=True)
+        try:
+            sizes = {p.name: p.stat().st_size for p in self.log_dir.iterdir()}
+            for name in expired_logs(sizes, _dt.date.today()):
+                (self.log_dir / name).unlink(missing_ok=True)
+        except OSError as error:  # a log that can't be removed shouldn't lose the record being written
+            self.log_error(error)
 
     def on_show(self, now: float, hwnd: int, pid: int, cls: str, title: str) -> None:
-        record = window_record("show", now, hwnd, pid, cls, title, self.history)
-        if record:
-            self.write(record)
-            if cls in CONSOLE_CLASSES:
-                self.watched[hwnd] = {"shown": now, "program": record.get("program")}
+        record = show_record(now, hwnd, pid, cls, title, self.history)
+        if record is None:
+            return
+        if cls in CONSOLE_CLASSES:  # first, so a failed write can't also lose the window's end
+            # Its later records go in this day's log, so a flash across midnight stays whole.
+            self.watched[hwnd] = {"shown": now, "program": record.get("program"),
+                                  "date": _dt.date.today().isoformat()}
+        pending = self.pending_foreground
+        if pending and pending[1] == hwnd and now - pending[0] <= FOREGROUND_LEAD_SECONDS:
+            self.write({"t": pending[0], "e": "foreground", "hwnd": hwnd})
+        self.pending_foreground = None
+        self.write(record)
 
-    def on_foreground(self, now: float, hwnd: int, pid: int, cls: str, title: str) -> None:
-        record = window_record("foreground", now, hwnd, pid, cls, title, self.history)
-        if record is None and self.log_next_foreground:
-            record = {"t": round(now, 3), "e": "foreground", "hwnd": hwnd}  # just ends the flash's time in front
-        if record:
-            self.write(record)
-        self.log_next_foreground = cls in CONSOLE_CLASSES
+    def on_foreground(self, now: float, hwnd: int, cls: str) -> None:
+        previous, self.foreground = self.foreground, hwnd
+        t = round(now, 3)
+        ended_flash = self.just_gone != 0 and previous == self.just_gone
+        if hwnd in self.watched or previous in self.watched or ended_flash:
+            if ended_flash:
+                self.just_gone = 0
+            self.write({"t": t, "e": "foreground", "hwnd": hwnd})
+        elif cls in FLASH_CLASSES:
+            self.pending_foreground = (t, hwnd)  # an ordinary terminal never gets a show, so it's never logged
 
     def check_watched(self, now: float, hwnd: int, visible: bool, title: str) -> None:
         """Log a watched window's program name and its end. Past the flash limit, stop watching."""
         state = self.watched[hwnd]
         if not visible:
             del self.watched[hwnd]
-            self.write({"t": round(now, 3), "e": "hide", "hwnd": hwnd})
+            self.just_gone = hwnd
+            self.write({"t": round(now, 3), "e": "hide", "hwnd": hwnd}, state["date"])
         elif now - state["shown"] > FLASH_MAX_SECONDS:
             del self.watched[hwnd]
         else:
             program = program_from_title(title)
             if program and program != state["program"]:
                 state["program"] = program
-                self.write({"t": round(now, 3), "e": "name", "hwnd": hwnd, "program": program})
+                self.write({"t": round(now, 3), "e": "name", "hwnd": hwnd, "program": program}, state["date"])
 
 
 def run_monitor(log_dir: Path, seconds: float | None) -> int:
@@ -312,6 +447,9 @@ def run_monitor(log_dir: Path, seconds: float | None) -> int:
     kernel32.Process32FirstW.argtypes = (wintypes.HANDLE, ctypes.POINTER(ProcessEntry))
     kernel32.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(ProcessEntry))
     kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
 
     def snapshot() -> dict[int, tuple[str, int]]:
         found: dict[int, tuple[str, int]] = {}
@@ -328,6 +466,19 @@ def run_monitor(log_dir: Path, seconds: float | None) -> int:
         finally:
             kernel32.CloseHandle(handle)
         return found
+
+    def created_at(pid: int) -> float | None:
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return None
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]
+            if not kernel32.GetProcessTimes(handle, *[ctypes.byref(t) for t in times]):
+                return None
+            ticks = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+            return ticks / 1e7 - 11644473600  # 100 ns units since 1601, to seconds since 1970
+        finally:
+            kernel32.CloseHandle(handle)
 
     user32.GetAncestor.restype = wintypes.HWND
     user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
@@ -346,15 +497,9 @@ def run_monitor(log_dir: Path, seconds: float | None) -> int:
         return pid.value, cls.value, title.value
 
     monitor = Monitor(log_dir)
-    monitor.history.update(snapshot(), time.time())
-    errors: set[str] = set()
-
-    def log_error(error: Exception) -> None:
-        text = f"{type(error).__name__}: {error}"
-        if text not in errors:  # once per distinct error: this runs on every window event
-            errors.add(text)
-            with open(log_dir / "monitor-errors.log", "a", encoding="utf-8") as fh:
-                fh.write(f"{_dt.datetime.now().isoformat(timespec='seconds')} {text}\n")
+    first_snapshot = snapshot()
+    created = {pid: t for pid in first_snapshot if (t := created_at(pid)) is not None}
+    monitor.history.update(first_snapshot, time.time(), created)
 
     EVENT_FOREGROUND, EVENT_SHOW = 0x3, 0x8002
 
@@ -366,11 +511,14 @@ def run_monitor(log_dir: Path, seconds: float | None) -> int:
                 return
             now = time.time()
             pid, cls, title = describe(hwnd)
-            if cls in CONSOLE_CLASSES or title:  # catches a process born since the last snapshot
-                monitor.history.update(snapshot(), now)
-            (monitor.on_show if event == EVENT_SHOW else monitor.on_foreground)(now, hwnd, pid, cls, title)
+            if event == EVENT_SHOW:
+                if cls in CONSOLE_CLASSES or title:  # catches a process born since the last snapshot
+                    monitor.history.update(snapshot(), now)
+                monitor.on_show(now, hwnd, pid, cls, title)
+            else:
+                monitor.on_foreground(now, hwnd, cls)
         except Exception as error:  # an exception can't cross the callback, and pyw has no console
-            log_error(error)
+            monitor.log_error(error)
 
     proc_type = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND, wintypes.LONG,
                                    wintypes.LONG, wintypes.DWORD, wintypes.DWORD)
@@ -384,7 +532,7 @@ def run_monitor(log_dir: Path, seconds: float | None) -> int:
     # so a window that may be a flash is checked directly in the loop below.
     hooks = [user32.SetWinEventHook(e, e, None, callback, 0, 0, flags) for e in (EVENT_FOREGROUND, EVENT_SHOW)]
     if not all(hooks):
-        log_error(OSError("SetWinEventHook failed"))
+        monitor.log_error(OSError("SetWinEventHook failed"))
         return 1
 
     message = wintypes.MSG()
@@ -407,10 +555,10 @@ def run_monitor(log_dir: Path, seconds: float | None) -> int:
                     monitor.history.update(snapshot(), now)
                     last_snapshot = now
                 if now - last_beat >= BEAT_SECONDS:
-                    monitor.write({"t": round(now, 3), "e": "beat"})
                     last_beat = now
-            except OSError as error:  # a full disk should not end the monitor
-                log_error(error)
+                    monitor.write({"t": round(now, 3), "e": "beat"})
+            except Exception as error:  # a full disk or a bad record should not end the monitor
+                monitor.log_error(error)
             wait = WATCH_SECONDS if monitor.watched else SNAPSHOT_SECONDS
             user32.MsgWaitForMultipleObjects(0, None, False, int(wait * 1000), 0x04FF)  # QS_ALLINPUT
     finally:
@@ -426,6 +574,13 @@ def report(date: str | None, log_dir: Path) -> int:
         print(f"No log for {day} at {path}. The monitor was not running, so this says nothing about flashes.")
         return 1
     print(render_report(day, load_records(path)), end="")
+    errors = log_dir / ERROR_LOG
+    if errors.exists():  # a bug raising on every event would otherwise read as zero flashes
+        lines = [line for line in errors.read_text(encoding="utf-8", errors="replace").splitlines()
+                 if line.startswith(day)]
+        if lines:
+            print("\nThe monitor logged errors this day, so the counts above may be low:")
+            print("\n".join(lines))
     return 0
 
 
@@ -436,10 +591,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seconds", type=float, help="stop after this long (for tests)")
     args = ap.parse_args(argv)
     if args.report is not None:
-        if sys.stdout:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         return report(args.report or None, args.log_dir)
-    return run_monitor(args.log_dir, args.seconds)
+    try:
+        return run_monitor(args.log_dir, args.seconds)
+    except Exception:  # pyw has no console, so an unlogged crash would leave no trace
+        append_error(args.log_dir, traceback.format_exc())
+        return 1
 
 
 if __name__ == "__main__":
