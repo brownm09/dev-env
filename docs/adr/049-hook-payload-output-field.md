@@ -31,7 +31,7 @@ The wrong-field read was copied into several sibling hooks (`post-pr-merge-proje
 
 3. **Cover it with an offline regression test.** `claude/scripts/tests/test_post_tool_use.py` pins that the real `stdout`-shaped payload yields a non-empty output (the pre-fix `output` read was `""`), that the legacy fallback still works, and that the de-silence predicate distinguishes a different-repo miss from a no-URL miss.
 
-The `exitCode` reads elsewhere default to `0` and are harmless because PostToolUse fires only after a successful tool call; they are left unchanged here.
+The `exitCode` reads elsewhere default to `0` and are harmless because PostToolUse fires only after a successful tool call; they are left unchanged here. (Corrected by [ADR-050 Amendment 31](050-shared-hookio-sibling-hook-fixes.md): a failed command inside a chain still gives a successful tool call, so these reads hid it, dev-env#1243.)
 
 ## Consequences
 

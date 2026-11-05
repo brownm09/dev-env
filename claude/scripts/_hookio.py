@@ -267,6 +267,41 @@ def merge_pr_number_from_output(output: str) -> int | None:
     return None
 
 
+# What `gh pr create` / `gh issue create` print on success: the new item's URL
+# alone on a line (cli/cli pkg/cmd/pr/create/create.go). A trailing dot is
+# tolerated and left out of the URL.
+_CREATED_ITEM_URL_RE = re.compile(r"(https://github\.com/([^/\s]+/[^/\s]+)/(pull|issues)/\d+)\.?")
+
+
+def created_item_url(output: str, kind: str | None = None, repo: str | None = None) -> str | None:
+    """Return the URL a create command printed in *output*, or ``None``.
+
+    The evidence that a create succeeded inside a chained command (dev-env#1243).
+    Claude Code's Bash payload carries no ``exitCode`` key (ADR-049), so
+    ``read_exit_code`` returns the caller's default whether the create worked or
+    not, and PostToolUse fires for any chain the shell finishes normally.
+
+    Only a bare item URL counts. That leaves out a URL inside a line of prose and
+    a ``#issuecomment-`` URL from a chained comment. *kind* (``"pull"`` or
+    ``"issues"``) and *repo* (``"owner/name"``) narrow the match. The last match
+    wins. gh's "already exists" error is skipped: it ends in a bare URL too, for
+    a PR the command did not open.
+
+    Known limit: a chained command that prints a bare item URL of the same kind
+    (``gh pr edit``, ``gh pr view --json url --jq .url``) still looks like a
+    created item, since nothing in the payload says which command printed a line.
+    """
+    lines = output.splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        m = _CREATED_ITEM_URL_RE.fullmatch(lines[i].strip())
+        if not m or (kind and m.group(3) != kind) or (repo and m.group(2) != repo):
+            continue
+        if i and lines[i - 1].rstrip().endswith("already exists:"):
+            continue
+        return m.group(1)
+    return None
+
+
 # The one `gh pr merge` spelling every merge hook and parser builds from
 # (dev-env#1168): `gh` or `gh.exe`, compiled with re.IGNORECASE. Hand copies of
 # this pattern drifted into four variants before, so build from it, never copy it.

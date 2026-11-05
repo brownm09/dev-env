@@ -37,6 +37,7 @@ import sys
 
 from _hookio import (
     confirm_merge_via_gh,
+    created_item_url,
     effective_merge_dir,
     is_absolute_path,
     is_merge_help_only,
@@ -231,10 +232,9 @@ def _create_shard_step(output: str) -> str:
     shell-based write to this exact path shape, and an echo'd instruction
     here would tell Claude to do the very thing that hook exists to stop.
     """
-    pr_url_match = re.search(r"https://github\.com/\S+/pull/(\d+)", output)
-    if pr_url_match:
-        pr_url = pr_url_match.group(0)
-        pr_number = pr_url_match.group(1)
+    pr_url = created_item_url(output, "pull")
+    if pr_url:
+        pr_number = pr_url.rsplit("/", 1)[1]
         return (
             f"\n  3a. Write the open-PR shard with the Write tool (never echo/a redirect --"
             f" ADR-129) for PR #{pr_number}:\n"
@@ -326,6 +326,15 @@ def _build_messages(
     silent no-op an unrecognized command already gets, rather than paying a
     GraphQL-backed confirmation during the exact outage that motivates the
     REST path).
+
+    The create reminder also needs the URL gh prints on success (or a confirmed
+    merge, the same proof as above). The real Bash payload has no exitCode key
+    (ADR-049), so `exit_code` reads as 0 for a failed create in a chain, and only
+    the output can show the create failed (dev-env#1243). Empty output shows
+    nothing either way, as with `run_in_background`, so it keeps the generic
+    reminder. A failed create no longer suppresses the push reminder either:
+    `git push; gh pr create` on a branch that already has a PR still pushed to
+    that PR.
     """
     merge_ok = is_merge and _is_successful_merge_call(output)
     if not merge_ok:
@@ -333,9 +342,12 @@ def _build_messages(
     if live_confirmed is not None:
         merge_ok = live_confirmed
     create_push_ok = exit_code == 0 or merge_ok
+    create_ok = is_create and create_push_ok and (
+        merge_ok or not output.strip() or bool(created_item_url(output, "pull"))
+    )
     messages = []
 
-    if is_create and create_push_ok:
+    if create_ok:
         shard_step = _create_shard_step(output)
         create_repo = _effective_create_repo(command, cwd)
         messages.append(
@@ -372,7 +384,7 @@ def _build_messages(
             " && git push"
         )
 
-    if is_push and not (is_create or is_merge or is_rest_merge_command(command)) and create_push_ok:
+    if is_push and not (create_ok or is_merge or is_rest_merge_command(command)) and create_push_ok:
         # Scope the open-PR lookup to the repo the push actually targets: a
         # `cd <other-repo> && git push` must not fire the session cwd's reminder
         # (issue #442 / ADR-065).  Engineering-journal pushes route into the

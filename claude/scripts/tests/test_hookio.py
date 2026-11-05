@@ -24,6 +24,7 @@ SCRIPTS_DIR = REPO_ROOT / "claude" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from _hookio import (  # noqa: E402
+    created_item_url,
     effective_merge_dir,
     is_absolute_path,
     is_help_only,
@@ -1474,6 +1475,41 @@ def test_merge_parsers_accept_every_predicate_spelling() -> str:
     return "merge_args and effective_merge_dir locate gh.exe, uppercase and env-prefixed merges"
 
 
+PR_URL = "https://github.com/brownm09/dev-env/pull/1235"
+
+
+def test_created_item_url_bare_lines_only() -> str:
+    assert created_item_url(PR_URL) == PR_URL
+    assert created_item_url(f"\r\n  {PR_URL}\r\n") == PR_URL, "CRLF and padding are not part of the URL"
+    assert created_item_url(f"{PR_URL}.") == PR_URL, "a trailing dot is not part of the URL"
+    assert created_item_url(URL) == URL
+    assert created_item_url(f"[PR 1218]({PR_URL}). All failed") is None, "URL in prose"
+    assert created_item_url(f"{URL}#issuecomment-123") is None, "comment URL"
+    assert created_item_url(f"{PR_URL}/files") is None, "sub-page URL"
+    assert created_item_url("https://github.com/brownm09/dev-env") is None, "repo URL"
+    assert created_item_url("") is None
+    return "only a line holding just an item URL counts"
+
+
+def test_created_item_url_kind_repo_and_last_match() -> str:
+    both = f"{PR_URL}\n{URL}\n"
+    assert created_item_url(both) == URL, "the last match wins"
+    assert created_item_url(both, "pull") == PR_URL
+    assert created_item_url(both, "issues") == URL
+    assert created_item_url(PR_URL, "issues") is None
+    assert created_item_url(PR_URL, repo="brownm09/dev-env") == PR_URL
+    assert created_item_url(PR_URL, repo="someone/other") is None
+    return "kind and repo narrow the match; the last match wins"
+
+
+def test_created_item_url_skips_already_exists_error() -> str:
+    error = f'a pull request for branch "b" into branch "main" already exists:\n{PR_URL}\n'
+    assert created_item_url(error, "pull") is None
+    created = "https://github.com/brownm09/dev-env/pull/9"
+    assert created_item_url(f"{created}\n{error}", "pull") == created, "an earlier real create still counts"
+    return "gh's 'already exists' error is not a created PR"
+
+
 def main() -> int:
     tests = [
         ("load_hook_input: unreadable payload -> None", test_load_hook_input_unreadable_is_none),
@@ -1641,6 +1677,9 @@ def main() -> int:
             test_read_exit_code_non_coercible_exit_code_falls_back_to_default,
         ),
         ("read_exit_code: numeric-string exitCode is coerced", test_read_exit_code_numeric_string_is_coerced),
+        ("created_item_url: bare lines only (dev-env#1243)", test_created_item_url_bare_lines_only),
+        ("created_item_url: kind, repo, last match (dev-env#1243)", test_created_item_url_kind_repo_and_last_match),
+        ("created_item_url: skips gh's 'already exists' error (dev-env#1243)", test_created_item_url_skips_already_exists_error),
     ]
     failed = 0
     for name, fn in tests:

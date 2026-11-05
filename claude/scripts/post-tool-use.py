@@ -75,6 +75,7 @@ from pathlib import Path
 
 from _gh_project import add_to_project
 from _hookio import (
+    created_item_url,
     is_help_only,
     load_hook_input,
     read_command,
@@ -90,6 +91,9 @@ from _settings_sync import HOOK_CONFIG_SHARED_PATH
 from _worktree_canon import canonical_root_from_worktree
 
 CONFIG_FILE = ".claude/hook-config.json"
+
+# The URL path segment each item type's create prints (dev-env#1243).
+_URL_KIND = {"Issue": "issues", "PR": "pull"}
 
 # Matches the start of a statement token against `gh issue create` or
 # `gh pr create` (dev-env#499). The check functions below anchor via
@@ -312,28 +316,20 @@ def load_config(cwd: str, command: str | None = None) -> dict | None:
     return None
 
 
-def extract_github_url(output: str, repo: str | None = None) -> str | None:
-    """Return the last GitHub URL found in command output, or None.
+def extract_github_url(output: str, repo: str | None = None, kind: str | None = None) -> str | None:
+    """Return the URL of the item a create command printed, or None.
 
-    If repo is provided (e.g. 'owner/name'), only return a URL that contains
-    that repo path — prevents cross-repo false positives when cwd belongs to
-    a different project than the one being created.
+    If repo is provided (e.g. 'owner/name'), only return a URL in that repo —
+    prevents cross-repo false positives when cwd belongs to a different project
+    than the one being created. *kind* ('issues' or 'pull') limits it to that
+    item type. See _hookio.created_item_url for what counts (dev-env#1243).
     """
-    pattern = (
-        rf"https://github\.com/{re.escape(repo)}/" if repo
-        else r"https://github\.com/"
-    )
-    for line in reversed(output.strip().splitlines()):
-        line = line.strip()
-        if re.search(pattern, line):
-            # Extract just the URL in case the line has surrounding text
-            match = re.search(r"https://github\.com/\S+", line)
-            if match:
-                return match.group(0).rstrip(".")
-    return None
+    return created_item_url(output, kind, repo)
 
 
-def expected_opt_in_config(output: str, shared_path=HOOK_CONFIG_SHARED_PATH) -> dict | None:
+def expected_opt_in_config(
+    output: str, shared_path=HOOK_CONFIG_SHARED_PATH, kind: str | None = None
+) -> dict | None:
     """The tracked dev-env config when *output* names an item created in its
     `repo`, else None (dev-env#669).
 
@@ -345,7 +341,7 @@ def expected_opt_in_config(output: str, shared_path=HOOK_CONFIG_SHARED_PATH) -> 
     shared = _read_config(str(shared_path)) or {}
     if not all(shared.get(k) for k in ("repo", "project_number", "project_owner")):
         return None
-    if not extract_github_url(output, shared["repo"]):
+    if not extract_github_url(output, shared["repo"], kind):
         return None
     return shared
 
@@ -372,10 +368,11 @@ def format_missing_config_warning(item_type: str, url: str, shared: dict) -> str
 def exit_unless_expected_opt_in(item_type: str, output: str) -> None:
     """Exit 0 silently, unless the item landed in an expected-opt-in repo:
     then warn on stderr and exit 2 (dev-env#669). Never returns."""
-    expected = expected_opt_in_config(output)
+    kind = _URL_KIND[item_type]
+    expected = expected_opt_in_config(output, kind=kind)
     if expected is None:
         sys.exit(0)
-    url = extract_github_url(output, expected["repo"])
+    url = extract_github_url(output, expected["repo"], kind)
     print(format_missing_config_warning(item_type, url, expected), file=sys.stderr)
     sys.exit(2)
 
@@ -641,11 +638,15 @@ def main() -> None:
     if not (is_issue_create or is_pr_create):
         sys.exit(0)
 
-    # Don't process if the gh command itself failed
+    # Don't process if the gh command itself failed. This only catches a payload
+    # that carries exitCode, and the real Bash payload doesn't (ADR-049), so a
+    # failed create in a chain gets past it. extract_github_url is what catches
+    # that case (dev-env#1243).
     if exit_code != 0:
         sys.exit(0)
 
     item_type = "Issue" if is_issue_create else "PR"
+    kind = _URL_KIND[item_type]
 
     # Load project config — skip silently if not present, unless the item landed
     # in a repo that is expected to opt in (dev-env#669)
@@ -655,7 +656,7 @@ def main() -> None:
 
     repo = config.get("repo")  # e.g. "owner/repo-name"
 
-    url = extract_github_url(output, repo)
+    url = extract_github_url(output, repo, kind)
     if not url:
         # A configured repo filter can legitimately miss: the command may have
         # created the item in a *different* repo than this cwd's project. Stay
@@ -664,11 +665,12 @@ def main() -> None:
         # symptom of a real failure (e.g. reading the wrong payload field — the
         # bug behind #377) and must surface rather than be swallowed silently.
         # An item in an expected-opt-in repo still warns (dev-env#669).
-        if repo and extract_github_url(output, None):
+        if repo and extract_github_url(output, None, kind):
             exit_unless_expected_opt_in(item_type, output)
         print(
-            f"[project-hook] {item_type} created but no GitHub URL found in output.\n"
-            f"  Add to project manually:\n"
+            f"[project-hook] {item_type} create ran but no GitHub URL found in its output: "
+            f"it failed, or its output was discarded.\n"
+            f"  If it did create the {item_type}, add it to the project manually:\n"
             f"    gh project item-add {config['project_number']} "
             f"--owner {config['project_owner']} --url <url>",
             file=sys.stderr,

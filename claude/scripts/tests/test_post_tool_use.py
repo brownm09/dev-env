@@ -57,6 +57,8 @@ Exit 0 = all pass.
 import importlib.util
 import json
 import os
+import contextlib
+import io
 import subprocess
 import sys
 import tempfile
@@ -979,7 +981,7 @@ def test_main_chained_help_only_issue_create_and_real_pr_create_still_processes(
         # Not just "some create reached the advisory" -- specifically the PR
         # create (is_pr_create), proving the downgrade logic didn't flip
         # item_type to "Issue" for this chained command (review of PR #637).
-        assert "PR created" in result.stderr, f"got {result.stderr!r}"
+        assert "PR create ran" in result.stderr, f"got {result.stderr!r}"
     return "help-only issue-create chained with a real pr-create -> the real create still processed"
 
 
@@ -1177,6 +1179,128 @@ def test_exit_code_coercion_pins_accepted_tradeoff() -> str:
     return "exitCode:null coerces to 0 (default=0), indistinguishable from a genuine exitCode:0 -- accepted trade-off, pinned (ADR-050 Amendment 28)"
 
 
+# ---------------------------------------------------------------------------
+# dev-env#1243: a failed `gh pr create` inside a chained command. The stdout and
+# the response keys are from the real incident (PR #1235's session). The payload
+# has no exitCode key at all, so the exit_code gate above cannot see the failure,
+# and the only URLs in the output belong to the chain's other commands.
+# ---------------------------------------------------------------------------
+
+COMMENT_URL = "https://github.com/brownm09/dev-env/issues/1061#issuecomment-6669636491"
+PROSE_PR_LINE = (
+    "2026-11-05T17:51:24Z Seen again in the full suite on the branch for "
+    "[PR 1218](https://github.com/brownm09/dev-env/pull/1218). All 3 attempts failed"
+)
+FAILED_CREATE_STDOUT = (
+    f"--- recent 1061 comments\n{PROSE_PR_LINE}\n"
+    f"--- post comment\n{COMMENT_URL}\n"
+    "--- PR\nGraphQL: API rate limit already exceeded for user ID 36768444."
+)
+CHAINED_CREATE_COMMAND = (
+    "echo before; gh api -X POST repos/brownm09/dev-env/issues/1061/comments -F body=@c.md; "
+    "gh pr create --repo brownm09/dev-env --head b --base main --title t --body-file b.md 2>&1 | tail -3"
+)
+
+
+def _chained_create_payload(cwd: str, stdout: str) -> dict:
+    return {
+        "tool_name": "Bash",
+        "tool_input": {"command": CHAINED_CREATE_COMMAND},
+        "tool_response": {
+            "stdout": stdout,
+            "stderr": "",
+            "interrupted": False,
+            "isImage": False,
+            "noOutputExpected": False,
+        },
+        "cwd": cwd,
+    }
+
+
+def _run_main_recording_adds(payload: dict) -> tuple[int, str, list[str]]:
+    """Run main() in-process with add_to_project swapped for a recorder, so a
+    wrong add shows up as a recorded URL rather than a live board call."""
+    added: list[str] = []
+
+    def record_add(url, _number, _owner):
+        added.append(url)
+        return "PVTI_recorded", None
+
+    real_add, real_stdin = post_tool_use.add_to_project, post_tool_use.sys.stdin
+    post_tool_use.add_to_project = record_add
+    post_tool_use.sys.stdin = io.StringIO(json.dumps(payload))
+    stderr = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(stderr):
+            post_tool_use.main()
+        code = 0
+    except SystemExit as e:
+        code = e.code
+    finally:
+        post_tool_use.add_to_project, post_tool_use.sys.stdin = real_add, real_stdin
+    return code, stderr.getvalue(), added
+
+
+def test_main_failed_create_in_chain_adds_nothing() -> str:
+    with tempfile.TemporaryDirectory() as tmp_root:
+        cwd = _hook_config_cwd(tmp_root)
+        code, stderr, added = _run_main_recording_adds(_chained_create_payload(cwd, FAILED_CREATE_STDOUT))
+    assert added == [], f"a failed create must add nothing to the board, added {added!r}"
+    assert COMMENT_URL not in stderr, f"the comment URL must not be reported: {stderr!r}"
+    assert "created but" not in stderr, f"must not claim the PR was created: {stderr!r}"
+    assert code == 2 and "no GitHub URL found" in stderr, f"still surfaces (#377): {code} {stderr!r}"
+    return "failed create + comment URL in output -> nothing added, and no claim of creation"
+
+
+def test_main_failed_create_no_config_does_not_warn_of_created_item() -> str:
+    # With no config resolved, the dev-env#669 warning keys on a URL in the
+    # tracked repo too. The comment URL is one, and must not read as a new item.
+    with tempfile.TemporaryDirectory() as tmp_root:
+        code, stderr, added = _run_main_recording_adds(_chained_create_payload(tmp_root, FAILED_CREATE_STDOUT))
+    assert added == [] and code == 0, f"expected a silent skip, got {code} {added!r}"
+    assert stderr == "", f"expected no warning, got {stderr!r}"
+    return "failed create, no config -> no 'NOT added to project' warning about a comment URL"
+
+
+def test_main_successful_create_in_chain_adds_the_created_pr() -> str:
+    created = "https://github.com/brownm09/dev-env/pull/1235"
+    # A comment URL on either side of the real URL, since the old scan took the last URL it saw.
+    stdout = f"{PROSE_PR_LINE}\n{COMMENT_URL}\n{created}\n{COMMENT_URL}\n"
+    with tempfile.TemporaryDirectory() as tmp_root:
+        cwd = _hook_config_cwd(tmp_root)
+        code, stderr, added = _run_main_recording_adds(_chained_create_payload(cwd, stdout))
+    assert added == [created], f"expected only the created PR, added {added!r}"
+    assert code == 2 and created in stderr, f"got {code} {stderr!r}"
+    return "successful create chained with other URLs -> the created PR is what gets added"
+
+
+def test_main_existing_pr_error_adds_nothing() -> str:
+    # gh's error for an existing PR ends in a bare URL, the same shape as success
+    # (cli/cli pkg/cmd/pr/create/create.go). `| tail` keeps the chain at exit 0.
+    stdout = (
+        'a pull request for branch "b" into branch "main" already exists:\n'
+        "https://github.com/brownm09/dev-env/pull/1218\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp_root:
+        cwd = _hook_config_cwd(tmp_root)
+        _code, _stderr, added = _run_main_recording_adds(_chained_create_payload(cwd, stdout))
+    assert added == [], f"an existing PR was not created by this command, added {added!r}"
+    return "gh's 'already exists' error -> its URL is not treated as a created PR"
+
+
+def test_main_issue_create_ignores_bare_pr_url() -> str:
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "gh pr edit 5 --add-label x; gh issue create --title t --body-file b.md"},
+        "tool_response": {"stdout": "https://github.com/brownm09/dev-env/pull/5\nGraphQL: rate limit", "stderr": ""},
+    }
+    with tempfile.TemporaryDirectory() as tmp_root:
+        payload["cwd"] = _hook_config_cwd(tmp_root)
+        _code, _stderr, added = _run_main_recording_adds(payload)
+    assert added == [], f"a bare PR URL is not a created issue, added {added!r}"
+    return "gh issue create only accepts an issue URL, not the PR URL a sibling printed"
+
+
 def main() -> int:
     tests = [
         ("reads command output from stdout", test_reads_stdout),
@@ -1279,6 +1403,11 @@ def main() -> int:
         ("format_reminder: required_fields param used directly over config", test_format_reminder_required_fields_param_used_directly_over_config),
         ("format_reminder: field absent from live_options -> cached, unlabeled", test_format_reminder_field_not_in_live_options_uses_cached_unlabeled),
         ("exit_code coercion pins the accepted default=0 trade-off (ADR-050 Amendment 28)", test_exit_code_coercion_pins_accepted_tradeoff),
+        ("main(): failed create in a chain adds nothing (dev-env#1243)", test_main_failed_create_in_chain_adds_nothing),
+        ("main(): failed create, no config -> no created-item warning (dev-env#1243)", test_main_failed_create_no_config_does_not_warn_of_created_item),
+        ("main(): successful create in a chain adds the created PR (dev-env#1243)", test_main_successful_create_in_chain_adds_the_created_pr),
+        ("main(): gh's 'already exists' error adds nothing (dev-env#1243)", test_main_existing_pr_error_adds_nothing),
+        ("main(): issue create ignores a bare PR URL (dev-env#1243)", test_main_issue_create_ignores_bare_pr_url),
     ]
     failed = 0
     for name, fn in tests:
