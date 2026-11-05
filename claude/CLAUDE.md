@@ -653,6 +653,18 @@ Stated by the user on 2026-10-08 ([dev-env#1131](https://github.com/brownm09/dev
 
 ---
 
+## Asking the User
+
+**Ask through `AskUserQuestion` whenever the answers can be enumerated.** Use single-select when one answer applies and multi-select when several can, rather than listing the options in prose for the user to answer by typing. This includes decisions left open at the end of a turn, such as the *Context / ask* part of a stop summary. The specific cases elsewhere in this file (an in-flight PR, the issues offered after an unchained merge) are instances of this rule.
+
+- **Keep what the tool's own description asks.** Each question stands on its own, since the dialog may hide the text around it. A recommended option comes first and is labelled "(Recommended)". A choice with a conventional default, or a fact you can check yourself, doesn't get asked at all: pick the default, say so, and proceed.
+- **This rule says how to ask, not whether to.** Rules that say not to ask still stand, such as *Fix everything, always* and not asking when to tile a follow-up.
+- **Limits.** An open-ended question has no options to click, so it goes in prose. `AskUserQuestion` also isn't available everywhere: in a background or headless session, put the question in the final message, or park the session until someone can answer it.
+
+Stated by the user on 2026-11-05, after a session closed with a numbered list of decisions in prose. Asked again with clicks, the same decisions took seconds and the answers were unambiguous ([dev-env#1230](https://github.com/brownm09/dev-env/issues/1230)). Nothing enforces this mechanically.
+
+---
+
 ## Engineering Journal
 
 After each session (or at natural breakpoints for long sessions), create or update a session
