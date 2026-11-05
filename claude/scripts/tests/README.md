@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 101 `test_*.py` files, 11 bash gates, and
-two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 114 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 102 `test_*.py` files, 11 bash gates, and
+two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 115 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -178,6 +178,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_token_attribution.py` | `_token_pricing.py`, `token-report.py` | Model prices, unknown models reported as unpriced, and `--attribution` dollars pinned against a hand-computed transcript, with no transcript text in the output. |
 | `test_token_tracker.py` | `token-tracker.py` | Per-session token/cost aggregation and the once-per-session locate-failure advisory. |
 | `test_usage_snapshot.py` | `usage-snapshot.py` | OAuth-token expiry classification plus the merge-confirmation predicate for the post-tool-use usage snapshot. |
+| `test_window_flash_monitor.py` | `window-flash-monitor.py` | Console-flash recorder (ADR-155): flash detection, focus-loss timing, source lookup from process history, the title rule, retention and the report, over fixtures. `--live` runs the real monitor against real windows (local only; CI runs only the fixtures). |
 
 ### Utility & setup scripts
 
