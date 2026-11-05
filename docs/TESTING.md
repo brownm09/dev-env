@@ -2816,8 +2816,8 @@ For a one-line navigational map of the test directory, see
     PR6 review (dev-env#740): a Stop hook fires every turn-end, so a persistently unlocatable transcript
     would re-toast every turn without it; pins advise-once-then-suppress, per-session (not global)
     keying, and the empty-session-id "always advise" fallback (can't dedupe -> fail toward visible);
-    plus `get_pricing` (known models incl. a dated/suffixed id via substring match, and the default
-    fallback for an unknown/empty model) and `compute_cost` (the four-bucket per-million arithmetic, and
+    plus `get_pricing` (known models incl. a dated/suffixed id via substring match, and an unknown/empty
+    model reported as unpriced) and `compute_cost` (the four-bucket per-million arithmetic, and
     `$0` for empty usage). Also (dev-env#804) `read_token_log_lines(path)` — extracted from `main()`'s
     previously-inline, unguarded `TOKEN_LOG.read_text(encoding="utf-8")` (which let a non-UTF-8 log's
     `UnicodeDecodeError` escape uncaught, silently dropping the current session's entire summary) so the
@@ -5050,4 +5050,20 @@ For a one-line navigational map of the test directory, see
 
      ```bash
      py -3 claude/scripts/tests/test_reconcile_late_stubs.py
+     ```
+
+112. **token attribution and pricing test** — required when changing `claude/scripts/_token_pricing.py`
+     or `token-report.py`'s `--attribution` mode. Also run item 65 when changing `_token_pricing.py`,
+     since `token-tracker.py` prices through it (dev-env#1214, #1122). A small transcript's expected
+     dollars are worked out by hand in the fixture: hourly and 5-minute cache writes price separately,
+     a repeated message id counts once with its final usage, a call outside the window is excluded,
+     and only a large mid-session write after an idle gap counts as a re-cache. A longer model id is
+     never claimed by a shorter one it contains, and an unknown model is listed as unpriced instead of
+     taking another model's rates. Sentinel text in tool inputs and results is checked absent from the
+     markdown and JSON output. The empty-extraction check asserts tables rendered before it checks
+     their `#` columns. Deliberately not covered: whether the bands and the compaction heuristic are
+     the right cut points. They only sort spend into rows, and no check acts on them.
+
+     ```bash
+     py -3 claude/scripts/tests/test_token_attribution.py
      ```

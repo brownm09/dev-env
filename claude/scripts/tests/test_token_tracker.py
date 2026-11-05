@@ -13,8 +13,8 @@ These tests exercise the pure helpers offline (no stdin, network, gh, or disk):
   * format_locate_error(session_id): ASCII / cp1252-encodable (so the systemMessage
     text can't vanish under Claude Code's cp1252 hook-output pipe on Windows) and
     names the hook + the session id.
-  * get_pricing / compute_cost: the pure pricing math (a known model, the default
-    fallback, and the cost arithmetic).
+  * get_pricing / compute_cost: the pure pricing math (a known model, an unknown
+    model reported as unpriced, and the cost arithmetic).
   * read_token_log_lines(path) (dev-env#804): extracted from main()'s previously-
     inline, unguarded `TOKEN_LOG.read_text(encoding="utf-8")` (which let a non-UTF-8
     log's UnicodeDecodeError escape uncaught, silently dropping the current session's
@@ -137,23 +137,24 @@ def test_should_advise_locate_failure_empty_session_always_advises() -> str:
 # --- get_pricing() -------------------------------------------------------------
 
 def test_get_pricing_known_models() -> str:
-    assert tt.get_pricing("claude-sonnet-4-6") == tt.PRICING["claude-sonnet-4-6"]
-    assert tt.get_pricing("claude-opus-4-6") == tt.PRICING["claude-opus-4-6"]
+    assert tt.get_pricing("claude-sonnet-4-6")["input"] == 3.00
+    assert tt.get_pricing("claude-opus-5-5")["input"] == 4.00
     # Substring match: a fully-qualified/dated model id still resolves.
-    assert tt.get_pricing("claude-haiku-4-5-20251001") == tt.PRICING["claude-haiku-4-5"]
+    assert tt.get_pricing("claude-haiku-4-5-20251001")["input"] == 1.00
     return "get_pricing resolves known models (incl. a dated/suffixed id via substring match)"
 
 
-def test_get_pricing_unknown_defaults() -> str:
-    assert tt.get_pricing("some-unknown-model") == tt._DEFAULT_PRICES
-    assert tt.get_pricing("") == tt._DEFAULT_PRICES
-    return "get_pricing falls back to the default (sonnet) prices for an unknown/empty model"
+def test_get_pricing_unknown_is_unpriced() -> str:
+    # dev-env#1122: this used to fall back to Sonnet 4.6 prices with no warning.
+    assert tt.get_pricing("some-unknown-model") is None
+    assert tt.get_pricing("") is None
+    return "get_pricing returns None for an unknown/empty model instead of another model's prices"
 
 
 # --- compute_cost() ------------------------------------------------------------
 
 def test_compute_cost_arithmetic() -> str:
-    prices = {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75}
+    prices = {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6.0}
     # 1M input @ $3 + 1M output @ $15 = $18.00
     usage = {
         "input_tokens": 1_000_000,
@@ -174,7 +175,7 @@ def test_compute_cost_arithmetic() -> str:
 
 
 def test_compute_cost_empty_usage_is_zero() -> str:
-    prices = {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75}
+    prices = {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6.0}
     assert tt.compute_cost({}, prices) == 0.0
     return "empty usage -> $0.00 (missing token keys default to 0)"
 
@@ -236,7 +237,8 @@ def test_count_turns_reads_normal_file() -> str:
             "output_tokens": 50,
             "cache_read_input_tokens": 10,
             "cache_creation_input_tokens": 5,
-        }, totals
+            "cache_write_1h_input_tokens": 0,
+        },totals
         assert turn_count == 1, turn_count
         assert model == "claude-opus-4-6", model
     return "_count_turns extracts totals/turn_count/model from a normal JSONL file"
@@ -255,7 +257,8 @@ def test_count_turns_non_utf8_returns_zeroed_defaults() -> str:
             "output_tokens": 0,
             "cache_read_input_tokens": 0,
             "cache_creation_input_tokens": 0,
-        }, totals
+            "cache_write_1h_input_tokens": 0,
+        },totals
         assert turn_count == 0, turn_count
         assert model == "claude-sonnet-4-6", model
     return "_count_turns degrades to zeroed defaults on a non-UTF-8 file (no raise)"
@@ -280,7 +283,8 @@ def test_aggregate_session_reads_normal_file() -> str:
             "output_tokens": 50,
             "cache_read_input_tokens": 10,
             "cache_creation_input_tokens": 5,
-        }, data["tokens"]
+            "cache_write_1h_input_tokens": 0,
+        },data["tokens"]
         assert data["turn_count"] == 1, data["turn_count"]
         assert data["model"] == "claude-opus-4-6", data["model"]
         assert data["cwd"] == "/repo", data["cwd"]
@@ -306,7 +310,8 @@ def test_aggregate_session_non_utf8_returns_safe_defaults() -> str:
             "output_tokens": 0,
             "cache_read_input_tokens": 0,
             "cache_creation_input_tokens": 0,
-        }, data["tokens"]
+            "cache_write_1h_input_tokens": 0,
+        },data["tokens"]
         assert data["turn_count"] == 0
         assert data["model"] == "claude-sonnet-4-6"
         assert data["cwd"] is None
@@ -327,7 +332,7 @@ def main() -> int:
         ("should_advise_locate_failure distinct sessions", test_should_advise_locate_failure_distinct_sessions),
         ("should_advise_locate_failure empty session always advises", test_should_advise_locate_failure_empty_session_always_advises),
         ("get_pricing known models", test_get_pricing_known_models),
-        ("get_pricing unknown -> default", test_get_pricing_unknown_defaults),
+        ("get_pricing unknown -> unpriced", test_get_pricing_unknown_is_unpriced),
         ("compute_cost arithmetic", test_compute_cost_arithmetic),
         ("compute_cost empty usage -> 0", test_compute_cost_empty_usage_is_zero),
         ("read_token_log_lines: missing file -> []", test_read_token_log_lines_missing_file),
