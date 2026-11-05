@@ -243,6 +243,27 @@ def test_summarize_by_project_counts_and_sorts() -> str:
     return "per-project counts are alphabetised and totals are honest"
 
 
+def test_composed_dates_count_only_files_directly_in_a_project_dir() -> str:
+    tree = "\n".join([
+        "sessions/p/reports/2026-06-29-x.md",
+        "sessions/p/retro/2026-06-30-x.md",
+        "sessions/p/memory-audit/2026-07-01-x.md",
+        "sessions/p/2026-07-02-slug.md",
+        "sessions/p/2026-07-03_120000.stub.md",
+    ])
+    orig_run = mod.subprocess.run
+    mod.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=tree, stderr="")
+    mod.composed_dates_on_main.cache_clear()
+    try:
+        got = mod.composed_dates_on_main()
+    finally:
+        mod.subprocess.run = orig_run
+        mod.composed_dates_on_main.cache_clear()
+    assert "2026-06-29" not in got, f"a report alone must not count as composed: {got}"
+    assert got == {"2026-07-02"}, got
+    return "only a journal directly in sessions/<project>/ marks a date composed"
+
+
 def test_mismatched_stub_paths_requires_digits_not_just_separators() -> str:
     """The date check must be digit-strict: a name like `abcd-fg-ij_010101.stub.md` has
     separators in the right places and compares lexicographically GREATER than any real
@@ -575,6 +596,7 @@ def main() -> int:
         ("message states the branch-move-before-commit ordering", test_format_day_rollover_states_the_ordering_constraint),
         ("mismatch summary names every affected project", test_format_day_rollover_summarizes_projects),
         ("summarize_by_project counts and sorts", test_summarize_by_project_counts_and_sorts),
+        ("composed dates count only files directly in a project dir", test_composed_dates_count_only_files_directly_in_a_project_dir),
         ("worktree session: rollover only", test_main_worktree_session_gets_rollover_only),
         ("main checkout: rollover plus checks 1-3", test_main_non_worktree_session_gets_everything),
         ("worktree emission does not suppress checks 1-3", test_main_worktree_emission_does_not_suppress_canonical_checks),
