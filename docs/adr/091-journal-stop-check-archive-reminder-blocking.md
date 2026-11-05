@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-08
 **Status:** Accepted
-**Amended:** 2026-07-09, 2026-08-15, 2026-08-16, 2026-10-30 (four amendments — see Amendment sections below)
+**Amended:** 2026-07-09, 2026-08-15, 2026-08-16, 2026-10-30, 2026-11-05 (five amendments — see Amendment sections below)
 **Tags:** hooks, stop, journal, archive, session-archiving, exit-code, stderr, claude-facing, adr-021, adr-088, false-positive, manifest, open-prs, session-scoping, sentinel, adr-064, cross-session, in-flight-work, todowrite, background-agent, latency, network, remote-tracking-refs
 
 ---
@@ -559,3 +559,39 @@ stale local-only refs were already-composed dates, which the existing filter dro
 amendment closes. [PR #1161](https://github.com/brownm09/dev-env/pull/1161) has the before/after
 timing (in-process median 1.71 s → 0.18 s) and the tests that fail against the old
 implementation.
+
+---
+
+## Amendment 5 (2026-11-05) — the hook no longer deletes journal files (dev-env#1221)
+
+The "orphaned-draft-removed FYI" named in *The other three message types stay NON-blocking* no
+longer exists, because the deletion behind it is gone.
+
+**The problem.** `remove_orphaned_drafts()` deleted every stale artifact that git reported as
+untracked. PR #111 added it for drafts left on disk after their journal was composed
+([dev-env#31](https://github.com/brownm09/dev-env/issues/31)). PR #144 then made
+`stale_draft_artifacts()` skip any project and date with a composed journal on `origin/main`,
+which removed that case from the function's input. What still reached it was the opposite:
+uncomposed files. An untracked stub has never been committed, so the delete could not be undone,
+and a session between its stub Write and its commit could lose its only copy to another session's
+Stop hook.
+
+**The decision.** Remove the deletion for both file kinds. Untracked stale files now appear in the
+existing stale-artifact advisory.
+
+**Alternatives considered.**
+- *Keep deleting untracked `*_draft.md` files and exempt only stubs.* Rejected. Such a file also
+  reaches this code only when its date is uncomposed, so it is content nobody composed.
+  `/journal-compose` already says so: its `check-clean` step routes a leftover `_draft.md` to
+  recovery and never deletes it.
+- *Delete only when a composed journal exists for the date.* Rejected. `stale_draft_artifacts()`
+  already filters those out, so the check could never pass. Removing the filter would bring back
+  stale-artifact false positives from branch lineage.
+
+**The cost.** A real leftover is now reported on each Stop until someone commits or removes it. The
+advisory names only the newest stale artifact, as it did before, so an older untracked stub is not
+named until the newer ones are resolved. It stays on disk either way.
+
+**References:** [dev-env#1221](https://github.com/brownm09/dev-env/issues/1221).
+`test_e2e_untracked_stale_stub_is_kept_and_reported` and its `*_draft.md` sibling fail against the
+old implementation.

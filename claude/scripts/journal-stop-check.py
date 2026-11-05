@@ -51,9 +51,9 @@ Checks 2–3 (user-facing, NON-blocking — exit 0, systemMessage):
   systemMessage channel — the one exit-0 channel a Stop hook delivers to the
   user (ADR-103) — NOT plain stdout, which never surfaced them at all.
 
-Also cleans up orphaned draft files: physical files left on disk as untracked
-after git rm. This prevents new-day-journal-check.py false positives on the
-next session (see dev-env#31).
+Never deletes a stale file. An untracked stub has never been committed and may
+be a session's only copy of its work, so it is reported like any other stale
+artifact (dev-env#1221).
 """
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
@@ -523,26 +523,6 @@ def unmerged_draft_branches() -> list[str]:
         return []
 
 
-def remove_orphaned_drafts(stale: list[str]) -> list[str]:
-    """Delete stale draft files that are untracked (orphaned after git rm)."""
-    removed = []
-    for path_str in stale:
-        try:
-            result = subprocess.run(
-                ["git", "status", "--porcelain", path_str],
-                cwd=JOURNAL_REPO,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.stdout.startswith("??"):
-                os.remove(path_str)
-                removed.append(path_str)
-        except Exception:
-            pass
-    return removed
-
-
 def parse_stop_hook_active(raw: str) -> bool:
     """True iff the Stop payload's stop_hook_active flag is set. Tolerates empty
     or malformed stdin (returns False) so a parse hiccup never suppresses the
@@ -641,18 +621,9 @@ def main() -> None:
 
     stale = stale_draft_artifacts()
 
-    removed = remove_orphaned_drafts(stale)
-    for path_str in removed:
-        messages.append(
-            f"[journal-stop-hook] Removed orphaned draft: {Path(path_str).as_posix()}"
-        )
-
-    # After removing orphans, re-evaluate what's still stale
-    still_stale = [f for f in stale if f not in removed]
-
-    if still_stale:
-        artifact_path = Path(still_stale[0]).as_posix()
-        artifact_date = os.path.basename(still_stale[0])[:10]
+    if stale:
+        artifact_path = Path(stale[0]).as_posix()
+        artifact_date = os.path.basename(stale[0])[:10]
         messages.append(
             f"[journal-stop-hook] Stale draft artifact: {artifact_path}\n"
             f"The engineering journal draft from {artifact_date} was never composed.\n"
