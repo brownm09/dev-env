@@ -34,7 +34,10 @@ For a one-line navigational map of the test directory, see
 
 3. **Pre-push hook self-test** — required when changing `claude/hooks/pre-push`. Drives the real
    hook against throwaway fixture repos with a stubbed `npm` and asserts the lockfile-drift guard's
-   BLOCK / PASS / SKIP paths, working-tree restoration, and repo-hook chaining (see [ADR-036](adr/036-lockfile-drift-prevention.md)):
+   BLOCK / PASS / SKIP paths, working-tree restoration, and repo-hook chaining (see [ADR-036](adr/036-lockfile-drift-prevention.md)).
+   With a stubbed `gh`, it also asserts the resurrected-draft guard blocks a push to a past `draft/<D>`
+   when the day merged from `draft/<D>` or `compose/<D>`, allows it when neither merged, and queries
+   both heads (dev-env#1205):
 
    ```bash
    bash claude/hooks/tests/test-pre-push-lockfile.sh
