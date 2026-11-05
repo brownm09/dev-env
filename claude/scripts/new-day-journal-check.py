@@ -173,7 +173,9 @@ def stale_draft_artifacts() -> list[str]:
 def composed_dates_on_main() -> set[str]:
     """Return YYYY-MM-DD dates that have a composed journal file on origin/main.
 
-    A composed file is any sessions/**/*.md that is NOT a stub (*.stub.md).
+    A composed file is a sessions/<project>/*.md directly in the project directory
+    that is NOT a stub (*.stub.md). A report, retro or audit in a subdirectory can
+    carry a date whose journal is not composed yet (dev-env#1206).
     This is the squash-merge signal: squash merges don't leave branch commits in
     main's ancestry, so git branch --merged is unreliable. Checking for the
     composed file on main is the authoritative indicator.
@@ -192,6 +194,8 @@ def composed_dates_on_main() -> set[str]:
         )
         dates = set()
         for line in result.stdout.splitlines():
+            if line.count("/") != 2:
+                continue
             fname = line.split("/")[-1]
             if fname.endswith(".stub.md") or not fname.endswith(".md"):
                 continue
