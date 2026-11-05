@@ -31,7 +31,7 @@ def _count_turns_from_jsonl(jsonl_path: Path) -> tuple[dict, int, str]:
         "cache_write_1h_input_tokens": 0,
     }
     turn_count = 0
-    model = "claude-sonnet-4-6"
+    model = ""
     with open(jsonl_path, encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()

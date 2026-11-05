@@ -101,7 +101,7 @@ def _count_turns(jsonl_path: Path) -> tuple[dict, int, str]:
         "cache_write_1h_input_tokens": 0,
     }
     turn_count = 0
-    model = "claude-sonnet-4-6"
+    model = ""
     for line in _iter_file_lines_safely(jsonl_path):
         try:
             record = json.loads(line)
@@ -134,7 +134,7 @@ def aggregate_session(transcript_path: Path) -> dict:
         "cache_write_1h_input_tokens": 0,
     }
     turn_count = 0
-    model = "claude-sonnet-4-6"
+    model = ""
     first_ts = None
     last_ts = None
     cwd = None

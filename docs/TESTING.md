@@ -5052,17 +5052,26 @@ For a one-line navigational map of the test directory, see
      py -3 claude/scripts/tests/test_reconcile_late_stubs.py
      ```
 
-112. **token attribution and pricing test** — required when changing `claude/scripts/_token_pricing.py`
-     or `token-report.py`'s `--attribution` mode. Also run item 65 when changing `_token_pricing.py`,
-     since `token-tracker.py` prices through it (dev-env#1214, #1122). A small transcript's expected
-     dollars are worked out by hand in the fixture: hourly and 5-minute cache writes price separately,
-     a repeated message id counts once with its final usage, a call outside the window is excluded,
-     and only a large mid-session write after an idle gap counts as a re-cache. A longer model id is
-     never claimed by a shorter one it contains, and an unknown model is listed as unpriced instead of
-     taking another model's rates. Sentinel text in tool inputs and results is checked absent from the
-     markdown and JSON output. The empty-extraction check asserts tables rendered before it checks
-     their `#` columns. Deliberately not covered: whether the bands and the compaction heuristic are
-     the right cut points. They only sort spend into rows, and no check acts on them.
+112. **token attribution and pricing test** — required when changing `claude/scripts/_token_pricing.py`,
+     `claude/scripts/backfill-tokens.py`, or `token-report.py`'s `--attribution` mode or session tables.
+     Also run item 65 when changing `_token_pricing.py`, since `token-tracker.py` prices through it
+     (dev-env#1214, #1122, ADR-154). Expected dollars are worked out by hand in the fixtures: hourly and
+     5-minute cache writes price separately, the Haiku 5.5 long-prompt tier applies per call, a message id
+     counts once across all files with its last record that has tokens, and a call outside the window is
+     excluded. A re-cache needs a lost cache prefix and a write of at least `REWRITE_MIN_TOKENS`, at any
+     idle gap, and a write at a compaction has its own row. A tool-result row charges its write once and a
+     read per later call, stopping at a `compact_boundary` record and at the window's edge. Only an exact
+     price-table key with an optional date or bracket suffix gets a price, so a successor model is listed
+     as unpriced, as are fast-mode and US-only calls. Every price row keeps the published ratios to its
+     input price. Malformed records are counted, not fatal, and a project with no transcripts says so.
+     Sentinel text in prompts, tool inputs, tool results and the model field is checked absent from the
+     markdown and JSON output. The command line runs through `main()` with a fixture root, covering the
+     inclusive `--until`, `--project`, and the flag combinations it rejects. Session tables mark unpriced
+     rows, and `backfill-tokens.py`'s `process_transcript` records `model_unpriced`. The empty-extraction
+     check asserts tables rendered before it checks their `#` columns. Deliberately not covered: whether
+     the bands, `CHARS_PER_TOKEN` and `PREFIX_LOST_RATIO` are the right values. They only sort spend into
+     rows, and no check acts on them. Each message-id rule here stops at `--attribution`:
+     `token-tracker.py`, `backfill-tokens.py` and `read_subagents` still sum every record (dev-env#1223).
 
      ```bash
      py -3 claude/scripts/tests/test_token_attribution.py
