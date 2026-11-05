@@ -135,7 +135,10 @@ For a one-line navigational map of the test directory, see
 
    **Truncation half.** `classify_package_dir()`, `truncation_verdict()` and `is_staging_name()` are
    pure and covered exhaustively; `scan_node_modules()` runs against real temp-directory fixtures,
-   following `test_reclaim_worktree_disk.py`'s fake-worktree precedent (item 30).
+   following `test_reclaim_worktree_disk.py`'s fake-worktree precedent (item 30). A case that can't
+   run on this machine (junctions off Windows, symlinks without the privilege) prints `skipped:` and
+   counts as skipped, never as passed — lowercase, because the runner reads a leading `SKIP:` as a
+   whole-file skip (dev-env#1212).
 
    **Several thresholds here are calibration constants, so the tests pin the measurement rather than
    the arithmetic.** `test_measured_benign_ceiling_stays_ok` asserts against
@@ -2800,6 +2803,11 @@ For a one-line navigational map of the test directory, see
     (`--max-retries`, default 2, the `RETRY`/`[retried Nx]` output, and the new `Retried:` summary
     line) is, like `main` itself, exercised end-to-end only by the first green CI run on the PR that
     adds it — not by this offline suite.
+
+    `test_per_case_skip_in_worktree_npm_install_does_not_skip_the_file` (dev-env#1212) is the one
+    case that isn't a pure helper check. It runs item 9's cases in-process with the symlink case
+    forced to skip, then asserts `classify_result` still reads the output as a pass. A per-case skip
+    in that file must not print `SKIP:`, or the runner labels the whole file skipped.
 
     ```bash
     py -3 claude/scripts/tests/test_run_hook_tests.py

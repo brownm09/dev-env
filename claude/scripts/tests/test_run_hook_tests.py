@@ -10,6 +10,8 @@ the bash-missing and non-test-suffix cases), ``classify_result`` (the
 pass / self-skip / fail mapping, incl. non-zero-exit winning over a SKIP marker),
 and ``run_with_retries`` (dev-env#994, ADR-134 -- the file-level retry helper,
 exercised with a canned zero-arg callable so no real subprocess is spawned).
+The one exception to the pure-helper rule is the dev-env#1212 regression test,
+which runs test_worktree_npm_install.py's own cases in-process.
 
 ``main`` / ``_run_one`` (which shell out) are not covered here -- the end-to-end
 acceptance test for the runner is the first green CI run on the PR that adds it,
@@ -18,7 +20,9 @@ the rest of this suite).
 
 Run: py -3 claude/scripts/tests/test_run_hook_tests.py
 """
+import contextlib
 import importlib.util
+import io
 import os
 import sys
 import tempfile
@@ -157,6 +161,28 @@ def test_classify_self_skip_on_leading_skip_marker():
 def test_classify_nonzero_exit_beats_skip_marker():
     # A test that printed SKIP: but still exited non-zero is a real failure.
     assert mod.classify_result(2, "SKIP: something\nthen it crashed") == "fail"
+
+
+def test_per_case_skip_in_worktree_npm_install_does_not_skip_the_file():
+    # dev-env#1212: one case that cannot run here must not label a whole file
+    # skipped. The case is forced to skip so this holds on a machine that can
+    # create symlinks too.
+    path = SCRIPT.parent / "tests" / "test_worktree_npm_install.py"
+    spec = importlib.util.spec_from_file_location("test_worktree_npm_install", path)
+    target = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(target)
+
+    def _forced_skip():
+        raise target._Skip("forced by test_run_hook_tests")
+
+    target.test_scan_skips_workspace_links = _forced_skip
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        returncode = target.main()
+    output = out.getvalue()
+    assert "scan: workspace symlinks skipped" in output, output
+    assert "forced by test_run_hook_tests" in output, output
+    assert mod.classify_result(returncode, output) == "pass", output
 
 
 # ---------------------------------------------------------------------------
