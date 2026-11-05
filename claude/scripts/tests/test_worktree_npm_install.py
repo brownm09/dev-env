@@ -479,7 +479,9 @@ def main() -> int:
             print(f"      {detail}")
         except _Skip as e:
             skipped += 1
-            print(f"SKIP: {name}")
+            # Not "SKIP:" -- run-hook-tests.py reads a leading "SKIP:" line
+            # as a whole-file skip.
+            print(f"skipped: {name}")
             print(f"      {e}")
         except AssertionError as e:
             failed += 1
