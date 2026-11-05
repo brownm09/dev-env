@@ -23,7 +23,7 @@ GraphQL exhaustion (dev-env#769/#773, PR #872, and `reconcile-pending-tiles.py`'
 implementation session at `graphql 0/5000` while REST `core` sat at `4999/5000`). An
 exhausted bucket failed every lookup, and since an unresolved state is conservatively
 *kept*, nothing was ever pruned — safe, but a total and unreported loss of this hook's only
-job, on the same bucket Projects v2 operations contend for with no REST alternative at all.
+job, on the same bucket the `gh project` commands contend for.
 
 ADR-119 first addressed that with a GraphQL-then-REST *fallback*. Amendment 1 replaces it
 with REST-only, which is strictly better on every axis that motivated the fallback: the

@@ -49,8 +49,8 @@ model, each load-bearing:
    implementation session — `graphql 0/5000` while REST `core` sat at `4999/5000`). An exhausted
    bucket failed every lookup, so nothing was ever pruned. `fetch_repo_issue_states` therefore
    reads `GET /repos/{owner}/{repo}/issues` over REST, whose `core` bucket is 5000/hr and
-   near-untouched — and which is *not* what Projects v2 operations contend for, since those have
-   no REST alternative at all. REST-only, with no GraphQL fallback: one code path, and a `core`
+   near-untouched — and which is *not* what the `gh project` commands contend for, since those
+   spend GraphQL. REST-only, with no GraphQL fallback: one code path, and a `core`
    failure almost always means auth/network is down, which GraphQL would not survive either.
    See dev-env#882 and ADR-118 Amendment 3.
 

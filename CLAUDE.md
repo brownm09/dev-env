@@ -356,17 +356,54 @@ GPI_URL="$URL" GPI_ITEM_ID="$ITEM_ID" node -e "
 "
 ```
 
-**GraphQL-only, no REST fallback.** Every command in this section — `gh project item-add`,
-`item-edit`, `item-list` — is GraphQL-only; GitHub Projects v2 has no REST API surface at all
-(Projects *classic* did; v2 does not). This is unlike `gh pr merge`/`gh pr comment`/`gh pr view
---json`, which all have documented REST equivalents (see [docs/REFERENCE.md → Git Workflow
-Runbooks](docs/REFERENCE.md#git-workflow-runbooks)) for when the GraphQL bucket is exhausted. When
-GraphQL hits 0/5000, every project-board operation above — adding an issue/PR, setting
-Impact/Why/Status, looking up an item ID — is completely blocked with **no workaround** except
-waiting for the bucket to reset (`gh api rate_limit --jq .resources.graphql.reset`, up to ~1 hour).
-If this happens mid-session, note the board update as an outstanding manual step and defer it
-rather than hunting for a REST substitute that doesn't exist. See
-[dev-env#769](https://github.com/brownm09/dev-env/issues/769).
+**When GraphQL rejects a call, use REST.** Every `gh project` command in this section spends the
+GraphQL bucket, and so does the fallback in `get-project-item.sh`. GitHub also has a REST API for
+Projects v2, which spends the separate `core` bucket (the response header says
+`X-RateLimit-Resource: core`). So a GraphQL rate-limit error doesn't block the board: adding an
+item, looking up an item ID, and setting a field all have a REST path. This applies even when
+`gh api rate_limit` shows GraphQL budget left: on 2026-11-05 a call was rejected with 3717/5000
+remaining ([dev-env#1238](https://github.com/brownm09/dev-env/issues/1238)). See GitHub's
+[Project items](https://docs.github.com/en/rest/projects/items) and
+[Project fields](https://docs.github.com/en/rest/projects/fields) REST documentation.
+
+REST takes numeric IDs, not the `PVTI_`/`PVTSSF_`/`PVTF_` node IDs used above, so an ID from
+`get-project-item.sh` won't work here. Field IDs: Status=`341872838`, Impact=`341872855`,
+Why=`341872861`. Option IDs are the same strings as in the table above. If a field ID stops
+working, list the current ones with `gh api users/brownm09/projectsV2/3/fields`.
+
+```bash
+N=<issue-or-pr-number>
+
+# Add an issue or PR to the board; prints the numeric item ID. Use type=PullRequest for a PR.
+gh api -X POST users/brownm09/projectsV2/3/items -f type=Issue -f owner=brownm09 -f repo=dev-env -F number=$N --jq .id
+
+# Look up the numeric item ID of an item already on the board.
+ITEM_ID=$(gh api --paginate "users/brownm09/projectsV2/3/items?q=$N&per_page=100" \
+  --jq ".[] | select(.content.number == $N and (.content.html_url | contains(\"/brownm09/dev-env/\"))) | .id")
+
+# Set Status (Todo=f75ad846, In Progress=47fc9ee4, Done=98236657).
+echo '{"fields":[{"id":341872838,"value":"98236657"}]}' | gh api -X PATCH "users/brownm09/projectsV2/3/items/$ITEM_ID" --input - --jq .id
+
+# Read it back; prints the option name, such as Done.
+gh api "users/brownm09/projectsV2/3/items/$ITEM_ID?fields=341872838" --jq '.fields[] | select(.id == 341872838) | .value.name.raw'
+```
+
+Impact and Why use the same `PATCH` with their own field IDs; Why's `value` is the text itself.
+Four behaviours, each seen on 2026-11-05, that a first attempt would trip over:
+
+- **`q` is a loose text filter, not a number lookup.** `q=1219` also returned #1212, and `q=12`
+  returned #120 and #121, so keep the `select`.
+- **Filter on `html_url`, not `repository_url`.** A pull request's `content.repository_url` is
+  null, so a filter on it never matches a PR.
+- **`q` can lag a new item.** `q=1239` returned nothing right after the add and found the item
+  about 35 seconds later. An empty result just after an add doesn't mean the add failed; use the
+  ID the `POST` printed.
+- **The `POST` isn't idempotent.** Adding an item already on the board fails with HTTP 422,
+  `Content already exists in this project`, which only means there's nothing to add.
+
+The local item-ID cache holds node IDs and these commands neither read nor write it. Corrects
+[dev-env#769](https://github.com/brownm09/dev-env/issues/769), which said Projects v2 lacked a REST API;
+see [dev-env#1239](https://github.com/brownm09/dev-env/issues/1239).
 
 To look up an item ID by issue or PR number `<N>` (e.g., to move status in a later session), use
 `get-project-item.sh` rather than querying the board directly — it checks a local cache first

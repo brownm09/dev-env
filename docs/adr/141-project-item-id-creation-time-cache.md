@@ -1,8 +1,8 @@
 # ADR-141 — Cache Project-Board Item IDs at Creation Time, Fall Back to a Full Fetch Only on a Miss
 
-**Date:** 2026-08-26
+**Date:** 2026-08-26 (amended 2026-11-05)
 **Status:** Accepted
-**Tags:** hooks, post-tool-use, github-project, graphql, caching, reconcile-project-board, performance
+**Tags:** hooks, post-tool-use, github-project, graphql, rest-api, caching, reconcile-project-board, performance
 
 ---
 
@@ -146,7 +146,7 @@ different per-PR lookup, reasoning "a fallback still spends the quota it was int
 protect... on every healthy session" — and could do this because a REST equivalent existed for PR
 state. That move is unavailable here: GitHub Projects v2 has **no REST API surface at all**
 (confirmed in root `CLAUDE.md`'s own "GraphQL-only, no REST fallback" note, citing
-[dev-env#769](https://github.com/brownm09/dev-env/issues/769)). The lever available to this design
+[dev-env#769](https://github.com/brownm09/dev-env/issues/769); wrong, see Amendment 1). The lever available to this design
 is avoiding *redundant* GraphQL calls via a cache, not eliminating GraphQL calls the way ADR-018
 Amendment 1 did — a fallback that only fires on a genuine miss does not "spend the quota it was
 introduced to protect" on a healthy (cache-hit) session, since it never runs at all in that case.
@@ -214,4 +214,25 @@ counter-precedent on eliminating vs. reducing GraphQL calls).
 - [GitHub REST API — Projects (classic)](https://docs.github.com/en/rest/projects) vs.
   [GitHub GraphQL API — ProjectV2](https://docs.github.com/en/graphql/reference/objects#projectv2) —
   confirms Projects v2 (used here) has no REST surface, unlike the classic Projects API GitHub
-  deprecated; this is why a cache, not a protocol switch, is the available lever.
+  deprecated; this is why a cache, not a protocol switch, is the available lever. (Wrong as of
+  Amendment 1 below.)
+
+## Amendment 1 (2026-11-05, dev-env#1239) — Projects v2 does have a REST API
+
+This ADR says Projects v2 has no REST API, and gives that as the reason a cache, not a protocol
+switch, was the available lever. That premise is wrong today. GitHub documents REST endpoints for
+[Project items](https://docs.github.com/en/rest/projects/items) (add, list, read, update) and
+[Project fields](https://docs.github.com/en/rest/projects/fields). On 2026-11-05 a session whose
+`gh project item-edit` had failed with a GraphQL rate-limit error set Status over REST instead. A
+later session then added items and set fields the same way, confirmed by reading the items back
+and by the `X-RateLimit-Resource: core` response header. Whether the API was missing when dev-env#769 was filed, or that session just didn't find
+it, wasn't established.
+
+**The decision stands.** The cache still saves a full-board fetch for the `gh project` commands,
+which remain the default, and a cache hit still costs zero calls. What changes is the rejected
+alternative: "why not eliminate GraphQL entirely" can no longer be answered with "that move is
+unavailable." It is available and hasn't been evaluated. The cached values are node IDs, which the
+REST endpoints don't accept, so moving the hooks to REST would also change what the cache stores.
+
+For now, REST is the documented manual fallback when GraphQL rejects a call, in the root `CLAUDE.md`
+GitHub Project section.
