@@ -219,3 +219,38 @@ the GitHub API today regardless of the hook. Flipping that toggle for any specif
 separate, smaller decision (this ADR's Decision point 6 / ADR-083 Follow-up item 7) — this
 addendum does not make it. See `claude/CLAUDE.md` → Git Workflow → "Auto-merge is off by design"
 for the current operational guidance.
+
+---
+
+## Addendum (2026-11-05) — Waiting for CI is one background watch ([dev-env#1229](https://github.com/brownm09/dev-env/issues/1229))
+
+The primary path above says to "poll/wait for CI". The Claude desktop app now tells sessions the
+opposite after opening a PR: never poll CI, and read the app's cached PR status instead. With both
+in force, sessions opened a PR and stopped, and the user had to prompt each merge.
+
+The app's Auto-fix monitor doesn't close this gap. Its tool description lists CI failures, merge
+conflicts and review comments as wake events, and passing CI isn't one of them. Passing CI is the
+one signal this ADR's merge step waits for.
+
+**Decision.** A session that intends to merge runs `gh pr checks <N> --watch --interval 60` once,
+in the background, and merges when it exits 0. `claude/CLAUDE.md` states this as an explicit
+override of the app's instruction, limited to this one command. Scheduled wakeups, `/loop`,
+`Monitor` and repeated `gh` loops stay out.
+
+**Why this form.** A background command re-invokes the session when it exits, so waiting costs no
+tokens, which is the app rule's most plausible concern. The interval is raised from the default 10
+seconds because `gh pr checks` uses GraphQL (confirmed with `GH_DEBUG=api` on gh 2.91.0), and
+concurrent sessions share that budget.
+
+**Alternatives rejected.** Relying on Auto-fix alone leaves passing CI unreported. Keeping the
+current behavior leaves the user prompting every merge. Turning on `--auto` would give up the
+in-session merge moment this ADR exists to protect.
+
+**Observed exit behavior (gh 2.91.0).** Exit 0 when all checks passed; exit 1 immediately with "no
+checks reported" when there are none. The exit code on a failed check wasn't observed, so the rule
+treats any non-zero exit as something to read rather than as a specific failure.
+
+**Limit.** Whether a fresh session follows the CLAUDE.md rule over the app's instruction can only
+be observed after merge. If sessions keep stopping, the rule needs stronger wording or a hook.
+
+Primary source: [`gh pr checks` manual](https://cli.github.com/manual/gh_pr_checks).
