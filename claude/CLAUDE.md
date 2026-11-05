@@ -622,6 +622,8 @@ Whenever directing the user to view, test, run, or consume any resource, include
 
 No "see the file" without the path. No "check the PR" without the URL.
 
+**Reopen an application yourself before asking the user to test something in it.** When the session closed the application, or had the user close it, launch it and confirm the process and its window exist, then ask. Don't ask the user to reopen it, and don't make the launch wait on an action of theirs. The exception is a step that needs the user's own hands first, such as elevation or a sign-in: say so and state exactly what is needed. Stated by the user on 2026-11-05, after a session asked for a RetroArch test while RetroArch was still closed ([dev-env#1211](https://github.com/brownm09/dev-env/issues/1211)). Nothing enforces this mechanically.
+
 ---
 
 ## Abbreviations
