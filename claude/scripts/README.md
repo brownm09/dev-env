@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **109 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **111 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -148,7 +148,7 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (30)
+### Session state, reliability & token tracking (32)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -182,6 +182,8 @@ invocation instead.
 | `keep-token-warm.ps1` | Scheduled-task payload (not run by hand) | Triggers a CLI OAuth-token refresh every few hours so `usage-snapshot.py` rarely needs an on-demand refresh — unless a desktop-app auth-status probe detects the refresh would be futile, in which case it exits early instead. |
 | `register-auto-resume.ps1` | `powershell -File register-auto-resume.ps1 [-Include ...] [-IntervalMinutes N] [-Unregister]` | Per-machine, run-once: creates the opt-in config if absent and registers the `ClaudeAutoResumeLauncher` task; `-Unregister` is the undo. |
 | `auto-resume-launcher.py` | Scheduled-task payload (`--dry-run` to preview) | After the Claude app starts, opens each opted-in session cut off mid-turn before that start with `claude://code/continue?session=`, so its auto-resume hook fires; skips sessions already running. |
+| `register-window-flash-monitor.ps1` | `powershell -File register-window-flash-monitor.ps1 [-Unregister]` | Per-machine, run-once: registers the hidden `ClaudeWindowFlashMonitor` logon task that keeps `window-flash-monitor.py` running. ADR-155. |
+| `window-flash-monitor.py` | Scheduled-task payload; `py -3 window-flash-monitor.py --report [YYYY-MM-DD]` by hand | Records console flashes, the focus each one took and the process behind it, and reports them by day. Observes only. ADR-155. |
 
 ---
 
