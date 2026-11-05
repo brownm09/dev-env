@@ -13,8 +13,8 @@ These tests exercise the pure helpers offline (no stdin, network, gh, or disk):
   * format_locate_error(session_id): ASCII / cp1252-encodable (so the systemMessage
     text can't vanish under Claude Code's cp1252 hook-output pipe on Windows) and
     names the hook + the session id.
-  * get_pricing / compute_cost: the pure pricing math (a known model, the default
-    fallback, and the cost arithmetic).
+  * get_pricing / compute_cost: the pure pricing math (a known model, an unknown
+    model reported as unpriced, and the cost arithmetic).
   * read_token_log_lines(path) (dev-env#804): extracted from main()'s previously-
     inline, unguarded `TOKEN_LOG.read_text(encoding="utf-8")` (which let a non-UTF-8
     log's UnicodeDecodeError escape uncaught, silently dropping the current session's
@@ -33,8 +33,9 @@ These tests exercise the pure helpers offline (no stdin, network, gh, or disk):
     copy — exercised only indirectly through these same tests, since it has no
     behavior of its own beyond what its two callers already prove.
 
-main()'s remaining I/O (stdin parse, transcript locate, the log write/rewrite, the
-`_hookout.emit_advisory` emission) is not covered — the emission channel itself is
+test_main_records_model_unpriced runs main() once per model case against a temp log
+(dev-env#1122). main()'s remaining I/O (the transcript-locate failure, the log rewrite,
+the `_hookout.emit_advisory` emission) is not covered — the emission channel itself is
 pinned by test_hook_output_contract.py (the gate finds ZERO output-contract offenses
 in token-tracker after this migration) and by test_hookout.py. This also covers a
 second `/review` finding on PR #808: when `read_token_log_lines` returns `[]` (a
@@ -51,9 +52,16 @@ Exit 0 = all pass.
 """
 
 import importlib.util
+import io
+import json
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
+
+from _heartbeat_isolation import isolate_heartbeat
+
+isolate_heartbeat()  # keep this file's hook fires out of the real heartbeat ledger (dev-env#1163)
 
 # tests/ -> scripts/ -> claude/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -137,23 +145,24 @@ def test_should_advise_locate_failure_empty_session_always_advises() -> str:
 # --- get_pricing() -------------------------------------------------------------
 
 def test_get_pricing_known_models() -> str:
-    assert tt.get_pricing("claude-sonnet-4-6") == tt.PRICING["claude-sonnet-4-6"]
-    assert tt.get_pricing("claude-opus-4-6") == tt.PRICING["claude-opus-4-6"]
+    assert tt.get_pricing("claude-sonnet-4-6")["input"] == 3.00
+    assert tt.get_pricing("claude-opus-5-5")["input"] == 4.00
     # Substring match: a fully-qualified/dated model id still resolves.
-    assert tt.get_pricing("claude-haiku-4-5-20251001") == tt.PRICING["claude-haiku-4-5"]
+    assert tt.get_pricing("claude-haiku-4-5-20251001")["input"] == 1.00
     return "get_pricing resolves known models (incl. a dated/suffixed id via substring match)"
 
 
-def test_get_pricing_unknown_defaults() -> str:
-    assert tt.get_pricing("some-unknown-model") == tt._DEFAULT_PRICES
-    assert tt.get_pricing("") == tt._DEFAULT_PRICES
-    return "get_pricing falls back to the default (sonnet) prices for an unknown/empty model"
+def test_get_pricing_unknown_is_unpriced() -> str:
+    # dev-env#1122: this used to fall back to Sonnet 4.6 prices with no warning.
+    assert tt.get_pricing("some-unknown-model") is None
+    assert tt.get_pricing("") is None
+    return "get_pricing returns None for an unknown/empty model instead of another model's prices"
 
 
 # --- compute_cost() ------------------------------------------------------------
 
 def test_compute_cost_arithmetic() -> str:
-    prices = {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75}
+    prices = {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6.0}
     # 1M input @ $3 + 1M output @ $15 = $18.00
     usage = {
         "input_tokens": 1_000_000,
@@ -174,7 +183,7 @@ def test_compute_cost_arithmetic() -> str:
 
 
 def test_compute_cost_empty_usage_is_zero() -> str:
-    prices = {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75}
+    prices = {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6.0}
     assert tt.compute_cost({}, prices) == 0.0
     return "empty usage -> $0.00 (missing token keys default to 0)"
 
@@ -236,7 +245,8 @@ def test_count_turns_reads_normal_file() -> str:
             "output_tokens": 50,
             "cache_read_input_tokens": 10,
             "cache_creation_input_tokens": 5,
-        }, totals
+            "cache_write_1h_input_tokens": 0,
+        },totals
         assert turn_count == 1, turn_count
         assert model == "claude-opus-4-6", model
     return "_count_turns extracts totals/turn_count/model from a normal JSONL file"
@@ -255,9 +265,10 @@ def test_count_turns_non_utf8_returns_zeroed_defaults() -> str:
             "output_tokens": 0,
             "cache_read_input_tokens": 0,
             "cache_creation_input_tokens": 0,
-        }, totals
+            "cache_write_1h_input_tokens": 0,
+        },totals
         assert turn_count == 0, turn_count
-        assert model == "claude-sonnet-4-6", model
+        assert model == "", model
     return "_count_turns degrades to zeroed defaults on a non-UTF-8 file (no raise)"
 
 
@@ -280,7 +291,8 @@ def test_aggregate_session_reads_normal_file() -> str:
             "output_tokens": 50,
             "cache_read_input_tokens": 10,
             "cache_creation_input_tokens": 5,
-        }, data["tokens"]
+            "cache_write_1h_input_tokens": 0,
+        },data["tokens"]
         assert data["turn_count"] == 1, data["turn_count"]
         assert data["model"] == "claude-opus-4-6", data["model"]
         assert data["cwd"] == "/repo", data["cwd"]
@@ -306,9 +318,10 @@ def test_aggregate_session_non_utf8_returns_safe_defaults() -> str:
             "output_tokens": 0,
             "cache_read_input_tokens": 0,
             "cache_creation_input_tokens": 0,
-        }, data["tokens"]
+            "cache_write_1h_input_tokens": 0,
+        },data["tokens"]
         assert data["turn_count"] == 0
-        assert data["model"] == "claude-sonnet-4-6"
+        assert data["model"] == ""
         assert data["cwd"] is None
         assert data["git_branch"] is None
         assert data["entrypoint"] is None
@@ -316,6 +329,74 @@ def test_aggregate_session_non_utf8_returns_safe_defaults() -> str:
         assert data["last_turn_ts"] is None
         assert data["subagent_count"] == 0
     return "aggregate_session returns safe zeroed/None defaults on a non-UTF-8 transcript (no raise)"
+
+
+def _assistant_line(model, usage) -> str:
+    return json.dumps({"type": "assistant", "message": {"model": model, "usage": usage}}) + "\n"
+
+
+def test_aggregate_session_prices_nested_hourly_writes() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "session-abc.jsonl"
+        path.write_text(_assistant_line("claude-opus-5-5", {
+            "cache_creation_input_tokens": 2_000_000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 1_000_000},
+        }), encoding="utf-8")
+        data = tt.aggregate_session(path)
+    assert data["tokens"]["cache_write_1h_input_tokens"] == 1_000_000, data["tokens"]
+    cost = tt.compute_cost(data["tokens"], tt.get_pricing(data["model"]))
+    assert cost == 13.0, cost
+    return "1M hourly at $8 plus 1M 5-minute at $5 is $13, read from a real nested record"
+
+
+def test_synthetic_last_record_keeps_the_real_model() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "session-abc.jsonl"
+        path.write_text(
+            _assistant_line("claude-opus-5-5", {"input_tokens": 1})
+            + _assistant_line(tt.SYNTHETIC_MODEL, {"input_tokens": 0}),
+            encoding="utf-8",
+        )
+        assert tt.aggregate_session(path)["model"] == "claude-opus-5-5"
+        assert tt._count_turns(path)[2] == "claude-opus-5-5"
+    return "a session ending on a synthetic record is priced by the real model before it"
+
+
+def test_odd_usage_shape_does_not_lose_the_record() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "session-abc.jsonl"
+        path.write_text(
+            _assistant_line("claude-opus-5-5", {"input_tokens": 7, "cache_creation": 3})
+            + _assistant_line("claude-opus-5-5", {"input_tokens": None, "cache_creation": {"ephemeral_1h_input_tokens": None}}),
+            encoding="utf-8",
+        )
+        data = tt.aggregate_session(path)
+    assert data["tokens"]["input_tokens"] == 7, data["tokens"]
+    return "a non-object cache_creation or a null count can't raise out of the Stop hook"
+
+
+def test_main_records_model_unpriced() -> str:
+    # A session with usage but no model, and one on an unknown model, are both unpriced.
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        results = {}
+        for name, model in (("known", "claude-opus-5-5"), ("unknown", "claude-future-9"), ("none", None)):
+            path = root / f"{name}.jsonl"
+            path.write_text(_assistant_line(model, {"input_tokens": 1_000_000}), encoding="utf-8")
+            log = root / f"{name}-log.jsonl"
+            stdin = json.dumps({"session_id": name, "transcript_path": str(path)})
+            with mock.patch.object(tt, "TOKEN_LOG", log), \
+                    mock.patch.object(tt, "LATEST_SESSION", root / f"{name}-latest.json"), \
+                    mock.patch.object(tt, "SCRATCH_DIR", root), \
+                    mock.patch.object(sys, "stdin", io.StringIO(stdin)):
+                tt.main()
+            results[name] = json.loads(log.read_text(encoding="utf-8"))
+    assert results["known"]["model_unpriced"] is False, results["known"]
+    assert results["known"]["estimated_cost_usd"] == 4.0, results["known"]
+    assert results["unknown"]["model_unpriced"] is True, results["unknown"]
+    assert results["none"]["model_unpriced"] is True, results["none"]
+    assert results["none"]["estimated_cost_usd"] == 0.0, results["none"]
+    return "the recorded row marks an unknown or missing model as unpriced, not costed as Sonnet 4.6"
 
 
 def main() -> int:
@@ -327,7 +408,7 @@ def main() -> int:
         ("should_advise_locate_failure distinct sessions", test_should_advise_locate_failure_distinct_sessions),
         ("should_advise_locate_failure empty session always advises", test_should_advise_locate_failure_empty_session_always_advises),
         ("get_pricing known models", test_get_pricing_known_models),
-        ("get_pricing unknown -> default", test_get_pricing_unknown_defaults),
+        ("get_pricing unknown -> unpriced", test_get_pricing_unknown_is_unpriced),
         ("compute_cost arithmetic", test_compute_cost_arithmetic),
         ("compute_cost empty usage -> 0", test_compute_cost_empty_usage_is_zero),
         ("read_token_log_lines: missing file -> []", test_read_token_log_lines_missing_file),
@@ -338,6 +419,10 @@ def main() -> int:
         ("_count_turns: non-UTF-8 -> zeroed defaults", test_count_turns_non_utf8_returns_zeroed_defaults),
         ("aggregate_session: reads normal file", test_aggregate_session_reads_normal_file),
         ("aggregate_session: non-UTF-8 -> safe defaults", test_aggregate_session_non_utf8_returns_safe_defaults),
+        ("aggregate_session: nested hourly writes priced", test_aggregate_session_prices_nested_hourly_writes),
+        ("synthetic last record keeps the real model", test_synthetic_last_record_keeps_the_real_model),
+        ("odd usage shape keeps the record", test_odd_usage_shape_does_not_lose_the_record),
+        ("main records model_unpriced", test_main_records_model_unpriced),
     ]
     failed = 0
     for name, fn in tests:

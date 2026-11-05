@@ -14,32 +14,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from _token_pricing import SYNTHETIC_MODEL, compute_cost, flat_usage, get_pricing
+
 CLAUDE_DIR = Path.home() / ".claude"
 SCRATCH_DIR = CLAUDE_DIR / "scratch"
 TOKEN_LOG = SCRATCH_DIR / "token-sessions.jsonl"
-
-PRICING = {
-    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
-    "claude-opus-4-6":   {"input": 15.00, "output": 75.00, "cache_read": 1.50, "cache_write": 18.75},
-    "claude-haiku-4-5":  {"input": 0.80, "output": 4.00,  "cache_read": 0.08, "cache_write": 1.00},
-}
-_DEFAULT_PRICES = PRICING["claude-sonnet-4-6"]
-
-
-def get_pricing(model: str) -> dict:
-    for key, prices in PRICING.items():
-        if key in model:
-            return prices
-    return _DEFAULT_PRICES
-
-
-def compute_cost(usage: dict, prices: dict) -> float:
-    return (
-        usage.get("input_tokens", 0)               * prices["input"]       / 1_000_000
-        + usage.get("output_tokens", 0)            * prices["output"]      / 1_000_000
-        + usage.get("cache_read_input_tokens", 0)  * prices["cache_read"]  / 1_000_000
-        + usage.get("cache_creation_input_tokens", 0) * prices["cache_write"] / 1_000_000
-    )
 
 
 def _count_turns_from_jsonl(jsonl_path: Path) -> tuple[dict, int, str]:
@@ -49,9 +28,10 @@ def _count_turns_from_jsonl(jsonl_path: Path) -> tuple[dict, int, str]:
         "output_tokens": 0,
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
+        "cache_write_1h_input_tokens": 0,
     }
     turn_count = 0
-    model = "claude-sonnet-4-6"
+    model = ""
     with open(jsonl_path, encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -63,12 +43,12 @@ def _count_turns_from_jsonl(jsonl_path: Path) -> tuple[dict, int, str]:
                 continue
             if record.get("type") == "assistant":
                 msg = record.get("message", {})
-                usage = msg.get("usage", {})
+                usage = flat_usage(msg.get("usage", {}))
                 if usage:
                     for key in totals:
                         totals[key] += usage.get(key, 0)
                     turn_count += 1
-                    if msg.get("model"):
+                    if msg.get("model") and msg["model"] != SYNTHETIC_MODEL:
                         model = msg["model"]
     return totals, turn_count, model
 
@@ -138,6 +118,7 @@ def process_transcript(transcript_path: Path) -> dict | None:
         "subagent_turn_count": subagent_turn_count,
         "tokens": totals,
         "estimated_cost_usd": round(cost, 6),
+        "model_unpriced": prices is None,
         "backfilled": True,
     }
 

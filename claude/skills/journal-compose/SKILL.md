@@ -754,7 +754,7 @@ node -e "
     console.log('S' + i + '_OUT=' + (t.output_tokens||0));
     console.log('S' + i + '_CR=' + (t.cache_read_input_tokens||0));
     console.log('S' + i + '_CW=' + (t.cache_creation_input_tokens||0));
-    console.log('S' + i + '_COST=' + (s.estimated_cost_usd||0).toFixed(4));
+    console.log('S' + i + '_COST=' + (s.model_unpriced ? 'unpriced' : (s.estimated_cost_usd||0).toFixed(4)));
     console.log('S' + i + '_SUB=' + (s.subagent_count||0));
   });
 "
