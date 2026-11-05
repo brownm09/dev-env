@@ -418,6 +418,9 @@ def composed_project_dates_on_main() -> set[tuple[str, str]]:
     when stubs from a composed date are still present on disk because a new-day
     branch was cut from the previous day's draft branch instead of from main.
 
+    Only a file directly in sessions/<project>/ counts. A report, retro or audit in a
+    subdirectory can carry a date whose journal is not composed yet (dev-env#1209).
+
     Note: reads the local remote-tracking ref (origin/main) without fetching —
     results reflect the last fetch. A stale ref could miss composed dates, causing
     branch-lineage artifacts to appear stale. The next fetch will self-correct.
@@ -432,9 +435,9 @@ def composed_project_dates_on_main() -> set[tuple[str, str]]:
         )
         pairs: set[tuple[str, str]] = set()
         for line in result.stdout.splitlines():
-            parts = line.split("/")
-            if len(parts) < 3:
+            if line.count("/") != 2:
                 continue
+            parts = line.split("/")
             project = parts[1]
             fname = parts[-1]
             if fname.endswith(".stub.md") or not fname.endswith(".md"):
