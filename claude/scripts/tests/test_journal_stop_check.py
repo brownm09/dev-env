@@ -987,6 +987,27 @@ def test_composed_dates_ls_tree_runs_once_per_invocation():
     return "stale_draft_artifacts() + unmerged_draft_branches() in one invocation -> one git ls-tree"
 
 
+def test_composed_project_dates_count_only_files_directly_in_a_project_dir():
+    tree = "\n".join([
+        "sessions/p/reports/2026-06-29-x.md",
+        "sessions/p/retro/2026-06-30-x.md",
+        "sessions/p/memory-audit/2026-07-01-x.md",
+        "sessions/p/2026-07-02-slug.md",
+        "sessions/p/2026-07-03_120000.stub.md",
+    ])
+    real_run = jsc.subprocess.run
+    jsc.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=tree, stderr="")
+    jsc.composed_project_dates_on_main.cache_clear()
+    try:
+        got = jsc.composed_project_dates_on_main()
+    finally:
+        jsc.subprocess.run = real_run
+        jsc.composed_project_dates_on_main.cache_clear()
+    assert ("p", "2026-06-29") not in got, f"a report alone must not count as composed: {got}"
+    assert got == {("p", "2026-07-02")}, got
+    return "only a journal directly in sessions/<project>/ marks a project and date composed"
+
+
 def test_e2e_unmerged_draft_advisory_without_network():
     with tempfile.TemporaryDirectory() as home:
         _init_draft_refs_fixture(Path(home) / "Git" / "engineering-journal")
@@ -1071,6 +1092,7 @@ def main():
         ("e2e stop_hook_active allows + preserves flag", test_e2e_stop_hook_active_allows_and_preserves_flag),
         ("unmerged drafts from local refs, no network (dev-env#628)", test_unmerged_draft_branches_reads_local_refs_without_network),
         ("composed-dates ls-tree runs once per invocation (dev-env#1165)", test_composed_dates_ls_tree_runs_once_per_invocation),
+        ("composed project dates count only files directly in a project dir (dev-env#1209)", test_composed_project_dates_count_only_files_directly_in_a_project_dir),
         ("e2e unmerged-draft advisory with unreachable origin (dev-env#628)", test_e2e_unmerged_draft_advisory_without_network),
     ]
     failed = 0
