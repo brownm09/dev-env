@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 99 `test_*.py` files, 11 bash gates, and
-two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 112 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 100 `test_*.py` files, 11 bash gates, and
+two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 113 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -107,6 +107,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_new_day_journal_check.py` | `new-day-journal-check.py` | Day-rollover detection: the canonical resting on a draft branch dated other than today, and stubs dated *after* their branch. |
 | `test_post_compact.py` | `post-compact.py` | Reads and unions open-PR shards + legacy `open-prs.jsonl` at PostCompact time. |
 | `test_pre_tool_use_journal_compose_force_guard.py` | `pre-tool-use-journal-compose-force-guard.py` | Mechanically blocks a same-day `/journal-compose` git operation unless a fresh `--force` marker exists. |
+| `test_reconcile_late_stubs.py` | `reconcile-late-stubs.py` | End to end against a throwaway git origin, with only `gh` faked: a moved stub and manifest take the target branch's date so compose finds them, a day merged from `compose/<D>` is found, and the latest merge decides what is late. Also name collisions, re-runs, and report dates not counting as composed days. |
 | `test_reconcile_open_prs.py` | `reconcile-open-prs.py` | Reconciles open-PR shards against live GitHub state (removes shards for merged/closed PRs) and classifies uncommitted shard changes into commit-safe deletions vs. a concurrent session's in-flight shards. Also the REST transport's two silent hazards (`state` upper-cased; MERGED recovered from the separate `merged`/`merged_at` signal, pinned end-to-end through the `unlink`), the jq projection's structural gate, and the lookup budget + its unresolved count. |
 | `test_reconcile_pending_tiles.py` | `reconcile-pending-tiles.py` | Reconciles tile shards against live issue state; URL validation in front of the unlink, filename-authoritative issue numbers, one paged REST read per repo, and the REST transport's two silent hazards (PR rows dropped, `state` upper-cased). Also covers the orphaned-deletion advisory (dev-env#958): exact porcelain-code classification, per-item re-confirmation, and the ready-to-run commit recommendation. |
 | `test_retro_chain_status.py` | `retro-chain-status.py` | Read-only per-repo classifier for the retro-action chained-tile backlog: reports ALIVE/UNRESOLVED/NO_QUEUE_FOUND/QUEUE_EXHAUSTED/ALL_TILED/AMBIGUOUS/NEEDS_REFILL from tile-shard + queue-issue-checklist state; never mutates anything, invoked by the `retro-chain-refill` skill. |

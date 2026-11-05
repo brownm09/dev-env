@@ -5022,3 +5022,29 @@ For a one-line navigational map of the test directory, see
      ```bash
      py -3 claude/scripts/tests/test_dev_env_doctor.py
      ```
+
+111. **reconcile-late-stubs test** — required when changing `claude/scripts/reconcile-late-stubs.py`.
+     Runs the script's real `main()` against a throwaway bare origin and clone, so every assertion
+     is about the tree actually pushed. Only `gh` is faked, by wrapping `subprocess.run`. The
+     fixture sets its own `core.hooksPath`, so the machine's global pre-push hook stays out of it.
+     A moved stub and manifest take the target branch's date, checked with the same glob
+     `/journal-compose` uses, and the manifest's `stub` field names the new path in whichever form
+     it had: a bare filename or a `sessions/<project>/` path, since both occur in real shards. A
+     day merged from `compose/<D>` is found, and when both heads merged, the latest merge decides
+     what is late. A failed `gh` lookup raises rather than reading as "no PR". A different
+     session's file at the new name steps `HHMMSS` forward and keeps the stub and manifest paired.
+     A late stub brings its manifest along, and a late manifest alone is skipped as bookkeeping for
+     a session already composed. Late reports and tile shards are copied unrenamed. Today's branch
+     as the source stops the run and is kept, since moving onto itself and deleting it would lose
+     the stubs. A stub renamed in a late commit still moves. A legacy per-day manifest, or a manifest
+     with no `stub` field, stops the run before the remote is touched, and the error names the file.
+     A report dated for an uncomposed day does not count that day as composed. A failed source-branch
+     delete says to delete by hand, because an immediate re-run adds nothing but a re-run after the
+     target composed would move the session again. Deliberately not covered: a stub committed before
+     the merge but pushed after it. `--after` filters on committer date, so such a stub is not treated
+     as late. A stub edited after its day composed is moved and composed again, which ADR-119
+     Amendment 2 accepts as cheaper than losing the edit.
+
+     ```bash
+     py -3 claude/scripts/tests/test_reconcile_late_stubs.py
+     ```
