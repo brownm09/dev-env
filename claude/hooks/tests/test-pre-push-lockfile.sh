@@ -8,6 +8,8 @@
 #   - SKIP  (exit 0) when npm is absent from PATH
 #   - the working tree is restored and no backup leaks into the repo on every path
 #   - a repo-level .git/hooks/pre-push still fires (chaining) on the pass path
+#   - a push to a past draft/<D> is blocked when the day merged from draft/<D> or
+#     compose/<D>, and allowed when neither merged (resurrected-draft guard, dev-env#1205)
 #
 # Portable to Git Bash on Windows and Linux CI. Run from anywhere:
 #   bash claude/hooks/tests/test-pre-push-lockfile.sh
@@ -167,6 +169,58 @@ RC=$(run_hook "$REPO" "$C1" "$C2" "$BIN:$PATH" pass)
 [ "$RC" = "0" ] && ok "exit 0" || bad "expected exit 0, got $RC"
 [ -f "$SENTINEL" ] && ok "repo-level hook was invoked" || bad "repo-level hook did not fire"
 rm -rf "$REPO" "$(dirname "$BIN")"
+
+# --- Scenarios 6-8: resurrected-draft guard (dev-env#1205) ---
+# A stub `gh` answers `pr list --head <head>` with a merged PR only for
+# $TEST_GH_MERGED_HEAD, and logs every head it was asked about.
+make_stub_gh() {
+  cat > "$1/gh" <<'GH'
+#!/bin/bash
+head=""
+while [ $# -gt 0 ]; do
+  [ "$1" = "--head" ] && head="$2"
+  shift
+done
+echo "$head" >> "$TEST_GH_LOG"
+if [ "$head" = "${TEST_GH_MERGED_HEAD:-}" ]; then echo '[{"number":1}]'; else echo '[]'; fi
+GH
+  chmod +x "$1/gh"
+}
+
+# Push a past-dated draft branch from a fixture whose origin is the journal repo.
+# Args: merged_head. Sets RC, and GH_LOG to the heads the stub saw.
+run_draft_push() {
+  local repo c1 c2 bin
+  read -r repo c1 c2 <<<"$(make_fixture)"
+  git -C "$repo" remote add origin https://example.test/engineering-journal.git
+  bin=$(make_stub_npm "$repo")
+  make_stub_gh "$bin"
+  local log="$repo/.gh-heads"
+  (
+    cd "$repo" || exit 99
+    echo "refs/heads/draft/2020-01-02 $c2 refs/heads/draft/2020-01-02 $c1" | \
+      PATH="$bin:$PATH" TEST_NPM_MODE=pass TEST_GH_LOG="$log" TEST_GH_MERGED_HEAD="$1" \
+      bash "$HOOK" origin "file://$repo" >/dev/null 2>&1
+  )
+  RC=$?
+  GH_LOG=$(cat "$log" 2>/dev/null)
+  rm -rf "$repo" "$(dirname "$bin")"
+}
+
+echo "[6] day merged only from compose/<D> -> BLOCK"
+run_draft_push compose/2020-01-02
+[ "$RC" = "1" ] && ok "exit 1 (push blocked)" || bad "expected exit 1, got $RC"
+
+echo "[7] day merged only from draft/<D> -> BLOCK"
+run_draft_push draft/2020-01-02
+[ "$RC" = "1" ] && ok "exit 1 (push blocked)" || bad "expected exit 1, got $RC"
+
+echo "[8] no merged PR at either head -> PASS"
+run_draft_push none
+[ "$RC" = "0" ] && ok "exit 0" || bad "expected exit 0, got $RC"
+# The allow is only meaningful if the guard really asked about both heads.
+echo "$GH_LOG" | grep -qx draft/2020-01-02 && ok "looked up draft head" || bad "draft head not looked up"
+echo "$GH_LOG" | grep -qx compose/2020-01-02 && ok "looked up compose head" || bad "compose head not looked up"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

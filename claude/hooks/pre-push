@@ -34,16 +34,19 @@ while read -r _ local_sha remote_ref remote_sha; do
       branch_date="${remote_branch#draft/}"
       [ "$branch_date" = "$(date +%Y-%m-%d)" ] && continue
       if command -v gh >/dev/null 2>&1; then
-        merged=$(gh pr list --repo brownm09/engineering-journal \
-          --state merged --head "$remote_branch" --json number 2>/dev/null || echo "[]")
-        if [ "$merged" != "[]" ] && [ -n "$merged" ]; then
-          echo "ERROR: $remote_branch already has a merged PR." >&2
-          echo "Pushing to this branch would resurrect it and cause stale-branch hook noise." >&2
-          echo "Check your current branch — did you mean a different draft branch?" >&2
-          echo "To reconcile orphaned commits after an accidental push:" >&2
-          echo "  py -3 ~/.claude/scripts/reconcile-late-stubs.py $remote_branch" >&2
-          exit 1  # intentionally skips per-repo hook chain — push is fully blocked
-        fi
+        # A day whose draft conflicted merges from compose/<D>, so check both heads.
+        for head in "$remote_branch" "compose/$branch_date"; do
+          merged=$(gh pr list --repo brownm09/engineering-journal \
+            --state merged --head "$head" --json number 2>/dev/null || echo "[]")
+          if [ "$merged" != "[]" ] && [ -n "$merged" ]; then
+            echo "ERROR: $branch_date already has a merged PR from $head." >&2
+            echo "Pushing to $remote_branch would resurrect it and cause stale-branch hook noise." >&2
+            echo "Check your current branch — did you mean a different draft branch?" >&2
+            echo "To reconcile orphaned commits after an accidental push:" >&2
+            echo "  py -3 ~/.claude/scripts/reconcile-late-stubs.py $remote_branch" >&2
+            exit 1  # intentionally skips per-repo hook chain — push is fully blocked
+          fi
+        done
       fi
     fi
   fi

@@ -220,8 +220,8 @@ for the branch ref.
 `$SOURCE_BRANCH` rejected because the remote has moved means new stubs landed mid-compose. Do
 not rebase over content you haven't read — fetch, note what's new, and re-run from this step
 (which recreates the worktree from the new tip). The one exception is the pre-push hook's
-merged-draft-branch block (refuses a push to a `draft/YYYY-MM-DD` that already has a merged PR,
-except same-day — the `-recovery` suffix exists specifically to bypass this for a branch that
+merged-draft-branch block (refuses a push to a `draft/YYYY-MM-DD` whose day already has a merged
+PR from `draft/` or `compose/`, except same-day — the `-recovery` suffix exists specifically to bypass this for a branch that
 already merged on a prior day). **This specific rejection does not "route to" Step 10.5
 automatically — it requires an explicit jump:** the commit already succeeded (only the push was
 rejected), so go directly to Step 10.5's `CONFLICT_LINES > 0` recovery block, treating the
@@ -1833,8 +1833,8 @@ branch is deleted and no commit in the compose PR contains the stubs — the lat
 them from this SHA.
 
 A rejected push follows the Step 0.6 push-failure rule — except a rejection from the pre-push
-hook's merged-draft-branch block, which means the draft branch already has a merged PR from a
-prior day (the #147-morning/#150-evening shape). This commit already succeeded, so skip Step
+hook's merged-draft-branch block, which means the day already has a merged PR from `draft/` or
+`compose/`, for a prior day (the #147-morning/#150-evening shape). This commit already succeeded, so skip Step
 10.5's merge-tree probe entirely and jump directly to its `CONFLICT_LINES > 0` recovery block
 below, exactly as if a conflict had been detected. (Skipping the probe used to leave
 `$MERGE_BASE` — which the probe is the only place to compute — unset on this route;
