@@ -1075,6 +1075,26 @@ def test_build_messages_existing_pr_error_no_reminder() -> str:
     return "gh's 'already exists' error -> no reminder for a PR this command did not open"
 
 
+def test_build_messages_failed_create_then_merge_only_merge_reminder() -> str:
+    # The merge was of a different PR, so it says nothing about the create.
+    output = (
+        'a pull request for branch "b" into branch "main" already exists:\n'
+        "https://github.com/brownm09/dev-env/pull/1218\n"
+        "Squashed and merged pull request #1218\n"
+    )
+    messages = _build_messages(
+        command="gh pr create --fill 2>&1; gh pr merge 1218 --squash",
+        cwd="/session/cwd",
+        exit_code=_exit_code_as_main_reads_it(output),
+        output=output,
+        is_create=True,
+        is_merge=True,
+        is_push=False,
+    )
+    assert len(messages) == 1 and "gh pr merge detected" in messages[0], messages
+    return "failed create chained with a merge -> only the merge reminder, no shard for a merged PR"
+
+
 def test_build_messages_empty_output_keeps_generic_reminder() -> str:
     # A `run_in_background` create returns empty stdout: seen once in the replay
     # of 234 recorded PR creates. Nothing shows it failed, so the nudge stays.
@@ -1191,6 +1211,7 @@ def main() -> int:
         ("shard step: PR URL in prose is not named (dev-env#1243)", test_shard_step_ignores_pr_url_in_prose),
         ("build_messages: successful create in a chain names the created PR (dev-env#1243)", test_build_messages_successful_create_names_created_pr),
         ("build_messages: gh's 'already exists' error -> no reminder (dev-env#1243)", test_build_messages_existing_pr_error_no_reminder),
+        ("build_messages: failed create + merge -> only the merge reminder (dev-env#1243)", test_build_messages_failed_create_then_merge_only_merge_reminder),
         ("build_messages: empty output keeps the generic reminder (dev-env#1243)", test_build_messages_empty_output_keeps_generic_reminder),
         ("build_messages: failed create keeps the push reminder (dev-env#1243)", test_build_messages_failed_create_chained_with_push_keeps_push_reminder),
     ]

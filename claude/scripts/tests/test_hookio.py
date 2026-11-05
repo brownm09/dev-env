@@ -1479,26 +1479,28 @@ PR_URL = "https://github.com/brownm09/dev-env/pull/1235"
 
 
 def test_created_item_url_bare_lines_only() -> str:
-    assert created_item_url(PR_URL) == PR_URL
-    assert created_item_url(f"\r\n  {PR_URL}\r\n") == PR_URL, "CRLF and padding are not part of the URL"
-    assert created_item_url(f"{PR_URL}.") == PR_URL, "a trailing dot is not part of the URL"
-    assert created_item_url(URL) == URL
-    assert created_item_url(f"[PR 1218]({PR_URL}). All failed") is None, "URL in prose"
-    assert created_item_url(f"{URL}#issuecomment-123") is None, "comment URL"
-    assert created_item_url(f"{PR_URL}/files") is None, "sub-page URL"
-    assert created_item_url("https://github.com/brownm09/dev-env") is None, "repo URL"
-    assert created_item_url("") is None
+    assert created_item_url(PR_URL, "pull") == PR_URL
+    assert created_item_url(f"\r\n  {PR_URL}\r\n", "pull") == PR_URL, "CRLF and padding are not part of the URL"
+    assert created_item_url(f"{PR_URL}.", "pull") == PR_URL, "a trailing dot is not part of the URL"
+    assert created_item_url(URL, "issues") == URL
+    assert created_item_url(f"[PR 1218]({PR_URL}). All failed", "pull") is None, "URL in prose"
+    assert created_item_url(f"{URL}#issuecomment-123", "issues") is None, "comment URL"
+    assert created_item_url(f"{PR_URL}/files", "pull") is None, "sub-page URL"
+    assert created_item_url("https://github.com/brownm09/dev-env", "pull") is None, "repo URL"
+    assert created_item_url("https://github.com/$(id)/x/pull/1", "pull") is None, "shell syntax in the owner"
+    assert created_item_url("", "pull") is None
     return "only a line holding just an item URL counts"
 
 
 def test_created_item_url_kind_repo_and_last_match() -> str:
+    two_prs = f"{PR_URL}\nhttps://github.com/brownm09/dev-env/pull/9\n"
+    assert created_item_url(two_prs, "pull").endswith("/pull/9"), "the last match wins"
     both = f"{PR_URL}\n{URL}\n"
-    assert created_item_url(both) == URL, "the last match wins"
     assert created_item_url(both, "pull") == PR_URL
     assert created_item_url(both, "issues") == URL
     assert created_item_url(PR_URL, "issues") is None
-    assert created_item_url(PR_URL, repo="brownm09/dev-env") == PR_URL
-    assert created_item_url(PR_URL, repo="someone/other") is None
+    assert created_item_url(PR_URL, "pull", repo="brownm09/dev-env") == PR_URL
+    assert created_item_url(PR_URL, "pull", repo="someone/other") is None
     return "kind and repo narrow the match; the last match wins"
 
 
@@ -1508,6 +1510,30 @@ def test_created_item_url_skips_already_exists_error() -> str:
     created = "https://github.com/brownm09/dev-env/pull/9"
     assert created_item_url(f"{created}\n{error}", "pull") == created, "an earlier real create still counts"
     return "gh's 'already exists' error is not a created PR"
+
+
+def test_created_item_url_skips_powershell_wrapped_already_exists() -> str:
+    # Windows PowerShell 5.1 with `2>&1` wraps gh's first stderr line in an error
+    # record, so the URL is no longer directly under "already exists:".
+    error = (
+        'gh : a pull request for branch "b" into branch "main" already exists:\n'
+        "At line:1 char:1\n"
+        "+ gh pr create --fill 2>&1; echo next\n"
+        "+ ~~~~~~~~~~~~~~~~~~~~~~~~\n"
+        '    + CategoryInfo          : NotSpecified: (a pull request ...ready exists::String) [], RemoteException\n'
+        "    + FullyQualifiedErrorId : NativeCommandError\n"
+        "\n"
+        f"{PR_URL}\n"
+    )
+    assert created_item_url(error, "pull") is None
+    return "PowerShell's error record between the error and the URL -> still not a created PR"
+
+
+def test_created_item_url_known_limits() -> str:
+    # Pinned so a change here is a decision, not a surprise. See the docstring.
+    assert created_item_url(PR_URL, "pull") == PR_URL, "`2>&1 | tail -1` on the error leaves only the URL"
+    assert created_item_url(f"PR: {PR_URL}", "pull") is None, "a create whose URL was reshaped doesn't count"
+    return "documented limits: a lone URL counts, and a reshaped URL doesn't"
 
 
 def main() -> int:
@@ -1680,6 +1706,8 @@ def main() -> int:
         ("created_item_url: bare lines only (dev-env#1243)", test_created_item_url_bare_lines_only),
         ("created_item_url: kind, repo, last match (dev-env#1243)", test_created_item_url_kind_repo_and_last_match),
         ("created_item_url: skips gh's 'already exists' error (dev-env#1243)", test_created_item_url_skips_already_exists_error),
+        ("created_item_url: skips the PowerShell-wrapped form (dev-env#1243)", test_created_item_url_skips_powershell_wrapped_already_exists),
+        ("created_item_url: known limits pinned (dev-env#1243)", test_created_item_url_known_limits),
     ]
     failed = 0
     for name, fn in tests:

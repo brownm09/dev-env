@@ -221,8 +221,8 @@ def read_exit_code(data: dict, default: int) -> int:
     *default* has **no** default value and is a required argument
     (dev-env#1028 post-review finding): sibling hooks disagree on what an
     absent ``exitCode`` should mean — ``usage-snapshot.py`` and three others
-    treat it as ``-1`` (the payload omits the field entirely on some real
-    invocations — see this module's ``should_confirm_via_gh`` docstring), but
+    treat it as ``-1`` (the payload omits the field: 0 of 501 recorded create
+    results carried it, ADR-050 Amendment 31), but
     ``post-tool-use.py``/``pr-merge-reminder.py`` treat it as ``0``. A
     convenience default here (e.g. ``-1``) would let a future drop-in
     migration at one of the ``0``-sites silently flip an absent ``exitCode``
@@ -269,11 +269,16 @@ def merge_pr_number_from_output(output: str) -> int | None:
 
 # What `gh pr create` / `gh issue create` print on success: the new item's URL
 # alone on a line (cli/cli pkg/cmd/pr/create/create.go). A trailing dot is
-# tolerated and left out of the URL.
-_CREATED_ITEM_URL_RE = re.compile(r"(https://github\.com/([^/\s]+/[^/\s]+)/(pull|issues)/\d+)\.?")
+# tolerated and left out of the URL. The owner and name classes are the characters
+# GitHub allows, so a line holding shell syntax never reaches a printed command.
+_CREATED_ITEM_URL_RE = re.compile(r"(https://github\.com/([\w-]+/[\w.-]+)/(pull|issues)/\d+)\.?")
+# Lines to search above a URL for gh's "already exists" error. Windows PowerShell
+# 5.1 with `2>&1` puts its error record (`At line:1`, `+ CategoryInfo`, and so on)
+# between the error's first line and the URL.
+_ALREADY_EXISTS_WINDOW = 8
 
 
-def created_item_url(output: str, kind: str | None = None, repo: str | None = None) -> str | None:
+def created_item_url(output: str, kind: str, repo: str | None = None) -> str | None:
     """Return the URL a create command printed in *output*, or ``None``.
 
     The evidence that a create succeeded inside a chained command (dev-env#1243).
@@ -281,22 +286,27 @@ def created_item_url(output: str, kind: str | None = None, repo: str | None = No
     ``read_exit_code`` returns the caller's default whether the create worked or
     not, and PostToolUse fires for any chain the shell finishes normally.
 
-    Only a bare item URL counts. That leaves out a URL inside a line of prose and
-    a ``#issuecomment-`` URL from a chained comment. *kind* (``"pull"`` or
-    ``"issues"``) and *repo* (``"owner/name"``) narrow the match. The last match
-    wins. gh's "already exists" error is skipped: it ends in a bare URL too, for
-    a PR the command did not open.
+    Only a bare item URL of *kind* (``"pull"`` or ``"issues"``) counts. That leaves
+    out a URL inside a line of prose and a ``#issuecomment-`` URL from a chained
+    comment. *repo* (``"owner/name"``) narrows the match. The last match wins. gh's
+    "already exists" error is skipped: it ends in a bare URL too, for a PR the
+    command did not open.
 
-    Known limit: a chained command that prints a bare item URL of the same kind
-    (``gh pr edit``, ``gh pr view --json url --jq .url``) still looks like a
-    created item, since nothing in the payload says which command printed a line.
+    Known limits, since nothing in the payload says which command printed a line:
+
+    - A chained command that prints a bare URL of the same kind (``gh pr edit``,
+      ``gh pr view --json url --jq .url``) still looks like a created item.
+    - ``2>&1 | tail -1`` keeps only the URL of gh's "already exists" error, which
+      then looks like a created PR.
+    - A real create whose URL was reshaped (``| sed "s/^/PR: /"``) or sent to a
+      file doesn't count. The project hook's no-URL advisory still fires for it.
     """
     lines = output.splitlines()
     for i in range(len(lines) - 1, -1, -1):
         m = _CREATED_ITEM_URL_RE.fullmatch(lines[i].strip())
-        if not m or (kind and m.group(3) != kind) or (repo and m.group(2) != repo):
+        if not m or m.group(3) != kind or (repo and m.group(2) != repo):
             continue
-        if i and lines[i - 1].rstrip().endswith("already exists:"):
+        if any("already exists:" in line for line in lines[max(0, i - _ALREADY_EXISTS_WINDOW):i]):
             continue
         return m.group(1)
     return None

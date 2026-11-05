@@ -82,7 +82,7 @@ assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 post_tool_use = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(post_tool_use)  # safe: main() is guarded by __main__
 read_command_output = post_tool_use.read_command_output
-extract_github_url = post_tool_use.extract_github_url
+created_item_url = post_tool_use.created_item_url
 canonical_root_from_worktree = post_tool_use.canonical_root_from_worktree
 _canonical_root_from_common_dir = post_tool_use._canonical_root_from_common_dir
 load_config = post_tool_use.load_config
@@ -150,18 +150,18 @@ def test_old_output_read_would_have_been_empty() -> str:
 
 
 def test_extract_url_matches_configured_repo() -> str:
-    assert extract_github_url(URL, REPO) == URL, "matching-repo URL should extract"
-    return "extract_github_url returns the URL for the configured repo"
+    assert created_item_url(URL, "issues", REPO) == URL, "matching-repo URL should extract"
+    return "created_item_url returns the URL for the configured repo"
 
 
 def test_extract_url_filters_other_repo() -> str:
-    assert extract_github_url(OTHER_REPO_URL, REPO) is None, "different-repo URL must not match"
+    assert created_item_url(OTHER_REPO_URL, "issues", REPO) is None, "different-repo URL must not match"
     return "repo filter rejects a URL for a different repo"
 
 
 def test_extract_url_empty_output_is_none() -> str:
-    assert extract_github_url("", REPO) is None, "empty output -> None"
-    assert extract_github_url("no url here", REPO) is None, "no URL -> None"
+    assert created_item_url("", "issues", REPO) is None, "empty output -> None"
+    assert created_item_url("no url here", "issues", REPO) is None, "no URL -> None"
     return "empty / URL-less output -> None"
 
 
@@ -170,8 +170,8 @@ def test_desilence_predicate() -> str:
     # (a legitimate different-repo create); it surfaces when there is none.
     different_repo = OTHER_REPO_URL
     no_url = "=== merge exit: 0 ==="
-    assert extract_github_url(different_repo, None), "different-repo case has a URL -> stay silent"
-    assert not extract_github_url(no_url, None), "no-URL case is empty -> surface advisory"
+    assert created_item_url(different_repo, "issues"), "different-repo case has a URL -> stay silent"
+    assert not created_item_url(no_url, "issues"), "no-URL case is empty -> surface advisory"
     return "different-repo output stays silent; no-URL output surfaces (de-silence behavior)"
 
 
@@ -828,7 +828,7 @@ def _write_shared(tmp_root: str, data) -> str:
 def test_expected_opt_in_config_matches_tracked_repo() -> str:
     with tempfile.TemporaryDirectory() as tmp_root:
         path = _write_shared(tmp_root, SHARED)
-        got = post_tool_use.expected_opt_in_config(URL, path)
+        got = post_tool_use.expected_opt_in_config(URL, "issues", path)
     assert got == SHARED, f"expected the tracked config, got {got!r}"
     return "created item in the tracked repo -> tracked config returned"
 
@@ -836,7 +836,7 @@ def test_expected_opt_in_config_matches_tracked_repo() -> str:
 def test_expected_opt_in_config_other_repo_is_none() -> str:
     with tempfile.TemporaryDirectory() as tmp_root:
         path = _write_shared(tmp_root, SHARED)
-        got = post_tool_use.expected_opt_in_config(OTHER_REPO_URL, path)
+        got = post_tool_use.expected_opt_in_config(OTHER_REPO_URL, "issues", path)
     assert got is None, f"another repo must keep the silent skip, got {got!r}"
     return "created item in another repo -> None (silent skip kept)"
 
@@ -845,8 +845,8 @@ def test_expected_opt_in_config_unusable_source_is_none() -> str:
     with tempfile.TemporaryDirectory() as tmp_root:
         missing = os.path.join(tmp_root, "absent.json")
         incomplete = _write_shared(tmp_root, {"repo": REPO})
-        assert post_tool_use.expected_opt_in_config(URL, missing) is None
-        assert post_tool_use.expected_opt_in_config(URL, incomplete) is None
+        assert post_tool_use.expected_opt_in_config(URL, "issues", missing) is None
+        assert post_tool_use.expected_opt_in_config(URL, "issues", incomplete) is None
     return "missing source, or one lacking project_number/owner -> None, never a raise"
 
 
@@ -1288,6 +1288,21 @@ def test_main_existing_pr_error_adds_nothing() -> str:
     return "gh's 'already exists' error -> its URL is not treated as a created PR"
 
 
+def test_main_both_creates_in_chain_adds_the_one_that_printed_its_url() -> str:
+    created = "https://github.com/brownm09/dev-env/pull/88"
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "gh issue create --title t --body-file b.md; gh pr create --fill"},
+        "tool_response": {"stdout": f"could not add label: 'x' not found\n{created}\n", "stderr": ""},
+    }
+    with tempfile.TemporaryDirectory() as tmp_root:
+        payload["cwd"] = _hook_config_cwd(tmp_root)
+        code, stderr, added = _run_main_recording_adds(payload)
+    assert added == [created], f"the issue create failed and the PR create didn't, added {added!r}"
+    assert code == 2 and "PR added to project" in stderr, f"got {code} {stderr!r}"
+    return "issue create failed, PR create succeeded in one chain -> the PR is added, as a PR"
+
+
 def test_main_issue_create_ignores_bare_pr_url() -> str:
     payload = {
         "tool_name": "Bash",
@@ -1407,6 +1422,7 @@ def main() -> int:
         ("main(): failed create, no config -> no created-item warning (dev-env#1243)", test_main_failed_create_no_config_does_not_warn_of_created_item),
         ("main(): successful create in a chain adds the created PR (dev-env#1243)", test_main_successful_create_in_chain_adds_the_created_pr),
         ("main(): gh's 'already exists' error adds nothing (dev-env#1243)", test_main_existing_pr_error_adds_nothing),
+        ("main(): both creates in a chain -> the one that printed its URL (dev-env#1243)", test_main_both_creates_in_chain_adds_the_one_that_printed_its_url),
         ("main(): issue create ignores a bare PR URL (dev-env#1243)", test_main_issue_create_ignores_bare_pr_url),
     ]
     failed = 0
