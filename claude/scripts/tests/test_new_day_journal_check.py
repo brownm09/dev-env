@@ -208,6 +208,8 @@ def test_format_day_rollover_warns_on_dirty_canonical() -> str:
     assert "CAUTION" not in _msg(canonical_dirty=False)
     dirty = _msg(canonical_dirty=True)
     assert "CAUTION" in dirty and "uncommitted changes" in dirty, dirty
+    # ADR-119 Amendment 2: "let them settle" must not contradict the clean-fix rule.
+    assert "24+ hours ago is stale" in dirty and "clean fix" in dirty, dirty
     return "a dirty canonical adds an explicit caution rather than advising a blind switch"
 
 

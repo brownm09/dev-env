@@ -1,6 +1,6 @@
 # ADR-119: Day Rollover Cuts a Fresh Draft Branch; Orphaned Open-PR Shard Deletions Are Surfaced, Not Auto-Committed
 
-**Date:** 2026-07-22 (amended 2026-07-26)
+**Date:** 2026-07-22 (amended 2026-07-26, 2026-11-05)
 **Status:** Accepted
 **Tags:** journal, stubs, draft-branch, day-rollover, open-prs, sharding, hooks, UserPromptSubmit, new-day-journal-check, reconcile-open-prs, canonical-checkout, silent-failure, data-loss, global-rule, self-healing, stale-canonical, auto-recovery, concurrency, toctou, adr-017, adr-056, adr-082, adr-084, adr-071, adr-093, tiles, adr-118
 
@@ -166,3 +166,40 @@ Same file, same hook, same shared canonical, same underlying hazard class this A
 - [dev-env#911](https://github.com/brownm09/dev-env/issues/911) — the originating investigation (both 2026-07-25 and 2026-07-26 incidents, reflog forensics, root-cause analysis, and the three candidate fix directions this amendment picks from)
 - [dev-env#912](https://github.com/brownm09/dev-env/pull/912) — implementing PR; its `/review` pass caught the tip-commit-vs-HEAD-reflog idle-signal defect recorded above
 - `journal-canonical-guard.py` — the sibling hook whose final-re-check-before-mutating pattern this amendment's TOCTOU narrowing mirrors
+
+## Amendment 2 (2026-11-05, dev-env#1199) — A stale edit in the canonical gets the clean fix
+
+### The gap
+
+Amendment 1 leaves a dirty stale branch to its advisory, which told every session to let the changes settle. An abandoned edit never settles. On 2026-11-04 the canonical was on `draft/2026-10-30` holding a career-playbook stub edit last modified on 2026-10-30. A cover-letter-runtime session could not commit its stub, tried a git-plumbing push instead (auto mode blocked it), and left the stub uncommitted until the user said: "Do the clean fix and don't hold up future journal activities when a clean fix is available."
+
+Fixing that session's stub exposed a second gap. A stub filed under its session's start date, on a later day's branch, is skipped by `/journal-compose`, which finds stubs by filename date. Decision 1 states this invariant, but nothing said what a stub should do when its own day has already merged.
+
+### The decision
+
+A session that finds another session's stale edit commits it to its own day's branch, moves the canonical to today's branch, and commits its own stub there. The rule's text is in `claude/CLAUDE.md` → Stub file workflow.
+
+- **Stale means the file was last modified at least 24 hours ago.** Stubs and shards are committed at PR and context-growth events, so a day-old uncommitted edit is well outside normal use. The threshold is a judgment, not a measurement: the one observed incident was about five days old.
+- **A stub takes the date of the branch it lands on when its own day has merged.** This keeps Decision 1's invariant, and it replaces the start-date filename rule in that one case.
+- **The hooks still never commit.** Decision 3's reasons stand, so this is a rule for sessions. Only the new-day advisory's wording changes, so it no longer contradicts the rule.
+
+### Alternatives considered
+
+- **Test whether the owning session is still running.** This is the accurate signal, but sessions have no reliable way to see other sessions, and none at all across machines. Rejected in favour of mtime.
+- **Reuse Amendment 1's 15-minute idle window.** That window is safe because it only applies to a clean tree, where a wrong call loses nothing. Here a wrong call commits someone's in-progress edit, so the window needs to be much longer.
+- **Have `new-day-journal-check.py` commit stale edits.** Rejected for the reasons in Decision 3: the hook would commit onto whichever branch the canonical holds, in an index shared by every session.
+- **Keep asking the user.** This is the behaviour the user asked to end.
+
+### Consequences (amendment)
+
+**Positive.** A stranded edit no longer blocks every later stub, and it reaches its own day's journal.
+
+**Negative / accepted.** A session idle for over a day can have its edit committed for it. The content lands unchanged on the right branch, and that session's later commit simply carries less. A stale edit whose day has merged may repeat content already in the composed journal, which is cheaper than losing it.
+
+**Known gap.** `reconcile-late-stubs.py` still moves stubs without renaming them, so compose skips them. The rule carries a manual step until [dev-env#1203](https://github.com/brownm09/dev-env/issues/1203) lands.
+
+### References (amendment)
+
+- [dev-env#1199](https://github.com/brownm09/dev-env/issues/1199) — the originating issue
+- [dev-env#1203](https://github.com/brownm09/dev-env/issues/1203) — the late-stub rename gap
+- [dev-env#876](https://github.com/brownm09/dev-env/issues/876) — the earlier stubs stranded uncomposed on `main`

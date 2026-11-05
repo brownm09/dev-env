@@ -482,7 +482,9 @@ def format_day_rollover(
         msg += (
             f" CAUTION: the canonical has uncommitted changes right now - they belong to "
             f"concurrent sessions. Check `git -C {ej} status --porcelain` and let them settle "
-            f"(or commit only your own files with an explicit pathspec) before switching."
+            f"(or commit only your own files with an explicit pathspec) before switching. "
+            f"An edit last modified 24+ hours ago is stale, not concurrent: commit it to its "
+            f"own day's branch, per the global CLAUDE.md Stub file workflow (clean fix)."
         )
 
     mismatched = mismatched_stub_paths(tree_paths, bdate)
