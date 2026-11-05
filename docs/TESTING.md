@@ -2120,9 +2120,15 @@ For a one-line navigational map of the test directory, see
     without delivery); a flag planted under a DIFFERENT session_id than the payload's own -> exit 0, no
     block, the other session's flag left untouched (the direct dev-env#980 regression case); and a
     payload carrying no `session_id` at all -> exit 0 regardless of what flags exist on disk. `main()`'s
-    advisory branches (stale-draft / unmerged-branch / orphan cleanup) shell out to git and are not
+    advisory branches (stale-draft / unmerged-branch) shell out to git and are not
     separately unit-tested (pure-helper convention) — the end-to-end runs exercise their fail-closed path
     and, with the planted stub, the systemMessage delivery.
+
+    dev-env#1221 pins that the hook deletes nothing. A real git fixture repo holds one untracked pre-today
+    artifact, first a `*.stub.md` and then a `*_draft.md`, and asserts `git status` reports it as `??` so
+    the case cannot pass vacuously. After the end-to-end run the file must still exist, the advisory must
+    name its path after `Stale draft artifact:`, and `Removed orphaned draft` must not appear. Both cases
+    failed before the fix, which deleted any stale artifact git reported as untracked.
 
     dev-env#628 pins that the unmerged-branch advisory makes no network call. A real git fixture repo has an
     unresolvable `origin` (`*.invalid`, RFC 6761) and local `refs/remotes/origin/draft/*` refs for an

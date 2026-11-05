@@ -82,14 +82,16 @@ Three layers, mirroring this repo's hook-test convention:
       byte-identical to the unmodified archive_reminder_message() text -- the
       no-false-positive regression case (dev-env#1002).
 
-main()'s advisory branches (stale drafts / unmerged branches / orphan cleanup) run
-subprocess git against the journal repo and are not unit-tested here (pure-helper
-convention) -- the end-to-end no-flag run exercises their fail-closed path.
-The exception is unmerged_draft_branches() (dev-env#628): a real git fixture
-with an unreachable origin pins that it reads local refs/remotes/origin/draft/*
-and issues no network git call, in-process and end-to-end. The same fixture also
-drives stale_draft_artifacts() then unmerged_draft_branches() in main()'s order
-and pins a single `git ls-tree` per invocation (dev-env#1165).
+main()'s advisory branches (stale drafts / unmerged branches) run subprocess git
+against the journal repo and are not unit-tested here (pure-helper convention) --
+the end-to-end no-flag run exercises their fail-closed path. The exception is
+unmerged_draft_branches() (dev-env#628): a real git fixture with an unreachable
+origin pins that it reads local refs/remotes/origin/draft/* and issues no network
+git call, in-process and end-to-end. The same fixture also drives
+stale_draft_artifacts() then unmerged_draft_branches() in main()'s order and pins a
+single `git ls-tree` per invocation (dev-env#1165). A second real git fixture pins
+that an untracked stale stub or *_draft.md survives the hook and is named in the
+stale-artifact advisory: the hook deletes nothing (dev-env#1221).
 
 Usage:
     py -3 claude/scripts/tests/test_journal_stop_check.py
@@ -874,8 +876,7 @@ def test_e2e_stale_advisory_is_systemmessage():
     # uncomposed stub in the tmp journal repo (JOURNAL_REPO = <home>/Git/
     # engineering-journal) so stale_draft_artifacts() fires, then assert the
     # advisory arrives as a {"systemMessage": ...} JSON object on STDOUT (exit 0) --
-    # NOT the former invisible plain-stdout print. The non-git tmp repo makes the
-    # orphan-cleanup git status fail closed, so the planted stub stays "still stale".
+    # NOT the former invisible plain-stdout print.
     with tempfile.TemporaryDirectory() as home:
         stub = (
             Path(home) / "Git" / "engineering-journal" / "sessions" / "proj"
@@ -891,6 +892,52 @@ def test_e2e_stale_advisory_is_systemmessage():
     assert "Stale draft artifact" in payload["systemMessage"], payload
     assert "2020-01-01" in payload["systemMessage"], payload
     return "e2e no flag + planted stale stub -> exit 0, Checks 2-3 delivered as a systemMessage JSON on stdout"
+
+
+def _assert_untracked_artifact_kept_and_reported(filename):
+    # A real git repo, because the deletion this guards against keyed on git's `??`
+    # status: a non-git tmp repo makes that status call fail and would pass vacuously.
+    with tempfile.TemporaryDirectory() as home:
+        repo = Path(home) / "Git" / "engineering-journal"
+        repo.mkdir(parents=True)
+        _git(repo, "init", "-q")
+        (repo / "README.md").write_text("fixture")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "fixture")
+        _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        artifact = repo / "sessions" / "proj" / filename
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("a session's only copy of its work")
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=repo, check=True, capture_output=True, text=True,
+        ).stdout
+        assert status.startswith("??") and filename in status, (
+            f"fixture must leave the artifact untracked, got {status!r}"
+        )
+        rc, out, err = _run_hook(home, flag_present=False, stop_hook_active=False)
+        kept = artifact.exists()
+        expected_path = artifact.as_posix()
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    assert kept, f"untracked {filename} was deleted; it may be a session's only copy (output: {out!r})"
+    message = json.loads(out)["systemMessage"]
+    assert f"Stale draft artifact: {expected_path}" in message, message
+    assert "Removed orphaned draft" not in message, message
+
+
+def test_e2e_untracked_stale_stub_is_kept_and_reported():
+    # dev-env#1221: an untracked stub has never been committed, so deleting it is
+    # unrecoverable. It may be a session between its Write and its commit.
+    _assert_untracked_artifact_kept_and_reported("2020-01-01_120000.stub.md")
+    return "untracked pre-today stub in a real git repo -> still on disk, named in the stale-artifact advisory"
+
+
+def test_e2e_untracked_stale_legacy_draft_is_kept_and_reported():
+    # dev-env#1221: stale_draft_artifacts() already drops any date with a composed
+    # journal, so an untracked *_draft.md reaching main() is content nobody composed.
+    # /journal-compose's check-clean step routes those to recovery, never to the bin.
+    _assert_untracked_artifact_kept_and_reported("2020-01-01_draft.md")
+    return "untracked pre-today *_draft.md in a real git repo -> still on disk, named in the stale-artifact advisory"
 
 
 # --- unmerged draft branches read from local refs, no network (dev-env#628) ---
@@ -1068,6 +1115,8 @@ def main():
         ("e2e cross-session sentinel not consumed (dev-env#980)", test_e2e_cross_session_sentinel_not_consumed),
         ("e2e no session_id never blocks (dev-env#980)", test_e2e_no_session_id_never_blocks),
         ("e2e stale advisory is a systemMessage", test_e2e_stale_advisory_is_systemmessage),
+        ("e2e untracked stale stub kept and reported (dev-env#1221)", test_e2e_untracked_stale_stub_is_kept_and_reported),
+        ("e2e untracked stale *_draft.md kept and reported (dev-env#1221)", test_e2e_untracked_stale_legacy_draft_is_kept_and_reported),
         ("e2e stop_hook_active allows + preserves flag", test_e2e_stop_hook_active_allows_and_preserves_flag),
         ("unmerged drafts from local refs, no network (dev-env#628)", test_unmerged_draft_branches_reads_local_refs_without_network),
         ("composed-dates ls-tree runs once per invocation (dev-env#1165)", test_composed_dates_ls_tree_runs_once_per_invocation),
