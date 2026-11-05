@@ -2,7 +2,7 @@
 name: review
 description: Review a PR or diff for correctness, security, reliability, and maintainability. Produces a structured report with blocking findings, non-blocking findings, questions for the author, and optional style notes. Invoke as /review <PR-URL> [--no-style] [--author junior|mid|senior] [--focus security|correctness|perf] [--no-comment].
 argument-hint: "<PR-URL | --diff> [--no-style] [--author <level>] [--focus <area>] [--no-comment]"
-allowed-tools: Bash Read Grep Agent
+allowed-tools: Bash Read Grep Agent AskUserQuestion
 ---
 
 You are conducting a structured code review. Your goal is to produce a report the PR author
@@ -60,12 +60,14 @@ equal OWNER/REPO; on a fork PR they do not, and using OWNER/REPO there would 404
 misread as "file absent." If either is null (rare — a deleted fork), fall back to OWNER/REPO and
 note that Steps 2b/2c may be unable to read the head ref.
 
-**Duplicate-review guard:** If `reviewed-by-claude` appears in LABELS, tell the user:
+**Duplicate-review guard:** If `reviewed-by-claude` appears in LABELS, ask through `AskUserQuestion` (single-select):
 
-> "⚠️ This PR already has the `reviewed-by-claude` label — it appears to have been reviewed.
-> Re-review anyway? (y/n) [default: n]"
+> "⚠️ <PR_URL> already has the `reviewed-by-claude` label — it appears to have been reviewed.
+> Re-review it anyway?"
 
-If the user answers `y`, continue. Otherwise (answer is `n`, no response, or non-interactive context), stop.
+Options, in this order: **Stop (Recommended)**, **Re-review anyway**.
+
+If the user picks **Re-review anyway**, continue. Otherwise (a declined answer, no response, or non-interactive context, including a session without `AskUserQuestion`), stop and say the PR already has the label.
 
 Then fetch the diff:
 
