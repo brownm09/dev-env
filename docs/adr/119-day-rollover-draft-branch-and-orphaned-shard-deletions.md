@@ -181,6 +181,7 @@ A session that finds another session's stale edit commits it to its own day's br
 
 - **Stale means the file was last modified at least 24 hours ago.** Stubs and shards are committed at PR and context-growth events, so a day-old uncommitted edit is well outside normal use. The threshold is a judgment, not a measurement: the one observed incident was about five days old.
 - **A stub takes the date of the branch it lands on when its own day has merged.** This keeps Decision 1's invariant, and it replaces the start-date filename rule in that one case.
+- **"Merged" is read from composed files on `main`, not from a PR.** A draft with conflicts merges from `compose/<D>`, so `gh pr list --head draft/<D>` found a merged PR for only 1 of the 4 merged days tested on 2026-11-05. Looking for composed files gave the right answer on all 5 days tested (4 merged, 1 not).
 - **The hooks still never commit.** Decision 3's reasons stand, so this is a rule for sessions. Only the new-day advisory's wording changes, so it no longer contradicts the rule.
 
 ### Alternatives considered
