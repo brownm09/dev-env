@@ -215,6 +215,8 @@ def test_moved_stub_takes_target_date_and_compose_finds_it(j):
     assert "sessions/p/2026-11-03_120000.stub.md" not in tree
     assert "sessions/p/2026-11-03_120000.manifest.jsonl" not in tree
     assert j.show("draft/2026-11-04", "sessions/p/2026-11-04_120000.stub.md").replace("\r\n", "\n") == STUB
+    entry = json.loads(j.show("draft/2026-11-04", "sessions/p/2026-11-04_120000.manifest.jsonl"))
+    assert entry["stub"] == "sessions/p/2026-11-04_120000.stub.md", entry["stub"]
     assert not j.remote_has("draft/2026-11-03"), "source branch should be deleted"
 
 
