@@ -263,7 +263,10 @@ landed on precisely the work the hook exists to support.
 Amendment 1's transport paragraph (its batching argument stands unchanged — this is the same one
 lookup per repo, on a different bucket). `core` is 5000/hr and near-untouched here, and it is
 *not* what Projects v2 contends for: those operations are GraphQL-only with no REST surface at all
-(dev-env#769), so taking this hook off the shared bucket helps both.
+(dev-env#769), so taking this hook off the shared bucket helps both. (Correction, 2026-11-05:
+Projects v2 does have a REST API, so "no REST surface" is wrong; the `gh project` commands still
+spend GraphQL, and this decision stands. See
+[ADR-141 Amendment 1](141-project-item-id-creation-time-cache.md), dev-env#1239.)
 
 **REST-only, with no GraphQL fallback.** A fallback would add a second untested failure path and
 double worst-case latency inside a hook that stalls the session's first prompt, to defend against

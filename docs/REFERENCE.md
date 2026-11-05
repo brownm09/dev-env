@@ -2222,8 +2222,9 @@ above and the Hooks-table entry in `## Hooks` for why.
 
 **Lookup transport.** GraphQL (`gh issue list`) until
 [#882](https://github.com/brownm09/dev-env/issues/882); now the REST `core` bucket, which is
-5000/hr, near-untouched, and *not* what Projects v2 operations contend for — those have no REST
-alternative at all ([#769](https://github.com/brownm09/dev-env/issues/769)). REST-only, with no
+5000/hr, near-untouched, and *not* what the `gh project` commands contend for — those spend
+GraphQL ([#769](https://github.com/brownm09/dev-env/issues/769); the REST alternative is in the
+root `CLAUDE.md` GitHub Project section, [#1239](https://github.com/brownm09/dev-env/issues/1239)). REST-only, with no
 GraphQL fallback: one code path, and a `core` failure almost always means auth/network is down,
 which GraphQL would not survive either. Three properties a future edit must preserve:
 

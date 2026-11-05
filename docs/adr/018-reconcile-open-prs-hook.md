@@ -111,6 +111,9 @@ bucket failed every lookup, and because step 5's conservative contract treats an
 state as *keep*, **nothing was ever pruned**. The hook handled that safely — no entry was ever
 dropped — so it was a degradation rather than a defect, but a total one, and it landed on the
 same bucket that Projects v2 operations contend for with no REST surface at all (dev-env#769).
+(Correction, 2026-11-05: Projects v2 does have a REST API, so "no REST surface" is wrong; the
+`gh project` commands still spend GraphQL, and this amendment's decision stands. See
+[ADR-141 Amendment 1](141-project-item-id-creation-time-cache.md), dev-env#1239.)
 
 It was also worse here than in the tile reconciler that hit this first: one call per *PR*
 rather than per *repo*, and both reconcilers run at session start, so an outage stopped them
