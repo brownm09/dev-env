@@ -5032,12 +5032,18 @@ For a one-line navigational map of the test directory, see
      it had: a bare filename or a `sessions/<project>/` path, since both occur in real shards. A
      day merged from `compose/<D>` is found, and when both heads merged, the latest merge decides
      what is late. A failed `gh` lookup raises rather than reading as "no PR". A different
-     session's file at the new name steps `HHMMSS` forward and keeps the stub and manifest paired,
-     and a re-run after a failed branch delete adds nothing. A stub renamed in a late commit still
-     moves, and a legacy per-day manifest stops the run before anything moves. A report dated for an
-     uncomposed day does not count that day as composed. Deliberately not covered: a stub committed
-     before the merge but pushed after it. `--after` filters on committer date, so such a stub is
-     not treated as late.
+     session's file at the new name steps `HHMMSS` forward and keeps the stub and manifest paired.
+     A late stub brings its manifest along, and a late manifest alone is skipped as bookkeeping for
+     a session already composed. Late reports and tile shards are copied unrenamed. Today's branch
+     as the source stops the run and is kept, since moving onto itself and deleting it would lose
+     the stubs. A stub renamed in a late commit still moves. A legacy per-day manifest, or a manifest
+     with no `stub` field, stops the run before the remote is touched, and the error names the file.
+     A report dated for an uncomposed day does not count that day as composed. A failed source-branch
+     delete says to delete by hand, because an immediate re-run adds nothing but a re-run after the
+     target composed would move the session again. Deliberately not covered: a stub committed before
+     the merge but pushed after it. `--after` filters on committer date, so such a stub is not treated
+     as late. A stub edited after its day composed is moved and composed again, which ADR-119
+     Amendment 2 accepts as cheaper than losing the edit.
 
      ```bash
      py -3 claude/scripts/tests/test_reconcile_late_stubs.py

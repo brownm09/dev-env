@@ -26,6 +26,7 @@ JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SCRATCH = Path.home() / ".claude" / "scratch"
 TODAY = date.today().strftime("%Y-%m-%d")
 LATE_FILE_NAME = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{6})\.(stub\.md|manifest\.jsonl)")
+CARRIED_FILE = re.compile(r"/(reports/[^/]+\.md|tiles/[^/]+\.json)$")
 
 
 def run(cmd, cwd=None, check=True, capture=True):
@@ -60,7 +61,7 @@ def get_commits_after(branch: str, after_iso: str) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def get_stub_files_in_commits(commits: list[str]) -> list[str]:
+def get_late_files_in_commits(commits: list[str]) -> list[str]:
     files: list[str] = []
     seen: set[str] = set()
     for commit in commits:
@@ -80,9 +81,11 @@ def get_stub_files_in_commits(commits: list[str]) -> list[str]:
             # match the same suffix as the legacy per-day manifest. main() refuses a
             # legacy one, since it has no single stub to rename with.
             # Open-PR records (legacy open-prs.jsonl and open-prs/<N>.json shards) are
-            # excluded — the target branch's copy is authoritative.
+            # excluded — the target branch's copy is authoritative. Reports and tile
+            # shards exist nowhere else once the source branch is deleted, so they move too.
             if (path.endswith(".stub.md")
-                    or path.endswith(".manifest.jsonl")):
+                    or path.endswith(".manifest.jsonl")
+                    or CARRIED_FILE.search(path)):
                 if path not in seen:
                     files.append(path)
                     seen.add(path)
@@ -128,26 +131,74 @@ def ensure_remote_branch_exists(branch: str) -> None:
 
 
 def retarget_manifest(text: str, new_stem: str) -> str:
-    """Point a manifest's `stub` field at new_stem, keeping its form: both a bare
-    filename and a sessions/<project>/ path occur in real shards."""
-    lines = []
-    for line in text.splitlines():
-        if line.strip():
-            entry = json.loads(line)
-            prefix = entry["stub"].rpartition("/")[0]
-            entry["stub"] = f"{prefix}/{new_stem}.stub.md" if prefix else f"{new_stem}.stub.md"
-            line = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
-        lines.append(line)
-    return "\n".join(lines) + "\n"
+    """Point a manifest shard's `stub` field at new_stem, keeping its form: both a
+    bare filename and a sessions/<project>/ path occur in real shards."""
+    entry = json.loads(text)
+    prefix = entry["stub"].rpartition("/")[0]
+    entry["stub"] = f"{prefix}/{new_stem}.stub.md" if prefix else f"{new_stem}.stub.md"
+    return json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+def show_on_branch(branch: str, rel_path: str) -> Optional[str]:
+    result = run(["git", "show", f"origin/{branch}:{rel_path}"], check=False)
+    return result.stdout if result.returncode == 0 else None
+
+
+def read_late_files(source_branch: str, late_files: list[str]
+                    ) -> tuple[dict[tuple[str, str], dict[str, str]], dict[str, str]]:
+    """Read and check everything before the remote is touched. Returns the sessions to
+    rename, keyed by (parent, stem), and the reports and tile shards to copy as they are.
+
+    A late stub brings its manifest along, so compose keeps the session's topic and PR
+    numbers. A late manifest with no late stub is bookkeeping for a session already
+    composed: moving it would feed that topic into another day, so it is skipped.
+    """
+    sessions: dict[tuple[str, str], dict[str, str]] = {}
+    carried: dict[str, str] = {}
+    keep = f"Nothing was moved and {source_branch} is kept; move it by hand."
+    for rel_path in late_files:
+        if CARRIED_FILE.search(rel_path):
+            content = show_on_branch(source_branch, rel_path)
+            if content is not None:
+                carried[rel_path] = content
+            continue
+        parent, _, name = rel_path.rpartition("/")
+        match = LATE_FILE_NAME.fullmatch(name)
+        if not match:
+            raise RuntimeError(
+                f"Cannot rename {rel_path}: not a YYYY-MM-DD_HHMMSS stub or manifest. {keep}"
+            )
+        stem = match[1]
+        if (parent, stem) in sessions:
+            continue
+        stub_path = f"{parent}/{stem}.stub.md"
+        if stub_path not in late_files:
+            print(f"  Skipping {rel_path}: no late stub, so that session is already composed")
+            continue
+        stub = show_on_branch(source_branch, stub_path)
+        if stub is None:
+            print(f"  Skipping {rel_path}: {stub_path} is not on {source_branch}")
+            continue
+        contents = {"stub.md": stub}
+        manifest_path = f"{parent}/{stem}.manifest.jsonl"
+        manifest = show_on_branch(source_branch, manifest_path)
+        if manifest is not None:
+            try:
+                retarget_manifest(manifest, stem)
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
+                raise RuntimeError(f"Cannot read {manifest_path}: {e!r}. {keep}") from e
+            contents["manifest.jsonl"] = manifest
+        sessions[(parent, stem)] = contents
+    return sessions, carried
 
 
 def place_on_target(worktree: Path, parent: str, stem: str,
                     contents: dict[str, str], target_date: str) -> dict[str, str]:
-    """Map one session's stub and/or manifest to their paths on the target branch.
+    """Map one session's stub and manifest to their paths on the target branch.
 
     Keeps HHMMSS, stepping it forward past a different session's file so nothing is
-    overwritten. Files already there with the same content (a re-run after a failed
-    branch delete) keep their place, so a session is not moved twice.
+    overwritten. Files already there with the same content stay put, so an immediate
+    re-run does not add the session again.
     """
     hhmmss = int(stem[11:])
     while True:
@@ -202,20 +253,27 @@ def main() -> None:
         msg = run(["git", "log", "-1", "--format=%s", c]).stdout.strip()
         print(f"  {c[:8]} {msg}")
 
-    stub_files = get_stub_files_in_commits(commits)
-    if not stub_files:
-        print("No stub/manifest files in new commits. Deleting stale branch...")
+    late_files = get_late_files_in_commits(commits)
+    print(f"Found {len(late_files)} late file(s):")
+    for f in late_files:
+        print(f"  {f}")
+
+    sessions, carried = read_late_files(source_branch, late_files)
+    if not sessions and not carried:
+        print("No files to move in new commits. Deleting stale branch...")
         run(["git", "push", "origin", "--delete", source_branch])
         print(f"Deleted {source_branch}. Done.")
         return
 
-    print(f"Found {len(stub_files)} file(s) to move:")
-    for f in stub_files:
-        print(f"  {f}")
-
     run(["git", "fetch", "origin", "--quiet"])
     target_branch = find_target_branch(source_date)
     print(f"Target branch: {target_branch}")
+    if target_branch == source_branch:
+        # The fallback target is today's branch. Moving onto it and then deleting the
+        # source would delete the only branch that holds the stubs.
+        print(f"Error: {source_branch} is today's branch, so there is no later branch to "
+              "move to. Nothing was moved and it is kept.", file=sys.stderr)
+        sys.exit(1)
 
     ensure_remote_branch_exists(target_branch)
     run(["git", "fetch", "origin", target_branch, "--quiet"])
@@ -229,38 +287,16 @@ def main() -> None:
         run(["git", "worktree", "add", "--detach", str(temp_dir),
              f"origin/{target_branch}"])
 
-        sessions: dict[tuple[str, str], dict[str, str]] = {}
-        for rel_path in stub_files:
-            content_result = run(
-                ["git", "show", f"origin/{source_branch}:{rel_path}"],
-                check=False,
-            )
-            if content_result.returncode != 0:
-                print(f"  Skipping {rel_path} (not found on source branch)")
-                continue
-            parent, _, name = rel_path.rpartition("/")
-            match = LATE_FILE_NAME.fullmatch(name)
-            if not match:
-                raise RuntimeError(
-                    f"Cannot rename {rel_path}: not a YYYY-MM-DD_HHMMSS stub or manifest. "
-                    f"Nothing was moved and {source_branch} is kept; move it by hand."
-                )
-            sessions.setdefault((parent, match[1]), {})[match[2]] = content_result.stdout
-
-        if not sessions:
-            print("No files could be copied. Deleting stale branch...")
-            run(["git", "push", "origin", "--delete", source_branch])
-            return
-
-        copied: list[str] = []
+        to_write = dict(carried)
         for (parent, stem), contents in sessions.items():
-            placed = place_on_target(temp_dir, parent, stem, contents, target_date)
-            for rel_path, content in placed.items():
-                dest = temp_dir / rel_path
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_text(content, encoding="utf-8", newline="\n")
-                print(f"  Copied {parent}/{stem} to {rel_path}")
-                copied.append(rel_path)
+            to_write.update(place_on_target(temp_dir, parent, stem, contents, target_date))
+
+        copied = list(to_write)
+        for rel_path, content in to_write.items():
+            dest = temp_dir / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content, encoding="utf-8", newline="\n")
+            print(f"  Copied to {rel_path}")
 
         run(["git", "add"] + copied, cwd=temp_dir)
         if run(["git", "diff", "--cached", "--quiet"], cwd=temp_dir, check=False).returncode == 0:
@@ -281,7 +317,13 @@ def main() -> None:
         run(["git", "worktree", "remove", "--force", str(temp_dir)], check=False)
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-    run(["git", "push", "origin", "--delete", source_branch])
+    # A re-run is only safe while the target is uncomposed: after that the script picks
+    # a later branch and would move the same session again.
+    if run(["git", "push", "origin", "--delete", source_branch], check=False).returncode != 0:
+        print(f"Error: moved the files to {target_branch} but could not delete {source_branch}. "
+              f"Delete it by hand: git push origin --delete {source_branch}. Do not re-run.",
+              file=sys.stderr)
+        sys.exit(1)
     print(f"Deleted stale branch {source_branch}")
     print("Reconciliation complete.")
 

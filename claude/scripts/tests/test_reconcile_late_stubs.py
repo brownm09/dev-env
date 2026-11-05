@@ -15,8 +15,10 @@ Usage:
 """
 
 import importlib.util
+import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -50,26 +52,38 @@ def manifest(stub_field: str) -> str:
     }) + "\n"
 
 
+TEMPLATE = tempfile.TemporaryDirectory()
+
+
 class Journal:
-    """A bare origin plus a clone, on `main` with one composed day."""
+    """A bare origin plus a clone, on `main` with one composed day. The pair is built
+    once and copied for each test, since building it runs many real git commands."""
 
     def __init__(self, root: Path):
-        self.origin = root / "origin.git"
-        self.clone = root / "clone"
+        template = Path(TEMPLATE.name)
         self.prs: dict[str, list[dict]] = {}
         self.gh_error = False
-        no_hooks = root / "no-hooks"
-        no_hooks.mkdir()
-        REAL_RUN(["git", "init", "--bare", "-b", "main", str(self.origin)], capture_output=True, check=True)
-        REAL_RUN(["git", "clone", str(self.origin), str(self.clone)], capture_output=True, check=True)
-        self.git("config", "user.name", "test")
-        self.git("config", "user.email", "test@example.com")
-        self.git("config", "core.autocrlf", "false")
-        # The machine's global pre-push hook must not run against the fixture.
-        self.git("config", "core.hooksPath", str(no_hooks))
-        self.git("checkout", "-b", "main")
-        self.commit({"sessions/p/2026-11-02-composed.md": "composed\n"}, BEFORE_MERGE)
-        self.git("push", "origin", "main")
+        self.delete_fails = False
+        if not (template / "clone").exists():
+            self.origin = template / "origin.git"
+            self.clone = template / "clone"
+            no_hooks = template / "no-hooks"
+            no_hooks.mkdir()
+            REAL_RUN(["git", "init", "--bare", "-b", "main", str(self.origin)], capture_output=True, check=True)
+            REAL_RUN(["git", "clone", str(self.origin), str(self.clone)], capture_output=True, check=True)
+            self.git("config", "user.name", "test")
+            self.git("config", "user.email", "test@example.com")
+            self.git("config", "core.autocrlf", "false")
+            # The machine's global pre-push hook must not run against the fixture.
+            self.git("config", "core.hooksPath", str(no_hooks))
+            self.git("checkout", "-b", "main")
+            self.commit({"sessions/p/2026-11-02-composed.md": "composed\n"}, BEFORE_MERGE)
+            self.git("push", "origin", "main")
+        self.origin = root / "origin.git"
+        self.clone = root / "clone"
+        shutil.copytree(template / "origin.git", self.origin)
+        shutil.copytree(template / "clone", self.clone)
+        self.git("remote", "set-url", "origin", str(self.origin))
 
     def git(self, *args: str, env: dict | None = None) -> str:
         result = REAL_RUN(
@@ -120,7 +134,19 @@ class Journal:
         self.commit(files or {"sessions/p/2026-11-04_090000.stub.md": OTHER_STUB}, BEFORE_MERGE)
         self.push("draft/2026-11-04")
 
+    def source_with_composed_pair(self, stub_field: str = "sessions/p/2026-11-03_120000.stub.md") -> None:
+        """draft/2026-11-03 holds a stub and manifest committed before the merge. The
+        branch stays checked out so a test can add a late commit."""
+        self.branch("draft/2026-11-03")
+        self.commit({
+            "sessions/p/2026-11-03_120000.stub.md": STUB,
+            "sessions/p/2026-11-03_120000.manifest.jsonl": manifest(stub_field),
+        }, BEFORE_MERGE)
+        self.push("draft/2026-11-03")
+
     def fake_run(self, cmd, *args, **kwargs):
+        if self.delete_fails and "--delete" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="remote hung up")
         if cmd[0] != "gh":
             return REAL_RUN(cmd, *args, **kwargs)
         if self.gh_error:
@@ -247,13 +273,12 @@ def test_failed_lookup_aborts_and_keeps_branch(j):
     j.source_with_late_stub()
     j.target()
     j.gh_error = True
-    with mock.patch.object(sys, "stderr"):
-        try:
-            j.reconcile()
-        except RuntimeError as e:
-            assert "gh" in str(e)
-        else:
-            raise AssertionError("a failed lookup must not read as 'no PR' or carry on")
+    try:
+        j.reconcile()
+    except RuntimeError as e:
+        assert "gh" in str(e)
+    else:
+        raise AssertionError("a failed lookup must not read as 'no PR' or carry on")
     assert j.remote_has("draft/2026-11-03")
 
 
@@ -353,6 +378,118 @@ def test_no_late_commits_deletes_branch_and_moves_nothing(j):
     assert j.reconcile() == 0
     assert j.tree("draft/2026-11-04") == before
     assert not j.remote_has("draft/2026-11-03")
+
+
+@with_journal
+def test_todays_branch_is_kept_rather_than_deleted_with_its_stubs(j):
+    """The fallback target is today's branch, which here is the source itself."""
+    j.branch(f"draft/{TODAY}")
+    j.commit({f"sessions/p/{TODAY}_120000.stub.md": STUB}, AFTER_MERGE)
+    j.push(f"draft/{TODAY}")
+    j.prs[f"draft/{TODAY}"] = [merged()]
+    with mock.patch.object(sys, "stderr", io.StringIO()):
+        assert j.reconcile(f"draft/{TODAY}") == 1
+    assert f"sessions/p/{TODAY}_120000.stub.md" in j.tree(f"draft/{TODAY}")
+
+
+@with_journal
+def test_late_stub_brings_its_manifest_along(j):
+    j.source_with_composed_pair()
+    j.commit({"sessions/p/2026-11-03_120000.stub.md": STUB + "edited late\n"}, AFTER_MERGE)
+    j.push("draft/2026-11-03")
+    j.compose_day("2026-11-03")
+    j.target()
+    j.prs["compose/2026-11-03"] = [merged()]
+    assert j.reconcile() == 0
+    entry = json.loads(j.show("draft/2026-11-04", "sessions/p/2026-11-04_120000.manifest.jsonl"))
+    assert entry["stub"] == "sessions/p/2026-11-04_120000.stub.md", entry["stub"]
+
+
+@with_journal
+def test_late_manifest_alone_is_not_moved_into_another_day(j):
+    """A late prs_closed edit is bookkeeping for a session already composed."""
+    j.source_with_composed_pair()
+    j.commit({"sessions/p/2026-11-03_120000.manifest.jsonl":
+              manifest("sessions/p/2026-11-03_120000.stub.md").replace('"prs_closed": []', '"prs_closed": [9]')},
+             AFTER_MERGE)
+    j.push("draft/2026-11-03")
+    j.compose_day("2026-11-03")
+    j.target()
+    j.prs["compose/2026-11-03"] = [merged()]
+    before = j.tree("draft/2026-11-04")
+    assert j.reconcile() == 0
+    assert j.tree("draft/2026-11-04") == before
+    assert not j.remote_has("draft/2026-11-03")
+
+
+@with_journal
+def test_late_reports_and_tile_shards_survive_unrenamed(j):
+    j.source_with_composed_pair()
+    j.commit({
+        "sessions/p/reports/2026-11-03-audit.md": "report\n",
+        "sessions/p/tiles/55.json": '{"issue":55}\n',
+    }, AFTER_MERGE)
+    j.push("draft/2026-11-03")
+    j.compose_day("2026-11-03")
+    j.target()
+    j.prs["compose/2026-11-03"] = [merged()]
+    assert j.reconcile() == 0
+    tree = j.tree("draft/2026-11-04")
+    assert "sessions/p/reports/2026-11-03-audit.md" in tree
+    assert "sessions/p/tiles/55.json" in tree
+    assert "sessions/p/2026-11-04_120000.stub.md" not in tree, "no late stub in this commit"
+    assert not j.remote_has("draft/2026-11-03")
+
+
+@with_journal
+def test_abort_on_the_way_to_todays_branch_leaves_the_remote_alone(j):
+    """With no later draft the target is today's branch, which must not be created
+    for a run that is about to stop."""
+    j.branch("draft/2026-11-03")
+    j.commit({"sessions/p/2026-11-03.manifest.jsonl": manifest("2026-11-03_120000.stub.md")}, AFTER_MERGE)
+    j.push("draft/2026-11-03")
+    j.prs["draft/2026-11-03"] = [merged()]
+    try:
+        j.reconcile()
+    except RuntimeError as e:
+        assert "2026-11-03.manifest.jsonl" in str(e)
+    else:
+        raise AssertionError("a legacy manifest must stop the run")
+    assert not j.remote_has(f"draft/{TODAY}")
+
+
+@with_journal
+def test_manifest_with_no_stub_field_stops_and_names_the_file(j):
+    """Real shape: four 2026-06-29 shards have no stub field."""
+    j.branch("draft/2026-11-03")
+    j.commit({
+        "sessions/p/2026-11-03_120000.stub.md": STUB,
+        "sessions/p/2026-11-03_120000.manifest.jsonl": '{"topic":"t"}\n',
+    }, AFTER_MERGE)
+    j.push("draft/2026-11-03")
+    j.compose_day("2026-11-03")
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    try:
+        j.reconcile()
+    except RuntimeError as e:
+        assert "2026-11-03_120000.manifest.jsonl" in str(e), str(e)
+    else:
+        raise AssertionError("a manifest with no stub field must stop the run")
+    assert j.remote_has("draft/2026-11-03")
+
+
+@with_journal
+def test_failed_delete_says_not_to_rerun(j):
+    j.source_with_late_stub()
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    j.delete_fails = True
+    stderr = io.StringIO()
+    with mock.patch.object(sys, "stderr", stderr):
+        assert j.reconcile() == 1
+    assert "Do not re-run" in stderr.getvalue(), stderr.getvalue()
+    assert "sessions/p/2026-11-04_120000.stub.md" in j.tree("draft/2026-11-04")
 
 
 def main() -> int:
