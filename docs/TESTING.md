@@ -253,7 +253,7 @@ For a one-line navigational map of the test directory, see
     ```
 
 12. **post-tool-use test** — required when changing `claude/scripts/post-tool-use.py`. Exercises the pure
-    `read_command_output()`, `extract_github_url()`, `canonical_root_from_worktree()`, and
+    `read_command_output()`, `created_item_url()`, `canonical_root_from_worktree()`, and
     `_canonical_root_from_common_dir()` helpers offline: pins that the real `stdout`-shaped Bash payload yields
     a non-empty output (the pre-fix `output` read was `""` — the [#377](https://github.com/brownm09/dev-env/issues/377)
     silent no-op), that the legacy `output` field still works, that the de-silenced no-URL path distinguishes a
@@ -275,8 +275,8 @@ For a one-line navigational map of the test directory, see
     `gh issue create` / `gh pr create`): bare `--help`/`-h`, a real create, no invocation at all, and —
     via three `main()` end-to-end subprocess cases — that `gh issue create --help` and `gh pr create
     --help` each exit 0 silently, and that a help-only issue-create chained with a REAL pr-create still
-    reaches the exit-2 "no GitHub URL found" path **and names the PR specifically** (`"PR created"`, not
-    `"Issue created"`) — proving `main()` downgrades each create-flag independently rather than bailing
+    reaches the exit-2 "no GitHub URL found" path **and names the PR specifically** (`"PR create ran"`, not
+    `"Issue create ran"`) — proving `main()` downgrades each create-flag independently rather than bailing
     out wholesale. Also exercises the dev-env#527 / [ADR-076](adr/076-live-fetch-project-hook-single-select-options.md)
     live-fetch of `single_select` field options: the pure `_parse_live_options()` response parser (valid, empty-options,
     null-node, and malformed-JSON shapes), the pure `_resolve_required_fields()` legacy-config normalization shared
@@ -303,6 +303,11 @@ For a one-line navigational map of the test directory, see
     Why. A `main()` end-to-end pair runs a config-less temp cwd: a dev-env issue URL exits 2 with
     ASCII stderr carrying the seed command and the exact `gh project item-add`, and `origin/main`
     exited 0 silently on that same payload. Another repo's URL stays exit 0 and silent.
+    dev-env#1243 adds a failed `gh pr create` in a chain, using the real incident's output and a
+    payload with no `exitCode` key. Run through `main()` with `add_to_project` swapped for a recorder,
+    nothing reaches the board, the comment URL isn't reported, and no message claims a PR was created.
+    A successful create adds the created PR even with comment URLs on either side of it, gh's "already
+    exists" error adds nothing, and `gh issue create` won't accept a bare PR URL.
 
     ```bash
     py -3 claude/scripts/tests/test_post_tool_use.py
@@ -382,7 +387,9 @@ For a one-line navigational map of the test directory, see
     `is_pr_merge_command` classify every spelling the same way, and the argument parsers built on
     `GH_PR_MERGE` (`merge_args`, `effective_merge_dir`) find the merge in every spelling the
     predicate admits. The gates' own parsers are pinned in items 38 and 52, and the stop-tile gate's
-    first-word match in item 48.
+    first-word match in item 48. `created_item_url` (dev-env#1243) counts only a line holding nothing
+    but an item URL: not a URL in prose, a `#issuecomment-` URL, or a sub-page. It also pins the *kind*
+    and *repo* filters, last-match-wins, and skipping gh's "already exists" error.
 
     ```bash
     py -3 claude/scripts/tests/test_hookio.py
@@ -1003,7 +1010,10 @@ For a one-line navigational map of the test directory, see
     no longer fires a duplicate push reminder when a REST merge is chained with a `git push` in the same
     command — `is_merge` alone stays False for the REST shape, so without the addition the suppression
     check missed it even though `merge_ok` (and the merge reminder) fired correctly via the REST
-    OR-branch.
+    OR-branch. dev-env#1243 adds a failed `gh pr create` in a chain, using the real incident's output:
+    no reminder fires and PR 1218, linked in the prose, is not named. A successful create names the
+    created PR, gh's "already exists" error fires nothing, empty output (a `run_in_background` create)
+    keeps the generic reminder, and a failed create chained with `git push` keeps the push reminder.
 
     ```bash
     py -3 claude/scripts/tests/test_pr_merge_reminder.py

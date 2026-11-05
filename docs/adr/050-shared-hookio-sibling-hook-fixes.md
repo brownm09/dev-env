@@ -2694,3 +2694,63 @@ module would add an import and leave the guard's copy in place. Reading the tran
 hooks belongs to #851's dispatcher, which runs them in one process; these helpers give it one place to
 add that cache.
 
+## Amendment 31 (2026-11-05) — a create counts only if it printed its URL (dev-env#1243)
+
+**What happened.** In [PR #1235](https://github.com/brownm09/dev-env/pull/1235)'s session, one Bash call
+posted a comment and then ran `gh pr create ... 2>&1 | tail -3`, which failed on a GraphQL rejection. The
+journal reminder still told the session to write a shard for merged PR #1218, and the project hook tried
+to add the comment's URL to the board.
+
+**The mechanism.** The issue guessed that the hooks saw the last command's exit code. They see none. A
+replay of 501 recorded Bash and PowerShell results that ran a top-level `gh pr create` or `gh issue create`,
+from 279 transcripts in the last 60 days, found `exitCode` in **0 of 501**. So `read_exit_code(data,
+default=0)` returns 0 every time on this path and the `exit_code != 0` gates never fire. ADR-049 called
+these reads harmless because PostToolUse fires only after a successful tool call, but the tool call succeeds
+whenever the shell finishes the chain normally, so a failed command inside the chain is invisible. The URL
+scans then took whatever they found: the project hook the last GitHub URL on any line, the reminder the first
+PR URL anywhere. In the incident those were a `#issuecomment-` URL and a link inside a line of prose.
+
+**The decision.** `_hookio.created_item_url` is now the evidence. Only a line holding nothing but an item
+URL counts, because that is what `gh` prints on success, and *kind* limits it to `pull` or `issues`. gh's
+"already exists" error ends in the same bare URL, for a PR the command did not open, so it is skipped
+([cli/cli create.go](https://github.com/cli/cli/blob/trunk/pkg/cmd/pr/create/create.go)). The skip searches
+the 8 lines above the URL, because Windows PowerShell 5.1 with `2>&1` puts its error record in between. The
+reminder fires only with that URL or with empty output. A confirmed merge no longer stands in for it, since
+`gh pr create; gh pr merge 5` can merge a different PR. A failed create no longer suppresses the push
+reminder. When a chain holds both creates, the project hook handles whichever one printed its URL.
+
+**Calibration.** The replay is the corpus, and neither hook blocks a tool call.
+
+- Successful creates: the check found the URL in 219 of 234 PR results and 250 of 267 issue results.
+- Failed creates: all 7 PR results and both issue results showing a failure in their output were rejected.
+- The old project-hook scan picked the wrong or a mangled URL on 15 successful creates that the new check
+  gets right, 4 PRs and 11 issues, usually a comment URL from a chained command.
+- Of the 8 other PR results with no URL, 6 have an empty `stdout` only in the transcript: the reminder those
+  sessions received named the PR, so the hook's payload had the URL. One was `run_in_background`, and one
+  had no URL anywhere and no hook output, so it is unclassified.
+- Of the 15 other issue results with no URL, 14 have an empty `stdout` in the transcript. For 12 of those,
+  the tool result the session saw held the URL; 2 held none. One more result is unclassified.
+- The worst known-good case is that background create. It has empty output, so empty output keeps the
+  generic reminder that names no PR.
+- A separate pass over the same 60 days found one successful issue create whose URL sat inside another
+  command's output, and no such PR create. That shape now reaches the no-URL advisory instead of a board add.
+
+**Known limits.** Nothing in the payload says which command printed a line, so three shapes stay wrong:
+
+- A chained command that prints a bare item URL of the same kind (`gh pr edit`, `gh pr view --json url --jq
+  .url`) still reads as a created item.
+- `2>&1 | tail -1` on gh's "already exists" error keeps only the URL, which reads as a created PR.
+- A successful create whose URL was reshaped (`| sed "s/^/PR: /"`) or discarded gets no journal reminder. The
+  project hook's no-URL advisory still fires, and it now says the create "ran" rather than claiming it created
+  anything.
+
+**Still open.** A chain where both creates succeed adds only the issue, as it added only one item before
+this change; [dev-env#1250](https://github.com/brownm09/dev-env/issues/1250) tracks it. The other hooks'
+`read_exit_code` calls were not measured here; [dev-env#1251](https://github.com/brownm09/dev-env/issues/1251)
+tracks that.
+
+**Alternatives considered.** Asking GitHub whether the PR exists would be definitive, but it spends the
+GraphQL budget during the exact outage that caused this, on every create. Parsing the transcript for an exit
+code doesn't work, since a chain's code is its last command's and a pipe hides the rest. Fixing only the two
+regexes would stop the wrong URL but leave the reminder firing for a create that failed.
+

@@ -634,12 +634,16 @@ def test_build_messages_chained_create_and_queued_auto_still_creates() -> str:
 
 
 def test_build_messages_chained_create_and_help_shaped_merge_still_creates() -> str:
-    # The --help-shaped case from the issue: no marker, exit 0.
+    # The --help-shaped case from the issue: no marker, exit 0. The create's own
+    # URL line comes first, as it would in a real run (dev-env#1243).
     messages = _build_messages(
         command="gh pr create --fill && gh pr merge --help",
         cwd="/session/cwd",
         exit_code=0,
-        output="Merge a pull request\n\nUSAGE\n  gh pr merge [<number> | <url> | <branch>] [flags]",
+        output=(
+            "https://github.com/brownm09/dev-env/pull/500\n"
+            "Merge a pull request\n\nUSAGE\n  gh pr merge [<number> | <url> | <branch>] [flags]"
+        ),
         is_create=True,
         is_merge=True,
         is_push=False,
@@ -985,6 +989,157 @@ def test_exit_code_coercion_pins_accepted_tradeoff() -> str:
 # runner
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# dev-env#1243: a failed `gh pr create` inside a chained command. The stdout and
+# the response keys are from the real incident (PR #1235's session): the payload
+# has no exitCode key, so read_exit_code's default of 0 reads as success, and the
+# old scan took the first PR URL anywhere in the output, here one inside prose.
+# ---------------------------------------------------------------------------
+
+FAILED_CREATE_STDOUT = (
+    "--- recent 1061 comments\n"
+    "2026-11-05T17:51:24Z Seen again in the full suite on the branch for "
+    "[PR 1218](https://github.com/brownm09/dev-env/pull/1218). All 3 attempts failed\n"
+    "--- post comment\n"
+    "https://github.com/brownm09/dev-env/issues/1061#issuecomment-6669636491\n"
+    "--- PR\n"
+    "GraphQL: API rate limit already exceeded for user ID 36768444."
+)
+CHAINED_CREATE_COMMAND = (
+    "echo before; gh api -X POST repos/brownm09/dev-env/issues/1061/comments -F body=@c.md; "
+    "gh pr create --repo brownm09/dev-env --head b --base main --title t --body-file b.md 2>&1 | tail -3"
+)
+
+
+def _exit_code_as_main_reads_it(stdout: str) -> int:
+    response = {"stdout": stdout, "stderr": "", "interrupted": False, "isImage": False, "noOutputExpected": False}
+    return pmr.read_exit_code({"tool_response": response}, default=0)
+
+
+def test_build_messages_failed_create_in_chain_no_reminder() -> str:
+    messages = _build_messages(
+        command=CHAINED_CREATE_COMMAND,
+        cwd="/session/cwd",
+        exit_code=_exit_code_as_main_reads_it(FAILED_CREATE_STDOUT),
+        output=FAILED_CREATE_STDOUT,
+        is_create=True,
+        is_merge=False,
+        is_push=False,
+    )
+    assert messages == [], f"a failed create must not fire, got {messages!r}"
+    return "failed create in a chain, with PR 1218 in prose -> no reminder, no unrelated PR named"
+
+
+def test_shard_step_ignores_pr_url_in_prose() -> str:
+    step = _create_shard_step(FAILED_CREATE_STDOUT)
+    assert "1218" not in step, f"a PR URL in prose must not be named: {step!r}"
+    assert "<N>" in step, f"expected the generic step: {step!r}"
+    return "PR URL inside a line of prose -> generic shard step"
+
+
+def test_build_messages_successful_create_names_created_pr() -> str:
+    created = "https://github.com/brownm09/dev-env/pull/1235"
+    output = FAILED_CREATE_STDOUT.rsplit("\n", 1)[0] + f"\n{created}\n"
+    messages = _build_messages(
+        command=CHAINED_CREATE_COMMAND,
+        cwd="/session/cwd",
+        exit_code=_exit_code_as_main_reads_it(output),
+        output=output,
+        is_create=True,
+        is_merge=False,
+        is_push=False,
+    )
+    assert len(messages) == 1, f"expected the create reminder, got {messages!r}"
+    assert "open-prs/1235.json" in messages[0], messages[0]
+    assert "1218" not in messages[0], f"must not name the PR from prose: {messages[0]!r}"
+    return "successful create in a chain -> reminder names the created PR, not the one in prose"
+
+
+def test_build_messages_existing_pr_error_no_reminder() -> str:
+    # gh's error for an existing PR ends in a bare URL, the same shape as success
+    # (cli/cli pkg/cmd/pr/create/create.go). `| tail` keeps the chain at exit 0.
+    output = (
+        'a pull request for branch "b" into branch "main" already exists:\n'
+        "https://github.com/brownm09/dev-env/pull/1218\n"
+    )
+    messages = _build_messages(
+        command="gh pr create --fill 2>&1 | tail -3",
+        cwd="/session/cwd",
+        exit_code=_exit_code_as_main_reads_it(output),
+        output=output,
+        is_create=True,
+        is_merge=False,
+        is_push=False,
+    )
+    assert messages == [], f"an existing PR was not created by this command, got {messages!r}"
+    return "gh's 'already exists' error -> no reminder for a PR this command did not open"
+
+
+def test_build_messages_failed_create_then_merge_only_merge_reminder() -> str:
+    # The merge was of a different PR, so it says nothing about the create.
+    output = (
+        'a pull request for branch "b" into branch "main" already exists:\n'
+        "https://github.com/brownm09/dev-env/pull/1218\n"
+        "Squashed and merged pull request #1218\n"
+    )
+    messages = _build_messages(
+        command="gh pr create --fill 2>&1; gh pr merge 1218 --squash",
+        cwd="/session/cwd",
+        exit_code=_exit_code_as_main_reads_it(output),
+        output=output,
+        is_create=True,
+        is_merge=True,
+        is_push=False,
+    )
+    assert len(messages) == 1 and "gh pr merge detected" in messages[0], messages
+    return "failed create chained with a merge -> only the merge reminder, no shard for a merged PR"
+
+
+def test_build_messages_empty_output_keeps_generic_reminder() -> str:
+    # A `run_in_background` create returns empty stdout: seen once in the replay
+    # of 234 recorded PR creates. Nothing shows it failed, so the nudge stays.
+    messages = _build_messages(
+        command="gh pr create --fill",
+        cwd="/session/cwd",
+        exit_code=_exit_code_as_main_reads_it(""),
+        output="",
+        is_create=True,
+        is_merge=False,
+        is_push=False,
+    )
+    assert len(messages) == 1 and "open-prs/<N>.json" in messages[0], messages
+    return "create with empty output -> generic reminder, no PR named"
+
+
+def test_build_messages_failed_create_chained_with_push_keeps_push_reminder() -> str:
+    # `git push; gh pr create` where the PR already exists: the push still landed
+    # on an open PR, so its reminder must not be suppressed by the create that failed.
+    output = (
+        'a pull request for branch "b" into branch "main" already exists:\n'
+        "https://github.com/brownm09/dev-env/pull/1218\n"
+    )
+    real_lookup = pmr._open_pr_for_cwd
+    pmr._open_pr_for_cwd = lambda _dir: {
+        "number": 1218,
+        "url": "https://github.com/brownm09/dev-env/pull/1218",
+        "title": "t",
+    }
+    try:
+        messages = _build_messages(
+            command="git push; gh pr create --fill 2>&1 | tail -3",
+            cwd="/session/cwd",
+            exit_code=_exit_code_as_main_reads_it(output),
+            output=output,
+            is_create=True,
+            is_merge=False,
+            is_push=True,
+        )
+    finally:
+        pmr._open_pr_for_cwd = real_lookup
+    assert len(messages) == 1 and "git push detected for PR #1218" in messages[0], messages
+    return "push + failed create -> the push reminder still fires"
+
+
 def main() -> int:
     tests = [
         ("bare gh pr create -> match", test_create_simple),
@@ -1052,6 +1207,13 @@ def main() -> int:
         ("build_messages: REST merge chained with push -> no duplicate reminder (dev-env#986/#991)", test_build_messages_rest_merge_chained_push_no_duplicate_reminder),
         ("build_messages: REST merge GET (no PUT) -> no message (dev-env#986/#991)", test_build_messages_rest_merge_get_method_not_matched),
         ("exit_code coercion pins the accepted default=0 trade-off (ADR-050 Amendment 28)", test_exit_code_coercion_pins_accepted_tradeoff),
+        ("build_messages: failed create in a chain -> no reminder (dev-env#1243)", test_build_messages_failed_create_in_chain_no_reminder),
+        ("shard step: PR URL in prose is not named (dev-env#1243)", test_shard_step_ignores_pr_url_in_prose),
+        ("build_messages: successful create in a chain names the created PR (dev-env#1243)", test_build_messages_successful_create_names_created_pr),
+        ("build_messages: gh's 'already exists' error -> no reminder (dev-env#1243)", test_build_messages_existing_pr_error_no_reminder),
+        ("build_messages: failed create + merge -> only the merge reminder (dev-env#1243)", test_build_messages_failed_create_then_merge_only_merge_reminder),
+        ("build_messages: empty output keeps the generic reminder (dev-env#1243)", test_build_messages_empty_output_keeps_generic_reminder),
+        ("build_messages: failed create keeps the push reminder (dev-env#1243)", test_build_messages_failed_create_chained_with_push_keeps_push_reminder),
     ]
     failed = 0
     for name, fn in tests:
