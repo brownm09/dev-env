@@ -12,10 +12,11 @@ running processes, so it can still name that process, and logs what it sees to
     py -3 window-flash-monitor.py --report 2026-11-05
 
 The monitor only observes, and logs as little as it can, because a record of windows is a
-record of what the user was doing. A window descended from claude.exe keeps its title when
-it is shown. A console window keeps only the program its title names. Foreground changes are
-logged only around a console window young enough to be a flash, without titles. Nothing else
-is logged.
+record of what the user was doing. It keeps no window titles: a session can start any
+application, so even a window under claude.exe can show private content. A console window
+keeps only the program its title names, and a window under claude.exe is logged by process
+name. Foreground changes are logged only around a console window young enough to be a flash.
+Nothing else is logged.
 """
 from __future__ import annotations
 
@@ -139,7 +140,7 @@ def show_record(now: float, hwnd: int, pid: int, cls: str, title: str, history: 
     if program:
         record["program"] = program
     if claude and title:
-        record["title"] = title
+        record["titled"] = True  # a real window rather than a helper; the title itself isn't kept
     if console:
         record["recent"] = history.recent(now)
     return record
@@ -239,7 +240,7 @@ def _focus_lost(foreground: list[dict], times: list[float], hwnd: int, shown: fl
 
 def claude_windows(records: list[dict]) -> list[dict]:
     """Titled windows shown by a process descended from claude.exe."""
-    return [r for r in records if r.get("e") == "show" and r.get("title")
+    return [r for r in records if r.get("e") == "show" and r.get("titled")
             and is_claude(r.get("chain") or [])]
 
 
@@ -299,9 +300,9 @@ def render_report(date: str, records: list[dict]) -> str:
     windows = claude_windows(records)
     lines.append(f"Other windows opened under Claude: {len(windows)}.")
     if windows:
-        lines += ["", "| # | Time | Process | Title |", "|---|------|---------|-------|"]
+        lines += ["", "| # | Time | Source chain |", "|---|------|--------------|"]
         for n, r in enumerate(windows, 1):
-            lines.append(f"| {n} | {_clock(r['t'])} | {r['chain'][0]} | {_cell(r['title'])} |")
+            lines.append(f"| {n} | {_clock(r['t'])} | {_cell(' < '.join(r['chain']))} |")
     return "\n".join(lines) + "\n"
 
 

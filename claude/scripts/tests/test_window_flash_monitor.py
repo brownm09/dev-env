@@ -128,8 +128,10 @@ def test_show_record_title_rule():
     assert SENTINEL not in json.dumps(console), "a console window outside Claude kept its title"
     assert "program" not in console and "recent" in console
     mine = wfm.show_record(1.0, 5, 10, "Chrome_WidgetWin_1", SENTINEL, history)
-    assert mine["title"] == SENTINEL
-    return "other windows unlogged, consoles keep only a program name, Claude's windows keep titles"
+    assert mine["titled"] is True and SENTINEL not in json.dumps(mine), "a window under Claude kept its title"
+    helper = wfm.show_record(1.0, 5, 10, "Chrome_WidgetWin_1", "", history)
+    assert "titled" not in helper
+    return "other windows unlogged, consoles keep only a program name, and no title is kept anywhere"
 
 
 def test_terminal_flash_times_focus_and_names_the_source():
@@ -224,13 +226,13 @@ def test_finding_flashes_is_not_quadratic():
 def test_report_counts_numbers_rows_and_states_gaps():
     records = _terminal_flash() + _terminal_flash(start=2000.0, hwnd=8, program=None)
     records.append({"t": 3000.0, "e": "show", "hwnd": 9, "cls": "Notepad", "pid": 1,
-                    "chain": ["notepad.exe", "claude.exe"], "title": "a|b.txt"})
+                    "chain": ["note|pad.exe", "claude.exe"], "titled": True})
     report = wfm.render_report("2026-11-05", records)
     assert "Flashes: 2 (1 from Claude, 0 from elsewhere, 1 of unknown origin)" in report
     rows = [line for line in report.splitlines() if line.startswith("| ") and "---" not in line]
     assert len(rows) == 5, f"expected 2 headers and 3 rows, got {rows}"
     assert rows[1].startswith("| 1 |") and rows[2].startswith("| 2 |")
-    assert "Other windows opened under Claude: 1." in report and "a/b.txt" in report
+    assert "Other windows opened under Claude: 1." in report and "note/pad.exe < claude.exe" in report
     assert "Nothing was seen in these gaps" in report, "a gap longer than two beats went unstated"
     assert wfm.recording_gaps([1.0, 1.0 + 2 * wfm.BEAT_SECONDS]) == [], "two beats apart is not a gap"
     assert "gaps" not in wfm.render_report("2026-11-05", _terminal_flash())
@@ -331,9 +333,9 @@ def test_write_failures_do_not_lose_or_stop_anything():
         assert log_dir.exists(), "a deleted log directory was not recreated"
 
         monitor.history = _history()
-        title_with_half_a_pair = "tool \ud83d"
+        title_with_half_a_pair = "C:\\x\\tool\ud83d.exe"
         monitor.on_show(3.0, 5, 10, "ConsoleWindowClass", title_with_half_a_pair)
-        assert 5 in monitor.watched
+        assert 5 in monitor.watched and monitor.watched[5]["program"] == "tool\ud83d.exe"
 
         blocked = Path(tmp) / "file-not-directory"
         blocked.write_text("x", encoding="utf-8")
