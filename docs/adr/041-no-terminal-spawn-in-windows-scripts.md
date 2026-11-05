@@ -3,7 +3,7 @@
 **Date:** 2026-06-06
 **Status:** Accepted
 **Closes:** [dev-env#324](https://github.com/brownm09/dev-env/issues/324)
-**Tags:** code-quality, global-rule, windows, powershell, claude-behavior, review
+**Tags:** code-quality, global-rule, windows, powershell, claude-behavior, review, sudo, uac, elevation
 **Related:** [ADR-038](038-durable-preferences-documented-in-repo.md), [ADR-040](040-global-claudemd-layering-and-slimming.md), [ADR-039](039-merge-gate-findings-enforcement.md)
 
 ---
@@ -90,3 +90,28 @@ The allowlist is closed: `win11-init-tools/install_base_apps.ps1`, `set_irfanvie
 - [win11-init-tools#20](https://github.com/brownm09/win11-init-tools/issues/20) — followup tracking conversion of `configure_dev_env.ps1` and subsequent allowlist shrink.
 - Microsoft Learn — [`Start-Process` parameter reference](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.management/start-process) (documents `-Verb`, `-NoNewWindow`, `-PassThru` and confirms `-Verb RunAs` triggers UAC).
 - Microsoft Learn — [`#Requires` statement](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_requires) (documents `-RunAsAdministrator`, the recommended replacement).
+
+## Amendment 1 (2026-11-05) — a session elevates with `sudo` ([dev-env#1231](https://github.com/brownm09/dev-env/issues/1231))
+
+The script rule above stands: a script fails fast with `#Requires -RunAsAdministrator` or an `IsInRole` check, and never relaunches itself. This amendment changes only what a *session* does when it needs to run something elevated. The rule used to say "Tell the user to open an elevated terminal". A session now runs `sudo <command>` and asks the user only if `sudo` fails or is unavailable. The rule itself lives in `claude/CLAUDE.md` → *Platform & Environment*.
+
+**Why.** On 2026-11-05 a win11-init-tools session asked the user to run `fix_bluetooth_reconnect.ps1 -RestartService` in an elevated terminal. The user replied "You run it", and the command then ran from the Bash tool with `sudo`, returning its output and exit code ([win11-init-tools#102](https://github.com/brownm09/win11-init-tools/pull/102)). Windows `sudo` is in Inline mode on this machine. The old sentence, and a matching line in *User-Actionable References*, pushed sessions toward the ask.
+
+**What was established** (2026-11-05, Windows 11 10.0.26200). Rows 1–5 ran from Git Bash with `MSYS_NO_PATHCONV=1` set and stdin closed:
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `sudo cmd /c "exit 7"` | returned 7, in 5 s |
+| 2 | `sudo powershell -NoProfile -Command "exit 3"` | returned 3, in 4 s |
+| 3 | `sudo cmd /c "net session >nul 2>&1 && echo elevated \|\| echo not-elevated"` | printed `elevated`, returned 0; the same `net session` from the unelevated shell returned 2 |
+| 4 | `sudo nonexistent-command-xyz` | printed `Command not found`, returned 49, in under 1 s |
+| 5 | `sudo cmd /c "echo to-stderr 1>&2 & exit 5"` with stderr redirected | returned 5; the text landed in the redirect target, so stderr stays separate |
+| 6 | Polling for `consent.exe` during `sudo cmd /c "exit 0"` | `consent.exe` ran for about 2.3 s of a 3.1 s call |
+| 7 | `sudo cmd /c "exit 7"` from Git Bash, no prefix | `/c` reached `cmd` as `C:/` (confirmed by printing `argv`); an interactive elevated prompt opened and hung |
+| 8 | Row 7 with `</dev/null`, under `timeout 40` | still hung, until `timeout` killed `sudo` at 40 s; the elevated `cmd` survived and needed `sudo taskkill /PID <pid> /F` |
+
+**UAC.** [Microsoft's documentation](https://learn.microsoft.com/en-us/windows/advanced-settings/sudo/) says a prompt opens for verification, and `sudo --help` says the same. The [source](https://github.com/microsoft/sudo/blob/main/sudo/src/run_handler.rs) elevates through `ShellExecuteExW` with the `runas` verb. So UAC is involved on every call, and the Inline-mode security risks Microsoft describes are the ones already accepted by enabling that mode. Row 6 shows the prompt process ran. It does not show what was on screen, and the 3–5 s calls don't say who answered. The [source](https://github.com/microsoft/sudo/blob/main/sudo/src/main.rs) maps a cancelled prompt to a printed message and a non-zero exit, which was read but not run, since declining needs a person.
+
+**Correction to Context item 1.** "The UAC dialog has no desktop to render against" is not true of every agent-driven context: rows 1–6 elevated from an agent's shell in a logged-in desktop session. A scheduled run was not tested, so the rule says only that a routine shouldn't count on `sudo`.
+
+**No mechanical check.** A Stop hook matching text like "open an elevated terminal" was considered and not added. The only known-bad reference is the one incident, there is no known-good corpus, and the shape the rule allows (asking after `sudo` failed) reads the same as the shape it forbids. Under Pass 3 Gate calibration that would be a diagnostic at most. As with the original rule, re-evaluate if it recurs now that the instruction is written down.
