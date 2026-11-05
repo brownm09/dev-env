@@ -91,7 +91,7 @@ git call, in-process and end-to-end. The same fixture also drives
 stale_draft_artifacts() then unmerged_draft_branches() in main()'s order and pins a
 single `git ls-tree` per invocation (dev-env#1165). A second real git fixture pins
 that an untracked stale stub or *_draft.md survives the hook and is named in the
-stale-artifact advisory: the hook deletes nothing (dev-env#1221).
+stale-artifact advisory: the hook deletes no journal file (dev-env#1221).
 
 Usage:
     py -3 claude/scripts/tests/test_journal_stop_check.py

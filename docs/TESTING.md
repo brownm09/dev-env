@@ -2124,7 +2124,7 @@ For a one-line navigational map of the test directory, see
     separately unit-tested (pure-helper convention) — the end-to-end runs exercise their fail-closed path
     and, with the planted stub, the systemMessage delivery.
 
-    dev-env#1221 pins that the hook deletes nothing. A real git fixture repo holds one untracked pre-today
+    dev-env#1221 pins that the hook deletes no journal file. A real git fixture repo holds one untracked pre-today
     artifact, first a `*.stub.md` and then a `*_draft.md`, and asserts `git status` reports it as `??` so
     the case cannot pass vacuously. After the end-to-end run the file must still exist, the advisory must
     name its path after `Stale draft artifact:`, and `Removed orphaned draft` must not appear. Both cases

@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-08
 **Status:** Accepted
-**Amended:** 2026-07-09, 2026-08-15, 2026-08-16, 2026-10-30 (four amendments — see Amendment sections below)
+**Amended:** 2026-07-09, 2026-08-15, 2026-08-16, 2026-10-30, 2026-11-05 (five amendments — see Amendment sections below)
 **Tags:** hooks, stop, journal, archive, session-archiving, exit-code, stderr, claude-facing, adr-021, adr-088, false-positive, manifest, open-prs, session-scoping, sentinel, adr-064, cross-session, in-flight-work, todowrite, background-agent, latency, network, remote-tracking-refs
 
 ---
@@ -562,7 +562,7 @@ implementation.
 
 ---
 
-## Amendment 5 (2026-11-05) — the hook no longer deletes anything (dev-env#1221)
+## Amendment 5 (2026-11-05) — the hook no longer deletes journal files (dev-env#1221)
 
 The "orphaned-draft-removed FYI" named in *The other three message types stay NON-blocking* no
 longer exists, because the deletion behind it is gone.
