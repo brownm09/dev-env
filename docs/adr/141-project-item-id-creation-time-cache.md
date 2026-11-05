@@ -222,10 +222,10 @@ counter-precedent on eliminating vs. reducing GraphQL calls).
 This ADR says Projects v2 has no REST API, and gives that as the reason a cache, not a protocol
 switch, was the available lever. That premise is wrong today. GitHub documents REST endpoints for
 [Project items](https://docs.github.com/en/rest/projects/items) (add, list, read, update) and
-[Project fields](https://docs.github.com/en/rest/projects/fields). On 2026-11-05, while
-`gh project item-edit` was failing on an exhausted GraphQL bucket, those calls added an item and
-set fields, confirmed by reading the item back and by the `X-RateLimit-Resource: core` response
-header. Whether the API was missing when dev-env#769 was filed, or that session just didn't find
+[Project fields](https://docs.github.com/en/rest/projects/fields). On 2026-11-05 a session whose
+`gh project item-edit` had failed with a GraphQL rate-limit error set Status over REST instead. A
+later session then added items and set fields the same way, confirmed by reading the items back
+and by the `X-RateLimit-Resource: core` response header. Whether the API was missing when dev-env#769 was filed, or that session just didn't find
 it, wasn't established.
 
 **The decision stands.** The cache still saves a full-board fetch for the `gh project` commands,
@@ -234,5 +234,5 @@ alternative: "why not eliminate GraphQL entirely" can no longer be answered with
 unavailable." It is available and hasn't been evaluated. The cached values are node IDs, which the
 REST endpoints don't accept, so moving the hooks to REST would also change what the cache stores.
 
-For now, REST is the documented manual fallback when GraphQL is exhausted, in the root `CLAUDE.md`
+For now, REST is the documented manual fallback when GraphQL rejects a call, in the root `CLAUDE.md`
 GitHub Project section.

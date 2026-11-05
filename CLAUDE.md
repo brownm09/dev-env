@@ -356,11 +356,13 @@ GPI_URL="$URL" GPI_ITEM_ID="$ITEM_ID" node -e "
 "
 ```
 
-**When GraphQL is exhausted, use REST.** Every `gh project` command in this section spends the
+**When GraphQL rejects a call, use REST.** Every `gh project` command in this section spends the
 GraphQL bucket, and so does the fallback in `get-project-item.sh`. GitHub also has a REST API for
 Projects v2, which spends the separate `core` bucket (the response header says
 `X-RateLimit-Resource: core`). So a GraphQL rate-limit error doesn't block the board: adding an
-item, looking up an item ID, and setting a field all have a REST path. See GitHub's
+item, looking up an item ID, and setting a field all have a REST path. This applies even when
+`gh api rate_limit` shows GraphQL budget left: on 2026-11-05 a call was rejected with 3717/5000
+remaining ([dev-env#1238](https://github.com/brownm09/dev-env/issues/1238)). See GitHub's
 [Project items](https://docs.github.com/en/rest/projects/items) and
 [Project fields](https://docs.github.com/en/rest/projects/fields) REST documentation.
 
