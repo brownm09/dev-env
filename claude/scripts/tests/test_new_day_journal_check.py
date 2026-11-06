@@ -347,7 +347,7 @@ def test_stale_canonical_recovery_decision_suffixed_branch_matches_today() -> st
 # silently reinstate the exact dev-env#866 blind spot with a green suite.
 
 
-def _run_main(cwd, session_id, scratch, rollover="ROLLOVER-MSG"):
+def _run_main(cwd, session_id, scratch, rollover="ROLLOVER-MSG", resurrected=lambda: []):
     """Drive main() with stubbed checks; return the emitted systemMessage ('' if silent)."""
     orig = {
         name: getattr(mod, name)
@@ -359,7 +359,7 @@ def _run_main(cwd, session_id, scratch, rollover="ROLLOVER-MSG"):
     mod.day_rollover_message = lambda: rollover
     mod.stale_draft_artifacts = lambda: ["/x/sessions/dev-env/2026-07-01_010101.stub.md"]
     mod.unmerged_draft_branches = lambda: ["2026-07-01"]
-    mod.resurrected_draft_branches = lambda: []
+    mod.resurrected_draft_branches = resurrected
     mod.cleanup_stale_flags = lambda: None
     mod.SCRATCH = scratch
     payload = json.dumps({"session_id": session_id, "cwd": cwd})
@@ -515,6 +515,181 @@ def _stale_recovery_against(root: Path):
         mod.JOURNAL_REPO, mod.TODAY = orig_repo, orig_today
 
 
+# --- Check 3: late commits on a composed day's branch (dev-env#1262) -----------------------
+# A real bare origin and clone, with only the merged-PR lookup faked. The incident: the old
+# check flagged every kept branch of a composed day, late commits or not.
+LATE_MERGED_AT = "2098-01-02T12:00:00Z"
+LATE_BEFORE = "2098-01-02T11:00:00+00:00"
+LATE_AFTER = "2098-01-02T13:00:00+00:00"
+
+
+def _late_fixture(tmp: str) -> Path:
+    """A clone whose origin has `main` with composed journals for 2098-01-01..04."""
+    origin, clone = Path(tmp) / "origin.git", Path(tmp) / "clone"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True, capture_output=True)
+    _run_git(clone, "config", "user.email", "test@example.com")
+    _run_git(clone, "config", "user.name", "Test")
+    _run_git(clone, "config", "core.hooksPath", str(Path(tmp) / "no-hooks"))
+    _run_git(clone, "checkout", "-q", "-b", "main")
+    (clone / "sessions" / "p").mkdir(parents=True)
+    for day in ("01", "02", "03", "04"):
+        (clone / "sessions" / "p" / f"2098-01-{day}-journal.md").write_text("composed\n", encoding="utf-8")
+    _late_commit(clone, "compose", LATE_BEFORE)
+    _run_git(clone, "push", "-q", "origin", "main")
+    return clone
+
+
+def _late_commit(clone: Path, message: str, when: str) -> None:
+    env = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
+    _run_git(clone, "add", "-A")
+    _run_git(clone, "commit", "-q", "--allow-empty", "-m", message, env=env)
+
+
+def _late_branch(clone: Path, branch: str, when: str | None) -> str:
+    """Push `branch` from main, with one commit at `when` unless it is None. Returns its tip."""
+    _run_git(clone, "checkout", "-q", "-b", branch, "main")
+    if when:
+        _late_commit(clone, f"stub on {branch}", when)
+    _run_git(clone, "push", "-q", "origin", branch)
+    tip = _run_git(clone, "rev-parse", "HEAD").stdout.strip()
+    _run_git(clone, "checkout", "-q", "main")
+    return tip
+
+
+def _resurrected_against(clone: Path, merged: dict[str, str]) -> list[str]:
+    """Run the real check against the fixture, with last_merged_at answering from `merged`."""
+    _run_git(clone, "fetch", "-q", "origin")
+    orig = (mod.JOURNAL_REPO, mod.TODAY, mod.last_merged_at)
+    mod.JOURNAL_REPO, mod.TODAY = clone, "2098-01-04"
+    mod.last_merged_at = lambda dates: {d: at for d, at in merged.items() if d in dates}
+    mod.composed_dates_on_main.cache_clear()
+    try:
+        return mod.resurrected_draft_branches()
+    finally:
+        mod.JOURNAL_REPO, mod.TODAY, mod.last_merged_at = orig
+        mod.composed_dates_on_main.cache_clear()
+
+
+def test_late_commits_kept_branch_without_them_is_not_flagged() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        clone = _late_fixture(tmp)
+        _late_branch(clone, "draft/2098-01-01", LATE_BEFORE)
+        _late_branch(clone, "draft/2098-01-02", LATE_AFTER)
+        found = _resurrected_against(clone, {"2098-01-01": LATE_MERGED_AT, "2098-01-02": LATE_MERGED_AT})
+        assert found == ["draft/2098-01-02"], found
+    return "a branch with commits after the merge is flagged; one with none is not"
+
+
+def test_late_commits_cutoff_is_the_days_last_merge() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        clone = _late_fixture(tmp)
+        _late_branch(clone, "draft/2098-01-02", LATE_AFTER)
+        found = _resurrected_against(clone, {"2098-01-02": "2098-01-02T14:00:00Z"})
+        assert found == [], found
+    return "commits before a later merge (such as one from compose/<D>) are not late"
+
+
+def test_last_merged_at_reads_both_heads_and_takes_the_latest() -> str:
+    orig_run = mod.subprocess.run
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["query"] = cmd[-1]
+        data = {"h0": {"nodes": [{"mergedAt": "2098-01-02T10:00:00Z"}]},
+                "h1": {"nodes": [{"mergedAt": "2098-01-02T12:00:00Z"}]},
+                "h2": {"nodes": []}, "h3": {"nodes": []}}
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"data": {"repository": data}}), "")
+
+    mod.subprocess.run = fake_run
+    try:
+        merged = mod.last_merged_at({"2098-01-02", "2098-01-03"})
+    finally:
+        mod.subprocess.run = orig_run
+    assert merged == {"2098-01-02": "2098-01-02T12:00:00Z"}, merged
+    for head in ("draft/2098-01-02", "compose/2098-01-02"):
+        assert f'"{head}"' in captured["query"], captured["query"]
+    return "draft/<D> and compose/<D> are both read; the later merge wins; no PR means no entry"
+
+
+def test_late_commits_main_history_on_a_later_cut_is_not_late() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        clone = _late_fixture(tmp)
+        _late_commit(clone, "a later commit on main", LATE_AFTER)
+        _run_git(clone, "push", "-q", "origin", "main")
+        _late_branch(clone, "draft/2098-01-02", None)
+        found = _resurrected_against(clone, {"2098-01-02": LATE_MERGED_AT})
+        assert found == [], found
+    return "a branch cut from main after the compose has no late commits of its own"
+
+
+def test_late_commits_suffixed_branch_is_named_in_full() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        clone = _late_fixture(tmp)
+        _late_branch(clone, "draft/2098-01-02-late", LATE_AFTER)
+        found = _resurrected_against(clone, {"2098-01-02": LATE_MERGED_AT})
+        assert found == ["draft/2098-01-02-late"], found
+    return "a suffixed branch is checked against its date and reported by its real name"
+
+
+def test_late_commits_already_reconciled_are_not_flagged() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        clone = _late_fixture(tmp)
+        tip = _late_branch(clone, "draft/2098-01-02", LATE_AFTER)
+        _run_git(clone, "push", "-q", "origin", f"{tip}:refs/tags/reconciled/draft/2098-01-02")
+        assert _resurrected_against(clone, {"2098-01-02": LATE_MERGED_AT}) == []
+        _run_git(clone, "checkout", "-q", "draft/2098-01-02")
+        _late_commit(clone, "a newer stub", "2098-01-02T15:00:00+00:00")
+        _run_git(clone, "push", "-q", "origin", "draft/2098-01-02")
+        _run_git(clone, "checkout", "-q", "main")
+        found = _resurrected_against(clone, {"2098-01-02": LATE_MERGED_AT})
+        assert found == ["draft/2098-01-02"], found
+    return "a reconciled tip is silent, and a commit pushed after it is flagged again"
+
+
+def test_late_commits_uncomposed_today_and_no_pr_are_not_flagged() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        clone = _late_fixture(tmp)
+        _late_branch(clone, "draft/2098-01-03", LATE_AFTER)  # composed, no PR at either head
+        _late_branch(clone, "draft/2098-01-04", LATE_AFTER)  # today
+        _late_branch(clone, "draft/2098-01-09", LATE_AFTER)  # no composed journal
+        found = _resurrected_against(clone, {"2098-01-04": LATE_MERGED_AT, "2098-01-09": LATE_MERGED_AT})
+        assert found == [], found
+    return "no known cutoff, today's branch, and an uncomposed day are each left alone"
+
+
+def test_late_commits_failed_lookup_reports_nothing() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        clone = _late_fixture(tmp)
+        _late_branch(clone, "draft/2098-01-02", LATE_AFTER)
+        _run_git(clone, "fetch", "-q", "origin")
+        orig = (mod.JOURNAL_REPO, mod.last_merged_at)
+        mod.JOURNAL_REPO = clone
+
+        def boom(_dates):
+            raise subprocess.CalledProcessError(1, "gh")
+
+        mod.last_merged_at = boom
+        mod.composed_dates_on_main.cache_clear()
+        try:
+            assert mod.resurrected_draft_branches() == []
+        finally:
+            mod.JOURNAL_REPO, mod.last_merged_at = orig
+            mod.composed_dates_on_main.cache_clear()
+    return "a failed PR lookup stays silent instead of raising out of the advisory hook"
+
+
+def test_late_commits_message_says_who_acts_and_gives_each_command() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        msg = _run_main(MAIN_CWD, "sid-late", Path(tmp),
+                        resurrected=lambda: ["draft/2098-01-02", "draft/2098-01-01-late"])
+    assert "The first session to see this" in msg, msg
+    for branch in ("draft/2098-01-02", "draft/2098-01-01-late"):
+        assert f"reconcile-late-stubs.py {branch}" in msg, msg
+    assert "resurrected" not in msg.lower(), msg
+    return "the warning names who acts, and gives a runnable command for each flagged branch"
+
+
 def test_stale_recovery_noop_on_todays_branch() -> str:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "engineering-journal"
@@ -628,6 +803,15 @@ def main() -> int:
         ("stale-recovery: dirty short-circuits before idle is consulted", test_stale_canonical_recovery_decision_dirty_short_circuits_before_idle),
         ("stale-recovery: fires when clean and idle >= threshold", test_stale_canonical_recovery_decision_fires_when_clean_and_idle),
         ("stale-recovery: suffixed branch dated today is not stale", test_stale_canonical_recovery_decision_suffixed_branch_matches_today),
+        ("late commits: a kept branch without them is not flagged, one with them is", test_late_commits_kept_branch_without_them_is_not_flagged),
+        ("late commits: the cutoff is the day's last merge", test_late_commits_cutoff_is_the_days_last_merge),
+        ("late commits: both heads are read and the latest merge wins", test_last_merged_at_reads_both_heads_and_takes_the_latest),
+        ("late commits: main's history on a later-cut branch is not late", test_late_commits_main_history_on_a_later_cut_is_not_late),
+        ("late commits: a suffixed branch is named in full", test_late_commits_suffixed_branch_is_named_in_full),
+        ("late commits: already reconciled commits are not flagged", test_late_commits_already_reconciled_are_not_flagged),
+        ("late commits: no PR, today and uncomposed days are left alone", test_late_commits_uncomposed_today_and_no_pr_are_not_flagged),
+        ("late commits: a failed lookup reports nothing", test_late_commits_failed_lookup_reports_nothing),
+        ("late commits: the message says who acts and gives each command", test_late_commits_message_says_who_acts_and_gives_each_command),
         ("stale-recovery (real repo): today's branch never touched", test_stale_recovery_noop_on_todays_branch),
         ("stale-recovery (real repo): dirty tree -> checkout does NOT happen", test_stale_recovery_noop_when_dirty),
         ("stale-recovery (real repo): recent commit (<15min) -> no-op", test_stale_recovery_noop_when_recently_committed),

@@ -326,12 +326,41 @@ def test_stub_renamed_in_a_late_commit_still_moves(j):
 
 
 @with_journal
-def test_legacy_per_day_manifest_aborts_before_anything_moves(j):
+def test_legacy_per_day_manifest_is_split_into_a_shard_for_the_moved_stub(j):
+    j.branch("draft/2026-11-03")
+    entry = {"stub": "2026-11-03_120000.stub.md", "topic": "opened", "prs_opened": [7], "prs_closed": [],
+             "tokens": {"input": 9, "output": 9, "cost": 2.0}}
+    closed = {**entry, "topic": "merged", "prs_opened": [], "prs_closed": [7],
+              "tokens": {"input": 0, "output": 0, "cost": 0}}
+    other = {**entry, "stub": "2026-11-03_130000.stub.md", "topic": "another session"}
+    legacy = "".join(json.dumps(e) + "\n" for e in (entry, closed, other))
+    j.commit({
+        "sessions/p/2026-11-03_120000.stub.md": STUB,
+        "sessions/p/2026-11-03.manifest.jsonl": legacy,
+    }, AFTER_MERGE)
+    j.push("draft/2026-11-03")
+    j.compose_day("2026-11-03")
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    assert j.reconcile() == 0
+    tree = j.tree("draft/2026-11-04")
+    assert "sessions/p/2026-11-03.manifest.jsonl" not in tree
+    assert "sessions/p/2026-11-04.manifest.jsonl" not in tree
+    shard = json.loads(j.show("draft/2026-11-04", "sessions/p/2026-11-04_120000.manifest.jsonl"))
+    assert shard == {
+        "stub": "2026-11-04_120000.stub.md", "topic": "merged", "prs_opened": [7], "prs_closed": [7],
+        "tokens": {"input": 9, "output": 9, "cost": 2.0},
+    }
+
+
+@with_journal
+def test_unreadable_legacy_manifest_aborts_before_anything_moves(j):
     j.source_with_late_stub()
     j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     j.git("checkout", "draft/2026-11-03")
-    j.commit({"sessions/p/2026-11-03.manifest.jsonl": manifest("2026-11-03_120000.stub.md")}, AFTER_MERGE)
+    j.git("rm", "sessions/p/2026-11-03_120000.manifest.jsonl")
+    j.commit({"sessions/p/2026-11-03.manifest.jsonl": "not json\n"}, AFTER_MERGE)
     j.push("draft/2026-11-03")
     before = j.tree("draft/2026-11-04")
     try:
@@ -339,9 +368,83 @@ def test_legacy_per_day_manifest_aborts_before_anything_moves(j):
     except RuntimeError as e:
         assert "2026-11-03.manifest.jsonl" in str(e)
     else:
-        raise AssertionError("a legacy manifest must not be moved under a name compose ignores")
+        raise AssertionError("an unreadable manifest must stop the move")
     assert j.tree("draft/2026-11-04") == before
     assert j.remote_has("draft/2026-11-03")
+
+
+@with_journal
+def test_second_run_after_target_composed_does_not_move_the_stub_again(j):
+    """dev-env#1262: without the tag, the second run picks a later branch and duplicates it."""
+    j.source_with_late_stub()
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    assert j.reconcile() == 0
+    source_tip = j.git("rev-parse", "draft/2026-11-03").strip()
+    assert j.git("ls-remote", "origin", "refs/tags/reconciled/draft/2026-11-03").startswith(source_tip)
+    # The target composes, so a repeat run would now choose today's branch. The source
+    # branch still exists, as it does after a failed delete or a push from another clone.
+    j.compose_day("2026-11-04")
+    j.git("push", "origin", f"{source_tip}:refs/heads/draft/2026-11-03")
+    assert j.reconcile() == 0
+    assert not j.remote_has(f"draft/{TODAY}"), "the repeat run moved the stub to another branch"
+    assert not j.remote_has("draft/2026-11-03")
+
+
+@with_journal
+def test_stub_pushed_after_a_reconcile_still_moves_and_the_old_one_does_not(j):
+    j.source_with_late_stub()
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    assert j.reconcile() == 0
+    j.compose_day("2026-11-04")
+    j.git("checkout", "draft/2026-11-03")
+    j.commit({"sessions/p/2026-11-03_180000.stub.md": "a later stub\n"}, AFTER_MERGE)
+    j.git("push", "origin", "draft/2026-11-03")
+    assert j.reconcile() == 0
+    assert j.compose_stubs(f"draft/{TODAY}") == [f"sessions/p/{TODAY}_180000.stub.md"]
+
+
+@with_journal
+def test_stubs_moved_by_hand_and_marked_are_not_moved_by_a_later_run(j):
+    j.source_with_late_stub()
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    source_tip = j.git("rev-parse", "draft/2026-11-03").strip()
+    j.git("push", "origin", f"{source_tip}:refs/tags/reconciled/draft/2026-11-03")
+    before = j.tree("draft/2026-11-04")
+    assert j.reconcile() == 0
+    assert j.tree("draft/2026-11-04") == before
+    assert not j.remote_has("draft/2026-11-03")
+
+
+@with_journal
+def test_suffixed_branch_uses_its_days_merged_pr_and_moves_its_stubs(j):
+    j.branch("draft/2026-11-03-late")
+    j.commit({"sessions/p/2026-11-03_120000.stub.md": STUB}, AFTER_MERGE)
+    j.push("draft/2026-11-03-late")
+    j.compose_day("2026-11-03")
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    assert j.reconcile("draft/2026-11-03-late") == 0
+    assert "sessions/p/2026-11-04_120000.stub.md" in j.tree("draft/2026-11-04")
+    assert not j.remote_has("draft/2026-11-03-late")
+
+
+@with_journal
+def test_commits_from_main_on_a_branch_cut_later_are_not_late(j):
+    """A branch cut from main after the compose holds main's own later commits."""
+    j.compose_day("2026-11-03")
+    j.git("checkout", "main")
+    j.commit({"sessions/p/2026-11-02_120000.stub.md": "already on main\n"}, AFTER_MERGE)
+    j.git("push", "origin", "main")
+    j.branch("draft/2026-11-03")
+    j.push("draft/2026-11-03")
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    assert j.reconcile() == 0
+    assert "sessions/p/2026-11-04_120000.stub.md" not in j.tree("draft/2026-11-04")
+    assert not j.remote_has("draft/2026-11-03")
 
 
 @with_journal
@@ -448,15 +551,15 @@ def test_abort_on_the_way_to_todays_branch_leaves_the_remote_alone(j):
     """With no later draft the target is today's branch, which must not be created
     for a run that is about to stop."""
     j.branch("draft/2026-11-03")
-    j.commit({"sessions/p/2026-11-03.manifest.jsonl": manifest("2026-11-03_120000.stub.md")}, AFTER_MERGE)
+    j.commit({"sessions/p/notes.stub.md": STUB}, AFTER_MERGE)
     j.push("draft/2026-11-03")
     j.prs["draft/2026-11-03"] = [merged()]
     try:
         j.reconcile()
     except RuntimeError as e:
-        assert "2026-11-03.manifest.jsonl" in str(e)
+        assert "notes.stub.md" in str(e)
     else:
-        raise AssertionError("a legacy manifest must stop the run")
+        raise AssertionError("a stub with no YYYY-MM-DD_HHMMSS name must stop the run")
     assert not j.remote_has(f"draft/{TODAY}")
 
 
@@ -482,7 +585,7 @@ def test_manifest_with_no_stub_field_stops_and_names_the_file(j):
 
 
 @with_journal
-def test_failed_delete_says_not_to_rerun(j):
+def test_failed_delete_keeps_the_mark_so_a_rerun_moves_nothing(j):
     j.source_with_late_stub()
     j.target()
     j.prs["draft/2026-11-03"] = [merged()]
@@ -490,8 +593,13 @@ def test_failed_delete_says_not_to_rerun(j):
     stderr = io.StringIO()
     with mock.patch.object(sys, "stderr", stderr):
         assert j.reconcile() == 1
-    assert "Do not re-run" in stderr.getvalue(), stderr.getvalue()
+    assert "git push origin --delete draft/2026-11-03" in stderr.getvalue(), stderr.getvalue()
     assert "sessions/p/2026-11-04_120000.stub.md" in j.tree("draft/2026-11-04")
+    j.delete_fails = False
+    j.compose_day("2026-11-04")
+    assert j.reconcile() == 0
+    assert not j.remote_has(f"draft/{TODAY}"), "the rerun moved the stub again"
+    assert not j.remote_has("draft/2026-11-03")
 
 
 def main() -> int:

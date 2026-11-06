@@ -7,7 +7,8 @@ Five checks:
    branch not yet deleted, or composition never ran).
 2. Remote draft/* branches with no composed journal file on main — never
    composed, or composed but the PR was never opened/merged.
-3. Remote draft/* branches already merged but since resurrected by a later push.
+3. Remote draft/* branches of a composed day with commits later than that day's last
+   merged PR (dev-env#1262). A kept branch with no late commits is not reported.
 4. Day rollover (ADR-119, dev-env#866): the canonical checkout sitting on a
    draft/<D> branch whose date is not today, plus any already-date-mismatched
    stubs on it (filename date != branch date). Every discovery path keys on
@@ -72,6 +73,8 @@ RECHECK_MINUTES = 30
 # bound left the canonical stranded ~32 hours. 15 minutes gives real in-flight work
 # comfortable headroom while still bounding worst-case staleness.
 STALE_CANONICAL_IDLE_MINUTES = 15
+# reconcile-late-stubs.py points this tag at a branch's tip once its late stubs are moved.
+RECONCILED_TAG_PREFIX = "refs/tags/reconciled/"
 
 
 def cleanup_stale_flags() -> None:
@@ -261,25 +264,107 @@ def unmerged_draft_branches() -> list[str]:
     )
 
 
-def resurrected_draft_branches() -> list[str]:
-    """Return remote draft/* branch names that were already merged but still exist.
-
-    A branch is resurrected when its date has a composed journal file on
-    origin/main (merged PR) but the remote branch was recreated by a later push.
-    These need reconciliation via reconcile-late-stubs.py, not recomposition.
-
-    Note: uses the local origin/main cache — results are only accurate after a
-    recent git fetch. A stale cache may produce false negatives (silent), which
-    is preferable to false-positive noise.
-    """
-    remote_dates = remote_draft_dates()
-    if not remote_dates:
-        return []
-    merged = composed_dates_on_main()
-    return sorted(
-        [d for d in remote_dates if d != TODAY and d in merged],
-        reverse=True,
+def remote_draft_refs() -> tuple[dict[str, str], dict[str, str]]:
+    """Return ({draft branch: tip sha}, {draft branch: sha of its reconciled tag})."""
+    result = subprocess.run(
+        ["git", "ls-remote", "origin", "refs/heads/draft/*", f"{RECONCILED_TAG_PREFIX}draft/*"],
+        cwd=JOURNAL_REPO,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
+    tips: dict[str, str] = {}
+    reconciled: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        if ref.startswith("refs/heads/"):
+            tips[ref.removeprefix("refs/heads/")] = sha
+        elif ref.startswith(RECONCILED_TAG_PREFIX):
+            reconciled[ref.removeprefix(RECONCILED_TAG_PREFIX)] = sha
+    return tips, reconciled
+
+
+def last_merged_at(dates: set[str]) -> dict[str, str]:
+    """Return {date: mergedAt of its last merged PR}, from draft/<date> or compose/<date>.
+
+    A day merges from compose/<date> when its draft conflicted with main. One GraphQL
+    request covers every date, so this stays a single point however many branches exist.
+    Each date has passed branch_date(), so it is digits and hyphens only. Raises on a
+    failed lookup: a date missing from the result means it has no such PR.
+    """
+    heads = [f"{prefix}/{d}" for d in sorted(dates) for prefix in ("draft", "compose")]
+    fields = " ".join(
+        f'h{i}: pullRequests(headRefName: "{head}", states: MERGED, first: 50) {{ nodes {{ mergedAt }} }}'
+        for i, head in enumerate(heads)
+    )
+    query = f'{{ repository(owner: "brownm09", name: "engineering-journal") {{ {fields} }} }}'
+    result = subprocess.run(
+        ["gh", "api", "graphql", "-f", f"query={query}"],
+        cwd=JOURNAL_REPO,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=True,
+    )
+    repo = json.loads(result.stdout)["data"]["repository"]
+    merged: dict[str, str] = {}
+    for i, head in enumerate(heads):
+        date_str = head.split("/", 1)[1]
+        for node in repo[f"h{i}"]["nodes"]:
+            merged[date_str] = max(merged.get(date_str, ""), node["mergedAt"])
+    return merged
+
+
+def has_late_commits(tip: str, merged_at: str, reconciled: str | None) -> bool:
+    """Whether `tip` has commits after `merged_at` that are not on main or already moved.
+
+    Excluding origin/main matters for a branch cut from main after the compose: main's own
+    later commits are not late stubs. A tip this checkout has not fetched reads as False.
+    """
+    exclude = ["origin/main"] + ([reconciled] if reconciled else [])
+    result = subprocess.run(
+        ["git", "log", "-1", "--format=%H", f"--after={merged_at}", tip, "--not", *exclude],
+        cwd=JOURNAL_REPO,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def resurrected_draft_branches() -> list[str]:
+    """Return draft branches of a composed day with commits after its last merged PR.
+
+    A kept branch with no late commits needs nothing, and neither does a branch whose
+    late stubs were already moved. A day whose PR came from any other head has no known
+    cutoff, so it is not reported. A failed lookup reports nothing this time; this
+    advisory check runs again on a later prompt.
+    """
+    try:
+        tips, reconciled = remote_draft_refs()
+        composed = composed_dates_on_main()
+        candidates = {
+            branch: date_str
+            for branch, tip in tips.items()
+            if (date_str := branch_date(branch))
+            and date_str != TODAY
+            and date_str in composed
+            and reconciled.get(branch) != tip
+        }
+        if not candidates:
+            return []
+        merged = last_merged_at(set(candidates.values()))
+        return sorted(
+            (
+                branch
+                for branch, date_str in candidates.items()
+                if date_str in merged
+                and has_late_commits(tips[branch], merged[date_str], reconciled.get(branch))
+            ),
+            reverse=True,
+        )
+    except Exception:
+        return []
 
 
 def branch_date(branch: str) -> str | None:
@@ -827,11 +912,14 @@ def main() -> None:
 
     resurrected = resurrected_draft_branches()
     if resurrected:
-        dates_str = ", ".join(resurrected)
+        commands = "\n".join(
+            f"py -3 ~/.claude/scripts/reconcile-late-stubs.py {branch}" for branch in resurrected
+        )
         messages.append(
-            f"[journal-hook] Resurrected draft branch(es) detected: {dates_str}\n"
-            f"draft/{resurrected[0]} was already merged but new commits were pushed to it after the merge.\n"
-            f"Run: py -3 ~/.claude/scripts/reconcile-late-stubs.py draft/{resurrected[0]}"
+            f"[journal-hook] Late commits on composed draft branch(es): {', '.join(resurrected)}\n"
+            f"Each has commits later than its day's last merged PR, so they may be in no journal.\n"
+            f"The first session to see this runs these now, whatever its task; don't leave them "
+            f"for a later session or the user:\n{commands}"
         )
 
     emit(messages)

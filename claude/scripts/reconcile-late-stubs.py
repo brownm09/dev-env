@@ -7,9 +7,15 @@ unmerged draft branch (or today's branch if none exists), then deletes the
 stale source branch. Each moved stub and manifest is renamed to the target
 branch's date, because /journal-compose finds them by <DATE>_*.stub.md.
 
+Before deleting the branch it points the tag reconciled/<branch> at the branch's tip.
+Commits behind that tag are never moved again, so a repeat run moves nothing, and the tag
+keeps the deleted commits reachable. After moving stubs by hand, mark them the same way:
+  git push origin <tip sha>:refs/tags/reconciled/<branch>
+
 Usage:
   py -3 reconcile-late-stubs.py draft/2026-05-06
   py -3 reconcile-late-stubs.py 2026-05-06   # draft/ prefix optional
+  py -3 reconcile-late-stubs.py draft/2026-05-09-late   # a suffixed branch counts for its date
 """
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
@@ -26,7 +32,10 @@ JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SCRATCH = Path.home() / ".claude" / "scratch"
 TODAY = date.today().strftime("%Y-%m-%d")
 LATE_FILE_NAME = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{6})\.(stub\.md|manifest\.jsonl)")
+LEGACY_MANIFEST_NAME = re.compile(r"\d{4}-\d{2}-\d{2}\.manifest\.jsonl")
 CARRIED_FILE = re.compile(r"/(reports/[^/]+\.md|tiles/[^/]+\.json)$")
+SOURCE_BRANCH = re.compile(r"draft/(\d{4}-\d{2}-\d{2})(-.+)?")
+RECONCILED_TAG_PREFIX = "refs/tags/reconciled/"
 
 
 def run(cmd, cwd=None, check=True, capture=True):
@@ -54,9 +63,21 @@ def get_merged_pr_info(source_date: str) -> Optional[dict]:
     return max(prs, key=lambda pr: pr["mergedAt"], default=None)
 
 
-def get_commits_after(branch: str, after_iso: str) -> list[str]:
+def fetch_reconciled_tag(branch: str) -> Optional[str]:
+    """The tag marking what an earlier run moved from this branch, fetched, or None."""
+    tag = f"{RECONCILED_TAG_PREFIX}{branch}"
+    if not run(["git", "ls-remote", "origin", tag]).stdout.strip():
+        return None
+    run(["git", "fetch", "origin", "--quiet", f"+{tag}:{tag}"])
+    return tag
+
+
+def get_commits_after(branch: str, after_iso: str, reconciled_tag: Optional[str]) -> list[str]:
+    """Late commits: after the merge, not on main, and not moved by an earlier run. A
+    branch cut from main after the compose holds main's later commits, which are not late."""
+    exclude = ["origin/main"] + ([reconciled_tag] if reconciled_tag else [])
     result = run(
-        ["git", "log", f"origin/{branch}", f"--after={after_iso}", "--format=%H"]
+        ["git", "log", f"--after={after_iso}", "--format=%H", f"origin/{branch}", "--not", *exclude]
     )
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
@@ -78,8 +99,8 @@ def get_late_files_in_commits(commits: list[str]) -> list[str]:
             if status.startswith("D"):
                 continue
             # Per-session manifest shards (YYYY-MM-DD_HHMMSS.manifest.jsonl, ADR-056)
-            # match the same suffix as the legacy per-day manifest. main() refuses a
-            # legacy one, since it has no single stub to rename with.
+            # match the same suffix as the legacy per-day manifest, whose lines
+            # read_late_files splits out for each moved stub.
             # Open-PR records (legacy open-prs.jsonl and open-prs/<N>.json shards) are
             # excluded — the target branch's copy is authoritative. Reports and tile
             # shards exist nowhere else once the source branch is deleted, so they move too.
@@ -144,6 +165,21 @@ def show_on_branch(branch: str, rel_path: str) -> Optional[str]:
     return result.stdout if result.returncode == 0 else None
 
 
+def shard_from_legacy_manifest(text: str, stem: str) -> Optional[str]:
+    """One session's shard, from a per-day manifest. A session can have several lines, such
+    as one when its PR opened and one when it merged; the last topic, the costliest tokens
+    and every PR number survive. None when the manifest has no line for this stub."""
+    entries = [json.loads(line) for line in text.splitlines() if line.strip()]
+    lines = [e for e in entries if e["stub"].rpartition("/")[2] == f"{stem}.stub.md"]
+    if not lines:
+        return None
+    shard = dict(lines[-1])
+    shard["tokens"] = max((e["tokens"] for e in lines), key=lambda tokens: tokens["cost"])
+    for key in ("prs_opened", "prs_closed"):
+        shard[key] = sorted({number for e in lines for number in e[key]})
+    return json.dumps(shard, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
 def read_late_files(source_branch: str, late_files: list[str]
                     ) -> tuple[dict[tuple[str, str], dict[str, str]], dict[str, str]]:
     """Read and check everything before the remote is touched. Returns the sessions to
@@ -163,6 +199,8 @@ def read_late_files(source_branch: str, late_files: list[str]
                 carried[rel_path] = content
             continue
         parent, _, name = rel_path.rpartition("/")
+        if LEGACY_MANIFEST_NAME.fullmatch(name):
+            continue
         match = LATE_FILE_NAME.fullmatch(name)
         if not match:
             raise RuntimeError(
@@ -182,12 +220,17 @@ def read_late_files(source_branch: str, late_files: list[str]
         contents = {"stub.md": stub}
         manifest_path = f"{parent}/{stem}.manifest.jsonl"
         manifest = show_on_branch(source_branch, manifest_path)
-        if manifest is not None:
-            try:
+        try:
+            if manifest is None:
+                manifest_path = f"{parent}/{stem[:10]}.manifest.jsonl"
+                legacy = show_on_branch(source_branch, manifest_path)
+                if legacy is not None:
+                    manifest = shard_from_legacy_manifest(legacy, stem)
+            if manifest is not None:
                 retarget_manifest(manifest, stem)
-            except (ValueError, KeyError, TypeError, AttributeError) as e:
-                raise RuntimeError(f"Cannot read {manifest_path}: {e!r}. {keep}") from e
-            contents["manifest.jsonl"] = manifest
+                contents["manifest.jsonl"] = manifest
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            raise RuntimeError(f"Cannot read {manifest_path}: {e!r}. {keep}") from e
         sessions[(parent, stem)] = contents
     return sessions, carried
 
@@ -219,18 +262,36 @@ def place_on_target(worktree: Path, parent: str, stem: str,
         hhmmss += 1
 
 
+def retire_source_branch(source_branch: str, source_tip: str) -> None:
+    """Mark the branch's tip as reconciled, then delete the branch. The tag goes first, so
+    a failed delete leaves a branch that a re-run or the new-day check will not act on."""
+    run(["git", "push", "--force", "origin", f"{source_tip}:{RECONCILED_TAG_PREFIX}{source_branch}"])
+    if run(["git", "push", "origin", "--delete", source_branch], check=False).returncode != 0:
+        print(f"Error: could not delete {source_branch}. Its late stubs are marked as moved, so "
+              f"a re-run moves nothing. Delete it by hand: git push origin --delete {source_branch}",
+              file=sys.stderr)
+        sys.exit(1)
+    print(f"Deleted {source_branch}; its tip stays at {RECONCILED_TAG_PREFIX}{source_branch}")
+
+
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: reconcile-late-stubs.py <draft/YYYY-MM-DD>", file=sys.stderr)
+        print("Usage: reconcile-late-stubs.py <draft/YYYY-MM-DD[-suffix]>", file=sys.stderr)
         sys.exit(1)
 
     arg = sys.argv[1].strip()
     source_branch = arg if arg.startswith("draft/") else f"draft/{arg}"
-    source_date = source_branch.removeprefix("draft/")
+    branch_name = SOURCE_BRANCH.fullmatch(source_branch)
+    if not branch_name:
+        print(f"Error: {source_branch} is not draft/YYYY-MM-DD[-suffix].", file=sys.stderr)
+        sys.exit(1)
+    source_date = branch_name[1]
 
     print(f"Reconciling late stubs from {source_branch}...")
 
-    run(["git", "fetch", "origin", source_branch, "--quiet"])
+    run(["git", "fetch", "origin", source_branch, "main", "--quiet"])
+    source_tip = run(["git", "rev-parse", f"origin/{source_branch}"]).stdout.strip()
+    reconciled_tag = fetch_reconciled_tag(source_branch)
 
     pr = get_merged_pr_info(source_date)
     if not pr:
@@ -241,11 +302,10 @@ def main() -> None:
     merged_at = pr["mergedAt"]
     print(f"Found merged PR #{pr['number']} ({pr['url']}) merged at {merged_at}")
 
-    commits = get_commits_after(source_branch, merged_at)
+    commits = get_commits_after(source_branch, merged_at, reconciled_tag)
     if not commits:
-        print("No commits found after merge. Deleting stale branch...")
-        run(["git", "push", "origin", "--delete", source_branch])
-        print(f"Deleted {source_branch}. Done.")
+        print("No late commits left to move. Deleting stale branch...")
+        retire_source_branch(source_branch, source_tip)
         return
 
     print(f"Found {len(commits)} commit(s) after merge:")
@@ -261,8 +321,7 @@ def main() -> None:
     sessions, carried = read_late_files(source_branch, late_files)
     if not sessions and not carried:
         print("No files to move in new commits. Deleting stale branch...")
-        run(["git", "push", "origin", "--delete", source_branch])
-        print(f"Deleted {source_branch}. Done.")
+        retire_source_branch(source_branch, source_tip)
         return
 
     run(["git", "fetch", "origin", "--quiet"])
@@ -317,14 +376,7 @@ def main() -> None:
         run(["git", "worktree", "remove", "--force", str(temp_dir)], check=False)
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-    # A re-run is only safe while the target is uncomposed: after that the script picks
-    # a later branch and would move the same session again.
-    if run(["git", "push", "origin", "--delete", source_branch], check=False).returncode != 0:
-        print(f"Error: moved the files to {target_branch} but could not delete {source_branch}. "
-              f"Delete it by hand: git push origin --delete {source_branch}. Do not re-run.",
-              file=sys.stderr)
-        sys.exit(1)
-    print(f"Deleted stale branch {source_branch}")
+    retire_source_branch(source_branch, source_tip)
     print("Reconciliation complete.")
 
 
