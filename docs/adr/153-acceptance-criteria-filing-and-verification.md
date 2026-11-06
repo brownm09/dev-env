@@ -302,9 +302,10 @@ still applies to the next false block.
 
 ### Round 4 (2026-11-06, dev-env#1267: does "It names the work" falsely block a delivered deferral?)
 
-**Result: no false blocks, on thin evidence.** The search found 2 known-good PRs of the shape the
-issue asks for, not 3, and in both the verdict didn't depend on the follow-up. The wording's core
-test stays.
+**Result: no false blocks, but the wording's false-block risk stays largely unmeasured.** The search
+found 2 known-good PRs of the shape the issue asks for, not 3, and in both the verdict didn't depend
+on the follow-up. The user chose on 2026-11-06 to amend the criterion to 2 and merge, knowing that
+and that switchyard PR 13 becomes a miss. The wording's core test stays.
 
 **Corpus.** A separate labeller confirmed delivery from the delivering diff or a recorded run. It
 searched about 66 review markers, scanned about 155 older lifting-logbook PRs, re-read the candidates
