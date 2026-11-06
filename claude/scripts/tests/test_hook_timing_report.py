@@ -116,6 +116,18 @@ def test_reads_what_hookutil_writes() -> str:
     return "the report reads the exact format _hookutil.record_duration writes"
 
 
+def test_sample_stamped_just_after_now_spans_zero() -> str:
+    import _hookutil
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger = Path(tmp)
+        _hookutil.record_duration("real", 42, 1100, heartbeat_dir=ledger)
+        earlier = time.time() - 1
+        with unittest.mock.patch.object(report.time, "time", return_value=earlier):
+            rc, out = _run(["--dir", str(ledger)])
+    assert rc == 0 and "| 1 | real | 1 | 42 | 42 | 1100 | 1100 | 1 | 0 |" in out, out
+    return "a sample stamped just after the report's clock reads as 0 hours, never -0"
+
+
 def main() -> int:
     tests = [
         ("percentile: nearest rank", test_percentile_nearest_rank),
@@ -124,6 +136,7 @@ def main() -> int:
         ("main: no data / missing dir", test_main_no_data_and_missing_dir),
         ("main: rejects --since-hours 0", test_main_rejects_nonpositive_window),
         ("round trip: reads _hookutil.record_duration output", test_reads_what_hookutil_writes),
+        ("a sample stamped just after now spans 0, not -0", test_sample_stamped_just_after_now_spans_zero),
     ]
     failed = 0
     for name, fn in tests:

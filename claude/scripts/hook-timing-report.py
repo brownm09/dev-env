@@ -92,7 +92,8 @@ def build_rows(ledger: Path, since: float, now: float) -> list[dict]:
         if not data["runs"]:
             continue
         rows.append({
-            "span_h": round((now - data["oldest"]) / 3600, 1),
+            # max: a sample stamped in the same clock tick can read as just after `now`.
+            "span_h": round(max(now - data["oldest"], 0) / 3600, 1),
             "hook": path.name[: -len(_hookutil.DURATION_SUFFIX)],
             "fires": len(data["runs"]),
             "run_p50": percentile(data["runs"], 50),

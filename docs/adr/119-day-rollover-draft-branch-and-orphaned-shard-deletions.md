@@ -204,3 +204,40 @@ A session that finds another session's stale edit commits it to its own day's br
 - [dev-env#1199](https://github.com/brownm09/dev-env/issues/1199) — the originating issue
 - [dev-env#1203](https://github.com/brownm09/dev-env/issues/1203) — the late-stub rename gap
 - [dev-env#876](https://github.com/brownm09/dev-env/issues/876) — the earlier stubs stranded uncomposed on `main`
+
+---
+
+## Amendment 3 (2026-11-06, dev-env#1262) — The late-commits warning is true when it fires, and acting on it twice is safe
+
+### The gap
+
+The warning that points at `reconcile-late-stubs.py` flagged any remote `draft/<D>` whose date had a composed journal, and said new commits were pushed after the merge without checking. It collapsed suffixed branches to their date, so it could name a branch that didn't exist, and the script couldn't take a suffixed name anyway. Its text named no one to act. `draft/2026-10-30` really did hold 25 late commits, and the warning for it appeared 57 times across 29 session transcripts while no session ran the script. Repeating the script was also unsafe: once the target composed, a re-run picked a later branch and moved the same stubs again.
+
+### The decision
+
+1. **The check keys on the measured property.** A branch is flagged only when commits touching session files come after its day's last merged PR, read from `draft/<D>` and `compose/<D>`, and aren't on `main` or behind its reconciled tag. One GraphQL request covers every date, and the check shares a time budget under the hook's timeout. A failed lookup reports nothing and adds a line to `journal_hook_late_check_failures.log` in scratch, since the check is advisory and runs again later. `_journal_late.py` holds this rule for both the check and the script.
+2. **`reconciled/<branch>` marks what has been moved.** The tag lands in one atomic push with the moved files, and the script never moves commits behind it. A move by hand pushes the same tag. The tag keeps deleted commits reachable: the delete only succeeds at the tip the run read, and the script stops rather than move a tag off a rewritten branch.
+3. **The first session to see the warning acts on it**, whatever its task, and hands a blocked command to the user. The warning and the global `CLAUDE.md` both say so.
+4. **The script takes suffixed branches and legacy per-day manifests**, because every flagged May branch needed one or both. A legacy manifest is split into a shard per moved stub.
+5. **The script stops rather than delete what it can't vouch for:** a late file of a kind it doesn't move, or a suffixed branch with commits from before its day's merge, since that branch never merged itself.
+6. **A tag can also mean "tracked elsewhere".** The 8 branches flagged at first run were tagged when [dev-env#1277](https://github.com/brownm09/dev-env/issues/1277) took them on, so the warning wouldn't send a session to move stubs the owner decided to compose under their original dates.
+
+### Alternatives considered
+
+- **Cut off at the last commit on `main` that adds a composed file for the date.** This needs no network and catches PRs from unrelated heads, such as #58, which composed 2026-05-09 from `draft/2026-05-10`. Rejected: a journal composed from another branch doesn't contain a kept branch's stubs. It would have silenced 2026-05-04 and the 2026-05-09 branches, whose late stubs are mostly absent from the composed journals.
+- **Compare stub content against what was moved or composed.** Rejected: compose rewrites stubs into prose and deletes them, so nothing byte-comparable survives once the target composes.
+- **Rely on deleting the source branch.** Rejected: a failed delete or a move by hand leaves the branch, which is the case that duplicated stubs.
+
+### Calibration
+
+Advisory only, so it can't block anything. Measured against the live repository on 2026-11-06: of 12 composed days' branches, the check flags 8, and those are the ones with late commits. Known good: `draft/2026-05-02` and `draft/2026-07-03-lifting-logbook-late`, with none after their last merge, the second confirmed composed by content. Known bad: `draft/2026-05-03` (29 commits) and `draft/2026-09-04` (6). `draft/2026-04-27` and `draft/2026-05-08` have no PR at either head, so they have no cutoff and aren't flagged; their tips predate the PRs that composed them.
+
+### Consequences (amendment)
+
+**Positive.** A warning now means content that may be in no journal, and a repeat run moves nothing.
+
+**Negative / accepted.** A day composed only from another head is never flagged, whatever its branch holds. Nor is a suffixed branch whose commits all predate its day's merge, though it never merged itself; the script refuses to delete one, but no warning names it. A branch's commits can be flagged though a later journal covers them, and moving them repeats some content, which Amendment 2 already accepts as cheaper than losing it. Each repository gains tags under `reconciled/`.
+
+### References (amendment)
+
+- [dev-env#1262](https://github.com/brownm09/dev-env/issues/1262) — the originating issue
