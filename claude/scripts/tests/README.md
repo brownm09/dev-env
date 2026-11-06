@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 102 `test_*.py` files, 11 bash gates, and
-two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 115 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 103 `test_*.py` files, 11 bash gates, and
+two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 116 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -189,6 +189,7 @@ Scripts invoked directly (by a person or a skill), not wired as Claude Code hook
 | `test-baseline-tests-gc.sh` | `baseline-tests.sh` | Branch-existence-based cleanup (`gc`) of stale pre-existing-test-failure baseline snapshots. |
 | `test-get-project-item.sh` | `get-project-item.sh` | Execution smoke test (not just `bash -n`) resolving an issue number to a project item ID. |
 | `test-journal-compose-replay.sh` | `journal-compose-replay.sh` | Drives `/journal-compose` Step 10.5's conflict-recovery replay against throwaway fixture repos: uncontested paths replay wholesale, contested ones 3-way merge or stop with exit 2. |
+| `test_issue_dup_eval.py` | `experiments/2026-11-issue-dup-retrieval/` | Calibrates the duplicate-issue retrieval experiment's scorer against known-good and known-bad rankers, proves the outcome map can reach every verdict, and checks committed files for private text (ADR-156). |
 | `test-merge-stale-pr.sh` | `merge-stale-pr.sh` | Drives the stale-journal-PR remediation script against throwaway fixture repos with `gh` stubbed. |
 | `test-setup-link-loop.sh` | `setup.sh` | Drives the extracted `link_claude_windows`/`link_claude_unix` functions against a throwaway `$HOME`, then the rest for real: real items backed up, links pointing outside dev-env recorded, a backup never overwritten; `--restore` putting items, links, `settings.json` and `core.hooksPath` (unset included) back, converging, and refusing a directory setup didn't write; `win_cmd`, the symlink probe, the cmd-special-character and HOME guards, and the dispatch guard; every link fixture asserted to exist first, and a case this machine can't run counted as skipped, never passed. |
 | `test_dev_env_doctor.py` | `dev-env-doctor.py` | The install health check's pure decision helpers, fixture-only apart from one real dangling junction: link lists pinned against `setup.sh`, dangling links and missing hook scripts FAIL, zero commands or no readable script path FAIL rather than passing vacuously, gh sign-in decided offline, compile warnings on every Python version, the journal-draft and `core.hooksPath` matrices, and a crashing check reported as a FAIL. |

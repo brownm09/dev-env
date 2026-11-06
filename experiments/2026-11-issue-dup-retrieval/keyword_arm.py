@@ -1,6 +1,6 @@
 """Keyword arm: replay `gh issue list --search` for each input as of its filing time.
 
-Usage: py -3 keyword_arm.py <labels.json> <queries.json> <out.json> <run_log.jsonl> [--calibrate-only]
+Usage: py -3 keyword_arm.py <labels.json> <queries.json> <out.json> <run_log.jsonl>
 
 queries.json holds {generation: {input_id: [query, ...]}} and stays local, because queries written
 from private issues carry private words. The output holds issue numbers only.

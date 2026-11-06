@@ -5151,3 +5151,21 @@ For a one-line navigational map of the test directory, see
      py -3 claude/scripts/tests/test_window_flash_monitor.py
      py -3 claude/scripts/tests/test_window_flash_monitor.py --live
      ```
+
+114. **duplicate-issue retrieval scorer test** — required when changing anything under
+     `experiments/2026-11-issue-dup-retrieval/`
+     ([ADR-156](adr/156-duplicate-issue-retrieval-experiment.md), dev-env#1260). Pins the
+     instrument behind the experiment's verdict: a known-good ranker scores 1.0, a known-bad one
+     0.0, a random one lands near chance, and an empty run raises rather than scoring. The outcome
+     map must be able to reach all three verdicts, including both scope-disagreement cases. The
+     evaluation set must be non-empty.
+
+     Privacy: `labels.json` may hold only numbers and short structure, and the title scanner must
+     catch a known-bad fixture. **Scope gap:** the scan of committed files against real private
+     titles runs only when `DUP_EVAL_ISSUE_CACHE` names a local issue cache, because CI can't read
+     the private repos. It's run by hand before committing results, and the result is in
+     `results.md`.
+
+     ```bash
+     py -3 claude/scripts/tests/test_issue_dup_eval.py
+     ```

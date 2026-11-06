@@ -43,7 +43,7 @@ def main(labels_path, vector_path, keyword_path, out_path):
     edges = []
     for item in inputs:
         anchor = (item["repo"], item["targets"][0])
-        node = item.get("query_issue", item["host_issue"])
+        node = item["query_issue"] if item["stratum"] == "A" else item["host_issue"]
         edges.append(((item["repo"], node), anchor))
         edges += [(anchor, (item["repo"], t)) for t in item["targets"]]
     family = clusters(edges)

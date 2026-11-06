@@ -147,6 +147,17 @@ the item). A one-line navigational map of the test directory is
 111. **reconcile-late-stubs test** — required when changing `claude/scripts/reconcile-late-stubs.py`. A moved stub must take the target branch's date or `/journal-compose` skips it (dev-env#1203). Run: `py -3 claude/scripts/tests/test_reconcile_late_stubs.py`
 112. **token attribution and pricing test** — required when changing `claude/scripts/_token_pricing.py`, `claude/scripts/backfill-tokens.py`, or `token-report.py`'s `--attribution` mode or session tables. Also run item 65 when changing `_token_pricing.py`, since `token-tracker.py` prices through it (dev-env#1214, #1122, [ADR-154](docs/adr/154-token-attribution-and-shared-pricing.md)). Run: `py -3 claude/scripts/tests/test_token_attribution.py`
 113. **window-flash-monitor test** — required when changing `claude/scripts/window-flash-monitor.py` or `register-window-flash-monitor.ps1` ([ADR-155](docs/adr/155-record-console-flashes-before-fixing-them.md), dev-env#1225). The `--live` run opens real windows and briefly takes focus, so it is local only; run it too when changing the monitor. Run: `py -3 claude/scripts/tests/test_window_flash_monitor.py` + `py -3 claude/scripts/tests/test_window_flash_monitor.py --live`
+114. **duplicate-issue retrieval scorer test** — required when changing anything under `experiments/2026-11-issue-dup-retrieval/`. Calibrates the experiment's scorer and outcome map, and scans committed files for private text ([ADR-156](docs/adr/156-duplicate-issue-retrieval-experiment.md), dev-env#1260). Run: `py -3 claude/scripts/tests/test_issue_dup_eval.py`
+
+## Experiments
+
+Comparative claims about a process change follow the global `## Experimental Rigor` section and `/experiment-audit`. This repo's experiments keep their harness and results under `experiments/<yyyy-mm>-<slug>/`, and their pre-registration on the tracking issue. dev-env is public, so anything from a private repo is committed as issue numbers and metrics only.
+
+| # | Experiment | Corpus | Instruments and calibration references | Results home |
+|---|---|---|---|---|
+| 1 | Duplicate-issue retrieval ([#1260](https://github.com/brownm09/dev-env/issues/1260)) | `labels.json`: declared duplicates, avoided duplicates, declared non-duplicates | Hit-test scorer, known-good and known-bad rankers (item 114); vector ranking, `calibrate_vector.py` | `experiments/2026-11-issue-dup-retrieval/` |
+
+Default tier: Tier 1 for anything that would change a standing rule, hook or skill; Tier 0 for a one-off look.
 
 ## Observability
 
