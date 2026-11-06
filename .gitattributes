@@ -3,3 +3,6 @@
 
 # Shell scripts must always be LF
 *.sh text eol=lf
+
+# Batch files must always be CRLF: cmd.exe can miss labels in an LF-only file
+*.cmd text eol=crlf
