@@ -1622,8 +1622,9 @@ Two recovery paths depending on what the diff shows:
 share (and can exhaust) the GitHub GraphQL API's 5,000/hr rate-limit bucket, disabling
 `gh pr merge` / `gh pr comment` / `gh pr view --json` (all GraphQL-backed) for **both** sessions
 mid-work. The REST `core` bucket is a separate quota and typically stays healthy — prefer
-REST-backed `gh api` calls over GraphQL-backed `gh pr *` subcommands when the GraphQL bucket is
-known to be exhausted (`gh api rate_limit` shows the remaining count per bucket).
+REST-backed `gh api` calls over GraphQL-backed `gh pr *` subcommands when a GraphQL call fails with
+a rate-limit error. A `gh api rate_limit` reading can't confirm or refute that error; see
+[`claude/CLAUDE.md`](../claude/CLAUDE.md), *Never mutate git state directly*.
 
 **Prevention.** A `PreToolUse(Bash/PowerShell)` hook (`pre-tool-use-canonical-mutate-guard.py`,
 dev-env#620/ADR-071 Amendment 4) now hard-blocks git-mutating commands issued with cwd at a

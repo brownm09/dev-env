@@ -361,8 +361,11 @@ GraphQL bucket, and so does the fallback in `get-project-item.sh`. GitHub also h
 Projects v2, which spends the separate `core` bucket (the response header says
 `X-RateLimit-Resource: core`). So a GraphQL rate-limit error doesn't block the board: adding an
 item, looking up an item ID, and setting a field all have a REST path. This applies even when
-`gh api rate_limit` shows GraphQL budget left: on 2026-11-05 a call was rejected with 3717/5000
-remaining ([dev-env#1238](https://github.com/brownm09/dev-env/issues/1238)). See GitHub's
+`gh api rate_limit` shows GraphQL budget left, and even when a retry passes: one token has two
+rate-limit counters, a read shows only one, and some calls still pass while the busier counter is
+at 0 ([finding on dev-env#1238](https://github.com/brownm09/dev-env/issues/1238#issuecomment-6671406131)).
+On 2026-11-05 a call was rejected with 3717/5000 remaining on the reading. The rule for judging the
+error is in [`claude/CLAUDE.md`](claude/CLAUDE.md), *Never mutate git state directly*. See GitHub's
 [Project items](https://docs.github.com/en/rest/projects/items) and
 [Project fields](https://docs.github.com/en/rest/projects/fields) REST documentation.
 
