@@ -101,12 +101,24 @@ verified" (or "Exempt: <reason>"), and the marker.
 
 | # | Status | Meaning |
 |---|---|---|
-| 1 | `met` | The evidence shows the criterion is satisfied by this PR, or by an earlier merged change that the evidence cites. |
+| 1 | `met` | The evidence shows the criterion is satisfied by this PR, or by another merged change that the evidence cites. |
 | 2 | `not met` | The PR is the change meant to satisfy this criterion, and the evidence shows it does not. This includes a criterion the diff simply leaves out, and every case rules 2-4 below assign here. |
 | 3 | `not verifiable` | One of exactly three cases: (a) deferred to a linked follow-up (rule 1); (b) it plausibly holds but can't be confirmed from the PR, because it depends on production data, post-merge behaviour, another repo, or a live service; (c) it is too vague to test (§4). |
 
 **Linked follow-up**, wherever this schema uses the term: an issue reference in the Evidence
-cell, written as `#N`, `owner/repo#N`, or a `https://github.com/<owner>/<repo>/issues/<N>` URL.
+cell, written as `#N`, `owner/repo#N`, or a `https://github.com/<owner>/<repo>/issues/<N>` URL,
+to an issue that takes the criterion on as its own work. Read that issue to decide. It qualifies
+only if both of these hold:
+
+- **It names the work.** Its body, or a comment on it, names this criterion's check or outcome as
+  something it will do. Sharing a topic isn't enough, and neither is building something the check
+  depends on.
+- **The work is still ahead or was done.** The issue is open, or it was closed by a change that
+  did that work. An issue closed with the work still undone no longer tracks it.
+
+The Evidence cell says where the issue names the work (the body item, or a comment URL). A
+reference that fails either test is not a linked follow-up, so the row is scored as having no
+link. If the issue can't be read, stop and report a tool error, as in §1.
 
 ### Deferral and admission rules
 
@@ -114,8 +126,9 @@ These rules decide the cases that calibration showed are easy to get wrong (ADR-
 *Calibration*). Where two of them apply to the same row, the lower-numbered rule wins.
 
 1. **Deferred to a linked follow-up → `not verifiable`.** The issue or PR body explicitly defers
-   the criterion to a linked follow-up, which goes in the Evidence cell. This is the one case
-   where work the PR did not do is `not verifiable` rather than `not met`. It is not `met`.
+   the criterion to a linked follow-up, which goes in the Evidence cell. Apart from an open PR
+   under rule 9, this is the one case where work the PR did not do is `not verifiable` rather than
+   `not met`. It is not `met`.
 2. **Admitted not done, with no link → `not met`.** The PR body or a comment says the criterion
    is not done, skipped, re-scoped, descoped, "remaining open", "done post-merge", or "by design
    not done", and no linked follow-up is given. The row is `not met` however good the
@@ -123,7 +136,7 @@ These rules decide the cases that calibration showed are easy to get wrong (ADR-
    This rule outranks rules 3 and 6.
 3. **Skipped pre-merge check → `not met`.** A check that could have run before merge, such as a
    local build or a manual click-through, was skipped. `not verifiable` never means "the PR
-   didn't do it", except under rule 1.
+   didn't do it", except under rules 1 and 9.
 4. **Replaced by a different design → `not met`,** unless the issue was amended, or the
    replacement was recorded against the issue before merge. A rejected-alternatives section in
    the PR's ADR does not change the issue's criteria.
@@ -137,6 +150,13 @@ These rules decide the cases that calibration showed are easy to get wrong (ADR-
 8. **Accepted evidence.** CI check results on the PR's head commit, and a test-summary line in
    the PR body (`Tests: N passed, ...`), count as command-plus-output evidence. A bare claim
    ("tested locally", "verified") does not.
+9. **Delivered by another PR.** Another PR, in any repo, can deliver a criterion if it
+   cross-references the linked issue. List them with
+   `gh api --paginate "repos/<owner>/<repo>/issues/<N>/timeline"`, and read the diff of any that
+   may deliver it: a PR saying it delivers the criterion is a claim, not evidence. If the diff does
+   the work, the row is `met` if that PR has merged, or `not verifiable` (case b) if it's still
+   open, with the PR's URL in the Evidence cell. This rule outranks rules 2-4, because the work
+   isn't undone. If the timeline or that PR can't be read, stop and report a tool error, as in §1.
 
 **When every row is `not verifiable`.** If every row of a `parsed` table is `not verifiable`, and
 at least one of those rows has no linked follow-up, change the first such row's Status to

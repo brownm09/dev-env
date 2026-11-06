@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """
-reconcile-late-stubs.py <draft/YYYY-MM-DD>
+reconcile-late-stubs.py <draft/YYYY-MM-DD[-suffix]>
 
 Moves stub files pushed to an already-merged draft branch to the earliest
 unmerged draft branch (or today's branch if none exists), then deletes the
 stale source branch. Each moved stub and manifest is renamed to the target
 branch's date, because /journal-compose finds them by <DATE>_*.stub.md.
 
+Before deleting the branch it points the tag reconciled/<branch> at the branch's tip.
+Commits behind that tag are never moved again, so a repeat run moves nothing, and the tag
+keeps the deleted commits reachable. After moving stubs by hand, mark them the same way:
+  git push origin <tip sha>:refs/tags/reconciled/<branch>
+
 Usage:
   py -3 reconcile-late-stubs.py draft/2026-05-06
   py -3 reconcile-late-stubs.py 2026-05-06   # draft/ prefix optional
+  py -3 reconcile-late-stubs.py draft/2026-05-09-late   # a suffixed branch counts for its date
 """
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
@@ -22,11 +28,20 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
+from _journal_late import BEGINNING, DRAFT_BRANCH, RECONCILED_TAG_PREFIX, late_commits
+
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SCRATCH = Path.home() / ".claude" / "scratch"
 TODAY = date.today().strftime("%Y-%m-%d")
 LATE_FILE_NAME = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{6})\.(stub\.md|manifest\.jsonl)")
+LEGACY_MANIFEST_NAME = re.compile(r"\d{4}-\d{2}-\d{2}\.manifest\.jsonl")
 CARRIED_FILE = re.compile(r"/(reports/[^/]+\.md|tiles/[^/]+\.json)$")
+OPEN_PR_RECORD = re.compile(r"/open-prs(\.jsonl|/[^/]+\.json)$")
+
+
+def kept_note(source_branch: str) -> str:
+    return (f"Nothing was moved and {source_branch} is kept. Move it by hand, then mark it: "
+            f"git push origin <tip sha>:{RECONCILED_TAG_PREFIX}{source_branch}")
 
 
 def run(cmd, cwd=None, check=True, capture=True):
@@ -54,14 +69,16 @@ def get_merged_pr_info(source_date: str) -> Optional[dict]:
     return max(prs, key=lambda pr: pr["mergedAt"], default=None)
 
 
-def get_commits_after(branch: str, after_iso: str) -> list[str]:
-    result = run(
-        ["git", "log", f"origin/{branch}", f"--after={after_iso}", "--format=%H"]
-    )
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+def fetch_reconciled_tag(branch: str) -> Optional[str]:
+    """The tag marking what an earlier run moved from this branch, fetched, or None."""
+    tag = f"{RECONCILED_TAG_PREFIX}{branch}"
+    if not run(["git", "ls-remote", "origin", tag]).stdout.strip():
+        return None
+    run(["git", "fetch", "origin", "--quiet", f"+{tag}:{tag}"])
+    return tag
 
 
-def get_late_files_in_commits(commits: list[str]) -> list[str]:
+def get_late_files_in_commits(commits: list[str], source_branch: str) -> list[str]:
     files: list[str] = []
     seen: set[str] = set()
     for commit in commits:
@@ -78,8 +95,8 @@ def get_late_files_in_commits(commits: list[str]) -> list[str]:
             if status.startswith("D"):
                 continue
             # Per-session manifest shards (YYYY-MM-DD_HHMMSS.manifest.jsonl, ADR-056)
-            # match the same suffix as the legacy per-day manifest. main() refuses a
-            # legacy one, since it has no single stub to rename with.
+            # match the same suffix as the legacy per-day manifest, whose lines
+            # read_late_files splits out for each moved stub.
             # Open-PR records (legacy open-prs.jsonl and open-prs/<N>.json shards) are
             # excluded — the target branch's copy is authoritative. Reports and tile
             # shards exist nowhere else once the source branch is deleted, so they move too.
@@ -89,6 +106,10 @@ def get_late_files_in_commits(commits: list[str]) -> list[str]:
                 if path not in seen:
                     files.append(path)
                     seen.add(path)
+            elif not OPEN_PR_RECORD.search(path):
+                # Deleting the branch would leave this content behind with nothing naming it.
+                raise RuntimeError(f"Cannot move {path}: not a stub, manifest, report or tile "
+                                   f"shard. {kept_note(source_branch)}")
     return files
 
 
@@ -144,6 +165,21 @@ def show_on_branch(branch: str, rel_path: str) -> Optional[str]:
     return result.stdout if result.returncode == 0 else None
 
 
+def shard_from_legacy_manifest(text: str, stem: str) -> Optional[str]:
+    """One session's shard, from a per-day manifest. A session can have several lines, such
+    as one when its PR opened and one when it merged; the last topic, the costliest tokens
+    and every PR number survive. None when the manifest has no line for this stub."""
+    entries = [json.loads(line) for line in text.splitlines() if line.strip()]
+    lines = [e for e in entries if e["stub"].rpartition("/")[2] == f"{stem}.stub.md"]
+    if not lines:
+        return None
+    shard = dict(lines[-1])
+    shard["tokens"] = max((e["tokens"] for e in lines), key=lambda tokens: tokens["cost"])
+    for key in ("prs_opened", "prs_closed"):
+        shard[key] = sorted({number for e in lines for number in e[key]})
+    return json.dumps(shard, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
 def read_late_files(source_branch: str, late_files: list[str]
                     ) -> tuple[dict[tuple[str, str], dict[str, str]], dict[str, str]]:
     """Read and check everything before the remote is touched. Returns the sessions to
@@ -155,7 +191,7 @@ def read_late_files(source_branch: str, late_files: list[str]
     """
     sessions: dict[tuple[str, str], dict[str, str]] = {}
     carried: dict[str, str] = {}
-    keep = f"Nothing was moved and {source_branch} is kept; move it by hand."
+    keep = kept_note(source_branch)
     for rel_path in late_files:
         if CARRIED_FILE.search(rel_path):
             content = show_on_branch(source_branch, rel_path)
@@ -163,6 +199,8 @@ def read_late_files(source_branch: str, late_files: list[str]
                 carried[rel_path] = content
             continue
         parent, _, name = rel_path.rpartition("/")
+        if LEGACY_MANIFEST_NAME.fullmatch(name):
+            continue  # read below, for each late stub it has a line for
         match = LATE_FILE_NAME.fullmatch(name)
         if not match:
             raise RuntimeError(
@@ -182,12 +220,19 @@ def read_late_files(source_branch: str, late_files: list[str]
         contents = {"stub.md": stub}
         manifest_path = f"{parent}/{stem}.manifest.jsonl"
         manifest = show_on_branch(source_branch, manifest_path)
-        if manifest is not None:
-            try:
+        try:
+            if manifest is None:
+                manifest_path = f"{parent}/{stem[:10]}.manifest.jsonl"
+                legacy = show_on_branch(source_branch, manifest_path)
+                if legacy is not None:
+                    manifest = shard_from_legacy_manifest(legacy, stem)
+            if manifest is None:
+                print(f"  No manifest line for {stub_path}, so it moves without a topic or PR numbers")
+            else:
                 retarget_manifest(manifest, stem)
-            except (ValueError, KeyError, TypeError, AttributeError) as e:
-                raise RuntimeError(f"Cannot read {manifest_path}: {e!r}. {keep}") from e
-            contents["manifest.jsonl"] = manifest
+                contents["manifest.jsonl"] = manifest
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            raise RuntimeError(f"Cannot read {manifest_path}: {e!r}. {keep}") from e
         sessions[(parent, stem)] = contents
     return sessions, carried
 
@@ -219,18 +264,46 @@ def place_on_target(worktree: Path, parent: str, stem: str,
         hhmmss += 1
 
 
+def retire_source_branch(source_branch: str, source_tip: str) -> None:
+    """Mark the branch's tip as reconciled, then delete the branch. The tag goes first, so
+    a failed delete leaves a branch that a re-run or the new-day check will not act on. The
+    delete only succeeds at that same tip, so a commit pushed during this run survives."""
+    run(["git", "push", "origin", f"+{source_tip}:{RECONCILED_TAG_PREFIX}{source_branch}"])
+    lease = f"--force-with-lease=refs/heads/{source_branch}:{source_tip}"
+    if run(["git", "push", lease, "origin", "--delete", source_branch], check=False).returncode != 0:
+        print(f"Error: could not delete {source_branch}. What this run saw is marked as moved, so "
+              f"a re-run moves only newer commits, and it can delete the branch once a re-run finds "
+              f"none. A commit may have landed during this run. By hand: "
+              f"git push origin --delete {source_branch}",
+              file=sys.stderr)
+        sys.exit(1)
+    print(f"Deleted {source_branch}; its tip stays at {RECONCILED_TAG_PREFIX}{source_branch}")
+
+
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: reconcile-late-stubs.py <draft/YYYY-MM-DD>", file=sys.stderr)
+        print("Usage: reconcile-late-stubs.py <draft/YYYY-MM-DD[-suffix]>", file=sys.stderr)
         sys.exit(1)
 
     arg = sys.argv[1].strip()
     source_branch = arg if arg.startswith("draft/") else f"draft/{arg}"
-    source_date = source_branch.removeprefix("draft/")
+    branch_name = DRAFT_BRANCH.fullmatch(source_branch)
+    if not branch_name:
+        print(f"Error: {source_branch} is not draft/YYYY-MM-DD[-suffix].", file=sys.stderr)
+        sys.exit(1)
+    source_date = branch_name[1]
 
     print(f"Reconciling late stubs from {source_branch}...")
 
-    run(["git", "fetch", "origin", source_branch, "--quiet"])
+    run(["git", "fetch", "origin", source_branch, "main", "--quiet"])
+    source_tip = run(["git", "rev-parse", f"origin/{source_branch}"]).stdout.strip()
+    reconciled_tag = fetch_reconciled_tag(source_branch)
+    if reconciled_tag and run(["git", "merge-base", "--is-ancestor", reconciled_tag, source_tip],
+                              check=False).returncode != 0:
+        # Moving the tag would leave the commits it holds with nothing pointing at them.
+        print(f"Error: {source_branch} no longer descends from {reconciled_tag}, so the branch was "
+              f"rewritten. {kept_note(source_branch)}", file=sys.stderr)
+        sys.exit(1)
 
     pr = get_merged_pr_info(source_date)
     if not pr:
@@ -241,11 +314,18 @@ def main() -> None:
     merged_at = pr["mergedAt"]
     print(f"Found merged PR #{pr['number']} ({pr['url']}) merged at {merged_at}")
 
-    commits = get_commits_after(source_branch, merged_at)
+    source_ref = f"origin/{source_branch}"
+    commits = late_commits(JOURNAL_REPO, source_ref, merged_at, reconciled_tag)
     if not commits:
-        print("No commits found after merge. Deleting stale branch...")
-        run(["git", "push", "origin", "--delete", source_branch])
-        print(f"Deleted {source_branch}. Done.")
+        # A suffixed branch never merged itself, so the cutoff from its date's PR says nothing
+        # about whether its earlier commits were composed.
+        if branch_name[2] and late_commits(JOURNAL_REPO, source_ref, BEGINNING, reconciled_tag):
+            print(f"Error: {source_branch} has commits from before its day's last merge, and it "
+                  f"never merged itself, so they may be in no journal. Check them. "
+                  f"{kept_note(source_branch)}", file=sys.stderr)
+            sys.exit(1)
+        print("No late commits left to move. Deleting stale branch...")
+        retire_source_branch(source_branch, source_tip)
         return
 
     print(f"Found {len(commits)} commit(s) after merge:")
@@ -253,7 +333,7 @@ def main() -> None:
         msg = run(["git", "log", "-1", "--format=%s", c]).stdout.strip()
         print(f"  {c[:8]} {msg}")
 
-    late_files = get_late_files_in_commits(commits)
+    late_files = get_late_files_in_commits(commits, source_branch)
     print(f"Found {len(late_files)} late file(s):")
     for f in late_files:
         print(f"  {f}")
@@ -261,8 +341,7 @@ def main() -> None:
     sessions, carried = read_late_files(source_branch, late_files)
     if not sessions and not carried:
         print("No files to move in new commits. Deleting stale branch...")
-        run(["git", "push", "origin", "--delete", source_branch])
-        print(f"Deleted {source_branch}. Done.")
+        retire_source_branch(source_branch, source_tip)
         return
 
     run(["git", "fetch", "origin", "--quiet"])
@@ -310,21 +389,16 @@ def main() -> None:
                  f"renamed to its date."],
                 cwd=temp_dir,
             )
-            run(["git", "push", "origin", f"HEAD:refs/heads/{target_branch}"], cwd=temp_dir)
+            # One atomic push: moved files with no tag would be moved again by a later run.
+            run(["git", "push", "--atomic", "origin", f"HEAD:refs/heads/{target_branch}",
+                 f"+{source_tip}:{RECONCILED_TAG_PREFIX}{source_branch}"], cwd=temp_dir)
             print(f"Pushed {len(copied)} file(s) to {target_branch}")
 
     finally:
         run(["git", "worktree", "remove", "--force", str(temp_dir)], check=False)
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-    # A re-run is only safe while the target is uncomposed: after that the script picks
-    # a later branch and would move the same session again.
-    if run(["git", "push", "origin", "--delete", source_branch], check=False).returncode != 0:
-        print(f"Error: moved the files to {target_branch} but could not delete {source_branch}. "
-              f"Delete it by hand: git push origin --delete {source_branch}. Do not re-run.",
-              file=sys.stderr)
-        sys.exit(1)
-    print(f"Deleted stale branch {source_branch}")
+    retire_source_branch(source_branch, source_tip)
     print("Reconciliation complete.")
 
 
