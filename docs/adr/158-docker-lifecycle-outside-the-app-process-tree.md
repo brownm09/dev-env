@@ -49,7 +49,7 @@ Per [ADR-144](144-gate-calibration-pass-3-dimension.md).
 
 | # | Class | Count | Result |
 |---|---|---|---|
-| 1 | Classified as needing the engine | 66 | All real `docker` calls in the listing reviewed. A false match costs up to 15 minutes of RAM and blocks nothing. |
+| 1 | Classified as needing the engine | 66 | The 40 most common of 49 distinct commands were read, and each runs `docker`. A false match costs up to 15 minutes of RAM and blocks nothing. |
 | 2 | Classified as a direct start | 10 | Real starts, after a `--help` false positive found here was fixed. |
 | 3 | No match | 138 | Greps, log reads, and `docker desktop status`. A separate pattern for real-looking calls found one miss, `(docker info ...)`, now covered. |
 

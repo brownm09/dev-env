@@ -9,6 +9,8 @@
 #   - SKIP  (exit 0) when npm is absent from PATH
 #   - the working tree is restored and no backup leaks into the repo on every path
 #   - a repo-level .git/hooks/pre-push still fires (chaining) on the pass path
+#   - the merge-base warning stays quiet on engineering-journal draft/YYYY-MM-DD pushes and
+#     still fires on every other branch (dev-env#1272)
 #   - a push to a past draft/<D> is blocked when the day merged from draft/<D> or
 #     compose/<D>, and allowed when neither merged (resurrected-draft guard, dev-env#1205)
 #
@@ -189,7 +191,7 @@ GH
 }
 
 # Push a past-dated draft branch from a fixture whose origin is the journal repo.
-# Args: merged_head. Sets RC, and GH_LOG to the heads the stub saw.
+# Args: merged_head. Sets RC, HOOK_ERR to the hook's stderr, and GH_LOG to the heads the stub saw.
 run_draft_push() {
   local repo c1 c2 bin
   read -r repo c1 c2 <<<"$(make_fixture)"
@@ -201,9 +203,10 @@ run_draft_push() {
     cd "$repo" || exit 99
     echo "refs/heads/draft/2020-01-02 $c2 refs/heads/draft/2020-01-02 $c1" | \
       PATH="$bin:$PATH" TEST_NPM_MODE=pass TEST_GH_LOG="$log" TEST_GH_MERGED_HEAD="$1" \
-      bash "$HOOK" origin "file://$repo" >/dev/null 2>&1
+      bash "$HOOK" origin "file://$repo" >/dev/null 2>"$repo/.hook-stderr"
   )
   RC=$?
+  HOOK_ERR=$(cat "$repo/.hook-stderr" 2>/dev/null)
   GH_LOG=$(cat "$log" 2>/dev/null)
   rm -rf "$repo" "$(dirname "$bin")"
 }
@@ -211,10 +214,12 @@ run_draft_push() {
 echo "[6] day merged only from compose/<D> -> BLOCK"
 run_draft_push compose/2020-01-02
 [ "$RC" = "1" ] && ok "exit 1 (push blocked)" || bad "expected exit 1, got $RC"
+echo "$HOOK_ERR" | grep -q "already has a merged PR" && ok "names the merged PR" || bad "refusal message missing"
 
 echo "[7] day merged only from draft/<D> -> BLOCK"
 run_draft_push draft/2020-01-02
 [ "$RC" = "1" ] && ok "exit 1 (push blocked)" || bad "expected exit 1, got $RC"
+echo "$HOOK_ERR" | grep -q "already has a merged PR" && ok "names the merged PR" || bad "refusal message missing"
 
 echo "[8] no merged PR at either head -> PASS"
 run_draft_push none
@@ -222,6 +227,52 @@ run_draft_push none
 # The allow is only meaningful if the guard really asked about both heads.
 echo "$GH_LOG" | grep -qx draft/2020-01-02 && ok "looked up draft head" || bad "draft head not looked up"
 echo "$GH_LOG" | grep -qx compose/2020-01-02 && ok "looked up compose head" || bad "compose head not looked up"
+
+# --- Scenarios 9-12: merge-base warning scope (dev-env#1272) ---
+# Push a branch from a fixture whose origin/main has moved past the branch's base.
+# Args: branch origin_url. Sets RC and HOOK_ERR to the hook's stderr.
+run_behind_main_push() {
+  local repo c1 c2 bin moved
+  read -r repo c1 c2 <<<"$(make_fixture)"
+  git -C "$repo" remote add origin "$2"
+  moved=$(git -C "$repo" commit-tree "$c1^{tree}" -p "$c1" -m main-moved)
+  git -C "$repo" update-ref refs/remotes/origin/main "$moved"
+  bin=$(make_stub_npm "$repo")
+  make_stub_gh "$bin"
+  (
+    cd "$repo" || exit 99
+    echo "refs/heads/$1 $c2 refs/heads/$1 $c1" | \
+      PATH="$bin:$PATH" TEST_NPM_MODE=pass TEST_GH_LOG="$repo/.gh-heads" TEST_GH_MERGED_HEAD=none \
+      bash "$HOOK" origin "file://$repo" >/dev/null 2>"$repo/.hook-stderr"
+  )
+  RC=$?
+  HOOK_ERR=$(cat "$repo/.hook-stderr" 2>/dev/null)
+  rm -rf "$repo" "$(dirname "$bin")"
+}
+
+JOURNAL_URL=https://example.test/engineering-journal.git
+WARNING="merge base"
+
+echo "[9] journal draft for today, behind origin/main -> no warning"
+run_behind_main_push "draft/$(date +%Y-%m-%d)" "$JOURNAL_URL"
+[ "$RC" = "0" ] && ok "exit 0" || bad "expected exit 0, got $RC"
+echo "$HOOK_ERR" | grep -q "$WARNING" && bad "merge-base warning printed: $HOOK_ERR" || ok "no merge-base warning"
+
+echo "[10] journal draft for a past unmerged day, behind origin/main -> no warning"
+run_behind_main_push draft/2020-01-02 "$JOURNAL_URL"
+[ "$RC" = "0" ] && ok "exit 0" || bad "expected exit 0, got $RC"
+echo "$HOOK_ERR" | grep -q "$WARNING" && bad "merge-base warning printed: $HOOK_ERR" || ok "no merge-base warning"
+
+# Same fixture as 9-10: these two prove "no warning" above is not a vacuous pass.
+echo "[11] journal non-draft branch, behind origin/main -> warning"
+run_behind_main_push fix/something "$JOURNAL_URL"
+[ "$RC" = "0" ] && ok "exit 0 (warning does not block)" || bad "expected exit 0, got $RC"
+echo "$HOOK_ERR" | grep -q "$WARNING" && ok "merge-base warning printed" || bad "merge-base warning missing"
+
+echo "[12] draft-named branch outside the journal repo, behind origin/main -> warning"
+run_behind_main_push draft/2020-01-02 https://example.test/other-repo.git
+[ "$RC" = "0" ] && ok "exit 0 (warning does not block)" || bad "expected exit 0, got $RC"
+echo "$HOOK_ERR" | grep -q "$WARNING" && ok "merge-base warning printed" || bad "merge-base warning missing"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

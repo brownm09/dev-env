@@ -33,6 +33,29 @@ The global pre-push hook (`claude/hooks/pre-push`) chains to any per-repo `.git/
 
 ---
 
+## Amendment 1 (2026-11-06): a clone's local `core.hooksPath` bypasses this decision
+
+The engineering-journal checkout had a local `core.hooksPath` pointing at its own `.git/hooks`, which held only `*.sample` files. Git's [`core.hooksPath`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath) replaces the hooks directory, and local config beats global, so `claude/hooks/pre-push` never ran there. A push to the already-merged `draft/2026-10-30` went through on 2026-11-06 ([dev-env#1261](https://github.com/brownm09/dev-env/issues/1261)).
+
+**Where the value came from: not proven, and probably an older Claude Code.**
+
+- dev-env doesn't set it. `setup.sh` and `setup-elevated.ps1` only write the global value.
+- The desktop app bundle (4.16336.0.0) doesn't write it. Its only uses of the setting are `-c core.hooksPath=<null device>` flags that turn hooks off for a single command.
+- The installed Claude Code CLI (2.1.309 and 2.1.317) doesn't create it from nothing. Its worktree setup reads the main repo's value and, only if that value is relative, writes back the absolute form. With no local value it writes nothing.
+- The same function still builds a `<repo>/.husky` path it no longer uses. Together with the values found in [dev-env#1108](https://github.com/brownm09/dev-env/issues/1108) (absolute, `<repo>\.git\hooks` or `<repo>\.husky`), that points to older versions picking one of those two directories at worktree creation. No older binary was available to confirm this.
+
+**Decision: remove it in the journal checkout rather than route the guard another way.** Nothing needs the value: the directory held no active hooks, and no dev-env script depends on it. `claude/hooks/` holds only `pre-push`, so turning global hooks on can't affect the journal's commits. Every scripted push still works: stub pushes target today's draft, which the guard allows; `reconcile-late-stubs.py` and `merge-stale-pr.sh` push to branches with no merged PR; branch deletes skip the guard; and `/journal-compose` already handles the guard's refusal.
+
+**Alternatives rejected.** Adding a chaining `pre-push` to the journal's `.git/hooks` would keep a per-clone file that doesn't survive a fresh clone, which is the problem this ADR set out to avoid. Having `setup.sh` unset local values would overwrite overrides that may be deliberate, such as a repo's own Husky setup. The doctor names the fix instead, and the person running it decides.
+
+**Scope.** This changes the journal checkout only. dev-env's canonical checkout still has the same override, tracked in [dev-env#1108](https://github.com/brownm09/dev-env/issues/1108).
+
+## Amendment 2 (2026-11-06): the merge-base warning skips journal draft branches
+
+Once the guard ran in the journal checkout, its merge-base warning fired on normal stub pushes whenever `main` had moved past the base of the day's draft branch. Its advice to cherry-pick onto a fresh branch contradicts the Stub file workflow, where sessions share one draft branch per day, so following it would split that day's stubs ([dev-env#1272](https://github.com/brownm09/dev-env/issues/1272)). The warning now skips engineering-journal `draft/YYYY-MM-DD` pushes and still fires on every other branch. The merged-draft refusal is unchanged.
+
+---
+
 ## References
 
 - Engineering journal: `sessions/dev-env/2026-04-19-hook-infrastructure.md`
