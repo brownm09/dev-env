@@ -1,11 +1,28 @@
 #!/usr/bin/env bash
 # Wrapper for Claude Code desktop app CLI.
 # Resolves the current version directory dynamically so this script
-# does not need to be updated after app upgrades.
-CLAUDE_BASE="$LOCALAPPDATA/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code"
-CLAUDE_BIN=$(ls -d "$CLAUDE_BASE"/*/claude.exe 2>/dev/null | sort -V | tail -1)
-if [[ -z "$CLAUDE_BIN" ]]; then
-  echo "claude: could not find Claude Code binary under $CLAUDE_BASE" >&2
-  exit 1
-fi
-exec "$CLAUDE_BIN" "$@"
+# does not need to be updated after app upgrades. It only finds and runs the
+# binary and exports nothing, so authentication is the binary's own business.
+#
+# Looks in the current install location, then the older MSIX one. Within a
+# location it tries version directories newest first, by numeric sort (2.1.170
+# beats 2.1.99). Each holds claude.exe directly or one level down in a hash
+# directory, and any hash in the newest version will do.
+CLAUDE_BASES=(
+  "$LOCALAPPDATA/Claude-Data/claude_pzs8sxrjxfjjc/claude-code"
+  "$LOCALAPPDATA/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code"
+)
+for base in "${CLAUDE_BASES[@]}"; do
+  # mapfile, not `while read ... done < <(...)`: exec inside that loop would
+  # hand the binary this list as its stdin.
+  mapfile -t versions < <(ls -1 "$base" 2>/dev/null | grep -E '^[0-9.]+$' | sort -rV)
+  for version in "${versions[@]}"; do
+    for exe in "$base/$version"/claude.exe "$base/$version"/*/claude.exe; do
+      if [[ -f "$exe" ]]; then
+        exec "$exe" "$@"
+      fi
+    done
+  done
+done
+echo "claude: could not find Claude Code binary under ${CLAUDE_BASES[0]} or ${CLAUDE_BASES[1]}" >&2
+exit 1
