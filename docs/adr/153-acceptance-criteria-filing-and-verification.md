@@ -221,8 +221,8 @@ closed that part of the issue. It merged 16 seconds after PR 284. Step 2g blocke
 the issue timeline wasn't an evidence source. So the round-2 result was really 1 false block in 14
 good PRs, and 9 of 10 bad PRs caught.
 
-**Response, per the demotion rule.** Step 2g now reads PRs that cross-reference a linked issue.
-The severity line stays `blocking` because this round is the recalibration, and it measured no
+**Response, per the demotion rule.** Step 2g now reads PRs that cross-reference a linked issue
+(schema §2 rule 9, which requires reading that PR's diff). The severity line stays `blocking` because this round is the recalibration, and it measured no
 false blocks after the fix. Had it measured one, the line would have changed to `non-blocking`.
 
 **Scoring.** Labeller and scorers were separate agents, and the scorers saw only shuffled URLs.
@@ -232,13 +232,17 @@ false blocks after the fix. Had it measured one, the line would have changed to 
 - The fresh corpus and the 11 PRs that blocked were scored by a second scorer, at `2955b03`, which
   adds cross-referencing PRs. Added evidence can only clear a block, so the 13 passes weren't
   re-scored.
+- After PR 1265's review, the rule moved into the schema as rule 9. A third scorer ran on that
+  final text, `e6cf18a`, over the 3 new PRs and the 5 PRs that most directly test the changes:
+  lifting-logbook 1112, 212 and 165, dev-env 1198, and career-playbook 284. The other PRs weren't
+  re-scored on this text.
 
 | # | Set | Blocked | Result |
 |---|---|---|---|
 | 1 | ADR-153 corpus, known-good, with PR 284 relabelled (14) | 0 | 0 false blocks of 14 |
 | 2 | ADR-153 corpus, known-bad, with PR 284 relabelled (10) | 10 | 10 of 10 caught, including PR 212 on criterion 4 |
-| 3 | Fresh corpus, known-good (5) | 0 | 0 false blocks of 5 |
-| 4 | Fresh corpus, known-bad (3) | 2 | 2 of 3 caught |
+| 3 | Fresh corpus, known-good (7) | 0 | 0 false blocks of 7 |
+| 4 | Fresh corpus, known-bad (4) | 3 | 3 of 4 caught |
 
 Fresh corpus, by PR:
 
@@ -252,19 +256,35 @@ Fresh corpus, by PR:
 | 6 | lifting-logbook 165 | bad | block | Non-qualifying follow-up rejected (criterion 2, #166) |
 | 7 | lifting-logbook 562 | bad | block | Admitted gap with no link (criterion 5) |
 | 8 | lifting-logbook 613 | bad | **pass (miss)** | Nothing: plain bullets with no checkboxes, outcome `empty` |
+| 9 | win11-init-tools 75 | good | pass | Qualifying follow-up accepted (criterion 6, #63) |
+| 10 | switchyard 48 | good | pass | Qualifying follow-up accepted (criterion 2, #10), named only in a comment |
+| 11 | switchyard 13 | bad | block | Non-qualifying follow-up rejected (criterion 2, #12) |
 
 **What these figures do and don't show.**
 
-- **The fresh evidence for the rule is thin.** Three of the five good PRs never reached the new
-  definition. Direct evidence that a qualifying link still passes is PRs 1112 and 1198 here, plus
-  lifting-logbook PR 759 in the ADR-153 corpus. Direct evidence that a non-qualifying link blocks is
-  PR 165 here, plus PR 212 in the ADR-153 corpus. Usable cases are rare: few issues have a criteria
-  section, and fewer PRs defer one of its items.
+- **Four fresh good PRs reached the rule, not the five #1197 first asked for.** Three of the seven
+  fresh good PRs never reached the new definition. Direct evidence that a qualifying link still
+  passes is PRs 1112, 1198, 75 and 48 here, plus lifting-logbook PR 759 in the ADR-153 corpus. Direct
+  evidence that a non-qualifying link blocks is PRs 165 and 13 here, plus PR 212 in the ADR-153
+  corpus. A wording search over about 70 candidate PRs found only these three new cases of the right
+  shape, and a search of review markers since 2026-11-04 found no others, though about 45 dev-env
+  PRs went unread. The user chose to amend the criterion to four rather than hold the fixes for a
+  fifth case.
+- **The last scoring pass wasn't fully blind.** To score PR 1198 the scorer had to read its follow-up,
+  #1196, whose comment calls PR 284 a false block and lists PR 1112's review as `met`. So those two
+  scores are weaker evidence. The scorer also saw author evidence tables in three PR bodies, and
+  treated them as claims.
+- **Some verdicts depend on how the scorer reads the rule.** PR 13 blocks because #12 closed undone 35
+  minutes after merge; judged at merge, it passes. A review run at merge would therefore have passed
+  it. PR 48 would block under a stricter reading of a partly tested criterion. PR 212 would pass if
+  a near-match follow-up counted. [dev-env#1267](https://github.com/brownm09/dev-env/issues/1267)
+  tracks these readings.
 - **The rule can be too strict on a single row.** lifting-logbook PR 115 deferred criteria 6 and 7
   to #106, and PR 132 later delivered them and closed #106. Both scorers still marked those rows
   `not met`, because #106 describes the destination screens rather than the click-through. The PR's
   verdict didn't depend on it, since rows 2 and 4 block anyway. On a PR with no other gap, this
-  reading would be a false block, and it is the likeliest source of the next one.
+  reading would be a false block, and it is the likeliest source of the next one
+  ([dev-env#1267](https://github.com/brownm09/dev-env/issues/1267)).
 - **The PR 284 result is in-sample.** The evidence source was added after seeing that case. No
   other PR in either corpus tests it, so its reliability on a new case is unmeasured.
 - **Plain-bullet criteria aren't scored.** Issues whose criteria have no checkboxes get outcome
@@ -276,9 +296,10 @@ Fresh corpus, by PR:
 - **Scorers vary on individual rows.** Across the two scorers, career-playbook PR 2054's `not met`
   rows differed (criterion 7), though its verdict did not.
 
-**Verdict for the gate:** no false blocks measured in 19 known-good PRs after the fix, and 12 of 13
-known-bad PRs caught. This supports keeping `not met` as Blocking. It rests on one in-sample fix,
-so the demotion rule above still applies to the next false block.
+**Verdict for the gate:** no false blocks measured in 21 known-good PRs after the fix, and 13 of 14
+known-bad PRs caught. This supports keeping `not met` as Blocking, which the user chose on
+2026-11-06 knowing the limits above. It rests on one in-sample fix, so the demotion rule above
+still applies to the next false block.
 
 ## Consequences
 
