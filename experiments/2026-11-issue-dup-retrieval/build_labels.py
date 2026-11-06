@@ -11,6 +11,8 @@ import random
 import re
 import sys
 
+from dup_eval import clusters
+
 # Stratum A: a duplicate was actually filed. (repo, earlier, later)
 STRATUM_A = [
     ("career-playbook", 267, 268),
@@ -116,27 +118,24 @@ def main(cache_dir, out_path):
     def created(repo, number):
         return repos[repo][number]["createdAt"]
 
-    earlier_members = {}
-    inputs = []
+    edges = []
     for repo, earlier, later in STRATUM_A:
         assert created(repo, earlier) < created(repo, later), (repo, earlier, later)
-        earlier_members.setdefault((repo, later), set()).add(earlier)
+        edges.append(((repo, earlier), (repo, later)))
+    find = clusters(edges)
+    family = {}
+    for node in {n for edge in edges for n in edge}:
+        family.setdefault(find(node), set()).add(node[1])
+
+    def family_of(repo, number):
+        return family.get(find((repo, number)), set())
+
     # A hit on any earlier member of the same family counts.
-    changed = True
-    while changed:
-        changed = False
-        for (repo, later), members in earlier_members.items():
-            for other in list(members):
-                for second in earlier_members.get((repo, other), set()):
-                    if second not in members:
-                        members.add(second)
-                        changed = True
-            family = {m for m in members}
-            for (repo2, later2), members2 in earlier_members.items():
-                if repo2 == repo and later2 != later and members2 & family:
-                    if created(repo, later2) < created(repo, later) and later2 not in members:
-                        members.add(later2)
-                        changed = True
+    earlier_members = {
+        (repo, later): {n for n in family_of(repo, later) if created(repo, n) < created(repo, later)}
+        for repo, _, later in STRATUM_A
+    }
+    inputs = []
     for (repo, later), members in sorted(earlier_members.items()):
         inputs.append(
             {
@@ -158,10 +157,7 @@ def main(cache_dir, out_path):
         comment = min(comments, key=lambda c: c["createdAt"])
         assert created(repo, host) < comment["createdAt"]
         # A hit on another issue in the host's duplicate family counts too, if it existed by then.
-        targets = {host}
-        for (repo2, later), members in earlier_members.items():
-            if repo2 == repo and host in members | {later}:
-                targets |= {n for n in members | {later} if created(repo, n) < comment["createdAt"]}
+        targets = {host} | {n for n in family_of(repo, host) if created(repo, n) < comment["createdAt"]}
         inputs.append(
             {
                 "id": f"B:{repo}#{host}",

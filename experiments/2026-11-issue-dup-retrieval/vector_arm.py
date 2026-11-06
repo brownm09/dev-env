@@ -5,7 +5,8 @@ Usage: <venv-python> vector_arm.py <issue-cache-dir> <labels.json> <store-dir> <
 Model and text template are fixed before any result and are not tuned. Issue text and vectors stay
 in <store-dir>, on this machine. The output holds issue numbers and scores only.
 
-Store: one flat .npz per repo, searched by brute force. See ADR-157 for why nothing heavier is used.
+Store: one flat .npz per repo, searched by brute force and reused when its issue numbers still
+match. See ADR-157 for why nothing heavier is used.
 """
 import json
 import os
@@ -15,7 +16,7 @@ import time
 import numpy as np
 from fastembed import TextEmbedding
 
-from dup_eval import sanitize_query
+from dup_eval import draft_text, log_event, sanitize_query
 
 MODEL = "BAAI/bge-small-en-v1.5"
 REPOS = ["dev-env", "career-playbook", "lifting-logbook", "cover-letter-runtime"]
@@ -26,24 +27,22 @@ def doc_text(issue):
     return f"{issue['title']}\n\n{issue['body'] or ''}"
 
 
-def log(path, **event):
-    with open(path, "a", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps({"t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **event}) + "\n")
-
-
 def unit(rows):
     rows = np.asarray(rows, dtype=np.float32)
     return rows / np.linalg.norm(rows, axis=1, keepdims=True)
 
 
-def query_text(item, repos):
-    if item["stratum"] == "A":
-        issue = repos[item["repo"]][item["query_issue"]]
-        return sanitize_query(f"{issue['title']}\n\n{issue['body'] or ''}")
-    for comment in repos[item["repo"]][item["host_issue"]]["comments"]["nodes"]:
-        if comment["createdAt"] == item["comment_created_at"]:
-            return sanitize_query(comment["body"])
-    raise SystemExit(f"comment not found for {item['id']}")
+def load_or_embed(model, repo, issues, store_dir):
+    """Return (numbers, vectors) for one repo, reusing the flat file when it covers the same issues."""
+    ordered = np.array(sorted(issues))
+    path = f"{store_dir}/{repo}.npz"
+    if os.path.exists(path):
+        with np.load(path) as stored:
+            if np.array_equal(stored["numbers"], ordered):
+                return ordered, stored["vectors"]
+    vectors = unit(list(model.embed([doc_text(issues[int(n)]) for n in ordered])))
+    np.savez(path, numbers=ordered, vectors=vectors)
+    return ordered, vectors
 
 
 def main(cache_dir, labels_path, store_dir, out_path, log_path):
@@ -54,22 +53,20 @@ def main(cache_dir, labels_path, store_dir, out_path, log_path):
         with open(f"{cache_dir}/issues_{repo}.json", encoding="utf-8") as f:
             repos[repo] = {i["number"]: i for i in json.load(f)}
     os.makedirs(store_dir, exist_ok=True)
+    log_event(log_path, stage="embed_corpus", event="start", model=MODEL)
     model = TextEmbedding(MODEL)
     started = time.time()
     numbers, created, vectors = {}, {}, {}
     docs = 0
     for repo in REPOS:
-        ordered = sorted(repos[repo])
-        numbers[repo] = np.array(ordered)
-        created[repo] = [repos[repo][n]["createdAt"] for n in ordered]
-        vectors[repo] = unit(list(model.embed([doc_text(repos[repo][n]) for n in ordered])))
-        np.savez(f"{store_dir}/{repo}.npz", numbers=numbers[repo], vectors=vectors[repo])
-        docs += len(ordered)
-    log(log_path, stage="embed_corpus", docs=docs, seconds=round(time.time() - started), model=MODEL)
+        numbers[repo], vectors[repo] = load_or_embed(model, repo, repos[repo], store_dir)
+        created[repo] = [repos[repo][int(n)]["createdAt"] for n in numbers[repo]]
+        docs += len(numbers[repo])
+    log_event(log_path, stage="embed_corpus", event="end", docs=docs, seconds=round(time.time() - started))
 
     ranks, scores = {}, {}
     started = time.time()
-    query_vectors = unit(list(model.embed([query_text(i, repos) for i in labels["inputs"]])))
+    query_vectors = unit(list(model.embed([draft_text(i, repos) for i in labels["inputs"]])))
     for item, vector in zip(labels["inputs"], query_vectors):
         repo = item["repo"]
         eligible = np.array([c < item["created_before"] for c in created[repo]])
@@ -81,7 +78,7 @@ def main(cache_dir, labels_path, store_dir, out_path, log_path):
         top = top[sims[top] > -2.0]
         ranks[item["id"]] = [int(numbers[repo][i]) for i in top]
         scores[item["id"]] = [round(float(sims[i]), 4) for i in top]
-    log(log_path, stage="rank_inputs", inputs=len(labels["inputs"]), seconds=round(time.time() - started, 2))
+    log_event(log_path, stage="rank_inputs", inputs=len(labels["inputs"]), seconds=round(time.time() - started, 2))
 
     def pair_score(repo, a, b):
         ia = int(np.where(numbers[repo] == a)[0][0])

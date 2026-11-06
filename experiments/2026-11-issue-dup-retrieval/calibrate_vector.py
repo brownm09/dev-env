@@ -1,9 +1,10 @@
-"""Calibrate the vector instrument on a repo outside the corpus, before any arm is scored.
+"""Smoke-check the embedding stack on a repo outside the corpus. Not a calibration.
 
 Usage: <venv-python> calibrate_vector.py <issue-cache-dir>
 
-Known good: each issue's own text must rank itself first. Known bad: a string unrelated to the repo
-must score below every issue's self-match, by a clear margin. Prints numbers only.
+A unit vector's similarity to itself is 1.0, so the self-rank check shows only that the stack runs
+deterministically; a meaningless embedder would pass it too. The 0.7 limit on an unrelated string
+has no calibration source. It doesn't exercise vector_arm's filters. Prints numbers only.
 """
 import json
 import sys

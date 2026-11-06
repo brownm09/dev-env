@@ -1,58 +1,131 @@
 #!/usr/bin/env python3
 """Calibrate the duplicate-issue retrieval experiment's scorer (dev-env#1260).
 
-Known-good and known-bad rankers must land where the arithmetic says, the frozen outcome map must
-be able to reach every verdict, and the committed evaluation set must be non-empty and hold no text
-from a private repo. Standard library only; the embedding stack isn't needed here.
+Known-good and known-bad rankers go through score.py's real path, the frozen outcome map must reach
+every verdict and hold at each threshold, the committed result must reproduce from committed data,
+and committed files must hold no text from a private repo. Standard library only; the embedding
+stack isn't needed here.
 """
+import contextlib
+import io
 import json
 import os
 import pathlib
-import random
 import sys
+import tempfile
 import unittest
 
-EXPERIMENT = pathlib.Path(__file__).resolve().parents[3] / "experiments" / "2026-11-issue-dup-retrieval"
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+EXPERIMENT = REPO_ROOT / "experiments" / "2026-11-issue-dup-retrieval"
+ADR = REPO_ROOT / "docs" / "adr" / "157-duplicate-issue-retrieval-experiment.md"
 sys.path.insert(0, str(EXPERIMENT))
 
 import dup_eval as de  # noqa: E402
+import score  # noqa: E402
 
 
-def load_labels():
-    with open(EXPERIMENT / "labels.json", encoding="utf-8") as f:
+def load_json(name):
+    with open(EXPERIMENT / name, encoding="utf-8") as f:
         return json.load(f)
 
 
-class Calibration(unittest.TestCase):
-    """The hit-test is the verdict's instrument, so it is scored against known rankers first."""
+FIXTURE_INPUTS = [
+    {"id": "A:r#5", "stratum": "A", "repo": "r", "query_issue": 5, "created_before": "t", "targets": [1]},
+    {"id": "A:r#6", "stratum": "A", "repo": "r", "query_issue": 6, "created_before": "t", "targets": [2]},
+    {"id": "B:r#3", "stratum": "B", "repo": "r", "host_issue": 3, "created_before": "t", "targets": [3]},
+]
 
-    def setUp(self):
-        self.inputs = load_labels()["inputs"]
 
-    def test_known_good_ranker_scores_one(self):
-        runs = [{"ranked": i["targets"] + [99999], "targets": i["targets"]} for i in self.inputs]
-        self.assertEqual(de.recall_at(runs, de.K_PRIMARY), 1.0)
+def run_score(vector_ranks, keyword_lists, generations=("g1", "g2", "g3")):
+    """Run score.main on fixture files through its real path, and return its summary."""
+    vector = {
+        "ranks": vector_ranks,
+        "pairs": {
+            "duplicate": [["r", 1, 5, 0.9]],
+            "known_negative": [["r", 7, 8, 0.5]],
+            "easy_negative": [["r", 7, 9, 0.2]],
+            "auditor_near_dup": [["r", 7, 10, 0.6]],
+        },
+        "cross_repo": [],
+    }
+    keyword = {
+        g: {
+            i["id"]: {"parity": keyword_lists[i["id"]], "default": keyword_lists[i["id"]]}
+            for i in FIXTURE_INPUTS
+        }
+        for g in generations
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = {}
+        for name, data in (("labels", {"inputs": FIXTURE_INPUTS}), ("vector", vector), ("keyword", keyword)):
+            paths[name] = os.path.join(tmp, f"{name}.json")
+            with open(paths[name], "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        out = os.path.join(tmp, "scored.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            score.main(paths["labels"], paths["vector"], paths["keyword"], out)
+        with open(out, encoding="utf-8") as f:
+            return json.load(f)["summary"]
 
-    def test_known_bad_ranker_scores_zero(self):
-        runs = [{"ranked": [99998, 99999], "targets": i["targets"]} for i in self.inputs]
-        self.assertEqual(de.recall_at(runs, de.K_PRIMARY), 0.0)
+
+GOOD_RANKS = {i["id"]: i["targets"] + [999] for i in FIXTURE_INPUTS}
+BAD_RANKS = {i["id"]: [998, 999] for i in FIXTURE_INPUTS}
+GOOD_LISTS = {i["id"]: [i["targets"] + [999]] for i in FIXTURE_INPUTS}
+BAD_LISTS = {i["id"]: [[], [998]] for i in FIXTURE_INPUTS}
+
+
+class ScorePathCalibration(unittest.TestCase):
+    """The verdict's instrument, calibrated through the path that produces it."""
+
+    def test_known_good_rankers_score_one(self):
+        recall = run_score(GOOD_RANKS, GOOD_LISTS)["recall_at_10"]["pooled"]
+        self.assertEqual(recall, {"vector": 1.0, "keyword": 1.0})
+
+    def test_known_bad_rankers_score_zero(self):
+        recall = run_score(BAD_RANKS, BAD_LISTS)["recall_at_10"]["pooled"]
+        self.assertEqual(recall, {"vector": 0.0, "keyword": 0.0})
+
+    def test_good_vector_against_bad_keyword_counts_every_family(self):
+        summary = run_score(GOOD_RANKS, BAD_LISTS)
+        self.assertEqual(summary["gap_pooled"], 1.0)
+        self.assertEqual(summary["family_sign_test"]["wins"], 3)
+        # 3 wins out of 3 is p = 0.125, so a large gain on too few families stays inconclusive.
+        self.assertEqual(summary["verdict"], "inconclusive")
+
+    def test_equal_arms_read_as_refuted(self):
+        self.assertEqual(run_score(GOOD_RANKS, GOOD_LISTS)["verdict"], "refuted")
+
+    def test_partial_keyword_file_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            run_score(GOOD_RANKS, GOOD_LISTS, generations=("g1", "g2"))
 
     def test_target_below_the_budget_is_a_miss(self):
         ranked = list(range(1000, 1000 + de.K_PRIMARY)) + [7]
         self.assertFalse(de.hit_at(ranked, [7], de.K_PRIMARY))
         self.assertTrue(de.hit_at(ranked, [7], de.K_PRIMARY + 1))
 
-    def test_random_ranker_lands_near_chance(self):
-        rng = random.Random(1)
-        pool = list(range(1, 501))
-        runs = [{"ranked": rng.sample(pool, 500), "targets": [rng.choice(pool)]} for _ in range(2000)]
-        self.assertAlmostEqual(de.recall_at(runs, 10), 10 / 500, delta=0.012)
-
-    def test_empty_run_raises_rather_than_scoring(self):
-        with self.assertRaises(ValueError):
-            de.recall_at([], 10)
+    def test_no_generations_raises_rather_than_scoring(self):
         with self.assertRaises(ValueError):
             de.majority([])
+
+
+class CommittedResult(unittest.TestCase):
+    def test_score_reproduces_the_committed_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "scored.json")
+            with contextlib.redirect_stdout(io.StringIO()):
+                score.main(
+                    str(EXPERIMENT / "labels.json"),
+                    str(EXPERIMENT / "vector_results.json"),
+                    str(EXPERIMENT / "keyword_results.json"),
+                    out,
+                )
+            with open(out, encoding="utf-8") as f:
+                self.assertEqual(json.load(f), load_json("scored.json"))
+
+    def test_frozen_map_reading_is_pinned(self):
+        # The audit's threat sweep overrides this reading: see results.md.
+        self.assertEqual(load_json("scored.json")["summary"]["verdict"], "supported")
 
 
 class OutcomeMap(unittest.TestCase):
@@ -68,15 +141,32 @@ class OutcomeMap(unittest.TestCase):
     def test_between_the_lines_is_inconclusive(self):
         self.assertEqual(de.decide(0.10, 0.01, 0.0, 0.10)[0], "inconclusive")
 
-    def test_clearing_the_bar_without_the_sign_test_is_inconclusive(self):
-        self.assertEqual(de.decide(0.20, 0.06, 0.0, 0.20)[0], "inconclusive")
-
-    def test_stratum_b_loss_blocks_a_pooled_win(self):
-        self.assertEqual(de.decide(0.20, 0.01, -0.16, 0.20)[0], "inconclusive")
-
     def test_scope_disagreement_is_inconclusive_in_both_directions(self):
         self.assertEqual(de.decide(0.20, 0.01, 0.0, 0.05)[0], "inconclusive")
         self.assertEqual(de.decide(0.0, 0.5, 0.0, 0.20)[0], "inconclusive")
+
+    def test_no_gain_line_is_inclusive(self):
+        self.assertEqual(de.decide(0.05, 0.5, 0.0, 0.15)[0], "refuted")
+        self.assertEqual(de.decide(0.0501, 0.5, 0.0, 0.15)[0], "inconclusive")
+
+    def test_default_scope_line_on_the_no_gain_branch(self):
+        self.assertEqual(de.decide(0.05, 0.5, 0.0, 0.1501)[0], "inconclusive")
+
+    def test_win_bar_is_inclusive(self):
+        self.assertEqual(de.decide(0.15, 0.01, 0.0, 0.15)[0], "supported")
+        self.assertEqual(de.decide(0.1499, 0.01, 0.0, 0.15)[0], "inconclusive")
+
+    def test_significance_line_is_inclusive(self):
+        self.assertEqual(de.decide(0.20, 0.05, 0.0, 0.20)[0], "supported")
+        self.assertEqual(de.decide(0.20, 0.0501, 0.0, 0.20)[0], "inconclusive")
+
+    def test_stratum_b_guard_is_inclusive(self):
+        self.assertEqual(de.decide(0.20, 0.01, -0.15, 0.20)[0], "supported")
+        self.assertEqual(de.decide(0.20, 0.01, -0.1501, 0.20)[0], "inconclusive")
+
+    def test_default_scope_line_on_the_win_branch(self):
+        self.assertEqual(de.decide(0.20, 0.01, 0.0, 0.05)[0], "inconclusive")
+        self.assertEqual(de.decide(0.20, 0.01, 0.0, 0.0501)[0], "supported")
 
 
 class Helpers(unittest.TestCase):
@@ -113,21 +203,45 @@ class Helpers(unittest.TestCase):
         self.assertIn("Hook fails on a clean tree", out)
         self.assertIn("The guard reads config", out)
 
+    def test_draft_text_for_each_stratum(self):
+        repos = {"r": {
+            5: {"title": "Title", "body": "Body see #4", "comments": {"nodes": []}},
+            3: {"title": "Host", "body": "", "comments": {"nodes": [{"createdAt": "t", "body": "Finding"}]}},
+        }}
+        a = {"id": "A", "stratum": "A", "repo": "r", "query_issue": 5}
+        b = {"id": "B", "stratum": "B", "repo": "r", "host_issue": 3, "comment_created_at": "t"}
+        self.assertEqual(de.draft_text(a, repos), "Title\n\nBody see")
+        self.assertEqual(de.draft_text(b, repos), "Finding")
+
+    def test_empty_or_missing_draft_raises(self):
+        repos = {"r": {3: {"title": "Host", "body": "", "comments": {"nodes": [
+            {"createdAt": "t", "body": "Duplicate of #1"},
+        ]}}}}
+        empty = {"id": "B", "stratum": "B", "repo": "r", "host_issue": 3, "comment_created_at": "t"}
+        missing = dict(empty, comment_created_at="other")
+        with self.assertRaises(SystemExit):
+            de.draft_text(empty, repos)
+        with self.assertRaises(SystemExit):
+            de.draft_text(missing, repos)
+
 
 class EvaluationSet(unittest.TestCase):
     def test_counts_are_non_vacuous(self):
-        labels = load_labels()
+        labels = load_json("labels.json")
         strata = [i["stratum"] for i in labels["inputs"]]
         self.assertGreaterEqual(strata.count("A"), 3)
         self.assertGreaterEqual(strata.count("B"), 1)
         self.assertGreaterEqual(len(labels["known_negative"]), 1)
         self.assertGreaterEqual(len(labels["easy_negative"]), 1)
 
-    def test_targets_are_filed_before_a_stratum_a_query(self):
-        for item in load_labels()["inputs"]:
+    def test_targets_are_numbered_before_a_stratum_a_query(self):
+        """Issue numbers rise with filing order within a repo."""
+        stratum_a = [i for i in load_json("labels.json")["inputs"] if i["stratum"] == "A"]
+        self.assertTrue(stratum_a)
+        for item in stratum_a:
             self.assertTrue(item["targets"], item["id"])
-            if item["stratum"] == "A":
-                self.assertNotIn(item["query_issue"], item["targets"])
+            for target in item["targets"]:
+                self.assertLess(target, item["query_issue"], item["id"])
 
 
 class Privacy(unittest.TestCase):
@@ -144,34 +258,42 @@ class Privacy(unittest.TestCase):
         titles = ["Reject the widget when the frobnicator is stale", "short"]
         self.assertEqual(de.privacy_scan("| 3 | career-playbook#1575 | short rank | 0.81 |", titles), [])
 
-    def test_labels_hold_only_numbers_and_structure(self):
-        def walk(node):
-            if isinstance(node, dict):
-                for key, value in node.items():
-                    self.assertLess(len(str(key)), 30)
-                    walk(value)
-            elif isinstance(node, list):
-                for value in node:
-                    walk(value)
-            elif isinstance(node, str):
-                self.assertLess(len(node), 45, node)
+    def _assert_short_strings(self, node, limit):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                self.assertLess(len(str(key)), 40)
+                self._assert_short_strings(value, limit)
+        elif isinstance(node, list):
+            for value in node:
+                self._assert_short_strings(value, limit)
+        elif isinstance(node, str):
+            self.assertLess(len(node), limit, node)
 
-        walk(load_labels())
+    def test_data_files_hold_only_numbers_and_short_structure(self):
+        """Issue text can't pass this. Limits: IDs and timestamps fit under 45, and scored.json also
+        holds one fixed reason sentence from dup_eval.decide."""
+        for name, limit in (("labels.json", 45), ("keyword_results.json", 45), ("vector_results.json", 45), ("scored.json", 110)):
+            self._assert_short_strings(load_json(name), limit)
 
     def test_committed_files_hold_no_private_title(self):
-        """Runs where the local issue cache exists; CI can't read the private repos. The result of
-        the local run is recorded in results.md."""
+        """Needs the local issue cache, which CI can't have, because the repos are private. This
+        checks full verbatim titles only. The local result is recorded in results.md."""
         cache = os.environ.get("DUP_EVAL_ISSUE_CACHE")
         if not cache:
-            return
+            self.skipTest("DUP_EVAL_ISSUE_CACHE not set")
         titles = []
         for repo in self.PRIVATE_REPOS:
             with open(f"{cache}/issues_{repo}.json", encoding="utf-8") as f:
                 titles += [i["title"] for i in json.load(f)]
         self.assertGreater(len(titles), 100, "an empty title list would pass vacuously")
-        for path in EXPERIMENT.iterdir():
-            if path.is_file() and path.suffix in {".md", ".json", ".jsonl", ".txt"}:
-                self.assertEqual(de.privacy_scan(path.read_text(encoding="utf-8"), titles), [], path.name)
+        paths = [p for p in EXPERIMENT.iterdir() if p.is_file() and p.suffix in {".md", ".json", ".jsonl", ".txt", ".py"}]
+        self.assertGreater(len(paths), 5, "an empty file list would pass vacuously")
+        for path in paths + [ADR]:
+            text = path.read_text(encoding="utf-8")
+            if path.suffix == ".json":
+                # Decode first: json.dump escapes non-ASCII, which would hide a title.
+                text = json.dumps(json.loads(text), ensure_ascii=False)
+            self.assertEqual(de.privacy_scan(text, titles), [], path.name)
 
 
 if __name__ == "__main__":

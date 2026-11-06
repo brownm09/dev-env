@@ -21,6 +21,8 @@ from dup_eval import (
     sign_test_one_sided,
 )
 
+EXPECTED_GENERATIONS = {"g1", "g2", "g3"}
+
 
 def auc(positive, negative):
     """Probability a duplicate pair scores above a non-duplicate pair (ties count half)."""
@@ -39,6 +41,8 @@ def main(labels_path, vector_path, keyword_path, out_path):
         keyword = json.load(f)
     inputs = labels["inputs"]
     generations = sorted(keyword)
+    if set(generations) != EXPECTED_GENERATIONS:
+        raise SystemExit(f"registered k=3, but the keyword file holds {generations}")
 
     edges = []
     for item in inputs:
@@ -63,7 +67,6 @@ def main(labels_path, vector_path, keyword_path, out_path):
         merged = {g: round_robin(keyword[g][iid]["parity"]) for g in generations}
         row["k_ranks"] = [hit_rank(merged[g], targets) for g in generations]
         row["k_hit"] = majority([hit_at(merged[g], targets, K_PRIMARY) for g in generations])
-        row["k_shown"] = statistics.median(min(len(merged[g]), K_PRIMARY) for g in generations)
         row["k_total_returned"] = statistics.median(len(merged[g]) for g in generations)
         row["k_any30"] = majority([hit_rank(merged[g], targets) is not None for g in generations])
         if item["stratum"] == "A":

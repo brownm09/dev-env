@@ -1,10 +1,12 @@
 """Scoring core for the duplicate-issue retrieval experiment (dev-env#1260).
 
-Standard library only, so CI can test it without the embedding stack. Every number in the
-verdict comes from these functions; nothing here reads issue text except `sanitize_query`
+Standard library only, so CI can test it without the embedding stack. `score.py` builds the verdict
+from these helpers and `decide`. Nothing here reads issue text except `sanitize_query`, `draft_text`
 and `privacy_scan`.
 """
+import json
 import re
+import time
 from math import comb
 
 K_PRIMARY = 10
@@ -33,6 +35,28 @@ def sanitize_query(text):
     return _REF.sub("", "\n".join(kept)).strip()
 
 
+def draft_text(item, repos):
+    """The sanitized draft both arms start from. An empty draft raises, because the frozen rule is
+    to discard and list such an input, never to score it."""
+    if item["stratum"] == "A":
+        issue = repos[item["repo"]][item["query_issue"]]
+        text = sanitize_query(f"{issue['title']}\n\n{issue['body'] or ''}")
+    else:
+        comments = repos[item["repo"]][item["host_issue"]]["comments"]["nodes"]
+        matching = [c for c in comments if c["createdAt"] == item["comment_created_at"]]
+        if not matching:
+            raise SystemExit(f"comment not found for {item['id']}")
+        text = sanitize_query(matching[0]["body"])
+    if not text:
+        raise SystemExit(f"empty sanitized draft for {item['id']}: discard and list it")
+    return text
+
+
+def log_event(path, **event):
+    with open(path, "a", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps({"t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **event}) + "\n")
+
+
 def round_robin(lists):
     """Merge per-query result lists into one ranking: first of each, then second of each, deduped."""
     merged, seen = [], set()
@@ -56,14 +80,6 @@ def hit_rank(ranked, targets):
 def hit_at(ranked, targets, k):
     rank = hit_rank(ranked, targets)
     return rank is not None and rank <= k
-
-
-def recall_at(runs, k):
-    """Share of inputs with a target in the top k. Raises on an empty run: a recall over nothing
-    must read as a broken extraction, not as a score."""
-    if not runs:
-        raise ValueError("recall_at got no inputs: a vacuous score, not a result")
-    return sum(hit_at(r["ranked"], r["targets"], k) for r in runs) / len(runs)
 
 
 def majority(flags):
@@ -113,9 +129,10 @@ def cluster_discordance(rows):
 def decide(gap, p, gap_stratum_b, gap_default_scope_a):
     """The frozen outcome map. Inputs are vector minus keyword recall@10:
     gap (pooled), p (family sign test), gap_stratum_b, gap_default_scope_a (keyword at GitHub's
-    default scope, stratum A only). Returns the verdict and the reason."""
+    default scope, stratum A only). Returns the map's reading and the reason. The audit's threat
+    sweep can still force inconclusive on top of this (see results.md)."""
     if gap <= NO_GAIN:
-        if gap_default_scope_a is not None and gap_default_scope_a > WIN_BAR:
+        if gap_default_scope_a > WIN_BAR:
             return "inconclusive", "confounded by search scope: no pooled gain, but a large gain at default scope"
         return "refuted", "pooled gain is at or below the no-gain line"
     if gap < WIN_BAR:
@@ -124,7 +141,7 @@ def decide(gap, p, gap_stratum_b, gap_default_scope_a):
         return "inconclusive", "pooled gain clears the bar but the family sign test does not"
     if gap_stratum_b < -STRATUM_B_GUARD:
         return "inconclusive", "pooled gain clears the bar but stratum B loses beyond the guard"
-    if gap_default_scope_a is not None and gap_default_scope_a <= NO_GAIN:
+    if gap_default_scope_a <= NO_GAIN:
         return "inconclusive", "confounded by search scope: the gain disappears at default scope"
     return "supported", "pooled gain clears the bar, the sign test, the stratum B guard and the scope check"
 

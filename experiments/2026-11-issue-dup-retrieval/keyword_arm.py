@@ -2,20 +2,26 @@
 
 Usage: py -3 keyword_arm.py <labels.json> <queries.json> <out.json> <run_log.jsonl>
 
-queries.json holds {generation: {input_id: [query, ...]}} and stays local, because queries written
-from private issues carry private words. The output holds issue numbers only.
+queries.json holds {generation: {input_id: [query, ...]}} and stays out of the repo, because queries
+written from private issues carry private words. They do go to GitHub's search. The output holds
+issue numbers only, and appears only when every generation has finished.
 
 A failed `gh` call aborts the run. It must never read as an empty result, since an empty result
 scores as a miss.
 """
 import json
+import os
 import subprocess
 import sys
 import time
 
+from dup_eval import log_event
+
 OWNERS = {"lifting-logbook": "merickvaughn"}
 SCOPES = {"parity": " in:title,body", "default": ""}
 PACE_SECONDS = 1.0
+CALL_TIMEOUT_SECONDS = 60
+ATTEMPTS = 4
 
 
 def repo_slug(repo):
@@ -26,17 +32,28 @@ def search(repo, query, scope, created_before):
     full = f"{query}{SCOPES[scope]} created:<{created_before}"
     args = ["gh", "issue", "list", "--repo", repo_slug(repo), "--state", "all", "--limit", "30"]
     args += ["--search", full, "--json", "number"]
-    for attempt in range(4):
-        out = subprocess.run(args, capture_output=True)
-        if out.returncode == 0:
-            return [i["number"] for i in json.loads(out.stdout.decode("utf-8"))]
-        time.sleep(30 * (attempt + 1))
-    raise SystemExit("gh failed after retries: " + out.stderr.decode("utf-8", "replace")[:400])
+    error = ""
+    for attempt in range(ATTEMPTS):
+        try:
+            out = subprocess.run(args, capture_output=True, timeout=CALL_TIMEOUT_SECONDS)
+            if out.returncode == 0:
+                return [i["number"] for i in json.loads(out.stdout.decode("utf-8"))]
+            error = out.stderr.decode("utf-8", "replace")[:400]
+        except subprocess.TimeoutExpired:
+            error = f"timed out after {CALL_TIMEOUT_SECONDS} s"
+        if attempt < ATTEMPTS - 1:
+            time.sleep(30 * (attempt + 1))
+    raise SystemExit(f"gh failed after {ATTEMPTS} attempts: {error}")
 
 
-def log(path, **event):
-    with open(path, "a", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps({"t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **event}) + "\n")
+def check_queries(inputs, generations):
+    """Every input needs at least one non-blank query per generation. A missing query would score
+    as a miss, and a blank one would search on qualifiers alone."""
+    for gen, by_input in generations.items():
+        for item in inputs:
+            queries = by_input.get(item["id"])
+            if not queries or not all(q.strip() for q in queries):
+                raise SystemExit(f"{gen}: missing or blank queries for {item['id']}")
 
 
 def main(labels_path, queries_path, out_path, log_path):
@@ -44,11 +61,9 @@ def main(labels_path, queries_path, out_path, log_path):
         inputs = json.load(f)["inputs"]
     with open(queries_path, encoding="utf-8") as f:
         generations = json.load(f)
-    missing = [i["id"] for g in generations.values() for i in inputs if i["id"] not in g]
-    if missing:
-        raise SystemExit(f"queries.json lacks inputs: {missing}")
+    check_queries(inputs, generations)
     cache, calls, started = {}, 0, time.time()
-    log(log_path, stage="keyword_search", event="start", generations=len(generations))
+    log_event(log_path, stage="keyword_search", event="start", generations=len(generations))
     results = {}
     for gen, by_input in generations.items():
         results[gen] = {}
@@ -66,10 +81,12 @@ def main(labels_path, queries_path, out_path, log_path):
                     lists.append(cache[key])
                 per_scope[scope] = lists
             results[gen][item["id"]] = per_scope
-        with open(out_path, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(results, f)
-        log(log_path, stage="keyword_search", event="generation_done", generation=gen, calls=calls)
-    log(log_path, stage="keyword_search", event="end", calls=calls, seconds=round(time.time() - started))
+        log_event(log_path, stage="keyword_search", event="generation_done", generation=gen, calls=calls)
+    partial = out_path + ".partial"
+    with open(partial, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(results, f)
+    os.replace(partial, out_path)
+    log_event(log_path, stage="keyword_search", event="end", calls=calls, seconds=round(time.time() - started))
     print(f"calls={calls} seconds={round(time.time() - started)}")
 
 

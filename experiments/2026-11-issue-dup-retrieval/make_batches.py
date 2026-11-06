@@ -3,25 +3,16 @@
 Usage: py -3 make_batches.py <issue-cache-dir> <labels.json> <out-dir>
 
 The writing agent sees sanitized draft text only: no labels, targets, issue numbers or results.
-The ID map stays beside the batches. All of this is local, because the text can be private.
+The ID map stays beside the batches. All of this stays out of the repo, because the text can be
+private. The agent itself runs through the Anthropic API, like any Claude Code session.
 """
 import json
 import random
 import sys
 
-from dup_eval import sanitize_query
+from dup_eval import draft_text
 
 GENERATIONS = {"g1": 11, "g2": 22, "g3": 33}
-
-
-def draft_text(item, repos):
-    if item["stratum"] == "A":
-        issue = repos[item["repo"]][item["query_issue"]]
-        return sanitize_query(f"{issue['title']}\n\n{issue['body'] or ''}")
-    for comment in repos[item["repo"]][item["host_issue"]]["comments"]["nodes"]:
-        if comment["createdAt"] == item["comment_created_at"]:
-            return sanitize_query(comment["body"])
-    raise SystemExit(f"comment not found for {item['id']}")
 
 
 def main(cache_dir, labels_path, out_dir):
