@@ -1,6 +1,6 @@
 ---
 name: experiment-audit
-description: Rigor protocol for process experiments — design mode pre-registers (tier, hypothesis + primary outcome construct, contamination inventory, instrument calibration, frozen win bar) before any results exist; verdict mode gates the conclusion (deviation ledger, threat sweep T1–T10, verdict read off the primary construct, decision legality). Invoke as /experiment-audit design <description> | verdict <results-path, issue #N, or description>.
+description: Rigor protocol for process experiments — design mode pre-registers (tier, hypothesis + primary outcome construct, contamination inventory, instrument calibration, frozen win bar, measured cost model with a stage-boundary stop rule) before any results exist; verdict mode gates the conclusion (deviation ledger, estimated against actual spend, threat sweep T1–T10, verdict read off the primary construct, decision legality). Invoke as /experiment-audit design <description> | verdict <results-path, issue #N, or description>.
 argument-hint: "design <experiment description> | verdict <results path | issue #N | description>"
 allowed-tools: Read Grep Glob Bash AskUserQuestion Write Edit
 ---
@@ -166,13 +166,103 @@ Resolve every `<CONFIRM>` marker with the user before freezing.
 
 ---
 
-## Step D6 — Freeze
+## Step D6 — Budget: cost model, pilot, stop rule, and screen (field 11)
 
-Emit the complete 10-field pre-registration as one `[experiment-audit] Pre-registration — <slug>
+A budget is a measured projection that gets checked between stages, not a single number.
+[cover-letter-runtime#204](https://github.com/brownm09/cover-letter-runtime/issues/204) estimated
+$7.50 and would have cost about $29. Its priciest instrument was estimated per call, but its cost
+scaled with claims per run, and that count wasn't known until the arms finished. They finished with
+$5.17 left and a known need of at least $14.60. Nothing checked that, so scoring spent $5.03 before
+reaching the cap, with no verdict to show for it.
+
+An experiment with no metered stage writes `Field 11: N/A — no metered stage` and skips this step.
+
+**What the budget covers.** State the limit and who approved it, then name what counts against it.
+The default is the experiment's own model calls. Say in the field that the session driving the
+experiment and any review of it are outside the budget unless they are listed as stages, because
+they can be the larger bill:
+[dev-env PR 1276](https://github.com/brownm09/dev-env/pull/1276) estimated query writing at $1.75
+and spent $1.73, while its session ($15.45) and review subagents ($5.04) dominated a total of about
+$22.60. Name each stage's billing source, API or subscription (global *Context & Token Efficiency →
+Token source*). API use, including the pilot's, needs the owner's approval first.
+
+**Per-unit cost model.** Emit one row per stage, including calibration, the pilot, retries, and any
+held-out input:
+
+```
+[experiment-audit] Cost model — <slug>
+| # | Stage | Unit | Units expected (source) | Cost per unit (source) | Projected | Billed to |
+|---|-------|------|-------------------------|------------------------|-----------|-----------|
+| 1 | <arm runs> | per run | n × k × arms | $X (pilot) | $Y | API |
+| 2 | <scorer>   | per claim | runs × claims per run × passes (derived: known after stage 1) | $X (pilot) | $Y | API |
+```
+
+- **Name the unit the cost actually scales with**, such as per claim or per run. "Per call" is the
+  right unit only when every call is about the same size.
+- **Mark any unit count an earlier stage determines** as `derived: known after stage <n>`, with the
+  pilot's figure as the placeholder. These are what the stop rule re-projects.
+- **Say how a failed call is priced.** A call that times out may return no usage figure, so a ledger
+  can't price it and a cap doesn't bound the bill: #204's ledger read $9.86 while the real bill may
+  be near $11.80.
+- **State the margin** between the projected total and the budget, and where it came from. The
+  projection must fit before the freeze. If it doesn't, change n or k in field 10 or ask the owner.
+
+**Pilot.** Before the freeze, run a pilot on an input outside the corpus and any held-out set,
+through every stage at real size, or state in the field why you are skipping it. A reason might be
+that the same instrument was already measured on same-sized inputs in a run you cite. Without a
+pilot, mark the affected rates `unmeasured`.
+
+- **The pilot's numbers go in the pre-registration:** the input, units per stage, cost per unit,
+  failures and timeouts, and what the pilot itself cost.
+- **Calibration calls don't stand in for a pilot.** #204's calibration calls held a few claims each,
+  against an average of 23 and a maximum of 64 on real artifacts, and the cost per claim came in
+  about 1.5 times higher on the corpus.
+- **A declared pilot is the one generation allowed before the freeze** (Gate 0). It may inform the
+  design, including n, k, unit counts, and timeouts. It never scores in the verdict, and its output
+  isn't compared by arm to set the win bar (T8).
+
+**Stop rule at each stage boundary.** List the boundaries in the field. Before the first call of
+each stage, re-project the remaining stages from measured units and measured cost per unit, and
+keep this block in the results home:
+
+```
+Stage boundary — <slug>, before <stage>
+Spent: $X priced, plus up to $Y for failed calls with no usage figure, of a $B budget
+Remaining: <stage>: <measured units> × <measured cost per unit> = $Z; <next stage>: ...
+Projected $R against $A available. Fits | Does not fit
+```
+
+- **If it doesn't fit, stop and ask the owner** with `AskUserQuestion`: raise the budget, reduce the
+  scope, or stop and shelve. Spend nothing further until they answer. A scope change is a Gate 1
+  deviation.
+- **A hard cap isn't this check.** A cap fires mid-stage, after the money is gone.
+- **Read only unit counts and spend at a boundary, never scores by arm.** That is what keeps the
+  check from being optional stopping (T7) or peeking (T8). The one by-arm read allowed is a screen
+  pre-registered below.
+- **It runs during the experiment,** after design mode has ended, which is why the frozen field
+  carries it. If one command runs several stages, it must run this check itself or be split.
+- **Leave the `[experiment-audit]` marker off this block.** `stop-experiment-verdict-gate.py` reads
+  that marker as "the audit ran", so a mid-run block would silence the verdict backstop.
+
+**Reader-free screen.** Ask whether a reader-free screen can gate the expensive instrument. In #204
+the reader was the blinded model that judged every claim. A reader-free screen compares only what
+the arms already produced, such as failures, finding counts, or ratings, so it costs nothing extra.
+Pre-register the screen and what each outcome does, or say why none applies.
+
+**A screen may gate spending, but it may not decide the verdict (threat T10),** because it stands in
+for the primary construct. When a clean screen skips the reader, the construct went unmeasured, so
+the verdict is `inconclusive — primary construct not measured`. Keep the screen's by-arm results
+away from blinded scorers (field 9).
+
+---
+
+## Step D7 — Freeze
+
+Emit the complete 11-field pre-registration as one `[experiment-audit] Pre-registration — <slug>
 (Tier 1)` block, then **post it to the tracking issue before any generation** (with the user's
 confirmation, per the messaging rules) — GitHub's timestamp + edit history is the tamper-evidence
 Gate 0 checks later. Optionally also write `<results-home>/preregistration.md`. Design mode ends
-here; generation happens *after* the freeze.
+here; generation happens *after* the freeze, apart from a pilot declared in field 11.
 
 ---
 
@@ -189,10 +279,12 @@ Do not manufacture a retroactive pre-registration.
 ## Step V2 — Gates 0–1
 
 - **Gate 0 — Registration & freeze.** The pre-registration exists AND its freeze timestamp precedes
-  *every* generation timestamp. Missing or post-hoc ⇒ cap at `inconclusive — unregistered` (→ salvage).
-- **Gate 1 — Deviation ledger.** Diff conduct against each of the 10 fields. Author-listed deviations:
-  assess impact per deviation. An **auditor-discovered** deviation the author did not disclose ⇒ the
-  verdict is **void** (re-audit only after full disclosure).
+  *every* generation timestamp, apart from a pilot declared in field 11 on a non-corpus input. Missing
+  or post-hoc ⇒ cap at `inconclusive — unregistered` (→ salvage).
+- **Gate 1 — Deviation ledger.** Diff conduct against each registered field (11, or 10 for a
+  pre-registration frozen before field 11 existed). A missing stage-boundary block is a deviation.
+  Author-listed deviations: assess impact per deviation. An **auditor-discovered** deviation the
+  author did not disclose ⇒ the verdict is **void** (re-audit only after full disclosure).
 
 ---
 
@@ -201,10 +293,24 @@ Do not manufacture a retroactive pre-registration.
 - **Gate 2 — Instrument validity.** Every verdict-bearing instrument's calibration ran, *before* arm
   scoring, and passed (known-good → PASS, known-bad → FLAG). Instruments failing this are quarantined
   retroactively; if the headline result depended on one, verdict = `inconclusive — confounded by T2`.
-- **Gate 3 — Achieved power & complete reporting.** Report achieved n and k vs. registered; a
+- **Gate 3 — Achieved power, spend & complete reporting.** Report achieved n and k vs. registered; a
   per-input × per-generation table with **no silent discards** (each discard cites its pre-registered
   criterion); the **worst-case row beside the aggregate**; and a heterogeneity note (win/loss
-  direction per input — an aggregate may not hide a split).
+  direction per input — an aggregate may not hide a split). Also report **estimated against actual
+  spend**, per stage, and **state whether unpriced failures make the total a lower bound**. Name where
+  the actual figure came from (the run's ledger, or the provider's billed amount):
+
+  ```
+  [experiment-audit] Spend — <slug>
+  | # | Stage | Estimated | Actual | Actual ÷ estimated | Failed calls with no usage figure |
+  |---|-------|-----------|--------|--------------------|-----------------------------------|
+  | 1 | <stage> | $X | $Y | 1.0 | 0 |
+  Total: $Y against an estimate of $X and a budget of $B.
+  Exact | Lower bound: N failed calls returned no usage figure, up to $W more at the measured rate.
+  ```
+
+  For a pre-registration with no field 11, report the actual spend and write `not registered` for the
+  estimate. Spend is reported for the next design; it isn't evidence for the verdict.
 
 ---
 
@@ -232,8 +338,8 @@ load-bearing threat forces `inconclusive — confounded by <Tn>`.
 **T10 (criterion substitution)** is the "wrong-yardstick" threat and is distinct from T3: a criterion
 can be perfectly fair and independent yet still be the wrong *construct* — the verdict decided on a
 measurable proxy or a SECONDARY / mechanism criterion instead of the field-1 primary construct.
-FLAG it whenever the headline verdict rests on anything other than the primary criteria (field 3).
-The motivating incident: a "failure" verdict driven by bookend correspondence (a ~20%, easily-fixed
+FLAG it whenever the headline verdict rests on anything other than the primary criteria (field 3),
+including a screen pre-registered in field 11 only to gate spending. The motivating incident: a "failure" verdict driven by bookend correspondence (a ~20%, easily-fixed
 mechanism) while the actual goal — overall letter cohesion — went unmeasured.
 
 ---
