@@ -531,6 +531,14 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 
 **Session length:** A `UserPromptSubmit` hook warns at turn 50 (and every 25 turns thereafter). When warned, consider running `/clear` or `/compact` if the task scope has shifted — accumulated context inflates cost toward the end of long sessions. The default threshold can be overridden per-project: add `"turn_threshold": N` to `.claude/hook-config.json`.
 
+**Token source:** Whenever you estimate or spend tokens, for any task in any session, say whether they come from the subscription or the API.
+
+- **API use needs approval first.** Never use API billing until the user has approved its purpose, estimated expenditure and spend limit. An approval covers only the use it was given for.
+- **Label list-price dollars.** On the subscription, a dollar figure at list price estimates how much of the plan limit something uses. It isn't a charge, so say so.
+- **Confirm the source before a headless run.** `claude auth status` shows a claude.ai login, nothing that outranks it is set (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper`, a `CLAUDE_CODE_USE_*` provider variable, `ANTHROPIC_PROFILE`), and the run doesn't pass `--bare`, which accepts only an API key or helper. In `-p` mode an API key is always used when present ([authentication documentation](https://code.claude.com/docs/en/authentication)). Signed in with a plan, `claude -p` draws from subscription limits ([support article](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)).
+
+Stated by the user on 2026-11-06, after a session priced a test in dollars without confirming what its runs would bill against ([dev-env#1280](https://github.com/brownm09/dev-env/issues/1280)). Nothing enforces this mechanically.
+
 **Mechanical operations:** If a task is fully scriptable with known inputs, write the script rather than running an interactive session. Candidate operations: stale PR remediation, branch cleanup, rebase-and-merge sequences. Use `~/.claude/scripts/merge-stale-pr.sh` for engineering-journal stale draft PRs.
 
 **Always plan first — permission modes don't bypass it:** Plan mode (Shift+Tab cycles modes) is the session default for every substantive task. Bypass and auto modes reduce permission prompts only; they do not relax the plan-first discipline.
