@@ -85,7 +85,7 @@ _ITEM_LOOKUP_QUERY = """query($owner: String!, $repo: String!, $number: Int!) {
   }
 }"""
 
-_CLOSES_RE =re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
+_CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
 # The `--repo`/`-R` flag, PR-URL, positional-number, and `gh pr merge`
 # args-region extraction (with their quote-aware masking) now live in the
 # shared `_repo_target` module — one implementation across the five sibling
@@ -338,7 +338,7 @@ def _match_project_item(response: dict, project_number: str, project_owner: str)
     data = response.get("data") or {}
     target = (data.get("repository") or {}).get("issueOrPullRequest") or {}
     for node in (target.get("projectItems") or {}).get("nodes") or []:
-        project = node.get("project") or {}
+        project = (node or {}).get("project") or {}
         owner = (project.get("owner") or {}).get("login") or ""
         if str(project.get("number")) == str(project_number) and owner.lower() == project_owner.lower():
             return node.get("id")
@@ -377,8 +377,9 @@ def find_project_item(issue_number: int, config: dict) -> str | None:
             encoding="utf-8",
             timeout=30,
         )
-        if result.returncode != 0:
-            return None
+        # No returncode check: gh exits 1 on any GraphQL error but still prints the
+        # response, which can hold the wanted item alongside an error about another
+        # board the token can't read. Output with no JSON raises, caught below.
         item_id = _match_project_item(
             json.loads(result.stdout), config["project_number"], config["project_owner"]
         )

@@ -60,7 +60,8 @@ Exit 1  — single-repo mode: operational failure (no config, gh list failed, mi
           RESULT: line" instruction always has something to read.
 
 The pure helpers (open_issue_numbers / board_issue_numbers /
-compute_orphans / field_key / board_items_query / normalize_board_node /
+compute_orphans / field_key / board_items_query / required_field_problems /
+normalize_board_node /
 colliding_required_fields / is_truncated /
 item_missing_fields / board_items_missing_fields / looks_like_scope_error /
 render_report / render_scan_summary / _added_and_failed / _validated_config) are
@@ -90,31 +91,24 @@ from _worktree_canon import canonical_repo_root
 
 CONFIG_FILE = ".claude/hook-config.json"
 
-# `gh project item-list --format json` items, whose shape fetch_board_items still produces
-# (see normalize_board_node), may expose any of these as gh's own built-in
-# top-level keys — the exact set observed varies by which system fields a given project
-# surfaces (dev-env's board currently emits content/id/labels/repository/status/title plus
-# whichever custom fields are set). Kept as a conservative superset, not the exact set of
-# any one board, so the guard stays safe when this script is reused against a different
-# project's board. A `required_fields` entry whose name lowercases to one of these would
-# silently read the wrong value in item_missing_fields (e.g. a field literally named
-# "Status" would read the built-in status string and always appear "present") —
-# colliding_required_fields() guards against that at config-load time rather than letting
-# it silently mask a real gap.
+# Item keys a required field's name must not collide with. normalize_board_node emits only
+# `id` and `content` besides the required fields themselves, so those two are the real
+# collisions: a field literally named "Content" would read the built-in value and always
+# appear "present". The rest are the keys `gh project item-list --format json` used to emit,
+# kept as a conservative superset. colliding_required_fields() applies this at config-load
+# time rather than letting a collision silently mask a real gap.
 _RESERVED_ITEM_KEYS = frozenset({
     "id", "type", "title", "body", "content", "repository", "url",
     "status", "labels", "milestone", "assignees", "reviewers", "number",
 })
 
 
-# What a project field's value can be, one selection per type that carries a single
-# scalar. Only one of these is ever non-null on a given value.
+# The field types a required field may be, which are the two post-tool-use.py and
+# _edit_command handle. _FIELD_VALUE_SELECTION reads exactly these.
+_SUPPORTED_FIELD_TYPES = frozenset({"TEXT", "SINGLE_SELECT"})
 _FIELD_VALUE_SELECTION = (
     " ... on ProjectV2ItemFieldTextValue { text }"
-    " ... on ProjectV2ItemFieldSingleSelectValue { name }"
-    " ... on ProjectV2ItemFieldNumberValue { number }"
-    " ... on ProjectV2ItemFieldDateValue { date }"
-    " ... on ProjectV2ItemFieldIterationValue { title } "
+    " ... on ProjectV2ItemFieldSingleSelectValue { name } "
 )
 
 
@@ -128,8 +122,7 @@ class GhError(RuntimeError):
 def field_key(field_name: str) -> str:
     """The key under which an item from fetch_board_items exposes a field's value: the
     field name lowercased (interior spaces preserved), as `gh project item-list
-    --format json` does. 'Impact' -> 'impact', 'Why' -> 'why', 'Linked pull requests'
-    -> 'linked pull requests'."""
+    --format json` does. 'Impact' -> 'impact', 'Why' -> 'why', 'Due soon' -> 'due soon'."""
     return (field_name or "").strip().lower()
 
 
@@ -138,8 +131,13 @@ def board_items_query(required_names: list[str]) -> str:
     `rateLimit(dryRun: true)` on 2026-11-06), against 101 for the `fieldValues(first:
     100)` connection `gh project item-list` always asks for (dev-env#1246). This script
     does read field values, but only the required ones, so each is asked for by name.
-    Field names arrive as variables ($f0, $f1, ...) and never reach the query text."""
+    Field names arrive as variables ($f0, $f1, ...) and never reach the query text. Each
+    is also asked about as a board field (d0, d1, ...), for required_field_problems."""
     params = "".join(f", $f{i}: String!" for i in range(len(required_names)))
+    definitions = "".join(
+        f"\n        d{i}: field(name: $f{i}) {{ ... on ProjectV2FieldCommon {{ dataType }} }}"
+        for i in range(len(required_names))
+    )
     fields = "".join(
         f"\n            f{i}: fieldValueByName(name: $f{i}) {{{_FIELD_VALUE_SELECTION}}}"
         for i in range(len(required_names))
@@ -147,7 +145,7 @@ def board_items_query(required_names: list[str]) -> str:
     return f"""query($owner: String!, $number: Int!, $after: String{params}) {{
   repositoryOwner(login: $owner) {{
     ... on ProjectV2Owner {{
-      projectV2(number: $number) {{
+      projectV2(number: $number) {{{definitions}
         items(first: 100, after: $after) {{
           pageInfo {{ hasNextPage endCursor }}
           nodes {{
@@ -163,6 +161,20 @@ def board_items_query(required_names: list[str]) -> str:
     }}
   }}
 }}"""
+
+
+def required_field_problems(project: dict, required_names: list[str]) -> list[str]:
+    """Which required fields are of a type the query doesn't read, from a
+    `board_items_query` project node; [] when none are. Without this such a field comes
+    back empty on every item and reports every open issue as missing it, with no error.
+    A name GitHub doesn't know needs no check here: names match exactly, and asking for
+    an unknown or mis-cased one fails the whole query with a NOT_FOUND error naming it."""
+    problems = []
+    for i, name in enumerate(required_names):
+        data_type = project[f"d{i}"]["dataType"]
+        if data_type not in _SUPPORTED_FIELD_TYPES:
+            problems.append(f"{name!r} is a {data_type} field; only text and single-select are read")
+    return problems
 
 
 def normalize_board_node(node: dict, required_names: list[str]) -> dict:
@@ -503,7 +515,11 @@ def fetch_board_items(project_number: str, owner: str, required_names: list[str]
         owner_node = json.loads(result.stdout)["data"]["repositoryOwner"]
         if owner_node is None:
             raise GhError(f"no GitHub user or organization named {owner}")
-        page = owner_node["projectV2"]["items"]
+        project = owner_node["projectV2"]
+        problems = required_field_problems(project, required_names)
+        if problems:
+            raise GhError("required_fields in hook-config.json: " + "; ".join(problems))
+        page = project["items"]
         items.extend(normalize_board_node(n, required_names) for n in page["nodes"])
         if not page["pageInfo"]["hasNextPage"]:
             return items

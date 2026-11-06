@@ -55,6 +55,7 @@ _spec.loader.exec_module(mod)  # safe: main() is guarded by __main__
 canonical_repo_root = mod.canonical_repo_root
 field_key = mod.field_key
 board_items_query = mod.board_items_query
+required_field_problems = mod.required_field_problems
 normalize_board_node = mod.normalize_board_node
 colliding_required_fields = mod.colliding_required_fields
 open_issue_numbers = mod.open_issue_numbers
@@ -294,7 +295,7 @@ def test_looks_like_scope_error() -> str:
     return "the missing-project-scope gh error is recognized so the refresh hint can fire"
 
 
-# --- gh --limit truncation detection ------------------------------------------
+# --- board query and node normalization (dev-env#1246) ------------------------
 
 
 def test_board_items_query_asks_for_required_fields_by_name() -> str:
@@ -350,17 +351,38 @@ def test_normalize_board_node_matches_item_list_shape() -> str:
     return "a raw node normalizes to the item-list shape the helpers read"
 
 
-def test_normalize_board_node_reads_every_scalar_field_type() -> str:
-    for selection, expected in [
-        ({"text": "t"}, "t"),
-        ({"name": "n"}, "n"),
-        ({"number": 0}, 0),
-        ({"date": "2026-11-06"}, "2026-11-06"),
-        ({"title": "Sprint 1"}, "Sprint 1"),
-    ]:
+def test_normalize_board_node_reads_both_supported_field_types() -> str:
+    for selection, expected in [({"text": "t"}, "t"), ({"name": "n"}, "n")]:
         item = normalize_board_node({"id": "x", "f0": selection}, ["Field"])
         assert item.get("field") == expected, f"{selection!r} -> {item!r}"
-    return "text, single-select, number (including 0), date and iteration values all read"
+    return "text and single-select values both read"
+
+
+def test_required_field_problems_accepts_readable_fields() -> str:
+    project = {"d0": {"dataType": "SINGLE_SELECT"}, "d1": {"dataType": "TEXT"}}
+    assert required_field_problems(project, ["Impact", "Why"]) == []
+    assert required_field_problems({}, []) == [], "no required fields, nothing to check"
+    return "text and single-select required fields raise no problem"
+
+
+def test_required_field_problems_names_an_unreadable_type() -> str:
+    problems = required_field_problems({"d0": {"dataType": "LINKED_PULL_REQUESTS"}}, ["Linked"])
+    assert len(problems) == 1 and "'Linked'" in problems[0] and "LINKED_PULL_REQUESTS" in problems[0], problems
+    return "a field of a type the query doesn't read is reported, by name and type"
+
+
+def test_required_field_problem_text_is_not_a_scope_error() -> str:
+    """_reconcile_repo routes a GhError through looks_like_scope_error, and a scope error
+    aborts a whole --scan-dir sweep. One repo's bad config must not. The second message
+    is the one GitHub really returned for a mis-cased name on 2026-11-06."""
+    problems = required_field_problems({"d0": {"dataType": "DATE"}}, ["Field"])
+    assert problems, "no problem to check -- this would pass vacuously"
+    for message in (
+        "required_fields in hook-config.json: " + problems[0],
+        "gh: Could not resolve to a Unions::ProjectV2FieldConfiguration with the name impact",
+    ):
+        assert not looks_like_scope_error(message), message
+    return "a required-field failure isn't mistaken for a missing-scope error"
 
 
 def test_normalize_board_node_leaves_unset_fields_absent() -> str:
@@ -398,6 +420,8 @@ def test_normalize_board_node_keeps_pull_requests_for_the_cache() -> str:
     assert board_issue_numbers([item], REPO) == set(), "a PR is not an issue on the board"
     return "a PR keeps its number and repo for the cache but isn't counted as an issue"
 
+
+# --- gh --limit truncation detection ------------------------------------------
 
 def test_is_truncated() -> str:
     assert is_truncated(1000, 1000) is True, "count == limit -> may be capped"
@@ -589,7 +613,10 @@ def main() -> int:
         ("board_items_query names fields, no fieldValues", test_board_items_query_asks_for_required_fields_by_name),
         ("board_items_query with no required fields", test_board_items_query_with_no_required_fields),
         ("normalize_board_node matches the item-list shape", test_normalize_board_node_matches_item_list_shape),
-        ("normalize_board_node reads every scalar field type", test_normalize_board_node_reads_every_scalar_field_type),
+        ("normalize_board_node reads both supported field types", test_normalize_board_node_reads_both_supported_field_types),
+        ("required_field_problems accepts readable fields", test_required_field_problems_accepts_readable_fields),
+        ("required_field_problems names an unreadable type", test_required_field_problems_names_an_unreadable_type),
+        ("required_field_problems text isn't a scope error", test_required_field_problem_text_is_not_a_scope_error),
         ("normalize_board_node leaves unset fields absent", test_normalize_board_node_leaves_unset_fields_absent),
         ("normalize_board_node draft and unreadable content", test_normalize_board_node_draft_and_unreadable_content),
         ("normalize_board_node keeps pull requests for the cache", test_normalize_board_node_keeps_pull_requests_for_the_cache),

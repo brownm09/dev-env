@@ -78,6 +78,7 @@ Exit 0 = all pass.
 
 import importlib.util
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -737,6 +738,29 @@ def test_match_project_item_handles_absent_shapes() -> str:
     return "_match_project_item returns None for null targets and an empty board list"
 
 
+def test_match_project_item_survives_a_null_node() -> str:
+    """A board the token can't read comes back as a null element beside an error, and
+    must not stop the wanted board's item being found."""
+    response = _lookup_response(("PVTI_right", 3, "brownm09"))
+    nodes = response["data"]["repository"]["issueOrPullRequest"]["projectItems"]["nodes"]
+    nodes.insert(0, None)
+    response["errors"] = [{"type": "FORBIDDEN", "message": "Resource not accessible"}]
+    assert _match_project_item(response, "3", "brownm09") == "PVTI_right"
+    return "_match_project_item finds the wanted board past a null element and a partial error"
+
+
+def test_lookup_query_matches_the_shell_copy() -> str:
+    """Both copies feed the same shared cache, so a change to one alone (includeArchived,
+    say) would make the two callers answer differently for the same item, silently."""
+    shell = (SCRIPT.parent / "get-project-item.sh").read_text(encoding="utf-8")
+    match = re.search(r"-f query='(.*?)' \\", shell, re.DOTALL)
+    assert match, "could not find the query in get-project-item.sh -- this comparison would be vacuous"
+    shell_query = "".join(match.group(1).split())
+    python_query = "".join(ppmp._ITEM_LOOKUP_QUERY.split())
+    assert shell_query == python_query, "the two lookup queries have drifted"
+    return "get-project-item.sh and _ITEM_LOOKUP_QUERY ask the same query"
+
+
 def main() -> int:
     tests = [
         ("command: bare number", test_cmd_bare_number),
@@ -803,6 +827,8 @@ def main() -> int:
         ("_match_project_item: picks the named board among several", test_match_project_item_picks_named_board_among_several),
         ("_match_project_item: owner compared case-insensitively", test_match_project_item_owner_is_case_insensitive),
         ("_match_project_item: absent shapes return None", test_match_project_item_handles_absent_shapes),
+        ("_match_project_item: survives a null node and a partial error", test_match_project_item_survives_a_null_node),
+        ("_ITEM_LOOKUP_QUERY matches get-project-item.sh", test_lookup_query_matches_the_shell_copy),
     ]
     failed = 0
     for name, fn in tests:

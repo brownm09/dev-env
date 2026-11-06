@@ -36,7 +36,6 @@ OTHER_BOARD_REPO=lifting-logbook
 OTHER_BOARD_ISSUE=644
 OTHER_BOARD_NUMBER=2
 OTHER_BOARD_OWNER=merickvaughn
-SCRATCH="C:/Users/brown/.claude/scratch"
 
 PASS=0; FAIL=0
 ok()  { echo "  ok: $*"; PASS=$((PASS + 1)); }
@@ -117,7 +116,7 @@ case "$err" in
   *) bad "non-numeric input stderr missing the expected diagnostic: '$err'" ;;
 esac
 
-# --- Test 0c-0g — the cache-miss lookup, against a stub `gh` on PATH ------------
+# --- Test 0c-0h — the cache-miss lookup, against a stub `gh` on PATH ------------
 #
 # Hermetic, so these run in CI too. The stub prints a canned response and records its
 # arguments, which also pins that a miss never reaches for the full board.
@@ -189,14 +188,17 @@ case "$stub_err" in
   *)                 bad "NOT_FOUND stderr missing 'no item found': '$stub_err'" ;;
 esac
 
-# Test 0f — any other gh failure is not "no item found": gh's own exit code and message
-# survive, so a caller can tell a failed lookup from an absent item. Two shapes: a
-# GraphQL rate-limit body on stdout, and no stdout at all (offline).
+# Test 0f — any other gh failure is not "no item found": it exits 2 with gh's own message,
+# so a caller can tell a failed lookup from an absent item. gh exits 1 for these, the same
+# code as a no-match, which is why the stub does too. Three shapes: a GraphQL rate-limit
+# body on stdout, no stdout at all (offline), and an error about a board the token can't
+# read when the wanted item isn't in the response.
 RATE_LIMITED='{"errors":[{"type":"RATE_LIMITED","code":"graphql_rate_limit","message":"API rate limit already exceeded for user ID 1."}]}'
-for body in "$RATE_LIMITED" ""; do
-  GH_STUB_STDOUT="$body" GH_STUB_RC=4 GH_STUB_STDERR="gh: simulated failure" run_stubbed 42
-  if [ "$stub_rc" -eq 4 ]; then ok "a non-NOT_FOUND failure keeps gh's exit code (body: '${body:0:20}')"
-  else bad "expected gh's exit code 4, got $stub_rc (body: '${body:0:20}')"; fi
+FORBIDDEN_NO_MATCH='{"data":{"repository":{"issueOrPullRequest":{"projectItems":{"nodes":[null]}}}},"errors":[{"type":"FORBIDDEN","message":"Resource not accessible"}]}'
+for body in "$RATE_LIMITED" "" "$FORBIDDEN_NO_MATCH"; do
+  GH_STUB_STDOUT="$body" GH_STUB_RC=1 GH_STUB_STDERR="gh: simulated failure" run_stubbed 42
+  if [ "$stub_rc" -eq 2 ]; then ok "a non-NOT_FOUND failure exits 2 (body: '${body:0:20}')"
+  else bad "expected exit 2, got $stub_rc (body: '${body:0:20}'): $stub_err"; fi
   case "$stub_err" in
     *"no item found"*)      bad "a failed lookup was reported as 'no item found': '$stub_err'" ;;
     *"simulated failure"*)  ok "a non-NOT_FOUND failure leaves gh's own message as the diagnosis" ;;
@@ -204,11 +206,27 @@ for body in "$RATE_LIMITED" ""; do
   esac
 done
 
-# Test 0g — an unknown-to-any-board response with no errors is a clean no-match too.
+# Test 0g — the wanted item still resolves beside an error about another board, and a null
+# element in the list doesn't throw.
+FORBIDDEN_WITH_MATCH='{"data":{"repository":{"issueOrPullRequest":{"projectItems":{"nodes":[null,
+  {"id":"PVTI_wanted","project":{"number":3,"owner":{"login":"brownm09"}}}
+]}}}},"errors":[{"type":"FORBIDDEN","message":"Resource not accessible"}]}'
+GH_STUB_STDOUT="$FORBIDDEN_WITH_MATCH" GH_STUB_RC=1 GH_STUB_STDERR="gh: simulated failure" run_stubbed 42
+if [ "$stub_rc" -eq 0 ] && [ "$stub_out" = "PVTI_wanted" ]; then
+  ok "the wanted item resolves beside an error about another board"
+else
+  bad "expected PVTI_wanted with exit 0 beside a partial error, got '$stub_out' exit $stub_rc: $stub_err"
+fi
+
+# Test 0h — an issue on no board at all, with no errors, is a clean no-match too.
 EMPTY_NODES='{"data":{"repository":{"issueOrPullRequest":{"projectItems":{"nodes":[]}}}}}'
 GH_STUB_STDOUT="$EMPTY_NODES" GH_STUB_RC=0 GH_STUB_STDERR="" run_stubbed 42
 if [ "$stub_rc" -eq 1 ]; then ok "an issue on no board at all exits 1"
 else bad "an issue on no board expected exit 1, got $stub_rc"; fi
+case "$stub_err" in
+  *"no item found"*) ok "an issue on no board reports 'no item found'" ;;
+  *)                 bad "an issue on no board stderr missing 'no item found': '$stub_err'" ;;
+esac
 
 # --- Network-dependent tests below: preflight gh present/authenticated/reachable ---
 command -v gh >/dev/null 2>&1 || skip "gh CLI not installed"
@@ -216,10 +234,6 @@ gh auth status >/dev/null 2>&1 || skip "gh not authenticated (run: gh auth login
 if ! gh api graphql -f query='{user(login:"brownm09"){projectV2(number:3){number}}}' >/dev/null 2>&1; then
   skip "gh project query failed (offline, or missing 'project' scope: gh auth refresh -s project)"
 fi
-
-# Count via find (not `ls | wc`) so a non-alphanumeric name can't skew the count.
-count_temps() { find "$SCRATCH" -maxdepth 1 -name 'tmp_project_item_*.json' 2>/dev/null | wc -l; }
-before=$(count_temps)
 
 # Test 1 — success path: resolves a known item to a PVTI_ node id. Isolated from
 # the real production cache via PROJECT_ITEM_CACHE_PATH_OVERRIDE (a fresh, empty
@@ -298,11 +312,6 @@ if OTHER_ID=$(PROJECT_REPO="$OTHER_BOARD_REPO" PROJECT_ITEM_CACHE_PATH_OVERRIDE=
 else
   bad "control: #$OTHER_BOARD_ISSUE did not resolve on $OTHER_BOARD_OWNER/$OTHER_BOARD_NUMBER"
 fi
-
-# Test 3 — cleanup: the trap removes the temp file on every path.
-after=$(count_temps)
-if [ "$after" -le "$before" ]; then ok "no leftover temp files (count $before -> $after)"
-else bad "temp files leaked (count $before -> $after); trap cleanup failed"; fi
 
 echo "Tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

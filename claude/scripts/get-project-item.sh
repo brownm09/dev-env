@@ -24,6 +24,10 @@
 # one board's answer for a lookup meant for another (a /review finding on this PR;
 # must stay byte-identical to _gh_project.py's _cache_key format).
 #
+# Exit status: 0 printed the ID; 1 no such item on that board (or bad usage); 2 the
+# lookup itself failed, for example on a rate limit, with gh's own message on stderr.
+# gh exits 1 for nearly every failure, so this can't pass gh's code through.
+#
 # Prerequisites (fallback path only): gh CLI authenticated with the 'project' scope.
 #   Add once if needed: gh auth refresh -s project
 
@@ -35,11 +39,9 @@ if [[ -z "$ISSUE_NUMBER" ]]; then
   exit 1
 fi
 # Numeric-only: this value is later passed as a GraphQL Int (fallback path) and used
-# to build the cache key. Rejecting non-numeric input here,
-# rather than letting it reach node as an unquoted expression or a JS-string
-# fragment, closes an injection-shaped hole a /review finding raised for this file's
-# interpolated node snippets (also fixed below by passing values through
-# process.env instead of string-interpolating them into the JS source).
+# to build the cache key. Rejecting non-numeric input here keeps anything else out of
+# both, and every value node needs goes through process.env instead of being
+# string-interpolated into the JS source (a /review finding on this file).
 if [[ ! "$ISSUE_NUMBER" =~ ^[0-9]+$ ]]; then
   echo "get-project-item: <issue-or-pr-number> must be a positive integer, got: '$ISSUE_NUMBER'" >&2
   exit 1
@@ -53,7 +55,7 @@ REPO_SLUG="${OWNER}/${REPO}"
 # Literal Windows-style path (not "${HOME}/...") so Git Bash and Node resolve it
 # identically. Under Git Bash $HOME is the MSYS path /c/Users/brown; Node on Windows
 # resolves a leading /c/... against the current drive (-> C:\c\Users\...), so the
-# redirect-write and the node-read would target different files (dev-env#334). This
+# two would target different files (dev-env#334). This
 # matches the repo convention (DEFAULT_LOG in session-mode-report.py) and must stay
 # byte-identical to _gh_project.py's CACHE_PATH so both sides read/write the same
 # file. PROJECT_ITEM_CACHE_PATH_OVERRIDE mirrors _gh_project.py's test-only override
@@ -92,15 +94,12 @@ CACHED_ID=$(GPI_CACHE_FILE="$CACHE_FILE" GPI_CACHE_KEY="$CACHE_KEY" node -e '
   process.exit(1);
 ') && { echo "$CACHED_ID"; exit 0; }
 
-TMPFILE="${SCRATCH}/tmp_project_item_$$.json"
-trap 'rm -f "$TMPFILE"' EXIT
-
 # Keep in step with post-pr-merge-project.py's _ITEM_LOOKUP_QUERY. includeArchived is
 # false, against GitHub's default of true, because an archived item isn't one a caller
 # should be moving. gh exits 1 on any GraphQL error but still prints the response body,
 # so the exit code is kept for node to weigh rather than aborting here under `set -e`.
 GH_RC=0
-gh api graphql \
+GH_RESPONSE=$(gh api graphql \
   -f query='query($owner: String!, $repo: String!, $number: Int!) {
     repository(owner: $owner, name: $repo) {
       issueOrPullRequest(number: $number) {
@@ -111,33 +110,34 @@ gh api graphql \
   }' \
   -f owner="$OWNER" \
   -f repo="$REPO" \
-  -F number="$ISSUE_NUMBER" > "$TMPFILE" || GH_RC=$?
+  -F number="$ISSUE_NUMBER") || GH_RC=$?
 
-# Under `set -e` a non-zero exit from node aborts the script with that status; the
-# EXIT trap above removes the temp file either way. Only a NOT_FOUND response means
-# "no such item": any other gh failure (rate limit, auth, offline) exits with gh's own
-# code and leaves gh's own stderr as the diagnosis, so a caller can't mistake a failed
-# lookup for an item that isn't there. The query is scoped to one repo, but an issue
-# can sit on several boards, and a board number alone is ambiguous (brownm09 and
-# merickvaughn each have a board 2), so a match needs both number and owner --
-# accepting any other would print the wrong ID and, via the write-back below, poison
-# the shared cache for every later reader.
-ITEM_ID=$(GPI_TMPFILE="$TMPFILE" GPI_GH_RC="$GH_RC" GPI_ISSUE_NUMBER="$ISSUE_NUMBER" GPI_REPO_SLUG="$REPO_SLUG" GPI_PROJECT_NUMBER="$PROJECT_NUMBER" GPI_OWNER_LOWER="$OWNER_LOWER" node -e '
+# Under `set -eo pipefail` a non-zero exit from node aborts the script with that status.
+# The response reaches node on stdin, not in an env var, where Git Bash's path conversion
+# could rewrite it. The wanted item is looked for first, because a response can carry
+# it alongside an error about another board the token can't read. Without it, only a
+# NOT_FOUND response means "no such item": any other gh failure (rate limit, auth,
+# offline) exits 2 and leaves gh's own stderr as the diagnosis, so a caller can't mistake
+# a failed lookup for an item that isn't there. The query is scoped to one repo, but an
+# issue can sit on several boards, and a board number alone is ambiguous (brownm09 and
+# merickvaughn each have a board 2), so a match needs both number and owner -- accepting
+# any other would print the wrong ID and, via the write-back below, poison the shared
+# cache for every later reader.
+ITEM_ID=$(printf '%s' "$GH_RESPONSE" | GPI_GH_RC="$GH_RC" GPI_ISSUE_NUMBER="$ISSUE_NUMBER" GPI_REPO_SLUG="$REPO_SLUG" GPI_PROJECT_NUMBER="$PROJECT_NUMBER" GPI_OWNER_LOWER="$OWNER_LOWER" node -e '
   let d = {};
-  try { d = JSON.parse(require("fs").readFileSync(process.env.GPI_TMPFILE, "utf8")); } catch (e) { /* gh printed no JSON */ }
-  const errors = d.errors || [];
-  const notFound = errors.length > 0 && errors.every(e => e.type === "NOT_FOUND");
-  const ghRc = Number(process.env.GPI_GH_RC);
-  if (ghRc !== 0 && !notFound) process.exit(ghRc);
+  try { d = JSON.parse(require("fs").readFileSync(0, "utf8")); } catch (e) { /* gh printed no JSON */ }
   const repository = d.data && d.data.repository;
   const target = repository && repository.issueOrPullRequest;
   const nodes = (target && target.projectItems && target.projectItems.nodes) || [];
   const wantProject = Number(process.env.GPI_PROJECT_NUMBER);
-  const item = nodes.find(n => n.project
+  const item = nodes.find(n => n && n.project
     && n.project.number === wantProject
     && n.project.owner
     && (n.project.owner.login || "").toLowerCase() === process.env.GPI_OWNER_LOWER);
   if (!item) {
+    const errors = d.errors || [];
+    const notFound = errors.length > 0 && errors.every(e => e.type === "NOT_FOUND");
+    if (Number(process.env.GPI_GH_RC) !== 0 && !notFound) process.exit(2);
     process.stderr.write("get-project-item: no item found for #" + process.env.GPI_ISSUE_NUMBER
       + " in " + process.env.GPI_REPO_SLUG
       + " on board " + process.env.GPI_OWNER_LOWER + "/" + process.env.GPI_PROJECT_NUMBER + "\n");

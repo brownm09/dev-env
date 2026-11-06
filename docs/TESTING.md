@@ -61,12 +61,14 @@ For a one-line navigational map of the test directory, see
 6. **`get-project-item.sh` smoke test** — required when changing `claude/scripts/get-project-item.sh`.
    Actually *runs* the script (which `bash -n` cannot — #334 parsed cleanly yet failed at runtime).
    The first half is hermetic and runs in CI: a cache hit makes no `gh` call, and a stub `gh` on `PATH`
-   pins the cache-miss lookup — it picks the item on the wanted board by number and owner, reports
-   `no item found` for another owner's same-numbered board or a `NOT_FOUND` response, writes nothing to
-   the cache on a no-match, and leaves gh's own exit code and message on any other failure, so a rate
-   limit can't read as an absent item. The second half is live: a known issue and a known PR resolve to
+   pins the cache-miss lookup — it picks the item on the wanted board by number and owner, including
+   past a null element and an error about another board, reports `no item found` (exit 1) for another
+   owner's same-numbered board, a `NOT_FOUND` response or no board at all, writes nothing to the cache
+   on a no-match, and exits 2 with gh's own message on any other failure. Those stubs exit 1, as gh does
+   for a rate limit, so a failed lookup can't pass for an absent item by exit code alone. The stubs need
+   no scratch directory, since the response reaches node on stdin. The second half is live: a known issue and a known PR resolve to
    `PVTI_` ids, a nonexistent issue and an issue on another board only exit 1 (with a control showing
-   that issue does resolve on its real board), and the temp file is cleaned up. The live half SKIPs
+   that issue does resolve on its real board). The live half SKIPs
    (exit 0) when `gh` is unauthenticated/offline, so it is a local pre-PR check, not a CI gate.
 
    **GraphQL cost per run: 6 points** — the preflight plus 5 lookups, each one query at 1 point
@@ -437,8 +439,9 @@ For a one-line navigational map of the test directory, see
     `--repo`, no deliberately-crafted string needed) is no longer truncated away, while a genuine
     top-level `&&` chaining a real sibling command still correctly bounds the region. Also (dev-env#1246)
     pins `_match_project_item`, the board filter on the cache-miss lookup: it matches on board number and
-    owner together, case-insensitively on the owner, and returns `None` for a null target or an item on no
-    board. The live `gh`
+    owner together, case-insensitively on the owner, finds the item past a null element and a partial error,
+    and returns `None` for a null target or an item on no board; and `test_lookup_query_matches_the_shell_copy`
+    pins `_ITEM_LOOKUP_QUERY` to `get-project-item.sh`'s copy, since both feed the same shared cache. The live `gh`
     calls (`get_pr_body` / `find_project_item` / `move_to_done` / `confirm_merge_via_gh`) are not covered
     ([ADR-050](adr/050-shared-hookio-sibling-hook-fixes.md),
     [ADR-067](adr/067-scope-merge-keyed-hooks-to-target-repo.md)). Also (dev-env#831) pins that
@@ -1039,7 +1042,8 @@ For a one-line navigational map of the test directory, see
     (field name -> item-list JSON key), `board_items_query` (names each required field through a variable and
     never asks for the 101-point `fieldValues` connection, dev-env#1246), `normalize_board_node` (a raw GraphQL
     node reads through every helper the same as a `gh project item-list` item, including unset fields, draft and
-    unreadable content, and PRs), `board_issue_numbers` (ignores PRs / cross-repo / number-less items),
+    unreadable content, and PRs), `required_field_problems` (a field type the query doesn't read is reported by
+    name and type, in words that don't trip the scope-error abort; so is GitHub's own error for a name it doesn't know), `board_issue_numbers` (ignores PRs / cross-repo / number-less items),
     the `compute_orphans` set difference (open issues minus board issues — the #434/#435/#436 case),
     `item_missing_fields` / `board_items_missing_fields` (a field is missing unless it holds a non-empty
     value; only OPEN same-repo issues are surfaced), `looks_like_scope_error`, and `render_report` —

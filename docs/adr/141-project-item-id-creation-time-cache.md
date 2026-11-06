@@ -1,4 +1,4 @@
-# ADR-141 — Cache Project-Board Item IDs at Creation Time, Fall Back to a Full Fetch Only on a Miss
+# ADR-141 — Cache Project-Board Item IDs at Creation Time, Look Up Live Only on a Miss
 
 **Date:** 2026-08-26 (amended 2026-11-05, 2026-11-06)
 **Status:** Accepted
@@ -265,10 +265,18 @@ values, for the missing-required-field report, so it asks for the required field
 `fieldValueByName`, normalized to the item shape its helpers already read. Paging until GitHub says
 there are no more also retires the `--limit 1000` cap this board, now past 900 items, was approaching.
 
-**Failure behaviour.** `get-project-item.sh` reports `no item found` only for a `NOT_FOUND` response or
-an item on no matching board. Any other `gh` failure keeps gh's exit code and message, so a rate limit
-can't read as an absent item. `post-pr-merge-project.py` still returns `None` on any failure, as it did
-before.
+`fieldValueByName` is stricter than the old read in two ways: it matches names exactly (live, `impact`
+came back null where `Impact` read High), and the query reads only text and single-select values, the
+two types this repo's hooks handle. Either would quietly report every open issue as missing the field,
+so the same query also asks for each required field's definition, and a name or type it can't read
+fails that repo's sweep with an error naming the field.
+
+**Failure behaviour.** The query starts from the issue, so its response can mention boards the caller
+doesn't care about. Both lookups therefore look for the wanted item first, and an error about another
+board doesn't stop them finding it. Without the item, `get-project-item.sh` exits 1 with `no item found`
+for a `NOT_FOUND` response or no matching board, and 2 for any other `gh` failure. gh exits 1 for nearly
+every failure, so passing its code through would have made a rate limit look like an absent item.
+`post-pr-merge-project.py` still returns `None` when it finds nothing, as it did before.
 
 **Parity check, 2026-11-06.** The new sweep and a real `item-list` of the Dev Env board, taken seconds
 apart, agreed on every item's type, number, URL, repository, Impact and Why, apart from two issues
