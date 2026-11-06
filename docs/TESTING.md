@@ -5151,3 +5151,20 @@ For a one-line navigational map of the test directory, see
      py -3 claude/scripts/tests/test_window_flash_monitor.py
      py -3 claude/scripts/tests/test_window_flash_monitor.py --live
      ```
+
+114. **docker-lifecycle test** — required when changing `claude/scripts/_docker_lifecycle.py`,
+     `pre-tool-use-docker-start.py`, `docker-watchdog.py` or `register-docker-watchdog.ps1`
+     (dev-env#1278, ADR-158). Runs against a fake `docker` and a temp state directory, so nothing touches
+     real Docker. It pins which commands need the engine, the direct-start block under both shells,
+     starting only through the scheduled task, every stop-decision state, wedge timing across ticks,
+     leases, the lock, the once-per-boot hypervisor check, and deleting only AF_UNIX sockets.
+
+     **Scope gap:** the failure this exists for only reproduces on a real machine, inside the Claude
+     app's process tree. When changing how Docker is started or stopped, also check by hand: with the
+     engine down, a session's `docker ps` succeeds; `py -3 claude/scripts/docker-watchdog.py --status`
+     shows it as started by a session; after 15 to 20 minutes idle it has stopped and
+     `wsl --list --running` lists no `docker-desktop`; and a later start shows no Inference manager error.
+
+     ```bash
+     py -3 claude/scripts/tests/test_docker_lifecycle.py
+     ```

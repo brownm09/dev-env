@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 102 `test_*.py` files, 11 bash gates, and
-two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 115 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 103 `test_*.py` files, 11 bash gates, and
+two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 116 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -156,6 +156,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 
 | Test file | Covers | Purpose |
 |---|---|---|
+| `test_docker_lifecycle.py` | `_docker_lifecycle.py`, `pre-tool-use-docker-start.py`, `docker-watchdog.py` | Docker Desktop lifecycle (ADR-158), against a fake `docker`: which commands need the engine, the direct-start block, starting only through the scheduled task, every stop-decision state, wedge timing across ticks, leases, the lock, the once-per-boot hypervisor check, and deleting only AF_UNIX sockets. |
 | `test_dev_env_sync.py` | `dev-env-sync.py` | Fast-forwards the canonical checkout's `main` on every prompt; escalates a persistent pull failure. |
 | `test_hook_liveness_check.py` | `hook-liveness-check.py` | Warns when a wired hook's heartbeat ledger has gone stale (hasn't recorded in its expected cadence). |
 | `test_hook_timing_report.py` | `hook-timing-report.py` | Per-hook duration percentiles from the heartbeat's `.dur.jsonl` lines: window and malformed-line filtering, numbered slowest-first table, empty/missing ledger, and a round trip against `_hookutil.record_duration`'s own output. |

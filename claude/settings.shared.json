@@ -104,6 +104,11 @@
           },
           {
             "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/pre-tool-use-docker-start.py",
+            "timeout": 180
+          },
+          {
+            "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/pre-tool-use-scratch-rm-allow.py",
             "timeout": 10
           }
@@ -181,6 +186,11 @@
             "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/pre-bash-drift-check.py",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/pre-tool-use-docker-start.py",
+            "timeout": 180
           }
         ]
       },

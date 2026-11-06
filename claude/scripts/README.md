@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **111 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **115 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -33,11 +33,12 @@ exercises these scripts: `py -3 claude/scripts/run-hook-tests.py`.
 `_foo.py` files — imported by other scripts, never directly invoked or wired as a hook
 themselves. None of these get their own row in `docs/REFERENCE.md`'s Hooks/Utilities tables
 (they're described in prose paragraphs at the top of the Hooks section instead); this table is
-the one place all 22 are listed together. Each has its own test file in
+the one place all 23 are listed together. Each has its own test file in
 [`tests/README.md`](tests/README.md) → Shared support modules.
 
 | Module | Purpose | Consumers |
 |---|---|---|
+| `_docker_lifecycle.py` | Docker Desktop start/stop state: marker and leases, engine checks, stale-socket repair, and the stop decision (ADR-158) | `pre-tool-use-docker-start.py`, `docker-watchdog.py` |
 | `_auto_resume.py` | Auto-resume for desktop sessions cut off mid-turn: the opt-in config (`~/.claude/auto-resume.json`, fail closed), transcript-tail classification, the app's session files, the attempt cap and the JSONL log. [ADR-152](../../docs/adr/152-auto-resume-interrupted-desktop-sessions.md) | `session-start-auto-resume.py`, `auto-resume-launcher.py` |
 | `_bash_state.py` | Per-session repo/branch state file, plus the shared drift-warning formatter and elapsed-time gate. | `post-tool-use-cwd-track.py` (writer); `pre-commit-branch-check.py`, `pre-pr-create-check.py`, `pre-merge-branch-check.py`, `pre-bash-drift-check.py` (readers) |
 | `_composed_output_scan.py` | Fence- and code-span-aware scanner for stray terminal output in composed journal markdown (`scan_text`, `find_signature_hits`, `strip_code_spans`). | `validate-composed-output.py` |
@@ -68,7 +69,7 @@ the one place all 22 are listed together. Each has its own test file in
 
 ## Wired hooks & their domain utilities
 
-The 45 scripts Claude Code invokes automatically via `claude/settings.shared.json`, grouped with
+The 46 scripts Claude Code invokes automatically via `claude/settings.shared.json`, grouped with
 the utility scripts that serve the same workflow area — mirroring
 [`tests/README.md`](tests/README.md)'s domain grouping so the two indexes read the same way.
 **Event** names the hook registration(s) from `settings.shared.json`; utility scripts show their
@@ -148,10 +149,13 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (32)
+### Session state, reliability & token tracking (35)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
+| `pre-tool-use-docker-start.py` | PreToolUse (Bash, PowerShell) | Starts Docker Desktop through a scheduled task when a session runs `docker` or a project-listed test command, and blocks starting it directly from a session (ADR-158). |
+| `docker-watchdog.py` | Scheduled-task payload (`--tick`, `--start`); `py -3 docker-watchdog.py --status` by hand | Checks the hypervisor each boot and notifies if it's off, repairs a stuck or crashed Docker Desktop, deletes stale sockets, and stops a session-started engine when sessions are done (ADR-158). |
+| `register-docker-watchdog.ps1` | `powershell -File register-docker-watchdog.ps1 [-Unregister]` | Per-machine, run-once: registers the hidden `ClaudeDockerWatchdog` (sign-in and every 5 minutes) and `ClaudeDockerStart` (on demand) tasks (ADR-158). |
 | `hook-dispatch.py` | PostToolUse (Bash/PowerShell), every call | Runs the handler scripts named after it in one process (concurrently, each as `__main__` with its own stdin, routed streams, budget and heartbeat) and combines their output; a dropped or crashed handler becomes a warning. The ten PostToolUse Bash/PowerShell hooks run through it. [ADR-151](../../docs/adr/151-in-process-hook-dispatcher.md) |
 | `pre-tool-use-shell-content-write-guard.py` | PreToolUse (Bash/PowerShell) | Blocks a command that routes an *inline literal* to a file — or into a `gh`/`git` prose argument (`--body-file -`, `-F -`) — when that literal is multi-line or carries an apostrophe, backtick, or backslash; the content-shaped generalization of the journal guard. Program-output redirection (`gh … > "$TMPFILE"`, `npm test > out.log`) and an interpreter's stdin (`py -3 - <<'PY'`) are never matched, structurally. Bypass with `ALLOW_SHELL_CONTENT_WRITE=1`. See [ADR-138](../../docs/adr/138-shell-content-write-guard.md). |
 | `replay-shell-content-guard.py` | `py -3 replay-shell-content-guard.py [--gap] [--json] [--samples N] [--scan-dir DIR]` | Replays the guard above over recorded session transcripts and reports block rate, mechanism mix, override use, and the **failure-rate enrichment ratio** (blocked-set shell-parse-failure rate ÷ corpus baseline; `>1` concentrates real failures, `~1` means over-matching). Read-only. ADR-138 Amendment 1's answer to "is it over-matching?" — re-run after any detector change to the guard. |
