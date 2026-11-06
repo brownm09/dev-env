@@ -5,14 +5,20 @@
 # script end-to-end and asserts behaviour, which is how dev-env#334 (a runtime
 # path-resolution bug that parsed cleanly) would have been caught.
 #
-# Network-dependent for the item-list-fetch tests: they call `gh project item-list`.
-# When gh is unauthenticated or offline the whole rest of the suite SKIPS (exit 0)
-# rather than failing -- so it is a local pre-PR check, not a hermetic CI gate.
-# The cache-hit test (Test 0) is the one exception: it is hermetic and runs BEFORE
-# the network preflight, since proving it needs no `gh` call at all is the whole
-# point (dev-env#1057, ADR-141) -- and per the `skip()` fix below, a Test 0 failure
-# can never be silently discarded by that preflight even in an environment (like
-# this repo's own CI) that never has a `gh` token to begin with.
+# Network-dependent for the live-lookup tests: they call `gh api graphql`. When gh is
+# unauthenticated or offline the whole rest of the suite SKIPS (exit 0) rather than
+# failing -- so that half is a local pre-PR check, not a hermetic CI gate. The
+# Test 0 group is the exception: it is hermetic and runs BEFORE the network preflight
+# -- the cache-hit case because proving it needs no `gh` call at all is the whole
+# point (dev-env#1057, ADR-141), the rest because a stub `gh` on PATH can show which
+# board's item gets picked and what a failed lookup does -- and per the `skip()` fix
+# below, a Test 0 failure can never be silently discarded by that preflight even in
+# an environment (like this repo's own CI) that never has a `gh` token to begin with.
+#
+# GraphQL cost of one run: 6 points (the preflight plus 5 lookups, each one query
+# priced at 1 point). Each lookup used to force a full-board fetch, about 2,022
+# points per run, which is what exhausted the shared budget on 2026-11-05 (dev-env#1238,
+# dev-env#1246). Keep live lookups few: this file runs in every run-hook-tests.py pass.
 #
 # Run: bash claude/scripts/tests/test-get-project-item.sh
 set -u
@@ -23,7 +29,13 @@ SCRIPT="$REPO_ROOT/claude/scripts/get-project-item.sh"
 # ever removed from the board, the test fails loudly (assertion), which is the
 # correct signal — update KNOWN_ISSUE to any current project item number.
 KNOWN_ISSUE=334
-SCRATCH="C:/Users/brown/.claude/scratch"
+# Same idea for a PR on board 3, and for an issue that sits on a different owner's
+# board 2 (lifting-logbook's board, owned by merickvaughn) and never on board 3.
+KNOWN_PR=1254
+OTHER_BOARD_REPO=lifting-logbook
+OTHER_BOARD_ISSUE=644
+OTHER_BOARD_NUMBER=2
+OTHER_BOARD_OWNER=merickvaughn
 
 PASS=0; FAIL=0
 ok()  { echo "  ok: $*"; PASS=$((PASS + 1)); }
@@ -70,11 +82,13 @@ winpath() { cygpath -w "$1" | tr '\\' '/'; }
 # circuited before any `gh` invocation, not just a lucky offline/online coincidence.
 CACHE_TMP=$(winpath "$(mktemp -d)")
 EMPTY_GH_CONFIG=$(winpath "$(mktemp -d)")
-if [ -z "$CACHE_TMP" ] || [ -z "$EMPTY_GH_CONFIG" ]; then
+# Left in MSYS form: this one goes on PATH, which bash reads, not node.
+STUB_DIR=$(mktemp -d)
+if [ -z "$CACHE_TMP" ] || [ -z "$EMPTY_GH_CONFIG" ] || [ -z "$STUB_DIR" ]; then
   echo "FATAL: winpath (cygpath/mktemp) produced an empty temp path -- refusing to install a cleanup trap over an empty/unset target" >&2
   exit 1
 fi
-trap 'rm -rf "$CACHE_TMP" "$EMPTY_GH_CONFIG"' EXIT
+trap 'rm -rf "$CACHE_TMP" "$EMPTY_GH_CONFIG" "$STUB_DIR"' EXIT
 FAKE_ISSUE=99999001
 FAKE_ITEM_ID="PVTI_faketest123"
 # Key format must match _gh_project.py's _cache_key exactly: lower-cased
@@ -102,21 +116,129 @@ case "$err" in
   *) bad "non-numeric input stderr missing the expected diagnostic: '$err'" ;;
 esac
 
+# --- Test 0c-0h — the cache-miss lookup, against a stub `gh` on PATH ------------
+#
+# Hermetic, so these run in CI too. The stub prints a canned response and records its
+# arguments, which also pins that a miss never reaches for the full board.
+cat > "$STUB_DIR/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_STUB_LOG"
+printf '%s' "${GH_STUB_STDOUT:-}"
+[ -z "${GH_STUB_STDERR:-}" ] || printf '%s\n' "$GH_STUB_STDERR" >&2
+exit "${GH_STUB_RC:-0}"
+STUB
+chmod +x "$STUB_DIR/gh"
+GH_STUB_LOG="$STUB_DIR/calls.log"
+STUB_CACHE="$CACHE_TMP/stub-cache.json"
+
+# Runs the script on a guaranteed cache miss against the stub, with the response in
+# GH_STUB_STDOUT / GH_STUB_STDERR / GH_STUB_RC. Sets stub_out, stub_err and stub_rc.
+run_stubbed() {
+  rm -f "$STUB_CACHE"
+  stub_out=$(PATH="$STUB_DIR:$PATH" GH_STUB_LOG="$GH_STUB_LOG" \
+    GH_STUB_STDOUT="${GH_STUB_STDOUT:-}" GH_STUB_STDERR="${GH_STUB_STDERR:-}" GH_STUB_RC="${GH_STUB_RC:-0}" \
+    PROJECT_ITEM_CACHE_PATH_OVERRIDE="$STUB_CACHE" bash "$SCRIPT" "$@" 2>"$STUB_DIR/stderr")
+  stub_rc=$?
+  stub_err=$(cat "$STUB_DIR/stderr")
+}
+
+# The same number on three boards: another owner's, another number, and the wanted one.
+TWO_BOARDS='{"data":{"repository":{"issueOrPullRequest":{"projectItems":{"nodes":[
+  {"id":"PVTI_otherowner","project":{"number":3,"owner":{"login":"someoneelse"}}},
+  {"id":"PVTI_othernumber","project":{"number":2,"owner":{"login":"brownm09"}}},
+  {"id":"PVTI_wanted","project":{"number":3,"owner":{"login":"BrownM09"}}}
+]}}}}}'
+
+# Test 0c — picks the item on the wanted board, by number AND owner (case-insensitive).
+GH_STUB_STDOUT="$TWO_BOARDS" GH_STUB_RC=0 GH_STUB_STDERR="" run_stubbed 42
+if [ "$stub_rc" -eq 0 ] && [ "$stub_out" = "PVTI_wanted" ]; then
+  ok "cache miss picks the item on the wanted board out of several"
+else
+  bad "expected PVTI_wanted with exit 0, got '$stub_out' exit $stub_rc: $stub_err"
+fi
+case "$(cat "$GH_STUB_LOG")" in
+  *"project item-list"*) bad "cache miss still fetched the whole board: $(cat "$GH_STUB_LOG")" ;;
+  *"api graphql"*)       ok "cache miss asks GitHub for the one item, not the whole board" ;;
+  *)                     bad "stub never saw the expected 'api graphql' call: $(cat "$GH_STUB_LOG")" ;;
+esac
+
+# Test 0d — on the same number under another owner only: no match, and nothing cached.
+ONLY_OTHER_OWNER='{"data":{"repository":{"issueOrPullRequest":{"projectItems":{"nodes":[
+  {"id":"PVTI_otherowner","project":{"number":3,"owner":{"login":"someoneelse"}}}
+]}}}}}'
+GH_STUB_STDOUT="$ONLY_OTHER_OWNER" GH_STUB_RC=0 GH_STUB_STDERR="" run_stubbed 42
+if [ "$stub_rc" -eq 1 ] && [ -z "$stub_out" ]; then
+  ok "an item only on another owner's same-numbered board exits 1 with no ID"
+else
+  bad "expected exit 1 and no output for another owner's board, got '$stub_out' exit $stub_rc"
+fi
+case "$stub_err" in
+  *"no item found"*) ok "another owner's board reports 'no item found'" ;;
+  *)                 bad "another owner's board stderr missing 'no item found': '$stub_err'" ;;
+esac
+if [ -e "$STUB_CACHE" ]; then bad "a no-match lookup wrote to the cache: $(cat "$STUB_CACHE")"
+else ok "a no-match lookup writes nothing to the cache"; fi
+
+# Test 0e — gh's real NOT_FOUND shape (exit 1, body on stdout) is a clean no-match.
+NOT_FOUND='{"data":{"repository":{"issueOrPullRequest":null}},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to an issue or pull request with the number of 42."}]}'
+GH_STUB_STDOUT="$NOT_FOUND" GH_STUB_RC=1 GH_STUB_STDERR="gh: Could not resolve to an issue or pull request with the number of 42." run_stubbed 42
+if [ "$stub_rc" -eq 1 ]; then ok "NOT_FOUND exits 1"; else bad "NOT_FOUND expected exit 1, got $stub_rc"; fi
+case "$stub_err" in
+  *"no item found"*) ok "NOT_FOUND reports 'no item found'" ;;
+  *)                 bad "NOT_FOUND stderr missing 'no item found': '$stub_err'" ;;
+esac
+
+# Test 0f — any other gh failure is not "no item found": it exits 2 with gh's own message,
+# so a caller can tell a failed lookup from an absent item. gh exits 1 for these, the same
+# code as a no-match, which is why the stub does too. Three shapes: a GraphQL rate-limit
+# body on stdout, no stdout at all (offline), and an error about a board the token can't
+# read when the wanted item isn't in the response.
+RATE_LIMITED='{"errors":[{"type":"RATE_LIMITED","code":"graphql_rate_limit","message":"API rate limit already exceeded for user ID 1."}]}'
+FORBIDDEN_NO_MATCH='{"data":{"repository":{"issueOrPullRequest":{"projectItems":{"nodes":[null]}}}},"errors":[{"type":"FORBIDDEN","message":"Resource not accessible"}]}'
+for body in "$RATE_LIMITED" "" "$FORBIDDEN_NO_MATCH"; do
+  GH_STUB_STDOUT="$body" GH_STUB_RC=1 GH_STUB_STDERR="gh: simulated failure" run_stubbed 42
+  if [ "$stub_rc" -eq 2 ]; then ok "a non-NOT_FOUND failure exits 2 (body: '${body:0:20}')"
+  else bad "expected exit 2, got $stub_rc (body: '${body:0:20}'): $stub_err"; fi
+  case "$stub_err" in
+    *"no item found"*)      bad "a failed lookup was reported as 'no item found': '$stub_err'" ;;
+    *"simulated failure"*)  ok "a non-NOT_FOUND failure leaves gh's own message as the diagnosis" ;;
+    *)                      bad "gh's own message was lost: '$stub_err'" ;;
+  esac
+done
+
+# Test 0g — the wanted item still resolves beside an error about another board, and a null
+# element in the list doesn't throw.
+FORBIDDEN_WITH_MATCH='{"data":{"repository":{"issueOrPullRequest":{"projectItems":{"nodes":[null,
+  {"id":"PVTI_wanted","project":{"number":3,"owner":{"login":"brownm09"}}}
+]}}}},"errors":[{"type":"FORBIDDEN","message":"Resource not accessible"}]}'
+GH_STUB_STDOUT="$FORBIDDEN_WITH_MATCH" GH_STUB_RC=1 GH_STUB_STDERR="gh: simulated failure" run_stubbed 42
+if [ "$stub_rc" -eq 0 ] && [ "$stub_out" = "PVTI_wanted" ]; then
+  ok "the wanted item resolves beside an error about another board"
+else
+  bad "expected PVTI_wanted with exit 0 beside a partial error, got '$stub_out' exit $stub_rc: $stub_err"
+fi
+
+# Test 0h — an issue on no board at all, with no errors, is a clean no-match too.
+EMPTY_NODES='{"data":{"repository":{"issueOrPullRequest":{"projectItems":{"nodes":[]}}}}}'
+GH_STUB_STDOUT="$EMPTY_NODES" GH_STUB_RC=0 GH_STUB_STDERR="" run_stubbed 42
+if [ "$stub_rc" -eq 1 ]; then ok "an issue on no board at all exits 1"
+else bad "an issue on no board expected exit 1, got $stub_rc"; fi
+case "$stub_err" in
+  *"no item found"*) ok "an issue on no board reports 'no item found'" ;;
+  *)                 bad "an issue on no board stderr missing 'no item found': '$stub_err'" ;;
+esac
+
 # --- Network-dependent tests below: preflight gh present/authenticated/reachable ---
 command -v gh >/dev/null 2>&1 || skip "gh CLI not installed"
 gh auth status >/dev/null 2>&1 || skip "gh not authenticated (run: gh auth login)"
-if ! gh project item-list 3 --owner brownm09 --limit 1 >/dev/null 2>&1; then
+if ! gh api graphql -f query='{user(login:"brownm09"){projectV2(number:3){number}}}' >/dev/null 2>&1; then
   skip "gh project query failed (offline, or missing 'project' scope: gh auth refresh -s project)"
 fi
 
-# Count via find (not `ls | wc`) so a non-alphanumeric name can't skew the count.
-count_temps() { find "$SCRATCH" -maxdepth 1 -name 'tmp_project_item_*.json' 2>/dev/null | wc -l; }
-before=$(count_temps)
-
 # Test 1 — success path: resolves a known item to a PVTI_ node id. Isolated from
 # the real production cache via PROJECT_ITEM_CACHE_PATH_OVERRIDE (a fresh, empty
-# tmp file) so this always exercises the fetch-and-scan fallback, not a leftover
-# cache entry from a prior run.
+# tmp file) so this always exercises the live lookup, not a leftover cache entry
+# from a prior run.
 FALLBACK_CACHE="$CACHE_TMP/fallback-cache.json"
 if ITEM_ID=$(PROJECT_ITEM_CACHE_PATH_OVERRIDE="$FALLBACK_CACHE" bash "$SCRIPT" "$KNOWN_ISSUE" 2>/dev/null); then
   case "$ITEM_ID" in
@@ -155,6 +277,16 @@ if [ -n "$ITEM_ID" ]; then
   fi
 fi
 
+# Test 1d — a PR resolves the same way an issue does.
+if PR_ITEM_ID=$(PROJECT_ITEM_CACHE_PATH_OVERRIDE="$FALLBACK_CACHE" bash "$SCRIPT" "$KNOWN_PR" 2>/dev/null); then
+  case "$PR_ITEM_ID" in
+    PVTI_*) ok "resolved PR #$KNOWN_PR -> $PR_ITEM_ID" ;;
+    *)      bad "expected a PVTI_ id for PR #$KNOWN_PR, got: '$PR_ITEM_ID'" ;;
+  esac
+else
+  bad "script exited non-zero resolving known PR #$KNOWN_PR"
+fi
+
 # Test 2 — failure path: a non-existent issue exits 1 with the diagnostic.
 err=$(PROJECT_ITEM_CACHE_PATH_OVERRIDE="$FALLBACK_CACHE" bash "$SCRIPT" 99999999 2>&1 >/dev/null); rc=$?
 if [ "$rc" -eq 1 ]; then ok "no-match exits 1"; else bad "no-match expected exit 1, got $rc"; fi
@@ -163,10 +295,23 @@ case "$err" in
   *)                 bad "no-match stderr missing 'no item found': '$err'" ;;
 esac
 
-# Test 3 — cleanup: the trap removes the temp file on every path.
-after=$(count_temps)
-if [ "$after" -le "$before" ]; then ok "no leftover temp files (count $before -> $after)"
-else bad "temp files leaked (count $before -> $after); trap cleanup failed"; fi
+# Test 2b — an issue on another board only is a no-match for board 3. The control after
+# it keeps this from passing vacuously: the same issue does resolve on its real board.
+err=$(PROJECT_REPO="$OTHER_BOARD_REPO" PROJECT_ITEM_CACHE_PATH_OVERRIDE="$FALLBACK_CACHE" bash "$SCRIPT" "$OTHER_BOARD_ISSUE" 2>&1 >/dev/null); rc=$?
+if [ "$rc" -eq 1 ]; then ok "an issue on another board only exits 1 for board 3"
+else bad "an issue on another board only expected exit 1, got $rc"; fi
+case "$err" in
+  *"no item found"*) ok "an issue on another board only reports 'no item found'" ;;
+  *)                 bad "another-board stderr missing 'no item found': '$err'" ;;
+esac
+if OTHER_ID=$(PROJECT_REPO="$OTHER_BOARD_REPO" PROJECT_ITEM_CACHE_PATH_OVERRIDE="$FALLBACK_CACHE" bash "$SCRIPT" "$OTHER_BOARD_ISSUE" "$OTHER_BOARD_NUMBER" "$OTHER_BOARD_OWNER" 2>/dev/null); then
+  case "$OTHER_ID" in
+    PVTI_*) ok "control: #$OTHER_BOARD_ISSUE resolves on its real board -> $OTHER_ID" ;;
+    *)      bad "control: expected a PVTI_ id on the real board, got: '$OTHER_ID'" ;;
+  esac
+else
+  bad "control: #$OTHER_BOARD_ISSUE did not resolve on $OTHER_BOARD_OWNER/$OTHER_BOARD_NUMBER"
+fi
 
 echo "Tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -412,8 +412,9 @@ To look up an item ID by issue or PR number `<N>` (e.g., to move status in a lat
 `get-project-item.sh` rather than querying the board directly — it checks a local cache first
 (dev-env#1057, [ADR-141](docs/adr/141-project-item-id-creation-time-cache.md)) and costs **zero**
 `gh` calls on a hit (populated automatically at creation time and backfilled wholesale by
-`reconcile-project-board.py`'s sweeps), falling back to the full `--limit 1000` board fetch only
-on a genuine cache miss — never the unconditional full fetch this section used to document inline:
+`reconcile-project-board.py`'s sweeps), falling back on a miss to a query for that one item, which
+costs 1 GraphQL point ([dev-env#1246](https://github.com/brownm09/dev-env/issues/1246)). Don't look
+one item up with `gh project item-list`: on this board that's about 1,011 points:
 
 ```bash
 ITEM_ID=$(bash ~/.claude/scripts/get-project-item.sh <N>)

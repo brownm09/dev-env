@@ -66,8 +66,9 @@ calls (`get_pr_body`, `move_to_done`, `confirm_merge_via_gh`) are intentionally
 not tested. `find_project_item` is the one exception, partially: its cache-hit
 path (dev-env#1057, ADR-141) returns before ever reaching `subprocess.run`, so it
 is tested directly (isolated to a tmp-dir cache via `_gh_project`'s
-`cache_path`/`PROJECT_ITEM_CACHE_PATH_OVERRIDE`); its fallback fetch-and-scan
-path still shells out to `gh` and remains untested here, unchanged from before.
+`cache_path`/`PROJECT_ITEM_CACHE_PATH_OVERRIDE`); its cache-miss lookup still
+shells out to `gh`, so only its pure board filter (`_match_project_item`) is
+tested here.
 
 Usage:
     py -3 claude/scripts/tests/test_post_pr_merge_project.py
@@ -77,6 +78,7 @@ Exit 0 = all pass.
 
 import importlib.util
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -100,7 +102,7 @@ extract_repo_from_command = ppmp.extract_repo_from_command
 resolve_command_repo = ppmp.resolve_command_repo
 resolve_command_pr_number = ppmp.resolve_command_pr_number
 find_project_item = ppmp.find_project_item
-_match_item_in_list = ppmp._match_item_in_list
+_match_project_item = ppmp._match_project_item
 
 # is_merge_help_only lives in _hookio (a sibling); SCRIPT.parent already on
 # sys.path via the insert above.
@@ -673,51 +675,90 @@ def test_find_project_item_cache_miss_on_different_project() -> str:
     return "an entry cached under project 5 is not returned for a project-3 lookup of the same repo#number"
 
 
-# --- _match_item_in_list: the fallback scan's repo filter (dev-env#1057 /review) ---
+# --- _match_project_item: the cache-miss lookup's board filter (dev-env#1246) ---
 
-def _fake_item(number, repo, item_id):
-    return {"content": {"number": number, "repository": repo}, "id": item_id}
-
-
-def test_match_item_in_list_finds_same_repo_match() -> str:
-    items = [_fake_item(1057, "brownm09/dev-env", "PVTI_1057")]
-    assert _match_item_in_list(items, 1057, "brownm09/dev-env") == "PVTI_1057"
-    return "_match_item_in_list finds an item matching both number and repo"
-
-
-def test_match_item_in_list_rejects_wrong_repo_same_number() -> str:
-    """The exact defect a /review finding on this PR caught: an unfiltered scan
-    would return this WRONG-repo item just because the number matched. This board
-    genuinely carries items from more than one repo (--scan-dir reconciliation),
-    so a same-numbered issue on a different repo is a realistic collision, not a
-    contrived one."""
-    items = [_fake_item(42, "merickvaughn/lifting-logbook", "PVTI_wrong_repo")]
-    assert _match_item_in_list(items, 42, "brownm09/dev-env") is None
-    return "_match_item_in_list rejects a same-numbered item that belongs to a different repo"
-
-
-def test_match_item_in_list_picks_correct_repo_among_several() -> str:
-    items = [
-        _fake_item(42, "merickvaughn/lifting-logbook", "PVTI_wrong"),
-        _fake_item(42, "brownm09/dev-env", "PVTI_right"),
+def _lookup_response(*boards):
+    """An `_ITEM_LOOKUP_QUERY` response, one node per (item_id, number, owner)."""
+    nodes = [
+        {"id": item_id, "project": {"number": number, "owner": {"login": owner}}}
+        for item_id, number, owner in boards
     ]
-    assert _match_item_in_list(items, 42, "brownm09/dev-env") == "PVTI_right"
-    return "_match_item_in_list picks the same-repo item even when a same-numbered item from another repo appears first"
+    return {"data": {"repository": {"issueOrPullRequest": {"projectItems": {"nodes": nodes}}}}}
 
 
-def test_match_item_in_list_no_repo_filter_when_repo_falsy() -> str:
-    """When `repo` is empty/falsy (e.g. an incomplete config), the filter is
-    skipped -- matching the original number-only behavior rather than rejecting
-    every item outright."""
-    items = [_fake_item(1057, "brownm09/dev-env", "PVTI_1057")]
-    assert _match_item_in_list(items, 1057, "") == "PVTI_1057"
-    return "_match_item_in_list falls back to number-only matching when repo is falsy"
+def test_match_project_item_finds_the_named_board() -> str:
+    response = _lookup_response(("PVTI_1057", 3, "brownm09"))
+    assert _match_project_item(response, "3", "brownm09") == "PVTI_1057"
+    return "_match_project_item finds the item on the board named by number and owner"
 
 
-def test_match_item_in_list_no_match_returns_none() -> str:
-    items = [_fake_item(1, "brownm09/dev-env", "PVTI_1")]
-    assert _match_item_in_list(items, 999, "brownm09/dev-env") is None
-    return "_match_item_in_list returns None when no item matches the number at all"
+def test_match_project_item_rejects_same_number_other_owner() -> str:
+    """A real collision, not a contrived one: brownm09 and merickvaughn each have a
+    board 2, so matching on the number alone would return the wrong board's item."""
+    response = _lookup_response(("PVTI_other_owner", 2, "merickvaughn"))
+    assert _match_project_item(response, "2", "brownm09") is None
+    return "_match_project_item rejects a same-numbered board under another owner"
+
+
+def test_match_project_item_rejects_other_number_same_owner() -> str:
+    response = _lookup_response(("PVTI_other_board", 2, "brownm09"))
+    assert _match_project_item(response, "3", "brownm09") is None
+    return "_match_project_item rejects another board under the same owner"
+
+
+def test_match_project_item_picks_named_board_among_several() -> str:
+    response = _lookup_response(
+        ("PVTI_wrong_owner", 3, "merickvaughn"),
+        ("PVTI_wrong_number", 2, "brownm09"),
+        ("PVTI_right", 3, "brownm09"),
+    )
+    assert _match_project_item(response, "3", "brownm09") == "PVTI_right"
+    return "_match_project_item picks the named board when the item sits on several"
+
+
+def test_match_project_item_owner_is_case_insensitive() -> str:
+    """GitHub logins are case-insensitive, and hook-config.json is hand-typed."""
+    response = _lookup_response(("PVTI_1057", 3, "BrownM09"))
+    assert _match_project_item(response, "3", "brownm09") == "PVTI_1057"
+    return "_match_project_item compares owners case-insensitively"
+
+
+def test_match_project_item_handles_absent_shapes() -> str:
+    """A number or repo that doesn't exist comes back as a null, and an item on no
+    board as an empty list. None of those may raise."""
+    empty_shapes = [
+        {},
+        {"data": None},
+        {"data": {"repository": None}},
+        {"data": {"repository": {"issueOrPullRequest": None}}},
+        _lookup_response(),
+    ]
+    for response in empty_shapes:
+        assert _match_project_item(response, "3", "brownm09") is None, f"expected None for {response!r}"
+    return "_match_project_item returns None for null targets and an empty board list"
+
+
+def test_match_project_item_survives_a_null_node() -> str:
+    """A board the token can't read comes back as a null element beside an error, and
+    must not stop the wanted board's item being found."""
+    response = _lookup_response(("PVTI_right", 3, "brownm09"))
+    nodes = response["data"]["repository"]["issueOrPullRequest"]["projectItems"]["nodes"]
+    nodes.insert(0, None)
+    response["errors"] = [{"type": "FORBIDDEN", "message": "Resource not accessible"}]
+    assert _match_project_item(response, "3", "brownm09") == "PVTI_right"
+    return "_match_project_item finds the wanted board past a null element and a partial error"
+
+
+def test_lookup_query_matches_the_shell_copy() -> str:
+    """Both copies feed the same shared cache, so a change to one alone (includeArchived,
+    say) would make the two callers answer differently for the same item, silently."""
+    shell = (SCRIPT.parent / "get-project-item.sh").read_text(encoding="utf-8")
+    match = re.search(r"-f query='(.*?)' \\", shell, re.DOTALL)
+    assert match, "could not find the query in get-project-item.sh -- this comparison would be vacuous"
+    shell_query = "".join(match.group(1).split())
+    python_query = "".join(ppmp._ITEM_LOOKUP_QUERY.split())
+    assert shell_query == python_query, "the two lookup queries have drifted"
+    return "get-project-item.sh and _ITEM_LOOKUP_QUERY ask the same query"
 
 
 def main() -> int:
@@ -780,11 +821,14 @@ def main() -> int:
         ("command: PR number on a continued line (dev-env#831)", test_extract_pr_number_from_command_number_on_continued_line),
         ("find_project_item: cache hit returns without gh (dev-env#1057)", test_find_project_item_cache_hit_returns_without_subprocess),
         ("find_project_item: cache miss across project boards (dev-env#1057)", test_find_project_item_cache_miss_on_different_project),
-        ("_match_item_in_list: same-repo match found", test_match_item_in_list_finds_same_repo_match),
-        ("_match_item_in_list: wrong-repo same-number rejected", test_match_item_in_list_rejects_wrong_repo_same_number),
-        ("_match_item_in_list: picks correct repo among several", test_match_item_in_list_picks_correct_repo_among_several),
-        ("_match_item_in_list: no repo filter when repo is falsy", test_match_item_in_list_no_repo_filter_when_repo_falsy),
-        ("_match_item_in_list: no match returns None", test_match_item_in_list_no_match_returns_none),
+        ("_match_project_item: finds the named board", test_match_project_item_finds_the_named_board),
+        ("_match_project_item: same number, other owner rejected", test_match_project_item_rejects_same_number_other_owner),
+        ("_match_project_item: other number, same owner rejected", test_match_project_item_rejects_other_number_same_owner),
+        ("_match_project_item: picks the named board among several", test_match_project_item_picks_named_board_among_several),
+        ("_match_project_item: owner compared case-insensitively", test_match_project_item_owner_is_case_insensitive),
+        ("_match_project_item: absent shapes return None", test_match_project_item_handles_absent_shapes),
+        ("_match_project_item: survives a null node and a partial error", test_match_project_item_survives_a_null_node),
+        ("_ITEM_LOOKUP_QUERY matches get-project-item.sh", test_lookup_query_matches_the_shell_copy),
     ]
     failed = 0
     for name, fn in tests:

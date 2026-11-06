@@ -1,6 +1,6 @@
-# ADR-141 — Cache Project-Board Item IDs at Creation Time, Fall Back to a Full Fetch Only on a Miss
+# ADR-141 — Cache Project-Board Item IDs at Creation Time, Look Up Live Only on a Miss
 
-**Date:** 2026-08-26 (amended 2026-11-05)
+**Date:** 2026-08-26 (amended 2026-11-05, 2026-11-06)
 **Status:** Accepted
 **Tags:** hooks, post-tool-use, github-project, graphql, rest-api, caching, reconcile-project-board, performance
 
@@ -236,3 +236,51 @@ REST endpoints don't accept, so moving the hooks to REST would also change what 
 
 For now, REST is the documented manual fallback when GraphQL rejects a call, in the root `CLAUDE.md`
 GitHub Project section.
+
+## Amendment 2 (2026-11-06, dev-env#1246) — a cache miss no longer fetches the whole board
+
+This ADR kept a full `gh project item-list --limit 1000` as the fallback on a miss, on the reasoning
+that a fallback which only fires on a miss doesn't spend quota on a healthy session. That underrated
+how often misses happen and what each one costs. `item-list` always asks for `fieldValues(first:
+100)`, which GitHub prices at 101 points per 100 items, so one fetch of the 900-item board costs about
+1,011 points. `test-get-project-item.sh` empties the cache on purpose and forced two such fetches per
+attempt, in every suite run, and that exhausted the shared budget on 2026-11-05
+([dev-env#1238](https://github.com/brownm09/dev-env/issues/1238)).
+
+**The cache stays, and so does its scoping by board.** Only the fallback and the sweep's query change,
+each priced with `rateLimit(dryRun: true)`:
+
+| # | Caller | Before | After |
+|---|---|---|---|
+| 1 | `get-project-item.sh` and `post-pr-merge-project.py` on a miss | about 1,011 points | 1 point: `issueOrPullRequest { projectItems }` for that one issue or PR, filtered on board number and owner |
+| 2 | `reconcile-project-board.py`'s sweep of this board | about 1,011 points | about 10 points: 1 per page |
+
+This ADR's rejected "narrow `--limit` first, then paginate" depended on `item-list`'s unverified sort
+order. The single-item query doesn't: it starts from the issue and asks which boards it's on. Nobody
+evaluated that shape when this ADR was written.
+
+**Why the sweep still fetches every item, and why this ADR's reasoning for it holds.** Its set
+difference needs them all. What it didn't need was every field of every item. It does read field
+values, for the missing-required-field report, so it asks for the required fields by name through
+`fieldValueByName`, normalized to the item shape its helpers already read. Paging until GitHub says
+there are no more also retires the `--limit 1000` cap this board, now past 900 items, was approaching.
+
+`fieldValueByName` is stricter than the old read in two ways: it matches names exactly (live, `impact`
+came back null where `Impact` read High), and the query reads only text and single-select values, the
+two types this repo's hooks handle. Either would quietly report every open issue as missing the field,
+so the same query also asks for each required field's definition, and a name or type it can't read
+fails that repo's sweep with an error naming the field.
+
+**Failure behaviour.** The query starts from the issue, so its response can mention boards the caller
+doesn't care about. Both lookups therefore look for the wanted item first, and an error about another
+board doesn't stop them finding it. Without the item, `get-project-item.sh` exits 1 with `no item found`
+for a `NOT_FOUND` response or no matching board, and 2 for any other `gh` failure. gh exits 1 for nearly
+every failure, so passing its code through would have made a rate limit look like an absent item.
+`post-pr-merge-project.py` still returns `None` when it finds nothing, as it did before.
+
+**Parity check, 2026-11-06.** The new sweep and a real `item-list` of the Dev Env board, taken seconds
+apart, agreed on every item's type, number, URL, repository, Impact and Why, apart from two issues
+another session was creating at that moment (#1259 and #1260).
+
+This also amends [ADR-068](068-reconcile-project-board-orphan-issues.md), which names
+`gh project item-list` as the sweep's board read.
