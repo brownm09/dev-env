@@ -54,6 +54,7 @@ from datetime import date
 from pathlib import Path
 
 import _hookutil
+from _journal_late import CONTENT_PATHS, DRAFT_BRANCH, RECONCILED_TAG_PREFIX, late_commits
 
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SCRATCH = Path.home() / ".claude" / "scratch"
@@ -61,8 +62,8 @@ TODAY = date.today().strftime("%Y-%m-%d")
 FLAG_MAX_AGE_HOURS = 24
 # How long a check's sentinel suppresses a re-run within the same session. Not "once per
 # session": a day rollover can begin mid-session, so the checks must re-arm — but re-running
-# them on every prompt costs a git spawn (and, for checks 1-3, a network `git ls-remote`) per
-# prompt for a condition that is almost always false. (dev-env#873 review)
+# them on every prompt costs a git spawn (and, for checks 1-3, a network `git ls-remote` and a
+# `gh` call) per prompt for a condition that is almost always false. (dev-env#873 review)
 RECHECK_MINUTES = 30
 # Check 5 (stale-canonical self-healing, dev-env#911): a branch is eligible for auto-restore
 # only once HEAD hasn't moved in the canonical -- a checkout OR a commit -- for at least this
@@ -73,8 +74,9 @@ RECHECK_MINUTES = 30
 # bound left the canonical stranded ~32 hours. 15 minutes gives real in-flight work
 # comfortable headroom while still bounding worst-case staleness.
 STALE_CANONICAL_IDLE_MINUTES = 15
-# reconcile-late-stubs.py points this tag at a branch's tip once its late stubs are moved.
-RECONCILED_TAG_PREFIX = "refs/tags/reconciled/"
+# The late-commits check stops here, leaving time to emit under the hook's 30-second timeout.
+HOOK_STARTED = time.monotonic()
+HOOK_BUDGET_SECONDS = 25
 
 
 def cleanup_stale_flags() -> None:
@@ -214,32 +216,39 @@ def composed_dates_on_main() -> set[str]:
 
 
 # Memoized: this reader is called from more than one check with identical inputs;
-# without the cache the same git (and for remote_draft_dates, NETWORK) call runs
-# twice per hook fire. Process-lifetime cache, so no staleness within a run.
+# without the cache the same NETWORK call runs twice per hook fire. Process-lifetime
+# cache, so no staleness within a run.
 @functools.lru_cache(maxsize=1)
+def remote_draft_refs() -> tuple[dict[str, str], dict[str, str]]:
+    """Return ({draft branch: tip sha}, {draft branch: sha of its reconciled tag})."""
+    result = subprocess.run(
+        ["git", "ls-remote", "origin", "refs/heads/draft/*", f"{RECONCILED_TAG_PREFIX}draft/*"],
+        cwd=JOURNAL_REPO,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+    tips: dict[str, str] = {}
+    reconciled: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        if ref.startswith("refs/heads/"):
+            tips[ref.removeprefix("refs/heads/")] = sha
+        elif ref.startswith(RECONCILED_TAG_PREFIX):
+            reconciled[ref.removeprefix(RECONCILED_TAG_PREFIX)] = sha
+    return tips, reconciled
+
+
 def remote_draft_dates() -> set[str]:
     """Return YYYY-MM-DD date strings for all remote draft/* branches."""
     try:
-        result = subprocess.run(
-            ["git", "ls-remote", "--heads", "origin", "refs/heads/draft/*"],
-            cwd=JOURNAL_REPO,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        dates: set[str] = set()
-        for line in result.stdout.splitlines():
-            if "\t" in line:
-                ref = line.split("\t", 1)[1].strip()
-                # Parse through branch_date so a suffixed branch (draft/2026-05-09-late,
-                # draft/2026-07-03-lifting-logbook-late — 6 of 33 live branches) yields its
-                # bare date. Previously the whole suffixed string was treated as the date, so
-                # it could never match composed_dates_on_main()'s bare dates and every such
-                # branch was reported as unmerged forever. (dev-env#873 review)
-                parsed = branch_date(ref.replace("refs/heads/", ""))
-                if parsed:
-                    dates.add(parsed)
-        return dates
+        # Parse through branch_date so a suffixed branch (draft/2026-05-09-late,
+        # draft/2026-07-03-lifting-logbook-late — 6 of 33 live branches) yields its
+        # bare date. Previously the whole suffixed string was treated as the date, so
+        # it could never match composed_dates_on_main()'s bare dates and every such
+        # branch was reported as unmerged forever. (dev-env#873 review)
+        return {parsed for branch in remote_draft_refs()[0] if (parsed := branch_date(branch))}
     except Exception:
         return set()
 
@@ -264,24 +273,23 @@ def unmerged_draft_branches() -> list[str]:
     )
 
 
-def remote_draft_refs() -> tuple[dict[str, str], dict[str, str]]:
-    """Return ({draft branch: tip sha}, {draft branch: sha of its reconciled tag})."""
-    result = subprocess.run(
-        ["git", "ls-remote", "origin", "refs/heads/draft/*", f"{RECONCILED_TAG_PREFIX}draft/*"],
-        cwd=JOURNAL_REPO,
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-    tips: dict[str, str] = {}
-    reconciled: dict[str, str] = {}
-    for line in result.stdout.splitlines():
-        sha, _, ref = line.partition("\t")
-        if ref.startswith("refs/heads/"):
-            tips[ref.removeprefix("refs/heads/")] = sha
-        elif ref.startswith(RECONCILED_TAG_PREFIX):
-            reconciled[ref.removeprefix(RECONCILED_TAG_PREFIX)] = sha
-    return tips, reconciled
+def seconds_left() -> float:
+    """The hook's remaining time budget. Raises once it is spent."""
+    left = HOOK_STARTED + HOOK_BUDGET_SECONDS - time.monotonic()
+    if left <= 1:
+        raise TimeoutError("hook time budget spent")
+    return left
+
+
+def note_late_check_failure(detail: str) -> None:
+    """Record a failed check where someone can find it. The hook stays silent and exits 0,
+    but a lasting break must not hide late commits with no trace."""
+    try:
+        SCRATCH.mkdir(parents=True, exist_ok=True)
+        with open(SCRATCH / "journal_hook_late_check_failures.log", "a", encoding="utf-8") as log:
+            log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {detail}\n")
+    except Exception:
+        pass
 
 
 def last_merged_at(dates: set[str]) -> dict[str, str]:
@@ -303,7 +311,7 @@ def last_merged_at(dates: set[str]) -> dict[str, str]:
         cwd=JOURNAL_REPO,
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=min(20, seconds_left()),
         check=True,
     )
     repo = json.loads(result.stdout)["data"]["repository"]
@@ -315,55 +323,41 @@ def last_merged_at(dates: set[str]) -> dict[str, str]:
     return merged
 
 
-def has_late_commits(tip: str, merged_at: str, reconciled: str | None) -> bool:
-    """Whether `tip` has commits after `merged_at` that are not on main or already moved.
-
-    Excluding origin/main matters for a branch cut from main after the compose: main's own
-    later commits are not late stubs. A tip this checkout has not fetched reads as False.
-    """
-    exclude = ["origin/main"] + ([reconciled] if reconciled else [])
-    result = subprocess.run(
-        ["git", "log", "-1", "--format=%H", f"--after={merged_at}", tip, "--not", *exclude],
-        cwd=JOURNAL_REPO,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    return result.returncode == 0 and bool(result.stdout.strip())
-
-
 def resurrected_draft_branches() -> list[str]:
-    """Return draft branches of a composed day with commits after its last merged PR.
+    """Return draft branches of a composed day with session content after its last merged PR.
 
     A kept branch with no late commits needs nothing, and neither does a branch whose
     late stubs were already moved. A day whose PR came from any other head has no known
-    cutoff, so it is not reported. A failed lookup reports nothing this time; this
-    advisory check runs again on a later prompt.
+    cutoff, so it is not reported. A failed lookup reports nothing this time and is logged;
+    this advisory check runs again on a later prompt.
     """
     try:
         tips, reconciled = remote_draft_refs()
         composed = composed_dates_on_main()
         candidates = {
-            branch: date_str
+            branch: match[1]
             for branch, tip in tips.items()
-            if (date_str := branch_date(branch))
-            and date_str != TODAY
-            and date_str in composed
+            if (match := DRAFT_BRANCH.fullmatch(branch))
+            and match[1] != TODAY
+            and match[1] in composed
             and reconciled.get(branch) != tip
         }
         if not candidates:
             return []
         merged = last_merged_at(set(candidates.values()))
-        return sorted(
-            (
-                branch
-                for branch, date_str in candidates.items()
-                if date_str in merged
-                and has_late_commits(tips[branch], merged[date_str], reconciled.get(branch))
-            ),
-            reverse=True,
-        )
-    except Exception:
+        flagged = []
+        for branch, date_str in candidates.items():
+            if date_str not in merged:
+                continue
+            try:
+                if late_commits(JOURNAL_REPO, tips[branch], merged[date_str], reconciled.get(branch),
+                                CONTENT_PATHS, seconds_left()):
+                    flagged.append(branch)
+            except subprocess.SubprocessError as e:
+                note_late_check_failure(f"{branch}: {e!r}")
+        return sorted(flagged, reverse=True)
+    except Exception as e:
+        note_late_check_failure(repr(e))
         return []
 
 
@@ -919,7 +913,7 @@ def main() -> None:
             f"[journal-hook] Late commits on composed draft branch(es): {', '.join(resurrected)}\n"
             f"Each has commits later than its day's last merged PR, so they may be in no journal.\n"
             f"The first session to see this runs these now, whatever its task; don't leave them "
-            f"for a later session or the user:\n{commands}"
+            f"for a later session. If a command is blocked, give it to the user and say why:\n{commands}"
         )
 
     emit(messages)

@@ -215,10 +215,12 @@ The warning that points at `reconcile-late-stubs.py` flagged any remote `draft/<
 
 ### The decision
 
-1. **The check keys on the measured property.** A branch is flagged only when it has commits after its day's last merged PR, read from `draft/<D>` and `compose/<D>`, that are not on `main` and not behind its reconciled tag. One GraphQL request covers every date. A failed lookup reports nothing, since the check is advisory and runs again later.
-2. **`reconciled/<branch>` marks what has been moved.** The script pushes that tag at the source tip before deleting the branch, and never moves commits behind it. A move by hand pushes the same tag. The tag also keeps the deleted commits reachable, so the delete can be undone.
-3. **The first session to see the warning acts on it**, whatever its task. The warning and the global `CLAUDE.md` both say so.
+1. **The check keys on the measured property.** A branch is flagged only when commits touching session files come after its day's last merged PR, read from `draft/<D>` and `compose/<D>`, and aren't on `main` or behind its reconciled tag. One GraphQL request covers every date, and the check shares a time budget under the hook's timeout. A failed lookup reports nothing and adds a line to `journal_hook_late_check_failures.log` in scratch, since the check is advisory and runs again later. `_journal_late.py` holds this rule for both the check and the script.
+2. **`reconciled/<branch>` marks what has been moved.** The tag lands in one atomic push with the moved files, and the script never moves commits behind it. A move by hand pushes the same tag. The tag keeps deleted commits reachable: the delete only succeeds at the tip the run read, and the script stops rather than move a tag off a rewritten branch.
+3. **The first session to see the warning acts on it**, whatever its task, and hands a blocked command to the user. The warning and the global `CLAUDE.md` both say so.
 4. **The script takes suffixed branches and legacy per-day manifests**, because every flagged May branch needed one or both. A legacy manifest is split into a shard per moved stub.
+5. **The script stops rather than delete what it can't vouch for:** a late file of a kind it doesn't move, or a suffixed branch with commits from before its day's merge, since that branch never merged itself.
+6. **A tag can also mean "tracked elsewhere".** The 8 branches flagged at first run were tagged when [dev-env#1277](https://github.com/brownm09/dev-env/issues/1277) took them on, so the warning wouldn't send a session to move stubs the owner decided to compose under their original dates.
 
 ### Alternatives considered
 
@@ -234,7 +236,7 @@ Advisory only, so it can't block anything. Measured against the live repository 
 
 **Positive.** A warning now means content that may be in no journal, and a repeat run moves nothing.
 
-**Negative / accepted.** A day composed only from another head is never flagged, whatever its branch holds. A branch's commits can be flagged though a later journal covers them, and moving them repeats some content, which Amendment 2 already accepts as cheaper than losing it. Each repository gains tags under `reconciled/`.
+**Negative / accepted.** A day composed only from another head is never flagged, whatever its branch holds. Nor is a suffixed branch whose commits all predate its day's merge, though it never merged itself; the script refuses to delete one, but no warning names it. A branch's commits can be flagged though a later journal covers them, and moving them repeats some content, which Amendment 2 already accepts as cheaper than losing it. Each repository gains tags under `reconciled/`.
 
 ### References (amendment)
 

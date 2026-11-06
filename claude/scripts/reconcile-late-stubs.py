@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-reconcile-late-stubs.py <draft/YYYY-MM-DD>
+reconcile-late-stubs.py <draft/YYYY-MM-DD[-suffix]>
 
 Moves stub files pushed to an already-merged draft branch to the earliest
 unmerged draft branch (or today's branch if none exists), then deletes the
@@ -28,14 +28,20 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
+from _journal_late import BEGINNING, DRAFT_BRANCH, RECONCILED_TAG_PREFIX, late_commits
+
 JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
 SCRATCH = Path.home() / ".claude" / "scratch"
 TODAY = date.today().strftime("%Y-%m-%d")
 LATE_FILE_NAME = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{6})\.(stub\.md|manifest\.jsonl)")
 LEGACY_MANIFEST_NAME = re.compile(r"\d{4}-\d{2}-\d{2}\.manifest\.jsonl")
 CARRIED_FILE = re.compile(r"/(reports/[^/]+\.md|tiles/[^/]+\.json)$")
-SOURCE_BRANCH = re.compile(r"draft/(\d{4}-\d{2}-\d{2})(-.+)?")
-RECONCILED_TAG_PREFIX = "refs/tags/reconciled/"
+OPEN_PR_RECORD = re.compile(r"/open-prs(\.jsonl|/[^/]+\.json)$")
+
+
+def kept_note(source_branch: str) -> str:
+    return (f"Nothing was moved and {source_branch} is kept. Move it by hand, then mark it: "
+            f"git push origin <tip sha>:{RECONCILED_TAG_PREFIX}{source_branch}")
 
 
 def run(cmd, cwd=None, check=True, capture=True):
@@ -72,17 +78,7 @@ def fetch_reconciled_tag(branch: str) -> Optional[str]:
     return tag
 
 
-def get_commits_after(branch: str, after_iso: str, reconciled_tag: Optional[str]) -> list[str]:
-    """Late commits: after the merge, not on main, and not moved by an earlier run. A
-    branch cut from main after the compose holds main's later commits, which are not late."""
-    exclude = ["origin/main"] + ([reconciled_tag] if reconciled_tag else [])
-    result = run(
-        ["git", "log", f"--after={after_iso}", "--format=%H", f"origin/{branch}", "--not", *exclude]
-    )
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-
-
-def get_late_files_in_commits(commits: list[str]) -> list[str]:
+def get_late_files_in_commits(commits: list[str], source_branch: str) -> list[str]:
     files: list[str] = []
     seen: set[str] = set()
     for commit in commits:
@@ -110,6 +106,10 @@ def get_late_files_in_commits(commits: list[str]) -> list[str]:
                 if path not in seen:
                     files.append(path)
                     seen.add(path)
+            elif not OPEN_PR_RECORD.search(path):
+                # Deleting the branch would leave this content behind with nothing naming it.
+                raise RuntimeError(f"Cannot move {path}: not a stub, manifest, report or tile "
+                                   f"shard. {kept_note(source_branch)}")
     return files
 
 
@@ -191,7 +191,7 @@ def read_late_files(source_branch: str, late_files: list[str]
     """
     sessions: dict[tuple[str, str], dict[str, str]] = {}
     carried: dict[str, str] = {}
-    keep = f"Nothing was moved and {source_branch} is kept; move it by hand."
+    keep = kept_note(source_branch)
     for rel_path in late_files:
         if CARRIED_FILE.search(rel_path):
             content = show_on_branch(source_branch, rel_path)
@@ -200,7 +200,7 @@ def read_late_files(source_branch: str, late_files: list[str]
             continue
         parent, _, name = rel_path.rpartition("/")
         if LEGACY_MANIFEST_NAME.fullmatch(name):
-            continue
+            continue  # read below, for each late stub it has a line for
         match = LATE_FILE_NAME.fullmatch(name)
         if not match:
             raise RuntimeError(
@@ -226,7 +226,9 @@ def read_late_files(source_branch: str, late_files: list[str]
                 legacy = show_on_branch(source_branch, manifest_path)
                 if legacy is not None:
                     manifest = shard_from_legacy_manifest(legacy, stem)
-            if manifest is not None:
+            if manifest is None:
+                print(f"  No manifest line for {stub_path}, so it moves without a topic or PR numbers")
+            else:
                 retarget_manifest(manifest, stem)
                 contents["manifest.jsonl"] = manifest
         except (ValueError, KeyError, TypeError, AttributeError) as e:
@@ -264,11 +266,15 @@ def place_on_target(worktree: Path, parent: str, stem: str,
 
 def retire_source_branch(source_branch: str, source_tip: str) -> None:
     """Mark the branch's tip as reconciled, then delete the branch. The tag goes first, so
-    a failed delete leaves a branch that a re-run or the new-day check will not act on."""
-    run(["git", "push", "--force", "origin", f"{source_tip}:{RECONCILED_TAG_PREFIX}{source_branch}"])
-    if run(["git", "push", "origin", "--delete", source_branch], check=False).returncode != 0:
-        print(f"Error: could not delete {source_branch}. Its late stubs are marked as moved, so "
-              f"a re-run moves nothing. Delete it by hand: git push origin --delete {source_branch}",
+    a failed delete leaves a branch that a re-run or the new-day check will not act on. The
+    delete only succeeds at that same tip, so a commit pushed during this run survives."""
+    run(["git", "push", "origin", f"+{source_tip}:{RECONCILED_TAG_PREFIX}{source_branch}"])
+    lease = f"--force-with-lease=refs/heads/{source_branch}:{source_tip}"
+    if run(["git", "push", lease, "origin", "--delete", source_branch], check=False).returncode != 0:
+        print(f"Error: could not delete {source_branch}. What this run saw is marked as moved, so "
+              f"a re-run moves only newer commits, and it can delete the branch once a re-run finds "
+              f"none. A commit may have landed during this run. By hand: "
+              f"git push origin --delete {source_branch}",
               file=sys.stderr)
         sys.exit(1)
     print(f"Deleted {source_branch}; its tip stays at {RECONCILED_TAG_PREFIX}{source_branch}")
@@ -281,7 +287,7 @@ def main() -> None:
 
     arg = sys.argv[1].strip()
     source_branch = arg if arg.startswith("draft/") else f"draft/{arg}"
-    branch_name = SOURCE_BRANCH.fullmatch(source_branch)
+    branch_name = DRAFT_BRANCH.fullmatch(source_branch)
     if not branch_name:
         print(f"Error: {source_branch} is not draft/YYYY-MM-DD[-suffix].", file=sys.stderr)
         sys.exit(1)
@@ -292,6 +298,12 @@ def main() -> None:
     run(["git", "fetch", "origin", source_branch, "main", "--quiet"])
     source_tip = run(["git", "rev-parse", f"origin/{source_branch}"]).stdout.strip()
     reconciled_tag = fetch_reconciled_tag(source_branch)
+    if reconciled_tag and run(["git", "merge-base", "--is-ancestor", reconciled_tag, source_tip],
+                              check=False).returncode != 0:
+        # Moving the tag would leave the commits it holds with nothing pointing at them.
+        print(f"Error: {source_branch} no longer descends from {reconciled_tag}, so the branch was "
+              f"rewritten. {kept_note(source_branch)}", file=sys.stderr)
+        sys.exit(1)
 
     pr = get_merged_pr_info(source_date)
     if not pr:
@@ -302,8 +314,16 @@ def main() -> None:
     merged_at = pr["mergedAt"]
     print(f"Found merged PR #{pr['number']} ({pr['url']}) merged at {merged_at}")
 
-    commits = get_commits_after(source_branch, merged_at, reconciled_tag)
+    source_ref = f"origin/{source_branch}"
+    commits = late_commits(JOURNAL_REPO, source_ref, merged_at, reconciled_tag)
     if not commits:
+        # A suffixed branch never merged itself, so the cutoff from its date's PR says nothing
+        # about whether its earlier commits were composed.
+        if branch_name[2] and late_commits(JOURNAL_REPO, source_ref, BEGINNING, reconciled_tag):
+            print(f"Error: {source_branch} has commits from before its day's last merge, and it "
+                  f"never merged itself, so they may be in no journal. Check them. "
+                  f"{kept_note(source_branch)}", file=sys.stderr)
+            sys.exit(1)
         print("No late commits left to move. Deleting stale branch...")
         retire_source_branch(source_branch, source_tip)
         return
@@ -313,7 +333,7 @@ def main() -> None:
         msg = run(["git", "log", "-1", "--format=%s", c]).stdout.strip()
         print(f"  {c[:8]} {msg}")
 
-    late_files = get_late_files_in_commits(commits)
+    late_files = get_late_files_in_commits(commits, source_branch)
     print(f"Found {len(late_files)} late file(s):")
     for f in late_files:
         print(f"  {f}")
@@ -369,7 +389,9 @@ def main() -> None:
                  f"renamed to its date."],
                 cwd=temp_dir,
             )
-            run(["git", "push", "origin", f"HEAD:refs/heads/{target_branch}"], cwd=temp_dir)
+            # One atomic push: moved files with no tag would be moved again by a later run.
+            run(["git", "push", "--atomic", "origin", f"HEAD:refs/heads/{target_branch}",
+                 f"+{source_tip}:{RECONCILED_TAG_PREFIX}{source_branch}"], cwd=temp_dir)
             print(f"Pushed {len(copied)} file(s) to {target_branch}")
 
     finally:

@@ -432,6 +432,121 @@ def test_suffixed_branch_uses_its_days_merged_pr_and_moves_its_stubs(j):
 
 
 @with_journal
+def test_suffixed_branch_with_commits_before_the_merge_is_kept(j):
+    """It never merged itself, so the day's cutoff doesn't show those commits were composed."""
+    j.branch("draft/2026-11-03-late")
+    j.commit({"sessions/p/2026-11-03_120000.stub.md": STUB}, BEFORE_MERGE)
+    j.push("draft/2026-11-03-late")
+    j.compose_day("2026-11-03")
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    stderr = io.StringIO()
+    with mock.patch.object(sys, "stderr", stderr):
+        assert j.reconcile("draft/2026-11-03-late") == 1
+    assert "never merged itself" in stderr.getvalue(), stderr.getvalue()
+    assert j.remote_has("draft/2026-11-03-late")
+
+
+@with_journal
+def test_late_file_of_an_unknown_kind_stops_the_run_and_keeps_the_branch(j):
+    j.source_with_late_stub()
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    j.git("checkout", "draft/2026-11-03")
+    j.commit({"sessions/p/retros/2026-11-03-retro.md": "a late retro\n"}, AFTER_MERGE)
+    j.push("draft/2026-11-03")
+    before = j.tree("draft/2026-11-04")
+    try:
+        j.reconcile()
+    except RuntimeError as e:
+        assert "retros/2026-11-03-retro.md" in str(e), str(e)
+    else:
+        raise AssertionError("content the script can't move must not be deleted with the branch")
+    assert j.tree("draft/2026-11-04") == before
+    assert j.remote_has("draft/2026-11-03")
+
+
+@with_journal
+def test_commit_pushed_during_the_run_survives_the_delete(j):
+    """The delete is conditional on the tip the run read."""
+    j.source_with_late_stub()
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    real_fake_run = j.fake_run
+
+    def push_during_the_run(cmd, *args, **kwargs):
+        if "--delete" in cmd:
+            j.git("checkout", "draft/2026-11-03")
+            j.commit({"sessions/p/2026-11-03_190000.stub.md": "arrived mid-run\n"}, AFTER_MERGE)
+            j.git("push", "origin", "draft/2026-11-03")
+        return real_fake_run(cmd, *args, **kwargs)
+
+    j.fake_run = push_during_the_run
+    stderr = io.StringIO()
+    with mock.patch.object(sys, "stderr", stderr):
+        assert j.reconcile() == 1
+    assert j.remote_has("draft/2026-11-03"), "the delete removed a commit it never saw"
+    assert "sessions/p/2026-11-03_190000.stub.md" in j.tree("draft/2026-11-03")
+
+
+@with_journal
+def test_failed_tag_push_also_leaves_the_target_unmoved(j):
+    """The files and the tag land together, so nothing can be moved without its mark."""
+    j.source_with_late_stub()
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    # A stale local view of the target rejects the atomic push as a whole.
+    j.branch("other", "origin/draft/2026-11-04")
+    j.commit({"sessions/p/2026-11-04_100000.stub.md": "landed first\n"}, BEFORE_MERGE)
+    real_fake_run = j.fake_run
+
+    def race_the_target(cmd, *args, **kwargs):
+        if "--atomic" in cmd:
+            j.git("push", "origin", "other:refs/heads/draft/2026-11-04")
+        return real_fake_run(cmd, *args, **kwargs)
+
+    j.fake_run = race_the_target
+    try:
+        j.reconcile()
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("a rejected atomic push must stop the run")
+    assert not j.git("ls-remote", "origin", "refs/tags/reconciled/draft/2026-11-03").strip()
+    assert "sessions/p/2026-11-04_120000.stub.md" not in j.tree("draft/2026-11-04")
+    assert j.remote_has("draft/2026-11-03")
+
+
+@with_journal
+def test_rewritten_branch_stops_rather_than_moving_the_tag(j):
+    j.source_with_late_stub()
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    old_tip = j.git("rev-parse", "draft/2026-11-03").strip()
+    j.git("push", "origin", f"{old_tip}:refs/tags/reconciled/draft/2026-11-03")
+    j.git("push", "--force", "origin", "origin/main:refs/heads/draft/2026-11-03")
+    stderr = io.StringIO()
+    with mock.patch.object(sys, "stderr", stderr):
+        assert j.reconcile() == 1
+    assert j.git("ls-remote", "origin", "refs/tags/reconciled/draft/2026-11-03").startswith(old_tip)
+    assert j.remote_has("draft/2026-11-03")
+
+
+@with_journal
+def test_late_commit_with_an_older_child_is_still_found(j):
+    """Clock skew: `git log --after` would stop at the child and hide the late parent."""
+    j.branch("draft/2026-11-03")
+    j.commit({"sessions/p/2026-11-03_120000.stub.md": STUB}, AFTER_MERGE)
+    j.commit({"sessions/p/2026-11-03_130000.stub.md": "committed on a slow clock\n"}, BEFORE_MERGE)
+    j.push("draft/2026-11-03")
+    j.compose_day("2026-11-03")
+    j.target()
+    j.prs["draft/2026-11-03"] = [merged()]
+    assert j.reconcile() == 0
+    assert "sessions/p/2026-11-04_120000.stub.md" in j.tree("draft/2026-11-04")
+
+
+@with_journal
 def test_commits_from_main_on_a_branch_cut_later_are_not_late(j):
     """A branch cut from main after the compose holds main's own later commits."""
     j.compose_day("2026-11-03")

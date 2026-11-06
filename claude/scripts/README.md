@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **111 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **112 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -50,6 +50,7 @@ the one place all 22 are listed together. Each has its own test file in
 | `_hookutil.py` | Sentinel-file helpers, transcript-locate, transcript-record readers, and `record_heartbeat()` (called first-thing by every wired hook's `main()`). | Most Stop/UserPromptSubmit hooks |
 | `_journal_canon.py` | Shared engineering-journal canonical-path resolution (`resolve_journal_path`, `normalize_journal_path`) — env-override-or-default plus one canonical comparison normalization, single-sourcing what four hooks each independently duplicated. | `pre-tool-use-canonical-mutate-guard.py`, `journal-canonical-guard.py`, `pre-tool-use-journal-draft-worktree-guard.py`, `pre-tool-use-worktree-path-check.py` |
 | `_journal_compose_force.py` | Marker read/write/freshness helpers behind `/journal-compose`'s mechanical `--force` enforcement. | `journal-compose-force-resolve.py` (writer), `pre-tool-use-journal-compose-force-guard.py` (reader) |
+| `_journal_late.py` | What counts as a late commit on a journal draft branch (`late_commits`), plus the reconciled-tag prefix and branch-name pattern, so the warning and the script that acts on it can't disagree. | `new-day-journal-check.py`, `reconcile-late-stubs.py` |
 | `_journal_schema.py` | Shared manifest/open-PR/tile shard schema + validation. Presence checks (`missing_required_fields`, `missing_open_pr_fields`, `missing_tile_fields`) and *shape* checks for a present-but-wrong value (`malformed_manifest_fields` — `tokens`; `malformed_tile_fields` — `cwd`/`stub`/`task_id`), plus `parse_manifest_text` / `decode_shard_bytes`. | `validate-manifest.py`, `journal-shard-write-advisory.py`, `stub-push-archive-reminder.py` |
 | `_journal_shards.py` | Shared numeric-shard + legacy `open-prs.jsonl` reader (`iter_numeric_shards`, with `iter_pr_shards` / `iter_tile_shards` as named delegations; `read_legacy_entries`), plus `project_dirs` — the `sessions/<project>/` walk both reconcile hooks run before reading either shard kind. | `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, `post-compact.py` |
 | `_repo_scan.py` | Shared `find_git_repos()` directory-scan helper for every `--scan-dir` mode. | `prune-merged-worktrees.py`, `reclaim-worktree-disk.py`, `reconcile-project-board.py` |

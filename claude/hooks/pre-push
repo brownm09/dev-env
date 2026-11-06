@@ -22,8 +22,8 @@ while read -r _ local_sha remote_ref remote_sha; do
   fi
 
   # Block pushes to already-merged draft/YYYY-MM-DD branches in engineering-journal.
-  # Pushing to a merged branch resurrects it, causing the stale-branch hook to fire
-  # on every subsequent prompt until orphaned commits are reconciled.
+  # Pushing to a merged branch adds late commits, which new-day-journal-check.py then
+  # flags until they are reconciled.
   # Exception: same-day branches are allowed — recovery pushes after an accidental
   # mid-day compose are legitimate. Prior-day branches are still blocked (stale-branch noise).
   # Both the exception and the block are scoped to engineering-journal only.
