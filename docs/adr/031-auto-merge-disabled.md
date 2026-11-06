@@ -253,7 +253,11 @@ treats any non-zero exit as something to read rather than as a specific failure.
 **Rate limits.** The watch depends on the shared GraphQL budget, which ran out while this addendum's
 own PR was being opened. When it is exhausted, the watch can't run. Sessions then read state from
 the app's cached PR status or the REST check-runs endpoint, and start the watch again after the
-reset.
+reset on a counter reading 0. One token has two rate-limit counters with separate resets, so a
+`gh api rate_limit` reading with budget left gives the wrong time, and a pass before that reset
+doesn't mean the budget is back. (Corrected 2026-11-06 by
+[dev-env#1247](https://github.com/brownm09/dev-env/issues/1247), from the
+[finding on dev-env#1238](https://github.com/brownm09/dev-env/issues/1238#issuecomment-6671406131).)
 
 **Limit.** Whether a fresh session follows the CLAUDE.md rule over the app's instruction can only
 be observed after merge. If sessions keep stopping, the rule needs stronger wording or a hook.
