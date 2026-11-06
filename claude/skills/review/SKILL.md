@@ -477,7 +477,7 @@ Applies to PR_URL mode only. Skip it if DIFF_MODE is true: a pasted diff has no 
 nothing is posted in that mode. Emit no marker or finding, and note "DIFF_MODE: acceptance
 criteria not checked."
 
-**Severity of `not met`: blocking.** Calibrated on 2026-11-04; see *Calibration* below. To demote
+**Severity of `not met`: blocking.** Recalibrated on 2026-11-06; see *Calibration* below. To demote
 it, change this line to `non-blocking` and record why in ADR-153 → *Calibration*.
 
 Checks the diff against each linked issue's acceptance criteria, one criterion at a time.

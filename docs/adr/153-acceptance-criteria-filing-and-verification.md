@@ -183,9 +183,9 @@ private repo, so they live in the private engineering journal rather than here.
 - **Known miss (false pass), lifting-logbook PR 212.** Criterion 4, the manual Tempo check, was
   deferred to #207, which built the stack the check needed but did not track running it. Under
   rule 1, a link to any issue counts as a deferral. Tightening that, so the linked issue must
-  name the criterion as its own work, is an open refinement ([dev-env#1197](https://github.com/brownm09/dev-env/issues/1197)). It was not applied here, because it
-  would be tuned on the held-out case it fixes. The miss is in the safe direction: a pass, not a
-  false block.
+  name the criterion as its own work, was left to a later refinement, because it would be tuned on
+  the held-out case it fixes. The miss is in the safe direction: a pass, not a false block. Fixed
+  in round 3 below ([dev-env#1197](https://github.com/brownm09/dev-env/issues/1197)).
 - **The figures were measured on the round-2 schema text, not on the text as merged.** After
   round 2, and again in response to this PR's own review, the schema gained changes that no
   scorer has run against:
@@ -197,13 +197,84 @@ private repo, so they live in the private engineering journal rather than here.
 
   Each change either records how the round-2 scorer already decided the colliding rows, or
   concerns parsing and format rather than status judgments. That is the author's reading, not a
-  measurement. The first recalibration, [dev-env#1197](https://github.com/brownm09/dev-env/issues/1197),
-  scores the merged text and settles it.
+  measurement. Round 3 below scored the merged text and settles it.
 
-**Verdict for the gate:** no false blocks in 13 known-good PRs (6 of them held out). Every
-unmet criterion the check caught was real. This supports classifying `not met` as Blocking.
+**Verdict for the gate, as of round 2:** no false blocks in 13 known-good PRs (6 of them held out).
+Every unmet criterion the check caught was real. This supported classifying `not met` as Blocking.
 If a false block is observed, record it here and change Step 2g's severity line until the step
-is recalibrated.
+is recalibrated. Round 3 below found that this verdict rested on one wrong label.
+
+### Round 3 (2026-11-06, dev-env#1197: follow-up links must qualify)
+
+**Rule change.** A linked follow-up now has to take the criterion on as its own work: the issue
+names the criterion's check or outcome, and it is open or was closed by a change that did that
+work (schema §2).
+
+**False block found: career-playbook PR 284.** Round 2 counted this PR as a catch, because its
+label said no PR or issue recorded the decision in criterion 3. That label was wrong.
+tech-leadership-reference PR 51, opened before PR 284 merged, recorded the decision and said it
+closed that part of the issue. It merged 16 seconds after PR 284. Step 2g blocked PR 284 because
+the issue timeline wasn't an evidence source. So the round-2 result was really 1 false block in 14
+good PRs, and 9 of 10 bad PRs caught.
+
+**Response, per the demotion rule.** Step 2g now reads PRs that cross-reference a linked issue.
+The severity line stays `blocking` because this round is the recalibration, and it measured no
+false blocks after the fix. Had it measured one, the line would have changed to `non-blocking`.
+
+**Scoring.** Labeller and scorers were separate agents, and the scorers saw only shuffled URLs.
+
+- The ADR-153 corpus was scored at `35602e2`, the merged text plus the tightened rule. That covers
+  every schema change listed above as unmeasured.
+- The fresh corpus and the 11 PRs that blocked were scored by a second scorer, at `2955b03`, which
+  adds cross-referencing PRs. Added evidence can only clear a block, so the 13 passes weren't
+  re-scored.
+
+| # | Set | Blocked | Result |
+|---|---|---|---|
+| 1 | ADR-153 corpus, known-good, with PR 284 relabelled (14) | 0 | 0 false blocks of 14 |
+| 2 | ADR-153 corpus, known-bad, with PR 284 relabelled (10) | 10 | 10 of 10 caught, including PR 212 on criterion 4 |
+| 3 | Fresh corpus, known-good (5) | 0 | 0 false blocks of 5 |
+| 4 | Fresh corpus, known-bad (3) | 2 | 2 of 3 caught |
+
+Fresh corpus, by PR:
+
+| # | PR | Label | Verdict | What it tested |
+|---|---|---|---|---|
+| 1 | lifting-logbook 1112 | good | pass | Qualifying follow-up accepted (criterion 9, #1113) |
+| 2 | dev-env 1198 | good | pass | Qualifying follow-up accepted (criterion 4, #1196) |
+| 3 | lifting-logbook 800 | good | pass | Nothing: the deferred clause was only an "ideally", so no row depended on it |
+| 4 | career-playbook 791 | good | pass | Nothing: plain bullets with no checkboxes, outcome `empty` |
+| 5 | lifting-logbook 810 | good | pass | Nothing for the deferral: #806 has no criteria section, outcome `none` |
+| 6 | lifting-logbook 165 | bad | block | Non-qualifying follow-up rejected (criterion 2, #166) |
+| 7 | lifting-logbook 562 | bad | block | Admitted gap with no link (criterion 5) |
+| 8 | lifting-logbook 613 | bad | **pass (miss)** | Nothing: plain bullets with no checkboxes, outcome `empty` |
+
+**What these figures do and don't show.**
+
+- **The fresh evidence for the rule is thin.** Three of the five good PRs never reached the new
+  definition. Direct evidence that a qualifying link still passes is PRs 1112 and 1198 here, plus
+  lifting-logbook PR 759 in the ADR-153 corpus. Direct evidence that a non-qualifying link blocks is
+  PR 165 here, plus PR 212 in the ADR-153 corpus. Usable cases are rare: few issues have a criteria
+  section, and fewer PRs defer one of its items.
+- **The rule can be too strict on a single row.** lifting-logbook PR 115 deferred criteria 6 and 7
+  to #106, and PR 132 later delivered them and closed #106. Both scorers still marked those rows
+  `not met`, because #106 describes the destination screens rather than the click-through. The PR's
+  verdict didn't depend on it, since rows 2 and 4 block anyway. On a PR with no other gap, this
+  reading would be a false block, and it is the likeliest source of the next one.
+- **The PR 284 result is in-sample.** The evidence source was added after seeing that case. No
+  other PR in either corpus tests it, so its reliability on a new case is unmeasured.
+- **Plain-bullet criteria aren't scored.** Issues whose criteria have no checkboxes get outcome
+  `empty`. That is a reported non-blocking finding, not a verified pass, and it accounts for PR 613.
+  The filing rule asks for checkboxes, so this should fade as older issues close.
+- **PR 212 needs a judgment call to block.** "Blocked on #207" had to be read as a deferral, and
+  #207 had to be read as not taking the check on. Its own manual check covers the API only.
+- **The margin is unchanged.** PR 759 still passes only because #764 qualifies as a follow-up.
+- **Scorers vary on individual rows.** Across the two scorers, career-playbook PR 2054's `not met`
+  rows differed (criterion 7), though its verdict did not.
+
+**Verdict for the gate:** no false blocks measured in 19 known-good PRs after the fix, and 12 of 13
+known-bad PRs caught. This supports keeping `not met` as Blocking. It rests on one in-sample fix,
+so the demotion rule above still applies to the next false block.
 
 ## Consequences
 
