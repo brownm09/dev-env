@@ -5165,3 +5165,26 @@ For a one-line navigational map of the test directory, see
      py -3 claude/scripts/tests/test_window_flash_monitor.py
      py -3 claude/scripts/tests/test_window_flash_monitor.py --live
      ```
+
+114. **claude-wrappers test** — required when changing `bin/claude` or `bin/claude.cmd` (dev-env#1142). Runs
+     the real wrappers with `LOCALAPPDATA` pointed at temp directories, so no real `claude.exe` runs and no
+     tokens are spent. It checks which binary each wrapper starts for each layout: the current and older
+     install locations, flat and hash directories, 2.1.170 over 2.1.99 whatever the hash names, the current
+     location over a higher version in the older one, skipping a version directory with no binary yet, and
+     ignoring directories that aren't versions. With nothing installed, each must print the error on stderr,
+     nothing on stdout, and exit 1. It also checks that arguments (including a `!`), the exit code and, for
+     bash, stdin arrive intact, and that the binary sees the same environment variable names as when started
+     directly, because the environment is what authentication reads. Line endings are pinned too: CRLF for
+     `claude.cmd`, since `cmd.exe` can miss a label in an LF-only file, and LF for `bin/claude`.
+
+     The bash fixtures are shell scripts named `claude.exe`. A batch file can only start a real executable,
+     so the `cmd.exe` fixtures are copies of `cmd.exe`, and a probe batch file makes the copy report its own
+     path through `%CMDCMDLINE%`. Where there is no `cmd.exe`, that half is counted as skipped. Against the
+     wrappers as they were before this fix, 28 of the 36 checks fail; with the numeric sort swapped for a
+     lexical one, 6 fail. Deliberately not covered: the real binary. To check it, run `bash bin/claude
+     --version` from Git Bash and `bin\claude.cmd --version` from `cmd.exe`, and each should print the
+     installed version.
+
+     ```bash
+     bash claude/scripts/tests/test-claude-wrappers.sh
+     ```

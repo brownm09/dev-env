@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 102 `test_*.py` files, 11 bash gates, and
-two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 115 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 102 `test_*.py` files, 12 bash gates, and
+two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 116 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -187,6 +187,7 @@ Scripts invoked directly (by a person or a skill), not wired as Claude Code hook
 | Test file | Covers | Purpose |
 |---|---|---|
 | `test-baseline-tests-gc.sh` | `baseline-tests.sh` | Branch-existence-based cleanup (`gc`) of stale pre-existing-test-failure baseline snapshots. |
+| `test-claude-wrappers.sh` | `bin/claude`, `bin/claude.cmd` | Runs both wrappers against fixture install directories: which binary each starts for each layout (current and older location, flat and hash directories, numeric version sort), the error and exit 1 when none exists, and arguments, exit code, stdin and environment passing through unchanged (dev-env#1142). |
 | `test-get-project-item.sh` | `get-project-item.sh` | Execution smoke test (not just `bash -n`) resolving an issue number to a project item ID. |
 | `test-journal-compose-replay.sh` | `journal-compose-replay.sh` | Drives `/journal-compose` Step 10.5's conflict-recovery replay against throwaway fixture repos: uncontested paths replay wholesale, contested ones 3-way merge or stop with exit 2. |
 | `test-merge-stale-pr.sh` | `merge-stale-pr.sh` | Drives the stale-journal-PR remediation script against throwaway fixture repos with `gh` stubbed. |
