@@ -37,8 +37,9 @@ If there's no response or the context is non-interactive, including a session wi
 
 - **Inferred slug:** end the run here, the same way. A repo name isn't always the journal slug, and
   Step 5 pushes straight to `main`, so a wrong guess would create a journal home under the wrong
-  name. Say in the final message that nothing was created, and that
-  `/journal-onboard <slug>` runs it with that slug.
+  name. Say in the final message that nothing was created, and that whoever can confirm the slug
+  can run `/journal-onboard <slug>`. Don't rerun it yourself with the inferred slug, because that
+  would only turn the guess into an argument.
 - **Slug passed as an argument:** continue with Step 1. Whoever started the run named the slug, so
   it isn't a guess. Step 6 reports that it wasn't confirmed.
 
