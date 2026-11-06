@@ -510,6 +510,9 @@ Decision record: [ADR-153](../../../docs/adr/153-acceptance-criteria-filing-and-
    - PR and issue comments made up to the merge,
    - any issue cited as a linked follow-up, read in full with its comments (schema §2 says what
      qualifies),
+   - PRs in any repo that cross-reference a linked issue, listed by
+     `gh api "repos/<owner>/<repo>/issues/<N>/timeline?per_page=100"`. One that says it delivers a
+     criterion makes the row `met` if it has merged, or `not verifiable` (case b) if still open,
    - the PR's CI checks (`gh pr view --json statusCheckRollup`),
    - files on the head ref, read via the Step 2b API form.
 
