@@ -93,7 +93,14 @@ For a one-line navigational map of the test directory, see
    bash claude/scripts/tests/run-shellcheck.sh
    ```
 
-8. **usage-snapshot classifier test** — required when changing `claude/scripts/usage-snapshot.py`.
+8. **usage-snapshot classifier test** — required when changing `claude/scripts/usage-snapshot.py` or
+   `Resolve-ClaudeExe` in `claude/scripts/keep-token-warm.ps1`. Both find the desktop app's binary the
+   same way, so both are pinned here against `LOCALAPPDATA` fixtures
+   ([dev-env#1286](https://github.com/brownm09/dev-env/issues/1286)): the `Claude-Data` location beats
+   the older `Packages` one, the newest version wins numerically at either depth, and a directory not
+   named like a version is skipped. The PowerShell cases parse the script and evaluate only that
+   function's text, because the script has no main guard and dot-sourcing it would run its
+   `claude -p ok` model call.
    Exercises the pure `classify_token()` helper offline (no network, no credentials file): pins the
    `no_expiry` / `ok` / `expiring` / `expired` states and the expiry boundary, asserting an expired
    token now yields a user-facing advisory rather than the silent skip it did before

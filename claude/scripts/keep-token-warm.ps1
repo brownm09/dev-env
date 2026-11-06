@@ -124,15 +124,25 @@ function Test-DesktopAppDeadEnd {
 
 # --- resolve claude.exe (dynamic, newest version — mirrors ~/bin/claude) ---
 function Resolve-ClaudeExe {
-    $base = Join-Path $env:LOCALAPPDATA 'Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code'
-    if (Test-Path $base) {
-        # Sort by parsed version of the parent dir (e.g. "2.1.170"), NOT lexically — a
-        # path string sorts "2.1.170" before "2.1.99", which would pick the older binary.
-        # Mirrors `sort -V` in ~/bin/claude. Non-version dir names fall back to 0.0.0.
-        $exe = Get-ChildItem -Path $base -Filter 'claude.exe' -Recurse -ErrorAction SilentlyContinue |
-               Sort-Object { try { [version]$_.Directory.Name } catch { [version]'0.0.0' } } |
-               Select-Object -Last 1
-        if ($exe) { return $exe.FullName }
+    # Current install location first, then the older MSIX one (dev-env#1286).
+    $bases = @(
+        (Join-Path $env:LOCALAPPDATA 'Claude-Data\claude_pzs8sxrjxfjjc\claude-code'),
+        (Join-Path $env:LOCALAPPDATA 'Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code')
+    )
+    foreach ($base in $bases) {
+        # Sort by parsed version of the version dir (e.g. "2.1.170"), NOT lexically — a
+        # string sort puts "2.1.170" before "2.1.99", which would pick the older binary.
+        # Mirrors `sort -V` in ~/bin/claude. Other dir names are skipped, and the regex
+        # admits only what [version] can parse (two to four parts).
+        $versionDirs = Get-ChildItem -Path $base -Directory -ErrorAction SilentlyContinue |
+                       Where-Object { $_.Name -match '^\d+(\.\d+){1,3}$' } |
+                       Sort-Object { [version]$_.Name } -Descending
+        foreach ($dir in $versionDirs) {
+            # claude.exe sits directly in the version dir or one level down in a hash dir.
+            $exe = Get-Item -Path (Join-Path $dir.FullName 'claude.exe'), (Join-Path $dir.FullName '*\claude.exe') -ErrorAction SilentlyContinue |
+                   Select-Object -First 1
+            if ($exe) { return $exe.FullName }
+        }
     }
     # Fallback to PATH resolution if the package layout ever changes.
     $cmd = Get-Command claude -ErrorAction SilentlyContinue | Select-Object -First 1
