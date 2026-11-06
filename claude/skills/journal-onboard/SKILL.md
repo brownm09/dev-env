@@ -2,7 +2,7 @@
 name: journal-onboard
 description: Scaffold a new project's journal home (sessions/<project>/) in engineering-journal and optionally create a .claude/CLAUDE.md in the project repo.
 argument-hint: "[project-slug]"
-allowed-tools: Read Write Edit Bash Glob
+allowed-tools: Read Write Edit Bash Glob AskUserQuestion
 ---
 
 You are implementing the `/journal-onboard` workflow: create a journal home for a new project in the engineering-journal repo and optionally scaffold `.claude/CLAUDE.md` in the project repo.
@@ -91,20 +91,26 @@ cat .claude/CLAUDE.md 2>/dev/null
 
 **If the file does not exist:**
 
-Ask the user:
-> "No `.claude/CLAUDE.md` found. Create one from the standard template? (yes/no)"
+Ask through `AskUserQuestion` (single-select):
+> "`<repo basename>` has no `.claude/CLAUDE.md`. Create one from the standard template?"
+
+Options, in this order: **Yes (Recommended)**, **No**.
 
 If yes: read `~/.claude/templates/project-claude.md`, replace `<REPO_NAME>` with the repo
 basename and `<PROJECT_SLUG>` with the slug, then write it to `.claude/CLAUDE.md`. Remind
 the user to commit it in the project repo.
 
-If no: note that the journal path convention requires `.claude/CLAUDE.md` to contain a
-`## Journal` section with the path `sessions/<slug>/`, and that the user should add it manually.
+If no, or if no answer can be had (a declined answer, no response, or a non-interactive context,
+including a session without `AskUserQuestion`): don't write the file. Note that the journal path
+convention requires `.claude/CLAUDE.md` to contain a `## Journal` section with the path
+`sessions/<slug>/`, and that the user should add it manually. Then continue with Step 5.
 
 **If the file exists but contains no `sessions/` path reference:**
 
-Ask the user:
-> "`.claude/CLAUDE.md` exists but has no journal path. Append the `## Journal` section? (yes/no)"
+Ask through `AskUserQuestion` (single-select):
+> "`.claude/CLAUDE.md` in `<repo basename>` has no journal path. Append the `## Journal` section for `sessions/<slug>/`?"
+
+Options, in this order: **Yes (Recommended)**, **No**.
 
 If yes: use the Edit tool to append to the file. Add the following block at the end:
 ```markdown
@@ -115,6 +121,10 @@ Project journal path: `sessions/<slug>/`
 ```
 
 Remind the user to commit the updated file.
+
+If no, or if no answer can be had (the same cases as above): leave the file unchanged. Note that
+the user should add the `## Journal` section with the path `sessions/<slug>/` manually. Then
+continue with Step 5.
 
 **If the file exists and already references `sessions/<slug>/`:** no action needed.
 
@@ -138,3 +148,4 @@ Tell the user:
 - First stub for this project must include the `<!-- opening-brief -->` block. Set it to:
   `"First session — no prior context."`
 - If `.claude/CLAUDE.md` was created or updated, remind the user to commit it in the project repo before the first session stub is written.
+- If a Step 4 question got no answer, repeat the question and the manual-add note here, so a session that couldn't ask still puts them in its final message.
