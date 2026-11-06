@@ -101,7 +101,8 @@ Auto-draft each field; mark any you cannot derive with a `<CONFIRM>` tag for the
 4. **Baseline (control arm).** Default: a *fresh* incumbent run on this corpus at the D5 stage. An
    archived artifact needs a one-line representativeness justification; a known-*failure* artifact is
    **not** a neutral baseline.
-5. **Corpus.** List inputs *before* any generation; span difficulty; do not compose solely of
+5. **Corpus.** List inputs *before* any generation, apart from a field 11 pilot, whose input stays
+   off this list; span difficulty; do not compose solely of
    incumbent-failure cases; include ≥1 input where the incumbent is known-good. A probe's origin case
    may be included, flagged "origin case."
 
@@ -175,7 +176,8 @@ scaled with claims per run, and that count wasn't known until the arms finished.
 $5.17 left and a known need of at least $14.60. Nothing checked that, so scoring spent $5.03 before
 reaching the cap, with no verdict to show for it.
 
-An experiment with no metered stage writes `Field 11: N/A — no metered stage` and skips this step.
+An experiment where no stage uses tokens or paid calls writes `Field 11: N/A — no token or paid use`
+and skips this step. A stage on subscription limits still counts.
 
 **What the budget covers.** State the limit and who approved it, then name what counts against it.
 The default is the experiment's own model calls. Say in the field that the session driving the
@@ -282,8 +284,8 @@ Do not manufacture a retroactive pre-registration.
   *every* generation timestamp, apart from a pilot declared in field 11 on a non-corpus input. Missing
   or post-hoc ⇒ cap at `inconclusive — unregistered` (→ salvage).
 - **Gate 1 — Deviation ledger.** Diff conduct against each registered field (11, or 10 for a
-  pre-registration frozen before field 11 existed). A missing stage-boundary block is a deviation.
-  Author-listed deviations: assess impact per deviation. An **auditor-discovered** deviation the
+  pre-registration frozen before field 11 existed). Where field 11 registers a stop rule, a missing
+  stage-boundary block is a deviation. Author-listed deviations: assess impact per deviation. An **auditor-discovered** deviation the
   author did not disclose ⇒ the verdict is **void** (re-audit only after full disclosure).
 
 ---
