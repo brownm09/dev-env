@@ -26,7 +26,11 @@
     ],
     "defaultMode": "plan"
   },
-  "model": "claude-sonnet-4-6",
+  "model": "sonnet",
+  "autoCompactWindow": 400000,
+  "env": {
+    "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -455,5 +459,5 @@
       }
     ]
   },
-  "effortLevel": "max"
+  "effortLevel": "xhigh"
 }

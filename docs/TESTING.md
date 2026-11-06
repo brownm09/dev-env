@@ -4165,10 +4165,14 @@ For a one-line navigational map of the test directory, see
     `claude/settings.shared.json`, or `setup.sh`'s `seed_claude_settings()`
     ([ADR-139](adr/139-machine-local-settings-with-shared-source-sync.md), dev-env#1049).
 
-    66 cases in 9 groups, **fully hermetic** — every scenario builds a throwaway
+    121 cases in 9 groups, **fully hermetic** — every scenario builds a throwaway
     shared/live/backup trio in a temp directory. Nothing writes the developer's real
     `~/.claude/settings.json`, which matters more than usual here: the subject under test is
-    the file that defines every hook on the machine.
+    the file that defines every hook on the machine. Group 7, which reads the real shared
+    file, also pins the spend defaults from
+    [ADR-156](adr/156-compact-early-and-default-subagents-to-sonnet.md): the 400k compaction
+    window, the Sonnet subagent default with its force variable off, an accepted
+    `effortLevel`, and that a live `env` block or compaction window is left alone.
 
     **The groups, in order of how badly a regression would hurt:**
 
