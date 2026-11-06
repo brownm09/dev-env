@@ -462,6 +462,7 @@ def test_repo_hooks_results():
     assert _statuses(results) == [PASS, WARN, WARN], results
     assert "1 clone(s)" in results[0].detail
     assert results[1].detail.startswith("overridden:") and "dev-env#1108" in results[1].detail, results[1]
+    assert "git -C C:/Git/overridden config --local --unset core.hooksPath" in results[1].detail, results[1]
     assert "unreadable" in results[2].detail and "safe.directory" in results[2].detail, results[2]
     assert _statuses(doc.repo_hooks_results({}, "C:/g/hooks")) == [INFO]
     return "global PASS; override WARN; unreadable WARN; none INFO"

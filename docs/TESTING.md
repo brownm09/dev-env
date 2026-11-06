@@ -5062,7 +5062,8 @@ For a one-line navigational map of the test directory, see
      decided by `gh auth token`: a failed `gh auth status` is a WARN, never "not signed in", and
      `--offline` or a timeout an INFO. `parse_ls_remote` accepts only a 40-hex line for the exact
      ref. Also covered: tool presence, the gh credential helper, git identity, a global
-     `core.hooksPath` that's unset or missing (FAIL) or different (WARN), per-clone overrides,
+     `core.hooksPath` that's unset or missing (FAIL) or different (WARN), per-clone overrides
+     (a WARN that names the command removing the override, dev-env#1261),
      the journal / `origin/draft/<today>` matrix (an unreadable branch included, and advice that
      fetches and merges `origin/draft/<today>` by name and never pulls, per the
      [ADR-056](adr/056-per-session-sharding-journal-companion-files.md) addendum of 2026-10-31),

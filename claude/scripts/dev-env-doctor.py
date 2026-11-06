@@ -474,7 +474,8 @@ def repo_hooks_results(
         out.append(Result(
             WARN, "repo hooks",
             f"{Path(repo).name}: effective hooks dir is {hooks}, so the global pre-push guards "
-            "(ADR-005) never run there (dev-env#1108)",
+            "(ADR-005) never run there (dev-env#1108). Unless it is deliberate, remove it: "
+            f"git -C {repo} config --local --unset core.hooksPath",
         ))
     if unreadable:
         out.append(Result(
