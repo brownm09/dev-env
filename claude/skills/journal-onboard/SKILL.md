@@ -148,3 +148,4 @@ Tell the user:
 - First stub for this project must include the `<!-- opening-brief -->` block. Set it to:
   `"First session — no prior context."`
 - If `.claude/CLAUDE.md` was created or updated, remind the user to commit it in the project repo before the first session stub is written.
+- If a Step 4 question got no answer, repeat the question and the manual-add note here, so a session that couldn't ask still puts them in its final message.
