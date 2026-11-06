@@ -37,7 +37,9 @@ For a one-line navigational map of the test directory, see
    BLOCK / PASS / SKIP paths, working-tree restoration, and repo-hook chaining (see [ADR-036](adr/036-lockfile-drift-prevention.md)).
    With a stubbed `gh`, it also asserts the resurrected-draft guard blocks a push to a past `draft/<D>`
    when the day merged from `draft/<D>` or `compose/<D>`, allows it when neither merged, and queries
-   both heads (dev-env#1205):
+   both heads (dev-env#1205). It also asserts the merge-base warning stays quiet on an
+   engineering-journal `draft/YYYY-MM-DD` push behind `origin/main` and still fires, from the same
+   fixture, on a non-draft journal branch and on a draft-named branch in another repo (dev-env#1272):
 
    ```bash
    bash claude/hooks/tests/test-pre-push-lockfile.sh

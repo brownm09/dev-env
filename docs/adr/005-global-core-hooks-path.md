@@ -50,6 +50,10 @@ The engineering-journal checkout had a local `core.hooksPath` pointing at its ow
 
 **Scope.** This changes the journal checkout only. dev-env's canonical checkout still has the same override, tracked in [dev-env#1108](https://github.com/brownm09/dev-env/issues/1108).
 
+## Amendment 2 (2026-11-06): the merge-base warning skips journal draft branches
+
+Once the guard ran in the journal checkout, its merge-base warning fired on normal stub pushes whenever `main` had moved past the base of the day's draft branch. Its advice to cherry-pick onto a fresh branch contradicts the Stub file workflow, where sessions share one draft branch per day, so following it would split that day's stubs ([dev-env#1272](https://github.com/brownm09/dev-env/issues/1272)). The warning now skips engineering-journal `draft/YYYY-MM-DD` pushes and still fires on every other branch. The merged-draft refusal is unchanged.
+
 ---
 
 ## References
