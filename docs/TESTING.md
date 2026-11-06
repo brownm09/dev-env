@@ -5169,15 +5169,20 @@ For a one-line navigational map of the test directory, see
 114. **duplicate-issue retrieval scorer test** — required when changing anything under
      `experiments/2026-11-issue-dup-retrieval/`
      ([ADR-157](adr/157-duplicate-issue-retrieval-experiment.md), dev-env#1260). Pins the
-     instrument behind the experiment's verdict: a known-good ranker scores 1.0, a known-bad one
-     0.0, a random one lands near chance, and an empty run raises rather than scoring. The outcome
-     map must be able to reach all three verdicts, including both scope-disagreement cases. The
+     instrument behind the experiment's verdict: known-good rankers score 1.0 and known-bad ones
+     0.0 through `score.py`'s real path, a partial keyword file is rejected, and `score.py`
+     reproduces the committed `scored.json`. The outcome map must reach all three verdicts and hold
+     at each exact threshold. Draft text comes from one helper, which raises on an empty draft. The
      evaluation set must be non-empty.
 
-     Privacy: `labels.json` may hold only numbers and short structure, and the title scanner must
-     catch a known-bad fixture. **Scope gap:** the scan of committed files against real private
-     titles runs only when `DUP_EVAL_ISSUE_CACHE` names a local issue cache, because CI can't read
-     the private repos. It's run by hand before committing results, and the result is in
+     This pins the frozen outcome map's reading, not the audit's verdict, which `results.md` records
+     after the threat sweep.
+
+     Privacy: the committed data files may hold only numbers and short structure, and the title
+     scanner must catch a known-bad fixture. **Scope gap:** the scan of committed files against real
+     private titles runs only when `DUP_EVAL_ISSUE_CACHE` names a local issue cache, because CI can't
+     read the private repos, and it skips visibly otherwise. It checks full verbatim titles only. It's
+     run by hand before committing results, and the result is in
      `results.md`.
 
      ```bash
