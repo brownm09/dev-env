@@ -510,9 +510,7 @@ Decision record: [ADR-153](../../../docs/adr/153-acceptance-criteria-filing-and-
    - PR and issue comments made up to the merge,
    - any issue cited as a linked follow-up, read in full with its comments (schema §2 says what
      qualifies),
-   - PRs in any repo that cross-reference a linked issue, listed by
-     `gh api "repos/<owner>/<repo>/issues/<N>/timeline?per_page=100"`. One that says it delivers a
-     criterion makes the row `met` if it has merged, or `not verifiable` (case b) if still open,
+   - other PRs that cross-reference a linked issue, in any repo (schema §2 rule 9),
    - the PR's CI checks (`gh pr view --json statusCheckRollup`),
    - files on the head ref, read via the Step 2b API form.
 
@@ -541,8 +539,9 @@ Decision record: [ADR-153](../../../docs/adr/153-acceptance-criteria-filing-and-
 6. **Emit** each issue's block in Step 8, whatever the outcome.
 
 **Calibration.** The severity line above is `blocking` because blind scoring on known-good and
-known-bad merged PRs produced no false blocks. The corpus, the hit rates, the known miss, and what
-the figures do and don't show are in ADR-153 → *Calibration*. If a false block is observed (a PR
+known-bad merged PRs measured no false blocks after round 3 fixed the one found earlier. That fix
+is in-sample. The corpus, the hit rates, the known misses, and what the figures do and don't show
+are in ADR-153 → *Calibration*. If a false block is observed (a PR
 that did meet its criteria), record it there and change the severity line until the step is
 recalibrated (Pass 3 Gate calibration, ADR-144).
 

@@ -42,7 +42,8 @@ needs the same per-criterion evidence, in a form a parser can read.
      finding has a recorded disposition. It sums blocking and non-blocking findings and does not
      tell them apart. What keeps a `not met` from being waved through with "filed #N" is the
      global fix-everything rule, which Step 2g's finding text restates: the criterion is fixed,
-     or the issue is amended to link a follow-up, which turns the row into `not verifiable`.
+     or the issue is amended to link a follow-up that names it as its own work, which turns the
+     row into `not verifiable`.
      Blocking versus non-blocking is a review-level classification. It decides what the summary
      says must change before merge.
    - **Nothing passes vacuously.** A missing section, an empty section, or no linked issue is
@@ -130,6 +131,9 @@ the ten ambiguities the round-1 scorer reported.
 | 3 | Known-good, held out (6) | 0 | 0 false blocks of 6 |
 | 4 | Known-bad, held out (4) | 3 | 3 of 4 |
 | 5 | **All** | 13 good / 11 bad | **0 of 13 false blocks; 10 of 11 caught (91%)** |
+
+Round 3 below corrects row 5: one bad label hid a false block, so the real figures were 1 false
+block in 14 good PRs and 9 of 10 bad PRs caught.
 
 Corpus, by PR:
 
