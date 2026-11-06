@@ -4165,7 +4165,7 @@ For a one-line navigational map of the test directory, see
     `claude/settings.shared.json`, or `setup.sh`'s `seed_claude_settings()`
     ([ADR-139](adr/139-machine-local-settings-with-shared-source-sync.md), dev-env#1049).
 
-    120 cases in 9 groups, **fully hermetic** — every scenario builds a throwaway
+    121 cases in 9 groups, **fully hermetic** — every scenario builds a throwaway
     shared/live/backup trio in a temp directory. Nothing writes the developer's real
     `~/.claude/settings.json`, which matters more than usual here: the subject under test is
     the file that defines every hook on the machine. Group 7, which reads the real shared

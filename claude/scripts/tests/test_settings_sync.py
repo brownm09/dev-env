@@ -445,13 +445,16 @@ if real_shared is not None:
         "shipped effortLevel is a value the settings key accepts (max is not)",
     )
 
-    # A seeded env must never touch a block the machine already has. Both are absent here.
+    # A seeded env must never touch a block the machine already has.
     own_env = {"env": {"MY_VAR": "1"}, "autoCompactWindow": 500000}
     seeded = _settings_sync.plan_sync(real_shared, own_env).seed_inserts
     check("env" not in seeded, "an existing live env block is left whole")
     check("autoCompactWindow" not in seeded, "an existing live compaction window is left alone")
     seeded = _settings_sync.plan_sync(real_shared, {}).seed_inserts
     check({"env", "autoCompactWindow"} <= set(seeded), "both new keys seed when absent from the live file")
+    # ADR-156's way to turn the subagent default off without a revert: an empty block.
+    seeded = _settings_sync.plan_sync(real_shared, {"env": {}}).seed_inserts
+    check("env" not in seeded, "an empty live env block stays empty, so turning the default off sticks")
 
 # --- 8. hook launcher install + missing-script guard (dev-env#1146, ADR-148) ------------
 
