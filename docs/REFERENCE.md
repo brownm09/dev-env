@@ -181,7 +181,7 @@ Produces a structured report with blocking findings, non-blocking findings, ques
 
 Scaffolds a new project's journal home (`sessions/<slug>/`) in engineering-journal and optionally creates `.claude/CLAUDE.md` in the project repo.
 
-**Slug inference:** defaults to the active git repo's name. Pass an explicit slug to override (useful when the repo name and journal slug differ).
+**Slug inference:** defaults to the active git repo's name. Pass an explicit slug to override (useful when the repo name and journal slug differ). The slug is confirmed through `AskUserQuestion`. If nobody can answer, a run with an inferred slug stops before creating anything, and a run with an explicit slug continues.
 
 **Produces:** `sessions/<slug>/README.md` in engineering-journal (committed and pushed directly to `main`), and optionally `.claude/CLAUDE.md` in the current project repo.
 

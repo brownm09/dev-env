@@ -20,10 +20,27 @@ git rev-parse --git-common-dir
 Take the parent directory of the output and use its basename as the slug. For example,
 `C:/Users/brown/Git/my-project/.git` → slug = `my-project`.
 
-Confirm with the user:
+Ask through `AskUserQuestion` (single-select):
 > "Onboarding project `<slug>` — is this the right journal slug?"
 
-Wait for confirmation before proceeding.
+Options, in this order: **Use `<slug>` (Recommended)**, **Stop**.
+
+If the user picks **Use `<slug>`**, continue with Step 1. If the user types a different slug in the
+question's free-text option, use that slug and continue with Step 1.
+
+If the user picks **Stop** or declines the question, end the run here, whichever way the slug was
+given. Step 2 and everything after it don't run, so nothing is created. Someone was there and
+didn't confirm the name.
+
+If there's no response or the context is non-interactive, including a session without
+`AskUserQuestion`:
+
+- **Inferred slug:** end the run here, the same way. A repo name isn't always the journal slug, and
+  Step 5 pushes straight to `main`, so a wrong guess would create a journal home under the wrong
+  name. Say in the final message that nothing was created, and that
+  `/journal-onboard <slug>` runs it with that slug.
+- **Slug passed as an argument:** continue with Step 1. Whoever started the run named the slug, so
+  it isn't a guess. Step 6 reports that it wasn't confirmed.
 
 ---
 
@@ -149,3 +166,4 @@ Tell the user:
   `"First session — no prior context."`
 - If `.claude/CLAUDE.md` was created or updated, remind the user to commit it in the project repo before the first session stub is written.
 - If a Step 4 question got no answer, repeat the question and the manual-add note here, so a session that couldn't ask still puts them in its final message.
+- If Step 0 continued without an answer, say that the slug `<slug>` came from the argument and wasn't confirmed.
