@@ -149,8 +149,8 @@ These rules decide the cases that calibration showed are easy to get wrong (ADR-
    the PR's ADR does not change the issue's criteria.
 5. **Compound criteria.** A criterion with several clauses ("X and Y") takes the worst status of
    its clauses, in the order `not met` > `not verifiable` > `met`. Each clause needs only the
-   evidence it asks for: a check the clause names, or else any accepted form above, including a file
-   path and line. A stronger test the criterion didn't ask for isn't a skipped check under rule 3.
+   evidence it asks for: a check the clause names, or else any accepted evidence form, including a
+   file path and line. A stronger test the criterion didn't ask for isn't a skipped check under rule 3.
 6. **Conditional criteria** ("update X if Y"). The row is `met` when the evidence shows Y didn't
    happen, or that X was done. It is `not verifiable` when Y can't be known from the PR.
 7. **Locators** (line numbers, step numbers, file names) are judged by intent. A file landing on

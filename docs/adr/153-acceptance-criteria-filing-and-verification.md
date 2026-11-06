@@ -326,7 +326,9 @@ No fresh known-bad PR turned up. The distractors came from earlier rounds.
 scorer ran on the text as it stood (`8fb1b75`) over rows 1 to 5 above, PR 115 and 4 known-bad PRs. Two
 more ran on the final text (`1b12aab`), over 19 PRs: rows 1 to 5, every other round-3 PR whose table
 has a deferred row, PR 284, and four known-bad PRs that block on a skipped check or an admitted gap
-(157, 213, 562, 709), as a guard on the new rule 5 sentence.
+(157, 213, 562, 709), as a guard on the new rule 5 sentence. After scoring, review changed rule 5's
+"any accepted form above" to "any accepted evidence form", because rule 8's accepted forms come
+below it. No scorer ran on that wording.
 
 | # | Text | Set | Blocked | Result |
 |---|---|---|---|---|
@@ -350,8 +352,8 @@ four guards didn't move, but those five weren't run.
 | 3 | A near-match follow-up (lifting-logbook PR 212) | Other words count if they describe the same check or outcome. A narrower check doesn't | The single web-to-API trace is the point of that criterion, and #207 checks the API only | PR 212 blocks, row 4 `not met` |
 
 **Why the wording's core test stays.** The issue's trigger is a false block, and none was measured.
-Two sentences were added, for readings 1 and 3 above, but "names this criterion's check or outcome"
-is unchanged. PR 115's rows 6 and 7 stay `not met` under every scorer who has read them, though
+The text gained a "When to judge" paragraph and a sentence on near-matches, for readings 1 and 3
+above, but "names this criterion's check or outcome" is unchanged. PR 115's rows 6 and 7 stay `not met` under every scorer who has read them, though
 PR 132 later delivered that work. On a PR with no other gap, that would block until someone added a
 comment to #106 naming the click-through, and that's what the finding asks for. A review can't see
 later delivery, so what it can check is whether anything tracks the work, and at merge nothing on
