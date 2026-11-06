@@ -54,6 +54,8 @@ _spec.loader.exec_module(mod)  # safe: main() is guarded by __main__
 
 canonical_repo_root = mod.canonical_repo_root
 field_key = mod.field_key
+board_items_query = mod.board_items_query
+normalize_board_node = mod.normalize_board_node
 colliding_required_fields = mod.colliding_required_fields
 open_issue_numbers = mod.open_issue_numbers
 board_issue_numbers = mod.board_issue_numbers
@@ -102,8 +104,9 @@ def _issue(number, title="t"):
 
 
 def _item(number, *, type="Issue", repo=REPO, impact=None, why=None, item_id=None):
-    """A `gh project item-list --format json` item. Field values are exposed under the
-    field name lowercased (impact / why), absent when unset."""
+    """An item as fetch_board_items returns it, the shape of `gh project item-list
+    --format json`. Field values are exposed under the field name lowercased (impact /
+    why), absent when unset."""
     content = {"type": type, "number": number, "repository": repo,
                "url": f"https://github.com/{repo}/issues/{number}"}
     item = {"content": content, "id": item_id or f"PVTI_{number}"}
@@ -294,6 +297,108 @@ def test_looks_like_scope_error() -> str:
 # --- gh --limit truncation detection ------------------------------------------
 
 
+def test_board_items_query_asks_for_required_fields_by_name() -> str:
+    """The cost hinges on this: naming each field costs 1 point a page, where
+    `fieldValues` costs 101 (dev-env#1246). Field names travel as variables, so one
+    with a quote in it can't change the query."""
+    query = board_items_query(["Impact", 'Wh"y'])
+    assert "fieldValues" not in query, "must not ask for the fieldValues connection"
+    assert "$f0: String!" in query and "$f1: String!" in query
+    assert "f0: fieldValueByName(name: $f0)" in query
+    assert "f1: fieldValueByName(name: $f1)" in query
+    assert "Impact" not in query and 'Wh"y' not in query, "field names must not reach the query text"
+    assert query.count("{") == query.count("}"), "unbalanced braces"
+    return "board query names each required field through a variable, without fieldValues"
+
+
+def test_board_items_query_with_no_required_fields() -> str:
+    """lifting-logbook's config has an empty required_fields, a real case."""
+    query = board_items_query([])
+    assert "fieldValueByName" not in query and "$f0" not in query
+    assert query.count("{") == query.count("}"), "unbalanced braces"
+    return "board query is well-formed with no required fields"
+
+
+def test_normalize_board_node_matches_item_list_shape() -> str:
+    """Fed the raw shape GitHub returned on 2026-11-06. The result must read the same
+    through the helpers as a `gh project item-list` item."""
+    node = {
+        "id": "PVTI_30",
+        "f0": {"name": "High"},
+        "f1": {"text": "Fires on every prompt"},
+        "content": {
+            "__typename": "Issue",
+            "number": 30,
+            "url": f"https://github.com/{REPO}/issues/30",
+            "repository": {"nameWithOwner": REPO},
+        },
+    }
+    item = normalize_board_node(node, ["Impact", "Why"])
+    assert item == {
+        "id": "PVTI_30",
+        "content": {
+            "type": "Issue",
+            "number": 30,
+            "url": f"https://github.com/{REPO}/issues/30",
+            "repository": REPO,
+        },
+        "impact": "High",
+        "why": "Fires on every prompt",
+    }, f"unexpected shape: {item!r}"
+    assert board_issue_numbers([item], REPO) == {30}
+    assert item_missing_fields(item, ["Impact", "Why"]) == []
+    return "a raw node normalizes to the item-list shape the helpers read"
+
+
+def test_normalize_board_node_reads_every_scalar_field_type() -> str:
+    for selection, expected in [
+        ({"text": "t"}, "t"),
+        ({"name": "n"}, "n"),
+        ({"number": 0}, 0),
+        ({"date": "2026-11-06"}, "2026-11-06"),
+        ({"title": "Sprint 1"}, "Sprint 1"),
+    ]:
+        item = normalize_board_node({"id": "x", "f0": selection}, ["Field"])
+        assert item.get("field") == expected, f"{selection!r} -> {item!r}"
+    return "text, single-select, number (including 0), date and iteration values all read"
+
+
+def test_normalize_board_node_leaves_unset_fields_absent() -> str:
+    """Absent, as gh leaves it, so item_missing_fields reports it. GitHub returns null
+    for an unset field, and an empty selection for a field type not asked about."""
+    for raw in (None, {}):
+        node = {
+            "id": "PVTI_1",
+            "f0": raw,
+            "content": {"__typename": "Issue", "number": 1, "url": "u", "repository": {"nameWithOwner": REPO}},
+        }
+        item = normalize_board_node(node, ["Impact"])
+        assert "impact" not in item, f"expected no impact key for {raw!r}: {item!r}"
+        assert item_missing_fields(item, ["Impact"]) == ["Impact"]
+    return "an unset field stays absent and is reported missing"
+
+
+def test_normalize_board_node_draft_and_unreadable_content() -> str:
+    """Neither may raise, and neither may count as an issue on the board."""
+    draft = normalize_board_node({"id": "d", "content": {"__typename": "DraftIssue"}}, [])
+    unreadable = normalize_board_node({"id": "r", "content": None}, [])
+    assert draft["content"] == {"type": "DraftIssue"}
+    assert unreadable["content"] == {"type": None}
+    assert board_issue_numbers([draft, unreadable], REPO) == set()
+    return "draft and unreadable items normalize without a number and are not counted"
+
+
+def test_normalize_board_node_keeps_pull_requests_for_the_cache() -> str:
+    node = {
+        "id": "PVTI_pr",
+        "content": {"__typename": "PullRequest", "number": 20, "url": "u", "repository": {"nameWithOwner": REPO}},
+    }
+    item = normalize_board_node(node, [])
+    assert item["content"]["type"] == "PullRequest"
+    assert board_issue_numbers([item], REPO) == set(), "a PR is not an issue on the board"
+    return "a PR keeps its number and repo for the cache but isn't counted as an issue"
+
+
 def test_is_truncated() -> str:
     assert is_truncated(1000, 1000) is True, "count == limit -> may be capped"
     assert is_truncated(999, 1000) is False, "under the limit -> safe"
@@ -481,6 +586,13 @@ def main() -> int:
         ("item_missing_fields presence rule", test_item_missing_fields),
         ("board_items_missing_fields scope", test_board_items_missing_fields_scope),
         ("looks_like_scope_error", test_looks_like_scope_error),
+        ("board_items_query names fields, no fieldValues", test_board_items_query_asks_for_required_fields_by_name),
+        ("board_items_query with no required fields", test_board_items_query_with_no_required_fields),
+        ("normalize_board_node matches the item-list shape", test_normalize_board_node_matches_item_list_shape),
+        ("normalize_board_node reads every scalar field type", test_normalize_board_node_reads_every_scalar_field_type),
+        ("normalize_board_node leaves unset fields absent", test_normalize_board_node_leaves_unset_fields_absent),
+        ("normalize_board_node draft and unreadable content", test_normalize_board_node_draft_and_unreadable_content),
+        ("normalize_board_node keeps pull requests for the cache", test_normalize_board_node_keeps_pull_requests_for_the_cache),
         ("is_truncated gh --limit cap detection", test_is_truncated),
         ("render_report adds + emits commands (no guessing)", test_render_report_adds_and_lists_commands),
         ("render_report dry-run", test_render_report_dry_run),

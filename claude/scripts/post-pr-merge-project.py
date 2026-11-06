@@ -72,7 +72,20 @@ from _repo_target import (
 
 CONFIG_FILE = ".claude/hook-config.json"
 
-_CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
+# One issue or PR's own board items: 1 GraphQL point, against about 1,011 for a full
+# `gh project item-list` of the 900-item board (dev-env#1246). Keep in step with
+# get-project-item.sh's copy. includeArchived is false, against GitHub's default of
+# true, because an archived item isn't one a caller should be moving.
+_ITEM_LOOKUP_QUERY = """query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    issueOrPullRequest(number: $number) {
+      ... on Issue { projectItems(first: 20, includeArchived: false) { nodes { id project { number owner { ... on User { login } ... on Organization { login } } } } } }
+      ... on PullRequest { projectItems(first: 20, includeArchived: false) { nodes { id project { number owner { ... on User { login } ... on Organization { login } } } } } }
+    }
+  }
+}"""
+
+_CLOSES_RE =re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
 # The `--repo`/`-R` flag, PR-URL, positional-number, and `gh pr merge`
 # args-region extraction (with their quote-aware masking) now live in the
 # shared `_repo_target` module — one implementation across the five sibling
@@ -312,39 +325,32 @@ def parse_closes_numbers(body: str) -> list[int]:
     return [int(n) for n in _CLOSES_RE.findall(body)]
 
 
-def _match_item_in_list(items: list[dict], issue_number: int, repo: str) -> str | None:
-    """Pure scan of a `gh project item-list --format json` `items` array for the
-    item whose `content.number == issue_number` AND (when `repo` is truthy)
-    `content.repository == repo`. None if no item matches both. Extracted so this
-    matching logic -- specifically the repo filter -- is unit-testable without a
-    live `gh` call.
+def _match_project_item(response: dict, project_number: str, project_owner: str) -> str | None:
+    """Pure scan of an `_ITEM_LOOKUP_QUERY` response for the item on the board named
+    by `project_number` AND `project_owner`. None if no item matches both. Extracted
+    so the board filter is unit-testable without a live `gh` call.
 
-    The repo filter exists because an unfiltered number-only match can return a
-    DIFFERENT repo's item on a board that carries more than one (this repo's own
-    board does, via --scan-dir reconciliation) -- pre-existing code elsewhere in
-    this file (dev-env#559/#569, ~line 445) already guards against a
-    same-numbered issue on the WRONG repo when resolving which config to use;
-    this scan needs the identical guard, since an unfiltered match here can both
-    move the wrong repo's issue to Done and, since dev-env#1057 added cache
-    persistence, write that wrong match into the shared cache where
-    get-project-item.sh and every later merge would read it back as if it were
-    correct (a /review finding on that PR)."""
-    for item in items:
-        content = item.get("content", {})
-        if content.get("number") != issue_number:
-            continue
-        if repo and content.get("repository") != repo:
-            continue
-        return item.get("id")
+    The query is already scoped to one repo and number, but an issue can sit on
+    several boards, and a board number alone is ambiguous (brownm09 and merickvaughn
+    each have a board 2). Accepting any other board's item here could move the wrong
+    item to Done and write it into the shared cache, where get-project-item.sh and
+    every later merge would read it back as if it were correct."""
+    data = response.get("data") or {}
+    target = (data.get("repository") or {}).get("issueOrPullRequest") or {}
+    for node in (target.get("projectItems") or {}).get("nodes") or []:
+        project = node.get("project") or {}
+        owner = (project.get("owner") or {}).get("login") or ""
+        if str(project.get("number")) == str(project_number) and owner.lower() == project_owner.lower():
+            return node.get("id")
     return None
 
 
 def find_project_item(issue_number: int, config: dict) -> str | None:
     """Resolve the project item ID for `issue_number`. Checks the shared item-ID
     cache first (dev-env#1057, ADR-141) -- a hit costs zero `gh` calls, which
-    matters here since this runs on EVERY PR merge. On a miss, falls back to the
-    original full `gh project item-list --limit 1000` fetch-and-scan (matched via
-    `_match_item_in_list`), and populates the cache on a successful match so a
+    matters here since this runs on EVERY PR merge. On a miss, asks GitHub for that
+    one issue or PR's own board items (1 GraphQL point, dev-env#1246), matched via
+    `_match_project_item`, and populates the cache on a successful match so a
     repeat lookup (e.g. a second `Closes #N` in the same merge) hits."""
     repo = config.get("repo", "")
     project_owner = config.get("project_owner", "")
@@ -357,21 +363,25 @@ def find_project_item(issue_number: int, config: dict) -> str | None:
         return cached
 
     try:
+        repo_owner, repo_name = repo.split("/", 1)
         result = subprocess.run(
             [
-                "gh", "project", "item-list", config["project_number"],
-                "--owner", config["project_owner"],
-                "--format", "json",
-                "--limit", "1000",
+                "gh", "api", "graphql",
+                "-f", f"query={_ITEM_LOOKUP_QUERY}",
+                "-f", f"owner={repo_owner}",
+                "-f", f"repo={repo_name}",
+                "-F", f"number={issue_number}",
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
         )
         if result.returncode != 0:
             return None
-        data = json.loads(result.stdout)
-        item_id = _match_item_in_list(data.get("items", []), issue_number, repo)
+        item_id = _match_project_item(
+            json.loads(result.stdout), config["project_number"], config["project_owner"]
+        )
         if item_id and repo and project_owner and project_number:
             write_item_cache_entry(project_owner, project_number, repo, issue_number, item_id)
         return item_id

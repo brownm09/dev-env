@@ -96,8 +96,8 @@ detect that on its own — a cache hit is specifically the path that skips the l
 that would reveal it — so detection is necessarily the consuming caller's job, at the one point
 that already knows the ID didn't work: `evict_item_cache_entry` exists for that caller to call
 on a confirmed failure (see `post-pr-merge-project.py`'s `move_to_done` failure path). A cache
-*miss* is still never treated as staleness — a missing entry safely degrades to the
-pre-existing full-fetch fallback every caller already had; only a *used-and-failed* entry is
+*miss* is still never treated as staleness — a missing entry safely degrades to the live
+single-item lookup every caller has (dev-env#1246); only a *used-and-failed* entry is
 evicted.
 
 Every cache function is best-effort and never raises, matching every other sentinel writer in

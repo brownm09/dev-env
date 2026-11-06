@@ -14,10 +14,11 @@
 # Checks a local item-ID cache first (dev-env#1057, ADR-141) -- populated by
 # _gh_project.py's add_to_project() at creation time and backfilled wholesale by
 # reconcile-project-board.py's sweep, so a cache hit costs zero `gh` calls (works
-# even when `gh` is offline/unauthenticated). Falls back to the original full
-# `gh project item-list --limit 1000` fetch-and-scan on a miss, exactly as before,
-# and writes the result back into the cache so the next lookup for the same item
-# is a hit. The cache key includes the project board (owner + number), not just the
+# even when `gh` is offline/unauthenticated). On a miss it asks GitHub for that one
+# issue or PR's own board items (1 GraphQL point, against about 1,011 for a full
+# `gh project item-list` of the 900-item board, dev-env#1246) and writes the result
+# back into the cache so the next lookup for the same item is a hit. The cache key
+# includes the project board (owner + number), not just the
 # repo/number -- this repo alone already reconciles more than one real board
 # (dev-env #3, lifting-logbook #2), and a key that omitted the board could return
 # one board's answer for a lookup meant for another (a /review finding on this PR;
@@ -33,8 +34,8 @@ if [[ -z "$ISSUE_NUMBER" ]]; then
   echo "Usage: get-project-item.sh <issue-or-pr-number> [project-number] [owner]" >&2
   exit 1
 fi
-# Numeric-only: this value is later embedded in a `content.number === N` comparison
-# (fallback path) and used to build the cache key. Rejecting non-numeric input here,
+# Numeric-only: this value is later passed as a GraphQL Int (fallback path) and used
+# to build the cache key. Rejecting non-numeric input here,
 # rather than letting it reach node as an unquoted expression or a JS-string
 # fragment, closes an injection-shaped hole a /review finding raised for this file's
 # interpolated node snippets (also fixed below by passing values through
@@ -94,29 +95,52 @@ CACHED_ID=$(GPI_CACHE_FILE="$CACHE_FILE" GPI_CACHE_KEY="$CACHE_KEY" node -e '
 TMPFILE="${SCRATCH}/tmp_project_item_$$.json"
 trap 'rm -f "$TMPFILE"' EXIT
 
-gh project item-list "$PROJECT_NUMBER" \
-  --owner "$OWNER" \
-  --format json \
-  --limit 1000 > "$TMPFILE"
+# Keep in step with post-pr-merge-project.py's _ITEM_LOOKUP_QUERY. includeArchived is
+# false, against GitHub's default of true, because an archived item isn't one a caller
+# should be moving. gh exits 1 on any GraphQL error but still prints the response body,
+# so the exit code is kept for node to weigh rather than aborting here under `set -e`.
+GH_RC=0
+gh api graphql \
+  -f query='query($owner: String!, $repo: String!, $number: Int!) {
+    repository(owner: $owner, name: $repo) {
+      issueOrPullRequest(number: $number) {
+        ... on Issue { projectItems(first: 20, includeArchived: false) { nodes { id project { number owner { ... on User { login } ... on Organization { login } } } } } }
+        ... on PullRequest { projectItems(first: 20, includeArchived: false) { nodes { id project { number owner { ... on User { login } ... on Organization { login } } } } } }
+      }
+    }
+  }' \
+  -f owner="$OWNER" \
+  -f repo="$REPO" \
+  -F number="$ISSUE_NUMBER" > "$TMPFILE" || GH_RC=$?
 
-# Under `set -e` a non-zero exit from node (e.g. no matching item) aborts the script
-# with that status; the EXIT trap above removes the temp file either way. Filtered
-# by content.repository === REPO_SLUG before accepting a match -- an unfiltered
-# number-only match can return a DIFFERENT repo's item on a board that carries more
-# than one (this board already does: dev-env #3 also lists lifting-logbook's items
-# under --scan-dir reconciliation), which would both print the wrong ID here and,
-# via the write-back below, poison the shared cache for every later reader (a
-# /review finding on this PR -- the same class of bug post-pr-merge-project.py's
-# fallback scan needed fixing for).
-ITEM_ID=$(GPI_TMPFILE="$TMPFILE" GPI_ISSUE_NUMBER="$ISSUE_NUMBER" GPI_REPO_SLUG="$REPO_SLUG" node -e '
-  const d = JSON.parse(require("fs").readFileSync(process.env.GPI_TMPFILE, "utf8"));
-  const wantNumber = Number(process.env.GPI_ISSUE_NUMBER);
-  const wantRepo = process.env.GPI_REPO_SLUG;
-  const item = d.items.find(i => i.content
-    && i.content.number === wantNumber
-    && i.content.repository === wantRepo);
+# Under `set -e` a non-zero exit from node aborts the script with that status; the
+# EXIT trap above removes the temp file either way. Only a NOT_FOUND response means
+# "no such item": any other gh failure (rate limit, auth, offline) exits with gh's own
+# code and leaves gh's own stderr as the diagnosis, so a caller can't mistake a failed
+# lookup for an item that isn't there. The query is scoped to one repo, but an issue
+# can sit on several boards, and a board number alone is ambiguous (brownm09 and
+# merickvaughn each have a board 2), so a match needs both number and owner --
+# accepting any other would print the wrong ID and, via the write-back below, poison
+# the shared cache for every later reader.
+ITEM_ID=$(GPI_TMPFILE="$TMPFILE" GPI_GH_RC="$GH_RC" GPI_ISSUE_NUMBER="$ISSUE_NUMBER" GPI_REPO_SLUG="$REPO_SLUG" GPI_PROJECT_NUMBER="$PROJECT_NUMBER" GPI_OWNER_LOWER="$OWNER_LOWER" node -e '
+  let d = {};
+  try { d = JSON.parse(require("fs").readFileSync(process.env.GPI_TMPFILE, "utf8")); } catch (e) { /* gh printed no JSON */ }
+  const errors = d.errors || [];
+  const notFound = errors.length > 0 && errors.every(e => e.type === "NOT_FOUND");
+  const ghRc = Number(process.env.GPI_GH_RC);
+  if (ghRc !== 0 && !notFound) process.exit(ghRc);
+  const repository = d.data && d.data.repository;
+  const target = repository && repository.issueOrPullRequest;
+  const nodes = (target && target.projectItems && target.projectItems.nodes) || [];
+  const wantProject = Number(process.env.GPI_PROJECT_NUMBER);
+  const item = nodes.find(n => n.project
+    && n.project.number === wantProject
+    && n.project.owner
+    && (n.project.owner.login || "").toLowerCase() === process.env.GPI_OWNER_LOWER);
   if (!item) {
-    process.stderr.write("get-project-item: no item found for #" + wantNumber + " in " + wantRepo + "\n");
+    process.stderr.write("get-project-item: no item found for #" + process.env.GPI_ISSUE_NUMBER
+      + " in " + process.env.GPI_REPO_SLUG
+      + " on board " + process.env.GPI_OWNER_LOWER + "/" + process.env.GPI_PROJECT_NUMBER + "\n");
     process.exit(1);
   }
   console.log(item.id);

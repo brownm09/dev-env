@@ -60,7 +60,8 @@ Exit 1  — single-repo mode: operational failure (no config, gh list failed, mi
           RESULT: line" instruction always has something to read.
 
 The pure helpers (open_issue_numbers / board_issue_numbers /
-compute_orphans / field_key / colliding_required_fields / is_truncated /
+compute_orphans / field_key / board_items_query / normalize_board_node /
+colliding_required_fields / is_truncated /
 item_missing_fields / board_items_missing_fields / looks_like_scope_error /
 render_report / render_scan_summary / _added_and_failed / _validated_config) are
 unit-tested offline in tests/test_reconcile_project_board.py — _validated_config needs
@@ -89,7 +90,8 @@ from _worktree_canon import canonical_repo_root
 
 CONFIG_FILE = ".claude/hook-config.json"
 
-# `gh project item-list --format json` items may expose any of these as gh's own built-in
+# `gh project item-list --format json` items, whose shape fetch_board_items still produces
+# (see normalize_board_node), may expose any of these as gh's own built-in
 # top-level keys — the exact set observed varies by which system fields a given project
 # surfaces (dev-env's board currently emits content/id/labels/repository/status/title plus
 # whichever custom fields are set). Kept as a conservative superset, not the exact set of
@@ -105,6 +107,17 @@ _RESERVED_ITEM_KEYS = frozenset({
 })
 
 
+# What a project field's value can be, one selection per type that carries a single
+# scalar. Only one of these is ever non-null on a given value.
+_FIELD_VALUE_SELECTION = (
+    " ... on ProjectV2ItemFieldTextValue { text }"
+    " ... on ProjectV2ItemFieldSingleSelectValue { name }"
+    " ... on ProjectV2ItemFieldNumberValue { number }"
+    " ... on ProjectV2ItemFieldDateValue { date }"
+    " ... on ProjectV2ItemFieldIterationValue { title } "
+)
+
+
 class GhError(RuntimeError):
     """A `gh` invocation failed; carries the captured stderr for diagnosis."""
 
@@ -113,10 +126,63 @@ class GhError(RuntimeError):
 
 
 def field_key(field_name: str) -> str:
-    """The key under which `gh project item-list --format json` exposes a field's
-    value: the field name lowercased (interior spaces preserved). 'Impact' -> 'impact',
-    'Why' -> 'why', 'Linked pull requests' -> 'linked pull requests'."""
+    """The key under which an item from fetch_board_items exposes a field's value: the
+    field name lowercased (interior spaces preserved), as `gh project item-list
+    --format json` does. 'Impact' -> 'impact', 'Why' -> 'why', 'Linked pull requests'
+    -> 'linked pull requests'."""
     return (field_name or "").strip().lower()
+
+
+def board_items_query(required_names: list[str]) -> str:
+    """The GraphQL query for one page of a board's items: 1 point per page (priced with
+    `rateLimit(dryRun: true)` on 2026-11-06), against 101 for the `fieldValues(first:
+    100)` connection `gh project item-list` always asks for (dev-env#1246). This script
+    does read field values, but only the required ones, so each is asked for by name.
+    Field names arrive as variables ($f0, $f1, ...) and never reach the query text."""
+    params = "".join(f", $f{i}: String!" for i in range(len(required_names)))
+    fields = "".join(
+        f"\n            f{i}: fieldValueByName(name: $f{i}) {{{_FIELD_VALUE_SELECTION}}}"
+        for i in range(len(required_names))
+    )
+    return f"""query($owner: String!, $number: Int!, $after: String{params}) {{
+  repositoryOwner(login: $owner) {{
+    ... on ProjectV2Owner {{
+      projectV2(number: $number) {{
+        items(first: 100, after: $after) {{
+          pageInfo {{ hasNextPage endCursor }}
+          nodes {{
+            id{fields}
+            content {{
+              __typename
+              ... on Issue {{ number url repository {{ nameWithOwner }} }}
+              ... on PullRequest {{ number url repository {{ nameWithOwner }} }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}"""
+
+
+def normalize_board_node(node: dict, required_names: list[str]) -> dict:
+    """One `board_items_query` node as the `gh project item-list --format json` item
+    every helper here reads: `content.type` / `number` / `url` / `repository`
+    ("owner/repo"), `id`, and each set required field under its `field_key`. An unset
+    field is left out, as gh leaves it out, so item_missing_fields reports it. A draft
+    item's content carries only its type; content the token can't read may be null."""
+    raw = node.get("content") or {}
+    content = {"type": raw.get("__typename")}
+    if isinstance(raw.get("number"), int):
+        content["number"] = raw["number"]
+        content["url"] = raw.get("url", "")
+        content["repository"] = (raw.get("repository") or {}).get("nameWithOwner", "")
+    item = {"id": node.get("id", ""), "content": content}
+    for i, name in enumerate(required_names):
+        value = next((v for v in (node.get(f"f{i}") or {}).values() if v is not None), None)
+        if value is not None:
+            item[field_key(name)] = value
+    return item
 
 
 def colliding_required_fields(required_names: list[str]) -> list[str]:
@@ -134,7 +200,7 @@ def open_issue_numbers(issues: list[dict]) -> set[int]:
 
 def board_issue_numbers(items: list[dict], repo: str) -> set[int]:
     """Set of issue numbers already on the board for `repo`, from
-    `gh project item-list --format json` items. Only Issue-type items whose
+    fetch_board_items. Only Issue-type items whose
     `content.repository` matches `repo` are counted — PRs, draft items, and
     cross-repo items are ignored so the set difference can't misfire."""
     out: set[int] = set()
@@ -414,24 +480,34 @@ def fetch_open_issues(repo: str, limit: int = 1000) -> list[dict]:
     return issues
 
 
-def fetch_board_items(project_number: str, owner: str, limit: int = 1000) -> list[dict]:
-    result = subprocess.run(
-        [
-            "gh", "project", "item-list", str(project_number), "--owner", owner,
-            "--format", "json", "--limit", str(limit),
-        ],
-        capture_output=True, text=True, encoding="utf-8", timeout=60,
-    )
-    if result.returncode != 0:
-        raise GhError(result.stderr.strip() or "gh project item-list failed")
-    items = json.loads(result.stdout or "{}").get("items", [])
-    if is_truncated(len(items), limit):
-        print(
-            f"[reconcile-board] WARNING: gh project item-list hit the --limit {limit} "
-            f"cap - results may be truncated and some board items missed this run.",
-            file=sys.stderr,
+def fetch_board_items(project_number: str, owner: str, required_names: list[str]) -> list[dict]:
+    """Every item on the board, one 1-point query per 100 items, carrying each item's
+    required-field values. Pages until GitHub says there are no more, so unlike the
+    `--limit 1000` fetch this replaced it can't silently truncate a growing board."""
+    args = [
+        "gh", "api", "graphql", "-f", f"query={board_items_query(required_names)}",
+        "-f", f"owner={owner}", "-F", f"number={project_number}",
+    ]
+    for i, name in enumerate(required_names):
+        args += ["-f", f"f{i}={name}"]
+
+    items: list[dict] = []
+    after: list[str] = []
+    while True:
+        result = subprocess.run(
+            args + after, capture_output=True, text=True, encoding="utf-8", timeout=60,
         )
-    return items
+        if result.returncode != 0:
+            raise GhError(result.stderr.strip() or "gh api graphql failed")
+        # An unknown owner is a null with no error, so gh exits 0 here.
+        owner_node = json.loads(result.stdout)["data"]["repositoryOwner"]
+        if owner_node is None:
+            raise GhError(f"no GitHub user or organization named {owner}")
+        page = owner_node["projectV2"]["items"]
+        items.extend(normalize_board_node(n, required_names) for n in page["nodes"])
+        if not page["pageInfo"]["hasNextPage"]:
+            return items
+        after = ["-f", f"after={page['pageInfo']['endCursor']}"]
 
 
 def _backfill_item_cache(items: list[dict], project_owner: str, project_number: str) -> None:
@@ -492,7 +568,7 @@ def _reconcile_repo(config: dict, dry_run: bool) -> dict:
 
     try:
         issues = fetch_open_issues(repo)
-        items = fetch_board_items(project_number, owner)
+        items = fetch_board_items(project_number, owner, required_names)
     except GhError as e:
         msg = str(e)
         if looks_like_scope_error(msg):

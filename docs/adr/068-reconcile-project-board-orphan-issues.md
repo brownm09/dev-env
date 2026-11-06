@@ -111,3 +111,6 @@ board the brief names; the pure helpers are written to generalize cleanly.
   repo convention.
 - Generalized to all project-configured repos via `--scan-dir` (dev-env#462,
   [ADR-070](070-reconcile-project-board-scan-dir.md)).
+- The board read moved off `gh project item-list` to a paged GraphQL query that names only the
+  required fields, about 10 points against about 1,011 for this board (dev-env#1246,
+  [ADR-141](141-project-item-id-creation-time-cache.md) Amendment 2).
