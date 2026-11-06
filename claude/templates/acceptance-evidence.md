@@ -111,14 +111,21 @@ to an issue that takes the criterion on as its own work. Read that issue to deci
 only if both of these hold:
 
 - **It names the work.** Its body, or a comment on it, names this criterion's check or outcome as
-  something it will do. Sharing a topic isn't enough, and neither is building something the check
-  depends on.
+  something it will do. Other words are fine if they describe the same check or outcome. Sharing a
+  topic isn't enough, and neither is building something the check depends on, or a narrower check
+  that leaves out part of what the criterion asks.
 - **The work is still ahead or was done.** The issue is open, or it was closed by a change that
   did that work. An issue closed with the work still undone no longer tracks it.
 
 The Evidence cell says where the issue names the work (the body item, or a comment URL). A
 reference that fails either test is not a linked follow-up, so the row is scored as having no
 link. If the issue can't be read, stop and report a tool error, as in §1.
+
+**When to judge.** A review judges both tests as the issue stands when the review runs. A re-score
+of a merged PR replays that review, so it judges the second test, and rule 9's open-or-merged
+state, as of the PR's merge: a later closure or a PR opened later doesn't count for or against the
+row. The first test still reads the issue as it stands now, comments after the merge included,
+because a missing name is what the finding asks the author to fix.
 
 ### Deferral and admission rules
 
@@ -141,7 +148,9 @@ These rules decide the cases that calibration showed are easy to get wrong (ADR-
    replacement was recorded against the issue before merge. A rejected-alternatives section in
    the PR's ADR does not change the issue's criteria.
 5. **Compound criteria.** A criterion with several clauses ("X and Y") takes the worst status of
-   its clauses, in the order `not met` > `not verifiable` > `met`.
+   its clauses, in the order `not met` > `not verifiable` > `met`. Each clause needs only the
+   evidence it asks for: a check the clause names, or else any accepted form above, including a file
+   path and line. A stronger test the criterion didn't ask for isn't a skipped check under rule 3.
 6. **Conditional criteria** ("update X if Y"). The row is `met` when the evidence shows Y didn't
    happen, or that X was done. It is `not verifiable` when Y can't be known from the PR.
 7. **Locators** (line numbers, step numbers, file names) are judged by intent. A file landing on
