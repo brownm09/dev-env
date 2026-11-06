@@ -323,7 +323,7 @@ def last_merged_at(dates: set[str]) -> dict[str, str]:
     return merged
 
 
-def resurrected_draft_branches() -> list[str]:
+def late_commit_branches() -> list[str]:
     """Return draft branches of a composed day with session content after its last merged PR.
 
     A kept branch with no late commits needs nothing, and neither does a branch whose
@@ -904,13 +904,13 @@ def main() -> None:
             f"dedicated session; it skips any project already composed for that date."
         )
 
-    resurrected = resurrected_draft_branches()
-    if resurrected:
+    late = late_commit_branches()
+    if late:
         commands = "\n".join(
-            f"py -3 ~/.claude/scripts/reconcile-late-stubs.py {branch}" for branch in resurrected
+            f"py -3 ~/.claude/scripts/reconcile-late-stubs.py {branch}" for branch in late
         )
         messages.append(
-            f"[journal-hook] Late commits on composed draft branch(es): {', '.join(resurrected)}\n"
+            f"[journal-hook] Late commits on composed draft branch(es): {', '.join(late)}\n"
             f"Each has commits later than its day's last merged PR, so they may be in no journal.\n"
             f"The first session to see this runs these now, whatever its task; don't leave them "
             f"for a later session. If a command is blocked, give it to the user and say why:\n{commands}"

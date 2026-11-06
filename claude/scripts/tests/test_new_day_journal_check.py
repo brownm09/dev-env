@@ -353,13 +353,13 @@ def _run_main(cwd, session_id, scratch, rollover="ROLLOVER-MSG", resurrected=lam
         name: getattr(mod, name)
         for name in (
             "day_rollover_message", "stale_draft_artifacts", "unmerged_draft_branches",
-            "resurrected_draft_branches", "cleanup_stale_flags", "SCRATCH",
+            "late_commit_branches", "cleanup_stale_flags", "SCRATCH",
         )
     }
     mod.day_rollover_message = lambda: rollover
     mod.stale_draft_artifacts = lambda: ["/x/sessions/dev-env/2026-07-01_010101.stub.md"]
     mod.unmerged_draft_branches = lambda: ["2026-07-01"]
-    mod.resurrected_draft_branches = resurrected
+    mod.late_commit_branches = resurrected
     mod.cleanup_stale_flags = lambda: None
     mod.SCRATCH = scratch
     payload = json.dumps({"session_id": session_id, "cwd": cwd})
@@ -571,7 +571,7 @@ def _resurrected_against(clone: Path, merged: dict[str, str]) -> list[str]:
     mod.composed_dates_on_main.cache_clear()
     mod.remote_draft_refs.cache_clear()
     try:
-        return mod.resurrected_draft_branches()
+        return mod.late_commit_branches()
     finally:
         mod.JOURNAL_REPO, mod.TODAY, mod.last_merged_at = orig
         mod.composed_dates_on_main.cache_clear()
@@ -680,7 +680,7 @@ def test_late_commits_failed_lookup_reports_nothing_and_logs_it() -> str:
         mod.composed_dates_on_main.cache_clear()
         mod.remote_draft_refs.cache_clear()
         try:
-            assert mod.resurrected_draft_branches() == []
+            assert mod.late_commit_branches() == []
             log = (Path(tmp) / "scratch" / "journal_hook_late_check_failures.log").read_text(encoding="utf-8")
             assert "CalledProcessError" in log, log
         finally:
