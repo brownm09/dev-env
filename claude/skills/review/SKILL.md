@@ -508,6 +508,8 @@ Decision record: [ADR-153](../../../docs/adr/153-acceptance-criteria-filing-and-
    - DIFF,
    - PR_BODY, including its Testing section and test-summary line,
    - PR and issue comments made up to the merge,
+   - any issue cited as a linked follow-up, read in full with its comments (schema §2 says what
+     qualifies),
    - the PR's CI checks (`gh pr view --json statusCheckRollup`),
    - files on the head ref, read via the Step 2b API form.
 
@@ -519,9 +521,10 @@ Decision record: [ADR-153](../../../docs/adr/153-acceptance-criteria-filing-and-
      number and what is missing. It is Blocking or Non-Blocking according to the severity line
      above.
      **Fix:** Implement the criterion in this PR, or amend the issue to defer it explicitly to a
-     linked follow-up (the row then becomes `not verifiable`). Under the global fix-everything
-     rule, "filed #N" alone is not a valid disposition for this finding, because filing a follow-up
-     *is* the deferral, and the issue must say so.
+     linked follow-up that names the criterion as its own work (the row then becomes
+     `not verifiable`). Under the global fix-everything rule, "filed #N" alone is not a valid
+     disposition for this finding, because filing a follow-up *is* the deferral, and the issue must
+     say so.
    - **Non-blocking [documentation] — Acceptance criterion not verifiable from the PR**, one per
      `not verifiable` row that has no linked follow-up or named post-merge check.
      **Suggestion:** State in the PR body how and when it will be verified, or rewrite the

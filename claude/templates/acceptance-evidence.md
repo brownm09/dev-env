@@ -106,7 +106,19 @@ verified" (or "Exempt: <reason>"), and the marker.
 | 3 | `not verifiable` | One of exactly three cases: (a) deferred to a linked follow-up (rule 1); (b) it plausibly holds but can't be confirmed from the PR, because it depends on production data, post-merge behaviour, another repo, or a live service; (c) it is too vague to test (§4). |
 
 **Linked follow-up**, wherever this schema uses the term: an issue reference in the Evidence
-cell, written as `#N`, `owner/repo#N`, or a `https://github.com/<owner>/<repo>/issues/<N>` URL.
+cell, written as `#N`, `owner/repo#N`, or a `https://github.com/<owner>/<repo>/issues/<N>` URL,
+to an issue that takes the criterion on as its own work. Read that issue to decide. It qualifies
+only if both of these hold:
+
+- **It names the work.** Its body, or a comment on it, names this criterion's check or outcome as
+  something it will do. Sharing a topic isn't enough, and neither is building something the check
+  depends on.
+- **The work is still ahead or was done.** The issue is open, or it was closed by a change that
+  did that work. An issue closed with the work still undone no longer tracks it.
+
+The Evidence cell says where the issue names the work (the body item, or a comment URL). A
+reference that fails either test is not a linked follow-up, so the row is scored as having no
+link. If the issue can't be read, stop and report a tool error, as in §1.
 
 ### Deferral and admission rules
 
