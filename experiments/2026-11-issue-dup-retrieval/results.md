@@ -77,7 +77,7 @@ Direction by stratum: no stratum reverses.
 | T3 | Circular criteria | PASS | Recall isn't built from either arm's known failure. |
 | T4 | Baseline non-neutrality | PASS | Fresh run, 3 queries per draft, at or above the 2 phrasings a real session recorded. The default-scope check also clears. Residual: the harness doesn't reformulate after seeing results, and a real session might. |
 | T5 | Processing inequality | PASS | Same stage, raw candidate list. Reading load differs and is reported. |
-| T6 | Corpus bias | PASS, with a limit | Stratum A leans toward vectors by survivorship, and the registered counterweight is stratum B, where vectors also lead. Limit: searches that found the issue and left no comment are invisible, so absolute recall here understates the incumbent. Trust the direction, not the levels. |
+| T6 | Corpus bias | PASS, with a limit | Stratum A leans toward vectors by survivorship, and the registered counterweight is stratum B, where vectors also lead. Limits: searches that found the issue and left no comment are invisible, so absolute recall here understates the incumbent. Stratum B's keyword recall of 0.538 also shows it isn't proven keyword-friendly, since a comment makes a weaker draft than an issue, and at 10 against 7 of 13 it isn't significant alone. This is the weakest point of the audit: trust the direction, not the levels. |
 | T7 | Power and stopping | PASS | n and k fixed, one primary, no stopping. |
 | T8 | Peeking | PASS | Bar frozen first. The scorer fix came before any output existed. |
 | T9 | Judge contamination | PASS | Scoring is a script. Writers had separate contexts, model verified as `claude-sonnet-5-5` from transcripts. Residual: one writer saw all 43 drafts at once, including drafts from one family. |
