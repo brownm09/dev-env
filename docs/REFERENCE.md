@@ -1731,6 +1731,12 @@ owns the global value, coordinate rather than overwrite — two tools cannot sha
 Once clear: `git config --global core.hooksPath ~/.claude/hooks`. The hook chains to any per-repo
 `.git/hooks/pre-push`, so existing repo-level hooks are preserved.
 
+A clone's local `core.hooksPath` overrides the global value, and none of the global guards run in
+that clone. `setup.sh` never sets a local value, so a fresh machine has none. `dev-env-doctor.py`
+warns about each clone that has one and names the command that removes it. Before removing a value,
+save it so you can put it back. See [ADR-005](adr/005-global-core-hooks-path.md) Amendment 1 for
+where these values came from.
+
 ### Post-merge follow-up tiles (chips)
 
 The post-merge checklist ([`claude/CLAUDE.md`](../claude/CLAUDE.md) → Git Workflow) asks you to capture
