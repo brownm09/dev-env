@@ -5175,15 +5175,19 @@ For a one-line navigational map of the test directory, see
      nothing on stdout, and exit 1. It also checks that arguments (including a `!`), the exit code and, for
      bash, stdin arrive intact, and that the binary sees the same environment variable names as when started
      directly, because the environment is what authentication reads. Line endings are pinned too: CRLF for
-     `claude.cmd`, since `cmd.exe` can miss a label in an LF-only file, and LF for `bin/claude`.
+     `claude.cmd` and LF for `bin/claude`. They are counted with `tr`, because Git Bash's `grep` strips CRs
+     before matching and a `grep` check passes on any file. CRLF for a batch file with labels is a precaution
+     against a widely reported `cmd.exe` problem, not a documented requirement: an LF copy of this wrapper ran
+     correctly here on Windows 11.
 
      The bash fixtures are shell scripts named `claude.exe`. A batch file can only start a real executable,
      so the `cmd.exe` fixtures are copies of `cmd.exe`, and a probe batch file makes the copy report its own
-     path through `%CMDCMDLINE%`. Where there is no `cmd.exe`, that half is counted as skipped. Against the
-     wrappers as they were before this fix, 28 of the 36 checks fail; with the numeric sort swapped for a
-     lexical one, 6 fail. Deliberately not covered: the real binary. To check it, run `bash bin/claude
-     --version` from Git Bash and `bin\claude.cmd --version` from `cmd.exe`, and each should print the
-     installed version.
+     path through `%CMDCMDLINE%`. Where there is no `cmd.exe`, that half is counted as skipped. Checked against
+     known-bad copies: with the wrappers as they were before this fix, 29 of the 36 checks fail; with a lexical
+     sort, the 6 that compare 2.1.170 with 2.1.99 fail; with the wrong line endings in either wrapper, that
+     wrapper's line-ending check fails. Deliberately not covered: the real binary. To check it, run `bash
+     bin/claude --version` from Git Bash and `bin\claude.cmd --version` from `cmd.exe`, and each should print
+     the installed version.
 
      ```bash
      bash claude/scripts/tests/test-claude-wrappers.sh

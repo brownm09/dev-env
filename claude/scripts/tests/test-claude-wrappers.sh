@@ -189,8 +189,8 @@ if [ "$rc" -eq 7 ]; then ok "bash: binary's exit code comes back"; else bad "bas
 out=$(echo piped | FAKE_READ_STDIN=1 run_bash "$root"); rc=$?
 if printf '%s\n' "$out" | grep -qxF 'STDIN=piped'; then ok "bash: binary gets the caller's stdin"; else bad "bash: stdin (rc=$rc): $out"; fi
 
-# The environment is what authentication reads, so it must arrive unchanged: same
-# names as starting the binary directly, and a credential variable passes through.
+# The environment is what authentication reads, so the binary must see the same
+# variable names as when it's started directly.
 exe="$root/bash/$CURRENT/2.1.317/a33aa5518497/claude.exe"
 direct=$(LOCALAPPDATA="$root/bash" FAKE_DUMP_ENV=1 bash "$exe" | grep -v '^STARTED\|^_$')
 wrapped=$(FAKE_DUMP_ENV=1 run_bash "$root" | grep -v '^STARTED\|^_$')
@@ -237,12 +237,21 @@ fi
 echo "Line endings"
 
 # cmd.exe can miss a label in an LF-only batch file, and a CRLF shebang breaks bash.
-if [ "$(grep -c $'\r$' "$WRAPPER_CMD")" -eq "$(wc -l < "$WRAPPER_CMD")" ]; then
+# Count bytes with tr, because Git Bash's grep strips CRs before matching and can't
+# see them at all.
+count_bytes() { tr -cd "$1" < "$2" | wc -c; }
+cmd_lf=$(count_bytes '\n' "$WRAPPER_CMD"); cmd_cr=$(count_bytes '\r' "$WRAPPER_CMD")
+if [ "$cmd_lf" -gt 0 ] && [ "$cmd_cr" -eq "$cmd_lf" ]; then
   ok "claude.cmd is CRLF"
 else
-  bad "claude.cmd has lines without CRLF"
+  bad "claude.cmd has $cmd_cr CRs for $cmd_lf line feeds"
 fi
-if grep -q $'\r' "$WRAPPER"; then bad "bin/claude has a CR"; else ok "bin/claude is LF"; fi
+sh_lf=$(count_bytes '\n' "$WRAPPER"); sh_cr=$(count_bytes '\r' "$WRAPPER")
+if [ "$sh_lf" -gt 0 ] && [ "$sh_cr" -eq 0 ]; then
+  ok "bin/claude is LF"
+else
+  bad "bin/claude has $sh_cr CRs for $sh_lf line feeds"
+fi
 
 echo ""
 echo "Results: $PASS passed, $SKIP skipped, $FAIL failed"
