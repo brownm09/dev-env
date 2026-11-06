@@ -4165,10 +4165,14 @@ For a one-line navigational map of the test directory, see
     `claude/settings.shared.json`, or `setup.sh`'s `seed_claude_settings()`
     ([ADR-139](adr/139-machine-local-settings-with-shared-source-sync.md), dev-env#1049).
 
-    66 cases in 9 groups, **fully hermetic** — every scenario builds a throwaway
+    121 cases in 9 groups, **fully hermetic** — every scenario builds a throwaway
     shared/live/backup trio in a temp directory. Nothing writes the developer's real
     `~/.claude/settings.json`, which matters more than usual here: the subject under test is
-    the file that defines every hook on the machine.
+    the file that defines every hook on the machine. Group 7, which reads the real shared
+    file, also pins the spend defaults from
+    [ADR-156](adr/156-compact-early-and-default-subagents-to-sonnet.md): the 400k compaction
+    window, the Sonnet subagent default with its force variable off, an accepted
+    `effortLevel`, and that a live `env` block or compaction window is left alone.
 
     **The groups, in order of how badly a regression would hurt:**
 
@@ -5062,7 +5066,8 @@ For a one-line navigational map of the test directory, see
      decided by `gh auth token`: a failed `gh auth status` is a WARN, never "not signed in", and
      `--offline` or a timeout an INFO. `parse_ls_remote` accepts only a 40-hex line for the exact
      ref. Also covered: tool presence, the gh credential helper, git identity, a global
-     `core.hooksPath` that's unset or missing (FAIL) or different (WARN), per-clone overrides,
+     `core.hooksPath` that's unset or missing (FAIL) or different (WARN), per-clone overrides
+     (a WARN that names the command removing the override, dev-env#1261),
      the journal / `origin/draft/<today>` matrix (an unreadable branch included, and advice that
      fetches and merges `origin/draft/<today>` by name and never pulls, per the
      [ADR-056](adr/056-per-session-sharding-journal-companion-files.md) addendum of 2026-10-31),
@@ -5154,7 +5159,7 @@ For a one-line navigational map of the test directory, see
 
 114. **duplicate-issue retrieval scorer test** — required when changing anything under
      `experiments/2026-11-issue-dup-retrieval/`
-     ([ADR-156](adr/156-duplicate-issue-retrieval-experiment.md), dev-env#1260). Pins the
+     ([ADR-157](adr/157-duplicate-issue-retrieval-experiment.md), dev-env#1260). Pins the
      instrument behind the experiment's verdict: a known-good ranker scores 1.0, a known-bad one
      0.0, a random one lands near chance, and an empty run raises rather than scoring. The outcome
      map must be able to reach all three verdicts, including both scope-disagreement cases. The

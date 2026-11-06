@@ -101,7 +101,7 @@ OWNED_KEYS = ("hooks", "permissions")
 
 # Top-level keys written only when ABSENT from the live file (ADR-079 rule 3).
 # The app/`/config` may change them afterwards and the change sticks.
-SEED_KEYS = ("model", "effortLevel")
+SEED_KEYS = ("model", "effortLevel", "autoCompactWindow", "env")
 
 # scripts/ -> claude/
 _CLAUDE_DIR = Path(__file__).resolve().parent.parent

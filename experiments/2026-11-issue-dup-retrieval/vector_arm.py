@@ -5,7 +5,7 @@ Usage: <venv-python> vector_arm.py <issue-cache-dir> <labels.json> <store-dir> <
 Model and text template are fixed before any result and are not tuned. Issue text and vectors stay
 in <store-dir>, on this machine. The output holds issue numbers and scores only.
 
-Store: one flat .npz per repo, searched by brute force. See ADR-156 for why nothing heavier is used.
+Store: one flat .npz per repo, searched by brute force. See ADR-157 for why nothing heavier is used.
 """
 import json
 import os

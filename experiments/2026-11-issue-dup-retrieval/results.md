@@ -1,6 +1,6 @@
 # Duplicate-issue retrieval: results
 
-Tracking issue: [dev-env#1260](https://github.com/brownm09/dev-env/issues/1260). Pre-registration: [comment frozen 2026-11-06T16:16:10Z](https://github.com/brownm09/dev-env/issues/1260#issuecomment-6689587273), citing commit `a4139e8`. Decision record: [ADR-156](../../docs/adr/156-duplicate-issue-retrieval-experiment.md).
+Tracking issue: [dev-env#1260](https://github.com/brownm09/dev-env/issues/1260). Pre-registration: [comment frozen 2026-11-06T16:16:10Z](https://github.com/brownm09/dev-env/issues/1260#issuecomment-6689587273), citing commit `a4139e8`. Decision record: [ADR-157](../../docs/adr/157-duplicate-issue-retrieval-experiment.md).
 
 **Result:** on 43 inputs, embedding search put the existing issue in the first 10 candidates 39 times, and keyword search 30 times. The registered verdict is **supported**.
 
@@ -49,7 +49,7 @@ Gate 1: one deviation, listed below. Nothing undisclosed found.
 
 | # | Field | Deviation | Impact |
 |---|-------|-----------|--------|
-| 1 | 10 (provenance) | `score.py` crashed on first run with a `KeyError`, before printing anything. One line changed after the freeze: `git diff a4139e8 -- experiments` shows only that line in frozen code. New files added afterwards: `report.py`, results, data. | None on the outcome map, which is in `dup_eval.py`, unchanged. The aggregates were also checked by hand from the per-input table: 39/43, 30/43, 10/13, 7/13. |
+| 1 | 10 (provenance) | `score.py` crashed on first run with a `KeyError`, before printing anything. One line of logic changed after the freeze. `git diff a4139e8 -- experiments` also shows two docstring lines, in `keyword_arm.py` and `vector_arm.py`, changed afterwards with no effect on behaviour. New files added afterwards: `report.py`, results, data. | None on the outcome map, which is in `dup_eval.py`, unchanged. The aggregates were also checked by hand from the per-input table: 39/43, 30/43, 10/13, 7/13. |
 
 ```
 [experiment-audit] Gate 2 — instruments

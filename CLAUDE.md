@@ -147,7 +147,7 @@ the item). A one-line navigational map of the test directory is
 111. **reconcile-late-stubs test** — required when changing `claude/scripts/reconcile-late-stubs.py`. A moved stub must take the target branch's date or `/journal-compose` skips it (dev-env#1203). Run: `py -3 claude/scripts/tests/test_reconcile_late_stubs.py`
 112. **token attribution and pricing test** — required when changing `claude/scripts/_token_pricing.py`, `claude/scripts/backfill-tokens.py`, or `token-report.py`'s `--attribution` mode or session tables. Also run item 65 when changing `_token_pricing.py`, since `token-tracker.py` prices through it (dev-env#1214, #1122, [ADR-154](docs/adr/154-token-attribution-and-shared-pricing.md)). Run: `py -3 claude/scripts/tests/test_token_attribution.py`
 113. **window-flash-monitor test** — required when changing `claude/scripts/window-flash-monitor.py` or `register-window-flash-monitor.ps1` ([ADR-155](docs/adr/155-record-console-flashes-before-fixing-them.md), dev-env#1225). The `--live` run opens real windows and briefly takes focus, so it is local only; run it too when changing the monitor. Run: `py -3 claude/scripts/tests/test_window_flash_monitor.py` + `py -3 claude/scripts/tests/test_window_flash_monitor.py --live`
-114. **duplicate-issue retrieval scorer test** — required when changing anything under `experiments/2026-11-issue-dup-retrieval/`. Calibrates the experiment's scorer and outcome map, and scans committed files for private text ([ADR-156](docs/adr/156-duplicate-issue-retrieval-experiment.md), dev-env#1260). Run: `py -3 claude/scripts/tests/test_issue_dup_eval.py`
+114. **duplicate-issue retrieval scorer test** — required when changing anything under `experiments/2026-11-issue-dup-retrieval/`. Calibrates the experiment's scorer and outcome map, and scans committed files for private text ([ADR-157](docs/adr/157-duplicate-issue-retrieval-experiment.md), dev-env#1260). Run: `py -3 claude/scripts/tests/test_issue_dup_eval.py`
 
 ## Experiments
 
@@ -260,7 +260,7 @@ Which keys belong where:
 | Class | Keys | Behavior |
 |---|---|---|
 | **Owned** (tracked) | `hooks`, `permissions` | Replaced wholesale on every sync — deletions propagate, and the app cannot silently drop an allow rule. |
-| **Seed** (tracked) | `model`, `effortLevel` | Written only when absent, so a `/config` change sticks ([ADR-079](docs/adr/079-backup-restore-convention.md) rule 3). |
+| **Seed** (tracked) | `model`, `effortLevel`, `autoCompactWindow`, `env` | Written only when absent, so a `/config` change sticks ([ADR-079](docs/adr/079-backup-restore-convention.md) rule 3). `env` is seeded as one block: a machine that already has one keeps it whole and gets no new shared variables. |
 | **Machine-local** (never tracked) | `theme`, `tui`, `agentPushNotifEnabled`, `inputNeededNotifEnabled`, `skipWorkflowUsageWarning`, `autoMode` | Never read, written, or removed by the sync. `autoMode.environment` describes personal data and must stay out of git. |
 
 **Adding a key to `claude/settings.shared.json` requires classifying it** in `OWNED_KEYS` or

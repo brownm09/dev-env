@@ -1,4 +1,4 @@
-# ADR-156: Embedding Search Finds More Duplicate Issues Than Keyword Search, So Add It Beside Keyword Search
+# ADR-157: Embedding Search Finds More Duplicate Issues Than Keyword Search, So Add It Beside Keyword Search
 
 **Date:** 2026-11-06
 **Status:** Accepted
