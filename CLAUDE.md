@@ -249,7 +249,7 @@ Which keys belong where:
 | Class | Keys | Behavior |
 |---|---|---|
 | **Owned** (tracked) | `hooks`, `permissions` | Replaced wholesale on every sync — deletions propagate, and the app cannot silently drop an allow rule. |
-| **Seed** (tracked) | `model`, `effortLevel` | Written only when absent, so a `/config` change sticks ([ADR-079](docs/adr/079-backup-restore-convention.md) rule 3). |
+| **Seed** (tracked) | `model`, `effortLevel`, `autoCompactWindow`, `env` | Written only when absent, so a `/config` change sticks ([ADR-079](docs/adr/079-backup-restore-convention.md) rule 3). `env` is seeded as one block: a machine that already has one keeps it whole and gets no new shared variables. |
 | **Machine-local** (never tracked) | `theme`, `tui`, `agentPushNotifEnabled`, `inputNeededNotifEnabled`, `skipWorkflowUsageWarning`, `autoMode` | Never read, written, or removed by the sync. `autoMode.environment` describes personal data and must stay out of git. |
 
 **Adding a key to `claude/settings.shared.json` requires classifying it** in `OWNED_KEYS` or

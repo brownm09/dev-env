@@ -432,6 +432,27 @@ if real_shared is not None:
     for key in ("theme", "tui", "autoMode", "skipWorkflowUsageWarning"):
         check(key not in real_shared, f"machine-local key stays out of the tracked file: {key}")
 
+    # The shipped spend defaults (dev-env#1215, ADR-156).
+    check(real_shared.get("autoCompactWindow") == 400000, "shipped compaction window is 400k")
+    shipped_env = real_shared.get("env", {})
+    check(shipped_env.get("CLAUDE_CODE_SUBAGENT_MODEL") == "sonnet", "shipped subagent default is Sonnet")
+    check(
+        "CLAUDE_CODE_SUBAGENT_MODEL_FORCE" not in shipped_env,
+        "the force variable stays off, so a skill's Opus pin keeps working",
+    )
+    check(
+        real_shared.get("effortLevel") in ("low", "medium", "high", "xhigh"),
+        "shipped effortLevel is a value the settings key accepts (max is not)",
+    )
+
+    # A seeded env must never touch a block the machine already has. Both are absent here.
+    own_env = {"env": {"MY_VAR": "1"}, "autoCompactWindow": 500000}
+    seeded = _settings_sync.plan_sync(real_shared, own_env).seed_inserts
+    check("env" not in seeded, "an existing live env block is left whole")
+    check("autoCompactWindow" not in seeded, "an existing live compaction window is left alone")
+    seeded = _settings_sync.plan_sync(real_shared, {}).seed_inserts
+    check({"env", "autoCompactWindow"} <= set(seeded), "both new keys seed when absent from the live file")
+
 # --- 8. hook launcher install + missing-script guard (dev-env#1146, ADR-148) ------------
 
 print("[8] ensure_launcher installs the launcher; hooks_guard never wires a missing file")
