@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Unit tests for reconcile-project-board.py pure helpers (dev-env #447).
 
-`reconcile-project-board.py` is the backstop for the gap ADR-053 documents: PostToolUse
-hooks are inert in background and SDK sessions, so issues filed there are never added
-to the project board. The script lists open issues + board items, computes the set
+`reconcile-project-board.py` is the backstop for the gap ADR-053 documents: when PostToolUse
+doesn't run for a create call, the issue is never added to the project board. The script lists open issues + board items, computes the set
 difference (orphans), adds them, and reports the issues still missing a required field —
 **without ever guessing the field value**. These tests pin that contract offline:
 
@@ -32,12 +31,15 @@ Usage:
 Exit 0 = all pass.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 # tests/ -> scripts/ -> claude/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -51,6 +53,8 @@ _spec = importlib.util.spec_from_file_location("reconcile_project_board", SCRIPT
 assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)  # safe: main() is guarded by __main__
+
+from _last_run import commit as commit_state, pending_path as mod_pending_path  # noqa: E402
 
 canonical_repo_root = mod.canonical_repo_root
 field_key = mod.field_key
@@ -597,8 +601,245 @@ def test_validated_config_non_dict_json() -> str:
     return "a valid-but-non-object hook-config.json (e.g. a bare array) is 'bad-config', not a crash"
 
 
+# --- --scan-dir twice: print only what changed since the last run (dev-env#1307, ADR-161).
+# Runs the real main() with only the gh boundary, and the production item cache, patched out.
+
+def _scan_board(repo_root, state, issues, items, *flags, fetch_error=None,
+                add_result=("PVTI_added", ""), repos=None, commit=True) -> tuple[int, str]:
+    """One --scan-dir run, then the routine's commit step unless commit=False."""
+    argv = ["reconcile-project-board.py", "--scan-dir", repo_root, "--state-file", str(state), *flags]
+    out = io.StringIO()
+    with mock.patch.object(mod, "find_git_repos", return_value=repos or [repo_root]), \
+            mock.patch.object(mod, "fetch_open_issues", return_value=issues, side_effect=fetch_error), \
+            mock.patch.object(mod, "fetch_board_items", return_value=items), \
+            mock.patch.object(mod, "add_to_project", return_value=add_result), \
+            mock.patch.object(mod, "_backfill_item_cache"), \
+            mock.patch.object(sys, "argv", argv), \
+            contextlib.redirect_stdout(out):
+        rc = mod.main()
+    if commit and rc == 0 and "--dry-run" not in flags and "--full" not in flags:
+        error = commit_state(state)
+        assert error is None, error
+    return rc, out.getvalue()
+
+
+def _result_line(output: str) -> str:
+    return [line for line in output.splitlines() if line.startswith("RESULT: repos_scanned")][-1]
+
+
+# Issue 1 lacks both fields and issue 2 lacks Why; issue 3 is complete.
+_FLAGGED_ISSUES = [_issue(1), _issue(2), _issue(3)]
+_FLAGGED_ITEMS = [_item(1), _item(2, impact="High"), _item(3, impact="High", why="w")]
+
+
+def test_scan_dir_second_run_lists_nothing_then_only_the_new_issue() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, CONFIG)
+        state = Path(tmp) / "state.json"
+
+        rc, first = _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        assert rc == 0
+        assert "#1 missing: Impact, Why" in first and "#2 missing: Why" in first, first
+        assert "new_needs_attention=2 " in _result_line(first) and "baseline=true" in _result_line(first), first
+
+        rc, second = _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        assert rc == 0
+        assert "missing:" not in second, second
+        assert "gh project item-edit" not in second, second
+        assert "2 issue(s) still need a required field, none new" in second, second
+        result = _result_line(second)
+        assert "needs_attention=2 " in result and "new_needs_attention=0 " in result, result
+        assert "baseline=false" in result, result
+
+        issues = _FLAGGED_ISSUES + [_issue(4)]
+        items = _FLAGGED_ITEMS + [_item(4)]
+        rc, third = _scan_board(tmp, state, issues, items)
+        assert rc == 0
+        assert "#4 missing: Impact, Why" in third, third
+        assert "#1 missing" not in third and "#2 missing" not in third, third
+        assert "1 of 3 issue(s)" in third, third
+        assert "needs_attention=3 " in _result_line(third), third
+        assert "new_needs_attention=1 " in _result_line(third), third
+    return "repeat run lists no issue and keeps RESULT; a new issue is the only one listed"
+
+
+def test_scan_dir_reports_changed_and_resolved_issues() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, CONFIG)
+        state = Path(tmp) / "state.json"
+        _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+
+        # Issue 1 gains Impact but still lacks Why; issue 2 gets its Why.
+        items = [_item(1, impact="High"), _item(2, impact="High", why="w"), _item(3, impact="High", why="w")]
+        _, out = _scan_board(tmp, state, _FLAGGED_ISSUES, items)
+        assert "#1 missing: Why" in out, out
+        assert "No longer flagged since the last run: #2" in out, out
+        result = _result_line(out)
+        assert "new_needs_attention=1 " in result and "no_longer_needs_attention=1 " in result, result
+    return "an issue missing different fields is listed; a filled one is named as no longer flagged"
+
+
+def test_scan_dir_missing_or_unreadable_state_gives_full_report() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, CONFIG)
+        state = Path(tmp) / "state.json"
+        _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        _, quiet = _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        assert "#1 missing" not in quiet, "control: the state file should silence the list"
+
+        state.write_text("{not json", encoding="utf-8")
+        _, out = _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        assert "no usable state" in out and "#1 missing" in out and "#2 missing" in out, out
+        assert "baseline=true" in _result_line(out), out
+
+        state.unlink()
+        _, out = _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        assert "#1 missing" in out and "#2 missing" in out, out
+        assert state.exists(), "a baseline run must store its findings"
+    return "an unreadable or missing state file gives the full list, and is rewritten"
+
+
+def test_scan_dir_full_and_dry_run_leave_the_state_alone() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, CONFIG)
+        state = Path(tmp) / "state.json"
+        _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        before = state.read_bytes()
+        issues = _FLAGGED_ISSUES + [_issue(4)]
+        items = _FLAGGED_ITEMS + [_item(4)]
+
+        _, full = _scan_board(tmp, state, issues, items, "--full")
+        assert all(f"#{n} missing" in full for n in (1, 2, 4)), full
+        assert "new_needs_attention" not in full, full
+        assert state.read_bytes() == before, "--full updated the state"
+
+        _, dry = _scan_board(tmp, state, issues, items, "--dry-run")
+        assert "#4 missing" in dry and "#1 missing" not in dry, dry
+        assert state.read_bytes() == before, "--dry-run updated the state"
+
+        # The new issue is still news to the routine after both.
+        _, real = _scan_board(tmp, state, issues, items)
+        assert "#4 missing" in real and "new_needs_attention=1 " in _result_line(real), real
+    return "--full lists all and --dry-run previews, and neither uses up the next run's news"
+
+
+def test_scan_dir_failed_repo_keeps_its_findings() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, CONFIG)
+        state = Path(tmp) / "state.json"
+        _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            _, failed = _scan_board(tmp, state, [], [], fetch_error=mod.GhError("boom"))
+            assert "new_repos_failed=1 " in _result_line(failed), failed
+            assert "no_longer_needs_attention=0 " in _result_line(failed), failed
+            _, again = _scan_board(tmp, state, [], [], fetch_error=mod.GhError("boom"))
+            assert "repos_failed=1 " in _result_line(again), again
+            assert "new_repos_failed=0 " in _result_line(again), again
+
+        _, back = _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        assert "missing:" not in back, f"a failed night made old issues new again:\n{back}"
+        assert "new_needs_attention=0 " in _result_line(back), back
+    return "a repo failing is reported once, and doesn't make its old issues read as new"
+
+
+def test_scan_dir_add_failure_is_news_once() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, CONFIG)
+        state = Path(tmp) / "state.json"
+        issues = [_issue(1)]
+
+        def scan_with_add(result):
+            return _scan_board(tmp, state, issues, [], add_result=result)[1]
+
+        first = scan_with_add((None, "blip"))
+        assert "[ADD FAILED - re-run]" in first and "#1 missing" in first, first
+        second = scan_with_add((None, "blip"))
+        assert "add_failed=1 " in _result_line(second), second
+        assert "new_needs_attention=0 " in _result_line(second), second
+        third = scan_with_add(("PVTI_added", ""))
+        assert "#1 missing" in third and "gh project item-edit" in third, third
+        assert "new_needs_attention=1 " in _result_line(third), third
+    return "a failed add is reported once; the add succeeding lists it again, with its commands"
+
+
+def test_scan_dir_uncommitted_run_reports_again() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, CONFIG)
+        state = Path(tmp) / "state.json"
+        _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        issues = _FLAGGED_ISSUES + [_issue(4)]
+        items = _FLAGGED_ITEMS + [_item(4)]
+        # The routine's push failed, so it never committed: the next run must say it again.
+        _, first = _scan_board(tmp, state, issues, items, commit=False)
+        _, second = _scan_board(tmp, state, issues, items)
+        for out in (first, second):
+            assert "#4 missing" in out and "new_needs_attention=1 " in _result_line(out), out
+        _, third = _scan_board(tmp, state, issues, items)
+        assert "#4 missing" not in third, third
+    return "a run that isn't committed is reported again next run, and is quiet once committed"
+
+
+def test_scan_dir_scope_abort_saves_nothing() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        other = Path(tmp) / "other"
+        _write_config(tmp, CONFIG)
+        _write_config(other, dict(CONFIG, repo="brownm09/other"))
+        state = Path(tmp) / "state.json"
+        _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        issues = _FLAGGED_ISSUES + [_issue(4)]
+        items = _FLAGGED_ITEMS + [_item(4)]
+
+        def fetch(repo):
+            if repo == REPO:
+                return issues
+            raise mod.GhError("missing required scope 'read:project'")
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            rc, aborted = _scan_board(tmp, state, issues, items, fetch_error=fetch,
+                                      repos=[tmp, str(other)])
+        assert rc == 1, aborted
+        assert not mod_pending_path(state).exists(), "a scope abort saved its findings"
+        _, next_run = _scan_board(tmp, state, issues, items)
+        assert "#4 missing" in next_run, f"the abort used up #4's news:\n{next_run}"
+    return "a scope abort saves nothing, so the repos it did reach are reported again"
+
+
+def test_scan_dir_failed_repo_recovery_is_reported() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, CONFIG)
+        state = Path(tmp) / "state.json"
+        with contextlib.redirect_stderr(io.StringIO()):
+            _scan_board(tmp, state, [], [], fetch_error=mod.GhError("boom"))
+        _, back = _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        assert f"gh works again for {REPO}" in back, back
+        assert "no_longer_repos_failed=1" in _result_line(back), back
+    return "a repo whose gh calls work again is named once"
+
+
+def test_scan_dir_ignores_non_numeric_state_keys() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, CONFIG)
+        state = Path(tmp) / "state.json"
+        state.write_text(json.dumps({REPO: {"needs_attention": {"abc": "Why"}}}), encoding="utf-8")
+        rc, out = _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        assert rc == 0 and "#1 missing" in out, out
+        assert "No longer flagged" not in out, out
+    return "a hand-edited non-numeric key is ignored, not a crash on every run"
+
+
 def main() -> int:
     tests = [
+        ("--scan-dir repeat lists nothing, then only the new issue", test_scan_dir_second_run_lists_nothing_then_only_the_new_issue),
+        ("--scan-dir reports changed and resolved issues", test_scan_dir_reports_changed_and_resolved_issues),
+        ("--scan-dir missing or unreadable state gives the full report", test_scan_dir_missing_or_unreadable_state_gives_full_report),
+        ("--scan-dir --full and --dry-run leave the state alone", test_scan_dir_full_and_dry_run_leave_the_state_alone),
+        ("--scan-dir failed repo keeps its findings", test_scan_dir_failed_repo_keeps_its_findings),
+        ("--scan-dir add failure is news once", test_scan_dir_add_failure_is_news_once),
+        ("--scan-dir uncommitted run reports again", test_scan_dir_uncommitted_run_reports_again),
+        ("--scan-dir scope abort saves nothing", test_scan_dir_scope_abort_saves_nothing),
+        ("--scan-dir failed repo recovery is reported", test_scan_dir_failed_repo_recovery_is_reported),
+        ("--scan-dir ignores non-numeric state keys", test_scan_dir_ignores_non_numeric_state_keys),
         ("canonical_repo_root resolution", test_canonical_repo_root),
         ("field_key derivation", test_field_key),
         ("colliding_required_fields reserved-key guard", test_colliding_required_fields),

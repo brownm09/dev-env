@@ -568,6 +568,29 @@ def test_format_advisory_mentions_fallback() -> str:
     return "advisory tags itself, cites ADR-053, names the action, points to the fallback"
 
 
+def test_format_advisory_names_no_cause() -> str:
+    # dev-env#1320: 4 of the advisory's 5 recorded firings were sessions whose hooks
+    # were running, 3 of them launched with start_session. A message asserting that
+    # hooks didn't fire, or blaming how the session was launched, sends the reader
+    # after the wrong cause. The file it tells the reader to check comes from
+    # _bash_state, so a rename there fails here instead of leaving the advisory
+    # pointing at a file that never exists (which would read as "inert").
+    import _bash_state
+
+    state_name = _bash_state.state_path("<session-id>", scratch=Path(".")).name
+    for actions in (
+        [{"action": "create", "label": f"issue {DEVENV_ISSUE_URL}"}],
+        [{"action": "merge", "label": "PR #241"}],
+    ):
+        msg = format_advisory(actions)
+        lowered = msg.lower()
+        for banned in ("background", "sdk", "spawn_task", "start_session", "did not fire"):
+            assert banned not in lowered, f"advisory must not assert a cause ({banned!r}): {msg!r}"
+        assert f"~/.claude/scratch/{state_name}" in msg, f"advisory must say how to check: {msg!r}"
+        assert "doesn't prove" in msg, f"advisory must not read as a diagnosis: {msg!r}"
+    return "advisory states what was observed, gives the check, and names no launch path"
+
+
 def test_advisory_is_cp1252_safe() -> str:
     # Claude Code pipes hook output as cp1252; a char outside it (an arrow, an
     # em-dash) makes the exit-2 stderr write raise and the advisory vanish through
@@ -721,6 +744,7 @@ def main() -> int:
         ("should_emit: no action -> silent", test_should_emit_no_action_silent),
         ("should_emit: inert merge -> advise", test_should_emit_inert_merge),
         ("format_advisory mentions fallback", test_format_advisory_mentions_fallback),
+        ("format_advisory names no cause", test_format_advisory_names_no_cause),
         ("advisory is cp1252-safe (no vanish under cp1252 stderr)", test_advisory_is_cp1252_safe),
         # behavioral: real hook over stdin (exit-2 stderr migration, dev-env#740)
         ("e2e inert blocks on stderr (exit 2)", test_e2e_inert_blocks_on_stderr),

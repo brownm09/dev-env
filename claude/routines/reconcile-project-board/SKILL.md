@@ -29,9 +29,10 @@ required field)**.
 > mitigation). See the **Restorable live-copy imperative** at the bottom of this file.
 
 **Why:** `post-tool-use.py` auto-adds each newly-created issue to its repo's board, but
-PostToolUse hooks are inert in background / SDK-launched sessions
-([ADR-053](../../docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md)), so issues
-filed from such a session are silently never boarded — missing Impact, Why, and the Status
+it only runs when PostToolUse runs for the create call: a chain that exits non-zero runs none, and
+in the rare inert session none run at all
+([ADR-053](../../docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md) and its
+2026-11-07 amendment). Issues filed that way are silently never boarded — missing Impact, Why, and the Status
 workflow. This routine is the nightly backstop that catches them, across every repo that has
 adopted board tracking, not just dev-env (dev-env #447, #462; remediation of the gap ADR-053
 documents, generalized by [ADR-070](../../docs/adr/070-reconcile-project-board-scan-dir.md)).
@@ -51,23 +52,41 @@ documents, generalized by [ADR-070](../../docs/adr/070-reconcile-project-board-s
    ```
    The script discovers every git repo directly under `C:/Users/brown/Git` with a
    `.claude/hook-config.json` (`repo`/`project_number`/`project_owner` set) and reconciles
-   each one; repos without one are skipped silently — board tracking is opt-in.
+   each one; repos without one are skipped silently — board tracking is opt-in. It lists only
+   the issues that are new or changed since its last run, and prints the full list when its
+   state file is missing or unreadable (`baseline=true` in the `RESULT:` line). To see every
+   issue still flagged, add `--full`, which leaves the state file alone
+   ([ADR-161](../../../docs/adr/161-maintenance-routines-report-what-changed.md)).
 2. Report the script output per repo: how many orphan issues were added (vs. attempted — a
-   partial failure shows as `Added M/N ... (K failed)`), and the per-issue list of issues
-   still missing a required field (the script prints the exact `gh project item-edit`
-   commands for each, under its own `Repo: <name>` heading).
-3. Read the final aggregate `RESULT:` line (`repos_scanned=N repos_skipped=K repos_failed=F
-   orphans_added=M add_failed=J needs_attention=L dry_run=...`) and send a push notification
-   when any of:
-   - `needs_attention` is greater than 0 — list the issue numbers (with their repo) that
-     need a required field, so the user (or a later interactive session) can fill them.
-     **Do not set the field yourself** — it requires human judgment per the no-guessing rule.
-   - `add_failed` is greater than 0 — an orphan failed to add (e.g. a transient `gh` error);
-     note it self-heals on the next nightly run since the issue stays orphaned, but surface
-     it so a persistent failure doesn't go unnoticed.
-   - `repos_failed` is greater than 0 — a configured repo's `gh` call failed for a reason
-     other than a missing scope (network blip, access change, deleted repo); name the repo
-     from the per-repo output above so it can be investigated.
+   partial failure shows as `Added M/N ... (K failed)`), and the per-issue list it printed
+   (the exact `gh project item-edit` commands for each, under its own `Repo: <name>` heading).
+   Don't re-list issues it summarized as unchanged.
+3. If the script exited non-zero or printed no `RESULT:` line (a scope abort, a crash, a
+   timeout), send a push notification with its last lines, do **not** run step 4, and stop.
+   The next run then reports the same findings again instead of losing them.
+   Otherwise read the final aggregate `RESULT:` line (`repos_scanned=N repos_skipped=K
+   repos_failed=F orphans_added=M add_failed=J needs_attention=L dry_run=...
+   new_needs_attention=A no_longer_needs_attention=B new_repos_failed=C
+   no_longer_repos_failed=D baseline=...`) and send a push notification **only for changed
+   findings**: when `new_needs_attention` or `new_repos_failed` is greater than 0. When both
+   are 0, send no notification, however large `needs_attention`, `add_failed` or
+   `repos_failed` are, because those totals repeat what was already reported.
+   - `new_needs_attention` greater than 0 — list the issue numbers (with their repo) the script
+     printed, so the user (or a later interactive session) can fill them. An issue that is
+     still missing fields for a different reason (for example, its add to the board failed
+     and has now succeeded) counts as changed and is listed again. An orphan whose add failed
+     shows `[ADD FAILED - re-run]` and self-heals on a later run, since the issue stays
+     orphaned. **Do not set the field yourself** — it requires human judgment per the
+     no-guessing rule.
+   - `new_repos_failed` greater than 0 — a configured repo's `gh` call started failing for a
+     reason other than a missing scope (network blip, access change, deleted repo); name the
+     repo from the per-repo output above so it can be investigated.
+4. Once the notification is sent, or none was needed, commit this run's findings so the next
+   run compares against them:
+   ```bash
+   python "$WORKTREE_ROOT/claude/scripts/_last_run.py" commit C:/Users/brown/.claude/scratch/last-run/reconcile-project-board.json
+   ```
+   A push that wasn't delivered but was saved by `routine-findings.py save` (above) counts as handled. Skip this step only when the finding reached neither: the next run then reports the same changes again.
 
 **Constraints:**
 - The script is **add-only + report-only**: it adds orphans and prints the `gh project

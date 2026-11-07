@@ -224,3 +224,71 @@ def worktree_session_is_live(
         return False
     current = now if now is not None else time.time()
     return is_recent(current - newest, window_seconds)
+
+
+# Files in a worktree's own admin folder that only work in that worktree writes
+# (dev-env#1330, ADR-051 Amendment 1). The admin folder's own mtime and logs/HEAD are left out on
+# purpose: `git gc` or a fetch in the primary checkout moves them, which on 2026-11-07 made every
+# worktree in a repo look active.
+GIT_ACTIVITY_FILES = ("index", "HEAD", "FETCH_HEAD", "ORIG_HEAD")
+
+
+def worktree_admin_dir(worktree_path: "str | os.PathLike[str]") -> "Path | None":
+    """The admin folder named by a linked worktree's ``.git`` file, or None if unreadable.
+
+    The link is ``gitdir: <path>``, and the path can be relative to the worktree. No subprocess,
+    so this module stays import-only.
+    """
+    try:
+        link = (Path(worktree_path) / ".git").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not link.startswith("gitdir:"):
+        return None
+    target = link[len("gitdir:"):].strip()
+    return (Path(worktree_path) / target) if target else None
+
+
+def newest_git_activity_mtime(worktree_path: "str | os.PathLike[str]") -> "float | None":
+    """Newest mtime among ``GIT_ACTIVITY_FILES``, or None if that can't be established."""
+    admin = worktree_admin_dir(worktree_path)
+    if admin is None:
+        return None
+    newest: "float | None" = None
+    for name in GIT_ACTIVITY_FILES:
+        try:
+            mtime = (admin / name).stat().st_mtime
+        except FileNotFoundError:
+            continue  # FETCH_HEAD and ORIG_HEAD exist only after their first use.
+        except OSError:
+            return None
+        if newest is None or mtime > newest:
+            newest = mtime
+    return newest
+
+
+def git_activity_skip_reason(
+    worktree_path: "str | os.PathLike[str]",
+    *,
+    window_seconds: float,
+    now: "float | None" = None,
+) -> "str | None":
+    """Why a worktree's own git state says to leave it alone, or None if it says nothing.
+
+    This sees what ``worktree_session_is_live`` can't: a session whose transcript is under
+    another folder because it reached this worktree through ``git worktree add`` or ``git -C``.
+
+    Unlike that function, this fails toward keeping the worktree: a worktree that exists but whose
+    git state can't be read may be in use, and the caller is about to delete it. A missing folder
+    returns None, because the caller's other checks already handle an orphaned worktree.
+    """
+    if not Path(worktree_path).exists():
+        return None
+    mtime = newest_git_activity_mtime(worktree_path)
+    if mtime is None:
+        return "could not read its git state, so it may be in use"
+    current = now if now is not None else time.time()
+    age = current - mtime
+    if is_recent(age, window_seconds):
+        return f"recent git activity in the worktree ({max(age, 0) / 3600:.1f}h ago)"
+    return None

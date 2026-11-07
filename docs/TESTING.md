@@ -556,8 +556,10 @@ For a one-line navigational map of the older tests, see
     become `-`), the recency boundary (incl. unknown and future mtimes), exact-slug and basename-suffix
     transcript-dir resolution, recursive newest-`.jsonl` mtime (incl. `subagents/`), the live/stale/no-session
     verdicts that stop prune/reclaim from severing an active session, and the prune=24h / reclaim=6h default
-    windows ([ADR-051](adr/051-worktree-liveness-guard.md)). The git-driven prune/reclaim loops are
-    exercised by `--dry-run` in the PR, not here.
+    windows ([ADR-051](adr/051-worktree-liveness-guard.md)). Also pins `git_activity_skip_reason()` against
+    real throwaway worktrees: work in the worktree reads as active, while `git gc` and a fetch in the primary
+    don't, and unreadable git state keeps the worktree ([ADR-051 Amendment 1](adr/051-worktree-liveness-guard.md#amendment-1-2026-11-07-a-worktrees-own-git-state),
+    dev-env#1330). The git-driven prune/reclaim loops are exercised by `--dry-run` in the PR, not here.
 
     ```bash
     py -3 claude/scripts/tests/test_worktree_liveness.py
@@ -862,6 +864,10 @@ For a one-line navigational map of the older tests, see
     ```
 
 26. **prune-merged-worktrees test** — required when changing `claude/scripts/prune-merged-worktrees.py`.
+    The `test_scan_*` tests run the real script twice against a throwaway repo with an unmerged detached
+    worktree and a broken fetch: a repeat `--scan-dir` lists neither and keeps `RESULT:`, a new worktree is
+    the only one listed, a missing or corrupt state file gives the full report, and `--full` and `--dry-run`
+    leave the state alone ([dev-env#1307](https://github.com/brownm09/dev-env/issues/1307), [ADR-161](adr/161-maintenance-routines-report-what-changed.md)).
     Exercises `prune_one()` via subprocess mocking (subprocess.run mocking, unlike the other offline
     pure-helper tests): pins that a `subprocess.TimeoutExpired` from a slow `git worktree remove` is caught, the timed-out
     worktree is counted as skipped, and the prune loop continues rather than propagating the exception
@@ -1062,6 +1068,10 @@ For a one-line navigational map of the older tests, see
     ```
 
 29. **reconcile-project-board test** — required when changing `claude/scripts/reconcile-project-board.py`.
+    The `test_scan_dir_*` tests run the real `main()` with only the `gh` boundary and the production item
+    cache patched out: a repeat `--scan-dir` lists no issue and keeps `RESULT:`, one new issue is the only
+    one listed, a missing or corrupt state file gives the full list, and a failed repo doesn't make its old
+    issues read as new ([dev-env#1307](https://github.com/brownm09/dev-env/issues/1307), [ADR-161](adr/161-maintenance-routines-report-what-changed.md)).
     Exercises the pure helpers offline (no network/gh/disk): pins `canonical_repo_root` (a Claude-managed
     worktree path resolves to the canonical checkout where the machine-local hook-config lives), `field_key`
     (field name -> item-list JSON key), `board_items_query` (names each required field through a variable and
