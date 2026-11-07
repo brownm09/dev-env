@@ -151,6 +151,7 @@ the item). A one-line navigational map of the test directory is
 115. **claude-md-size test** — required when changing `claude/CLAUDE.md` or the `## Instruction Detail` headings in `docs/REFERENCE.md`. Caps the global file's size and checks its local links resolve ([ADR-159](docs/adr/159-instruction-files-hold-rules-not-stories.md), dev-env#1216). Run: `py -3 claude/scripts/tests/test_claude_md_size.py`
 116. **deferred-followup-sweep test** — required when changing `claude/scripts/deferred-followup-sweep.py` ([ADR-153](docs/adr/153-acceptance-criteria-filing-and-verification.md), dev-env#1292). Run: `py -3 claude/scripts/tests/test_deferred_followup_sweep.py`
 117. **duplicate-issue retrieval scorer test** — required when changing anything under `experiments/2026-11-issue-dup-retrieval/`. Calibrates the experiment's scorer and outcome map, and scans committed files for private text ([ADR-157](docs/adr/157-duplicate-issue-retrieval-experiment.md), dev-env#1260). Run: `py -3 claude/scripts/tests/test_issue_dup_eval.py`
+118. **closing-negation test** — required when changing `claude/scripts/_closing_negation.py` ([ADR-153](docs/adr/153-acceptance-criteria-filing-and-verification.md), dev-env#1300). Its two callers are items 38 and 116, so run those too. Run: `py -3 claude/scripts/tests/test_closing_negation.py`
 
 ## Experiments
 
