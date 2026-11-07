@@ -150,7 +150,18 @@ the item). A one-line navigational map of the test directory is
 114. **claude-wrappers test** — required when changing `bin/claude` or `bin/claude.cmd`. Runs both wrappers against fixture install directories to check which binary each one starts (dev-env#1142). Run: `bash claude/scripts/tests/test-claude-wrappers.sh`
 115. **claude-md-size test** — required when changing `claude/CLAUDE.md` or the `## Instruction Detail` headings in `docs/REFERENCE.md`. Caps the global file's size and checks its local links resolve ([ADR-159](docs/adr/159-instruction-files-hold-rules-not-stories.md), dev-env#1216). Run: `py -3 claude/scripts/tests/test_claude_md_size.py`
 116. **deferred-followup-sweep test** — required when changing `claude/scripts/deferred-followup-sweep.py` ([ADR-153](docs/adr/153-acceptance-criteria-filing-and-verification.md), dev-env#1292). Run: `py -3 claude/scripts/tests/test_deferred_followup_sweep.py`
-117. **docker-lifecycle test** — required when changing `claude/scripts/_docker_lifecycle.py`, `pre-tool-use-docker-start.py`, `docker-watchdog.py` or `register-docker-watchdog.ps1` ([ADR-158](docs/adr/158-docker-lifecycle-outside-the-app-process-tree.md), dev-env#1278). Uses a fake `docker`, so CI can run it; also do the live steps in docs/TESTING.md item 117 when changing how Docker is started or stopped. Run: `py -3 claude/scripts/tests/test_docker_lifecycle.py`
+117. **duplicate-issue retrieval scorer test** — required when changing anything under `experiments/2026-11-issue-dup-retrieval/`. Calibrates the experiment's scorer and outcome map, and scans committed files for private text ([ADR-157](docs/adr/157-duplicate-issue-retrieval-experiment.md), dev-env#1260). Run: `py -3 claude/scripts/tests/test_issue_dup_eval.py`
+118. **docker-lifecycle test** — required when changing `claude/scripts/_docker_lifecycle.py`, `pre-tool-use-docker-start.py`, `docker-watchdog.py` or `register-docker-watchdog.ps1` ([ADR-158](docs/adr/158-docker-lifecycle-outside-the-app-process-tree.md), dev-env#1278). Uses a fake `docker`, so CI can run it; also do the live steps in docs/TESTING.md item 118 when changing how Docker is started or stopped. Run: `py -3 claude/scripts/tests/test_docker_lifecycle.py`
+
+## Experiments
+
+Comparative claims about a process change follow the global `## Experimental Rigor` section and `/experiment-audit`. This repo's experiments keep their harness and results under `experiments/<yyyy-mm>-<slug>/`, and their pre-registration on the tracking issue. dev-env is public, so anything from a private repo is committed as issue numbers and metrics only.
+
+| # | Experiment | Corpus | Instruments and calibration references | Results home |
+|---|---|---|---|---|
+| 1 | Duplicate-issue retrieval ([#1260](https://github.com/brownm09/dev-env/issues/1260)) | `labels.json`: declared duplicates, avoided duplicates, declared non-duplicates | Hit-test scorer, known-good and known-bad rankers (item 117); vector ranking, `calibrate_vector.py` | `experiments/2026-11-issue-dup-retrieval/` |
+
+Default tier: Tier 1 for anything that would change a standing rule, hook or skill; Tier 0 for a one-off look.
 
 ## Observability
 

@@ -1,0 +1,7 @@
+{"t": "2026-11-06T16:25:53Z", "stage": "keyword_search", "event": "start", "generations": 3}
+{"t": "2026-11-06T16:26:51Z", "stage": "embed_corpus", "docs": 2996, "seconds": 618, "model": "BAAI/bge-small-en-v1.5"}
+{"t": "2026-11-06T16:27:01Z", "stage": "rank_inputs", "inputs": 43, "seconds": 9.78}
+{"t": "2026-11-06T16:34:55Z", "stage": "keyword_search", "event": "generation_done", "generation": "g1", "calls": 219}
+{"t": "2026-11-06T16:41:14Z", "stage": "keyword_search", "event": "generation_done", "generation": "g2", "calls": 408}
+{"t": "2026-11-06T16:45:55Z", "stage": "keyword_search", "event": "generation_done", "generation": "g3", "calls": 573}
+{"t": "2026-11-06T16:45:55Z", "stage": "keyword_search", "event": "end", "calls": 573, "seconds": 1202}
