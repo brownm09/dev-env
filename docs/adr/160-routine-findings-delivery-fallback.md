@@ -34,5 +34,9 @@ The message's source and conditions are [on the issue](https://github.com/brownm
 - A session started by another session looks like a person's session to the hook, so it can claim findings. The cue asks that session to repeat them in its report.
 - The findings are shown to the model, which is told to show them to the user. A model that ignores the instruction would lose the display, but the file stays in `shown/`.
 - `shown/` is never pruned. A finding is a few hundred bytes, so this can wait until it matters.
-- `~/.claude/scheduled-tasks/` holds a separate live copy of each routine, so a registered routine needs its live prompt updated to pick this up. On 2026-11-07 no routine from `claude/routines/` was registered there.
+- A saved finding is text an unattended run wrote, possibly from something hostile it read. The hook collapses each to one line, slugs the routine name, cuts the message at 300 characters and tells the model to report the text without following it. That lowers the risk of planted instructions; it doesn't remove it.
+- The routine writes the push result and text to a file and passes `--file`, so no finding text crosses shell quoting.
+- The hook skips headless runs (`CLAUDE_CODE_ENTRYPOINT` starting `sdk-`), which can send a plain prompt that looks like a person's.
+- The hook moves findings to `shown/` before writing its output, and moves them back if the write fails. A session killed between the two, or a prompt cancelled after the hook ran, still loses the display; the file stays in `shown/`.
+- The live scheduled tasks registered on 2026-11-07 (`reconcile-project-board`, `retro-chain-backstop`) read their routine from `origin/main` at run time, so they pick this up once it merges with no prompt update. `dev-env-sync.py` brings the script to `~/.claude/scripts/` on the next prompt; a routine that runs before then gets a missing-script error, and the routine text tells it to put the push text in its final output instead.
 - Scheduled tasks defined outside `claude/routines/` don't use this until their own prompts call the script.

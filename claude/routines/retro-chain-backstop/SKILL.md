@@ -11,6 +11,14 @@ schedule: "0 21 * * *"
 # cost either slot would carry.
 ---
 
+**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so this applies to every push notification in this run, including one sent just before stopping. Right after each push, use the Write tool to create a new file named `C:/Users/brown/.claude/scratch/routine-finding-retro-chain-backstop-<HHMMSS>.txt`. Put the tool's result text on its first line, leaving that line empty if the tool failed or wasn't available, and the push text after it. Then run:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine retro-chain-backstop --file C:/Users/brown/.claude/scratch/routine-finding-retro-chain-backstop-<HHMMSS>.txt
+```
+
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output. `sync-routine-worktree` does this itself on its abort paths.
+
 Check every tracked repo's `retro-action` chain liveness and refill any repo whose chain has died.
 Run **fully autonomously** -- never call `AskUserQuestion`, never wait for input, never prompt for
 approval.
@@ -88,14 +96,6 @@ next biweekly run notices. This routine is the daily backstop that catches it sa
    ```
 
    Clean up any scratch files this run created.
-
-**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so right after each push notification this routine sends, pass the tool's result to the fallback script, using an empty result if the tool failed or wasn't available:
-
-```bash
-py -3 ~/.claude/scripts/routine-findings.py save --routine retro-chain-backstop --message 'THE PUSH TEXT' --push-result 'THE TOOL RESULT'
-```
-
-It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. Drop any apostrophes from the quoted text, and if the script exits non-zero, put its error in the run's final output. `sync-routine-worktree` does this itself on its abort paths, so don't repeat it for those.
 
 **Constraints:**
 

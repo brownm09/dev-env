@@ -6,6 +6,14 @@ schedule: "0 7 * * *"
 # CST (Nov–Mar): 0 8 * * *  → 2:00 AM CST (UTC−6)
 ---
 
+**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so this applies to every push notification in this run, including one sent just before stopping. That includes the pushes the batch skill sends, since it runs inside this routine. Right after each push, use the Write tool to create a new file named `C:/Users/brown/.claude/scratch/routine-finding-nightly-cover-letters-<HHMMSS>.txt`. Put the tool's result text on its first line, leaving that line empty if the tool failed or wasn't available, and the push text after it. Then run:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine nightly-cover-letters --file C:/Users/brown/.claude/scratch/routine-finding-nightly-cover-letters-<HHMMSS>.txt
+```
+
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output. `sync-routine-worktree` does this itself on its abort paths.
+
 Run the batch cover-letter pipeline on the career-playbook repo.
 
 Never call AskUserQuestion. Run fully autonomously.
@@ -46,14 +54,6 @@ skill with cwd set to `${REPO}`.
 The batch skill handles all JD processing, artifact writing, `_review_queue.md` updates,
 branch creation, committing, PR creation, and push notification. This routine's job is only
 to ensure the working tree is current with `origin/main` before the skill runs.
-
-**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so right after each push notification this routine sends, pass the tool's result to the fallback script, using an empty result if the tool failed or wasn't available:
-
-```bash
-py -3 ~/.claude/scripts/routine-findings.py save --routine nightly-cover-letters --message 'THE PUSH TEXT' --push-result 'THE TOOL RESULT'
-```
-
-It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. Drop any apostrophes from the quoted text, and if the script exits non-zero, put its error in the run's final output. `sync-routine-worktree` does this itself on its abort paths, so don't repeat it for those.
 
 ## Constraints
 
