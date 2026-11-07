@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Claude Code Stop hook — reliable-event safety net for inert PostToolUse hooks.
 
-In sessions launched as background tasks (SDK-driven), *all*
-PostToolUse settings hooks are silently inert — no project-board add after
-`gh issue create`/`gh pr create`, no Done-move / usage snapshot after
-`gh pr merge` — while UserPromptSubmit, PreToolUse, and Stop hooks from the same
-settings file still fire. This is an upstream Claude Code Desktop limitation that
-no PostToolUse hook-code change can fix because the hooks never dispatch
-(ADR-053, dev-env #381; anthropics/claude-code#42336, #53494).
+In a rare inert session, *all* PostToolUse settings hooks are silent — no
+project-board add after `gh issue create`/`gh pr create`, no Done-move / usage
+snapshot after `gh pr merge` — while UserPromptSubmit, PreToolUse, and Stop hooks
+from the same settings file still fire. This is an upstream Claude Code Desktop
+limitation that no PostToolUse hook-code change can fix because the hooks never
+dispatch (ADR-053, dev-env #381; anthropics/claude-code#42336, #53494).
+
+Launch path doesn't decide this, and a firing here doesn't prove it: hooks can run
+and print nothing, and a failed tool call runs none (ADR-053's 2026-11-07 amendment;
+detection follow-up dev-env#1331). So the message states what was observed and how
+to check, and names no cause.
 
 This Stop hook converts that *silent* gap into a *visible* one. It scans the
 just-ended session's transcript and, when a board-relevant `gh` command ran but
@@ -293,14 +297,17 @@ def format_advisory(actions: list[dict]) -> str:
     # ASCII (`->`, `-`, no emoji) keeps the sanitizer a no-op here.
     labels = "\n".join(f"    - {a['action']}: {a['label']}" for a in actions)
     return (
-        "[posttooluse-inert] PostToolUse hooks did not fire this session "
-        "(background/SDK-launched - ADR-053); GitHub Project #3 automation was "
-        "silently skipped.\n"
-        "  Board-relevant gh command(s) ran with no PostToolUse side-effect:\n"
+        "[posttooluse-inert] No PostToolUse hook output was recorded this session, so "
+        "GitHub Project #3 automation may have been skipped (ADR-053).\n"
+        "  Board-relevant gh command(s) ran with no PostToolUse output:\n"
         f"{labels}\n"
-        "  Likely missing: board add (create) / Done-move + usage snapshot (merge).\n"
-        "  Apply the manual fallback: dev-env CLAUDE.md -> 'GitHub Project' section "
-        "-> Fallback (gh project item-add / item-edit). Advisory only; nothing was blocked."
+        "  Possibly missing: board add (create) / Done-move + usage snapshot (merge).\n"
+        "  This doesn't prove hooks didn't run: they can run silently, and a tool call "
+        "that exited non-zero runs none. If ~/.claude/scratch/bash_state_<session-id>.json "
+        "was updated at the last successful shell call, hooks ran.\n"
+        "  If an item is really missing, apply the manual fallback: dev-env CLAUDE.md -> "
+        "'GitHub Project' section -> Fallback (gh project item-add / item-edit). "
+        "Advisory only; nothing was blocked."
     )
 
 
