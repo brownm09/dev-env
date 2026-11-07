@@ -63,8 +63,7 @@ LOG_PATH = f"{_SCRATCH_DIR}/session-mode-prompt.log"
 SENTINEL_PREFIX = "session_mode_ack_"
 
 # Automated triggers use XML-tagged prompts; human prompts never start with <tag>.
-# Matches lowercase-initial tags only — all current triggers use lowercase; update if that changes.
-_AUTOMATED_PREFIX = re.compile(r"^\s*<[a-z]")
+_AUTOMATED_PREFIX = _hookutil.AUTOMATED_PROMPT
 
 # session_id is a UUID from Claude Code; sanitize defensively in case the contract changes.
 _SAFE_SESSION_ID = re.compile(r"[^A-Za-z0-9_-]")

@@ -244,7 +244,7 @@ a second one: [`docs/REFERENCE.md` → Adding a Second Machine](docs/REFERENCE.m
 
 **Machine-local only — never commit:**
 
-`scratch/`, `projects/`, `sessions/`, `backups/`, `ide/`, `plans/`, `shell-snapshots/`
+`scratch/`, `projects/`, `sessions/`, `backups/`, `ide/`, `plans/`, `shell-snapshots/`, `routine-findings/`
 
 **Installed by dev-env, but deliberately *outside* every junction — `~/.claude/hook-launch.py`:**
 

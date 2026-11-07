@@ -4,6 +4,14 @@ description: Add open issues missing from each configured repo's GitHub project 
 schedule: "0 6 * * *"
 ---
 
+**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so this applies to every push notification in this run, including one sent just before stopping. Right after each push, use the Write tool to create a new file named `C:/Users/brown/.claude/scratch/routine-finding-reconcile-project-board-<HHMMSS>.txt`. Put the tool's result text on its first line, leaving that line empty if the tool failed or wasn't available, and the push text after it. Then run:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine reconcile-project-board --file C:/Users/brown/.claude/scratch/routine-finding-reconcile-project-board-<HHMMSS>.txt
+```
+
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output. `sync-routine-worktree` does this itself on its abort paths.
+
 Reconcile every configured repo's GitHub project board against its own open issues. Run fully
 autonomously — do not ask the user anything, and **never guess Impact or Why (or any other
 required field)**.
