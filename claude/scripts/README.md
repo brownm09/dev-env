@@ -33,8 +33,10 @@ exercises these scripts: `py -3 claude/scripts/run-hook-tests.py`.
 `_foo.py` files — imported by other scripts, never directly invoked or wired as a hook
 themselves. None of these get their own row in `docs/REFERENCE.md`'s Hooks/Utilities tables
 (they're described in prose paragraphs at the top of the Hooks section instead); this table is
-the one place all 22 are listed together. Each has its own test file in
-[`tests/README.md`](tests/README.md) → Shared support modules.
+the one place all 28 are listed together. Most have their own test file in
+[`tests/README.md`](tests/README.md) → Shared support modules. `_default_branch.py` is covered by
+`test_prune_merged_worktrees.py` and `test_reclaim_worktree_disk.py`, which run it against real
+throwaway repos.
 
 | Module | Purpose | Consumers |
 |---|---|---|

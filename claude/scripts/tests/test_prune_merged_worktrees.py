@@ -887,6 +887,48 @@ def test_real_origin_head_is_believed_without_asking_the_remote() -> str:
     return "with origin/HEAD set, discovery stays local and the fetch failure names origin/trunk"
 
 
+def test_real_hostile_branch_name_is_not_a_fetch_option() -> str:
+    """Known-bad: `git fetch origin --upload-pack=echo` runs echo, and the protocol then breaks."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        hostile = "refs/heads/--upload-pack=echo"
+        repo._git(repo.origin, "update-ref", hostile, "main")
+        repo._git(repo.origin, "symbolic-ref", "HEAD", hostile)
+        r = repo.run_script(_MODULE_PATH, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "fetch failed" in r.stdout or "protocol error" in r.stdout:
+            raise AssertionError(f"the branch name was read as an option\n{r.stdout}")
+        if "would remove" not in r.stdout:
+            raise AssertionError(f"the branch should be fetched as a ref and compared against\n{r.stdout}")
+    return "a default branch named --upload-pack=echo is fetched as refs/heads/..., not run"
+
+
+def test_real_stale_origin_head_asks_the_remote() -> str:
+    """origin/HEAD still names a branch the remote renamed: fetch fails, the remote is asked."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp), default_branch="master")
+        repo.set_origin_head("renamed-away")
+        r = repo.run_script(_MODULE_PATH, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "fetch failed" in r.stdout or "would remove" not in r.stdout:
+            raise AssertionError(f"should fall back to the remote's master\n{r.stdout}")
+    return "a stale origin/HEAD falls back to ls-remote, fetches master and sees the merged worktree"
+
+
+def test_real_discovery_failure_still_protects_master() -> str:
+    """Branch unknown: the fallback guess is main, but a worktree on master is still protected."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp), default_branch="master")
+        repo.git("checkout", "--detach")
+        repo.add_worktree_on_default_branch()
+        repo.git("remote", "set-url", "origin", (repo.root / "github.com" / "owner" / "gone.git").as_posix())
+        r = repo.run_script(_MODULE_PATH, "--dry-run", "--include-named")
+        repo.assert_targets_repo(r)
+        if "on the default branch 'master'" not in r.stdout:
+            raise AssertionError(f"the master worktree should be skipped as the default branch\n{r.stdout}")
+    return "with discovery failed, a worktree on master is skipped as a default branch"
+
+
 def test_real_discovery_failure_lands_in_fetch_failed() -> str:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         repo = ThrowawayRepo(Path(tmp))
@@ -943,6 +985,9 @@ def main() -> int:
         ("real repo: non-main default, origin/HEAD unset -> fetched and pruned", test_real_non_main_with_origin_head_unset_is_fetched_and_pruned),
         ("real repo: origin/HEAD set -> believed without the remote", test_real_origin_head_is_believed_without_asking_the_remote),
         ("real repo: discovery failure -> fetch failed, run carries on", test_real_discovery_failure_lands_in_fetch_failed),
+        ("real repo: hostile branch name is not a fetch option", test_real_hostile_branch_name_is_not_a_fetch_option),
+        ("real repo: stale origin/HEAD -> asks the remote", test_real_stale_origin_head_asks_the_remote),
+        ("real repo: discovery failure still protects master", test_real_discovery_failure_still_protects_master),
         ("real repo: non-main squatter parked, default branch survives", test_real_non_main_squatter_is_parked_and_default_branch_survives),
         ("real repo: default-branch worktree under detached primary kept", test_real_default_branch_worktree_under_detached_primary_is_kept),
         ("CLI: --help and -h change nothing", test_cli_help_changes_nothing),

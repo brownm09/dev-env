@@ -60,6 +60,7 @@ import re
 import shutil
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 from _default_branch import fetch_default_branch
@@ -288,7 +289,7 @@ def reclaim_one(repo: str, dry_run: bool, protect_cwd: str, liveness_window_seco
 
     print(f"\nRepo: {gh_repo} ({repo})")
 
-    default_branch, fetch_problem, fetch_detail = fetch_default_branch(repo)
+    default_branch, fetch_problem, fetch_detail, _ = fetch_default_branch(repo)
     if fetch_problem:
         print(f"  WARNING: fetch {fetch_problem} — merge/ahead checks may use stale origin/{default_branch}: {fetch_detail}")
 
@@ -386,7 +387,8 @@ def main() -> None:
             try:
                 grand_total += reclaim_one(repo, dry_run, protect_cwd, liveness_window_seconds)
             except Exception as exc:  # noqa: BLE001
-                print(f"  ERROR: {repo}: {type(exc).__name__}: {exc}")
+                print(f"  ERROR: {repo}: {type(exc).__name__}: {exc} -- its bytes are not in the total")
+                traceback.print_exc()
                 error_repos.append(repo)
         summary = f"\nTotal — {'would reclaim' if dry_run else 'reclaimed'} {_fmt_gb(grand_total)}"
         if error_repos:

@@ -263,4 +263,5 @@ would remove it and delete the branch. Two changes close that:
   callers are unchanged.
 - The prune loop now skips any worktree still on the default branch after the squatter check. This
   is the legitimate home described above (a bare or detached primary). The same removal already
-  existed for `main` under `--include-named`, and the skip closes that too.
+  existed for `main` under `--include-named`, and the skip closes that too. When the default
+  branch can't be discovered, the skip covers both `main` and `master`, not just the `main` fallback.

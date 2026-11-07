@@ -200,6 +200,20 @@ def test_main_squatter_bare_or_detached_canonical() -> str:
     return "bare or detached canonical never flags a main worktree as a squatter"
 
 
+def test_main_squatter_follows_default_branch() -> str:
+    # dev-env#1088: a repo whose default branch is master squats master, not main.
+    worktrees = wt.parse_worktree_porcelain(_porcelain([(CANON, "pr-385"), (WT_SQUAT, "master")]))
+    sq = wt.main_squatter(worktrees, "master")
+    if sq is None or sq["path"] != WT_SQUAT:
+        raise AssertionError(f"expected the master squatter, got {sq}")
+    if wt.main_squatter(worktrees) is not None:
+        raise AssertionError("without the argument, a worktree on master is not a main squatter")
+    on_default = wt.parse_worktree_porcelain(_porcelain([(CANON, "master"), (WT_SQUAT, "main")]))
+    if wt.main_squatter(on_default, "master") is not None:
+        raise AssertionError("canonical on its default branch -> no squatter, even with a main worktree")
+    return "the default_branch argument decides which branch counts as squatted"
+
+
 def test_canonical_on_main() -> str:
     on = wt.parse_worktree_porcelain(_porcelain([(CANON, "main")]))
     off = wt.parse_worktree_porcelain(_porcelain([(CANON, "pr-385")]))
@@ -425,6 +439,7 @@ def main() -> int:
         ("main_squatter none when main free", test_main_squatter_none_when_main_free),
         ("main_squatter across multiple worktrees", test_main_squatter_multiple_worktrees),
         ("main_squatter none for bare/detached canonical", test_main_squatter_bare_or_detached_canonical),
+        ("main_squatter follows the default_branch argument", test_main_squatter_follows_default_branch),
         ("canonical_on_main predicate", test_canonical_on_main),
         ("diagnose healthy", test_diagnose_healthy),
         ("diagnose squat", test_diagnose_squat),

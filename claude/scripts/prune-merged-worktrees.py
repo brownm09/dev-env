@@ -82,6 +82,7 @@ import os
 import re
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 from _default_branch import FAILED, TIMED_OUT, fetch_default_branch
@@ -333,7 +334,10 @@ def prune_one(
     print(f"\nRepo: {gh_repo} ({repo})")
 
     # Fetch the default branch so merge checks are accurate
-    default_branch, fetch_problem, fetch_detail = fetch_default_branch(repo)
+    default_branch, fetch_problem, fetch_detail, branch_found = fetch_default_branch(repo)
+    # A worktree on any of these is the branch's real home, never pruned. When the default
+    # branch could not be found, protect both common names rather than only the guess.
+    protected_branches = {default_branch} if branch_found else {"main", "master"}
     if fetch_problem:
         print(f"  WARNING: fetch {fetch_problem} — merge checks may use stale origin/{default_branch}: {fetch_detail}")
 
@@ -395,14 +399,14 @@ def prune_one(
             park = park_branch_for(path)
             if dry_run:
                 pruned.append(path)
-                print(f"  [dry-run] would park stale main checkout off main: {path} -> {park}")
+                print(f"  [dry-run] would park stale {default_branch} checkout off {default_branch}: {path} -> {park}")
                 continue
             r = run(["git", "-C", path, "checkout", "-b", park], cwd=repo)
             if r.returncode != 0:
-                skipped.append((path, f"park off main failed (branch {park} may already exist): {r.stderr.strip()}"))
+                skipped.append((path, f"park off {default_branch} failed (branch {park} may already exist): {r.stderr.strip()}"))
                 continue
             pruned.append(path)
-            print(f"  parked off main: {path} ({park}) — freed the main ref")
+            print(f"  parked off {default_branch}: {path} ({park}) — freed the {default_branch} ref")
             continue
 
         # Non-primary worktree squatting a draft/YYYY-MM-DD-shaped engineering-journal
@@ -444,7 +448,7 @@ def prune_one(
         # Past the squatter check, a worktree on the default branch is that branch's real home
         # (the primary is bare or detached). It is merged by definition, so --include-named
         # would otherwise remove it and delete the branch.
-        if branch == default_branch:
+        if branch in protected_branches:
             skipped.append((path, f"on the default branch '{branch}'"))
             continue
 
@@ -534,7 +538,9 @@ def main() -> None:
             try:
                 p, s, fetch_problem = prune_one(repo, dry_run, liveness_window_seconds, include_named)
             except Exception as exc:  # noqa: BLE001
-                print(f"  ERROR: {repo}: {type(exc).__name__}: {exc}")
+                # Lines already printed for this repo record what it changed; its counts are lost.
+                print(f"  ERROR: {repo}: {type(exc).__name__}: {exc} -- its counts are not in the total")
+                traceback.print_exc()
                 error_repos.append(repo)
                 continue
             total_pruned += p
