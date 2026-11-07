@@ -1,7 +1,7 @@
 # ADR-044 — Eliminate the Usage-Snapshot Gap via On-Demand CLI Refresh
 
 **Date:** 2026-06-16
-**Status:** Accepted
+**Status:** Accepted; Decision reversed by the 2026-11-06 amendment
 **Closes:** [dev-env#361](https://github.com/brownm09/dev-env/issues/361)
 **Tags:** hooks, oauth, token-refresh, usage-snapshot, post-tool-use, lazy-refresh
 **Related:** [ADR-043](043-keep-warm-scheduled-task-for-token-freshness.md), [ADR-027](027-userpromptsubmit-blocking-hook-conventions.md)
@@ -151,3 +151,39 @@ helps in exactly the cases the `"expired"` branch already helps in.
 
 See [dev-env#819](https://github.com/brownm09/dev-env/issues/819) and
 [dev-env#825](https://github.com/brownm09/dev-env/issues/825).
+
+## Amendment (2026-11-06) — On-demand refresh removed; a status readout makes no model call (dev-env#1299)
+
+This reverses this ADR's Decision. The on-demand refresh meant a merge on an expired token could run
+`claude -p ok --model haiku`, a model call whose only purpose was to show a status readout. That cost
+appeared in no plan and no approval. This ADR weighed the refresh's latency but never its usage. The
+investigation in [dev-env#1294](https://github.com/brownm09/dev-env/issues/1294) found the path had
+become reachable on 2026-11-06, before it had fired.
+
+**Decision.** `refresh_token_now()`, `attempt_token_refresh()` and `snapshot_action()` are deleted. A
+missing or expired token now skips the snapshot with an advisory saying what fixes it. This ADR's other
+fix stands: a still-valid "expiring" token is used, not discarded.
+
+**Cost accepted.** A merge in a stale window shows the advisory instead of the snapshot. The next merge
+after anything rewrites the token, such as running `claude` in a terminal, shows it again. The merge
+itself is unaffected.
+
+**Alternative rejected: keep the refresh and check the token source first.** Confirming a run bills the
+subscription rather than the API would satisfy the
+[token-source rule](https://github.com/brownm09/dev-env/issues/1280), but the call would still spend
+plan limit on a readout. The check answers which budget pays, and the objection is to paying at all.
+
+**Measured, and not settled.** #1299 left open whether `claude auth status --json` refreshes an expired
+token. Two runs on 2026-11-07 disagree. At 06:30:36, 17 seconds after expiry, the file was rewritten
+during the command (`expiresAt` 1794051019496 to 1794079838328, mtime 06:30:38). At 14:30:44, 6 seconds
+after the next expiry, the command exited 0 with `loggedIn` true and left the file unchanged. So the
+hook skips, and [dev-env#1327](https://github.com/brownm09/dev-env/issues/1327) tracks the question.
+
+**The path this amendment removes fired that day.** The file was next rewritten at 14:33:19, 6 seconds
+after the old hook, still live on `main`, saw a confirmed merge of win11-init-tools PR 115 on an expired
+token. The old hook's only refresh was `claude -p ok --model haiku`, so that was very likely the first
+such call, though the call itself wasn't observed.
+
+**Left as is.** The hook's 90-second budget in `hook-dispatch.py` was sized for the refresh. The fetch's
+retry and the merge confirmation now take far less, but a larger budget costs nothing unless the hook
+hangs, so it isn't changed here.

@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **115 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **113 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -151,7 +151,7 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (33)
+### Session state, reliability & token tracking (31)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -182,8 +182,6 @@ invocation instead.
 | `session-mode-report.py` | `py -3 session-mode-report.py [--since\|--interactive-only\|--non-plan-only\|--log]` | Reports which sessions started outside `plan` mode, from the session-mode-prompt hook's log. |
 | `run-hook-tests.py` | `py -3 run-hook-tests.py [--list] [--timeout N] [--max-retries N]` | Discovers and runs the whole hook/script test suite; engine behind the `hook-tests` CI workflow. `--max-retries` (default 2) visibly re-runs a failing file before counting it a final failure, absorbing transient CI flakiness without masking a real regression (dev-env#994, [ADR-134](../../docs/adr/134-run-hook-tests-retry-mechanism.md)). |
 | `dev-env-doctor.py` | `py -3 dev-env-doctor.py [--offline] [--settings PATH]` | Read-only health check of this machine's install (links, dangling ones included; hook-command scripts; tools and gh sign-in; `core.hooksPath` overrides; the journal clone); exits 1 on any FAIL, and never waits on a credential prompt. Run by `setup.sh`; see `docs/REFERENCE.md` → Adding a Second Machine. |
-| `register-keep-token-warm.ps1` | `powershell -File register-keep-token-warm.ps1 [-IntervalHours N] [-Unregister]` | Per-machine, run-once: registers the scheduled task that keeps the OAuth token fresh. |
-| `keep-token-warm.ps1` | Scheduled-task payload (not run by hand) | Triggers a CLI OAuth-token refresh every few hours so `usage-snapshot.py` rarely needs an on-demand refresh — unless a desktop-app auth-status probe detects the refresh would be futile, in which case it exits early instead. |
 | `register-auto-resume.ps1` | `powershell -File register-auto-resume.ps1 [-Include ...] [-IntervalMinutes N] [-Unregister]` | Per-machine, run-once: creates the opt-in config if absent and registers the `ClaudeAutoResumeLauncher` task; `-Unregister` is the undo. |
 | `auto-resume-launcher.py` | Scheduled-task payload (`--dry-run` to preview) | After the Claude app starts, opens each opted-in session cut off mid-turn before that start with `claude://code/continue?session=`, so its auto-resume hook fires; skips sessions already running. |
 | `register-window-flash-monitor.ps1` | `powershell -File register-window-flash-monitor.ps1 [-Unregister]` | Per-machine, run-once: registers the hidden `ClaudeWindowFlashMonitor` task that keeps `window-flash-monitor.py` running. ADR-155. |
