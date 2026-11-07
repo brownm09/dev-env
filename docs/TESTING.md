@@ -5166,6 +5166,13 @@ For a one-line navigational map of the older tests, see
      as late. A stub edited after its day composed is moved and composed again, which ADR-119
      Amendment 2 accepts as cheaper than losing the edit.
 
+     Git is the cost here, mostly `push`, `fetch` and `ls-remote`, and a real `main()` is about 24
+     git processes that have to stay real. So the file spends its time on those and little else
+     (dev-env#1269): shared starting repos are built once and copied, assertions read origin
+     itself rather than fetching first, the fixture repos turn off fsync and background upkeep, and
+     each test runs in its own process, at most 8 at a time, since a test patches the script's
+     module globals. A child's exit code decides its result, so one that crashes counts as failed.
+
      ```bash
      py -3 claude/scripts/tests/test_reconcile_late_stubs.py
      ```
