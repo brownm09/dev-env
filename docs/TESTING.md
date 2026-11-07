@@ -948,8 +948,12 @@ For a one-line navigational map of the test directory, see
     re-concatenated on every chunk read) — the exact shape that bites `idle-refresher.py`'s live
     caller, since the record immediately before whatever it's scanning past is often the
     transcript's newest entry (the user's just-submitted prompt), whose size a large paste puts
-    directly under the user's control. Used by `idle-refresher.py`, which needs only the last
-    assistant record's timestamp and would otherwise pay a full parse on every prompt submit.
+    directly under the user's control. Used by `idle-refresher.py`, which needs only the newest
+    records (the last assistant timestamp, and the last usable usage once the gap has fired) and
+    would otherwise pay a full parse on every prompt submit. `record_context_tokens`, the one
+    context-size definition `turn-count-hook.py` and `idle-refresher.py` share (dev-env#1217), is
+    pinned to a main-thread turn's input + cache read + cache write, and to `None` without raising
+    for a sidechain, zero or malformed usage, or a non-assistant or non-dict record.
     Also exercises `record_heartbeat(hook_name, heartbeat_dir=None)`
     ([ADR-106](adr/106-hook-heartbeat-liveness-ledger.md); dev-env#745, PR8 of #717): a real
     tmp-dir round trip pins that it writes a parseable, current Unix timestamp to
@@ -2274,8 +2278,9 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_journal_stop_check.py
     ```
 
-51. **idle-refresher test** — required when changing `claude/scripts/idle-refresher.py`. Exercises the
-    pure helpers offline (no stdin, network, gh, or disk — fixture-only, matching item 47's precedent):
+51. **idle-refresher test** — required when changing `claude/scripts/idle-refresher.py`. Twenty-three
+    cases. Most exercise the pure helpers offline (no stdin, network, gh, or disk, matching item 47's
+    precedent), and the `main()` tests described at the end run a subprocess against a temp transcript:
     `parse_iso_to_epoch` (the transcript `Z` / `+00:00` / naive / microsecond timestamp forms agree, and
     bad/`None`/non-str input yields `None`); `last_activity_epoch` (anchors on the **last** assistant
     record's timestamp — deliberately not "the last record of any type," which would be the just-submitted
@@ -2294,9 +2299,19 @@ For a one-line navigational map of the test directory, see
     above are written newest-first accordingly, and a dedicated test
     (`test_last_activity_epoch_consumes_lazily`) proves the laziness itself with a hand-rolled generator
     that raises `AssertionError` if pulled past its first match. `main()`'s stdin plumbing and the live
-    transcript read (through the already-tested `_hookutil.iter_records_reverse` / `find_transcript`) are
-    not covered (pure-helper convention) — exercised instead by the manual end-to-end smoke run in the PR
+    transcript read (through the already-tested `_hookutil.iter_records_reverse` / `find_transcript`) were
+    left to a manual smoke run at first
     ([ADR-095](adr/095-session-boundary-summaries-and-idle-refresher.md); dev-env#655).
+
+    Since [dev-env#1217](https://github.com/brownm09/dev-env/issues/1217) the cue states the context size
+    the return re-caches and suggests `/clear` with a hand-off. `last_context_tokens` is pinned to the
+    newest main-thread turn with real usage (a prompt, a synthetic zero-usage turn, malformed usage and a
+    sidechain record are skipped), and to `None` when a compaction comes first, since the turn behind it
+    carries the larger context it replaced. A read that raises also gives `None`. The cue keeps its
+    `/clear` sentence and drops only the size sentence when the size is unknown. End to end, the size
+    reaches the stdout JSON with exit 0 and empty stderr, the cue still fires without a size for a record
+    with no usage and for a compaction just before the gap, and an automated prompt and garbage stdin
+    stay silent with exit 0.
 
     ```bash
     py -3 claude/scripts/tests/test_idle_refresher.py
@@ -4771,8 +4786,9 @@ For a one-line navigational map of the test directory, see
     ([ADR-150](adr/150-context-growth-journal-stub-trigger.md), dev-env#1160).
 
     The hook nudges Claude to update the session's journal stub the first time cumulative context
-    growth reaches each band. Sixteen cases, all against fixture transcripts in a temp directory with
-    the module's `SCRATCH` swapped out, so no case touches the real `~/.claude/scratch`:
+    growth reaches each band, and warns with `[session-size]` on the same growth figure. Twenty-three
+    cases, all against fixture transcripts in a temp directory with the module's `SCRATCH` swapped out,
+    so no case touches the real `~/.claude/scratch`:
 
     - **Growth is cumulative, from the first turn.** `get_context_stats` sums every increase between
       consecutive main-thread assistant turns. A compaction's drop is not subtracted. Sidechain
@@ -4782,6 +4798,12 @@ For a one-line navigational map of the test directory, see
       growth, which the `/review` of PR #1164 found in 38 of 192 local transcripts. A record with
       a non-integer usage field (`null`, a string) is skipped rather than raised, since one bad
       record would otherwise silence every warning for the rest of the session.
+    - **The size warning keys on growth, not absolute size** ([ADR-150 Amendment 1](adr/150-context-growth-journal-stub-trigger.md#amendment-1-2026-11-06--the-size-warning-also-keys-on-growth),
+      dev-env#1217). A 167k start with no growth is silent and writes no state file. It fires at the
+      first threshold and each step, naming the growth and the current size. A jump over several
+      thresholds warns once and records the highest, a post-compaction re-climb fires only when
+      growth reaches the next threshold, and the text is ASCII. End to end, the warning is absent at
+      a large start and present on stdout after growth, with exit 0 both times.
     - **Each band fires once.** Below the first band is silent. Band 1 and band 2 each fire exactly
       once, and a jump straight to band 3 nudges once and records band 3.
     - **Post-compaction.** After a compaction, climbing back past the absolute size that fired band 1
@@ -4802,9 +4824,8 @@ For a one-line navigational map of the test directory, see
     - **End to end.** `main()` runs as a subprocess with a temporary home directory: two prompts in
       the same band produce one nudge, and garbage stdin still exits 0.
 
-    The existing `[session-size]` and `[prompt-count]` warnings are not covered here beyond the
-    unsafe-id case. Only their input changed: the shared transcript pass now skips sidechain,
-    zero-usage and malformed records, and an unsafe session id now falls back to `unknown`.
+    The `[prompt-count]` warning is covered only for firing at its threshold with ASCII text, and in
+    the unsafe-id case.
 
     ```bash
     py -3 claude/scripts/tests/test_turn_count_hook.py

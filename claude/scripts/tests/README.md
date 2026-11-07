@@ -163,7 +163,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_dev_env_sync.py` | `dev-env-sync.py` | Fast-forwards the canonical checkout's `main` on every prompt; escalates a persistent pull failure. |
 | `test_hook_liveness_check.py` | `hook-liveness-check.py` | Warns when a wired hook's heartbeat ledger has gone stale (hasn't recorded in its expected cadence). |
 | `test_hook_timing_report.py` | `hook-timing-report.py` | Per-hook duration percentiles from the heartbeat's `.dur.jsonl` lines: window and malformed-line filtering, numbered slowest-first table, empty/missing ledger, and a round trip against `_hookutil.record_duration`'s own output. |
-| `test_idle_refresher.py` | `idle-refresher.py` | Injects a "here's what we were doing" cue after a long idle gap between prompts. |
+| `test_idle_refresher.py` | `idle-refresher.py` | Injects a "here's what we were doing" cue after a long idle gap between prompts, stating the context size re-cached and suggesting `/clear` with a hand-off. |
 | `test_memory_write_advisory.py` | `memory-write-advisory.py` | Flags a durable memory write that has no paired immortalization issue. |
 | `test_posttooluse_inert_advisory.py` | `posttooluse-inert-advisory.py` | Stop-hook safety net: detects a background/SDK-launched session where PostToolUse hooks never fired at all. |
 | `test_pre_bash_drift_check.py` | `pre-bash-drift-check.py` | Elapsed-time-gated repo/branch drift check on every Bash call, not just the three merge-adjacent checkpoints. |
@@ -178,7 +178,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_skill_file_size_advisory.py` | `skill-file-size-advisory.py` | Non-blocking nudge when a `SKILL.md` write/edit lands at/above a lower watermark, ahead of the hard-block guard's ceiling (ADR-127). |
 | `test_skill_file_size_guard.py` | `pre-tool-use-skill-file-size-guard.py` | Blocks a Write/Edit that would leave a `SKILL.md` file over a configurable byte ceiling; an exactly-at-limit size and an Edit that shrinks an already-oversized file both pass (ADR-127). |
 | `test_stop_experiment_verdict_gate.py` | `stop-experiment-verdict-gate.py` | Stop-hook backstop for the experiment-verdict half of the Experimental Rigor protocol: blocks the stop when an assistant message states a process-experiment conclusion with no `/experiment-audit` run and no skip override (ADR-115). |
-| `test_turn_count_hook.py` | `turn-count-hook.py` | Context-growth journal-stub bands: once per band, post-compaction growth, sidechain records skipped, stub discovery, config fallback, and an end-to-end subprocess run (ADR-150). |
+| `test_turn_count_hook.py` | `turn-count-hook.py` | The `[session-size]` warning on growth (silent at a large start). Context-growth journal-stub bands: once per band, post-compaction growth, sidechain records skipped, stub discovery, config fallback, and an end-to-end subprocess run (ADR-150). |
 | `test_token_attribution.py` | `_token_pricing.py`, `token-report.py` | Model prices, unknown models reported as unpriced, and `--attribution` dollars pinned against a hand-computed transcript, with no transcript text in the output. |
 | `test_token_tracker.py` | `token-tracker.py` | Per-session token/cost aggregation and the once-per-session locate-failure advisory. |
 | `test_usage_snapshot.py` | `usage-snapshot.py` | OAuth-token expiry classification plus the merge-confirmation predicate for the post-tool-use usage snapshot. |

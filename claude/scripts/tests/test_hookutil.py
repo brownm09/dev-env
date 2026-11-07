@@ -561,6 +561,30 @@ def _write_jsonl(path: Path, records: list, trailing_newline: bool = True) -> No
     path.write_text(text, encoding="utf-8")
 
 
+def test_record_context_tokens() -> str:
+    def rec(usage, **extra):
+        return {"type": "assistant", "message": {"usage": usage}, **extra}
+
+    full = {"input_tokens": 10, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 5}
+    assert _hookutil.record_context_tokens(rec(full)) == 115, "sums the three fields, not output"
+    assert _hookutil.record_context_tokens(rec({**full, "output_tokens": 999})) == 115, "output excluded"
+    assert _hookutil.record_context_tokens(rec({"cache_read_input_tokens": 7})) == 7, "a missing field is 0"
+    for name, bad in (
+        ("sidechain", rec(full, isSidechain=True)),
+        ("user record", {"type": "user", "message": {"usage": full}}),
+        ("zero usage", rec({"input_tokens": 0, "cache_read_input_tokens": 0})),
+        ("empty usage", rec({})),
+        ("non-integer field", rec({**full, "input_tokens": "12"})),
+        ("null field", rec({**full, "input_tokens": None})),
+        ("non-dict usage", rec("x")),
+        ("non-dict message", {"type": "assistant", "message": "x"}),
+        ("no message", {"type": "assistant"}),
+        ("non-dict record", "junk"),
+    ):
+        assert _hookutil.record_context_tokens(bad) is None, name
+    return "a main-thread turn's input + cache read + cache write; None for everything else, without raising"
+
+
 def test_iter_records_reverse_basic_order() -> str:
     with tempfile.TemporaryDirectory() as root:
         p = Path(root) / "t.jsonl"
@@ -1136,6 +1160,7 @@ def main() -> int:
         ("_launch_time: plausible on Windows, None elsewhere", test_launch_time_plausible),
         ("_launch_time: py launcher parent vs bare interpreter", test_launch_time_uses_py_launcher_parent),
         ("record_heartbeat: arms duration once, exit codes intact (subprocess)", test_heartbeat_arms_duration_once_and_keeps_exit_code),
+        ("record_context_tokens: one record's context size", test_record_context_tokens),
     ]
     failed = 0
     for name, fn in tests:

@@ -4,11 +4,13 @@ UserPromptSubmit hook: warn when a session is accumulating significant context.
 
 Two independent signals:
 
-  1. Context token size (PRIMARY) — reads the transcript JSONL and checks the
-     total input tokens on the last assistant turn. Fires at CONTEXT_WARN_TOKENS
-     and repeats every CONTEXT_REPEAT_TOKENS after that. State is persisted in
-     ~/.claude/scratch/ctx-warn-<session_id>.txt so warnings don't repeat until
-     the next threshold boundary is crossed.
+  1. Context growth (PRIMARY) — reads the transcript JSONL and checks cumulative
+     context growth since the session's first turn (defined under signal 3).
+     Fires at CONTEXT_WARN_TOKENS of growth and repeats every
+     CONTEXT_REPEAT_TOKENS after that. Growth, not absolute size, so a large
+     start with no work done stays silent (dev-env#1217, ADR-150 Amendment 1).
+     State is persisted in ~/.claude/scratch/ctx-warn-<session_id>.txt so
+     warnings don't repeat until the next threshold boundary is crossed.
 
   2. User prompt count (SECONDARY, less accurate) — counts UserPromptSubmit
      events via a scratch file. Fires at PROMPT_THRESHOLD and repeats every
@@ -44,9 +46,9 @@ import _hookutil
 
 SCRATCH = Path.home() / ".claude" / "scratch"
 
-# --- Signal 1: context token size ---
-CONTEXT_WARN_TOKENS = 40_000   # first warning
-CONTEXT_REPEAT_TOKENS = 20_000 # repeat interval after first warning
+# --- Signal 1: context growth (ADR-150 Amendment 1 has the replay behind these) ---
+CONTEXT_WARN_TOKENS = 150_000   # growth since the first turn before the first warning
+CONTEXT_REPEAT_TOKENS = 100_000 # further growth per additional warning
 
 # --- Signal 2: user prompt count ---
 PROMPT_THRESHOLD = 8           # first warning
@@ -128,9 +130,8 @@ def get_context_stats(transcript_path_str: str) -> tuple[int, int] | None:
 
     Sidechain (subagent) records are skipped: their much smaller context would
     otherwise read as a drop and then a spurious rise back to the main thread's.
-    So are zero-usage records: Claude Code writes synthetic assistant turns
-    ("No response requested.", a usage-limit notice, an API error) with every
-    usage field 0, and counting one would add the whole context back as growth.
+    So are zero-usage records, since counting a synthetic turn would add the whole
+    context back as growth (_hookutil.record_context_tokens decides both).
     Returns None if the transcript cannot be read or has no assistant turns yet.
 
     transcript_path_str comes from the documented `transcript_path` field in the
@@ -154,27 +155,12 @@ def get_context_stats(transcript_path_str: str) -> tuple[int, int] | None:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not isinstance(record, dict) or record.get("isSidechain"):
+                tokens = _hookutil.record_context_tokens(record)
+                if tokens is None:
                     continue
-                if record.get("type") == "assistant":
-                    msg = record.get("message", {})
-                    usage = msg.get("usage", {}) if isinstance(msg, dict) else {}
-                    if isinstance(usage, dict) and usage:
-                        parts = [
-                            usage.get("input_tokens", 0),
-                            usage.get("cache_read_input_tokens", 0),
-                            usage.get("cache_creation_input_tokens", 0),
-                        ]
-                        # One malformed record must not raise past this loop and
-                        # silence every warning for the rest of the session.
-                        if not all(isinstance(p, int) for p in parts):
-                            continue
-                        tokens = sum(parts)
-                        if tokens == 0:
-                            continue
-                        if current is not None and tokens > current:
-                            growth += tokens - current
-                        current = tokens
+                if current is not None and tokens > current:
+                    growth += tokens - current
+                current = tokens
     except OSError:
         return None
 
@@ -183,11 +169,12 @@ def get_context_stats(transcript_path_str: str) -> tuple[int, int] | None:
     return current, growth
 
 
-def check_context_tokens(tokens: int, session_id: str) -> str | None:
+def check_context_tokens(tokens: int, growth: int, session_id: str) -> str | None:
     """
-    Return a warning string if context token threshold is crossed since the last
-    warning, else None. Persists the last-warned level to avoid re-firing on the
-    same threshold boundary across multiple prompts.
+    Return a warning string if a context growth threshold is crossed since the
+    last warning, else None. Persists the last-warned level to avoid re-firing on
+    the same threshold boundary across multiple prompts. *tokens* is the current
+    context, stated in the warning; only *growth* decides whether it fires.
     """
 
     warn_file = SCRATCH / f"ctx-warn-{session_id}.txt"
@@ -198,13 +185,13 @@ def check_context_tokens(tokens: int, session_id: str) -> str | None:
 
     next_threshold = CONTEXT_WARN_TOKENS if last_warned == 0 else last_warned + CONTEXT_REPEAT_TOKENS
 
-    if tokens < next_threshold:
+    if growth < next_threshold:
         return None
 
     # Advance through all crossed thresholds so a single heavy prompt doesn't
     # produce consecutive same-token warnings on back-to-back turns.
     initial_threshold = next_threshold
-    while tokens >= next_threshold + CONTEXT_REPEAT_TOKENS:
+    while growth >= next_threshold + CONTEXT_REPEAT_TOKENS:
         next_threshold += CONTEXT_REPEAT_TOKENS
     caught_up = next_threshold > initial_threshold
 
@@ -213,11 +200,12 @@ def check_context_tokens(tokens: int, session_id: str) -> str | None:
     except Exception:
         pass
 
-    clause = " (catching up — context crossed prior boundaries)" if caught_up else ""
+    clause = " (catching up - context crossed prior boundaries)" if caught_up else ""
     return (
-        f"[session-size] Context is at {tokens:,} tokens "
+        f"[session-size] This session has added {growth:,} tokens of context since "
+        f"its first turn, and its last turn carried {tokens:,} "
         f"(threshold: {next_threshold:,}{clause}). "
-        f"Consider running /compact or /clear if the task scope has shifted — "
+        f"Consider running /compact or /clear if the task scope has shifted - "
         f"accumulated context increases cost on every subsequent turn."
     )
 
@@ -333,7 +321,7 @@ def check_prompt_count(session_id: str, cwd: str) -> str | None:
         return (
             f"[prompt-count] Session has {count} user prompts "
             f"(threshold: {threshold}). "
-            f"Note: prompt count is a weak signal — check context token size "
+            f"Note: prompt count is a weak signal - check context token size "
             f"for a more accurate read on session weight."
         )
     return None
@@ -360,7 +348,7 @@ def main() -> None:
     stats = get_context_stats(transcript_path)
     if stats is not None:
         tokens, growth = stats
-        ctx_warn = check_context_tokens(tokens, session_id)
+        ctx_warn = check_context_tokens(tokens, growth, session_id)
         if ctx_warn:
             messages.append(ctx_warn)
         # The raw id, not the "unknown" fallback: sessions without an id must

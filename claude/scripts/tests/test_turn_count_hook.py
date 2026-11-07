@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Tests for turn-count-hook.py's context-growth journal-stub trigger.
+"""Tests for turn-count-hook.py's two context-growth signals.
 
-`turn-count-hook.py` is a UserPromptSubmit hook. Besides its `[session-size]`
-and `[prompt-count]` warnings it nudges Claude to update the session's journal
-stub the first time cumulative context growth reaches each band (dev-env#1160,
-ADR-150). This suite pins:
+`turn-count-hook.py` is a UserPromptSubmit hook. Its `[session-size]` warning
+fires on cumulative context growth since the session's first turn, so a large
+start with no growth stays silent (dev-env#1217, ADR-150 Amendment 1). It also
+nudges Claude to update the session's journal stub the first time that growth
+reaches each band (dev-env#1160, ADR-150). This suite pins:
 
   * get_context_stats: current = the last main-thread assistant turn's
     context; growth = the sum of increases between consecutive turns, so a
     compaction's drop never subtracts and sidechain records are ignored;
+  * check_context_tokens: silent at a large start with no growth, fires when
+    growth crosses each threshold, a multi-threshold jump fires once, and a
+    post-compaction re-climb does not re-fire;
   * check_stub_band: fires once per band, a multi-band jump fires once, a
     post-compaction re-climb past the same absolute size does not re-fire
     until growth reaches the next band, and an unsafe or missing session id
@@ -18,7 +22,9 @@ ADR-150). This suite pins:
   * load_stub_bands: hook-config.json override and per-key default fallback;
   * the nudge text is ASCII and carries the ADR-129 write rule;
   * main() end to end in a subprocess with a temporary home directory: one
-    nudge across two prompts at the same band, and exit 0 on garbage stdin.
+    nudge across two prompts at the same band, the size warning absent at a
+    large start and present on stdout after growth, and exit 0 throughout,
+    garbage stdin included.
 
 Usage:
     py -3 claude/scripts/tests/test_turn_count_hook.py
@@ -48,6 +54,9 @@ _spec.loader.exec_module(tch)  # safe: main() is guarded by __main__
 
 FIRST = tch.STUB_FIRST_TOKENS  # 150_000
 STEP = tch.STUB_STEP_TOKENS    # 100_000
+WARN = tch.CONTEXT_WARN_TOKENS
+REPEAT = tch.CONTEXT_REPEAT_TOKENS
+LARGE_START = 167_000  # the starting context dev-env#1217 was filed against
 SID = "11111111-2222-3333-4444-555555555555"
 
 
@@ -100,6 +109,12 @@ class _Tmp:
         stats = tch.get_context_stats(str(self.transcript))
         assert stats is not None, "stats unexpectedly None"
         return tch.check_stub_band(stats[1], session_id, self.cwd, str(self.transcript))
+
+    def warn(self, records: list, session_id: str = SID):
+        _write_transcript(self.transcript, records)
+        stats = tch.get_context_stats(str(self.transcript))
+        assert stats is not None, "stats unexpectedly None"
+        return tch.check_context_tokens(stats[0], stats[1], session_id)
 
 
 # --- get_context_stats ---------------------------------------------------------
@@ -160,6 +175,70 @@ def test_stats_skip_malformed_usage() -> str:
         current, growth = tch.get_context_stats(str(t.transcript))
     assert (current, growth) == (200_000, 30_000), (current, growth)
     return "a non-integer usage field skips that record instead of raising"
+
+
+# --- check_context_tokens --------------------------------------------------------
+
+def test_warn_silent_at_large_start() -> str:
+    with _Tmp() as t:
+        assert t.warn([_assistant(LARGE_START)]) is None, "a large start alone must not warn"
+        assert t.warn([_assistant(LARGE_START)]) is None, "no growth on a later turn"
+        assert not list(t.root.glob("ctx-warn-*")), "nothing to record yet"
+    return f"{LARGE_START:,} start with no growth -> no warning and no state file"
+
+
+def test_warn_fires_when_growth_crosses() -> str:
+    with _Tmp() as t:
+        assert t.warn([_assistant(LARGE_START), _assistant(LARGE_START + WARN - 1)]) is None, "just under"
+        msg = t.warn([_assistant(LARGE_START + WARN)])
+        assert msg is not None, "should fire at the first threshold"
+        assert f"{WARN:,} tokens" in msg, msg
+        assert f"{LARGE_START + WARN:,}" in msg, msg
+        assert t.warn([_assistant(LARGE_START + WARN + REPEAT - 1)]) is None, "must not re-fire below the next step"
+        assert t.warn([_assistant(LARGE_START + WARN + REPEAT)]) is not None, "fires at the next step"
+    return "fires at the first threshold and each step, naming the growth and the current size"
+
+
+def test_warn_multi_jump_fires_once() -> str:
+    with _Tmp() as t:
+        jump = LARGE_START + WARN + 2 * REPEAT + 5
+        msg = t.warn([_assistant(LARGE_START), _assistant(jump)])
+        assert msg is not None and "catching up" in msg, msg
+        assert msg.isascii(), f"catch-up clause must be ASCII: {msg!r}"
+        state = (t.root / f"ctx-warn-{SID}.txt").read_text().strip()
+        assert state == str(WARN + 2 * REPEAT), state
+        assert t.warn([_assistant(jump + 9)]) is None, "must not fire again in the same step"
+    return "a jump over several thresholds warns once and records the highest"
+
+
+def test_warn_post_compaction_no_refire() -> str:
+    with _Tmp() as t:
+        # Fires at 150k growth, at 317k absolute.
+        assert t.warn([_assistant(LARGE_START), _assistant(LARGE_START + WARN)]) is not None
+        # A compaction's drop is not growth, and climbing back past 317k absolute
+        # adds only what it adds: the next warning is at 250k of growth.
+        assert t.warn([_assistant(250_000), _assistant(325_000)]) is None, "325k absolute, 225k of growth"
+        msg = t.warn([_assistant(350_000)])
+        assert msg is not None and f"{WARN + REPEAT:,}" in msg, msg
+    return "a post-compaction re-climb past the old absolute size fires only when growth reaches the next threshold"
+
+
+def test_prompt_count_text_is_ascii() -> str:
+    with _Tmp() as t:
+        msgs = [tch.check_prompt_count(SID, t.cwd) for _ in range(tch.PROMPT_THRESHOLD)]
+    msg = msgs[-1]
+    assert msg is not None and msg.startswith("[prompt-count]"), msgs
+    assert msg.isascii(), f"warning must be ASCII (cp1252-safe stdout): {msg!r}"
+    return "the prompt-count warning fires at its threshold and is ASCII"
+
+
+def test_warn_text_is_ascii() -> str:
+    with _Tmp() as t:
+        msg = t.warn([_assistant(LARGE_START), _assistant(LARGE_START + WARN)])
+    assert msg.startswith("[session-size]"), msg
+    assert msg.isascii(), f"warning must be ASCII (cp1252-safe stdout): {msg!r}"
+    assert "/compact" in msg and "/clear" in msg, msg
+    return "starts with [session-size], ASCII, names /compact and /clear"
 
 
 # --- check_stub_band -----------------------------------------------------------
@@ -354,6 +433,24 @@ def test_main_end_to_end() -> str:
     return "one nudge across two prompts in the same band; exit 0 on garbage stdin"
 
 
+def test_main_size_warning_end_to_end() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        home = Path(d)
+        (home / ".claude" / "scratch").mkdir(parents=True)
+        transcript = home / "t.jsonl"
+        payload = {"session_id": SID, "cwd": d, "transcript_path": str(transcript)}
+        _write_transcript(transcript, [_assistant(LARGE_START)])
+        start = _run_hook(home, payload)
+        _write_transcript(transcript, [_assistant(LARGE_START + WARN)])
+        grown = _run_hook(home, payload)
+    out_start = start.stdout.decode("utf-8", "replace")
+    out_grown = grown.stdout.decode("utf-8", "replace")
+    assert start.returncode == 0 and "[session-size]" not in out_start, (start.returncode, out_start)
+    assert grown.returncode == 0 and "[session-size]" in out_grown, (grown.returncode, out_grown)
+    assert b"session-size" not in start.stderr + grown.stderr, "the warning belongs on stdout"
+    return "silent at a large start; warns on stdout after growth; exit 0 both times"
+
+
 def main() -> int:
     tests = [
         ("stats: missing/empty -> None", test_stats_missing_or_empty),
@@ -361,6 +458,12 @@ def main() -> int:
         ("stats: sidechain records skipped", test_stats_skip_sidechain),
         ("stats: zero-usage synthetic records skipped", test_stats_skip_zero_usage_synthetic),
         ("stats: malformed usage skipped, not raised", test_stats_skip_malformed_usage),
+        ("size warning: silent at a large start", test_warn_silent_at_large_start),
+        ("size warning: fires when growth crosses", test_warn_fires_when_growth_crosses),
+        ("size warning: multi-threshold jump fires once", test_warn_multi_jump_fires_once),
+        ("size warning: post-compaction re-climb", test_warn_post_compaction_no_refire),
+        ("size warning: ASCII text", test_warn_text_is_ascii),
+        ("prompt-count warning: ASCII text", test_prompt_count_text_is_ascii),
         ("band: fires once per band", test_band_fires_once_per_band),
         ("band: multi-band jump fires once", test_band_multi_jump_fires_once),
         ("band: post-compaction re-climb", test_band_post_compaction_no_refire),
@@ -371,6 +474,7 @@ def main() -> int:
         ("find_session_stub skips failed write", test_find_session_stub_skips_failed_write),
         ("nudge names stub or says create", test_message_names_stub_or_says_create),
         ("main() end to end", test_main_end_to_end),
+        ("main() size warning end to end", test_main_size_warning_end_to_end),
         ("main() unsafe session id falls back", test_main_unsafe_session_id_falls_back),
     ]
     failed = 0
