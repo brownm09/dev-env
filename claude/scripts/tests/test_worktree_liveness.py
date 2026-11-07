@@ -12,6 +12,8 @@ reclaim-worktree-disk.py from severing an active Claude session (dev-env#384, AD
   5. liveness_minutes_arg() — valid/zero/non-numeric/non-finite/negative (pure).
   6. worktree_session_is_live() — live / stale / no-session verdicts (now + root injected).
   7. The per-script default windows: prune = 24h, reclaim = 6h.
+  8. git_activity_skip_reason() — a worktree's own git state, against real throwaway worktrees
+     (dev-env#1330).
 
 Filesystem helpers are exercised against tmp dirs with os.utime-stamped mtimes (matching
 test_reclaim_worktree_disk.py) — no live session, no network, fully offline. The git-driven
@@ -27,6 +29,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -38,6 +41,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import _worktree_liveness as wl  # noqa: E402
+from _throwaway_repo import ThrowawayRepo  # noqa: E402
 
 
 def _load_script(stem: str):
@@ -356,8 +360,154 @@ def test_script_default_windows() -> str:
     return "prune default = 24h, reclaim default = 6h (blast-radius-scaled)"
 
 
+# --- A worktree's own git state (dev-env#1330, ADR-051 Amendment 1). These use a real worktree,
+# because which git commands move which files is the thing being pinned.
+
+DAY = 24 * 60 * 60
+
+
+def _idle_repo(tmp: str) -> ThrowawayRepo:
+    repo = ThrowawayRepo(Path(tmp))
+    repo.age_git_state()
+    return repo
+
+
+def test_git_activity_fresh_worktree_is_active() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        reason = wl.git_activity_skip_reason(repo.worktree, window_seconds=DAY)
+        if not reason or "recent git activity" not in reason:
+            raise AssertionError(f"fresh worktree reason = {reason!r}")
+    return "a worktree just made by git worktree add reads as active"
+
+
+def test_git_activity_aged_worktree_is_idle() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = _idle_repo(tmp)
+        reason = wl.git_activity_skip_reason(repo.worktree, window_seconds=DAY)
+        if reason is not None:
+            raise AssertionError(f"worktree idle a week reason = {reason!r}")
+    return "a worktree idle for a week reads as idle"
+
+
+def test_git_activity_window_boundary() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        stamp = repo.age_git_state(DAY)
+        inside = wl.git_activity_skip_reason(repo.worktree, window_seconds=DAY, now=stamp + DAY - 1)
+        outside = wl.git_activity_skip_reason(repo.worktree, window_seconds=DAY, now=stamp + DAY + 1)
+        future = wl.git_activity_skip_reason(repo.worktree, window_seconds=DAY, now=stamp - 60)
+        if not inside or outside is not None or not future:
+            raise AssertionError(f"inside={inside!r} outside={outside!r} future={future!r}")
+    return "inside the window active, outside idle, a future mtime active"
+
+
+def test_git_activity_each_file_counts_alone() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = _idle_repo(tmp)
+        for name in wl.GIT_ACTIVITY_FILES:
+            path = repo.admin_dir / name
+            path.touch()
+            if not wl.git_activity_skip_reason(repo.worktree, window_seconds=DAY):
+                raise AssertionError(f"a fresh {name} alone should read as active")
+            repo.age_git_state()
+    return f"each of {', '.join(wl.GIT_ACTIVITY_FILES)} is enough on its own"
+
+
+def test_git_activity_seen_for_work_in_the_worktree() -> str:
+    """Known bad: real commands a session runs there must move the signal."""
+    commands = {
+        "git add": lambda repo: (
+            (repo.worktree / "new.txt").write_text("x", encoding="utf-8"),
+            repo._git(repo.worktree, "add", "new.txt"),
+        ),
+        "git commit": lambda repo: repo._git(repo.worktree, "commit", "--allow-empty", "-m", "x"),
+        "git fetch": lambda repo: repo._git(repo.worktree, "fetch", "origin", "main"),
+        "git switch": lambda repo: repo._git(repo.worktree, "switch", "-c", "other"),
+    }
+    for label, command in commands.items():
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = _idle_repo(tmp)
+            command(repo)
+            if not wl.git_activity_skip_reason(repo.worktree, window_seconds=DAY):
+                raise AssertionError(f"{label} in the worktree should read as active")
+    return f"{', '.join(commands)} in the worktree each read as active"
+
+
+def test_git_activity_ignores_maintenance_in_the_primary() -> str:
+    """Known good: the admin folder's mtime can't tell an idle worktree from a used one."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = _idle_repo(tmp)
+        stamp = repo.admin_dir.stat().st_mtime
+        repo._git(repo.primary, "fetch", "origin", "main")
+        repo._git(repo.primary, "gc", "--prune=now")
+        repo._git(repo.primary, "worktree", "list", "--porcelain")
+        if repo.admin_dir.stat().st_mtime <= stamp:
+            raise AssertionError("gc left the admin folder alone, so this test proves nothing")
+        reason = wl.git_activity_skip_reason(repo.worktree, window_seconds=DAY)
+        if reason is not None:
+            raise AssertionError(f"maintenance in the primary read as activity: {reason!r}")
+    return "gc and fetch in the primary move the admin folder but don't read as activity"
+
+
+def test_git_activity_unreadable_state_keeps_the_worktree() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = Path(tmp) / "wt"
+        wt.mkdir()
+        cases = {
+            "no .git": None,
+            "not a gitfile": "garbage\n",
+            "empty gitdir": "gitdir:\n",
+            "gitdir that does not exist": f"gitdir: {Path(tmp) / 'gone'}\n",
+        }
+        for label, content in cases.items():
+            if content is not None:
+                (wt / ".git").write_text(content, encoding="utf-8")
+            reason = wl.git_activity_skip_reason(wt, window_seconds=DAY)
+            if not reason or "could not read" not in reason:
+                raise AssertionError(f"{label}: reason = {reason!r}")
+        (wt / ".git").unlink()
+        (wt / ".git").mkdir()
+        if "could not read" not in (wl.git_activity_skip_reason(wt, window_seconds=DAY) or ""):
+            raise AssertionError(".git folder should read as unknown")
+    return "a missing or bad link, or an empty admin folder, keeps the worktree"
+
+
+def test_git_activity_missing_worktree_defers_to_caller() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        reason = wl.git_activity_skip_reason(Path(tmp) / "gone", window_seconds=DAY)
+        if reason is not None:
+            raise AssertionError(f"missing folder reason = {reason!r}")
+    return "a missing folder returns None, leaving orphans to the caller's checks"
+
+
+def test_git_activity_relative_gitdir() -> str:
+    """`git worktree add --relative-paths` writes a relative link."""
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = Path(tmp) / "wt"
+        admin = Path(tmp) / "admin"
+        wt.mkdir()
+        admin.mkdir()
+        (admin / "HEAD").write_text("ref: refs/heads/x\n", encoding="utf-8")
+        (wt / ".git").write_text("gitdir: ../admin\n", encoding="utf-8")
+        stamp = time.time() - DAY * 7
+        os.utime(admin / "HEAD", (stamp, stamp))
+        if wl.newest_git_activity_mtime(wt) != stamp:
+            raise AssertionError(f"mtime = {wl.newest_git_activity_mtime(wt)}, expected {stamp}")
+    return "a relative gitdir resolves against the worktree"
+
+
 def main() -> int:
     tests = [
+        ("git activity: fresh worktree active", test_git_activity_fresh_worktree_is_active),
+        ("git activity: aged worktree idle", test_git_activity_aged_worktree_is_idle),
+        ("git activity: window boundary", test_git_activity_window_boundary),
+        ("git activity: each file counts alone", test_git_activity_each_file_counts_alone),
+        ("git activity: work in the worktree is seen", test_git_activity_seen_for_work_in_the_worktree),
+        ("git activity: maintenance in the primary is not", test_git_activity_ignores_maintenance_in_the_primary),
+        ("git activity: unreadable state keeps the worktree", test_git_activity_unreadable_state_keeps_the_worktree),
+        ("git activity: missing worktree defers to caller", test_git_activity_missing_worktree_defers_to_caller),
+        ("git activity: relative gitdir", test_git_activity_relative_gitdir),
         ("encode_project_slug encoding", test_encode_project_slug),
         ("is_recent boundaries", test_is_recent_boundaries),
         ("transcript_dirs_for exact match", test_transcript_dirs_exact_match),
