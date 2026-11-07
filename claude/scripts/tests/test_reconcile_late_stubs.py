@@ -12,6 +12,7 @@ conflicted merges from compose/<D>, so the merge has to be found there too.
 
 Usage:
     py -3 claude/scripts/tests/test_reconcile_late_stubs.py
+    py -3 claude/scripts/tests/test_reconcile_late_stubs.py <test name>   # just that test
 """
 
 import importlib.util
@@ -23,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -52,42 +54,43 @@ def manifest(stub_field: str) -> str:
     }) + "\n"
 
 
-TEMPLATE = tempfile.TemporaryDirectory()
+# main() builds the snapshots, and each test's own process copies them from here.
+SHARED_SNAPSHOTS_VAR = "RECONCILE_LATE_STUBS_TEST_SNAPSHOTS"
+OWN_SNAPSHOTS = tempfile.TemporaryDirectory()
+SNAPSHOTS = Path(os.environ.get(SHARED_SNAPSHOTS_VAR, OWN_SNAPSHOTS.name))
+# Each spawns a process or flushes to disk on every commit, fetch or push, and none of
+# them changes what a throwaway repository ends up holding.
+SPEED_SETTINGS = (("maintenance.auto", "false"), ("receive.autogc", "false"), ("core.fsync", "none"))
 
 
 class Journal:
-    """A bare origin plus a clone, on `main` with one composed day. The pair is built
-    once and copied for each test, since building it runs many real git commands."""
+    """A bare origin plus a clone. Building them runs many real git commands, so each
+    test starts from a copy of a snapshot: see `snapshot`."""
 
     def __init__(self, root: Path):
-        template = Path(TEMPLATE.name)
+        self.root = root
+        self.origin = root / "origin.git"
+        self.clone = root / "clone"
         self.prs: dict[str, list[dict]] = {}
         self.gh_error = False
         self.delete_fails = False
-        if not (template / "clone").exists():
-            self.origin = template / "origin.git"
-            self.clone = template / "clone"
-            no_hooks = template / "no-hooks"
-            no_hooks.mkdir()
-            REAL_RUN(["git", "init", "--bare", "-b", "main", str(self.origin)], capture_output=True, check=True)
-            REAL_RUN(["git", "clone", str(self.origin), str(self.clone)], capture_output=True, check=True)
-            self.git("config", "user.name", "test")
-            self.git("config", "user.email", "test@example.com")
-            self.git("config", "core.autocrlf", "false")
-            # The machine's global pre-push hook must not run against the fixture.
-            self.git("config", "core.hooksPath", str(no_hooks))
-            self.git("checkout", "-b", "main")
-            self.commit({"sessions/p/2026-11-02-composed.md": "composed\n"}, BEFORE_MERGE)
-            self.git("push", "origin", "main")
-        self.origin = root / "origin.git"
-        self.clone = root / "clone"
-        shutil.copytree(template / "origin.git", self.origin)
-        shutil.copytree(template / "clone", self.clone)
+
+    def restore(self, snapshot_dir: Path) -> None:
+        shutil.copytree(snapshot_dir / "origin.git", self.origin)
+        shutil.copytree(snapshot_dir / "clone", self.clone)
         self.git("remote", "set-url", "origin", str(self.origin))
 
     def git(self, *args: str, env: dict | None = None) -> str:
+        return self._run_git(self.clone, args, env)
+
+    def origin_git(self, *args: str) -> str:
+        """Read the bare origin directly, which is what was actually pushed."""
+        return self._run_git(self.origin, args)
+
+    @staticmethod
+    def _run_git(cwd: Path, args: tuple[str, ...], env: dict | None = None) -> str:
         result = REAL_RUN(
-            ["git", *args], cwd=self.clone, capture_output=True,
+            ["git", *args], cwd=cwd, capture_output=True,
             env={**os.environ, **(env or {})},
         )
         if result.returncode != 0:
@@ -106,7 +109,6 @@ class Journal:
         )
 
     def branch(self, name: str, start: str = "origin/main") -> None:
-        self.git("fetch", "origin")
         self.git("checkout", "-b", name, start)
 
     def push(self, name: str) -> None:
@@ -168,12 +170,11 @@ class Journal:
         return 0
 
     def tree(self, branch: str) -> list[str]:
-        self.git("fetch", "origin", "--prune")
-        out = self.git("ls-tree", "-r", "--name-only", f"origin/{branch}", "sessions/")
+        out = self.origin_git("ls-tree", "-r", "--name-only", f"refs/heads/{branch}", "sessions/")
         return out.splitlines()
 
     def show(self, branch: str, rel_path: str) -> str:
-        return self.git("show", f"origin/{branch}:{rel_path}")
+        return self.origin_git("show", f"refs/heads/{branch}:{rel_path}")
 
     def compose_stubs(self, branch: str) -> list[str]:
         """The stubs /journal-compose would find: sessions/*/<DATE>_*.stub.md."""
@@ -184,30 +185,67 @@ class Journal:
         ]
 
     def remote_has(self, branch: str) -> bool:
-        return bool(self.git("ls-remote", "--heads", "origin", branch).strip())
+        return bool(self.origin_git("for-each-ref", f"refs/heads/{branch}").strip())
 
 
 def merged(number: int = 310, at: str = MERGED_AT) -> dict:
     return {"number": number, "mergedAt": at, "url": f"https://example.test/pull/{number}"}
 
 
-def with_journal(test):
-    def run_test():
-        with tempfile.TemporaryDirectory() as tmp:
-            journal = Journal(Path(tmp))
-            try:
-                test(journal)
-            finally:
-                # Release any worktree registration before the tempdir is removed.
-                REAL_RUN(["git", "worktree", "prune"], cwd=journal.clone, capture_output=True)
-    run_test.__name__ = test.__name__
-    return run_test
+def composed_main(j: Journal) -> None:
+    """`main` with one composed day, the state every other snapshot builds on."""
+    # --template= leaves out the sample hooks, which every copy would otherwise copy.
+    REAL_RUN(["git", "init", "--bare", "-b", "main", "--template=", str(j.origin)], capture_output=True, check=True)
+    REAL_RUN(["git", "clone", "--template=", str(j.origin), str(j.clone)], capture_output=True, check=True)
+    j.git("config", "user.name", "test")
+    j.git("config", "user.email", "test@example.com")
+    j.git("config", "core.autocrlf", "false")
+    # The machine's global pre-push hook must not run against the fixture.
+    j.git("config", "core.hooksPath", str(SNAPSHOTS / "no-hooks"))
+    for setting, value in SPEED_SETTINGS:
+        j.git("config", setting, value)
+        j.origin_git("config", setting, value)
+    j.git("checkout", "-b", "main")
+    j.commit({"sessions/p/2026-11-02-composed.md": "composed\n"}, BEFORE_MERGE)
+    j.git("push", "origin", "main")
 
 
-@with_journal
-def test_moved_stub_takes_target_date_and_compose_finds_it(j):
+def late_stub_and_target(j: Journal) -> None:
+    """A late stub on a day already composed, and a later draft branch to move it to."""
+    j.restore(snapshot(composed_main))
     j.source_with_late_stub()
     j.target()
+
+
+def snapshot(scenario) -> Path:
+    """The repositories as `scenario` leaves them, built the first time a test asks.
+    A failed build leaves no snapshot, so each test that needs it fails on its own."""
+    path = SNAPSHOTS / scenario.__name__
+    if not path.exists():
+        (SNAPSHOTS / "no-hooks").mkdir(exist_ok=True)
+        journal = Journal(Path(tempfile.mkdtemp(dir=SNAPSHOTS)))
+        scenario(journal)
+        journal.root.rename(path)
+    return path
+
+
+def starting_from(scenario):
+    def decorate(test):
+        def run_test():
+            with tempfile.TemporaryDirectory() as tmp:
+                journal = Journal(Path(tmp))
+                journal.restore(snapshot(scenario))
+                test(journal)
+        run_test.__name__ = test.__name__
+        return run_test
+    return decorate
+
+
+with_journal = starting_from(composed_main)
+
+
+@starting_from(late_stub_and_target)
+def test_moved_stub_takes_target_date_and_compose_finds_it(j):
     j.prs["draft/2026-11-03"] = [merged()]
     assert j.reconcile() == 0
     assert "sessions/p/2026-11-04_120000.stub.md" in j.compose_stubs("draft/2026-11-04")
@@ -220,10 +258,8 @@ def test_moved_stub_takes_target_date_and_compose_finds_it(j):
     assert not j.remote_has("draft/2026-11-03"), "source branch should be deleted"
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_manifest_moves_with_stub_and_names_its_new_path(j):
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     assert j.reconcile() == 0
     entry = json.loads(j.show("draft/2026-11-04", "sessions/p/2026-11-04_120000.manifest.jsonl"))
@@ -241,20 +277,16 @@ def test_bare_filename_stub_field_stays_bare(j):
     assert entry["stub"] == "2026-11-04_120000.stub.md", entry["stub"]
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_day_merged_from_compose_branch_is_found(j):
-    j.source_with_late_stub()
-    j.target()
     j.prs["compose/2026-11-03"] = [merged()]  # no PR at draft/2026-11-03
     assert j.reconcile() == 0
     assert "sessions/p/2026-11-04_120000.stub.md" in j.tree("draft/2026-11-04")
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_latest_merge_decides_what_is_late_when_both_heads_merged(j):
     """Real shape: 2026-07-08 merged from draft/ and, a day later, from compose/."""
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged(300, at="2026-11-03T22:00:00Z")]
     j.prs["compose/2026-11-03"] = [merged(310, at="2026-11-04T23:00:00Z")]
     assert j.reconcile() == 0
@@ -262,18 +294,14 @@ def test_latest_merge_decides_what_is_late_when_both_heads_merged(j):
     assert "sessions/p/2026-11-04_120000.stub.md" not in j.tree("draft/2026-11-04")
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_no_merged_pr_at_either_head_aborts_and_keeps_branch(j):
-    j.source_with_late_stub()
-    j.target()
     assert j.reconcile() == 1
     assert j.remote_has("draft/2026-11-03")
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_failed_lookup_aborts_and_keeps_branch(j):
-    j.source_with_late_stub()
-    j.target()
     j.gh_error = True
     try:
         j.reconcile()
@@ -296,10 +324,8 @@ def test_name_collision_keeps_both_sessions_and_the_pair_together(j):
     assert entry["stub"] == "sessions/p/2026-11-04_120001.stub.md"
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_rerun_after_failed_delete_does_not_duplicate_the_session(j):
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     assert j.reconcile() == 0
     # The source branch survives the first run's failed delete: put it back.
@@ -312,10 +338,8 @@ def test_rerun_after_failed_delete_does_not_duplicate_the_session(j):
     assert not j.remote_has("draft/2026-11-03")
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_stub_renamed_in_a_late_commit_still_moves(j):
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     j.git("checkout", "draft/2026-11-03")
     j.git("mv", "sessions/p/2026-11-03_120000.stub.md", "sessions/p/2026-11-03_120500.stub.md")
@@ -353,10 +377,8 @@ def test_legacy_per_day_manifest_is_split_into_a_shard_for_the_moved_stub(j):
     }
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_unreadable_legacy_manifest_aborts_before_anything_moves(j):
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     j.git("checkout", "draft/2026-11-03")
     j.git("rm", "sessions/p/2026-11-03_120000.manifest.jsonl")
@@ -373,11 +395,9 @@ def test_unreadable_legacy_manifest_aborts_before_anything_moves(j):
     assert j.remote_has("draft/2026-11-03")
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_second_run_after_target_composed_does_not_move_the_stub_again(j):
     """dev-env#1262: without the tag, the second run picks a later branch and duplicates it."""
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     assert j.reconcile() == 0
     source_tip = j.git("rev-parse", "draft/2026-11-03").strip()
@@ -391,10 +411,8 @@ def test_second_run_after_target_composed_does_not_move_the_stub_again(j):
     assert not j.remote_has("draft/2026-11-03")
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_stub_pushed_after_a_reconcile_still_moves_and_the_old_one_does_not(j):
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     assert j.reconcile() == 0
     j.compose_day("2026-11-04")
@@ -405,10 +423,8 @@ def test_stub_pushed_after_a_reconcile_still_moves_and_the_old_one_does_not(j):
     assert j.compose_stubs(f"draft/{TODAY}") == [f"sessions/p/{TODAY}_180000.stub.md"]
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_stubs_moved_by_hand_and_marked_are_not_moved_by_a_later_run(j):
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     source_tip = j.git("rev-parse", "draft/2026-11-03").strip()
     j.git("push", "origin", f"{source_tip}:refs/tags/reconciled/draft/2026-11-03")
@@ -447,10 +463,8 @@ def test_suffixed_branch_with_commits_before_the_merge_is_kept(j):
     assert j.remote_has("draft/2026-11-03-late")
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_late_file_of_an_unknown_kind_stops_the_run_and_keeps_the_branch(j):
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     j.git("checkout", "draft/2026-11-03")
     j.commit({"sessions/p/retros/2026-11-03-retro.md": "a late retro\n"}, AFTER_MERGE)
@@ -466,11 +480,9 @@ def test_late_file_of_an_unknown_kind_stops_the_run_and_keeps_the_branch(j):
     assert j.remote_has("draft/2026-11-03")
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_commit_pushed_during_the_run_survives_the_delete(j):
     """The delete is conditional on the tip the run read."""
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     real_fake_run = j.fake_run
 
@@ -489,11 +501,9 @@ def test_commit_pushed_during_the_run_survives_the_delete(j):
     assert "sessions/p/2026-11-03_190000.stub.md" in j.tree("draft/2026-11-03")
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_failed_tag_push_also_leaves_the_target_unmoved(j):
     """The files and the tag land together, so nothing can be moved without its mark."""
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     # A stale local view of the target rejects the atomic push as a whole.
     j.branch("other", "origin/draft/2026-11-04")
@@ -517,10 +527,8 @@ def test_failed_tag_push_also_leaves_the_target_unmoved(j):
     assert j.remote_has("draft/2026-11-03")
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_rewritten_branch_stops_rather_than_moving_the_tag(j):
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     old_tip = j.git("rev-parse", "draft/2026-11-03").strip()
     j.git("push", "origin", f"{old_tip}:refs/tags/reconciled/draft/2026-11-03")
@@ -562,11 +570,9 @@ def test_commits_from_main_on_a_branch_cut_later_are_not_late(j):
     assert not j.remote_has("draft/2026-11-03")
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_report_dated_for_uncomposed_day_does_not_mark_it_composed(j):
     """A report dated 2026-11-04 on main must not make draft/2026-11-04 look composed."""
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     j.git("checkout", "main")
     j.commit({"sessions/p/reports/2026-11-04-analysis.md": "report\n"}, MERGED_AT)
@@ -576,10 +582,8 @@ def test_report_dated_for_uncomposed_day_does_not_mark_it_composed(j):
     assert not j.remote_has(f"draft/{TODAY}"), "should not have fallen through to today's branch"
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_composed_target_day_is_skipped_for_todays_branch_with_todays_date(j):
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     j.compose_day("2026-11-04")
     assert j.reconcile() == 0
@@ -699,10 +703,8 @@ def test_manifest_with_no_stub_field_stops_and_names_the_file(j):
     assert j.remote_has("draft/2026-11-03")
 
 
-@with_journal
+@starting_from(late_stub_and_target)
 def test_failed_delete_keeps_the_mark_so_a_rerun_moves_nothing(j):
-    j.source_with_late_stub()
-    j.target()
     j.prs["draft/2026-11-03"] = [merged()]
     j.delete_fails = True
     stderr = io.StringIO()
@@ -717,20 +719,42 @@ def test_failed_delete_keeps_the_mark_so_a_rerun_moves_nothing(j):
     assert not j.remote_has("draft/2026-11-03")
 
 
+def run_one(test) -> int:
+    try:
+        test()
+        print(f"PASS: {test.__name__}")
+        return 0
+    except AssertionError as e:
+        print(f"FAIL: {test.__name__}: {e}")
+    except Exception as e:  # noqa: BLE001
+        print(f"ERROR: {test.__name__}: {type(e).__name__}: {e}")
+        traceback.print_exc(limit=3, file=sys.stdout)
+    return 1
+
+
+def run_in_own_process(test) -> subprocess.CompletedProcess:
+    """Tests patch this module's globals and git is slow to start, so run them side by side
+    in separate processes, each getting its own share of a busy machine's CPU."""
+    return REAL_RUN(
+        [sys.executable, __file__, test.__name__], capture_output=True, text=True,
+        env={**os.environ, SHARED_SNAPSHOTS_VAR: str(SNAPSHOTS)},
+    )
+
+
 def main() -> int:
+    if len(sys.argv) > 1:
+        return run_one(globals()[sys.argv[1]])
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+    try:
+        snapshot(late_stub_and_target)
+    except Exception as e:  # noqa: BLE001
+        # Each test that needs a snapshot rebuilds it in its own process and reports the failure.
+        print(f"Could not build the shared snapshots: {type(e).__name__}: {e}")
     failed = 0
-    for test in tests:
-        try:
-            test()
-            print(f"PASS: {test.__name__}")
-        except AssertionError as e:
-            failed += 1
-            print(f"FAIL: {test.__name__}: {e}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"ERROR: {test.__name__}: {type(e).__name__}: {e}")
-            traceback.print_exc(limit=3, file=sys.stdout)
+    with ThreadPoolExecutor(os.cpu_count()) as pool:
+        for result in pool.map(run_in_own_process, tests):
+            print(result.stdout + result.stderr, end="", flush=True)
+            failed += result.returncode != 0
     print()
     print(f"Tests: {len(tests) - failed} passed, 0 skipped, {failed} failed")
     return 1 if failed else 0
