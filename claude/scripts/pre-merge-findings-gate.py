@@ -39,6 +39,10 @@ can) — see the inline comment at `command = read_command(data)` in `main()` an
 ADR-050 Amendment 27 for the full reasoning, including why failing CLOSED here
 instead was considered and rejected.
 
+Also warns, without blocking, when the body says it doesn't close an issue in a form GitHub reads as
+closing it (dev-env#1300, `_closing_negation.py`). It lives here because this is the last read of the
+body before merge, so an edit made after the PR opened is covered, and it needs no extra `gh` call.
+
 Merge detection is `_hookio.is_pr_merge_command` (dev-env#1168), the predicate
 every merge hook shares: top-level statements only, so a `gh pr merge` mentioned
 inside a heredoc body or `$()` subshell (dev-env#499) never pays this hook's live
@@ -66,6 +70,7 @@ import re
 import subprocess
 import sys
 
+from _closing_negation import accidental_closes
 import _hookout
 from _hookio import (
     GH_PR_MERGE,
@@ -239,7 +244,7 @@ def main() -> None:
         view_cmd.append(ref)
     if repo:
         view_cmd += ["--repo", repo]
-    view_cmd += ["--json", "comments,body,number"]
+    view_cmd += ["--json", "comments,body,number,url"]
 
     pr = _fetch_pr_json(view_cmd, cwd)
     if pr is None:
@@ -249,6 +254,16 @@ def main() -> None:
 
     comments = pr.get("comments", []) or []
     body = pr.get("body", "") or ""
+
+    # Report-only until calibrated (dev-env#1300). A block below shows only stderr, and the next
+    # merge attempt repeats this.
+    accidental = accidental_closes(body, repo or "/".join((pr.get("url") or "").split("/")[3:5]))
+    if accidental:
+        print(json.dumps({"systemMessage": (
+            f"[merge-gate] The PR body says it doesn't close {', '.join(accidental)}, but GitHub honors a closing "
+            f"keyword wherever it appears, so merging will close it. Reword the sentence (for "
+            f"example \"Refs #N, which stays open\") unless the issue should close."
+        )}))
 
     # Last comment carrying the /review machine marker wins (handles re-reviews).
     blocking = non_blocking = None

@@ -88,6 +88,18 @@ RC=$(run_gate "$MERGE_CMD" "$J"); [ "$RC" = "0" ] && ok "exit 0" || bad "expecte
 echo "[5] gh failure -> allow (fail-open)"
 RC=$(run_gate "$MERGE_CMD" "FAIL"); [ "$RC" = "0" ] && ok "exit 0" || bad "expected 0, got $RC"
 
+echo "[5b] body says it doesn't close an issue -> warns, still allows (dev-env#1300)"
+J=$(canned "It doesn't close #12, whose criteria are undone." "$NO_MARK")
+STDIN=$(printf '{"tool_name":"Bash","tool_input":{"command":%s},"cwd":"."}' "$(printf '%s' "$MERGE_CMD" | json_str)")
+OUT=$(printf '%s' "$STDIN" | MERGE_GATE_TEST_JSON="$J" $PY "$HOOK" 2>/dev/null); RC=$?
+[ "$RC" = "0" ] && ok "exit 0" || bad "expected 0, got $RC"
+case "$OUT" in *systemMessage*"#12"*) ok "warning names #12" ;; *) bad "no warning naming #12: $OUT" ;; esac
+rm -f "$J"
+J=$(canned "Closes #12" "$NO_MARK")
+OUT=$(printf '%s' "$STDIN" | MERGE_GATE_TEST_JSON="$J" $PY "$HOOK" 2>/dev/null)
+[ -z "$OUT" ] && ok "plain Closes: no warning" || bad "unexpected output: $OUT"
+rm -f "$J"
+
 echo "[6] non-merge command -> allow"
 RC=$(run_gate 'gh pr view 999 --repo o/r' "UNSET"); [ "$RC" = "0" ] && ok "exit 0" || bad "expected 0, got $RC"
 

@@ -26,6 +26,7 @@ import subprocess
 import sys
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+from _closing_negation import CLOSING_REF, closing_mentions, same_repo, says_it_does_not_close
 
 GH_TIMEOUT_SECONDS = 300
 PR_LIST_LIMIT = 5000
@@ -46,17 +47,6 @@ _DEFERRAL_WORD = re.compile(r"\bdefer\w*\b(?!\s+from\b)|\bfollow-?up|\btrack", r
 _REF_SHAPE = r"(?:#\d+|/issues/\d+)"
 _DEFERRED_LINE = re.compile(
     rf"\bdefer\w*\b(?!\s+from\b)[^.|]{{0,60}}?{_REF_SHAPE}|[\w./:-]*{_REF_SHAPE}[^.|]{{0,20}}\bdefer", re.I
-)
-# Whitespace that may hold one line break, for a hard-wrapped sentence, but not a blank line.
-_WRAP = r"[ \t]*(?:\r?\n)?[ \t]*"
-_CLOSING_REF = re.compile(
-    rf"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[*_]*:?[*_]*{_WRAP}\[?"
-    r"(?:https://github\.com/(?P<url>[\w.-]+/[\w.-]+)/issues/(?P<url_n>\d+)|(?P<full>[\w.-]+/[\w.-]+)?#(?P<n>\d+))"
-    r"(?:\]\(https://github\.com/(?P<link>[\w.-]+/[\w.-]+)/issues/\d+\))?",
-    re.I,
-)
-_NEGATED_BEFORE = re.compile(
-    rf"(?:n['’]t|\bnot\b|\bnever\b|\bcannot\b)[*_`]*(?:{_WRAP}(?:yet|(?!only\b)\w+ly)\b)*{_WRAP}[*_`]*\Z", re.I
 )
 FOLLOW_UP_FIELDS = """... on Issue {
   __typename number state stateReason(enableDuplicate: true) closedAt
@@ -84,22 +74,6 @@ def issue_refs(text, repo):
     return refs
 
 
-def _same_repo(a, b):
-    """Compare by name only, because an owner can change: brownm09/lifting-logbook redirects."""
-    return a.split("/")[-1].lower() == b.split("/")[-1].lower()
-
-
-def _closing_mentions(body, repo):
-    """Yield (repo, number, negated) for each closing keyword with a reference after it. A table
-    row is skipped, because "fixed: #12 is amended" there records a review finding."""
-    for m in _CLOSING_REF.finditer(body):
-        if body[body.rfind("\n", 0, m.start()) + 1:m.start()].startswith("|"):
-            continue
-        target = m.group("url") or m.group("full") or m.group("link") or repo
-        number = int(m.group("url_n") or m.group("n"))
-        yield target, number, _NEGATED_BEFORE.search(body[max(0, m.start() - 80):m.start()]) is not None
-
-
 def _evidence_deferrals(body, comments, repo):
     """Return refs from `not verifiable` Evidence cells that defer, in each issue's newest block."""
     newest = {}
@@ -119,32 +93,22 @@ def _prose_deferrals(body, repo):
     """Return refs from body lines saying something is deferred, for PRs older than the table.
     An issue this PR closes, un-negated, isn't a follow-up."""
     body = body or ""
-    closes = [(r, n) for r, n, negated in _closing_mentions(body, repo) if not negated]
+    closes = [(r, n) for r, n, negated in closing_mentions(body, repo) if not negated]
     found = set()
     for line in body.splitlines():
         if line.startswith("|"):
             continue
-        text = _CLOSING_REF.sub(" ", line)
+        text = CLOSING_REF.sub(" ", line)
         m = _DEFERRED_LINE.search(text)
         if m:
             sentence_rest = re.split(r"\.\s|\|", text[m.end():])[0]
             found.update(issue_refs(m.group(0) + sentence_rest, repo))
-    return {ref for ref in found if not any(ref[1] == n and _same_repo(ref[0], r) for r, n in closes)}
+    return {ref for ref in found if not any(ref[1] == n and same_repo(ref[0], r) for r, n in closes)}
 
 
 def extract_deferrals(body, comments, repo):
     """Return {(repo, number)} for issues this PR's body or comments defer a criterion to."""
     return _evidence_deferrals(body, comments, repo) | _prose_deferrals(body, repo)
-
-
-def says_it_does_not_close(pr_body, number, repo):
-    """True if every closing keyword naming this issue is negated, and there is at least one."""
-    mentions = [
-        negated
-        for target, n, negated in _closing_mentions(pr_body or "", repo)
-        if n == number and _same_repo(target, repo)
-    ]
-    return bool(mentions) and all(mentions)
 
 
 def closure_finding(follow_up):

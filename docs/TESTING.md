@@ -5255,4 +5255,15 @@ For a one-line navigational map of the test directory, see
 
      ```bash
      py -3 claude/scripts/tests/test_issue_dup_eval.py
+118. **closing-negation test** — required when changing `claude/scripts/_closing_negation.py`
+     ([ADR-153](adr/153-acceptance-criteria-filing-and-verification.md), dev-env#1300). The lines that closed
+     an issue by accident in switchyard PR 21 and lifting-logbook PR 510 must name #12 and #468. Emphasis and a
+     colon still match, and ordinary wording doesn't, nor do the forms GitHub doesn't link (a code span, and
+     emphasis closing after a keyword's colon), nor an issue the body also really closes. The
+     fixtures hold only the lines #1300 quotes, because both repos are private. Item 38's shell test covers the
+     warning at merge. The hit rate over merged PRs is in ADR-153, because it needs labelled data. Its two
+     callers are items 38 and 116, so run those too.
+
+     ```bash
+     py -3 claude/scripts/tests/test_closing_negation.py
      ```
