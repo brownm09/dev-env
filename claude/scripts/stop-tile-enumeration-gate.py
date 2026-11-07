@@ -101,13 +101,15 @@ follow-up artifact before the stop is allowed:
 
 **The tool's name.** The app now offers ``start_session``, and ``spawn_task`` is the
 older name, which this hook still reads so older transcripts keep working. The trigger
-descriptions here and in the ADRs name the older tool; read them as "a tile". What a
-``start_session`` call counts as depends on how it ended, not just on the call
-(dev-env#1298): a proposal card is a tile, so it satisfies triggers 1, 2 and 5 and owes
-a table and a shard (3, 3b). A session that actually started (``user_asked``, an offer
-answered "New session", or ``proposal_id``) satisfies 1, 2 and 5 but owes neither, since
-it has no card to lose. A refusal, and an offer answered "Do it here" or left
-unanswered, counts as nothing. See ``session_tile_outcomes``.
+descriptions here and in the ADRs name the older tool; read them as "a card or a started
+session" for triggers 1, 2 and 5, and "a card" for 3 and 3b. What a ``start_session``
+call counts as depends on how it ended, not just on the call (dev-env#1298): a proposal
+card is a tile, so it satisfies triggers 1, 2 and 5 and owes a table and a shard (3, 3b).
+A session that actually started (``user_asked`` or ``proposal_id``) satisfies 1, 2 and 5
+but owes neither, since it has no card to lose. A card later started with ``proposal_id``
+becomes that, and a card withdrawn with ``dismiss_task`` counts as nothing. So does a
+refusal and an offer, since even one answered "New session" waits for its ``proposal_id``
+call. See ``session_tile_outcomes``.
 
 Triggers 1-3b and 5 are the direct Stop-hook analog of
 ``pre-merge-findings-gate`` (ADR-039) and BLOCK the stop (exit 2) with a
@@ -332,9 +334,12 @@ _START_SESSION_RE = re.compile(r"(?:^|_)start_session$", re.IGNORECASE)
 # A refusal doesn't always set is_error: "Nothing was proposed. ..." comes back as a
 # normal result (seen in 6 recorded calls), so the text is read too.
 _NOTHING_HAPPENED_RE = re.compile(r"\s*Nothing was\b", re.IGNORECASE)
-# What an offer's result says when the user picked a separate session. An offer starts
-# nothing by itself, so unlike the check above this one has to be positive.
-_OFFER_ACCEPTED = '"New session"'
+_DISMISS_TASK_RE = re.compile(r"(?:^|_)dismiss_task$", re.IGNORECASE)
+# How a proposal result names its card. proposal_id and dismiss_task use the same id.
+_TASK_ID_RE = re.compile(r"\(task_id:\s*([\w-]+)\)")
+# A dismissal of a card that's no longer pending ends with this. The card may have started
+# or come back to this session, and the result doesn't say which, so it still counts.
+_NOT_WITHDRAWN = "Nothing was changed"
 # How a call ended, for the two questions the triggers ask (see session_tile_outcomes).
 _OUTCOME_CARD = "card"
 _OUTCOME_STARTED = "started"
@@ -355,7 +360,7 @@ _SKIP_RE = re.compile(r"\b(?:skip\s+tiles?|don'?t\s+(?:spawn\s+)?tiles?|no\s+til
 # namespacing hits" bare-verb philosophy (review of PR #674) -- an earlier
 # version of this pre-filter checked the exact fully-qualified tool name
 # (mcp__ccd_session__spawn_task) instead, which is a STRICT SUBSET of what
-# _SPAWN_TASK_RE (used inside session_spawned_tiles, below) can match: a
+# _SPAWN_TASK_RE (used inside session_tile_outcomes, below) can match: a
 # spawn_task call recorded under any other MCP namespace would satisfy the
 # real detector but be silently skipped by that narrower pre-filter, defeating
 # the detector's own documented namespace-robustness. The bare substring costs
@@ -776,29 +781,47 @@ def _start_session_outcome(item: dict, result: tuple | None) -> str | None:
     or ``None`` when nothing came of it (dev-env#1298).
 
     ``own_initiative`` puts up a proposal card. ``user_asked`` and ``proposal_id``
-    start a session. ``offer`` only asks: "Do it here" keeps the work in this session,
-    so it counts only when the user chose "New session". No recorded result counts as
-    what the call asked for, because nothing says it was refused and missing a real
-    tile is the failure this exists to fix.
+    start a session. ``offer`` only asks, and even an offer answered "New session" waits
+    for the ``proposal_id`` call its result asks for, so that call is what counts. No
+    recorded result counts as what the call asked for, because nothing says it was
+    refused and missing a real tile is the failure this exists to fix.
     """
-    inp = item.get("input")
-    initiation = inp.get("initiation") if isinstance(inp, dict) else None
-    text = ""
     if result is not None:
         result_item, result_rec = result
-        text = _result_text(result_item, result_rec)
-        if result_item.get("is_error") or _NOTHING_HAPPENED_RE.match(text):
+        if result_item.get("is_error") or _NOTHING_HAPPENED_RE.match(
+            _result_text(result_item, result_rec)
+        ):
             return None
+    inp = item.get("input")
+    initiation = inp.get("initiation") if isinstance(inp, dict) else None
     if initiation == "own_initiative":
         return _OUTCOME_CARD
-    if initiation == "offer":
-        return _OUTCOME_STARTED if _OFFER_ACCEPTED in text else None
-    return _OUTCOME_STARTED
+    return None if initiation == "offer" else _OUTCOME_STARTED
+
+
+def _card_id(item: dict, result: tuple | None) -> str:
+    """The id a later call would name this card by. A result that names none falls back
+    to the call's own id, which nothing retires, so the card keeps counting."""
+    if result is not None:
+        match = _TASK_ID_RE.search(_result_text(*result))
+        if match:
+            return match.group(1)
+    return item.get("id")
+
+
+def _withdrew(result: tuple | None) -> bool:
+    """True unless a ``dismiss_task`` call's result shows the card wasn't withdrawn."""
+    if result is None:
+        return True
+    return not result[0].get("is_error") and _NOT_WITHDRAWN not in _result_text(*result)
 
 
 def session_tile_outcomes(records: list) -> set:
     """Every way this session handed work to another session. The single source of
     truth behind the two questions below, so they can't drift on what a call means.
+
+    A card counts until it's gone: ``dismiss_task`` withdraws it and leaves nothing, and
+    a ``proposal_id`` start turns it into a started session.
 
     A ``spawn_task`` call (the older name) is always a card: the tool had no other
     mode, and its result was never read. Results are paired by ``tool_use_id``, as
@@ -812,13 +835,26 @@ def session_tile_outcomes(records: list) -> set:
         if isinstance(item, dict) and item.get("type") == "tool_result"
     }
     outcomes: set = set()
+    cards: set = set()
+    gone: set = set()
     for _i, _rec, item in iter_tool_uses(records):
         name = item.get("name", "") or ""
+        result = results.get(item.get("id"))
+        inp = item.get("input")
+        inp = inp if isinstance(inp, dict) else {}
         if _SPAWN_TASK_RE.search(name):
             outcomes.add(_OUTCOME_CARD)
         elif _START_SESSION_RE.search(name):
-            outcomes.add(_start_session_outcome(item, results.get(item.get("id"))))
-    outcomes.discard(None)
+            outcome = _start_session_outcome(item, result)
+            if outcome == _OUTCOME_CARD:
+                cards.add(_card_id(item, result))
+            elif outcome == _OUTCOME_STARTED:
+                outcomes.add(outcome)
+                gone.add(inp.get("proposal_id"))
+        elif _DISMISS_TASK_RE.search(name) and _withdrew(result):
+            gone.add(inp.get("task_id"))
+    if cards - gone:
+        outcomes.add(_OUTCOME_CARD)
     return outcomes
 
 
@@ -1031,8 +1067,10 @@ def evaluate_tile_shard(records: list) -> tuple:
     is present. A session that spawned no tile returns ``(None, False)`` so a tile spawned
     later is still caught.
 
-    Shares ``session_spawned_tiles`` with triggers 1/2/3, so "was a tile spawned" cannot
-    drift between them. Like trigger 3 (the table), a spawned tile does NOT satisfy this
+    Reads ``session_tile_outcomes`` like triggers 1, 2, 3 and 5, so what a call counts as
+    cannot drift between them. Like trigger 3 (the table), it asks whether a card exists,
+    through ``session_spawned_tiles``, where 1, 2 and 5 ask whether any work was queued,
+    through ``session_queued_work``. A spawned tile does NOT satisfy this
     trigger by itself — the shard is a separate, stricter bar, and the two guard different
     losses: the table is what tells the *user* a tile exists, the shard is what lets the
     *tile* be re-spawned after the chip dies.
@@ -1344,8 +1382,8 @@ def format_shard_reminder(payload: object = None) -> str:
         "API to recover a lost one, so the shard "
         "sessions/<project>/tiles/<issue-number>.json IS the durable payload -- without "
         "it the paired issue survives but the one-click restart does not (ADR-118). "
-        "Write one shard per tile now, filed under the tile's TARGET project (from its "
-        "cwd), not the spawning session's. Required fields: issue, url, title, tldr, "
+        "Write one shard per tile now, filed under the TARGET project, the repo the work "
+        "belongs in (record it as cwd), not the spawning session's. Required fields: issue, url, title, tldr, "
         "prompt, cwd, spawned. Build it with a JSON serializer or the Write tool -- never "
         "echo, since `prompt` is free prose that corrupts the shard or escapes into the "
         "shell when interpolated. Recipe: docs/REFERENCE.md -> Tile shards. Only an "

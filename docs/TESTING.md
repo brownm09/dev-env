@@ -2026,8 +2026,11 @@ For a one-line navigational map of the test directory, see
     **`start_session`** (dev-env#1298): the app replaced `spawn_task`, the older name that most
     of this item still uses and the gate still reads for older transcripts. `_START_SESSION_DECISIONS`
     states what each way a call can end counts as, and pins it through triggers 1, 2, 3, 3b and 5:
-    only a proposal card is a tile. The fixtures' result text is taken from recorded transcripts,
-    because a refusal can come back with no error flag ("Nothing was proposed"). See
+    only a proposal card is a tile. `_CARD_LIFE_DECISIONS` does the same for what follows a card:
+    `dismiss_task` withdraws it, and a `proposal_id` start turns it into a started session, both
+    matched on the `task_id` in the proposal's result. The fixtures' result text is taken from
+    recorded transcripts, because a refusal can come back with no error flag ("Nothing was
+    proposed"). See
     [Detail: Tiles](REFERENCE.md#detail-tiles).
 
 49. **setup-link-loop test** — required when changing `setup.sh`'s link arrays

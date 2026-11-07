@@ -123,7 +123,9 @@ def format_pending_tiles(entries: list[dict], max_shown: int = MAX_TILES_SHOWN) 
     lines = [
         f"Pending tiles ({len(entries)}) -- tile cards don't last (they expire after 7 days); "
         "these shards are the durable payload (ADR-118). Check list_sessions for a matching "
-        "title/branch before re-spawning any of them."
+        "title/branch before re-proposing any of them. A card can't carry a folder and starts "
+        "in this project, so when a shard's cwd is another repo, put that path at the top of "
+        "the prompt."
     ]
     for entry in entries[:max_shown]:
         title = str(entry.get("title") or "(no title)")

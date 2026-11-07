@@ -2,7 +2,7 @@
 """Unit tests for reconcile-project-board.py pure helpers (dev-env #447).
 
 `reconcile-project-board.py` is the backstop for the gap ADR-053 documents: PostToolUse
-hooks are inert in background/tile-launched sessions, so issues filed there are never added
+hooks are inert in background and SDK sessions, so issues filed there are never added
 to the project board. The script lists open issues + board items, computes the set
 difference (orphans), adds them, and reports the issues still missing a required field —
 **without ever guessing the field value**. These tests pin that contract offline:

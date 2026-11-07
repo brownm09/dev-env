@@ -106,7 +106,9 @@ For each repo's `status`:
   it) for human review. **Never spawn** for an `AMBIGUOUS` repo -- this is a deliberate "don't guess"
   outcome, not a temporary gap.
 - **`NEEDS_REFILL`** -- before treating this as actionable, cross-check `list_sessions` for a session
-  whose title, branch, or cwd already matches this repo and its candidate/anchor issue. A match means
+  whose title, branch, or cwd already matches this repo and its candidate/anchor issue. A card from
+  another project starts there, so its branch and cwd won't match: for those, go by the title, which
+  carries `<repo>#<issue>` (Step 3, sub-step 4). A match means
   a session is already working the item (chip dismissed or not) -- reclassify this repo as alive for
   this run and record it distinctly from a script-confirmed `ALIVE`, e.g. `ALIVE (list_sessions
   match, not shard-confirmed)`, so a human reading the summary can tell the difference (this is the
@@ -148,11 +150,16 @@ unchecked-item list:
    always starts in the proposing session's project. End the prompt with the CHAIN block below,
    verbatim, with `<QUEUE_ISSUE_URL>` and `<OWNER>`/`<REPO>` filled in with this repo's real values.
 4. **Propose the tile** with `mcp__ccd_session__start_session`, `initiation: "own_initiative"`,
-   `context: "fresh"`, `title` a short card label, `prompt` the composed text from sub-step 3, and
+   `context: "fresh"`, `title` a short card label that carries `<repo>#<issue>`, `prompt` the
+   composed text from sub-step 3, and
    `background` the one-to-two sentence `tldr` expanded to at least 80 characters. Pass no `cwd`:
    the app refuses a folder on a proposal card. The shard (sub-step 5) still records `tldr` and
    `cwd`, this repo's local clone path from the table above (forward slashes, per
-   [ADR-118](../../../docs/adr/118-tile-persistence-shards.md) Amendment 4).
+   [ADR-118](../../../docs/adr/118-tile-persistence-shards.md) Amendment 4). **Read the result.** A
+   refusal can come back with no error flag ("Nothing was proposed"). Unless the result says the card
+   was proposed (`Proposed "..." (task_id: ...)`), write no shard, because a chain shard with an open
+   issue reads as `ALIVE` and the backstop would never refill it. Record this repo as not refilled,
+   with the result's text, and carry that into Step 5's summary.
 5. **Write the shard immediately** -- `sessions/<project>/tiles/N.json`, with the **Write tool**,
    never a shell redirect or heredoc
    ([ADR-129](../../../docs/adr/129-journal-shell-write-guard.md)) -- carrying all seven
@@ -196,6 +203,7 @@ responsibility.
 | 1 | brownm09/dev-env | ALIVE | none |
 | 2 | brownm09/career-playbook | AMBIGUOUS | flagged for human review -- \<notes\> |
 | 3 | merickvaughn/lifting-logbook | NEEDS_REFILL | refilled -> issue #NNN, shard committed |
+| 4 | brownm09/win11-init-tools | NEEDS_REFILL | not refilled, proposal refused -- \<result text\> |
 | ... | ... | ... | ... |
 
 ---
@@ -233,11 +241,13 @@ skipped -- but do this anyway; it is the fast path. Before ending the session:
    reference resolves -- file a new one in <OWNER>/<REPO> (label `retro-action`)
    so the tile has a durable anchor per ADR-094.
 5. Propose a tile for that item with `mcp__ccd_session__start_session`
-   (`initiation: "own_initiative"`, `context: "fresh"`, a `title`, this
+   (`initiation: "own_initiative"`, `context: "fresh"`, a `title` that carries
+   <REPO>#<issue-number>, this
    prompt, and a `background` of at least 80 characters; no folder, and if the
    repo is not your own project, open the prompt with its local clone path),
    carrying this entire CHAIN block forward
-   verbatim (updating the issue URLs), then write its shard to
+   verbatim (updating the issue URLs). If the result doesn't say the card was
+   proposed, write no shard and say the chain stopped here. Otherwise write its shard to
    `sessions/<project>/tiles/<issue-number>.json` per ADR-118 using the Write
    tool -- never a shell redirect or heredoc (ADR-129). Include a "chain" field:
    {"queue_issue": "<QUEUE_ISSUE_URL>", "seeded_by": "<how this tile was spawned>"}

@@ -128,9 +128,19 @@ def _start_session(inp, result=_PROPOSED, *, tid="ss1", is_error=False,
     ]
 
 
-def _own_initiative(result=_PROPOSED, **kwargs):
-    return _start_session({"initiation": "own_initiative", "title": "Follow-up", "prompt": "Do it."},
-                          result, **kwargs)
+def _own_initiative():
+    return _start_session({"initiation": "own_initiative", "title": "Follow-up", "prompt": "Do it."})
+
+
+_WITHDRAWN = "Task task_9c1d4435 withdrawn - the chip is no longer shown to the user."
+_EXPIRED = "Task task_9c1d4435 already expired unstarted, so it is no longer shown."
+_NOT_PENDING = ("Task task_9c1d4435 is no longer pending, so there is nothing to withdraw: it was "
+                "started in its own session, or the user sent it to this one. Nothing was changed.")
+
+
+def _dismiss(result=_WITHDRAWN, *, task_id="task_9c1d4435", tid="dt1", is_error=False):
+    return _start_session({"task_id": task_id}, result, tid=tid, is_error=is_error,
+                          name="mcp__ccd_session__dismiss_task")
 
 
 _TILE_SHARD = "sessions/dev-env/tiles/870.json"
@@ -1389,15 +1399,98 @@ _START_SESSION_DECISIONS = (
      {"initiation": "user_asked"}, _STARTED, False, True, False),
     ("user_asked refused: nothing started",
      {"initiation": "user_asked"}, _START_REFUSED, True, False, False),
-    ("offer, user chose New session: a session opens, with no card to lose",
-     {"initiation": "offer"}, _OFFER_NEW_SESSION, False, True, False),
+    ("offer, user chose New session: the proposal_id call that follows is what counts",
+     {"initiation": "offer"}, _OFFER_NEW_SESSION, False, False, False),
     ("offer, user chose Do it here: the work stays here, nothing is queued",
      {"initiation": "offer"}, _OFFER_DO_IT_HERE, False, False, False),
     ("offer left unanswered: nothing is queued",
      {"initiation": "offer"}, _OFFER_UNANSWERED, False, False, False),
-    ("proposal_id started: the card, if any, was counted when it was proposed",
+    ("proposal_id started: the work is queued, with no card to lose",
      {"proposal_id": "task_9c1d4435"}, _STARTED, False, True, False),
 )
+
+
+# A card's life after it's proposed, one row per way it can continue. Same two columns.
+# proposal_id and dismiss_task both name the card by the task_id in its proposal result.
+_CARD_LIFE_DECISIONS = (
+    # label, what follows the proposal, queued, tile
+    ("withdrawn: nothing is queued and no card is left to lose",
+     _dismiss(), False, False),
+    ("expired: nothing is queued and no card is left to lose",
+     _dismiss(_EXPIRED), False, False),
+    ("dismissal says nothing changed: it may have started, so the card still counts",
+     _dismiss(_NOT_PENDING), True, True),
+    ("dismissal failed: the card still counts",
+     _dismiss("tool failed", is_error=True), True, True),
+    ("dismissal of another card: this one still counts",
+     _dismiss(task_id="task_other"), True, True),
+    ("started with proposal_id: queued, with no card to lose",
+     _start_session({"proposal_id": "task_9c1d4435"}, _STARTED, tid="ss2"), True, False),
+    ("proposal_id start refused: the card still counts",
+     _start_session({"proposal_id": "task_9c1d4435"}, _START_REFUSED, tid="ss2", is_error=True),
+     True, True),
+    ("another card's proposal_id start: queued, and this card still counts",
+     _start_session({"proposal_id": "task_other"}, _STARTED, tid="ss2"), True, True),
+)
+
+
+def test_card_life_decision_table():
+    for label, after, queued, tile in _CARD_LIFE_DECISIONS:
+        records = _own_initiative() + after
+        assert gate.session_queued_work(records) is queued, f"queued: {label}"
+        assert gate.session_spawned_tiles(records) is tile, f"tile: {label}"
+    return f"{len(_CARD_LIFE_DECISIONS)} ways a card can continue each decided"
+
+
+def test_card_life_decisions_reach_the_triggers():
+    for label, after, queued, tile in _CARD_LIFE_DECISIONS:
+        call = _own_initiative() + after
+        fire, _ = gate.evaluate(_MERGED_NO_ENUM + call)
+        assert (fire is None) is queued, f"merge floor: {label}"
+        fire, _ = gate.evaluate_issues(_ISSUE_CREATED_NO_ENUM + call)
+        assert (fire is None) is queued, f"issue floor: {label}"
+        fire, _ = gate.evaluate_workstream(_MERGED_UNCHAINED + call)
+        assert (fire is None) is queued, f"unchained merge: {label}"
+        fire, _ = gate.evaluate_tile_table(call)
+        assert (fire is True) is tile, f"table: {label}"
+        fire, _ = gate.evaluate_tile_shard(call)
+        assert (fire is True) is tile, f"shard: {label}"
+    return "each card decision reaches triggers 1, 2, 3, 3b and 5"
+
+
+def test_accepted_offer_counts_once_its_brief_is_sent():
+    # The result tells the session to call again with proposal_id, and that call starts it.
+    records = (_start_session({"initiation": "offer"}, _OFFER_NEW_SESSION)
+               + _start_session({"proposal_id": "task_f00f", "prompt": "Do it."}, _STARTED, tid="ss2"))
+    assert gate.session_queued_work(records) and not gate.session_spawned_tiles(records)
+    return "offer accepted + proposal_id -> queued, owes no table or shard"
+
+
+def test_one_card_gone_leaves_the_other():
+    second = 'Proposed "Second" (task_id: task_2222). The user sees a card and nothing runs'
+    records = (_own_initiative()
+               + _start_session({"initiation": "own_initiative"}, second, tid="ss2")
+               + _dismiss())
+    assert gate.session_spawned_tiles(records)
+    records += _dismiss(task_id="task_2222", tid="dt2")
+    assert not gate.session_spawned_tiles(records)
+    return "a tile is owed until the last card is gone"
+
+
+def test_refused_call_does_not_hide_a_later_proposal():
+    # Results pair by tool_use_id, so parallel calls in one session can't borrow each other's.
+    records = (_start_session({"initiation": "own_initiative"}, _NOTHING_PROPOSED, tid="ss1")
+               + _start_session({"initiation": "own_initiative"}, _PROPOSED, tid="ss2"))
+    assert gate.session_spawned_tiles(records)
+    return "one refused and one proposed -> a card"
+
+
+def test_proposal_with_no_task_id_stays_a_card():
+    # Nothing can retire it, so a reworded result can't make a real tile disappear.
+    records = (_start_session({"initiation": "own_initiative"}, "Proposed a card")
+               + _dismiss())
+    assert gate.session_spawned_tiles(records)
+    return "a proposal whose result names no task_id is still a card"
 
 
 def test_start_session_decision_table():
@@ -2639,6 +2732,12 @@ def main():
         ("e2e trigger 5 sentinel suppresses re-fire", test_e2e_workstream_sentinel_suppresses_refire),
         ("start_session: decision table", test_start_session_decision_table),
         ("start_session: decisions reach the triggers", test_start_session_decisions_reach_the_triggers),
+        ("start_session: a card's life, decision table", test_card_life_decision_table),
+        ("start_session: a card's life reaches the triggers", test_card_life_decisions_reach_the_triggers),
+        ("start_session: accepted offer counts once its brief is sent", test_accepted_offer_counts_once_its_brief_is_sent),
+        ("start_session: one card gone leaves the other", test_one_card_gone_leaves_the_other),
+        ("start_session: a refusal doesn't hide a later proposal", test_refused_call_does_not_hide_a_later_proposal),
+        ("start_session: a proposal with no task_id stays a card", test_proposal_with_no_task_id_stays_a_card),
         ("start_session: own_initiative satisfies the merge floor", test_own_initiative_satisfies_the_merge_floor),
         ("start_session: before the merge doesn't resolve trigger 5", test_start_session_before_the_merge_does_not_resolve_trigger_5),
         ("start_session: result in a content list", test_start_session_result_in_a_content_list_is_read),
