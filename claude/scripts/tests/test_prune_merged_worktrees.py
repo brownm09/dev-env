@@ -71,9 +71,11 @@ Exit 0 = all pass.
 """
 import importlib.util
 import io
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
@@ -922,14 +924,23 @@ def test_draft_squat_fetch_timeout_counts_as_not_pushed() -> str:
 
 # --- dev-env#1088: discover the default branch instead of assuming main ---------------------
 
+def _run_aged(repo: ThrowawayRepo, *args: str) -> subprocess.CompletedProcess:
+    """Run the script with every worktree's git state a week old, past the recent-activity guard."""
+    stamp = time.time() - 7 * 24 * 60 * 60
+    for admin in (repo.primary / ".git" / "worktrees").iterdir():
+        for path in (admin, *admin.iterdir()):
+            os.utime(path, (stamp, stamp))
+    return repo.run_script(_MODULE_PATH, *args)
+
+
 def test_real_non_main_with_origin_head_unset_is_fetched_and_pruned() -> str:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         repo = ThrowawayRepo(Path(tmp), default_branch="master")
-        r = repo.run_script(_MODULE_PATH, "--dry-run")
+        r = _run_aged(repo, "--dry-run")
         repo.assert_targets_repo(r)
         if "fetch failed" in r.stdout or "would remove" not in r.stdout:
             raise AssertionError(f"--dry-run should fetch master and see a merged worktree\n{r.stdout}")
-        r = repo.run_script(_MODULE_PATH)
+        r = _run_aged(repo)
         if repo.worktree.exists() or repo.branch_exists():
             raise AssertionError(f"plain run should prune\n{r.stdout}\n{r.stderr}")
     return "origin/HEAD unset, ls-remote finds master, the worktree is merged into origin/master and pruned"
@@ -941,7 +952,7 @@ def test_real_origin_head_is_believed_without_asking_the_remote() -> str:
         repo = ThrowawayRepo(Path(tmp), default_branch="trunk")
         repo.set_origin_head("trunk")
         repo.git("remote", "set-url", "origin", (repo.root / "github.com" / "owner" / "gone.git").as_posix())
-        r = repo.run_script(_MODULE_PATH, "--dry-run")
+        r = _run_aged(repo, "--dry-run")
         repo.assert_targets_repo(r)
         if "fetch failed" not in r.stdout or "origin/trunk" not in r.stdout:
             raise AssertionError(f"the warning should name origin/trunk\n{r.stdout}")
@@ -957,7 +968,7 @@ def test_real_hostile_branch_name_is_not_a_fetch_option() -> str:
         hostile = "refs/heads/--upload-pack=echo"
         repo._git(repo.origin, "update-ref", hostile, "main")
         repo._git(repo.origin, "symbolic-ref", "HEAD", hostile)
-        r = repo.run_script(_MODULE_PATH, "--dry-run")
+        r = _run_aged(repo, "--dry-run")
         repo.assert_targets_repo(r)
         if "fetch failed" in r.stdout or "protocol error" in r.stdout:
             raise AssertionError(f"the branch name was read as an option\n{r.stdout}")
@@ -971,7 +982,7 @@ def test_real_stale_origin_head_asks_the_remote() -> str:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         repo = ThrowawayRepo(Path(tmp), default_branch="master")
         repo.set_origin_head("renamed-away")
-        r = repo.run_script(_MODULE_PATH, "--dry-run")
+        r = _run_aged(repo, "--dry-run")
         repo.assert_targets_repo(r)
         if "fetch failed" in r.stdout or "would remove" not in r.stdout:
             raise AssertionError(f"should fall back to the remote's master\n{r.stdout}")
@@ -985,7 +996,7 @@ def test_real_discovery_failure_still_protects_master() -> str:
         repo.git("checkout", "--detach")
         repo.add_worktree_on_default_branch()
         repo.git("remote", "set-url", "origin", (repo.root / "github.com" / "owner" / "gone.git").as_posix())
-        r = repo.run_script(_MODULE_PATH, "--dry-run", "--include-named")
+        r = _run_aged(repo, "--dry-run", "--include-named")
         repo.assert_targets_repo(r)
         if "on the default branch 'master'" not in r.stdout:
             raise AssertionError(f"the master worktree should be skipped as the default branch\n{r.stdout}")
@@ -996,7 +1007,7 @@ def test_real_discovery_failure_lands_in_fetch_failed() -> str:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         repo = ThrowawayRepo(Path(tmp))
         repo.git("remote", "set-url", "origin", (repo.root / "github.com" / "owner" / "gone.git").as_posix())
-        r = repo.run_script(_MODULE_PATH, "--dry-run")
+        r = _run_aged(repo, "--dry-run")
         repo.assert_targets_repo(r)
         if r.returncode != 0 or "could not find" not in r.stdout or "fetch failed" not in r.stdout:
             raise AssertionError(f"exit {r.returncode}, should report and carry on\n{r.stdout}\n{r.stderr}")
@@ -1009,9 +1020,9 @@ def test_real_non_main_squatter_is_parked_and_default_branch_survives() -> str:
         repo = ThrowawayRepo(Path(tmp), default_branch="master")
         repo.git("checkout", "-b", "elsewhere")
         squat = repo.add_worktree_on_default_branch()
-        r = repo.run_script(_MODULE_PATH, "--dry-run", "--include-named")
+        r = _run_aged(repo, "--dry-run", "--include-named")
         repo.assert_targets_repo(r)
-        r = repo.run_script(_MODULE_PATH, "--include-named")
+        r = _run_aged(repo, "--include-named")
         if not squat.exists() or not repo.branch_exists("master"):
             raise AssertionError(f"master or its worktree was removed\n{r.stdout}\n{r.stderr}")
         if repo.current_branch(squat) == "master":
@@ -1026,9 +1037,9 @@ def test_real_default_branch_worktree_under_detached_primary_is_kept() -> str:
             repo = ThrowawayRepo(Path(tmp), default_branch=default_branch)
             repo.git("checkout", "--detach")
             home = repo.add_worktree_on_default_branch()
-            r = repo.run_script(_MODULE_PATH, "--dry-run", "--include-named")
+            r = _run_aged(repo, "--dry-run", "--include-named")
             repo.assert_targets_repo(r)
-            r = repo.run_script(_MODULE_PATH, "--include-named")
+            r = _run_aged(repo, "--include-named")
             if not home.exists() or not repo.branch_exists(default_branch):
                 raise AssertionError(f"{default_branch} or its worktree was removed\n{r.stdout}\n{r.stderr}")
             if "default branch" not in r.stdout:
