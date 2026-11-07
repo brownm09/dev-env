@@ -186,6 +186,9 @@ what separates a fresh worktree in use from an abandoned one.
 
 - A session that only reads writes nothing here, so it's invisible until it does. Edits show as dirty, and
   that check still applies.
+- A commit writes the branch ref and `logs/HEAD`, and writes `index` only when it records a change or git
+  refreshes the index. An empty commit, or a `git push`, can therefore go unseen; on CI an empty commit left
+  all four files alone. `logs/HEAD` would catch it, but `git gc` in the primary rewrites it too.
 - A session quiet in git for over 24h loses protection, as the transcript check's limitation above says.
 - The corpus is one machine on one evening, and the labels above leave out one repo. `git gc` and a fetch in
   the primary were probed, but other tools that write these files were not surveyed. A false "in use" costs

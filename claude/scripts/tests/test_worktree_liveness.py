@@ -421,7 +421,12 @@ def test_git_activity_seen_for_work_in_the_worktree() -> str:
             (repo.worktree / "new.txt").write_text("x", encoding="utf-8"),
             repo._git(repo.worktree, "add", "new.txt"),
         ),
-        "git commit": lambda repo: repo._git(repo.worktree, "commit", "--allow-empty", "-m", "x"),
+        # A commit that records a change writes the index. An empty one may not (it failed in CI),
+        # which ADR-051 Amendment 1 lists as a limit.
+        "git commit -a": lambda repo: (
+            (repo.worktree / ".gitignore").write_text("node_modules/\n.claude/\nx\n", encoding="utf-8"),
+            repo._git(repo.worktree, "commit", "-am", "x"),
+        ),
         "git fetch": lambda repo: repo._git(repo.worktree, "fetch", "origin", "main"),
         "git switch": lambda repo: repo._git(repo.worktree, "switch", "-c", "other"),
     }
